@@ -352,7 +352,7 @@ type ReviewPlan = {
     canRunInParallel: boolean
     reason: string
   }>
-  systemReviewTasks: Array<{
+  systemFollowUpTasks: Array<{
     topic: string
     files: string[]
     symbols: string[]
@@ -496,7 +496,7 @@ Packet construction algorithm:
 2. Validate planner output and apply deterministic fallbacks for missing coverage, invalid skip reasons, or empty lens sets.
 3. Apply file processing mode: skip files produce coverage records only; whole-file files produce one file packet when size limits allow; all other files default to hunk-first packets.
 4. Group hunks conservatively: one packet per hunk by default; coalesce only same-file hunks that share an enclosing symbol or are very nearby and still fit strict size limits.
-5. Never coalesce across files in v1. Cross-file concerns become system review tasks.
+5. Never coalesce across files in v1. Cross-file concerns become system follow-up tasks.
 6. Enforce max hunks, patch chars, context chars, and skill/lens prompt caps. Split oversized packets back into smaller packets.
 7. Compute packet coverage as the max coverage of included hunks, ordered `deep > normal > light`.
 8. Compute packet lenses as the bounded union of included hunk lenses, keeping core and primary language lenses when applicable.
@@ -560,6 +560,7 @@ type VerificationVerdict = {
   requiredEvidencePresent: boolean
   falsePositiveRisk: "low" | "medium" | "high"
   finalFinding?: CandidateFinding
+  verificationIncomplete?: boolean
 }
 
 type FinalFinding = CandidateFinding & {
@@ -774,21 +775,46 @@ interface LanguageAdapter {
 Repository tool interface:
 
 ```ts
+type ToolBackend = "tree-sitter" | "text" | "language-analyzer"
+
+type SourceSelector =
+  | { kind: "head" }
+  | { kind: "base" }
+  | { kind: "git-ref"; ref: string }
+
+type ToolResultMeta = {
+  backend: ToolBackend
+  degraded: boolean
+  degradationReason?: string
+  truncated?: boolean
+  omittedCount?: number
+}
+
 interface RepositoryTools {
-  readRange(path: string, startLine: number, endLine: number): Promise<string>
-  readEnclosingSymbol(path: string, line: number): Promise<string | undefined>
-  readSymbol(path: string, selector: { symbolName?: string; line?: number }): Promise<string | undefined>
-  listSymbols(path: string): Promise<SymbolInfo[]>
-  readDiffBlocks(input: { packetId?: string; path?: string }): Promise<string[]>
+  readRange(path: string, startLine: number, endLine: number, source?: SourceSelector): Promise<{ text: string; meta: ToolResultMeta }>
+  readEnclosingSymbol(path: string, line: number, source?: SourceSelector): Promise<{ text?: string; symbol?: SymbolInfo; meta: ToolResultMeta }>
+  readSymbol(path: string, selector: { symbolName?: string; line?: number }, source?: SourceSelector): Promise<{ text?: string; symbol?: SymbolInfo; meta: ToolResultMeta }>
+  listSymbols(path: string, source?: SourceSelector): Promise<{ symbols: SymbolInfo[]; meta: ToolResultMeta }>
+  readDiffBlocks(input: { packetId?: string; path?: string }): Promise<{ blocks: string[]; meta: ToolResultMeta }>
   findImports(path: string): Promise<string[]>
-  searchFiles(query: string, options?: SearchOptions): Promise<SearchResult[]>
-  findReferences(symbolName: string, options?: { pathGlob?: string }): Promise<SearchResult[]>
-  findLikelyTests(input: { path?: string; symbol?: SymbolRef }): Promise<SymbolRef[]>
+  searchFiles(query: string, options?: SearchOptions): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>
+  findReferences(symbolName: string, options?: { pathGlob?: string }): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>
+  findLikelyTests(input: { path?: string; symbol?: SymbolRef }): Promise<{ tests: SymbolRef[]; meta: ToolResultMeta }>
   listFiles(glob: string): Promise<string[]>
 }
 ```
 
-Repository tools should use tree-sitter-backed symbols and source blocks when available, with `rg`/line-window fallback when parsing is unavailable. Tool results must be capped by count and characters, include line numbers, prefer semantic blocks over whole files, and record truncation or omitted-result counts in telemetry. The model should see structured summaries and source snippets, not raw AST dumps.
+Repository tools are stable contracts backed by pluggable implementations:
+
+- Tree-sitter backend: preferred for files with available grammars. It provides symbols, enclosing blocks, imports, syntax-aware snippets, and static signals.
+- Text backend: required fallback for every repository. It uses git/file reads, `rg`, line windows, and simple filename/test conventions.
+- Language analyzer backend: optional later enrichment for languages where stronger semantic analysis is available.
+
+Tool callers should not need to know which backend answered. Every semantic tool result should include backend provenance and degradation metadata. `readRange`, `readDiffBlocks`, and `listFiles` do not require tree-sitter. `readEnclosingSymbol`, `listSymbols`, `readSymbol`, `findReferences`, and `findLikelyTests` should use tree-sitter when available and degrade to text-backed approximations or empty degraded results when unavailable.
+
+Source-reading tools default to head content and can read base or explicit git refs when available. Base reads are required for deleted-file review and old-side context.
+
+Tool results must be capped by count and characters, include line numbers, prefer semantic blocks over whole files, and record truncation or omitted-result counts in telemetry. The model should see structured summaries and source snippets, not raw AST dumps.
 
 ### Skills And Lenses
 
@@ -799,7 +825,7 @@ Responsibilities:
 - Validate skill frontmatter and content.
 - Register user-facing lenses.
 - Map lenses to one or more skills.
-- Build prompts for scout, lens review, system review, verifier, and composer stages.
+- Build prompts for scout, lens review, system follow-up review, verifier, and composer stages.
 
 Skill file shape:
 
@@ -891,7 +917,7 @@ async function runReview(input: ReviewInput, config: CodeninjaConfig): Promise<R
   const candidates = await runLensPackets(plan, packets, repoIndex.tools, config, run.telemetry)
   const systemCandidates = await runSystemReview(plan, candidates, repoIndex.tools, config, run.telemetry)
   const verified = await verifyFindings([...candidates, ...systemCandidates], repoIndex.tools, config, run.telemetry)
-  const finalReview = await composeReview(verified, plan, config, run.telemetry)
+  const finalReview = await dedupeRankAndComposeReview(verified, plan, config, run.telemetry)
   await renderOutputs(finalReview, config, run.telemetry)
   await maybePublishToGitHub(finalReview, resolved, config, run.telemetry)
   return finalReview
@@ -942,10 +968,14 @@ V1 repository intelligence can be incremental:
 
 ### Verifier, Deduper, Composer
 
-Responsibilities:
+Verifier responsibilities:
 
 - Reject low-quality candidate findings.
 - Revise findings that are real but poorly anchored or worded.
+- Preserve candidate lineage and verification telemetry.
+
+Deduper and composer responsibilities:
+
 - Group duplicates and same-root-cause issues.
 - Rank findings by severity, confidence, evidence strength, and actionability.
 - Produce final Markdown and GitHub comment bodies.
@@ -958,6 +988,22 @@ Verifier keep criteria:
 - Anchor maps to a changed diff line for inline comments.
 - False-positive risk is not high.
 - Style-only comments are disabled unless the configured lens allows them.
+
+Pre-verification gates run before LLM verification to avoid wasting calls on invalid candidates:
+
+- Schema validation.
+- Changed-line anchor validation for inline candidates.
+- Required evidence and concrete failure-mode checks.
+- Low-confidence suppression by default.
+- Exact or obvious duplicate pre-clustering for verifier scheduling only.
+
+LLM verification is enabled by default and runs one candidate at a time with bounded concurrency. The verifier receives the candidate, originating packet or system follow-up context, relevant changed hunk(s), cited evidence, active lens criteria, and read-only semantic tools. It must verify, revise, or reject the candidate; it must not search for new issues.
+
+Verifier pre-clustering is not final deduplication. It may avoid repeated checks for identical or near-identical candidate copies, but semantic deduplication, same-root-cause grouping, comment-cap handling, ranking, and final wording happen only after verification.
+
+Revision preserves candidate lineage and original validated anchors unless the verifier proposes a new anchor that validates against a changed diff line. Findings that are real but not changed-line anchorable become summary-only findings.
+
+Unverified candidates are not publishable by default. Authentication or provider-wide verifier failures fail the run or mark the review incomplete. Individual verifier schema/parse failures get one repair attempt; candidates still unverified after retry are marked `verificationIncomplete` and suppressed from publication unless explicit config changes that behavior.
 
 Dedup fingerprint:
 
