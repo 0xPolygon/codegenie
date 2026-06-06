@@ -33,16 +33,20 @@ The unit of review should be the changed hunk, but the unit of understanding sho
 
 ```text
 PR diff
-  -> PR summary / risk map
-  -> changed symbol graph
+  -> file filtering / classification
+  -> PR summary / risk map / coverage plan
+  -> file facts + optional changed symbol graph
   -> per-hunk / per-file review packets
-  -> targeted repo exploration tools
+  -> selected lenses + targeted repo tools
   -> candidate findings
+  -> cross-file/system review where needed
   -> independent verifier
   -> deduped staff-level review
 ```
 
 codeninja should not dump the whole repository into model context. Instead, it should provide focused diff packets plus tools to inspect the repository as needed. This avoids attention dilution and keeps the reviewer focused on relevant code while still allowing deeper system exploration when a finding requires it.
+
+Every changed hunk should receive an explicit review coverage decision or a skip reason, so large or partial reviews remain honest and inspectable.
 
 Inline GitHub findings should almost always anchor to changed lines because PR review comments are tied to the pull request diff. Candidate findings should carry a validated GitHub anchor with path, line, side, hunk identity, and diff position or commit metadata when available. Broader architectural, systemic, or non-diff-local concerns may still be included in the stdout report or PR review body when they cannot be accurately attached to a changed line.
 

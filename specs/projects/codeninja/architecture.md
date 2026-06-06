@@ -11,7 +11,25 @@ codeninja is a TypeScript CLI that reviews pull-request-style diffs using a stag
 - `architecture.md`: system-level components, data contracts, and cross-component flow.
 - `components/*.md`: detailed designs for the complex internals after this architecture is approved.
 
-Component docs are required because the review pipeline, repository intelligence layer, GitHub posting, skills/lenses, LLM runner, verifier/composer, and telemetry/eval support each have enough complexity to warrant separate designs.
+Component docs are required because the review pipeline, repository intelligence layer, GitHub posting, skills/lenses, LLM runner, verifier/composer, and telemetry/eval support each have enough complexity to warrant separate designs. Those component docs should preserve a minimal v1 path rather than turning every possible enhancement into a first implementation requirement.
+
+## Implementation Philosophy
+
+codeninja should be a specialized review workflow harness, not a generic agent asked to remember the workflow from a skill file. The harness owns the stage order, data contracts, concurrency, validation, GitHub anchoring, and telemetry. Pi agents and Markdown skills provide reasoning inside those stages.
+
+The v1 implementation should stay close to a CodeGenie-style backbone:
+
+1. Resolve target and collect diff.
+2. Filter ignored, generated, vendored, binary, and lock files.
+3. Classify files into simple processing facts such as language, processing mode, package root, test/generated/vendor/lock/binary status, configured labels, and configured priority.
+4. Build a review plan with focus areas, coverage decisions, and file/hunk groups.
+5. Build review packets from files and hunks.
+6. Route selected skills/lenses to those packets.
+7. Retrieve seed context and expose read-only repo tools.
+8. Run model review per scheduled packet.
+9. Verify, dedupe, compose, and optionally publish.
+
+The first implementation should favor simple deterministic heuristics plus structured model calls over an elaborate semantic-analysis platform. Advanced repository intelligence should be added behind stable interfaces when telemetry shows it improves review quality.
 
 ## Technology Choices
 
@@ -46,7 +64,8 @@ CLI args
   -> review input resolver
   -> git/GitHub metadata collection
   -> diff parser
-  -> syntax index and changed-symbol graph
+  -> file filtering and simple file classification
+  -> optional syntax index and changed-symbol graph
   -> scout/planner
   -> review packet builder
   -> selected lens runners with bounded concurrency
@@ -134,11 +153,12 @@ Only `.codeninja/runs/` is git-ignored. `.codeninja/skills/` should remain track
 ### Review Input
 
 ```ts
-type ReviewMode = "github_pr" | "git_range" | "diff_file"
+type ReviewMode = "github_pr" | "branch" | "commit_range" | "diff_file"
 
 type ReviewInput =
   | { mode: "github_pr"; prNumber: number }
-  | { mode: "git_range"; baseRef: string; headRef: string }
+  | { mode: "branch"; branchName: string; baseBranch?: string }
+  | { mode: "commit_range"; startCommit: string; endCommit?: string }
   | { mode: "diff_file"; diffPath: string }
 
 type ResolvedReviewInput = {
@@ -146,6 +166,8 @@ type ResolvedReviewInput = {
   repoRoot: string
   baseRef?: string
   headRef?: string
+  startCommit?: string
+  endCommit?: string
   mergeBase?: string
   headSha?: string
   pr?: PullRequestMetadata
@@ -256,9 +278,55 @@ type ChangedSymbolGraph = {
   symbols: ChangedSymbol[]
   edges: SymbolEdge[]
 }
+
+type HunkSymbolFacts = {
+  path: string
+  hunkId: string
+  enclosingSymbol?: string
+  symbolKind?: SymbolKind
+  symbolRange?: [number, number]
+  changedLines: number[]
+  signature?: string
+  source: "tree-sitter" | "fallback"
+  confidence: "syntactic" | "heuristic"
+}
+
+type ProcessingMode = "per-hunk" | "whole-file" | "skip"
+type ReviewPriority = "critical" | "high" | "normal" | "low"
+
+type FactProvenance = {
+  fact: string
+  source: "path" | "filename" | "extension" | "parser" | "git" | "diff" | "config" | "generated_detector"
+  confidence: "high" | "medium" | "low"
+  reason: string
+}
+
+type FileFacts = {
+  path: string
+  language: string
+  packageRoot?: string
+  processingMode: ProcessingMode
+  testStatus: "test" | "source" | "mixed" | "unknown"
+  isGenerated: boolean
+  isVendored: boolean
+  isLockfile: boolean
+  isBinary: boolean
+  changedLines: number
+  hunkCount: number
+  labels: string[]
+  reviewPriority: ReviewPriority
+  reasons: string[]
+  provenance: FactProvenance[]
+}
 ```
 
 Tree-sitter-backed graph facts are syntactic or heuristic unless a richer language adapter provides semantic evidence. The LLM may reason over the graph, but graph construction itself must be deterministic.
+
+Changed-symbol extraction is a local indexing step, not an LLM stage. It parses changed files, maps hunk line ranges to enclosing symbols, and emits compact `HunkSymbolFacts` for planner and packet construction. If parsing fails, the pipeline falls back to hunk/file metadata without blocking review.
+
+File classification is deterministic, narrow, and auditable by default. It uses path rules, filenames, extensions, package-root detection, generated/vendor/lockfile/binary detectors, diff metadata, and `codeninja.toml` rules. The LLM is not part of the default classifier.
+
+The core classifier must not ship with hardcoded business/domain risk keyword lists. Labels and criticality come from explicit project configuration, while the planner and skills may reason about risk from the diff, symbols, static signals, and configured labels.
 
 ### Review Planning
 
@@ -275,39 +343,107 @@ type ReviewPlan = {
   testsTouched: string[]
   missingTestSuspicions: string[]
   reviewOrder: string[]
+  coverage: PlannedReviewTarget[]
   packetGroups: Array<{
     groupId: string
     packetIds: string[]
     lenses: string[]
+    priority: "high" | "medium" | "low"
     canRunInParallel: boolean
     reason: string
   }>
+  systemReviewTasks: Array<{
+    topic: string
+    files: string[]
+    symbols: string[]
+    lenses: string[]
+    question: string
+  }>
+  partialReview?: {
+    isPartial: boolean
+    reason: string
+    reviewedHunks: number
+    totalHunks: number
+  }
+}
+
+type CoverageLevel = "deep" | "normal" | "light" | "skip"
+type ReviewPacketKind = "hunk" | "coalesced-hunks" | "file-diff" | "whole-file"
+
+type PlannedReviewTarget = {
+  hunkId: string
+  path: string
+  coverage: CoverageLevel
+  lenses: string[]
+  reason: string
 }
 ```
 
-The planner is the only stage allowed to decide review ordering and lens selection. It must not select every lens for every packet by default.
+The planner is the only stage allowed to decide review ordering, lens selection, and coverage level. It must not select every lens for every packet by default. Every changed hunk must either be assigned a coverage level or explicitly skipped with a reason.
+
+Later stages may validate planner decisions and apply deterministic fallbacks, but they must not become independent risk classifiers. If a reviewable hunk has no valid planner coverage, packet construction falls back to `normal` and records the fallback reason in telemetry. If the planner skips a reviewable hunk without a valid reason, packet construction also falls back to `normal`.
+
+Large PRs use hierarchical planning when the deterministic planner dossier exceeds configured model or budget limits:
+
+```text
+full deterministic inventory
+  -> group by subsystem/package/language/file type/configured labels/planner risk area
+  -> compact group summaries
+  -> optional sub-plans per group
+  -> meta-plan merged into ReviewPlan
+```
+
+The deterministic inventory is complete even when model context is limited. It includes changed files, hunks, line counts, languages, file processing facts, configured labels/priorities, changed symbols, exported API/interface changes, tests touched, generated/vendor/lockfile detection, package/build/test config summaries, and static signals. Model calls receive budgeted summaries of that inventory.
+
+Coverage rules:
+
+- `deep`: changes with strong risk evidence, including configured critical paths, exported API/interface changes, migrations, lifecycle/concurrency-sensitive code identified by symbols or skills, or planner-inferred risks backed by concrete diff evidence.
+- `normal`: ordinary application logic.
+- `light`: low-risk, repetitive, or mostly mechanical changes.
+- `skip`: generated, vendored, binary, irrelevant, or otherwise intentionally unreviewed hunks.
+
+Partial reviews must be explicit. If the configured runtime, token, or provider-call budget prevents full review, `partialReview.isPartial` must be true and the final output must report coverage counts.
 
 ### Review Packets
 
 ```ts
+type ReviewPacketHunk = {
+  hunkId: string
+  oldStart: number
+  oldLines: number
+  newStart: number
+  newLines: number
+  header?: string
+  contentWithLineNumbers: string
+  changedLineNumbers: number[]
+}
+
+type ToolBudget = {
+  maxToolCalls: number
+  maxInvestigationRounds: number
+  maxResultChars: number
+}
+
 type ReviewPacket = {
   id: string
+  kind: ReviewPacketKind
   prSummary: string
   path: string
   language: string
-  hunk: {
-    id: string
-    oldStart: number
-    oldLines: number
-    newStart: number
-    newLines: number
-    contentWithLineNumbers: string
-    changedLineNumbers: number[]
-  }
+  coverage: Exclude<CoverageLevel, "skip">
+  lenses: string[]
+  hunks: ReviewPacketHunk[]
+  symbolFacts: HunkSymbolFacts[]
   context: HunkContext
   relevantTests: SymbolInfo[]
   relatedFilesHint: string[]
-  riskTags: string[]
+  labels: string[]
+  riskNotes: string[]
+  toolBudget: ToolBudget
+  fileContext?: {
+    mode: "file-diff" | "whole-file"
+    reason: string
+  }
 }
 
 type HunkContext = {
@@ -328,9 +464,42 @@ type AstNodeSummary = {
   lineRange: [number, number]
   summary: string
 }
+
+type PacketReviewResult = {
+  packetId: string
+  lenses: string[]
+  findings: CandidateFinding[]
+  followUpHints: Array<{
+    question: string
+    files: string[]
+    symbols: string[]
+    suggestedLenses: string[]
+    reason: string
+  }>
+  uncertainties: string[]
+  filesRead: string[]
+  toolCalls: Array<{
+    tool: string
+    target?: string
+    durationMs: number
+    status: "ok" | "error" | "skipped"
+  }>
+  status: "completed" | "incomplete" | "failed" | "skipped"
+}
 ```
 
-Review packets are persisted to telemetry artifacts so evals can inspect what context the reviewer saw.
+Review packets are persisted to telemetry artifacts so evals can inspect what context the reviewer saw. Every packet contains one or more hunks. `ReviewPacket.kind` explains why those hunks are reviewed together, while `ReviewPacket.coverage` controls execution budget and prompting.
+
+Packet construction algorithm:
+
+1. Build one planned hunk record per changed hunk from diff data, file facts, `HunkSymbolFacts`, planner coverage, selected lenses, processing mode, labels, and estimated size.
+2. Validate planner output and apply deterministic fallbacks for missing coverage, invalid skip reasons, or empty lens sets.
+3. Apply file processing mode: skip files produce coverage records only; whole-file files produce one file packet when size limits allow; all other files default to hunk-first packets.
+4. Group hunks conservatively: one packet per hunk by default; coalesce only same-file hunks that share an enclosing symbol or are very nearby and still fit strict size limits.
+5. Never coalesce across files in v1. Cross-file concerns become system review tasks.
+6. Enforce max hunks, patch chars, context chars, and skill/lens prompt caps. Split oversized packets back into smaller packets.
+7. Compute packet coverage as the max coverage of included hunks, ordered `deep > normal > light`.
+8. Compute packet lenses as the bounded union of included hunk lenses, keeping core and primary language lenses when applicable.
 
 ### Findings And Anchors
 
@@ -442,6 +611,18 @@ type CodeninjaConfig = {
     postSummary: boolean
     summaryWhenNoFindings: boolean
   }
+  git: {
+    defaultBaseBranch?: string
+  }
+  classification: {
+    pathRules: Array<{
+      pattern: string
+      processingMode?: ProcessingMode
+      reviewPriority?: ReviewPriority
+      labels?: string[]
+      reason: string
+    }>
+  }
   llm: {
     provider?: string
     model?: string
@@ -470,10 +651,32 @@ Chosen defaults:
 - `github.postComments = false`
 - `github.postSummary = true`
 - `github.summaryWhenNoFindings = false`
+- `git.defaultBaseBranch = undefined`
+- `classification.pathRules = []`
 - `telemetry.enabled = true`
 - `telemetry.debugTrace = false`
 - `telemetry.runDir = ".codeninja/runs"`
 - `telemetry.retainRuns = 20`
+
+Example path classification config:
+
+```toml
+[git]
+defaultBaseBranch = "main"
+
+[[classification.pathRules]]
+pattern = "lib/payments/**"
+reviewPriority = "critical"
+labels = ["payments", "critical-path"]
+processingMode = "per-hunk"
+reason = "Payments code is business-critical and should receive deeper review."
+
+[[classification.pathRules]]
+pattern = "generated/**"
+labels = ["generated"]
+processingMode = "skip"
+reason = "Generated files are not reviewed directly."
+```
 
 ### Git And GitHub Input Resolver
 
@@ -496,12 +699,21 @@ Responsibilities:
 5. Compute merge base and diff locally.
 6. Collect commit metadata with `git log <mergeBase>..<head>`.
 
-`--base --head` flow:
+`--branch --base` flow:
 
-1. Resolve refs locally.
-2. Compute merge base.
-3. Diff `mergeBase..head`.
-4. Collect commit metadata with `git log mergeBase..head`.
+1. Resolve the review branch locally.
+2. Resolve the base branch in precedence order: CLI `--base`, `codeninja.toml` `git.defaultBaseBranch`, existing `master`, existing `main`.
+3. If no base branch resolves, fail with a clear error asking the user to pass `--base` or configure `git.defaultBaseBranch`.
+4. Compute merge base between the base branch and branch head.
+5. Diff `mergeBase..branchHead`.
+6. Collect commit metadata with `git log mergeBase..branchHead`.
+
+Commit or commit range flow:
+
+1. Resolve the start commit and optional end commit locally.
+2. With one commit, diff the commit's first parent against the commit.
+3. With two commits, diff the start commit against the end commit.
+4. Collect commit metadata for the single commit or reviewed range.
 
 `--diff` flow:
 
@@ -563,18 +775,20 @@ Repository tool interface:
 
 ```ts
 interface RepositoryTools {
-  readFileRange(path: string, startLine: number, endLine: number): Promise<string>
-  getEnclosingSymbol(path: string, line: number): Promise<SymbolInfo | undefined>
+  readRange(path: string, startLine: number, endLine: number): Promise<string>
+  readEnclosingSymbol(path: string, line: number): Promise<string | undefined>
+  readSymbol(path: string, selector: { symbolName?: string; line?: number }): Promise<string | undefined>
   listSymbols(path: string): Promise<SymbolInfo[]>
-  getSymbolSource(path: string, symbolName: string): Promise<string | undefined>
-  getChangedSymbols(): Promise<ChangedSymbol[]>
+  readDiffBlocks(input: { packetId?: string; path?: string }): Promise<string[]>
   findImports(path: string): Promise<string[]>
-  findLikelyTestsForSymbol(symbol: SymbolRef): Promise<SymbolRef[]>
-  searchReferences(query: string, options?: SearchOptions): Promise<SearchResult[]>
+  searchFiles(query: string, options?: SearchOptions): Promise<SearchResult[]>
+  findReferences(symbolName: string, options?: { pathGlob?: string }): Promise<SearchResult[]>
+  findLikelyTests(input: { path?: string; symbol?: SymbolRef }): Promise<SymbolRef[]>
+  listFiles(glob: string): Promise<string[]>
 }
 ```
 
-The model should see structured summaries and source snippets, not raw AST dumps.
+Repository tools should use tree-sitter-backed symbols and source blocks when available, with `rg`/line-window fallback when parsing is unavailable. Tool results must be capped by count and characters, include line numbers, prefer semantic blocks over whole files, and record truncation or omitted-result counts in telemetry. The model should see structured summaries and source snippets, not raw AST dumps.
 
 ### Skills And Lenses
 
@@ -668,9 +882,12 @@ async function runReview(input: ReviewInput, config: CodeninjaConfig): Promise<R
   const run = await startRun(config)
   const resolved = await resolveReviewInput(input, config, run.telemetry)
   const diff = await parseDiff(resolved.diff, run.telemetry)
-  const repoIndex = await buildRepositoryIndex(resolved, diff, config, run.telemetry)
-  const plan = await runPlanner(resolved, diff, repoIndex, config, run.telemetry)
-  const packets = await buildReviewPackets(plan, diff, repoIndex, run.telemetry)
+  const filtered = await filterDiffFiles(diff, config, run.telemetry)
+  const fileFacts = await classifyChangedFiles(resolved, filtered, config, run.telemetry)
+  const repoIndex = await buildRepositoryIndex(resolved, filtered, fileFacts, config, run.telemetry)
+  const dossier = await buildPlannerDossier(resolved, filtered, fileFacts, repoIndex, config, run.telemetry)
+  const plan = await runPlanner(dossier, config, run.telemetry)
+  const packets = await buildReviewPackets(plan, filtered, fileFacts, repoIndex, run.telemetry)
   const candidates = await runLensPackets(plan, packets, repoIndex.tools, config, run.telemetry)
   const systemCandidates = await runSystemReview(plan, candidates, repoIndex.tools, config, run.telemetry)
   const verified = await verifyFindings([...candidates, ...systemCandidates], repoIndex.tools, config, run.telemetry)
@@ -687,13 +904,41 @@ Parallelizable work:
 - Verifier calls use `review.concurrency`.
 - LLM provider calls are additionally capped by `llm.maxConcurrentCalls`.
 
+Lens execution rules:
+
+- Run one composite model task per scheduled packet, with the selected lenses projected into that task.
+- Do not run one model call per lens by default.
+- Project and cap skill prompt sections for the review stage so large skill files do not dominate every packet prompt.
+- Use coverage-aware execution profiles:
+  - `light`: one structured call with a tiny optional read-only tool budget.
+  - `normal`: one structured/tool-capable task with real read-only tool access, focused review instructions, and bounded investigation.
+  - `deep`: one structured/tool-capable task with real read-only tool access, a larger budget, and more focused investigation rounds.
+- Normal and deep packet reviewers may use the same read-only tool suite. The difference is budget, investigation depth, and prompting, not capability.
+- The reviewer should submit immediately when packet context is sufficient. Tool calls are for concrete missing evidence, not broad exploration.
+- Validate packet review output before verification. Schema-invalid output, missing evidence, low-confidence candidates, and anchors outside changed hunks are recorded in telemetry and suppressed or downgraded before verifier scheduling.
+
 Non-parallel stages:
 
 - Input resolution.
 - Diff parsing.
-- Scout/planning.
+- Deterministic planner dossier construction.
+- Scout/planning, except optional sub-planners for large grouped reviews.
 - Deduplication/ranking/composition.
 - Final GitHub publishing.
+
+Planner dossier construction:
+
+- The dossier is a compact, deterministic artifact, not full review context.
+- It includes PR metadata, commit messages, changed file inventory, hunk inventory, line counts, simple file facts, configured labels/priorities, test/config summaries, generated/vendor detection, lockfile detection, and any available changed-symbol graph or static signals.
+- It records omitted details with counts and reasons when budgeted summaries are required.
+- For small and medium reviews, one planner call can consume the dossier.
+- For large reviews, code partitions the dossier and invokes sub-planners before a meta-planner merges the final `ReviewPlan`.
+
+V1 repository intelligence can be incremental:
+
+- Required for v1: diff parsing, filtering, simple file classification, package-root hints, test-file detection, configured labels/priorities, absolute hunk line numbers, and seed context retrieval.
+- Strongly preferred for v1: tree-sitter enclosing symbol and changed-symbol extraction for Go and TypeScript/JavaScript.
+- Optional enhancement: richer symbol edges, caller/test relationships, and semantic analyzer integrations.
 
 ### Verifier, Deduper, Composer
 
@@ -778,7 +1023,9 @@ Run directory:
   run.json
   telemetry.json
   events.jsonl
+  planner-dossier.json
   review-plan.json
+  coverage.json
   changed-symbol-graph.json
   packets/
     <packet-id>.json
@@ -818,6 +1065,8 @@ type TelemetryEvent = {
 
 The telemetry recorder must support redaction before any future external export. V1 writes local files only.
 
+`coverage.json` must include total hunk count, reviewed hunk count, skipped hunk count, coverage level counts, skipped reasons, partial-review status, and the planner group that decided each hunk's coverage.
+
 ### Eval Support
 
 V1 should not require a full public `codeninja eval` command, but the architecture must support eval workflows through stable run artifacts.
@@ -828,8 +1077,9 @@ Eval cases can be represented externally as:
 type EvalCase = {
   id: string
   repoUrl: string
-  baseRef: string
-  headRef: string
+  target:
+    | { kind: "branch"; branchName: string; baseBranch?: string }
+    | { kind: "commit_range"; startCommit: string; endCommit?: string }
   expectedFindings: Array<{
     category: FindingCategory
     path?: string
@@ -840,7 +1090,7 @@ type EvalCase = {
 }
 ```
 
-An eval runner can execute `codeninja review --base <base> --head <head>` in a cloned repo, then compare expected findings to `final-findings.json` and inspect telemetry to diagnose misses.
+An eval runner can execute `codeninja review --branch <branch> --base <base>` or `codeninja review <start-commit> <end-commit>` in a cloned repo, then compare expected findings to `final-findings.json` and inspect telemetry to diagnose misses.
 
 ## Error Handling
 
@@ -855,6 +1105,7 @@ type CodeninjaErrorCode =
   | "gh_auth_failed"
   | "pr_not_found"
   | "git_ref_missing"
+  | "git_base_branch_unresolved"
   | "git_fetch_failed"
   | "diff_parse_failed"
   | "parser_unavailable"
@@ -882,6 +1133,7 @@ Fatal errors:
 - Not in a git worktree.
 - Invalid input mode.
 - Cannot resolve review range.
+- Cannot resolve a base branch for branch review.
 - Cannot parse the diff at all.
 - Missing or unauthenticated `gh` for requested PR/GitHub posting mode.
 - GitHub posting failure when posting was requested.
@@ -936,7 +1188,7 @@ Fixture tests:
 
 Integration tests:
 
-- Temporary git repos for `--base --head`.
+- Temporary git repos for `--branch --base` and commit range review.
 - Simulated PR metadata for `--pr`.
 - Missing local PR refs causing internal fetch calls, with git/gh clients mocked.
 - stdout-only run with fake LLM outputs.
@@ -958,10 +1210,7 @@ Eval-style regression tests:
 
 After architecture approval, write detailed component docs for:
 
-- `components/review_pipeline.md`
-- `components/git_and_github.md`
-- `components/repository_intelligence.md`
-- `components/skills_and_lenses.md`
-- `components/llm_runner.md`
-- `components/verifier_and_composer.md`
-- `components/telemetry_and_evals.md`
+- `components/review_pipeline.md`: orchestration, filtering, planning, packet construction, lens scheduling, verification, and composition.
+- `components/repository_and_github.md`: local git resolution, PR metadata, diff parsing, file classification, GitHub anchor validation, duplicate detection, and posting.
+- `components/context_and_tools.md`: seed context retrieval, tree-sitter-backed syntax helpers, read-only repository tools, and progressive language adapter support.
+- `components/skills_llm_telemetry.md`: Markdown skill loading, Pi runner integration, structured schemas, telemetry artifacts, and eval support.
