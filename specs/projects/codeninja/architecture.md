@@ -331,7 +331,19 @@ The core classifier must not ship with hardcoded business/domain risk keyword li
 ### Review Planning
 
 ```ts
+type IntentUnderstanding = {
+  declaredIntent: string
+  inferredBehavior: string
+  relevantSpecs: Array<{
+    path: string
+    title?: string
+    whyRelevant: string
+  }>
+  specAlignmentQuestions: string[]
+}
+
 type ReviewPlan = {
+  intentUnderstanding: IntentUnderstanding
   intent: string
   riskAreas: Array<{
     area: string

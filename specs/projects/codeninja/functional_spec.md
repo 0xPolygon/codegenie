@@ -236,11 +236,32 @@ The LLM decides whether a signal matters in the context of the PR. A static sign
 
 The scout/planning pass is the first LLM reasoning stage, but it is not a review pass and must not produce publishable findings.
 
-V1 planner input should be a compact deterministic dossier: PR metadata, commit messages, changed file inventory, file processing facts, configured review depth, configured labels/priorities, hunk ranges, `HunkSymbolFacts`, changed symbol summaries, touched tests, static signals, and available lenses.
+V1 planner input should be a compact deterministic dossier: PR metadata, commit messages, changed file inventory, file processing facts, configured review depth, configured labels/priorities, hunk ranges, `HunkSymbolFacts`, changed symbol summaries, touched tests, static signals, available lenses, and relevant spec or product documentation snippets when configured or cheaply discoverable.
+
+The planner should explicitly build an intent understanding before assigning coverage and lenses. It should distinguish declared intent from inferred behavior:
+
+```ts
+type IntentUnderstanding = {
+  declaredIntent: string
+  inferredBehavior: string
+  relevantSpecs: Array<{
+    path: string
+    title?: string
+    whyRelevant: string
+  }>
+  specAlignmentQuestions: string[]
+}
+```
+
+Declared intent comes from PR title/body, commit titles/descriptions, branch names when useful, and configured or referenced spec documents. Inferred behavior comes from the changed files, changed symbols, tests, static signals, and diff summary.
+
+When relevant specs or component docs are available, Stage 5 should compare the PR's declared intent, inferred behavior, and spec expectations. The planner should use this comparison to schedule deeper packet review or system follow-up tasks for concrete alignment questions, such as "the PR claims to add retry cancellation but the changed symbol appears to replace the request context" or "the component spec requires audit logging but the changed flow does not touch the audit path."
 
 The v1 planner should not receive repository exploration tools by default. If it cannot decide from the dossier, it should mark uncertainty and schedule deeper hunk/file review or a system follow-up task rather than opening files itself.
 
-Planner output should include review intent, risk areas, review order, per-hunk coverage decisions, selected lenses, system follow-up tasks, missing-test suspicions, and partial-review disclosure when needed.
+Planner output should include intent understanding, review intent, risk areas, review order, per-hunk coverage decisions, selected lenses, system follow-up tasks, missing-test suspicions, spec-alignment questions, and partial-review disclosure when needed.
+
+Spec-alignment concerns must be evidence-gated. A publishable finding that claims the implementation does not match a spec or PR intent must cite both sides: the relevant intent/spec evidence and the changed code behavior. If either side is missing, the planner should turn it into an investigation question rather than a finding.
 
 The planner must not skip a reviewable changed hunk without a reason.
 
@@ -726,6 +747,7 @@ V1 configuration should support:
 
 - Default base branch for branch review.
 - Default review depth: `light`, `normal`, or `deep`.
+- Spec and documentation path globs used by planner intent/spec matching.
 - Path-based file handling rules, including processing mode, review priority, labels, and reasons.
 - Enabling and disabling lenses.
 - Extra Markdown skill paths.
