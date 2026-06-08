@@ -342,6 +342,25 @@ type IntentUnderstanding = {
   specAlignmentQuestions: string[]
 }
 
+type SurroundingContextHint = {
+  kind:
+    | "enclosing_symbol"
+    | "sibling_pattern"
+    | "call_site"
+    | "test"
+    | "spec"
+    | "config"
+    | "lifecycle"
+    | "resource_management"
+    | "authorization"
+    | "other"
+  path?: string
+  symbol?: string
+  lineRange?: [number, number]
+  reason: string
+  expectedUse: "packet_context" | "tool_lookup" | "system_follow_up"
+}
+
 type ReviewPlan = {
   intentUnderstanding: IntentUnderstanding
   intent: string
@@ -387,11 +406,14 @@ type PlannedReviewTarget = {
   path: string
   coverage: CoverageLevel
   lenses: string[]
+  surroundingContextHints: SurroundingContextHint[]
   reason: string
 }
 ```
 
 The planner is the only stage allowed to decide review ordering, lens selection, and coverage level. It must not select every lens for every packet by default. Every changed hunk must either be assigned a coverage level or explicitly skipped with a reason.
+
+The planner may request surrounding-code inspection by emitting `SurroundingContextHint` records. It should not broadly inspect files itself by default. Hints are instructions for packet construction, packet reviewers, or system follow-up tasks to inspect concrete symbols, files, tests, specs, local patterns, or integration points.
 
 Later stages may validate planner decisions and apply deterministic fallbacks, but they must not become independent risk classifiers. If a reviewable hunk has no valid planner coverage, packet construction falls back to `normal` and records the fallback reason in telemetry. If the planner skips a reviewable hunk without a valid reason, packet construction also falls back to `normal`.
 
@@ -449,6 +471,7 @@ type ReviewPacket = {
   context: HunkContext
   relevantTests: SymbolInfo[]
   relatedFilesHint: string[]
+  surroundingContextHints: SurroundingContextHint[]
   labels: string[]
   riskNotes: string[]
   toolBudget: ToolBudget
@@ -509,9 +532,10 @@ Packet construction algorithm:
 3. Apply file processing mode: skip files produce coverage records only; whole-file files produce one file packet when size limits allow; all other files default to hunk-first packets.
 4. Group hunks conservatively: one packet per hunk by default; coalesce only same-file hunks that share an enclosing symbol or are very nearby and still fit strict size limits.
 5. Never coalesce across files in v1. Cross-file concerns become system follow-up tasks.
-6. Enforce max hunks, patch chars, context chars, and skill/lens prompt caps. Split oversized packets back into smaller packets.
-7. Compute packet coverage as the max coverage of included hunks, ordered `deep > normal > light`.
-8. Compute packet lenses as the bounded union of included hunk lenses, keeping core and primary language lenses when applicable.
+6. Attach cheap deterministic surrounding context when available: enclosing symbol source, nearby syntax-aware lines, imports, sibling symbol names, likely tests, and planner-provided `surroundingContextHints`.
+7. Enforce max hunks, patch chars, context chars, and skill/lens prompt caps. Split oversized packets back into smaller packets.
+8. Compute packet coverage as the max coverage of included hunks, ordered `deep > normal > light`.
+9. Compute packet lenses as the bounded union of included hunk lenses, keeping core and primary language lenses when applicable.
 
 ### Findings And Anchors
 
@@ -953,6 +977,7 @@ Lens execution rules:
   - `deep`: one structured/tool-capable task with real read-only tool access, a larger budget, and more focused investigation rounds.
 - Normal and deep packet reviewers may use the same read-only tool suite. The difference is budget, investigation depth, and prompting, not capability.
 - The reviewer should submit immediately when packet context is sufficient. Tool calls are for concrete missing evidence, not broad exploration.
+- Packet reviewers should not review hunks in isolation. They should use packet context first, then bounded read-only tools to inspect relevant surrounding code: enclosing symbols, sibling patterns, call sites, tests, setup/cleanup, lifecycle, authorization, configuration, resource-management code, and existing patterns in the same file/package/component.
 - Validate packet review output before verification. Schema-invalid output, missing evidence, low-confidence candidates, and anchors outside changed hunks are recorded in telemetry and suppressed or downgraded before verifier scheduling.
 
 Non-parallel stages:
@@ -967,7 +992,7 @@ Non-parallel stages:
 Planner dossier construction:
 
 - The dossier is a compact, deterministic artifact, not full review context.
-- It includes PR metadata, commit messages, changed file inventory, hunk inventory, line counts, simple file facts, configured labels/priorities, test/config summaries, generated/vendor detection, lockfile detection, and any available changed-symbol graph or static signals.
+- It includes PR metadata, commit messages, changed file inventory, hunk inventory, line counts, simple file facts, configured labels/priorities, test/config summaries, generated/vendor detection, lockfile detection, relevant spec/doc snippets, and any available changed-symbol graph, static signals, or surrounding-context hints.
 - It records omitted details with counts and reasons when budgeted summaries are required.
 - For small and medium reviews, one planner call can consume the dossier.
 - For large reviews, code partitions the dossier and invokes sub-planners before a meta-planner merges the final `ReviewPlan`.
@@ -1009,7 +1034,7 @@ Pre-verification gates run before LLM verification to avoid wasting calls on inv
 - Low-confidence suppression by default.
 - Exact or obvious duplicate pre-clustering for verifier scheduling only.
 
-LLM verification is enabled by default and runs one candidate at a time with bounded concurrency. The verifier receives the candidate, originating packet or system follow-up context, relevant changed hunk(s), cited evidence, active lens criteria, and read-only semantic tools. It must verify, revise, or reject the candidate; it must not search for new issues.
+LLM verification is enabled by default and runs one candidate at a time with bounded concurrency. The verifier receives the candidate, originating packet or system follow-up context, relevant changed hunk(s), cited evidence, active lens criteria, and read-only semantic tools. It may inspect surrounding code only to validate the candidate's specific claim. It must verify, revise, or reject the candidate; it must not search for new issues or introduce unrelated findings.
 
 Verifier pre-clustering is not final deduplication. It may avoid repeated checks for identical or near-identical candidate copies, but semantic deduplication, same-root-cause grouping, comment-cap handling, ranking, and final wording happen only after verification.
 

@@ -263,6 +263,8 @@ Planner output should include intent understanding, review intent, risk areas, r
 
 Spec-alignment concerns must be evidence-gated. A publishable finding that claims the implementation does not match a spec or PR intent must cite both sides: the relevant intent/spec evidence and the changed code behavior. If either side is missing, the planner should turn it into an investigation question rather than a finding.
 
+The planner should also identify where surrounding-code inspection matters. It should not broadly read files itself by default; instead it should name the hunks, symbols, files, tests, or existing patterns that later stages should inspect. Examples include sibling methods that establish a consistency pattern, call sites affected by a changed API, tests for the changed behavior, or nearby lifecycle/resource-management code.
+
 The planner must not skip a reviewable changed hunk without a reason.
 
 The planner owns coverage and lens decisions. It should decide `light`, `normal`, `deep`, or `skip` for each changed hunk, and select the lenses that should review that hunk or related system task. Later stages may validate or fall back from invalid planner output, but they should not become independent risk classifiers.
@@ -346,9 +348,12 @@ Each packet should include:
 - Imports or dependencies visible from the changed file.
 - Related tests when discoverable.
 - Related file hints from the planner.
+- Surrounding-context hints from the planner or deterministic repository intelligence.
 - Configured labels and planner risk notes.
 
 Review packets should be compact. They should not contain the whole repository or large unrelated file dumps.
+
+Stage 6 should include cheap deterministic surrounding context when it improves reviewer accuracy without blowing the context budget. This may include enclosing symbol source, nearby syntax-aware lines, sibling symbol names, imports, likely tests, small examples of nearby established patterns, and planner-specified files or symbols to inspect with tools. It should not perform broad repo exploration or try to prove findings.
 
 Deleted files and deletion-only hunks should produce review packets when they are reviewable. These packets should clearly mark that the changed content is old-side/deleted content, include removed-line numbers, and include base-revision context when available. Reviewers should focus on risks caused by removal: removed required behavior, removed tests, removed security checks, removed cleanup, removed exports, broken callers, stale references, and migration/config consequences.
 
@@ -367,6 +372,17 @@ Execution should be coverage-aware:
 Normal and deep packet reviewers may use the same read-only tool suite. The difference is budget, investigation depth, and prompting, not capability.
 
 Reviewer workers should submit an empty finding list when the packet evidence is insufficient. They should use tools only to support, narrow, or reject a concrete changed-code concern, not for broad repository exploration.
+
+Packet reviewers should not review a hunk in isolation. They should use packet context first, then use read-only repository tools when needed to inspect the surrounding code that determines correctness:
+
+- Enclosing symbols and relevant surrounding lines.
+- Sibling functions, methods, classes, or modules that show local patterns.
+- Call sites or references affected by the change.
+- Tests for the changed behavior.
+- Nearby setup, cleanup, lifecycle, authorization, configuration, or resource-management code.
+- Existing patterns in the same file, package, or component.
+
+Tool use should remain bounded by the packet coverage and tool budget. Reviewers should inspect surrounding code to prove, narrow, or reject a concrete concern, not to conduct a broad exploratory audit.
 
 Skill and lens prompt content should be projected and capped for the review stage. codeninja should include only the guidance relevant to candidate generation rather than pasting entire large skill files into every packet prompt.
 
@@ -472,6 +488,8 @@ type SystemFollowUpTask = {
 
 System follow-up workers may use the same read-only semantic tool suite as packet reviewers, but with task-specific file/symbol constraints. They should produce structured candidate findings, resolved/rejected hint notes, and uncertainties. Findings still go through verification and deduplication before publication.
 
+System follow-up review is the place for surrounding-code inspection that crosses packet boundaries. It should answer concrete questions about interactions between changed files, API contracts, call paths, tests, specs, configuration, migrations, authorization flows, lifecycle behavior, concurrency, and architecture boundaries.
+
 System follow-up review should be tightly capped by default: maximum tasks, maximum files per task, maximum tool calls, maximum result size, and task timeout. Prefer skipping a vague follow-up over running an expensive broad pass.
 
 ## Stage 9: Candidate Verification
@@ -492,6 +510,8 @@ Pre-clustering in this stage is a verifier scheduling optimization, not final de
 Every surviving candidate should be verified by an independent LLM verifier by default. Verification may be disabled only through explicit configuration for faster local experimentation, not as the default v1 behavior.
 
 The verifier receives one candidate at a time, its originating packet or system follow-up context, the relevant changed hunk(s), cited evidence, active lens criteria, and the read-only semantic tool suite. The verifier should use tools only to prove, narrow, or reject the candidate. It must not search for new issues.
+
+The verifier may inspect surrounding code, but only to validate the candidate's specific claim. It should not expand into a new review pass or introduce unrelated findings.
 
 Verifier output should be structured:
 
