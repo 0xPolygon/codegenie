@@ -114,6 +114,7 @@ src/
     planner.ts
     packet-builder.ts
     lens-runner.ts
+    worker-runner.ts
     system-reviewer.ts
     verifier.ts
     composer.ts
@@ -122,8 +123,15 @@ src/
     pi-runner.ts
     schemas.ts
   telemetry/
+    logger.ts
     telemetry-recorder.ts
     run-artifacts.ts
+  evals/
+    eval-command.ts
+    eval-runner.ts
+    eval-scoring.ts
+    eval-artifacts.ts
+    eval-compare.ts
   output/
     markdown-renderer.ts
     stdout-renderer.ts
@@ -651,6 +659,9 @@ type CodeninjaConfig = {
   git: {
     defaultBaseBranch?: string
   }
+  specs: {
+    paths: string[]
+  }
   classification: {
     pathRules: Array<{
       pattern: string
@@ -670,11 +681,20 @@ type CodeninjaConfig = {
     testCommands: string[]
     testCommandTimeoutMs: number
   }
+  cache: {
+    enabled: boolean
+    dir: string
+  }
   telemetry: {
     enabled: boolean
+    logLevel: "debug" | "info" | "warn" | "error"
     debugTrace: boolean
     runDir: string
     retainRuns: number
+  }
+  eval: {
+    defaultEvalDir?: string
+    logsDir: string
   }
 }
 ```
@@ -689,11 +709,16 @@ Chosen defaults:
 - `github.postSummary = true`
 - `github.summaryWhenNoFindings = false`
 - `git.defaultBaseBranch = undefined`
+- `specs.paths = ["specs/**/*.md", "docs/**/*.md", "adr/**/*.md"]`
 - `classification.pathRules = []`
+- `cache.enabled = false`
+- `cache.dir = ".codeninja/cache"`
 - `telemetry.enabled = true`
+- `telemetry.logLevel = "warn"`
 - `telemetry.debugTrace = false`
 - `telemetry.runDir = ".codeninja/runs"`
 - `telemetry.retainRuns = 20`
+- `eval.logsDir = "logs"`
 
 Example path classification config:
 
@@ -813,6 +838,8 @@ Repository tool interface:
 ```ts
 type ToolBackend = "tree-sitter" | "text" | "language-analyzer"
 
+type ToolPrecision = "exact" | "semantic" | "syntactic" | "heuristic" | "text"
+
 type SourceSelector =
   | { kind: "head" }
   | { kind: "base" }
@@ -820,21 +847,33 @@ type SourceSelector =
 
 type ToolResultMeta = {
   backend: ToolBackend
+  precision: ToolPrecision
   degraded: boolean
   degradationReason?: string
   truncated?: boolean
   omittedCount?: number
 }
 
+type FileOutline = {
+  path: string
+  language: string
+  packageName?: string
+  imports: string[]
+  topLevelSymbols: SymbolInfo[]
+  testSymbols: SymbolInfo[]
+  notes: string[]
+}
+
 interface RepositoryTools {
   readRange(path: string, startLine: number, endLine: number, source?: SourceSelector): Promise<{ text: string; meta: ToolResultMeta }>
+  readFileOutline(path: string, source?: SourceSelector): Promise<{ outline: FileOutline; meta: ToolResultMeta }>
   readEnclosingSymbol(path: string, line: number, source?: SourceSelector): Promise<{ text?: string; symbol?: SymbolInfo; meta: ToolResultMeta }>
   readSymbol(path: string, selector: { symbolName?: string; line?: number }, source?: SourceSelector): Promise<{ text?: string; symbol?: SymbolInfo; meta: ToolResultMeta }>
   listSymbols(path: string, source?: SourceSelector): Promise<{ symbols: SymbolInfo[]; meta: ToolResultMeta }>
   readDiffBlocks(input: { packetId?: string; path?: string }): Promise<{ blocks: string[]; meta: ToolResultMeta }>
-  findImports(path: string): Promise<string[]>
+  listImports(path: string, source?: SourceSelector): Promise<{ imports: string[]; meta: ToolResultMeta }>
   searchFiles(query: string, options?: SearchOptions): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>
-  findReferences(symbolName: string, options?: { pathGlob?: string }): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>
+  findSymbolMentions(symbolName: string, options?: { pathGlob?: string }): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>
   findLikelyTests(input: { path?: string; symbol?: SymbolRef }): Promise<{ tests: SymbolRef[]; meta: ToolResultMeta }>
   listFiles(glob: string): Promise<string[]>
 }
@@ -846,7 +885,9 @@ Repository tools are stable contracts backed by pluggable implementations:
 - Text backend: required fallback for every repository. It uses git/file reads, `rg`, line windows, and simple filename/test conventions.
 - Language analyzer backend: optional later enrichment for languages where stronger semantic analysis is available.
 
-Tool callers should not need to know which backend answered. Every semantic tool result should include backend provenance and degradation metadata. `readRange`, `readDiffBlocks`, and `listFiles` do not require tree-sitter. `readEnclosingSymbol`, `listSymbols`, `readSymbol`, `findReferences`, and `findLikelyTests` should use tree-sitter when available and degrade to text-backed approximations or empty degraded results when unavailable.
+Tool callers should not need to know which backend answered. Every tool result should include backend provenance, precision, and degradation metadata. `readRange`, `readDiffBlocks`, and `listFiles` do not require tree-sitter. `readFileOutline`, `readEnclosingSymbol`, `readSymbol`, `listSymbols`, `listImports`, `findSymbolMentions`, and `findLikelyTests` should use tree-sitter when available and degrade to text-backed approximations or empty degraded results when unavailable.
+
+`findSymbolMentions` is intentionally named as a mention-finding tool, not a reference-resolution tool. Tree-sitter can find syntactic identifier mentions, but it cannot prove cross-file symbol identity, import resolution, shadowing, dynamic dispatch, interface implementation, or overload resolution by itself. If a future language analyzer backend can prove real references, the result can be marked with `precision: "semantic"` or `precision: "exact"` without changing the reviewer-facing tool contract.
 
 Source-reading tools default to head content and can read base or explicit git refs when available. Base reads are required for deleted-file review and old-side context.
 
@@ -927,6 +968,27 @@ type LlmStructuredRequest<T> = {
 
 Pipeline code must depend on `LlmRunner`, not directly on Pi APIs.
 
+### Local Review Cache
+
+The local cache is optional and disabled by default. It is primarily for development and eval iteration, where cached model-backed stages make it possible to debug deterministic downstream behavior without rerunning every LLM call.
+
+Cache keys must include all prompt-affecting inputs:
+
+- Stage id.
+- Prompt template/version.
+- Model/provider/reasoning settings.
+- Packet, candidate, or verifier input payload.
+- Project config affecting review behavior.
+- Enabled lenses and skill content hashes.
+- Tool budget and relevant repository source revisions.
+- Repository identity, review target, base/head SHAs, and normalized diff hash.
+- Tool-result context hashes for any tool output included in the prompt.
+- Cache schema version.
+
+Cache entries should record whether they came from candidate generation, system follow-up, verification, or final composition. Cache data should live under the local repository's `.codeninja/cache` directory by default and must not be shared across repositories unless the key includes repository identity and source/diff hashes.
+
+Weak or incomplete results should not be cached as durable truth unless a stage explicitly marks them safe to reuse. Provider/auth failures, schema failures, cancelled calls, and incomplete verification results should not be reused as successful stage outputs. Telemetry and logs must record cache hit/miss/write events with the numeric stage.
+
 ### Review Pipeline
 
 Responsibilities:
@@ -965,6 +1027,17 @@ Parallelizable work:
 - Packet-level lens review uses `review.concurrency`.
 - Verifier calls use `review.concurrency`.
 - LLM provider calls are additionally capped by `llm.maxConcurrentCalls`.
+
+Stage 7 packet review uses an internal sub-agent-like worker runner, not the external `pi-subagents` package. Useful orchestration ideas from Pi subagent systems are still applicable: focused child tasks, fresh or forked context, parallel workers, compact result handoff, saved artifacts, progress/status tracking, cancellation, and parent-controlled synthesis.
+
+Worker runner responsibilities:
+
+- Schedule packet workers with bounded concurrency.
+- Give each worker one packet, selected lenses, projected skill guidance, and a tool budget.
+- Isolate worker prompt context from other packet workers.
+- Attach worker id, packet id, stage, and run id to every log, telemetry event, tool call, model call, and result artifact.
+- Support cancellation, timeout, retry policy, and partial-run reporting.
+- Return structured results only; workers do not publish comments or mutate the repository.
 
 Lens execution rules:
 
@@ -1094,6 +1167,7 @@ Publishing rules:
 Responsibilities:
 
 - Create local run directory.
+- Provide structured application logging.
 - Record structured events.
 - Record aggregate metrics.
 - Persist inspectable artifacts for debugging and evals.
@@ -1104,8 +1178,11 @@ Run directory:
 ```text
 .codeninja/runs/<yyyyMMdd-HHmmss>-<shortid>/
   run.json
+  run.log
   telemetry.json
   events.jsonl
+  model-calls.jsonl
+  model-calls-summary.json
   planner-dossier.json
   review-plan.json
   coverage.json
@@ -1114,7 +1191,9 @@ Run directory:
     <packet-id>.json
   candidate-findings.json
   verification.json
+  final-selection.json
   final-findings.json
+  cost-profile.json
   final-review.md
   github-posting.json
   debug/
@@ -1125,6 +1204,39 @@ Run directory:
 ```
 
 `debug/` is written only when `telemetry.debugTrace` is enabled. Debug artifacts may contain source snippets, prompts, and model outputs.
+
+Logger interface:
+
+```ts
+type LogLevel = "debug" | "info" | "warn" | "error"
+
+type LogEvent = {
+  timestamp: string
+  level: LogLevel
+  runId: string
+  stage: ReviewStage
+  event: string
+  message: string
+  workerId?: string
+  packetId?: string
+  hunkId?: string
+  path?: string
+  candidateId?: string
+  findingId?: string
+  toolName?: string
+  lensId?: string
+  data?: Record<string, unknown>
+}
+
+interface Logger {
+  debug(event: Omit<LogEvent, "timestamp" | "level">): void
+  info(event: Omit<LogEvent, "timestamp" | "level">): void
+  warn(event: Omit<LogEvent, "timestamp" | "level">): void
+  error(event: Omit<LogEvent, "timestamp" | "level">): void
+}
+```
+
+The logger writes timestamped structured lines to `run.log`. Human-facing stdout remains reserved for the final Markdown report or concise posting summary. Warnings and errors may also be mirrored to stderr. Every pipeline log must include the numeric `stage` from the functional spec so evals and later LLM analysis can reconstruct stage behavior from the log.
 
 Telemetry event shape:
 
@@ -1142,38 +1254,115 @@ type TelemetryEvent = {
   lensId?: string
   workerId?: string
   durationMs?: number
+  cacheStatus?: "hit" | "miss" | "disabled" | "write"
   data?: Record<string, unknown>
 }
 ```
 
-The telemetry recorder must support redaction before any future external export. V1 writes local files only.
+The telemetry recorder must support redaction before any future external export. V1 writes local files only. Typed telemetry artifacts should be the source of truth for metrics; `run.log` is the chronological narrative.
 
 `coverage.json` must include total hunk count, reviewed hunk count, skipped hunk count, coverage level counts, skipped reasons, partial-review status, and the planner group that decided each hunk's coverage.
 
 ### Eval Support
 
-V1 should not require a full public `codeninja eval` command, but the architecture must support eval workflows through stable run artifacts.
+V1 should include a `codeninja eval` command for repeatable quality testing against real repositories, fixtures, and captured artifacts. Eval support reuses the normal review engine and run artifacts; it must not fork a separate review implementation.
 
-Eval cases can be represented externally as:
+Eval command examples:
+
+```bash
+codeninja eval --eval-dir /path/to/evals
+codeninja eval --eval-dir /path/to/evals --cache
+codeninja eval --eval-dir /path/to/evals --no-cache
+codeninja eval --from-artifacts /path/to/eval/logs/42
+```
+
+Eval cases are YAML files. Private eval cases should live outside the codeninja repository and may point to external local repositories. Public eval cases may use fixtures.
 
 ```ts
 type EvalCase = {
-  id: string
-  repoUrl: string
-  target:
-    | { kind: "branch"; branchName: string; baseBranch?: string }
-    | { kind: "commit_range"; startCommit: string; endCommit?: string }
-  expectedFindings: Array<{
-    category: FindingCategory
-    path?: string
-    lineRange?: [number, number]
-    description: string
-    severity?: Severity
-  }>
+  name: string
+  repo?: {
+    external?: string
+    fixture?: string
+  }
+  command?: {
+    pr?: number
+    branch?: string
+    base?: string
+    target?: string
+    args?: string[]
+  }
+  review?: {
+    depth?: "light" | "normal" | "deep"
+    lenses?: string[]
+    maxFindings?: number
+    concurrency?: number
+    verify?: boolean
+    cache?: boolean
+    cacheDir?: string
+    debug?: boolean
+  }
+  logs?: {
+    enabled?: boolean
+    dir?: string
+  }
+  artifacts?: {
+    path: string
+    mode?: "candidate-recall" | "final-report" | "merge-only"
+  }
+  expect?: {
+    minFindings?: number
+    maxFindings?: number
+    maxDuplicateGroups?: number
+    maxCostUSD?: number
+    maxElapsedSeconds?: number
+    maxModelCalls?: number
+    maxPromptCharsByStage?: Record<string, number>
+  }
+  should_find?: EvalFindingExpectation[]
+  should_find_candidate?: EvalFindingExpectation[]
+  should_not_find?: string[]
+  verifier?: {
+    should_decide?: VerifierExpectation[]
+  }
+  merge?: {
+    should_keep?: EvalFindingExpectation[]
+    should_drop?: EvalFindingExpectation[]
+    should_merge?: MergeExpectation[]
+    should_not_merge?: Array<{ findingIds: string[] }>
+  }
 }
 ```
 
-An eval runner can execute `codeninja review --branch <branch> --base <base>` or `codeninja review <start-commit> <end-commit>` in a cloned repo, then compare expected findings to `final-findings.json` and inspect telemetry to diagnose misses.
+Eval run directories:
+
+```text
+<eval-suite>/logs/<n>/
+  info.json
+  out.log
+  codeninja-review.out.md
+  telemetry/
+    run.json
+    run.log
+    events.jsonl
+    review-plan.json
+    review-packets.json
+    candidate-findings.json
+    verification.json
+    final-selection.json
+    final-findings.json
+    cost-profile.json
+    model-calls.jsonl
+    model-calls-summary.json
+  debug-prompts/
+  debug-results/
+  compare-to-previous.txt
+  compare-to-previous.json
+```
+
+Eval scoring should compare expected findings against final findings, candidate findings, hint/follow-up decisions, verification results, merge decisions, and final-selection trace. Failures should be labeled by loss stage where possible: missed before candidate generation, candidate-only, rejected by verification, merged/deduped away, omitted by final selection/report cap, hint-only, or same-file partial match.
+
+Eval metrics should include finding counts, duplicate groups, cost, runtime, model calls, verification calls, prompt sizes by stage, cache hit/miss counts, tool-call counts, and stage-loss counts. Cached and no-cache runs should both be supported so model-review quality and downstream deterministic behavior can be debugged separately.
 
 ## Error Handling
 
@@ -1296,4 +1485,5 @@ After architecture approval, write detailed component docs for:
 - `components/review_pipeline.md`: orchestration, filtering, planning, packet construction, lens scheduling, verification, and composition.
 - `components/repository_and_github.md`: local git resolution, PR metadata, diff parsing, file classification, GitHub anchor validation, duplicate detection, and posting.
 - `components/context_and_tools.md`: seed context retrieval, tree-sitter-backed syntax helpers, read-only repository tools, and progressive language adapter support.
-- `components/skills_llm_telemetry.md`: Markdown skill loading, Pi runner integration, structured schemas, telemetry artifacts, and eval support.
+- `components/skills_llm_telemetry.md`: Markdown skill loading, Pi runner integration, structured schemas, and telemetry artifacts.
+- `components/evals.md`: eval command, YAML case format, cache/artifact replay, scoring, and regression reporting.

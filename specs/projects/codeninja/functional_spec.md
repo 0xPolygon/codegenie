@@ -10,6 +10,8 @@ codeninja is a TypeScript CLI for high-signal AI code review of pull-request-sty
 
 The default review stance is correctness-first. codeninja should find real bugs, logical errors, security issues, architectural risks, performance problems, missing tests, and maintainability concerns that matter. It should suppress style-only, naming, formatting, and subjective comments unless the user explicitly enables a lint/style lens.
 
+codeninja's reviewer voice should be that of a detail-oriented senior individual contributor who will own the code long term. It should be direct and specific when there is a real problem, polite without softening correctness or design issues, and focused on advice that matters because the reviewer may need to maintain the code long after the original author has moved on.
+
 ## Users
 
 Primary users are developers and engineering teams who want an expert code-review assistant for local branches and GitHub pull requests.
@@ -363,6 +365,18 @@ Lens review execution is the candidate-generation stage. It runs selected lenses
 
 V1 should run one composite review task per packet. If a packet has multiple selected lenses, those lenses should be included in one model task rather than running one model call per lens. This keeps cost and latency bounded while still letting language, core correctness, tests, and project-specific guidance work together.
 
+Packet reviews should run in a parallelizable sub-agent-like worker system owned by codeninja. The orchestration ideas can be informed by Pi subagent patterns such as focused child tasks, fresh or forked context, parallel workers, bounded background execution, progress/status tracking, artifacts, and compact result handoff, but codeninja should not depend on the `pi-subagents` package directly in v1. The parent orchestrator owns scheduling, concurrency, cancellation, telemetry, tool permissions, and result validation.
+
+Each packet worker should have:
+
+- A stable worker id.
+- One review packet.
+- Selected lenses and projected skill guidance.
+- A bounded read-only tool budget.
+- A structured output schema.
+- Isolated prompt context so workers do not share mutable conversation state.
+- Telemetry and logs tied to the worker id, packet id, stage, and run id.
+
 Execution should be coverage-aware:
 
 - `light`: compact packet, tiny optional read-only tool budget.
@@ -558,33 +572,35 @@ The repository tool layer should support pluggable backends:
 - Text backend: required fallback for every repository. It should use `rg`, file listing, line windows, and simple filename/test conventions when tree-sitter is unavailable or parsing fails.
 - Language analyzer backend: optional future enrichment for languages where deeper semantic analysis is available.
 
-Callers should not need to know which backend answered a tool call. Tool results should include backend provenance such as `tree-sitter`, `text`, or `language-analyzer`, and should record degraded results when a semantic request falls back to text search.
+Callers should not need to know which backend answered a tool call. Tool results should include backend provenance such as `tree-sitter`, `text`, or `language-analyzer`, precision such as `exact`, `syntactic`, `heuristic`, or `text`, and degraded-result metadata when a semantic request falls back to an approximate implementation.
 
 Minimum required v1 tools:
 
 - `read_range(path, startLine, endLine, source?)`.
+- `read_file_outline(path, source?)`.
 - `read_enclosing_symbol(path, line)`.
+- `read_symbol(path, symbolName | line)`.
 - `list_symbols(path)`.
+- `list_imports(path)`.
 - `read_diff_blocks(packetId | path)`.
 - `search_files(query, pathGlob?, contextMode)`, where `contextMode` can return no context, line windows, or enclosing symbols.
+- `find_symbol_mentions(symbolName, pathGlob?)`.
+- `find_likely_tests(path | symbol)`.
 - `list_files(glob)`.
 
 Expected backend behavior:
 
 - `read_range` uses file/git reads and does not require tree-sitter.
+- `read_file_outline` uses tree-sitter when available to return package/module name, imports, top-level symbols, classes/types, functions/methods, and test markers; it falls back to extension/name heuristics and a compact text outline.
 - `read_enclosing_symbol` uses tree-sitter when available and falls back to a bounded line window with a degraded-result marker.
+- `read_symbol` uses tree-sitter when available and falls back to exact-name text search plus bounded line windows.
 - `list_symbols` uses tree-sitter when available and falls back to lightweight language heuristics or an empty degraded result.
+- `list_imports` uses tree-sitter or language heuristics when available and falls back to simple import/include/require pattern matching.
 - `read_diff_blocks` uses parsed diff data and does not require tree-sitter.
 - `search_files` uses `rg` for discovery, then may enrich matches with tree-sitter enclosing symbols when `contextMode` asks for semantic context.
+- `find_symbol_mentions` uses syntax-aware identifier matching when available and `rg` fallback otherwise. It does not claim compiler-grade reference resolution unless a language analyzer backend explicitly marks the result as semantic or exact.
+- `find_likely_tests` combines test filename conventions with symbol extraction when available and filename/path heuristics otherwise.
 - `list_files` uses filesystem/git listing and does not require tree-sitter.
-
-Best-effort v1 tools when syntax support is available:
-
-- `read_symbol(path, symbolName | line)`.
-- `find_references(symbolName, pathGlob?)`.
-- `find_likely_tests(path | symbol)`.
-
-For best-effort tools, tree-sitter should be used when possible, but text fallback is still useful. For example, `find_references` may use syntax-aware identifiers when available and `rg` fallback otherwise; `find_likely_tests` may combine test filename conventions with symbol extraction when available.
 
 Source-reading tools should read the head worktree by default and support base-revision reads when the review target has a base revision. Base reads are required for reviewing deleted files and removed-line context when local git can provide the content.
 
@@ -594,11 +610,25 @@ Tree-sitter should be the default cross-language syntax layer. It should enrich 
 
 Language-specific analyzers may enrich the common tool interface later, but v1 should remain useful with tree-sitter-backed support.
 
+Tree-sitter-backed tools provide syntax-aware evidence, not full semantic truth. Reviewers and verifiers may use `find_symbol_mentions` to discover likely call sites or affected code, but publishable findings still need changed-code evidence and surrounding-code confirmation.
+
 ## Telemetry And Debug Traces
 
 codeninja needs first-class local telemetry so review quality, cost, latency, and failure modes can be analyzed during development and evaluation.
 
 Telemetry should be local by default. codeninja must not send source code, prompts, findings, or usage data to an external telemetry service unless the user explicitly configures such behavior in the future.
+
+codeninja should also have structured application logging. Logs are not a replacement for typed telemetry artifacts, but they should provide a readable chronological trace that humans or later LLM analysis can inspect.
+
+The logger should support `debug`, `info`, `warn`, and `error` levels, ISO timestamps, and structured metadata. Every log event emitted by the review pipeline must include:
+
+- `runId`.
+- `stage`, using the numeric stage from this spec, such as `1` for diff parsing or `7` for lens review execution.
+- `event`, a stable event name.
+- `message`, a concise human-readable summary.
+- Relevant ids when available, such as `workerId`, `packetId`, `hunkId`, `path`, `candidateId`, `findingId`, `toolName`, or `lensId`.
+
+Normal stdout should stay focused on the final report or concise run summary. Debug/info logs should be written to local run files when enabled; warnings and errors may also be shown on stderr when useful.
 
 V1 telemetry should capture:
 
@@ -614,11 +644,15 @@ V1 telemetry should capture:
 - Coverage decisions for each hunk or file.
 - Reviewed, skipped, and partially reviewed hunk counts.
 - Repository tools invoked, including tool name, target path or symbol, duration, and success/failure.
+- Tool backend provenance and degradation reasons.
+- Worker lifecycle events: scheduled, started, completed, failed, cancelled, retried, or timed out.
 - Candidate findings produced.
 - Verification verdicts.
 - Findings rejected and rejection reasons.
 - Deduplication/grouping decisions.
 - GitHub posting attempts and results.
+- Final-selection decisions and reasons for omitted verified findings.
+- Local cache hits/misses when caching is enabled.
 
 Debug traces should make the review process inspectable. When enabled, codeninja should record step-by-step events describing:
 
@@ -633,6 +667,59 @@ Debug traces should make the review process inspectable. When enabled, codeninja
 Debug traces may include source snippets, prompts, and model outputs, so they should be opt-in and written to local files rather than mixed into normal stdout output.
 
 Telemetry artifacts should support the eval workflow. An evaluator should be able to run codeninja against a real remote repository or branch, define expected findings externally, and inspect telemetry to understand whether misses came from packet construction, lens selection, tool behavior, model output, verification, deduplication, or final composition.
+
+Suggested local artifacts include:
+
+- `run.log` for structured application logs.
+- `events.jsonl` for structured stage events.
+- `model-calls.jsonl` and `model-calls-summary.json`.
+- `review-plan.json`.
+- `review-packets.json`.
+- `candidate-findings.json`.
+- `verification.json`.
+- `final-selection.json`.
+- `final-findings.json`.
+- `cost-profile.json`.
+- Debug prompt and model-result files when explicitly enabled.
+
+## Eval System
+
+codeninja should include an eval command for end-to-end quality testing against real repositories, fixture repositories, and previously captured artifacts.
+
+The v1 eval command should support:
+
+```bash
+codeninja eval --eval-dir /path/to/evals
+codeninja eval --eval-dir /path/to/evals --cache
+codeninja eval --eval-dir /path/to/evals --no-cache
+codeninja eval --from-artifacts /path/to/eval/logs/42
+```
+
+Eval cases should be YAML files stored outside the codeninja repository when they reference private or real customer-like repositories. A case may point at:
+
+- An external local repository path.
+- A fixture repository.
+- A branch, commit, commit range, or PR target.
+- Review settings such as depth, lenses, max findings, concurrency, cache on/off, verification on/off, and telemetry/debug options.
+- Expected final findings.
+- Expected candidate findings.
+- Findings that must not appear.
+- Verifier expectations.
+- Deduplication/merge expectations.
+- Cost, runtime, model-call, prompt-size, and tool-call budgets.
+
+The eval runner should write incrementing run directories under the eval suite, such as `logs/1`, `logs/2`, and so on. Each run directory should include the rendered review output, structured application log, run info, telemetry artifacts, debug prompts/results when enabled, and comparison artifacts against the previous run when available.
+
+Eval scoring should not only report pass/fail. It should explain where expected findings were lost:
+
+- Missed before candidate generation.
+- Produced as a candidate but rejected by verification.
+- Produced as a candidate but removed by deduplication or final selection.
+- Present only as a follow-up hint.
+- Present in the right file but missing the expected root cause.
+- Omitted by report caps or confidence thresholds.
+
+This eval system should reuse normal review artifacts rather than running a separate review engine. It should be suitable for private eval suites like real-repo regression cases, and for public fixture-based evals that can run in CI.
 
 ## Skills And Lenses
 
@@ -777,9 +864,11 @@ V1 configuration should support:
 - Model/provider options for `@earendil-works/pi-ai`.
 - Runtime and per-pass timeouts.
 - Review concurrency.
+- Local review cache settings.
 - Read-only tool permissions.
 - Optional test/typecheck commands.
 - Local telemetry and debug trace settings.
+- Eval defaults, such as default eval directory, logs directory, and artifact replay settings.
 
 If no config exists, codeninja should run with sensible defaults:
 
@@ -790,6 +879,7 @@ If no config exists, codeninja should run with sensible defaults:
 - GitHub posting disabled.
 - Runtime budget of 30 minutes.
 - Safe bounded concurrency.
+- Local review cache disabled unless explicitly enabled.
 - Tests/typecheck disabled unless explicitly enabled.
 - External telemetry disabled.
 
