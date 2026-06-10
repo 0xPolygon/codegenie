@@ -4,7 +4,7 @@ status: complete
 
 # Component: Repository And GitHub
 
-This component owns `src/git/*` and `src/github/*`: the `GitClient` and `GitHubClient` subprocess layers, the review input resolver, the diff parser, deterministic file classification and filtering, GitHub anchor validation, duplicate detection, and GitHub publishing. It implements Stages 1-3 of the pipeline plus Stage 11 posting, and supplies the git plumbing primitives that the repository tool layer builds on.
+This component owns `src/git/*` and `src/github/*`: the `GitClient` and `GitHubClient` subprocess layers, the review input resolver, the diff parser, deterministic file classification and filtering, GitHub anchor validation, duplicate detection, and GitHub publishing. It implements Stages 1-3 of the pipeline plus Stage 11 posting, and supplies the git plumbing primitives that the repository tool layer builds on. For Stages 2-3 it owns the detector, classifier, and filter pure functions; `components/review_pipeline.md` owns when they run, the coverage-ledger writes, and the zero-work short-circuit.
 
 All data contracts referenced here — `ReviewInput`, `ResolvedReviewInput`, `PullRequestMetadata`, `ExistingReviewThread`, `CommitInfo`, `UnifiedDiff`, `DiffFile`, `DiffHunk`, `DiffLine`, `FileFacts`, `FileFilterDecision`, `FactProvenance`, `DiffAnchor`, `FinalFinding`, `ReviewResult`, `CodeninjaConfig`, `CodeninjaError` — are defined in `architecture.md` and are used here unchanged.
 

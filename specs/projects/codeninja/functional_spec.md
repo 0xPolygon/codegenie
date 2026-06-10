@@ -843,7 +843,7 @@ The Markdown report should include:
 - Suggested fix or suggested test when useful.
 - A clear "no findings" result when no credible findings are found.
 
-When `--format json` is used, codeninja should print the final review object as JSON to stdout instead of the Markdown report. The JSON output should carry the same content as the Markdown report: summary, coverage, final findings with anchors, evidence, failure modes, suggested fixes and tests, and summary-only findings.
+When `--format json` is used, codeninja should print the final review object as JSON to stdout instead of the Markdown report. The JSON output should carry the same content as the Markdown report: summary, coverage, final findings with anchors, evidence, failure modes, suggested fixes and tests, and summary-only findings. Suppressed findings are not part of the report in either format; they are recorded only in run artifacts.
 
 When `--post-github-comments` is used, stdout should not print the full report by default. It should print a concise run summary with counts, posting status, and any fatal or skipped-posting errors. When combined with `--format json`, that run summary should be emitted as JSON.
 

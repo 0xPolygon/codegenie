@@ -543,7 +543,7 @@ Scoring and attribution read the following artifacts. The expectation-bearing fo
 | Artifact | Evals reads | Writer (owner) |
 | --- | --- | --- |
 | `candidate-findings.json` | `CandidateFinding[]`: every structurally valid candidate from Stages 7–8, with `id`, matching fields, `producedBy`, `clusterId?`, `duplicateOf?` | `components/review_pipeline.md` |
-| `verification.json` | Per candidate id: either a pre-verification-gate record `{ candidateId, gate: "suppressed", gateReason }` or `{ candidateId, gate: "passed", verdict: VerificationVerdict }`; revised findings carry `verdict.finalFinding` | `components/review_pipeline.md` |
+| `verification.json` | Per candidate id: either a pre-verification-gate record `{ candidateId, gate: "suppressed", gateReason }` or `{ candidateId, gate: "passed", verdict: VerificationVerdict }`; revised findings carry `verdict.finalFinding`. Pre-clustered duplicate members carry no record of their own — the reader resolves them through the candidate's `duplicateOf` chain to the representative's record | `components/review_pipeline.md` |
 | `final-selection.json` | Per verified-kept finding: `{ findingId, decision: "published" \| "merged" \| "suppressed", reason, mergedIntoFingerprint? }` — the telemetry requirement "final-selection decisions and reasons for omitted verified findings" in artifact form | `components/review_pipeline.md` |
 | `final-findings.json` | `FinalFinding[]` including suppressed entries, with `publication`, `fingerprint`, `mergedCandidateIds` | `components/review_pipeline.md` |
 | `review-plan.json` | `ReviewPlan` (coverage decisions per hunk, skip reasons) | `components/review_pipeline.md` |
@@ -731,7 +731,7 @@ Mode resolution: for an artifact-backed case run via `--eval-dir`, `EvalCase.art
 | Mode | Artifacts loaded (required) | Stages re-run | LLM calls | Repo required |
 | --- | --- | --- | --- | --- |
 | `final-report` | `final-findings.json`; optional: all others for attribution/metrics | None | None | No |
-| `merge-only` | `verification.json` + `candidate-findings.json` (lineage); `packets/` for anchor re-validation | Stage 10 (dedup/rank/compose) | Composer call(s) | No — anchors re-validate against packet hunk line data, not the repo |
+| `merge-only` | `verification.json` + `candidate-findings.json` (lineage); `packets/` for anchor re-validation; `review-plan.json` + `coverage.json` + `run.json` (Stage 10's plan, coverage, and resolved-input metadata) | Stage 10 (dedup/rank/compose) | Composer call(s) | No — anchors re-validate against packet hunk line data, not the repo |
 | `candidate-recall` | `candidate-findings.json` + `packets/` (verifier context); `review-plan.json` optional | Stages 9–10 | Verifier calls + composer call(s) | Yes — verifiers use read-only repository tools at the recorded base/head SHAs |
 
 Common behavior:
@@ -740,6 +740,7 @@ Common behavior:
 - Stages that re-run write fresh artifacts into the new run's `telemetry/` (`candidate-recall` produces a new `verification.json`, `final-selection.json`, `final-findings.json`; `merge-only` produces new `final-selection.json` and `final-findings.json`). Artifacts consumed without re-running are copied from the source into the new `telemetry/` so every run directory is self-contained for scoring, future replays, and comparison.
 - `info.json.stages` records each stage as `executed`, `replayed-from-artifacts`, or `not-applicable` — the architecture requires which stages re-ran vs replayed to be recorded in the eval run info.
 - Expectation results computed against replayed inputs are flagged `fromReplayedArtifacts: true` (e.g. `should_find_candidate` results in `candidate-recall` reflect the original run's candidates, not new model behavior).
+- `merge-only` reconstructs Stage 10's `resolved` slice from `run.json` metadata. When existing-thread data is absent there, thread-overlap recording is skipped and the new run's coverage `reasons` carry a disclosed note — fallback values are deterministic, never fabricated.
 - `candidate-recall` resolves the repo from the case (`repo.external`/`repo.fixture`) and verifies the recorded `baseSha`/`headSha` resolve (`git rev-parse --verify <sha>^{commit}`); failures are per-case `git_ref_missing` errors. Verifier and composer execution is the engine's (Stage 9/10 entrypoints with the same configs, budgets, and failure policy); evals supplies inputs from artifacts instead of live upstream stages.
 - Replay modes honor cache settings: with cache enabled, re-run verifier/composer calls hit the model-call cache when their normalized requests match, making `candidate-recall` + `--cache` an effectively free regression of deterministic downstream behavior.
 - Missing required artifacts for the selected mode fail the case with `invalid_args` naming the file; optional artifacts degrade per the reader contract.

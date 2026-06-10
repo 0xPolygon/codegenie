@@ -1063,7 +1063,7 @@ interface RepositoryTools {
   searchFiles(query: string, options?: SearchOptions): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>
   findSymbolMentions(symbolName: string, options?: { pathGlob?: string; source?: SourceSelector }): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>
   findLikelyTests(input: { path?: string; symbol?: SymbolRef; source?: SourceSelector }): Promise<{ tests: SymbolRef[]; meta: ToolResultMeta }>
-  listFiles(glob: string): Promise<string[]>
+  listFiles(glob: string): Promise<{ paths: string[]; meta: ToolResultMeta }>
 }
 ```
 
@@ -1245,10 +1245,10 @@ async function runReview(input: ReviewInput, config: CodeninjaConfig): Promise<R
 type ReviewResult = {
   summary: string
   coverage: RunCoverageStatus
-  findings: FinalFinding[]
-  summaryOnlyFindings: FinalFinding[]
+  findings: FinalFinding[] // publication "inline" only; suppressed findings are artifact-only (final-findings.json / final-selection.json)
+  summaryOnlyFindings: FinalFinding[] // publication "summary-only"
   noFindings: boolean
-  postingPlan?: {
+  postingPlan?: { // present only when --post-github-comments was passed
     inline: Array<{ findingId: string; anchor: DiffAnchor }>
     reviewBody: string
   }
@@ -1932,9 +1932,9 @@ V1 ships `HunkSymbolFacts` and outlines; relationship questions are answered on 
 
 Semantic enrichment (gopls / go-packages, TypeScript compiler API, Rust Analyzer) behind the existing `ToolBackend`/`ToolPrecision` contract, upgrading `find_symbol_mentions` results to `semantic`/`exact` without changing the reviewer-facing tools.
 
-## Component Docs To Write Next
+## Component Docs
 
-After architecture approval, write detailed component docs for:
+Detailed component docs elaborate this architecture:
 
 - `components/review_pipeline.md`: orchestration, filtering, planning, packet construction, lens scheduling, verification, and composition.
 - `components/repository_and_github.md`: local git resolution, PR metadata, diff parsing, file classification, GitHub anchor validation, duplicate detection, and posting.
