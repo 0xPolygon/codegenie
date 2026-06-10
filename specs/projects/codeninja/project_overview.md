@@ -8,13 +8,17 @@ codeninja is a code-reviewing AI harness and agent with configurable reviewing s
 
 The goal is to build a high-quality code-reviewing agent that can review pull requests and give sound advice to developers. It should review code at a top-tier staff engineer level, with a focus on finding bugs, logical errors, poor architectural patterns, performance issues, and other meaningful problems. The review output should avoid fluff and nitpicks.
 
-The system will include bundled skills and user-facing review lenses. A skill is the executable review unit: prompt, tools, schema, examples, filters, and concrete checks. A lens is the review perspective exposed to users, such as Go correctness, TypeScript correctness, security, API design, performance, architecture, database, concurrency, or tests. A lens may map to one or more skills. Skills should not be mostly persona; the best skills should encode concrete checks, false-positive rules, examples, safe patterns, and severity guidance tied to impact. Later, developers should be able to pass in their own bundled skills or lenses to give the reviewer additional expertise.
+The system will include bundled skills and user-facing review lenses. A skill is the review knowledge unit: a Markdown file of concrete checks, false-positive rules, safe patterns, examples, and severity guidance tied to impact; the harness owns prompts, tools, and output schemas. A lens is the review perspective exposed to users, such as Go correctness, TypeScript correctness, security, API design, performance, architecture, database, concurrency, or tests. A lens may map to one or more skills. Skills should not be mostly persona; the best skills encode concrete checks rather than character description. Developers can add their own repo-local Markdown skills to give the reviewer additional expertise, with executable skill packages as a possible future extension.
 
 codeninja should be built in TypeScript and run as a CLI.
 
-codeninja should focus on reviewing any git repository. It should also support referencing a GitHub pull request by PR number, but GitLab support is not an initial goal.
+codeninja should focus on reviewing any git repository. It should also support referencing a GitHub pull request by PR number, but GitLab support is not an initial goal. Reviews should target the actual base/head revisions through git, so codeninja can review a PR or branch that is not checked out and is unaffected by local working-tree state.
 
 The first version should output clean, structured Markdown to stdout and also be able to post inline comments directly on a GitHub PR.
+
+Review quality should be measurable, not vibes: codeninja should record local telemetry and run artifacts for every review, and ship an eval system that can attribute every missed or lost finding to the pipeline stage that lost it. The eval suite, skills, and telemetry are the compounding assets; models are swappable underneath them.
+
+Because codeninja reviews attacker-influenced content and can post publicly, it must treat reviewed content as data rather than instructions, contain repository tools to the repository root, and never let repo-resident configuration enable command execution or posting on its own.
 
 A successful review finds real correctness, security, and design issues; explains the impact; cites the relevant code; and avoids style nits unless they hide meaningful risk. By default, codeninja should avoid comments about formatting, naming, or subjective style. Style and lint-oriented review should only run when explicitly configured, potentially through a `codeninja.toml` file, a lint mode, or language-specific lint skills such as a Go lint skill.
 
@@ -35,7 +39,7 @@ The unit of review should be the changed hunk, but the unit of understanding sho
 PR diff
   -> file filtering / classification
   -> PR summary / risk map / coverage plan
-  -> file facts + optional changed symbol graph
+  -> file facts + changed-symbol extraction
   -> per-hunk / per-file review packets
   -> selected lenses + targeted repo tools
   -> candidate findings
