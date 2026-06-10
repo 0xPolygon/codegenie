@@ -359,6 +359,7 @@ type EvalArtifacts = {
   metricsSources: {
     costProfile?: unknown // cost-profile.json
     modelCallsSummary?: unknown // model-calls-summary.json
+    toolCallsSummary?: unknown // tool-calls-summary.json
     runJson?: unknown // run.json
   }
 }
@@ -519,6 +520,8 @@ Run directories follow the architecture's layout exactly:
     final-review.md
     model-calls.jsonl
     model-calls-summary.json
+    tool-calls.jsonl
+    tool-calls-summary.json
     debug/                   # same layout as the engine run dir, when debug traces are enabled
   compare-to-previous.txt    # only when a previous run of the same case exists
   compare-to-previous.json
@@ -547,6 +550,7 @@ Scoring and attribution read the following artifacts. The expectation-bearing fo
 | `packets/*.json` | `ReviewPacket[]` (paths, hunk line ranges, lenses) | `components/review_pipeline.md` |
 | `coverage.json` | `RunCoverageStatus` + per-hunk records (filter/skip/review_failed status) | `components/review_pipeline.md` |
 | `events.jsonl` | Hint events: one event per emitted follow-up hint and structured uncertainty (stage 7/8; `event: "follow_up_hint"` / `"uncertainty"`) carrying `{ packetId, question, files, symbols, reason, confidence }` in `data` (uncertainty events omit `reason`/`confidence`), plus `system_task_scheduled` / `system_task_suppressed` events | `components/skills_llm_telemetry.md` (recorder), `components/review_pipeline.md` (emission) |
+| `tool-calls.jsonl`, `tool-calls-summary.json` | Per-call `ToolCallRecord`s (tool, stage, initiator, status, normalized args, join ids) and per-tool/per-stage aggregates — the source for tool-call counts and the `maxToolCalls` check | `components/skills_llm_telemetry.md` |
 | `cost-profile.json`, `model-calls.jsonl`, `model-calls-summary.json`, `run.json` | Total cost; per-call stage + prompt char size; per-stage call counts; total runtime; cache hit/miss counts | `components/skills_llm_telemetry.md` |
 
 These reader contracts are interface requirements on the writers: if a listed field is renamed or dropped, evals breaks. Component docs for the writers should treat them as consumed contracts.
@@ -713,10 +717,10 @@ Covering packets are located deterministically: packets whose `path` matches the
 | `maxCostUSD` | `cost-profile.json` | Total run cost `<=` limit |
 | `maxElapsedSeconds` | `run.json` / telemetry totals | Total review runtime `<=` limit |
 | `maxModelCalls` | `model-calls-summary.json` (fallback: count `model-calls.jsonl` lines) | Total provider calls `<=` limit |
-| `maxToolCalls` | tool-invocation events in `events.jsonl` | Total repository tool calls `<=` limit |
+| `maxToolCalls` | `tool-calls.jsonl` (fallback: `tool-calls-summary.json` totals) | Total repository tool calls `<=` limit |
 | `maxPromptCharsByStage` | `model-calls.jsonl` (per-call stage + prompt char size) | For every call of stage `s`, prompt chars `<=` limit for `s`; one `EvalBudgetResult` per configured stage key |
 
-Replay semantics: budget checks measure what actually executed in this eval run. In replay modes, checks whose source metrics belong to stages that did not execute are `skipped` with `skipReason: "stage not executed in replay mode <mode>"`. Concretely: `final-report` skips all budget checks except the finding-count and duplicate-group checks (which read replayed artifacts and are marked `fromReplayedArtifacts`); `merge-only` measures Stage 10 calls/cost/runtime only; `candidate-recall` measures Stages 9–10. `verificationCalls` in metrics counts stage-9 entries in `model-calls.jsonl` (fallback: `verification.json` verdict count).
+Replay semantics: budget checks measure what actually executed in this eval run. In replay modes, checks whose source metrics belong to stages that did not execute are `skipped` with `skipReason: "stage not executed in replay mode <mode>"`. Concretely: `final-report` skips all budget checks except the finding-count and duplicate-group checks (which read replayed artifacts and are marked `fromReplayedArtifacts`); `merge-only` measures Stage 10 calls/cost/runtime only; `candidate-recall` measures Stages 9–10. `verificationCalls` in metrics counts stage-9 entries in `model-calls.jsonl` (fallback: `verification.json` verdict count); `toolCalls` in metrics counts `tool-calls.jsonl` lines the same way, never derived events.
 
 ### Replay Modes
 
@@ -786,7 +790,7 @@ All structured results live in each run's `info.json` (`EvalRunInfo.score`); the
 This component depends on:
 
 - `components/review_pipeline.md` — the review engine, invoked in-process and never forked. Required seams: an engine entrypoint accepting an explicit repository root and an explicit run-artifact directory; Stage 9 and Stage 10 entrypoints invocable with artifact-supplied inputs for replay; writer-side guarantees for the artifact reader contract (`candidate-findings.json`, `verification.json` gate+verdict records, `final-selection.json` decision records, `final-findings.json` including suppressed entries, hint/system-task event emission).
-- `components/skills_llm_telemetry.md` — the telemetry recorder and artifact files evals reads for metrics (`events.jsonl`, `model-calls.jsonl`, `model-calls-summary.json`, `cost-profile.json`, `run.json`), and the model-call cache evals toggles per run.
+- `components/skills_llm_telemetry.md` — the telemetry recorder and artifact files evals reads for metrics (`events.jsonl`, `model-calls.jsonl`, `model-calls-summary.json`, `tool-calls.jsonl`, `tool-calls-summary.json`, `cost-profile.json`, `run.json`), and the model-call cache evals toggles per run.
 - `components/repository_and_github.md` / `components/context_and_tools.md` — git resolution and repository tools, consumed only through the engine; evals itself performs only worktree existence checks and `git rev-parse --verify` for replay SHAs via `GitClient`.
 - CLI/config: `commander` registration in `src/cli/main.ts`; the config loader for `eval.defaultEvalDir`, `eval.logsDir`, `eval.replayMode`, and the precedence chain.
 - Libraries: `zod` for case validation; a YAML parser for eval case files, per `architecture.md`'s dependency choices; the shared glob matcher used by `classification.pathRules`; Node `fs` for run-dir management.

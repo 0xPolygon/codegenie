@@ -30,7 +30,7 @@ Explicitly not this component's responsibility:
 - Eval scoring and replay — see `components/evals.md`.
 - Everything listed under Future Considerations in `architecture.md`: the changed-symbol graph (`SymbolEdge`, `ChangedSymbolGraph`), the cross-packet `ReviewSignal` index, and language analyzer backends. The `ToolBackend` enum value `"language-analyzer"` exists in the contract but receives no design here; no v1 code path produces it.
 
-All data contracts referenced here — `SymbolKind`, `SymbolRef`, `SymbolInfo`, `ChangedSymbol`, `HunkSymbolFacts`, `StaticSignal`, `ToolResultMeta`, `SourceSelector`, `FileOutline`, `ToolBackend`, `ToolPrecision`, `PacketContext`, `AstNodeSummary`, `RepositoryIndex`, `LanguageAdapter`, `GitClient`, and the `RepositoryTools` interface — are defined in `architecture.md` and are law. This document elaborates behavior; it does not change signatures. The only types defined here are the four delegated to this doc.
+All data contracts referenced here — `SymbolKind`, `SymbolRef`, `SymbolInfo`, `ChangedSymbol`, `HunkSymbolFacts`, `StaticSignal`, `ToolResultMeta`, `SourceSelector`, `FileOutline`, `ToolBackend`, `ToolPrecision`, `ToolCallRecord`, `PacketContext`, `AstNodeSummary`, `RepositoryIndex`, `LanguageAdapter`, `GitClient`, and the `RepositoryTools` interface — are defined in `architecture.md` and are law. This document elaborates behavior; it does not change signatures. The only types defined here are the four delegated to this doc.
 
 ## Public Interface
 
@@ -114,7 +114,7 @@ The `RepositoryTools` interface in `architecture.md` is the contract. Behavioral
 - `searchFiles(query, options?)` — POSIX ERE search via `git grep -E` at the resolved revision, or bundled ripgrep on the worktree fast path. `contextMode` controls enrichment: `"none"` (matching line only), `"lines"` (±2 context lines), `"symbols"` (tree-sitter enclosing `SymbolRef` attached per match, best effort).
 - `findSymbolMentions(symbolName, { pathGlob?, source? })` — word-boundary text search for the identifier at the resolved revision (default head), then tree-sitter token verification that drops string/comment hits for files with grammars. `precision: "syntactic"` when all returned mentions are token-verified, otherwise `"text"` with a degradation note. Never claims `semantic` or `exact` in v1.
 - `findLikelyTests({ path?, symbol?, source? })` — test filename/path conventions plus, when a symbol is given, symbol-name mention filtering inside candidate test files, all at the resolved revision (default head). Always `precision: "heuristic"`. An empty result is a valid answer, not a degradation.
-- `listFiles(glob)` — `git ls-tree -r` at the head revision filtered by the glob (worktree `git ls-files` in `diff_file` mode). Returns paths only; the signature carries no `ToolResultMeta`, so truncation at the cap is recorded in telemetry only.
+- `listFiles(glob)` — `git ls-tree -r` at the head revision filtered by the glob (worktree `git ls-files` in `diff_file` mode). Returns paths only; the signature carries no `ToolResultMeta`, so truncation at the cap is recorded only on the call's `ToolCallRecord` in `tool-calls.jsonl`.
 
 All tools are read-only. Source-reading and symbol-searching tools default to `{ kind: "head" }` and accept `{ kind: "base" }` and `{ kind: "git-ref" }` — `findDefinition`, `findSymbolMentions`, and `findLikelyTests` take `source?` first-class, and `searchFiles` takes it through `SearchOptions.source`. Only `listFiles` has no `source` parameter and operates on the head revision.
 
@@ -203,7 +203,7 @@ Tool methods reject with `CodeninjaError` using existing stable codes only:
 
 Absence is never an exception: a missing file at a revision, a symbol not found, or zero search matches return empty results with appropriate `ToolResultMeta` (`degraded` set when the answer quality is reduced, not merely empty). `parser_unavailable` conditions are recoverable inside this component and never cross the tool boundary as exceptions; they surface as degraded results.
 
-Tool rejections are rendered as model-visible tool errors by the worker runner (`components/skills_llm_telemetry.md`) and recorded in telemetry; they must never abort the run. Containment violations additionally emit a `warn`-level telemetry event, since a model-authored escape attempt is itself review-manipulation signal under Trust Boundaries.
+Tool rejections are rendered as model-visible tool errors by the worker runner (`components/skills_llm_telemetry.md`) and recorded in `tool-calls.jsonl` — containment denials surface as `status: "rejected"` `ToolCallRecord`s; they must never abort the run. Containment violations additionally emit a `warn`-level telemetry event, since a model-authored escape attempt is itself review-manipulation signal under Trust Boundaries.
 
 ## Internal Design
 
@@ -301,7 +301,7 @@ Ripgrep invocation and alignment with the `git grep -E` contract:
 - Pattern alignment: the query contract is POSIX ERE. `git grep -E` is the reference semantics. Ripgrep's Rust regex accepts the common ERE constructs (alternation, intervals, classes, anchors) with matching meaning; if ripgrep rejects the pattern, the call falls back to `git grep` transparently. If `git grep` also rejects the pattern, the call fails with `invalid_args`.
 - Residual engine differences that cannot be aligned (`.ignore`/`.rgignore` handling, binary-detection heuristics) are disclosed as degradation notes when they are detected to have affected the result (for example, ripgrep reporting skipped binary candidates); in that case `degraded: true` with a `degradationReason` naming the engine difference. A clean fast-path result is not degraded.
 
-Engine identity (`git-grep` vs `ripgrep`, including fallback transitions) is recorded in tool-call telemetry as engine provenance; `ToolResultMeta.backend` remains `"text"` for both engines because `ToolBackend` does not distinguish engines.
+Engine identity (`git-grep` vs `ripgrep`, including fallback transitions) is recorded as engine provenance on the call's `ToolCallRecord` telemetry in `tool-calls.jsonl`; `ToolResultMeta.backend` remains `"text"` for both engines because `ToolBackend` does not distinguish engines.
 
 Searches are executed with a bounded match count (engine-level `--max-count`/result truncation at `maxResults + 1`) so caps do not require reading unbounded output.
 
@@ -389,7 +389,7 @@ Candidates come from tree listings at the resolved revision (default head; `sour
 
 #### listFiles
 
-`GitClient.lsTree(headCommit, glob)` (or worktree `git ls-files` in `diff_file` mode), capped at 500 paths. Truncation is recorded in telemetry only, since the signature returns `string[]` without meta.
+`GitClient.lsTree(headCommit, glob)` (or worktree `git ls-files` in `diff_file` mode), capped at 500 paths. Truncation is recorded on the call's `ToolCallRecord` only, since the signature returns `string[]` without meta.
 
 ### Result Caps
 
@@ -542,7 +542,9 @@ The serialized context targets ≤ 4000 chars; each list cap above keeps it unde
 
 ### Telemetry
 
-This component emits stage-attributed events through the injected recorder for its own passes: Stage 4 extraction (per-file parse outcomes, fallback usage, signal counts, cap hits). `diff_file` staleness verdicts are recorded at stage 3 by classification, which executes the primitive. For tool calls made by LLM workers, attaching `runId`, `stage`, `workerId`, and `packetId` is the worker runner's responsibility; this component returns `ToolResultMeta` plus duration and emits per-call debug records (tool name, target, engine provenance, degradation reason, truncation counts) that the worker runner enriches with ids. Engine identity (`git-grep`/`ripgrep`, fallback transitions) and `listFiles` truncation exist only in telemetry, as noted above. Containment violations log at `warn`.
+This component emits stage-attributed events through the injected recorder for its own passes: Stage 4 extraction (per-file parse outcomes, fallback usage, signal counts, cap hits). `diff_file` staleness verdicts are recorded at stage 3 by classification, which executes the primitive.
+
+The `RepositoryTools` facade supplies the per-call measurement behind the always-on `ToolCallRecord` contract (`architecture.md`): every invocation produces `backend`, `precision`, `degraded`/`degradationReason`, `truncated`, `resultCount`, `resultChars`, `durationMs`, and the normalized args (path/symbol/lines/query/glob/source/contextMode), and the facade reports them to the telemetry recorder, which owns persistence to `tool-calls.jsonl` and the `tool-calls-summary.json` aggregation (`components/skills_llm_telemetry.md`). Harness-initiated invocations that go through the facade — packet-context assembly, staleness validation, classifier reads if any — are recorded with `initiator: "harness"` and the current stage; for model-initiated calls, attaching `workerId`, `packetId`, `modelCallId`, and the other join ids is the worker runner's responsibility. Containment rejections surface as `status: "rejected"` records. Engine identity (`git-grep`/`ripgrep`, fallback transitions) and `listFiles` truncation live on these records rather than in `ToolResultMeta`, as noted above. Containment violations additionally log at `warn`.
 
 ## Dependencies
 
@@ -560,7 +562,7 @@ Depended on by:
 - `components/review_pipeline.md`: `buildRepositoryIndex` output feeds the planner dossier (`HunkSymbolFacts`, `StaticSignal`); the packet builder calls `buildPacketContext` (context plus the likely-tests list for `relevantTests`) and the orchestrator calls `bindPackets` between Stage 6 and Stage 7.
 - `components/repository_and_github.md`: Stage 3 classification calls `validateHunkContextAgainstWorktree` in `diff_file` mode and writes `FileFacts.degraded` from its verdicts.
 - `components/skills_llm_telemetry.md`: the worker runner wraps `RepositoryTools` methods as LLM tool definitions for packet reviewers, system follow-up workers, and verifiers, and enforces `ToolBudget` on top of this component's per-call caps.
-- `components/evals.md`: consumes tool-call and degradation telemetry to attribute losses; no direct code dependency.
+- `components/evals.md`: consumes tool-call records (`tool-calls.jsonl`) and degradation telemetry to attribute losses; no direct code dependency.
 
 ## Test Plan
 
@@ -666,3 +668,5 @@ Integration (temporary git repositories):
 - `index built against non-checked-out revision` — build the index with HEAD on an unrelated branch; reads, outlines, search, and Stage 4 facts all reflect the reviewed revisions (plumbing-only), and the fast path stays off.
 - `dirty worktree never leaks into results` — modify a tracked file in the worktree; head reads and searches return committed content.
 - `end-to-end tool meta and telemetry` — a scripted tool-call sequence produces meta and telemetry records with backend, precision, engine, degradation, and truncation fields populated as specified.
+- `harness calls record initiator harness` — packet-context assembly and the staleness primitive, run through the facade, report `ToolCallRecord`s to the recorder with `initiator: "harness"`, the executing stage, and populated measurement fields (backend, precision, durationMs, resultChars, normalized args).
+- `containment rejection records rejected status` — a tool call failing containment produces a `status: "rejected"` `ToolCallRecord` alongside the `warn` telemetry event.

@@ -269,7 +269,7 @@ Sequencing rules:
 - Stage 9 verifier calls run with bounded concurrency after stages 7 and 8 have settled.
 - Stage 10 composition and stage 11 publishing are strictly sequential and always run (composition runs even under budget exhaustion; publishing only when requested).
 - `candidate-findings.json` persists all candidates produced by stages 7-8 (pre-gate), so evals can attribute losses to gates, verification, or composition.
-- Every stage boundary emits telemetry events with the numeric stage id; every model task and tool call carries `runId`, `stage`, and the relevant `workerId`/`packetId`/`hunkId`/`candidateId`.
+- Every stage boundary emits telemetry events with the numeric stage id; every model task and tool call carries `runId`, `stage`, and the relevant `workerId`/`packetId`/`hunkId`/`candidateId`. Every repository tool call — model- or harness-initiated — additionally lands as one `ToolCallRecord` line in the telemetry recorder's always-on `tool-calls.jsonl` artifact.
 
 Cancellation flows from the run context's root `AbortController`: the hard kill aborts it, which cancels in-flight workers and pending LLM calls; budget exhaustion does not abort in-flight work (the ladder only stops new dispatches).
 
@@ -571,7 +571,7 @@ Execution:
 
 - Each worker composes one `LlmStructuredRequest` (stage schema, prompt, tools, `toolBudget`, timeout, telemetry context) and awaits `LlmRunner.runStructured`. Per `architecture.md`, the agent loop lives inside the pi-runner behind `LlmRunner.runStructured` — it executes repository tool calls, enforces the request's `ToolBudget`, and terminates on submit-tool call, budget exhaustion, or timeout. The worker runner schedules workers and supplies the budget through `LlmStructuredRequest`; it does not run the loop itself, and pipeline code never touches Pi APIs directly.
 - Per-worker timeout: `review.perPassTimeoutMs` for packet and verifier workers; `systemReview.taskTimeoutMs` for system tasks. Timeouts use `AbortController`; the run-wide abort is chained so the 2x hard kill cancels all in-flight workers.
-- Worker ids are `"w<stage>-<seq>"` with a per-stage sequence in dispatch order. Every log line, telemetry event, tool call, model call, and result artifact carries `workerId`, `packetId`/`taskId`/`candidateId`, `stage`, and `runId`.
+- Worker ids are `"w<stage>-<seq>"` with a per-stage sequence in dispatch order. Every log line, telemetry event, tool call, model call, and result artifact carries `workerId`, `packetId`/`taskId`/`candidateId`, `stage`, and `runId`. The worker runner supplies these stamps through the request's telemetry context; for model-initiated tool calls they become the call-context fields of the always-on `ToolCallRecord`s the agent loop emits into `tool-calls.jsonl` (with `initiator: "model"` and the issuing `modelCallId`).
 
 Retry policy (layered; lower layers are owned by the LLM runner and referenced here):
 
@@ -610,7 +610,7 @@ Result validation, applied in pipeline code to each schema-valid `PacketReviewRe
 - Missing `evidence.changedCode` or missing `failureMode` is recorded now (`missing_evidence`, `missing_failure_mode`) and enforced by the Stage 9 gates; low-confidence candidates are recorded and left for gate suppression so telemetry can attribute the loss stage precisely.
 - `followUpHints` are validated for pointer-richness: a hint with an empty `question` or with no `files` and no `symbols` is dropped (`vague_hint`).
 - Each surviving `followUpHint` and each `uncertainty` is emitted as a telemetry event (`event: "follow_up_hint"` / `"uncertainty"`, stage-attributed) carrying `{ packetId, question, files, symbols, reason, confidence }` in `data` (uncertainty events omit `reason`/`confidence`) — the hint-event reader contract consumed by `components/evals.md`.
-- `filesRead`, `toolCalls`, prompt size, token usage, runtime, and `status` are recorded per worker.
+- `filesRead`, `toolCalls`, prompt size, token usage, runtime, and `status` are recorded per worker. `PacketReviewResult.toolCalls` is a compact derived view of the run's `ToolCallRecord`s for that worker — `tool-calls.jsonl` carries the full always-on records; the contract is unchanged.
 
 All candidates (pre-gate) are persisted to `candidate-findings.json`.
 

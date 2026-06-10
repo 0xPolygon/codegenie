@@ -6,7 +6,7 @@ status: complete
 
 This component owns `src/skills/*`, `src/llm/*`, and `src/telemetry/*`, plus the packaging contract for `bundled-skills/`. It is the layer between the review pipeline and everything model-shaped or disk-shaped: it loads and validates Markdown skills, registers lenses, projects skill guidance into stage prompts with untrusted-content delimiting, executes every structured model call through `@earendil-works/pi-ai` behind the `LlmRunner` seam, caches model calls locally when enabled, and records every log line, telemetry event, and run artifact codeninja produces.
 
-All data contracts referenced here — `ReviewStage`, `CodeninjaConfig`, `ToolBudget`, `ReviewPacket`, `ReviewPlan`, `SystemFollowUpTask`, `PacketReviewResult`, `SystemReviewResult`, `CandidateFinding`, `DiffAnchor`, `VerificationVerdict`, `FinalFinding`, `RunCoverageStatus`, `ReviewResult`, `RepositoryTools`, `ToolResultMeta`, `SourceSelector`, `LlmRunner`, `LlmStructuredRequest`, `LogLevel`, `LogEvent`, `Logger`, `TelemetryEvent`, `CodeninjaError`, `CodeninjaErrorCode` — are defined in `architecture.md` and are law; this document elaborates behavior and never redefines them. The one type `architecture.md` delegates to this document is `ToolDefinition`, defined under Public Interface. All other types introduced here (`Skill`, `LensDescriptor`, `BuiltPrompt`, `LlmCallRecord`, `ToolCallRecord`, `TelemetryRecorder`, and friends) are this component's own seams; where marked internal they are execution records, not published data contracts.
+All data contracts referenced here — `ReviewStage`, `CodeninjaConfig`, `ToolBudget`, `ReviewPacket`, `ReviewPlan`, `SystemFollowUpTask`, `PacketReviewResult`, `SystemReviewResult`, `CandidateFinding`, `DiffAnchor`, `VerificationVerdict`, `FinalFinding`, `RunCoverageStatus`, `ReviewResult`, `RepositoryTools`, `ToolResultMeta`, `SourceSelector`, `LlmRunner`, `LlmStructuredRequest`, `LogLevel`, `LogEvent`, `Logger`, `TelemetryEvent`, `ToolCallRecord`, `CodeninjaError`, `CodeninjaErrorCode` — are defined in `architecture.md` and are law; this document elaborates behavior and never redefines them. The one type `architecture.md` delegates to this document is `ToolDefinition`, defined under Public Interface. All other types introduced here (`Skill`, `LensDescriptor`, `BuiltPrompt`, `LlmCallRecord`, `TelemetryRecorder`, and friends) are this component's own seams; where marked internal they are execution records, not published data contracts.
 
 ## Purpose And Scope
 
@@ -16,11 +16,11 @@ This component is responsible for:
 - The trusted-checkout policy-loading rule: skills and config always load from the user's working copy, never from the reviewed PR head revision.
 - The lens registry: lens existence derived from loaded skills (`lens exists iff at least one loaded skill declares it`), `enabledByDefault` conflict resolution, `--lens` validation with an available-lens error listing, config precedence for the effective enabled-lens set, and one-line lens summaries for the planner dossier.
 - The prompt builder: the five stage prompt templates, per-stage skill projection maps with the 4000-char per-skill and 12000-char total caps, telemetry-recorded truncation, and the untrusted-content fencing required by Trust Boundaries.
-- The `LlmRunner` implementation (`PiRunner`): forced submit-tool structured outputs per stage (`submit_plan`, `submit_review`, `submit_verdict`, `submit_composition`), TypeBox schema authoring with `Static<>` type derivation, the codeninja-owned agent loop driving pi-ai `complete()` + `validateToolCall`, `ToolBudget` enforcement, `AbortController` timeouts chained to the run-wide abort, one schema-repair retry, per-role model resolution from `llm.model` + `llm.roleModels`, `llm.maxConcurrentCalls` enforcement, 429/transient-5xx exponential backoff with budget accounting, and per-call telemetry.
+- The `LlmRunner` implementation (`PiRunner`): forced submit-tool structured outputs per stage (`submit_plan`, `submit_review`, `submit_verdict`, `submit_composition`), TypeBox schema authoring with `Static<>` type derivation, the codeninja-owned agent loop driving pi-ai `complete()` + `validateToolCall`, `ToolBudget` enforcement, `AbortController` timeouts chained to the run-wide abort, one schema-repair retry, per-role model resolution from `llm.model` + `llm.roleModels`, `llm.maxConcurrentCalls` enforcement, 429/transient-5xx exponential backoff with budget accounting, and per-call telemetry — including one law `ToolCallRecord` emitted to the recorder for every tool-loop call (executed, budget-rejected, or containment-rejected), stamped with `initiator: "model"` and the issuing `modelCallId`.
 - The delegated `ToolDefinition` type and the factory that wraps `RepositoryTools` methods as model-facing tool definitions, including rendering tool rejections as model-visible errors.
 - The local model-call cache: normalized-request key derivation, per-provider-call caching with conversation-prefix keying, cache-schema-version validation on read, refusal of repo-tracked cache directories, 14-day / 500MB eviction at run start, and hit/miss/write telemetry.
 - The logger and telemetry recorder: `run.log` and `events.jsonl` writing, level filtering, stderr mirroring, stage `0` pre-pipeline event buffering, and monotonic event ids.
-- Run artifacts: creating `.codeninja/runs/<run-id>/`, the artifact writer surface used by every stage, `model-calls.jsonl` / `model-calls-summary.json` / `cost-profile.json` / `run.json` / `telemetry.json`, opt-in debug traces under `debug/`, `retainRuns` pruning, `.codeninja/.gitignore` provisioning, and the credential-stripping invariant applied before any byte is written.
+- Run artifacts: creating `.codeninja/runs/<run-id>/`, the artifact writer surface used by every stage, `model-calls.jsonl` / `model-calls-summary.json` / `tool-calls.jsonl` / `tool-calls-summary.json` / `cost-profile.json` / `run.json` / `telemetry.json`, opt-in debug traces under `debug/`, `retainRuns` pruning, `.codeninja/.gitignore` provisioning, and the credential-stripping invariant applied before any byte is written.
 
 This component is explicitly not responsible for:
 
@@ -257,15 +257,17 @@ The factory that wraps the read-only repository tool suite:
 function buildRepositoryToolDefinitions(
   tools: RepositoryTools,
   options?: {
-    onToolCall?: (record: ToolCallRecord) => void  // per-worker observer; the pipeline
-                                                   // assembles PacketReviewResult.toolCalls
+    onToolCall?: (record: ToolCallRecord) => void  // per-worker observer receiving the same
+                                                   // law ToolCallRecords the agent loop emits
+                                                   // to the telemetry recorder; the pipeline
+                                                   // derives PacketReviewResult.toolCalls
                                                    // and filesRead from these records
   }
 ): ToolDefinition[]
 ```
 
 - Returns one `ToolDefinition` per tool named in the functional spec: `read_range`, `read_file_outline`, `read_enclosing_symbol`, `read_symbol`, `list_symbols`, `find_definition`, `read_diff_blocks`, `search_files`, `find_symbol_mentions`, `find_likely_tests`, `list_files`. Tool behavior, containment, and caps are owned by `components/context_and_tools.md`; this factory owns the parameter schemas, result rendering, error rendering, and call records.
-- `CodeninjaError` rejections from the tool layer (`path_outside_repo`, `invalid_args`, `git_ref_missing`) are caught and rendered as `isError: true` results so the model sees the failure and the run never aborts; `path_outside_repo` additionally emits a `warn` telemetry event as a review-manipulation signal, matching `components/context_and_tools.md`.
+- `CodeninjaError` rejections from the tool layer (`path_outside_repo`, `invalid_args`, `git_ref_missing`) are caught and rendered as `isError: true` results so the model sees the failure and the run never aborts; the call still produces its `ToolCallRecord` (containment denials as `status: "rejected"`, other tool failures as `status: "error"`), and `path_outside_repo` additionally emits a `warn` telemetry event as a review-manipulation signal, matching `components/context_and_tools.md`.
 
 ### Model-Call Cache
 
@@ -310,7 +312,7 @@ async function createModelCallCache(opts: {
 
 ### Telemetry: Logger, Recorder, And Run Lifecycle
 
-`LogLevel`, `LogEvent`, the `Logger` interface, and `TelemetryEvent` are law in `architecture.md`. This component defines the recorder and lifecycle seams around them:
+`LogLevel`, `LogEvent`, the `Logger` interface, `TelemetryEvent`, and `ToolCallRecord` are law in `architecture.md`. This component defines the recorder and lifecycle seams around them:
 
 ```ts
 // src/telemetry/telemetry-recorder.ts
@@ -344,26 +346,6 @@ type LlmCallRecord = {
   errorCode?: CodeninjaErrorCode
 }
 
-type ToolCallRecord = {
-  toolCallId: string           // "tc-<workerId>-<seq>"
-  runId: string
-  stage: ReviewStage
-  workerId?: string
-  packetId?: string
-  taskId?: string
-  candidateId?: string
-  toolName: string
-  target?: string              // primary path/symbol/query argument, truncated to 200 chars
-  durationMs: number
-  status: "ok" | "error" | "rejected" | "budget_exhausted"
-  resultChars: number
-  backend?: string             // ToolResultMeta passthrough
-  precision?: string
-  degraded?: boolean
-  truncated?: boolean
-  errorCode?: CodeninjaErrorCode
-}
-
 interface TelemetryRecorder {
   readonly runId: string
   readonly runDir?: string     // undefined until attachRunDirectory (stage 0 buffering)
@@ -371,8 +353,12 @@ interface TelemetryRecorder {
   event(e: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">): void
   // Append to model-calls.jsonl and update in-memory aggregates.
   recordModelCall(record: Omit<LlmCallRecord, "runId">): void
-  // Append a tool-call telemetry event and update aggregates.
-  recordToolCall(record: Omit<ToolCallRecord, "runId">): void
+  // Append one law ToolCallRecord line to tool-calls.jsonl (always on, never
+  // debug-gated), emit the debug-level `tool_call` log event, and update
+  // per-tool/per-stage aggregates. Stamps runId, toolCallId ("tc-<seq>",
+  // emission order), and timestamp; returns the allocated toolCallId (the
+  // debug-trace join key).
+  recordToolCall(record: Omit<ToolCallRecord, "runId" | "toolCallId" | "timestamp">): string
   // Persist a named run artifact (write-temp-then-rename JSON). relPath must be
   // a known artifact name from the architecture run-directory layout or a path
   // under packets/; anything else is a programming error.
@@ -399,8 +385,9 @@ type RunTelemetry = {
   // Creates .codeninja/ (with .gitignore provisioning) and the run directory,
   // prunes old runs per telemetry.retainRuns, flushes stage-0 buffers.
   attachRunDirectory(repoRoot: string): Promise<{ runId: string; runDir: string }>
-  // Writes run.json, telemetry.json, model-calls-summary.json, cost-profile.json
-  // from accumulated state and closes file handles.
+  // Writes run.json, telemetry.json, model-calls-summary.json,
+  // tool-calls-summary.json, cost-profile.json from accumulated state and
+  // closes file handles.
   finalize(outcome: RunOutcome): Promise<void>
 }
 
@@ -605,7 +592,7 @@ Loop, repeated until terminal:
 2. Provider call: acquire the `llm.maxConcurrentCalls` semaphore, check the cache (key over the full conversation prefix; see Cache Key Derivation), and on miss call pi-ai `complete()` with messages, tools, model, and the abort signal. Tool choice is `"auto"` while investigation is permitted; for stages with no repository tools (5, 10) and for all finalization calls it forces the submit tool. Release the semaphore when the call settles; report `hooks.onUsage` and `telemetry.recordModelCall` for every attempt.
 3. Response handling, in order:
    - Submit-tool call present: validate its arguments against `request.schema` via pi-ai `validateToolCall`. Valid → resolve `runStructured` with the typed payload; any other tool calls in the same response are ignored with a telemetry note (`submit_with_extra_tools`). Invalid → schema repair (below).
-   - Repository tool calls present (no submit): if `roundsUsed >= maxInvestigationRounds`, skip execution and enter finalization with a budget notice. Otherwise increment `roundsUsed` and execute the requested tool calls sequentially in response order. For each: if `toolCallsUsed >= maxToolCalls` or `resultCharsUsed >= maxResultChars`, append a budget-exhausted tool error result (`status: "budget_exhausted"` on the `ToolCallRecord`) instead of executing; else validate arguments (`validateToolCall` against `parameters`; invalid arguments render as `isError` results without execution), invoke `definition.execute(args, signal)`, cap the appended text at the remaining `maxResultChars`, wrap it in untrusted fencing with a one-line framing prefix, and append it as the tool-result message. Update counters; emit `recordToolCall` and the per-call debug trace. Then continue the loop.
+   - Repository tool calls present (no submit): if `roundsUsed >= maxInvestigationRounds`, skip execution and enter finalization with a budget notice. Otherwise increment `roundsUsed` and execute the requested tool calls sequentially in response order. For each: if `toolCallsUsed >= maxToolCalls` or `resultCharsUsed >= maxResultChars`, append a budget-exhausted tool error result (a `ToolCallRecord` with `status: "rejected"`) instead of executing; else validate arguments (`validateToolCall` against `parameters`; invalid arguments render as `isError` results without execution), invoke `definition.execute(args, signal)`, cap the appended text at the remaining `maxResultChars`, wrap it in untrusted fencing with a one-line framing prefix, and append it as the tool-result message. Update counters; every requested call — executed, budget-rejected, or containment-rejected — emits one law `ToolCallRecord` via `recordToolCall` (stamped `initiator: "model"`, the issuing step's `modelCallId`, and normalized args, with `ToolResultMeta` passthrough) plus the per-call debug trace. Then continue the loop.
    - Plain text with no tool calls: append a one-line nudge message (versioned constant) instructing the model to call the submit tool or a repository tool. At most one nudge per request; a second text-only response enters finalization.
 4. Finalization (entered on tool-call budget exhaustion, round exhaustion, ledger-checkpoint exhaustion, or the post-nudge text response): append a versioned finalize message — investigation is over; call the submit tool now using only evidence already gathered — and make one completion with tool choice forced to the submit tool. A valid submit resolves the request. An invalid submit gets the one schema repair. Anything else rejects `llm_schema_invalid`.
 
@@ -690,7 +677,7 @@ Anything prompt-affecting therefore misses; identical reruns hit.
 - `eventId` is monotonic per run: `"ev-" + zero-padded sequence` in emission order, so event order is reconstructible even with identical timestamps.
 - The recorder stamps `runId`, `eventId`, and `timestamp`; callers supply everything else, including the numeric `stage` and the relevant ids (`packetId`, `workerId`, `lensId`, ...). The recorder performs no semantic validation of `data` payloads beyond credential stripping and a 16KB serialized-size cap per event (over-cap `data` is replaced with `{ truncated: true, chars }`).
 - Reader contracts: `components/evals.md` reads hint events (follow-up hints and structured uncertainties with `{ packetId, question, files, symbols, reason, confidence }` in `data`, plus system-task scheduled/suppressed events) out of `events.jsonl`. Emission is pipeline-owned; the recorder's obligation is to persist `data` fields losslessly under the size cap and never rename `TelemetryEvent` fields.
-- `recordToolCall` writes a telemetry event (`event: "tool_call"`, with duration, status, and `ToolResultMeta` passthrough fields in `data`) and updates tool-call aggregates; `recordModelCall` appends to `model-calls.jsonl` and updates model-call aggregates. Both are synchronous in-memory operations with batched async writes; `flush()` drains pending writes for the fatal-error path.
+- `recordToolCall` appends one law `ToolCallRecord` line to `tool-calls.jsonl` — always on, regardless of debug settings, for every repository tool invocation, model-initiated in a tool loop or harness-initiated by deterministic stages — emits a debug-level `tool_call` log event carrying `toolName`, `path`, and the line range, and updates per-tool/per-stage aggregates; `recordModelCall` appends to `model-calls.jsonl` and updates model-call aggregates. Both are synchronous in-memory operations with batched async writes; `flush()` drains pending writes for the fatal-error path.
 
 ### Credential Stripping
 
@@ -716,17 +703,18 @@ Artifact writer ownership (the layout itself is law in `architecture.md`):
 | Artifact | Content owner | Written via |
 | --- | --- | --- |
 | `run.log`, `events.jsonl` | this component | logger / recorder streams |
-| `model-calls.jsonl`, `model-calls-summary.json`, `cost-profile.json`, `run.json`, `telemetry.json` | this component | recorder aggregates + `finalize` |
+| `model-calls.jsonl`, `model-calls-summary.json`, `tool-calls.jsonl`, `tool-calls-summary.json`, `cost-profile.json`, `run.json`, `telemetry.json` | this component | recorder aggregates + `finalize` |
 | `planner-dossier.json`, `review-plan.json`, `coverage.json`, `packets/<packet-id>.json`, `candidate-findings.json`, `verification.json`, `final-selection.json`, `final-findings.json` | `components/review_pipeline.md` | `writeArtifact` |
 | `final-review.md` | output renderer | `writeArtifact` |
 | `github-posting.json` | `components/repository_and_github.md` | `writeArtifact` |
 | `debug/llm-calls/<call-id>.json`, `debug/tool-calls/<tool-call-id>.json` | this component | `writeDebug` |
 
-- `writeArtifact` serializes with stable key order and 2-space indentation, strips credentials, and writes temp-then-rename so a crashed run never leaves a half-written JSON artifact for evals to choke on. `run.log`, `events.jsonl`, and `model-calls.jsonl` are append streams by nature and are exempt from rename atomicity (line-granular durability).
-- `finalize(outcome)` writes the four summary artifacts and closes streams:
+- `writeArtifact` serializes with stable key order and 2-space indentation, strips credentials, and writes temp-then-rename so a crashed run never leaves a half-written JSON artifact for evals to choke on. `run.log`, `events.jsonl`, `model-calls.jsonl`, and `tool-calls.jsonl` are append streams by nature and are exempt from rename atomicity (line-granular durability).
+- `finalize(outcome)` writes the five summary artifacts and closes streams:
   - `run.json` — run identity and totals: `runId`, codeninja version, node version, `startedAt`/`finishedAt`/`durationMs` (the evals "total runtime" source), review mode, repo root, base/head SHAs, PR number when applicable, credential-stripped argv, effective depth and enabled lenses, `outcome.status`/`errorCode`/`exitCode`, and total counts (model calls, tool calls, packets, candidates, verified, final findings).
   - `telemetry.json` — the aggregate metrics document mirroring the functional spec's V1 telemetry list: total runtime, per-stage runtime, per-worker runtime, provider-call and token totals, packets generated, lens selection counts, coverage decision counts, reviewed/skipped/failed hunk counts, tool invocation counts with backend/degradation tallies, worker lifecycle counts, candidate/verdict/rejection/dedup counts, posting results, final-selection omissions, and cache hit/miss counts. Values are folded from recorder aggregates; stages report their numbers through ordinary telemetry events with well-known `event` names.
   - `model-calls-summary.json` — per-stage and per-role call/token/cost/retry/repair aggregates plus cache hit/miss/write counts (the evals cache-metrics source).
+  - `tool-calls-summary.json` — per-tool and per-stage aggregates over the run's `ToolCallRecord`s: call counts, error/rejection/degradation rates, average duration, and average result size.
   - `cost-profile.json` — `totalCostUSD`, known/unknown-cost call counts, per-stage and per-role token and cost breakdowns.
 - `finalize` runs on success and on the fatal-error path (best effort, after `flush()`), satisfying "attempt to write telemetry artifacts before exiting".
 
@@ -753,9 +741,9 @@ This component depends on:
 Depends on this component:
 
 - `components/review_pipeline.md` — composes every `LlmStructuredRequest` against `LlmRunner`, supplies the budget `checkpoint`/`onUsage` hooks, consumes `BuiltPrompt`s, skill projections, the lens registry, and persists all stage artifacts through `TelemetryRecorder`.
-- `components/context_and_tools.md` — emits its stage-4 and tool-layer telemetry through the `Logger`/`TelemetryRecorder` interfaces defined here.
+- `components/context_and_tools.md` — emits its stage-4 and tool-layer telemetry through the `Logger`/`TelemetryRecorder` interfaces defined here, including harness-initiated `ToolCallRecord`s reported through `recordToolCall` with `initiator: "harness"`.
 - `components/repository_and_github.md` — emits telemetry and writes `github-posting.json` through the recorder.
-- `components/evals.md` — reads `events.jsonl`, `model-calls.jsonl`, `model-calls-summary.json`, `cost-profile.json`, and `run.json` as reader contracts; toggles and directs the model-call cache per run.
+- `components/evals.md` — reads `events.jsonl`, `model-calls.jsonl`, `model-calls-summary.json`, `tool-calls.jsonl`, `tool-calls-summary.json`, `cost-profile.json`, and `run.json` as reader contracts; toggles and directs the model-call cache per run.
 - `src/cli/` — creates `RunTelemetry` at stage 0, loads skills, builds the registry, and constructs the runner and cache during startup.
 
 ## Test Plan
@@ -806,7 +794,7 @@ Agent loop:
 
 - `loop_submit_first_response`: a scripted immediate valid submit resolves with the typed payload, zero tool executions, one model-call record.
 - `loop_tool_round_then_submit`: tool call → fenced untrusted tool result appended → submit; counters and `ToolCallRecord`s match; the tool result message contains the fencing and framing line.
-- `loop_tool_budget_max_calls`: with `maxToolCalls: 2`, the third requested call returns a budget-exhausted tool error without executing; finalize forces submit.
+- `loop_tool_budget_max_calls`: with `maxToolCalls: 2`, the third requested call returns a budget-exhausted tool error without executing and records a `ToolCallRecord` with `status: "rejected"`; finalize forces submit.
 - `loop_round_budget_finalize`: with `maxInvestigationRounds: 1`, a second tool-requesting completion skips execution and enters forced-submit finalization.
 - `loop_result_chars_cumulative_cap`: results are truncated to remaining `maxResultChars`; once spent, further calls return budget errors.
 - `loop_text_response_single_nudge`: a text-only response gets one nudge; a second text-only response forces finalization; a third failure rejects `llm_schema_invalid`.
@@ -829,7 +817,7 @@ Runner policies:
 Tool definitions:
 
 - `tooldefs_cover_all_eleven`: the factory returns definitions for all eleven functional-spec tool names with TypeBox parameter schemas matching the law signatures (line numbers ≥ 1, selector unions, exactly-one selector constraints expressed in description + schema).
-- `tooldefs_observer_records`: the `onToolCall` observer receives one record per execution with name, target, duration, status, and meta passthrough, enabling `PacketReviewResult.toolCalls` assembly.
+- `tooldefs_observer_records`: the `onToolCall` observer receives one law `ToolCallRecord` per execution with tool name, normalized args, duration, status, and meta passthrough, enabling `PacketReviewResult.toolCalls` assembly.
 - `tooldefs_result_meta_footer`: degraded or truncated results render a meta note line; clean results render none.
 
 Model-call cache:
@@ -849,6 +837,7 @@ Logger and recorder:
 - `logger_stage0_buffering_flush_order`: events emitted before `attachRunDirectory` flush to `run.log`/`events.jsonl` in emission order with stage `0`; pre-attachment warnings already appeared on stderr.
 - `recorder_eventid_monotonic`: `eventId` values are strictly increasing and zero-padded; identical-timestamp events keep emission order.
 - `recorder_events_unfiltered_by_loglevel`: with `logLevel: "warn"`, `info` telemetry events still land in `events.jsonl`.
+- `tool_call_record_always_on`: with `debugTrace` off, every recorded tool call — executed, budget-rejected, and containment-rejected alike — lands as one `tool-calls.jsonl` line with `initiator`, `status`, normalized args, and join ids (`modelCallId` for model-initiated calls), plus a debug-level `tool_call` log event; a harness-reported call carries `initiator: "harness"` and its stage.
 - `recorder_hint_event_fields_preserved`: a hint event's `data` fields (`packetId`, `question`, `files`, `symbols`, `reason`, `confidence`) round-trip losslessly under the size cap (evals reader contract).
 - `recorder_data_size_cap`: an over-16KB `data` payload is replaced with the truncation stub.
 - `telemetry_disabled_noop`: with `telemetry.enabled: false`, no run directory is created, `writeArtifact` resolves without writing, and stderr mirroring still works.
@@ -866,5 +855,6 @@ Run artifacts and lifecycle:
 - `artifacts_retain_runs_pruning`: with `retainRuns: 2` and three prior runs, the oldest is deleted, the active run is never deleted, and a stage-0 telemetry event lists the pruned ids.
 - `artifacts_write_atomic_known_names_only`: `writeArtifact` accepts the architecture-named artifacts and `packets/<id>.json`, writes temp-then-rename, and rejects unknown names as a programming error.
 - `artifacts_finalize_summaries`: after scripted calls and tool executions, `finalize` writes `run.json` (with `durationMs`, totals, outcome), `telemetry.json` (stage runtimes and counts), `model-calls-summary.json` (per-stage/per-role aggregates plus cache hit/miss/write counts), and `cost-profile.json` (known/unknown cost split) with the documented required fields.
+- `tool_calls_summary_aggregates`: `finalize` writes `tool-calls-summary.json` whose per-tool and per-stage call counts, error/rejection/degradation rates, and average duration/result size match the run's recorded `tool-calls.jsonl` lines.
 - `artifacts_finalize_on_fatal_path`: `flush()` + `finalize({ status: "failed", … })` after a simulated mid-run fatal error still produces parseable `run.log`, `events.jsonl`, and summary artifacts.
 - `debug_trace_gating_and_join`: with `debugTrace` off, no `debug/` directory exists; with it on, `debug/llm-calls/<call-id>.json` carries `promptText` and the response, and `<call-id>` joins to a `model-calls.jsonl` row; tool-call debug files join to `ToolCallRecord.toolCallId`.
