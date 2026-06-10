@@ -58,7 +58,7 @@ codeninja review --format markdown|json
 
 All v1 modes require running from inside a local git worktree. This means the repository must exist locally so codeninja can inspect files, map diff paths to source files, build context, and run read-only repository tools. The `--pr` mode uses GitHub metadata for PR context and posting, but the reviewed diff, changed files, and commit information should come from local git whenever possible.
 
-The checked-out worktree does not need to match the reviewed head. Source reads resolve against the reviewed revisions through git, so codeninja can review a PR or branch that is not checked out, and review results are unaffected by dirty worktree state.
+The checked-out worktree does not need to match the reviewed head. Reviewed source reads resolve against the reviewed revisions through git, so codeninja can review a PR or branch that is not checked out, and reviewed source content is unaffected by dirty worktree state. Review policy, config, and skills load separately from the trusted local checkout.
 
 ### `--pr`
 

@@ -78,17 +78,7 @@ The coverage ledger accumulates the per-hunk records serialized into `coverage.j
 
 ### Stage Functions
 
-```ts
-// src/pipeline/review-runner.ts — Stage 2 policy pass
-async function filterDiffFiles(
-  fileFacts: FileFacts[],
-  diff: UnifiedDiff,
-  config: CodeninjaConfig,
-  telemetry: TelemetryRecorder
-): Promise<{ kept: DiffFile[]; decisions: FileFilterDecision[] }>
-```
-
-- Pure policy over Stage 3 facts and configuration; never calls the LLM, never throws for per-file conditions. Produces exactly one `FileFilterDecision` per changed file.
+Stage 2 filtering is intentionally not implemented in `src/pipeline/*`. `runReview` calls `filterDiffFiles` from `src/git/file-classifier.ts` (`components/repository_and_github.md`), then owns writing skip coverage, applying the zero-work short-circuit, and threading the decisions into downstream artifacts.
 
 ```ts
 // src/pipeline/planner.ts — Stage 5 dossier
@@ -244,7 +234,7 @@ startRun                          -> run.json, run directory
 resolveReviewInput   (stage 1)    -> ResolvedReviewInput          [repository_and_github]
 parseDiff            (stage 1)    -> UnifiedDiff                  [repository_and_github]
 classifyChangedFiles (stage 3)    -> FileFacts[]                  [repository_and_github]
-filterDiffFiles      (stage 2)    -> kept DiffFile[], FileFilterDecision[]   [this doc]
+filterDiffFiles      (stage 2)    -> kept DiffFile[], FileFilterDecision[]   [repository_and_github; coverage/zero-work here]
   -- zero-work short-circuit here --
 buildRepositoryIndex (stage 4)    -> RepositoryIndex              [context_and_tools]
 buildPlannerDossier  (stage 5)    -> PlannerDossier               -> planner-dossier.json
@@ -275,7 +265,7 @@ Cancellation flows from the run context's root `AbortController`: the hard kill 
 
 ### Stage 2: Filtering Policy Pass
 
-`filterDiffFiles` is a policy pass over the shared deterministic detector facts (the detectors themselves live in `components/repository_and_github.md`). It must not re-detect anything; it consumes `FileFacts` and configuration and emits decisions with the same provenance the detectors recorded.
+`filterDiffFiles` is a pure policy pass owned by `components/repository_and_github.md`, over the shared deterministic detector facts owned by that same component. It must not re-detect anything; it consumes `FileFacts` and configuration and emits decisions with the same provenance the detectors recorded. This component owns how the orchestrator applies those decisions to coverage, zero-work behavior, and downstream stage inputs.
 
 Decision algorithm, applied to every `DiffFile` in diff order; the first matching rule wins and each decision records the matched fact's `FactProvenance`:
 
@@ -744,7 +734,7 @@ Depends on this component:
 
 - `src/cli/review-command.ts`: invokes `runReview`, maps `CodeninjaError` to exit codes, triggers rendering/posting.
 - Output renderers (`src/output/*`): consume `ReviewResult` for Markdown/JSON/stdout.
-- `components/evals.md`: invokes `runReview` with the `overrides` seam (explicit repo root and run-artifact directory) and replays this component's persisted artifacts — `candidate-recall` re-enters at Stage 9 via `verifyFindings`, `merge-only` at Stage 10 via `dedupeRankAndComposeReview`; both stage functions accept artifact-reconstructed inputs (candidates regrouped from `candidate-findings.json`, packets from `packets/*.json`, the plan from `review-plan.json`, verified findings from `verification.json`) without live upstream stages. Loss attribution consumes the `verification.json`, `final-selection.json`, and hint/system-task event reader contracts stated above.
+- `components/evals.md`: invokes `runReview` with the `overrides` seam (explicit repo root and run-artifact directory) and replays this component's persisted artifacts — `candidate-recall` re-enters at Stage 9 via `verifyFindings`, `merge-only` at Stage 10 via `dedupeRankAndComposeReview`; both stage functions accept artifact-reconstructed inputs (candidates regrouped from `candidate-findings.json`, packets from `packets/*.json`, the plan from `review-plan.json`, coverage from `coverage.json`, resolved-input metadata from `run.json`, verified findings from `verification.json`) without live upstream stages. Loss attribution consumes the `verification.json`, `final-selection.json`, and hint/system-task event reader contracts stated above.
 
 ## Test Plan
 
@@ -827,7 +817,7 @@ Stage 10:
 - `compose_caps_protect_critical_high`: 10 inline-eligible findings with `softCommentCap = 7` move the lowest-ranked medium findings to summary-only while all critical/high stay inline; `maxFindings` suppresses only non-critical/high overflow.
 - `compose_thread_overlap_recorded_not_dropped`: a finding within ±5 lines of an existing thread records `overlappingThreadIds` and remains published.
 - `compose_terminal_failure_fallback`: composer fails after repair; fallback emits template-worded, fingerprint-grouped, severity-ranked findings with the semantic-composition-skipped disclosure and loses nothing.
-- `compose_posting_plan_pr_mode`: `--pr` mode yields `postingPlan` with inline anchors only for `publication: "inline"` findings and a review body containing counts and partial disclosure.
+- `compose_posting_plan_pr_mode`: `--pr --post-github-comments` mode yields `postingPlan` with inline anchors only for `publication: "inline"` findings and a review body containing counts and partial disclosure.
 
 Budget and coverage:
 
@@ -836,7 +826,6 @@ Budget and coverage:
 - `budget_each_dimension_triggers`: time, tokens, cost, and model-call budgets each independently trigger the ladder at their checkpoint.
 - `coverage_aggregation_matrix`: fixtures combining filtered files, planner skips, completed packets, failed packets, undispatched packets, degraded planning, and incomplete verification produce the expected `RunCoverageStatus` counts, `coverageByLevel`, `partial` flag, and reasons; `coverage.json` includes every hunk exactly once.
 - `coverage_partial_definition`: degraded planning alone does not set `partial`; any failed hunk, budget stop, unreviewed hunk, or planner partial flag does.
-
 
 
 

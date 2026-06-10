@@ -732,7 +732,7 @@ Mode resolution: for an artifact-backed case run via `--eval-dir`, `EvalCase.art
 | --- | --- | --- | --- | --- |
 | `final-report` | `final-findings.json`; optional: all others for attribution/metrics | None | None | No |
 | `merge-only` | `verification.json` + `candidate-findings.json` (lineage); `packets/` for anchor re-validation; `review-plan.json` + `coverage.json` + `run.json` (Stage 10's plan, coverage, and resolved-input metadata) | Stage 10 (dedup/rank/compose) | Composer call(s) | No — anchors re-validate against packet hunk line data, not the repo |
-| `candidate-recall` | `candidate-findings.json` + `packets/` (verifier context); `review-plan.json` optional | Stages 9–10 | Verifier calls + composer call(s) | Yes — verifiers use read-only repository tools at the recorded base/head SHAs |
+| `candidate-recall` | `candidate-findings.json` + `packets/` (verifier context); `review-plan.json` + `coverage.json` + `run.json` (Stage 10's plan, coverage, and resolved-input metadata) | Stages 9–10 | Verifier calls + composer call(s) | Yes — verifiers use read-only repository tools at the recorded base/head SHAs |
 
 Common behavior:
 
@@ -741,7 +741,7 @@ Common behavior:
 - `info.json.stages` records each stage as `executed`, `replayed-from-artifacts`, or `not-applicable` — the architecture requires which stages re-ran vs replayed to be recorded in the eval run info.
 - Expectation results computed against replayed inputs are flagged `fromReplayedArtifacts: true` (e.g. `should_find_candidate` results in `candidate-recall` reflect the original run's candidates, not new model behavior).
 - `merge-only` reconstructs Stage 10's `resolved` slice from `run.json` metadata. When existing-thread data is absent there, thread-overlap recording is skipped and the new run's coverage `reasons` carry a disclosed note — fallback values are deterministic, never fabricated.
-- `candidate-recall` resolves the repo from the case (`repo.external`/`repo.fixture`) and verifies the recorded `baseSha`/`headSha` resolve (`git rev-parse --verify <sha>^{commit}`); failures are per-case `git_ref_missing` errors. Verifier and composer execution is the engine's (Stage 9/10 entrypoints with the same configs, budgets, and failure policy); evals supplies inputs from artifacts instead of live upstream stages.
+- `candidate-recall` resolves the repo from the case (`repo.external`/`repo.fixture`) and verifies the recorded `baseSha`/`headSha` from `run.json` resolve (`git rev-parse --verify <sha>^{commit}`); failures are per-case `git_ref_missing` errors. Verifier and composer execution is the engine's (Stage 9/10 entrypoints with the same configs, budgets, and failure policy); evals supplies inputs from artifacts instead of live upstream stages.
 - Replay modes honor cache settings: with cache enabled, re-run verifier/composer calls hit the model-call cache when their normalized requests match, making `candidate-recall` + `--cache` an effectively free regression of deterministic downstream behavior.
 - Missing required artifacts for the selected mode fail the case with `invalid_args` naming the file; optional artifacts degrade per the reader contract.
 
@@ -883,7 +883,7 @@ Replay modes (`eval-replay.test.ts`) — fake `LlmRunner` counting calls per sta
 - `candidate_recall_runs_9_and_10`: stage-9 + stage-10 calls; missing repo or unresolvable recorded SHAs → case status `error` with `git_ref_missing`; with repo present, new verification artifacts written.
 - `mode_resolution_precedence`: case `artifacts.mode` > `config.eval.replayMode` > `final-report` default; `--from-artifacts` ignores snapshot `artifacts.mode`.
 - `case_reread_vs_snapshot`: edited case YAML on disk is re-read for `--from-artifacts` re-scoring (`caseSource: "yaml"`); deleted YAML falls back to snapshot (`caseSource: "snapshot"`).
-- `missing_required_artifact_fails`: `merge-only` source without `verification.json` → `invalid_args` naming the file.
+- `missing_required_artifact_fails`: `merge-only` source without `verification.json`, or `candidate-recall` source without `run.json`/`review-plan.json`/`coverage.json`, fails with `invalid_args` naming the missing file.
 
 Cache wiring (`eval-cache-wiring.test.ts`):
 

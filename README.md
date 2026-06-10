@@ -9,7 +9,7 @@ It is not a chatbot pointed at a diff. It is a **review harness**: a staged pipe
 - **Findings that survive scrutiny.** Every candidate finding must cite changed-code evidence and a concrete failure mode, then pass an independent LLM verifier before it can be published. No evidence → no finding.
 - **A handful of comments, not fifty.** The default target is ~3–7 high-signal comments per PR (a soft cap — verified critical/high findings are never hidden by it). Style, naming, and formatting commentary is off unless you explicitly enable a lint lens.
 - **Honest coverage.** Every changed hunk gets an explicit decision — `deep`, `normal`, `light`, or `skip` with a reason. If a review is partial (budget, failures, filters), the report says so. codeninja never pretends it reviewed something it didn't.
-- **Reviews of the actual revision.** Source reads resolve through git plumbing against the PR's base/head revisions — not whatever happens to be checked out. You can review PR #123 while sitting on a dirty `master`.
+- **Reviews of the actual revision.** Reviewed source reads resolve through git plumbing against the PR's base/head revisions — not whatever happens to be checked out. Review policy, config, and skills still load from your trusted local checkout.
 
 ## Usage
 
@@ -62,7 +62,7 @@ Teams can also version project-specific review expertise as Markdown skills in `
 ## How a review runs
 
 ```text
-diff → filter → classify → changed-symbol extraction        (deterministic)
+diff → classify/detect → filter → changed-symbol extraction (deterministic)
   → planner: intent, risk areas, per-hunk coverage, lenses   (LLM)
   → review packets: focused diff slices + local context      (deterministic)
   → packet reviewers: candidate findings, in parallel        (LLM, tool-equipped)
