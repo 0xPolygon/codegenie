@@ -595,11 +595,11 @@ Minimum required v1 tools:
 - `read_enclosing_symbol(path, line, source?)`.
 - `read_symbol(path, symbolName | line, source?)`.
 - `list_symbols(path, source?)`.
-- `find_definition(symbolName, pathGlob?)`.
+- `find_definition(symbolName, pathGlob?, source?)`.
 - `read_diff_blocks(packetId | path)`.
 - `search_files(query, pathGlob?, contextMode)`, where `contextMode` can return no context, line windows, or enclosing symbols.
-- `find_symbol_mentions(symbolName, pathGlob?)`.
-- `find_likely_tests(path | symbol)`.
+- `find_symbol_mentions(symbolName, pathGlob?, source?)`.
+- `find_likely_tests(path | symbol, source?)`.
 - `list_files(glob)`.
 
 Expected backend behavior:
@@ -612,7 +612,7 @@ Expected backend behavior:
 - `find_definition` uses `git grep` to find candidate files at the reviewed revision, then tree-sitter parsing to return only definition sites; it falls back to text matches marked degraded when parsing is unavailable. Import questions are answered by `read_file_outline`, which includes the file's imports.
 - `read_diff_blocks` uses parsed diff data and does not require tree-sitter.
 - `search_files` uses `git grep` at the reviewed revision (or bundled ripgrep when the checkout matches the reviewed head) for discovery, then may enrich matches with tree-sitter enclosing symbols when `contextMode` asks for semantic context.
-- `find_symbol_mentions` uses syntax-aware identifier matching when available and `rg` fallback otherwise. It does not claim compiler-grade reference resolution unless a language analyzer backend explicitly marks the result as semantic or exact.
+- `find_symbol_mentions` uses syntax-aware identifier matching when available and `git grep` at the reviewed revision otherwise (ripgrep only as the checkout-matching fast path). It does not claim compiler-grade reference resolution unless a language analyzer backend explicitly marks the result as semantic or exact.
 - `find_likely_tests` combines test filename conventions with symbol extraction when available and filename/path heuristics otherwise.
 - `list_files` uses filesystem/git listing and does not require tree-sitter.
 
@@ -657,8 +657,8 @@ V1 telemetry should capture:
 - Lenses selected and skipped, including why.
 - Coverage decisions for each hunk or file.
 - Reviewed, skipped, and partially reviewed hunk counts.
-- Repository tools invoked, including tool name, target path or symbol, duration, and success/failure.
-- Tool backend provenance and degradation reasons.
+- Every repository tool call, always on rather than debug-gated: tool name, normalized arguments (path, symbol, line range, query, glob, source revision), initiator (model-issued inside an LLM tool loop, or harness-issued by a deterministic stage), duration, status, result size and count, and the worker, packet, task, candidate, and model call that issued it.
+- Tool backend provenance, precision, and degradation/truncation reasons for every tool call.
 - Worker lifecycle events: scheduled, started, completed, failed, cancelled, retried, or timed out.
 - Candidate findings produced.
 - Verification verdicts.
@@ -687,6 +687,7 @@ Suggested local artifacts include:
 - `run.log` for structured application logs.
 - `events.jsonl` for structured stage events.
 - `model-calls.jsonl` and `model-calls-summary.json`.
+- `tool-calls.jsonl` (one structured record per tool call) and `tool-calls-summary.json` (per-tool and per-stage aggregates: counts, error/degradation rates, durations, result sizes).
 - `review-plan.json`.
 - `packets/<packet-id>.json` (one file per packet).
 - `candidate-findings.json`.
@@ -727,11 +728,12 @@ The eval runner should write incrementing run directories under the eval suite, 
 Eval scoring should not only report pass/fail. It should explain where expected findings were lost:
 
 - Missed before candidate generation.
-- Produced as a candidate but rejected by verification.
-- Produced as a candidate but removed by deduplication or final selection.
+- Produced as a candidate but lost before verification (candidate-only).
+- Rejected by verification.
+- Merged or deduplicated away.
+- Omitted by final selection, report caps, or confidence thresholds.
 - Present only as a follow-up hint.
-- Present in the right file but missing the expected root cause.
-- Omitted by report caps or confidence thresholds.
+- Present in the right file but missing the expected root cause (partial match).
 
 This eval system should reuse normal review artifacts rather than running a separate review engine. It should be suitable for private eval suites like real-repo regression cases, and for public fixture-based evals that can run in CI.
 
@@ -902,7 +904,6 @@ V1 configuration should support:
 - Maximum model calls per run.
 - Review concurrency.
 - Local review cache settings, with `--cache` / `--no-cache` flags on `codeninja review` overriding the configured default per run.
-- Read-only tool permissions.
 - Optional test/typecheck commands.
 - Local telemetry and debug trace settings.
 - Eval defaults, such as default eval directory, logs directory, and artifact replay settings.
@@ -941,6 +942,7 @@ Untrusted inputs include:
 - Commit titles and descriptions.
 - Branch names.
 - Existing PR comments and review threads.
+- Repository tool results: file contents and search output read from the reviewed revisions.
 - Repo-resident docs and specs matched by `specs.paths`.
 
 All of these are attacker-controlled when reviewing a fork PR.

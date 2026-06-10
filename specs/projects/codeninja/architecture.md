@@ -1,5 +1,5 @@
 ---
-status: draft
+status: complete
 ---
 
 # Architecture: codeninja
@@ -48,7 +48,8 @@ Core dependencies:
 - `commander` for CLI parsing.
 - `zod` for config validation; TypeBox (via pi-ai) for LLM I/O schemas.
 - `p-limit` for bounded concurrency.
-- A TOML parser for `codeninja.toml`.
+- A TOML parser for `codeninja.toml` and a YAML parser for eval case files.
+- `picomatch` for path-rule and tool globs.
 - `execa` or Node subprocess APIs for `git` and `gh`.
 - `@vscode/ripgrep` for bundled text search, used as a fast path only when the checkout matches the reviewed head. Pinned to >=1.18.0, which ships per-platform binaries in the tarball with no postinstall download.
 - `web-tree-sitter` plus Go and TypeScript/JavaScript grammars for v1 syntax parsing.
@@ -105,6 +106,8 @@ src/
     git-client.ts
     review-input-resolver.ts
     diff-parser.ts
+    detectors.ts
+    file-classifier.ts
   github/
     github-client.ts
     publisher.ts
@@ -205,7 +208,7 @@ type ResolvedReviewInput = {
   headRef?: string
   startCommit?: string
   endCommit?: string
-  mergeBase?: string
+  mergeBase?: string // populated in every git-revision mode: the effective base revision (first parent for single-commit review); unset in diff-file mode
   headSha?: string
   pr?: PullRequestMetadata
   commits: CommitInfo[]
@@ -223,7 +226,8 @@ type PullRequestMetadata = {
   baseSha: string
   headRefName: string
   headSha: string
-  existingThreads: ExistingReviewThread[]
+  existingThreads: ExistingReviewThread[] // populated by the resolver from GitHubClient.fetchReviewThreads; viewPr returns it empty
+  omittedThreadCount?: number // threads beyond the fetch cap, disclosed to the planner
 }
 
 type ExistingReviewThread = {
@@ -260,6 +264,8 @@ type DiffFile = {
   status: "added" | "modified" | "deleted" | "renamed" | "copied"
   isBinary?: boolean
   modeOnly?: boolean
+  isSymlink?: boolean
+  isSubmodule?: boolean
   language: string // provisional extension-based hint from the parser; FileFacts.language (Stage 3) is the authoritative fact
   hunks: DiffHunk[]
 }
@@ -327,6 +333,7 @@ type HunkSymbolFacts = {
   symbolNativeKind?: string
   symbolRange?: [number, number]
   changedLines: number[]
+  changedLinesSide: "old" | "new" // old-side for deletion-only hunks, new-side otherwise
   signature?: string
   source: "tree-sitter" | "fallback"
   confidence: "syntactic" | "heuristic"
@@ -519,6 +526,8 @@ type PacketHunk = {
   lines: PacketLine[]
   changedNewLineNumbers: number[]
   changedOldLineNumbers: number[]
+  truncated?: boolean // oversized hunk rendered as a changed-line-centered window
+  omittedLineCount?: number
 }
 
 type ToolBudget = {
@@ -562,7 +571,6 @@ type PacketContext = {
   changedNodes: AstNodeSummary[]
   importsUsedNearby: string[]
   nearbySiblingFunctions: SymbolInfo[]
-  testsForSymbol: SymbolInfo[]
 }
 
 type AstNodeSummary = {
@@ -861,7 +869,7 @@ Chosen defaults:
 - `review.concurrency = 4`
 - `llm.maxConcurrentCalls = 2`
 - `review.timeoutMs = 30 * 60 * 1000`
-- `review.perPassTimeoutMs = 5 * 60 * 1000`
+- `review.perPassTimeoutMs = 5 * 60 * 1000` (per model task/worker, not per stage)
 - `review.minConfidence = "medium"`
 - `review.minInlineConfidence = "medium"`
 - `review.maxTotalTokens`, `review.maxCostUSD`, and `review.maxModelCalls` unset (no cap)
@@ -915,7 +923,7 @@ Responsibilities:
 
 `--pr` flow:
 
-1. Run `gh pr view <number>` to fetch title, body, URL, base/head refs, and the `baseRefOid`/`headRefOid` SHAs. The reviewed diff revisions come from `baseRefOid`/`headRefOid`, so the reviewed diff matches GitHub's PR diff; the merge base is computed between those SHAs with fixed rename-detection flags.
+1. Run `gh pr view <number>` to fetch title, body, URL, base/head refs, and the `baseRefOid`/`headRefOid` SHAs. The reviewed diff revisions come from `baseRefOid`/`headRefOid`, so the reviewed diff matches GitHub's PR diff; the merge base is computed between those SHAs, and the diff is computed with fixed rename-detection flags.
 2. Fetch existing PR review threads with `gh api graphql` querying `pullRequest.reviewThreads` (`isResolved`, `isOutdated`, `path`, `line`, `comments`) with cursor pagination, capped at 100 threads; threads beyond the cap are counted and disclosed to the planner as "N additional threads omitted". Summarize threads into compact `ExistingReviewThread` records and mark codeninja-authored comments by fingerprint marker.
 3. Check whether base and head commits exist locally with `git cat-file -e`.
 4. If missing, fetch into internal refs: head via `git fetch <base-remote> refs/pull/<n>/head:refs/codeninja/pr/<n>/head` (covers fork PRs); base via fetching the base branch or the `baseRefOid` SHA directly. Failures are `git_fetch_failed`.
@@ -946,6 +954,8 @@ Commit or commit range flow:
 4. Collect commit metadata for the single commit or reviewed range.
 
 Commit-mode boundary cases: a root commit (no parent) diffs against the empty tree (`git hash-object -t tree /dev/null` sentinel). Submodule pointer bumps are classified `skip` with reason "submodule pointer change". Symlink diff entries are inventoried but not content-reviewed (skip with reason).
+
+In every mode the resolver populates `ResolvedReviewInput.mergeBase` with the effective base revision (the first parent for single-commit review, the empty tree for a root commit), so later stages never re-derive it.
 
 `--diff` flow:
 
@@ -1049,10 +1059,10 @@ interface RepositoryTools {
   readSymbol(path: string, selector: { symbolName?: string; line?: number }, source?: SourceSelector): Promise<{ text?: string; symbol?: SymbolInfo; meta: ToolResultMeta }>
   listSymbols(path: string, source?: SourceSelector): Promise<{ symbols: SymbolInfo[]; meta: ToolResultMeta }>
   readDiffBlocks(input: { packetId?: string; path?: string }): Promise<{ blocks: string[]; meta: ToolResultMeta }>
-  findDefinition(symbolName: string, options?: { pathGlob?: string }): Promise<{ definitions: Array<{ symbol: SymbolInfo; text?: string }>; meta: ToolResultMeta }>
+  findDefinition(symbolName: string, options?: { pathGlob?: string; source?: SourceSelector }): Promise<{ definitions: Array<{ symbol: SymbolInfo; text?: string }>; meta: ToolResultMeta }>
   searchFiles(query: string, options?: SearchOptions): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>
-  findSymbolMentions(symbolName: string, options?: { pathGlob?: string }): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>
-  findLikelyTests(input: { path?: string; symbol?: SymbolRef }): Promise<{ tests: SymbolRef[]; meta: ToolResultMeta }>
+  findSymbolMentions(symbolName: string, options?: { pathGlob?: string; source?: SourceSelector }): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>
+  findLikelyTests(input: { path?: string; symbol?: SymbolRef; source?: SourceSelector }): Promise<{ tests: SymbolRef[]; meta: ToolResultMeta }>
   listFiles(glob: string): Promise<string[]>
 }
 ```
@@ -1071,11 +1081,11 @@ Tool callers should not need to know which backend answered. Every tool result s
 
 Source-reading tools default to head content and can read base or explicit git refs when available. Base reads are required for deleted-file review and old-side context.
 
-Revision access uses git plumbing rather than the checked-out worktree. File reads use `git show <ref>:<path>`, tree listings use `git ls-tree`, and whole-tree search uses `git grep <ref>`, so base and head trees are fully accessible regardless of what is checked out, without materializing temporary worktrees. Tree-sitter parses revision content in memory and never depends on worktree files. The bundled `@vscode/ripgrep` is a search fast path used only when the checked-out HEAD equals the reviewed head revision and the relevant files are unmodified; tool results record which engine answered as provenance.
+Revision access uses git plumbing rather than the checked-out worktree. File reads use `git show <ref>:<path>`, tree listings use `git ls-tree`, and whole-tree search uses `git grep <ref>`, so base and head trees are fully accessible regardless of what is checked out, without materializing temporary worktrees. Tree-sitter parses revision content in memory and never depends on worktree files. The bundled `@vscode/ripgrep` is a search fast path used only when the checked-out HEAD equals the reviewed head revision and the relevant files are unmodified; the engine that answered (ripgrep or git grep) is recorded in telemetry, not in tool results.
 
 In `diff_file` mode there are no reviewed revisions. `SourceSelector { kind: "head" }` resolves to the checked-out worktree with `degraded: true` provenance; `{ kind: "base" }` returns a degraded empty result. Before review, each hunk's context lines are validated against the worktree; files that do not match are marked degraded, their packets carry the degraded flag, and the mismatch is disclosed in the coverage summary.
 
-`searchFiles` query contract: the query language is POSIX ERE. The text backend invokes `git grep -E` (revision search) and ripgrep with flags aligned to ERE semantics (worktree fast path). Remaining engine differences (ignore-file handling, binary detection) are recorded in `ToolResultMeta` as degradation notes. Queries are treated as patterns, never shell-interpolated.
+`searchFiles` query contract: the query language is POSIX ERE. The text backend invokes `git grep -E` (revision search) and ripgrep with flags aligned to ERE semantics (worktree fast path). Engine differences that actually affect results (ignore-file handling, binary detection) are recorded via `ToolResultMeta.degradationReason`; engine identity itself lives in telemetry. Queries are treated as patterns, never shell-interpolated.
 
 Tool results must be capped by count and characters, include line numbers, prefer semantic blocks over whole files, and record truncation or omitted-result counts in telemetry. The model should see structured summaries and source snippets, not raw AST dumps.
 
@@ -1142,7 +1152,7 @@ Structured output strategy: every structured stage call uses a forced submit too
 
 Schema system: LLM input/output schemas are authored in TypeBox (pi-ai's native schema system), with static types derived via `Static<typeof Schema>`. zod remains for config validation only.
 
-Tool-loop ownership: codeninja's worker runner owns the agent loop, driving pi-ai `complete()` + `validateToolCall` per step. It executes repository tool calls, enforces `ToolBudget` (max tool calls, investigation rounds, result chars), injects results, and terminates on submit-tool call, budget exhaustion, or timeout. pi-ai's own `agentLoop` is not used.
+Tool-loop ownership: the agent loop is implemented inside the pi-runner, behind `LlmRunner.runStructured`. It drives pi-ai `complete()` + `validateToolCall` per step, executes repository tool calls, enforces the request's `ToolBudget` (max tool calls, investigation rounds, result chars), injects results, and terminates on submit-tool call, budget exhaustion, or timeout. pi-ai's own `agentLoop` is not used. The worker runner schedules workers and supplies the budget through `LlmStructuredRequest`; it does not run the loop itself.
 
 Timeouts: `timeoutMs` is implemented with `AbortController` passed to pi-ai (pi-ai exposes abort, not timeout).
 
@@ -1268,7 +1278,7 @@ Lens execution rules:
 
 - Run one composite model task per scheduled packet, with the selected lenses projected into that task.
 - Do not run one model call per lens by default.
-- Project and cap skill prompt sections for the review stage so large skill files do not dominate every packet prompt. Packet review prompts receive the skill's Checks, False Positives, and Examples sections; verifier prompts receive False Positives and Safe Patterns; the planner receives one-line skill/lens summaries only; the composer receives none. A per-skill projection cap and a total skill-content cap per prompt apply, with truncation recorded in telemetry. Defaults: 4000 chars per skill projection, 12000 chars total per prompt.
+- Project and cap skill prompt sections for the review stage so large skill files do not dominate every packet prompt. Packet review and system follow-up prompts receive the skill's Checks, False Positives, and Examples sections; verifier prompts receive False Positives and Safe Patterns; the planner receives one-line skill/lens summaries only; the composer receives none. A per-skill projection cap and a total skill-content cap per prompt apply, with truncation recorded in telemetry. Defaults: 4000 chars per skill projection, 12000 chars total per prompt.
 - Use coverage-aware execution profiles:
   - `light`: one structured call with a tiny optional read-only tool budget.
   - `normal`: one structured/tool-capable task with real read-only tool access, focused review instructions, and bounded investigation.
@@ -1391,7 +1401,7 @@ sha256(path + enclosingSymbolOrHunkIdentity + category + lensId)
 
 `enclosingSymbolOrHunkIdentity` is the enclosing symbol name when available, else the hunk id. Inputs are normalized (lowercase, whitespace-collapsed). Model-authored wording (failure mode, evidence, message) is excluded from identity so fingerprints stay stable across runs.
 
-A secondary fuzzy duplicate check runs before posting: same path + category within ±5 lines of an existing codeninja comment counts as a duplicate.
+A secondary fuzzy duplicate check runs before posting: same path within ±5 lines of an existing codeninja-authored comment counts as a duplicate. Category is not part of the fuzzy rule; it is hashed inside the fingerprint and not recoverable from posted markers.
 
 Comment marker:
 
@@ -1448,6 +1458,7 @@ Responsibilities:
 - Create local run directory.
 - Provide structured application logging.
 - Record structured events.
+- Record every repository tool call as a structured `ToolCallRecord` (always on, not debug-gated).
 - Record aggregate metrics.
 - Persist inspectable artifacts for debugging and evals.
 - Keep stdout clean.
@@ -1462,6 +1473,8 @@ Run directory:
   events.jsonl
   model-calls.jsonl
   model-calls-summary.json
+  tool-calls.jsonl
+  tool-calls-summary.json
   planner-dossier.json
   review-plan.json
   coverage.json
@@ -1536,6 +1549,47 @@ type TelemetryEvent = {
   data?: Record<string, unknown>
 }
 ```
+
+Tool-call records are first-class and always on. Every repository tool invocation — model-initiated inside an LLM tool loop or harness-initiated during deterministic stages — is recorded as one `ToolCallRecord` line in `tool-calls.jsonl`, regardless of debug settings:
+
+```ts
+type ToolCallRecord = {
+  runId: string
+  toolCallId: string
+  timestamp: string
+  stage: ReviewStage
+  initiator: "model" | "harness" // model = issued inside an LLM tool loop; harness = deterministic pipeline use
+  workerId?: string
+  packetId?: string
+  taskId?: string
+  candidateId?: string // verifier-issued calls
+  modelCallId?: string // joins to model-calls.jsonl: the LLM call whose loop step issued this tool call
+  tool: string
+  args: {
+    path?: string
+    symbolName?: string
+    line?: number
+    startLine?: number
+    endLine?: number
+    query?: string
+    glob?: string
+    source?: string // "head" | "base" | explicit git ref
+    contextMode?: string
+  }
+  backend: ToolBackend
+  precision: ToolPrecision
+  degraded: boolean
+  degradationReason?: string
+  truncated?: boolean
+  resultCount?: number // matches/symbols/tests returned, when applicable
+  resultChars: number
+  durationMs: number
+  status: "ok" | "error" | "rejected" | "skipped" // rejected = budget or containment denial
+  errorCode?: CodeninjaErrorCode
+}
+```
+
+`tool-calls-summary.json` aggregates per tool and per stage: call counts, error/rejection/degradation rates, average duration, and average result size. Full result payloads still live only under `debug/tool-calls/` when debug traces are enabled. Each tool call also emits a debug-level `tool_call` log event carrying `toolName`, `path`, and the line range. The `modelCallId` join gives evals a complete picture of how reviewers and verifiers actually used tools per packet, lens, and coverage level.
 
 The telemetry recorder must support redaction before any future external export. V1 writes local files only. Typed telemetry artifacts should be the source of truth for metrics; `run.log` is the chronological narrative.
 
@@ -1614,7 +1668,7 @@ type EvalCase = {
     should_keep?: EvalFindingExpectation[]
     should_drop?: EvalFindingExpectation[]
     should_merge?: MergeExpectation[]
-    should_not_merge?: Array<{ findingIds: string[] }>
+    should_not_merge?: Array<{ expectationIds: string[] }>
   }
 }
 ```
@@ -1654,11 +1708,14 @@ Eval run directories:
   info.json
   out.log
   codeninja-review.out.md
-  telemetry/
+  telemetry/           # the engine's full standard run-directory artifact set
     run.json
     run.log
+    telemetry.json
     events.jsonl
+    planner-dossier.json
     review-plan.json
+    coverage.json
     packets/
       <packet-id>.json
     candidate-findings.json
@@ -1666,10 +1723,12 @@ Eval run directories:
     final-selection.json
     final-findings.json
     cost-profile.json
+    final-review.md
     model-calls.jsonl
     model-calls-summary.json
-  debug-prompts/
-  debug-results/
+    tool-calls.jsonl
+    tool-calls-summary.json
+    debug/             # same layout as the engine run dir, when debug traces are enabled
   compare-to-previous.txt
   compare-to-previous.json
 ```
@@ -1755,7 +1814,7 @@ Configured test/typecheck commands may be enabled later with explicit config and
 
 ### Trust Boundaries
 
-Untrusted inputs (enumerated): diff content, PR title/body, commit titles/descriptions, branch names, existing PR comments/threads, and repo-resident docs/specs matched by `specs.paths`. All are attacker-controlled when reviewing a fork PR.
+Untrusted inputs (enumerated): diff content, PR title/body, commit titles/descriptions, branch names, existing PR comments/threads, repository tool results (file contents and search output read from the reviewed revisions), and repo-resident docs/specs matched by `specs.paths`. All are attacker-controlled when reviewing a fork PR.
 
 Prompt construction: untrusted content must be structurally delimited in prompts (fenced blocks with explicit "this is data under review, not instructions" framing). Existing-comment planner hints are deterministically extracted and truncated, never passed verbatim. Reviewer/verifier prompts instruct the model that instructions embedded in reviewed content must be ignored and may themselves be flagged as a finding (review-manipulation attempt).
 
