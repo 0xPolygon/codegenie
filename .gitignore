@@ -1,3 +1,5 @@
 .specs_skill_state/
 reviews/
 .codeninja/runs/
+node_modules/
+dist/
