@@ -470,12 +470,12 @@ verifier:
 
 A live case invokes the review engine in-process — never via a forked implementation, and not as a subprocess. This requires two seams on the engine entrypoint, owned by `components/review_pipeline.md`: it must accept an explicit repository root (the eval command's cwd is the suite, not the reviewed repo) and an explicit run-artifact directory (so the engine writes its standard run directory at `logs/<n>/telemetry/` instead of `.codeninja/runs/<run-id>/`). The engine's artifact set, stage behavior, telemetry, and failure semantics are otherwise completely unchanged.
 
-Config layering for a case run, reusing the existing precedence chain (CLI flags > environment > `codeninja.toml` > defaults):
+Config layering for a case run, reusing the existing precedence chain (CLI flags > environment > `codeninja.toml` > user-scoped config > defaults, with provider/model/reasoning keys trust-partitioned so repo `codeninja.toml` never supplies them):
 
 1. Built-in defaults.
-2. The reviewed repository's `codeninja.toml`, loaded from the case repo root with normal trust partitioning (safe keys only).
-3. User-scoped config.
-4. The eval case's `review.*` fields and `command.args`, applied at CLI-flag strength — the case file is user-authored and user-invoked, which satisfies the user-level opt-in rule for out-of-repo `cacheDir` and run-dir placement.
+2. User-scoped config.
+3. The reviewed repository's `codeninja.toml`, loaded from the case repo root with normal trust partitioning (safe keys only).
+4. The eval case's `review.*` fields and `command.args`, applied at CLI-flag strength — the case file is user-authored and user-invoked, which satisfies the user-level opt-in rule for out-of-repo `cacheDir`, run-dir placement, and provider/model/reasoning overrides.
 
 `EvalCase.review` field mapping:
 
@@ -489,6 +489,9 @@ Config layering for a case run, reusing the existing precedence chain (CLI flags
 | `cache` | `cache.enabled` | Overridden by the eval CLI flag; see Cache Wiring. |
 | `cacheDir` | `cache.dir` | Default: engine default (`.codeninja/cache` inside the reviewed repo). |
 | `debug` | `telemetry.debugTrace` | Produces the engine's `telemetry/debug/` traces in the run dir. |
+| `provider` | `llm.provider` | Applied at CLI-flag strength (user-authored case file satisfies the trust partition). |
+| `model` | `llm.model` | Same. |
+| `reasoning` | `llm.reasoning` | Same; values are `low\|medium\|high\|xhigh` (unset falls back to the built-in `high`). |
 
 Repo resolution: the runner resolves the case repo root (`repo.external` expanded, or `repo.fixture` against the suite dir), verifies it is a git worktree, builds the `ReviewInput` from `command` (`pr` → `github_pr`, `branch`/`base` → `branch`, `target` → `commit_range`, none → branch-mode default), and passes both to the engine. Base-branch resolution, merge-base semantics, PR fetching, and all other input-resolution behavior are the engine's, untouched.
 

@@ -2,11 +2,11 @@
 status: complete
 ---
 
-# Component: Skills, LLM Runner, And Telemetry
+# Component: Skills, Provider Auth, LLM Runner, And Telemetry
 
-This component owns `src/skills/*`, `src/llm/*`, and `src/telemetry/*`, plus the packaging contract for `bundled-skills/`. It is the layer between the review pipeline and everything model-shaped or disk-shaped: it loads and validates Markdown skills, registers lenses, projects skill guidance into stage prompts with untrusted-content delimiting, executes every structured model call through `@earendil-works/pi-ai` behind the `LlmRunner` seam, caches model calls locally when enabled, and records every log line, telemetry event, and run artifact codeninja produces.
+This component owns `src/skills/*`, `src/provider/*`, `src/llm/*`, and `src/telemetry/*`, plus the packaging contract for `bundled-skills/`. It is the layer between the review pipeline and everything model-shaped or disk-shaped: it loads and validates Markdown skills, registers lenses, projects skill guidance into stage prompts with untrusted-content delimiting, manages Pi-backed provider auth and user-level model defaults, executes every structured model call through `@earendil-works/pi-ai` behind the `LlmRunner` seam, caches model calls locally when enabled, and records every log line, telemetry event, and run artifact codeninja produces.
 
-All data contracts referenced here — `ReviewStage`, `CodeninjaConfig`, `ToolBudget`, `ReviewPacket`, `ReviewPlan`, `SystemFollowUpTask`, `PacketReviewResult`, `SystemReviewResult`, `CandidateFinding`, `DiffAnchor`, `VerificationVerdict`, `FinalFinding`, `RunCoverageStatus`, `ReviewResult`, `RepositoryTools`, `ToolResultMeta`, `SourceSelector`, `LlmRunner`, `LlmStructuredRequest`, `LogLevel`, `LogEvent`, `Logger`, `TelemetryEvent`, `ToolCallRecord`, `CodeninjaError`, `CodeninjaErrorCode` — are defined in `architecture.md` and are law; this document elaborates behavior and never redefines them. The one type `architecture.md` delegates to this document is `ToolDefinition`, defined under Public Interface. All other types introduced here (`Skill`, `LensDescriptor`, `BuiltPrompt`, `LlmCallRecord`, `TelemetryRecorder`, and friends) are this component's own seams; where marked internal they are execution records, not published data contracts.
+All data contracts referenced here — `ReviewStage`, `ReasoningLevel`, `CodeninjaConfig`, `ToolBudget`, `ReviewPacket`, `ReviewPlan`, `SystemFollowUpTask`, `PacketReviewResult`, `SystemReviewResult`, `CandidateFinding`, `DiffAnchor`, `VerificationVerdict`, `FinalFinding`, `RunCoverageStatus`, `ReviewResult`, `RepositoryTools`, `ToolResultMeta`, `SourceSelector`, `LlmRunner`, `LlmStructuredRequest`, `LogLevel`, `LogEvent`, `Logger`, `TelemetryEvent`, `ToolCallRecord`, `CodeninjaError`, `CodeninjaErrorCode` — are defined in `architecture.md` and are law; this document elaborates behavior and never redefines them. The one type `architecture.md` delegates to this document is `ToolDefinition`, defined under Public Interface. All other types introduced here (`Skill`, `LensDescriptor`, `BuiltPrompt`, `LlmCallRecord`, `TelemetryRecorder`, and friends) are this component's own seams; where marked internal they are execution records, not published data contracts.
 
 ## Purpose And Scope
 
@@ -16,7 +16,8 @@ This component is responsible for:
 - The trusted-checkout policy-loading rule: skills and config always load from the user's working copy, never from the reviewed PR head revision.
 - The lens registry: lens existence derived from loaded skills (`lens exists iff at least one loaded skill declares it`), `enabledByDefault` conflict resolution, `--lens` validation with an available-lens error listing, config precedence for the effective enabled-lens set, and one-line lens summaries for the planner dossier.
 - The prompt builder: the five stage prompt templates, per-stage skill projection maps with the 4000-char per-skill and 12000-char total caps, telemetry-recorded truncation, and the untrusted-content fencing required by Trust Boundaries.
-- The `LlmRunner` implementation (`PiRunner`): forced submit-tool structured outputs per stage (`submit_plan`, `submit_review`, `submit_verdict`, `submit_composition`), TypeBox schema authoring with `Static<>` type derivation, the codeninja-owned agent loop driving pi-ai `complete()` + `validateToolCall`, `ToolBudget` enforcement, `AbortController` timeouts chained to the run-wide abort, one schema-repair retry, per-role model resolution from `llm.model` + `llm.roleModels`, `llm.maxConcurrentCalls` enforcement, 429/transient-5xx exponential backoff with budget accounting, and per-call telemetry — including one law `ToolCallRecord` emitted to the recorder for every tool-loop call (executed, budget-rejected, or containment-rejected), stamped with `initiator: "model"` and the issuing `modelCallId`.
+- The provider/auth command layer: `codeninja provider ...`, `~/.codeninja/` path resolution, Pi provider/model registry access, login/logout/auth status, model listing, user-level default provider/model/depth/reasoning settings, and credential registration with the redaction layer.
+- The `LlmRunner` implementation (`PiRunner`): forced submit-tool structured outputs per stage (`submit_plan`, `submit_review`, `submit_verdict`, `submit_composition`), TypeBox schema authoring with `Static<>` type derivation, the codeninja-owned agent loop driving pi-ai `complete()` + `validateToolCall`, `ToolBudget` enforcement, `AbortController` timeouts chained to the run-wide abort, one schema-repair retry, per-role model resolution from the resolved `llm` config (`llm.model` + `llm.roleModels`, already merged from CLI/environment/user settings by the config loader), reasoning-effort resolution from the resolved `llm.reasoning` + `llm.roleReasoning` with the built-in `high` default, `llm.maxConcurrentCalls` enforcement, 429/transient-5xx exponential backoff with budget accounting, and per-call telemetry — including one law `ToolCallRecord` emitted to the recorder for every tool-loop call (executed, budget-rejected, or containment-rejected), stamped with `initiator: "model"` and the issuing `modelCallId`.
 - The delegated `ToolDefinition` type and the factory that wraps `RepositoryTools` methods as model-facing tool definitions, including rendering tool rejections as model-visible errors.
 - The local model-call cache: normalized-request key derivation, per-provider-call caching with conversation-prefix keying, cache-schema-version validation on read, refusal of repo-tracked cache directories, 14-day / 500MB eviction at run start, and hit/miss/write telemetry.
 - The logger and telemetry recorder: `run.log` and `events.jsonl` writing, level filtering, stderr mirroring, stage `0` pre-pipeline event buffering, and monotonic event ids.
@@ -27,6 +28,7 @@ This component is explicitly not responsible for:
 - Which repository tools exist and how they behave (backends, containment, caps, degradation) — `components/context_and_tools.md`; this component carries their `ToolDefinition`s into model calls and renders their results.
 - Pipeline orchestration, stage logic, worker scheduling, the budget ledger, coverage aggregation, and the content of stage artifacts such as `review-plan.json` or `verification.json` — `components/review_pipeline.md`; this component executes the calls those stages compose and persists the artifacts they hand over.
 - Git and GitHub mechanics, diff parsing, anchor validation, posting, and GitHub comment sanitization — `components/repository_and_github.md`.
+- CLI argument parsing itself — `src/cli/*`; this component provides the provider command handler invoked by `src/cli/provider-command.ts`.
 - Eval scoring, replay, and eval run directories — `components/evals.md`; evals consumes this component's telemetry artifacts as reader contracts.
 - Everything under Future Considerations in the parent specs, including executable skill packages, external telemetry export, language analyzer backends, and the cross-packet `ReviewSignal` index. The telemetry recorder keeps a redaction-capable design as `architecture.md` requires, but no export path is designed here.
 
@@ -167,6 +169,54 @@ function createPromptBuilder(registry: LensRegistry): PromptBuilder
 - All functions are pure and deterministic given their inputs: identical inputs must produce byte-identical prompts, because the model-call cache keys on prompt content. No randomness, timestamps, or run ids may enter prompt text.
 - Which dossier fields, packet fields, and context selections feed each prompt is the calling stage's contract (`components/review_pipeline.md`); this component owns the rendering, ordering, fencing, instruction text, and projection caps.
 - `fenceUntrusted` never throws; it must safely fence any string, including content containing backtick fences (see Untrusted-Content Delimiting).
+
+### Provider State And Model Registry
+
+```ts
+// src/provider/provider-services.ts
+
+type CodeninjaPaths = {
+  home: string          // CODENINJA_HOME ?? ~/.codeninja
+  authPath: string      // <home>/auth.json
+  modelsPath: string    // <home>/models.json
+  settingsPath: string  // <home>/settings.json
+  sessionsDir: string   // <home>/sessions
+}
+
+type ProviderSettings = {
+  defaultProvider?: string
+  defaultModel?: string
+  defaultDepth?: "light" | "normal" | "deep"
+  defaultReasoning?: ReasoningLevel
+}
+
+type ProviderServices = {
+  paths: CodeninjaPaths
+  authStorage: PiAuthStorage
+  modelRegistry: PiModelRegistry
+}
+
+function getCodeninjaPaths(homeOverride?: string): CodeninjaPaths
+function ensureCodeninjaHome(paths?: CodeninjaPaths): CodeninjaPaths
+function createProviderServices(homeOverride?: string): ProviderServices
+function loadProviderSettings(paths?: CodeninjaPaths): ProviderSettings
+function saveProviderSettings(settings: ProviderSettings, paths?: CodeninjaPaths): void
+function runProviderCommand(args: string[], opts?: { yes?: boolean; all?: boolean }): Promise<void>
+```
+
+`PiAuthStorage` and `PiModelRegistry` are the Pi provider/auth surfaces wrapped by this component; no other component imports them directly.
+
+Rules:
+
+- `getCodeninjaPaths` resolves `CODENINJA_HOME` first, then `~/.codeninja`; tilde expansion is deterministic and does not consult the repository.
+- `ensureCodeninjaHome` creates the home directory with mode `0700` where supported. `auth.json` and `settings.json` writes use mode `0600`.
+- `provider login` uses Pi OAuth/device-code flow when the selected provider supports it; otherwise it prompts for an API key and stores it via Pi auth storage. It never prints the secret value.
+- `provider models` defaults to authenticated/available models and uses `--all` for every known Pi model. Rows include provider, model id, context window, max output tokens, reasoning support, and image/input capability when Pi exposes those fields.
+- `provider config` prints JSON so scripts and tests can consume it. It includes paths and effective defaults, but never credentials.
+- `provider config set-reasoning auto` deletes the stored override. `set-depth` writes codeninja's `light|normal|deep` review-depth vocabulary.
+- Loading auth or settings registers every concrete credential value with `telemetry/redaction.ts` before any logger, telemetry, cache, artifact, debug trace, or error sink can observe it.
+
+`ProviderSettings` is consumed by the config loader only — the single merge point. The loader resolves provider/model/reasoning into the resolved `CodeninjaConfig.llm` (precedence: CLI flags > `CODENINJA_PROVIDER`/`CODENINJA_MODEL`/`CODENINJA_REASONING` environment variables > `ProviderSettings` > Pi/provider defaults; repo `codeninja.toml` is ignored for these keys) and `defaultDepth` into `review.depth` (where repo project policy outranks the personal default). `PiRunner` consumes the resolved config and never reads `ProviderSettings` directly. For each model role, `roleModels[role]` overrides the base model and `roleReasoning[role]` overrides the base reasoning effort. If no authenticated usable model can be resolved for any role needed by the run, `createPiRunner` throws `config_error` before the pipeline enters Stage 5.
 
 ### LLM Runner
 
@@ -607,7 +657,7 @@ Loop invariants:
 
 ### Model Resolution, Concurrency, And Provider Retries
 
-Model resolution per call: `llm.roleModels[role] ?? llm.model ?? ` pi-ai's environment-derived default. At `createPiRunner` time the runner resolves all five roles eagerly; if any role resolves to nothing (no role override, no `llm.model`, and pi-ai reports no usable default for the configured provider), construction throws `config_error` naming the missing configuration. `llm.provider`, when set, scopes resolution; otherwise pi-ai infers the provider from the model identifier and environment credentials. Reasoning settings are fixed per-role implementation constants in v1 (the config exposes none); they are folded into the cache key's llm-settings hash.
+Model resolution per call: `llm.roleModels[role] ?? llm.model ?? Pi/provider default`, scoped by `llm.provider` when present — the resolved config already carries CLI/environment/user-level defaults merged by the config loader; the runner never reads `ProviderSettings` directly. At `createPiRunner` time the runner resolves all five roles eagerly; if any role resolves to nothing, or the chosen provider has no usable auth, construction throws `config_error` naming the missing provider/model/auth and suggesting `codeninja provider login <provider>`. Reasoning resolution is `llm.roleReasoning[role] ?? llm.reasoning ?? "high"` (the built-in default). The resolved provider, model, and reasoning settings are folded into the cache key's llm-settings hash.
 
 Concurrency: a single `p-limit` semaphore of `llm.maxConcurrentCalls` (default 2) wraps each individual provider `complete()` call — not the whole `runStructured` invocation, since a tool-using task holds its loop across many provider calls and wrapping the loop would deadlock the run under low limits. Cache hits bypass the semaphore (no provider work). The pipeline's `review.concurrency` worker bound stacks on top of this limit, per `architecture.md`.
 
@@ -648,7 +698,7 @@ The key is `sha256(canonicalJson(normalizedRequest))` where canonical JSON sorts
 - `cacheSchemaVersion` (a single integer constant for the stored-entry format).
 - `runFingerprint` — computed once per run by the orchestrator and passed to `createModelCallCache`: `sha256(canonicalJson({ repoRoot: canonical absolute path, mode, baseSha, headSha, diffHash: sha256(resolved.rawDiff), reviewConfigHash, lensState, skillHashes }))`, where `reviewConfigHash` hashes the resolved config subtrees that affect review behavior (`lenses`, `review`, `systemReview`, `git`, `specs`, `classification`, `llm`, `tools`) and excludes `telemetry`, `cache`, and `eval`; `lensState` is the sorted effective enabled-lens list; `skillHashes` is the sorted `(skill id, contentSha)` list (i.e. `registryHash()` inputs). This covers repository identity, review target revisions, normalized diff hash, project config, enabled lenses, and skill content hashes.
 - `stage`, the stage's `templateVersion`, `RUNNER_MESSAGE_VERSION`, and the submit schema's name + version.
-- Model settings: resolved model, provider, and the per-role reasoning-settings constant.
+- Model settings: resolved model, provider, and reasoning effort for the role.
 - The serialized conversation prefix: the full message list so far, including the initial prompt (which embeds the packet/candidate/verifier payload and any projected skills) and all prior tool calls and tool-result messages — this is the "tool-result context hashes" requirement, satisfied by hashing the results themselves in place.
 - The tool surface: sorted tool names with their parameter-schema hashes and descriptions, plus the serialized `toolBudget`.
 
@@ -731,7 +781,7 @@ When `telemetry.debugTrace` is enabled:
 
 This component depends on:
 
-- `@earendil-works/pi-ai` — `complete()`, `validateToolCall`, TypeBox schema integration, provider/model resolution, typed provider errors, abort support. Wrapped entirely inside `src/llm/`; no other component imports pi-ai.
+- `@earendil-works/pi-ai` — `complete()`, `validateToolCall`, TypeBox schema integration, provider/model resolution, typed provider errors, abort support, and Pi provider/auth registry surfaces. Wrapped entirely inside `src/llm/` and `src/provider/`; no other component imports pi-ai.
 - TypeBox (via pi-ai) for all LLM I/O schemas; `Static<>` for type derivation.
 - `components/context_and_tools.md` — the `RepositoryTools` implementation wrapped by `buildRepositoryToolDefinitions`; tool-layer caps, containment, and `ToolResultMeta` provenance.
 - `components/repository_and_github.md` — `GitClient` for the cache tracked-directory check; subprocess credential scrubbing upstream of this component's sinks.
@@ -790,6 +840,13 @@ Submit schemas:
 - `schemas_submitted_finding_excludes_stamped_fields`: payloads containing `id`, `producedBy`, `clusterId`, `duplicateOf`, or `changedLine` are schema-invalid.
 - `schemas_stage_tool_name_mapping`: stages 5/7/8/9/10 expose `submit_plan` / `submit_review` / `submit_review` / `submit_verdict` / `submit_composition` respectively.
 
+Provider auth and settings:
+
+- `provider_commands_smoke`: `provider list`, `auth-status`, `models --all`, and `config` render deterministic, credential-free output against a fake Pi registry.
+- `provider_login_logout_settings`: API-key login stores credentials through fake auth storage, logout removes one or all providers, settings writes use the documented paths and parse back.
+- `provider_config_defaults`: `set-provider`, `set-model`, `set-depth`, and `set-reasoning auto` validate inputs, persist user defaults, and clear reasoning override on `auto`.
+- `provider_home_permissions_and_redaction`: creating `~/.codeninja` uses private permissions where supported, writes secret-bearing files as private, and registers loaded secrets with the redaction layer before logging.
+
 Agent loop:
 
 - `loop_submit_first_response`: a scripted immediate valid submit resolves with the typed payload, zero tool executions, one model-call record.
@@ -807,7 +864,7 @@ Agent loop:
 
 Runner policies:
 
-- `runner_role_model_resolution`: `roleModels.verifier` overrides `llm.model` for stage 9 only; other stages use `llm.model`; with neither and no environment default, `createPiRunner` throws `config_error`.
+- `runner_role_model_resolution`: `roleModels.verifier` overrides `llm.model` for stage 9 only; other stages use `llm.model` or user defaults; with neither and no Pi/provider default, `createPiRunner` throws `config_error`.
 - `runner_max_concurrent_calls`: with `maxConcurrentCalls: 2` and four concurrent requests, at most two provider calls are in flight (fake adapter latch); cache hits bypass the semaphore.
 - `runner_429_backoff_and_budget`: a 429 then success produces two `LlmCallRecord`s with attempts 1 and 2, two `onUsage` reports, and jittered delay within bounds; four consecutive 429s reject `llm_call_failed` recoverable.
 - `runner_auth_failure_no_retry`: a 401 rejects immediately with `recoverable: false` and one attempt record.

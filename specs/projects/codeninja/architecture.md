@@ -99,9 +99,15 @@ src/
   cli/
     main.ts
     review-command.ts
+    provider-command.ts
   config/
     config-loader.ts
     schema.ts
+    paths.ts
+  provider/
+    provider-services.ts
+    provider-settings.ts
+    model-resolver.ts
   git/
     git-client.ts
     review-input-resolver.ts
@@ -172,6 +178,19 @@ codeninja.toml
 ```
 
 `.codeninja/runs/` and `.codeninja/cache/` are git-ignored. `.codeninja/skills/` should remain trackable so teams can version project review policy.
+
+User-local provider/auth state:
+
+```text
+~/.codeninja/             # overridable with CODENINJA_HOME
+  auth.json               # Pi provider credentials, chmod 0600
+  models.json             # Pi custom provider/model registry data when supported
+  settings.json           # default provider/model/depth/reasoning, chmod 0600
+  config.toml             # optional user-level CodeninjaConfig overrides and trust opt-ins
+  sessions/               # provider/session state when Pi needs it
+```
+
+This state is user-scoped, never repo-tracked, and is the only place codeninja itself stores provider credentials.
 
 codeninja is distributed as a normal npm package; wasm grammars and the ripgrep binary resolve from `node_modules` at runtime. Single-file bundling is out of scope for v1.
 
@@ -759,22 +778,37 @@ type RepositoryIndex = {
 
 Responsibilities:
 
-- Parse `codeninja review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--depth`, repeatable `--lens`, `--format markdown|json`, `--post-github-comments`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
+- Parse `codeninja review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--depth`, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
+- Parse `codeninja provider ...` arguments and dispatch to the provider command layer.
 - Enforce flag rules: `--pr`, `--branch`, positional commits, and `--diff` are mutually exclusive — passing more than one is `invalid_args`. `--post-github-comments` outside `--pr` mode is `invalid_args`.
 - Load `codeninja.toml`.
-- Merge config from defaults, repo config, environment, and CLI flags.
+- Merge review config from defaults, repo config, user-level config, environment, and CLI flags, while enforcing the trust partition.
 - Validate config with `zod`.
 - Start a run and create `.codeninja/runs/<run-id>/`.
 
-Precedence:
+Review behavior precedence for safe keys (project policy outranks personal defaults; per-run flags outrank both):
 
 ```text
-CLI flags > environment variables > codeninja.toml > defaults
+CLI flags > environment variables > codeninja.toml > user-scoped config > defaults
 ```
+
+Provider/model selection precedence (trust-partitioned: repo `codeninja.toml` is ignored entirely for these keys; environment variables are `CODENINJA_PROVIDER`, `CODENINJA_MODEL`, and `CODENINJA_REASONING`):
+
+```text
+CLI flags > environment variables > ~/.codeninja/settings.json > Pi/provider defaults
+```
+
+`~/.codeninja/settings.json` also participates as user-scoped config for review depth: `--depth` and environment variables win, then repo `codeninja.toml` (project policy), then stored `defaultDepth`, then the built-in `normal` default.
+
+All merging happens once, in the config loader, which tracks per-key sources to enforce the trust partition and produces the single resolved `CodeninjaConfig`. Downstream components — including the LLM runner — consume the resolved config only and never read user state directly.
 
 Default config:
 
 ```ts
+// Providers exposing different reasoning scales map onto these four levels.
+// "auto" is CLI-only and means "no override"; unresolved reasoning defaults to "high".
+type ReasoningLevel = "low" | "medium" | "high" | "xhigh"
+
 type CodeninjaConfig = {
   lenses: {
     enabled: string[]
@@ -825,12 +859,20 @@ type CodeninjaConfig = {
   llm: {
     provider?: string
     model?: string
+    reasoning?: ReasoningLevel
     roleModels?: {
       planner?: string
       packetReview?: string
       systemReview?: string
       verifier?: string
       composer?: string
+    }
+    roleReasoning?: {
+      planner?: ReasoningLevel
+      packetReview?: ReasoningLevel
+      systemReview?: ReasoningLevel
+      verifier?: ReasoningLevel
+      composer?: ReasoningLevel
     }
     maxConcurrentCalls: number
   }
@@ -860,6 +902,8 @@ type CodeninjaConfig = {
 
 GitHub posting is enabled only by the `--post-github-comments` flag in v1; it cannot be enabled from configuration. `postSummary` and `summaryWhenNoFindings` are flag-scoped behavior options.
 
+Provider/model defaults are user-level state, not repo policy. Repo `codeninja.toml` must reject credential-bearing fields and ignore provider-routing fields (`llm.provider`, `llm.model`, `llm.reasoning`, `llm.roleModels`, `llm.roleReasoning`) unless they came from CLI, environment, `~/.codeninja/settings.json`, or another user-scoped config source.
+
 Chosen defaults:
 
 - `review.depth = "normal"`
@@ -879,6 +923,7 @@ Chosen defaults:
 - `git.baseBranch = undefined`
 - `specs.paths = ["specs/**/*.md", "docs/**/*.md", "adr/**/*.md"]`
 - `classification.pathRules = []`
+- `llm.provider`, `llm.model`, `llm.reasoning`, `llm.roleModels`, and `llm.roleReasoning` unset unless supplied by CLI, environment, or user-level config; unresolved reasoning falls back to the built-in `high` default at runner construction
 - `cache.enabled = false`
 - `cache.dir = ".codeninja/cache"`
 - `telemetry.enabled = true`
@@ -910,6 +955,33 @@ labels = ["generated"]
 processingMode = "skip"
 reason = "Generated files are not reviewed directly."
 ```
+
+### Provider/Auth CLI
+
+Responsibilities:
+
+- Implement `codeninja provider list`, `login`, `logout`, `auth-status`, `models`, and `config` subcommands.
+- Use Pi's provider/model registry and auth storage through a codeninja wrapper; pipeline code must not import Pi provider/auth classes directly.
+- Store credentials and provider defaults under `~/.codeninja/` by default, with `CODENINJA_HOME` as an override.
+- Create the user home directory with mode `0700` where supported; write `auth.json` and `settings.json` with mode `0600`.
+- Register every concrete credential value with the redaction layer before any logger, telemetry, artifact, cache, debug trace, or error context can observe it.
+
+Commands:
+
+```text
+codeninja provider list
+codeninja provider login <provider>
+codeninja provider logout [provider]
+codeninja provider auth-status [provider]
+codeninja provider models [provider-or-search] [--all]
+codeninja provider config
+codeninja provider config set-provider <provider>
+codeninja provider config set-model <provider> <model>
+codeninja provider config set-depth <light|normal|deep>
+codeninja provider config set-reasoning <low|medium|high|xhigh|auto>
+```
+
+`provider login` uses Pi OAuth/device-code flow when available, otherwise prompts for an API key. `provider models` lists authenticated models by default and all Pi-known models with `--all`, including context window, max output tokens, reasoning support, and input/vision capability when known. `provider config` emits credential-free JSON containing paths and effective defaults.
 
 ### Git And GitHub Input Resolver
 
@@ -1144,7 +1216,8 @@ Responsibilities:
 
 - Wrap `@earendil-works/pi-ai`.
 - Execute model calls with prompt, tools, timeout, and schema expectations.
-- Resolve the model for each call from `llm.model` plus optional `llm.roleModels` per-role overrides for planning, packet review, system follow-up review, verification, and final composition.
+- Resolve the model for each call from the resolved `llm.provider`/`llm.model` (already merged from CLI, environment, and user-level settings by the config loader) plus optional `llm.roleModels` per-role overrides for planning, packet review, system follow-up review, verification, and final composition.
+- Resolve reasoning effort from the resolved `llm.reasoning`, optional `llm.roleReasoning`, and the built-in `high` default. The runner never reads user state directly.
 - Record per-call telemetry: model, provider, duration, token usage, prompt hash, output hash, and schema validation result.
 - Enforce `llm.maxConcurrentCalls`.
 
@@ -1639,6 +1712,9 @@ type EvalCase = {
     cache?: boolean
     cacheDir?: string
     debug?: boolean
+    provider?: string
+    model?: string
+    reasoning?: ReasoningLevel
   }
   logs?: {
     enabled?: boolean
@@ -1822,13 +1898,13 @@ Output channel control: everything posted to GitHub passes deterministic sanitiz
 
 Repository tools path containment (single chokepoint in the RepositoryTools layer): all paths are canonicalized and required to resolve inside `repoRoot`; absolute paths and `..` traversal are rejected with a typed error (`path_outside_repo`); the worktree fast path must not follow symlinks resolving outside the repo root (git-plumbing reads are inherently contained); `--diff` file paths are validated the same way before any filesystem mapping; model-supplied refs are validated against `git check-ref-format` rules and rejected if option-like (leading `-`).
 
-Config trust partitioning: repo `codeninja.toml` may set safe keys only — lenses on/off, classification path rules, depth, base branch, labels, caps. Execution-capable or out-of-repo settings (`tools.testCommands`, `lenses.extraSkillPaths` outside the repo, `telemetry.runDir`/`cache.dir` outside the repo) take effect only with user-level opt-in: a CLI flag or a user-scoped config file (`~/.config/codeninja/config.toml`); repo-config values for these are ignored with a warning. Repo-config-relative paths are constrained to the repo root.
+Config trust partitioning: repo `codeninja.toml` may set safe keys only — lenses on/off, classification path rules, depth, base branch, labels, and review caps. Execution-capable, out-of-repo, or provider-routing settings (`tools.testCommands`, `lenses.extraSkillPaths` outside the repo, `telemetry.runDir`/`cache.dir` outside the repo, `llm.provider`, `llm.model`, `llm.reasoning`, `llm.roleModels`, `llm.roleReasoning`) take effect only with user-level opt-in: a CLI flag, `~/.codeninja/settings.json`, or the user-scoped config file `~/.codeninja/config.toml` (all under `CODENINJA_HOME`); repo-config values for these are ignored with a warning. Repo-config-relative paths are constrained to the repo root.
 
 Policy load revision: `codeninja.toml` and `.codeninja/skills/` always load from the trusted local checkout (the user's working copy), never from the PR head revision. If the PR under review modifies policy files (config or skills), that is surfaced to the planner as a risk signal and noted in the report.
 
 Subprocess hygiene (GitClient/GitHubClient/tools contract): never invoke through a shell; always pass `--` before untrusted positional path/ref arguments; reject argument values matching `^-`; prefer SHAs over ref names when both are available (GitHub-supplied ref names are display-only).
 
-Credentials: provider API keys come from environment variables or user-scoped config only; repo `codeninja.toml` must reject credential-bearing fields at parse time. Auth material (API keys, gh tokens, Authorization headers) must be stripped before anything is written to logs, telemetry, run artifacts, cache entries, or error context.
+Credentials: provider API keys come from environment variables or user-scoped provider auth state only (`~/.codeninja/auth.json`, overridable through `CODENINJA_HOME`); repo `codeninja.toml` must reject credential-bearing fields at parse time. Auth material (API keys, gh tokens, Authorization headers, OAuth tokens, device-flow tokens) must be stripped before anything is written to logs, telemetry, run artifacts, cache entries, debug traces, or error context.
 
 ## Testing Strategy
 
@@ -1939,5 +2015,5 @@ Detailed component docs elaborate this architecture:
 - `components/review_pipeline.md`: orchestration, filtering, planning, packet construction, lens scheduling, verification, and composition.
 - `components/repository_and_github.md`: local git resolution, PR metadata, diff parsing, file classification, GitHub anchor validation, duplicate detection, and posting.
 - `components/context_and_tools.md`: seed context retrieval, tree-sitter-backed syntax helpers, read-only repository tools, and progressive language adapter support.
-- `components/skills_llm_telemetry.md`: Markdown skill loading, Pi runner integration, structured schemas, and telemetry artifacts.
+- `components/skills_llm_telemetry.md`: Markdown skill loading, provider auth and user-level model defaults, Pi runner integration, structured schemas, and telemetry artifacts.
 - `components/evals.md`: eval command, YAML case format, cache/artifact replay, scoring, and regression reporting.

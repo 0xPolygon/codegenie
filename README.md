@@ -27,12 +27,26 @@ Common options:
 ```bash
 codeninja review --depth light|normal|deep        # global budget & planner bias
 codeninja review --lens lang/go --lens security   # restrict/enable lenses for this run
+codeninja review --provider openai --model gpt-5  # override the user-level model default
+codeninja review --reasoning high                 # override model reasoning effort
 codeninja review --format json                    # machine-readable final review object
 codeninja review --pr 123 --post-github-comments  # publish inline comments (explicit flag, never config)
 codeninja eval --eval-dir ./evals                 # run the eval suite
 ```
 
 By default codeninja prints a structured Markdown report to stdout and exits `0` whether or not it found issues (a review with findings is a *successful* review). Posting to GitHub is a single `COMMENT`-type review with inline comments anchored to changed lines — it never approves or requests changes, and it only ever happens when you pass the flag.
+
+Model provider auth is configured through Pi-backed user state:
+
+```bash
+codeninja provider list
+codeninja provider login <provider>
+codeninja provider models [provider-or-search] [--all]
+codeninja provider config set-provider <provider>
+codeninja provider config set-model <provider> <model>
+```
+
+Credentials and provider defaults live under `~/.codeninja/` by default, not in the repository.
 
 ### Configuration
 

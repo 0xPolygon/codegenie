@@ -47,6 +47,9 @@ Common review options:
 ```bash
 codeninja review --depth light|normal|deep
 codeninja review --lens <lens-name> [--lens <lens-name> ...]
+codeninja review --provider <provider>
+codeninja review --model <model-or-provider/model>
+codeninja review --reasoning low|medium|high|xhigh|auto
 codeninja review --format markdown|json
 ```
 
@@ -55,6 +58,8 @@ codeninja review --format markdown|json
 `--lens` restricts the run to the named lenses and may be repeated. It overrides the config-enabled lens set for the run, and it may explicitly enable a lens that is disabled by default, such as a lint/style lens. The planner still decides which of the selected lenses apply to each hunk.
 
 `--format` selects the stdout output format. The default is `markdown`. `json` prints the final review object instead of the Markdown report.
+
+`--provider`, `--model`, and `--reasoning` override the user-level provider defaults for one review run. `--provider` scopes model resolution. `--model` may be a provider-specific model id when `--provider` is also passed, or a provider-qualified `<provider>/<model>` value when no provider flag is passed; a qualified value is split on the first `/` only when the prefix matches a Pi-known provider id, otherwise the whole value is the model id (model ids may themselves contain slashes). `--reasoning auto` clears any explicit run-level override and falls back to the built-in `high` default. Providers exposing different reasoning scales map them onto codeninja's four levels (`low|medium|high|xhigh`).
 
 All v1 modes require running from inside a local git worktree. This means the repository must exist locally so codeninja can inspect files, map diff paths to source files, build context, and run read-only repository tools. The `--pr` mode uses GitHub metadata for PR context and posting, but the reviewed diff, changed files, and commit information should come from local git whenever possible.
 
@@ -115,6 +120,63 @@ Behavior:
 - Validate each hunk's context lines against the worktree; treat non-matching files as degraded and disclose them in the coverage summary rather than reviewing stale content silently.
 - Treat PR metadata and commit descriptions as unavailable unless separately provided by future options.
 - Do not post GitHub comments in v1 from diff-file mode.
+
+## Provider And Model CLI
+
+codeninja should expose a provider command namespace for LLM provider setup, backed by Pi's provider/model registry and auth storage:
+
+```bash
+codeninja provider list
+codeninja provider login <provider>
+codeninja provider logout [provider]
+codeninja provider auth-status [provider]
+codeninja provider models [provider-or-search] [--all]
+codeninja provider config
+codeninja provider config set-provider <provider>
+codeninja provider config set-model <provider> <model>
+codeninja provider config set-depth <light|normal|deep>
+codeninja provider config set-reasoning <low|medium|high|xhigh|auto>
+```
+
+Behavior:
+
+- `provider list` prints providers known to Pi's model registry, including whether auth appears configured.
+- `provider login <provider>` uses Pi OAuth/device-code flow when available; otherwise it prompts for an API key for API-key providers. Credentials are stored in user-scoped codeninja auth state.
+- `provider logout [provider]` removes stored credentials for one provider, or all providers after confirmation.
+- `provider auth-status [provider]` reports whether auth is available and where it came from, such as stored credentials, environment variables, runtime override, or model-registry configuration. It must not print secret values.
+- `provider models [provider-or-search] [--all]` lists models from Pi's registry. By default it lists authenticated/available models; `--all` lists every known model. Output should include provider, model id, context window, max output tokens when known, reasoning support, and vision/input capability when known.
+- `provider config` prints user-level effective defaults as JSON, including the codeninja home directory, auth path, models path, settings path, default provider/model, default depth, default reasoning override, and effective depth/reasoning.
+- `provider config set-provider` sets the user-level default provider after validating that the provider exists.
+- `provider config set-model` validates the model exists for the provider and stores both the default provider and default model.
+- `provider config set-depth` stores the user-level default review depth using codeninja's `light|normal|deep` depth vocabulary.
+- `provider config set-reasoning` stores a user-level reasoning override; `auto` clears the override, falling back to the built-in `high` default. Providers with different reasoning scales map onto codeninja's four levels.
+
+User provider state should live under `~/.codeninja/` by default, overridable with `CODENINJA_HOME`:
+
+```text
+~/.codeninja/
+  auth.json       # provider credentials, chmod 0600
+  models.json     # Pi model registry custom providers/models when supported
+  settings.json   # default provider/model/depth/reasoning, chmod 0600
+  config.toml     # optional user-level config overrides and trust opt-ins
+  sessions/       # provider/session state when Pi needs it
+```
+
+The home directory should be created with mode `0700` where supported. Auth material must be registered with the redaction layer before any logging, telemetry, cache, debug trace, or error context can include it.
+
+Model selection precedence for `review` and `eval` runs (repo `codeninja.toml` never participates for these keys; environment variables are `CODENINJA_PROVIDER`, `CODENINJA_MODEL`, and `CODENINJA_REASONING`):
+
+```text
+CLI flags > environment variables > ~/.codeninja/settings.json > Pi/provider defaults
+```
+
+Stored `defaultDepth` participates in review-depth resolution; repo project policy outranks the personal default:
+
+```text
+--depth > environment variables > codeninja.toml > ~/.codeninja/settings.json > normal
+```
+
+If no authenticated model can be resolved, codeninja should fail before Stage 5 with a clear `config_error`, for example: `no authenticated provider model is available; run: codeninja provider login <provider>`.
 
 ## Review Pipeline
 
@@ -715,7 +777,7 @@ Eval cases should be YAML files stored outside the codeninja repository when the
 - An external local repository path.
 - A fixture repository.
 - A branch, commit, commit range, or PR target.
-- Review settings such as depth, lenses, max findings, concurrency, cache on/off, verification on/off, and telemetry/debug options.
+- Review settings such as depth, lenses, max findings, concurrency, cache on/off, verification on/off, provider/model/reasoning overrides, and telemetry/debug options.
 - Expected final findings.
 - Expected candidate findings.
 - Findings that must not appear.
@@ -886,6 +948,8 @@ The repository config file should be named:
 codeninja.toml
 ```
 
+This section covers the resolved configuration surface. Repo `codeninja.toml` may set only the safe subset described under Trust Boundaries; provider credentials, default provider/model, and reasoning effort come from CLI flags, environment variables, or user-scoped provider state.
+
 V1 configuration should support:
 
 - Default base branch for branch review.
@@ -898,7 +962,7 @@ V1 configuration should support:
 - Severity and confidence thresholds, including a minimum severity threshold for reported findings.
 - Maximum findings (the report cap) and soft comment cap (the inline-comment target). Neither cap suppresses verified critical or high-severity findings.
 - System follow-up review caps: maximum tasks, maximum files per task, maximum tool calls per task, maximum result size, and task timeout.
-- Model/provider options for `@earendil-works/pi-ai`, including a default model and optional per-role overrides for planning, packet review, system follow-up review, verification, and final composition.
+- LLM runtime options for `@earendil-works/pi-ai`, including provider-call concurrency and optional per-role model overrides when supplied from user-level config or CLI. Repo `codeninja.toml` must not set provider credentials, default provider, default model, or reasoning effort.
 - Runtime and per-pass timeouts.
 - Maximum total token and cost budget for a run.
 - Maximum model calls per run.
@@ -966,7 +1030,7 @@ Repository tool path containment should be enforced at a single chokepoint in th
 Config trust partitioning:
 
 - Repo `codeninja.toml` may set safe keys only: lenses on/off, classification path rules, depth, base branch, labels, and caps.
-- Execution-capable or out-of-repo settings — `tools.testCommands`, `lenses.extraSkillPaths` outside the repo, and `telemetry.runDir` / `cache.dir` outside the repo — take effect only with user-level opt-in: a CLI flag or a user-scoped config file (`~/.config/codeninja/config.toml`). Repo-config values for these are ignored with a warning.
+- Execution-capable, out-of-repo, or provider-routing settings — `tools.testCommands`, `lenses.extraSkillPaths` outside the repo, `telemetry.runDir` / `cache.dir` outside the repo, and LLM provider/model/reasoning defaults — take effect only with user-level opt-in: a CLI flag, `~/.codeninja/settings.json`, or the user-scoped config file `~/.codeninja/config.toml` (all under `CODENINJA_HOME`). Repo-config values for these are ignored with a warning.
 - Repo-config-relative paths are constrained to the repo root.
 
 Policy load revision: `codeninja.toml` and `.codeninja/skills/` always load from the trusted local checkout (the user's working copy), never from the PR head revision. If the PR under review modifies policy files (config or skills), that should be surfaced to the planner as a risk signal and noted in the report.
@@ -978,7 +1042,7 @@ Subprocess hygiene for git, GitHub, and tool subprocess invocations:
 - Reject argument values matching `^-`.
 - Prefer SHAs over ref names when both are available; GitHub-supplied ref names are display-only.
 
-Credentials: provider API keys come from environment variables or user-scoped config only, and repo `codeninja.toml` must reject credential-bearing fields at parse time. Auth material such as API keys, `gh` tokens, and Authorization headers must be stripped before anything is written to logs, telemetry, run artifacts, cache entries, or error context.
+Credentials: provider API keys and OAuth/device-flow tokens come from environment variables or user-scoped provider auth state only (`~/.codeninja/auth.json`, overridable through `CODENINJA_HOME`), and repo `codeninja.toml` must reject credential-bearing fields at parse time. Auth material such as API keys, `gh` tokens, Authorization headers, OAuth tokens, and device-flow tokens must be stripped before anything is written to logs, telemetry, run artifacts, cache entries, debug traces, or error context.
 
 ## Error Handling
 
@@ -994,6 +1058,7 @@ codeninja should fail clearly for:
 - Diff parsing failures.
 - Unsupported or unavailable parser for a file language when no graceful fallback is possible.
 - Config parse errors.
+- No authenticated provider model available for the run, with a `codeninja provider login <provider>` hint.
 
 Parser or language-support failures for individual files should degrade gracefully when possible. codeninja may still review with raw diff context and basic file tools, but it should report degraded context in the run summary.
 

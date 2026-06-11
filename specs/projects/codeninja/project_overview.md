@@ -24,6 +24,8 @@ A successful review finds real correctness, security, and design issues; explain
 
 codeninja will use `pnpm` for package management and `@earendil-works/pi-ai` as the LLM/agent library. It may also use tools such as `web-tree-sitter` and custom repository-inspection tools to query source structure, symbols, references, and relationships between changed code and surrounding code.
 
+codeninja should include a `codeninja provider` CLI namespace for model-provider setup: listing Pi-known providers and models, logging in or out of a provider, checking auth status, and setting user-level default provider/model/depth/reasoning preferences. Credentials and model defaults should live in user-scoped codeninja state, such as `~/.codeninja/`, not in repo configuration.
+
 The implementation should use deterministic preprocessing wherever practical. The diff parser, syntax parser, changed-symbol extraction, hunk-to-line mapping, and review-packet construction should produce structured artifacts before the LLM reviews anything. Tree-sitter should be treated as the common cross-language syntax substrate: useful for finding enclosing symbols, changed AST nodes, imports, nearby declarations, and syntax-specific signals across languages such as Go, TypeScript, Rust, Solidity, and others. It should not be treated as perfect semantic truth. When a language has a stronger optional analyzer, such as `gopls`, `go/packages`, TypeScript compiler APIs, or Rust Analyzer, codeninja may use it to enrich the same common symbol/tool interface, but the product should remain useful with tree-sitter-only support.
 
 The preferred review design is a staged pipeline:
