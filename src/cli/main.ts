@@ -1,15 +1,19 @@
 #!/usr/bin/env node
-import { executeReviewCommand, parseReviewCommand } from "./review-command.js";
+import { executeReviewCommand, isCliDisplayExit, parseReviewCommand } from "./review-command.js";
 import { errorExitCode, isCodeninjaError } from "../util/errors.js";
 
 async function main(): Promise<void> {
   try {
-    const parsed = parseReviewCommand(process.argv.slice(2));
+    const parsed = parseReviewCommand(process.argv.slice(2), { allowOutput: true });
     const result = await executeReviewCommand(parsed);
     process.stdout.write(
       `codeninja review foundation initialized. Review pipeline stages are not implemented yet. Run artifacts: ${result.runDir || "disabled"}\n`
     );
   } catch (error) {
+    if (isCliDisplayExit(error)) {
+      process.exitCode = error.exitCode;
+      return;
+    }
     if (isCodeninjaError(error)) {
       process.stderr.write(`${error.code}: ${error.message}\n`);
     } else if (error instanceof Error) {

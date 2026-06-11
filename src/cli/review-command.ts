@@ -15,6 +15,7 @@ type ParseReviewCommandOptions = {
   repoRoot?: string;
   homeOverride?: string;
   env?: NodeJS.ProcessEnv;
+  allowOutput?: boolean;
 };
 
 type ExecuteReviewCommandResult = {
@@ -46,11 +47,14 @@ export function parseReviewCommand(
   const program = new Command();
   program
     .name("codeninja")
-    .exitOverride()
-    .configureOutput({
+    .exitOverride();
+
+  if (!opts.allowOutput) {
+    program.configureOutput({
       writeOut: () => undefined,
       writeErr: () => undefined
     });
+  }
 
   program
     .command("review")
@@ -76,6 +80,9 @@ export function parseReviewCommand(
   try {
     program.parse(argv, { from: "user" });
   } catch (error) {
+    if (isCommanderDisplayExit(error)) {
+      throw new CliDisplayExit(error.exitCode);
+    }
     throw commanderToCodeninjaError(error);
   }
 
@@ -300,6 +307,24 @@ function withOptionalBase<T extends { mode: "default_branch" | "branch" }>(
 
 function collect(value: string, previous: string[]): string[] {
   return [...previous, value];
+}
+
+export class CliDisplayExit extends Error {
+  readonly exitCode: number;
+
+  constructor(exitCode: number) {
+    super("command displayed output");
+    this.name = "CliDisplayExit";
+    this.exitCode = exitCode;
+  }
+}
+
+export function isCliDisplayExit(error: unknown): error is CliDisplayExit {
+  return error instanceof CliDisplayExit;
+}
+
+function isCommanderDisplayExit(error: unknown): error is CommanderError {
+  return error instanceof CommanderError && error.exitCode === 0;
 }
 
 function commanderToCodeninjaError(error: unknown): CodeninjaError {
