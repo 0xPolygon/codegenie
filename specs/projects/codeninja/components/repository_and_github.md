@@ -13,12 +13,12 @@ All data contracts referenced here — `ReviewInput`, `ResolvedReviewInput`, `Pu
 This component is responsible for:
 
 - The `GitClient` and `GitHubClient` implementations behind the interface seams defined in `architecture.md`, including subprocess invocation via `execa` with the Trust Boundaries subprocess-hygiene rules (no shell, `--` separators, option-injection rejection, SHA preference, credential scrubbing).
-- The review input resolver: turning a `ReviewInput` for any of the four modes (`github_pr`, `branch`, `commit_range`, `diff_file`), plus the bare-command default, into a `ResolvedReviewInput` with pinned SHAs, merge base, commit metadata, and raw unified diff.
+- The review input resolver: turning a `ReviewInput` for any of the three modes (`github_pr`, `branch`, `commit_range`), plus the bare-command default, into a `ResolvedReviewInput` with pinned SHAs, merge base, commit metadata, and raw unified diff.
 - PR ref fetching: the `refs/codeninja/pr/<n>/*` lifecycle, fork-PR head fetching via `refs/pull/<n>/head`, `baseRefOid`/`headRefOid`-anchored diffs, and the fixed diff flags shared by all modes.
 - Shallow/partial clone detection and bounded deepening.
-- Existing-review-thread fetching through `gh api graphql`: pagination, the 100-thread cap, deterministic `ExistingReviewThread` summarization, and codeninja-author fingerprint detection.
+- Prior codeninja comment listing (`listOwnComments`): REST pagination, deterministic `ExistingReviewThread` mapping, and codeninja-author fingerprint detection for rerun duplicate avoidance. (Human review-thread fetching is deferred to Future Considerations — see architecture.md.)
 - The diff parser: `UnifiedDiff`/`DiffFile`/`DiffHunk`/`DiffLine` construction, absolute old/new line mapping, stable hunk-id hashing, file status detection including `copied`, binary, and mode-only, and rename/deleted path semantics.
-- File classification: the shared deterministic detector library (generated/vendor/lockfile/binary detectors, package-root detection, test-status conventions, `codeninja.toml` path rules, `FactProvenance`) that produces Stage 3 `FileFacts` and feeds the Stage 2 filter pass; in `diff_file` mode this includes executing hunk-context staleness validation and writing `FileFacts.degraded` (read/compare mechanics owned by `components/context_and_tools.md`).
+- File classification: the shared deterministic detector library (generated/vendor/lockfile/binary detectors, package-root detection, test-status conventions, `codeninja.toml` path rules, `FactProvenance`) that produces Stage 3 `FileFacts` and feeds the Stage 2 filter pass.
 - GitHub anchor validation: the changed-line LEFT/RIGHT validation used by packet output validation, pre-verification gates, and pre-posting checks.
 - Duplicate detection against prior codeninja comments: the stable finding fingerprint, author-verified marker parsing, and the ±5-line fuzzy match.
 - GitHub publishing: the single `COMMENT` review, 422 recovery with bisect and the summary-only fallback, and deterministic comment sanitization (mention neutralization, HTML-comment stripping, body caps, secret scrubbing).
@@ -66,7 +66,7 @@ function classifyChangedFiles(
   config: CodeninjaConfig,
   telemetry: TelemetryRecorder
 ): Promise<FileFacts[]>
-// Errors: path_outside_repo (diff_file worktree reads only); content-read failures degrade, never throw
+// Content-read failures degrade, never throw
 
 function filterDiffFiles(
   fileFacts: FileFacts[],
@@ -172,17 +172,9 @@ interface GitHubClient {
   // `gh pr view <n> --json number,title,body,url,baseRefName,headRefName,baseRefOid,headRefOid`
   // plus `gh repo view --json owner,name` for owner/repo. When baseRefOid/headRefOid are absent
   // (older gh), falls back to `gh api repos/<owner>/<repo>/pulls/<n>` and reads base.sha/head.sha.
-  // Returns PullRequestMetadata with existingThreads: [] — the resolver populates threads via
-  // fetchReviewThreads and stitches them in. Caches the result per PR number for the run.
+  // Caches the result per PR number for the run.
   // Errors: pr_not_found; gh_auth_failed; gh_missing.
   viewPr(number: number): Promise<PullRequestMetadata>
-
-  // `gh api graphql` over pullRequest.reviewThreads with cursor pagination, collecting at most
-  // `cap` threads (the resolver passes 100) and summarizing each into ExistingReviewThread.
-  // Threads beyond the cap are counted (totalCount - collected) for the resolver to record as
-  // PullRequestMetadata.omittedThreadCount, and disclosed via telemetry as "N additional
-  // threads omitted" ("count unavailable", field left unset, when totalCount is missing).
-  fetchReviewThreads(number: number, cap: number): Promise<ExistingReviewThread[]>
 
   // POST /repos/<owner>/<repo>/pulls/<n>/reviews via `gh api --input -` (JSON body on stdin)
   // with event "COMMENT" and commit_id set to the PR head SHA cached from viewPr.
@@ -253,14 +245,13 @@ type RunPostingRecord = {
 All errors are `CodeninjaError` values with codes from `architecture.md`. Mappings used by this component:
 
 - `not_git_worktree`: any mode invoked outside a git worktree.
-- `invalid_args`: option-like (`^-`) or check-ref-format-invalid argument values reaching `GitClient`/`GitHubClient`; missing/unreadable `--diff` file; detached HEAD or current-branch-equals-base in the bare default (the message asks for an explicit review target); posting plan outside `github_pr` mode.
+- `invalid_args`: option-like (`^-`) or check-ref-format-invalid argument values reaching `GitClient`/`GitHubClient`; detached HEAD or current-branch-equals-base in the bare default (the message asks for an explicit review target); posting plan outside `github_pr` mode.
 - `gh_missing` / `gh_auth_failed`: `gh` preflight failures in `--pr` mode or when posting.
 - `pr_not_found`: `gh pr view` reports no such PR.
 - `git_ref_missing`: unresolvable refs/commits, unrelated histories, or a shallow clone that still cannot resolve the range after deepening (message names `git fetch --unshallow`).
 - `git_base_branch_unresolved`: branch mode with no resolvable base after the full precedence chain.
 - `git_fetch_failed`: PR head/base fetch failures.
 - `diff_parse_failed`: structurally invalid non-empty diff input; oversized diff output.
-- `path_outside_repo`: `--diff` worktree mapping of a path escaping the repo root.
 - `github_post_failed`: posting failures; fatal only after the summary-only fallback also fails.
 
 ## Internal Design
@@ -281,7 +272,7 @@ Invocation rules:
 Argument validation, applied before spawning:
 
 - `assertSafeRef(ref)`: accepted forms are a full 40/64-char hex SHA, or a refname valid under `git check-ref-format` rules (implemented locally: no leading `-`, no `..`, no control chars, no `~ ^ : ? * [ \`, no leading/trailing `/`, no `.lock` suffix, no `@{`). Internal callers may pass composed revision expressions (`<sha>^1`, `<sha>^{commit}`, `<a>..<b>`, `<sha>^!`, `<ref>:<path>`) only when every component part was individually validated first. Model-supplied refs arriving via the tools layer are plain refs and are re-validated here defensively.
-- `assertSafePath(path)` / `assertSafeGlob(glob)`: reject values matching `^-` and embedded NUL bytes. Repo-containment canonicalization for filesystem access is the tools-layer chokepoint's job; this component's own worktree reads (diff-file mode) use the shared `assertContainedRepoPath` helper in `src/util/paths.ts` (canonicalize, must resolve inside `repoRoot`, reject absolute and `..` forms, do not follow symlinks out of the root).
+- `assertSafePath(path)` / `assertSafeGlob(glob)`: reject values matching `^-` and embedded NUL bytes. Repo-containment canonicalization for filesystem access is the tools-layer chokepoint's job, via the shared `assertContainedRepoPath` helper in `src/util/paths.ts` (canonicalize, must resolve inside `repoRoot`, reject absolute and `..` forms, do not follow symlinks out of the root); this component itself reads content only through git plumbing.
 - Untrusted positional path/ref arguments are always preceded by `--` where the git subcommand supports it (`grep`, `ls-tree`, `log`, `diff`, `check-ignore`). For combined `<ref>:<path>` arguments (`cat-file`), validation of both parts guarantees the value cannot begin with `-`.
 - Search patterns are passed via `-e <pattern>` (never positionally), so patterns beginning with `-` are legal without violating the option-injection rule.
 - SHAs are preferred over ref names everywhere both exist; GitHub-supplied ref names (`baseRefName`, `headRefName`) are display-only and never become git arguments.
@@ -333,7 +324,7 @@ All resolver telemetry events use stage `1` (`input_resolved`, `pr_refs_fetched`
 
 With no target arguments, the CLI passes `{ mode: "branch", branchName: <current branch> }` semantics through the resolver:
 
-- `currentBranch()` returning `undefined` (detached HEAD) fails with `invalid_args`: "HEAD is detached; pass an explicit review target (`--pr`, `--branch`, a commit, or `--diff`)."
+- `currentBranch()` returning `undefined` (detached HEAD) fails with `invalid_args`: "HEAD is detached; pass an explicit review target (`--pr`, `--branch`, or a commit)."
 - After base resolution (below), if the current branch name equals the resolved base branch's short name, fail with `invalid_args`: "current branch <x> is the base branch; pass an explicit review target."
 - Otherwise behavior is identical to `--branch <current-branch>`, including merge-base semantics.
 
@@ -363,20 +354,17 @@ Boundary cases (inventoried, then classified — see File Classification):
 
 - Root commit: the empty-tree diff marks every file `added`; nothing special downstream.
 - Submodule pointer bumps: the parser sets `DiffFile.isSubmodule` (Subproject-commit content pattern / `160000` mode headers); classified `processingMode: "skip"` with reason "submodule pointer change".
-- Symlink entries: the parser sets `DiffFile.isSymlink` from `120000` mode headers; when headers are absent, the classifier backfills the field via `lsTreeEntry(ref, path).mode === "120000"` at head (or base for deletions). Inventoried but not content-reviewed — classified `skip` with reason "symlink change". For plain unified diffs without git headers in `diff_file` mode, symlink detection is unavailable and such files flow through as ordinary text (disclosed limitation).
+- Symlink entries: the parser sets `DiffFile.isSymlink` from `120000` mode headers; when headers are absent, the classifier backfills the field via `lsTreeEntry(ref, path).mode === "120000"` at head (or base for deletions). Inventoried but not content-reviewed — classified `skip` with reason "symlink change".
 
-#### Diff-File Mode
+#### Diff-File Mode (Deferred)
 
-1. Validate the CLI-supplied diff path: must exist and be a regular readable file, else `invalid_args` ("invalid diff file path"). The diff file itself may live anywhere — it is trusted user input; the paths inside it are untrusted.
-2. `rawDiff` = file contents (UTF-8).
-3. `commits = []`, `pr` undefined, `baseRef`/`headRef`/`mergeBase`/`headSha` unset. Tool-layer semantics for missing revisions (worktree-as-degraded-head, empty base) are owned by `components/context_and_tools.md`.
-4. Hunk-context validation against the worktree happens at classification time (see Diff-File Worktree Validation) and produces `FileFacts.degraded` rather than failing the run.
+The `--diff <path>` loose-diff input mode and its resolver flow are deferred to Future Considerations — see architecture.md.
 
 #### PR Mode
 
 1. Preflight `gh`: locate the binary (`gh_missing`) and check `gh auth status` (`gh_auth_failed`). Resolve `viewerLogin` once (`gh api user`, `.login`) and cache for the run.
 2. `viewPr(n)`: collect title, body, url, `baseRefName`/`headRefName` (display-only), and `baseRefOid`/`headRefOid`. The reviewed revisions are exactly these OIDs so the reviewed diff matches GitHub's PR diff; the merge base is computed between them and the diff uses the fixed flag set. REST fallback when the JSON fields are unavailable. `owner`/`repo` come from `gh repo view --json owner,name`.
-3. `fetchReviewThreads(n, 100)` and stitch the summaries into `pr.existingThreads`, recording threads beyond the cap on `pr.omittedThreadCount` — per the `PullRequestMetadata` contract, `viewPr` returns `existingThreads` empty and the resolver populates both fields. Thread summaries are planner hints only, never findings (`components/review_pipeline.md`).
+3. List codeninja's own prior review comments (`listOwnComments(n)`) for rerun duplicate avoidance, consumed by the publisher's duplicate detection. Human review threads are never fetched in v1; existing-PR-thread planner hints are deferred to Future Considerations — see architecture.md.
 4. Locality check: `commitExists(baseRefOid)` and `commitExists(headRefOid)`.
 5. Fetch what is missing (see PR Ref Fetching), failing `git_fetch_failed` with the attempted refspec when fetch fails.
 6. `mergeBase = mergeBase(baseRefOid, headRefOid)`; `rawDiff = diff(mergeBase, headRefOid)`; `commits = log(mergeBase..headRefOid)`.
@@ -405,37 +393,18 @@ Ref lifecycle:
 - When shallow and any required resolution fails (ref resolution, `mergeBase`, `log`), attempt a bounded deepen against the relevant remote: `fetchFrom(remote, <ref>, { deepen: 100 })`, re-check, then one more attempt with `deepen: 1000`. If the range still cannot be resolved, fail `git_ref_missing` with a message naming the fix: "repository is shallow; run `git fetch --unshallow` (or fetch more history) and retry".
 - Partial (promisor/filtered) clones need no special handling: git lazily fetches missing blobs during `cat-file`/`diff`; the only observable effect is latency, noted in telemetry when operations are slow.
 
-### Existing Review Thread Fetching
+### Prior codeninja Comment Listing
 
-`fetchReviewThreads` runs this GraphQL query through `gh api graphql` (query text on stdin via `--field query=@-`, variables via typed `-F` fields):
+`listOwnComments` is the only PR-comment read in v1. Fetching human review threads (`fetchReviewThreads` via `gh api graphql` over `pullRequest.reviewThreads`, with cursor pagination, the 100-thread cap, and `omittedThreadCount` disclosure) is deferred to Future Considerations — see architecture.md.
 
-```graphql
-query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
-  repository(owner: $owner, name: $repo) {
-    pullRequest(number: $number) {
-      reviewThreads(first: 50, after: $cursor) {
-        totalCount
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id isResolved isOutdated path line originalLine diffSide
-          comments(first: 1) {
-            totalCount
-            nodes { author { login } body }
-          }
-        }
-      }
-    }
-  }
-}
-```
+Behavior (REST `GET /repos/<owner>/<repo>/pulls/<n>/comments`, manual `per_page=100` pagination):
 
-- Pagination: loop on `endCursor` while `hasNextPage` and fewer than `cap` (100) threads are collected; page size 50.
-- Cap disclosure: `omitted = totalCount - collected` when positive, recorded by the resolver as `PullRequestMetadata.omittedThreadCount` (the planner dossier copies it) and emitted as a stage-1 telemetry event ("N additional threads omitted"). If the schema rejects `totalCount`, retry the query without it, leave `omittedThreadCount` unset, and disclose "additional threads omitted (count unavailable)".
+- Filter to comments authored by the authenticated `gh` login (`viewerLogin`, cached per run, compared case-insensitively); other users' comments are never collected.
 - Mapping to `ExistingReviewThread`:
-  - `id` = thread id; `path` = thread path; `side` = `diffSide`; `line` = `line`, falling back to `originalLine` for outdated threads; `resolved` = `isResolved`; `author` = first comment's author login (deleted authors map to `"ghost"`).
-  - `isCodeninja` = fingerprint marker parses from the first comment body AND `author` equals `viewerLogin` (case-insensitive). Markers in other users' comments never set `isCodeninja`; those threads remain ordinary hints.
+  - `id` = comment id; `path`/`side` = the comment's anchor fields; `line` = `line`, falling back to `original_line` for outdated comments; `resolved` = false (REST comment listing carries no resolution state; the field is meaningful only for the deferred thread fetching); `author` = the comment author login.
+  - `isCodeninja` = fingerprint marker parses from the comment body AND `author` equals `viewerLogin`. Markers in other users' comments never set `isCodeninja` and never suppress.
   - `fingerprint` = the parsed marker fingerprint when `isCodeninja`.
-  - `summary` is deterministically extracted, never verbatim (Trust Boundaries): first comment body → strip HTML comments → collapse all whitespace runs to single spaces → truncate to 280 characters with a trailing ellipsis → append compact flags: `" [resolved]"`, `" [outdated]"`, and `" [+<comments.totalCount - 1> replies]"` when applicable.
+  - `summary` is deterministically extracted, never verbatim (Trust Boundaries): comment body → strip HTML comments → collapse all whitespace runs to single spaces → truncate to 280 characters with a trailing ellipsis. It serves telemetry/debug readability only; nothing model-facing consumes it in v1.
 
 Marker grammar (shared with duplicate detection):
 
@@ -452,7 +421,7 @@ The parser is a line-oriented state machine over the raw diff text. It accepts:
 
 - git-style diffs: sections starting `diff --git a/<old> b/<new>`, followed by extended headers (`old mode`, `new mode`, `deleted file mode`, `new file mode`, `copy from/to`, `rename from/to`, `similarity index`, `index`), then optional `---`/`+++` lines and hunks.
 - format-patch wrappers: any content before the first `diff --git` line (mail headers, commit message) is ignored, as is a trailing `-- \n<version>` signature.
-- plain unified diffs without git headers (for `--diff` inputs): file sections introduced by `--- <old>` / `+++ <new>` pairs; status inferred from `/dev/null` sides (`added`/`deleted`), `modified` otherwise; rename/copy statuses are unavailable in this form.
+- plain unified diffs without git headers: file sections introduced by `--- <old>` / `+++ <new>` pairs; status inferred from `/dev/null` sides (`added`/`deleted`), `modified` otherwise; rename/copy statuses are unavailable in this form. All v1 modes produce git-style diffs; this grammar is parser robustness that the deferred diff-file input mode would rely on (see architecture.md Future Considerations).
 
 Empty or whitespace-only input returns `{ files: [] }` (the zero-work path handles it). Any structural violation in non-empty input — a hunk header that does not parse, a hunk body line with an illegal leading character, line counts disagreeing with the header — fails the whole parse with `diff_parse_failed` and the offending input line number; the parser never silently drops malformed files.
 
@@ -520,7 +489,7 @@ Implementation order follows `architecture.md`: parse → detect+classify (Stage
 
 `src/git/detectors.ts` is the single deterministic detector library; Stage 3 facts and Stage 2 filtering both consume it and record identical `FactProvenance`. Every detector returns `{ value, provenance: FactProvenance }`. No detector calls the LLM, and the library ships no business/domain risk keywords.
 
-Content source rule: detectors that read file content read it at the reviewed revisions through `GitClient.catFile` — head for added/modified/renamed files, base for deleted files — never the checked-out worktree. In `diff_file` mode (no revisions) they read the worktree through `assertContainedRepoPath`. Content reads are bounded to the first 64 lines or 8 KiB, whichever is smaller; read failures degrade the fact to its path-based result with a `low`-confidence provenance note rather than failing the run.
+Content source rule: detectors that read file content read it at the reviewed revisions through `GitClient.catFile` — head for added/modified/renamed files, base for deleted files — never the checked-out worktree. Content reads are bounded to the first 64 lines or 8 KiB, whichever is smaller; read failures degrade the fact to its path-based result with a `low`-confidence provenance note rather than failing the run.
 
 - Generated detector:
   - Marker scan of the bounded head/base content for: `^// Code generated .* DO NOT EDIT\.$` (Go convention), `@generated`, `DO NOT EDIT`, `Autogenerated`, `automatically generated` (case-insensitive for the latter three). Provenance source `generated_detector`, confidence `high`.
@@ -528,12 +497,12 @@ Content source rule: detectors that read file content read it at the reviewed re
 - Vendor detector: any path segment in `vendor/`, `node_modules/`, `third_party/`, `bower_components/`, `.yarn/`, `Pods/`. Provenance source `path`, confidence `high`.
 - Lockfile detector: exact basenames `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lockb`, `Cargo.lock`, `go.sum`, `composer.lock`, `Gemfile.lock`, `poetry.lock`, `uv.lock`, `Pipfile.lock`, `flake.lock`, `gradle.lockfile`, `packages.lock.json`. Provenance source `filename`, confidence `high`.
 - Binary detector: `DiffFile.isBinary` from diff metadata only. Provenance source `diff`, confidence `high`.
-- Ignored detector: `checkIgnored` (`git check-ignore`) against the trusted local checkout; relevant mainly to `--diff` inputs since tracked files in git-produced diffs are not ignored. Provenance source `git`.
-- Package-root detector: nearest ancestor directory (walking from the file's directory up to the repo root) containing one of `go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml`, `setup.py`, `setup.cfg`, `pom.xml`, `build.gradle`, `build.gradle.kts`, `composer.json`, `Gemfile`, `mix.exs`. The ancestor scan runs in memory against a single cached `lsTree(headRef)` listing (worktree listing in `diff_file` mode). Provenance source `path`.
+- Ignored detector: `checkIgnored` (`git check-ignore`) against the trusted local checkout; hits are rare since tracked files in git-produced diffs are normally not ignored. Provenance source `git`.
+- Package-root detector: nearest ancestor directory (walking from the file's directory up to the repo root) containing one of `go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml`, `setup.py`, `setup.cfg`, `pom.xml`, `build.gradle`, `build.gradle.kts`, `composer.json`, `Gemfile`, `mix.exs`. The ancestor scan runs in memory against a single cached `lsTree(headRef)` listing. Provenance source `path`.
 - Test-status detector, from established conventions only: Go `*_test.go`; TS/JS `*.test.*`, `*.spec.*`, `__tests__/` segment; Python `test_*.py`, `*_test.py`, `tests/` segment; Rust `tests/` top-level segment; generic `test/` or `tests/` path segment. Match → `"test"`; no match with a known language → `"source"`; unknown language or binary → `"unknown"`. The path classifier never emits `"mixed"`; that value is reserved for richer syntax-aware refinement (`components/context_and_tools.md`).
 - Language detector: extension map (representative: `.go`→`go`; `.ts/.mts/.cts/.tsx`→`typescript`; `.js/.jsx/.mjs/.cjs`→`javascript`; `.rs`→`rust`; `.sol`→`solidity`; `.md`→`markdown`; plus one entry each for `.py`, `.rb`, `.java`, `.kt`, `.swift`, `.c/.h`, `.cpp`, `.cs`, `.sql`, `.sh`, `.yaml/.yml`, `.json`, `.toml`) and known basenames (`Dockerfile`, `Makefile`, `go.mod`, `go.sum`). Fallback `"unknown"`. Provenance source `extension` or `filename`.
 - Submodule detector: consumes the parser-populated `DiffFile.isSubmodule` (content pattern / `160000` mode headers). Provenance source `diff`.
-- Symlink detector: consumes the parser-populated `DiffFile.isSymlink`; when mode headers were absent, backfills the field via `lsTreeEntry` mode `120000` at head (base for deletions). Unavailable for header-less diffs in `diff_file` mode. Provenance source `diff` (parser-populated) or `git` (ls-tree backfill).
+- Symlink detector: consumes the parser-populated `DiffFile.isSymlink`; when mode headers were absent, backfills the field via `lsTreeEntry` mode `120000` at head (base for deletions). Provenance source `diff` (parser-populated) or `git` (ls-tree backfill).
 
 #### FileFacts Assembly
 
@@ -550,7 +519,7 @@ Content source rule: detectors that read file content read it at the reviewed re
 5. `reviewPriority` defaults to `"normal"` unless configured.
 6. Every processing-mode decision and configured label appends a human-readable entry to `reasons` and a `FactProvenance` record.
 
-Deleted-file rule: deleted reviewable source/test/config/migration/docs files keep their ordinary processing mode (review of removed behavior happens old-side); deleted generated/vendor/lock/binary files match ordinary skip rules. When deleted-file content cannot be read at base (e.g. `diff_file` mode), facts degrade: `degraded = { reason: "base content unavailable for deleted file" }` rather than pretending normal classification.
+Deleted-file rule: deleted reviewable source/test/config/migration/docs files keep their ordinary processing mode (review of removed behavior happens old-side); deleted generated/vendor/lock/binary files match ordinary skip rules. When deleted-file content cannot be read at base, facts degrade: `degraded = { reason: "base content unavailable for deleted file" }` rather than pretending normal classification.
 
 Policy-file change signal: when the diff touches `codeninja.toml` or `.codeninja/skills/**`, the classifier attaches the label `policy-change` with config-source provenance. Policy itself always loads from the trusted local checkout (Trust Boundaries; loading is the config component's job) — this label is how the modification is surfaced to the planner as a risk signal and noted in the report.
 
@@ -565,15 +534,9 @@ Policy-file change signal: when the diff touches `codeninja.toml` or `.codeninja
 
 Configured labels are user-provided facts, never codeninja-inferred risk truth.
 
-#### Diff-File Worktree Validation
+#### Diff-File Worktree Validation (Deferred)
 
-In `diff_file` mode only, classification executes hunk-context staleness validation for each kept file during Stage 3, before review:
-
-1. For each kept file, invoke `validateHunkContextAgainstWorktree(repoRoot, file)` — the primitive exposed by `components/context_and_tools.md`, which owns the worktree-read and comparison mechanics (context lines compared at their new-side line numbers under the worktree-as-head convention, containment enforced at the tools-layer chokepoint; escape attempts → `path_outside_repo`).
-2. On `ok: false` (any mismatching context line, or a missing worktree file), classification writes `FileFacts.degraded = { reason }` with the primitive's reason (e.g. "diff context does not match worktree").
-3. Classification records the per-file verdicts in stage-3 telemetry.
-
-Classification is the single writer of `FileFacts.degraded` for this validation. Degraded facts flow into packets and the coverage summary (`components/review_pipeline.md`); the file is still reviewed from diff content alone rather than silently reviewing stale context.
+The diff-file mode's hunk-context staleness validation — classification invoking the tools-layer `validateHunkContextAgainstWorktree` primitive and acting as the single writer of `FileFacts.degraded` for that validation — is deferred with the diff-file input mode (see architecture.md Future Considerations). `FileFacts.degraded` itself stays in v1 for deleted-file degradation (above), and degraded facts still flow into packets and the coverage summary (`components/review_pipeline.md`).
 
 #### Stage 2 Filter Pass
 
@@ -676,7 +639,7 @@ This component depends on:
 - `picomatch` for `classification.pathRules` globs, per `architecture.md`'s dependency choices.
 - `src/util/paths.ts` (`assertContainedRepoPath`) shared with the tools-layer containment chokepoint, and `src/util/errors.ts` (`CodeninjaError`).
 - `CodeninjaConfig` from the config loader and `TelemetryRecorder`/`Logger` from `components/skills_llm_telemetry.md`.
-- `components/context_and_tools.md`: the `diff_file` hunk-context staleness primitive (`validateHunkContextAgainstWorktree`) invoked during Stage 3 classification; type-only `SearchResult` (returned by `GitClient.grep`).
+- `components/context_and_tools.md`: type-only `SearchResult` (returned by `GitClient.grep`).
 
 Depended on by:
 
@@ -728,7 +691,6 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `resolver.commit-root-empty-tree` — root commit reviews all files as `added` via the empty-tree base.
 - `resolver.commit-range-endpoint-diff` — two commits produce a direct `start..end` diff (not merge-base) and `log(start..end)` commit metadata.
 - `resolver.no-worktree-mutation` — HEAD, index, and `git status` are byte-identical before/after resolution in every mode.
-- `resolver.diff-file-flow` — `--diff` returns file contents as `rawDiff`, empty `commits`, no `pr`; missing file → `invalid_args`.
 - `resolver.shallow-deepen-then-resolve` — shallow clone fixture: deepen attempts (100 then 1000) are issued and resolution succeeds once history suffices.
 - `resolver.shallow-unresolvable-names-unshallow` — still-unresolvable range → `git_ref_missing` whose message contains `git fetch --unshallow`.
 
@@ -744,14 +706,12 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `pr.refs-lifecycle` — stale `refs/codeninja/pr/<n>/*` deleted at start; refs force-updated; deleted at run end; simulated crash leaves refs that the next run cleans.
 - `pr.merge-base-anchored-diff` — diff computed `merge-base(baseRefOid, headRefOid)..headRefOid`, matching GitHub's PR diff revisions.
 
-### Review Thread Fetching
+### Prior-Comment Listing
 
-- `threads.pagination-cursor-loop` — 3 pages of 50 are walked via `endCursor` until the cap.
-- `threads.cap-and-omitted-count` — 130 threads → 100 records, `PullRequestMetadata.omittedThreadCount: 30`, plus an "additional threads omitted: 30" disclosure from `totalCount`.
-- `threads.totalcount-unavailable-degrades` — schema error on `totalCount` retries without it and discloses "count unavailable".
-- `threads.summary-deterministic` — HTML comments stripped, whitespace collapsed, 280-char truncation, `[resolved]`/`[outdated]`/`[+N replies]` flags; identical input → identical summary.
-- `threads.codeninja-author-detection` — marker + author == viewer → `isCodeninja: true` with parsed fingerprint; marker with different author → `isCodeninja: false`, no fingerprint suppression.
-- `threads.outdated-line-fallback` — outdated thread with null `line` uses `originalLine`.
+- `comments.pagination` — multiple REST pages walked via `per_page=100` until exhausted; only viewer-authored comments are collected.
+- `comments.summary-deterministic` — HTML comments stripped, whitespace collapsed, 280-char truncation; identical input → identical summary.
+- `comments.codeninja-author-detection` — marker + author == viewer → `isCodeninja: true` with parsed fingerprint; marker with different author → `isCodeninja: false`, no fingerprint suppression.
+- `comments.outdated-line-fallback` — outdated comment with null `line` uses `original_line`.
 
 ### Diff Parser
 
@@ -793,7 +753,7 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `classify.submodule-and-symlink-skip` — gitlink bump (parser-set `isSubmodule`) → skip "submodule pointer change"; symlink (parser-set `isSymlink`, with `lsTreeEntry` mode-120000 backfill when headers are absent) → skip "symlink change".
 - `classify.mode-only-skip` — `modeOnly` file → skip with reason.
 - `classify.content-read-failure-degrades` — `catFile` failure degrades the generated fact to path-based with `low` confidence, run continues.
-- `classify.diff-file-context-validation` — a mismatch verdict from the context_and_tools staleness primitive (faked) → classification writes the `degraded` fact with reason; matching file stays normal; `../escape` path → `path_outside_repo`.
+- `classify.deleted-file-base-unreadable-degrades` — deleted file whose base content cannot be read → `FileFacts.degraded` with the documented reason.
 - `filter.decisions-cardinality` — exactly one `FileFilterDecision` per changed file; kept + skipped partitions the inventory.
 - `filter.deleted-source-kept-deleted-lockfile-skipped` — deleted `.go` file kept; deleted `yarn.lock` skipped by ordinary rules.
 

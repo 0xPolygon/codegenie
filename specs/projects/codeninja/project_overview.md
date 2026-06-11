@@ -32,7 +32,7 @@ The preferred review design is a staged pipeline:
 
 1. Whole-PR planning pass: understand intent, changed files, changed symbols, risk areas, architecture boundaries, and tests touched or missing. This pass chooses the review order and selects relevant lenses based on risk tags, language, changed symbols, and touched subsystems; codeninja should not run every lens on every hunk by default.
 2. Parallel hunk/file review passes: generate precise inline candidate findings anchored to changed lines.
-3. Cross-file/system pass: inspect interactions across changed files, call sites, interfaces, migrations, tests, and architecture.
+3. Cross-file/system pass: inspect interactions across changed files, call sites, interfaces, migrations, tests, and architecture (deferred past v1; reviewers record cross-file follow-up hints instead).
 4. Verifier/deduper pass: reject speculative comments, merge duplicates, and publish only high-signal findings.
 
 The unit of review should be the changed hunk, but the unit of understanding should be the affected system. The review flow should look like:
@@ -45,7 +45,7 @@ PR diff
   -> per-hunk / per-file review packets
   -> selected lenses + targeted repo tools
   -> candidate findings
-  -> cross-file/system review where needed
+  -> cross-file follow-up hints recorded
   -> independent verifier
   -> deduped staff-level review
 ```

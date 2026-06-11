@@ -6,20 +6,19 @@ status: complete
 
 ## Purpose And Scope
 
-This component is codeninja's repository intelligence layer: the implementation behind `RepositoryIndex.tools`, Stage 4 changed-symbol extraction, static signal extraction, and deterministic packet context assembly. It is implemented under `src/repo/` and is the single place where reviewed source content is read, parsed, searched, and shaped into compact evidence for the planner, packet builders, packet reviewers, system follow-up workers, and verifiers.
+This component is codeninja's repository intelligence layer: the implementation behind `RepositoryIndex.tools`, Stage 4 changed-symbol extraction, static signal extraction, and deterministic packet context assembly. It is implemented under `src/repo/` and is the single place where reviewed source content is read, parsed, searched, and shaped into compact evidence for the planner, packet builders, packet reviewers, and verifiers.
 
 This component owns:
 
-- The `RepositoryTools` implementation: `readRange`, `readFileOutline`, `readEnclosingSymbol`, `readSymbol`, `listSymbols`, `findDefinition`, `readDiffBlocks`, `searchFiles`, `findSymbolMentions`, `findLikelyTests`, and `listFiles`, including backend routing between the tree-sitter and text backends, degradation behavior, result caps, and `ToolResultMeta` provenance.
+- The `RepositoryTools` implementation: the nine tools `readRange`, `readFileOutline`, `readSymbol`, `findDefinition`, `readDiffBlocks`, `searchFiles`, `findSymbolMentions`, `findLikelyTests`, and `listFiles`, including backend routing between the tree-sitter and text backends, degradation behavior, result caps, and `ToolResultMeta` provenance. (`readSymbol` with a line selector returns the enclosing symbol; `readFileOutline` subsumes symbol listing.)
 - The path-containment chokepoint required by Trust Boundaries: canonicalization, rejection of absolute paths and `..` traversal with typed `path_outside_repo` errors, the symlink policy for worktree access, and validation of model-supplied refs.
 - Revision access through git plumbing (`git show`, `git ls-tree`, `git grep` via `GitClient`), the bundled-ripgrep search fast path, and engine provenance.
-- The `diff_file`-mode carve-out: worktree-as-head reads with degraded provenance, plus the hunk-context staleness primitive (worktree-read and comparison mechanics) that Stage 3 classification executes.
 - The `searchFiles` POSIX ERE query contract and engine flag alignment.
 - The tree-sitter service: WASM runtime and grammar loading from `node_modules`, extension-to-grammar routing including `tsx`, ABI pinning behavior, in-memory parsing of revision content, and parse caching.
 - The `LanguageAdapter` implementations: Go, TypeScript/JavaScript, and the generic fallback, including `SymbolKind` + `nativeKind` mapping rules and `ownerType` extraction.
 - Stage 4 changed-symbol extraction producing `HunkSymbolFacts` (enclosing-symbol mapping and fallback detection).
-- Static signal extraction, including the concrete v1 rule set for Go and TypeScript/JavaScript.
-- `PacketContext` assembly (enclosing symbols, changed AST node summaries, nearby siblings, imports used nearby) plus the likely-tests list for `ReviewPacket.relevantTests`, both consumed by the Stage 6 packet builder.
+- Static signal extraction: the two v1 cross-language rules (per-language rule packs are deferred to Future Considerations — see architecture.md).
+- `PacketContext` assembly (path, package name, enclosing function/type/method) plus the file outline and the likely-tests list for `ReviewPacket.relevantTests`, all consumed by the Stage 6 packet builder.
 - The delegated type definitions `SearchOptions`, `SearchResult`, `ParseInput`, and `ParsedFile`.
 
 Explicitly not this component's responsibility:
@@ -28,9 +27,9 @@ Explicitly not this component's responsibility:
 - Pipeline orchestration, planner behavior, packet sizing/coalescing, and packet identity — see `components/review_pipeline.md`; this component supplies `PacketContext` and `HunkSymbolFacts`, the packet builder assembles packets.
 - Exposing tools as LLM tool definitions, the worker agent loop, tool-budget enforcement per worker, and prompt plumbing — see `components/skills_llm_telemetry.md`.
 - Eval scoring and replay — see `components/evals.md`.
-- Everything listed under Future Considerations in `architecture.md`: the changed-symbol graph (`SymbolEdge`, `ChangedSymbolGraph`), the cross-packet `ReviewSignal` index, and language analyzer backends. The `ToolBackend` enum value `"language-analyzer"` exists in the contract but receives no design here; no v1 code path produces it.
+- Everything listed under Future Considerations in `architecture.md`: the changed-symbol graph (`SymbolEdge`, `ChangedSymbolGraph`), the cross-packet `ReviewSignal` index, language analyzer backends, the diff-file input mode (worktree-as-head reads and the hunk-context staleness primitive), per-language static-signal packs, and rich pre-attached packet context (`AstNodeSummary` changed-node summaries, nearby imports, sibling symbols). The `ToolBackend` enum value `"language-analyzer"` exists in the contract but receives no design here; no v1 code path produces it.
 
-All data contracts referenced here — `SymbolKind`, `SymbolRef`, `SymbolInfo`, `ChangedSymbol`, `HunkSymbolFacts`, `StaticSignal`, `ToolResultMeta`, `SourceSelector`, `FileOutline`, `ToolBackend`, `ToolPrecision`, `ToolCallRecord`, `PacketContext`, `AstNodeSummary`, `RepositoryIndex`, `LanguageAdapter`, `GitClient`, and the `RepositoryTools` interface — are defined in `architecture.md` and are law. This document elaborates behavior; it does not change signatures. The only types defined here are the four delegated to this doc.
+All data contracts referenced here — `SymbolKind`, `SymbolRef`, `SymbolInfo`, `ChangedSymbol`, `HunkSymbolFacts`, `StaticSignal`, `ToolResultMeta`, `SourceSelector`, `FileOutline`, `ToolBackend`, `ToolPrecision`, `ToolCallRecord`, `PacketContext`, `RepositoryIndex`, `LanguageAdapter`, `GitClient`, and the `RepositoryTools` interface — are defined in `architecture.md` and are law. This document elaborates behavior; it does not change signatures. The only types defined here are the four delegated to this doc.
 
 ## Public Interface
 
@@ -50,11 +49,11 @@ async function buildRepositoryIndex(
 
 `buildRepositoryIndex` should:
 
-1. Derive the revision binding (effective head and base commits) for the review mode, or the worktree binding in `diff_file` mode.
+1. Derive the revision binding (effective head and base commits) for the review mode.
 2. Run Stage 4 changed-symbol extraction over kept reviewable files, producing `HunkSymbolFacts[]`.
 3. Run static signal extraction over the same parses, producing `StaticSignal[]`.
 4. Construct the `RepositoryTools` facade bound to the repository root, revision binding, `GitClient`, tree-sitter service, adapter registry, parsed diff, and worktree snapshot.
-5. Return `RepositoryIndex { facts, symbolFacts, staticSignals, tools }`, passing the input `facts` through unchanged (in `diff_file` mode they already carry any staleness degradation written by Stage 3 classification).
+5. Return `RepositoryIndex { facts, symbolFacts, staticSignals, tools }`, passing the input `facts` through unchanged.
 
 `buildRepositoryIndex` must not call the LLM, must not write to the repository, and should be cheap enough to run on every review: parsing is restricted to kept reviewable files with available grammars, and base-side parses run only when a file needs old-side facts.
 
@@ -72,49 +71,35 @@ interface RepositoryToolsHost extends RepositoryTools {
   // Called by the Stage 6 packet builder for each packet under construction.
   // relevantTests is the likely-tests list the builder assigns to
   // ReviewPacket.relevantTests — the single carrier of likely tests;
-  // PacketContext itself has no tests field.
+  // PacketContext itself has no tests field. outline is the file outline
+  // the builder may render into the packet's context budget.
   buildPacketContext(
     file: DiffFile,
     hunks: DiffHunk[],
     symbolFacts: HunkSymbolFacts[]
-  ): Promise<{ context: PacketContext; relevantTests: SymbolInfo[]; degradation?: string }>
+  ): Promise<{ context: PacketContext; outline?: FileOutline; relevantTests: SymbolInfo[]; degradation?: string }>
 }
 ```
 
 `RepositoryIndex.tools` is typed as `RepositoryTools`; the orchestrator and packet builder may use the host interface on the same object.
 
-### Diff-File Staleness Primitive
+### Diff-File Staleness Primitive (Deferred)
 
-In `diff_file` mode, Stage 3 classification (`components/repository_and_github.md`) executes hunk-context staleness validation and writes `FileFacts.degraded`; this component owns only the worktree-read and comparison mechanics, exposed as a standalone primitive callable before the index exists:
-
-```ts
-// src/repo/source-resolver.ts — diff_file mode only; non-model-facing.
-// Reads the worktree file through the containment chokepoint (physical
-// realpath check; escapes reject with path_outside_repo) and compares every
-// hunk's context lines at their new-side line numbers (worktree-as-head
-// convention). A missing worktree file or any mismatching line yields
-// ok: false with a reason (e.g. "diff context does not match worktree").
-function validateHunkContextAgainstWorktree(
-  repoRoot: string,
-  file: DiffFile
-): Promise<{ ok: boolean; reason?: string }>
-```
+The diff-file input mode's worktree-as-head carve-out and its hunk-context staleness primitive (`validateHunkContextAgainstWorktree`) are deferred to Future Considerations — see architecture.md.
 
 ### Repository Tools Behavior Summary
 
 The `RepositoryTools` interface in `architecture.md` is the contract. Behavioral elaboration per tool:
 
 - `readRange(path, startLine, endLine, source?)` — text backend always. Reads file content at the resolved revision via `git show`, returns the inclusive 1-based line window. Out-of-bounds ranges are clamped to file bounds with `truncated: true` and `omittedCount` set when lines were dropped by clamping or the per-call cap. `precision: "exact"`. Missing file at the revision returns empty text with `degraded: true` and a reason; it is not an error.
-- `readFileOutline(path, source?)` — tree-sitter backend when a grammar is available: returns `FileOutline` with `packageName`, `imports`, `topLevelSymbols` (including methods of top-level types), `testSymbols`, and `notes` (`precision: "syntactic"`). Falls back to extension/filename heuristics plus a compact text outline with `backend: "text"`, `precision: "heuristic"`, `degraded: true`.
-- `readEnclosingSymbol(path, line, source?)` — tree-sitter: smallest enclosing symbol containing `line`, returned as `SymbolInfo` plus capped source text (`precision: "syntactic"`). Fallback: a bounded ±20-line window with no `symbol`, `backend: "text"`, `precision: "text"`, `degraded: true`.
-- `readSymbol(path, { symbolName?, line? }, source?)` — exactly one selector is required. By name: exact-name match over the file's symbols (qualified `Owner.name` queries supported); by line: identical to `readEnclosingSymbol`. Multiple same-name matches return the first in file order with `omittedCount` for the rest. Fallback: exact-name text search within the file plus a bounded window, `degraded: true`.
-- `listSymbols(path, source?)` — tree-sitter: all extracted symbols in start-line order, capped. Fallback: heuristic regex outline or an empty result, `degraded: true`.
+- `readFileOutline(path, source?)` — tree-sitter backend when a grammar is available: returns `FileOutline` with `packageName`, `imports`, `topLevelSymbols` (including methods of top-level types), `testSymbols`, and `notes` (`precision: "syntactic"`). Falls back to extension/filename heuristics plus a compact text outline with `backend: "text"`, `precision: "heuristic"`, `degraded: true`. Symbol enumeration is answered by this tool's `topLevelSymbols`; there is no separate symbol-listing tool.
+- `readSymbol(path, { symbolName?, line? }, source?)` — exactly one selector is required. By name: exact-name match over the file's symbols (qualified `Owner.name` queries supported); by line: the smallest enclosing symbol containing that line, returned as `SymbolInfo` plus capped source text (`precision: "syntactic"`). Multiple same-name matches return the first in file order with `omittedCount` for the rest. Fallback: by name, exact-name text search within the file plus a bounded window; by line, a bounded ±20-line window with no `symbol`, `backend: "text"`, `precision: "text"`; both `degraded: true`.
 - `findDefinition(symbolName, { pathGlob?, source? })` — `git grep` at the resolved revision (default head) finds candidate files; candidate files with grammars are parsed and filtered to definition sites whose symbol name (or `ownerType`-qualified name) matches. Unparseable candidates contribute plain text matches marked degraded. Base-side lookups support deleted-code questions.
 - `readDiffBlocks({ packetId?, path? })` — renders hunks from the parsed diff with dual old/new line numbers and change markers. Requires exactly one selector. `backend: "text"`, `precision: "exact"`. Unknown packetId or path returns a degraded empty result.
 - `searchFiles(query, options?)` — POSIX ERE search via `git grep -E` at the resolved revision, or bundled ripgrep on the worktree fast path. `contextMode` controls enrichment: `"none"` (matching line only), `"lines"` (±2 context lines), `"symbols"` (tree-sitter enclosing `SymbolRef` attached per match, best effort).
 - `findSymbolMentions(symbolName, { pathGlob?, source? })` — word-boundary text search for the identifier at the resolved revision (default head), then tree-sitter token verification that drops string/comment hits for files with grammars. `precision: "syntactic"` when all returned mentions are token-verified, otherwise `"text"` with a degradation note. Never claims `semantic` or `exact` in v1.
 - `findLikelyTests({ path?, symbol?, source? })` — test filename/path conventions plus, when a symbol is given, symbol-name mention filtering inside candidate test files, all at the resolved revision (default head). Always `precision: "heuristic"`. An empty result is a valid answer, not a degradation.
-- `listFiles(glob)` — `git ls-tree -r` at the head revision filtered by the glob (worktree `git ls-files` in `diff_file` mode). Returns `{ paths, meta }` like every other tool; truncation at the cap sets `meta.truncated` and `meta.omittedCount` so the model knows the listing is incomplete, and is also recorded on the call's `ToolCallRecord` in `tool-calls.jsonl`.
+- `listFiles(glob)` — `git ls-tree -r` at the head revision filtered by the glob. Returns `{ paths, meta }` like every other tool; truncation at the cap sets `meta.truncated` and `meta.omittedCount` so the model knows the listing is incomplete, and is also recorded on the call's `ToolCallRecord` in `tool-calls.jsonl`.
 
 All tools are read-only. Source-reading and symbol-searching tools default to `{ kind: "head" }` and accept `{ kind: "base" }` and `{ kind: "git-ref" }` — `findDefinition`, `findSymbolMentions`, and `findLikelyTests` take `source?` first-class, and `searchFiles` takes it through `SearchOptions.source`. Only `listFiles` has no `source` parameter and operates on the head revision.
 
@@ -168,7 +153,7 @@ type ParseInput = {
   language: string
   // Full file text at the requested revision; parsing is in-memory only.
   content: string
-  // Provenance of content (head, base, git-ref, or worktree in diff_file mode).
+  // Provenance of content (head, base, or git-ref).
   source: SourceSelector
   // Git blob sha when content came from plumbing; sha256(content) otherwise.
   // Used as the parse-cache key.
@@ -199,7 +184,7 @@ Tool methods reject with `CodeninjaError` using existing stable codes only:
 
 - `path_outside_repo` — any path or glob that fails containment: absolute paths, `..` segments, NUL bytes, paths whose first segment is `.git`, or worktree paths whose resolved real path escapes the repository root.
 - `invalid_args` — malformed tool arguments: empty or oversized query (over 500 chars), a pattern rejected by both search engines, `startLine < 1` or `startLine > endLine`, both or neither of `symbolName`/`line` in `readSymbol`, both or neither of `packetId`/`path` in `readDiffBlocks`, or a `git-ref` selector failing `git check-ref-format` rules or matching `^-`.
-- `git_ref_missing` — a well-formed `git-ref` selector that does not resolve to a commit. (`base` selectors always resolve outside `diff_file` mode: the resolver populates `mergeBase` in every mode; in `diff_file` mode base reads degrade empty per the carve-out.)
+- `git_ref_missing` — a well-formed `git-ref` selector that does not resolve to a commit. (`base` selectors always resolve: the resolver populates `mergeBase` in every mode.)
 
 Absence is never an exception: a missing file at a revision, a symbol not found, or zero search matches return empty results with appropriate `ToolResultMeta` (`degraded` set when the answer quality is reduced, not merely empty). `parser_unavailable` conditions are recoverable inside this component and never cross the tool boundary as exceptions; they surface as degraded results.
 
@@ -235,28 +220,27 @@ src/repo/
 At construction, the index resolves a `RevisionBinding` once, preferring SHAs over ref names (Trust Boundaries):
 
 ```ts
-type RevisionBinding =
-  | { mode: "revisions"; headCommit: string; baseCommit: string } // baseCommit = ResolvedReviewInput.mergeBase
-  | { mode: "worktree" } // diff_file only
+type RevisionBinding = { headCommit: string; baseCommit: string } // baseCommit = ResolvedReviewInput.mergeBase
+// (The deferred diff-file input mode would add a worktree binding variant —
+// see architecture.md Future Considerations.)
 ```
 
 Derivation per review mode from `ResolvedReviewInput`:
 
 - `github_pr` and `branch`: `headCommit = headSha ?? revParse(headRef)`; `baseCommit = mergeBase` (the diff's old side under merge-base semantics).
 - `commit_range` (single commit or range): `headCommit = revParse(endCommit ?? startCommit)`; `baseCommit = mergeBase` — the resolver populates `mergeBase` in every mode (`architecture.md`): the first parent for single-commit review, the empty-tree sentinel for a root commit, the start commit for ranges. The binding never re-derives `startCommit^`. For a root commit, base reads resolve against the empty tree and return missing-content degraded empty results.
-- `diff_file`: `{ mode: "worktree" }`.
 
 `SourceSelector` resolution against the binding:
 
 - `{ kind: "head" }` → `headCommit`.
-- `{ kind: "base" }` → `baseCommit` (in `diff_file` mode, degraded empty per the carve-out).
+- `{ kind: "base" }` → `baseCommit`.
 - `{ kind: "git-ref", ref }` → validated by the ref guard, then `revParse(ref + "^{commit}")`; resolution failure is `git_ref_missing`. Resolved SHAs are memoized per run.
 
-All content reads go through git plumbing: `GitClient.catFile(sha, path)` (`git show <sha>:<path>` semantics), tree listings through `GitClient.lsTree`, revision search through `GitClient.grep`. Tree-sitter parses revision content in memory; no temporary worktrees are materialized and parsing never depends on checked-out files. V1 deliberately does not use the optional worktree read fast path for content tools — `git show` is cheap, and confining worktree filesystem access to ripgrep search (plus `diff_file` mode) minimizes the symlink containment surface.
+All content reads go through git plumbing: `GitClient.catFile(sha, path)` (`git show <sha>:<path>` semantics), tree listings through `GitClient.lsTree`, revision search through `GitClient.grep`. Tree-sitter parses revision content in memory; no temporary worktrees are materialized and parsing never depends on checked-out files. V1 deliberately does not use the optional worktree read fast path for content tools — `git show` is cheap, and confining worktree filesystem access to ripgrep search minimizes the symlink containment surface.
 
 ### Path And Ref Containment Chokepoint
 
-`path-guard.ts` is the single chokepoint required by Trust Boundaries. Every externally supplied path — model tool arguments, diff paths in `diff_file` mode, and glob patterns — passes through it before any git or filesystem use.
+`path-guard.ts` is the single chokepoint required by Trust Boundaries. Every externally supplied path — model tool arguments and glob patterns — passes through it before any git or filesystem use.
 
 `containPath(repoRoot, input)` rules, applied in order:
 
@@ -269,7 +253,7 @@ All content reads go through git plumbing: `GitClient.catFile(sha, path)` (`git 
 
 Violations reject with `path_outside_repo` and emit a `warn` telemetry event including the tool name and offending input (truncated).
 
-Worktree filesystem access (the ripgrep fast path's result paths and all `diff_file`-mode reads) adds a physical check on top of the lexical rules: `realpath(join(repoRoot, rel))` must reside within `realpath(repoRoot)`; otherwise reject with `path_outside_repo`. Symlinks that resolve inside the repository root may be followed; symlinks resolving outside it must not be. Ripgrep is additionally invoked without `--follow` so directory traversal never walks through symlinks at all.
+Worktree filesystem access (the ripgrep fast path's result paths) adds a physical check on top of the lexical rules: `realpath(join(repoRoot, rel))` must reside within `realpath(repoRoot)`; otherwise reject with `path_outside_repo`. Symlinks that resolve inside the repository root may be followed; symlinks resolving outside it must not be. Ripgrep is additionally invoked without `--follow` so directory traversal never walks through symlinks at all.
 
 Glob containment: `pathGlob` and `listFiles` globs are validated with the same lexical rules (rules 1–5), treating `*`, `**`, `?`, and `[...]` as opaque literals during validation. Globs are then passed as `:(glob)` pathspecs to git or `--glob` arguments to ripgrep — never interpolated into a shell.
 
@@ -292,7 +276,7 @@ type WorktreeSnapshot = {
 }
 ```
 
-The fast path applies to a search call iff: the binding mode is `revisions`, the source resolves to `headCommit`, `headEqualsReviewedHead` is true, and `trackedClean` is true. Base-revision searches, `git-ref` searches, and dirty or mismatched checkouts always use `git grep`. The snapshot is taken once; mid-run worktree edits are outside the v1 contract (plumbing reads remain correct regardless, and the fast path is best-effort).
+The fast path applies to a search call iff: the source resolves to `headCommit`, `headEqualsReviewedHead` is true, and `trackedClean` is true. Base-revision searches, `git-ref` searches, and dirty or mismatched checkouts always use `git grep`. The snapshot is taken once; mid-run worktree edits are outside the v1 contract (plumbing reads remain correct regardless, and the fast path is best-effort).
 
 Ripgrep invocation and alignment with the `git grep -E` contract:
 
@@ -305,17 +289,9 @@ Engine identity (`git-grep` vs `ripgrep`, including fallback transitions) is rec
 
 Searches are executed with a bounded match count (engine-level `--max-count`/result truncation at `maxResults + 1`) so caps do not require reading unbounded output.
 
-### Diff-File Mode Carve-Out
+### Diff-File Mode Carve-Out (Deferred)
 
-In `diff_file` mode there are no reviewed revisions:
-
-- `{ kind: "head" }` resolves to the checked-out worktree. Every read and search result carries `degraded: true` with reason `"diff_file mode: content from checked-out worktree, no reviewed revision"`. Worktree reads pass the physical containment check (realpath inside root, no symlink escape).
-- `{ kind: "base" }` returns a degraded empty result.
-- `{ kind: "git-ref" }` remains available (the local repository exists); results carry normal provenance for that ref.
-- Search uses ripgrep over the worktree (the natural engine here) with the same flag set; `git grep` against a revision is not applicable. All results remain degraded as above.
-- `listFiles` uses `git ls-files` (tracked worktree files) filtered by the glob.
-
-Context-line staleness validation happens before any review work, during Stage 3 classification: `components/repository_and_github.md` invokes this component's `validateHunkContextAgainstWorktree` primitive (above) per kept file and writes `FileFacts.degraded` from its verdict. This component owns only the worktree-read and comparison mechanics; classification owns execution, the degraded fact, and the per-file stage-3 telemetry. The packet builder propagates the flag to `ReviewPacket.degraded` and the coverage summary disclosure follows from there (`components/review_pipeline.md`).
+The diff-file input mode's tool-layer carve-out — worktree-as-head reads with degraded provenance, degraded-empty base reads, ripgrep-only search, and the hunk-context staleness validation flow — is deferred with the mode itself (see architecture.md Future Considerations).
 
 ### Tool Designs
 
@@ -335,15 +311,13 @@ Route by adapter. Tree-sitter path: parse at the resolved revision, then build `
 
 Fallback path (no grammar, oversized file, or parse failure): `language` from extension, `imports` from a single-pass regex over import-like lines (`^import\b`, `^from ... import`, `require(`), `topLevelSymbols` empty, `testSymbols` empty unless the filename matches test conventions (then one file-level `SymbolInfo` with `kind: "other"`), and a note describing the fallback. Meta: `backend: "text"`, `precision: "heuristic"`, `degraded: true`.
 
-#### readEnclosingSymbol And readSymbol
+#### readSymbol
 
-Tree-sitter path: `getEnclosingSymbol(file, line)` returns the smallest symbol whose `lineRange` contains the line. The result includes the symbol's source text capped to the snippet limits, truncated tail-first with `truncated: true` when over the cap. `readSymbol` by name resolves over `listSymbols`: exact match on `name`, or on `ownerType + "." + name` for qualified queries; Go qualified queries are normalized by stripping `(*`, `)`, and package qualifiers, so `(*Store).SaveUser`, `Store.SaveUser`, and `SaveUser` all resolve. First match in file order wins; `omittedCount` counts the rest.
+`readSymbol` absorbs enclosing-symbol lookup (formerly a separate tool): a line selector answers "what encloses this line", a name selector answers "show me this symbol". Symbol enumeration is `readFileOutline`'s job (`topLevelSymbols`).
 
-Fallback path: `readEnclosingSymbol` returns a ±20-line window centered on the requested line with `degraded: true` and no `symbol`. `readSymbol` by name falls back to an exact-name text search within the file (word-boundary match) and returns a window around the first hit, `degraded: true`; no hit returns a degraded empty result.
+Tree-sitter path: with a line selector, `getEnclosingSymbol(file, line)` returns the smallest symbol whose `lineRange` contains the line; the result includes the symbol's source text capped to the snippet limits, truncated tail-first with `truncated: true` when over the cap. With a name selector, resolution runs over the adapter's `listSymbols(file)` output: exact match on `name`, or on `ownerType + "." + name` for qualified queries; Go qualified queries are normalized by stripping `(*`, `)`, and package qualifiers, so `(*Store).SaveUser`, `Store.SaveUser`, and `SaveUser` all resolve. First match in file order wins; `omittedCount` counts the rest.
 
-#### listSymbols
-
-Tree-sitter path: all adapter symbols in start-line order, including methods (with `ownerType`) and members of top-level containers one level deep, capped with `truncated`/`omittedCount`. Fallback: the same heuristic regex outline used by the outline fallback when the language has fallback patterns (Go and TS/JS always have grammars, so this applies to other languages), otherwise an empty result; both `degraded: true`.
+Fallback path: a line selector returns a ±20-line window centered on the requested line with `degraded: true` and no `symbol`. A name selector falls back to an exact-name text search within the file (word-boundary match) and returns a window around the first hit, `degraded: true`; no hit returns a degraded empty result.
 
 #### findDefinition
 
@@ -389,7 +363,7 @@ Candidates come from tree listings at the resolved revision (default head; `sour
 
 #### listFiles
 
-`GitClient.lsTree(headCommit, glob)` (or worktree `git ls-files` in `diff_file` mode), capped at 500 paths. Returns `{ paths, meta }`: truncation at the cap sets `meta.truncated` and `meta.omittedCount` (model-visible through the standard tool-result rendering) and is recorded on the call's `ToolCallRecord`.
+`GitClient.lsTree(headCommit, glob)`, capped at 500 paths. Returns `{ paths, meta }`: truncation at the cap sets `meta.truncated` and `meta.omittedCount` (model-visible through the standard tool-result rendering) and is recorded on the call's `ToolCallRecord`.
 
 ### Result Caps
 
@@ -397,8 +371,7 @@ Caps are component constants (not user configuration in v1; per-worker `ToolBudg
 
 - `readRange`: 400 lines, 16000 chars per call.
 - `readFileOutline`: 120 top-level symbols, 40 test symbols, 60 imports, 8000 chars.
-- `readEnclosingSymbol` / `readSymbol`: 250 lines, 10000 chars per snippet.
-- `listSymbols`: 200 symbols.
+- `readSymbol`: 250 lines, 10000 chars per snippet.
 - `findDefinition`: 20 definitions, 30 candidate files parsed, 16000 chars total.
 - `readDiffBlocks`: 20 blocks, 16000 chars.
 - `searchFiles`: 50 results default, 200 hard cap, 500 chars per match line, 16000 chars total, 25 matches enriched in `"symbols"` mode.
@@ -417,7 +390,7 @@ Every truncation sets `truncated: true` and `omittedCount` where the signature a
 - Extension routing: `.go` → go; `.ts`, `.mts`, `.cts`, `.d.ts` → typescript; `.tsx` → tsx; `.js`, `.jsx`, `.mjs`, `.cjs` → javascript (the javascript grammar parses JSX). Routing is by extension and known filename, consistent with the Stage 3 language fact for changed files; tools may read files outside the diff, so routing must not require `FileFacts`.
 - ABI pinning: `web-tree-sitter` and the three grammar packages are version-pinned together in the lockfile; `Language.load` enforces ABI compatibility at runtime. A load failure (ABI mismatch, missing wasm) marks that language unavailable for the run: one `warn` telemetry event with the `parser_unavailable` classification, and all routing for that language degrades to the generic adapter for the rest of the run. It never fails the review.
 - Parsing is in-memory over revision content. Guards: files over 1.5 MB are not parsed (degraded result); the parser timeout is 1000 ms per file, after which the file is treated as unparsed (`hasErrors: true`, `tree: undefined`).
-- Parse cache: LRU of 128 entries keyed by `(contentSha, language)`. The git blob sha (from `ls-tree`, or computed once per read) keys plumbing content; `sha256(content)` keys worktree content in `diff_file` mode. Concurrent requests for the same key share one in-flight promise. Evicted trees are explicitly disposed (`tree.delete()`) to release WASM memory.
+- Parse cache: LRU of 128 entries keyed by `(contentSha, language)`. The git blob sha (from `ls-tree`, or computed once per read) keys plumbing content; `sha256(content)` is the fallback key when no blob sha is available. Concurrent requests for the same key share one in-flight promise. Evicted trees are explicitly disposed (`tree.delete()`) to release WASM memory.
 - Trees with ERROR/MISSING nodes are still used: adapters extract what is syntactically sound and mark `hasErrors`. Extraction quality consequences are defined per consumer (see Stage 4).
 
 ### Language Adapters
@@ -468,7 +441,7 @@ Side selection per hunk:
 
 - Hunks with added lines: facts come from head content; `changedLines` are the added lines' new-side line numbers, with `changedLinesSide: "new"`.
 - Deletion-only hunks (and all hunks of deleted files): facts come from base content; `changedLines` are the removed lines' old-side line numbers, with `changedLinesSide: "old"`. The required `changedLinesSide` field carries the side explicitly; consumers never infer it from line kinds.
-- Files with no base-side content available (`diff_file` mode, or the empty-tree base of a root commit) skip base-side facts and emit fallback records for deletion-only hunks.
+- Files with no base-side content available (the empty-tree base of a root commit) skip base-side facts and emit fallback records for deletion-only hunks.
 
 Tree-sitter path, per file side actually needed:
 
@@ -493,30 +466,14 @@ Parser gaps degrade packet context quality; they never block review.
 
 Rule engine: each rule declares `ruleId`, applicable languages, diff side, a matcher (a tree-sitter node check scoped to changed line ranges, a diff-line regex, or both), `category`, `lensHint`, fixed `confidence`, and an explanation template. Confidence grades certainty of the stated fact, not severity. Signals deduplicate per `(ruleId, path, line)`, and are capped at 20 per file and 200 per run (cap hits recorded in telemetry). Tree-backed rules go silent when parsing is unavailable; diff-regex rules run on diff line content alone and need no parse.
 
-Cross-language rules (emitted by the extraction pass):
+V1 ships exactly two cross-language rules — the complete rule set:
 
-- `core/deleted-test-file` — a kept file with `testStatus: "test"` and status `deleted`. Diff/facts-derived. Confidence high, category `testing`, lensHint `core/tests`.
-- `core/exported-api-change` — an exported enclosing symbol's normalized signature differs between base and head, or an exported symbol is deleted. Requires both-side parses; evaluated only for symbols overlapping changed lines, and base parses run only for files where the head side found an exported enclosing symbol. Confidence medium, category `architecture`, lensHint `core/architecture`.
+- `core/deleted-test-file` — a kept file with `testStatus: "test"` and status `deleted`. Diff/facts-derived (no parse needed). Confidence high, category `testing`, lensHint `core/tests`.
+- `core/exported-api-change` — an exported enclosing symbol's normalized signature differs between base and head, or an exported symbol is deleted. Requires both-side parses; evaluated only for symbols overlapping changed lines, and base parses run only for files where the head side found an exported enclosing symbol. Confidence medium, category `architecture`, lensHint `core/code-review`.
 
-Go rules (`lang/go/*`, lensHint `lang/go` unless noted):
+Per-language rule packs (`lang/go/*`, `lang/ts/*` — ignored errors, goroutines, concurrency primitives, defer-in-loop, fresh contexts, panics, removed test functions, `any` casts, non-null assertions, empty catches, type-suppression comments, removed test cases) are deferred to Future Considerations — see architecture.md. `LanguageAdapter.getStaticSignals` remains the seam they plug into; no v1 adapter implements it.
 
-- `lang/go/ignored-error-blank` — an added line discards a call result with a blank identifier (`_ = f(...)` or `x, _ := f(...)` forms, tree-verified as assignment to `_` of a call expression). Fact: a return value is discarded. Confidence high, category `correctness`.
-- `lang/go/new-goroutine` — an added `go_statement`. Confidence high, category `correctness` (concurrency).
-- `lang/go/concurrency-primitive-touched` — added or removed lines intersect `sync.`/`atomic.` selector expressions, channel operations (`<-`), or `select_statement` nodes. Confidence medium, category `correctness` (concurrency).
-- `lang/go/defer-in-loop` — an added `defer_statement` inside a `for_statement` body. Confidence high, category `performance`.
-- `lang/go/fresh-context-created` — an added `context.Background()` or `context.TODO()` call outside `main`/`init`/test functions. Fact: a fresh context is created rather than propagated. Confidence high, category `correctness`.
-- `lang/go/panic-added` — an added `panic(` call expression. Confidence high, category `correctness`.
-- `lang/go/test-function-removed` — a removed diff line matching `^func (Test|Benchmark|Fuzz|Example)\w` in a `*_test.go` file. Diff-regex rule (no parse needed). Confidence high, category `testing`, lensHint `core/tests`.
-
-TypeScript/JavaScript rules (`lang/ts/*`, lensHint `lang/typescript` unless noted):
-
-- `lang/ts/any-cast-added` — an added `as any` assertion or `: any` annotation (tree-verified `any` type node in added range). Confidence high, category `correctness`. TypeScript grammars only.
-- `lang/ts/non-null-assertion-added` — an added `non_null_expression` (`expr!`). Confidence high, category `correctness`. TypeScript grammars only.
-- `lang/ts/empty-catch-added` — an added or modified `catch_clause` whose block is empty or comment-only. Confidence high, category `correctness`.
-- `lang/ts/ts-suppression-added` — an added comment line containing `@ts-ignore`, `@ts-expect-error`, or `@ts-nocheck`. Diff-regex rule. Fact: type checking is suppressed. Confidence high, category `correctness`.
-- `lang/ts/test-case-removed` — a removed diff line matching `^\s*(it|test|describe)(\.\w+)?\(` in a test-convention file. Diff-regex rule. Confidence medium, category `testing`, lensHint `core/tests`.
-
-This list is intentionally conservative: every rule states a syntactic certainty, lint/style territory is excluded (no naming, formatting, or `eslint-disable` rules), and nothing here requires type information or flow analysis. New rules require an eval-backed justification, per the project's compounding-assets stance.
+The v1 set is intentionally conservative: each rule states a syntactic certainty, lint/style territory is excluded, and nothing requires type information or flow analysis. New rules require an eval-backed justification, per the project's compounding-assets stance.
 
 ### PacketContext Assembly
 
@@ -526,25 +483,25 @@ Assembly, on the side selected by Stage 4 rules (head for hunks with adds, base 
 
 - `path`, `packageName`: from the file outline data.
 - `enclosingFunction` / `enclosingMethod` / `enclosingType`: resolved from the packet hunks' primary enclosing symbols. A `method` fills `enclosingMethod` and its `ownerType`'s type declaration (when found in the same file) fills `enclosingType`; a `function` fills `enclosingFunction`; changed lines directly inside a type declaration fill `enclosingType`. With multiple hunks, the primary symbol of the first hunk in file order wins; others remain visible through `symbolFacts`.
-- `changedNodes`: `AstNodeSummary` records for the smallest named nodes covering each changed line region, deduped by range, capped at 10; `summary` is the node's first source line trimmed to 120 chars.
-- `importsUsedNearby`: file imports whose imported identifier appears (word-boundary text match) within the enclosing symbol range, or within hunk lines ±20 when no symbol resolved; capped at 15.
-- `nearbySiblingFunctions`: `SymbolInfo` for up to 2 preceding and 2 following sibling callables in file order — same `ownerType` for methods, top level for functions. Names and signatures only, no bodies.
+- `outline` (returned alongside the context, not a `PacketContext` field): the same `FileOutline` the `readFileOutline` tool produces for the packet's file and side, for the builder's context-budget assembly.
 - `relevantTests` (returned alongside the context, not a `PacketContext` field): the internal `findLikelyTests` flow for the primary enclosing symbol, capped at 5. The packet builder assigns it to `ReviewPacket.relevantTests`, the single carrier of likely tests.
 
-The serialized context targets ≤ 4000 chars; each list cap above keeps it under the packet builder's `maxContextChars` budget, and the builder may trim further (its sizing rules, not this component's). When no parse is available, the context degrades to `path` plus regex-scanned imports with empty lists and a `degradation` note; the packet still ships.
+Richer pre-attached context — `changedNodes` (`AstNodeSummary`), `importsUsedNearby`, `nearbySiblingFunctions` — is deferred to Future Considerations (see architecture.md); reviewers fetch that context on demand with the read-only tools.
+
+The serialized context targets ≤ 4000 chars, keeping it under the packet builder's `maxContextChars` budget; the builder may trim further (its sizing rules, not this component's). When no parse is available, the context degrades to `path` plus a regex-scanned fallback outline and a `degradation` note; the packet still ships.
 
 ### Caching And Concurrency
 
-- The tools facade is shared by concurrent packet workers, system follow-up workers, and verifiers (`review.concurrency` bound). All state is read-only after construction except the parse cache and memoized ref resolutions, both guarded by in-flight promise dedup; `bindPackets` runs once before Stage 7 concurrency begins.
+- The tools facade is shared by concurrent packet workers and verifiers (`review.concurrency` bound). All state is read-only after construction except the parse cache and memoized ref resolutions, both guarded by in-flight promise dedup; `bindPackets` runs once before Stage 7 concurrency begins.
 - Git and ripgrep subprocesses are bounded by an internal `p-limit` semaphore of 8 to avoid process storms under concurrent workers.
 - Content reads memoize `(sha, path) → content` alongside the parse cache so repeated windows over one file cost one `git show`.
 - Nothing in this component caches across runs; the local review cache is a model-call cache and does not apply here.
 
 ### Telemetry
 
-This component emits stage-attributed events through the injected recorder for its own passes: Stage 4 extraction (per-file parse outcomes, fallback usage, signal counts, cap hits). `diff_file` staleness verdicts are recorded at stage 3 by classification, which executes the primitive.
+This component emits stage-attributed events through the injected recorder for its own passes: Stage 4 extraction (per-file parse outcomes, fallback usage, signal counts, cap hits).
 
-The `RepositoryTools` facade supplies the per-call measurement behind the always-on `ToolCallRecord` contract (`architecture.md`): every invocation produces `backend`, `precision`, `degraded`/`degradationReason`, `truncated`, `resultCount`, `resultChars`, `durationMs`, and the normalized args (path/symbol/lines/query/glob/source/contextMode), and the facade reports them to the telemetry recorder, which owns persistence to `tool-calls.jsonl` and the `tool-calls-summary.json` aggregation (`components/skills_llm_telemetry.md`). Harness-initiated invocations that go through the facade — packet-context assembly, staleness validation, classifier reads if any — are recorded with `initiator: "harness"` and the current stage; for model-initiated calls, attaching `workerId`, `packetId`, `modelCallId`, and the other join ids is the worker runner's responsibility. Containment rejections surface as `status: "rejected"` records. Engine identity (`git-grep`/`ripgrep`, fallback transitions) lives on these records rather than in `ToolResultMeta`, as noted above. Containment violations additionally log at `warn`.
+The `RepositoryTools` facade supplies the per-call measurement behind the always-on `ToolCallRecord` contract (`architecture.md`): every invocation produces `backend`, `precision`, `degraded`/`degradationReason`, `truncated`, `resultCount`, `resultChars`, `durationMs`, and the normalized args (path/symbol/lines/query/glob/source/contextMode), and the facade reports them to the telemetry recorder, which owns persistence to `tool-calls.jsonl` and the `tool-calls-summary.json` aggregation (`components/skills_llm_telemetry.md`). Harness-initiated invocations that go through the facade — packet-context assembly, classifier reads if any — are recorded with `initiator: "harness"` and the current stage; for model-initiated calls, attaching `workerId`, `packetId`, `modelCallId`, and the other join ids is the worker runner's responsibility. Containment rejections surface as `status: "rejected"` records. Engine identity (`git-grep`/`ripgrep`, fallback transitions) lives on these records rather than in `ToolResultMeta`, as noted above. Containment violations additionally log at `warn`.
 
 ## Dependencies
 
@@ -553,15 +510,14 @@ This component depends on:
 - `GitClient` (`components/repository_and_github.md`) for `revParse`, `catFile`, `lsTree`, and `grep` — all revision access flows through it; subprocess hygiene is its contract.
 - The parsed `UnifiedDiff`, `DiffFile`/`DiffHunk`/`DiffLine` records, and `FileFacts` produced upstream (Stages 1–3).
 - `web-tree-sitter` plus the pinned `tree-sitter-go`, `tree-sitter-typescript`, and `tree-sitter-javascript` grammar packages, resolved from `node_modules`.
-- `@vscode/ripgrep` (>= 1.18.0) for the worktree search fast path and `diff_file`-mode search.
+- `@vscode/ripgrep` (>= 1.18.0) for the worktree search fast path.
 - `p-limit` for subprocess concurrency bounds.
 - The `Logger` and `TelemetryRecorder` interfaces (`components/skills_llm_telemetry.md`).
 
 Depended on by:
 
-- `components/review_pipeline.md`: `buildRepositoryIndex` output feeds the planner dossier (`HunkSymbolFacts`, `StaticSignal`); the packet builder calls `buildPacketContext` (context plus the likely-tests list for `relevantTests`) and the orchestrator calls `bindPackets` between Stage 6 and Stage 7.
-- `components/repository_and_github.md`: Stage 3 classification calls `validateHunkContextAgainstWorktree` in `diff_file` mode and writes `FileFacts.degraded` from its verdicts.
-- `components/skills_llm_telemetry.md`: the worker runner wraps `RepositoryTools` methods as LLM tool definitions for packet reviewers, system follow-up workers, and verifiers, and enforces `ToolBudget` on top of this component's per-call caps.
+- `components/review_pipeline.md`: `buildRepositoryIndex` output feeds the planner dossier (`HunkSymbolFacts`, `StaticSignal`); the packet builder calls `buildPacketContext` (context plus the file outline and the likely-tests list for `relevantTests`) and the orchestrator calls `bindPackets` between Stage 6 and Stage 7.
+- `components/skills_llm_telemetry.md`: the worker runner wraps the nine `RepositoryTools` methods as LLM tool definitions for packet reviewers and verifiers, and enforces `ToolBudget` on top of this component's per-call caps.
 - `components/evals.md`: consumes tool-call records (`tool-calls.jsonl`) and degradation telemetry to attribute losses; no direct code dependency.
 
 ## Test Plan
@@ -607,7 +563,8 @@ Tool behavior:
 - `read-range missing file degrades empty` — nonexistent path at the revision returns empty degraded result, not an error.
 - `outline go file` — package name, imports, top-level symbols with methods, and `Test*` symbols extracted from a Go fixture.
 - `outline fallback for unsupported language` — a `.rb` file yields heuristic outline with `backend: "text"`, `degraded: true`, and a fallback note.
-- `enclosing-symbol fallback window` — parse failure returns ±20-line window, no symbol, degraded.
+- `read-symbol line selector returns enclosing symbol` — a line inside a method returns that method as `SymbolInfo` with capped source text, `precision: "syntactic"`.
+- `read-symbol line-selector fallback window` — parse failure returns ±20-line window, no symbol, degraded.
 - `read-symbol selector validation` — both or neither of name/line rejects `invalid_args`.
 - `read-symbol qualified go method lookup` — `(*Store).SaveUser`, `Store.SaveUser`, and `SaveUser` resolve to the same method; duplicates report `omittedCount`.
 - `find-definition filters to definition nodes` — a name appearing in calls and one declaration returns only the declaration; meta `syntactic`.
@@ -641,32 +598,22 @@ Stage 4 extraction (aligning with the fixture tests named in `architecture.md`):
 
 Static signals (one per rule plus engine behavior):
 
-- `go ignored-error blank assignment`, `go new goroutine`, `go concurrency primitive touched`, `go defer in loop`, `go fresh context outside main`, `go panic added`, `go test function removed` — each fires on its positive fixture and stays silent on a near-miss negative fixture (e.g. `_ = x` non-call assignment; `context.Background()` inside `main`).
-- `ts any cast added`, `ts non-null assertion added`, `ts empty catch added`, `ts suppression comment added`, `ts test case removed` — same positive/negative pattern; `any`-rules silent for plain javascript.
-- `deleted test file signal` — deleted `_test.go` file emits `core/deleted-test-file`.
+- `deleted test file signal` — deleted `_test.go` file emits `core/deleted-test-file`; a deleted non-test file does not.
 - `exported api change signal` — exported Go function signature change emits `core/exported-api-change`; unexported change does not; base parse runs only when triggered.
 - `signals capped per file and run` — caps enforced with telemetry records; signals carry correct `side` and line numbers.
-- `tree rules silent without parse` — parse failure suppresses tree-backed rules while diff-regex rules still fire.
+- `tree rule silent without parse` — parse failure suppresses `core/exported-api-change` while the facts-derived `core/deleted-test-file` still fires.
 
 PacketContext assembly:
 
 - `packet context resolves method and owner type` — method change fills `enclosingMethod` and `enclosingType` from the same file.
-- `packet context sibling and import caps` — sibling callables capped at 2+2; `importsUsedNearby` filtered to identifiers used in the enclosing range and capped at 15.
-- `packet context changed nodes capped and summarized` — ≤10 `AstNodeSummary` records with 120-char summaries.
-- `packet context degraded without parse` — unparseable file returns path plus regex imports, empty lists, and a degradation note.
+- `packet context returns outline and tests alongside` — a parseable file yields the `FileOutline` and a ≤5-entry likely-tests list in the wrapper return; `PacketContext` itself carries no outline or tests field.
+- `packet context degraded without parse` — unparseable file returns path plus a fallback outline and a degradation note.
 - `packet context deletion-only uses base content` — deleted-file packet context assembles from base-side parse.
-
-Diff-file mode:
-
-- `diff-file head reads worktree degraded` — `{ kind: "head" }` returns worktree content with the diff_file degradation reason.
-- `diff-file base degrades empty` — `{ kind: "base" }` returns degraded empty.
-- `diff-file staleness primitive verdicts` — a context line not matching the worktree at its new line number yields `ok: false` with a reason (Stage 3 classification writes `FileFacts.degraded` from it); a matching file yields `ok: true`; a missing worktree file yields `ok: false`.
-- `diff-file search uses ripgrep with degraded meta` — searches answer from the worktree and carry degraded provenance.
 
 Integration (temporary git repositories):
 
 - `index built against non-checked-out revision` — build the index with HEAD on an unrelated branch; reads, outlines, search, and Stage 4 facts all reflect the reviewed revisions (plumbing-only), and the fast path stays off.
 - `dirty worktree never leaks into results` — modify a tracked file in the worktree; head reads and searches return committed content.
 - `end-to-end tool meta and telemetry` — a scripted tool-call sequence produces meta and telemetry records with backend, precision, engine, degradation, and truncation fields populated as specified.
-- `harness calls record initiator harness` — packet-context assembly and the staleness primitive, run through the facade, report `ToolCallRecord`s to the recorder with `initiator: "harness"`, the executing stage, and populated measurement fields (backend, precision, durationMs, resultChars, normalized args).
+- `harness calls record initiator harness` — packet-context assembly, run through the facade, reports `ToolCallRecord`s to the recorder with `initiator: "harness"`, the executing stage, and populated measurement fields (backend, precision, durationMs, resultChars, normalized args).
 - `containment rejection records rejected status` — a tool call failing containment produces a `status: "rejected"` `ToolCallRecord` alongside the `warn` telemetry event.

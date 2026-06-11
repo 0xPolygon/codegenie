@@ -36,12 +36,6 @@ codeninja review <commit> [end-commit]
 
 With no target arguments, `codeninja review` reviews the current branch against the resolved base branch, equivalent to `--branch <current-branch>` with the same base-resolution and merge-base semantics. If the current branch is the resolved base itself, or no base branch can be resolved, codeninja should fail with a clear error asking for an explicit review target. Reviewing uncommitted working-tree changes is out of scope for v1.
 
-The command also supports a utility diff-file mode for evals, CI artifacts, downloaded patches, and test fixtures:
-
-```bash
-codeninja review --diff /path/review.diff
-```
-
 Common review options:
 
 ```bash
@@ -53,7 +47,7 @@ codeninja review --reasoning low|medium|high|xhigh|auto
 codeninja review --format markdown|json
 ```
 
-`--depth` controls the global review budget and planner bias. The default is `normal`. `light` should favor cheaper packet review and smaller tool budgets. `deep` should allow more `deep` packet coverage, larger tool budgets, and more system follow-up work. Per-hunk coverage may still vary inside the selected depth when the planner sees concrete risk evidence.
+`--depth` controls the global review budget and planner bias. The default is `normal`. `light` should favor cheaper packet review and smaller tool budgets. `deep` should allow more `deep` packet coverage and larger tool budgets. Per-hunk coverage may still vary inside the selected depth when the planner sees concrete risk evidence.
 
 `--lens` restricts the run to the named lenses and may be repeated. It overrides the config-enabled lens set for the run, and it may explicitly enable a lens that is disabled by default, such as a lint/style lens. The planner still decides which of the selected lenses apply to each hunk.
 
@@ -73,7 +67,7 @@ Behavior:
 
 - Use the `gh` CLI as the GitHub integration layer for PR metadata, authentication, and comment posting.
 - Fetch PR title, body, base/head refs or SHAs, and posting metadata through `gh`.
-- Fetch existing PR review comments and review threads through `gh` and pass compact summaries to the planner as hints.
+- List codeninja's own prior review comments through `gh` for rerun duplicate avoidance (see Stage 11).
 - Fetch the PR head and base commits into the local repository through `gh` or git when they are not already present locally, and fail clearly when they cannot be fetched.
 - Compute changed files, commit metadata, commit messages/descriptions, and unified diff from local git whenever possible.
 - Include commit titles and commit descriptions across the reviewed range as planner input.
@@ -108,18 +102,6 @@ Behavior:
 - With two commits, review the range from the first commit to the second commit.
 - Collect commit titles and commit descriptions across the reviewed commit or range as planner input.
 - Do not attempt to post GitHub comments in v1 from commit or commit-range mode.
-
-### `--diff`
-
-`--diff <file-path>` reviews an existing unified diff file. This mode is useful for reviewing a patch produced by another tool, an evaluation fixture, a CI artifact, or a downloaded `.diff` file while still allowing codeninja to inspect the local repository.
-
-Behavior:
-
-- Read the diff from disk.
-- Use the local worktree for source inspection when diff paths match files in the repo.
-- Validate each hunk's context lines against the worktree; treat non-matching files as degraded and disclose them in the coverage summary rather than reviewing stale content silently.
-- Treat PR metadata and commit descriptions as unavailable unless separately provided by future options.
-- Do not post GitHub comments in v1 from diff-file mode.
 
 ## Provider And Model CLI
 
@@ -189,10 +171,12 @@ codeninja should use a staged review pipeline:
 5. Run a PR scout/planning pass.
 6. Build compact review packets per hunk or file.
 7. Run selected lenses on relevant packets, with bounded parallelism where packets can be reviewed independently.
-8. Run cross-file/system follow-up review where the planner or packet reviewers identify systemic risk.
+8. (Reserved — deferred.) Cross-file/system follow-up review is a Future Consideration; stage id 8 stays reserved for it.
 9. Verify candidate findings, with only minimal duplicate suppression needed to avoid repeated verifier calls.
 10. Deduplicate, rank, and compose final output.
 11. Optionally post verified inline comments and a PR summary through GitHub.
+
+Stage ids are stable for telemetry and evals. Mentally, the pipeline is six phases: Inventory (stages 1-4), Plan (5), Review (6-7), Verify (9), Compose (10), Publish (11), with stage 8 reserved for the deferred system follow-up.
 
 The unit of candidate review is the changed hunk or file. The unit of understanding is the affected system.
 
@@ -204,7 +188,7 @@ The v1 pipeline should remain useful even when syntax intelligence is incomplete
 
 Stage 1 resolves the requested review target into a deterministic local change inventory.
 
-Inputs can come from `--pr`, `--branch`, commit/range mode, or `--diff`, but the output should be normalized into the same internal shape: changed files, hunks, absolute old/new line mappings, file statuses, and commit or PR metadata when available.
+Inputs can come from `--pr`, `--branch`, or commit/range mode, but the output should be normalized into the same internal shape: changed files, hunks, absolute old/new line mappings, file statuses, and commit or PR metadata when available.
 
 Stage 1 should:
 
@@ -297,6 +281,8 @@ Static signals are deterministic hints produced by syntax, diff, or language-spe
 
 Static signals should help the planner and reviewers notice patterns worth investigating, such as deleted tests, exported API changes, context/lifecycle-sensitive code, concurrency primitives, migration files, ignored errors, resource cleanup patterns, or configured critical paths. They should be conservative, traceable, and cheap to compute.
 
+V1 ships exactly two cross-language rules: `core/deleted-test-file` and `core/exported-api-change`. Per-language signal packs are a Future Consideration.
+
 Each static signal should include:
 
 - Rule id.
@@ -313,9 +299,7 @@ The LLM decides whether a signal matters in the context of the PR. A static sign
 
 The scout/planning pass is the first LLM reasoning stage, but it is not a review pass and must not produce publishable findings.
 
-V1 planner input should be a compact deterministic dossier: PR metadata, commit messages, changed file inventory, file processing facts, configured review depth, configured labels/priorities, hunk ranges, `HunkSymbolFacts`, changed symbol summaries, touched tests, static signals, available lenses, existing PR review-thread summaries in `--pr` mode, and relevant spec or product documentation snippets when configured or cheaply discoverable.
-
-Existing PR review comments are planner hints, not findings. They may point the planner at risk areas, already-discussed concerns, or files deserving deeper coverage, but codeninja must still perform its own independent review: a concern raised in an existing comment becomes publishable only through codeninja's own evidence, candidate generation, and verification.
+V1 planner input should be a compact deterministic dossier: PR metadata, commit messages, changed file inventory, file processing facts, configured review depth, configured labels/priorities, hunk ranges, `HunkSymbolFacts`, changed symbol summaries, touched tests, static signals, and available lenses.
 
 The planner should explicitly build a diff understanding before assigning coverage and lenses. It should distinguish declared intent from inferred behavior:
 
@@ -323,26 +307,16 @@ The planner should explicitly build a diff understanding before assigning covera
 type DiffUnderstanding = {
   declaredIntent: string
   inferredBehavior: string
-  relevantSpecs: Array<{
-    path: string
-    title?: string
-    whyRelevant: string
-  }>
-  specAlignmentQuestions: string[]
 }
 ```
 
-Declared intent comes from PR title/body, commit titles/descriptions, branch names when useful, and configured or referenced spec documents. Inferred behavior comes from the changed files, changed symbols, tests, static signals, and diff summary.
+Declared intent comes from PR title/body, commit titles/descriptions, and branch names when useful. Inferred behavior comes from the changed files, changed symbols, tests, static signals, and diff summary.
 
-When relevant specs or component docs are available, Stage 5 should compare the PR's declared intent, inferred behavior, and spec expectations. The planner should use this comparison to schedule deeper packet review or system follow-up tasks for concrete alignment questions, such as "the PR claims to add retry cancellation but the changed symbol appears to replace the request context" or "the component spec requires audit logging but the changed flow does not touch the audit path."
+The v1 planner should not receive repository exploration tools by default. If it cannot decide from the dossier, it should mark uncertainty and schedule deeper hunk/file review rather than opening files itself.
 
-V1 spec/doc discovery should use configured `specs.paths` globs only. Candidate docs are ranked deterministically: path proximity to changed package roots first, then filename/title keyword overlap with changed file and symbol names. The top 5 documents enter the dossier as capped snippets (2000 characters each, headline-first extraction). The planner's `relevantSpecs` selects from these candidates only; there is no LLM-driven discovery in v1.
+Planner output should include the diff understanding, review intent, risk areas, review order, per-hunk coverage decisions, selected lenses, missing-test suspicions, and partial-review disclosure when needed.
 
-The v1 planner should not receive repository exploration tools by default. If it cannot decide from the dossier, it should mark uncertainty and schedule deeper hunk/file review or a system follow-up task rather than opening files itself.
-
-Planner output should include the diff understanding, review intent, risk areas, review order, per-hunk coverage decisions, selected lenses, system follow-up tasks, missing-test suspicions, spec-alignment questions, and partial-review disclosure when needed.
-
-Spec-alignment concerns must be evidence-gated. A publishable finding that claims the implementation does not match a spec or PR intent must cite both sides: the relevant intent/spec evidence and the changed code behavior. If either side is missing, the planner should turn it into an investigation question rather than a finding.
+Findings claiming the implementation contradicts its declared intent must cite both the intent evidence and the changed-code behavior.
 
 The planner should also identify where surrounding-code inspection matters. It should not broadly read files itself by default; instead it should name the hunks, symbols, files, tests, or existing patterns that later stages should inspect. Examples include sibling methods that establish a consistency pattern, call sites affected by a changed API, tests for the changed behavior, or nearby lifecycle/resource-management code.
 
@@ -380,9 +354,8 @@ codeninja should degrade predictably when model calls fail or budgets run out. C
 Per-stage LLM failure policy:
 
 - Every structured LLM call gets one schema-repair retry.
-- Stage 5 planner: if the planner call fails terminally, codeninja must fall back to a deterministic default plan — all reviewable hunks at `normal` coverage, core lenses plus the file's language lens, and no system follow-up tasks — and mark the run as degraded-planning in coverage disclosure. Later stages run normally.
+- Stage 5 planner: if the planner call fails terminally, codeninja must fall back to a deterministic default plan — all reviewable hunks at `normal` coverage, core lenses plus the file's language lens — and mark the run as degraded-planning in coverage disclosure. Later stages run normally.
 - Stage 7 packet workers: transient or schema failures get one retry. Terminal failure marks the packet's hunks as `review_failed` in coverage accounting, counts toward partial-review disclosure, and never silently drops hunks.
-- Stage 8 system tasks: terminal failure drops the task with a telemetry record and a coverage-summary note; it does not fail the run.
 - Stage 9: verification failure rules are unchanged from the Stage 9 section.
 - Stage 10 composer: one repair retry. Terminal failure triggers a deterministic fallback composition — verified findings rendered with template wording, fingerprint-level grouping only, ranked by severity and confidence — with a disclosure note that semantic composition was skipped.
 - Authentication or provider-wide failures at any stage fail the run.
@@ -390,7 +363,7 @@ Per-stage LLM failure policy:
 Budget exhaustion ladder, applying to `timeoutMs`, `maxTotalTokens`, `maxCostUSD`, and `maxModelCalls`:
 
 - Budgets are checked before each new model call or worker dispatch.
-- On exhaustion: stop scheduling new packet reviews, then drop unstarted system follow-up tasks in ascending priority order, then verify already-produced candidates using a reserved budget slice, and always run composition and emit a partial-review disclosure.
+- On exhaustion: stop scheduling new packet reviews, then verify already-produced candidates using the reserved budget slice, and always run composition and emit a partial-review disclosure.
 - codeninja should reserve approximately 15% of the configured token/cost budget, and a fixed tail of the runtime budget, for Stages 9-10 so completed review work is never lost to exhaustion.
 - A hard kill at 2x the configured runtime budget is fatal; even then codeninja should attempt to write telemetry artifacts before exiting.
 - The run-level coverage status is owned by the orchestrator. It aggregates plan-time coverage, runtime failures, budget stops, and verification incompleteness into the final coverage summary, not only the planner's partial-review flag.
@@ -409,7 +382,6 @@ Parallel execution rules:
 
 - Hunk/file candidate-generation passes may run concurrently.
 - The scout/planning pass must run before parallel packet review.
-- Cross-file/system follow-up review should run after packet review has produced initial signals, unless the planner explicitly schedules a focused follow-up earlier.
 - Verification may run concurrently per candidate finding.
 - Deduplication and final composition must run after verification.
 - Concurrency must be configurable and have a safe default.
@@ -435,7 +407,7 @@ Packet grouping should stay conservative in v1:
 - Prefer coalescing hunks with the same enclosing symbol.
 - Allow very nearby same-file hunks to coalesce when the combined packet stays below strict size limits.
 - Do not create cross-file review packets in v1.
-- Route cross-file concerns to the system follow-up stage instead.
+- Cross-file concerns are recorded as follow-up hints (see Stage 8).
 - Split packets back into smaller packets when patch or context size limits would be exceeded.
 
 Each packet should include:
@@ -451,8 +423,7 @@ Each packet should include:
 - Diff side metadata for added, removed, and context lines.
 - Changed line numbers.
 - Deterministic enclosing symbol metadata when available.
-- Nearby context, syntax-aware when available.
-- Imports or dependencies visible from the changed file.
+- Enclosing-symbol source and a file outline when available.
 - Related tests when discoverable.
 - Related file hints from the planner.
 - Surrounding-context hints from the planner or deterministic repository intelligence.
@@ -460,7 +431,7 @@ Each packet should include:
 
 Review packets should be compact. They should not contain the whole repository or large unrelated file dumps.
 
-Stage 6 should include cheap deterministic surrounding context when it improves reviewer accuracy without blowing the context budget. This may include enclosing symbol source, nearby syntax-aware lines, sibling symbol names, imports, likely tests, small examples of nearby established patterns, and planner-specified files or symbols to inspect with tools. It should not perform broad repo exploration or try to prove findings.
+Stage 6 should include cheap deterministic surrounding context when it improves reviewer accuracy without blowing the context budget: the enclosing symbol source, a file outline, and likely tests. Richer pre-attached context — sibling symbols, AST summaries, nearby imports — is a Future Consideration; reviewers fetch that context on demand with read-only tools. Stage 6 should not perform broad repo exploration or try to prove findings.
 
 Deleted files and deletion-only hunks should produce review packets when they are reviewable. These packets should clearly mark that the changed content is old-side/deleted content, include removed-line numbers, and include base-revision context when available. Reviewers should focus on risks caused by removal: removed required behavior, removed tests, removed security checks, removed cleanup, removed exports, broken callers, stale references, and migration/config consequences.
 
@@ -507,13 +478,11 @@ Skill and lens prompt content should be projected and capped for the review stag
 
 After each packet review, codeninja should validate the structured result before sending candidates to verification. It should record schema failures, out-of-hunk anchors, missing evidence, low-confidence findings, tool calls, prompt size, token usage, runtime, and task status in telemetry. Findings outside the changed hunk should not be treated as inline candidates unless they can be re-anchored to a changed line with concrete evidence.
 
-## Stage 8: Cross-File / System Follow-Up Review
+## Stage 8: Cross-File / System Follow-Up Review (Deferred)
 
-Cross-file/system follow-up review is a focused follow-up stage, not a second broad review of the whole PR.
+Cross-file/system follow-up review — promoting cross-file concerns into focused system review tasks — is deferred from v1 (see Future Considerations). Stage id 8 stays reserved for it so stage numbering remains stable for telemetry and evals.
 
-Stage 8 should run after packet review so it can use both planner follow-up tasks and packet review outputs. Inputs include planner `systemFollowUpTasks`, structured packet follow-up hints, packet uncertainties, candidate findings, packet metadata, changed symbols, and file facts.
-
-Packet reviewers should emit structured follow-up hints when they need cross-file evidence:
+Packet reviewers still emit structured follow-up hints when they need cross-file evidence they cannot resolve locally:
 
 ```ts
 type FollowUpHint = {
@@ -534,57 +503,11 @@ type FollowUpHint = {
 
 Hints must be pointer-rich. Vague hints such as "check architecture" should be rejected or ignored unless they include a specific question with named files or symbols.
 
-V1 system-task promotion is deterministic and intentionally simple. System follow-up tasks should be created only when there is a concrete, bounded question:
-
-- Planner-requested `systemFollowUpTasks` are scheduled after validation; they must name specific files or symbols.
-- A packet hint, candidate finding, or structured uncertainty is promoted to a system follow-up task only when at least two independent sources name the same file or symbol — for example, two packets hinting at the same interface, or a hint plus a candidate finding touching the same symbol. Matching is name-based over the `files` and `symbols` fields.
-- Promoted duplicates merge into one task.
-
-A richer cross-packet signal index — normalizing planner tasks, hints, candidates, and uncertainties into typed `ReviewSignal` records indexed by symbol, file, category, and label — is deferred (see Future Considerations) until evals show the simple mention-count rule missing real cross-file findings or producing noisy tasks.
-
-System follow-up tasks should be suppressed when:
-
-- They do not name specific files or symbols.
-- They are based on only one weak, low-confidence hint.
-- They are too broad for the configured file or tool budget.
-- They duplicate another scheduled system task.
-
-Each system follow-up task should be question-sized:
-
-```ts
-type SystemFollowUpTask = {
-  // Stable task id used by scheduler, telemetry, and final traceability.
-  id: string
-  // Short label for the system concern being reviewed.
-  topic: string
-  // Concrete question the follow-up reviewer must answer.
-  question: string
-  // Origins that caused this task to be scheduled.
-  sources: Array<{ kind: "planner" | "packet_hint" | "candidate" | "uncertainty"; packetId?: string }>
-  // Packet ids whose hunks/results are relevant to this task.
-  relatedPacketIds: string[]
-  // Bounded file set the follow-up reviewer should focus on.
-  files: string[]
-  // Bounded symbol set the follow-up reviewer should inspect or trace.
-  symbols: string[]
-  // Lenses active for this focused system follow-up review.
-  lenses: string[]
-  // Scheduler priority for ordering and budget allocation.
-  priority: "critical" | "high" | "normal" | "low"
-  // Read-only tool and investigation limits for this task.
-  toolBudget: ToolBudget
-}
-```
-
-System follow-up workers may use the same read-only semantic tool suite as packet reviewers, but with task-specific file/symbol constraints. They should produce structured candidate findings, resolved/rejected hint notes, and uncertainties. Findings still go through verification and deduplication before publication.
-
-System follow-up review is the place for surrounding-code inspection that crosses packet boundaries. It should answer concrete questions about interactions between changed files, API contracts, call paths, tests, specs, configuration, migrations, authorization flows, lifecycle behavior, concurrency, and architecture boundaries.
-
-System follow-up review should be tightly capped by default: maximum tasks, maximum files per task, maximum tool calls, maximum result size, and task timeout. Prefer skipping a vague follow-up over running an expensive broad pass.
+In v1, hints are not promoted into new review tasks. Every hint is recorded in telemetry, and medium- and high-confidence hints are surfaced in the final report as "needs human attention" notes so the cross-file question reaches a human reviewer instead of disappearing silently.
 
 ## Stage 9: Candidate Verification
 
-Candidate verification is the false-positive control stage. Findings from packet reviewers, system follow-up workers, and promoted static signals are not publishable until they pass verification.
+Candidate verification is the false-positive control stage. Findings from packet reviewers and promoted static signals are not publishable until they pass verification.
 
 Before spending LLM verifier calls, codeninja should run deterministic pre-verification gates:
 
@@ -599,7 +522,7 @@ Pre-clustering in this stage is a verifier scheduling optimization, not final de
 
 Every surviving candidate should be verified by an independent LLM verifier by default. Verification may be disabled only through explicit configuration for faster local experimentation, not as the default v1 behavior.
 
-The verifier receives one candidate at a time, its originating packet or system follow-up context, the relevant changed hunk(s), cited evidence, active lens criteria, and the read-only semantic tool suite. The verifier should use tools only to prove, narrow, or reject the candidate. It must not search for new issues.
+The verifier receives one candidate at a time, its originating packet context, the relevant changed hunk(s), cited evidence, active lens criteria, and the read-only semantic tool suite. The verifier should use tools only to prove, narrow, or reject the candidate. It must not search for new issues.
 
 The verifier may inspect surrounding code, but only to validate the candidate's specific claim. It should not expand into a new review pass or introduce unrelated findings.
 
@@ -654,9 +577,7 @@ Minimum required v1 tools:
 
 - `read_range(path, startLine, endLine, source?)`.
 - `read_file_outline(path, source?)`.
-- `read_enclosing_symbol(path, line, source?)`.
 - `read_symbol(path, symbolName | line, source?)`.
-- `list_symbols(path, source?)`.
 - `find_definition(symbolName, pathGlob?, source?)`.
 - `read_diff_blocks(packetId | path)`.
 - `search_files(query, pathGlob?, contextMode)`, where `contextMode` can return no context, line windows, or enclosing symbols.
@@ -668,9 +589,7 @@ Expected backend behavior:
 
 - `read_range` uses file/git reads and does not require tree-sitter.
 - `read_file_outline` uses tree-sitter when available to return package/module name, imports, top-level symbols, classes/types, functions/methods, and test markers; it falls back to extension/name heuristics and a compact text outline.
-- `read_enclosing_symbol` uses tree-sitter when available and falls back to a bounded line window with a degraded-result marker.
-- `read_symbol` uses tree-sitter when available and falls back to exact-name text search plus bounded line windows.
-- `list_symbols` uses tree-sitter when available and falls back to lightweight language heuristics or an empty degraded result.
+- `read_symbol` uses tree-sitter when available; given a line selector it returns the enclosing symbol; falls back to exact-name text search plus bounded line windows.
 - `find_definition` uses `git grep` to find candidate files at the reviewed revision, then tree-sitter parsing to return only definition sites; it falls back to text matches marked degraded when parsing is unavailable. Import questions are answered by `read_file_outline`, which includes the file's imports.
 - `read_diff_blocks` uses parsed diff data and does not require tree-sitter.
 - `search_files` uses `git grep` at the reviewed revision (or bundled ripgrep when the checkout matches the reviewed head) for discovery, then may enrich matches with tree-sitter enclosing symbols when `contextMode` asks for semantic context.
@@ -772,6 +691,8 @@ codeninja eval --eval-dir /path/to/evals --no-cache
 codeninja eval --from-artifacts /path/to/eval/logs/42
 ```
 
+`--from-artifacts` re-scores a previously captured run directory against the case expectations without re-running the review; it is the only artifact-replay mode in v1.
+
 Eval cases should be YAML files stored outside the codeninja repository when they reference private or real customer-like repositories. A case may point at:
 
 - An external local repository path.
@@ -781,21 +702,18 @@ Eval cases should be YAML files stored outside the codeninja repository when the
 - Expected final findings.
 - Expected candidate findings.
 - Findings that must not appear.
-- Verifier expectations.
-- Deduplication/merge expectations.
 - Cost, runtime, model-call, prompt-size, and tool-call budgets.
 
 The eval runner should write incrementing run directories under the eval suite, such as `logs/1`, `logs/2`, and so on. Each run directory should include the rendered review output, structured application log, run info, telemetry artifacts, debug prompts/results when enabled, and comparison artifacts against the previous run when available.
 
-Eval scoring should not only report pass/fail. It should explain where expected findings were lost:
+Eval scoring should not only report pass/fail. It should attribute every lost expected finding to one of four coarse loss labels:
 
 - Missed before candidate generation.
-- Produced as a candidate but lost before verification (candidate-only).
-- Rejected by verification.
-- Merged or deduplicated away.
-- Omitted by final selection, report caps, or confidence thresholds.
-- Present only as a follow-up hint.
-- Present in the right file but missing the expected root cause (partial match).
+- Lost at verification (pre-gate or verifier).
+- Lost at composition (deduped, merged, or capped).
+- Partial match (right file, wrong root cause).
+
+When an expected finding appears only as a follow-up hint, the scorer records the hint's presence as supporting detail on the loss label rather than as a separate label.
 
 This eval system should reuse normal review artifacts rather than running a separate review engine. It should be suitable for private eval suites like real-repo regression cases, and for public fixture-based evals that can run in CI.
 
@@ -819,12 +737,12 @@ A lens is the user-facing review perspective. A lens may map to one or more skil
 
 Bundled v1 lenses should include:
 
-- Core code review.
-- Logic/correctness bugs.
-- Architecture/design.
+- Core code review, which absorbs logic/correctness and architecture/design guidance as sections of one strong core skill.
 - Tests.
 - Go.
 - TypeScript/JavaScript.
+
+Logic-bugs and architecture exist as sections of the `core` skill, not separate lenses, because v1 runs one composite review task per packet; separate lenses would not change what runs.
 
 Additional language and domain lenses, such as security, database, performance, and concurrency, may be added as bundled skills after v1.
 
@@ -875,7 +793,6 @@ Stage 10 should:
 - Rewrite comments into concise, staff-engineer-quality Markdown.
 - Decide whether each final finding should be inline, summary-only, or suppressed from publication.
 - Preserve lineage back to verified candidates, packets, lenses, and source evidence.
-- In `--pr` mode, detect overlap between final findings and existing review threads. The composer may acknowledge the overlap in the finding wording and must record it in lineage and telemetry, but it must not silently drop a verified finding merely because an existing comment raised a similar point, and it must never adopt an existing comment as a finding without codeninja's own evidence and verification.
 
 The final composer should prefer no comments over weak comments. The default target is roughly 3-7 high-signal comments per PR, but this is a soft cap: verified critical and high-severity findings should not be hidden only to satisfy the default limit.
 
@@ -888,6 +805,7 @@ The composer should produce a final review object containing:
 - Evidence and failure mode for each finding.
 - Suggested fix or suggested test when useful.
 - Summary-only findings that cannot be anchored inline.
+- "Needs human attention" notes for unresolved medium- and high-confidence follow-up hints (see Stage 8).
 - A clear "no findings" result when no credible findings are found.
 - Posting plan for GitHub mode.
 
@@ -903,6 +821,7 @@ The Markdown report should include:
 - File and line references.
 - Evidence and failure mode for each finding.
 - Suggested fix or suggested test when useful.
+- "Needs human attention" notes for unresolved medium- and high-confidence follow-up hints.
 - A clear "no findings" result when no credible findings are found.
 
 When `--format json` is used, codeninja should print the final review object as JSON to stdout instead of the Markdown report. The JSON output should carry the same content as the Markdown report: summary, coverage, final findings with anchors, evidence, failure modes, suggested fixes and tests, and summary-only findings. Suppressed findings are not part of the report in either format; they are recorded only in run artifacts.
@@ -938,7 +857,7 @@ If a deleted-line or other inline anchor fails validation or GitHub rejects it, 
 
 Posting requires the `gh` auth identity to have pull-request write access only; a fine-grained token or machine account is recommended for shared or CI use.
 
-V1 GitHub publishing should use `gh` and should be supported only for `--pr` mode. Branch, commit, commit-range, and diff-file modes should not post GitHub comments in v1 unless a future option explicitly supplies PR posting context.
+V1 GitHub publishing should use `gh` and should be supported only for `--pr` mode. Branch, commit, and commit-range modes should not post GitHub comments in v1 unless a future option explicitly supplies PR posting context.
 
 ## Configuration
 
@@ -955,20 +874,17 @@ V1 configuration should support:
 - Default base branch for branch review.
 - Default review depth: `light`, `normal`, or `deep`.
 - Independent verification on or off. Verification is enabled by default and may be disabled only through this explicit configuration, per Stage 9.
-- Spec and documentation path globs used by planner intent/spec matching.
 - Path-based file handling rules, including processing mode, review priority, labels, and reasons.
 - Enabling and disabling lenses.
 - Extra Markdown skill paths.
 - Severity and confidence thresholds, including a minimum severity threshold for reported findings.
 - Maximum findings (the report cap) and soft comment cap (the inline-comment target). Neither cap suppresses verified critical or high-severity findings.
-- System follow-up review caps: maximum tasks, maximum files per task, maximum tool calls per task, maximum result size, and task timeout.
-- LLM runtime options for `@earendil-works/pi-ai`, including provider-call concurrency and optional per-role model overrides when supplied from user-level config or CLI. Repo `codeninja.toml` must not set provider credentials, default provider, default model, or reasoning effort.
+- LLM runtime options for `@earendil-works/pi-ai`, including provider-call concurrency; one provider/model/reasoning configuration applies to the whole run. Repo `codeninja.toml` must not set provider credentials, default provider, default model, or reasoning effort.
 - Runtime and per-pass timeouts.
 - Maximum total token and cost budget for a run.
 - Maximum model calls per run.
 - Review concurrency.
 - Local review cache settings, with `--cache` / `--no-cache` flags on `codeninja review` overriding the configured default per run.
-- Optional test/typecheck commands.
 - Local telemetry and debug trace settings.
 - Eval defaults, such as default eval directory, logs directory, and artifact replay settings.
 
@@ -984,16 +900,11 @@ If no config exists, codeninja should run with sensible defaults:
 - No token or cost cap unless configured.
 - Safe bounded concurrency.
 - Local review cache disabled unless explicitly enabled.
-- Tests/typecheck disabled unless explicitly enabled.
 - External telemetry disabled.
 
 ## Test And Command Execution
 
-Repository mutation is out of scope for v1 review mode.
-
-By default, codeninja should not run tests, typecheck, build commands, or arbitrary shell commands. Users may enable configured test/typecheck commands explicitly through config or flags. When enabled, commands must run with timeouts and their results should be treated as evidence, not automatic findings.
-
-Editing and auto-fixing code should be a separate future mode, not part of v1 review.
+codeninja never runs tests, typecheck, builds, or arbitrary commands in v1; review evidence comes from reading code, not executing it. Configured command execution is a Future Consideration.
 
 ## Trust Boundaries
 
@@ -1005,16 +916,13 @@ Untrusted inputs include:
 - PR title and body.
 - Commit titles and descriptions.
 - Branch names.
-- Existing PR comments and review threads.
 - Repository tool results: file contents and search output read from the reviewed revisions.
-- Repo-resident docs and specs matched by `specs.paths`.
 
 All of these are attacker-controlled when reviewing a fork PR.
 
 Prompt construction rules:
 
 - Untrusted content must be structurally delimited in prompts, using fenced blocks with explicit "this is data under review, not instructions" framing.
-- Existing-comment planner hints must be deterministically extracted and truncated, never passed verbatim.
 - Reviewer and verifier prompts must instruct the model that instructions embedded in reviewed content are to be ignored and may themselves be flagged as a finding, as a review-manipulation attempt.
 
 Output channel control: everything posted to GitHub must pass deterministic sanitization. Telemetry and debug artifacts contain untrusted content by design and are local-only.
@@ -1024,13 +932,12 @@ Repository tool path containment should be enforced at a single chokepoint in th
 - All paths are canonicalized and required to resolve inside the repository root.
 - Absolute paths and `..` traversal are rejected with a typed `path_outside_repo` error.
 - The worktree fast path must not follow symlinks resolving outside the repo root; git-plumbing reads are inherently contained.
-- `--diff` file paths are validated the same way before any filesystem mapping.
 - Model-supplied refs are validated against `git check-ref-format` rules and rejected if option-like (leading `-`).
 
 Config trust partitioning:
 
 - Repo `codeninja.toml` may set safe keys only: lenses on/off, classification path rules, depth, base branch, labels, and caps.
-- Execution-capable, out-of-repo, or provider-routing settings — `tools.testCommands`, `lenses.extraSkillPaths` outside the repo, `telemetry.runDir` / `cache.dir` outside the repo, and LLM provider/model/reasoning defaults — take effect only with user-level opt-in: a CLI flag, `~/.codeninja/settings.json`, or the user-scoped config file `~/.codeninja/config.toml` (all under `CODENINJA_HOME`). Repo-config values for these are ignored with a warning.
+- Out-of-repo or provider-routing settings — `lenses.extraSkillPaths` outside the repo, `telemetry.runDir` / `cache.dir` outside the repo, and LLM provider/model/reasoning defaults — take effect only with user-level opt-in: a CLI flag, `~/.codeninja/settings.json`, or the user-scoped config file `~/.codeninja/config.toml` (all under `CODENINJA_HOME`). Repo-config values for these are ignored with a warning.
 - Repo-config-relative paths are constrained to the repo root.
 
 Policy load revision: `codeninja.toml` and `.codeninja/skills/` always load from the trusted local checkout (the user's working copy), never from the PR head revision. If the PR under review modifies policy files (config or skills), that should be surfaced to the planner as a risk signal and noted in the report.
@@ -1050,7 +957,6 @@ codeninja should fail clearly for:
 
 - Not running inside a git worktree.
 - Invalid or missing input mode.
-- Invalid diff file path.
 - Missing `gh` CLI for GitHub PR mode.
 - `gh` authentication or permission failures.
 - PR not found.
@@ -1079,10 +985,19 @@ CI failure thresholds such as `--fail-on high` are out of scope for v1 unless ex
 These designs are deliberately deferred from v1. They are recorded as target shapes to build only when telemetry or evals show the simple v1 behavior falling short — never speculatively.
 
 - Hierarchical planning. Compact group summaries, per-group sub-planners, and a meta-planner that merges group plans into one prioritized review plan. V1 uses a single planner call with deterministic dossier compaction and, when necessary, deterministic chunked planning with mechanical concatenation. Build when chunked planning measurably degrades plan quality on large reviews.
-- Cross-packet review-signal index. Normalizing planner tasks, packet hints, candidate findings, and uncertainties into typed `ReviewSignal` records indexed by symbol, file, category, and configured labels, with graded promotion rules. V1 promotes system tasks with a simple deterministic rule: validated planner tasks plus the two-independent-mentions rule. Build when evals show missed cross-file findings or noisy/duplicate system tasks.
+- Cross-packet review-signal index. Normalizing planner tasks, packet hints, candidate findings, and uncertainties into typed `ReviewSignal` records indexed by symbol, file, category, and configured labels, with graded promotion rules. This is the richer follow-on shape for the deferred system follow-up stage in the next bullet. Build when the simple promotion rule, once built, misses real cross-file findings or produces noisy/duplicate system tasks.
+- Cross-file/system follow-up review (Stage 8). The deferred stage promotes cross-file concerns into question-sized system review tasks. Target shape: the planner may emit `systemFollowUpTasks` validated to name specific files or symbols; packet hints, candidate findings, and uncertainties are promoted only when at least two independent sources name the same file or symbol (name-based matching over `files`/`symbols`, duplicates merged into one task); each `SystemFollowUpTask` carries a stable id, topic, concrete question, sources, related packet ids, bounded file/symbol sets, lenses, priority, and a tool budget; system workers share the packet-reviewer read-only tool suite under task-specific constraints and tight default caps (tasks, files per task, tool calls, result size, timeout), and their findings still pass verification and composition. The `ReviewSignal` index above already lives here as the richer promotion follow-on. V1 records `FollowUpHint`s and surfaces medium/high-confidence ones as needs-human-attention notes instead (see Stage 8). Build when telemetry shows recurring medium/high-confidence hints left unresolved, or evals attribute missed findings to the absent cross-file pass.
 - Planner scheduling groups. Planner-emitted hunk groups carrying parallelism and ordering intent. V1 packets are independent by construction and scheduling is priority-only; groups become meaningful only if cross-packet context sharing or dependent review ordering is introduced.
 - Changed-symbol graph edges. Caller, implements, imports, and test relationships between changed symbols (`SymbolEdge`, `ChangedSymbolGraph`). V1 ships `HunkSymbolFacts` and file outlines only; reviewers answer relationship questions on demand with `find_symbol_mentions` and `find_likely_tests`. Build when evals show reviewer or verifier misses attributable to missing precomputed relationship data.
 - Language analyzer backends. Optional semantic enrichment (gopls, TypeScript compiler API, Rust Analyzer) behind the same repository tool contract, already anticipated by the tool layer's backend and precision metadata.
+- Diff-file review mode (`--diff <path>`). Reviewing a loose unified diff file with the worktree treated as head for source reads, per-hunk staleness validation of context lines against the worktree, and degraded-coverage disclosure for non-matching files. Build when a real consumer needs loose-patch review that `git apply` to a branch cannot serve.
+- Spec/doc discovery and spec alignment. Deterministic discovery of repo-resident specs through configured `specs.paths` globs (path proximity to changed package roots, then filename/title keyword overlap; top 5 docs as capped snippets), plus `relevantSpecs` and `specAlignmentQuestions` on the planner's diff understanding, with spec-alignment findings citing both the spec evidence and the changed-code behavior. V1 compares declared intent against inferred behavior only. Build when evals show intent-only alignment missing real spec violations.
+- Human-thread awareness. Fetching existing PR review comments and threads, passing deterministically extracted and truncated summaries to the planner as hints (never findings), and composer acknowledgment of overlap with existing threads — without dropping verified findings or adopting an existing comment without codeninja's own evidence and verification. V1 lists only codeninja's own prior comments, for rerun duplicate avoidance. Build when codeninja is observed re-raising points humans already made on the thread.
+- Configured command execution. Opt-in `tools.testCommands` for test/typecheck/build commands run with timeouts, results treated as evidence rather than automatic findings, enabled only through user-level trust. V1 never executes repository commands. Build when evals show findings that only execution evidence could confirm or reject.
+- Per-role model/reasoning tiering. Optional per-role model and reasoning overrides (planner, packet reviewer, verifier, composer) supplied from user-level config or CLI. V1 runs one provider/model/reasoning configuration for the whole run. Build when evals identify roles where cheaper models or lower reasoning hold review quality.
+- Rich pre-attached packet context. Sibling symbol names, AST summaries, nearby imports, and small examples of nearby established patterns assembled into packets at construction time. V1 packets carry enclosing-symbol source, a file outline, and likely tests; reviewers fetch the rest on demand with read-only tools. Build when tool-call telemetry shows reviewers repeatedly refetching the same local context.
+- Per-language static-signal packs. Language-specific deterministic signal rules — ignored errors, concurrency primitives, migration files, resource cleanup, lifecycle-sensitive code — beyond the two v1 cross-language rules. Build when evals show planner risk-targeting misses attributable to absent signals.
+- Fine-grained eval attribution. The seven-label loss taxonomy (candidate-only loss, verifier rejection, dedup/merge loss, selection-cap loss, and hint-only presence as first-class labels), verifier and deduplication/merge expectations in eval cases, and additional replay modes such as candidate-recall and merge-only replay. V1 scores four coarse loss labels and supports `--from-artifacts` re-scoring only. Build when coarse labels are insufficient to localize a regression.
 
 ## Out Of Scope For V1
 
@@ -1091,7 +1006,6 @@ These designs are deliberately deferred from v1. They are recorded as target sha
 - Approving or requesting changes through GitHub reviews.
 - Auto-fixing or editing code.
 - Executable TypeScript skill packages from users.
-- Posting GitHub comments from `--diff` mode.
 - Full-repository prompt dumping.
 - Running every lens on every hunk.
 - Style, naming, formatting, or lint review by default.

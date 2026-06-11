@@ -6,17 +6,17 @@ status: complete
 
 ## Purpose And Scope
 
-The evals component implements `codeninja eval`: repeatable, end-to-end quality testing of the review pipeline against real repositories, fixture repositories, and previously captured run artifacts. It loads YAML eval cases, executes each case through the normal review engine (or replays captured artifacts), scores the results against the case's expectations with deterministic matching, attributes every missed expectation to the pipeline stage that lost it, writes incrementing run directories under the eval suite, and diffs each run against the previous run of the same case.
+The evals component implements `codeninja eval`: repeatable, end-to-end quality testing of the review pipeline against real repositories, fixture repositories, and previously captured run artifacts. It loads YAML eval cases, executes each case through the normal review engine (or re-scores captured artifacts), scores the results against the case's expectations with deterministic matching, attributes every missed expectation to the pipeline stage that lost it, writes incrementing run directories under the eval suite, and diffs each run against the previous run of the same case.
 
 This component owns:
 
 - The `codeninja eval` command surface: `--eval-dir`, `--cache` / `--no-cache`, and `--from-artifacts`.
-- Eval suite discovery, `EvalCase` YAML loading, and case validation, including the full matching semantics for `EvalFindingExpectation`, `VerifierExpectation`, and `MergeExpectation` (the types are defined in `architecture.md`; this doc elaborates their behavior and must not reshape them).
+- Eval suite discovery, `EvalCase` YAML loading, and case validation, including the full matching semantics for `EvalFindingExpectation` (the type is defined in `architecture.md`; this doc elaborates its behavior and must not reshape it).
 - Per-case execution: repo resolution for external and fixture repositories, per-case review-setting overlays on top of config, cache toggling per run, and telemetry wiring into the eval run directory.
 - Incrementing `logs/<n>` run directories and their layout, including `info.json`, `out.log`, `codeninja-review.out.md`, the embedded `telemetry/` artifact set (the engine's full standard run directory, including `debug/` when debug traces are enabled), and comparison artifacts.
 - Scoring: the expectation-matching algorithm (field rules, glob and line-range-overlap and severity-ordering and regex semantics, deterministic assignment when findings and expectations match many-to-many, and `should_not_find` violations).
-- Stage-loss attribution: labeling each missed expectation as `missed-before-candidate-generation`, `candidate-only`, `rejected-by-verification`, `merged-deduped-away`, `omitted-by-final-selection`, `hint-only`, or `same-file-partial-match` by walking `candidate-findings.json`, `verification.json`, `final-selection.json`, and `final-findings.json`.
-- Replay modes for `--from-artifacts` and artifact-backed cases: `candidate-recall`, `final-report`, and `merge-only`, including which artifacts load and which stages re-run.
+- Stage-loss attribution: labeling each missed expectation with one of the four coarse loss labels — `missed-before-candidate-generation`, `lost-at-verification` (pre-gate or verifier), `lost-at-composition` (deduped, merged, or capped), or `partial-match` — by walking `candidate-findings.json`, `verification.json`, `final-selection.json`, and `final-findings.json`, with follow-up-hint presence recorded as supporting detail on the label.
+- Artifact replay for `--from-artifacts` and artifact-backed cases: re-scoring saved final findings and candidate findings against (possibly edited) expectations; no stages re-run, no repository required.
 - Budget expectations: cost, runtime, model-call, prompt-size, tool-call, finding-count, and duplicate-group checks against run telemetry.
 - Compare-to-previous regression diffing between runs of the same case.
 
@@ -28,6 +28,7 @@ Explicitly not this component's responsibility:
 - GitHub posting. Eval runs must never post; `--post-github-comments` is rejected inside eval cases.
 - LLM-judged scoring. V1 scoring is deterministic field matching only, per `architecture.md`. Semantic or LLM-assisted matching is deferred.
 - Fixture materialization tooling (cloning bundles, unpacking archives). V1 requires fixture paths to already be git worktrees; how they got there (CI clone, setup script) is outside codeninja.
+- Stage-level replay (candidate-recall, merge-only), verifier/merge expectations (`VerifierExpectation`, `MergeExpectation`), and the fine-grained loss-label taxonomy — all deferred to Future Considerations (see architecture.md).
 
 ## Public Interface
 
@@ -102,7 +103,7 @@ export async function runEvalCase(
 
 // Implements --from-artifacts: loads info.json from sourceRunDir, re-reads the
 // case YAML when still present (falling back to the embedded snapshot),
-// allocates the next run number in the same logs directory, replays, scores.
+// allocates the next run number in the same logs directory, re-scores.
 // Errors: invalid_args when sourceRunDir is missing or lacks info.json;
 // config_error when the re-read case fails validation.
 export async function replayFromArtifacts(
@@ -148,8 +149,9 @@ export async function allocateRunDir(
 ): Promise<{ runNumber: number; dir: string }>
 
 // Loads the telemetry artifact set into a typed in-memory view. Missing
-// optional artifacts yield empty/undefined sections; missing artifacts that a
-// replay mode requires throw invalid_args naming the missing file.
+// optional artifacts yield empty/undefined sections; missing required artifacts
+// (final-findings.json, candidate-findings.json) throw invalid_args naming the
+// missing file.
 export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtifacts>
 
 // Highest-numbered run < before in logsDir whose info.json caseName matches.
@@ -172,27 +174,21 @@ export function compareToPrevious(
 
 ### Types Owned By This Component
 
-`EvalCase`, `EvalFindingExpectation`, `VerifierExpectation`, and `MergeExpectation` are defined in `architecture.md` and are referenced by name throughout this doc — they are not redefined here. The types below are new, owned by this component, and follow the `Eval*` prefix convention.
+`EvalCase` and `EvalFindingExpectation` are defined in `architecture.md` and are referenced by name throughout this doc — they are not redefined here. (`VerifierExpectation` and `MergeExpectation` are deferred to Future Considerations — see architecture.md.) The types below are new, owned by this component, and follow the `Eval*` prefix convention.
 
 ```ts
+// The four coarse v1 loss labels from the parent specs. The fine-grained
+// taxonomy is deferred to Future Considerations — see architecture.md.
 type EvalLossLabel =
   | "missed-before-candidate-generation"
-  | "candidate-only"
-  | "rejected-by-verification"
-  | "merged-deduped-away"
-  | "omitted-by-final-selection"
-  | "hint-only"
-  | "same-file-partial-match"
+  | "lost-at-verification"            // pre-gate or verifier
+  | "lost-at-composition"             // deduped, merged, or capped
+  | "partial-match"                   // right file, wrong root cause
 
 type EvalExpectationList =
   | "should_find"
   | "should_find_candidate"
   | "should_not_find"
-  | "verifier_should_decide"
-  | "merge_should_keep"
-  | "merge_should_drop"
-  | "merge_should_merge"
-  | "merge_should_not_merge"
 
 type EvalMatchOutcome = {
   matched: boolean
@@ -223,6 +219,16 @@ type EvalLossDetail = {
     outcome: string // e.g. "publication=suppressed reason=report-cap", "verdict=reject", "pre-gate=low_confidence"
     fieldMismatches?: EvalMatchOutcome["fields"]
   }>
+  // Follow-up-hint presence is supporting detail on the label, never a label
+  // of its own: hints from events.jsonl matching the expectation under the
+  // reduced hint matching rules, with their confidence.
+  matchingHints?: Array<{
+    packetId?: string
+    question: string
+    files: string[]
+    symbols: string[]
+    confidence: "high" | "medium" | "low"
+  }>
   // Enrichment for missed-before-candidate-generation, when artifacts allow.
   coveringPacketIds?: string[]
   coveringPacketLenses?: string[]
@@ -237,7 +243,7 @@ type EvalExpectationResult = {
   // True when the inputs this expectation was checked against were replayed
   // from saved artifacts rather than produced by stages run in this eval run.
   fromReplayedArtifacts?: boolean
-  matched: Array<{ findingId: string; artifact: "final-findings" | "candidate-findings" | "verification" }>
+  matched: Array<{ findingId: string; artifact: "final-findings" | "candidate-findings" }>
   loss?: EvalLossDetail
   note?: string
 }
@@ -254,7 +260,7 @@ type EvalBudgetResult = {
     | "maxElapsedSeconds" | "maxModelCalls" | "maxToolCalls" | "maxPromptCharsByStage"
   stage?: ReviewStage // for maxPromptCharsByStage entries
   status: "pass" | "fail" | "skipped"
-  skipReason?: string // e.g. "stage not executed in replay mode final-report"
+  skipReason?: string // e.g. "stage not executed in artifact replay"
   limit: number
   actual?: number
 }
@@ -300,10 +306,9 @@ type EvalRunInfo = {
   caseFile?: string // suite-relative path when run from a suite
   caseHash: string // sha256 of the raw case YAML bytes
   caseSnapshot: EvalCase // embedded resolved case; makes the run dir self-contained
-  mode: "live" | "replay"
+  mode: "live" | "replay" // replay = artifact re-scoring; no stages re-run
   replay?: {
     sourceArtifacts: string
-    replayMode: "candidate-recall" | "final-report" | "merge-only"
     caseSource: "yaml" | "snapshot"
   }
   repo?: { root: string; baseSha?: string; headSha?: string; mergeBase?: string }
@@ -373,7 +378,7 @@ There are no eval-specific `CodeninjaErrorCode` members; evals maps onto existin
 
 - `invalid_args`: conflicting/missing flags; `--from-artifacts` path missing or lacking `info.json`; an artifact replay missing a file its mode requires.
 - `config_error`: eval case YAML parse or validation failures (cases are user-authored configuration); unresolvable `eval.defaultEvalDir`.
-- `not_git_worktree` / `git_ref_missing`: a case's `repo.external`/`repo.fixture` is not a git worktree, or recorded review SHAs cannot be resolved for a `candidate-recall` replay. These are per-case errors (case status `error`), not suite-fatal.
+- `not_git_worktree` / `git_ref_missing`: a case's `repo.external`/`repo.fixture` is not a git worktree (live cases only; artifact replay needs no repository). These are per-case errors (case status `error`), not suite-fatal.
 - Engine errors during a live case run surface unchanged in the case's `score.error` and `out.log`; the suite continues with the next case.
 
 ## Internal Design
@@ -392,7 +397,7 @@ codeninja eval
            repo case  -> resolve repo root + ReviewInput; overlay review settings;
                          invoke review engine in-process with telemetry routed
                          into logs/<n>/telemetry/
-           artifacts case -> load source artifacts; replay per mode
+           artifacts case -> load source artifacts; re-score (no stages re-run)
          load artifacts from logs/<n>/telemetry/
          score (matching + attribution + budgets)  [pure, artifact-only]
          write info.json, out.log, codeninja-review.out.md, debug views
@@ -403,7 +408,7 @@ codeninja eval
 
 V1 runs cases sequentially. Sequential execution keeps run numbering, cache behavior, provider rate limits, and budget accounting easy to reason about; parallel case execution is not designed in v1. Within a case the engine parallelizes normally per its own configuration.
 
-Scoring never reads the repository — it consumes artifacts only. Repository access happens in exactly two places: live case execution (the engine) and `candidate-recall` replay (the verifier's read-only tools).
+Scoring never reads the repository — it consumes artifacts only. Repository access happens in exactly one place: live case execution (the engine). Artifact replay requires no repository.
 
 ### Eval Suite Loading And Case Validation
 
@@ -417,15 +422,13 @@ Validation rules (all violations are collected across all case files and reporte
 - Exactly one execution source must be present: `repo.external`, `repo.fixture`, or `artifacts.path`. Zero or more than one is invalid.
 - `repo.external` should be an absolute path (with `~` expansion). `repo.fixture` resolves relative to the suite directory when relative. Both must be existing git worktrees at execution time; v1 does not materialize fixtures (no bundles, no archives) — a missing or non-git path is a per-case `error` at run time, not a load-time failure, so suites with some unavailable private repos still run their other cases.
 - `command` is only meaningful with `repo`. At most one of `command.pr`, `command.branch`, `command.target` may be set. `command.base` requires `command.branch`. `command.target` accepts `<commit>` or `<start>..<end>` and maps to the engine's commit / commit-range mode. With no target fields, the engine's default branch-mode resolution applies inside the case repo.
-- `command.args` are extra `codeninja review` CLI arguments parsed by the same flag parser the review command uses, appended last (so they win over structured fields on overlap). Target-selection flags (`--pr`, `--branch`, `--base`, `--diff`, positionals) and `--post-github-comments` are forbidden inside `args` — eval runs never post to GitHub.
-- `artifacts.mode`, when present, must be one of the three replay modes. `artifacts.path` resolves relative to the suite directory when relative.
+- `command.args` are extra `codeninja review` CLI arguments parsed by the same flag parser the review command uses, appended last (so they win over structured fields on overlap). Target-selection flags (`--pr`, `--branch`, `--base`, positionals) and `--post-github-comments` are forbidden inside `args` — eval runs never post to GitHub.
+- `artifacts` carries only `path` in v1 (replay-mode selection is deferred with stage-level replay — see architecture.md Future Considerations); unknown keys under `artifacts` are validation errors like everywhere else. `artifacts.path` resolves relative to the suite directory when relative.
 - Every `EvalFindingExpectation` must set `id` (unique across `should_find`, `should_find_candidate`, and `should_not_find` together — one id namespace per case) plus at least one matching field. An expectation with only an `id` would match everything (or, under `should_not_find`, ban everything) and is rejected as an authoring error.
 - `lineRange` must be `[a, b]` with integers `1 <= a <= b`.
 - `category` must be a valid `FindingCategory`; `severityAtLeast` a valid `Severity`.
 - `titlePattern` / `failureModePattern` must compile as ECMAScript regular expressions; compilation failures are load-time errors.
-- `verifier.should_decide[].expectationId` and every id inside `merge.*` must reference a declared expectation id; dangling references are errors.
-- `merge.should_merge[].expectationIds` and `merge.should_not_merge[].expectationIds` must list at least two ids.
-- `MergeExpectation.intoOne` must be `true` in v1. `intoOne: false` has no defined semantics in the parent specs and is rejected at validation as reserved.
+- `verifier` and `merge` blocks do not exist in the v1 `EvalCase`; their presence is an unknown-key validation error (verifier/merge expectations are deferred — see architecture.md Future Considerations).
 - `expect.maxPromptCharsByStage` keys must parse as numeric stage ids `1`–`11` (YAML keys are strings, e.g. `"7"`); values must be positive integers. All other `expect.*` values must be positive numbers (`minFindings` may be `0`).
 - `review.*` values must satisfy the same constraints the config schema applies to the corresponding `CodeninjaConfig` fields.
 
@@ -440,7 +443,7 @@ command:
   base: main
 review:
   depth: normal
-  lenses: ["core/logic-bugs", "lang/go"]
+  lenses: ["core/code-review", "lang/go"]
   verify: true
   cache: true
 expect:
@@ -460,10 +463,6 @@ should_not_find:
   - id: no-style-nits
     category: maintainability
     titlePattern: "naming|formatting"
-verifier:
-  should_decide:
-    - expectationId: tx-rollback-leak
-      verdict: keep
 ```
 
 ### Per-Case Review Settings Overlay And Repo Resolution
@@ -534,7 +533,7 @@ Rules:
 
 - Run numbers are unpadded positive integers (`logs/1`, `logs/2`, …), ordered numerically, never lexicographically. Allocation scans existing numeric children, takes `max + 1` (starting at `1`), and claims the directory with `mkdir` — on `EEXIST` (a concurrent invocation), it retries with the next number. Non-numeric children of the logs dir are ignored.
 - `telemetry/` is the engine's full standard run directory written in place, per `architecture.md`'s eval layout — evals never suppresses or reshapes it. Attribution uses `coverage.json` and `review-plan.json` as enrichment when present.
-- `codeninja-review.out.md` is the Markdown rendering of the final `ReviewResult`, written by the eval runner regardless of any `--format` in `command.args`. In `final-report` replay mode it is copied from the source run when present.
+- `codeninja-review.out.md` is the Markdown rendering of the final `ReviewResult`, written by the eval runner regardless of any `--format` in `command.args`. In artifact replay it is copied from the source run when present.
 - `out.log` is the eval runner's own structured log (case resolution, settings overlay, stage execution, scoring summary, compare results), using the standard `Logger` with stage `0`; the engine's chronological log remains `telemetry/run.log`.
 - `info.json` is the single run-info document: it embeds the resolved case snapshot, the case hash, repo identity and reviewed SHAs, per-stage `executed` / `replayed-from-artifacts` / `not-applicable` records, cache resolution, timing, and the full `EvalScore`. It is written last (temp-file-then-rename) so a complete `info.json` marks a complete run.
 - Debug traces live in `telemetry/debug/` with the engine run directory's own layout (`llm-calls/<call-id>.json`, `tool-calls/<tool-call-id>.json`), present when `review.debug` enables `telemetry.debugTrace`. Evals derives no separate prompt/result views; the engine's debug artifacts are consumed as-is.
@@ -545,14 +544,14 @@ Scoring and attribution read the following artifacts. The expectation-bearing fo
 
 | Artifact | Evals reads | Writer (owner) |
 | --- | --- | --- |
-| `candidate-findings.json` | `CandidateFinding[]`: every structurally valid candidate from Stages 7–8, with `id`, matching fields, `producedBy`, `clusterId?`, `duplicateOf?` | `components/review_pipeline.md` |
+| `candidate-findings.json` | `CandidateFinding[]`: every structurally valid candidate from Stage 7, with `id`, matching fields, `producedBy`, `clusterId?`, `duplicateOf?` | `components/review_pipeline.md` |
 | `verification.json` | Per candidate id: either a pre-verification-gate record `{ candidateId, gate: "suppressed", gateReason }` or `{ candidateId, gate: "passed", verdict: VerificationVerdict }`; revised findings carry `verdict.finalFinding`. Pre-clustered duplicate members carry no record of their own — the reader resolves them through the candidate's `duplicateOf` chain to the representative's record | `components/review_pipeline.md` |
 | `final-selection.json` | Per verified-kept finding: `{ findingId, decision: "published" \| "merged" \| "suppressed", reason, mergedIntoFingerprint? }` — the telemetry requirement "final-selection decisions and reasons for omitted verified findings" in artifact form | `components/review_pipeline.md` |
 | `final-findings.json` | `FinalFinding[]` including suppressed entries, with `publication`, `fingerprint`, `mergedCandidateIds` | `components/review_pipeline.md` |
 | `review-plan.json` | `ReviewPlan` (coverage decisions per hunk, skip reasons) | `components/review_pipeline.md` |
 | `packets/*.json` | `ReviewPacket[]` (paths, hunk line ranges, lenses) | `components/review_pipeline.md` |
 | `coverage.json` | `RunCoverageStatus` + per-hunk records (filter/skip/review_failed status) | `components/review_pipeline.md` |
-| `events.jsonl` | Hint events: one event per emitted follow-up hint and structured uncertainty (stage 7/8; `event: "follow_up_hint"` / `"uncertainty"`) carrying `{ packetId, question, files, symbols, reason, confidence }` in `data` (uncertainty events omit `reason`/`confidence`), plus `system_task_scheduled` / `system_task_suppressed` events | `components/skills_llm_telemetry.md` (recorder), `components/review_pipeline.md` (emission) |
+| `events.jsonl` | Hint events: one event per emitted follow-up hint and structured uncertainty (stage 7; `event: "follow_up_hint"` / `"uncertainty"`) carrying `{ packetId, question, files, symbols, reason, confidence }` in `data` (uncertainty events omit `reason`/`confidence`) | `components/skills_llm_telemetry.md` (recorder), `components/review_pipeline.md` (emission) |
 | `tool-calls.jsonl`, `tool-calls-summary.json` | Per-call `ToolCallRecord`s (tool, stage, initiator, status, normalized args, join ids) and per-tool/per-stage aggregates — the source for tool-call counts and the `maxToolCalls` check | `components/skills_llm_telemetry.md` |
 | `cost-profile.json`, `model-calls.jsonl`, `model-calls-summary.json`, `run.json` | Total cost; per-call stage + prompt char size; per-stage call counts; total runtime; cache hit/miss counts | `components/skills_llm_telemetry.md` |
 
@@ -581,15 +580,10 @@ When matching against final findings, the post-revision field values apply (a `r
 | List | Matched against | Pass condition |
 | --- | --- | --- |
 | `should_find` | Reported final findings (`final-findings.json`) | Expectation satisfied under the assignment (below) |
-| `should_find_candidate` | All candidates (`candidate-findings.json`), packet- and system-produced | Satisfied under the assignment |
+| `should_find_candidate` | All candidates (`candidate-findings.json`) | Satisfied under the assignment |
 | `should_not_find` | Reported final findings | No reported finding matches (universal predicate, no assignment) |
-| `verifier.should_decide` | Verdicts of candidates matching the referenced expectation | See Verifier Expectations |
-| `merge.should_keep` | Verified-kept findings → reported finals | A verified-kept match persists into a reported final finding |
-| `merge.should_drop` | Verified-kept findings → reported finals | No reported final finding matches |
-| `merge.should_merge` | Reported finals' merge lineage (`mergedCandidateIds`) | See Merge Expectations |
-| `merge.should_not_merge` | Reported finals' merge lineage | See Merge Expectations |
 
-The lists are independent predicates: the same finding may satisfy a `should_find` and violate a `should_not_find` in the same run; both results are reported, neither suppresses the other.
+The lists are independent predicates: the same finding may satisfy a `should_find` and violate a `should_not_find` in the same run; both results are reported, neither suppresses the other. (Verifier and merge expectation lists are deferred to Future Considerations — see architecture.md.)
 
 #### Assignment And Ambiguity Handling
 
@@ -600,51 +594,28 @@ Within `should_find` (and independently within `should_find_candidate`), expecta
 3. Expectations left unmatched are failures (for `should_find`, they proceed to stage-loss attribution). Findings left unmatched are recorded as uncovered findings in the metrics, not failures.
 4. Determinism: iteration follows the fixed orders above, so equal-cardinality matchings resolve to the same pairing on every run. Only the matching's cardinality affects pass/fail; the specific pairing affects explanatory output only.
 
-Consequence worth stating: if an author writes two expectations for two aspects of one issue and the composer legitimately merges them into one final finding, one expectation fails with loss label `merged-deduped-away`. That is the intended truthful behavior — the remedy is to model the intended grouping with `merge.should_merge` plus a single `should_find` for the group.
+Consequence worth stating: if an author writes two expectations for two aspects of one issue and the composer legitimately merges them into one final finding, one expectation fails with loss label `lost-at-composition` (merged/deduped detail). That is the intended truthful behavior — the remedy is to write one expectation per final finding the report should carry.
 
 #### Should Not Find Violations
 
 Every reported final finding matching any `should_not_find` expectation produces one `EvalViolation` per (expectation, finding) pair; any violation fails the case. Additionally, candidates and suppressed final findings matching a `should_not_find` expectation are recorded as `nearViolations` — informational only (the pipeline correctly kept them out of the report), surfacing how close a banned finding came to publication.
 
-### Verifier Expectations
+### Verifier And Merge Expectations (Deferred)
 
-`VerifierExpectation` (`{ expectationId, verdict }`) asserts the verifier's verdict for the candidates matching the referenced expectation's predicate (the expectation may be declared in any of the three lists; only its fields are used).
-
-Algorithm:
-
-1. Compute the matching candidate set `C` from `candidate-findings.json` using the referenced expectation's predicate.
-2. For each candidate in `C`, resolve its verification outcome from `verification.json`. A candidate with `duplicateOf` set and no verdict of its own inherits its cluster representative's verdict (Stage 9 pre-clustering verifies the representative; the verdict applies to the cluster).
-3. Decide:
-   - `verdict: "keep"` or `"revise"` — pass iff **at least one** candidate in `C` received exactly that verdict. One surviving instance demonstrates the verifier keeps/revises this real issue.
-   - `verdict: "reject"` — pass iff **no** candidate in `C` was kept or revised. A rejection expectation is about the issue class, so one kept duplicate is a failure even if others were rejected. Candidates suppressed by pre-verification gates (no verdict) count as satisfying the rejection intent, recorded with note `satisfied_by: "pre_verification_gate"`.
-4. Outcome classes recorded in the result: `pass`; `fail` (a candidate received a contradicting verdict); `fail` with reason `no-matching-candidate` when `C` is empty (the expectation never reached the verifier); `fail` with reason `unverified` for keep/revise expectations whose only matching candidates were pre-gate-suppressed or `verificationIncomplete`.
-
-`keep` vs `revise` is an exact-verdict regression assertion and can be brittle across model wording choices; authors asserting survival should prefer `should_find` or `merge.should_keep`, and reserve `should_decide` for verifier-behavior regression tests. This is guidance, not mechanism.
-
-### Merge Expectations
-
-Merge checks evaluate Stage 10 behavior through final findings' lineage. A reported final finding `F` **covers** a candidate `c` iff `c.id === F.id` or `F.mergedCandidateIds` includes `c.id`.
-
-- `merge.should_keep[]` (`EvalFindingExpectation`): compute the matching verified-kept set (verdicts `keep`/`revise`, using post-revision values). Pass iff at least one member is covered by a reported final finding. If the verified-kept set is empty, fail with reason `unmatched-upstream` — merge behavior cannot be tested for a finding that never reached Stage 10 (the corresponding `should_find` failure carries the real attribution).
-- `merge.should_drop[]`: compute the matching verified-kept set. Pass iff no reported final finding matches the expectation's predicate. (The verified-kept set existing but being deduped/suppressed away is exactly the desired outcome; an empty verified-kept set passes with note `unmatched-upstream`, since nothing reached the merge stage to drop.)
-- `merge.should_merge[]` (`MergeExpectation`, `intoOne: true` only in v1): for each listed expectation id, compute its matching candidate set. Let `Finals` be the set of reported final findings covering at least one candidate from at least one listed expectation. Pass iff `Finals` has exactly one member and that member covers at least one matching candidate of **every** listed expectation. Fail reasons distinguish `not-merged` (multiple finals), `partially-merged` (one final covering only some listed expectations), and `unmatched-upstream` (a listed expectation matched no candidate).
-- `merge.should_not_merge[]` (`{ expectationIds }`): compute per-listed-expectation covering finals as above. Fail iff any single reported final finding covers candidates of two or more distinct listed expectations (they were merged). Listed expectations with no covering final fail with `unmatched-upstream`.
+Verifier-verdict expectations (`VerifierExpectation`, `verifier.should_decide`) and merge expectations (`MergeExpectation`, `merge.should_keep`/`should_drop`/`should_merge`/`should_not_merge`) are deferred to Future Considerations — see architecture.md. Verification and composition behavior is still observable in v1 through stage-loss attribution (below), which reads `verification.json` and `final-selection.json` to assign the coarse loss labels.
 
 ### Stage-Loss Attribution
 
-Every unsatisfied `should_find` expectation gets a loss label explaining where the pipeline lost it. Attribution is a deterministic walk over `candidate-findings.json`, `verification.json`, `final-selection.json`, and `final-findings.json`, enriched by `review-plan.json`, `packets/*.json`, `coverage.json`, and hint events from `events.jsonl` when present. The same `matchExpectation` predicate drives every rung.
+Every unsatisfied `should_find` expectation gets one of the four coarse loss labels from the parent specs. Attribution is a deterministic walk over `candidate-findings.json`, `verification.json`, `final-selection.json`, and `final-findings.json`, enriched by `review-plan.json`, `packets/*.json`, `coverage.json`, and hint events from `events.jsonl` when present. The same `matchExpectation` predicate drives every rung. Follow-up-hint presence is recorded as supporting detail on whichever label applies (`matchingHints`), never as a label of its own; the fine-grained taxonomy is deferred (see architecture.md Future Considerations).
 
 #### Outcome Ranking
 
 When multiple instances of the expected issue exist with different terminal outcomes (e.g., one candidate rejected, another merged away), the expectation is attributed to the **most-progressed instance** — the latest pipeline point that still held the finding — and all other instances are listed in `nearestInstances`. Outcome ranks, most-progressed first:
 
 ```text
-6 omitted-by-final-selection   (survived verification; lost identity at Stage 10 suppression)
-5 merged-deduped-away          (survived verification; absorbed into a non-matching final)
-4 rejected-by-verification     (reached the verifier; explicit reject verdict)
-3 candidate-only               (produced as a candidate; never received a verdict)
-2 hint-only                    (only articulated as a follow-up hint or uncertainty)
-1 same-file-partial-match      (something in the right file, wrong fields)
+3 lost-at-composition    (survived verification; suppressed, merged away, or capped at Stage 10)
+2 lost-at-verification   (reached Stage 9; pre-gate suppression, verifier rejection, or incomplete verification)
+1 partial-match          (right file, wrong root cause — matched the path but failed other fields)
 0 missed-before-candidate-generation
 ```
 
@@ -652,20 +623,17 @@ When multiple instances of the expected issue exist with different terminal outc
 
 For a missed expectation `E`:
 
-1. **Suppressed final?** Match `E` against final findings with `publication: "suppressed"`. On match → `omitted-by-final-selection`. `subReason` comes from `final-selection.json` (`report-cap`, `soft-comment-cap`, `confidence-threshold`, `severity-threshold`, `composer-suppressed`) or the finding's selection record; omissions caused by confidence/severity thresholds are this label (the functional spec's "omitted by report caps or confidence thresholds" maps here). If `final-selection.json` is absent or has no record, the label still applies with `subReason: "unrecorded"` plus a warning note.
-2. **Merged into a non-matching final?** Match `E` against the verified-kept set (verdicts `keep`/`revise`, post-revision values). For each match `c`, check whether any final finding covers `c` (`c.id ∈ F.mergedCandidateIds` or `c.id === F.id`). If a covering final exists but did not satisfy `E` (otherwise the expectation would have passed) → `merged-deduped-away`; the detail names the absorbing final's fingerprint, title, and which fields of `E` it fails.
-3. **Verified-kept but no selection trace?** A verified-kept match with no covering final and no selection record → `omitted-by-final-selection` with `subReason` from `final-selection.json` when available (e.g. `composer-pre-trim`), else `"unrecorded"`.
-4. **Rejected?** Match `E` against candidates whose resolved verdict (following `duplicateOf` to the cluster representative) is `reject` → `rejected-by-verification`. The detail carries the verifier's `reason` and `falsePositiveRisk`.
-5. **Candidate without a verdict?** Match `E` against all remaining candidates. A match whose verification record is a pre-gate suppression, `verificationIncomplete`, or absent entirely → `candidate-only`. `subReason` from the gate record or coverage: `low-confidence-suppressed`, `invalid-anchor`, `no-evidence`, `verification-incomplete`, `budget-exhausted`, or `unrecorded`.
-6. **Hint only?** No candidate matched. Search hint events (follow-up hints, structured uncertainties, system-task records) from `events.jsonl` using **diagnostic-grade reduced matching** — hints carry no severity/category/anchor, so only these fields participate: `path` matches any entry of the hint's `files` (exact-or-glob); `titlePattern`/`failureModePattern` test against the hint's `question`, `reason`, and `symbols` joined; `lineRange`, `category`, and `severityAtLeast` are ignored. An expectation whose only present fields are unmatchable against hints (e.g. category + severity only) skips this rung. On match → `hint-only`; the detail records the hint, its confidence, and whether it was promoted to a system follow-up task (`promoted-task-ran-no-candidate` vs `not-promoted` vs `task-suppressed` from the scheduling events). Reduced matching is acceptable here because `hint-only` is forensic, never a pass.
-7. **Same file, wrong fields?** Match `E`'s `path` field alone (exact-or-glob) against all candidates and all final findings. If any instance is in the right file but fails other fields → `same-file-partial-match`. The detail carries the closest instances (fewest failed fields; ties by artifact order) with full per-field mismatch records — e.g. `category: expected security, actual logic_bug`, `lineRange: expected 80–90, actual 120`. An expectation without a `path` field skips this rung.
-8. **Otherwise** → `missed-before-candidate-generation`.
+1. **Suppressed final?** Match `E` against final findings with `publication: "suppressed"`. On match → `lost-at-composition`. `subReason` comes from `final-selection.json` (`report-cap`, `soft-comment-cap`, `confidence-threshold`, `severity-threshold`, `composer-pre-trim`, `composer-suppressed`) or the finding's selection record; omissions caused by confidence/severity thresholds are this label (the functional spec's "lost at composition — deduped, merged, or capped" maps here). If `final-selection.json` is absent or has no record, the label still applies with `subReason: "unrecorded"` plus a warning note.
+2. **Merged into a non-matching final?** Match `E` against the verified-kept set (verdicts `keep`/`revise`, post-revision values). For each match `c`, check whether any final finding covers `c` (`c.id ∈ F.mergedCandidateIds` or `c.id === F.id`). If a covering final exists but did not satisfy `E` (otherwise the expectation would have passed) → `lost-at-composition` with `subReason: "merged-deduped-away"`; the detail names the absorbing final's fingerprint, title, and which fields of `E` it fails. A verified-kept match with no covering final and no selection record is also `lost-at-composition`, `subReason: "unrecorded"`.
+3. **Lost at verification?** Match `E` against the remaining candidates. A match whose resolved verification outcome (following `duplicateOf` to the cluster representative) is a verifier `reject`, a pre-verification-gate suppression, `verificationIncomplete`, or absent entirely → `lost-at-verification`. `subReason` distinguishes `verifier-rejected` (detail carries the verifier's `reason` and `falsePositiveRisk`), `low-confidence-suppressed`, `invalid-anchor`, `no-evidence`, `no-failure-mode`, `verification-incomplete`, `budget-exhausted`, and `unrecorded`.
+4. **Partial match?** Match `E`'s `path` field alone (exact-or-glob) against all candidates and all final findings. If any instance is in the right file but fails other fields → `partial-match`. The detail carries the closest instances (fewest failed fields; ties by artifact order) with full per-field mismatch records — e.g. `category: expected security, actual logic_bug`, `lineRange: expected 80–90, actual 120`. An expectation without a `path` field skips this rung.
+5. **Otherwise** → `missed-before-candidate-generation`.
 
-Rungs 6 and 7 are ordered hint-first, matching both parent specs' ordering; the detail record includes instances from both rungs regardless of which label wins.
+Hint detail, applied at every rung: hint events (follow-up hints and structured uncertainties) from `events.jsonl` are searched with **diagnostic-grade reduced matching** — hints carry no severity/category/anchor, so only these fields participate: `path` matches any entry of the hint's `files` (exact-or-glob); `titlePattern`/`failureModePattern` test against the hint's `question`, `reason`, and `symbols` joined; `lineRange`, `category`, and `severityAtLeast` are ignored. Matches are recorded in `EvalLossDetail.matchingHints` with the hint's confidence — supporting detail showing a reviewer articulated the question (most useful on `missed-before-candidate-generation` losses), never a pass and never a label. An expectation whose only present fields are unmatchable against hints (e.g. category + severity only) records no hint detail. Reduced matching is acceptable here because hint detail is forensic.
 
 #### Missed-Before-Candidate-Generation Sub-Reasons
 
-When the walk bottoms out at rung 8, attribution sub-diagnoses why nothing was ever produced, using enrichment artifacts when present:
+When the walk bottoms out at rung 5, attribution sub-diagnoses why nothing was ever produced, using enrichment artifacts when present:
 
 - `path-not-in-diff`: no packet and no coverage/filter record touches the expectation's path. Flagged prominently — the expectation itself may be wrong (stale line numbers, renamed file).
 - `file-filtered`: the path appears in filter decisions (`coverage.json` / filter records) with action `skip` (generated/vendored/lock/ignored/config-skipped); the filter reason is included.
@@ -678,7 +646,7 @@ Covering packets are located deterministically: packets whose `path` matches the
 
 #### Attribution For Candidate Expectations
 
-`should_find_candidate` misses can only be attributed to `missed-before-candidate-generation` (with sub-reasons), `hint-only`, or `same-file-partial-match` — candidate-stage expectations cannot be lost in later stages by definition. The walk runs rungs 6–8 only, with rung 7 restricted to candidates.
+`should_find_candidate` misses can only be attributed to `missed-before-candidate-generation` (with sub-reasons) or `partial-match` — candidate-stage expectations cannot be lost in later stages by definition. The walk runs rungs 4–5 only, with rung 4 restricted to candidates; hint detail is still recorded.
 
 #### Worked Example
 
@@ -689,7 +657,8 @@ Covering packets are located deterministically: packets whose `path` matches the
   "status": "fail",
   "matched": [],
   "loss": {
-    "label": "rejected-by-verification",
+    "label": "lost-at-verification",
+    "subReason": "verifier-rejected",
     "nearestInstances": [
       {
         "findingId": "cand-7f3a",
@@ -723,30 +692,20 @@ Covering packets are located deterministically: packets whose `path` matches the
 | `maxToolCalls` | `tool-calls.jsonl` (fallback: `tool-calls-summary.json` totals) | Total repository tool calls `<=` limit |
 | `maxPromptCharsByStage` | `model-calls.jsonl` (per-call stage + prompt char size) | For every call of stage `s`, prompt chars `<=` limit for `s`; one `EvalBudgetResult` per configured stage key |
 
-Replay semantics: budget checks measure what actually executed in this eval run. In replay modes, checks whose source metrics belong to stages that did not execute are `skipped` with `skipReason: "stage not executed in replay mode <mode>"`. Concretely: `final-report` skips all budget checks except the finding-count and duplicate-group checks (which read replayed artifacts and are marked `fromReplayedArtifacts`); `merge-only` measures Stage 10 calls/cost/runtime only; `candidate-recall` measures Stages 9–10. `verificationCalls` in metrics counts stage-9 entries in `model-calls.jsonl` (fallback: `verification.json` verdict count); `toolCalls` in metrics counts `tool-calls.jsonl` lines the same way, never derived events.
+Replay semantics: budget checks measure what actually executed in this eval run. In artifact replay no stages execute, so every budget check except the finding-count and duplicate-group checks is `skipped` with `skipReason: "stage not executed in artifact replay"`; the finding-count and duplicate-group checks read replayed artifacts and their results are marked `fromReplayedArtifacts`. `verificationCalls` in metrics counts stage-9 entries in `model-calls.jsonl` (fallback: `verification.json` verdict count); `toolCalls` in metrics counts `tool-calls.jsonl` lines the same way, never derived events.
 
-### Replay Modes
+### Artifact Replay (Re-Scoring)
 
-Replay reuses captured artifacts to re-run downstream slices of the pipeline — the workhorse for iterating on verification, dedup, and composition without paying for candidate generation, and for re-scoring after editing expectations.
+Artifact replay re-scores a previously captured run against (possibly edited) expectations: saved final findings and candidate findings are loaded and scored, and attribution walks the saved `verification.json`, `final-selection.json`, and hint events. No stages re-run, no LLM calls are made, and no repository is required. Stage-level replay modes — `candidate-recall` re-entering Stage 9 and `merge-only` re-entering Stage 10 — are deferred to Future Considerations (see architecture.md); there is no replay-mode configuration in v1.
 
-Mode resolution: for an artifact-backed case run via `--eval-dir`, `EvalCase.artifacts.mode`, else `config.eval.replayMode`, else `final-report`. For `--from-artifacts`, `config.eval.replayMode`, else `final-report` (the embedded snapshot's `artifacts.mode` does not apply; the snapshot of a live run has no `artifacts` block).
-
-| Mode | Artifacts loaded (required) | Stages re-run | LLM calls | Repo required |
-| --- | --- | --- | --- | --- |
-| `final-report` | `final-findings.json`; optional: all others for attribution/metrics | None | None | No |
-| `merge-only` | `verification.json` + `candidate-findings.json` (lineage); `packets/` for anchor re-validation; `review-plan.json` + `coverage.json` + `run.json` (Stage 10's plan, coverage, and resolved-input metadata) | Stage 10 (dedup/rank/compose) | Composer call(s) | No — anchors re-validate against packet hunk line data, not the repo |
-| `candidate-recall` | `candidate-findings.json` + `packets/` (verifier context); `review-plan.json` + `coverage.json` + `run.json` (Stage 10's plan, coverage, and resolved-input metadata) | Stages 9–10 | Verifier calls + composer call(s) | Yes — verifiers use read-only repository tools at the recorded base/head SHAs |
-
-Common behavior:
+Behavior:
 
 - `--from-artifacts <suite>/logs/<n>` allocates the next run number **in the same logs directory**, so replay runs sit beside their source and compare-to-previous naturally diffs against it. The case definition is re-read from the recorded `caseFile` when it still exists (supporting the expectation-iteration workflow: edit YAML, re-score captured artifacts), falling back to the `info.json` embedded snapshot; `info.json.replay.caseSource` records which was used.
-- Stages that re-run write fresh artifacts into the new run's `telemetry/` (`candidate-recall` produces a new `verification.json`, `final-selection.json`, `final-findings.json`; `merge-only` produces new `final-selection.json` and `final-findings.json`). Artifacts consumed without re-running are copied from the source into the new `telemetry/` so every run directory is self-contained for scoring, future replays, and comparison.
-- `info.json.stages` records each stage as `executed`, `replayed-from-artifacts`, or `not-applicable` — the architecture requires which stages re-ran vs replayed to be recorded in the eval run info.
-- Expectation results computed against replayed inputs are flagged `fromReplayedArtifacts: true` (e.g. `should_find_candidate` results in `candidate-recall` reflect the original run's candidates, not new model behavior).
-- `merge-only` reconstructs Stage 10's `resolved` slice from `run.json` metadata. When existing-thread data is absent there, thread-overlap recording is skipped and the new run's coverage `reasons` carry a disclosed note — fallback values are deterministic, never fabricated.
-- `candidate-recall` resolves the repo from the case (`repo.external`/`repo.fixture`) and verifies the recorded `baseSha`/`headSha` from `run.json` resolve (`git rev-parse --verify <sha>^{commit}`); failures are per-case `git_ref_missing` errors. Verifier and composer execution is the engine's (Stage 9/10 entrypoints with the same configs, budgets, and failure policy); evals supplies inputs from artifacts instead of live upstream stages.
-- Replay modes honor cache settings: with cache enabled, re-run verifier/composer calls hit the model-call cache when their normalized requests match, making `candidate-recall` + `--cache` an effectively free regression of deterministic downstream behavior.
-- Missing required artifacts for the selected mode fail the case with `invalid_args` naming the file; optional artifacts degrade per the reader contract.
+- An artifact-backed suite case (`artifacts.path`) re-scores the referenced run directory's `telemetry/` artifact set the same way.
+- Consumed artifacts are copied from the source into the new run's `telemetry/` so every run directory is self-contained for scoring, future replays, and comparison; `codeninja-review.out.md` is copied when present.
+- `info.json.stages` records every stage as `replayed-from-artifacts` or `not-applicable`; expectation results are flagged `fromReplayedArtifacts: true`.
+- Required artifacts: `final-findings.json` and `candidate-findings.json` — missing either fails the case with `invalid_args` naming the file. `verification.json` and `final-selection.json` are strongly expected for attribution and degrade to `subReason: "unrecorded"` notes when absent; the enrichment artifacts degrade per the reader contract.
+- The model-call cache is irrelevant to artifact replay (no model calls); cache flags affect live cases only.
 
 ### Cache Wiring
 
@@ -762,7 +721,7 @@ Cache directory: `EvalCase.review.cacheDir` when set (user-level opt-in is satis
 
 After scoring run `n` of a case, the runner locates the previous run: the highest-numbered run directory `< n` in the same logs directory whose `info.json.caseName` matches. When none exists, no comparison artifacts are written ("when available"). Otherwise `compare-to-previous.json` (the `EvalCompareReport`) and `compare-to-previous.txt` (its human-readable rendering) are written:
 
-- Expectation transitions: regressions (`pass` → `fail`, with the new loss label), fixes (`fail` → `pass`), and loss-label changes for still-failing expectations (e.g. `rejected-by-verification` → `merged-deduped-away` — the issue moved further down the pipeline).
+- Expectation transitions: regressions (`pass` → `fail`, with the new loss label), fixes (`fail` → `pass`), and loss-label changes for still-failing expectations (e.g. `lost-at-verification` → `lost-at-composition` — the issue moved further down the pipeline).
 - Violation churn: new and resolved `should_not_find` violations; budget-check status changes.
 - Finding-set diff keyed by `FinalFinding.fingerprint` (stable across runs by design — model wording is excluded from fingerprint identity): added, removed, and changed findings, where "changed" reports field-level transitions (severity, confidence, publication, anchor line, title).
 - Metric deltas: every `EvalRunMetrics` numeric field as previous/current/delta.
@@ -787,16 +746,16 @@ All structured results live in each run's `info.json` (`EvalRunInfo.score`); the
 - Scoring is a pure function of (case, artifacts, stage-execution record): no LLM, no repo reads, no clock.
 - All iteration orders are fixed: case files lexicographic; expectations in YAML order; findings in artifact array order; assignment via deterministic augmenting-path matching.
 - Regexes compile with fixed flags (`i`); glob matching uses the single shared matcher; severity ranks and overlap arithmetic are total functions.
-- Re-running `final-report` replay over the same artifacts with the same case YAML must produce byte-identical `score` content (modulo timestamps).
+- Re-running artifact replay over the same artifacts with the same case YAML must produce byte-identical `score` content (modulo timestamps).
 
 ## Dependencies
 
 This component depends on:
 
-- `components/review_pipeline.md` — the review engine, invoked in-process and never forked. Required seams: an engine entrypoint accepting an explicit repository root and an explicit run-artifact directory; Stage 9 and Stage 10 entrypoints invocable with artifact-supplied inputs for replay; writer-side guarantees for the artifact reader contract (`candidate-findings.json`, `verification.json` gate+verdict records, `final-selection.json` decision records, `final-findings.json` including suppressed entries, hint/system-task event emission).
+- `components/review_pipeline.md` — the review engine, invoked in-process and never forked. Required seams: an engine entrypoint accepting an explicit repository root and an explicit run-artifact directory; writer-side guarantees for the artifact reader contract (`candidate-findings.json`, `verification.json` gate+verdict records, `final-selection.json` decision records, `final-findings.json` including suppressed entries, follow-up-hint event emission).
 - `components/skills_llm_telemetry.md` — the telemetry recorder and artifact files evals reads for metrics (`events.jsonl`, `model-calls.jsonl`, `model-calls-summary.json`, `tool-calls.jsonl`, `tool-calls-summary.json`, `cost-profile.json`, `run.json`), and the model-call cache evals toggles per run.
-- `components/repository_and_github.md` / `components/context_and_tools.md` — git resolution and repository tools, consumed only through the engine; evals itself performs only worktree existence checks and `git rev-parse --verify` for replay SHAs via `GitClient`.
-- CLI/config: `commander` registration in `src/cli/main.ts`; the config loader for `eval.defaultEvalDir`, `eval.logsDir`, `eval.replayMode`, and the precedence chain.
+- `components/repository_and_github.md` / `components/context_and_tools.md` — git resolution and repository tools, consumed only through the engine; evals itself performs only worktree existence checks for live cases via `GitClient`.
+- CLI/config: `commander` registration in `src/cli/main.ts`; the config loader for `eval.defaultEvalDir`, `eval.logsDir`, and the precedence chain.
 - Libraries: `zod` for case validation; a YAML parser for eval case files, per `architecture.md`'s dependency choices; the shared glob matcher used by `classification.pathRules`; Node `fs` for run-dir management.
 
 Depends on this component:
@@ -816,7 +775,7 @@ Case loading and validation (`eval-case-loader.test.ts`):
 - `rejects_ambiguous_execution_source`: both `repo.external` and `artifacts.path`; neither; `external` + `fixture` together.
 - `rejects_conflicting_command_targets`: `pr` + `branch`; `base` without `branch`; forbidden flags in `command.args` (`--pr`, `--post-github-comments`).
 - `parses_target_forms`: `target: "abc123"` → single commit; `target: "abc123..def456"` → range.
-- `rejects_bad_expectations`: duplicate expectation ids across lists; expectation with only `id`; `lineRange` `[10, 5]`; invalid `category`/`severityAtLeast`; uncompilable `titlePattern`; dangling `verifier.should_decide.expectationId`; `merge.should_merge` with one id; `intoOne: false`; non-numeric `maxPromptCharsByStage` key.
+- `rejects_bad_expectations`: duplicate expectation ids across lists; expectation with only `id`; `lineRange` `[10, 5]`; invalid `category`/`severityAtLeast`; uncompilable `titlePattern`; a `verifier` or `merge` block (unknown keys); non-numeric `maxPromptCharsByStage` key.
 - `collects_all_errors_before_failing`: a suite with three invalid files reports all errors in one `config_error`.
 
 Field matching (`expectation-matcher.test.ts`):
@@ -843,32 +802,23 @@ Should-not-find (`should-not-find.test.ts`):
 
 Stage-loss attribution (`stage-loss-attribution.test.ts`) — one synthetic artifact set per label:
 
-- `label_omitted_by_final_selection`: matching final with `publication: "suppressed"` and selection reason `report-cap` → label + subReason.
-- `label_merged_deduped_away`: verified candidate absorbed via `mergedCandidateIds` into a final failing the expectation's lineRange → label, absorbing fingerprint named.
-- `label_rejected_by_verification`: reject verdict with reason/falsePositiveRisk in detail.
-- `label_candidate_only_variants`: pre-gate `low_confidence`; `verificationIncomplete`; no verification record at all → subReasons.
-- `cluster_verdict_inheritance`: candidate with `duplicateOf` and no own verdict inherits the representative's verdict in rung 4 and in verifier expectations.
-- `label_hint_only`: no candidate; matching hint event (path in `files`, pattern in `question`) → label; promotion sub-state (`not-promoted` vs `promoted-task-ran-no-candidate`).
-- `hint_reduced_matching_skips_unmatchable`: expectation with only category+severity skips the hint rung.
-- `label_same_file_partial_match`: same-path candidate with wrong category → label with field-mismatch records; expectation without `path` skips the rung.
+- `label_lost_at_composition_suppressed`: matching final with `publication: "suppressed"` and selection reason `report-cap` → `lost-at-composition` + subReason.
+- `label_lost_at_composition_merged`: verified candidate absorbed via `mergedCandidateIds` into a final failing the expectation's lineRange → `lost-at-composition`, subReason `merged-deduped-away`, absorbing fingerprint named.
+- `label_lost_at_verification_rejected`: reject verdict → `lost-at-verification`, subReason `verifier-rejected`, with reason/falsePositiveRisk in detail.
+- `label_lost_at_verification_gate_variants`: pre-gate `low_confidence`; `verificationIncomplete`; no verification record at all → `lost-at-verification` with the corresponding subReasons.
+- `cluster_verdict_inheritance`: candidate with `duplicateOf` and no own verdict inherits the representative's verdict in rung 3.
+- `hint_support_recorded`: no candidate; matching hint event (path in `files`, pattern in `question`) → `missed-before-candidate-generation` with the hint and its confidence in `matchingHints`; hint presence never changes the label.
+- `hint_reduced_matching_skips_unmatchable`: expectation with only category+severity records no hint detail.
+- `label_partial_match`: same-path candidate with wrong category → `partial-match` with field-mismatch records; expectation without `path` skips the rung.
 - `label_missed_subreasons`: fixtures for `path-not-in-diff`, `file-filtered`, `hunk-skipped-by-planner`, `packet-review-failed`, `reviewed-no-candidate` (asserts coveringPacketIds + lenses surfaced), and `unknown` when enrichment artifacts are absent.
-- `most_progressed_instance_wins`: one rejected candidate + one merged-away candidate for the same expectation → `merged-deduped-away`, both instances in `nearestInstances` ordered by rank.
-- `candidate_expectation_attribution_restricted`: a `should_find_candidate` miss never yields verification/selection labels.
-
-Verifier and merge expectations (`verifier-merge-expectations.test.ts`):
-
-- `keep_any_of`: two matching candidates, one kept one rejected, `verdict: keep` passes.
-- `reject_all_of`: same fixture with `verdict: reject` fails; all-rejected fixture passes; pre-gate-suppressed-only fixture passes with `satisfied_by: pre_verification_gate`.
-- `unverified_keep_fails`: only-incomplete candidates fail a keep expectation with reason `unverified`; empty match set fails with `no-matching-candidate`.
-- `should_merge_into_one`: covering-final arithmetic for pass, `not-merged`, `partially-merged`, `unmatched-upstream`.
-- `should_not_merge_detects_shared_final`: two expectations covered by one final → fail; distinct finals → pass.
-- `should_keep_and_drop`: verified-kept match published → keep passes; matching reported final → drop fails; empty verified-kept set → keep fails `unmatched-upstream`, drop passes with note.
+- `most_progressed_instance_wins`: one rejected candidate + one merged-away candidate for the same expectation → `lost-at-composition`, both instances in `nearestInstances` ordered by rank.
+- `candidate_expectation_attribution_restricted`: a `should_find_candidate` miss never yields verification or composition labels.
 
 Budgets (`budget-expectations.test.ts`):
 
 - `each_check_pass_fail`: synthetic telemetry exercising every `expect.*` field at, below, and above its limit (boundary `==` passes for max checks, `minFindings` boundary passes).
 - `prompt_chars_per_stage`: stage-7 call over limit fails only the `"7"` entry; stages without configured keys are unchecked.
-- `replay_skip_semantics`: `final-report` skips cost/runtime/call checks with skipReason; `merge-only` evaluates only stage-10-sourced metrics.
+- `replay_skip_semantics`: artifact replay skips cost/runtime/call checks with skipReason; finding-count and duplicate-group checks still evaluate against the replayed artifacts and are marked `fromReplayedArtifacts`.
 
 Run directories and artifacts (`eval-run-dirs.test.ts`):
 
@@ -879,14 +829,12 @@ Run directories and artifacts (`eval-run-dirs.test.ts`):
 - `logs_disabled_runs_in_memory`: `logs.enabled: false` scores and reports without creating a run dir.
 - `debug_traces_present`: with `review.debug`, the run dir carries the engine's `telemetry/debug/llm-calls/<call-id>.json` and `telemetry/debug/tool-calls/` traces; absent otherwise; no derived prompt/result views exist.
 
-Replay modes (`eval-replay.test.ts`) — fake `LlmRunner` counting calls per stage:
+Artifact replay (`eval-replay.test.ts`) — fake `LlmRunner` counting calls per stage:
 
-- `final_report_zero_calls`: no LLM calls; scores from saved artifacts; budget checks skipped; `stages` all `replayed-from-artifacts`/`not-applicable`; rendered output copied.
-- `merge_only_composer_only`: stage-10 calls only; new `final-selection.json`/`final-findings.json` written; consumed artifacts copied into new telemetry; anchors re-validated against packet hunks with no repo access (test runs without any repo on disk).
-- `candidate_recall_runs_9_and_10`: stage-9 + stage-10 calls; missing repo or unresolvable recorded SHAs → case status `error` with `git_ref_missing`; with repo present, new verification artifacts written.
-- `mode_resolution_precedence`: case `artifacts.mode` > `config.eval.replayMode` > `final-report` default; `--from-artifacts` ignores snapshot `artifacts.mode`.
+- `replay_zero_calls_no_repo`: no LLM calls; scores from saved artifacts; budget checks skipped; `stages` all `replayed-from-artifacts`/`not-applicable`; rendered output and consumed artifacts copied into the new `telemetry/`; the test runs without any repo on disk.
 - `case_reread_vs_snapshot`: edited case YAML on disk is re-read for `--from-artifacts` re-scoring (`caseSource: "yaml"`); deleted YAML falls back to snapshot (`caseSource: "snapshot"`).
-- `missing_required_artifact_fails`: `merge-only` source without `verification.json`, or `candidate-recall` source without `run.json`/`review-plan.json`/`coverage.json`, fails with `invalid_args` naming the missing file.
+- `replay_rescores_edited_expectations`: editing an expectation's `lineRange` between source run and replay flips its result without any stage executing.
+- `missing_required_artifact_fails`: a source without `final-findings.json` or `candidate-findings.json` fails with `invalid_args` naming the missing file; absent `verification.json`/`final-selection.json` degrade attribution to `unrecorded` sub-reasons instead of failing.
 
 Cache wiring (`eval-cache-wiring.test.ts`):
 
@@ -895,7 +843,7 @@ Cache wiring (`eval-cache-wiring.test.ts`):
 
 Compare-to-previous (`eval-compare.test.ts`):
 
-- `regressions_fixes_and_label_changes`: pass→fail (with loss label), fail→pass, and `rejected-by-verification`→`merged-deduped-away` transitions detected.
+- `regressions_fixes_and_label_changes`: pass→fail (with loss label), fail→pass, and `lost-at-verification`→`lost-at-composition` transitions detected.
 - `fingerprint_finding_diff`: added/removed/changed findings keyed by fingerprint; severity and publication transitions reported field-level.
 - `case_hash_drift_flagged`: differing caseHash sets `caseHashChanged` and the txt header note; comparison still produced.
 - `no_previous_run`: first run of a case writes no compare artifacts.
@@ -908,4 +856,4 @@ End-to-end (`eval-suite-e2e.test.ts`) — temporary fixture git repo + fake `Llm
 - `case_error_continues_suite`: case 1 repo missing (status `error`), case 2 still runs; exit 1.
 - `pre_run_validation_exit_2`: invalid case YAML aborts before any run dir is created; exit 2.
 - `never_posts_github`: a PR-mode case run asserts zero GitHub posting calls on the fake `GitHubClient`.
-- `determinism_replay_idempotent`: running `final-report` replay twice over the same run yields byte-identical scores.
+- `determinism_replay_idempotent`: running artifact replay twice over the same run yields byte-identical scores.

@@ -19,7 +19,6 @@ codeninja review --pr 123                 # a GitHub PR — no checkout needed, 
 codeninja review --branch feat --base main
 codeninja review abc1234                  # one commit
 codeninja review abc1234 def5678          # a commit range
-codeninja review --diff ./change.diff     # a patch file (evals, CI artifacts)
 ```
 
 Common options:
@@ -80,13 +79,12 @@ diff → classify/detect → filter → changed-symbol extraction (deterministic
   → planner: intent, risk areas, per-hunk coverage, lenses   (LLM)
   → review packets: focused diff slices + local context      (deterministic)
   → packet reviewers: candidate findings, in parallel        (LLM, tool-equipped)
-  → system follow-up: targeted cross-file questions          (LLM, tool-equipped)
   → independent verifier: keep / revise / reject             (LLM, per candidate)
   → dedupe, rank, compose final review                       (deterministic + 1 LLM call)
   → stdout report or GitHub review                           (deterministic)
 ```
 
-The unit of review is the changed hunk; the unit of understanding is the affected system. Reviewers don't get the repository dumped into context — they get a compact packet (the hunk, absolute line numbers, enclosing symbol, nearby context, relevant tests) plus bounded read-only repository tools (`read_symbol`, `search_files`, `find_likely_tests`, …) to chase down exactly the surrounding code a concern depends on.
+The unit of review is the changed hunk; the unit of understanding is the affected system. Reviewers don't get the repository dumped into context — they get a compact packet (the hunk, absolute line numbers, enclosing symbol source, a file outline, likely tests) plus bounded read-only repository tools (`read_symbol`, `search_files`, `find_likely_tests`, …) to chase down exactly the surrounding code a concern depends on.
 
 ## Design and philosophy
 
@@ -94,7 +92,7 @@ The unit of review is the changed hunk; the unit of understanding is the affecte
 
 The obvious way to build an AI reviewer in 2026 is one autonomous agent with repo tools and a good prompt. We deliberately didn't, and the reasoning is worth writing down.
 
-Despite the pipeline diagram, codeninja has only **five LLM decision points** — planner, packet reviewer, system follow-up, verifier, composer. Everything else is deterministic plumbing: parsing, bookkeeping, validation, serialization. A fully autonomous agent has *one* LLM decision point that internally makes hundreds of unauditable micro-decisions. We'd rather have five auditable ones.
+Despite the pipeline diagram, codeninja has only **four LLM decision points** — planner, packet reviewer, verifier, composer. Everything else is deterministic plumbing: parsing, bookkeeping, validation, serialization. A fully autonomous agent has *one* LLM decision point that internally makes hundreds of unauditable micro-decisions. We'd rather have four auditable ones.
 
 The deeper reason: a review tool's value isn't "finds bugs" — frontier models increasingly do that for free. The value is the **guarantees around the findings**, and each one is structurally impossible for an autonomous agent:
 
@@ -117,7 +115,7 @@ Long-context attention dilution is real: a model handed a 100k-token diff dump r
 
 ### Skills are checks, not personas
 
-A skill is a Markdown file of concrete checks, false-positive rules, safe patterns, and examples — not "you are a meticulous senior engineer" theater. Skills are projected per stage (reviewers get Checks + False Positives + Examples; the verifier gets False Positives + Safe Patterns) so guidance lands where it changes behavior. Lenses (`lang/go`, `core/logic-bugs`, `security`, …) are the user-facing perspectives that map onto skills, and teams can add their own per repo.
+A skill is a Markdown file of concrete checks, false-positive rules, safe patterns, and examples — not "you are a meticulous senior engineer" theater. Skills are projected per stage (reviewers get Checks + False Positives + Examples; the verifier gets False Positives + Safe Patterns) so guidance lands where it changes behavior. Lenses (`core`, `lang/go`, `tests`, …) are the user-facing perspectives that map onto skills, and teams can add their own per repo.
 
 ### Built to be evaluated
 
@@ -133,7 +131,7 @@ Budgets and failures don't produce silent gaps. A failed planner falls back to a
 
 ### Build when evidence demands it
 
-Several richer designs — hierarchical planning with sub-planners, a cross-packet signal index, planner scheduling groups, a changed-symbol graph — are specified but deliberately **deferred** behind simple v1 behavior. Each has a written trigger ("build when evals show…"). The rule is the project's own: advanced machinery is added behind stable interfaces when telemetry shows it improves review quality — never speculatively.
+Several richer designs — a cross-file system follow-up pass, hierarchical planning with sub-planners, a cross-packet signal index, spec-document alignment, per-role model tiering, a changed-symbol graph — are specified but deliberately **deferred** behind simple v1 behavior. Each has a written trigger ("build when evals show…"). The rule is the project's own: advanced machinery is added behind stable interfaces when telemetry shows it improves review quality — never speculatively.
 
 ## Status
 
