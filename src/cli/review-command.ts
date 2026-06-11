@@ -8,8 +8,11 @@ import type {
   ReviewCommandTarget,
   ReviewDepth
 } from "../types.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodeninjaError, errorExitCode, isCodeninjaError } from "../util/errors.js";
 import { createRunTelemetry } from "../telemetry/run-artifacts.js";
+import { parseDiff } from "../git/diff-parser.js";
+import { classifyChangedFiles, filterDiffFiles } from "../git/file-classifier.js";
+import { resolveReviewCommandTarget } from "../git/review-input-resolver.js";
 
 type ParseReviewCommandOptions = {
   repoRoot?: string;
@@ -21,6 +24,9 @@ type ParseReviewCommandOptions = {
 type ExecuteReviewCommandResult = {
   runId: string;
   runDir: string;
+  filesChanged: number;
+  keptFiles: number;
+  hunks: number;
 };
 
 type CommanderReviewOptions = {
@@ -158,20 +164,67 @@ export async function executeReviewCommand(
   });
 
   const attached = await run.attachRunDirectory(parsed.repoRoot);
-  await run.recorder.writeArtifact("coverage.json", {
-    status: "not_implemented",
-    phase: 1,
-    reason: "review pipeline stages are implemented in later phases",
-    target: parsed.target
-  });
-  run.recorder.event({
-    stage: 0,
-    level: "info",
-    message: "phase 1 review foundation initialized",
-    data: { runDir: attached.runDir }
-  });
-  await run.finalize({ status: "completed", exitCode: 0 });
-  return attached;
+  try {
+    const resolved = await resolveReviewCommandTarget(parsed.target, parsed.config, run.recorder, {
+      repoRoot: parsed.repoRoot
+    });
+    const diff = parseDiff(resolved.rawDiff);
+    const { kept, decisions } = await filterDiffFiles(resolved, diff, parsed.config, run.recorder);
+    const facts = await classifyChangedFiles(resolved, kept, decisions, parsed.config, run.recorder);
+    const hunkCount = diff.files.reduce((count, file) => count + file.hunks.length, 0);
+
+    await run.recorder.writeArtifact("resolved-input.json", {
+      mode: resolved.mode,
+      repoRoot: resolved.repoRoot,
+      baseRef: resolved.baseRef,
+      headRef: resolved.headRef,
+      startCommit: resolved.startCommit,
+      endCommit: resolved.endCommit,
+      mergeBase: resolved.mergeBase,
+      headSha: resolved.headSha,
+      pr: resolved.pr,
+      commits: resolved.commits,
+      rawDiffChars: resolved.rawDiff.length
+    });
+    await run.recorder.writeArtifact("diff.json", diff);
+    await run.recorder.writeArtifact("file-filter-decisions.json", decisions);
+    await run.recorder.writeArtifact("file-facts.json", facts);
+    await run.recorder.writeArtifact("coverage.json", {
+      status: "not_implemented",
+      phase: 2,
+      reason: "review pipeline stages 4 and later are implemented in later phases",
+      target: parsed.target,
+      filesChanged: diff.files.length,
+      hunks: hunkCount,
+      keptFiles: kept.length,
+      skippedFiles: decisions.filter((decision) => decision.action === "skip").length,
+      classifiedFiles: facts.length
+    });
+    run.recorder.event({
+      stage: 3,
+      level: "info",
+      message: "phase 2 review inventory completed",
+      data: { runDir: attached.runDir, filesChanged: diff.files.length, keptFiles: kept.length, hunks: hunkCount }
+    });
+    await run.finalize({ status: "completed", exitCode: 0 });
+    return { ...attached, filesChanged: diff.files.length, keptFiles: kept.length, hunks: hunkCount };
+  } catch (error) {
+    run.recorder.event({
+      stage: 0,
+      level: "error",
+      message: "review inventory failed",
+      data: {
+        errorCode: isCodeninjaError(error) ? error.code : undefined,
+        error: error instanceof Error ? error.message : String(error)
+      }
+    });
+    await run.finalize({
+      status: "failed",
+      ...(isCodeninjaError(error) ? { errorCode: error.code } : {}),
+      exitCode: errorExitCode(error)
+    });
+    throw error;
+  }
 }
 
 function resolveTarget(options: CommanderReviewOptions, commits: string[]): ReviewCommandTarget {

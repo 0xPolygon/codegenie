@@ -7,7 +7,7 @@ async function main(): Promise<void> {
     const parsed = parseReviewCommand(process.argv.slice(2), { allowOutput: true });
     const result = await executeReviewCommand(parsed);
     process.stdout.write(
-      `codeninja review foundation initialized. Review pipeline stages are not implemented yet. Run artifacts: ${result.runDir || "disabled"}\n`
+      `codeninja review inventory completed (${result.filesChanged} files, ${result.hunks} hunks; ${result.keptFiles} kept). Later review stages are not implemented yet. Run artifacts: ${result.runDir || "disabled"}\n`
     );
   } catch (error) {
     if (isCliDisplayExit(error)) {

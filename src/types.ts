@@ -115,6 +115,163 @@ export type ParsedReviewCommand = {
   configSources: Record<string, ConfigSource>;
 };
 
+export type ReviewMode = "github_pr" | "branch" | "commit_range";
+
+export type ReviewInput =
+  | { mode: "github_pr"; prNumber: number }
+  | { mode: "branch"; branchName: string; baseBranch?: string }
+  | { mode: "commit_range"; startCommit: string; endCommit?: string };
+
+export type PullRequestMetadata = {
+  owner: string;
+  repo: string;
+  number: number;
+  title: string;
+  body: string;
+  url: string;
+  baseRefName: string;
+  baseSha: string;
+  headRefName: string;
+  headSha: string;
+};
+
+export type ExistingReviewThread = {
+  id: string;
+  path?: string;
+  line?: number;
+  side?: "RIGHT" | "LEFT";
+  author: string;
+  isCodeninja: boolean;
+  fingerprint?: string;
+};
+
+export type CommitInfo = {
+  sha: string;
+  title: string;
+  body: string;
+  authorName?: string;
+  authoredAt?: string;
+};
+
+export type ResolvedReviewInput = {
+  mode: ReviewMode;
+  repoRoot: string;
+  baseRef?: string;
+  headRef?: string;
+  startCommit?: string;
+  endCommit?: string;
+  mergeBase?: string;
+  headSha?: string;
+  pr?: PullRequestMetadata;
+  commits: CommitInfo[];
+  rawDiff: string;
+};
+
+export type UnifiedDiff = {
+  files: DiffFile[];
+};
+
+export type DiffFileStatus = "added" | "modified" | "deleted" | "renamed" | "copied";
+
+export type DiffFile = {
+  path: string;
+  oldPath?: string;
+  status: DiffFileStatus;
+  isBinary?: boolean;
+  modeOnly?: boolean;
+  isSymlink?: boolean;
+  isSubmodule?: boolean;
+  language: string;
+  hunks: DiffHunk[];
+};
+
+export type DiffHunk = {
+  id: string;
+  path: string;
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  header: string;
+  lines: DiffLine[];
+};
+
+export type DiffLine = {
+  kind: "context" | "add" | "delete";
+  content: string;
+  oldLineNumber?: number;
+  newLineNumber?: number;
+};
+
+export type FactProvenance = {
+  fact: string;
+  source: "path" | "filename" | "extension" | "parser" | "git" | "diff" | "config" | "generated_detector";
+  confidence: "high" | "medium" | "low";
+  reason: string;
+};
+
+export type FileFacts = {
+  path: string;
+  language: string;
+  packageRoot?: string;
+  processingMode: ProcessingMode;
+  testStatus: "test" | "source" | "unknown";
+  isGenerated: boolean;
+  isVendored: boolean;
+  isLockfile: boolean;
+  isBinary: boolean;
+  changedLines: number;
+  hunkCount: number;
+  labels: string[];
+  reviewPriority: ReviewPriority;
+  reasons: string[];
+  provenance: FactProvenance[];
+  degraded?: { reason: string };
+};
+
+export type FileFilterDecision = {
+  path: string;
+  action: "skip" | "keep";
+  reason: string;
+  provenance: FactProvenance[];
+};
+
+export type DiffAnchor = {
+  path: string;
+  line: number;
+  side: "RIGHT" | "LEFT";
+  hunkId: string;
+  startLine?: number;
+  startSide?: "RIGHT" | "LEFT";
+  commitSha?: string;
+};
+
+export type DiffAnchorValidation = {
+  valid: boolean;
+  reason?:
+    | "unknown_path"
+    | "wrong_side_path"
+    | "unknown_hunk"
+    | "line_not_in_hunk"
+    | "line_not_changed"
+    | "side_mismatch"
+    | "multiline_invalid";
+};
+
+export type DiffAnchorIndex = {
+  isChangedLine(path: string, line: number, side: "RIGHT" | "LEFT"): boolean;
+  hunkIdAt(path: string, line: number, side: "RIGHT" | "LEFT"): string | undefined;
+};
+
+export type SearchResult = {
+  path: string;
+  line: number;
+  column?: number;
+  matchText: string;
+  contextBefore?: string[];
+  contextAfter?: string[];
+};
+
 export type ConfigWarning = {
   source: ConfigSource;
   key: string;

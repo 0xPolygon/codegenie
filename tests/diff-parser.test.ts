@@ -1,0 +1,170 @@
+import { describe, expect, it } from "vitest";
+import { buildDiffAnchorIndex, parseDiff, validateDiffAnchor } from "../src/git/diff-parser.js";
+import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
+
+describe("diff parser", () => {
+  it("parses statuses, line numbers, and stable hunk ids", () => {
+    const diff = parseDiff(FIXTURE_DIFF);
+
+    expect(diff.files.map((file) => [file.path, file.status])).toEqual([
+      ["src/a.ts", "modified"],
+      ["new-name.ts", "renamed"],
+      ["dead.go", "deleted"],
+      ["logo.png", "modified"],
+      ["run.sh", "modified"]
+    ]);
+    expect(diff.files[2]?.hunks[0]?.lines).toMatchObject([
+      { kind: "delete", oldLineNumber: 1, content: "package dead" },
+      { kind: "delete", oldLineNumber: 2, content: "func x() {}" }
+    ]);
+    expect(diff.files[3]?.isBinary).toBe(true);
+    expect(diff.files[4]?.modeOnly).toBe(true);
+
+    const firstHunk = diff.files[0]?.hunks[0];
+    expect(firstHunk?.id).toMatch(/^[0-9a-f]{64}$/);
+    expect(parseDiff(FIXTURE_DIFF).files[0]?.hunks[0]?.id).toBe(firstHunk?.id);
+    expect(firstHunk?.lines).toMatchObject([
+      { kind: "context", oldLineNumber: 1, newLineNumber: 1 },
+      { kind: "delete", oldLineNumber: 2 },
+      { kind: "add", newLineNumber: 2 },
+      { kind: "add", newLineNumber: 3 },
+      { kind: "context", oldLineNumber: 3, newLineNumber: 4 }
+    ]);
+  });
+
+  it("validates changed-line anchors on the correct side", () => {
+    const diff = parseDiff(FIXTURE_DIFF);
+    const index = buildDiffAnchorIndex(diff);
+    const modifiedHunk = diff.files[0]?.hunks[0];
+    const renameHunk = diff.files[1]?.hunks[0];
+
+    expect(
+      validateDiffAnchor(
+        { path: "src/a.ts", line: 2, side: "RIGHT", hunkId: modifiedHunk?.id ?? "" },
+        index
+      )
+    ).toEqual({ valid: true });
+    expect(
+      validateDiffAnchor(
+        { path: "src/a.ts", line: 1, side: "RIGHT", hunkId: modifiedHunk?.id ?? "" },
+        index
+      )
+    ).toEqual({ valid: false, reason: "line_not_changed" });
+    expect(
+      validateDiffAnchor(
+        { path: "old-name.ts", line: 1, side: "LEFT", hunkId: renameHunk?.id ?? "" },
+        index
+      )
+    ).toEqual({ valid: true });
+    expect(
+      validateDiffAnchor(
+        { path: "new-name.ts", line: 1, side: "LEFT", hunkId: renameHunk?.id ?? "" },
+        index
+      )
+    ).toEqual({ valid: false, reason: "wrong_side_path" });
+    expect(
+      validateDiffAnchor(
+        { path: "src/a.ts", line: 2, side: "RIGHT", hunkId: "missing" },
+        index
+      )
+    ).toEqual({ valid: false, reason: "unknown_hunk" });
+  });
+
+  it("fails malformed non-empty input", () => {
+    expect(() => parseDiff("--- a/file\n+++ b/file\n@@ -1 +1 @@\n-old\n+new\n")).toThrow(
+      /expected git diff header/
+    );
+  });
+
+  it("consumes GIT binary patch payload sections", () => {
+    const diff = parseDiff(`diff --git a/image.bin b/image.bin
+index 1111111..2222222 100644
+GIT binary patch
+literal 4
+LcmeZQ
+
+literal 0
+HcmV?d00001
+`);
+
+    expect(diff.files).toHaveLength(1);
+    expect(diff.files[0]).toMatchObject({
+      path: "image.bin",
+      isBinary: true,
+      hunks: []
+    });
+  });
+
+  it("parses real git diffs for paths with spaces", () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "a b.txt", "one\n");
+    const base = commitAll(repo, "base");
+    writeRepoFile(repo, "a b.txt", "one\ntwo\n");
+    const head = commitAll(repo, "head");
+    const raw = git(repo, [
+      "-c",
+      "core.quotepath=off",
+      "-c",
+      "diff.mnemonicPrefix=false",
+      "diff",
+      "--no-color",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--unified=3",
+      "--find-renames",
+      "--find-copies",
+      "--diff-algorithm=myers",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
+      base,
+      head,
+      "--"
+    ]);
+
+    expect(raw).toContain("diff --git a/a b.txt b/a b.txt");
+    const diff = parseDiff(raw);
+    expect(diff.files[0]?.path).toBe("a b.txt");
+    expect(diff.files[0]?.hunks[0]?.path).toBe("a b.txt");
+    expect(diff.files[0]?.hunks[0]?.lines).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: "add", newLineNumber: 2, content: "two" })])
+    );
+  });
+});
+
+const FIXTURE_DIFF = `diff --git a/src/a.ts b/src/a.ts
+index 1111111..2222222 100644
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,3 +1,4 @@ function a
+ line1
+-old
++new
++extra
+ line3
+\\ No newline at end of file
+diff --git a/old-name.ts b/new-name.ts
+similarity index 70%
+rename from old-name.ts
+rename to new-name.ts
+index 3333333..4444444 100644
+--- a/old-name.ts
++++ b/new-name.ts
+@@ -1,2 +1,2 @@
+-old
++new
+ keep
+diff --git a/dead.go b/dead.go
+deleted file mode 100644
+index 5555555..0000000
+--- a/dead.go
++++ /dev/null
+@@ -1,2 +0,0 @@
+-package dead
+-func x() {}
+diff --git a/logo.png b/logo.png
+index 7777777..8888888 100644
+Binary files a/logo.png and b/logo.png differ
+diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755
+`;
