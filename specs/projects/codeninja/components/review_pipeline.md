@@ -11,7 +11,7 @@ The review pipeline component owns `src/pipeline/*`: the orchestration of review
 This document owns:
 
 - `runReview` stage sequencing, data flow, and the run context that carries budget and coverage state across stages.
-- The Stage 2 filtering policy pass over shared deterministic detector facts (`FileFacts` → `FileFilterDecision`).
+- Orchestrating the Stage 2 detect/filter pass (kept files + `FileFilterDecision`s) and the Stage 3 classification of kept files, with the coverage-ledger writes and zero-work short-circuit owned here.
 - Planner dossier construction, including the `PlannerDossier` type (delegated to this document by `architecture.md`) and the untrusted-content projection rules the dossier must follow.
 - Planner invocation, planner output validation, deterministic planner fallbacks, and the degraded-planning default plan.
 - Deterministic dossier compaction and deterministic chunked planning for oversized dossiers, including mechanical plan concatenation.
@@ -78,7 +78,7 @@ The coverage ledger accumulates the per-hunk records serialized into `coverage.j
 
 ### Stage Functions
 
-Stage 2 filtering is intentionally not implemented in `src/pipeline/*`. `runReview` calls `filterDiffFiles` from `src/git/file-classifier.ts` (`components/repository_and_github.md`), then owns writing skip coverage, applying the zero-work short-circuit, and threading the decisions into downstream artifacts.
+Stage 2 filtering and Stage 3 classification are intentionally not implemented in `src/pipeline/*`. `runReview` calls `filterDiffFiles` and then `classifyChangedFiles` from `src/git/file-classifier.ts` (`components/repository_and_github.md`), and owns writing skip coverage, applying the zero-work short-circuit, and threading the decisions into downstream artifacts.
 
 ```ts
 // src/pipeline/planner.ts — Stage 5 dossier
@@ -216,9 +216,9 @@ interface WorkerRunner {
 startRun                          -> run.json, run directory
 resolveReviewInput   (stage 1)    -> ResolvedReviewInput          [repository_and_github]
 parseDiff            (stage 1)    -> UnifiedDiff                  [repository_and_github]
-classifyChangedFiles (stage 3)    -> FileFacts[]                  [repository_and_github]
 filterDiffFiles      (stage 2)    -> kept DiffFile[], FileFilterDecision[]   [repository_and_github; coverage/zero-work here]
   -- zero-work short-circuit here --
+classifyChangedFiles (stage 3)    -> FileFacts[] (kept files)     [repository_and_github]
 buildRepositoryIndex (stage 4)    -> RepositoryIndex              [context_and_tools]
 buildPlannerDossier  (stage 5)    -> PlannerDossier               -> planner-dossier.json
 runPlanner           (stage 5)    -> ReviewPlan                   -> review-plan.json
@@ -233,7 +233,7 @@ maybePublishToGitHub (stage 11)   -> posting                      [repository_an
 
 Sequencing rules:
 
-- Stages 1-4 are deterministic and strictly sequential. The implementation order is parse → classify (Stage 3 facts) → filter (Stage 2 policy pass), per `architecture.md`; telemetry still reports filtering as stage `2` and classification as stage `3`.
+- Stages 1-4 are deterministic and strictly sequential, and the implementation order matches the stage numbering: parse → Stage 2 detect/filter → Stage 3 classification of kept files, per `architecture.md`.
 - Stage 5 planning must complete before any packet review. Chunked planner calls for oversized dossiers are the only intra-stage-5 parallelism, bounded by `llm.maxConcurrentCalls`.
 - After Stage 6 completes and before any Stage 7 dispatch, the orchestrator calls the tools host's `bindPackets(packets)` (`RepositoryToolsHost`, `components/context_and_tools.md`) so `readDiffBlocks(packetId)` lookups resolve for stage 7-9 workers; path lookups work without binding.
 - Stage 7 packet workers run with bounded concurrency (`review.concurrency`); packets are independent by construction (never span files, isolated worker context), so all packets may run concurrently up to the limit.
@@ -244,17 +244,17 @@ Sequencing rules:
 
 Cancellation flows from the run context's root `AbortController`: the hard kill aborts it, which cancels in-flight workers and pending LLM calls; budget exhaustion does not abort in-flight work (the ladder only stops new dispatches).
 
-### Stage 2: Filtering Policy Pass
+### Stage 2: Detect/Filter Pass
 
-`filterDiffFiles` is a pure policy pass owned by `components/repository_and_github.md`, over the shared deterministic detector facts owned by that same component. It must not re-detect anything; it consumes `FileFacts` and configuration and emits decisions with the same provenance the detectors recorded. This component owns how the orchestrator applies those decisions to coverage, zero-work behavior, and downstream stage inputs.
+`filterDiffFiles` is owned by `components/repository_and_github.md`: it runs the skip-relevant shared detectors and applies keep/skip policy, emitting kept files plus decisions carrying the detection provenance. Detection results are memoized per file and reused by `classifyChangedFiles` for kept files — nothing detects twice, and filtered files receive no classification, parsing, or review work. This component owns how the orchestrator applies the decisions to coverage, zero-work behavior, and downstream stage inputs.
 
-Decision algorithm, applied to every `DiffFile` in diff order; the first matching rule wins and each decision records the matched fact's `FactProvenance`:
+Decision algorithm, applied to every `DiffFile` in diff order; the first matching rule wins and each decision records the matched detector's `FactProvenance`:
 
-1. `facts.isBinary` → skip, reason `"binary file"`.
-2. `facts.isLockfile` → skip, reason `"lockfile"`.
-3. `facts.isGenerated` → skip, reason `"generated file"`.
-4. `facts.isVendored` → skip, reason `"vendored or dependency file"`.
-5. `facts.processingMode === "skip"` → skip, with the classifier- or config-recorded reason (this is how explicit `codeninja.toml` skip rules, ignored paths, submodule pointer changes, and symlink entries arrive — they are classified `skip` upstream with provenance).
+1. Binary (diff metadata or detector) → skip, reason `"binary file"`.
+2. Lockfile detector → skip, reason `"lockfile"`.
+3. Generated detector → skip, reason `"generated file"`.
+4. Vendored detector → skip, reason `"vendored or dependency file"`.
+5. Ignored path, configured `processingMode = "skip"` path rule, submodule pointer change, or symlink entry → skip, with the rule- or parser-recorded reason and provenance.
 6. `file.modeOnly` → skip, reason `"mode-only change not reviewable in v1"`.
 7. Otherwise → keep.
 
@@ -268,13 +268,13 @@ Rules:
 
 ### Zero-Work Short-Circuit
 
-Immediately after Stage 2, if `diff.files` is empty or `kept` is empty, `runReview` short-circuits before Stage 4 with no LLM calls:
+Immediately after Stage 2, if `diff.files` is empty or `kept` is empty, `runReview` short-circuits before Stage 3 with no LLM calls:
 
 1. Record coverage: every hunk skipped with its filter reason; `RunCoverageStatus = { totalHunks, reviewedHunks: 0, skippedHunks: totalHunks, failedHunks: 0, coverageByLevel: { deep: 0, normal: 0, light: 0, skip: totalHunks }, degradedPlanning: false, budgetStopped: false, verificationIncompleteCount: 0, partial: false, reasons: [...filter summary] }`. A zero-work run is a complete review of nothing, not a partial review.
 2. Build `ReviewResult` with a deterministic template summary ("nothing to review" plus the filter summary), `noFindings: true`, empty findings arrays, and no posting plan.
 3. Render the report (including the filter summary), write all telemetry artifacts, and return; the CLI exits `0`.
 
-Stage 4 index construction, the dossier, and all model stages are skipped entirely.
+Stage 3 classification, Stage 4 index construction, the dossier, and all model stages are skipped entirely.
 
 ### Planner Dossier
 

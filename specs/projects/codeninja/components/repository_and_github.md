@@ -18,7 +18,7 @@ This component is responsible for:
 - Shallow/partial clone detection and bounded deepening.
 - Prior codeninja comment listing (`listOwnComments`): REST pagination, deterministic `ExistingReviewThread` mapping, and codeninja-author fingerprint detection for rerun duplicate avoidance. (Human review-thread fetching is deferred to Future Considerations — see architecture.md.)
 - The diff parser: `UnifiedDiff`/`DiffFile`/`DiffHunk`/`DiffLine` construction, absolute old/new line mapping, stable hunk-id hashing, file status detection including `copied`, binary, and mode-only, and rename/deleted path semantics.
-- File classification: the shared deterministic detector library (generated/vendor/lockfile/binary detectors, package-root detection, test-status conventions, `codeninja.toml` path rules, `FactProvenance`) that produces Stage 3 `FileFacts` and feeds the Stage 2 filter pass.
+- Detection, filtering, and classification: the shared deterministic detector library (generated/vendor/lockfile/binary detectors, package-root detection, test-status conventions, `codeninja.toml` path rules, `FactProvenance`), consumed first by the Stage 2 detect/filter pass and then by Stage 3 `FileFacts` enrichment of kept files.
 - GitHub anchor validation: the changed-line LEFT/RIGHT validation used by packet output validation, pre-verification gates, and pre-posting checks.
 - Duplicate detection against prior codeninja comments: the stable finding fingerprint, author-verified marker parsing, and the ±5-line fuzzy match.
 - GitHub publishing: the single `COMMENT` review, 422 recovery with bisect and the summary-only fallback, and deterministic comment sanitization (mention neutralization, HTML-comment stripping, body caps, secret scrubbing).
@@ -60,21 +60,24 @@ function validateDiffAnchor(anchor: DiffAnchor, index: DiffAnchorIndex): DiffAnc
 // Pure functions; never throw for invalid anchors — they return a structured rejection.
 
 // src/git/file-classifier.ts
-function classifyChangedFiles(
+function filterDiffFiles(
   resolved: ResolvedReviewInput,
   diff: UnifiedDiff,
   config: CodeninjaConfig,
   telemetry: TelemetryRecorder
-): Promise<FileFacts[]>
-// Content-read failures degrade, never throw
+): Promise<{ kept: DiffFile[]; decisions: FileFilterDecision[] }>
+// Stage 2: runs the skip-relevant detectors and applies keep/skip policy;
+// memoizes detection results per file. Content-read failures degrade, never throw.
 
-function filterDiffFiles(
-  fileFacts: FileFacts[],
-  diff: UnifiedDiff,
+function classifyChangedFiles(
+  resolved: ResolvedReviewInput,
+  kept: DiffFile[],
+  decisions: FileFilterDecision[],
   config: CodeninjaConfig,
   telemetry: TelemetryRecorder
-): Promise<{ kept: DiffFile[]; decisions: FileFilterDecision[] }>
-// Pure policy pass over facts; does not throw
+): Promise<FileFacts[]>
+// Stage 3: enrichment facts for kept files only; reuses the filter's memoized
+// detection results and never re-detects. Content-read failures degrade.
 
 // src/github/github-client.ts
 function createGitHubClient(repoRoot: string): GitHubClient
@@ -353,7 +356,7 @@ An empty resulting diff (branch fully merged) is not an error: the resolver retu
 Boundary cases (inventoried, then classified — see File Classification):
 
 - Root commit: the empty-tree diff marks every file `added`; nothing special downstream.
-- Submodule pointer bumps: the parser sets `DiffFile.isSubmodule` (Subproject-commit content pattern / `160000` mode headers); classified `processingMode: "skip"` with reason "submodule pointer change".
+- Submodule pointer bumps: the parser sets `DiffFile.isSubmodule` (Subproject-commit content pattern / `160000` mode headers); filtered at Stage 2 with reason "submodule pointer change".
 - Symlink entries: the parser sets `DiffFile.isSymlink` from `120000` mode headers; when headers are absent, the classifier backfills the field via `lsTreeEntry(ref, path).mode === "120000"` at head (or base for deletions). Inventoried but not content-reviewed — classified `skip` with reason "symlink change".
 
 #### Diff-File Mode (Deferred)
@@ -483,11 +486,11 @@ Context lines are deliberately absent from the index: inline publication is chan
 
 ### File Classification And Filtering
 
-Implementation order follows `architecture.md`: parse → detect+classify (Stage 3 facts with provenance) → filter (Stage 2 policy pass over those facts). Telemetry still reports the filter pass as stage `2` and classification as stage `3`.
+Implementation order follows `architecture.md` and matches the stage numbering: parse → Stage 2 detect/filter (the skip-relevant detectors plus keep/skip policy, recording decisions with detection provenance) → Stage 3 classification (enrichment facts for kept files, reusing the memoized detection results).
 
 #### Shared Detector Library
 
-`src/git/detectors.ts` is the single deterministic detector library; Stage 3 facts and Stage 2 filtering both consume it and record identical `FactProvenance`. Every detector returns `{ value, provenance: FactProvenance }`. No detector calls the LLM, and the library ships no business/domain risk keywords.
+`src/git/detectors.ts` is the single deterministic detector library; the Stage 2 filter consumes it first (the skip-relevant detectors) and Stage 3 classification reuses the memoized results for kept files, both recording identical `FactProvenance`. Every detector returns `{ value, provenance: FactProvenance }`. No detector calls the LLM, and the library ships no business/domain risk keywords.
 
 Content source rule: detectors that read file content read it at the reviewed revisions through `GitClient.catFile` — head for added/modified/renamed files, base for deleted files — never the checked-out worktree. Content reads are bounded to the first 64 lines or 8 KiB, whichever is smaller; read failures degrade the fact to its path-based result with a `low`-confidence provenance note rather than failing the run.
 
@@ -504,16 +507,24 @@ Content source rule: detectors that read file content read it at the reviewed re
 - Submodule detector: consumes the parser-populated `DiffFile.isSubmodule` (content pattern / `160000` mode headers). Provenance source `diff`.
 - Symlink detector: consumes the parser-populated `DiffFile.isSymlink`; when mode headers were absent, backfills the field via `lsTreeEntry` mode `120000` at head (base for deletions). Provenance source `diff` (parser-populated) or `git` (ls-tree backfill).
 
+#### Stage 2 Filter Pass
+
+`filterDiffFiles` runs before classification. It executes the skip-relevant detectors and applies keep/skip policy per changed file (first match wins, each with its reason and provenance):
+
+- skip when `isGenerated`, `isVendored`, `isLockfile`, `isBinary`, ignored, submodule bump, symlink, `modeOnly` (v1 cannot review mode-only changes usefully), or a configured `processingMode = "skip"` path rule matches.
+- keep otherwise.
+
+It returns the kept `DiffFile[]` and exactly one `FileFilterDecision` per changed file (`action: "keep" | "skip"`, the decisive reason, and the detection provenance), memoizing detection results per file for `classifyChangedFiles` to reuse — nothing detects twice. Decisions flow to the planner dossier as counts/paths and into `coverage.json` (orchestrator-owned). Filtered files produce no packets, no candidate findings, and no further classification or parsing work; they remain visible to the planner as review-scope facts.
+
 #### FileFacts Assembly
 
-`classifyChangedFiles` produces one `FileFacts` per `DiffFile` (deleted files included — they are review inventory, not noise):
+`classifyChangedFiles` produces one `FileFacts` per kept `DiffFile` (deleted reviewable files included — they are review inventory, not noise):
 
-1. Run all detectors; collect provenance.
+1. Copy the filter's memoized detection results (generated/vendor/lockfile/binary) with their provenance; run the enrichment detectors (language, package root, test status).
 2. `changedLines` = count of `add` + `delete` lines; `hunkCount` = hunk count.
 3. Apply configured path rules (below): labels, `reviewPriority`, `processingMode` overrides.
-4. Derive `processingMode` (first match wins):
-   - `skip` when `isGenerated`, `isVendored`, `isLockfile`, `isBinary`, ignored, submodule bump, symlink, `modeOnly` (v1 cannot review mode-only changes usefully), or a configured `skip` rule — each with its reason and provenance.
-   - configured `processingMode` from path rules, when set.
+4. Derive `processingMode` (first match wins; skip decisions already happened in the Stage 2 filter, so kept-file facts never carry `skip`):
+   - configured `processingMode` from path rules, when set (`skip` rules were consumed by the filter).
    - `whole-file` for added files with total new lines ≤ 100 (small-added-file rule; packet size caps still apply in Stage 6).
    - `per-hunk` otherwise.
 5. `reviewPriority` defaults to `"normal"` unless configured.
@@ -537,10 +548,6 @@ Configured labels are user-provided facts, never codeninja-inferred risk truth.
 #### Diff-File Worktree Validation (Deferred)
 
 The diff-file mode's hunk-context staleness validation — classification invoking the tools-layer `validateHunkContextAgainstWorktree` primitive and acting as the single writer of `FileFacts.degraded` for that validation — is deferred with the diff-file input mode (see architecture.md Future Considerations). `FileFacts.degraded` itself stays in v1 for deleted-file degradation (above), and degraded facts still flow into packets and the coverage summary (`components/review_pipeline.md`).
-
-#### Stage 2 Filter Pass
-
-`filterDiffFiles` is a pure policy pass over facts plus config: a file is kept iff `processingMode !== "skip"`. It returns the kept `DiffFile[]` and exactly one `FileFilterDecision` per changed file (`action: "keep" | "skip"`, the decisive reason, and the same provenance the facts carry). Decisions flow to the planner dossier as counts/paths and into `coverage.json` (orchestrator-owned). Filtered files produce no packets and no candidate findings; they remain visible to the planner as review-scope facts.
 
 ### GitHub Anchor Validation
 
@@ -644,7 +651,7 @@ This component depends on:
 Depended on by:
 
 - `components/context_and_tools.md`: `RepositoryTools` uses `GitClient` (`catFile`, `lsTree`, `grep`, `revParse`) as its git plumbing backend for revision reads and `git grep` search.
-- `components/review_pipeline.md`: calls `resolveReviewInput`, `parseDiff`, `classifyChangedFiles`, `filterDiffFiles`, `buildDiffAnchorIndex`/`validateDiffAnchor` (Stage 7 output validation and Stage 9 pre-gates), the fingerprint function (Stage 10), and `maybePublishToGitHub` (Stage 11).
+- `components/review_pipeline.md`: calls `resolveReviewInput`, `parseDiff`, `filterDiffFiles`, `classifyChangedFiles`, `buildDiffAnchorIndex`/`validateDiffAnchor` (Stage 7 output validation and Stage 9 pre-gates), the fingerprint function (Stage 10), and `maybePublishToGitHub` (Stage 11).
 - `components/skills_llm_telemetry.md`: reuses the secret scrubber before persisting final findings.
 - `components/evals.md`: consumes this component's artifacts (`coverage.json` inputs, `github-posting.json`) through normal run artifacts; no direct API dependency.
 
@@ -742,17 +749,18 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 ### Classification And Filtering
 
 - `classify.language-and-filenames` — extension map and known basenames, `"unknown"` fallback.
-- `classify.generated-marker-head-read` — marker present at head but not in the worktree → `isGenerated: true` (proves revision reads, provenance `generated_detector`).
-- `classify.generated-deleted-base-read` — deleted generated file detected from base content.
-- `classify.vendor-lockfile-binary` — detector lists honored with correct provenance sources.
+- `detect.generated-marker-head-read` — marker present at head but not in the worktree → `isGenerated: true` (proves revision reads, provenance `generated_detector`).
+- `detect.generated-deleted-base-read` — deleted generated file detected from base content.
+- `detect.vendor-lockfile-binary` — detector lists honored with correct provenance sources.
 - `classify.package-root-nearest` — nested `package.json` under a `go.mod` repo resolves the nearest marker from the head tree listing.
 - `classify.test-conventions` — `_test.go`, `*.spec.ts`, `__tests__/`, `test_*.py` → `"test"`; classifier never emits `"mixed"`.
 - `classify.small-added-whole-file` — added file with ≤ 100 lines → `whole-file`; 101 lines → `per-hunk`.
 - `classify.path-rules-precedence` — overlapping rules: last-match scalar wins, labels union, per-rule provenance recorded.
 - `classify.policy-change-label` — diff touching `codeninja.toml` / `.codeninja/skills/x.md` → label `policy-change`.
-- `classify.submodule-and-symlink-skip` — gitlink bump (parser-set `isSubmodule`) → skip "submodule pointer change"; symlink (parser-set `isSymlink`, with `lsTreeEntry` mode-120000 backfill when headers are absent) → skip "symlink change".
-- `classify.mode-only-skip` — `modeOnly` file → skip with reason.
-- `classify.content-read-failure-degrades` — `catFile` failure degrades the generated fact to path-based with `low` confidence, run continues.
+- `filter.submodule-and-symlink-skip` — gitlink bump (parser-set `isSubmodule`) → skip "submodule pointer change"; symlink (parser-set `isSymlink`, with `lsTreeEntry` mode-120000 backfill when headers are absent) → skip "symlink change".
+- `filter.mode-only-skip` — `modeOnly` file → skip with reason.
+- `filter.kept-files-skip-nothing` — kept-file `FileFacts` never carry `processingMode: "skip"`; configured skip rules are consumed by the filter.
+- `detect.content-read-failure-degrades` — `catFile` failure degrades the generated fact to path-based with `low` confidence, run continues.
 - `classify.deleted-file-base-unreadable-degrades` — deleted file whose base content cannot be read → `FileFacts.degraded` with the documented reason.
 - `filter.decisions-cardinality` — exactly one `FileFilterDecision` per changed file; kept + skipped partitions the inventory.
 - `filter.deleted-source-kept-deleted-lockfile-skipped` — deleted `.go` file kept; deleted `yarn.lock` skipped by ordinary rules.

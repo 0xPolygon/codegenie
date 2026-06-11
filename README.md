@@ -25,7 +25,7 @@ Common options:
 
 ```bash
 codeninja review --depth light|normal|deep        # global budget & planner bias
-codeninja review --lens lang/go --lens security   # restrict/enable lenses for this run
+codeninja review --lens lang/go --lens core/tests # restrict/enable lenses for this run
 codeninja review --provider openai --model gpt-5  # override the user-level model default
 codeninja review --reasoning high                 # override model reasoning effort
 codeninja review --format json                    # machine-readable final review object
@@ -75,7 +75,7 @@ Teams can also version project-specific review expertise as Markdown skills in `
 ## How a review runs
 
 ```text
-diff → classify/detect → filter → changed-symbol extraction (deterministic)
+diff → detect/filter → classify kept files → changed-symbol extraction (deterministic)
   → planner: intent, risk areas, per-hunk coverage, lenses   (LLM)
   → review packets: focused diff slices + local context      (deterministic)
   → packet reviewers: candidate findings, in parallel        (LLM, tool-equipped)
@@ -115,7 +115,7 @@ Long-context attention dilution is real: a model handed a 100k-token diff dump r
 
 ### Skills are checks, not personas
 
-A skill is a Markdown file of concrete checks, false-positive rules, safe patterns, and examples — not "you are a meticulous senior engineer" theater. Skills are projected per stage (reviewers get Checks + False Positives + Examples; the verifier gets False Positives + Safe Patterns) so guidance lands where it changes behavior. Lenses (`core`, `lang/go`, `tests`, …) are the user-facing perspectives that map onto skills, and teams can add their own per repo.
+A skill is a Markdown file of concrete checks, false-positive rules, safe patterns, and examples — not "you are a meticulous senior engineer" theater. Skills are projected per stage (reviewers get Checks + False Positives + Examples; the verifier gets False Positives + Safe Patterns) so guidance lands where it changes behavior. Lenses (`core/code-review`, `core/tests`, `lang/go`, …) are the user-facing perspectives that map onto skills, and teams can add their own per repo.
 
 ### Built to be evaluated
 

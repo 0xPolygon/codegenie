@@ -209,7 +209,7 @@ Deleted files and deletion-only hunks are part of the review inventory. codeninj
 
 Stage 2 removes files that should not enter the review pipeline and records why they were filtered.
 
-Filtering should be deterministic and explainable. It should apply built-in generated/vendor/binary/lockfile detection, repository ignore rules where appropriate, and explicit `codeninja.toml` skip rules. Filtering is a policy pass over the shared deterministic detectors that also produce Stage 3 facts; both record the same provenance.
+Filtering should be deterministic and explainable. Stage 2 runs the shared deterministic detectors the skip policy needs — built-in generated/vendor/binary/lockfile detection, repository ignore rules where appropriate, and explicit `codeninja.toml` skip rules — and applies policy over their results. Detection results are recorded with provenance on each filter decision and reused by Stage 3 classification for kept files: nothing is detected twice, and filtered files receive no further classification, parsing, or review work.
 
 Stage 2 should filter or mark:
 
@@ -228,23 +228,21 @@ Deleted reviewable source, test, config, migration, or documentation files shoul
 
 ## Stage 3: File Classification
 
-File classification should be deterministic, narrow, and auditable by default. It should not require an LLM. The classifier produces processing facts for the planner; it does not produce findings and should not try to infer business risk from a built-in keyword taxonomy.
+File classification should be deterministic, narrow, and auditable by default. It should not require an LLM. The classifier runs on kept files only — skip decisions already happened in Stage 2 — and produces processing facts for the planner; it does not produce findings and should not try to infer business risk from a built-in keyword taxonomy.
 
-Each changed file should receive a processing mode:
+Each kept file should receive a processing mode:
 
 - `per-hunk`: default for ordinary reviewable source files.
 - `whole-file`: for files that are better reviewed as a unit, such as small added files or files explicitly configured this way.
-- `skip`: for generated, vendored, binary, lock, ignored, or explicitly skipped files.
 
-Each changed file should also receive reliable facts when available:
+(`skip` is not a kept-file processing mode: configured `processingMode = "skip"` path rules are consumed by the Stage 2 filter, and skipped files are represented by their filter decisions rather than full classification facts.)
+
+Each kept file should also receive reliable facts when available:
 
 - Language, primarily from extension and known filenames.
 - Package root when a nearby package marker is found.
 - Test status from established test filename/path conventions.
-- Generated-file status from generated markers and generated-file detectors.
-- Vendor/dependency status from well-known dependency directories.
-- Lockfile status from known lockfile names.
-- Binary status from git or diff metadata.
+- Generated, vendor, lockfile, and binary status, copied from the Stage 2 detection results rather than re-detected.
 - Changed-line and hunk counts.
 - Configured labels and review priority from `codeninja.toml`.
 - Reasons and provenance for every processing-mode decision and configured label.

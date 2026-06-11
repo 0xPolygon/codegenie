@@ -370,6 +370,8 @@ type StaticSignal = {
   snippet?: string
 }
 
+// "skip" appears in config path rules and FileFilterDecisions (Stage 2);
+// FileFacts of kept files carry only "per-hunk" | "whole-file".
 type ProcessingMode = "per-hunk" | "whole-file" | "skip"
 type ReviewPriority = "critical" | "high" | "normal" | "low"
 
@@ -407,7 +409,7 @@ type FileFilterDecision = {
 }
 ```
 
-`filterDiffFiles` returns the kept files plus one `FileFilterDecision` per changed file. Decisions flow to the planner dossier (counts and paths) and into `coverage.json`.
+`filterDiffFiles` runs first: it executes the skip-relevant detectors, returns the kept files plus one `FileFilterDecision` per changed file (carrying the detection provenance the policy used), and memoizes detection results. Classification then runs on kept files only, reusing those results. Decisions flow to the planner dossier (counts and paths) and into `coverage.json`.
 
 V1 ships exactly two cross-language static-signal rules: `core/deleted-test-file` and `core/exported-api-change`. Per-language rule packs are deferred (see Future Considerations).
 
@@ -1220,8 +1222,8 @@ async function runReview(input: ReviewInput, config: CodeninjaConfig): Promise<R
   const run = await startRun(config)
   const resolved = await resolveReviewInput(input, config, run.telemetry)
   const diff = await parseDiff(resolved.rawDiff, run.telemetry)
-  const fileFacts = await classifyChangedFiles(resolved, diff, config, run.telemetry)
-  const { kept: filtered, decisions } = await filterDiffFiles(fileFacts, diff, config, run.telemetry)
+  const { kept: filtered, decisions } = await filterDiffFiles(resolved, diff, config, run.telemetry)
+  const fileFacts = await classifyChangedFiles(resolved, filtered, decisions, config, run.telemetry)
   const repoIndex = await buildRepositoryIndex(resolved, filtered, fileFacts, config, run.telemetry)
   const dossier = await buildPlannerDossier(resolved, filtered, fileFacts, decisions, repoIndex, config, run.telemetry)
   const plan = await runPlanner(dossier, config, run.telemetry)
@@ -1252,7 +1254,7 @@ type ReviewResult = {
 }
 ```
 
-Detection (generated/vendor/lock/binary) is a single shared deterministic detector library. The pipeline order is: parse → detect+classify (Stage 3 facts, including detector outputs with provenance) → filter (Stage 2 as a policy pass consuming facts and config skip rules). Stage numbering in the functional spec is unchanged (filtering is still reported as Stage 2 in telemetry), but implementation-wise classification facts feed the filter. Each decision records one provenance entry.
+Detection (generated/vendor/lock/binary) is a single shared deterministic detector library. The pipeline order matches the stage numbering: parse → Stage 2 filter (run the detectors the skip policy needs, decide keep/skip, record `FileFilterDecision`s with detection provenance) → Stage 3 classification (enrichment facts — language, package root, test status, counts, labels, priority — for kept files only, reusing the memoized detection results). Filtered files receive no enrichment, no parsing, and no review work. Each decision records one provenance entry.
 
 Parallelizable work:
 
