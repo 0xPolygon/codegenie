@@ -21,7 +21,7 @@ This component is responsible for:
 - Detection, filtering, and classification: the shared deterministic detector library (generated/vendor/lockfile/binary detectors, package-root detection, test-status conventions, `codeninja.toml` path rules, `FactProvenance`), consumed first by the Stage 2 detect/filter pass and then by Stage 3 `FileFacts` enrichment of kept files.
 - GitHub anchor validation: the changed-line LEFT/RIGHT validation used by packet output validation, pre-verification gates, and pre-posting checks.
 - Duplicate detection against prior codeninja comments: the stable finding fingerprint, author-verified marker parsing, and the ±5-line fuzzy match.
-- GitHub publishing: the single `COMMENT` review, 422 recovery with bisect and the summary-only fallback, and deterministic comment sanitization (mention neutralization, HTML-comment stripping, body caps, secret scrubbing).
+- GitHub publishing: the single `COMMENT` review, 422 recovery with suspect-class dropping and the summary-only fallback, and deterministic comment sanitization (mention neutralization, HTML-comment stripping, body caps, secret scrubbing).
 - Commit-mode boundary cases: root-commit empty-tree diffs, submodule pointer bumps, and symlink entries.
 
 This component is explicitly not responsible for:
@@ -36,7 +36,7 @@ This component is explicitly not responsible for:
 
 ### Module Entry Points
 
-These functions are the seams the pipeline orchestrator calls, matching the main algorithm in `architecture.md`. `TelemetryRecorder` is defined in `components/skills_llm_telemetry.md`; `SearchResult` is defined in `components/context_and_tools.md`.
+These functions are the seams the pipeline orchestrator calls, matching the main algorithm in `architecture.md`. `TelemetryRecorder` is defined in `components/skills_llm_telemetry.md`. Type placement note: `SearchResult` is defined in `components/context_and_tools.md` (`src/repo/`); `GitClient.grep` returns that same shape via a type-only import — an acceptable inverse dependency because it is type-only.
 
 ```ts
 // src/git/git-client.ts
@@ -88,16 +88,19 @@ function maybePublishToGitHub(
   resolved: ResolvedReviewInput,
   config: CodeninjaConfig,
   telemetry: TelemetryRecorder
-): Promise<void>
-// No-op unless finalReview.postingPlan is present and resolved.mode === "github_pr".
+): Promise<RunPostingRecord | undefined>
+// No-op (returns undefined) when finalReview.postingPlan is absent; a posting plan
+// present outside "github_pr" mode re-asserts invalid_args. When posting runs, the
+// returned RunPostingRecord is what renderOutputs (which runs after publishing)
+// renders the concise posting summary from.
 // Errors: github_post_failed (fatal only because posting was explicitly requested)
 ```
 
-`--post-github-comments` cannot be enabled from configuration, so the publisher keys off `finalReview.postingPlan`: Stage 10 includes a posting plan only when the flag was passed. A posting plan in any mode other than `github_pr` is an `invalid_args` defect (the CLI rejects it earlier; the publisher re-asserts).
+`--post-github-comments` cannot be enabled from configuration, so the publisher keys off `finalReview.postingPlan`: Stage 10 includes a posting plan only when the flag was passed. A posting plan in any mode other than `github_pr` is an `invalid_args` defect (the CLI rejects it earlier; the publisher re-asserts `invalid_args`).
 
 ### GitClient
 
-The seam is defined in `architecture.md` and is reproduced here unchanged, annotated with behavior and error conditions. All methods run `git` in `repoRoot` through the subprocess layer described under Internal Design.
+The seam is defined in `architecture.md` and is reproduced here annotated with behavior and error conditions, plus one addition this component owns: `lsFiles`, the tracked-file check. All methods run `git` in `repoRoot` through the subprocess layer described under Internal Design.
 
 ```ts
 interface GitClient {
@@ -116,6 +119,12 @@ interface GitClient {
   // `git ls-tree -r --name-only <ref> [-- :(glob)<glob>]` → repo-relative paths.
   // Errors: git_ref_missing; invalid_args for option-like ref/glob.
   lsTree(ref: string, glob?: string): Promise<string[]>
+
+  // `git ls-files -z -- <paths...>` → the subset of the given paths tracked in the
+  // index (the tracked-file check). The cache component consumes it for the
+  // repo-tracked-cache-dir refusal (components/skills_llm_telemetry.md).
+  // Errors: invalid_args for option-like path values.
+  lsFiles(paths: string[]): Promise<string[]>
 
   // `git grep -I -n --no-color -e <pattern> <ref> [-- :(glob)<glob>]`.
   // The pattern is POSIX ERE (`-E`), passed via `-e` so patterns starting with `-` are legal.
@@ -220,7 +229,6 @@ type DiffAnchorValidation = {
 type DiffAnchorIndex = {
   isChangedLine(path: string, line: number, side: "RIGHT" | "LEFT"): boolean
   hunkIdAt(path: string, line: number, side: "RIGHT" | "LEFT"): string | undefined
-  diffPositionAt(path: string, line: number, side: "RIGHT" | "LEFT"): number | undefined
 }
 
 // One duplicate-detection decision per inline-publication finding.
@@ -232,13 +240,16 @@ type FindingDuplicateDecision = {
 }
 
 // Whole-run posting outcome, serialized by the telemetry recorder into github-posting.json.
+// This is also the pinned schema for the posting-mode `--format json` run summary:
+// the publisher returns it, and renderOutputs — which runs after maybePublishToGitHub —
+// renders the concise stdout summary (Markdown or JSON) from the returned record.
 type RunPostingRecord = {
   attempted: boolean
   status: "posted" | "skipped_no_findings" | "skipped_all_duplicates" | "summary_only_fallback" | "failed"
   inlinePosted: number
   demotedToBody: number
   skippedDuplicates: number
-  attempts: Array<{ kind: "review" | "probe"; httpStatus?: number; commentCount: number; outcome: "ok" | "rejected" | "error" }>
+  attempts: Array<{ httpStatus?: number; commentCount: number; outcome: "ok" | "rejected" | "error" }> // one entry per review-creation attempt
   error?: string
 }
 ```
@@ -274,7 +285,7 @@ Invocation rules:
 
 Argument validation, applied before spawning:
 
-- `assertSafeRef(ref)`: accepted forms are a full 40/64-char hex SHA, or a refname valid under `git check-ref-format` rules (implemented locally: no leading `-`, no `..`, no control chars, no `~ ^ : ? * [ \`, no leading/trailing `/`, no `.lock` suffix, no `@{`). Internal callers may pass composed revision expressions (`<sha>^1`, `<sha>^{commit}`, `<a>..<b>`, `<sha>^!`, `<ref>:<path>`) only when every component part was individually validated first. Model-supplied refs arriving via the tools layer are plain refs and are re-validated here defensively.
+- `assertSafeRef(ref)`: accepted forms are a full 40/64-char hex SHA, or a refname valid under `git check-ref-format` rules (implemented locally: no leading `-`, no `..`, no control chars, no `~ ^ : ? * [ \`, no leading/trailing `/`, no `.lock` suffix, no `@{`). Internal callers may pass composed revision expressions (`<sha>^1`, `<sha>^{commit}`, `<a>..<b>`, `<sha>^!`, `<ref>:<path>`) only when every component part was individually validated first. Refs are harness-resolved only (model-facing source selectors expose `head`/`base`, never raw refs); harness-side ref values arriving via the tools layer are re-validated here defensively.
 - `assertSafePath(path)` / `assertSafeGlob(glob)`: reject values matching `^-` and embedded NUL bytes. Repo-containment canonicalization for filesystem access is the tools-layer chokepoint's job, via the shared `assertContainedRepoPath` helper in `src/util/paths.ts` (canonicalize, must resolve inside `repoRoot`, reject absolute and `..` forms, do not follow symlinks out of the root); this component itself reads content only through git plumbing.
 - Untrusted positional path/ref arguments are always preceded by `--` where the git subcommand supports it (`grep`, `ls-tree`, `log`, `diff`, `check-ignore`). For combined `<ref>:<path>` arguments (`cat-file`), validation of both parts guarantees the value cannot begin with `-`.
 - Search patterns are passed via `-e <pattern>` (never positionally), so patterns beginning with `-` are legal without violating the option-injection rule.
@@ -404,10 +415,10 @@ Behavior (REST `GET /repos/<owner>/<repo>/pulls/<n>/comments`, manual `per_page=
 
 - Filter to comments authored by the authenticated `gh` login (`viewerLogin`, cached per run, compared case-insensitively); other users' comments are never collected.
 - Mapping to `ExistingReviewThread`:
-  - `id` = comment id; `path`/`side` = the comment's anchor fields; `line` = `line`, falling back to `original_line` for outdated comments; `resolved` = false (REST comment listing carries no resolution state; the field is meaningful only for the deferred thread fetching); `author` = the comment author login.
+  - `id` = comment id; `path`/`side` = the comment's anchor fields; `line` = `line`, falling back to `original_line` for outdated comments; `author` = the comment author login.
   - `isCodeninja` = fingerprint marker parses from the comment body AND `author` equals `viewerLogin`. Markers in other users' comments never set `isCodeninja` and never suppress.
   - `fingerprint` = the parsed marker fingerprint when `isCodeninja`.
-  - `summary` is deterministically extracted, never verbatim (Trust Boundaries): comment body → strip HTML comments → collapse all whitespace runs to single spaces → truncate to 280 characters with a trailing ellipsis. It serves telemetry/debug readability only; nothing model-facing consumes it in v1.
+  - Thread resolution state and comment-body summarization are not handled in v1: duplicate detection consumes only the author-verified marker fingerprint and the anchor fields, and nothing model-facing consumes comment bodies. (Resolution state belongs to the deferred human-thread fetching — see architecture.md Future Considerations.)
 
 Marker grammar (shared with duplicate detection):
 
@@ -420,11 +431,9 @@ regex: /<!--\s*codeninja:fingerprint=([0-9a-f]{64});run=([A-Za-z0-9._-]+)\s*-->/
 
 #### Input Grammar
 
-The parser is a line-oriented state machine over the raw diff text. It accepts:
+The parser is a line-oriented state machine over the raw diff text. V1 accepts git-header unified diffs only: sections starting `diff --git a/<old> b/<new>`, followed by extended headers (`old mode`, `new mode`, `deleted file mode`, `new file mode`, `copy from/to`, `rename from/to`, `similarity index`, `index`), then optional `---`/`+++` lines and hunks. All v1 modes produce exactly this form via the fixed diff flags.
 
-- git-style diffs: sections starting `diff --git a/<old> b/<new>`, followed by extended headers (`old mode`, `new mode`, `deleted file mode`, `new file mode`, `copy from/to`, `rename from/to`, `similarity index`, `index`), then optional `---`/`+++` lines and hunks.
-- format-patch wrappers: any content before the first `diff --git` line (mail headers, commit message) is ignored, as is a trailing `-- \n<version>` signature.
-- plain unified diffs without git headers: file sections introduced by `--- <old>` / `+++ <new>` pairs; status inferred from `/dev/null` sides (`added`/`deleted`), `modified` otherwise; rename/copy statuses are unavailable in this form. All v1 modes produce git-style diffs; this grammar is parser robustness that the deferred diff-file input mode would rely on (see architecture.md Future Considerations).
+Plain unified diffs without git headers (`---`/`+++`-only file sections) and format-patch/mail-wrapped inputs strict-fail with `diff_parse_failed`; the lenient grammars for those forms return with the deferred diff-file input mode (see architecture.md Future Considerations).
 
 Empty or whitespace-only input returns `{ files: [] }` (the zero-work path handles it). Any structural violation in non-empty input — a hunk header that does not parse, a hunk body line with an illegal leading character, line counts disagreeing with the header — fails the whole parse with `diff_parse_failed` and the offending input line number; the parser never silently drops malformed files.
 
@@ -480,9 +489,8 @@ Ids are stable across reruns of the same diff and intentionally change when the 
 
 - RIGHT map: `newLineNumber → hunkId` for every `add` line, keyed by the new path (`DiffFile.path`).
 - LEFT map: `oldLineNumber → hunkId` for every `delete` line, keyed by the old path (`oldPath` for renames/copies, `path` for deletions and in-place modifications).
-- `diffPositionAt` records the legacy GitHub diff position (lines counted from the file's first `@@`, per side) — retained internally for validation only, never used as the primary anchor.
 
-Context lines are deliberately absent from the index: inline publication is changed-lines-only by product rule.
+Context lines are deliberately absent from the index: inline publication is changed-lines-only by product rule. Legacy GitHub diff positions are not computed anywhere — anchors are line/side only, per `architecture.md`.
 
 ### File Classification And Filtering
 
@@ -502,17 +510,24 @@ Content source rule: detectors that read file content read it at the reviewed re
 - Binary detector: `DiffFile.isBinary` from diff metadata only. Provenance source `diff`, confidence `high`.
 - Ignored detector: `checkIgnored` (`git check-ignore`) against the trusted local checkout; hits are rare since tracked files in git-produced diffs are normally not ignored. Provenance source `git`.
 - Package-root detector: nearest ancestor directory (walking from the file's directory up to the repo root) containing one of `go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml`, `setup.py`, `setup.cfg`, `pom.xml`, `build.gradle`, `build.gradle.kts`, `composer.json`, `Gemfile`, `mix.exs`. The ancestor scan runs in memory against a single cached `lsTree(headRef)` listing. Provenance source `path`.
-- Test-status detector, from established conventions only: Go `*_test.go`; TS/JS `*.test.*`, `*.spec.*`, `__tests__/` segment; Python `test_*.py`, `*_test.py`, `tests/` segment; Rust `tests/` top-level segment; generic `test/` or `tests/` path segment. Match → `"test"`; no match with a known language → `"source"`; unknown language or binary → `"unknown"`. The path classifier never emits `"mixed"`; that value is reserved for richer syntax-aware refinement (`components/context_and_tools.md`).
+- Test-status detector, from established conventions only: Go `*_test.go`; TS/JS `*.test.*`, `*.spec.*`, `__tests__/` segment; Python `test_*.py`, `*_test.py`, `tests/` segment; Rust `tests/` top-level segment; generic `test/` or `tests/` path segment. Match → `"test"`; no match with a known language → `"source"`; unknown language or binary → `"unknown"`.
 - Language detector: extension map (representative: `.go`→`go`; `.ts/.mts/.cts/.tsx`→`typescript`; `.js/.jsx/.mjs/.cjs`→`javascript`; `.rs`→`rust`; `.sol`→`solidity`; `.md`→`markdown`; plus one entry each for `.py`, `.rb`, `.java`, `.kt`, `.swift`, `.c/.h`, `.cpp`, `.cs`, `.sql`, `.sh`, `.yaml/.yml`, `.json`, `.toml`) and known basenames (`Dockerfile`, `Makefile`, `go.mod`, `go.sum`). Fallback `"unknown"`. Provenance source `extension` or `filename`.
 - Submodule detector: consumes the parser-populated `DiffFile.isSubmodule` (content pattern / `160000` mode headers). Provenance source `diff`.
 - Symlink detector: consumes the parser-populated `DiffFile.isSymlink`; when mode headers were absent, backfills the field via `lsTreeEntry` mode `120000` at head (base for deletions). Provenance source `diff` (parser-populated) or `git` (ls-tree backfill).
 
 #### Stage 2 Filter Pass
 
-`filterDiffFiles` runs before classification. It executes the skip-relevant detectors and applies keep/skip policy per changed file (first match wins, each with its reason and provenance):
+`filterDiffFiles` runs before classification. It executes the skip-relevant detectors and applies keep/skip policy per changed file. The decision uses first-match precedence in this canonical order — this doc owns the canonical order; `components/review_pipeline.md` points here:
 
-- skip when `isGenerated`, `isVendored`, `isLockfile`, `isBinary`, ignored, submodule bump, symlink, `modeOnly` (v1 cannot review mode-only changes usefully), or a configured `processingMode = "skip"` path rule matches.
-- keep otherwise.
+1. binary (diff metadata or detector) → skip.
+2. lockfile → skip.
+3. generated → skip.
+4. vendored → skip.
+5. ignored path / configured `processingMode = "skip"` rule / submodule pointer change / symlink entry → skip.
+6. mode-only (v1 cannot review mode-only changes usefully) → skip.
+7. keep.
+
+Each decision carries the decisive reason and the detection provenance of the matching rule.
 
 It returns the kept `DiffFile[]` and exactly one `FileFilterDecision` per changed file (`action: "keep" | "skip"`, the decisive reason, and the detection provenance), memoizing detection results per file for `classifyChangedFiles` to reuse — nothing detects twice. Decisions flow to the planner dossier as counts/paths and into `coverage.json` (orchestrator-owned). Filtered files produce no packets, no candidate findings, and no further classification or parsing work; they remain visible to the planner as review-scope facts.
 
@@ -606,7 +621,7 @@ Skipped findings are not demoted to the body (skip means "already said"); each d
 
    The marker is appended after sanitization so HTML-comment stripping cannot remove it, and the stdout renderer hides markers from normal Markdown output where possible (`src/output/`, one-line reference).
 7. `createReview(n, { body, event: "COMMENT", comments })` — exactly one review per run; codeninja never approves or requests changes in v1. `commit_id` is the PR head SHA.
-8. Write the `RunPostingRecord` through telemetry (`github-posting.json`) and report counts in the concise stdout summary.
+8. Write the `RunPostingRecord` through telemetry (`github-posting.json`) and return it. The publisher writes nothing to stdout itself: `renderOutputs` runs after `maybePublishToGitHub` and renders the concise posting summary — Markdown counts/status, or the record itself as the pinned `--format json` run-summary schema — from the returned record.
 
 #### Comment Sanitization
 
@@ -629,12 +644,11 @@ Deterministic, in code, post-composition; applied to every inline comment body a
 GitHub returns 422 when any inline comment is invalid for its diff; the review-creation call is atomic, so a 422 means nothing was posted. Recovery ladder, bounded by 3 review-creation attempts:
 
 1. Attempt 1: the full comment set. On 422, parse the error payload; when it identifies failing comments (by index or path), drop exactly those to the review body and go to the next attempt.
-2. When the payload does not identify the failure, first drop the locally-suspect classes in order of rejection likelihood — LEFT-side anchors, deleted-file anchors, multi-line anchors — re-attempting after each drop, within the 3-attempt budget.
-3. If suspects cannot be isolated and more than one comment remains, bisect with side-effect-free probes: create a PENDING review (the same REST call with `event` omitted) for a half of the comment set, then immediately delete it (`DELETE /repos/<owner>/<repo>/pulls/<n>/reviews/<id>`) when it validates. A 422 probe posts nothing and narrows the failing subset; a successful probe is deleted and proves its half valid. At most 8 probe calls; the isolated invalid comments move to the review body and the final valid set posts once as the single `COMMENT` review. Probes are recorded as `kind: "probe"` attempts in the `RunPostingRecord`; a crash between probe-create and probe-delete leaves only an author-visible pending review, deleted best-effort at the next run's stale cleanup.
-4. Final fallback: post a summary-only review — no inline comments, all findings rendered in the body (`summary_only_fallback`).
-5. Only if even the summary-only review fails does publishing fail the run: `github_post_failed`, fatal because `--post-github-comments` was explicitly requested.
+2. When the payload does not identify the failure, drop the locally-suspect classes in order of rejection likelihood — LEFT-side anchors, deleted-file anchors, multi-line anchors — re-attempting after each drop, within the 3-attempt budget.
+3. Final fallback: post a summary-only review — no inline comments, all findings rendered in the body (`summary_only_fallback`).
+4. Only if even the summary-only review fails does publishing fail the run: `github_post_failed`, fatal because `--post-github-comments` was explicitly requested.
 
-Every attempt, demotion, probe, and the final status is recorded in `RunPostingRecord` and stage-11 telemetry events (`github_review_posted`, `github_422_recovery`, `github_posting_failed`).
+Every attempt, demotion, and the final status is recorded in `RunPostingRecord` and stage-11 telemetry events (`github_review_posted`, `github_422_recovery`, `github_posting_failed`).
 
 ## Dependencies
 
@@ -651,8 +665,8 @@ This component depends on:
 Depended on by:
 
 - `components/context_and_tools.md`: `RepositoryTools` uses `GitClient` (`catFile`, `lsTree`, `grep`, `revParse`) as its git plumbing backend for revision reads and `git grep` search.
-- `components/review_pipeline.md`: calls `resolveReviewInput`, `parseDiff`, `filterDiffFiles`, `classifyChangedFiles`, `buildDiffAnchorIndex`/`validateDiffAnchor` (Stage 7 output validation and Stage 9 pre-gates), the fingerprint function (Stage 10), and `maybePublishToGitHub` (Stage 11).
-- `components/skills_llm_telemetry.md`: reuses the secret scrubber before persisting final findings.
+- `components/review_pipeline.md`: calls `resolveReviewInput`, `parseDiff`, `filterDiffFiles`, `classifyChangedFiles`, `buildDiffAnchorIndex`/`validateDiffAnchor` (Stage 7 output validation and Stage 9 pre-gates), the fingerprint function (Stage 10), and `maybePublishToGitHub` (Stage 11, whose returned `RunPostingRecord` feeds `renderOutputs`).
+- `components/skills_llm_telemetry.md`: reuses the secret scrubber before persisting final findings, and consumes `GitClient.lsFiles` for the cache's repo-tracked-cache-dir refusal.
 - `components/evals.md`: consumes this component's artifacts (`coverage.json` inputs, `github-posting.json`) through normal run artifacts; no direct API dependency.
 
 This component never calls the LLM, never mutates the repository or working tree (its only writes are git refs under `refs/codeninja/pr/<n>/*` and GitHub reviews when explicitly requested), and treats all reviewed content as data per Trust Boundaries.
@@ -680,6 +694,7 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `git-client.merge-base-unrelated-histories` — two orphan branches → `git_ref_missing` with an explanatory message.
 - `git-client.log-record-parsing` — multi-line bodies and titles containing `..` parse correctly via the `\x1e`/`\x1f` format.
 - `git-client.fetch-default-remote-and-refspec-validation` — `fetch` targets the configured default remote; refspec `"--mirror"` is rejected.
+- `git-client.ls-files-tracked-subset` — `lsFiles` returns only the tracked subset of the given paths; option-like path values are rejected with `invalid_args`.
 - `git-client.empty-tree-sha-sha256-repo` — `emptyTreeSha()` returns the correct sentinel in a `sha256` object-format repo.
 
 ### Review Input Resolver (Temp-Repo Integration)
@@ -716,7 +731,6 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 ### Prior-Comment Listing
 
 - `comments.pagination` — multiple REST pages walked via `per_page=100` until exhausted; only viewer-authored comments are collected.
-- `comments.summary-deterministic` — HTML comments stripped, whitespace collapsed, 280-char truncation; identical input → identical summary.
 - `comments.codeninja-author-detection` — marker + author == viewer → `isCodeninja: true` with parsed fingerprint; marker with different author → `isCodeninja: false`, no fingerprint suppression.
 - `comments.outdated-line-fallback` — outdated comment with null `line` uses `original_line`.
 
@@ -732,8 +746,8 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `parser.symlink-and-submodule-fields` — `120000` mode headers set `isSymlink`; a gitlink section (`160000` mode / `Subproject commit` lines) sets `isSubmodule`.
 - `parser.quoted-path-unescaping` — `"a/sp ace \"q\".go"` and octal-escaped UTF-8 paths unquote correctly.
 - `parser.no-newline-marker` — `\ No newline at end of file` consumed; surrounding line numbering unaffected.
-- `parser.format-patch-preamble-and-signature` — mail headers before `diff --git` and trailing `-- \n2.43.0` ignored.
-- `parser.plain-unified-fallback` — headerless `---`/`+++` diff parses with inferred statuses.
+- `parser.format-patch-input-fails` — format-patch/mail-wrapped input (headers before `diff --git`, trailing signature) → `diff_parse_failed` (lenient grammar deferred with the diff-file input mode).
+- `parser.plain-unified-fails` — headerless `---`/`+++`-only diff → `diff_parse_failed`.
 - `parser.hunk-id-golden-vector` — pinned input → pinned sha256, locking the canonical serialization.
 - `parser.hunk-id-stability-and-sensitivity` — same diff reparsed → identical ids; shifting a hunk by one line → different id.
 
@@ -744,7 +758,6 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `anchor.wrong-side-path-rejected` — rename fixture: LEFT anchor using the new path → `wrong_side_path`; LEFT with `oldPath` validates.
 - `anchor.unknown-path-and-hunk` — unknown path → `unknown_path`; stale hunkId → `unknown_hunk`.
 - `anchor.multiline-rules` — `startLine >= line` rejected; cross-hunk range rejected; valid same-hunk range accepted; `startLine === line` collapsed by the publisher before validation.
-- `anchor.diff-position-recorded` — `diffPositionAt` matches hand-counted legacy positions.
 
 ### Classification And Filtering
 
@@ -753,7 +766,7 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `detect.generated-deleted-base-read` — deleted generated file detected from base content.
 - `detect.vendor-lockfile-binary` — detector lists honored with correct provenance sources.
 - `classify.package-root-nearest` — nested `package.json` under a `go.mod` repo resolves the nearest marker from the head tree listing.
-- `classify.test-conventions` — `_test.go`, `*.spec.ts`, `__tests__/`, `test_*.py` → `"test"`; classifier never emits `"mixed"`.
+- `classify.test-conventions` — `_test.go`, `*.spec.ts`, `__tests__/`, `test_*.py` → `"test"`; non-test source with known language → `"source"`; unknown language → `"unknown"`.
 - `classify.small-added-whole-file` — added file with ≤ 100 lines → `whole-file`; 101 lines → `per-hunk`.
 - `classify.path-rules-precedence` — overlapping rules: last-match scalar wins, labels union, per-rule provenance recorded.
 - `classify.policy-change-label` — diff touching `codeninja.toml` / `.codeninja/skills/x.md` → label `policy-change`.
@@ -789,9 +802,8 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `publish.duplicates-skipped-not-demoted` — duplicate findings appear in neither comments nor body.
 - `publish.no-findings-respects-config` — nothing posts when empty unless `summaryWhenNoFindings: true`.
 - `publish.422-identified-drop-retry` — 422 payload naming comment index → that comment demoted, retry succeeds, ≤ 3 review attempts.
-- `publish.422-suspect-classes-first` — unidentifiable 422 drops LEFT/deleted-file/multi-line anchors first and recovers.
-- `publish.422-bisect-pending-probes` — fake rejecting one poisoned comment: probes are PENDING creates followed by deletes, ≤ 8 probes, exactly one final `COMMENT` review without the poisoned comment (demoted to body), no stray pending reviews remain.
+- `publish.422-suspect-classes` — unidentifiable 422 drops LEFT/deleted-file/multi-line anchors in order and recovers within the 3-attempt budget.
 - `publish.422-summary-only-fallback` — persistent 422 → summary-only review containing all findings.
 - `publish.summary-only-failure-fatal` — summary-only failure → `github_post_failed`, nonzero exit.
 - `publish.partial-coverage-disclosed` — `coverage.partial` run includes the disclosure in the review body.
-- `publish.posting-record` — `RunPostingRecord` captures attempts (reviews and probes), demotions, duplicate skips, and final status.
+- `publish.posting-record` — `RunPostingRecord` captures review-creation attempts, demotions, duplicate skips, and final status; the publisher returns the same record it persists to `github-posting.json`.

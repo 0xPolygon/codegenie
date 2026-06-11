@@ -53,7 +53,7 @@ codeninja review --format markdown|json
 
 `--format` selects the stdout output format. The default is `markdown`. `json` prints the final review object instead of the Markdown report.
 
-`--provider`, `--model`, and `--reasoning` override the user-level provider defaults for one review run. `--provider` scopes model resolution. `--model` may be a provider-specific model id when `--provider` is also passed, or a provider-qualified `<provider>/<model>` value when no provider flag is passed; a qualified value is split on the first `/` only when the prefix matches a Pi-known provider id, otherwise the whole value is the model id (model ids may themselves contain slashes). `--reasoning auto` clears any explicit run-level override and falls back to the built-in `high` default. Providers exposing different reasoning scales map them onto codeninja's four levels (`low|medium|high|xhigh`).
+`--provider`, `--model`, and `--reasoning` override the user-level provider defaults for one review run. `--provider` scopes model resolution. `--model` may be a provider-specific model id when `--provider` is also passed, or a provider-qualified `<provider>/<model>` value when no provider flag is passed; a qualified value is split on the first `/` only when the prefix matches a Pi-known provider id, otherwise the whole value is the model id (model ids may themselves contain slashes). `--reasoning auto` clears the CLI layer only; resolution then continues `CODENINJA_REASONING` > `~/.codeninja/settings.json` > `~/.codeninja/config.toml` > the built-in `high` default. Providers exposing different reasoning scales map them onto codeninja's four levels (`low|medium|high|xhigh`).
 
 All v1 modes require running from inside a local git worktree. This means the repository must exist locally so codeninja can inspect files, map diff paths to source files, build context, and run read-only repository tools. The `--pr` mode uses GitHub metadata for PR context and posting, but the reviewed diff, changed files, and commit information should come from local git whenever possible.
 
@@ -131,7 +131,7 @@ Behavior:
 - `provider config set-provider` sets the user-level default provider after validating that the provider exists.
 - `provider config set-model` validates the model exists for the provider and stores both the default provider and default model.
 - `provider config set-depth` stores the user-level default review depth using codeninja's `light|normal|deep` depth vocabulary.
-- `provider config set-reasoning` stores a user-level reasoning override; `auto` clears the override, falling back to the built-in `high` default. Providers with different reasoning scales map onto codeninja's four levels.
+- `provider config set-reasoning` stores a user-level reasoning override; `auto` clears the stored override, letting resolution fall through to `~/.codeninja/config.toml` and then the built-in `high` default. Providers with different reasoning scales map onto codeninja's four levels.
 
 User provider state should live under `~/.codeninja/` by default, overridable with `CODENINJA_HOME`:
 
@@ -146,16 +146,18 @@ User provider state should live under `~/.codeninja/` by default, overridable wi
 
 The home directory should be created with mode `0700` where supported. Auth material must be registered with the redaction layer before any logging, telemetry, cache, debug trace, or error context can include it.
 
-Model selection precedence for `review` and `eval` runs (repo `codeninja.toml` never participates for these keys; environment variables are `CODENINJA_PROVIDER`, `CODENINJA_MODEL`, and `CODENINJA_REASONING`):
+Model selection precedence for `review` and `eval` runs (repo `codeninja.toml` never participates for these keys; `CODENINJA_PROVIDER`, `CODENINJA_MODEL`, `CODENINJA_REASONING`, and `CODENINJA_HOME` are the only codeninja environment variables in v1):
 
 ```text
-CLI flags > environment variables > ~/.codeninja/settings.json > Pi/provider defaults
+CLI flags > environment variables > ~/.codeninja/settings.json > ~/.codeninja/config.toml > Pi/provider defaults
 ```
 
-Stored `defaultDepth` participates in review-depth resolution; repo project policy outranks the personal default:
+Within user scope, `settings.json` outranks `config.toml` because the dedicated `provider config set-*` commands write `settings.json`.
+
+Stored `defaultDepth` participates in review-depth resolution; repo project policy outranks the personal default, and depth has no environment layer:
 
 ```text
---depth > environment variables > codeninja.toml > ~/.codeninja/settings.json > normal
+--depth > repo codeninja.toml > settings.json defaultDepth > config.toml > built-in normal
 ```
 
 If no authenticated model can be resolved, codeninja should fail before Stage 5 with a clear `config_error`, for example: `no authenticated provider model is available; run: codeninja provider login <provider>`.
@@ -168,7 +170,7 @@ codeninja should use a staged review pipeline:
 2. Filter ignored, generated, vendored, binary, and lock files.
 3. Classify files into simple processing facts: language, processing mode, package root, test/generated/vendor/lock/binary status, configured labels, and configured priority.
 4. Build syntax-aware changed-symbol information where supported.
-5. Run a PR scout/planning pass.
+5. Run the planning pass.
 6. Build compact review packets per hunk or file.
 7. Run selected lenses on relevant packets, with bounded parallelism where packets can be reviewed independently.
 8. (Reserved — deferred.) Cross-file/system follow-up review is a Future Consideration; stage id 8 stays reserved for it.
@@ -180,7 +182,7 @@ Stage ids are stable for telemetry and evals. Mentally, the pipeline is six phas
 
 The unit of candidate review is the changed hunk or file. The unit of understanding is the affected system.
 
-The planner should choose review order and lenses based on language, changed symbols, touched subsystems, tests touched or missing, configured labels/priorities, and the actual diff content. It should not run every lens on every hunk by default.
+The planner should choose coverage and lenses based on language, changed symbols, touched subsystems, tests touched or missing, configured labels/priorities, and the actual diff content. It should not run every lens on every hunk by default.
 
 The v1 pipeline should remain useful even when syntax intelligence is incomplete. Basic diff parsing, file filtering, file classification, seed context, selected lenses, structured findings, verification, deduplication, and telemetry are required. Tree-sitter changed-symbol extraction for Go and TypeScript/JavaScript should improve packet quality, but parser gaps should degrade gracefully rather than block review.
 
@@ -295,7 +297,7 @@ The LLM decides whether a signal matters in the context of the PR. A static sign
 
 ## Stage 5: PR Scout / Planning Pass
 
-The scout/planning pass is the first LLM reasoning stage, but it is not a review pass and must not produce publishable findings.
+The planning pass is the first LLM reasoning stage, but it is not a review pass and must not produce publishable findings.
 
 V1 planner input should be a compact deterministic dossier: PR metadata, commit messages, changed file inventory, file processing facts, configured review depth, configured labels/priorities, hunk ranges, `HunkSymbolFacts`, changed symbol summaries, touched tests, static signals, and available lenses.
 
@@ -312,7 +314,7 @@ Declared intent comes from PR title/body, commit titles/descriptions, and branch
 
 The v1 planner should not receive repository exploration tools by default. If it cannot decide from the dossier, it should mark uncertainty and schedule deeper hunk/file review rather than opening files itself.
 
-Planner output should include the diff understanding, review intent, risk areas, review order, per-hunk coverage decisions, selected lenses, missing-test suspicions, and partial-review disclosure when needed.
+Planner output should include the diff understanding, risk areas, per-hunk coverage decisions, selected lenses, and partial-review disclosure when needed.
 
 Findings claiming the implementation contradicts its declared intent must cite both the intent evidence and the changed-code behavior.
 
@@ -358,17 +360,17 @@ Per-stage LLM failure policy:
 - Stage 10 composer: one repair retry. Terminal failure triggers a deterministic fallback composition — verified findings rendered with template wording, fingerprint-level grouping only, ranked by severity and confidence — with a disclosure note that semantic composition was skipped.
 - Authentication or provider-wide failures at any stage fail the run.
 
-Budget exhaustion ladder, applying to `timeoutMs`, `maxTotalTokens`, `maxCostUSD`, and `maxModelCalls`:
+Budget exhaustion ladder, applying to `timeoutMs`, `maxTotalTokens`, and `maxModelCalls`:
 
 - Budgets are checked before each new model call or worker dispatch.
 - On exhaustion: stop scheduling new packet reviews, then verify already-produced candidates using the reserved budget slice, and always run composition and emit a partial-review disclosure.
-- codeninja should reserve approximately 15% of the configured token/cost budget, and a fixed tail of the runtime budget, for Stages 9-10 so completed review work is never lost to exhaustion.
+- codeninja should reserve approximately 15% of the configured token budget, and a fixed tail of the runtime budget, for Stages 9-10 so completed review work is never lost to exhaustion.
 - A hard kill at 2x the configured runtime budget is fatal; even then codeninja should attempt to write telemetry artifacts before exiting.
 - The run-level coverage status is owned by the orchestrator. It aggregates plan-time coverage, runtime failures, budget stops, and verification incompleteness into the final coverage summary, not only the planner's partial-review flag.
 
 Provider rate limiting: 429 and transient 5xx responses should get up to 3 retries with exponential backoff, and retries count against budgets.
 
-Zero-work path: if the resolved diff is empty, or every changed file is filtered at Stage 2, codeninja should short-circuit before Stage 5 with no LLM calls, print a "nothing to review" report including the filter summary, write telemetry, and exit `0`.
+Zero-work path: if the resolved diff is empty, or every changed file is filtered at Stage 2, codeninja should short-circuit after Stage 2, before Stage 3 (hence zero LLM calls and no classification work), print a "nothing to review" report including the filter summary, write telemetry, and exit `0`.
 
 ## Parallel Review Execution
 
@@ -379,7 +381,7 @@ V1 should support bounded concurrency for independent hunk/file review packets. 
 Parallel execution rules:
 
 - Hunk/file candidate-generation passes may run concurrently.
-- The scout/planning pass must run before parallel packet review.
+- The planning pass must run before parallel packet review.
 - Verification may run concurrently per candidate finding.
 - Deduplication and final composition must run after verification.
 - Concurrency must be configurable and have a safe default.
@@ -411,6 +413,7 @@ Packet grouping should stay conservative in v1:
 Each packet should include:
 
 - PR or diff summary.
+- The declared intent of the change, fenced as data.
 - File path and language.
 - Packet kind: `hunk`, `coalesced-hunks`, `file-diff`, or `whole-file`.
 - Coverage: `light`, `normal`, or `deep`.
@@ -421,9 +424,7 @@ Each packet should include:
 - Diff side metadata for added, removed, and context lines.
 - Changed line numbers.
 - Deterministic enclosing symbol metadata when available.
-- Enclosing-symbol source and a file outline when available.
-- Related tests when discoverable.
-- Related file hints from the planner.
+- Rendered enclosing-symbol source, file outline, and likely tests when available.
 - Surrounding-context hints from the planner or deterministic repository intelligence.
 - Configured labels and planner risk notes.
 
@@ -505,7 +506,7 @@ In v1, hints are not promoted into new review tasks. Every hint is recorded in t
 
 ## Stage 9: Candidate Verification
 
-Candidate verification is the false-positive control stage. Findings from packet reviewers and promoted static signals are not publishable until they pass verification.
+Candidate verification is the false-positive control stage. Candidate findings from packet reviewers are not publishable until they pass verification.
 
 Before spending LLM verifier calls, codeninja should run deterministic pre-verification gates:
 
@@ -513,7 +514,7 @@ Before spending LLM verifier calls, codeninja should run deterministic pre-verif
 - Validate changed-line anchor when inline publication is requested.
 - Reject or suppress candidates with no changed-code evidence.
 - Reject or suppress candidates with no concrete failure mode.
-- Suppress low-confidence candidates by default.
+- Suppress low-confidence candidates by default, except critical/high severity, which go to verification (the verifier is the right place to resolve uncertain-but-critical claims).
 - Pre-cluster exact or obvious duplicate candidates so the verifier does not check the same issue repeatedly.
 
 Pre-clustering in this stage is a verifier scheduling optimization, not final deduplication. It may choose a representative candidate for identical or near-identical copies and preserve the losing candidates as lineage, but it must not perform semantic grouping, ranking, comment-cap enforcement, or final wording decisions. Those belong to final composition.
@@ -528,11 +529,13 @@ Verifier output should be structured:
 
 ```ts
 type VerificationVerdict = {
+  candidateId: string
   verdict: "keep" | "reject" | "revise"
   reason: string
   requiredEvidencePresent: boolean
   falsePositiveRisk: "low" | "medium" | "high"
   finalFinding?: CandidateFinding
+  revisedAnchor?: DiffAnchor
   verificationIncomplete?: boolean
 }
 ```
@@ -742,6 +745,8 @@ Bundled v1 lenses should include:
 
 Logic-bugs and architecture exist as sections of the `core` skill, not separate lenses, because v1 runs one composite review task per packet; separate lenses would not change what runs.
 
+`core/code-review` explicitly includes security-correctness checks — injection, authorization gaps, secret handling, unsafe deserialization — in v1; dedicated security/domain lenses remain post-v1.
+
 Additional language and domain lenses, such as security, database, performance, and concurrency, may be added as bundled skills after v1.
 
 Style, formatting, naming, and lint-like lenses are disabled by default.
@@ -822,9 +827,9 @@ The Markdown report should include:
 - "Needs human attention" notes for unresolved medium- and high-confidence follow-up hints.
 - A clear "no findings" result when no credible findings are found.
 
-When `--format json` is used, codeninja should print the final review object as JSON to stdout instead of the Markdown report. The JSON output should carry the same content as the Markdown report: summary, coverage, final findings with anchors, evidence, failure modes, suggested fixes and tests, and summary-only findings. Suppressed findings are not part of the report in either format; they are recorded only in run artifacts.
+When `--format json` is used, codeninja should print the final review object as JSON to stdout instead of the Markdown report. The JSON output should carry the same content as the Markdown report: summary, coverage, final findings with anchors, evidence, failure modes, suggested fixes and tests, summary-only findings, and needs-human-attention notes. Suppressed findings are not part of the report in either format; they are recorded only in run artifacts.
 
-When `--post-github-comments` is used, stdout should not print the full report by default. It should print a concise run summary with counts, posting status, and any fatal or skipped-posting errors. When combined with `--format json`, that run summary should be emitted as JSON.
+When `--post-github-comments` is used, stdout should not print the full report by default. It should print a concise run summary with counts, posting status, and any fatal or skipped-posting errors. When combined with `--format json`, that run summary should be emitted as JSON; its shape is the publisher's posting record (`components/repository_and_github.md` owns it).
 
 ## Stage 11: GitHub Publishing
 
@@ -879,12 +884,12 @@ V1 configuration should support:
 - Maximum findings (the report cap) and soft comment cap (the inline-comment target). Neither cap suppresses verified critical or high-severity findings.
 - LLM runtime options for `@earendil-works/pi-ai`, including provider-call concurrency; one provider/model/reasoning configuration applies to the whole run. Repo `codeninja.toml` must not set provider credentials, default provider, default model, or reasoning effort.
 - Runtime and per-pass timeouts.
-- Maximum total token and cost budget for a run.
+- Maximum total token budget for a run.
 - Maximum model calls per run.
 - Review concurrency.
 - Local review cache settings, with `--cache` / `--no-cache` flags on `codeninja review` overriding the configured default per run.
 - Local telemetry and debug trace settings.
-- Eval defaults, such as default eval directory, logs directory, and artifact replay settings.
+- Eval defaults, such as default eval directory and logs directory.
 
 If no config exists, codeninja should run with sensible defaults:
 
@@ -895,7 +900,7 @@ If no config exists, codeninja should run with sensible defaults:
 - Low-confidence findings suppressed.
 - GitHub posting disabled.
 - Runtime budget of 30 minutes.
-- No token or cost cap unless configured.
+- No token cap unless configured.
 - Safe bounded concurrency.
 - Local review cache disabled unless explicitly enabled.
 - External telemetry disabled.
@@ -930,7 +935,7 @@ Repository tool path containment should be enforced at a single chokepoint in th
 - All paths are canonicalized and required to resolve inside the repository root.
 - Absolute paths and `..` traversal are rejected with a typed `path_outside_repo` error.
 - The worktree fast path must not follow symlinks resolving outside the repo root; git-plumbing reads are inherently contained.
-- Model-supplied refs are validated against `git check-ref-format` rules and rejected if option-like (leading `-`).
+- Refs are harness-resolved only (model-facing source reads select `head` or `base`, never raw refs); harness-side ref values are validated against `git check-ref-format` rules and rejected if option-like (leading `-`).
 
 Config trust partitioning:
 
@@ -995,7 +1000,8 @@ These designs are deliberately deferred from v1. They are recorded as target sha
 - Per-role model/reasoning tiering. Optional per-role model and reasoning overrides (planner, packet reviewer, verifier, composer) supplied from user-level config or CLI. V1 runs one provider/model/reasoning configuration for the whole run. Build when evals identify roles where cheaper models or lower reasoning hold review quality.
 - Rich pre-attached packet context. Sibling symbol names, AST summaries, nearby imports, and small examples of nearby established patterns assembled into packets at construction time. V1 packets carry enclosing-symbol source, a file outline, and likely tests; reviewers fetch the rest on demand with read-only tools. Build when tool-call telemetry shows reviewers repeatedly refetching the same local context.
 - Per-language static-signal packs. Language-specific deterministic signal rules — ignored errors, concurrency primitives, migration files, resource cleanup, lifecycle-sensitive code — beyond the two v1 cross-language rules. Build when evals show planner risk-targeting misses attributable to absent signals.
-- Fine-grained eval attribution. The seven-label loss taxonomy (candidate-only loss, verifier rejection, dedup/merge loss, selection-cap loss, and hint-only presence as first-class labels), verifier and deduplication/merge expectations in eval cases, and additional replay modes such as candidate-recall and merge-only replay. V1 scores four coarse loss labels and supports `--from-artifacts` re-scoring only. Build when coarse labels are insufficient to localize a regression.
+- Cost-based run budgets. A maximum-cost budget alongside tokens and model calls; in v1, unknown-cost calls counting zero made it a loophole, and the token budget covers the need. Build when Pi-reported pricing is reliable.
+- Fine-grained eval attribution. The five-label loss taxonomy (candidate-only loss, verifier rejection, dedup/merge loss, selection-cap loss, and hint-only presence as first-class labels), verifier and deduplication/merge expectations in eval cases, and additional replay modes such as candidate-recall and merge-only replay. V1 scores four coarse loss labels and supports `--from-artifacts` re-scoring only. Build when coarse labels are insufficient to localize a regression.
 
 ## Out Of Scope For V1
 

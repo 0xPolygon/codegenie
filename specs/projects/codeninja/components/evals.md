@@ -25,7 +25,7 @@ Explicitly not this component's responsibility:
 - The review engine itself. Evals invoke the engine defined in `components/review_pipeline.md`; they never fork or reimplement any review stage.
 - Model-call cache internals (keying, storage, eviction). Evals only toggle and direct the cache per run; the cache is owned by `components/skills_llm_telemetry.md`.
 - Git, GitHub, and repository-tool mechanics; evals consume them through the engine (`components/repository_and_github.md`, `components/context_and_tools.md`).
-- GitHub posting. Eval runs must never post; `--post-github-comments` is rejected inside eval cases.
+- GitHub posting. Eval runs must never post; the case schema offers no posting surface and the engine is always invoked without a posting plan.
 - LLM-judged scoring. V1 scoring is deterministic field matching only, per `architecture.md`. Semantic or LLM-assisted matching is deferred.
 - Fixture materialization tooling (cloning bundles, unpacking archives). V1 requires fixture paths to already be git worktrees; how they got there (CI clone, setup script) is outside codeninja.
 - Stage-level replay (candidate-recall, merge-only), verifier/merge expectations (`VerifierExpectation`, `MergeExpectation`), and the fine-grained loss-label taxonomy — all deferred to Future Considerations (see architecture.md).
@@ -117,7 +117,7 @@ export async function replayFromArtifacts(
 export function scoreEvalRun(
   evalCase: EvalCase,
   artifacts: EvalArtifacts,
-  stages: EvalStageExecution[]
+  mode: "live" | "replay"
 ): EvalScore
 
 // Single field matcher used for satisfaction AND mismatch diagnostics.
@@ -295,25 +295,22 @@ type EvalScore = {
   error?: { code: CodeninjaErrorCode; message: string }
 }
 
-type EvalStageExecution = {
-  stage: ReviewStage
-  execution: "executed" | "replayed-from-artifacts" | "not-applicable"
-}
-
 type EvalRunInfo = {
   runNumber: number
   caseName: string
   caseFile?: string // suite-relative path when run from a suite
   caseHash: string // sha256 of the raw case YAML bytes
   caseSnapshot: EvalCase // embedded resolved case; makes the run dir self-contained
-  mode: "live" | "replay" // replay = artifact re-scoring; no stages re-run
+  // replay = artifact re-scoring; no stages re-run. Stage-level execution
+  // granularity returns with stage-level replay (deferred — see architecture.md
+  // Future Considerations).
+  mode: "live" | "replay"
   replay?: {
     sourceArtifacts: string
     caseSource: "yaml" | "snapshot"
   }
   repo?: { root: string; baseSha?: string; headSha?: string; mergeBase?: string }
   reviewRunId?: string // the engine's run id for live runs
-  stages: EvalStageExecution[]
   cache: { enabled: boolean; source: "cli" | "case" | "config"; dir?: string }
   startedAt: string
   finishedAt: string
@@ -322,7 +319,7 @@ type EvalRunInfo = {
 
 type EvalCaseResult = {
   caseName: string
-  runDir?: string // absent when logs.enabled is false
+  runDir: string // every case run persists its run directory
   status: "pass" | "fail" | "error"
   info: EvalRunInfo
 }
@@ -421,8 +418,7 @@ Validation rules (all violations are collected across all case files and reporte
 - `name` is required, non-empty, and unique across the suite. It keys previous-run lookup and `info.json`.
 - Exactly one execution source must be present: `repo.external`, `repo.fixture`, or `artifacts.path`. Zero or more than one is invalid.
 - `repo.external` should be an absolute path (with `~` expansion). `repo.fixture` resolves relative to the suite directory when relative. Both must be existing git worktrees at execution time; v1 does not materialize fixtures (no bundles, no archives) — a missing or non-git path is a per-case `error` at run time, not a load-time failure, so suites with some unavailable private repos still run their other cases.
-- `command` is only meaningful with `repo`. At most one of `command.pr`, `command.branch`, `command.target` may be set. `command.base` requires `command.branch`. `command.target` accepts `<commit>` or `<start>..<end>` and maps to the engine's commit / commit-range mode. With no target fields, the engine's default branch-mode resolution applies inside the case repo.
-- `command.args` are extra `codeninja review` CLI arguments parsed by the same flag parser the review command uses, appended last (so they win over structured fields on overlap). Target-selection flags (`--pr`, `--branch`, `--base`, positionals) and `--post-github-comments` are forbidden inside `args` — eval runs never post to GitHub.
+- `command` is only meaningful with `repo`. At most one of `command.pr`, `command.branch`, `command.target` may be set. `command.base` requires `command.branch`. `command.target` accepts `<commit>` or `<start>..<end>` and maps to the engine's commit / commit-range mode. With no target fields, the engine's default branch-mode resolution applies inside the case repo. Per-case settings are the structured `review.*` and `command.*` fields only; there is no raw CLI-argument passthrough (an `args` key under `command` is an unknown-key validation error, like any unknown key).
 - `artifacts` carries only `path` in v1 (replay-mode selection is deferred with stage-level replay — see architecture.md Future Considerations); unknown keys under `artifacts` are validation errors like everywhere else. `artifacts.path` resolves relative to the suite directory when relative.
 - Every `EvalFindingExpectation` must set `id` (unique across `should_find`, `should_find_candidate`, and `should_not_find` together — one id namespace per case) plus at least one matching field. An expectation with only an `id` would match everything (or, under `should_not_find`, ban everything) and is rejected as an authoring error.
 - `lineRange` must be `[a, b]` with integers `1 <= a <= b`.
@@ -474,7 +470,7 @@ Config layering for a case run, reusing the existing precedence chain (CLI flags
 1. Built-in defaults.
 2. User-scoped config.
 3. The reviewed repository's `codeninja.toml`, loaded from the case repo root with normal trust partitioning (safe keys only).
-4. The eval case's `review.*` fields and `command.args`, applied at CLI-flag strength — the case file is user-authored and user-invoked, which satisfies the user-level opt-in rule for out-of-repo `cacheDir`, run-dir placement, and provider/model/reasoning overrides.
+4. The eval case's `review.*` fields, applied at CLI-flag strength — the case file is user-authored and user-invoked, which satisfies the user-level opt-in rule for out-of-repo `cacheDir`, run-dir placement, and provider/model/reasoning overrides.
 
 `EvalCase.review` field mapping:
 
@@ -494,7 +490,7 @@ Config layering for a case run, reusing the existing precedence chain (CLI flags
 
 Repo resolution: the runner resolves the case repo root (`repo.external` expanded, or `repo.fixture` against the suite dir), verifies it is a git worktree, builds the `ReviewInput` from `command` (`pr` → `github_pr`, `branch`/`base` → `branch`, `target` → `commit_range`, none → branch-mode default), and passes both to the engine. Base-branch resolution, merge-base semantics, PR fetching, and all other input-resolution behavior are the engine's, untouched.
 
-`logs.enabled` (default `true`): when `false`, the case still executes and scores against in-memory artifacts, but no run directory is persisted — only the stdout summary and the suite exit code reflect it; replay and compare-to-previous are unavailable for such runs. `logs.dir` overrides the logs directory for the case (relative paths resolve against the suite directory); otherwise the logs directory is `<eval-suite>/<config.eval.logsDir>` (default `logs`).
+Every case run persists its run directory — there is no in-memory-only scoring path. `logs.dir` overrides the logs directory for the case (relative paths resolve against the suite directory); otherwise the logs directory is `<eval-suite>/<config.eval.logsDir>` (default `logs`).
 
 ### Eval Run Directories
 
@@ -533,9 +529,9 @@ Rules:
 
 - Run numbers are unpadded positive integers (`logs/1`, `logs/2`, …), ordered numerically, never lexicographically. Allocation scans existing numeric children, takes `max + 1` (starting at `1`), and claims the directory with `mkdir` — on `EEXIST` (a concurrent invocation), it retries with the next number. Non-numeric children of the logs dir are ignored.
 - `telemetry/` is the engine's full standard run directory written in place, per `architecture.md`'s eval layout — evals never suppresses or reshapes it. Attribution uses `coverage.json` and `review-plan.json` as enrichment when present.
-- `codeninja-review.out.md` is the Markdown rendering of the final `ReviewResult`, written by the eval runner regardless of any `--format` in `command.args`. In artifact replay it is copied from the source run when present.
+- `codeninja-review.out.md` is the Markdown rendering of the final `ReviewResult`, written by the eval runner (cases carry no output-format setting). In artifact replay it is copied from the source run when present.
 - `out.log` is the eval runner's own structured log (case resolution, settings overlay, stage execution, scoring summary, compare results), using the standard `Logger` with stage `0`; the engine's chronological log remains `telemetry/run.log`.
-- `info.json` is the single run-info document: it embeds the resolved case snapshot, the case hash, repo identity and reviewed SHAs, per-stage `executed` / `replayed-from-artifacts` / `not-applicable` records, cache resolution, timing, and the full `EvalScore`. It is written last (temp-file-then-rename) so a complete `info.json` marks a complete run.
+- `info.json` is the single run-info document: it embeds the resolved case snapshot, the case hash, repo identity and reviewed SHAs, the run mode (`live` / `replay`), cache resolution, timing, and the full `EvalScore`. It is written last (temp-file-then-rename) so a complete `info.json` marks a complete run.
 - Debug traces live in `telemetry/debug/` with the engine run directory's own layout (`llm-calls/<call-id>.json`, `tool-calls/<tool-call-id>.json`), present when `review.debug` enables `telemetry.debugTrace`. Evals derives no separate prompt/result views; the engine's debug artifacts are consumed as-is.
 
 ### Artifact Reader Contract
@@ -629,7 +625,7 @@ For a missed expectation `E`:
 4. **Partial match?** Match `E`'s `path` field alone (exact-or-glob) against all candidates and all final findings. If any instance is in the right file but fails other fields → `partial-match`. The detail carries the closest instances (fewest failed fields; ties by artifact order) with full per-field mismatch records — e.g. `category: expected security, actual logic_bug`, `lineRange: expected 80–90, actual 120`. An expectation without a `path` field skips this rung.
 5. **Otherwise** → `missed-before-candidate-generation`.
 
-Hint detail, applied at every rung: hint events (follow-up hints and structured uncertainties) from `events.jsonl` are searched with **diagnostic-grade reduced matching** — hints carry no severity/category/anchor, so only these fields participate: `path` matches any entry of the hint's `files` (exact-or-glob); `titlePattern`/`failureModePattern` test against the hint's `question`, `reason`, and `symbols` joined; `lineRange`, `category`, and `severityAtLeast` are ignored. Matches are recorded in `EvalLossDetail.matchingHints` with the hint's confidence — supporting detail showing a reviewer articulated the question (most useful on `missed-before-candidate-generation` losses), never a pass and never a label. An expectation whose only present fields are unmatchable against hints (e.g. category + severity only) records no hint detail. Reduced matching is acceptable here because hint detail is forensic.
+Hint detail, applied at every rung: hint events (follow-up hints and structured uncertainties) from `events.jsonl` are searched with **diagnostic-grade reduced matching** — hints carry no severity/category/anchor, so only these fields participate: `path` matches any entry of the hint's `files` (exact-or-glob); `titlePattern`/`failureModePattern` test deterministically over the hint's text and symbols (the exact reduction is pinned by the implementation); `lineRange`, `category`, and `severityAtLeast` are ignored. Matches are recorded in `EvalLossDetail.matchingHints` with the hint's confidence — supporting detail showing a reviewer articulated the question (most useful on `missed-before-candidate-generation` losses), never a pass and never a label. An expectation whose only present fields are unmatchable against hints (e.g. category + severity only) records no hint detail. Reduced matching is acceptable here because hint detail is forensic.
 
 #### Missed-Before-Candidate-Generation Sub-Reasons
 
@@ -686,11 +682,13 @@ Covering packets are located deterministically: packets whose `path` matches the
 | --- | --- | --- |
 | `minFindings` / `maxFindings` | `final-findings.json` | Count of reported findings (`inline` + `summary-only`; suppressed excluded) within `[min, max]` |
 | `maxDuplicateGroups` | `final-findings.json` | Count of final findings with `mergedCandidateIds.length >= 2` must be `<=` limit |
-| `maxCostUSD` | `cost-profile.json` | Total run cost `<=` limit |
+| `maxCostUSD` | `cost-profile.json` | Observed total run cost `<=` limit |
 | `maxElapsedSeconds` | `run.json` / telemetry totals | Total review runtime `<=` limit |
 | `maxModelCalls` | `model-calls-summary.json` (fallback: count `model-calls.jsonl` lines) | Total provider calls `<=` limit |
 | `maxToolCalls` | `tool-calls.jsonl` (fallback: `tool-calls-summary.json` totals) | Total repository tool calls `<=` limit |
 | `maxPromptCharsByStage` | `model-calls.jsonl` (per-call stage + prompt char size) | For every call of stage `s`, prompt chars `<=` limit for `s`; one `EvalBudgetResult` per configured stage key |
+
+`maxCostUSD` is an observed-cost assertion read from `cost-profile.json`, not a run budget: the engine has no cost budget in v1 (unknown-cost calls are disclosed in the cost profile; cost-based run budgets are deferred — see architecture.md Future Considerations).
 
 Replay semantics: budget checks measure what actually executed in this eval run. In artifact replay no stages execute, so every budget check except the finding-count and duplicate-group checks is `skipped` with `skipReason: "stage not executed in artifact replay"`; the finding-count and duplicate-group checks read replayed artifacts and their results are marked `fromReplayedArtifacts`. `verificationCalls` in metrics counts stage-9 entries in `model-calls.jsonl` (fallback: `verification.json` verdict count); `toolCalls` in metrics counts `tool-calls.jsonl` lines the same way, never derived events.
 
@@ -701,9 +699,9 @@ Artifact replay re-scores a previously captured run against (possibly edited) ex
 Behavior:
 
 - `--from-artifacts <suite>/logs/<n>` allocates the next run number **in the same logs directory**, so replay runs sit beside their source and compare-to-previous naturally diffs against it. The case definition is re-read from the recorded `caseFile` when it still exists (supporting the expectation-iteration workflow: edit YAML, re-score captured artifacts), falling back to the `info.json` embedded snapshot; `info.json.replay.caseSource` records which was used.
-- An artifact-backed suite case (`artifacts.path`) re-scores the referenced run directory's `telemetry/` artifact set the same way.
+- An artifact-backed suite case (`artifacts.path`) re-scores the referenced run directory's `telemetry/` artifact set the same way. Both entry points are kept deliberately: suite-pinned artifact cases serve CI regression against frozen artifacts; `--from-artifacts` serves ad-hoc re-scoring.
 - Consumed artifacts are copied from the source into the new run's `telemetry/` so every run directory is self-contained for scoring, future replays, and comparison; `codeninja-review.out.md` is copied when present.
-- `info.json.stages` records every stage as `replayed-from-artifacts` or `not-applicable`; expectation results are flagged `fromReplayedArtifacts: true`.
+- `info.json.mode` records `"replay"`; expectation results are flagged `fromReplayedArtifacts: true`.
 - Required artifacts: `final-findings.json` and `candidate-findings.json` — missing either fails the case with `invalid_args` naming the file. `verification.json` and `final-selection.json` are strongly expected for attribution and degrade to `subReason: "unrecorded"` notes when absent; the enrichment artifacts degrade per the reader contract.
 - The model-call cache is irrelevant to artifact replay (no model calls); cache flags affect live cases only.
 
@@ -743,7 +741,7 @@ All structured results live in each run's `info.json` (`EvalRunInfo.score`); the
 
 ### Determinism Rules
 
-- Scoring is a pure function of (case, artifacts, stage-execution record): no LLM, no repo reads, no clock.
+- Scoring is a pure function of (case, artifacts, run mode): no LLM, no repo reads, no clock.
 - All iteration orders are fixed: case files lexicographic; expectations in YAML order; findings in artifact array order; assignment via deterministic augmenting-path matching.
 - Regexes compile with fixed flags (`i`); glob matching uses the single shared matcher; severity ranks and overlap arithmetic are total functions.
 - Re-running artifact replay over the same artifacts with the same case YAML must produce byte-identical `score` content (modulo timestamps).
@@ -773,7 +771,7 @@ Case loading and validation (`eval-case-loader.test.ts`):
 - `rejects_unknown_keys`: a case with `shoud_find` fails with an error naming the key and file.
 - `rejects_missing_or_duplicate_names`: missing `name`; two files sharing a name.
 - `rejects_ambiguous_execution_source`: both `repo.external` and `artifacts.path`; neither; `external` + `fixture` together.
-- `rejects_conflicting_command_targets`: `pr` + `branch`; `base` without `branch`; forbidden flags in `command.args` (`--pr`, `--post-github-comments`).
+- `rejects_conflicting_command_targets`: `pr` + `branch`; `base` without `branch`; an `args` key under `command` rejected as an unknown key (no raw CLI passthrough).
 - `parses_target_forms`: `target: "abc123"` → single commit; `target: "abc123..def456"` → range.
 - `rejects_bad_expectations`: duplicate expectation ids across lists; expectation with only `id`; `lineRange` `[10, 5]`; invalid `category`/`severityAtLeast`; uncompilable `titlePattern`; a `verifier` or `merge` block (unknown keys); non-numeric `maxPromptCharsByStage` key.
 - `collects_all_errors_before_failing`: a suite with three invalid files reports all errors in one `config_error`.
@@ -825,13 +823,13 @@ Run directories and artifacts (`eval-run-dirs.test.ts`):
 - `incrementing_allocation`: empty logs dir → 1; existing 1,2,7 + `tmp` junk dir → 8 (numeric, junk ignored).
 - `concurrent_allocation_retries`: simulated EEXIST claims the next number.
 - `previous_run_lookup_by_case_name`: logs with interleaved cases A,B,A finds the right previous A; none for first run.
-- `info_written_last_and_complete`: `info.json` exists only after score + compare complete; embeds snapshot, caseHash, stages, cache source.
-- `logs_disabled_runs_in_memory`: `logs.enabled: false` scores and reports without creating a run dir.
+- `info_written_last_and_complete`: `info.json` exists only after score + compare complete; embeds snapshot, caseHash, mode, cache source.
+- `every_case_persists_run_dir`: every executed case — pass, fail, or error — leaves a complete run directory; there is no in-memory-only path.
 - `debug_traces_present`: with `review.debug`, the run dir carries the engine's `telemetry/debug/llm-calls/<call-id>.json` and `telemetry/debug/tool-calls/` traces; absent otherwise; no derived prompt/result views exist.
 
 Artifact replay (`eval-replay.test.ts`) — fake `LlmRunner` counting calls per stage:
 
-- `replay_zero_calls_no_repo`: no LLM calls; scores from saved artifacts; budget checks skipped; `stages` all `replayed-from-artifacts`/`not-applicable`; rendered output and consumed artifacts copied into the new `telemetry/`; the test runs without any repo on disk.
+- `replay_zero_calls_no_repo`: no LLM calls; scores from saved artifacts; budget checks skipped; `info.json.mode` is `"replay"`; rendered output and consumed artifacts copied into the new `telemetry/`; the test runs without any repo on disk.
 - `case_reread_vs_snapshot`: edited case YAML on disk is re-read for `--from-artifacts` re-scoring (`caseSource: "yaml"`); deleted YAML falls back to snapshot (`caseSource: "snapshot"`).
 - `replay_rescores_edited_expectations`: editing an expectation's `lineRange` between source run and replay flips its result without any stage executing.
 - `missing_required_artifact_fails`: a source without `final-findings.json` or `candidate-findings.json` fails with `invalid_args` naming the missing file; absent `verification.json`/`final-selection.json` degrade attribution to `unrecorded` sub-reasons instead of failing.

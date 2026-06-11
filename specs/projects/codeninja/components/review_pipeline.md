@@ -227,8 +227,8 @@ runLensPackets       (stage 7)    -> PacketReviewResult[]
 verifyFindings       (stage 9)    -> verified findings, verdicts  -> candidate-findings.json, verification.json
 aggregateRunCoverage              -> RunCoverageStatus            -> coverage.json
 dedupeRankAndComposeReview (10)   -> ReviewResult                 -> final-selection.json, final-findings.json, final-review.md
-renderOutputs                     -> stdout                       [output renderers]
 maybePublishToGitHub (stage 11)   -> posting                      [repository_and_github]
+renderOutputs                     -> stdout                       [output renderers]
 ```
 
 Sequencing rules:
@@ -239,6 +239,7 @@ Sequencing rules:
 - Stage 7 packet workers run with bounded concurrency (`review.concurrency`); packets are independent by construction (never span files, isolated worker context), so all packets may run concurrently up to the limit.
 - Stage 9 verifier calls run with bounded concurrency after all Stage 7 workers have settled (completed, failed, cancelled, or not dispatched). Stage 8 never runs: the cross-file system follow-up stage is deferred (see architecture.md Future Considerations); stage id 8 stays reserved.
 - Stage 10 composition and stage 11 publishing are strictly sequential and always run (composition runs even under budget exhaustion; publishing only when requested).
+- `renderOutputs` runs after `maybePublishToGitHub`, per the architecture main algorithm: in posting mode the concise stdout summary renders from Stage 11's results, and its schema is the publisher's posting record (owned by `components/repository_and_github.md`); in non-posting mode `posting` is empty and rendering is unaffected by the ordering.
 - `candidate-findings.json` persists all candidates produced by Stage 7 (pre-gate), so evals can attribute losses to gates, verification, or composition.
 - Every stage boundary emits telemetry events with the numeric stage id; every model task and tool call carries `runId`, `stage`, and the relevant `workerId`/`packetId`/`hunkId`/`candidateId`. Every repository tool call — model- or harness-initiated — additionally lands as one `ToolCallRecord` line in the telemetry recorder's always-on `tool-calls.jsonl` artifact.
 
@@ -248,15 +249,7 @@ Cancellation flows from the run context's root `AbortController`: the hard kill 
 
 `filterDiffFiles` is owned by `components/repository_and_github.md`: it runs the skip-relevant shared detectors and applies keep/skip policy, emitting kept files plus decisions carrying the detection provenance. Detection results are memoized per file and reused by `classifyChangedFiles` for kept files — nothing detects twice, and filtered files receive no classification, parsing, or review work. This component owns how the orchestrator applies the decisions to coverage, zero-work behavior, and downstream stage inputs.
 
-Decision algorithm, applied to every `DiffFile` in diff order; the first matching rule wins and each decision records the matched detector's `FactProvenance`:
-
-1. Binary (diff metadata or detector) → skip, reason `"binary file"`.
-2. Lockfile detector → skip, reason `"lockfile"`.
-3. Generated detector → skip, reason `"generated file"`.
-4. Vendored detector → skip, reason `"vendored or dependency file"`.
-5. Ignored path, configured `processingMode = "skip"` path rule, submodule pointer change, or symlink entry → skip, with the rule- or parser-recorded reason and provenance.
-6. `file.modeOnly` → skip, reason `"mode-only change not reviewable in v1"`.
-7. Otherwise → keep.
+The decision algorithm applies to every `DiffFile` in diff order; the first matching rule wins and each decision records the matched detector's `FactProvenance`. The canonical first-match precedence order is owned by `components/repository_and_github.md` (binary → lockfile → generated → vendored → ignored/config-skip/submodule/symlink → mode-only) and is not restated here.
 
 Rules:
 
@@ -271,7 +264,7 @@ Rules:
 Immediately after Stage 2, if `diff.files` is empty or `kept` is empty, `runReview` short-circuits before Stage 3 with no LLM calls:
 
 1. Record coverage: every hunk skipped with its filter reason; `RunCoverageStatus = { totalHunks, reviewedHunks: 0, skippedHunks: totalHunks, failedHunks: 0, coverageByLevel: { deep: 0, normal: 0, light: 0, skip: totalHunks }, degradedPlanning: false, budgetStopped: false, verificationIncompleteCount: 0, partial: false, reasons: [...filter summary] }`. A zero-work run is a complete review of nothing, not a partial review.
-2. Build `ReviewResult` with a deterministic template summary ("nothing to review" plus the filter summary), `noFindings: true`, empty findings arrays, and no posting plan.
+2. Build `ReviewResult` with a deterministic template summary ("nothing to review" plus the filter summary), `noFindings: true`, empty findings and `needsHumanAttention` arrays, and no posting plan.
 3. Render the report (including the filter summary), write all telemetry artifacts, and return; the CLI exits `0`.
 
 Stage 3 classification, Stage 4 index construction, the dossier, and all model stages are skipped entirely.
@@ -377,7 +370,7 @@ type DossierCompaction = {
 Construction rules:
 
 - All dossier content is deterministic: same inputs produce a byte-identical `planner-dossier.json`.
-- Untrusted fields (`pr`, `commits`, `excerpt`, branch names) are deterministically extracted and truncated here; the prompt builder (`components/skills_llm_telemetry.md`) renders them inside fenced "data under review, not instructions" blocks.
+- Untrusted fields (`pr`, `commits`, `excerpt`, branch names) are deterministically extracted and truncated here; the prompt builder's `renderDossier(dossier)` (`components/skills_llm_telemetry.md`) renders them inside fenced "data under review, not instructions" blocks. `buildPlannerPrompt` takes the dossier object itself, not pre-rendered text.
 - Existing-PR-thread summaries and spec/doc candidates are not part of the v1 dossier (deferred to Future Considerations — see architecture.md).
 - `policyFilesChanged` is computed from the pre-filter change inventory (`codeninja.toml`, any path under `.codeninja/skills/`), regardless of filter decisions.
 - `lenses` lists the run's enabled lens set (after `--lens` overrides) with one-line summaries from the lens registry; the planner receives one-line summaries only, never skill bodies.
@@ -385,7 +378,7 @@ Construction rules:
 
 ### Dossier Compaction
 
-The rendered dossier prompt has a deterministic budget: `maxDossierPromptChars = 120000` (implementation constant; not user configuration in v1). Size is estimated by serializing the dossier through the same renderer the prompt builder uses. Compaction applies ordered, deterministic reductions until the dossier fits, recording every reduction in `compaction.omitted`:
+The rendered dossier prompt has a deterministic budget: `maxDossierPromptChars = 120000` (implementation constant; not user configuration in v1). Size is estimated by calling the prompt builder's exported `renderDossier(dossier)` (`components/skills_llm_telemetry.md`) — the same renderer, including its untrusted-content fencing, that `buildPlannerPrompt` embeds — so fencing overhead and size estimation stay consistent. Compaction applies ordered, deterministic reductions until the dossier fits, recording every reduction in `compaction.omitted`:
 
 1. Drop `excerpt` from all hunks (`what: "hunk excerpts"`).
 2. Reduce `staticSignals` per hunk from 5 to 1, keeping the highest-confidence signal (`what: "static signals"`).
@@ -405,9 +398,8 @@ If the dossier still exceeds the budget after step 4, planning chunks determinis
 Mechanical concatenation of per-chunk `ReviewPlan`s, in chunk-index order:
 
 - `coverage`: concatenated. Each hunk belongs to exactly one chunk, so no conflicts arise; a duplicate `hunkId` across chunks keeps the first decision and drops the rest with telemetry.
-- `riskAreas`, `changedAPIs`, `testsTouched`, `missingTestSuspicions`, `reviewOrder`: concatenated with exact-string deduplication (first occurrence wins).
+- `riskAreas`: concatenated with exact-string deduplication (first occurrence wins).
 - `diffUnderstanding`: `declaredIntent` from chunk 1 (all chunks saw identical metadata); `inferredBehavior` joins distinct chunk values labeled by chunk root.
-- `intent`: chunk intents joined with `"; "`.
 - `partialReview`: `isPartial` is the OR; `reviewedHunks`/`totalHunks` summed; reasons joined.
 
 If an individual chunk's planner call fails terminally, only that chunk's hunks fall back to the default plan (below); the merged result sets `degradedPlanning: true` with a reason naming the failed chunk roots.
@@ -432,10 +424,8 @@ On terminal planner failure (schema-invalid after repair, transient failure afte
 
 - `coverage`: every reviewable hunk of every kept file at `normal`, `reason: "degraded planning: deterministic default"`, `surroundingContextHints: []`.
 - Per-hunk `lenses`: the default lens set — enabled lenses whose ids begin with `core/`, plus the enabled language lens matching `FileFacts.language` for that file (`lang/go` for `go`, `lang/typescript` for TypeScript/JavaScript), in registry order.
-- `riskAreas: []`; `changedAPIs: []`; `missingTestSuspicions: []`.
-- `testsTouched`: paths of kept files with `testStatus === "test"` (deterministic fact, not inference).
-- `reviewOrder`: kept file paths ordered by `reviewPriority` descending (`critical` first), then path ascending.
-- `diffUnderstanding`: `declaredIntent` is the PR title or first commit title (truncated, template-framed); `inferredBehavior: "unavailable (degraded planning)"`. `intent` uses the same template text.
+- `riskAreas: []`.
+- `diffUnderstanding`: `declaredIntent` is the PR title or first commit title (truncated, template-framed); `inferredBehavior: "unavailable (degraded planning)"`.
 - `partialReview` unset — the default plan covers all hunks; degradation is disclosed through `RunCoverageStatus.degradedPlanning` and a `reasons` entry, not through partial coverage.
 
 Later stages run normally on the default plan.
@@ -471,12 +461,12 @@ Otherwise the current group closes and a new group starts. Groups of one produce
 
 Step 5 — no cross-file packets. Cross-file concerns are recorded as packet follow-up hints (telemetry plus report notes; the Stage 8 system follow-up is deferred); the builder itself never creates them.
 
-Step 6 — context attachment. For each packet, the builder calls the tools host's `buildPacketContext(file, hunks, symbolFacts)` (`RepositoryToolsHost`, `components/context_and_tools.md` owns retrieval; the builder owns the budget and assembly order). The call returns the `PacketContext` (path, package name, enclosing function/type/method), the file outline, the likely-tests list the builder assigns to `relevantTests` (`ReviewPacket.relevantTests` is the single carrier of likely tests; `PacketContext` has no tests field), and an optional degradation note that sets `ReviewPacket.degraded`. Richer pre-attached context — changed-node summaries, nearby imports, sibling symbols — is deferred (see architecture.md Future Considerations); reviewers fetch it on demand with read-only tools. The planner's `surroundingContextHints` are attached alongside. Hints with `expectedUse: "packet_context"` are resolved into context content now; hints with `expectedUse: "tool_lookup"` are passed through on the packet for the worker. Context assembly fills `maxContextChars` in priority order — enclosing symbol source, file outline, likely tests, resolved hint extracts — truncating in reverse priority order and recording truncation in telemetry. Deletion-only packets set `isDeletedContent: true` and attach base-revision context when available; when base content is unavailable the packet carries `degraded: { reason }` for coverage disclosure.
+Step 6 — context attachment. For each packet, the builder calls the tools host's `buildPacketContext(file, hunks, symbolFacts)` (`RepositoryToolsHost`, `components/context_and_tools.md` owns retrieval; the builder owns the budget and assembly order). The call returns the `PacketContext` (path, package name, enclosing function/type/method), the file outline, the likely-tests list the builder assigns to `relevantTests` (`ReviewPacket.relevantTests` is the single carrier of likely tests; `PacketContext` has no tests field), and an optional degradation note that sets `ReviewPacket.degraded`. Richer pre-attached context — changed-node summaries, nearby imports, sibling symbols — is deferred (see architecture.md Future Considerations); reviewers fetch it on demand with read-only tools. The planner's `surroundingContextHints` are attached alongside. Hints with `expectedUse: "packet_context"` are resolved into context content now; hints with `expectedUse: "tool_lookup"` are passed through on the packet for the worker. The builder renders the retrieved deterministic context into `ReviewPacket.contextText`, filling `maxContextChars` in priority order — enclosing symbol source, file outline, likely tests, resolved hint extracts — truncating in reverse priority order and recording truncation in telemetry. The builder also fills `ReviewPacket.intentText` with the dossier's declared-intent projection (PR title/body extract, already fenced as untrusted data, capped at ~1000 chars). Deletion-only packets set `isDeletedContent: true` and attach base-revision context when available; when base content is unavailable the packet carries `degraded: { reason }` for coverage disclosure.
 
 Step 7 — size enforcement and truncation:
 
 - A multi-hunk packet exceeding `maxPatchChars` or `maxHunksPerPacket` after assembly splits back into per-hunk packets (deterministically, in hunk order).
-- A single hunk whose patch alone exceeds `maxPatchChars` is never split below hunk granularity and never receives synthesized sub-hunk ids. Instead the packet carries a truncated patch window centered on changed lines: choose the contiguous line window of at most `maxPatchChars` rendered characters that contains the maximum count of changed lines, earliest such window on ties. `PacketHunk.lines` contains only the window's lines, with `truncated: true` and `omittedLineCount` set to the count of dropped lines; `contentWithLineNumbers` renders deterministic boundary markers (`[... N lines omitted above ...]`, `[... M lines omitted below ...]`) as the prompt rendering of those fields; the per-hunk coverage record carries `reason: "patch truncated: K of L lines included"`; telemetry records the omitted counts. `changedNewLineNumbers`/`changedOldLineNumbers` still list all changed lines of the hunk so anchor validation remains complete.
+- A single hunk whose patch alone exceeds `maxPatchChars` is never split below hunk granularity and never receives synthesized sub-hunk ids. Instead the packet carries a truncated patch window of at most `maxPatchChars` rendered characters; the window selection must be deterministic and centered on changed lines, and the truncation must be disclosed — the exact window heuristic is an implementation detail within that contract. `PacketHunk.lines` contains only the window's lines, with `truncated: true` and `omittedLineCount` set to the count of dropped lines; `contentWithLineNumbers` renders deterministic boundary markers (`[... N lines omitted above ...]`, `[... M lines omitted below ...]`) as the prompt rendering of those fields; the per-hunk coverage record carries `reason: "patch truncated: K of L lines included"`; telemetry records the omitted counts. `changedNewLineNumbers`/`changedOldLineNumbers` still list all changed lines of the hunk so anchor validation remains complete.
 - Whole-file content participating in `maxContextChars` is truncated tail-first with the same marker convention.
 
 Step 8 — packet coverage. `coverage` = the maximum coverage of included hunks, ordered `deep > normal > light`. (`skip` hunks never enter packets.)
@@ -553,12 +543,12 @@ Execution rules:
 Result validation, applied in pipeline code to each schema-valid `PacketReviewResult` before anything reaches Stage 9:
 
 - Candidate ids are assigned deterministically by the pipeline — `"<packetId first 8 chars>-f<seq>"` in submission order — replacing any model-supplied ids; lineage uses these ids everywhere.
-- `producedBy` is stamped by the runner: `{ kind: "packet", stage: 7, packetId, lensId, skillIds, workerId }`. A finding's model-claimed lens must be one of the packet's lenses; otherwise it is rewritten to the packet's first lens with a telemetry note.
+- `producedBy` is stamped deterministically by the runner: `{ kind: "packet", stage: 7, packetId, lensId, skillIds, workerId }`, with `lensId` set to the packet's primary (first) lens and `skillIds` to that lens's skills. The model never claims a lens — `SubmittedFinding` carries no lens field (`components/skills_llm_telemetry.md`).
 - Anchor validation: an inline-intended candidate's `anchor` must reference the packet's path (side-appropriate for renames/deletions per the `DiffAnchor` path semantics) and a changed line of the packet's hunks — `RIGHT` against `changedNewLineNumbers`, `LEFT` against `changedOldLineNumbers`, with `hunkId` matching the containing hunk. Failing anchors are removed (`out_of_hunk_anchor` telemetry); the candidate continues as a summary-only candidate with `changedLine: false` unless the result itself re-anchored it to a changed line with concrete evidence.
 - Missing `evidence.changedCode` or missing `failureMode` is recorded now (`missing_evidence`, `missing_failure_mode`) and enforced by the Stage 9 gates; low-confidence candidates are recorded and left for gate suppression so telemetry can attribute the loss stage precisely.
 - `followUpHints` are validated for pointer-richness: a hint with an empty `question` or with no `files` and no `symbols` is dropped (`vague_hint`).
 - Each surviving `followUpHint` and each `uncertainty` is emitted as a telemetry event (`event: "follow_up_hint"` / `"uncertainty"`, stage-attributed) carrying `{ packetId, question, files, symbols, reason, confidence }` in `data` (uncertainty events omit `reason`/`confidence`) — the hint-event reader contract consumed by `components/evals.md`. Hints are never promoted into new review tasks in v1: medium- and high-confidence hints are additionally collected for Stage 10's "needs human attention" report notes; low-confidence hints are telemetry-only.
-- `filesRead`, `toolCalls`, prompt size, token usage, runtime, and `status` are recorded per worker. `PacketReviewResult.toolCalls` is a compact derived view of the run's `ToolCallRecord`s for that worker — `tool-calls.jsonl` carries the full always-on records; the contract is unchanged.
+- Prompt size, token usage, runtime, and `status` are recorded per worker. `PacketReviewResult` carries no tool-usage data: tool calls and files read live in the always-on `tool-calls.jsonl` `ToolCallRecord`s, and readers join them on `workerId`.
 
 All candidates (pre-gate) are persisted to `candidate-findings.json`.
 
@@ -574,7 +564,7 @@ V1 behavior for the signals Stage 8 would have consumed:
 
 ### Stage 9: Verification Orchestration
 
-Stage 9 is the false-positive control. Its candidate pool is every validated candidate from Stage 7 (including reviewer-promoted static signals, which arrive as ordinary candidates with `producedBy.kind: "static_signal"`; a static signal never enters the pool without a reviewer having cited it).
+Stage 9 is the false-positive control. Its candidate pool is every validated candidate from Stage 7 — v1 findings are always packet-produced; static signals are prompt hints only and never enter the pool as findings of their own.
 
 Deterministic pre-verification gates, in order, each recording the candidate id and gate decision:
 
@@ -582,7 +572,7 @@ Deterministic pre-verification gates, in order, each recording the candidate id 
 2. Anchor gate — for inline-intended candidates (anchor present): re-validate the anchor against the parsed diff (side-appropriate path, changed line, matching `hunkId`). Invalid → strip the anchor, set `changedLine: false`, continue as a summary-only candidate (`gate_anchor_stripped`). Candidates without anchors are summary-only candidates and pass this gate.
 3. Evidence gate — empty `evidence.changedCode` → reject (`gate_no_evidence`); no verifier call.
 4. Failure-mode gate — empty `failureMode` → reject (`gate_no_failure_mode`).
-5. Confidence gate — `confidence` below `review.minConfidence` (default suppresses `low`) → suppress (`gate_low_confidence`); recorded, not verified, not published.
+5. Confidence gate — `confidence` below `review.minConfidence` (default suppresses `low`) → suppress (`gate_low_confidence`); recorded, not verified, not published. Exception: critical and high severity candidates are never gate-suppressed for low confidence — they proceed to LLM verification, which is the right place to resolve uncertain-but-critical claims.
 6. Pre-clustering — verifier scheduling optimization only, never semantic grouping: candidates cluster when they share path, category, and anchor (same line and side), or share path, category, and enclosing symbol when both are unanchored, and additionally have equal normalized titles or equal normalized `evidence.changedCode` (lowercased, whitespace-collapsed). The representative is the highest confidence, then highest severity, then lowest id. Members get `clusterId` = representative id and `duplicateOf` = representative id; only the representative is verified. The representative's verdict applies to the cluster; member lineage is preserved for Stage 10's `mergedCandidateIds`. No ranking, cap enforcement, or wording happens here.
 
 Verifier dispatch: one candidate per call through the worker runner (stage 9, `review.perPassTimeoutMs`, bounded by `review.concurrency` and `llm.maxConcurrentCalls`); the verifier is an independent call with fresh context, using the run's single resolved model. Verifier `ToolBudget` default: `{ maxToolCalls: 6, maxInvestigationRounds: 2, maxResultChars: 12000 }` (implementation constant). The verifier receives the candidate, its originating packet context, the relevant changed hunk(s), cited evidence, active lens criteria (False Positives and Safe Patterns projections), and the read-only tool suite — for proving, narrowing, or rejecting the specific claim only; it must not search for new issues, and verifier-introduced unrelated findings are dropped in validation with telemetry.
@@ -625,7 +615,7 @@ Deterministic pre-grouping:
 2. Group findings sharing a fingerprint; then merge groups sharing path and category whose anchors fall within ±5 lines of each other (same side). Group representative: highest severity, then confidence, then earliest anchor line, then lowest id.
 3. Pre-trim: above 40 verified findings, rank by severity then confidence then id and trim to 40 before the composer call; critical and high findings are never trimmed. Trimmed findings become `FinalFinding`s with `publication: "suppressed"`, template `finalBody`, and a coverage/telemetry disclosure.
 
-Composer LLM call (one `runStructured`, the run's single resolved model, `review.perPassTimeoutMs`, no repository tools, no skill projections): input is the pre-grouped verified findings (full structured content and anchors), the plan's intent and diff understanding, the `RunCoverageStatus` counts, and the medium/high-confidence follow-up hints collected at Stage 7 (summary framing data only — never findings). Output schema: an ordered list of composed findings, each referencing input finding ids (`mergedCandidateIds`), with `finalBody` wording, a publication recommendation, plus the review `summary` text.
+Composer LLM call (one `runStructured`, the run's single resolved model, `review.perPassTimeoutMs`, no repository tools, no skill projections): input is the pre-grouped verified findings (full structured content and anchors), the plan's `diffUnderstanding` (`declaredIntent` and `inferredBehavior`), the `RunCoverageStatus` counts, and the medium/high-confidence follow-up hints collected at Stage 7 (summary framing data only — never findings). Output schema: an ordered list of composed findings, each referencing input finding ids (`mergedCandidateIds`), with `finalBody` wording, a publication recommendation, plus the review `summary` text.
 
 Output validation and deterministic post-processing:
 
@@ -634,10 +624,10 @@ Output validation and deterministic post-processing:
 3. Merge `mergedCandidateIds` with Stage 9 pre-cluster members (`duplicateOf` lineage) so `FinalFinding.mergedCandidateIds` is complete; preserve lineage to packets, lenses, and evidence via `producedBy`.
 4. Re-validate anchors. Inline publication requires a valid changed-line anchor; otherwise the finding is `summary-only`. When merged findings offer multiple valid anchors, prefer the representative's (clearest changed-line anchor by the pre-grouping representative rule).
 5. Apply thresholds: severity below `review.minSeverity` (when set) → `suppressed`; confidence below `review.minConfidence` → `suppressed`; confidence below `review.minInlineConfidence` → `summary-only`.
-6. Rank: severity, then confidence, then evidence strength (has related code, then changed-code length bucket), then actionability (has suggested fix/test), then path/anchor order. The composer's ordering is advisory input; this deterministic rank is final.
+6. Rank: a deterministic total order over severity, confidence, evidence strength, and actionability — the exact measures and tiebreakers are an implementation detail within that contract. The composer's ordering is advisory input; this deterministic rank is final.
 7. Enforce caps: at most `review.softCommentCap` inline findings — beyond the cap, medium/low-severity findings move to `summary-only`; verified critical and high findings are never displaced or hidden by the cap. At most `review.maxFindings` total reported findings — beyond it, lowest-ranked non-critical/high findings become `suppressed` with disclosure. Neither cap ever suppresses verified critical/high findings.
-8. Needs-human-attention notes: deterministically append every medium/high-confidence follow-up hint to the composed report as a "needs human attention" note (question, files, symbols, reason), deduplicated by trimmed question. The composer's summary wording may reference them, but the notes are code-assembled — they never become findings and are never silently dropped from the report. (Existing-PR-thread overlap recording is deferred to Future Considerations — see architecture.md.)
-9. Compute `fingerprint` on each `FinalFinding` (the Stage 11 duplicate-avoidance identity) and assemble `ReviewResult`: `summary` (composer wording, or template on fallback), `coverage` (the aggregated `RunCoverageStatus`, including partial disclosure), `findings` (publication `inline` only — suppressed findings never appear in `ReviewResult`; they are recorded solely in `final-findings.json` and `final-selection.json`), `summaryOnlyFindings`, `noFindings` when nothing is publishable, and `postingPlan` only when `--post-github-comments` was passed (`inline` entries for `publication: "inline"` findings with validated anchors; `reviewBody` containing the summary, counts, summary-only findings, needs-human-attention notes, and partial-coverage disclosure). Posting itself is Stage 11 (`components/repository_and_github.md`).
+8. Needs-human-attention notes: deterministically assemble every medium/high-confidence follow-up hint into `ReviewResult.needsHumanAttention` (`{ question, files, symbols, reason, confidence }` records), deduplicated by trimmed question. Renderers consume the field for the report's "needs human attention" section, and in posting mode `postingPlan.reviewBody` embeds the notes as well. The composer's summary wording may reference them, but the notes are code-assembled — they never become findings and are never silently dropped from the report. (Existing-PR-thread overlap recording is deferred to Future Considerations — see architecture.md.)
+9. Compute `fingerprint` on each `FinalFinding` (the Stage 11 duplicate-avoidance identity) and assemble `ReviewResult`: `summary` (composer wording, or template on fallback), `coverage` (the aggregated `RunCoverageStatus`, including partial disclosure), `findings` (publication `inline` only — suppressed findings never appear in `ReviewResult`; they are recorded solely in `final-findings.json` and `final-selection.json`), `summaryOnlyFindings`, `needsHumanAttention` (the step 8 notes), `noFindings` when nothing is publishable, and `postingPlan` only when `--post-github-comments` was passed (`inline` entries for `publication: "inline"` findings with validated anchors; `reviewBody` containing the summary, counts, summary-only findings, needs-human-attention notes, and partial-coverage disclosure). Posting itself is Stage 11 (`components/repository_and_github.md`).
 
 Composer terminal failure (after one repair retry, non-auth): deterministic fallback composition — fingerprint-level grouping only (steps 1-2 without semantic merging), template wording per finding (title, failure mode, evidence, why it matters, suggested fix/test), ranking, caps, and needs-human-attention notes per steps 4-8, and a coverage `reasons` disclosure note that semantic composition was skipped. The fallback never loses verified findings.
 
@@ -645,9 +635,9 @@ Composer terminal failure (after one repair retry, non-auth): deterministic fall
 
 ### Failure And Budget Semantics
 
-The budget ledger tracks, per run: elapsed wall-clock time against `review.timeoutMs`, total tokens against `review.maxTotalTokens`, accumulated cost against `review.maxCostUSD`, and model-call count against `review.maxModelCalls`. The LLM runner reports usage per call; the ledger is updated synchronously after every call.
+The budget ledger tracks, per run: elapsed wall-clock time against `review.timeoutMs`, total tokens against `review.maxTotalTokens`, and model-call count against `review.maxModelCalls`. There is no cost budget in v1 (cost-based run budgets are deferred — see architecture.md Future Considerations); cost is observability only, disclosed through `cost-profile.json`. The LLM runner reports usage per call; the ledger is updated synchronously after every call.
 
-Reservation: at run start the ledger reserves approximately 15% of the configured token and cost budgets (when set) and a runtime tail of `max(60s, 10% of review.timeoutMs)` for stages 9-10, so completed review work is never lost to exhaustion. Stages 1-7 draw from the remainder; stages 9-10 may draw from both the remainder and the reserve.
+Reservation: at run start the ledger reserves approximately 15% of the configured token budget (when set) and a runtime tail of `max(60s, 10% of review.timeoutMs)` for stages 9-10, so completed review work is never lost to exhaustion. Stages 1-7 draw from the remainder; stages 9-10 may draw from both the remainder and the reserve.
 
 Checkpoints: `budget.checkpoint(stage)` is evaluated before every new model call and every worker dispatch. It returns exhausted when any unreserved dimension is depleted for stages 1-7, or any total dimension is depleted for stages 9-10. Checkpoints never cancel in-flight work.
 
@@ -667,7 +657,7 @@ This component depends on:
 
 - `components/repository_and_github.md`: `resolveReviewInput`, `parseDiff` (`UnifiedDiff`, hunk ids, changed-line maps), Stage 3 classification (`FileFacts` with detector provenance), and diff-anchor validation primitives used by the Stage 7/9/10 anchor checks. Stage 11 posting consumes this component's `ReviewResult.postingPlan`.
 - `components/context_and_tools.md`: `buildRepositoryIndex` (`RepositoryIndex` with `HunkSymbolFacts`, static signals, `RepositoryTools`), the tools-host seams `buildPacketContext` (packet context plus the likely-tests list for `relevantTests`) and `bindPackets` (called between Stage 6 and Stage 7), and base/head source reads for deletion packets. Path containment is enforced in that layer.
-- `components/skills_llm_telemetry.md`: lens registry and skill projections, prompt building (including untrusted-content fencing), `LlmRunner.runStructured` (submit-tool schemas, schema repair, provider retries, the agent loop, abort/timeout, cache), and the telemetry recorder/logger that persist every artifact named here.
+- `components/skills_llm_telemetry.md`: lens registry and skill projections, prompt building (including `renderDossier` — used by dossier compaction for size estimation — and untrusted-content fencing), `LlmRunner.runStructured` (submit-tool schemas, schema repair, provider retries, the agent loop, abort/timeout, cache), and the telemetry recorder/logger that persist every artifact named here.
 - `src/config/`: validated `CodeninjaConfig` (depth, lens set, caps, budgets, concurrency, and the single run-wide `llm.*` settings).
 - Libraries: `p-limit` (worker concurrency), Node `crypto` (sha256 ids/fingerprints), `AbortController` (cancellation).
 
@@ -684,7 +674,7 @@ All tests use Vitest with a fake `LlmRunner` returning deterministic structured 
 Orchestration:
 
 - `runReview_stage_order_and_artifacts`: a small two-file fixture runs end to end; asserts stage telemetry events appear in pipeline order, Stage 9 starts only after all Stage 7 workers settle, and `planner-dossier.json`, `review-plan.json`, `packets/*.json`, `candidate-findings.json`, `verification.json`, `coverage.json`, `final-selection.json`, `final-findings.json` are all written.
-- `runReview_zero_work_empty_diff`: empty diff short-circuits before Stage 4 with zero LLM calls, a "nothing to review" `ReviewResult` (`noFindings: true`, `partial: false`), telemetry written, exit-equivalent success.
+- `runReview_zero_work_empty_diff`: empty diff short-circuits before Stage 3 with zero LLM calls, a "nothing to review" `ReviewResult` (`noFindings: true`, `partial: false`), telemetry written, exit-equivalent success.
 - `runReview_zero_work_all_filtered`: every changed file filtered at Stage 2; same short-circuit, and the report includes the filter summary with per-file reasons.
 - `runReview_fatal_auth_failure_flushes_telemetry`: provider-wide auth failure at Stage 7 fails the run with `llm_call_failed` and still writes telemetry artifacts.
 
@@ -703,7 +693,7 @@ Planner dossier and planning:
 - `planner_chunking_deterministic_merge`: a dossier exceeding the budget after compaction chunks by package root; per-chunk plans concatenate mechanically (coverage concat, dedup of lists, chunk-1 `declaredIntent`); identical chunking across reruns.
 - `planner_chunk_partial_failure`: one chunk fails terminally; only its hunks get default-plan coverage; `degradedPlanning: true` with the chunk root named in reasons.
 - `planner_validation_rules`: unknown-hunk decisions dropped; empty-reason skip treated as missing; unknown lenses dropped and empty lens sets flagged — each with its telemetry code.
-- `planner_terminal_failure_default_plan`: planner fails after repair; default plan covers every reviewable hunk at `normal` with core + language lenses and deterministic `reviewOrder`; `degradedPlanning: true`; later stages run.
+- `planner_terminal_failure_default_plan`: planner fails after repair; default plan covers every reviewable hunk at `normal` with core + language lenses; `degradedPlanning: true`; later stages run.
 
 Packet builder:
 
@@ -729,17 +719,17 @@ Worker runner and lens execution:
 - `lens_one_composite_call_per_packet`: a packet with three lenses produces exactly one model call whose prompt contains all three projections.
 - `lens_coverage_profiles`: light/normal/deep packets receive the table's tool budgets, scaled by run depth.
 - `lens_out_of_hunk_anchor_stripped`: a candidate anchored to an unchanged line loses its anchor, becomes summary-only with `changedLine: false`, and records `out_of_hunk_anchor`.
-- `lens_candidate_ids_and_producer`: candidate ids follow `"<packet8>-f<seq>"`; `producedBy` is stamped with stage 7, packet, lens, worker; an invalid model-claimed lens is rewritten to the packet's first lens.
+- `lens_candidate_ids_and_producer`: candidate ids follow `"<packet8>-f<seq>"`; `producedBy` is stamped deterministically with stage 7, the packet id, the packet's primary (first) lens, that lens's skill ids, and the worker id; the model output contains no lens claim to honor.
 - `lens_vague_hints_dropped`: a hint without files and symbols is dropped; a pointer-rich hint survives.
 
 Follow-up hints (Stage 8 deferred):
 
-- `hints_medium_high_surface_as_report_notes`: medium- and high-confidence packet hints appear as deduplicated "needs human attention" notes in the composed report and in `postingPlan.reviewBody`; low-confidence hints are telemetry-only; no hint becomes a finding or schedules a review task, and no Stage 8 telemetry events are emitted.
+- `hints_medium_high_surface_as_report_notes`: medium- and high-confidence packet hints land as deduplicated `ReviewResult.needsHumanAttention` entries (question, files, symbols, reason, confidence), which renderers surface in the composed report and `postingPlan.reviewBody` embeds; low-confidence hints are telemetry-only; no hint becomes a finding or schedules a review task, and no Stage 8 telemetry events are emitted.
 - `hint_events_recorded_for_evals`: every surviving hint and uncertainty emits its Stage 7 telemetry event carrying packet id, question, files, symbols, and confidence.
 
 Stage 9:
 
-- `verify_gates_order_and_reasons`: candidates missing evidence or failure mode are gate-rejected without verifier calls; a low-confidence candidate is suppressed; an invalid anchor is stripped to summary-only rather than rejected.
+- `verify_gates_order_and_reasons`: candidates missing evidence or failure mode are gate-rejected without verifier calls; a low-confidence medium-severity candidate is suppressed while a low-confidence critical-severity candidate proceeds to verification; an invalid anchor is stripped to summary-only rather than rejected.
 - `verify_precluster_representative_only`: three near-identical candidates produce one verifier call; members carry `clusterId`/`duplicateOf`; the verdict applies to the cluster and lineage survives to Stage 10.
 - `verify_verdict_handling`: keep/reject/revise are applied; a revised finding preserves the candidate id; a `revisedAnchor` on an unchanged line is discarded in favor of the original anchor.
 - `verify_repair_then_incomplete`: a schema-invalid verdict gets one repair; persistent failure marks `verificationIncomplete`, suppresses the candidate, and increments the coverage count.
@@ -756,9 +746,9 @@ Stage 10:
 
 Budget and coverage:
 
-- `budget_reservation_math`: with `maxTotalTokens = 100000`, stages 1-8 exhaust at 85000 while stages 9-10 may spend the reserve; the runtime tail is `max(60s, 10% of timeoutMs)`.
+- `budget_reservation_math`: with `maxTotalTokens = 100000`, stages 1-7 exhaust at 85000 while stages 9-10 may spend the reserve; the runtime tail is `max(60s, 10% of timeoutMs)`.
 - `budget_ladder_order`: exhaustion during Stage 7 stops new packet dispatch, verifies existing candidates from the reserve, and still composes; `budgetStopped: true` with reasons.
-- `budget_each_dimension_triggers`: time, tokens, cost, and model-call budgets each independently trigger the ladder at their checkpoint.
+- `budget_each_dimension_triggers`: time, token, and model-call budgets each independently trigger the ladder at their checkpoint.
 - `coverage_aggregation_matrix`: fixtures combining filtered files, planner skips, completed packets, failed packets, undispatched packets, degraded planning, and incomplete verification produce the expected `RunCoverageStatus` counts, `coverageByLevel`, `partial` flag, and reasons; `coverage.json` includes every hunk exactly once.
 - `coverage_partial_definition`: degraded planning alone does not set `partial`; any failed hunk, budget stop, unreviewed hunk, or planner partial flag does.
 

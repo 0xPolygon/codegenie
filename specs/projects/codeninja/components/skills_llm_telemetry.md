@@ -6,7 +6,7 @@ status: complete
 
 This component owns `src/skills/*`, `src/provider/*`, `src/llm/*`, and `src/telemetry/*`, plus the packaging contract for `bundled-skills/`. It is the layer between the review pipeline and everything model-shaped or disk-shaped: it loads and validates Markdown skills, registers lenses, projects skill guidance into stage prompts with untrusted-content delimiting, manages Pi-backed provider auth and user-level model defaults, executes every structured model call through `@earendil-works/pi-ai` behind the `LlmRunner` seam, caches model calls locally when enabled, and records every log line, telemetry event, and run artifact codeninja produces.
 
-All data contracts referenced here — `ReviewStage`, `ReasoningLevel`, `CodeninjaConfig`, `ToolBudget`, `ReviewPacket`, `ReviewPlan`, `PacketReviewResult`, `CandidateFinding`, `DiffAnchor`, `VerificationVerdict`, `FinalFinding`, `RunCoverageStatus`, `ReviewResult`, `RepositoryTools`, `ToolResultMeta`, `SourceSelector`, `LlmRunner`, `LlmStructuredRequest`, `LogLevel`, `LogEvent`, `Logger`, `TelemetryEvent`, `ToolCallRecord`, `CodeninjaError`, `CodeninjaErrorCode` — are defined in `architecture.md` and are law; this document elaborates behavior and never redefines them. The one type `architecture.md` delegates to this document is `ToolDefinition`, defined under Public Interface. All other types introduced here (`Skill`, `LensDescriptor`, `BuiltPrompt`, `LlmCallRecord`, `TelemetryRecorder`, and friends) are this component's own seams; where marked internal they are execution records, not published data contracts.
+All data contracts referenced here — `ReviewStage`, `ReasoningLevel`, `CodeninjaConfig`, `ToolBudget`, `ReviewPacket`, `ReviewPlan`, `PacketReviewResult`, `CandidateFinding`, `DiffAnchor`, `VerificationVerdict`, `FinalFinding`, `RunCoverageStatus`, `ReviewResult`, `RepositoryTools`, `ToolResultMeta`, `SourceSelector`, `LlmRunner`, `LlmStructuredRequest`, `LogLevel`, `LogEvent`, `Logger`, `TelemetryEvent`, `ToolCallRecord`, `CodeninjaError`, `CodeninjaErrorCode` — are defined in `architecture.md` and are law; this document elaborates behavior and never redefines them. The one type `architecture.md` delegates to this document is `ToolDefinition`, defined under Public Interface. `PlannerDossier`, consumed by the prompt builder's `renderDossier`/`buildPlannerPrompt`, is the planner dossier type `architecture.md` delegates to `components/review_pipeline.md`. All other types introduced here (`Skill`, `LensDescriptor`, `BuiltPrompt`, `LlmCallRecord`, `TelemetryRecorder`, and friends) are this component's own seams; where marked internal they are execution records, not published data contracts.
 
 ## Purpose And Scope
 
@@ -15,7 +15,7 @@ This component is responsible for:
 - The skill loader: parsing Markdown skill files with YAML frontmatter, validating frontmatter and section structure (`Purpose`, `Checks`, `False Positives`, `Safe Patterns`, `Examples`), loading bundled skills from the package's `bundled-skills/` directory and repo-local skills from `.codeninja/skills/`, honoring the extra-skill-path trust partitioning, hashing skill content for cache keying, and the recoverable `skill_invalid` policy (warn, skip, disclose).
 - The trusted-checkout policy-loading rule: skills and config always load from the user's working copy, never from the reviewed PR head revision.
 - The lens registry: lens existence derived from loaded skills (`lens exists iff at least one loaded skill declares it`), `enabledByDefault` conflict resolution, `--lens` validation with an available-lens error listing, config precedence for the effective enabled-lens set, and one-line lens summaries for the planner dossier.
-- The prompt builder: the four stage prompt templates (stages 5, 7, 9, 10), per-stage skill projection maps with the 4000-char per-skill and 12000-char total caps, telemetry-recorded truncation, and the untrusted-content fencing required by Trust Boundaries.
+- The prompt builder: the four stage prompt templates (stages 5, 7, 9, 10), the deterministic dossier renderer `renderDossier` (also called by the pipeline's dossier compaction for size estimation), per-stage skill projection maps with the 4000-char per-skill and 12000-char total caps, telemetry-recorded truncation, and the untrusted-content fencing required by Trust Boundaries.
 - The provider/auth command layer: `codeninja provider ...`, `~/.codeninja/` path resolution, Pi provider/model registry access, login/logout/auth status, model listing, user-level default provider/model/depth/reasoning settings, and credential registration with the redaction layer.
 - The `LlmRunner` implementation (`PiRunner`): forced submit-tool structured outputs per stage (`submit_plan`, `submit_review`, `submit_verdict`, `submit_composition`), TypeBox schema authoring with `Static<>` type derivation, the codeninja-owned agent loop driving pi-ai `complete()` + `validateToolCall`, `ToolBudget` enforcement, `AbortController` timeouts chained to the run-wide abort, one schema-repair retry, single run-wide model resolution from the resolved `llm` config (`llm.model ?? Pi/provider default`, already merged from CLI/environment/user settings by the config loader), reasoning-effort resolution from the resolved `llm.reasoning` with the built-in `high` default, `llm.maxConcurrentCalls` enforcement, 429/transient-5xx exponential backoff with budget accounting, and per-call telemetry — including one law `ToolCallRecord` emitted to the recorder for every tool-loop call (executed, budget-rejected, or containment-rejected), stamped with `initiator: "model"` and the issuing `modelCallId`.
 - The delegated `ToolDefinition` type and the factory that wraps `RepositoryTools` methods as model-facing tool definitions, including rendering tool rejections as model-visible errors.
@@ -146,7 +146,12 @@ function projectSkills(skills: Skill[], stage: ReviewStage): SkillProjection
 function fenceUntrusted(content: string, label: string): string
 
 interface PromptBuilder {
-  buildPlannerPrompt(input: { dossierText: string; lenses: LensDescriptor[]; skills: Skill[] }): BuiltPrompt
+  // Deterministic dossier rendering, including every untrusted-content fence the
+  // dossier requires. buildPlannerPrompt embeds its output, and the pipeline's
+  // dossier compaction calls it for size estimation (components/review_pipeline.md),
+  // so fencing overhead and sizing stay consistent with the actual planner prompt.
+  renderDossier(dossier: PlannerDossier): string
+  buildPlannerPrompt(input: { dossier: PlannerDossier; lenses: LensDescriptor[]; skills: Skill[] }): BuiltPrompt
   buildPacketReviewPrompt(input: { packet: ReviewPacket; skills: Skill[] }): BuiltPrompt
   buildVerifierPrompt(input: {
     candidate: CandidateFinding
@@ -167,7 +172,7 @@ function createPromptBuilder(registry: LensRegistry): PromptBuilder
 ```
 
 - All functions are pure and deterministic given their inputs: identical inputs must produce byte-identical prompts, because the model-call cache keys on prompt content. No randomness, timestamps, or run ids may enter prompt text.
-- Which dossier fields, packet fields, and context selections feed each prompt is the calling stage's contract (`components/review_pipeline.md`); this component owns the rendering, ordering, fencing, instruction text, and projection caps.
+- Which dossier fields, packet fields, and context selections feed each prompt is the calling stage's contract (`components/review_pipeline.md`); this component owns the rendering, ordering, fencing, instruction text, and projection caps. Dossier fencing lives in `renderDossier`: the pipeline hands over the `PlannerDossier` object, never pre-rendered text, and reuses the same renderer for compaction size estimation.
 - `fenceUntrusted` never throws; it must safely fence any string, including content containing backtick fences (see Untrusted-Content Delimiting).
 
 ### Provider State And Model Registry
@@ -176,11 +181,12 @@ function createPromptBuilder(registry: LensRegistry): PromptBuilder
 // src/provider/provider-services.ts
 
 type CodeninjaPaths = {
-  home: string          // CODENINJA_HOME ?? ~/.codeninja
-  authPath: string      // <home>/auth.json
-  modelsPath: string    // <home>/models.json
-  settingsPath: string  // <home>/settings.json
-  sessionsDir: string   // <home>/sessions
+  home: string            // CODENINJA_HOME ?? ~/.codeninja
+  authPath: string        // <home>/auth.json
+  modelsPath: string      // <home>/models.json
+  settingsPath: string    // <home>/settings.json
+  configTomlPath: string  // <home>/config.toml — optional user-level CodeninjaConfig overrides and trust opt-ins
+  sessionsDir: string     // <home>/sessions
 }
 
 type ProviderSettings = {
@@ -213,10 +219,10 @@ Rules:
 - `provider login` uses Pi OAuth/device-code flow when the selected provider supports it; otherwise it prompts for an API key and stores it via Pi auth storage. It never prints the secret value.
 - `provider models` defaults to authenticated/available models and uses `--all` for every known Pi model. Rows include provider, model id, context window, max output tokens, reasoning support, and image/input capability when Pi exposes those fields.
 - `provider config` prints JSON so scripts and tests can consume it. It includes paths and effective defaults, but never credentials.
-- `provider config set-reasoning auto` deletes the stored override. `set-depth` writes codeninja's `light|normal|deep` review-depth vocabulary.
+- `provider config set-reasoning auto` deletes the stored override, letting resolution fall through to `~/.codeninja/config.toml` and then the built-in `high` default. (The review flag `--reasoning auto` is analogous but per-run: it clears the CLI layer only, and resolution continues `CODENINJA_REASONING` > `settings.json` > `config.toml` > the built-in `high` default.) `set-depth` writes codeninja's `light|normal|deep` review-depth vocabulary.
 - Loading auth or settings registers every concrete credential value with `telemetry/redaction.ts` before any logger, telemetry, cache, artifact, debug trace, or error sink can observe it.
 
-`ProviderSettings` is consumed by the config loader only — the single merge point. The loader resolves provider/model/reasoning into the resolved `CodeninjaConfig.llm` (precedence: CLI flags > `CODENINJA_PROVIDER`/`CODENINJA_MODEL`/`CODENINJA_REASONING` environment variables > `ProviderSettings` > Pi/provider defaults; repo `codeninja.toml` is ignored for these keys) and `defaultDepth` into `review.depth` (where repo project policy outranks the personal default). `PiRunner` consumes the resolved config and never reads `ProviderSettings` directly. One model and one reasoning level serve the whole run; per-role tiering is deferred (see architecture.md Future Considerations). If no authenticated usable model can be resolved for the run, `createPiRunner` throws `config_error` before the pipeline enters Stage 5.
+`ProviderSettings` is consumed by the config loader only — the single merge point. The loader resolves provider/model/reasoning into the resolved `CodeninjaConfig.llm` (precedence: CLI flags > `CODENINJA_PROVIDER`/`CODENINJA_MODEL`/`CODENINJA_REASONING` environment variables > `ProviderSettings` from `~/.codeninja/settings.json` > `~/.codeninja/config.toml` > Pi/provider defaults; repo `codeninja.toml` is ignored for these keys). Within user scope, `settings.json` outranks `config.toml` because the dedicated `provider config set-*` commands write `settings.json`. `--reasoning auto` clears the CLI layer only; resolution then continues down that same chain to the built-in `high` default. `CODENINJA_PROVIDER`, `CODENINJA_MODEL`, `CODENINJA_REASONING`, and `CODENINJA_HOME` are the only codeninja environment variables in v1. `defaultDepth` resolves into `review.depth` as user-scoped config (`--depth > repo codeninja.toml > settings.json defaultDepth > config.toml > built-in normal`; repo project policy outranks the personal default, and depth has no environment layer). `PiRunner` consumes the resolved config and never reads `ProviderSettings` directly. One model and one reasoning level serve the whole run; per-role tiering is deferred (see architecture.md Future Considerations). If no authenticated usable model can be resolved for the run, `createPiRunner` throws `config_error` before the pipeline enters Stage 5.
 
 ### LLM Runner
 
@@ -225,8 +231,11 @@ The `LlmRunner` interface and `LlmStructuredRequest<T>` type in `architecture.md
 ```ts
 // src/llm/llm-runner.ts
 
-// Telemetry/aggregation label only — one model and one reasoning level serve
-// every role in v1 (per-role tiering is deferred; see architecture.md).
+// Plain telemetry label derived from stage (5 → planner, 7 → packetReview,
+// 9 → verifier, 10 → composer). No per-role aggregation or resolution machinery
+// hangs off it — the numeric stage is the aggregation key, and one model and one
+// reasoning level serve every stage in v1 (per-role tiering is deferred; see
+// architecture.md).
 type LlmRole = "planner" | "packetReview" | "verifier" | "composer"
 
 // Internal usage report delivered to the pipeline's budget ledger after every
@@ -250,6 +259,7 @@ function createPiRunner(opts: {
   logger: Logger
   cache?: ModelCallCache       // undefined when caching is disabled
   runSignal: AbortSignal       // run-wide abort root from the orchestrator
+  adapter?: PiAiAdapter        // injected pi-ai surface (complete, validateToolCall, model resolution); defaults to the real pi-ai
   hooks: {
     // Budget checkpoint evaluated before every new provider call, including
     // tool-loop continuations. Implemented by the pipeline's budget ledger.
@@ -267,6 +277,7 @@ function createPiRunner(opts: {
   - `llm_schema_invalid` with `recoverable: true` when the submit payload is still schema-invalid after the one repair retry, or when the model never produces a submit call after forced finalization.
 - Retry layering is fixed: provider 429/transient-5xx backoff (up to 3 retries) and the single schema-repair attempt live inside the runner; worker re-dispatch lives in the pipeline's worker runner and is not this component's concern.
 - `createPiRunner` throws `config_error` at construction when no model can be resolved (see Model Resolution).
+- `adapter` is the pi-ai injection seam: tests supply a fake adapter (scripted completions, tool calls, errors, usage) through this real parameter instead of module-mocking pi-ai; when omitted, the runner constructs the real pi-ai surface.
 
 ### Tool Definitions
 
@@ -306,19 +317,11 @@ The factory that wraps the read-only repository tool suite:
 ```ts
 // src/llm/tool-definitions.ts
 
-function buildRepositoryToolDefinitions(
-  tools: RepositoryTools,
-  options?: {
-    onToolCall?: (record: ToolCallRecord) => void  // per-worker observer receiving the same
-                                                   // law ToolCallRecords the agent loop emits
-                                                   // to the telemetry recorder; the pipeline
-                                                   // derives PacketReviewResult.toolCalls
-                                                   // and filesRead from these records
-  }
-): ToolDefinition[]
+function buildRepositoryToolDefinitions(tools: RepositoryTools): ToolDefinition[]
 ```
 
-- Returns one `ToolDefinition` per tool named in the functional spec — the nine tools `read_range`, `read_file_outline`, `read_symbol`, `find_definition`, `read_diff_blocks`, `search_files`, `find_symbol_mentions`, `find_likely_tests`, `list_files`. Tool behavior, containment, and caps are owned by `components/context_and_tools.md`; this factory owns the parameter schemas, result rendering, error rendering, and call records.
+- Returns one `ToolDefinition` per tool named in the functional spec — the nine tools `read_range`, `read_file_outline`, `read_symbol`, `find_definition`, `read_diff_blocks`, `search_files`, `find_symbol_mentions`, `find_likely_tests`, `list_files`. Tool behavior, containment, and caps are owned by `components/context_and_tools.md`; this factory owns the parameter schemas, result rendering, and error rendering.
+- There is no per-call observer seam: tool usage flows exclusively through the agent loop's `recordToolCall` emissions into `tool-calls.jsonl` (`PacketReviewResult` carries no tool-usage data; readers join tool records on `workerId`).
 - `CodeninjaError` rejections from the tool layer (`path_outside_repo`, `invalid_args`, `git_ref_missing`) are caught and rendered as `isError: true` results so the model sees the failure and the run never aborts; the call still produces its `ToolCallRecord` (containment denials as `status: "rejected"`, other tool failures as `status: "error"`), and `path_outside_repo` additionally emits a `warn` telemetry event as a review-manipulation signal, matching `components/context_and_tools.md`.
 
 ### Model-Call Cache
@@ -334,8 +337,7 @@ type CacheLookup =
 type StoredProviderResponse = {
   cacheSchemaVersion: number
   createdAt: string
-  stage: ReviewStage
-  origin: "candidate-generation" | "verification" | "composition" | "planning"
+  stage: ReviewStage           // the numeric stage suffices; no separate origin label
   // The pi-ai assistant message as returned by complete(): content blocks and
   // tool calls, sufficient to replay the step without a provider call.
   message: unknown
@@ -540,6 +542,25 @@ Body parsing:
 - Discovery order within each source is deterministic: lexicographic by repo-relative (or absolute) path. The resulting `skills` array order is the registry's load order and the tiebreaker for duplicate-id handling.
 - Skill loading happens once per run during startup, before the pipeline starts; all its events carry stage `0`.
 
+### Bundled Skill Content Outlines
+
+Loader, registry, and projection machinery do not make reviews good — skill content does, and bundled skill content is the day-one review-quality gap this component must close. The four bundled skills ship with at least checklist-level content; the outlines below are the normative minimum for each skill's `Checks` section, with 5-8 concrete check areas per skill:
+
+- `core/code-review`:
+  - Logic/correctness: boundary conditions, off-by-one errors, inverted conditions.
+  - Error handling: swallowed errors, missing failure paths.
+  - Resource lifecycle: leaks, missing cleanup/close.
+  - Concurrency basics: shared-state mutation, ordering assumptions.
+  - Security-correctness: injection, authorization gaps, secret handling, unsafe deserialization.
+  - API misuse: contract violations at call sites.
+  - Architectural regressions: layering violations, circular dependencies.
+  - Plus substantive `False Positives` and `Safe Patterns` themes alongside the checks.
+- `core/tests`: missing coverage for changed behavior, deleted or weakened tests, assertion quality, flaky patterns (timing/order dependence), test-only code leaking into production.
+- `lang/go`: goroutine leaks, context misuse/replacement, defer-in-loop, nil map/pointer writes, error shadowing (`:=`), channel deadlocks, slice aliasing/append sharing, missing mutex on mixed access.
+- `lang/typescript`: floating promises, `any`-casts erasing type safety, non-null assertions, missing exhaustiveness checks, async error handling (unawaited rejections), equality/coercion pitfalls, mutation of shared references.
+
+Phase 4 authors the four skill files against these outlines; the outlines are the minimum bar, not the ceiling.
+
 ### Lens Resolution Algorithm
 
 1. Registration: collect the union of `lenses` declarations across loaded skills. A lens exists iff at least one loaded skill declares it. `skillIds` lists declaring skills in load order; `title` and `description` come from the first declaring skill.
@@ -566,7 +587,7 @@ Cap algorithm, applied in `projectSkills`:
 1. Order skills deterministically: by the order of the packet/task lens list, then by skill load order within a lens; a skill mapped from two selected lenses projects once (first occurrence wins).
 2. Render each skill's projection: a header line (`## Skill: <id> — <title>`), then the included sections in the fixed order Checks, False Positives, Safe Patterns, Examples (whichever the stage map includes and the skill has).
 3. Per-skill cap: 4000 chars. Over-cap projections truncate at the last section boundary that fits; if even the first section does not fit, hard-truncate at 4000 chars at a line boundary. Truncation appends `\n[skill truncated: <n> chars omitted]` and records `truncatedChars`.
-4. Total cap: 12000 chars per prompt. Skills are admitted in order until the remaining budget is under 200 chars, after which remaining skills are omitted entirely (`omitted: true`) — a sub-200-char fragment is noise, not guidance.
+4. Total cap: 12000 chars per prompt. Skills are admitted in order until the remaining budget falls below a deterministic minimum-fragment threshold, after which remaining skills are omitted entirely (`omitted: true`) — a tiny trailing fragment is noise, not guidance. The minimum-fragment rule is an implementation constant; it must be deterministic and is disclosed in telemetry with the omission events.
 5. Every truncation and omission is recorded in telemetry (`event: "skill_projection_truncated"`, stage-attributed, with skill id and char counts) and carried in `SkillProjection.perSkill`, which the runner folds into the call's debug trace.
 
 Skill content is trusted policy (bundled or team-versioned), so projections are not fenced as untrusted data; they render as instruction-position prompt content.
@@ -615,7 +636,7 @@ Stage-to-submit-tool mapping (the tool name the model must call; the schema trav
 | 9 | `submit_verdict` | `SubmitVerdictSchema` | `VerificationVerdict` minus `candidateId` and `verificationIncomplete`; `finalFinding`, when present, uses the `SubmittedFinding` shape |
 | 10 | `submit_composition` | `SubmitCompositionSchema` | `{ summary: string; composedFindings: Array<{ findingIds: string[]; finalBody: string; publication: "inline" \| "summary-only" }> }` per the Stage 10 composer contract |
 
-`SubmittedFinding` is the model-facing projection of `CandidateFinding`: it excludes the pipeline-stamped fields `id`, `producedBy`, `clusterId`, `duplicateOf`, and `changedLine` (assigned, stamped, and computed by pipeline validation respectively) and includes everything else — `title`, `severity`, `confidence`, `path`, `anchor?`, `category`, `evidence`, `failureMode`, `whyThisMatters`, `suggestedFix?`, `suggestedTest?`, `verification`. The schemas mirror the law types field-for-field with TypeBox string-enum unions for the closed enums; they must not invent fields, defaults, or relaxations beyond the exclusions named here. Mapping submissions back into law types (id assignment, `producedBy` stamping, anchor validation) is stage logic in `components/review_pipeline.md`.
+`SubmittedFinding` is the model-facing projection of `CandidateFinding`: it excludes the pipeline-stamped fields `id`, `producedBy`, `clusterId`, `duplicateOf`, and `changedLine` (assigned, stamped, and computed by pipeline validation respectively) and includes everything else — `title`, `severity`, `confidence`, `path`, `anchor?`, `category`, `evidence`, `failureMode`, `whyThisMatters`, `suggestedFix?`, `suggestedTest?`, `verification`. The schemas mirror the law types field-for-field with TypeBox string-enum unions for the closed enums; they must not invent fields, defaults, or relaxations beyond the exclusions named here. `SubmittedFinding` is deliberately lens-free: producer and lens attribution is deterministic — Stage 7 validation stamps `producedBy` with the packet's primary (first) lens and that lens's skill ids; the model never claims a lens. Mapping submissions back into law types (id assignment, deterministic `producedBy` stamping, anchor validation) is stage logic in `components/review_pipeline.md`.
 
 Schema authoring rules:
 
@@ -681,10 +702,10 @@ Every provider call attempt and every cache hit produces one `LlmCallRecord` app
 - `promptHash` / `outputHash` are sha256 over the canonical serialization of, respectively, the full request content (message list, tool schemas, submit schema, model settings — the same serialization the cache key uses) and the assistant response. They satisfy the architecture requirement to record prompt and output hashes without persisting prompt text outside debug traces.
 - `promptChars` is the serialized request content length; evals reads per-call `stage` + `promptChars` from this file (reader contract in `components/evals.md`).
 - ids from `request.telemetryContext` — `workerId`, `packetId`, `candidateId` — are copied onto the record and onto every telemetry event the call emits, fulfilling the worker-traceability requirements.
-- Token usage comes from pi-ai's reported usage. `costUSD` is recorded when pi-ai or the provider reports cost or sufficient pricing metadata; when unavailable, `costUSD` is omitted, the call counts zero toward `maxCostUSD`, and the cost profile discloses the unknown-cost call count (the parents define a cost budget but no pricing source; this is the conservative v1 behavior).
-- Cache hits record `cacheStatus: "hit"`, the stored usage for visibility, `durationMs` of the lookup, and report no `hooks.onUsage` (no provider spend: cached replays consume neither tokens, cost, nor model-call budget; they are development/eval conveniences, not provider work).
+- Token usage comes from pi-ai's reported usage. `costUSD` is recorded when pi-ai or the provider reports cost or sufficient pricing metadata; when unavailable, `costUSD` is omitted and the call is disclosed in `cost-profile.json`'s unknown-cost call count. Cost is observability only in v1 — there is no cost budget, so unknown-cost calls interact with no budget (cost-based run budgets are deferred; see architecture.md Future Considerations).
+- Cache hits record `cacheStatus: "hit"`, the stored usage for visibility, `durationMs` of the lookup, and report no `hooks.onUsage` (no provider spend: cached replays consume no token or model-call budget and incur no provider cost; they are development/eval conveniences, not provider work).
 
-Aggregates maintained in memory and written at `finalize`: per-stage and per-role call counts, token sums, cost sums, retry counts, schema-repair counts, cache hit/miss/write counts (→ `model-calls-summary.json`); total/known/unknown cost, per-stage and per-role token/cost breakdown (→ `cost-profile.json`).
+Aggregates maintained in memory and written at `finalize`, keyed by numeric stage (`role` is a derived display label, not an aggregation key): per-stage call counts, token sums, cost sums, retry counts, schema-repair counts, cache hit/miss/write counts (→ `model-calls-summary.json`); total/known/unknown cost, per-stage token/cost breakdown (→ `cost-profile.json`).
 
 ### Model-Call Cache
 
@@ -724,6 +745,7 @@ Anything prompt-affecting therefore misses; identical reruns hit.
 
 - `events.jsonl` receives every `TelemetryEvent` when `telemetry.enabled` is true, unfiltered by `logLevel` — typed telemetry artifacts are the metrics source of truth and must stay complete for evals; `logLevel` governs only the `run.log` narrative.
 - `eventId` is monotonic per run: `"ev-" + zero-padded sequence` in emission order, so event order is reconstructible even with identical timestamps.
+- Stage lifecycle: every stage emits `stage_started` / `stage_completed` events carrying the numeric stage id (pipeline-emitted); these lifecycle events are the source for the per-stage runtimes folded into `telemetry.json` at `finalize`.
 - The recorder stamps `runId`, `eventId`, and `timestamp`; callers supply everything else, including the numeric `stage` and the relevant ids (`packetId`, `workerId`, `lensId`, ...). The recorder performs no semantic validation of `data` payloads beyond credential stripping and a 16KB serialized-size cap per event (over-cap `data` is replaced with `{ truncated: true, chars }`).
 - Reader contracts: `components/evals.md` reads hint events (follow-up hints and structured uncertainties with `{ packetId, question, files, symbols, reason, confidence }` in `data`) out of `events.jsonl`. Emission is pipeline-owned; the recorder's obligation is to persist `data` fields losslessly under the size cap and never rename `TelemetryEvent` fields.
 - `recordToolCall` appends one law `ToolCallRecord` line to `tool-calls.jsonl` — always on, regardless of debug settings, for every repository tool invocation, model-initiated in a tool loop or harness-initiated by deterministic stages — emits a debug-level `tool_call` log event carrying `toolName`, `path`, and the line range, and updates per-tool/per-stage aggregates; `recordModelCall` appends to `model-calls.jsonl` and updates model-call aggregates. Both are synchronous in-memory operations with batched async writes; `flush()` drains pending writes for the fatal-error path.
@@ -761,10 +783,10 @@ Artifact writer ownership (the layout itself is law in `architecture.md`):
 - `writeArtifact` serializes with stable key order and 2-space indentation, strips credentials, and writes temp-then-rename so a crashed run never leaves a half-written JSON artifact for evals to choke on. `run.log`, `events.jsonl`, `model-calls.jsonl`, and `tool-calls.jsonl` are append streams by nature and are exempt from rename atomicity (line-granular durability).
 - `finalize(outcome)` writes the five summary artifacts and closes streams:
   - `run.json` — run identity and totals: `runId`, codeninja version, node version, `startedAt`/`finishedAt`/`durationMs` (the evals "total runtime" source), review mode, repo root, base/head SHAs, PR number when applicable, credential-stripped argv, effective depth and enabled lenses, `outcome.status`/`errorCode`/`exitCode`, and total counts (model calls, tool calls, packets, candidates, verified, final findings).
-  - `telemetry.json` — the aggregate metrics document mirroring the functional spec's V1 telemetry list: total runtime, per-stage runtime, per-worker runtime, provider-call and token totals, packets generated, lens selection counts, coverage decision counts, reviewed/skipped/failed hunk counts, tool invocation counts with backend/degradation tallies, worker lifecycle counts, candidate/verdict/rejection/dedup counts, posting results, final-selection omissions, and cache hit/miss counts. Values are folded from recorder aggregates; stages report their numbers through ordinary telemetry events with well-known `event` names.
-  - `model-calls-summary.json` — per-stage and per-role call/token/cost/retry/repair aggregates plus cache hit/miss/write counts (the evals cache-metrics source).
+  - `telemetry.json` — the aggregate metrics document mirroring the functional spec's V1 telemetry list: total runtime, per-stage runtime (derived from the `stage_started`/`stage_completed` lifecycle events), per-worker runtime, provider-call and token totals, packets generated, lens selection counts, coverage decision counts, reviewed/skipped/failed hunk counts, tool invocation counts with backend/degradation tallies, worker lifecycle counts, candidate/verdict/rejection/dedup counts, posting results, final-selection omissions, and cache hit/miss counts. Values are folded from recorder aggregates; stages report their numbers through ordinary telemetry events with well-known `event` names.
+  - `model-calls-summary.json` — per-stage call/token/cost/retry/repair aggregates plus cache hit/miss/write counts (the evals cache-metrics source).
   - `tool-calls-summary.json` — per-tool and per-stage aggregates over the run's `ToolCallRecord`s: call counts, error/rejection/degradation rates, average duration, and average result size.
-  - `cost-profile.json` — `totalCostUSD`, known/unknown-cost call counts, per-stage and per-role token and cost breakdowns.
+  - `cost-profile.json` — `totalCostUSD`, known/unknown-cost call counts (unknown-cost calls are disclosed here; they interact with no budget), per-stage token and cost breakdowns.
 - `finalize` runs on success and on the fatal-error path (best effort, after `flush()`), satisfying "attempt to write telemetry artifacts before exiting".
 
 ### Debug Traces
@@ -789,7 +811,7 @@ This component depends on:
 
 Depends on this component:
 
-- `components/review_pipeline.md` — composes every `LlmStructuredRequest` against `LlmRunner`, supplies the budget `checkpoint`/`onUsage` hooks, consumes `BuiltPrompt`s, skill projections, the lens registry, and persists all stage artifacts through `TelemetryRecorder`.
+- `components/review_pipeline.md` — composes every `LlmStructuredRequest` against `LlmRunner`, supplies the budget `checkpoint`/`onUsage` hooks, consumes `BuiltPrompt`s, `renderDossier` (dossier compaction size estimation), skill projections, the lens registry, and persists all stage artifacts through `TelemetryRecorder`.
 - `components/context_and_tools.md` — emits its stage-4 and tool-layer telemetry through the `Logger`/`TelemetryRecorder` interfaces defined here, including harness-initiated `ToolCallRecord`s reported through `recordToolCall` with `initiator: "harness"`.
 - `components/repository_and_github.md` — emits telemetry and writes `github-posting.json` through the recorder.
 - `components/evals.md` — reads `events.jsonl`, `model-calls.jsonl`, `model-calls-summary.json`, `tool-calls.jsonl`, `tool-calls-summary.json`, `cost-profile.json`, and `run.json` as reader contracts; toggles and directs the model-call cache per run.
@@ -797,7 +819,7 @@ Depends on this component:
 
 ## Test Plan
 
-All tests use Vitest. LLM tests use a fake pi-ai adapter returning scripted completions (tool calls, submits, errors, usage); no network. Filesystem tests use temp directories; clock and timers are injected/faked.
+All tests use Vitest. LLM tests use a fake pi-ai adapter returning scripted completions (tool calls, submits, errors, usage), injected through `createPiRunner`'s `adapter` parameter — a real seam, not module mocking; no network. Filesystem tests use temp directories; clock and timers are injected/faked.
 
 Skill loader:
 
@@ -825,9 +847,9 @@ Prompt builder and projection:
 
 - `projection_stage_maps`: for one skill with all five sections, the stage 7 projection contains Checks + False Positives + Examples only; stage 9 contains False Positives + Safe Patterns only; stage 5 yields summary lines without section content; stage 10 performs no projection.
 - `projection_per_skill_cap_4000`: an oversized skill truncates at a section boundary with the truncation marker, `truncatedChars` set, and a `skill_projection_truncated` telemetry event.
-- `projection_total_cap_12000_omits_tail`: four 4000-char skills project three; the fourth is `omitted: true` with telemetry; sub-200-char remainders never produce fragments.
+- `projection_total_cap_12000_omits_tail`: four 4000-char skills project three; the fourth is `omitted: true` with telemetry; remainders below the minimum-fragment threshold never produce fragments.
 - `projection_dedupes_shared_skill`: a skill mapped from two selected lenses projects once.
-- `prompt_determinism`: identical inputs produce byte-identical prompts across calls and processes (no timestamps, ids, or randomness).
+- `prompt_determinism`: identical inputs produce byte-identical prompts and `renderDossier` renderings across calls and processes (no timestamps, ids, or randomness).
 - `fence_untrusted_collision_safety`: content containing a 5-backtick run is fenced with 6 backticks; framing lines and label render; nested fence content round-trips unmodified.
 - `prompt_untrusted_blocks_and_injection_instruction`: packet review, verifier, and planner prompts each contain the data-not-instructions instruction and fence all untrusted inputs; projected skill content is outside untrusted fences.
 - `prompt_template_version_changes_key`: bumping a template version constant changes `BuiltPrompt.templateVersion` and, downstream, the cache key.
@@ -873,7 +895,7 @@ Runner policies:
 Tool definitions:
 
 - `tooldefs_cover_all_nine`: the factory returns definitions for all nine functional-spec tool names with TypeBox parameter schemas matching the law signatures (line numbers ≥ 1, selector unions, exactly-one selector constraints expressed in description + schema).
-- `tooldefs_observer_records`: the `onToolCall` observer receives one law `ToolCallRecord` per execution with tool name, normalized args, duration, status, and meta passthrough, enabling `PacketReviewResult.toolCalls` assembly.
+- `tooldefs_records_via_recorder_only`: every execution through a tool definition lands as exactly one law `ToolCallRecord` emitted via `recordToolCall` (tool name, normalized args, duration, status, meta passthrough, and the joining `workerId`); the factory exposes no per-call observer seam.
 - `tooldefs_result_meta_footer`: degraded or truncated results render a meta note line; clean results render none.
 
 Model-call cache:
@@ -910,7 +932,7 @@ Run artifacts and lifecycle:
 - `artifacts_gitignore_provisioned_on_create_only`: creating `.codeninja/` writes `.gitignore` with `runs/` and `cache/`; a pre-existing `.codeninja/` without `.gitignore` is left untouched.
 - `artifacts_retain_runs_pruning`: with `retainRuns: 2` and three prior runs, the oldest is deleted, the active run is never deleted, and a stage-0 telemetry event lists the pruned ids.
 - `artifacts_write_atomic_known_names_only`: `writeArtifact` accepts the architecture-named artifacts and `packets/<id>.json`, writes temp-then-rename, and rejects unknown names as a programming error.
-- `artifacts_finalize_summaries`: after scripted calls and tool executions, `finalize` writes `run.json` (with `durationMs`, totals, outcome), `telemetry.json` (stage runtimes and counts), `model-calls-summary.json` (per-stage/per-role aggregates plus cache hit/miss/write counts), and `cost-profile.json` (known/unknown cost split) with the documented required fields.
+- `artifacts_finalize_summaries`: after scripted calls and tool executions, `finalize` writes `run.json` (with `durationMs`, totals, outcome), `telemetry.json` (per-stage runtimes derived from `stage_started`/`stage_completed` events, plus counts), `model-calls-summary.json` (per-stage aggregates plus cache hit/miss/write counts), and `cost-profile.json` (known/unknown cost split) with the documented required fields.
 - `tool_calls_summary_aggregates`: `finalize` writes `tool-calls-summary.json` whose per-tool and per-stage call counts, error/rejection/degradation rates, and average duration/result size match the run's recorded `tool-calls.jsonl` lines.
 - `artifacts_finalize_on_fatal_path`: `flush()` + `finalize({ status: "failed", … })` after a simulated mid-run fatal error still produces parseable `run.log`, `events.jsonl`, and summary artifacts.
 - `debug_trace_gating_and_join`: with `debugTrace` off, no `debug/` directory exists; with it on, `debug/llm-calls/<call-id>.json` carries `promptText` and the response, and `<call-id>` joins to a `model-calls.jsonl` row; tool-call debug files join to `ToolCallRecord.toolCallId`.
