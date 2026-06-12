@@ -1,0 +1,658 @@
+import type { LlmRunner } from "../llm/llm-runner.js";
+import { SubmitCompositionSchema, type SubmitComposition } from "../llm/schemas.js";
+import type { PromptBuilder } from "../skills/prompt-builder.js";
+import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
+import type {
+  CandidateFinding,
+  Confidence,
+  CodeninjaConfig,
+  FinalFinding,
+  NeedsHumanAttentionNote,
+  PacketReviewResult,
+  ReviewPacket,
+  ResolvedReviewInput,
+  ReviewPlan,
+  ReviewResult,
+  RunCoverageStatus,
+  Severity,
+  UnifiedDiff,
+  VerificationVerdict
+} from "../types.js";
+import { sha256Hex } from "../util/hashing.js";
+import { isFatalLlmError, validateAnchorForDiff } from "./pipeline-utils.js";
+
+type ComposeOptions = {
+  runner: LlmRunner;
+  promptBuilder: PromptBuilder;
+  packetResults?: PacketReviewResult[];
+  packets?: ReviewPacket[];
+  postGithubComments?: boolean;
+  diff?: UnifiedDiff;
+};
+
+type FindingGroup = {
+  fingerprint: string;
+  representative: CandidateFinding;
+  findings: CandidateFinding[];
+};
+
+type SelectionRecord = {
+  findingId: string;
+  decision: "published" | "merged" | "suppressed";
+  reason: string;
+  mergedIntoFingerprint?: string;
+};
+
+const MAX_COMPOSER_FINDINGS = 40;
+
+export async function dedupeRankAndComposeReview(
+  verified: { verified: CandidateFinding[]; verdicts: VerificationVerdict[] },
+  plan: ReviewPlan,
+  _resolved: ResolvedReviewInput,
+  coverage: RunCoverageStatus,
+  config: CodeninjaConfig,
+  telemetry: TelemetryRecorder,
+  opts: ComposeOptions
+): Promise<ReviewResult> {
+  telemetry.event({ stage: 10, level: "info", message: "stage_started", data: { verified: verified.verified.length } });
+  const packetsById = new Map((opts.packets ?? []).map((packet) => [packet.id, packet]));
+  const pretrim = pretrimComposerInput(verified.verified);
+  const groups = groupFindings(pretrim.kept, packetsById);
+  const notes = needsHumanAttention(opts.packetResults ?? []);
+  if (pretrim.suppressed.length > 0) {
+    const reason = `composer pre-trim suppressed ${pretrim.suppressed.length} verified finding${pretrim.suppressed.length === 1 ? "" : "s"} above the ${MAX_COMPOSER_FINDINGS}-finding composer input cap`;
+    coverage.reasons.push(reason);
+    telemetry.event({
+      stage: 10,
+      level: "warn",
+      message: "composer_pretrim_suppressed_findings",
+      data: { suppressedFindings: pretrim.suppressed.length, maxComposerFindings: MAX_COMPOSER_FINDINGS }
+    });
+  }
+  let fallbackUsed = false;
+  let compositionDegraded = false;
+  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts).catch((error) => {
+    if (isFatalLlmError(error)) {
+      throw error;
+    }
+    fallbackUsed = true;
+    telemetry.event({
+      stage: 10,
+      level: "warn",
+      message: "composer fallback used",
+      data: { error: error instanceof Error ? error.message : String(error) }
+    });
+    coverage.reasons.push("semantic composition skipped; deterministic fallback used");
+    return fallbackComposition(groups);
+  });
+
+  const known = new Map(pretrim.kept.map((finding) => [finding.id, finding]));
+  const anchorDowngradeReasons = new Map<string, string>();
+  const finalFindings: FinalFinding[] = pretrim.suppressed.map((finding) => {
+    const requestedPublication = "suppressed" as const;
+    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding), requestedPublication, [finding.id], opts.diff);
+    recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
+    return final;
+  });
+  const baseSelection = new Map<string, SelectionRecord>(
+    pretrim.suppressed.map((finding) => [finding.id, { findingId: finding.id, decision: "suppressed", reason: "composer-pre-trim" }])
+  );
+  const used = new Set<string>();
+
+  for (const composed of composition.composedFindings) {
+    const unknownIds = composed.findingIds.filter((id) => !known.has(id));
+    if (unknownIds.length > 0) {
+      compositionDegraded = true;
+      telemetry.event({ stage: 10, level: "warn", message: "composer_invented_finding", data: { findingIds: composed.findingIds, unknownIds } });
+      continue;
+    }
+    const ids = expandClusterFindingIds(composed.findingIds, known);
+    if (ids.length === 0) {
+      compositionDegraded = true;
+      telemetry.event({ stage: 10, level: "warn", message: "composer_invented_finding", data: { findingIds: composed.findingIds } });
+      continue;
+    }
+    const overlappingIds = ids.filter((id) => used.has(id));
+    if (overlappingIds.length > 0) {
+      compositionDegraded = true;
+      telemetry.event({ stage: 10, level: "warn", message: "composer_overlapping_finding_group", data: { findingIds: composed.findingIds, expandedFindingIds: ids, overlappingIds } });
+      continue;
+    }
+    const representative = strongest(ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined));
+    const fingerprint = fingerprintFinding(representative, packetsById);
+    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, ids, opts.diff);
+    recordAnchorDowngrade(final, composed.publication, anchorDowngradeReasons);
+    finalFindings.push(final);
+    used.add(representative.id);
+    baseSelection.set(representative.id, { findingId: representative.id, decision: "published", reason: "composer-selected" });
+    for (const id of ids.filter((id) => id !== representative.id)) {
+      used.add(id);
+      baseSelection.set(id, { findingId: id, decision: "merged", reason: "composer-merged", mergedIntoFingerprint: fingerprint });
+    }
+  }
+
+  for (const finding of pretrim.kept) {
+    if (used.has(finding.id)) {
+      continue;
+    }
+    const fingerprint = fingerprintFinding(finding, packetsById);
+    const requestedPublication = finding.anchor ? "inline" : "summary-only";
+    const final = toFinalFinding(finding, fingerprint, templateBody(finding), requestedPublication, [finding.id], opts.diff);
+    recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
+    finalFindings.push(final);
+    baseSelection.set(finding.id, { findingId: finding.id, decision: "published", reason: "composer_omitted_finding" });
+    compositionDegraded = true;
+  }
+
+  const capped = applyCaps(finalFindings, config);
+  for (const [id, reason] of anchorDowngradeReasons) {
+    if (!capped.downgradeReasons.has(id)) {
+      capped.downgradeReasons.set(id, reason);
+    }
+  }
+  const selection = buildSelectionRecords(capped.findings, baseSelection, capped.suppressedReasons, capped.downgradeReasons);
+  const findings = capped.findings.filter((finding) => finding.publication === "inline");
+  const summaryOnlyFindings = capped.findings.filter((finding) => finding.publication === "summary-only");
+  const publishableCount = findings.length + summaryOnlyFindings.length;
+  const summary = publishableCount === 0
+    ? fallbackSummary(0)
+    : fallbackUsed || compositionDegraded || isNoFindingsSummary(composition.summary)
+      ? fallbackSummary(publishableCount)
+      : composition.summary || fallbackSummary(publishableCount);
+  const createPostingPlan = opts.postGithubComments === true && (publishableCount > 0 || config.github.summaryWhenNoFindings);
+  const result: ReviewResult = {
+    summary,
+    coverage,
+    findings,
+    summaryOnlyFindings,
+    needsHumanAttention: notes,
+    noFindings: findings.length === 0 && summaryOnlyFindings.length === 0,
+    ...(createPostingPlan
+      ? {
+          postingPlan: {
+            inline: findings.flatMap((finding) => (finding.anchor ? [{ findingId: finding.id, anchor: finding.anchor }] : [])),
+            reviewBody: renderReviewBody(summary, summaryOnlyFindings, notes, coverage)
+          }
+        }
+      : {})
+  };
+
+  await telemetry.writeArtifact("final-selection.json", {
+    records: selection,
+    groups: groups.map((group) => ({
+      fingerprint: group.fingerprint,
+      findingIds: group.findings.map((finding) => finding.id)
+    }))
+  });
+  await telemetry.writeArtifact("final-findings.json", capped.findings);
+  telemetry.event({ stage: 10, level: "info", message: "stage_completed", data: { finalFindings: capped.findings.length } });
+  return result;
+}
+
+async function runComposer(
+  groups: FindingGroup[],
+  plan: ReviewPlan,
+  coverage: RunCoverageStatus,
+  config: CodeninjaConfig,
+  telemetry: TelemetryRecorder,
+  opts: ComposeOptions
+): Promise<SubmitComposition> {
+  const notes = needsHumanAttention(opts.packetResults ?? []);
+  const prompt = opts.promptBuilder.buildComposerPrompt({
+    groupedFindingsJson: JSON.stringify(groups, null, 2),
+    intent: `Declared intent: ${plan.diffUnderstanding.declaredIntent}\nInferred behavior: ${plan.diffUnderstanding.inferredBehavior}`,
+    coverage,
+    followUpHintNotes: notes.map((note) => `${note.question} (${note.files.join(", ")})`)
+  });
+  const submitted = await opts.runner.runStructured<SubmitComposition>({
+    stage: 10,
+    prompt: prompt.prompt,
+    schema: SubmitCompositionSchema,
+    templateVersion: prompt.templateVersion,
+    timeoutMs: config.review.perPassTimeoutMs
+  });
+  telemetry.event({ stage: 10, level: "info", message: "composer_completed", data: { composed: submitted.composedFindings.length } });
+  return submitted;
+}
+
+function groupFindings(findings: CandidateFinding[], packetsById: Map<string, ReviewPacket>): FindingGroup[] {
+  const groups = new Map<string, CandidateFinding[]>();
+  for (const finding of findings) {
+    const fingerprint = fingerprintFinding(finding, packetsById);
+    groups.set(fingerprint, [...(groups.get(fingerprint) ?? []), finding]);
+  }
+  const exactGroups = [...groups.entries()]
+    .map(([fingerprint, members]) => ({
+      fingerprint,
+      representative: strongest(members),
+      findings: members
+    }))
+    .sort((a, b) => compareFindings(a.representative, b.representative));
+  return mergeProximityGroups(exactGroups, packetsById);
+}
+
+function expandClusterFindingIds(findingIds: string[], known: Map<string, CandidateFinding>): string[] {
+  const expanded = new Set<string>();
+  for (const id of findingIds) {
+    const finding = known.get(id);
+    if (!finding) {
+      continue;
+    }
+    const representativeId = finding.duplicateOf ?? finding.clusterId ?? finding.id;
+    for (const candidate of known.values()) {
+      if (candidate.id === representativeId || candidate.duplicateOf === representativeId || candidate.clusterId === representativeId) {
+        expanded.add(candidate.id);
+      }
+    }
+  }
+  return [...expanded];
+}
+
+function fallbackComposition(groups: FindingGroup[]): SubmitComposition {
+  return {
+    summary: groups.length === 0 ? "No credible findings." : `Found ${groups.length} verified issue${groups.length === 1 ? "" : "s"}.`,
+    composedFindings: groups.map((group) => ({
+      findingIds: group.findings.map((finding) => finding.id),
+      finalBody: templateBody(group.representative),
+      publication: group.representative.anchor ? "inline" : "summary-only"
+    }))
+  };
+}
+
+function toFinalFinding(
+  finding: CandidateFinding,
+  fingerprint: string,
+  finalBody: string,
+  publication: FinalFinding["publication"],
+  mergedCandidateIds: string[],
+  diff: UnifiedDiff | undefined
+): FinalFinding {
+  const { anchor: _unvalidatedAnchor, ...findingWithoutAnchor } = finding;
+  const anchor = validateAnchorForDiff(finding.anchor, diff);
+  return {
+    ...findingWithoutAnchor,
+    ...(anchor !== undefined ? { anchor } : {}),
+    changedLine: anchor !== undefined,
+    fingerprint,
+    finalBody,
+    publication: publication === "suppressed" ? "suppressed" : anchor ? publication : "summary-only",
+    mergedCandidateIds: [...new Set(mergedCandidateIds)]
+  };
+}
+
+function recordAnchorDowngrade(
+  finding: FinalFinding,
+  requestedPublication: FinalFinding["publication"],
+  downgradeReasons: Map<string, string>
+): void {
+  if (requestedPublication === "inline" && finding.publication === "summary-only" && finding.anchor === undefined) {
+    downgradeReasons.set(finding.id, "unanchorable");
+  }
+}
+
+function fallbackSummary(publishableCount: number): string {
+  return publishableCount === 0 ? "No credible findings." : `Found ${publishableCount} verified issue${publishableCount === 1 ? "" : "s"}.`;
+}
+
+function isNoFindingsSummary(summary: string | undefined): boolean {
+  if (!summary) {
+    return false;
+  }
+  return /\bno\b[\s\S]{0,80}\b(findings?|issues?|problems?|concerns?)\b/i.test(summary) ||
+    /\bnothing\b[\s\S]{0,80}\b(findings?|issues?|problems?|concerns?)\b/i.test(summary);
+}
+
+function pretrimComposerInput(findings: CandidateFinding[]): { kept: CandidateFinding[]; suppressed: CandidateFinding[] } {
+  if (findings.length <= MAX_COMPOSER_FINDINGS) {
+    return { kept: findings, suppressed: [] };
+  }
+  const criticalHigh = findings.filter((finding) => finding.severity === "critical" || finding.severity === "high");
+  const others = findings
+    .filter((finding) => finding.severity !== "critical" && finding.severity !== "high")
+    .sort(compareFindings);
+  const remainingSlots = Math.max(0, MAX_COMPOSER_FINDINGS - criticalHigh.length);
+  const kept = [...criticalHigh, ...others.slice(0, remainingSlots)].sort(compareFindings);
+  const keptIds = new Set(kept.map((finding) => finding.id));
+  return {
+    kept,
+    suppressed: findings.filter((finding) => !keptIds.has(finding.id)).sort(compareFindings)
+  };
+}
+
+function mergeProximityGroups(groups: FindingGroup[], packetsById: Map<string, ReviewPacket>): FindingGroup[] {
+  const merged: FindingGroup[] = [];
+  for (const group of groups) {
+    const existing = merged.find((candidate) => nearbyGroup(candidate, group));
+    if (!existing) {
+      merged.push(group);
+      continue;
+    }
+    existing.findings.push(...group.findings);
+    existing.representative = strongest(existing.findings);
+    existing.fingerprint = fingerprintFinding(existing.representative, packetsById);
+  }
+  return merged.sort((a, b) => compareFindings(a.representative, b.representative));
+}
+
+function nearbyGroup(a: FindingGroup, b: FindingGroup): boolean {
+  return a.representative.path === b.representative.path &&
+    a.representative.category === b.representative.category &&
+    a.findings.some((left) => b.findings.some((right) => anchorsWithinFiveLines(left.anchor, right.anchor)));
+}
+
+function anchorsWithinFiveLines(a: CandidateFinding["anchor"], b: CandidateFinding["anchor"]): boolean {
+  if (!a || !b) {
+    return false;
+  }
+  return a.side === b.side && a.path === b.path && Math.abs(a.line - b.line) <= 5;
+}
+
+function applyCaps(findings: FinalFinding[], config: CodeninjaConfig): { findings: FinalFinding[]; suppressedReasons: Map<string, string>; downgradeReasons: Map<string, string> } {
+  const suppressedReasons = new Map<string, string>();
+  const downgradeReasons = new Map<string, string>();
+  const ranked = [...findings].sort(compareFindings);
+  const thresholded = ranked.map((finding) => {
+    if (belowSeverity(finding.severity, config.review.minSeverity)) {
+      suppressedReasons.set(finding.id, "severity-threshold");
+      return { ...finding, publication: "suppressed" as const };
+    }
+    if (belowConfidence(finding.confidence, config.review.minConfidence)) {
+      suppressedReasons.set(finding.id, "confidence-threshold");
+      return { ...finding, publication: "suppressed" as const };
+    }
+    if (belowConfidence(finding.confidence, config.review.minInlineConfidence) && finding.publication === "inline") {
+      downgradeReasons.set(finding.id, "min-inline-confidence");
+      return { ...finding, publication: "summary-only" as const };
+    }
+    return finding;
+  });
+
+  let inlineCount = 0;
+  const softCapped = thresholded.map((finding) => {
+    if (finding.publication !== "inline") {
+      return finding;
+    }
+    inlineCount += 1;
+    if (inlineCount > config.review.softCommentCap && finding.severity !== "critical" && finding.severity !== "high") {
+      downgradeReasons.set(finding.id, "soft-comment-cap");
+      return { ...finding, publication: "summary-only" as const };
+    }
+    return finding;
+  });
+
+  let reportedCount = 0;
+  const capped = softCapped.map((finding) => {
+    if (finding.publication === "suppressed") {
+      return finding;
+    }
+    reportedCount += 1;
+    if (reportedCount > config.review.maxFindings && finding.severity !== "critical" && finding.severity !== "high") {
+      suppressedReasons.set(finding.id, "report-cap");
+      return { ...finding, publication: "suppressed" as const };
+    }
+    return finding;
+  });
+  return { findings: capped, suppressedReasons, downgradeReasons };
+}
+
+function buildSelectionRecords(
+  findings: FinalFinding[],
+  baseSelection: Map<string, SelectionRecord>,
+  suppressedReasons: Map<string, string>,
+  downgradeReasons: Map<string, string>
+): SelectionRecord[] {
+  const records = new Map<string, SelectionRecord>();
+  for (const finding of findings) {
+    const suppressedReason = finding.publication === "suppressed"
+      ? suppressedReasons.get(finding.id) ?? baseSelection.get(finding.id)?.reason ?? "suppressed"
+      : undefined;
+    if (suppressedReason) {
+      for (const id of finding.mergedCandidateIds) {
+        records.set(id, { findingId: id, decision: "suppressed", reason: suppressedReason });
+      }
+      continue;
+    }
+    const downgradeReason = finding.publication === "summary-only" ? downgradeReasons.get(finding.id) : undefined;
+    for (const id of finding.mergedCandidateIds) {
+      const base = baseSelection.get(id);
+      if (downgradeReason !== undefined) {
+        const decision = base?.decision ?? (id === finding.id ? "published" : "merged");
+        records.set(id, {
+          findingId: id,
+          decision,
+          reason: downgradeReason,
+          ...(decision === "merged" ? { mergedIntoFingerprint: base?.mergedIntoFingerprint ?? finding.fingerprint } : {})
+        });
+        continue;
+      }
+      records.set(id, base ?? {
+        findingId: id,
+        decision: id === finding.id ? "published" : "merged",
+        reason: id === finding.id ? "composer-selected" : "composer-merged",
+        ...(id === finding.id ? {} : { mergedIntoFingerprint: finding.fingerprint })
+      });
+    }
+  }
+  return [...records.values()].sort((a, b) => a.findingId.localeCompare(b.findingId));
+}
+
+function needsHumanAttention(packetResults: PacketReviewResult[]): NeedsHumanAttentionNote[] {
+  const byQuestion = new Map<string, NeedsHumanAttentionNote>();
+  for (const hint of packetResults.flatMap((result) => result.followUpHints)) {
+    if (hint.confidence === "low") {
+      continue;
+    }
+    const key = hint.question.trim();
+    if (key.length === 0) {
+      continue;
+    }
+    const existing = byQuestion.get(key);
+    if (!existing) {
+      byQuestion.set(key, {
+        question: key,
+        files: [...new Set(hint.files)].sort(),
+        symbols: [...new Set(hint.symbols)].sort(),
+        reason: hint.reason,
+        confidence: hint.confidence
+      });
+      continue;
+    }
+    const confidence = strongerConfidence(existing.confidence, hint.confidence);
+    byQuestion.set(key, {
+      question: key,
+      files: mergeStrings(existing.files, hint.files),
+      symbols: mergeStrings(existing.symbols, hint.symbols),
+      reason: confidence === hint.confidence && confidenceRank(hint.confidence) < confidenceRank(existing.confidence)
+        ? hint.reason
+        : existing.reason,
+      confidence
+    });
+  }
+  return [...byQuestion.values()];
+}
+
+function mergeStrings(a: string[], b: string[]): string[] {
+  return [...new Set([...a, ...b])].sort();
+}
+
+function strongerConfidence(a: Exclude<Confidence, "low">, b: Exclude<Confidence, "low">): Exclude<Confidence, "low"> {
+  return confidenceRank(a) <= confidenceRank(b) ? a : b;
+}
+
+function renderReviewBody(
+  summary: string,
+  summaryOnly: FinalFinding[],
+  notes: NeedsHumanAttentionNote[],
+  coverage: RunCoverageStatus
+): string {
+  const lines = [summary || "codeninja review completed.", "", `Reviewed ${coverage.reviewedHunks}/${coverage.totalHunks} hunks.`];
+  const coverageDisclosures = coverageDisclosureLines(coverage);
+  if (coverageDisclosures.length > 0) {
+    lines.push("", "Coverage disclosure:", ...coverageDisclosures);
+  }
+  if (summaryOnly.length > 0) {
+    lines.push("", "Summary-only findings:");
+    for (const finding of summaryOnly) {
+      lines.push(`- ${finding.title} (${finding.path})`);
+    }
+  }
+  if (notes.length > 0) {
+    lines.push("", "Needs human attention:");
+    for (const note of notes) {
+      lines.push(`- ${note.question}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function coverageDisclosureLines(coverage: RunCoverageStatus): string[] {
+  const lines: string[] = [];
+  if (coverage.partial) {
+    lines.push("- Review is partial.");
+  }
+  if (coverage.budgetStopped) {
+    lines.push("- Budget exhausted before all review work completed.");
+  }
+  if (coverage.verificationIncompleteCount > 0) {
+    lines.push(`- Verification incomplete for ${coverage.verificationIncompleteCount} candidate${coverage.verificationIncompleteCount === 1 ? "" : "s"}.`);
+  }
+  if (coverage.verificationSkipped === true) {
+    lines.push("- Verification was skipped by configuration.");
+  }
+  for (const reason of coverage.reasons) {
+    lines.push(`- ${reason}`);
+  }
+  return [...new Set(lines)];
+}
+
+function templateBody(finding: CandidateFinding): string {
+  return [
+    finding.failureMode,
+    "",
+    `Evidence: ${finding.evidence.changedCode}`,
+    `Why it matters: ${finding.whyThisMatters}`,
+    finding.suggestedFix ? `Suggested fix: ${finding.suggestedFix}` : "",
+    finding.suggestedTest ? `Suggested test: ${finding.suggestedTest}` : ""
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function fingerprintFinding(finding: CandidateFinding, packetsById: Map<string, ReviewPacket> = new Map()): string {
+  return sha256Hex([
+    normalize(finding.path),
+    normalize(fingerprintLocationIdentity(finding, packetsById)),
+    normalize(finding.category),
+    normalize(finding.producedBy.lensId)
+  ].join("\0"));
+}
+
+function fingerprintLocationIdentity(finding: CandidateFinding, packetsById: Map<string, ReviewPacket>): string {
+  const packet = packetsById.get(finding.producedBy.packetId);
+  const hunkId = finding.anchor?.hunkId ?? inferredHunkId(finding, packet);
+  const symbol = hunkId !== undefined ? symbolForHunk(packet, hunkId) : uniquePacketSymbol(packet);
+  if (symbol !== undefined) {
+    return symbol;
+  }
+  if (hunkId !== undefined) {
+    return hunkId;
+  }
+  return packet?.id ?? finding.producedBy.packetId;
+}
+
+function inferredHunkId(finding: CandidateFinding, packet: ReviewPacket | undefined): string | undefined {
+  if (!packet) {
+    return undefined;
+  }
+  const matching = matchingEvidenceHunks(finding, packet);
+  if (matching.length === 1) {
+    return matching[0]?.hunkId;
+  }
+  if (matching.length > 1) {
+    return undefined;
+  }
+  return packet.hunks.length === 1 ? packet.hunks[0]?.hunkId : undefined;
+}
+
+function matchingEvidenceHunks(finding: CandidateFinding, packet: ReviewPacket): ReviewPacket["hunks"] {
+  const needle = normalizeSnippet(finding.evidence.changedCode);
+  if (needle.length === 0) {
+    return [];
+  }
+  return packet.hunks.filter((hunk) => {
+    const haystack = normalizeSnippet(hunk.lines.map((line) => line.content).join("\n"));
+    return haystack.length > 0 && (haystack.includes(needle) || needle.includes(haystack));
+  });
+}
+
+function symbolForHunk(packet: ReviewPacket | undefined, hunkId: string): string | undefined {
+  const symbols = [...new Set(
+    (packet?.symbolFacts ?? [])
+      .filter((fact) => fact.hunkId === hunkId)
+      .map((fact) => fact.enclosingSymbol)
+      .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
+  )];
+  return symbols.length === 1 ? symbols[0] : undefined;
+}
+
+function uniquePacketSymbol(packet: ReviewPacket | undefined): string | undefined {
+  const symbols = [...new Set(
+    (packet?.symbolFacts ?? [])
+      .map((fact) => fact.enclosingSymbol)
+      .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
+  )];
+  return symbols.length === 1 ? symbols[0] : undefined;
+}
+
+function normalizeSnippet(input: string): string {
+  return input
+    .split(/\r?\n/u)
+    .map((line) => line.replace(/^\s*[+-]\s?/u, "").trim())
+    .join("\n")
+    .toLowerCase()
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function strongest(findings: CandidateFinding[]): CandidateFinding {
+  const sorted = [...findings].sort(compareFindings);
+  const first = sorted[0];
+  if (!first) {
+    throw new Error("cannot choose representative from empty finding group");
+  }
+  return first;
+}
+
+function compareFindings(
+  a: Pick<CandidateFinding, "severity" | "confidence" | "id" | "anchor">,
+  b: Pick<CandidateFinding, "severity" | "confidence" | "id" | "anchor">
+): number {
+  return severityRank(a.severity) - severityRank(b.severity) ||
+    confidenceRank(a.confidence) - confidenceRank(b.confidence) ||
+    anchorLineRank(a) - anchorLineRank(b) ||
+    a.id.localeCompare(b.id);
+}
+
+function anchorLineRank(finding: Pick<CandidateFinding, "anchor">): number {
+  return finding.anchor?.line ?? Number.POSITIVE_INFINITY;
+}
+
+function severityRank(severity: Severity): number {
+  return { critical: 0, high: 1, medium: 2, low: 3 }[severity];
+}
+
+function confidenceRank(confidence: Confidence): number {
+  return { high: 0, medium: 1, low: 2 }[confidence];
+}
+
+function belowConfidence(actual: Confidence, minimum: Confidence): boolean {
+  return confidenceRank(actual) > confidenceRank(minimum);
+}
+
+function belowSeverity(actual: Severity, minimum: Severity | undefined): boolean {
+  return minimum !== undefined && severityRank(actual) > severityRank(minimum);
+}
+
+function normalize(input: string): string {
+  return input.toLowerCase().replace(/\s+/gu, " ").trim();
+}

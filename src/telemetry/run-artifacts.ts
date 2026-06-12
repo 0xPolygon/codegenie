@@ -47,6 +47,7 @@ const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
 
 const KNOWN_ARTIFACTS = new Set([
   "planner-dossier.json",
+  "planner-dossier-chunks.json",
   "resolved-input.json",
   "diff.json",
   "file-filter-decisions.json",
@@ -471,6 +472,10 @@ class RunTelemetryImpl {
       return;
     }
     assertAllowedArtifactPath(relPath);
+    if (relPath === "final-review.md") {
+      this.writeText(relPath, typeof data === "string" ? data : serialize(data, 2));
+      return;
+    }
     this.writeJson(relPath, data);
   }
 
@@ -521,6 +526,17 @@ class RunTelemetryImpl {
     mkdirSync(path.dirname(absolutePath), { recursive: true });
     const tmpPath = `${absolutePath}.${process.pid}.${Date.now()}.tmp`;
     writeFileSync(tmpPath, `${serialize(data, 2)}\n`);
+    renameSync(tmpPath, absolutePath);
+  }
+
+  private writeText(relPath: string, data: string): void {
+    if (!this.runDirectory) {
+      return;
+    }
+    const absolutePath = path.join(this.runDirectory, relPath);
+    mkdirSync(path.dirname(absolutePath), { recursive: true });
+    const tmpPath = `${absolutePath}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tmpPath, data.endsWith("\n") ? data : `${data}\n`);
     renameSync(tmpPath, absolutePath);
   }
 

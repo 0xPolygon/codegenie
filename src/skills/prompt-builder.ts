@@ -1,5 +1,6 @@
 import type {
   CandidateFinding,
+  PlannerDossier,
   ReviewPacket,
   ReviewStage,
   RunCoverageStatus
@@ -61,8 +62,6 @@ export type PromptBuilder = {
   }): BuiltPrompt;
 };
 
-export type PlannerDossier = Record<string, unknown>;
-
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 9 | 10, string> = {
   5: "p5.1",
   7: "p7.1",
@@ -81,10 +80,10 @@ const STAGE_SECTION_MAP: Partial<Record<ReviewStage, SkillSectionName[]>> = {
 
 export function createPromptBuilder(_registry: LensRegistry, options: ProjectSkillsOptions = {}): PromptBuilder {
   return {
-    renderDossier: (dossier) => fenceUntrusted(stableJson(dossier), "planner-dossier"),
+    renderDossier: (dossier) => fenceUntrusted(stableJson(plannerDossierPromptProjection(dossier)), "planner-dossier"),
     buildPlannerPrompt: ({ dossier, lenses, skills }) => {
       const projection = projectSkills(skills, 5, options);
-      const dossierBlock = fenceUntrusted(stableJson(dossier), "planner-dossier");
+      const dossierBlock = fenceUntrusted(stableJson(plannerDossierPromptProjection(dossier)), "planner-dossier");
       return buildPrompt(5, [
         reviewerFrame("planning"),
         injectionInstruction(),
@@ -144,6 +143,11 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
       ], undefined, blocks.length);
     }
   };
+}
+
+function plannerDossierPromptProjection(dossier: PlannerDossier): Omit<PlannerDossier, "runId"> {
+  const { runId: _runId, ...projection } = dossier;
+  return projection;
 }
 
 export function projectSkills(skills: Skill[], stage: ReviewStage, options: ProjectSkillsOptions = {}): SkillProjection {
@@ -277,12 +281,16 @@ function renderLensList(lenses: LensDescriptor[]): string {
 function renderPacket(packet: ReviewPacket): string {
   return stableJson({
     id: packet.id,
+    kind: packet.kind,
     path: packet.path,
+    oldPath: packet.oldPath,
     language: packet.language,
+    reviewPriority: packet.reviewPriority,
     coverage: packet.coverage,
     lenses: packet.lenses,
     fileStatus: packet.fileStatus,
     isDeletedContent: packet.isDeletedContent,
+    fileContext: packet.fileContext,
     labels: packet.labels,
     riskNotes: packet.riskNotes,
     contextText: packet.contextText,

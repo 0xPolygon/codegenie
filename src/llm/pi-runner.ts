@@ -329,6 +329,21 @@ async function completeWithCache(input: {
         context: { reason: "budget_exhausted", stage: request.stage }
       });
     }
+    const estimatedTokens = estimateProviderCallTokens(promptText);
+    if (opts.hooks.reserve?.(request.stage, estimatedTokens) === "exhausted") {
+      throw new CodeninjaError("llm_call_failed", "LLM provider call budget exhausted", {
+        recoverable: true,
+        context: { reason: "budget_exhausted", stage: request.stage }
+      });
+    }
+    let reservationActive = opts.hooks.reserve !== undefined;
+    const releaseReservation = (): void => {
+      if (!reservationActive) {
+        return;
+      }
+      reservationActive = false;
+      opts.hooks.releaseReservation?.(request.stage, estimatedTokens);
+    };
 
     const callId = nextModelCallId();
     const startedAt = Date.now();
@@ -373,11 +388,14 @@ async function completeWithCache(input: {
         errorCode: callErrorCode
       }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodeninjaErrorCode });
       reportUsage(opts, request.stage, message);
+      releaseReservation();
       if (opts.cache && schemaValid !== false) {
         await opts.cache.put(cacheKey, cacheEntry(request.stage, message));
       }
       return { source: "provider", message, callId };
     } catch (cause) {
+      releaseReservation();
+      reportAttemptUsage(opts, request.stage);
       lastError = cause;
       const status = taskTimedOut() ? "timeout" : errorStatus(cause);
       recordErroredModelCall(opts, request, model, {
@@ -439,6 +457,10 @@ function canonicalModelRequest(input: {
     messages: input.messages,
     tools: input.tools.map((tool) => toolSpec(tool))
   };
+}
+
+function estimateProviderCallTokens(promptText: string): number {
+  return Math.max(1, Math.ceil(promptText.length / 4));
 }
 
 function isForcedToolChoice(choice: unknown): choice is Extract<ToolChoiceMode, { type: "tool" }> {
@@ -811,6 +833,10 @@ function reportUsage(opts: CreateRunnerOptions, stage: ReviewStage, message: PiA
   opts.hooks.onUsage(usage);
 }
 
+function reportAttemptUsage(opts: CreateRunnerOptions, stage: ReviewStage): void {
+  opts.hooks.onUsage({ stage, providerCalls: 1 });
+}
+
 function cacheEntry(stage: ReviewStage, message: PiAssistantMessage): StoredProviderResponse {
   return {
     cacheSchemaVersion: MODEL_CALL_CACHE_SCHEMA_VERSION,
@@ -871,9 +897,11 @@ function toLlmError(
       cause
     });
   }
+  const reason = timedOut ? "timeout" : requestErrorReason(cause, status);
+  const fatalProviderFailure = status === "transient_error" && reason === "transient_error";
   return new CodeninjaError("llm_call_failed", timedOut ? "LLM provider call timed out" : "LLM provider call failed", {
-    recoverable: true,
-    context: { reason: timedOut ? "timeout" : requestErrorReason(cause, status) },
+    recoverable: !fatalProviderFailure,
+    context: { reason },
     cause
   });
 }

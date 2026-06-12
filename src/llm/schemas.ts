@@ -70,8 +70,8 @@ export const SubmitPlanSchema = Type.Object(
   {
     diffUnderstanding: Type.Object(
       {
-        summary: Type.String({ minLength: 1, maxLength: 4000 }),
-        intent: Type.Optional(Type.String({ maxLength: 2000 }))
+        declaredIntent: Type.String({ minLength: 1, maxLength: 2000 }),
+        inferredBehavior: Type.String({ minLength: 1, maxLength: 4000 })
       },
       { additionalProperties: false }
     ),

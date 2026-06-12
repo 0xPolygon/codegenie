@@ -40,7 +40,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(SCHEMA_VERSIONS.submit_plan).toBe(1);
 
     const valid = {
-      diffUnderstanding: { summary: "Small change" },
+      diffUnderstanding: { declaredIntent: "Small change", inferredBehavior: "The diff makes a small change." },
       riskAreas: [],
       coverage: []
     };
@@ -59,6 +59,14 @@ describe("Phase 4 schemas and repository tool definitions", () => {
         id: "submit-2",
         name: "submit_plan",
         arguments: { ...valid, inventedField: true }
+      })
+    ).toThrow();
+    expect(() =>
+      validateToolCall([submitTool], {
+        type: "toolCall",
+        id: "submit-old-understanding",
+        name: "submit_plan",
+        arguments: { ...valid, diffUnderstanding: { summary: "old", intent: "old" } }
       })
     ).toThrow();
   });
@@ -874,6 +882,38 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         ])
       );
       expect(telemetry.modelCalls.every((call) => call.workerId === "worker-retry")).toBe(true);
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it("treats persistent retryable provider errors as fatal provider outages", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async () => {
+        const error = new Error("provider unavailable") as Error & { status: number };
+        error.status = 503;
+        throw error;
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    try {
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: fakeTelemetry().recorder,
+        logger: fakeLogger(),
+        runSignal: new AbortController().signal,
+        adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+
+      await expect(runner.runStructured(submitReviewRequest("packet-provider-down"))).rejects.toMatchObject({
+        code: "llm_call_failed",
+        recoverable: false,
+        context: { reason: "transient_error" }
+      });
+      expect(adapter.complete).toHaveBeenCalledTimes(4);
     } finally {
       random.mockRestore();
     }

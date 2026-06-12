@@ -376,6 +376,7 @@ export type PacketHunk = {
   changedOldLineNumbers: number[];
   truncated?: boolean;
   omittedLineCount?: number;
+  plannerFallbackReason?: string;
 };
 
 export type CoverageLevel = "deep" | "normal" | "light" | "skip";
@@ -419,9 +420,11 @@ export type ReviewPacket = {
   prSummary: string;
   intentText?: string;
   path: string;
+  oldPath?: string;
   fileStatus: DiffFile["status"];
   isDeletedContent: boolean;
   language: string;
+  reviewPriority: ReviewPriority;
   coverage: Exclude<CoverageLevel, "skip">;
   lenses: string[];
   hunks: PacketHunk[];
@@ -523,8 +526,8 @@ export type FindingCategory =
   | "maintainability";
 
 export type DiffUnderstanding = {
-  summary: string;
-  intent?: string;
+  declaredIntent: string;
+  inferredBehavior: string;
 };
 
 export type HunkCoverageDecision = {
@@ -634,8 +637,121 @@ export type RunCoverageStatus = {
   degradedPlanning: boolean;
   budgetStopped: boolean;
   verificationIncompleteCount: number;
+  verificationSkipped?: boolean;
   partial: boolean;
   reasons: string[];
+};
+
+export type NeedsHumanAttentionNote = {
+  question: string;
+  files: string[];
+  symbols: string[];
+  reason: string;
+  confidence: Exclude<Confidence, "low">;
+};
+
+export type PostingPlan = {
+  inline: Array<{ findingId: string; anchor: DiffAnchor }>;
+  reviewBody: string;
+};
+
+export type ReviewResult = {
+  summary: string;
+  coverage: RunCoverageStatus;
+  findings: FinalFinding[];
+  summaryOnlyFindings: FinalFinding[];
+  needsHumanAttention: NeedsHumanAttentionNote[];
+  noFindings: boolean;
+  postingPlan?: PostingPlan;
+};
+
+export type DossierHunkEntry = {
+  hunkId: string;
+  header: string;
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  changedNewLineNumbers: number[];
+  changedOldLineNumbers: number[];
+  symbolFacts?: HunkSymbolFacts;
+  staticSignals: StaticSignal[];
+  omittedSignalCount: number;
+  excerpt?: string;
+};
+
+export type DossierFileEntry = {
+  path: string;
+  oldPath?: string;
+  status: DiffFile["status"];
+  language: string;
+  processingMode: ProcessingMode;
+  testStatus: FileFacts["testStatus"];
+  packageRoot?: string;
+  labels: string[];
+  reviewPriority: ReviewPriority;
+  changedLines: number;
+  hunkCount: number;
+  degraded?: { reason: string };
+  hunks: DossierHunkEntry[];
+};
+
+export type DossierDirectoryRollup = {
+  root: string;
+  fileCount: number;
+  hunkCount: number;
+  changedLines: number;
+  languages: string[];
+  labels: string[];
+  maxReviewPriority: ReviewPriority;
+  testFileCount: number;
+  representativePaths: string[];
+  hunkIds: string[];
+};
+
+export type DossierCompaction = {
+  level: "full" | "compacted" | "chunked";
+  omitted: Array<{ what: string; count: number; reason: string }>;
+  chunkCount?: number;
+  chunkIndex?: number;
+  chunkRoot?: string;
+};
+
+export type PlannerDossier = {
+  runId: string;
+  mode: ReviewMode;
+  depth: ReviewDepth;
+  target: {
+    baseRef?: string;
+    headRef?: string;
+    headSha?: string;
+    mergeBase?: string;
+  };
+  pr?: {
+    title: string;
+    body: string;
+    url: string;
+    baseRefName: string;
+    headRefName: string;
+  };
+  commits: Array<{ sha: string; title: string; body: string }>;
+  policyFilesChanged: string[];
+  files: DossierFileEntry[];
+  directories: DossierDirectoryRollup[];
+  filterSummary: {
+    keptFiles: number;
+    skippedFiles: number;
+    skipped: Array<{ path: string; reason: string }>;
+  };
+  lenses: Array<{ id: string; summary: string }>;
+  totals: {
+    files: number;
+    keptFiles: number;
+    hunks: number;
+    addedLines: number;
+    deletedLines: number;
+  };
+  compaction: DossierCompaction;
 };
 
 export type SearchResult = {

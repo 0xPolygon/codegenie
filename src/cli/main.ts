@@ -11,10 +11,7 @@ async function main(): Promise<void> {
       return;
     }
     const parsed = parseReviewCommand(argv, { allowOutput: true });
-    const result = await executeReviewCommand(parsed);
-    process.stdout.write(
-      `codeninja review inventory completed (${result.filesChanged} files, ${result.hunks} hunks; ${result.keptFiles} kept). Later review stages are not implemented yet. Run artifacts: ${result.runDir || "disabled"}\n`
-    );
+    await executeReviewCommand(parsed, { writeOutput: (text) => process.stdout.write(text) });
   } catch (error) {
     if (isCliDisplayExit(error)) {
       process.exitCode = error.exitCode;

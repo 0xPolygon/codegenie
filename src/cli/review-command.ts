@@ -6,13 +6,11 @@ import type {
   ParsedReviewCommand,
   ReasoningLevel,
   ReviewCommandTarget,
-  ReviewDepth
+  ReviewDepth,
+  ReviewResult
 } from "../types.js";
-import { CodeninjaError, errorExitCode, isCodeninjaError } from "../util/errors.js";
-import { createRunTelemetry } from "../telemetry/run-artifacts.js";
-import { parseDiff } from "../git/diff-parser.js";
-import { classifyChangedFiles, filterDiffFiles } from "../git/file-classifier.js";
-import { resolveReviewCommandTarget } from "../git/review-input-resolver.js";
+import { CodeninjaError } from "../util/errors.js";
+import { runReview } from "../pipeline/review-runner.js";
 
 type ParseReviewCommandOptions = {
   repoRoot?: string;
@@ -27,6 +25,11 @@ type ExecuteReviewCommandResult = {
   filesChanged: number;
   keptFiles: number;
   hunks: number;
+  review: ReviewResult;
+};
+
+type ExecuteReviewCommandOptions = {
+  writeOutput?: (text: string) => void;
 };
 
 type CommanderReviewOptions = {
@@ -134,108 +137,35 @@ export function parseReviewCommand(
 }
 
 export async function executeReviewCommand(
-  parsed: ParsedReviewCommand
+  parsed: ParsedReviewCommand,
+  opts: ExecuteReviewCommandOptions = {}
 ): Promise<ExecuteReviewCommandResult> {
-  const run = createRunTelemetry({
-    telemetryConfig: parsed.config.telemetry,
-    runMetadata: {
-      argv: process.argv,
-      repoRoot: parsed.repoRoot,
-      review: {
-        mode: parsed.target.mode,
-        target: parsed.target,
-        ...(parsed.target.mode === "github_pr" ? { prNumber: parsed.target.prNumber } : {}),
-        depth: parsed.config.review.depth,
-        lenses: parsed.config.lenses.enabled,
-        format: parsed.options.format,
-        postGithubComments: parsed.options.postGithubComments
-      }
+  let attached = { runId: "", runDir: "" };
+  let inventory = { filesChanged: 0, keptFiles: 0 };
+  const overrides = {
+    repoRoot: parsed.repoRoot,
+    format: parsed.options.format,
+    postGithubComments: parsed.options.postGithubComments,
+    onRunStart: (run: { runId: string; runDir: string }) => {
+      attached = run;
+    },
+    onInventory: (nextInventory: { filesChanged: number; keptFiles: number }) => {
+      inventory = nextInventory;
     }
+  };
+  const review = await runReview(parsed.target, parsed.config, {
+    ...overrides,
+    configWarnings: parsed.warnings,
+    ...(parsed.options.cliLenses !== undefined ? { cliLenses: parsed.options.cliLenses } : {}),
+    ...(opts.writeOutput !== undefined ? { writeOutput: opts.writeOutput } : {})
   });
-
-  for (const warning of parsed.warnings) {
-    run.logger.warn({
-      runId: run.recorder.runId,
-      stage: 0,
-      event: "config_warning",
-      message: warning.message,
-      data: { key: warning.key, source: warning.source }
-    });
-  }
-
-  run.recorder.event({
-    stage: 0,
-    level: "info",
-    message: "review command parsed",
-    data: {
-      target: parsed.target,
-      format: parsed.options.format,
-      postGithubComments: parsed.options.postGithubComments
-    }
-  });
-
-  const attached = await run.attachRunDirectory(parsed.repoRoot);
-  try {
-    const resolved = await resolveReviewCommandTarget(parsed.target, parsed.config, run.recorder, {
-      repoRoot: parsed.repoRoot
-    });
-    const diff = parseDiff(resolved.rawDiff);
-    const { kept, decisions } = await filterDiffFiles(resolved, diff, parsed.config, run.recorder);
-    const facts = await classifyChangedFiles(resolved, kept, decisions, parsed.config, run.recorder);
-    const hunkCount = diff.files.reduce((count, file) => count + file.hunks.length, 0);
-
-    await run.recorder.writeArtifact("resolved-input.json", {
-      mode: resolved.mode,
-      repoRoot: resolved.repoRoot,
-      baseRef: resolved.baseRef,
-      headRef: resolved.headRef,
-      startCommit: resolved.startCommit,
-      endCommit: resolved.endCommit,
-      mergeBase: resolved.mergeBase,
-      headSha: resolved.headSha,
-      pr: resolved.pr,
-      commits: resolved.commits,
-      rawDiffChars: resolved.rawDiff.length
-    });
-    await run.recorder.writeArtifact("diff.json", diff);
-    await run.recorder.writeArtifact("file-filter-decisions.json", decisions);
-    await run.recorder.writeArtifact("file-facts.json", facts);
-    await run.recorder.writeArtifact("coverage.json", {
-      status: "not_implemented",
-      phase: 2,
-      reason: "review pipeline stages 4 and later are implemented in later phases",
-      target: parsed.target,
-      filesChanged: diff.files.length,
-      hunks: hunkCount,
-      keptFiles: kept.length,
-      skippedFiles: decisions.filter((decision) => decision.action === "skip").length,
-      classifiedFiles: facts.length
-    });
-    run.recorder.event({
-      stage: 3,
-      level: "info",
-      message: "phase 2 review inventory completed",
-      data: { runDir: attached.runDir, filesChanged: diff.files.length, keptFiles: kept.length, hunks: hunkCount }
-    });
-    await run.finalize({ status: "completed", exitCode: 0 });
-    return { ...attached, filesChanged: diff.files.length, keptFiles: kept.length, hunks: hunkCount };
-  } catch (error) {
-    run.recorder.event({
-      stage: 0,
-      level: "error",
-      message: "review inventory failed",
-      data: {
-        errorCode: isCodeninjaError(error) ? error.code : undefined,
-        error: error instanceof Error ? error.message : String(error)
-      }
-    });
-    await run.finalize({
-      status: "failed",
-      ...(isCodeninjaError(error) ? { errorCode: error.code } : {}),
-      exitCode: errorExitCode(error)
-    });
-    throw error;
-  }
+  return {
+    ...attached,
+    filesChanged: inventory.filesChanged,
+    keptFiles: inventory.keptFiles,
+    hunks: review.coverage.totalHunks,
+    review
+  };
 }
 
 function resolveTarget(options: CommanderReviewOptions, commits: string[]): ReviewCommandTarget {
