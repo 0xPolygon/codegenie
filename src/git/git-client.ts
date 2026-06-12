@@ -15,7 +15,11 @@ export interface GitClient {
   catFile(ref: string, path: string): Promise<string>;
   lsTree(ref: string, glob?: string): Promise<string[]>;
   lsFiles(paths: string[]): Promise<string[]>;
-  grep(ref: string, pattern: string, opts?: { glob?: string; maxResults?: number }): Promise<SearchResult[]>;
+  grep(
+    ref: string,
+    pattern: string,
+    opts?: { glob?: string; maxResults?: number; caseSensitive?: boolean; fixedString?: boolean; word?: boolean }
+  ): Promise<SearchResult[]>;
   mergeBase(a: string, b: string): Promise<string>;
   log(range: string): Promise<CommitInfo[]>;
   diff(base: string, head: string): Promise<string>;
@@ -125,7 +129,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     async grep(
       ref: string,
       pattern: string,
-      grepOpts: { glob?: string; maxResults?: number } = {}
+      grepOpts: { glob?: string; maxResults?: number; caseSensitive?: boolean; fixedString?: boolean; word?: boolean } = {}
     ): Promise<SearchResult[]> {
       assertSafeRef(ref);
       if (grepOpts.glob !== undefined) {
@@ -137,7 +141,9 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
         "-n",
         "--column",
         "--no-color",
-        "-E",
+        grepOpts.fixedString === true ? "-F" : "-E",
+        ...(grepOpts.word === true ? ["-w"] : []),
+        ...(grepOpts.caseSensitive === false ? ["-i"] : []),
         "-e",
         pattern,
         ref,
@@ -146,16 +152,18 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
       if (grepOpts.glob !== undefined) {
         args.push(`:(glob)${grepOpts.glob}`);
       }
-      const stdout = await runGit(repoRoot, args, {
+      const maxResults = grepOpts.maxResults ?? 50;
+      const stdout = await runGitCapped(repoRoot, args, {
+        maxBytes: Math.max(64 * 1024, maxResults * 1024),
+        maxLines: maxResults,
         allowedExitCodes: [0, 1],
         errorCode: "git_ref_missing"
       });
-      const maxResults = grepOpts.maxResults ?? 50;
       return stdout
         .split("\n")
         .filter(Boolean)
         .slice(0, maxResults)
-        .map(parseGrepLine)
+        .map((line) => parseGrepLine(line, ref))
         .filter((result): result is SearchResult => result !== undefined);
     },
 
@@ -435,13 +443,15 @@ function parseLog(stdout: string): CommitInfo[] {
     });
 }
 
-function parseGrepLine(line: string): SearchResult | undefined {
+function parseGrepLine(line: string, ref: string): SearchResult | undefined {
   const match = /^(?<path>.*?):(?<line>\d+):(?<column>\d+):(?<text>.*)$/u.exec(line);
   if (!match?.groups) {
     return undefined;
   }
+  const rawPath = match.groups.path ?? "";
+  const pathPrefix = `${ref}:`;
   return {
-    path: match.groups.path ?? "",
+    path: rawPath.startsWith(pathPrefix) ? rawPath.slice(pathPrefix.length) : rawPath,
     line: Number(match.groups.line ?? "0"),
     column: Number(match.groups.column ?? "0"),
     matchText: match.groups.text ?? ""

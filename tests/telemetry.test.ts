@@ -166,7 +166,7 @@ describe("run telemetry", () => {
       initiator: "harness",
       tool: "read_range",
       args: { path: "src/index.ts", query: "super-secret-token" },
-      backend: "worktree",
+      backend: "text",
       precision: "exact",
       degraded: false,
       resultChars: 42,

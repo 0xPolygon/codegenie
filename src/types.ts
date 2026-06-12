@@ -236,6 +236,256 @@ export type FileFilterDecision = {
   provenance: FactProvenance[];
 };
 
+export type SymbolKind =
+  | "function"
+  | "method"
+  | "type"
+  | "interface"
+  | "value"
+  | "container"
+  | "other";
+
+export type SymbolRef = {
+  path: string;
+  name: string;
+  kind: SymbolKind;
+  nativeKind?: string;
+  lineRange: [number, number];
+};
+
+export type SymbolInfo = SymbolRef & {
+  exported?: boolean;
+  ownerType?: string;
+  packageName?: string;
+  signature?: string;
+};
+
+export type ChangedSymbol = SymbolInfo & {
+  changedLines: number[];
+};
+
+export type HunkSymbolFacts = {
+  path: string;
+  hunkId: string;
+  enclosingSymbol?: string;
+  symbolKind?: SymbolKind;
+  symbolNativeKind?: string;
+  symbolRange?: [number, number];
+  changedLines: number[];
+  changedLinesSide: "old" | "new";
+  signature?: string;
+  source: "tree-sitter" | "fallback";
+  confidence: "syntactic" | "heuristic";
+};
+
+export type StaticSignal = {
+  ruleId: string;
+  path: string;
+  line?: number;
+  side?: "RIGHT" | "LEFT";
+  category: string;
+  lensHint?: string;
+  confidence: "high" | "medium" | "low";
+  explanation: string;
+  snippet?: string;
+};
+
+export type SourceSelector = { kind: "head" } | { kind: "base" };
+
+export type ToolBackend = "tree-sitter" | "text" | "language-analyzer";
+export type ToolPrecision = "exact" | "semantic" | "syntactic" | "heuristic" | "text";
+
+export type ToolResultMeta = {
+  backend: ToolBackend;
+  precision: ToolPrecision;
+  degraded: boolean;
+  degradationReason?: string;
+  truncated?: boolean;
+  omittedCount?: number;
+};
+
+export type FileOutline = {
+  path: string;
+  language: string;
+  packageName?: string;
+  imports: string[];
+  topLevelSymbols: SymbolInfo[];
+  testSymbols: SymbolInfo[];
+  notes: string[];
+};
+
+export type SearchContextMode = "none" | "lines" | "symbols";
+
+export type SearchOptions = {
+  pathGlob?: string;
+  contextMode?: SearchContextMode;
+  maxResults?: number;
+  caseSensitive?: boolean;
+  source?: SourceSelector;
+};
+
+export type ParseInput = {
+  path: string;
+  language: string;
+  content: string;
+  source: SourceSelector;
+  contentSha?: string;
+};
+
+export type ParsedFile = {
+  path: string;
+  language: string;
+  adapterId: string;
+  source: SourceSelector;
+  contentSha?: string;
+  content: string;
+  tree?: unknown;
+  hasErrors: boolean;
+};
+
+export interface LanguageAdapter {
+  id: string;
+  extensions: string[];
+  init(): Promise<void>;
+  parse(input: ParseInput): Promise<ParsedFile>;
+  listSymbols(file: ParsedFile): SymbolInfo[];
+  getEnclosingSymbol(file: ParsedFile, line: number): SymbolInfo | undefined;
+  getImports(file: ParsedFile): string[];
+  getChangedSymbols(file: ParsedFile, hunk: DiffHunk): ChangedSymbol[];
+  getStaticSignals?(file: ParsedFile, hunk: DiffHunk): StaticSignal[];
+  findLikelyTests?(symbol: SymbolInfo, index: RepositoryIndex): SymbolInfo[];
+}
+
+export type PacketLine = {
+  kind: "context" | "add" | "delete";
+  oldLine?: number;
+  newLine?: number;
+  content: string;
+};
+
+export type PacketHunk = {
+  hunkId: string;
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  header?: string;
+  contentWithLineNumbers: string;
+  lines: PacketLine[];
+  changedNewLineNumbers: number[];
+  changedOldLineNumbers: number[];
+  truncated?: boolean;
+  omittedLineCount?: number;
+};
+
+export type CoverageLevel = "deep" | "normal" | "light" | "skip";
+export type PacketKind = "hunk" | "coalesced-hunks" | "file-diff" | "whole-file";
+
+export type ToolBudget = {
+  maxToolCalls: number;
+  maxInvestigationRounds: number;
+  maxResultChars: number;
+};
+
+export type SurroundingContextHint = {
+  kind:
+    | "enclosing_symbol"
+    | "sibling_pattern"
+    | "call_site"
+    | "test"
+    | "config"
+    | "lifecycle"
+    | "resource_management"
+    | "authorization"
+    | "other";
+  path?: string;
+  symbol?: string;
+  lineRange?: [number, number];
+  reason: string;
+  expectedUse: "packet_context" | "tool_lookup";
+};
+
+export type PacketContext = {
+  path: string;
+  packageName?: string;
+  enclosingFunction?: SymbolInfo;
+  enclosingType?: SymbolInfo;
+  enclosingMethod?: SymbolInfo;
+};
+
+export type ReviewPacket = {
+  id: string;
+  kind: PacketKind;
+  prSummary: string;
+  intentText?: string;
+  path: string;
+  fileStatus: DiffFile["status"];
+  isDeletedContent: boolean;
+  language: string;
+  coverage: Exclude<CoverageLevel, "skip">;
+  lenses: string[];
+  hunks: PacketHunk[];
+  symbolFacts: HunkSymbolFacts[];
+  context: PacketContext;
+  contextText: string;
+  relevantTests: SymbolInfo[];
+  surroundingContextHints: SurroundingContextHint[];
+  labels: string[];
+  riskNotes: string[];
+  toolBudget: ToolBudget;
+  degraded?: { reason: string };
+  fileContext?: {
+    mode: "file-diff" | "whole-file";
+    reason: string;
+  };
+};
+
+export interface RepositoryTools {
+  readRange(
+    path: string,
+    startLine: number,
+    endLine: number,
+    source?: SourceSelector
+  ): Promise<{ text: string; meta: ToolResultMeta }>;
+  readFileOutline(path: string, source?: SourceSelector): Promise<{ outline: FileOutline; meta: ToolResultMeta }>;
+  readSymbol(
+    path: string,
+    selector: { symbolName?: string; line?: number },
+    source?: SourceSelector
+  ): Promise<{ text?: string; symbol?: SymbolInfo; meta: ToolResultMeta }>;
+  readDiffBlocks(input: { packetId?: string; path?: string }): Promise<{ blocks: string[]; meta: ToolResultMeta }>;
+  findDefinition(
+    symbolName: string,
+    options?: { pathGlob?: string; source?: SourceSelector }
+  ): Promise<{ definitions: Array<{ symbol: SymbolInfo; text?: string }>; meta: ToolResultMeta }>;
+  searchFiles(query: string, options?: SearchOptions): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>;
+  findSymbolMentions(
+    symbolName: string,
+    options?: { pathGlob?: string; source?: SourceSelector }
+  ): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>;
+  findLikelyTests(
+    input: { path?: string; symbol?: SymbolRef; source?: SourceSelector }
+  ): Promise<{ tests: SymbolRef[]; meta: ToolResultMeta }>;
+  listFiles(glob: string): Promise<{ paths: string[]; meta: ToolResultMeta }>;
+}
+
+export interface RepositoryToolsHost extends RepositoryTools {
+  bindPackets(packets: ReviewPacket[]): void;
+  buildPacketContext(
+    file: DiffFile,
+    hunks: DiffHunk[],
+    symbolFacts: HunkSymbolFacts[]
+  ): Promise<{ context: PacketContext; outline?: FileOutline; relevantTests: SymbolInfo[]; degradation?: string }>;
+  withToolCallContext<T>(context: RepositoryToolCallContext, run: () => Promise<T>): Promise<T>;
+}
+
+export type RepositoryIndex = {
+  facts: FileFacts[];
+  symbolFacts: HunkSymbolFacts[];
+  staticSignals: StaticSignal[];
+  tools: RepositoryTools;
+};
+
 export type DiffAnchor = {
   path: string;
   line: number;
@@ -270,6 +520,7 @@ export type SearchResult = {
   matchText: string;
   contextBefore?: string[];
   contextAfter?: string[];
+  enclosingSymbol?: SymbolRef;
 };
 
 export type ConfigWarning = {
@@ -320,9 +571,6 @@ export type TelemetryEvent = {
   data?: Record<string, unknown>;
 };
 
-export type ToolBackend = "git" | "worktree" | "tree-sitter" | "ripgrep" | "fallback";
-export type ToolPrecision = "exact" | "syntactic" | "heuristic" | "text";
-
 export type ToolCallRecord = {
   runId: string;
   toolCallId: string;
@@ -352,11 +600,22 @@ export type ToolCallRecord = {
   degraded: boolean;
   degradationReason?: string;
   truncated?: boolean;
+  omittedCount?: number;
   resultCount?: number;
   resultChars: number;
   durationMs: number;
   status: "ok" | "error" | "rejected" | "skipped";
   errorCode?: import("./util/errors.js").CodeninjaErrorCode;
+};
+
+export type RepositoryToolCallContext = {
+  stage: ReviewStage;
+  initiator: "model" | "harness";
+  workerId?: string;
+  packetId?: string;
+  taskId?: string;
+  candidateId?: string;
+  modelCallId?: string;
 };
 
 export type RunOutcome = {

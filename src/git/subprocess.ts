@@ -19,6 +19,7 @@ export type GitCappedCommandOptions = {
   maxLines: number;
   timeoutMs?: number;
   errorCode?: CodeninjaErrorCode;
+  allowedExitCodes?: number[];
 };
 
 const LOCAL_TIMEOUT_MS = 60_000;
@@ -49,6 +50,7 @@ export async function runGitCapped(
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const errorCode = opts.errorCode ?? "git_ref_missing";
+    const allowedExitCodes = new Set(opts.allowedExitCodes ?? [0]);
     const child = spawn("git", args, {
       cwd: repoRoot,
       env: { ...process.env, ...SAFE_ENV },
@@ -108,7 +110,7 @@ export async function runGitCapped(
       }
       settled = true;
       const output = truncateLines(Buffer.concat(chunks).toString("utf8"), opts.maxLines);
-      if (reachedLimit || code === 0) {
+      if (reachedLimit || (typeof code === "number" && allowedExitCodes.has(code))) {
         resolve(output);
         return;
       }

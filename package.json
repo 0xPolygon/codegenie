@@ -22,10 +22,16 @@
   },
   "license": "UNLICENSED",
   "dependencies": {
+    "@vscode/ripgrep": "1.18.0",
     "commander": "15.0.0",
     "execa": "9.6.1",
+    "p-limit": "7.3.0",
     "picomatch": "4.0.4",
     "smol-toml": "1.6.1",
+    "tree-sitter-go": "0.25.0",
+    "tree-sitter-javascript": "0.25.0",
+    "tree-sitter-typescript": "0.23.2",
+    "web-tree-sitter": "0.26.9",
     "zod": "4.4.3"
   },
   "devDependencies": {
