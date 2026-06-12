@@ -513,6 +513,131 @@ export type DiffAnchorIndex = {
   hunkIdAt(path: string, line: number, side: "RIGHT" | "LEFT"): string | undefined;
 };
 
+export type FindingCategory =
+  | "logic_bug"
+  | "correctness"
+  | "security"
+  | "performance"
+  | "architecture"
+  | "testing"
+  | "maintainability";
+
+export type DiffUnderstanding = {
+  summary: string;
+  intent?: string;
+};
+
+export type HunkCoverageDecision = {
+  hunkId: string;
+  path: string;
+  coverage: CoverageLevel;
+  lenses: string[];
+  surroundingContextHints: SurroundingContextHint[];
+  reason: string;
+};
+
+export type ReviewPlan = {
+  diffUnderstanding: DiffUnderstanding;
+  riskAreas: Array<{
+    area: string;
+    reason: string;
+    files: string[];
+    suggestedLenses: string[];
+  }>;
+  coverage: HunkCoverageDecision[];
+  partialReview?: {
+    isPartial: boolean;
+    reason: string;
+    reviewedHunks: number;
+    totalHunks: number;
+  };
+};
+
+export type FindingProducer = {
+  kind: "packet";
+  stage: ReviewStage;
+  packetId: string;
+  lensId: string;
+  skillIds: string[];
+  workerId?: string;
+};
+
+export type CandidateFinding = {
+  id: string;
+  title: string;
+  severity: Severity;
+  confidence: Confidence;
+  path: string;
+  anchor?: DiffAnchor;
+  changedLine: boolean;
+  category: FindingCategory;
+  evidence: {
+    changedCode: string;
+    relatedCode?: Array<{ path: string; lines: string; whyRelevant: string }>;
+  };
+  failureMode: string;
+  whyThisMatters: string;
+  suggestedFix?: string;
+  suggestedTest?: string;
+  verification: string;
+  producedBy: FindingProducer;
+  clusterId?: string;
+  duplicateOf?: string;
+};
+
+export type StructuredUncertainty = {
+  question: string;
+  files: string[];
+  symbols: string[];
+};
+
+export type PacketReviewResult = {
+  packetId: string;
+  lenses: string[];
+  findings: CandidateFinding[];
+  followUpHints: Array<{
+    question: string;
+    files: string[];
+    symbols: string[];
+    suggestedLenses: string[];
+    reason: string;
+    confidence: Confidence;
+  }>;
+  uncertainties: StructuredUncertainty[];
+  status: "completed" | "incomplete" | "failed" | "skipped";
+};
+
+export type VerificationVerdict = {
+  candidateId: string;
+  verdict: "keep" | "reject" | "revise";
+  reason: string;
+  requiredEvidencePresent: boolean;
+  falsePositiveRisk: "low" | "medium" | "high";
+  finalFinding?: CandidateFinding;
+  revisedAnchor?: DiffAnchor;
+  verificationIncomplete?: boolean;
+};
+
+export type FinalFinding = CandidateFinding & {
+  fingerprint: string;
+  finalBody: string;
+  publication: "inline" | "summary-only" | "suppressed";
+  mergedCandidateIds: string[];
+};
+
+export type RunCoverageStatus = {
+  totalHunks: number;
+  reviewedHunks: number;
+  skippedHunks: number;
+  failedHunks: number;
+  coverageByLevel: Record<CoverageLevel, number>;
+  degradedPlanning: boolean;
+  budgetStopped: boolean;
+  verificationIncompleteCount: number;
+  partial: boolean;
+  reasons: string[];
+};
+
 export type SearchResult = {
   path: string;
   line: number;
@@ -611,6 +736,7 @@ export type ToolCallRecord = {
 export type RepositoryToolCallContext = {
   stage: ReviewStage;
   initiator: "model" | "harness";
+  record?: boolean;
   workerId?: string;
   packetId?: string;
   taskId?: string;

@@ -1,0 +1,144 @@
+import { Command, CommanderError } from "commander";
+import { runProviderCommand, type RunProviderCommandOptions } from "../provider/provider-services.js";
+import { CodeninjaError } from "../util/errors.js";
+import { CliDisplayExit } from "./review-command.js";
+
+type ParseProviderCommandOptions = {
+  allowOutput?: boolean;
+};
+
+type ParsedProviderCommand = {
+  args: string[];
+  options: Pick<RunProviderCommandOptions, "yes" | "all">;
+};
+
+export async function executeProviderCommand(
+  argv: string[],
+  opts: RunProviderCommandOptions & ParseProviderCommandOptions = {}
+): Promise<void> {
+  const parsed = parseProviderCommand(argv, opts);
+  await runProviderCommand(parsed.args, { ...opts, ...parsed.options });
+}
+
+export function parseProviderCommand(
+  argv: string[],
+  opts: ParseProviderCommandOptions = {}
+): ParsedProviderCommand {
+  let parsed: ParsedProviderCommand | undefined;
+  const program = new Command();
+  program.name("codeninja").exitOverride();
+
+  if (!opts.allowOutput) {
+    program.configureOutput({
+      writeOut: () => undefined,
+      writeErr: () => undefined
+    });
+  }
+
+  const provider = program.command("provider").description("manage model providers and defaults");
+  provider
+    .command("list")
+    .description("list known providers and auth status")
+    .action(() => {
+      parsed = { args: ["provider", "list"], options: {} };
+    });
+  provider
+    .command("login")
+    .description("store credentials for a provider")
+    .argument("<provider>")
+    .action((providerId: string) => {
+      parsed = { args: ["provider", "login", providerId], options: {} };
+    });
+  provider
+    .command("logout")
+    .description("remove one provider credential, or all credentials with --yes")
+    .argument("[provider]")
+    .option("--yes", "confirm removing all credentials")
+    .action((providerId: string | undefined, options: { yes?: boolean }) => {
+      parsed = {
+        args: providerId ? ["provider", "logout", providerId] : ["provider", "logout"],
+        options: { yes: options.yes === true }
+      };
+    });
+  provider
+    .command("auth-status")
+    .description("show stored or environment auth status")
+    .argument("[provider]")
+    .action((providerId: string | undefined) => {
+      parsed = {
+        args: providerId ? ["provider", "auth-status", providerId] : ["provider", "auth-status"],
+        options: {}
+      };
+    });
+  provider
+    .command("models")
+    .description("list available models")
+    .argument("[query]")
+    .option("--all", "include unauthenticated providers")
+    .action((query: string | undefined, options: { all?: boolean }) => {
+      parsed = {
+        args: query ? ["provider", "models", query] : ["provider", "models"],
+        options: { all: options.all === true }
+      };
+    });
+
+  const config = provider.command("config").description("show or update provider defaults");
+  config.action(() => {
+    parsed = { args: ["provider", "config"], options: {} };
+  });
+  config
+    .command("set-provider")
+    .argument("<provider>")
+    .action((providerId: string) => {
+      parsed = { args: ["provider", "config", "set-provider", providerId], options: {} };
+    });
+  config
+    .command("set-model")
+    .argument("<provider>")
+    .argument("<model>")
+    .action((providerId: string, modelId: string) => {
+      parsed = { args: ["provider", "config", "set-model", providerId, modelId], options: {} };
+    });
+  config
+    .command("set-depth")
+    .argument("<light|normal|deep>")
+    .action((depth: string) => {
+      parsed = { args: ["provider", "config", "set-depth", depth], options: {} };
+    });
+  config
+    .command("set-reasoning")
+    .argument("<low|medium|high|xhigh|auto>")
+    .action((reasoning: string) => {
+      parsed = { args: ["provider", "config", "set-reasoning", reasoning], options: {} };
+    });
+
+  try {
+    program.parse(argv, { from: "user" });
+  } catch (error) {
+    if (isCommanderDisplayExit(error)) {
+      throw new CliDisplayExit(error.exitCode);
+    }
+    throw commanderToCodeninjaError(error);
+  }
+
+  if (!parsed) {
+    throw new CodeninjaError("invalid_args", "expected provider command: list, login, logout, auth-status, models, or config");
+  }
+  return parsed;
+}
+
+function isCommanderDisplayExit(error: unknown): error is CommanderError {
+  return error instanceof CommanderError && error.exitCode === 0;
+}
+
+function commanderToCodeninjaError(error: unknown): CodeninjaError {
+  if (error instanceof CommanderError) {
+    return new CodeninjaError("invalid_args", error.message, {
+      context: { code: error.code, exitCode: error.exitCode }
+    });
+  }
+  if (error instanceof CodeninjaError) {
+    return error;
+  }
+  return new CodeninjaError("invalid_args", "failed to parse provider command line", { cause: error });
+}

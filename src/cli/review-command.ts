@@ -82,6 +82,17 @@ export function parseReviewCommand(
       commits = commitArgs;
       commandOptions = options;
     });
+  const provider = program.command("provider").description("manage model providers and defaults");
+  provider.command("list").description("list known providers and auth status");
+  provider.command("login").description("store credentials for a provider").argument("<provider>");
+  provider.command("logout").description("remove stored provider credentials").argument("[provider]").option("--yes", "confirm removing all credentials");
+  provider.command("auth-status").description("show stored or environment auth status").argument("[provider]");
+  provider.command("models").description("list available models").argument("[query]").option("--all", "include unauthenticated providers");
+  const providerConfig = provider.command("config").description("show or update provider defaults");
+  providerConfig.command("set-provider").argument("<provider>");
+  providerConfig.command("set-model").argument("<provider>").argument("<model>");
+  providerConfig.command("set-depth").argument("<light|normal|deep>");
+  providerConfig.command("set-reasoning").argument("<low|medium|high|xhigh|auto>");
 
   try {
     program.parse(argv, { from: "user" });

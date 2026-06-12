@@ -1,0 +1,1317 @@
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { complete as piComplete, completeSimple as piCompleteSimple, Type, validateToolCall } from "@earendil-works/pi-ai";
+import { getOAuthApiKey as piGetOAuthApiKey } from "@earendil-works/pi-ai/oauth";
+import { describe, expect, it, vi } from "vitest";
+import { createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
+import type {
+  LlmCallUsage,
+  PiAiAdapter,
+  PiAssistantMessage,
+  PiToolCall,
+  StoredProviderResponse
+} from "../src/llm/llm-runner.js";
+import { buildModelCallCacheKey, createModelCallCache, MODEL_CALL_CACHE_SCHEMA_VERSION } from "../src/llm/model-call-cache.js";
+import {
+  SCHEMA_VERSIONS,
+  SubmitCompositionSchema,
+  SubmitPacketReviewSchema,
+  SubmitPlanSchema,
+  SubmitVerificationVerdictSchema,
+  submitToolNameForStage
+} from "../src/llm/schemas.js";
+import { buildRepositoryToolDefinitions } from "../src/llm/tool-definitions.js";
+import type { Logger, LogEvent, RepositoryTools, TelemetryEvent, ToolCallRecord } from "../src/types.js";
+import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
+import { clearRegisteredSecretsForTests, registerSecret, stripCredentials } from "../src/telemetry/redaction.js";
+import type { ToolDefinition } from "../src/llm/llm-runner.js";
+import type { PiAuthStorage, ProviderAuthEntry } from "../src/provider/provider-services.js";
+import { CodeninjaError } from "../src/util/errors.js";
+import { sha256Hex } from "../src/util/hashing.js";
+
+describe("Phase 4 schemas and repository tool definitions", () => {
+  it("rejects hallucinated fields and exposes stage submit tool names", () => {
+    expect(submitToolNameForStage(5)).toBe("submit_plan");
+    expect(submitToolNameForStage(7)).toBe("submit_review");
+    expect(submitToolNameForStage(9)).toBe("submit_verdict");
+    expect(submitToolNameForStage(10)).toBe("submit_composition");
+    expect(SCHEMA_VERSIONS.submit_plan).toBe(1);
+
+    const valid = {
+      diffUnderstanding: { summary: "Small change" },
+      riskAreas: [],
+      coverage: []
+    };
+    const submitTool = { name: "submit_plan", description: "submit", parameters: SubmitPlanSchema };
+    expect(
+      validateToolCall([submitTool], {
+        type: "toolCall",
+        id: "submit-1",
+        name: "submit_plan",
+        arguments: valid
+      })
+    ).toEqual(valid);
+    expect(() =>
+      validateToolCall([submitTool], {
+        type: "toolCall",
+        id: "submit-2",
+        name: "submit_plan",
+        arguments: { ...valid, inventedField: true }
+      })
+    ).toThrow();
+  });
+
+  it("exposes model-facing submit schemas without pipeline-owned fields", () => {
+    const review = { findings: [], followUpHints: [], uncertainties: [] };
+    const reviewTool = { name: "submit_review", description: "submit", parameters: SubmitPacketReviewSchema };
+    expect(
+      validateToolCall([reviewTool], {
+        type: "toolCall",
+        id: "submit-review",
+        name: "submit_review",
+        arguments: review
+      })
+    ).toEqual(review);
+    expect(() =>
+      validateToolCall([reviewTool], {
+        type: "toolCall",
+        id: "submit-review-owned",
+        name: "submit_review",
+        arguments: { ...review, packetId: "packet-1", lenses: ["core/code-review"], status: "completed" }
+      })
+    ).toThrow();
+
+    const verdict = {
+      verdict: "keep",
+      reason: "evidence is present",
+      requiredEvidencePresent: true,
+      falsePositiveRisk: "low"
+    };
+    const verdictTool = { name: "submit_verdict", description: "submit", parameters: SubmitVerificationVerdictSchema };
+    expect(
+      validateToolCall([verdictTool], {
+        type: "toolCall",
+        id: "submit-verdict",
+        name: "submit_verdict",
+        arguments: verdict
+      })
+    ).toEqual(verdict);
+    expect(() =>
+      validateToolCall([verdictTool], {
+        type: "toolCall",
+        id: "submit-verdict-owned",
+        name: "submit_verdict",
+        arguments: { ...verdict, candidateId: "candidate-1", verificationIncomplete: true }
+      })
+    ).toThrow();
+
+    const composition = {
+      summary: "One verified finding.",
+      composedFindings: [{ findingIds: ["finding-1"], finalBody: "The final body.", publication: "inline" }]
+    };
+    const compositionTool = { name: "submit_composition", description: "submit", parameters: SubmitCompositionSchema };
+    expect(
+      validateToolCall([compositionTool], {
+        type: "toolCall",
+        id: "submit-composition",
+        name: "submit_composition",
+        arguments: composition
+      })
+    ).toEqual(composition);
+    expect(() =>
+      validateToolCall([compositionTool], {
+        type: "toolCall",
+        id: "submit-composition-old",
+        name: "submit_composition",
+        arguments: {
+          ...composition,
+          markdown: "old markdown",
+          findingOrder: ["finding-1"],
+          suppressedFindingIds: [],
+          notes: []
+        }
+      })
+    ).toThrow();
+  });
+
+  it("defines all nine repository tools and renders tool failures as model-visible errors", async () => {
+    const defs = buildRepositoryToolDefinitions(fakeRepositoryTools());
+    expect(defs.map((tool) => tool.name)).toEqual([
+      "read_range",
+      "read_file_outline",
+      "read_symbol",
+      "find_definition",
+      "read_diff_blocks",
+      "search_files",
+      "find_symbol_mentions",
+      "find_likely_tests",
+      "list_files"
+    ]);
+
+    const readRange = defs.find((tool) => tool.name === "read_range");
+    const range = await readRange?.execute({ path: "src/a.ts", startLine: 1, endLine: 2 }, new AbortController().signal);
+    expect(range?.text).toContain("line 1");
+    expect(range?.meta?.precision).toBe("exact");
+
+    const readSymbol = defs.find((tool) => tool.name === "read_symbol");
+    const invalid = await readSymbol?.execute({ path: "src/a.ts" }, new AbortController().signal);
+    expect(invalid).toMatchObject({
+      isError: true
+    });
+    expect(invalid?.text).toContain("read_symbol requires exactly one");
+  });
+
+  it("suppresses facade recording and preserves path rejection metadata for model tools", async () => {
+    const facadeRecords: string[] = [];
+    let suppressFacadeRecord = false;
+    const tools = {
+      ...fakeRepositoryTools(),
+      withToolCallContext: async <T>(context: { record?: boolean }, run: () => Promise<T>) => {
+        suppressFacadeRecord = context.record === false;
+        try {
+          return await run();
+        } finally {
+          suppressFacadeRecord = false;
+        }
+      },
+      readRange: async () => {
+        if (!suppressFacadeRecord) {
+          facadeRecords.push("read_range");
+        }
+        throw new CodeninjaError("path_outside_repo", "outside repo");
+      }
+    } satisfies RepositoryTools & {
+      withToolCallContext<T>(context: { record?: boolean }, run: () => Promise<T>): Promise<T>;
+    };
+
+    const readRange = buildRepositoryToolDefinitions(tools).find((tool) => tool.name === "read_range");
+    const result = await readRange?.execute({ path: "../secret", startLine: 1, endLine: 1 }, new AbortController().signal);
+
+    expect(facadeRecords).toEqual([]);
+    expect(result).toMatchObject({
+      isError: true,
+      errorCode: "path_outside_repo"
+    });
+  });
+
+  it("rejects model-facing repository tools promptly when their signal aborts", async () => {
+    const tools = {
+      ...fakeRepositoryTools(),
+      searchFiles: vi.fn(async () => new Promise<never>(() => undefined))
+    } satisfies RepositoryTools;
+    const search = buildRepositoryToolDefinitions(tools).find((tool) => tool.name === "search_files");
+    if (!search) {
+      throw new Error("search_files definition missing");
+    }
+    const controller = new AbortController();
+
+    const result = search.execute({ query: "needle" }, controller.signal);
+    await Promise.resolve();
+    expect(tools.searchFiles).toHaveBeenCalledTimes(1);
+    controller.abort(new Error("timeout"));
+
+    await expect(result).rejects.toMatchObject({
+      code: "llm_call_failed",
+      context: { reason: "timeout" }
+    });
+  });
+});
+
+describe("Phase 4 Pi runner and model-call cache", () => {
+  it("runs a tool round, fences tool output, validates submit payload, and records telemetry", async () => {
+    const telemetry = fakeTelemetry();
+    const usage: LlmCallUsage[] = [];
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-1",
+          name: "read_range",
+          arguments: { path: "src/a.ts", startLine: 1, endLine: 2 }
+        }
+      ]),
+      assistant([
+        {
+          type: "toolCall",
+          id: "submit-1",
+          name: "submit_review",
+          arguments: {
+            findings: [],
+            followUpHints: [],
+            uncertainties: []
+          }
+        }
+      ])
+    ]);
+
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: {
+        checkpoint: () => "ok",
+        onUsage: (entry) => usage.push(entry)
+      }
+    });
+
+    const result = await runner.runStructured({
+      stage: 7,
+      prompt: "review packet",
+      schema: SubmitPacketReviewSchema,
+      templateVersion: "test-template",
+      tools: buildRepositoryToolDefinitions(fakeRepositoryTools()),
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 2000 },
+      timeoutMs: 1000,
+      telemetryContext: { workerId: "worker-1", packetId: "packet-1" }
+    });
+
+    expect(result).toEqual({
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
+    });
+    expect(adapter.contexts[1]).toContain("untrusted-data label=tool-result-read_range");
+    expect(telemetry.modelCalls.map((call) => call.stopReason)).toEqual(["tool_calls", "submit"]);
+    expect(telemetry.modelCalls[1]?.schemaValid).toBe(true);
+    expect(telemetry.toolCalls).toHaveLength(1);
+    expect(telemetry.toolCalls[0]).toMatchObject({
+      stage: 7,
+      initiator: "model",
+      modelCallId: "mc-000001",
+      tool: "read_range",
+      status: "ok",
+      packetId: "packet-1"
+    });
+    expect(usage).toHaveLength(2);
+  });
+
+  it("uses one timeout signal across provider and repository tool steps", async () => {
+    const providerSignals: AbortSignal[] = [];
+    const toolSignals: AbortSignal[] = [];
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read",
+      parameters: Type.Object({ path: Type.String() }),
+      execute: vi.fn(async (_args, signal) => {
+        toolSignals.push(signal);
+        return {
+          text: "line 1",
+          meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+        };
+      })
+    };
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async (_model, _context, options) => {
+        if (!(options.signal instanceof AbortSignal)) {
+          throw new Error("missing abort signal");
+        }
+        providerSignals.push(options.signal);
+        return providerSignals.length === 1
+          ? assistant([
+              {
+                type: "toolCall",
+                id: "tool-timeout-signal",
+                name: "read_range",
+                arguments: { path: "src/a.ts" }
+              }
+            ])
+          : assistant([validSubmitReviewCall("submit-timeout-signal")]);
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("packet-timeout-signal"),
+      tools: [tool],
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 }
+    });
+
+    expect(providerSignals).toHaveLength(2);
+    expect(new Set(providerSignals).size).toBe(1);
+    expect(toolSignals).toEqual([providerSignals[0]]);
+  });
+
+  it("enforces maxConcurrentCalls across provider misses", async () => {
+    const telemetry = fakeTelemetry();
+    let active = 0;
+    let maxActive = 0;
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async () => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await delay(25);
+        active -= 1;
+        return assistant([validSubmitReviewCall("submit-concurrent")]);
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await Promise.all([
+      runner.runStructured(submitReviewRequest("one")),
+      runner.runStructured(submitReviewRequest("two")),
+      runner.runStructured(submitReviewRequest("three"))
+    ]);
+
+    expect(maxActive).toBe(1);
+  });
+
+  it("records schema-invalid submits and does not cache them before repair", async () => {
+    const telemetry = fakeTelemetry();
+    const cache = {
+      get: vi.fn(async (_key: string) => ({ status: "miss" as const })),
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "submit-invalid",
+          name: "submit_review",
+          arguments: { packetId: "packet-1" }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-repair")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      cache,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured(submitReviewRequest("packet-1"))).resolves.toMatchObject({
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
+    });
+
+    expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
+    expect(telemetry.modelCalls[0]).toMatchObject({
+      schemaValid: false,
+      errorCode: "llm_schema_invalid"
+    });
+    expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["miss", "write"]);
+    expect(cache.put).toHaveBeenCalledTimes(1);
+    expect(cache.put.mock.calls[0]?.[1].message.content).toEqual([validSubmitReviewCall("submit-repair")]);
+  });
+
+  it("does not make a finalization provider call after checkpoint exhaustion", async () => {
+    const adapter = scriptedAdapter([
+      assistant([{ type: "text", text: "plain text instead of submit" }]),
+      assistant([validSubmitReviewCall("must-not-run")])
+    ]);
+    let checkpoints = 0;
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: {
+        checkpoint: () => {
+          checkpoints += 1;
+          return checkpoints === 1 ? "ok" : "exhausted";
+        },
+        onUsage: vi.fn()
+      }
+    });
+
+    await expect(runner.runStructured(submitReviewRequest("packet-budget-stop"))).rejects.toMatchObject({
+      code: "llm_call_failed",
+      recoverable: true,
+      context: { reason: "budget_exhausted", stage: 7 }
+    });
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("includes tool budget in model-call cache keys", async () => {
+    const cacheKeys: string[] = [];
+    const cache = {
+      get: vi.fn(async (key: string) => {
+        cacheKeys.push(key);
+        return { status: "miss" as const };
+      }),
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+    };
+    const adapter = scriptedAdapter([
+      assistant([validSubmitReviewCall("submit-budget-a")]),
+      assistant([validSubmitReviewCall("submit-budget-b")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      cache,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("same-packet"),
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 100 }
+    });
+    await runner.runStructured({
+      ...submitReviewRequest("same-packet"),
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 1, maxResultChars: 100 }
+    });
+
+    expect(cache.get).toHaveBeenCalledTimes(2);
+    expect(cacheKeys[0]).not.toBe(cacheKeys[1]);
+  });
+
+  it("uses canonical prompt hashes for matching cache misses and hits", async () => {
+    const telemetry = fakeTelemetry();
+    const entries = new Map<string, StoredProviderResponse>();
+    const cache = {
+      get: vi.fn(async (key: string) => {
+        const entry = entries.get(key);
+        return entry ? { status: "hit" as const, response: entry } : { status: "miss" as const };
+      }),
+      put: vi.fn(async (key: string, entry: StoredProviderResponse) => {
+        entries.set(key, entry);
+      })
+    };
+    const adapter = scriptedAdapter([assistant([validSubmitReviewCall("submit-canonical-cache")])]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      cache,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-canonical"));
+    await runner.runStructured(submitReviewRequest("packet-canonical"));
+
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+    expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["write", "hit"]);
+    expect(telemetry.modelCalls[0]?.promptHash).toBe(telemetry.modelCalls[1]?.promptHash);
+    expect(telemetry.modelCalls[0]?.promptChars).toBe(telemetry.modelCalls[1]?.promptChars);
+  });
+
+  it("passes auto tool choice during investigation and forces submit-only calls", async () => {
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read",
+      parameters: Type.Object({ path: Type.String() }),
+      execute: vi.fn(async () => ({
+        text: "line 1",
+        meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+      }))
+    };
+    const investigative = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-choice-round",
+          name: "read_range",
+          arguments: { path: "src/a.ts" }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-forced-after-tool")])
+    ]);
+    const investigativeRunner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter: investigative,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await investigativeRunner.runStructured({
+      ...submitReviewRequest("packet-tool-choice"),
+      tools: [tool],
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 }
+    });
+    expect(investigative.options.map((options) => options.toolChoice)).toEqual([
+      "auto",
+      { type: "tool", name: "submit_review" }
+    ]);
+
+    const submitOnly = scriptedAdapter([assistant([validSubmitReviewCall("submit-forced-initial")])]);
+    const submitOnlyRunner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter: submitOnly,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await submitOnlyRunner.runStructured(submitReviewRequest("packet-submit-only"));
+    expect(submitOnly.options[0]?.toolChoice).toEqual({ type: "tool", name: "submit_review" });
+  });
+
+  it("rejects tools before execution when result-character budget is exhausted", async () => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async () => ({
+      text: "should not execute",
+      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+    }));
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read",
+      parameters: Type.Object({ path: Type.String() }),
+      execute
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-budget",
+          name: "read_range",
+          arguments: { path: "src/a.ts" }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-after-budget")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("packet-budget"),
+      tools: [tool],
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 0 }
+    });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(telemetry.toolCalls[0]).toMatchObject({
+      status: "rejected",
+      resultChars: 0
+    });
+  });
+
+  it("rejects repository tools when request.toolBudget is absent", async () => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async () => ({
+      text: "should not execute without explicit budget",
+      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+    }));
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-no-budget",
+          name: "read_range",
+          arguments: { path: "src/a.ts" }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-no-budget")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("packet-no-budget"),
+      tools: [
+        {
+          name: "read_range",
+          description: "read",
+          parameters: Type.Object({ path: Type.String() }),
+          execute
+        }
+      ]
+    });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(telemetry.toolCalls[0]).toMatchObject({
+      status: "rejected",
+      resultChars: 0
+    });
+  });
+
+  it("keeps schema repair available after a plain-text finalization nudge", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{ type: "text", text: "plain text instead of submit" }]),
+      assistant([
+        {
+          type: "toolCall",
+          id: "submit-invalid-after-nudge",
+          name: "submit_review",
+          arguments: { packetId: "packet-plain" }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-valid-after-repair")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured(submitReviewRequest("packet-plain"))).resolves.toMatchObject({
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
+    });
+    expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["ok", "schema_invalid", "ok"]);
+  });
+
+  it("rejects non-submit responses during forced finalization without a second nudge", async () => {
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read",
+      parameters: Type.Object({ path: Type.String() }),
+      execute: vi.fn(async () => ({
+        text: "line 1",
+        meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+      }))
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-finalize",
+          name: "read_range",
+          arguments: { path: "src/a.ts" }
+        }
+      ]),
+      assistant([{ type: "text", text: "plain text during finalization" }]),
+      assistant([validSubmitReviewCall("must-not-run-after-finalize-text")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-finalize-text"),
+        tools: [tool],
+        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 }
+      })
+    ).rejects.toMatchObject({
+      code: "llm_schema_invalid",
+      recoverable: true,
+      context: { submitTool: "submit_review", kind: "finalize" }
+    });
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it("records submit_with_extra_tools telemetry and ignores extra model tool calls", async () => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async () => ({
+      text: "should not execute when submit is present",
+      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+    }));
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read",
+      parameters: Type.Object({ path: Type.String() }),
+      execute
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        validSubmitReviewCall("submit-with-extra-tool"),
+        {
+          type: "toolCall",
+          id: "ignored-tool",
+          name: "read_range",
+          arguments: { path: "src/a.ts" }
+        }
+      ])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-extra-tool"),
+        tools: [tool],
+        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 },
+        telemetryContext: { workerId: "worker-extra", packetId: "packet-extra" }
+      })
+    ).resolves.toEqual({
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
+    });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(telemetry.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 7,
+          level: "warn",
+          message: "submit_with_extra_tools",
+          workerId: "worker-extra",
+          packetId: "packet-extra",
+          data: expect.objectContaining({
+            submitTool: "submit_review",
+            ignoredTools: ["read_range"],
+            count: 1
+          })
+        })
+      ])
+    );
+  });
+
+  it("does not retry non-auth 4xx provider errors", async () => {
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async () => {
+        const error = new Error("bad request") as Error & { status: number };
+        error.status = 400;
+        throw error;
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured(submitReviewRequest("packet-400"))).rejects.toMatchObject({
+      code: "llm_call_failed",
+      recoverable: true,
+      context: { reason: "request_error" }
+    });
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries retryable provider errors three times and preserves trace context", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const telemetry = fakeTelemetry();
+    let calls = 0;
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async () => {
+        calls += 1;
+        if (calls <= 3) {
+          const error = new Error("rate limited") as Error & { status: number; headers: Record<string, string> };
+          error.status = 429;
+          error.headers = { "retry-after": "0" };
+          throw error;
+        }
+        return assistant([validSubmitReviewCall("submit-after-retry")]);
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    try {
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder,
+        logger: fakeLogger(),
+        runSignal: new AbortController().signal,
+        adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+
+      await runner.runStructured({
+        ...submitReviewRequest("packet-retry"),
+        telemetryContext: { workerId: "worker-retry", packetId: "packet-retry", candidateId: "candidate-retry" }
+      });
+
+      expect(adapter.complete).toHaveBeenCalledTimes(4);
+      expect(telemetry.modelCalls.map((call) => call.attempt)).toEqual([1, 2, 3, 4]);
+      expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["transient_error", "transient_error", "transient_error", "ok"]);
+      expect(telemetry.modelCalls).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            workerId: "worker-retry",
+            packetId: "packet-retry",
+            candidateId: "candidate-retry"
+          })
+        ])
+      );
+      expect(telemetry.modelCalls.every((call) => call.workerId === "worker-retry")).toBe(true);
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it("resolves provider-qualified real models only when auth is usable", () => {
+    const previous = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "plain-provider-qualified-secret";
+    clearRegisteredSecretsForTests();
+    try {
+      const model = createRealPiAiAdapter().resolveModel({ model: "openai/gpt-4.1-mini" });
+      expect(model).toMatchObject({
+        provider: "openai",
+        id: "gpt-4.1-mini",
+        apiKey: "plain-provider-qualified-secret"
+      });
+      expect(stripCredentials("error plain-provider-qualified-secret")).toBe("error [redacted:secret]");
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previous;
+      }
+      clearRegisteredSecretsForTests();
+    }
+  });
+
+  it("rejects unknown real model ids during runner construction", () => {
+    const previous = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "plain-unknown-model-secret";
+    clearRegisteredSecretsForTests();
+    try {
+      expect(() =>
+        createPiRunner({
+          llmConfig: {
+            model: "openai/not-a-real-codeninja-test-model",
+            maxConcurrentCalls: 1
+          },
+          telemetry: fakeTelemetry().recorder,
+          logger: fakeLogger(),
+          runSignal: new AbortController().signal,
+          hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+        })
+      ).toThrow(CodeninjaError);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previous;
+      }
+      clearRegisteredSecretsForTests();
+    }
+  });
+
+  it("uses Pi completeSimple so resolved reasoning is provider-mapped", async () => {
+    const optionsSeen: Record<string, unknown>[] = [];
+    const completeSimple = (async (_model, _context, options) => {
+      optionsSeen.push(options as Record<string, unknown>);
+      return assistant([validSubmitReviewCall("submit-simple-reasoning")]);
+    }) as typeof piCompleteSimple;
+    const adapter = createRealPiAiAdapter({ completeSimple });
+
+    await adapter.complete(
+      { provider: "fake", id: "fake-model", raw: { id: "fake-model" }, apiKey: "fake-api-key" },
+      { messages: [], tools: [] },
+      { reasoning: "xhigh", maxRetries: 0 }
+    );
+
+    expect(optionsSeen).toEqual([
+      expect.objectContaining({
+        apiKey: "fake-api-key",
+        reasoning: "xhigh"
+      })
+    ]);
+  });
+
+  it("maps forced submit calls to raw Pi provider reasoning and tool choice options", async () => {
+    const rawOptionsSeen: Record<string, unknown>[] = [];
+    const complete = (async (_model, _context, options) => {
+      rawOptionsSeen.push(options as Record<string, unknown>);
+      return assistant([validSubmitReviewCall("submit-raw-forced")]);
+    }) as typeof piComplete;
+    const completeSimple = vi.fn(async () => assistant([validSubmitReviewCall("must-not-use-simple")])) as unknown as typeof piCompleteSimple;
+    const adapter = createRealPiAiAdapter({ complete, completeSimple });
+
+    await adapter.complete(
+      {
+        provider: "openai",
+        id: "gpt-test",
+        raw: { api: "openai-completions", provider: "openai", id: "gpt-test", maxTokens: 4096, reasoning: true },
+        apiKey: "fake-api-key"
+      },
+      { messages: [], tools: [] },
+      { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0 }
+    );
+
+    expect(completeSimple).not.toHaveBeenCalled();
+    expect(rawOptionsSeen).toEqual([
+      expect.objectContaining({
+        apiKey: "fake-api-key",
+        reasoningEffort: "high",
+        toolChoice: { type: "function", function: { name: "submit_review" } }
+      })
+    ]);
+    expect(rawOptionsSeen[0]).not.toHaveProperty("reasoning");
+  });
+
+  it("refreshes stored OAuth credentials through Pi helpers and persists updates", async () => {
+    clearRegisteredSecretsForTests();
+    const oldCredentials = { access: "old-access-token", refresh: "old-refresh-token", expires: 0 };
+    const newCredentials = { access: "new-access-token", refresh: "new-refresh-token", expires: Date.now() + 60_000 };
+    const entries = new Map<string, ProviderAuthEntry>([
+      ["github-copilot", { type: "oauth", credentials: oldCredentials, createdAt: new Date(0).toISOString() }]
+    ]);
+    const authStorage: PiAuthStorage = {
+      loadAll: () => Object.fromEntries(entries.entries()),
+      get: (provider) => entries.get(provider),
+      set: (provider, entry) => {
+        entries.set(provider, entry);
+      },
+      delete: (provider) => {
+        entries.delete(provider);
+      },
+      clear: () => entries.clear()
+    };
+    const optionsSeen: Record<string, unknown>[] = [];
+    const completeSimple = (async (_model, _context, options) => {
+      optionsSeen.push(options as Record<string, unknown>);
+      return assistant([validSubmitReviewCall("submit-oauth-refresh")]);
+    }) as typeof piCompleteSimple;
+    const getOAuthApiKey = vi.fn(async (_provider: string, credentials: Record<string, typeof oldCredentials>) => {
+      expect(credentials["github-copilot"]).toEqual(oldCredentials);
+      return { newCredentials, apiKey: "new-oauth-api-key" };
+    }) as unknown as typeof piGetOAuthApiKey;
+    const adapter = createRealPiAiAdapter({ authStorage, completeSimple, getOAuthApiKey });
+
+    await adapter.complete(
+      { provider: "github-copilot", id: "fake-model", raw: { id: "fake-model" }, oauthProvider: "github-copilot" },
+      { messages: [], tools: [] },
+      { maxRetries: 0 }
+    );
+
+    expect(getOAuthApiKey).toHaveBeenCalledTimes(1);
+    expect(entries.get("github-copilot")).toMatchObject({
+      type: "oauth",
+      credentials: newCredentials,
+      createdAt: new Date(0).toISOString()
+    });
+    expect(optionsSeen[0]).toMatchObject({ apiKey: "new-oauth-api-key" });
+    expect(stripCredentials("new-oauth-api-key")).toBe("[redacted:secret]");
+    clearRegisteredSecretsForTests();
+  });
+
+  it("derives sensitive cache keys, redacts entries, returns hits, and misses schema-version mismatches", async () => {
+    clearRegisteredSecretsForTests();
+    const repoRoot = tempGitRepo();
+    const telemetry = fakeTelemetry();
+    const cache = await createModelCallCache({
+      dir: path.join(repoRoot, ".codeninja", "cache"),
+      repoRoot,
+      runFingerprint: "run-a",
+      logger: fakeLogger(),
+      telemetry: telemetry.recorder
+    });
+    const keyA = buildModelCallCacheKey({ prompt: "a", model: "m" });
+    const keyB = buildModelCallCacheKey({ prompt: "b", model: "m" });
+    expect(keyA).not.toBe(keyB);
+
+    const entry = cacheEntry(7);
+    entry.message.content.push({ type: "text", text: "cache contains super-secret-cache-token" });
+    registerSecret("super-secret-cache-token");
+    await cache.put(keyA, entry);
+    expect(readCacheText(path.join(repoRoot, ".codeninja", "cache"))).not.toContain("super-secret-cache-token");
+    expect(readCacheText(path.join(repoRoot, ".codeninja", "cache"))).toContain("[redacted:secret]");
+    await expect(cache.get(keyA, 7)).resolves.toMatchObject({ status: "hit" });
+    await expect(cache.get(keyB, 7)).resolves.toEqual({ status: "miss" });
+    expect(telemetry.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 7,
+          message: "model_call_cache_miss",
+          cacheStatus: "miss"
+        })
+      ])
+    );
+
+    await cache.put("old-schema", { ...entry, cacheSchemaVersion: 0 });
+    await expect(cache.get("old-schema", 7)).resolves.toEqual({ status: "miss" });
+    const malformedKey = "malformed-current-schema";
+    const malformedPath = path.join(repoRoot, ".codeninja", "cache", `${sha256Hex(`run-a\0${malformedKey}`)}.json`);
+    writeFileSync(
+      malformedPath,
+      `${JSON.stringify({
+        cacheSchemaVersion: MODEL_CALL_CACHE_SCHEMA_VERSION,
+        createdAt: new Date(0).toISOString(),
+        stage: 7,
+        message: { role: "assistant", provider: "fake", model: "fake-model" },
+        finishReason: "submit",
+        usage: {}
+      })}\n`
+    );
+    await expect(cache.get(malformedKey, 7)).resolves.toEqual({ status: "miss" });
+    expect(existsSync(malformedPath)).toBe(false);
+    const malformedContentKey = "malformed-current-schema-content";
+    const malformedContentPath = path.join(repoRoot, ".codeninja", "cache", `${sha256Hex(`run-a\0${malformedContentKey}`)}.json`);
+    writeFileSync(
+      malformedContentPath,
+      `${JSON.stringify({
+        ...cacheEntry(7),
+        message: {
+          ...cacheEntry(7).message,
+          content: [{}]
+        }
+      })}\n`
+    );
+    await expect(cache.get(malformedContentKey, 7)).resolves.toEqual({ status: "miss" });
+    expect(existsSync(malformedContentPath)).toBe(false);
+    expect(telemetry.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 7,
+          message: "model_call_cache_invalid_miss",
+          cacheStatus: "miss"
+        })
+      ])
+    );
+    expect(existsSync(path.join(repoRoot, ".codeninja", "cache"))).toBe(true);
+    clearRegisteredSecretsForTests();
+  });
+
+  it("rejects repo-root cache directories before eviction and fails closed on non-git roots", async () => {
+    const repoRoot = tempGitRepo();
+    const trackedJson = path.join(repoRoot, "tracked.json");
+    writeFileSync(trackedJson, "{}\n");
+    execFileSync("git", ["add", "tracked.json"], { cwd: repoRoot, stdio: "ignore" });
+
+    await expect(
+      createModelCallCache({
+        dir: repoRoot,
+        repoRoot,
+        runFingerprint: "run-root",
+        logger: fakeLogger(),
+        telemetry: fakeTelemetry().recorder
+      })
+    ).rejects.toMatchObject({
+      code: "config_error"
+    });
+    expect(existsSync(trackedJson)).toBe(true);
+
+    const nonGitRoot = tempDir();
+    await expect(
+      createModelCallCache({
+        dir: path.join(nonGitRoot, ".codeninja", "cache"),
+        repoRoot: nonGitRoot,
+        runFingerprint: "run-non-git",
+        logger: fakeLogger(),
+        telemetry: fakeTelemetry().recorder
+      })
+    ).rejects.toMatchObject({
+      code: "config_error"
+    });
+  });
+});
+
+function scriptedAdapter(messages: PiAssistantMessage[]): PiAiAdapter & { contexts: string[]; options: Record<string, unknown>[] } {
+  const contexts: string[] = [];
+  const optionsSeen: Record<string, unknown>[] = [];
+  return {
+    contexts,
+    options: optionsSeen,
+    resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model", api: "faux" } }),
+    complete: vi.fn(async (_model, context, options) => {
+      contexts.push(JSON.stringify(context.messages));
+      optionsSeen.push(options);
+      const next = messages.shift();
+      if (!next) {
+        throw new Error("no scripted message");
+      }
+      return next;
+    }),
+    validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+  };
+}
+
+function assistant(content: PiAssistantMessage["content"]): PiAssistantMessage {
+  return {
+    role: "assistant",
+    provider: "fake",
+    model: "fake-model",
+    content,
+    usage: {
+      input: 10,
+      output: 5,
+      totalTokens: 15,
+      cost: { total: 0.01 }
+    },
+    stopReason: content.some((block) => (block as PiToolCall).type === "toolCall") ? "toolUse" : "stop",
+    timestamp: 0
+  };
+}
+
+function validSubmitReviewCall(id: string): PiToolCall {
+  return {
+    type: "toolCall",
+    id,
+    name: "submit_review",
+    arguments: {
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
+    }
+  };
+}
+
+function submitReviewRequest(packetId: string) {
+  return {
+    stage: 7 as const,
+    prompt: `review ${packetId}`,
+    schema: SubmitPacketReviewSchema,
+    templateVersion: "test-template",
+    timeoutMs: 1000
+  };
+}
+
+function fakeRepositoryTools(): RepositoryTools {
+  const meta = { backend: "text" as const, precision: "exact" as const, degraded: false };
+  return {
+    readRange: async () => ({ text: "line 1\nline 2", meta }),
+    readFileOutline: async () => ({
+      outline: {
+        path: "src/a.ts",
+        language: "typescript",
+        imports: [],
+        topLevelSymbols: [],
+        testSymbols: [],
+        notes: []
+      },
+      meta
+    }),
+    readSymbol: async () => ({ text: "function a() {}", meta }),
+    readDiffBlocks: async () => ({ blocks: ["@@ -1 +1 @@"], meta }),
+    findDefinition: async () => ({ definitions: [], meta }),
+    searchFiles: async () => ({ results: [], meta }),
+    findSymbolMentions: async () => ({ results: [], meta }),
+    findLikelyTests: async () => ({ tests: [], meta }),
+    listFiles: async () => ({ paths: ["src/a.ts"], meta })
+  };
+}
+
+function fakeTelemetry(): {
+  recorder: TelemetryRecorder;
+  events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">>;
+  modelCalls: Array<Omit<LlmCallRecord, "runId">>;
+  toolCalls: Array<Omit<ToolCallRecord, "runId" | "toolCallId" | "timestamp">>;
+} {
+  const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+  const modelCalls: Array<Omit<LlmCallRecord, "runId">> = [];
+  const toolCalls: Array<Omit<ToolCallRecord, "runId" | "toolCallId" | "timestamp">> = [];
+  return {
+    recorder: {
+      runId: "phase4-llm",
+      runDir: undefined,
+      event: (event) => events.push(event),
+      recordModelCall: (record) => modelCalls.push(record),
+      recordToolCall: (record) => {
+        toolCalls.push(record);
+        return `tc-${toolCalls.length}`;
+      },
+      writeArtifact: vi.fn(async () => undefined),
+      writeDebug: vi.fn(async () => undefined),
+      flush: vi.fn(async () => undefined)
+    },
+    events,
+    modelCalls,
+    toolCalls
+  };
+}
+
+function fakeLogger(): Logger {
+  const sink = vi.fn();
+  return {
+    debug: sink,
+    info: sink,
+    warn: sink,
+    error: sink
+  };
+}
+
+function cacheEntry(stage: 7): StoredProviderResponse {
+  return {
+    cacheSchemaVersion: MODEL_CALL_CACHE_SCHEMA_VERSION,
+    createdAt: new Date(0).toISOString(),
+    stage,
+    message: assistant([
+      {
+        type: "toolCall",
+        id: "submit-cache",
+        name: "submit_review",
+        arguments: {
+          findings: [],
+          followUpHints: [],
+          uncertainties: []
+        }
+      }
+    ]),
+    finishReason: "submit",
+    usage: {
+      inputTokens: 1,
+      outputTokens: 1,
+      totalTokens: 2,
+      costUSD: 0.01
+    }
+  };
+}
+
+function tempDir(): string {
+  const dir = mkdtempSync(path.join(tmpdir(), "codeninja-phase4-"));
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, ".keep"), "");
+  return dir;
+}
+
+function tempGitRepo(): string {
+  const dir = tempDir();
+  execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+  return dir;
+}
+
+function readCacheText(cacheDir: string): string {
+  const parts: string[] = [];
+  for (const entry of readdirSync(cacheDir, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith(".json")) {
+      parts.push(readFileSync(path.join(cacheDir, entry.name), "utf8"));
+    }
+  }
+  return parts.join("\n");
+}
+
+async function delay(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}

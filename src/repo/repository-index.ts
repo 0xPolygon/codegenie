@@ -557,38 +557,42 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     const context = this.toolCallContext.getStore();
     try {
       const measurement = await run();
-      this.opts.telemetry.recordToolCall({
-        ...toolCallContextRecordFields(context, stage),
-        tool,
-        args: cleanArgs(measurement.args ?? args),
-        backend: measurement.meta.backend,
-        precision: measurement.meta.precision,
-        ...(measurement.engine !== undefined ? { engine: measurement.engine } : {}),
-        degraded: measurement.meta.degraded,
-        ...(measurement.meta.degradationReason !== undefined ? { degradationReason: measurement.meta.degradationReason } : {}),
-        ...(measurement.meta.truncated !== undefined ? { truncated: measurement.meta.truncated } : {}),
-        ...(measurement.meta.omittedCount !== undefined ? { omittedCount: measurement.meta.omittedCount } : {}),
-        ...(measurement.resultCount !== undefined ? { resultCount: measurement.resultCount } : {}),
-        resultChars: measurement.resultChars,
-        durationMs: Date.now() - started,
-        status: "ok"
-      });
+      if (context?.record !== false) {
+        this.opts.telemetry.recordToolCall({
+          ...toolCallContextRecordFields(context, stage),
+          tool,
+          args: cleanArgs(measurement.args ?? args),
+          backend: measurement.meta.backend,
+          precision: measurement.meta.precision,
+          ...(measurement.engine !== undefined ? { engine: measurement.engine } : {}),
+          degraded: measurement.meta.degraded,
+          ...(measurement.meta.degradationReason !== undefined ? { degradationReason: measurement.meta.degradationReason } : {}),
+          ...(measurement.meta.truncated !== undefined ? { truncated: measurement.meta.truncated } : {}),
+          ...(measurement.meta.omittedCount !== undefined ? { omittedCount: measurement.meta.omittedCount } : {}),
+          ...(measurement.resultCount !== undefined ? { resultCount: measurement.resultCount } : {}),
+          resultChars: measurement.resultChars,
+          durationMs: Date.now() - started,
+          status: "ok"
+        });
+      }
       return measurement.value;
     } catch (error) {
       const isRejected = error instanceof CodeninjaError && error.code === "path_outside_repo";
-      this.opts.telemetry.recordToolCall({
-        ...toolCallContextRecordFields(context, stage),
-        tool,
-        args: cleanArgs(args),
-        backend: "text",
-        precision: "text",
-        degraded: true,
-        degradationReason: error instanceof Error ? error.message : String(error),
-        resultChars: 0,
-        durationMs: Date.now() - started,
-        status: isRejected ? "rejected" : "error",
-        ...(error instanceof CodeninjaError ? { errorCode: error.code } : {})
-      });
+      if (context?.record !== false) {
+        this.opts.telemetry.recordToolCall({
+          ...toolCallContextRecordFields(context, stage),
+          tool,
+          args: cleanArgs(args),
+          backend: "text",
+          precision: "text",
+          degraded: true,
+          degradationReason: error instanceof Error ? error.message : String(error),
+          resultChars: 0,
+          durationMs: Date.now() - started,
+          status: isRejected ? "rejected" : "error",
+          ...(error instanceof CodeninjaError ? { errorCode: error.code } : {})
+        });
+      }
       throw error;
     }
   }

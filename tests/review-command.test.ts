@@ -22,6 +22,10 @@ describe("review command", () => {
     expect(() => parseReviewCommand(["review", "--help"], testContext())).toThrow(CliDisplayExit);
   });
 
+  it("exposes provider help through the root command tree", () => {
+    expect(() => parseReviewCommand(["help", "provider"], testContext())).toThrow(CliDisplayExit);
+  });
+
   it("rejects conflicting targets", () => {
     const ctx = testContext();
 

@@ -1,0 +1,148 @@
+import type { CodeninjaConfig, Logger } from "../types.js";
+import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
+import { sha256Hex } from "../util/hashing.js";
+import { CodeninjaError } from "../util/errors.js";
+import type { Skill } from "./skill-loader.js";
+
+export type LensDescriptor = {
+  id: string;
+  title: string;
+  description: string;
+  skillIds: string[];
+  enabledByDefault: boolean;
+  enabled: boolean;
+  languages: string[];
+};
+
+export interface LensRegistry {
+  allLenses(): LensDescriptor[];
+  enabledLenses(): LensDescriptor[];
+  lens(id: string): LensDescriptor | undefined;
+  skillsForLens(id: string): Skill[];
+  skillsById(ids: string[]): Skill[];
+  registryHash(): string;
+}
+
+export function buildLensRegistry(
+  skills: Skill[],
+  lensConfig: CodeninjaConfig["lenses"],
+  cliLenses: string[] | undefined,
+  logger: Logger,
+  telemetry: TelemetryRecorder
+): LensRegistry {
+  const duplicateConfigIds = lensConfig.enabled.filter((id) => lensConfig.disabled.includes(id));
+  if (duplicateConfigIds.length > 0) {
+    throw new CodeninjaError("config_error", "lens ids cannot be both enabled and disabled", {
+      context: { lenses: duplicateConfigIds }
+    });
+  }
+
+  const skillsById = new Map(skills.map((skill) => [skill.id, skill]));
+  const byLens = new Map<string, { firstSkill: Skill; skillIds: string[]; enabledByDefault: boolean; languages: Set<string> }>();
+  for (const skill of skills) {
+    for (const lensId of skill.lenses) {
+      const existing = byLens.get(lensId);
+      if (existing) {
+        existing.skillIds.push(skill.id);
+        existing.enabledByDefault ||= skill.enabledByDefault;
+        for (const language of skill.languages) {
+          existing.languages.add(language);
+        }
+      } else {
+        byLens.set(lensId, {
+          firstSkill: skill,
+          skillIds: [skill.id],
+          enabledByDefault: skill.enabledByDefault,
+          languages: new Set(skill.languages)
+        });
+      }
+    }
+  }
+
+  const available = [...byLens.keys()].sort();
+  if (cliLenses !== undefined) {
+    const unknown = cliLenses.filter((id) => !byLens.has(id));
+    if (unknown.length > 0) {
+      throw new CodeninjaError("invalid_args", `unknown lens ${unknown.join(", ")}; available lenses: ${available.join(", ")}`, {
+        context: { unknown, available }
+      });
+    }
+  }
+
+  for (const lensId of [...lensConfig.enabled, ...lensConfig.disabled]) {
+    if (!byLens.has(lensId)) {
+      logger.warn({
+        runId: telemetry.runId,
+        stage: 0,
+        event: "unknown_config_lens",
+        message: `configured lens ${lensId} is not available and will be ignored`,
+        lensId
+      });
+      telemetry.event({
+        stage: 0,
+        level: "warn",
+        message: "unknown configured lens ignored",
+        lensId,
+        data: { lensId }
+      });
+    }
+  }
+
+  const cliSet = cliLenses === undefined ? undefined : new Set(cliLenses);
+  const enabledConfig = new Set(lensConfig.enabled);
+  const disabledConfig = new Set(lensConfig.disabled);
+  const descriptors = available.map((id) => {
+    const entry = byLens.get(id);
+    if (!entry) {
+      throw new Error(`missing registered lens ${id}`);
+    }
+    const defaultEnabled = entry.enabledByDefault;
+    const enabled = cliSet ? cliSet.has(id) : disabledConfig.has(id) ? false : enabledConfig.has(id) ? true : defaultEnabled;
+    return {
+      id,
+      title: entry.firstSkill.title,
+      description: truncate(entry.firstSkill.summaryLine, 200),
+      skillIds: [...entry.skillIds],
+      enabledByDefault: defaultEnabled,
+      enabled,
+      languages: [...entry.languages].sort()
+    };
+  });
+
+  return {
+    allLenses: () => descriptors.map(cloneDescriptor),
+    enabledLenses: () => descriptors.filter((lens) => lens.enabled).map(cloneDescriptor),
+    lens: (id) => {
+      const descriptor = descriptors.find((item) => item.id === id);
+      return descriptor ? cloneDescriptor(descriptor) : undefined;
+    },
+    skillsForLens: (id) => {
+      const descriptor = descriptors.find((item) => item.id === id);
+      return descriptor ? descriptor.skillIds.map((skillId) => skillsById.get(skillId)).filter(isSkill) : [];
+    },
+    skillsById: (ids) => ids.map((id) => skillsById.get(id)).filter(isSkill),
+    registryHash: () =>
+      sha256Hex(
+        JSON.stringify({
+          skills: skills.map((skill) => ({ id: skill.id, contentSha: skill.contentSha })).sort((a, b) => a.id.localeCompare(b.id)),
+          enabled: descriptors.filter((lens) => lens.enabled).map((lens) => lens.id).sort()
+        })
+      )
+  };
+}
+
+function cloneDescriptor(descriptor: LensDescriptor): LensDescriptor {
+  return {
+    ...descriptor,
+    skillIds: [...descriptor.skillIds],
+    languages: [...descriptor.languages]
+  };
+}
+
+function isSkill(skill: Skill | undefined): skill is Skill {
+  return skill !== undefined;
+}
+
+function truncate(input: string, maxChars: number): string {
+  return input.length <= maxChars ? input : input.slice(0, maxChars).trimEnd();
+}
