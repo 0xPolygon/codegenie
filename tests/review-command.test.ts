@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -72,6 +72,17 @@ describe("review command", () => {
     expect(parsed.options.cliLenses).toEqual(["core/tests", "lang/go"]);
     expect(parsed.config.lenses.enabled).toEqual(["core/tests", "lang/go"]);
     expect(parsed.config.cache.enabled).toBe(true);
+  });
+
+  it("lets --no-cache override a configured cache default", () => {
+    const ctx = testContext();
+    writeFileSync(path.join(ctx.homeOverride, "config.toml"), "[cache]\nenabled = true\n");
+
+    const parsed = parseReviewCommand(["review", "--branch", "feature", "--no-cache"], ctx);
+
+    expect(parsed.options.cacheOverride).toBe(false);
+    expect(parsed.config.cache.enabled).toBe(false);
+    expect(parsed.configSources["cache.enabled"]).toBe("cli");
   });
 
   it("parses commit ranges", () => {

@@ -24,6 +24,11 @@ type CacheFileInfo = {
   mtimeMs: number;
 };
 
+type EvictionResult = {
+  deletedCount: number;
+  deletedBytes: number;
+};
+
 const MAX_CACHE_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_CACHE_BYTES = 500 * 1024 * 1024;
 
@@ -31,11 +36,24 @@ export async function createModelCallCache(opts: CreateModelCallCacheOptions): P
   const dir = path.resolve(opts.repoRoot, opts.dir);
   refuseTrackedCacheDirectory(opts.repoRoot, dir);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  evictCacheEntries(dir);
+  const eviction = evictCacheEntries(dir);
+  opts.telemetry.event({
+    stage: 0,
+    level: "debug",
+    message: "model_call_cache_evicted",
+    data: {
+      dir,
+      deletedCount: eviction.deletedCount,
+      deletedBytes: eviction.deletedBytes,
+      maxAgeDays: 14,
+      maxBytes: MAX_CACHE_BYTES
+    }
+  });
 
   return {
+    runFingerprint: opts.runFingerprint,
     get: async (key, stage) => {
-      const filePath = cacheEntryPath(dir, opts.runFingerprint, key);
+      const filePath = cacheEntryPath(dir, key);
       if (!existsSync(filePath)) {
         opts.telemetry.event({ stage: stage ?? 0, level: "debug", message: "model_call_cache_miss", cacheStatus: "miss" });
         return { status: "miss" };
@@ -71,9 +89,10 @@ export async function createModelCallCache(opts: CreateModelCallCacheOptions): P
       }
     },
     put: async (key, entry) => {
-      const filePath = cacheEntryPath(dir, opts.runFingerprint, key);
+      const filePath = cacheEntryPath(dir, key);
       const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
       try {
+        mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
         writeFileSync(tmpPath, `${JSON.stringify(stripCredentials(entry), null, 2)}\n`, { mode: 0o600 });
         renameSync(tmpPath, filePath);
         opts.telemetry.event({ stage: entry.stage, level: "debug", message: "model_call_cache_write", cacheStatus: "write" });
@@ -95,8 +114,12 @@ export function buildModelCallCacheKey(input: Record<string, unknown>): string {
   return sha256Hex(stableJson(input));
 }
 
-function cacheEntryPath(dir: string, runFingerprint: string, key: string): string {
-  return path.join(dir, `${sha256Hex(`${runFingerprint}\0${key}`)}.json`);
+export function modelCallCacheEntryPath(dir: string, key: string): string {
+  return cacheEntryPath(dir, key);
+}
+
+function cacheEntryPath(dir: string, key: string): string {
+  return path.join(dir, `v${MODEL_CALL_CACHE_SCHEMA_VERSION}`, key.slice(0, 3), `${key}.json`);
 }
 
 function refuseTrackedCacheDirectory(repoRoot: string, dir: string): void {
@@ -120,16 +143,20 @@ function refuseTrackedCacheDirectory(repoRoot: string, dir: string): void {
   }
   if (result.status === 0 && result.stdout.trim().length > 0) {
     throw new CodeninjaError("config_error", "model-call cache directory contains git-tracked files", {
-      context: { dir, tracked: result.stdout.trim().split(/\r?\n/) }
+      context: { dir, tracked: result.stdout.trim().split(/\r?\n/).slice(0, 5) }
     });
   }
 }
 
-function evictCacheEntries(dir: string): void {
+function evictCacheEntries(dir: string): EvictionResult {
+  const result: EvictionResult = { deletedCount: 0, deletedBytes: 0 };
   const now = Date.now();
   for (const file of listCacheFiles(dir)) {
     if (now - file.mtimeMs > MAX_CACHE_AGE_MS) {
-      unlinkBestEffort(file.path);
+      if (unlinkBestEffort(file.path)) {
+        result.deletedCount += 1;
+        result.deletedBytes += file.size;
+      }
     }
   }
 
@@ -139,9 +166,13 @@ function evictCacheEntries(dir: string): void {
     if (totalBytes <= MAX_CACHE_BYTES) {
       break;
     }
-    unlinkBestEffort(file.path);
+    if (unlinkBestEffort(file.path)) {
+      result.deletedCount += 1;
+      result.deletedBytes += file.size;
+    }
     totalBytes -= file.size;
   }
+  return result;
 }
 
 function listCacheFiles(dir: string): CacheFileInfo[] {
@@ -164,11 +195,13 @@ function listCacheFiles(dir: string): CacheFileInfo[] {
   return files;
 }
 
-function unlinkBestEffort(filePath: string): void {
+function unlinkBestEffort(filePath: string): boolean {
   try {
     rmSync(filePath, { force: true });
+    return true;
   } catch {
     // Best-effort cleanup only.
+    return false;
   }
 }
 

@@ -415,6 +415,7 @@ class RunTelemetryImpl {
 
     const capped = capTelemetryEventData(record);
     this.updateTelemetrySummary(capped);
+    this.updateModelSummaryFromCacheEvent(capped);
     if (this.runDirectory) {
       this.appendJsonl("events.jsonl", capped);
     } else {
@@ -602,6 +603,18 @@ class RunTelemetryImpl {
         (this.toolSummary.byStage[stage] = emptyToolBucket()),
       record
     );
+  }
+
+  private updateModelSummaryFromCacheEvent(event: TelemetryEvent): void {
+    if (event.cacheStatus !== "write" || event.message !== "model_call_cache_write") {
+      return;
+    }
+    this.modelSummary.cache.write += 1;
+    const stage = String(event.stage);
+    const bucket =
+      this.modelSummary.byStage[stage] ??
+      (this.modelSummary.byStage[stage] = emptyModelStageSummary());
+    bucket.cache.write += 1;
   }
 
   private finalToolSummary(): unknown {

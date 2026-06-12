@@ -317,6 +317,51 @@ describe("run telemetry", () => {
     clearRegisteredSecretsForTests();
   });
 
+  it("folds successful cache write events into model-call cache summaries", async () => {
+    const repoRoot = tempDir();
+    const run = createRunTelemetry({
+      telemetryConfig: {
+        ...defaultConfig.telemetry,
+        logLevel: "debug"
+      },
+      idFactory: () => "20260611-120001-cache-summary"
+    });
+    const attached = await run.attachRunDirectory(repoRoot);
+
+    run.recorder.recordModelCall({
+      callId: "mc-cold",
+      stage: 7,
+      role: "packetReview",
+      model: "model",
+      provider: "provider",
+      kind: "initial",
+      attempt: 1,
+      promptChars: 12,
+      promptHash: "prompt",
+      outputChars: 5,
+      outputHash: "output",
+      inputTokens: 10,
+      outputTokens: 5,
+      totalTokens: 15,
+      durationMs: 10,
+      cacheStatus: "miss",
+      stopReason: "submit",
+      status: "ok"
+    });
+    run.recorder.event({
+      stage: 7,
+      level: "debug",
+      message: "model_call_cache_write",
+      cacheStatus: "write"
+    });
+
+    await run.finalize({ status: "completed", exitCode: 0 });
+
+    const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
+    expect(modelSummary.cache).toMatchObject({ hit: 0, miss: 1, disabled: 0, write: 1 });
+    expect(modelSummary.byStage["7"].cache).toMatchObject({ hit: 0, miss: 1, disabled: 0, write: 1 });
+  });
+
   it("drops buffered debug/info before warnings and records overflow", async () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const repoRoot = tempDir();

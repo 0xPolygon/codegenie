@@ -127,6 +127,7 @@ export type StoredProviderResponse = {
 export type CacheLookup = { status: "hit"; response: StoredProviderResponse } | { status: "miss" };
 
 export interface ModelCallCache {
+  readonly runFingerprint?: string;
   get(key: string, stage?: ReviewStage): Promise<CacheLookup>;
   put(key: string, entry: StoredProviderResponse): Promise<void>;
 }

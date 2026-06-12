@@ -276,12 +276,15 @@ async function completeWithCache(input: {
 }): Promise<ProviderCallResult> {
   const { opts, adapter, request, model, messages, tools, kind, toolChoice, providerLimit, nextModelCallId, taskSignal, taskTimedOut } = input;
   const canonicalRequest = canonicalModelRequest({
+    cacheSchemaVersion: MODEL_CALL_CACHE_SCHEMA_VERSION,
+    runFingerprint: opts.cache?.runFingerprint ?? null,
     runnerMessageVersion: RUNNER_MESSAGE_VERSION,
     provider: model.provider,
     model: model.id,
     reasoning: opts.llmConfig.reasoning ?? "high",
     stage: request.stage,
     templateVersion: request.templateVersion,
+    schemaName: submitToolNameForStage(request.stage),
     schemaVersion: SCHEMA_VERSIONS[submitToolNameForStage(request.stage)],
     toolBudget: request.toolBudget ?? NO_REPOSITORY_TOOL_BUDGET,
     kind,
@@ -312,7 +315,8 @@ async function completeWithCache(input: {
             attempt: 1,
             cacheStatus: "hit",
             promptText,
-            durationMs: 0
+            durationMs: 0,
+            usage: cached.response.usage
           });
         return { source: "cache", message: cached.response.message, callId };
       }
@@ -362,7 +366,7 @@ async function completeWithCache(input: {
       );
       const durationMs = Date.now() - startedAt;
       const schemaValid = schemaValidityForResponse(adapter, request, tools, message);
-      const cacheStatus = opts.cache ? schemaValid === false ? "miss" : "write" : "disabled";
+      const cacheStatus = opts.cache ? "miss" : "disabled";
       const modelCallMeta = definedRecord({
         callId,
         kind,
@@ -389,7 +393,7 @@ async function completeWithCache(input: {
       }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodeninjaErrorCode });
       reportUsage(opts, request.stage, message);
       releaseReservation();
-      if (opts.cache && schemaValid !== false) {
+      if (opts.cache && isCacheableProviderResponse(schemaValid, message)) {
         await opts.cache.put(cacheKey, cacheEntry(request.stage, message));
       }
       return { source: "provider", message, callId };
@@ -430,12 +434,15 @@ function buildSubmitTool<T>(request: LlmStructuredRequest<T>): ToolDefinition {
 }
 
 function canonicalModelRequest(input: {
+  cacheSchemaVersion: number;
+  runFingerprint: string | null;
   runnerMessageVersion: string;
   provider: string;
   model: string;
   reasoning: string;
   stage: ReviewStage;
   templateVersion: string;
+  schemaName: string;
   schemaVersion: number;
   toolBudget: unknown;
   kind: "initial" | "tool-continuation" | "repair" | "finalize";
@@ -444,18 +451,31 @@ function canonicalModelRequest(input: {
   tools: ToolDefinition[];
 }): Record<string, unknown> {
   return {
+    cacheSchemaVersion: input.cacheSchemaVersion,
+    runFingerprint: input.runFingerprint,
     runnerMessageVersion: input.runnerMessageVersion,
     provider: input.provider,
     model: input.model,
     reasoning: input.reasoning,
     stage: input.stage,
     templateVersion: input.templateVersion,
+    schemaName: input.schemaName,
     schemaVersion: input.schemaVersion,
     toolBudget: input.toolBudget,
     kind: input.kind,
     toolChoice: input.toolChoice,
     messages: input.messages,
-    tools: input.tools.map((tool) => toolSpec(tool))
+    tools: input.tools
+      .map((tool) => {
+        const spec = toolSpec(tool);
+        return {
+          name: spec.name,
+          description: spec.description,
+          parameters: spec.parameters,
+          parametersHash: sha256Hex(stableJson(spec.parameters))
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name))
   };
 }
 
@@ -722,12 +742,14 @@ function recordModelCall(
     cacheStatus: "hit" | "miss" | "disabled" | "write";
     promptText: string;
     durationMs: number;
+    usage?: StoredProviderResponse["usage"];
     schemaValid?: boolean;
     status?: "ok" | "schema_invalid";
     errorCode?: CodeninjaErrorCode;
   }
 ): void {
   const outputText = stableJson(message.content);
+  const usage = meta.usage;
   opts.telemetry.recordModelCall(definedRecord({
     callId: meta.callId,
     stage: request.stage,
@@ -743,10 +765,10 @@ function recordModelCall(
     promptHash: sha256Hex(meta.promptText),
     outputChars: outputText.length,
     outputHash: sha256Hex(outputText),
-    inputTokens: message.usage?.input,
-    outputTokens: message.usage?.output,
-    totalTokens: message.usage?.totalTokens,
-    costUSD: message.usage?.cost?.total,
+    inputTokens: usage !== undefined ? usage.inputTokens : message.usage?.input,
+    outputTokens: usage !== undefined ? usage.outputTokens : message.usage?.output,
+    totalTokens: usage !== undefined ? usage.totalTokens : message.usage?.totalTokens,
+    costUSD: usage !== undefined ? usage.costUSD : message.usage?.cost?.total,
     durationMs: meta.durationMs,
     cacheStatus: meta.cacheStatus,
     schemaValid: meta.schemaValid,
@@ -814,6 +836,10 @@ function schemaValidityForResponse(
   } catch {
     return false;
   }
+}
+
+function isCacheableProviderResponse(schemaValid: boolean | undefined, message: PiAssistantMessage): boolean {
+  return schemaValid === true || stopReason(message) === "tool_calls";
 }
 
 function reportUsage(opts: CreateRunnerOptions, stage: ReviewStage, message: PiAssistantMessage): void {

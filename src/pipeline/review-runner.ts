@@ -10,7 +10,7 @@ import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import { maybePublishToGitHub } from "../github/publisher.js";
 import { createPiRunner } from "../llm/pi-runner.js";
 import type { LlmCallUsage, LlmRunner, ModelCallCache, PiAiAdapter } from "../llm/llm-runner.js";
-import { createModelCallCache } from "../llm/model-call-cache.js";
+import { buildModelCallCacheKey, createModelCallCache } from "../llm/model-call-cache.js";
 import { createFakeRunner, shouldUseFakeRunner } from "../llm/fake-runner.js";
 import { buildRepositoryIndex } from "../repo/repository-index.js";
 import { buildLensRegistry } from "../skills/lens-registry.js";
@@ -522,28 +522,27 @@ function reviewCacheFingerprint(
   config: CodeninjaConfig,
   repoRoot: string,
   resolved: ResolvedReviewInput,
-  lensState: string
+  registryHash: string
 ): string {
-  return sha256Hex(JSON.stringify({
+  return buildModelCallCacheKey({
     repoRoot: path.resolve(repoRoot),
     mode: resolved.mode,
-    baseRef: resolved.baseRef ?? null,
-    headRef: resolved.headRef ?? null,
+    baseSha: resolved.baseRef ?? null,
+    headSha: resolved.headRef ?? resolved.headSha ?? null,
     startCommit: resolved.startCommit ?? null,
     endCommit: resolved.endCommit ?? null,
     mergeBase: resolved.mergeBase ?? null,
-    headSha: resolved.headSha ?? null,
     pr: resolved.pr ? { number: resolved.pr.number, baseSha: resolved.pr.baseSha, headSha: resolved.pr.headSha } : null,
     diffHash: sha256Hex(resolved.rawDiff),
-    reviewConfig: {
+    reviewConfigHash: buildModelCallCacheKey({
       lenses: config.lenses,
       review: config.review,
       git: config.git,
       classification: config.classification,
       llm: config.llm
-    },
-    lensState
-  }));
+    }),
+    registryHash
+  });
 }
 
 function createRunner(config: CodeninjaConfig, run: RunContext, cache?: ModelCallCache, adapter?: PiAiAdapter): LlmRunner {

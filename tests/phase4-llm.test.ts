@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { complete as piComplete, completeSimple as piCompleteSimple, Type, validateToolCall } from "@earendil-works/pi-ai";
@@ -13,7 +13,12 @@ import type {
   PiToolCall,
   StoredProviderResponse
 } from "../src/llm/llm-runner.js";
-import { buildModelCallCacheKey, createModelCallCache, MODEL_CALL_CACHE_SCHEMA_VERSION } from "../src/llm/model-call-cache.js";
+import {
+  buildModelCallCacheKey,
+  createModelCallCache,
+  MODEL_CALL_CACHE_SCHEMA_VERSION,
+  modelCallCacheEntryPath
+} from "../src/llm/model-call-cache.js";
 import {
   SCHEMA_VERSIONS,
   SubmitCompositionSchema,
@@ -29,7 +34,6 @@ import { clearRegisteredSecretsForTests, registerSecret, stripCredentials } from
 import type { ToolDefinition } from "../src/llm/llm-runner.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../src/provider/provider-services.js";
 import { CodeninjaError } from "../src/util/errors.js";
-import { sha256Hex } from "../src/util/hashing.js";
 
 describe("Phase 4 schemas and repository tool definitions", () => {
   it("rejects hallucinated fields and exposes stage submit tool names", () => {
@@ -423,7 +427,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       schemaValid: false,
       errorCode: "llm_schema_invalid"
     });
-    expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["miss", "write"]);
+    expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["miss", "miss"]);
     expect(cache.put).toHaveBeenCalledTimes(1);
     expect(cache.put.mock.calls[0]?.[1].message.content).toEqual([validSubmitReviewCall("submit-repair")]);
   });
@@ -455,6 +459,41 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       context: { reason: "budget_exhausted", stage: 7 }
     });
     expect(adapter.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not cache plain-text non-submissions", async () => {
+    const cache = {
+      get: vi.fn(async (_key: string) => ({ status: "miss" as const })),
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+    };
+    const adapter = scriptedAdapter([
+      assistant([{ type: "text", text: "plain text instead of submit" }]),
+      assistant([validSubmitReviewCall("must-not-run")])
+    ]);
+    let checkpoints = 0;
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      cache,
+      hooks: {
+        checkpoint: () => {
+          checkpoints += 1;
+          return checkpoints === 1 ? "ok" : "exhausted";
+        },
+        onUsage: vi.fn()
+      }
+    });
+
+    await expect(runner.runStructured(submitReviewRequest("packet-plain-no-cache"))).rejects.toMatchObject({
+      code: "llm_call_failed",
+      recoverable: true,
+      context: { reason: "budget_exhausted", stage: 7 }
+    });
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+    expect(cache.put).not.toHaveBeenCalled();
   });
 
   it("includes tool budget in model-call cache keys", async () => {
@@ -520,9 +559,86 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await runner.runStructured(submitReviewRequest("packet-canonical"));
 
     expect(adapter.complete).toHaveBeenCalledTimes(1);
-    expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["write", "hit"]);
+    expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["miss", "hit"]);
     expect(telemetry.modelCalls[0]?.promptHash).toBe(telemetry.modelCalls[1]?.promptHash);
     expect(telemetry.modelCalls[0]?.promptChars).toBe(telemetry.modelCalls[1]?.promptChars);
+  });
+
+  it("replays cache hits without provider budget usage or checkpoint calls", async () => {
+    const telemetry = fakeTelemetry();
+    const cache = {
+      runFingerprint: "run-hit",
+      get: vi.fn(async (_key: string) => ({ status: "hit" as const, response: cacheEntry(7) })),
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+    };
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async () => assistant([validSubmitReviewCall("must-not-call-provider")])),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const checkpoint = vi.fn(() => "ok" as const);
+    const onUsage = vi.fn();
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      cache,
+      hooks: { checkpoint, onUsage }
+    });
+
+    await expect(runner.runStructured(submitReviewRequest("packet-hit"))).resolves.toEqual({
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
+    });
+
+    expect(adapter.complete).not.toHaveBeenCalled();
+    expect(checkpoint).not.toHaveBeenCalled();
+    expect(onUsage).not.toHaveBeenCalled();
+    expect(cache.put).not.toHaveBeenCalled();
+    expect(telemetry.modelCalls).toEqual([
+      expect.objectContaining({
+        cacheStatus: "hit",
+        inputTokens: 1,
+        outputTokens: 1,
+        totalTokens: 2,
+        costUSD: 0.01
+      })
+    ]);
+  });
+
+  it("includes the run fingerprint in model-call cache keys", async () => {
+    const keys: string[] = [];
+    const cache = (runFingerprint: string) => ({
+      runFingerprint,
+      get: vi.fn(async (key: string) => {
+        keys.push(key);
+        return { status: "miss" as const };
+      }),
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+    });
+    const adapter = scriptedAdapter([
+      assistant([validSubmitReviewCall("submit-run-a")]),
+      assistant([validSubmitReviewCall("submit-run-b")])
+    ]);
+
+    for (const runFingerprint of ["run-a", "run-b"]) {
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: fakeTelemetry().recorder,
+        logger: fakeLogger(),
+        runSignal: new AbortController().signal,
+        adapter,
+        cache: cache(runFingerprint),
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      await runner.runStructured(submitReviewRequest("same-packet"));
+    }
+
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).not.toBe(keys[1]);
   });
 
   it("passes auto tool choice during investigation and forces submit-only calls", async () => {
@@ -1086,6 +1202,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     entry.message.content.push({ type: "text", text: "cache contains super-secret-cache-token" });
     registerSecret("super-secret-cache-token");
     await cache.put(keyA, entry);
+    expect(existsSync(modelCallCacheEntryPath(path.join(repoRoot, ".codeninja", "cache"), keyA))).toBe(true);
     expect(readCacheText(path.join(repoRoot, ".codeninja", "cache"))).not.toContain("super-secret-cache-token");
     expect(readCacheText(path.join(repoRoot, ".codeninja", "cache"))).toContain("[redacted:secret]");
     await expect(cache.get(keyA, 7)).resolves.toMatchObject({ status: "hit" });
@@ -1103,7 +1220,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await cache.put("old-schema", { ...entry, cacheSchemaVersion: 0 });
     await expect(cache.get("old-schema", 7)).resolves.toEqual({ status: "miss" });
     const malformedKey = "malformed-current-schema";
-    const malformedPath = path.join(repoRoot, ".codeninja", "cache", `${sha256Hex(`run-a\0${malformedKey}`)}.json`);
+    const malformedPath = modelCallCacheEntryPath(path.join(repoRoot, ".codeninja", "cache"), malformedKey);
+    mkdirSync(path.dirname(malformedPath), { recursive: true });
     writeFileSync(
       malformedPath,
       `${JSON.stringify({
@@ -1118,7 +1236,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await expect(cache.get(malformedKey, 7)).resolves.toEqual({ status: "miss" });
     expect(existsSync(malformedPath)).toBe(false);
     const malformedContentKey = "malformed-current-schema-content";
-    const malformedContentPath = path.join(repoRoot, ".codeninja", "cache", `${sha256Hex(`run-a\0${malformedContentKey}`)}.json`);
+    const malformedContentPath = modelCallCacheEntryPath(path.join(repoRoot, ".codeninja", "cache"), malformedContentKey);
+    mkdirSync(path.dirname(malformedContentPath), { recursive: true });
     writeFileSync(
       malformedContentPath,
       `${JSON.stringify({
@@ -1142,6 +1261,42 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     );
     expect(existsSync(path.join(repoRoot, ".codeninja", "cache"))).toBe(true);
     clearRegisteredSecretsForTests();
+  });
+
+  it("evicts stale cache entries at construction and records telemetry", async () => {
+    const repoRoot = tempGitRepo();
+    const cacheDir = path.join(repoRoot, ".codeninja", "cache");
+    const staleKey = buildModelCallCacheKey({ runFingerprint: "old", prompt: "old" });
+    const freshKey = buildModelCallCacheKey({ runFingerprint: "new", prompt: "new" });
+    const stalePath = modelCallCacheEntryPath(cacheDir, staleKey);
+    const freshPath = modelCallCacheEntryPath(cacheDir, freshKey);
+    mkdirSync(path.dirname(stalePath), { recursive: true });
+    mkdirSync(path.dirname(freshPath), { recursive: true });
+    writeFileSync(stalePath, `${JSON.stringify(cacheEntry(7))}\n`);
+    writeFileSync(freshPath, `${JSON.stringify(cacheEntry(7))}\n`);
+    const staleTime = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    utimesSync(stalePath, staleTime, staleTime);
+
+    const telemetry = fakeTelemetry();
+    await createModelCallCache({
+      dir: cacheDir,
+      repoRoot,
+      runFingerprint: "run-evict",
+      logger: fakeLogger(),
+      telemetry: telemetry.recorder
+    });
+
+    expect(existsSync(stalePath)).toBe(false);
+    expect(existsSync(freshPath)).toBe(true);
+    expect(telemetry.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 0,
+          message: "model_call_cache_evicted",
+          data: expect.objectContaining({ deletedCount: 1 })
+        })
+      ])
+    );
   });
 
   it("rejects repo-root cache directories before eviction and fails closed on non-git roots", async () => {
@@ -1345,8 +1500,11 @@ function tempGitRepo(): string {
 function readCacheText(cacheDir: string): string {
   const parts: string[] = [];
   for (const entry of readdirSync(cacheDir, { withFileTypes: true })) {
-    if (entry.isFile() && entry.name.endsWith(".json")) {
-      parts.push(readFileSync(path.join(cacheDir, entry.name), "utf8"));
+    const entryPath = path.join(cacheDir, entry.name);
+    if (entry.isDirectory()) {
+      parts.push(readCacheText(entryPath));
+    } else if (entry.isFile() && entry.name.endsWith(".json")) {
+      parts.push(readFileSync(entryPath, "utf8"));
     }
   }
   return parts.join("\n");
