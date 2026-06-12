@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { createGitClient } from "../src/git/git-client.js";
-import { assertSafeRefspec, runGit } from "../src/git/subprocess.js";
+import { assertSafeRefspec, runGit, scrubSubprocessValue } from "../src/git/subprocess.js";
 import { CodeninjaError } from "../src/util/errors.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
@@ -30,6 +30,24 @@ describe("git client", () => {
       code: "git_ref_missing",
       message: expect.not.stringContaining(secret)
     });
+  });
+
+  it("uses the pinned GitHub scrubber for gh subprocess contexts", () => {
+    const privateKey = [
+      "-----BEGIN PRIVATE KEY-----",
+      "abc123",
+      "-----END PRIVATE KEY-----"
+    ].join("\n");
+    const raw = {
+      stdout: `token xoxb-abcdefghijklmnop ${privateKey}`,
+      stderr: "notify @team"
+    };
+
+    expect(scrubSubprocessValue("gh", raw)).toEqual({
+      stdout: "token [redacted:slack-token] [redacted:private-key]",
+      stderr: "notify @team"
+    });
+    expect(String(scrubSubprocessValue("git", privateKey))).toContain("BEGIN PRIVATE KEY");
   });
 
   it("rejects malformed refspecs before fetch", () => {

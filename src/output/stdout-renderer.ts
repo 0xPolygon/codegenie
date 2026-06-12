@@ -11,6 +11,20 @@ export function renderPostingSummaryForStdout(
   format: OutputFormat,
   opts: { postRequested?: boolean } = {}
 ): string {
+  if (result.posting !== undefined) {
+    if (format === "json") {
+      return `${JSON.stringify(result.posting, null, 2)}\n`;
+    }
+    return [
+      "codeninja GitHub posting summary",
+      `Status: ${result.posting.status}`,
+      `Inline comments posted: ${result.posting.inlinePosted}`,
+      `Demoted to review body: ${result.posting.demotedToBody}`,
+      `Skipped duplicates: ${result.posting.skippedDuplicates}`,
+      `Attempts: ${result.posting.attempts.length}`
+    ].join("\n") + "\n";
+  }
+
   const summary = {
     summary: result.summary,
     findings: result.findings.length,

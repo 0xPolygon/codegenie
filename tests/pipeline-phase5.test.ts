@@ -3786,6 +3786,53 @@ describe("phase 5 pipeline regressions", () => {
     expect(enabled.postingPlan?.reviewBody).toContain("No credible findings.");
   });
 
+  it("renders summary-only findings with their full body in GitHub posting plans", async () => {
+    const { anchor: _anchor, ...summaryFinding } = fakeFinding();
+    const result = await dedupeRankAndComposeReview(
+      { verified: [{ ...summaryFinding, changedLine: false }], verdicts: [] },
+      fakePlan(),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "one broad issue",
+              composedFindings: [{
+                findingIds: ["finding-1"],
+                finalBody: "Full failure mode and concrete fix details.",
+                publication: "summary-only"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        postGithubComments: true
+      }
+    );
+
+    expect(result.summaryOnlyFindings).toHaveLength(1);
+    expect(result.postingPlan?.reviewBody).toContain("- finding (app.ts)");
+    expect(result.postingPlan?.reviewBody).toContain("  Full failure mode and concrete fix details.");
+  });
+
   it("includes partial coverage disclosure in GitHub posting review body", async () => {
     const result = await dedupeRankAndComposeReview(
       { verified: [], verdicts: [] },

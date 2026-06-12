@@ -1,9 +1,13 @@
 import path from "node:path";
+import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createRunTelemetry } from "../telemetry/run-artifacts.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { parseDiff } from "../git/diff-parser.js";
 import { classifyChangedFiles, filterDiffFiles } from "../git/file-classifier.js";
-import { resolveReviewCommandTarget, resolveReviewInput } from "../git/review-input-resolver.js";
+import { createGitClient } from "../git/git-client.js";
+import { cleanupPullRequestRefs, resolveReviewCommandTarget, resolveReviewInput } from "../git/review-input-resolver.js";
+import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
+import { maybePublishToGitHub } from "../github/publisher.js";
 import { createPiRunner } from "../llm/pi-runner.js";
 import type { LlmCallUsage, LlmRunner, ModelCallCache, PiAiAdapter } from "../llm/llm-runner.js";
 import { createModelCallCache } from "../llm/model-call-cache.js";
@@ -18,6 +22,7 @@ import type {
   CoverageLevel,
   DiffFile,
   FileFilterDecision,
+  GitHubClient,
   OutputFormat,
   PacketReviewResult,
   RepositoryToolsHost,
@@ -49,6 +54,7 @@ type RunReviewOverrides = {
   writeOutput?: (text: string) => void;
   runner?: LlmRunner;
   piAdapter?: PiAiAdapter;
+  github?: GitHubClient;
   onRunStart?: (run: { runId: string; runDir: string }) => void;
   onInventory?: (inventory: { filesChanged: number; keptFiles: number }) => void;
 };
@@ -59,6 +65,7 @@ type RunContext = {
   logger: ReturnType<typeof createRunTelemetry>["logger"];
   budget: BudgetLedger;
   abort: AbortController;
+  addCleanupTask(task: () => Promise<void>): void;
   finalize(outcome: { status: "completed" | "failed"; errorCode?: import("../util/errors.js").CodeninjaErrorCode; exitCode: number }): Promise<void>;
 };
 
@@ -69,6 +76,15 @@ type CoverageOptions = {
   budgetStopped?: boolean;
 };
 
+type PullRequestRefLockOwner = {
+  runId?: string;
+  prNumber?: number;
+  pid?: number;
+  acquiredAt?: string;
+};
+
+const MISSING_LOCK_OWNER_STALE_MS = 5_000;
+
 export async function runReview(
   input: ReviewInput | ReviewCommandTarget,
   config: CodeninjaConfig,
@@ -78,7 +94,8 @@ export async function runReview(
   const run = await startRun(config, input, repoRoot, overrides);
 
   try {
-    const resolved = await resolveInput(input, config, run.telemetry, repoRoot);
+    await registerPullRequestRefCleanup(input, repoRoot, run);
+    const resolved = await resolveInput(input, config, run.telemetry, repoRoot, overrides);
     throwIfHardAborted(run);
     const diff = parseDiff(resolved.rawDiff);
     await run.telemetry.writeArtifact("resolved-input.json", summarizeResolvedInput(resolved));
@@ -91,7 +108,7 @@ export async function runReview(
     if (isZeroWork(diff.files, kept)) {
       await validateExplicitCliLensesForZeroWork(config, repoRoot, run, overrides);
     }
-    const zeroWork = await maybeZeroWork(diff.files, kept, decisions, run, overrides);
+    const zeroWork = await maybeZeroWork(diff.files, kept, decisions, resolved, config, run, overrides);
     if (zeroWork) {
       await run.finalize({ status: "completed", exitCode: 0 });
       return zeroWork;
@@ -166,6 +183,10 @@ export async function runReview(
       status: finalReview.coverage,
       records: buildCoverageRecords(diff.files, decisions, plannerResult.plan, packetResults, packets)
     });
+    await maybePublishToGitHub(finalReview, resolved, config, run.telemetry, {
+      diff,
+      ...(overrides.github !== undefined ? { github: overrides.github } : {})
+    });
     await renderOutputs(finalReview, overrides, run.telemetry);
     await run.finalize({ status: "completed", exitCode: 0 });
     return finalReview;
@@ -230,6 +251,7 @@ async function startRun(
     hardTimeoutMs
   );
   hardKillTimer.unref?.();
+  const cleanupTasks: Array<() => Promise<void>> = [];
   let finalized = false;
   return {
     runId: run.recorder.runId,
@@ -237,10 +259,14 @@ async function startRun(
     logger: run.logger,
     budget,
     abort,
+    addCleanupTask: (task) => {
+      cleanupTasks.push(task);
+    },
     finalize: async (outcome) => {
       if (!finalized) {
         finalized = true;
         clearTimeout(hardKillTimer);
+        await runCleanupTasks(cleanupTasks, run.recorder);
       }
       await run.finalize(outcome);
     }
@@ -269,6 +295,154 @@ function emitConfigWarnings(
       data: { ...data, message: warning.message }
     });
   }
+}
+
+async function registerPullRequestRefCleanup(
+  input: ReviewInput | ReviewCommandTarget,
+  repoRoot: string,
+  run: RunContext
+): Promise<void> {
+  const prNumber = pullRequestNumber(input);
+  if (prNumber === undefined) {
+    return;
+  }
+  const git = createGitClient(repoRoot);
+  if (!(await git.isInsideWorktree())) {
+    return;
+  }
+  const actualRepoRoot = await git.repoRoot();
+  const lock = await acquirePullRequestRefLock(actualRepoRoot, prNumber, run.telemetry);
+  run.addCleanupTask(lock.release);
+  run.addCleanupTask(async () => {
+    await cleanupPullRequestRefs(createGitClient(actualRepoRoot), prNumber, run.telemetry, "end");
+  });
+}
+
+function pullRequestNumber(input: ReviewInput | ReviewCommandTarget): number | undefined {
+  return input.mode === "github_pr" ? input.prNumber : undefined;
+}
+
+async function acquirePullRequestRefLock(
+  repoRoot: string,
+  prNumber: number,
+  telemetry: TelemetryRecorder
+): Promise<{ release: () => Promise<void> }> {
+  const lockDir = path.join(repoRoot, ".codeninja", "locks", `pr-${prNumber}.refs.lock`);
+  await mkdir(path.dirname(lockDir), { recursive: true });
+  const deadline = Date.now() + 300_000;
+  for (;;) {
+    try {
+      await mkdir(lockDir);
+      await writeFile(
+        path.join(lockDir, "owner.json"),
+        `${JSON.stringify({ runId: telemetry.runId, prNumber, pid: process.pid, acquiredAt: new Date().toISOString() })}\n`
+      );
+      telemetry.event({
+        stage: 1,
+        level: "info",
+        message: "pr_ref_lock_acquired",
+        data: { prNumber, lockDir }
+      });
+      return {
+        release: async () => {
+          await rm(lockDir, { recursive: true, force: true });
+          telemetry.event({
+            stage: 1,
+            level: "info",
+            message: "pr_ref_lock_released",
+            data: { prNumber, lockDir }
+          });
+        }
+      };
+    } catch (error) {
+      if (!isNodeErrorCode(error, "EEXIST") || Date.now() >= deadline) {
+        throw new CodeninjaError("git_fetch_failed", `timed out waiting for PR #${prNumber} ref lock`, { cause: error });
+      }
+      if (await removeStalePullRequestRefLock(lockDir, prNumber, telemetry)) {
+        continue;
+      }
+      await sleep(100);
+    }
+  }
+}
+
+async function removeStalePullRequestRefLock(
+  lockDir: string,
+  prNumber: number,
+  telemetry: TelemetryRecorder
+): Promise<boolean> {
+  const owner = await readPullRequestRefLockOwner(lockDir);
+  if (owner !== undefined && owner.pid !== undefined && processExists(owner.pid)) {
+    return false;
+  }
+  if (owner === undefined && !(await lockDirectoryIsOlderThan(lockDir, MISSING_LOCK_OWNER_STALE_MS))) {
+    return false;
+  }
+  await rm(lockDir, { recursive: true, force: true });
+  telemetry.event({
+    stage: 1,
+    level: "warn",
+    message: "stale_pr_ref_lock_removed",
+    data: { prNumber, lockDir, owner }
+  });
+  return true;
+}
+
+async function lockDirectoryIsOlderThan(lockDir: string, ms: number): Promise<boolean> {
+  try {
+    const info = await stat(lockDir);
+    return Date.now() - info.mtimeMs >= ms;
+  } catch {
+    return true;
+  }
+}
+
+async function readPullRequestRefLockOwner(lockDir: string): Promise<PullRequestRefLockOwner | undefined> {
+  try {
+    const raw = await readFile(path.join(lockDir, "owner.json"), "utf8");
+    const parsed = JSON.parse(raw) as PullRequestRefLockOwner;
+    return parsed && typeof parsed === "object" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function processExists(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return isNodeErrorCode(error, "EPERM");
+  }
+}
+
+async function runCleanupTasks(tasks: Array<() => Promise<void>>, telemetry: TelemetryRecorder): Promise<void> {
+  for (const task of [...tasks].reverse()) {
+    try {
+      await task();
+    } catch (error) {
+      telemetry.event({
+        stage: 0,
+        level: "warn",
+        message: "run_cleanup_failed",
+        data: { error: error instanceof Error ? error.message : String(error) }
+      });
+    }
+  }
+}
+
+function isNodeErrorCode(error: unknown, code: string): boolean {
+  return error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as { code?: unknown }).code === code;
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function createPipelineServices(
@@ -407,18 +581,21 @@ async function resolveInput(
   input: ReviewInput | ReviewCommandTarget,
   config: CodeninjaConfig,
   telemetry: TelemetryRecorder,
-  repoRoot: string
+  repoRoot: string,
+  overrides: RunReviewOverrides
 ): Promise<ResolvedReviewInput> {
   if (input.mode === "default_branch") {
-    return resolveReviewCommandTarget(input, config, telemetry, { repoRoot });
+    return resolveReviewCommandTarget(input, config, telemetry, { repoRoot, ...(overrides.github !== undefined ? { github: overrides.github } : {}) });
   }
-  return resolveReviewInput(input, config, telemetry, { repoRoot });
+  return resolveReviewInput(input, config, telemetry, { repoRoot, ...(overrides.github !== undefined ? { github: overrides.github } : {}) });
 }
 
 async function maybeZeroWork(
   allFiles: DiffFile[],
   kept: DiffFile[],
   decisions: FileFilterDecision[],
+  resolved: ResolvedReviewInput,
+  config: CodeninjaConfig,
   run: RunContext,
   overrides: RunReviewOverrides
 ): Promise<ReviewResult | undefined> {
@@ -445,7 +622,10 @@ async function maybeZeroWork(
     findings: [],
     summaryOnlyFindings: [],
     needsHumanAttention: [],
-    noFindings: true
+    noFindings: true,
+    ...(overrides.postGithubComments === true && resolved.mode === "github_pr" && config.github.summaryWhenNoFindings
+      ? { postingPlan: { inline: [], reviewBody: "Nothing to review." } }
+      : {})
   };
   await run.telemetry.writeArtifact("coverage.json", {
     status: coverage,
@@ -455,6 +635,9 @@ async function maybeZeroWork(
   await run.telemetry.writeArtifact("verification.json", []);
   await run.telemetry.writeArtifact("final-selection.json", { records: [], groups: [] });
   await run.telemetry.writeArtifact("final-findings.json", []);
+  await maybePublishToGitHub(result, resolved, config, run.telemetry, {
+    ...(overrides.github !== undefined ? { github: overrides.github } : {})
+  });
   await renderOutputs(result, overrides, run.telemetry);
   run.telemetry.event({ stage: 2, level: "info", message: "zero_work_short_circuit", data: { totalHunks, reasons } });
   return result;
@@ -655,7 +838,7 @@ async function renderOutputs(
   overrides: RunReviewOverrides,
   telemetry: TelemetryRecorder
 ): Promise<void> {
-  const markdown = renderMarkdownReview(result);
+  const markdown = scrubGitHubSecrets(renderMarkdownReview(result));
   await telemetry.writeArtifact("final-review.md", markdown);
   const rendered = overrides.postGithubComments
     ? renderPostingSummaryForStdout(result, overrides.format ?? "markdown", { postRequested: true })

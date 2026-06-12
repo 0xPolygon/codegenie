@@ -1,0 +1,141 @@
+import { describe, expect, it } from "vitest";
+import { createGitHubClient } from "../src/github/github-client.js";
+import type { runGh } from "../src/git/subprocess.js";
+
+type RunGh = typeof runGh;
+
+describe("GitHub client", () => {
+  it("maps PR metadata and falls back to REST commit SHAs", async () => {
+    const calls: string[][] = [];
+    const gh: RunGh = async (_repoRoot, args) => {
+      calls.push(args);
+      if (args[0] === "--version" || args.join(" ") === "auth status") {
+        return "";
+      }
+      if (args.join(" ") === "repo view --json owner,name") {
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codeninja" });
+      }
+      if (args[0] === "pr") {
+        return JSON.stringify({
+          number: 7,
+          title: "PR title",
+          body: "PR body",
+          url: "https://github.com/0xPolygon/codeninja/pull/7",
+          baseRefName: "main",
+          headRefName: "feature"
+        });
+      }
+      if (args[0] === "api" && args[1] === "repos/0xPolygon/codeninja/pulls/7") {
+        return JSON.stringify({ base: { sha: "b".repeat(40) }, head: { sha: "h".repeat(40) } });
+      }
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    };
+
+    const client = createGitHubClient("/repo", { runGh: gh });
+
+    await expect(client.viewPr(7)).resolves.toMatchObject({
+      owner: "0xPolygon",
+      repo: "codeninja",
+      number: 7,
+      baseSha: "b".repeat(40),
+      headSha: "h".repeat(40)
+    });
+    expect(calls).toContainEqual(["pr", "view", "7", "--json", expect.stringContaining("baseRefOid")]);
+    expect(calls).toContainEqual(["api", "repos/0xPolygon/codeninja/pulls/7"]);
+  });
+
+  it("lists only viewer-authored codeninja comments with pagination and outdated-line fallback", async () => {
+    const fingerprint = "a".repeat(64);
+    const gh: RunGh = async (_repoRoot, args) => {
+      if (args[0] === "--version" || args.join(" ") === "auth status") {
+        return "";
+      }
+      if (args.join(" ") === "repo view --json owner,name") {
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codeninja" });
+      }
+      if (args.join(" ") === "api user --jq .login") {
+        return "codebot\n";
+      }
+      if (args[0] === "api" && String(args[1]).endsWith("page=1")) {
+        return JSON.stringify([
+          {
+            id: 1,
+            path: "src/app.ts",
+            side: "RIGHT",
+            line: null,
+            original_line: 42,
+            body: `<!-- codeninja:fingerprint=${fingerprint};run=run-1 -->`,
+            user: { login: "codebot" }
+          },
+          {
+            id: 2,
+            path: "src/app.ts",
+            side: "RIGHT",
+            line: 50,
+            body: `<!-- codeninja:fingerprint=${"b".repeat(64)};run=run-2 -->`,
+            user: { login: "other" }
+          }
+        ]);
+      }
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    };
+
+    const client = createGitHubClient("/repo", { runGh: gh });
+
+    await expect(client.listOwnComments(3)).resolves.toEqual([
+      {
+        id: "1",
+        path: "src/app.ts",
+        line: 42,
+        side: "RIGHT",
+        author: "codebot",
+        isCodeninja: true,
+        fingerprint
+      }
+    ]);
+  });
+
+  it("posts one COMMENT review with the cached PR head SHA", async () => {
+    let payload: unknown;
+    const gh: RunGh = async (_repoRoot, args, opts = {}) => {
+      if (args[0] === "--version" || args.join(" ") === "auth status") {
+        return "";
+      }
+      if (args.join(" ") === "repo view --json owner,name") {
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codeninja" });
+      }
+      if (args[0] === "pr") {
+        return JSON.stringify({
+          number: 9,
+          title: "",
+          body: "",
+          url: "",
+          baseRefName: "main",
+          headRefName: "feature",
+          baseRefOid: "b".repeat(40),
+          headRefOid: "h".repeat(40)
+        });
+      }
+      if (args[0] === "api" && args[1] === "repos/0xPolygon/codeninja/pulls/9/reviews") {
+        payload = JSON.parse(String(opts.input));
+        return "{}";
+      }
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    };
+    const client = createGitHubClient("/repo", { runGh: gh });
+
+    await client.viewPr(9);
+    await client.createReview(9, {
+      body: "review body",
+      event: "COMMENT",
+      comments: [{ path: "src/app.ts", line: 2, side: "RIGHT", body: "inline" }]
+    });
+
+    expect(payload).toEqual({
+      body: "review body",
+      event: "COMMENT",
+      commit_id: "h".repeat(40),
+      comments: [{ path: "src/app.ts", line: 2, side: "RIGHT", body: "inline" }]
+    });
+  });
+});

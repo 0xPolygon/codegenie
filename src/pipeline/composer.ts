@@ -2,6 +2,7 @@ import type { LlmRunner } from "../llm/llm-runner.js";
 import { SubmitCompositionSchema, type SubmitComposition } from "../llm/schemas.js";
 import type { PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
+import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import type {
   CandidateFinding,
   Confidence,
@@ -184,7 +185,7 @@ export async function dedupeRankAndComposeReview(
       findingIds: group.findings.map((finding) => finding.id)
     }))
   });
-  await telemetry.writeArtifact("final-findings.json", capped.findings);
+  await telemetry.writeArtifact("final-findings.json", scrubGitHubSecrets(capped.findings));
   telemetry.event({ stage: 10, level: "info", message: "stage_completed", data: { finalFindings: capped.findings.length } });
   return result;
 }
@@ -493,7 +494,8 @@ function renderReviewBody(
   if (summaryOnly.length > 0) {
     lines.push("", "Summary-only findings:");
     for (const finding of summaryOnly) {
-      lines.push(`- ${finding.title} (${finding.path})`);
+      lines.push("", `- ${finding.title} (${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""})`);
+      lines.push(indentBlock(finding.finalBody.trim() || finding.failureMode));
     }
   }
   if (notes.length > 0) {
@@ -503,6 +505,10 @@ function renderReviewBody(
     }
   }
   return lines.join("\n");
+}
+
+function indentBlock(text: string): string {
+  return text.split(/\r?\n/u).map((line) => `  ${line}`).join("\n");
 }
 
 function coverageDisclosureLines(coverage: RunCoverageStatus): string[] {

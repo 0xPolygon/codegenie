@@ -135,6 +135,15 @@ export type PullRequestMetadata = {
   headSha: string;
 };
 
+export type InlineCommentInput = {
+  path: string;
+  line: number;
+  side: "RIGHT" | "LEFT";
+  start_line?: number;
+  start_side?: "RIGHT" | "LEFT";
+  body: string;
+};
+
 export type ExistingReviewThread = {
   id: string;
   path?: string;
@@ -144,6 +153,15 @@ export type ExistingReviewThread = {
   isCodeninja: boolean;
   fingerprint?: string;
 };
+
+export interface GitHubClient {
+  viewPr(number: number, opts?: { refresh?: boolean }): Promise<PullRequestMetadata>;
+  createReview(
+    number: number,
+    review: { body: string; event: "COMMENT"; comments: InlineCommentInput[] }
+  ): Promise<void>;
+  listOwnComments(number: number): Promise<ExistingReviewThread[]>;
+}
 
 export type CommitInfo = {
   sha: string;
@@ -663,6 +681,25 @@ export type ReviewResult = {
   needsHumanAttention: NeedsHumanAttentionNote[];
   noFindings: boolean;
   postingPlan?: PostingPlan;
+  posting?: RunPostingRecord;
+};
+
+export type FindingDuplicateDecision = {
+  findingId: string;
+  action: "post" | "skip_exact_fingerprint" | "skip_fuzzy_proximity";
+  matchedCommentId?: string;
+  reason: string;
+};
+
+export type RunPostingRecord = {
+  attempted: boolean;
+  status: "posted" | "skipped_no_findings" | "skipped_all_duplicates" | "summary_only_fallback" | "failed";
+  inlinePosted: number;
+  demotedToBody: number;
+  skippedDuplicates: number;
+  attempts: Array<{ httpStatus?: number; commentCount: number; outcome: "ok" | "rejected" | "error" }>;
+  error?: string;
+  duplicateDecisions?: FindingDuplicateDecision[];
 };
 
 export type DossierHunkEntry = {

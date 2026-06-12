@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { execa } from "execa";
+import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import { stripCredentials } from "../telemetry/redaction.js";
 import { CodeninjaError, type CodeninjaErrorCode } from "../util/errors.js";
 
@@ -41,6 +42,14 @@ export async function runGit(
   opts: GitCommandOptions = {}
 ): Promise<string> {
   return runCommand("git", repoRoot, args, opts);
+}
+
+export async function runGh(
+  repoRoot: string,
+  args: string[],
+  opts: GitCommandOptions = {}
+): Promise<string> {
+  return runCommand("gh", repoRoot, args, { ...opts, network: true });
 }
 
 export async function runGitCapped(
@@ -155,7 +164,7 @@ async function runCommand(
 
     const detail = subprocessFailureDetail(result);
     throw new CodeninjaError(errorCode, commandFailureMessage(command, args, detail), {
-      context: {
+      context: scrubSubprocessValue(command, {
         command,
         args,
         exitCode: result.exitCode,
@@ -165,27 +174,31 @@ async function runCommand(
         signal: result.signal,
         stdout: result.stdout,
         stderr: result.stderr
-      }
+      })
     });
   } catch (error) {
     if (error instanceof CodeninjaError) {
       throw error;
     }
     throw new CodeninjaError(errorCode, commandFailureMessage(command, args, errorMessage(error)), {
-      context: {
+      context: scrubSubprocessValue(command, {
         command,
         args,
         error: errorMessage(error)
-      },
+      }),
       cause: error
     });
   }
 }
 
 function commandFailureMessage(command: string, args: string[], detail: unknown): string {
-  const safeDetail = String(stripCredentials(detail) ?? "").trim();
+  const safeDetail = String(scrubSubprocessValue(command, detail) ?? "").trim();
   const suffix = safeDetail.length > 0 ? `: ${safeDetail}` : "";
-  return String(stripCredentials(`${command} ${args.join(" ")} failed${suffix}`));
+  return String(scrubSubprocessValue(command, `${command} ${args.join(" ")} failed${suffix}`));
+}
+
+export function scrubSubprocessValue<T>(command: string, value: T): T {
+  return command === "gh" ? scrubGitHubSecrets(value) : stripCredentials(value);
 }
 
 function errorMessage(error: unknown): string {

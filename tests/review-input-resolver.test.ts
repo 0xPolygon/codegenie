@@ -3,6 +3,7 @@ import { defaultConfig } from "../src/config/schema.js";
 import { parseDiff } from "../src/git/diff-parser.js";
 import type { InternalGitClient } from "../src/git/git-client.js";
 import { resolveReviewCommandTarget, resolveReviewInput } from "../src/git/review-input-resolver.js";
+import type { GitHubClient, PullRequestMetadata } from "../src/types.js";
 import { CodeninjaError } from "../src/util/errors.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 
@@ -184,6 +185,141 @@ describe("review input resolver", () => {
       message: expect.stringContaining("git fetch --unshallow")
     });
   });
+
+  it("resolves PR mode by fetching GitHub-matched refs from the matching base remote", async () => {
+    const pr = prMetadata();
+    const available = new Set<string>();
+    const fetches: Array<{ remote: string; refspec: string }> = [];
+    const deletedRefs: string[] = [];
+    const gitClient = fakeGitClient({
+      repoRoot: async () => "/repo",
+      isShallow: async () => false,
+      remotes: async () => [
+        { name: "origin", url: "https://github.com/someone/else.git" },
+        { name: "upstream", url: "git@github.com:0xPolygon/codeninja.git" }
+      ],
+      listRefs: async () => ["refs/codeninja/pr/12/head"],
+      deleteRef: async (ref) => {
+        deletedRefs.push(ref);
+      },
+      commitExists: async (sha) => available.has(sha),
+      fetchFrom: async (remote, refspec) => {
+        fetches.push({ remote, refspec });
+        if (refspec.includes("/head")) {
+          available.add(pr.headSha);
+        }
+        if (refspec.includes(pr.baseSha)) {
+          available.add(pr.baseSha);
+        }
+      },
+      mergeBase: async (base, head) => {
+        expect(base).toBe(pr.baseSha);
+        expect(head).toBe(pr.headSha);
+        return "m".repeat(40);
+      },
+      diff: async (base, head) => {
+        expect(base).toBe("m".repeat(40));
+        expect(head).toBe(pr.headSha);
+        return "";
+      },
+      log: async (range) => {
+        expect(range).toBe(`${"m".repeat(40)}..${pr.headSha}`);
+        return [{ sha: pr.headSha, title: "change", body: "" }];
+      }
+    });
+
+    const resolved = await resolveReviewInput(
+      { mode: "github_pr", prNumber: 12 },
+      defaultConfig,
+      nullTelemetry(),
+      { git: gitClient, github: fakeGithub([pr]) }
+    );
+
+    expect(resolved).toMatchObject({
+      mode: "github_pr",
+      repoRoot: "/repo",
+      baseRef: pr.baseSha,
+      headRef: pr.headSha,
+      mergeBase: "m".repeat(40),
+      headSha: pr.headSha,
+      pr
+    });
+    expect(fetches).toEqual([
+      { remote: "upstream", refspec: "+refs/pull/12/head:refs/codeninja/pr/12/head" },
+      { remote: "upstream", refspec: `+${pr.baseSha}:refs/codeninja/pr/12/base` }
+    ]);
+    expect(deletedRefs).toEqual(["refs/codeninja/pr/12/head"]);
+  });
+
+  it("refreshes PR metadata once when the head moves during fetch", async () => {
+    const first = prMetadata({ headSha: "1".repeat(40) });
+    const second = prMetadata({ headSha: "2".repeat(40) });
+    const available = new Set<string>([second.baseSha]);
+    const gitClient = fakeGitClient({
+      isShallow: async () => false,
+      remotes: async () => [{ name: "origin", url: "https://github.com/0xPolygon/codeninja.git" }],
+      commitExists: async (sha) => available.has(sha),
+      fetchFrom: async (_remote, refspec) => {
+        if (refspec.includes("/head") && refspec.includes("refs/pull/12")) {
+          available.add(second.headSha);
+        }
+      },
+      mergeBase: async (_base, head) => {
+        expect(head).toBe(second.headSha);
+        return "m".repeat(40);
+      },
+      diff: async () => "",
+      log: async () => []
+    });
+
+    const resolved = await resolveReviewInput(
+      { mode: "github_pr", prNumber: 12 },
+      defaultConfig,
+      nullTelemetry(),
+      { git: gitClient, github: fakeGithub([first, second]) }
+    );
+
+    expect(resolved.headSha).toBe(second.headSha);
+  });
+
+  it("deepens shallow PR merge-base using the selected PR remote", async () => {
+    const pr = prMetadata();
+    const deepenCalls: Array<{ remote: string; refspec: string; deepen?: number }> = [];
+    let mergeAttempts = 0;
+    const gitClient = fakeGitClient({
+      isShallow: async () => true,
+      remotes: async () => [
+        { name: "origin", url: "https://github.com/user/fork.git" },
+        { name: "upstream", url: "https://github.com/0xPolygon/codeninja.git" }
+      ],
+      commitExists: async () => true,
+      fetchFrom: async (remote, refspec, opts) => {
+        deepenCalls.push({ remote, refspec, ...(opts?.deepen !== undefined ? { deepen: opts.deepen } : {}) });
+      },
+      mergeBase: async () => {
+        mergeAttempts += 1;
+        if (mergeAttempts === 1) {
+          throw new CodeninjaError("git_ref_missing", "history missing");
+        }
+        return "m".repeat(40);
+      },
+      diff: async () => "",
+      log: async () => []
+    });
+
+    const resolved = await resolveReviewInput(
+      { mode: "github_pr", prNumber: 12 },
+      defaultConfig,
+      nullTelemetry(),
+      { git: gitClient, github: fakeGithub([pr]) }
+    );
+
+    expect(resolved.mergeBase).toBe("m".repeat(40));
+    expect(deepenCalls).toEqual([
+      { remote: "upstream", refspec: pr.baseSha, deepen: 100 },
+      { remote: "upstream", refspec: pr.headSha, deepen: 100 }
+    ]);
+  });
 });
 
 function fakeGitClient(overrides: Partial<InternalGitClient>): InternalGitClient {
@@ -213,6 +349,40 @@ function fakeGitClient(overrides: Partial<InternalGitClient>): InternalGitClient
     firstParent: async () => "p".repeat(40),
     parentShas: async () => ["p".repeat(40)],
     checkIgnored: async () => new Set(),
+    ...overrides
+  };
+}
+
+function fakeGithub(prs: PullRequestMetadata[]): GitHubClient {
+  let index = 0;
+  return {
+    viewPr: async (_number, opts = {}) => {
+      if (opts.refresh === true) {
+        index = Math.min(index + 1, prs.length - 1);
+      }
+      const pr = prs[index];
+      if (!pr) {
+        throw new Error("missing fake PR");
+      }
+      return pr;
+    },
+    createReview: async () => undefined,
+    listOwnComments: async () => []
+  };
+}
+
+function prMetadata(overrides: Partial<PullRequestMetadata> = {}): PullRequestMetadata {
+  return {
+    owner: "0xPolygon",
+    repo: "codeninja",
+    number: 12,
+    title: "PR",
+    body: "",
+    url: "https://github.com/0xPolygon/codeninja/pull/12",
+    baseRefName: "main",
+    baseSha: "b".repeat(40),
+    headRefName: "feature",
+    headSha: "h".repeat(40),
     ...overrides
   };
 }

@@ -1,5 +1,7 @@
 import type {
   CodeninjaConfig,
+  GitHubClient,
+  PullRequestMetadata,
   ResolvedReviewInput,
   ReviewCommandTarget,
   ReviewInput
@@ -7,16 +9,23 @@ import type {
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { CodeninjaError } from "../util/errors.js";
 import { createGitClient, type InternalGitClient } from "./git-client.js";
+import { createGitHubClient } from "../github/github-client.js";
 
 type ResolveOptions = {
   repoRoot?: string;
   git?: InternalGitClient;
+  github?: GitHubClient;
 };
 
 type ResolvedBranch = {
   sha: string;
   ref: string;
   shortName: string;
+};
+
+type ResolvedPullRequestCommits = {
+  pr: PullRequestMetadata;
+  remote?: string;
 };
 
 const DEEPEN_STEPS = [100, 1000] as const;
@@ -61,10 +70,7 @@ export async function resolveReviewInput(
 
   switch (input.mode) {
     case "github_pr":
-      throw new CodeninjaError(
-        "invalid_args",
-        "--pr mode is implemented in Phase 7; Phase 2 supports branch/default and commit review inventory."
-      );
+      return resolvePullRequestReview(input, telemetry, git, opts.github ?? createGitHubClient(await git.repoRoot()));
     case "branch":
       return resolveBranchReview(input, config, telemetry, git);
     case "commit_range":
@@ -75,6 +81,244 @@ export async function resolveReviewInput(
 async function ensureWorktree(git: InternalGitClient): Promise<void> {
   if (!(await git.isInsideWorktree())) {
     throw new CodeninjaError("not_git_worktree", "codeninja review must run inside a git worktree");
+  }
+}
+
+async function resolvePullRequestReview(
+  input: Extract<ReviewInput, { mode: "github_pr" }>,
+  telemetry: TelemetryRecorder,
+  git: InternalGitClient,
+  github: GitHubClient
+): Promise<ResolvedReviewInput> {
+  const repoRoot = await git.repoRoot();
+  await cleanupPullRequestRefs(git, input.prNumber, telemetry, "start");
+  const initialPr = await github.viewPr(input.prNumber);
+  const prCommits = await ensurePrCommitsAvailable(initialPr, github, git, telemetry);
+  const pr = prCommits.pr;
+  const mergeBase = await withShallowDeepening(
+    git,
+    telemetry,
+    [pr.baseSha, pr.headSha],
+    () => git.mergeBase(pr.baseSha, pr.headSha),
+    prCommits.remote !== undefined ? { preferredRemote: prCommits.remote } : {}
+  );
+  const rawDiff = await git.diff(mergeBase, pr.headSha);
+  const commits = await withShallowDeepening(
+    git,
+    telemetry,
+    [pr.baseSha, pr.headSha],
+    () => git.log(`${mergeBase}..${pr.headSha}`),
+    prCommits.remote !== undefined ? { preferredRemote: prCommits.remote } : {}
+  );
+
+  telemetry.event({
+    stage: 1,
+    level: "info",
+    message: "github pr input resolved",
+    data: {
+      mode: "github_pr",
+      prNumber: input.prNumber,
+      baseSha: pr.baseSha,
+      headSha: pr.headSha,
+      mergeBase,
+      commitCount: commits.length
+    }
+  });
+
+  return {
+    mode: "github_pr",
+    repoRoot,
+    baseRef: pr.baseSha,
+    headRef: pr.headSha,
+    mergeBase,
+    headSha: pr.headSha,
+    pr,
+    commits,
+    rawDiff
+  };
+}
+
+async function ensurePrCommitsAvailable(
+  initialPr: PullRequestMetadata,
+  github: GitHubClient,
+  git: InternalGitClient,
+  telemetry: TelemetryRecorder
+): Promise<ResolvedPullRequestCommits> {
+  let pr = initialPr;
+  let refreshed = false;
+  let remote: string | undefined;
+
+  for (;;) {
+    const baseExists = await git.commitExists(pr.baseSha);
+    const headExists = await git.commitExists(pr.headSha);
+    if (baseExists && headExists) {
+      remote ??= await selectPrRemote(git, pr);
+      return { pr, ...(remote !== undefined ? { remote } : {}) };
+    }
+
+    remote = await selectPrRemote(git, pr);
+    if (!remote) {
+      throw new CodeninjaError("git_fetch_failed", "no git remote available to fetch PR commits");
+    }
+
+    if (!headExists) {
+      await fetchPrHead(git, pr, remote, telemetry);
+    }
+    if (!baseExists) {
+      await fetchPrBase(git, pr, remote, telemetry);
+    }
+
+    const nextBaseExists = await git.commitExists(pr.baseSha);
+    const nextHeadExists = await git.commitExists(pr.headSha);
+    if (nextBaseExists && nextHeadExists) {
+      return { pr, remote };
+    }
+
+    if (!nextHeadExists && !refreshed) {
+      refreshed = true;
+      const nextPr = await github.viewPr(pr.number, { refresh: true });
+      if (nextPr.headSha !== pr.headSha || nextPr.baseSha !== pr.baseSha) {
+        telemetry.event({
+          stage: 1,
+          level: "warn",
+          message: "github pr head moved during fetch; retrying with fresh metadata",
+          data: { prNumber: pr.number, oldHeadSha: pr.headSha, newHeadSha: nextPr.headSha }
+        });
+        pr = nextPr;
+        continue;
+      }
+    }
+
+    throw new CodeninjaError(
+      "git_fetch_failed",
+      `failed to fetch PR #${pr.number} commits (${pr.baseSha}..${pr.headSha})`
+    );
+  }
+}
+
+async function fetchPrHead(
+  git: InternalGitClient,
+  pr: PullRequestMetadata,
+  remote: string,
+  telemetry: TelemetryRecorder
+): Promise<void> {
+  const refspec = `+refs/pull/${pr.number}/head:refs/codeninja/pr/${pr.number}/head`;
+  await git.fetchFrom(remote, refspec);
+  telemetry.event({
+    stage: 1,
+    level: "info",
+    message: "pr_refs_fetched",
+    data: { prNumber: pr.number, remote, kind: "head", refspec }
+  });
+}
+
+async function fetchPrBase(
+  git: InternalGitClient,
+  pr: PullRequestMetadata,
+  remote: string,
+  telemetry: TelemetryRecorder
+): Promise<void> {
+  const directRefspec = `+${pr.baseSha}:refs/codeninja/pr/${pr.number}/base`;
+  try {
+    await git.fetchFrom(remote, directRefspec);
+    telemetry.event({
+      stage: 1,
+      level: "info",
+      message: "pr_refs_fetched",
+      data: { prNumber: pr.number, remote, kind: "base-sha", refspec: directRefspec }
+    });
+    if (await git.commitExists(pr.baseSha)) {
+      return;
+    }
+  } catch (error) {
+    telemetry.event({
+      stage: 1,
+      level: "warn",
+      message: "pr_base_sha_fetch_failed",
+      data: { prNumber: pr.number, remote, error: error instanceof Error ? error.message : String(error) }
+    });
+  }
+
+  if (pr.baseRefName.trim().length === 0) {
+    throw new CodeninjaError("git_fetch_failed", `failed to fetch PR #${pr.number} base commit ${pr.baseSha}`);
+  }
+  const branchRefspec = `+refs/heads/${pr.baseRefName}:refs/codeninja/pr/${pr.number}/base`;
+  await git.fetchFrom(remote, branchRefspec);
+  telemetry.event({
+    stage: 1,
+    level: "info",
+    message: "pr_refs_fetched",
+    data: { prNumber: pr.number, remote, kind: "base-branch", refspec: branchRefspec }
+  });
+}
+
+async function selectPrRemote(git: InternalGitClient, pr: PullRequestMetadata): Promise<string | undefined> {
+  const remotes = await git.remotes();
+  const matching = remotes.find((remote) => remoteMatchesPr(remote.url, pr));
+  if (matching !== undefined) {
+    return matching.name;
+  }
+  return remotes.find((remote) => remote.name === "origin")?.name ?? [...remotes].sort((a, b) => a.name.localeCompare(b.name))[0]?.name;
+}
+
+function remoteMatchesPr(url: string, pr: PullRequestMetadata): boolean {
+  const normalized = normalizeRemoteUrl(url);
+  return normalized?.owner.toLowerCase() === pr.owner.toLowerCase() &&
+    normalized.repo.toLowerCase() === pr.repo.toLowerCase();
+}
+
+function normalizeRemoteUrl(url: string): { host?: string; owner: string; repo: string } | undefined {
+  const trimmed = url.trim().replace(/\.git$/u, "");
+  const scp = /^(?<user>[^@]+)@(?<host>[^:]+):(?<path>.+)$/u.exec(trimmed);
+  if (scp?.groups?.path) {
+    return ownerRepoFromPath(scp.groups.path, scp.groups.host);
+  }
+  try {
+    const parsed = new URL(trimmed);
+    return ownerRepoFromPath(parsed.pathname.replace(/^\/+/u, ""), parsed.hostname);
+  } catch {
+    return ownerRepoFromPath(trimmed);
+  }
+}
+
+function ownerRepoFromPath(path: string, host?: string): { host?: string; owner: string; repo: string } | undefined {
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length < 2) {
+    return undefined;
+  }
+  const [owner, repo] = parts.slice(-2);
+  if (!owner || !repo) {
+    return undefined;
+  }
+  return host !== undefined ? { host, owner, repo } : { owner, repo };
+}
+
+export async function cleanupPullRequestRefs(
+  git: InternalGitClient,
+  prNumber: number,
+  telemetry: TelemetryRecorder,
+  timing: "start" | "end"
+): Promise<void> {
+  try {
+    const refs = await git.listRefs(`refs/codeninja/pr/${prNumber}`);
+    for (const ref of refs) {
+      await git.deleteRef(ref);
+    }
+    if (refs.length > 0) {
+      telemetry.event({
+        stage: 1,
+        level: "info",
+        message: "pr_refs_cleaned",
+        data: { prNumber, timing, refs }
+      });
+    }
+  } catch (error) {
+    telemetry.event({
+      stage: 1,
+      level: "warn",
+      message: "pr_refs_cleanup_failed",
+      data: { prNumber, timing, error: error instanceof Error ? error.message : String(error) }
+    });
   }
 }
 
@@ -344,7 +588,8 @@ async function withShallowDeepening<T>(
   git: InternalGitClient,
   telemetry: TelemetryRecorder,
   refs: Array<ResolvedBranch | string>,
-  operation: () => Promise<T>
+  operation: () => Promise<T>,
+  opts: { preferredRemote?: string } = {}
 ): Promise<T> {
   try {
     return await operation();
@@ -355,7 +600,7 @@ async function withShallowDeepening<T>(
     let lastError: unknown = error;
     let fetched = false;
     for (const depth of DEEPEN_STEPS) {
-      fetched = (await deepenRefs(git, telemetry, refs, depth)) || fetched;
+      fetched = (await deepenRefs(git, telemetry, refs, depth, opts)) || fetched;
       try {
         return await operation();
       } catch (retryError) {
@@ -373,9 +618,10 @@ async function deepenRefs(
   git: InternalGitClient,
   telemetry: TelemetryRecorder,
   refs: Array<ResolvedBranch | string>,
-  depth: number
+  depth: number,
+  opts: { preferredRemote?: string } = {}
 ): Promise<boolean> {
-  const remote = await primaryRemote(git);
+  const remote = opts.preferredRemote ?? await primaryRemote(git);
   if (!remote) {
     return false;
   }
