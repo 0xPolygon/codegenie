@@ -18,11 +18,11 @@
     "dev": "tsx src/cli/main.ts"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   },
   "license": "UNLICENSED",
   "dependencies": {
-    "@earendil-works/pi-ai": "0.74.2",
+    "@earendil-works/pi-ai": "0.79.1",
     "@vscode/ripgrep": "1.18.0",
     "commander": "15.0.0",
     "execa": "9.6.1",

@@ -193,7 +193,21 @@ async function commandLogin(
       onAuth: (info) => {
         (opts.writeOut ?? ((text: string) => output.write(text)))(`${info.url}\n${info.instructions ?? ""}\n`);
       },
+      onDeviceCode: (info) => {
+        const writeOut = opts.writeOut ?? ((text: string) => output.write(text));
+        writeOut(`${info.verificationUri}\nEnter code: ${info.userCode}\n`);
+      },
       onPrompt: async (prompt) => promptForSecret(prompt.message),
+      onSelect: async (prompt) => {
+        const writeOut = opts.writeOut ?? ((text: string) => output.write(text));
+        writeOut(`${prompt.message}\n`);
+        prompt.options.forEach((option, index) => {
+          writeOut(`  ${index + 1}. ${option.label}\n`);
+        });
+        const selected = await promptForSecret(`Enter number (1-${prompt.options.length}): `);
+        const index = Number.parseInt(selected, 10) - 1;
+        return prompt.options[index]?.id;
+      },
       onProgress: (message) => {
         (opts.writeErr ?? ((text: string) => process.stderr.write(text)))(`${message}\n`);
       }
