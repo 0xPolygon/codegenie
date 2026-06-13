@@ -1,0 +1,22 @@
+name: fixture-core-lens
+repo:
+  fixture: repos/core
+command:
+  branch: feature
+  base: main
+review:
+  provider: fake
+  model: fake-model
+  verify: true
+  cache: false
+  lenses:
+    - core/code-review
+expect:
+  minFindings: 1
+  maxFindings: 1
+should_find:
+  - id: core-fake-finding
+    path: src/core.js
+    category: correctness
+    severityAtLeast: medium
+    titlePattern: Fake finding

@@ -684,6 +684,256 @@ export type ReviewResult = {
   posting?: RunPostingRecord;
 };
 
+export type EvalFindingExpectation = {
+  id: string;
+  path?: string;
+  lineRange?: [number, number];
+  category?: FindingCategory;
+  severityAtLeast?: Severity;
+  titlePattern?: string;
+  failureModePattern?: string;
+};
+
+export type EvalCase = {
+  name: string;
+  repo?: {
+    external?: string;
+    fixture?: string;
+  };
+  command?: {
+    pr?: number;
+    branch?: string;
+    base?: string;
+    target?: string;
+  };
+  review?: {
+    depth?: ReviewDepth;
+    lenses?: string[];
+    maxFindings?: number;
+    concurrency?: number;
+    verify?: boolean;
+    cache?: boolean;
+    cacheDir?: string;
+    debug?: boolean;
+    provider?: string;
+    model?: string;
+    reasoning?: ReasoningLevel;
+  };
+  logs?: {
+    dir?: string;
+  };
+  artifacts?: {
+    path: string;
+  };
+  expect?: {
+    minFindings?: number;
+    maxFindings?: number;
+    maxDuplicateGroups?: number;
+    maxCostUSD?: number;
+    maxElapsedSeconds?: number;
+    maxModelCalls?: number;
+    maxToolCalls?: number;
+    maxPromptCharsByStage?: Partial<Record<ReviewStage | string, number>>;
+  };
+  should_find?: EvalFindingExpectation[];
+  should_find_candidate?: EvalFindingExpectation[];
+  should_not_find?: EvalFindingExpectation[];
+};
+
+export type EvalLossLabel =
+  | "missed-before-candidate-generation"
+  | "lost-at-verification"
+  | "lost-at-composition"
+  | "partial-match";
+
+export type EvalExpectationList = "should_find" | "should_find_candidate" | "should_not_find";
+
+export type EvalMatchOutcome = {
+  matched: boolean;
+  fields: Array<{
+    field: "path" | "lineRange" | "category" | "severityAtLeast" | "titlePattern" | "failureModePattern";
+    present: boolean;
+    matched: boolean;
+    expected?: string;
+    actual?: string;
+  }>;
+};
+
+export type EvalAssignment = {
+  pairs: Array<{ expectationId: string; findingId: string }>;
+  unmatchedExpectationIds: string[];
+  unmatchedFindingIds: string[];
+};
+
+export type EvalLossDetail = {
+  label: EvalLossLabel;
+  subReason?: string;
+  nearestInstances: Array<{
+    findingId?: string;
+    artifact: "final-findings" | "final-selection" | "verification" | "candidate-findings" | "events";
+    outcome: string;
+    fieldMismatches?: EvalMatchOutcome["fields"];
+  }>;
+  matchingHints?: Array<{
+    packetId?: string;
+    question: string;
+    files: string[];
+    symbols: string[];
+    confidence: Confidence;
+  }>;
+  coveringPacketIds?: string[];
+  coveringPacketLenses?: string[];
+  plannerCoverage?: string;
+};
+
+export type EvalExpectationResult = {
+  expectationId: string;
+  list: EvalExpectationList;
+  status: "pass" | "fail" | "skipped";
+  skipReason?: string;
+  fromReplayedArtifacts?: boolean;
+  matched: Array<{ findingId: string; artifact: "final-findings" | "candidate-findings" }>;
+  loss?: EvalLossDetail;
+  note?: string;
+};
+
+export type EvalViolation = {
+  expectationId: string;
+  findingId: string;
+  publication: "inline" | "summary-only";
+};
+
+export type EvalBudgetResult = {
+  check:
+    | "minFindings"
+    | "maxFindings"
+    | "maxDuplicateGroups"
+    | "maxCostUSD"
+    | "maxElapsedSeconds"
+    | "maxModelCalls"
+    | "maxToolCalls"
+    | "maxPromptCharsByStage";
+  stage?: ReviewStage;
+  status: "pass" | "fail" | "skipped";
+  skipReason?: string;
+  limit: number;
+  actual?: number;
+  fromReplayedArtifacts?: boolean;
+};
+
+export type EvalRunMetrics = {
+  reportedFindings: number;
+  inlineFindings: number;
+  summaryOnlyFindings: number;
+  suppressedFindings: number;
+  candidateFindings: number;
+  duplicateGroups: number;
+  costUSD?: number;
+  elapsedSeconds?: number;
+  modelCalls?: number;
+  verificationCalls?: number;
+  toolCalls?: number;
+  maxPromptCharsByStage?: Partial<Record<ReviewStage, number>>;
+  cacheHits?: number;
+  cacheMisses?: number;
+  stageLossCounts: Record<EvalLossLabel, number>;
+};
+
+export type EvalScore = {
+  status: "pass" | "fail" | "error";
+  expectationResults: EvalExpectationResult[];
+  budgetResults: EvalBudgetResult[];
+  violations: EvalViolation[];
+  nearViolations: Array<{ expectationId: string; findingId: string; artifact: string }>;
+  metrics: EvalRunMetrics;
+  error?: { code: import("./util/errors.js").CodeninjaErrorCode; message: string };
+};
+
+export type EvalRunInfo = {
+  runNumber: number;
+  caseName: string;
+  caseFile?: string;
+  caseHash: string;
+  caseSnapshot: EvalCase;
+  mode: "live" | "replay";
+  replay?: {
+    sourceArtifacts: string;
+    caseSource: "yaml" | "snapshot";
+  };
+  repo?: { root: string; baseSha?: string; headSha?: string; mergeBase?: string };
+  reviewRunId?: string;
+  cache: { enabled: boolean; source: "cli" | "case" | "config"; dir?: string };
+  startedAt: string;
+  finishedAt: string;
+  score: EvalScore;
+};
+
+export type EvalCaseResult = {
+  caseName: string;
+  runDir: string;
+  status: "pass" | "fail" | "error";
+  info: EvalRunInfo;
+};
+
+export type EvalVerificationRecord =
+  | { candidateId: string; gate: "suppressed" | "gate_anchor_stripped"; gateReason: string; duplicateOf?: string; clusterId?: string }
+  | { candidateId: string; gate: "passed" | "gate_anchor_stripped"; verdict: VerificationVerdict; duplicateOf?: string; clusterId?: string };
+
+export type EvalSelectionRecord = {
+  findingId: string;
+  decision: "published" | "merged" | "suppressed";
+  reason: string;
+  mergedIntoFingerprint?: string;
+};
+
+export type EvalHintEvent = {
+  packetId?: string;
+  question: string;
+  files: string[];
+  symbols: string[];
+  reason?: string;
+  confidence: Confidence;
+};
+
+export type EvalArtifacts = {
+  candidates: CandidateFinding[];
+  verification: EvalVerificationRecord[];
+  finalSelection: EvalSelectionRecord[];
+  finalFindings: FinalFinding[];
+  reviewPlan?: ReviewPlan;
+  packets: ReviewPacket[];
+  hintEvents: EvalHintEvent[];
+  coverage?: RunCoverageStatus & { hunks?: unknown[] };
+  metricsSources: {
+    costProfile?: unknown;
+    modelCallsSummary?: unknown;
+    toolCallsSummary?: unknown;
+    runJson?: unknown;
+    modelCalls?: unknown[];
+    toolCalls?: unknown[];
+  };
+};
+
+export type EvalCompareReport = {
+  caseName: string;
+  currentRun: number;
+  previousRun: number;
+  caseHashChanged: boolean;
+  statusChange?: { from: EvalScore["status"]; to: EvalScore["status"] };
+  regressions: Array<{ expectationId: string; lossLabel?: EvalLossLabel }>;
+  fixes: Array<{ expectationId: string }>;
+  lossLabelChanges: Array<{ expectationId: string; from: EvalLossLabel; to: EvalLossLabel }>;
+  newViolations: EvalViolation[];
+  resolvedViolations: EvalViolation[];
+  budgetChanges: Array<{ check: string; from: "pass" | "fail" | "skipped"; to: "pass" | "fail" | "skipped" }>;
+  findingDiff: {
+    added: Array<{ fingerprint: string; title: string; severity: Severity; publication: string }>;
+    removed: Array<{ fingerprint: string; title: string; severity: Severity; publication: string }>;
+    changed: Array<{ fingerprint: string; changes: Record<string, { from: string; to: string }> }>;
+  };
+  metricDeltas: Record<string, { previous?: number; current?: number; delta?: number }>;
+};
+
 export type FindingDuplicateDecision = {
   findingId: string;
   action: "post" | "skip_exact_fingerprint" | "skip_fuzzy_proximity";

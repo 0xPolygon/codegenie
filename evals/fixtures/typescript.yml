@@ -1,0 +1,22 @@
+name: fixture-typescript-lens
+repo:
+  fixture: repos/typescript
+command:
+  branch: feature
+  base: main
+review:
+  provider: fake
+  model: fake-model
+  verify: true
+  cache: false
+  lenses:
+    - lang/typescript
+expect:
+  minFindings: 1
+  maxFindings: 1
+should_find:
+  - id: ts-fake-finding
+    path: src/app.ts
+    category: correctness
+    severityAtLeast: medium
+    titlePattern: Fake finding

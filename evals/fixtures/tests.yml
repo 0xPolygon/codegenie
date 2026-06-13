@@ -1,0 +1,22 @@
+name: fixture-tests-lens
+repo:
+  fixture: repos/tests
+command:
+  branch: feature
+  base: main
+review:
+  provider: fake
+  model: fake-model
+  verify: true
+  cache: false
+  lenses:
+    - core/tests
+expect:
+  minFindings: 1
+  maxFindings: 1
+should_find:
+  - id: tests-fake-finding
+    path: src/core.test.ts
+    category: correctness
+    severityAtLeast: medium
+    titlePattern: Fake finding

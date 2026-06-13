@@ -37,6 +37,7 @@ export type LoadConfigOptions = {
   homeOverride?: string;
   env?: NodeJS.ProcessEnv;
   cli?: CliConfigOverrides;
+  loadRepoConfig?: boolean;
 };
 
 export type LoadedConfig = {
@@ -106,11 +107,13 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     sources["review.depth"] = "provider-settings";
   }
 
-  const repoConfigPath = path.join(repoRoot, "codeninja.toml");
-  const repoConfig = readConfigIfPresent(repoConfigPath, "repo-config");
-  if (repoConfig) {
-    const safeRepoConfig = filterRepoConfig(repoConfig, warnings);
-    applyRawConfig(config, safeRepoConfig, "repo-config", sources);
+  if (opts.loadRepoConfig !== false) {
+    const repoConfigPath = path.join(repoRoot, "codeninja.toml");
+    const repoConfig = readConfigIfPresent(repoConfigPath, "repo-config");
+    if (repoConfig) {
+      const safeRepoConfig = filterRepoConfig(repoConfig, warnings);
+      applyRawConfig(config, safeRepoConfig, "repo-config", sources);
+    }
   }
 
   applyEnvironment(config, env, sources);
@@ -129,6 +132,29 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     warnings,
     sources
   };
+}
+
+export function applyRepoConfigLayer(
+  baseConfig: CodeninjaConfig,
+  repoRoot: string
+): { config: CodeninjaConfig; warnings: ConfigWarning[] } {
+  const config = structuredClone(baseConfig) as CodeninjaConfig;
+  const warnings: ConfigWarning[] = [];
+  const sources = defaultSources();
+  const repoConfig = readConfigIfPresent(path.join(path.resolve(repoRoot), "codeninja.toml"), "repo-config");
+  if (repoConfig) {
+    const safeRepoConfig = filterRepoConfig(repoConfig, warnings);
+    applyRawConfig(config, safeRepoConfig, "repo-config", sources);
+  }
+
+  const validated = codeninjaConfigSchema.safeParse(config);
+  if (!validated.success) {
+    throw new CodeninjaError("config_error", "resolved configuration is invalid after repo config", {
+      context: { issues: validated.error.issues }
+    });
+  }
+
+  return { config: validated.data as CodeninjaConfig, warnings };
 }
 
 function readConfigIfPresent(filePath: string, source: ConfigSource): RawCodeninjaConfig | undefined {

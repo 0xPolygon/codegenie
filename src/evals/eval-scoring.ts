@@ -1,0 +1,904 @@
+import picomatch from "picomatch";
+import type {
+  CandidateFinding,
+  EvalArtifacts,
+  EvalAssignment,
+  EvalBudgetResult,
+  EvalCase,
+  EvalExpectationResult,
+  EvalFindingExpectation,
+  EvalHintEvent,
+  EvalLossDetail,
+  EvalLossLabel,
+  EvalMatchOutcome,
+  EvalRunMetrics,
+  EvalScore,
+  EvalSelectionRecord,
+  EvalVerificationRecord,
+  EvalViolation,
+  FinalFinding,
+  ReviewStage,
+  Severity
+} from "../types.js";
+
+type ScorableFinding = CandidateFinding | FinalFinding;
+type ScoreMode = "live" | "replay";
+
+const severityRank: Record<Severity, number> = {
+  low: 1,
+  medium: 2,
+  high: 3,
+  critical: 4
+};
+
+const lossLabels: EvalLossLabel[] = [
+  "missed-before-candidate-generation",
+  "lost-at-verification",
+  "lost-at-composition",
+  "partial-match"
+];
+
+type RankedLossInstance = {
+  rank: number;
+  order: number;
+  label: EvalLossLabel;
+  subReason?: string;
+  instance: EvalLossDetail["nearestInstances"][number];
+};
+
+export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode: ScoreMode): EvalScore {
+  const reportedFinals = artifacts.finalFindings.filter(isReportedFinalFinding);
+  const metrics = buildMetrics(artifacts);
+  const shouldNot = scoreShouldNotFind(evalCase.should_not_find ?? [], reportedFinals, artifacts, mode);
+  const allExpectationResults = [
+    ...scorePositiveList("should_find", evalCase.should_find ?? [], reportedFinals, artifacts, mode),
+    ...scorePositiveList("should_find_candidate", evalCase.should_find_candidate ?? [], artifacts.candidates, artifacts, mode),
+    ...shouldNot.results
+  ];
+  metrics.stageLossCounts = countLosses(allExpectationResults);
+  const budgetResults = scoreBudgets(evalCase, artifacts, metrics, mode);
+  const status = allExpectationResults.some((result) => result.status === "fail") ||
+    shouldNot.violations.length > 0 ||
+    budgetResults.some((result) => result.status === "fail")
+    ? "fail"
+    : "pass";
+  return {
+    status,
+    expectationResults: allExpectationResults,
+    budgetResults,
+    violations: shouldNot.violations,
+    nearViolations: shouldNot.nearViolations,
+    metrics
+  };
+}
+
+export function matchExpectation(
+  expectation: EvalFindingExpectation,
+  finding: ScorableFinding
+): EvalMatchOutcome {
+  const fields: EvalMatchOutcome["fields"] = [];
+  if (expectation.path !== undefined) {
+    const actual = normalizePath(finding.path);
+    fields.push({
+      field: "path",
+      present: true,
+      matched: pathMatches(expectation.path, actual),
+      expected: expectation.path,
+      actual
+    });
+  }
+  if (expectation.lineRange !== undefined) {
+    const actualRange = findingLineRange(finding);
+    fields.push({
+      field: "lineRange",
+      present: true,
+      matched: actualRange !== undefined && rangesOverlap(expectation.lineRange, actualRange),
+      expected: `${expectation.lineRange[0]}-${expectation.lineRange[1]}`,
+      ...(actualRange !== undefined ? { actual: `${actualRange[0]}-${actualRange[1]}` } : {})
+    });
+  }
+  if (expectation.category !== undefined) {
+    fields.push({
+      field: "category",
+      present: true,
+      matched: expectation.category === finding.category,
+      expected: expectation.category,
+      actual: finding.category
+    });
+  }
+  if (expectation.severityAtLeast !== undefined) {
+    fields.push({
+      field: "severityAtLeast",
+      present: true,
+      matched: severityRank[finding.severity] >= severityRank[expectation.severityAtLeast],
+      expected: expectation.severityAtLeast,
+      actual: finding.severity
+    });
+  }
+  if (expectation.titlePattern !== undefined) {
+    fields.push({
+      field: "titlePattern",
+      present: true,
+      matched: regexMatches(expectation.titlePattern, finding.title),
+      expected: expectation.titlePattern,
+      actual: finding.title
+    });
+  }
+  if (expectation.failureModePattern !== undefined) {
+    fields.push({
+      field: "failureModePattern",
+      present: true,
+      matched: regexMatches(expectation.failureModePattern, finding.failureMode),
+      expected: expectation.failureModePattern,
+      actual: finding.failureMode
+    });
+  }
+  return {
+    matched: fields.every((field) => field.matched),
+    fields
+  };
+}
+
+export function assignExpectations(
+  expectations: EvalFindingExpectation[],
+  findings: ScorableFinding[]
+): EvalAssignment {
+  const matches = expectations.map((expectation) =>
+    findings.map((finding) => matchExpectation(expectation, finding).matched)
+  );
+  const findingToExpectation = new Array<number>(findings.length).fill(-1);
+
+  for (let expectationIndex = 0; expectationIndex < expectations.length; expectationIndex += 1) {
+    augment(expectationIndex, new Set<number>(), matches, findingToExpectation);
+  }
+
+  const pairs = findingToExpectation
+    .map((expectationIndex, findingIndex) => ({ expectationIndex, findingIndex }))
+    .filter((pair) => pair.expectationIndex !== -1)
+    .sort((a, b) => a.expectationIndex - b.expectationIndex)
+    .map((pair) => ({
+      expectationId: expectations[pair.expectationIndex]?.id ?? "",
+      findingId: findings[pair.findingIndex]?.id ?? ""
+    }));
+  const matchedExpectationIds = new Set(pairs.map((pair) => pair.expectationId));
+  const matchedFindingIds = new Set(pairs.map((pair) => pair.findingId));
+  return {
+    pairs,
+    unmatchedExpectationIds: expectations
+      .map((expectation) => expectation.id)
+      .filter((id) => !matchedExpectationIds.has(id)),
+    unmatchedFindingIds: findings
+      .map((finding) => finding.id)
+      .filter((id) => !matchedFindingIds.has(id))
+  };
+}
+
+export function attributeLoss(
+  expectation: EvalFindingExpectation,
+  artifacts: EvalArtifacts
+): EvalLossDetail {
+  const hints = matchingHints(expectation, artifacts.hintEvents);
+  const exactInstances = exactLossInstances(expectation, artifacts);
+  if (exactInstances.length > 0) {
+    const [winner] = exactInstances;
+    return addHints({
+      label: winner?.label ?? "missed-before-candidate-generation",
+      ...(winner?.subReason !== undefined ? { subReason: winner.subReason } : {}),
+      nearestInstances: exactInstances.map((entry) => entry.instance)
+    }, hints);
+  }
+
+  const partial = nearestPartialMatches(expectation, artifacts, "all");
+  if (partial.length > 0) {
+    return addHints({
+      label: "partial-match",
+      nearestInstances: partial
+    }, hints);
+  }
+
+  return addHints({
+    label: "missed-before-candidate-generation",
+    subReason: missedSubReason(expectation, artifacts),
+    nearestInstances: [],
+    ...packetCoverageDetails(expectation, artifacts)
+  }, hints);
+}
+
+function exactLossInstances(expectation: EvalFindingExpectation, artifacts: EvalArtifacts): RankedLossInstance[] {
+  let order = 0;
+  const instances: RankedLossInstance[] = [];
+
+  for (const finding of artifacts.finalFindings) {
+    if (finding.publication !== "suppressed" || !matchExpectation(expectation, finding).matched) {
+      continue;
+    }
+    const subReason = selectionReasonForFinding(finding, artifacts.finalSelection) ?? "suppressed";
+    instances.push({
+      rank: 3,
+      order: order++,
+      label: "lost-at-composition",
+      subReason,
+      instance: {
+        findingId: finding.id,
+        artifact: "final-findings",
+        outcome: `publication=${finding.publication} reason=${subReason}`
+      }
+    });
+  }
+
+  for (const finding of verifiedKeptFindings(artifacts)) {
+    if (!matchExpectation(expectation, finding).matched) {
+      continue;
+    }
+    const absorbing = artifacts.finalFindings.find((finalFinding) =>
+      finalFinding.id === finding.id || finalFinding.mergedCandidateIds.includes(finding.id)
+    );
+    const subReason = absorbing ? "merged-deduped-away" : "unrecorded";
+    instances.push({
+      rank: 3,
+      order: order++,
+      label: "lost-at-composition",
+      subReason,
+      instance: {
+        findingId: finding.id,
+        artifact: absorbing ? "final-selection" : "verification",
+        outcome: absorbing
+          ? `mergedInto=${absorbing.fingerprint} publication=${absorbing.publication}`
+          : "verified-kept without final selection"
+      }
+    });
+  }
+
+  for (const candidate of artifacts.candidates) {
+    if (!matchExpectation(expectation, candidate).matched || verificationKeptCandidate(candidate, artifacts)) {
+      continue;
+    }
+    const outcome = verificationOutcome(candidate, artifacts.verification, artifacts.candidates);
+    instances.push({
+      rank: 2,
+      order: order++,
+      label: "lost-at-verification",
+      subReason: outcome.subReason,
+      instance: {
+        findingId: candidate.id,
+        artifact: "verification",
+        outcome: outcome.outcome
+      }
+    });
+  }
+
+  return instances.sort((a, b) => b.rank - a.rank || a.order - b.order);
+}
+
+function scorePositiveList(
+  list: "should_find" | "should_find_candidate",
+  expectations: EvalFindingExpectation[],
+  findings: ScorableFinding[],
+  artifacts: EvalArtifacts,
+  mode: ScoreMode
+): EvalExpectationResult[] {
+  const assignment = assignExpectations(expectations, findings);
+  const pairByExpectation = new Map(assignment.pairs.map((pair) => [pair.expectationId, pair.findingId]));
+  return expectations.map((expectation) => {
+    const findingId = pairByExpectation.get(expectation.id);
+    if (findingId !== undefined) {
+      return {
+        expectationId: expectation.id,
+        list,
+        status: "pass",
+        fromReplayedArtifacts: mode === "replay",
+        matched: [{
+          findingId,
+          artifact: list === "should_find" ? "final-findings" : "candidate-findings"
+        }]
+      };
+    }
+    return {
+      expectationId: expectation.id,
+      list,
+      status: "fail",
+      fromReplayedArtifacts: mode === "replay",
+      matched: [],
+      loss: list === "should_find"
+        ? attributeLoss(expectation, artifacts)
+        : attributeCandidateLoss(expectation, artifacts)
+    };
+  });
+}
+
+function scoreShouldNotFind(
+  expectations: EvalFindingExpectation[],
+  reportedFinals: Array<FinalFinding & { publication: "inline" | "summary-only" }>,
+  artifacts: EvalArtifacts,
+  mode: ScoreMode
+): {
+  results: EvalExpectationResult[];
+  violations: EvalViolation[];
+  nearViolations: Array<{ expectationId: string; findingId: string; artifact: string }>;
+} {
+  const violations: EvalViolation[] = [];
+  const nearViolations: Array<{ expectationId: string; findingId: string; artifact: string }> = [];
+  const results = expectations.map((expectation): EvalExpectationResult => {
+    const matches = reportedFinals.filter((finding) => matchExpectation(expectation, finding).matched);
+    for (const finding of matches) {
+      violations.push({
+        expectationId: expectation.id,
+        findingId: finding.id,
+        publication: finding.publication
+      });
+    }
+    for (const finding of artifacts.candidates.filter((candidate) => matchExpectation(expectation, candidate).matched)) {
+      nearViolations.push({ expectationId: expectation.id, findingId: finding.id, artifact: "candidate-findings" });
+    }
+    for (const finding of artifacts.finalFindings.filter((candidate) =>
+      candidate.publication === "suppressed" && matchExpectation(expectation, candidate).matched
+    )) {
+      nearViolations.push({ expectationId: expectation.id, findingId: finding.id, artifact: "final-findings:suppressed" });
+    }
+    return {
+      expectationId: expectation.id,
+      list: "should_not_find",
+      status: matches.length === 0 ? "pass" : "fail",
+      fromReplayedArtifacts: mode === "replay",
+      matched: matches.map((finding) => ({ findingId: finding.id, artifact: "final-findings" }))
+    };
+  });
+  return { results, violations, nearViolations };
+}
+
+function attributeCandidateLoss(expectation: EvalFindingExpectation, artifacts: EvalArtifacts): EvalLossDetail {
+  const hints = matchingHints(expectation, artifacts.hintEvents);
+  const partial = nearestPartialMatches(expectation, artifacts, "candidates");
+  if (partial.length > 0) {
+    return addHints({ label: "partial-match", nearestInstances: partial }, hints);
+  }
+  return addHints({
+    label: "missed-before-candidate-generation",
+    subReason: missedSubReason(expectation, artifacts),
+    nearestInstances: [],
+    ...packetCoverageDetails(expectation, artifacts)
+  }, hints);
+}
+
+function scoreBudgets(
+  evalCase: EvalCase,
+  artifacts: EvalArtifacts,
+  metrics: EvalRunMetrics,
+  mode: ScoreMode
+): EvalBudgetResult[] {
+  const expect = evalCase.expect ?? {};
+  const results: EvalBudgetResult[] = [];
+  if (expect.minFindings !== undefined) {
+    results.push(budgetResult("minFindings", expect.minFindings, metrics.reportedFindings, metrics.reportedFindings >= expect.minFindings, mode));
+  }
+  if (expect.maxFindings !== undefined) {
+    results.push(budgetResult("maxFindings", expect.maxFindings, metrics.reportedFindings, metrics.reportedFindings <= expect.maxFindings, mode));
+  }
+  if (expect.maxDuplicateGroups !== undefined) {
+    results.push(budgetResult("maxDuplicateGroups", expect.maxDuplicateGroups, metrics.duplicateGroups, metrics.duplicateGroups <= expect.maxDuplicateGroups, mode));
+  }
+  const replaySkip = mode === "replay" ? "stage not executed in artifact replay" : undefined;
+  if (expect.maxCostUSD !== undefined) {
+    results.push(metricBudgetResult("maxCostUSD", expect.maxCostUSD, metrics.costUSD, replaySkip));
+  }
+  if (expect.maxElapsedSeconds !== undefined) {
+    results.push(metricBudgetResult("maxElapsedSeconds", expect.maxElapsedSeconds, metrics.elapsedSeconds, replaySkip));
+  }
+  if (expect.maxModelCalls !== undefined) {
+    results.push(metricBudgetResult("maxModelCalls", expect.maxModelCalls, metrics.modelCalls, replaySkip));
+  }
+  if (expect.maxToolCalls !== undefined) {
+    results.push(metricBudgetResult("maxToolCalls", expect.maxToolCalls, metrics.toolCalls, replaySkip));
+  }
+  for (const [stageKey, limit] of Object.entries(expect.maxPromptCharsByStage ?? {})) {
+    if (limit === undefined) {
+      continue;
+    }
+    const stage = Number(stageKey);
+    if (!isReviewStage(stage)) {
+      continue;
+    }
+    const actual = metrics.maxPromptCharsByStage?.[stage];
+    results.push(metricBudgetResult("maxPromptCharsByStage", limit, actual, replaySkip, stage));
+  }
+  return results;
+}
+
+function budgetResult(
+  check: EvalBudgetResult["check"],
+  limit: number,
+  actual: number,
+  passed: boolean,
+  mode: ScoreMode
+): EvalBudgetResult {
+  return {
+    check,
+    status: passed ? "pass" : "fail",
+    limit,
+    actual,
+    fromReplayedArtifacts: mode === "replay"
+  };
+}
+
+function metricBudgetResult(
+  check: EvalBudgetResult["check"],
+  limit: number,
+  actual: number | undefined,
+  replaySkip?: string,
+  stage?: ReviewStage
+): EvalBudgetResult {
+  if (replaySkip !== undefined) {
+    return {
+      check,
+      ...(stage !== undefined ? { stage } : {}),
+      status: "skipped",
+      skipReason: replaySkip,
+      limit
+    };
+  }
+  if (actual === undefined) {
+    return {
+      check,
+      ...(stage !== undefined ? { stage } : {}),
+      status: "skipped",
+      skipReason: "metric unavailable",
+      limit
+    };
+  }
+  return {
+    check,
+    ...(stage !== undefined ? { stage } : {}),
+    status: actual <= limit ? "pass" : "fail",
+    limit,
+    actual
+  };
+}
+
+function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
+  const reported = artifacts.finalFindings.filter(isReportedFinalFinding);
+  const modelCalls = artifacts.metricsSources.modelCalls ?? [];
+  const toolCalls = artifacts.metricsSources.toolCalls ?? [];
+  const maxPromptCharsByStage = maxPromptChars(modelCalls);
+  const metrics: EvalRunMetrics = {
+    reportedFindings: reported.length,
+    inlineFindings: reported.filter((finding) => finding.publication === "inline").length,
+    summaryOnlyFindings: reported.filter((finding) => finding.publication === "summary-only").length,
+    suppressedFindings: artifacts.finalFindings.filter((finding) => finding.publication === "suppressed").length,
+    candidateFindings: artifacts.candidates.length,
+    duplicateGroups: artifacts.finalFindings.filter((finding) => finding.mergedCandidateIds.length >= 2).length,
+    stageLossCounts: emptyLossCounts()
+  };
+  const costUSD = numberPath(artifacts.metricsSources.costProfile, ["totalCostUSD"]);
+  if (costUSD !== undefined) {
+    metrics.costUSD = costUSD;
+  }
+  const elapsedMs = numberPath(artifacts.metricsSources.runJson, ["durationMs"]);
+  if (elapsedMs !== undefined) {
+    metrics.elapsedSeconds = elapsedMs / 1000;
+  }
+  const modelCallsTotal = numberPath(artifacts.metricsSources.modelCallsSummary, ["totalCalls"]) ??
+    numberPath(artifacts.metricsSources.modelCallsSummary, ["providerCalls"]) ??
+    (modelCalls.length > 0 ? modelCalls.length : undefined);
+  if (modelCallsTotal !== undefined) {
+    metrics.modelCalls = modelCallsTotal;
+  }
+  const verificationCalls = modelCalls.filter((call) => isRecord(call) && call.stage === 9).length;
+  if (verificationCalls > 0) {
+    metrics.verificationCalls = verificationCalls;
+  } else {
+    const verificationVerdicts = artifacts.verification.filter((record) => "verdict" in record).length;
+    if (verificationVerdicts > 0) {
+      metrics.verificationCalls = verificationVerdicts;
+    }
+  }
+  const toolCallTotal = toolCalls.length > 0 ? toolCalls.length : numberPath(artifacts.metricsSources.toolCallsSummary, ["totalCalls"]);
+  if (toolCallTotal !== undefined) {
+    metrics.toolCalls = toolCallTotal;
+  }
+  if (Object.keys(maxPromptCharsByStage).length > 0) {
+    metrics.maxPromptCharsByStage = maxPromptCharsByStage;
+  }
+  const cacheHits = numberPath(artifacts.metricsSources.modelCallsSummary, ["cache", "hit"]);
+  if (cacheHits !== undefined) {
+    metrics.cacheHits = cacheHits;
+  }
+  const cacheMisses = numberPath(artifacts.metricsSources.modelCallsSummary, ["cache", "miss"]);
+  if (cacheMisses !== undefined) {
+    metrics.cacheMisses = cacheMisses;
+  }
+  return metrics;
+}
+
+function maxPromptChars(modelCalls: unknown[]): Partial<Record<ReviewStage, number>> {
+  const byStage: Partial<Record<ReviewStage, number>> = {};
+  for (const call of modelCalls) {
+    if (!isRecord(call) || typeof call.stage !== "number" || !isReviewStage(call.stage)) {
+      continue;
+    }
+    const promptChars = typeof call.promptChars === "number" ? call.promptChars : undefined;
+    if (promptChars === undefined) {
+      continue;
+    }
+    byStage[call.stage] = Math.max(byStage[call.stage] ?? 0, promptChars);
+  }
+  return byStage;
+}
+
+function countLosses(results: EvalExpectationResult[]): Record<EvalLossLabel, number> {
+  const counts = emptyLossCounts();
+  for (const result of results) {
+    if (result.loss !== undefined) {
+      counts[result.loss.label] += 1;
+    }
+  }
+  return counts;
+}
+
+function emptyLossCounts(): Record<EvalLossLabel, number> {
+  return {
+    "missed-before-candidate-generation": 0,
+    "lost-at-verification": 0,
+    "lost-at-composition": 0,
+    "partial-match": 0
+  };
+}
+
+function verifiedKeptFindings(artifacts: EvalArtifacts): CandidateFinding[] {
+  return artifacts.candidates.flatMap((candidate) => {
+    const resolved = verificationRecordForCandidate(candidate, artifacts.verification, artifacts.candidates);
+    if (resolved === undefined ||
+      !("verdict" in resolved.record) ||
+      resolved.record.verdict.verdict === "reject" ||
+      resolved.record.verdict.verificationIncomplete === true) {
+      return [];
+    }
+    return [resolved.viaDuplicate ? candidate : resolved.record.verdict.finalFinding ?? candidate];
+  });
+}
+
+function verificationOutcome(
+  candidate: CandidateFinding,
+  records: EvalVerificationRecord[],
+  candidates: CandidateFinding[]
+): { subReason: string; outcome: string } {
+  const resolved = verificationRecordForCandidate(candidate, records, candidates);
+  const record = resolved?.record;
+  if (record === undefined) {
+    return { subReason: "unrecorded", outcome: "verification=unrecorded" };
+  }
+  const duplicateSuffix = resolved?.viaDuplicate === true ? ` via duplicateOf=${record.candidateId}` : "";
+  if (!("verdict" in record)) {
+    return { subReason: normalizeGateReason(record.gateReason), outcome: `pre-gate=${record.gateReason}${duplicateSuffix}` };
+  }
+  if (record.verdict.verificationIncomplete === true) {
+    return { subReason: "verification-incomplete", outcome: `verdict=${record.verdict.verdict}${duplicateSuffix} reason=${record.verdict.reason}` };
+  }
+  if (record.verdict.verdict === "reject") {
+    return { subReason: "verifier-rejected", outcome: `verdict=reject${duplicateSuffix} reason=${record.verdict.reason}` };
+  }
+  return { subReason: "unrecorded", outcome: `verdict=${record.verdict.verdict}${duplicateSuffix}` };
+}
+
+function verificationRecordForCandidate(
+  candidate: CandidateFinding,
+  records: EvalVerificationRecord[],
+  candidates: CandidateFinding[]
+): { record: EvalVerificationRecord; viaDuplicate: boolean } | undefined {
+  const direct = records.find((record) => record.candidateId === candidate.id);
+  if (direct !== undefined) {
+    return { record: direct, viaDuplicate: false };
+  }
+  const representativeId = representativeCandidateId(candidate, candidates);
+  if (representativeId === undefined || representativeId === candidate.id) {
+    return undefined;
+  }
+  const representative = records.find((record) => record.candidateId === representativeId);
+  return representative !== undefined ? { record: representative, viaDuplicate: true } : undefined;
+}
+
+function verificationKeptCandidate(candidate: CandidateFinding, artifacts: EvalArtifacts): boolean {
+  const resolved = verificationRecordForCandidate(candidate, artifacts.verification, artifacts.candidates);
+  if (resolved === undefined || !("verdict" in resolved.record)) {
+    return false;
+  }
+  return resolved.record.verdict.verdict !== "reject" && resolved.record.verdict.verificationIncomplete !== true;
+}
+
+function representativeCandidateId(candidate: CandidateFinding, candidates: CandidateFinding[]): string | undefined {
+  const byId = new Map(candidates.map((item) => [item.id, item]));
+  const seen = new Set<string>();
+  let current: CandidateFinding | undefined = candidate;
+  for (;;) {
+    const nextId = current.duplicateOf ?? current.clusterId;
+    if (nextId === undefined) {
+      return current.id;
+    }
+    if (seen.has(nextId)) {
+      return undefined;
+    }
+    seen.add(nextId);
+    const next = byId.get(nextId);
+    if (next === undefined) {
+      return nextId;
+    }
+    current = next;
+  }
+}
+
+function selectionReasonForFinding(finding: FinalFinding, selection: EvalSelectionRecord[]): string | undefined {
+  for (const id of [finding.id, ...finding.mergedCandidateIds]) {
+    const record = selection.find((item) => item.findingId === id);
+    if (record !== undefined) {
+      return record.reason;
+    }
+  }
+  return undefined;
+}
+
+function nearestPartialMatches(
+  expectation: EvalFindingExpectation,
+  artifacts: EvalArtifacts,
+  target: "all" | "candidates"
+): EvalLossDetail["nearestInstances"] {
+  if (expectation.path === undefined) {
+    return [];
+  }
+  const findings: Array<{ artifact: "candidate-findings" | "final-findings"; finding: ScorableFinding }> = [
+    ...artifacts.candidates.map((finding) => ({ artifact: "candidate-findings" as const, finding })),
+    ...(target === "all" ? artifacts.finalFindings.map((finding) => ({ artifact: "final-findings" as const, finding })) : [])
+  ];
+  return findings
+    .map(({ artifact, finding }) => ({ artifact, finding, outcome: matchExpectation(expectation, finding) }))
+    .filter((item) => pathMatches(expectation.path ?? "", normalizePath(item.finding.path)) && !item.outcome.matched)
+    .sort((a, b) => failedFieldCount(a.outcome) - failedFieldCount(b.outcome))
+    .slice(0, 5)
+    .map((item) => ({
+      findingId: item.finding.id,
+      artifact: item.artifact,
+      outcome: "same path, field mismatch",
+      fieldMismatches: item.outcome.fields.filter((field) => !field.matched)
+    }));
+}
+
+function matchingHints(expectation: EvalFindingExpectation, hints: EvalHintEvent[]): EvalLossDetail["matchingHints"] {
+  const comparable = expectation.path !== undefined ||
+    expectation.titlePattern !== undefined ||
+    expectation.failureModePattern !== undefined;
+  if (!comparable) {
+    return [];
+  }
+  return hints.flatMap((hint) => {
+    if (expectation.path !== undefined && !hint.files.some((file) => pathMatches(expectation.path ?? "", normalizePath(file)))) {
+      return [];
+    }
+    const text = [hint.question, hint.reason ?? "", ...hint.symbols].join("\n");
+    if (expectation.titlePattern !== undefined && !regexMatches(expectation.titlePattern, text)) {
+      return [];
+    }
+    if (expectation.failureModePattern !== undefined && !regexMatches(expectation.failureModePattern, text)) {
+      return [];
+    }
+    return [{
+      ...(hint.packetId !== undefined ? { packetId: hint.packetId } : {}),
+      question: hint.question,
+      files: hint.files,
+      symbols: hint.symbols,
+      confidence: hint.confidence
+    }];
+  });
+}
+
+function missedSubReason(expectation: EvalFindingExpectation, artifacts: EvalArtifacts): string {
+  if (expectation.path === undefined) {
+    return "unknown";
+  }
+  const records = coverageRecords(artifacts);
+  const anyPacket = artifacts.packets.some((packet) => pathMatches(expectation.path ?? "", normalizePath(packet.path)));
+  const anyCoverage = records.some((record) =>
+    typeof record.path === "string" && pathMatches(expectation.path ?? "", normalizePath(record.path))
+  );
+  if (!anyPacket && !anyCoverage) {
+    return "path-not-in-diff";
+  }
+  const failed = records.find((record) =>
+    record.status === "review_failed" && coverageRecordCoversExpectation(record, expectation, artifacts)
+  );
+  if (failed !== undefined) {
+    return "packet-review-failed";
+  }
+  const plannerSkipped = records.find((record) =>
+    record.status === "skipped" &&
+    coverageRecordCoversExpectation(record, expectation, artifacts) &&
+    isPlannerSkipRecord(record, artifacts)
+  );
+  if (plannerSkipped !== undefined) {
+    return "hunk-skipped-by-planner";
+  }
+  const filterSkipped = records.find((record) =>
+    record.status === "skipped" && coverageRecordCoversExpectation(record, expectation, artifacts)
+  );
+  if (filterSkipped !== undefined) {
+    return "file-filtered";
+  }
+  const reviewed = artifacts.packets.some((packet) => packetOverlapsExpectation(packet, expectation));
+  return reviewed ? "reviewed-no-candidate" : "unknown";
+}
+
+function packetCoverageDetails(
+  expectation: EvalFindingExpectation,
+  artifacts: EvalArtifacts
+): Pick<EvalLossDetail, "coveringPacketIds" | "coveringPacketLenses" | "plannerCoverage"> {
+  const packets = artifacts.packets.filter((packet) => packetOverlapsExpectation(packet, expectation));
+  const details: Pick<EvalLossDetail, "coveringPacketIds" | "coveringPacketLenses" | "plannerCoverage"> = {};
+  if (packets.length > 0) {
+    details.coveringPacketIds = packets.map((packet) => packet.id);
+    details.coveringPacketLenses = [...new Set(packets.flatMap((packet) => packet.lenses))].sort();
+  }
+  const coverage = artifacts.reviewPlan?.coverage.find((decision) =>
+    expectation.path !== undefined && pathMatches(expectation.path, normalizePath(decision.path))
+  );
+  if (coverage !== undefined) {
+    details.plannerCoverage = coverage.coverage;
+  }
+  return details;
+}
+
+function packetOverlapsExpectation(packet: { path: string; hunks: Array<{ oldStart: number; oldLines: number; newStart: number; newLines: number }> }, expectation: EvalFindingExpectation): boolean {
+  if (expectation.path !== undefined && !pathMatches(expectation.path, normalizePath(packet.path))) {
+    return false;
+  }
+  if (expectation.lineRange === undefined) {
+    return true;
+  }
+  return packet.hunks.some((hunk) =>
+    packetHunkOverlapsLineRange(hunk, expectation.lineRange ?? [0, 0])
+  );
+}
+
+function coverageRecords(artifacts: EvalArtifacts): Array<Record<string, unknown>> {
+  const hunks = artifacts.coverage?.hunks;
+  return Array.isArray(hunks) ? hunks.filter(isRecord) : [];
+}
+
+function coverageRecordCoversExpectation(
+  record: Record<string, unknown>,
+  expectation: EvalFindingExpectation,
+  artifacts: EvalArtifacts
+): boolean {
+  if (typeof record.path !== "string" || !pathMatches(expectation.path ?? "", normalizePath(record.path))) {
+    return false;
+  }
+  if (expectation.lineRange === undefined) {
+    return true;
+  }
+  if (typeof record.hunkId !== "string") {
+    return true;
+  }
+  const hunk = artifacts.packets
+    .flatMap((packet) => packet.hunks)
+    .find((candidate) => candidate.hunkId === record.hunkId);
+  return hunk === undefined || packetHunkOverlapsLineRange(hunk, expectation.lineRange);
+}
+
+function isPlannerSkipRecord(record: Record<string, unknown>, artifacts: EvalArtifacts): boolean {
+  if (typeof record.hunkId !== "string") {
+    return false;
+  }
+  return artifacts.reviewPlan?.coverage.some((decision) =>
+    decision.hunkId === record.hunkId &&
+    decision.coverage === "skip" &&
+    (typeof record.path !== "string" || normalizePath(decision.path) === normalizePath(record.path))
+  ) === true;
+}
+
+function packetHunkOverlapsLineRange(
+  hunk: { oldStart: number; oldLines: number; newStart: number; newLines: number },
+  lineRange: [number, number]
+): boolean {
+  return rangesOverlap(lineRange, [hunk.newStart, hunk.newStart + Math.max(0, hunk.newLines - 1)]) ||
+    rangesOverlap(lineRange, [hunk.oldStart, hunk.oldStart + Math.max(0, hunk.oldLines - 1)]);
+}
+
+function addHints(detail: EvalLossDetail, hints: EvalLossDetail["matchingHints"]): EvalLossDetail {
+  return hints !== undefined && hints.length > 0 ? { ...detail, matchingHints: hints } : detail;
+}
+
+function augment(
+  expectationIndex: number,
+  seenFindings: Set<number>,
+  matches: boolean[][],
+  findingToExpectation: number[]
+): boolean {
+  for (let findingIndex = 0; findingIndex < findingToExpectation.length; findingIndex += 1) {
+    if (seenFindings.has(findingIndex) || matches[expectationIndex]?.[findingIndex] !== true) {
+      continue;
+    }
+    seenFindings.add(findingIndex);
+    const currentExpectationIndex = findingToExpectation[findingIndex];
+    if (currentExpectationIndex === -1 ||
+      (currentExpectationIndex !== undefined && augment(currentExpectationIndex, seenFindings, matches, findingToExpectation))) {
+      findingToExpectation[findingIndex] = expectationIndex;
+      return true;
+    }
+  }
+  return false;
+}
+
+function findingLineRange(finding: ScorableFinding): [number, number] | undefined {
+  if (finding.anchor === undefined) {
+    return undefined;
+  }
+  const start = finding.anchor.startLine ?? finding.anchor.line;
+  const end = finding.anchor.line;
+  return [Math.min(start, end), Math.max(start, end)];
+}
+
+function rangesOverlap(a: [number, number], b: [number, number]): boolean {
+  return Math.max(a[0], b[0]) <= Math.min(a[1], b[1]);
+}
+
+function pathMatches(pattern: string, input: string): boolean {
+  const normalizedPattern = normalizePath(pattern);
+  if (hasGlobMeta(normalizedPattern)) {
+    return picomatch.isMatch(input, normalizedPattern, { dot: true });
+  }
+  return input === normalizedPattern;
+}
+
+function normalizePath(input: string): string {
+  return input.replace(/\\/gu, "/").replace(/^\.\//u, "");
+}
+
+function hasGlobMeta(input: string): boolean {
+  return /[*?[\]{}]/u.test(input);
+}
+
+function regexMatches(pattern: string, input: string): boolean {
+  return new RegExp(pattern, "i").test(input);
+}
+
+function failedFieldCount(outcome: EvalMatchOutcome): number {
+  return outcome.fields.filter((field) => !field.matched).length;
+}
+
+function isReportedFinalFinding(finding: FinalFinding): finding is FinalFinding & { publication: "inline" | "summary-only" } {
+  return finding.publication === "inline" || finding.publication === "summary-only";
+}
+
+function normalizeGateReason(reason: string): string {
+  if (/invalid_anchor/u.test(reason)) {
+    return "invalid-anchor";
+  }
+  if (/low_confidence|confidence/u.test(reason)) {
+    return "low-confidence-suppressed";
+  }
+  if (/evidence/u.test(reason)) {
+    return "no-evidence";
+  }
+  if (/failure/u.test(reason)) {
+    return "no-failure-mode";
+  }
+  if (/budget/u.test(reason)) {
+    return "budget-exhausted";
+  }
+  return reason;
+}
+
+function numberPath(input: unknown, pathParts: string[]): number | undefined {
+  let cursor = input;
+  for (const part of pathParts) {
+    if (!isRecord(cursor)) {
+      return undefined;
+    }
+    cursor = cursor[part];
+  }
+  return typeof cursor === "number" && Number.isFinite(cursor) ? cursor : undefined;
+}
+
+function isReviewStage(input: number): input is ReviewStage {
+  return Number.isInteger(input) && input >= 1 && input <= 11;
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return input !== null && typeof input === "object" && !Array.isArray(input);
+}

@@ -96,6 +96,7 @@ export function parseReviewCommand(
   providerConfig.command("set-model").argument("<provider>").argument("<model>");
   providerConfig.command("set-depth").argument("<light|normal|deep>");
   providerConfig.command("set-reasoning").argument("<low|medium|high|xhigh|auto>");
+  program.command("eval").description("run codeninja eval suites");
 
   try {
     program.parse(argv, { from: "user" });

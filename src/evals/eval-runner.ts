@@ -1,0 +1,788 @@
+import { existsSync } from "node:fs";
+import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import path from "node:path";
+import { parse as parseYaml } from "yaml";
+import { z } from "zod";
+import { applyRepoConfigLayer } from "../config/config-loader.js";
+import {
+  reasoningLevelSchema,
+  reviewDepthSchema,
+  severitySchema
+} from "../config/schema.js";
+import { createGitClient } from "../git/git-client.js";
+import { runReview } from "../pipeline/review-runner.js";
+import type {
+  CodeninjaConfig,
+  EvalCase,
+  EvalCaseResult,
+  EvalFindingExpectation,
+  EvalRunInfo,
+  EvalScore,
+  FinalFinding,
+  ReviewCommandTarget
+} from "../types.js";
+import { runGit } from "../git/subprocess.js";
+import { CodeninjaError, isCodeninjaError } from "../util/errors.js";
+import { sha256Hex } from "../util/hashing.js";
+import {
+  allocateRunDir,
+  copyReviewOutput,
+  copyTelemetryArtifacts,
+  findPreviousRun,
+  loadEvalArtifacts,
+  resolveTelemetryDir,
+  writeEvalRunInfo
+} from "./eval-artifacts.js";
+import { compareToPrevious, renderEvalCompareText } from "./eval-compare.js";
+import { scoreEvalRun } from "./eval-scoring.js";
+
+export type EvalSuite = {
+  dir: string;
+  cases: Array<{ file: string; evalCase: EvalCase; caseHash: string }>;
+};
+
+export type EvalRunOptions = {
+  cacheOverride?: boolean;
+  config: CodeninjaConfig;
+};
+
+const positiveNumberSchema = z.number().positive();
+const positiveIntSchema = z.number().int().positive();
+const findingCategorySchema = z.enum([
+  "logic_bug",
+  "correctness",
+  "security",
+  "performance",
+  "architecture",
+  "testing",
+  "maintainability"
+]);
+
+const expectationSchema = z
+  .object({
+    id: z.string().min(1),
+    path: z.string().min(1).optional(),
+    lineRange: z.tuple([positiveIntSchema, positiveIntSchema]).optional(),
+    category: findingCategorySchema.optional(),
+    severityAtLeast: severitySchema.optional(),
+    titlePattern: z.string().min(1).optional(),
+    failureModePattern: z.string().min(1).optional()
+  })
+  .strict()
+  .superRefine((expectation, ctx) => {
+    if (expectation.lineRange !== undefined && expectation.lineRange[0] > expectation.lineRange[1]) {
+      ctx.addIssue({ code: "custom", path: ["lineRange"], message: "lineRange must be [start, end] with start <= end" });
+    }
+    const matchingFields: Array<keyof EvalFindingExpectation> = [
+      "path",
+      "lineRange",
+      "category",
+      "severityAtLeast",
+      "titlePattern",
+      "failureModePattern"
+    ];
+    if (matchingFields.every((field) => expectation[field] === undefined)) {
+      ctx.addIssue({ code: "custom", message: "expectation must include at least one matching field" });
+    }
+    for (const field of ["titlePattern", "failureModePattern"] as const) {
+      const pattern = expectation[field];
+      if (pattern === undefined) {
+        continue;
+      }
+      try {
+        new RegExp(pattern, "i");
+      } catch {
+        ctx.addIssue({ code: "custom", path: [field], message: "pattern must compile as an ECMAScript regular expression" });
+      }
+    }
+  });
+
+const caseSchema = z
+  .object({
+    name: z.string().min(1),
+    repo: z
+      .object({
+        external: z.string().min(1).optional(),
+        fixture: z.string().min(1).optional()
+      })
+      .strict()
+      .optional(),
+    command: z
+      .object({
+        pr: positiveIntSchema.optional(),
+        branch: z.string().min(1).optional(),
+        base: z.string().min(1).optional(),
+        target: z.string().min(1).optional()
+      })
+      .strict()
+      .optional(),
+    review: z
+      .object({
+        depth: reviewDepthSchema.optional(),
+        lenses: z.array(z.string().min(1)).optional(),
+        maxFindings: positiveIntSchema.optional(),
+        concurrency: positiveIntSchema.optional(),
+        verify: z.boolean().optional(),
+        cache: z.boolean().optional(),
+        cacheDir: z.string().min(1).optional(),
+        debug: z.boolean().optional(),
+        provider: z.string().min(1).optional(),
+        model: z.string().min(1).optional(),
+        reasoning: reasoningLevelSchema.optional()
+      })
+      .strict()
+      .optional(),
+    logs: z
+      .object({
+        dir: z.string().min(1).optional()
+      })
+      .strict()
+      .optional(),
+    artifacts: z
+      .object({
+        path: z.string().min(1)
+      })
+      .strict()
+      .optional(),
+    expect: z
+      .object({
+        minFindings: z.number().nonnegative().optional(),
+        maxFindings: positiveNumberSchema.optional(),
+        maxDuplicateGroups: positiveNumberSchema.optional(),
+        maxCostUSD: positiveNumberSchema.optional(),
+        maxElapsedSeconds: positiveNumberSchema.optional(),
+        maxModelCalls: positiveNumberSchema.optional(),
+        maxToolCalls: positiveNumberSchema.optional(),
+        maxPromptCharsByStage: z.record(z.string(), positiveIntSchema).optional()
+      })
+      .strict()
+      .optional(),
+    should_find: z.array(expectationSchema).optional(),
+    should_find_candidate: z.array(expectationSchema).optional(),
+    should_not_find: z.array(expectationSchema).optional()
+  })
+  .strict()
+  .superRefine((evalCase, ctx) => {
+    const sources = [
+      evalCase.repo?.external !== undefined,
+      evalCase.repo?.fixture !== undefined,
+      evalCase.artifacts?.path !== undefined
+    ].filter(Boolean).length;
+    if (sources !== 1) {
+      ctx.addIssue({ code: "custom", message: "exactly one of repo.external, repo.fixture, or artifacts.path is required" });
+    }
+    if (evalCase.repo?.external !== undefined && !path.isAbsolute(expandHome(evalCase.repo.external))) {
+      ctx.addIssue({ code: "custom", path: ["repo", "external"], message: "repo.external must be an absolute path; use repo.fixture for suite-relative paths" });
+    }
+    if (evalCase.artifacts?.path !== undefined && evalCase.command !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["command"], message: "command is only valid for repo-backed eval cases" });
+    }
+    const commandModes = [
+      evalCase.command?.pr !== undefined,
+      evalCase.command?.branch !== undefined,
+      evalCase.command?.target !== undefined
+    ].filter(Boolean).length;
+    if (commandModes > 1) {
+      ctx.addIssue({ code: "custom", path: ["command"], message: "at most one of command.pr, command.branch, or command.target may be set" });
+    }
+    if (evalCase.command?.base !== undefined && evalCase.command.branch === undefined) {
+      ctx.addIssue({ code: "custom", path: ["command", "base"], message: "command.base requires command.branch" });
+    }
+    if (evalCase.command?.target !== undefined && evalCase.command.target.includes("..")) {
+      const parts = evalCase.command.target.split("..");
+      if (parts.length !== 2 || (parts[0]?.length ?? 0) === 0 || (parts[1]?.length ?? 0) === 0) {
+        ctx.addIssue({ code: "custom", path: ["command", "target"], message: "command.target ranges must be <start>..<end>" });
+      }
+    }
+    for (const stage of Object.keys(evalCase.expect?.maxPromptCharsByStage ?? {})) {
+      const parsed = Number(stage);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 11) {
+        ctx.addIssue({ code: "custom", path: ["expect", "maxPromptCharsByStage", stage], message: "stage keys must be numeric ids 1-11" });
+      }
+    }
+    const expectationIds = [
+      ...(evalCase.should_find ?? []),
+      ...(evalCase.should_find_candidate ?? []),
+      ...(evalCase.should_not_find ?? [])
+    ].map((expectation) => expectation.id);
+    const duplicates = expectationIds.filter((id, index) => expectationIds.indexOf(id) !== index);
+    for (const id of [...new Set(duplicates)]) {
+      ctx.addIssue({ code: "custom", message: `duplicate expectation id: ${id}` });
+    }
+  });
+
+export async function loadEvalSuite(evalDir: string): Promise<EvalSuite> {
+  const dir = path.resolve(expandHome(evalDir));
+  const entries = await readdir(dir).catch((cause) => {
+    throw new CodeninjaError("config_error", `failed to read eval directory: ${dir}`, {
+      context: { path: dir },
+      cause
+    });
+  });
+  const files = entries.filter((entry) => /\.ya?ml$/u.test(entry)).sort();
+  const cases: EvalSuite["cases"] = [];
+  const errors: string[] = [];
+  for (const file of files) {
+    try {
+      cases.push(await loadCaseFile(path.join(dir, file), dir));
+    } catch (error) {
+      errors.push(...formatCaseLoadErrors(error));
+    }
+  }
+  const duplicateNames = cases
+    .map((entry) => entry.evalCase.name)
+    .filter((name, index, names) => names.indexOf(name) !== index);
+  for (const name of [...new Set(duplicateNames)]) {
+    errors.push(`duplicate eval case name: ${name}`);
+  }
+  if (cases.length === 0 && errors.length === 0) {
+    errors.push(`no eval case YAML files found in ${dir}`);
+  }
+  if (errors.length > 0) {
+    throw new CodeninjaError("config_error", "invalid eval suite", {
+      context: { path: dir, errors }
+    });
+  }
+  return { dir, cases };
+}
+
+export async function runEvalCase(
+  suite: EvalSuite,
+  entry: EvalSuite["cases"][number],
+  options: EvalRunOptions
+): Promise<EvalCaseResult> {
+  const logsDir = resolveLogsDir(suite.dir, entry.evalCase, options.config);
+  const allocated = await allocateRunDir(logsDir);
+  await mkdir(path.join(allocated.dir, "telemetry"), { recursive: true });
+  return entry.evalCase.artifacts !== undefined
+    ? runArtifactCase(suite, entry, allocated, options)
+    : runLiveCase(suite, entry, allocated, options);
+}
+
+export async function replayFromArtifacts(
+  sourceRunDir: string,
+  options: EvalRunOptions
+): Promise<EvalCaseResult> {
+  const source = path.resolve(expandHome(sourceRunDir));
+  const sourceInfo = await readRunInfo(source);
+  const logsDir = path.dirname(source);
+  const suiteDir = path.dirname(logsDir);
+  const allocated = await allocateRunDir(logsDir);
+  const reread = await rereadReplayCase(sourceInfo, suiteDir);
+  const startedAt = new Date().toISOString();
+  try {
+    const telemetryDir = await copyTelemetryArtifacts(source, allocated.dir);
+    await copyReviewOutput(source, allocated.dir);
+    const artifacts = await loadEvalArtifacts(telemetryDir);
+    const score = scoreEvalRun(reread.evalCase, artifacts, "replay");
+    const finishedAt = new Date().toISOString();
+    const info = buildRunInfo({
+      runNumber: allocated.runNumber,
+      evalCase: reread.evalCase,
+      caseHash: reread.caseHash,
+      mode: "replay",
+      startedAt,
+      finishedAt,
+      score,
+      config: options.config,
+      replay: { sourceArtifacts: source, caseSource: reread.source },
+      ...(sourceInfo.caseFile !== undefined ? { caseFile: sourceInfo.caseFile } : {})
+    });
+    await writeRunOutputs(allocated.dir, logsDir, info, artifacts.finalFindings);
+    return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
+  } catch (error) {
+    return writeErroredCase(
+      allocated,
+      {
+        evalCase: reread.evalCase,
+        caseHash: reread.caseHash,
+        ...(sourceInfo.caseFile !== undefined ? { file: sourceInfo.caseFile } : {})
+      },
+      options.config,
+      startedAt,
+      error,
+      "replay",
+      { sourceArtifacts: source, caseSource: reread.source }
+    );
+  }
+}
+
+async function runArtifactCase(
+  suite: EvalSuite,
+  entry: EvalSuite["cases"][number],
+  allocated: { runNumber: number; dir: string },
+  options: EvalRunOptions
+): Promise<EvalCaseResult> {
+  const startedAt = new Date().toISOString();
+  const source = resolveCasePath(suite.dir, entry.evalCase.artifacts?.path ?? "");
+  try {
+    const telemetryDir = await copyTelemetryArtifacts(source, allocated.dir);
+    await copyReviewOutput(source, allocated.dir);
+    const artifacts = await loadEvalArtifacts(telemetryDir);
+    const score = scoreEvalRun(entry.evalCase, artifacts, "replay");
+    const finishedAt = new Date().toISOString();
+    const info = buildRunInfo({
+      runNumber: allocated.runNumber,
+      evalCase: entry.evalCase,
+      caseHash: entry.caseHash,
+      caseFile: entry.file,
+      mode: "replay",
+      startedAt,
+      finishedAt,
+      score,
+      config: options.config,
+      replay: { sourceArtifacts: source, caseSource: "yaml" }
+    });
+    await writeRunOutputs(allocated.dir, path.dirname(allocated.dir), info, artifacts.finalFindings);
+    return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
+  } catch (error) {
+    return writeErroredCase(
+      allocated,
+      entry,
+      options.config,
+      startedAt,
+      error,
+      "replay",
+      { sourceArtifacts: source, caseSource: "yaml" }
+    );
+  }
+}
+
+async function runLiveCase(
+  suite: EvalSuite,
+  entry: EvalSuite["cases"][number],
+  allocated: { runNumber: number; dir: string },
+  options: EvalRunOptions
+): Promise<EvalCaseResult> {
+  const startedAt = new Date().toISOString();
+  let reviewRunId: string | undefined;
+  try {
+    const repoRoot = await resolveRepoRoot(suite.dir, entry.evalCase, allocated.dir);
+    const git = createGitClient(repoRoot);
+    if (!(await git.isInsideWorktree())) {
+      throw new CodeninjaError("not_git_worktree", `eval case repository is not a git worktree: ${repoRoot}`, {
+        context: { repoRoot }
+      });
+    }
+    const actualRepoRoot = await git.repoRoot();
+    const repoLayer = applyRepoConfigLayer(options.config, actualRepoRoot);
+    const caseConfig = applyCaseReviewConfig(repoLayer.config, entry.evalCase, options.cacheOverride);
+    const target = targetForCase(entry.evalCase);
+    let reviewOutput = "";
+    await runReview(target, caseConfig.config, {
+      repoRoot: actualRepoRoot,
+      runArtifactDir: path.join(allocated.dir, "telemetry"),
+      format: "markdown",
+      postGithubComments: false,
+      ...(entry.evalCase.review?.lenses !== undefined ? { cliLenses: entry.evalCase.review.lenses } : {}),
+      configWarnings: repoLayer.warnings,
+      onRunStart: (run) => {
+        reviewRunId = run.runId;
+      },
+      writeOutput: (chunk) => {
+        reviewOutput += chunk;
+      }
+    });
+    if (reviewOutput.trim().length > 0) {
+      await writeFile(path.join(allocated.dir, "codeninja-review.out.md"), reviewOutput);
+    }
+    const telemetryDir = path.join(allocated.dir, "telemetry");
+    const artifacts = await loadEvalArtifacts(telemetryDir);
+    const score = scoreEvalRun(entry.evalCase, artifacts, "live");
+    const finishedAt = new Date().toISOString();
+    const info = buildRunInfo({
+      runNumber: allocated.runNumber,
+      evalCase: entry.evalCase,
+      caseHash: entry.caseHash,
+      caseFile: entry.file,
+      mode: "live",
+      startedAt,
+      finishedAt,
+      score,
+      config: caseConfig.config,
+      cache: caseConfig.cache,
+      repo: await repoInfo(actualRepoRoot, telemetryDir),
+      ...(reviewRunId !== undefined ? { reviewRunId } : {})
+    });
+    await writeRunOutputs(allocated.dir, path.dirname(allocated.dir), info, artifacts.finalFindings);
+    return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
+  } catch (error) {
+    return writeErroredCase(allocated, entry, options.config, startedAt, error, "live");
+  }
+}
+
+async function writeErroredCase(
+  allocated: { runNumber: number; dir: string },
+  entry: { evalCase: EvalCase; caseHash: string; file?: string },
+  config: CodeninjaConfig,
+  startedAt: string,
+  error: unknown,
+  mode: "live" | "replay",
+  replay?: EvalRunInfo["replay"]
+): Promise<EvalCaseResult> {
+  const finishedAt = new Date().toISOString();
+  const score = errorScore(error);
+  const info = buildRunInfo({
+    runNumber: allocated.runNumber,
+    evalCase: entry.evalCase,
+    caseHash: entry.caseHash,
+    mode,
+    ...(entry.file !== undefined ? { caseFile: entry.file } : {}),
+    ...(replay !== undefined ? { replay } : {}),
+    startedAt,
+    finishedAt,
+    score,
+    config
+  });
+  await writeFile(path.join(allocated.dir, "out.log"), `${JSON.stringify({ level: "error", message: score.error?.message, code: score.error?.code })}\n`);
+  await writeCompareIfAvailable(allocated.dir, path.dirname(allocated.dir), info, []);
+  await writeEvalRunInfo(allocated.dir, info);
+  return { caseName: info.caseName, runDir: allocated.dir, status: "error", info };
+}
+
+async function writeRunOutputs(
+  runDir: string,
+  logsDir: string,
+  info: EvalRunInfo,
+  finalFindings: FinalFinding[]
+): Promise<void> {
+  await writeFile(path.join(runDir, "out.log"), `${JSON.stringify({ level: "info", message: "eval case scored", status: info.score.status })}\n`);
+  await writeCompareIfAvailable(runDir, logsDir, info, finalFindings);
+  await writeEvalRunInfo(runDir, info);
+}
+
+async function writeCompareIfAvailable(
+  runDir: string,
+  logsDir: string,
+  info: EvalRunInfo,
+  finalFindings: FinalFinding[]
+): Promise<void> {
+  const previous = await findPreviousRun(logsDir, info.caseName, info.runNumber);
+  if (previous === undefined) {
+    return;
+  }
+  try {
+    const previousInfo = await readRunInfo(previous.dir);
+    const previousArtifacts = await loadPreviousArtifactsForCompare(previous.dir);
+    const report = compareToPrevious(
+      { info, finalFindings },
+      { info: previousInfo, finalFindings: previousArtifacts }
+    );
+    await writeFile(path.join(runDir, "compare-to-previous.json"), `${JSON.stringify(report, null, 2)}\n`);
+    await writeFile(path.join(runDir, "compare-to-previous.txt"), renderEvalCompareText(report));
+  } catch {
+    // A damaged previous run should not prevent the current eval result from being written.
+  }
+}
+
+async function loadPreviousArtifactsForCompare(runDir: string): Promise<FinalFinding[]> {
+  try {
+    return (await loadEvalArtifacts(resolveTelemetryDir(runDir))).finalFindings;
+  } catch {
+    return [];
+  }
+}
+
+async function loadCaseFile(filePath: string, suiteDir: string): Promise<EvalSuite["cases"][number]> {
+  const raw = await readFile(filePath, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = parseYaml(raw);
+  } catch (cause) {
+    throw new CodeninjaError("config_error", `failed to parse eval case YAML at ${filePath}`, {
+      context: { path: filePath },
+      cause
+    });
+  }
+  const result = caseSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new CodeninjaError("config_error", `invalid eval case at ${filePath}`, {
+      context: { path: filePath, issues: result.error.issues }
+    });
+  }
+  return {
+    file: path.relative(suiteDir, filePath),
+    evalCase: result.data as EvalCase,
+    caseHash: sha256Hex(raw)
+  };
+}
+
+async function rereadReplayCase(
+  sourceInfo: EvalRunInfo,
+  suiteDir: string
+): Promise<{ evalCase: EvalCase; caseHash: string; source: "yaml" | "snapshot" }> {
+  if (sourceInfo.caseFile !== undefined) {
+    const casePath = path.join(suiteDir, sourceInfo.caseFile);
+    if (existsSync(casePath)) {
+      const entry = await loadCaseFile(casePath, suiteDir);
+      return { evalCase: entry.evalCase, caseHash: entry.caseHash, source: "yaml" };
+    }
+  }
+  return { evalCase: sourceInfo.caseSnapshot, caseHash: sourceInfo.caseHash, source: "snapshot" };
+}
+
+async function readRunInfo(runDir: string): Promise<EvalRunInfo> {
+  const filePath = path.join(runDir, "info.json");
+  try {
+    return JSON.parse(await readFile(filePath, "utf8")) as EvalRunInfo;
+  } catch (cause) {
+    throw new CodeninjaError("invalid_args", `failed to read eval run info: ${filePath}`, {
+      context: { path: filePath },
+      cause
+    });
+  }
+}
+
+function buildRunInfo(input: {
+  runNumber: number;
+  evalCase: EvalCase;
+  caseHash: string;
+  caseFile?: string;
+  mode: "live" | "replay";
+  replay?: EvalRunInfo["replay"];
+  repo?: EvalRunInfo["repo"];
+  reviewRunId?: string;
+  startedAt: string;
+  finishedAt: string;
+  score: EvalScore;
+  config: CodeninjaConfig;
+  cache?: EvalRunInfo["cache"];
+}): EvalRunInfo {
+  return {
+    runNumber: input.runNumber,
+    caseName: input.evalCase.name,
+    ...(input.caseFile !== undefined ? { caseFile: input.caseFile } : {}),
+    caseHash: input.caseHash,
+    caseSnapshot: input.evalCase,
+    mode: input.mode,
+    ...(input.replay !== undefined ? { replay: input.replay } : {}),
+    ...(input.repo !== undefined ? { repo: input.repo } : {}),
+    ...(input.reviewRunId !== undefined ? { reviewRunId: input.reviewRunId } : {}),
+    cache: input.cache ?? { enabled: input.config.cache.enabled, source: "config", dir: input.config.cache.dir },
+    startedAt: input.startedAt,
+    finishedAt: input.finishedAt,
+    score: input.score
+  };
+}
+
+function errorScore(error: unknown): EvalScore {
+  const code = isCodeninjaError(error) ? error.code : "invalid_args";
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    status: "error",
+    expectationResults: [],
+    budgetResults: [],
+    violations: [],
+    nearViolations: [],
+    metrics: {
+      reportedFindings: 0,
+      inlineFindings: 0,
+      summaryOnlyFindings: 0,
+      suppressedFindings: 0,
+      candidateFindings: 0,
+      duplicateGroups: 0,
+      stageLossCounts: {
+        "missed-before-candidate-generation": 0,
+        "lost-at-verification": 0,
+        "lost-at-composition": 0,
+        "partial-match": 0
+      }
+    },
+    error: { code, message }
+  };
+}
+
+function formatCaseLoadErrors(error: unknown): string[] {
+  if (isCodeninjaError(error) && Array.isArray(error.context?.issues)) {
+    return error.context.issues.map((issue) => {
+      if (!isRecord(issue)) {
+        return error.message;
+      }
+      const pathText = Array.isArray(issue.path) ? issue.path.join(".") : "";
+      const message = typeof issue.message === "string" ? issue.message : "validation failed";
+      return pathText.length > 0 ? `${error.message}: ${pathText}: ${message}` : `${error.message}: ${message}`;
+    });
+  }
+  return [error instanceof Error ? error.message : String(error)];
+}
+
+function applyCaseReviewConfig(
+  loaded: CodeninjaConfig,
+  evalCase: EvalCase,
+  cacheOverride: boolean | undefined
+): { config: CodeninjaConfig; cache: EvalRunInfo["cache"] } {
+  const config = structuredClone(loaded) as CodeninjaConfig;
+  const review = evalCase.review;
+  if (review?.depth !== undefined) {
+    config.review.depth = review.depth;
+  }
+  if (review?.maxFindings !== undefined) {
+    config.review.maxFindings = review.maxFindings;
+  }
+  if (review?.concurrency !== undefined) {
+    config.review.concurrency = review.concurrency;
+  }
+  if (review?.verify !== undefined) {
+    config.review.verify = review.verify;
+  }
+  if (review?.debug !== undefined) {
+    config.telemetry.debugTrace = review.debug;
+  }
+  if (review?.cacheDir !== undefined) {
+    config.cache.dir = review.cacheDir;
+  }
+  if (review?.lenses !== undefined) {
+    config.lenses.enabled = [...review.lenses];
+    config.lenses.disabled = [];
+  }
+  if (review?.provider !== undefined) {
+    config.llm.provider = review.provider;
+  }
+  if (review?.model !== undefined) {
+    config.llm.model = review.model;
+  }
+  if (review?.reasoning !== undefined) {
+    config.llm.reasoning = review.reasoning;
+  }
+  const cacheEnabled = cacheOverride ?? review?.cache ?? config.cache.enabled;
+  const cacheSource = cacheOverride !== undefined ? "cli" : review?.cache !== undefined ? "case" : "config";
+  config.cache.enabled = cacheEnabled;
+  return {
+    config,
+    cache: { enabled: cacheEnabled, source: cacheSource, dir: config.cache.dir }
+  };
+}
+
+function targetForCase(evalCase: EvalCase): ReviewCommandTarget {
+  const command = evalCase.command;
+  if (command?.pr !== undefined) {
+    return { mode: "github_pr", prNumber: command.pr };
+  }
+  if (command?.branch !== undefined) {
+    return {
+      mode: "branch",
+      branchName: command.branch,
+      ...(command.base !== undefined ? { baseBranch: command.base } : {})
+    };
+  }
+  if (command?.target !== undefined) {
+    const parts = command.target.split("..");
+    if (parts.length === 2) {
+      const startCommit = parts[0] ?? "";
+      const endCommit = parts[1] ?? "";
+      return endCommit.length > 0
+        ? { mode: "commit_range", startCommit, endCommit }
+        : { mode: "commit_range", startCommit };
+    }
+    return { mode: "commit_range", startCommit: command.target };
+  }
+  return { mode: "default_branch" };
+}
+
+async function resolveRepoRoot(suiteDir: string, evalCase: EvalCase, runDir: string): Promise<string> {
+  if (evalCase.repo?.external !== undefined) {
+    return path.resolve(expandHome(evalCase.repo.external));
+  }
+  const fixturePath = path.resolve(resolveCasePath(suiteDir, evalCase.repo?.fixture ?? ""));
+  if (await isGitWorktreeRoot(fixturePath)) {
+    return fixturePath;
+  }
+  return materializeFixtureRepo(fixturePath, runDir);
+}
+
+function resolveLogsDir(suiteDir: string, evalCase: EvalCase, config: CodeninjaConfig): string {
+  const configured = evalCase.logs?.dir ?? config.eval.logsDir;
+  return path.isAbsolute(configured) ? configured : path.join(suiteDir, configured);
+}
+
+function resolveCasePath(suiteDir: string, input: string): string {
+  const expanded = expandHome(input);
+  return path.isAbsolute(expanded) ? expanded : path.join(suiteDir, expanded);
+}
+
+async function isGitWorktreeRoot(repoPath: string): Promise<boolean> {
+  const git = createGitClient(repoPath);
+  if (!(await git.isInsideWorktree())) {
+    return false;
+  }
+  return path.resolve(await git.repoRoot()) === path.resolve(repoPath);
+}
+
+async function materializeFixtureRepo(fixturePath: string, runDir: string): Promise<string> {
+  const featureDir = path.join(fixturePath, "feature");
+  if (!existsSync(featureDir)) {
+    throw new CodeninjaError("not_git_worktree", `eval fixture is not a git worktree or materializable fixture: ${fixturePath}`, {
+      context: { repoRoot: fixturePath }
+    });
+  }
+
+  const repoRoot = path.join(runDir, "fixture-repo");
+  await mkdir(repoRoot, { recursive: true });
+  await runGit(repoRoot, ["init", "-b", "main"], { errorCode: "invalid_args" });
+  await runGit(repoRoot, ["config", "user.name", "Codeninja Fixture"], { errorCode: "invalid_args" });
+  await runGit(repoRoot, ["config", "user.email", "fixture@example.com"], { errorCode: "invalid_args" });
+
+  const baseDir = path.join(fixturePath, "base");
+  if (existsSync(baseDir)) {
+    await copyFixtureTree(baseDir, repoRoot);
+  }
+  await runGit(repoRoot, ["add", "."], { errorCode: "invalid_args" });
+  await runGit(repoRoot, ["commit", "--allow-empty", "-m", "base"], { errorCode: "invalid_args" });
+  await runGit(repoRoot, ["checkout", "-b", "feature"], { errorCode: "invalid_args" });
+  await copyFixtureTree(featureDir, repoRoot);
+  await runGit(repoRoot, ["add", "."], { errorCode: "invalid_args" });
+  await runGit(repoRoot, ["commit", "-m", "fixture feature"], { errorCode: "invalid_args" });
+  return repoRoot;
+}
+
+async function copyFixtureTree(sourceDir: string, destinationDir: string): Promise<void> {
+  const entries = await readdir(sourceDir, { withFileTypes: true }).catch((cause) => {
+    throw new CodeninjaError("config_error", `failed to read fixture source directory: ${sourceDir}`, {
+      context: { path: sourceDir },
+      cause
+    });
+  });
+  await mkdir(destinationDir, { recursive: true });
+  for (const entry of entries) {
+    if (entry.name === ".git") {
+      continue;
+    }
+    const source = path.join(sourceDir, entry.name);
+    const destination = path.join(destinationDir, entry.name);
+    if (entry.isDirectory()) {
+      await copyFixtureTree(source, destination);
+    } else if (entry.isFile()) {
+      await mkdir(path.dirname(destination), { recursive: true });
+      await copyFile(source, destination);
+    } else {
+      throw new CodeninjaError("config_error", `fixture source contains unsupported entry: ${source}`, {
+        context: { path: source }
+      });
+    }
+  }
+}
+
+function expandHome(input: string): string {
+  if (input === "~") {
+    return process.env.HOME ?? input;
+  }
+  return input.startsWith("~/") ? path.join(process.env.HOME ?? "~", input.slice(2)) : input;
+}
+
+async function repoInfo(repoRoot: string, telemetryDir: string): Promise<EvalRunInfo["repo"]> {
+  try {
+    const resolved = JSON.parse(await readFile(path.join(telemetryDir, "resolved-input.json"), "utf8")) as Record<string, unknown>;
+    return {
+      root: repoRoot,
+      ...(typeof resolved.baseRef === "string" ? { baseSha: resolved.baseRef } : {}),
+      ...(typeof resolved.headSha === "string" ? { headSha: resolved.headSha } : {}),
+      ...(typeof resolved.mergeBase === "string" ? { mergeBase: resolved.mergeBase } : {})
+    };
+  } catch {
+    return { root: repoRoot };
+  }
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return input !== null && typeof input === "object" && !Array.isArray(input);
+}

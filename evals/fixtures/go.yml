@@ -1,0 +1,22 @@
+name: fixture-go-lens
+repo:
+  fixture: repos/go
+command:
+  branch: feature
+  base: main
+review:
+  provider: fake
+  model: fake-model
+  verify: true
+  cache: false
+  lenses:
+    - lang/go
+expect:
+  minFindings: 1
+  maxFindings: 1
+should_find:
+  - id: go-fake-finding
+    path: service/main.go
+    category: correctness
+    severityAtLeast: medium
+    titlePattern: Fake finding

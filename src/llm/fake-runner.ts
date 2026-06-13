@@ -178,6 +178,9 @@ function firstTriggeredLine(packet: ReviewPacket):
 
 function defaultFakeLenses(path: string): string[] {
   const lenses = ["core/code-review"];
+  if (/(?:^|[./_-])(test|spec)\.(ts|tsx|js|jsx|go)$/u.test(path) || /_test\.go$/u.test(path)) {
+    lenses.push("core/tests");
+  }
   if (/\.(go)$/u.test(path)) {
     lenses.push("lang/go");
   } else if (/\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$/u.test(path)) {

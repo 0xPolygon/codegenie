@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { executeReviewCommand, isCliDisplayExit, parseReviewCommand } from "./review-command.js";
 import { executeProviderCommand } from "./provider-command.js";
+import { executeEvalCommand } from "../evals/eval-command.js";
 import { errorExitCode, isCodeninjaError } from "../util/errors.js";
 
 async function main(): Promise<void> {
@@ -8,6 +9,13 @@ async function main(): Promise<void> {
     const argv = process.argv.slice(2);
     if (argv[0] === "provider" || (argv[0] === "help" && argv[1] === "provider")) {
       await executeProviderCommand(argv, { allowOutput: true });
+      return;
+    }
+    if (argv[0] === "eval" || (argv[0] === "help" && argv[1] === "eval")) {
+      process.exitCode = await executeEvalCommand(argv, {
+        allowOutput: true,
+        writeOutput: (text) => process.stdout.write(text)
+      });
       return;
     }
     const parsed = parseReviewCommand(argv, { allowOutput: true });
