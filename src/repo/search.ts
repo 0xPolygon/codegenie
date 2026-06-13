@@ -41,7 +41,11 @@ const RIPGREP_RAW_RESULT_MULTIPLIER = 5;
 export class SearchService {
   constructor(
     private readonly resolver: SourceResolver,
-    private readonly registry: LanguageAdapterRegistry
+    private readonly registry: LanguageAdapterRegistry,
+    // Shared bounded-concurrency gate for subprocess work (ripgrep spawns and
+    // git ls-tree blob checks), so search spawns count against the same budget
+    // as the rest of the repository tools. Defaults to unbounded for tests.
+    private readonly limit: <T>(fn: () => Promise<T>) => Promise<T> = (fn) => fn()
   ) {}
 
   async search(query: string, options: RawSearchOptions = {}): Promise<SearchExecution> {
@@ -140,14 +144,14 @@ export class SearchService {
 
   private async gitGrep(query: string, options: RawSearchOptions & { pathGlob?: string; source: SourceSelector; maxResults: number }): Promise<SearchResult[]> {
     try {
-      return await this.resolver.grep(query, {
+      return await this.limit(() => this.resolver.grep(query, {
         source: options.source,
         maxResults: options.maxResults,
         ...(options.pathGlob !== undefined ? { glob: options.pathGlob } : {}),
         ...(options.caseSensitive !== undefined ? { caseSensitive: options.caseSensitive } : {}),
         ...(options.fixedString !== undefined ? { fixedString: options.fixedString } : {}),
         ...(options.word !== undefined ? { word: options.word } : {})
-      });
+      }));
     } catch (error) {
       if (error instanceof CodeninjaError && error.code === "git_ref_missing") {
         throw new CodeninjaError("invalid_args", "search pattern or revision could not be searched", { cause: error });
@@ -166,6 +170,9 @@ export class SearchService {
       "--column",
       "--no-config",
       "--no-messages",
+      // --no-ignore is required so force-added files inside gitignored directories
+      // (tracked content) are still searched; untracked results are dropped by the
+      // tracked-blob post-filter below.
       "--no-ignore",
       "--hidden",
       "--glob",
@@ -180,7 +187,7 @@ export class SearchService {
       query,
       "."
     ];
-    const ripgrep = await this.runRipgrepCapped(args, options.maxResults * RIPGREP_RAW_RESULT_MULTIPLIER);
+    const ripgrep = await this.limit(() => this.runRipgrepCapped(args, options.maxResults * RIPGREP_RAW_RESULT_MULTIPLIER));
     if (!ripgrep.ok) {
       return ripgrep;
     }
@@ -271,7 +278,7 @@ export class SearchService {
       let keep = tracked.get(result.path);
       if (keep === undefined) {
         try {
-          const entry = await this.resolver.git.lsTreeEntry(this.resolver.binding.headCommit, result.path);
+          const entry = await this.limit(() => this.resolver.git.lsTreeEntry(this.resolver.binding.headCommit, result.path));
           keep = entry?.type === "blob";
         } catch {
           keep = false;
@@ -286,7 +293,10 @@ export class SearchService {
   }
 
   private canUseRipgrep(source: SourceSelector): boolean {
-    return source.kind === "head" && this.resolver.worktree.headEqualsReviewedHead && this.resolver.worktree.trackedClean;
+    return source.kind === "head" &&
+      this.resolver.worktree.headEqualsReviewedHead &&
+      this.resolver.worktree.trackedClean &&
+      this.resolver.worktree.untrackedPaths.size === 0;
   }
 
   private async enrich(results: SearchResult[], source: SourceSelector, mode: SearchOptions["contextMode"]): Promise<void> {

@@ -27,12 +27,6 @@ export function formatCodeninjaMarker(fingerprint: string, runId: string): strin
   return `<!-- codeninja:fingerprint=${fingerprint};run=${runId} -->`;
 }
 
-export function fingerprintFindingForGitHub(
-  finding: Pick<FinalFinding, "fingerprint">
-): string {
-  return finding.fingerprint;
-}
-
 export function detectDuplicateFindings(
   findings: FinalFinding[],
   comments: ExistingReviewThread[]

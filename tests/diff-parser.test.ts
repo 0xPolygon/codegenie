@@ -178,6 +178,24 @@ index e69de29..0000000
     expect(diff.files[1]?.modeOnly).toBeUndefined();
   });
 
+  it("marks a pure permission change mode-only but not a rename that also changes mode", () => {
+    const pureChmod = parseDiff(`diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755
+`);
+    expect(pureChmod.files[0]).toMatchObject({ path: "run.sh", status: "modified", modeOnly: true });
+
+    const renameChmod = parseDiff(`diff --git a/run.sh b/scripts/run.sh
+old mode 100644
+new mode 100755
+similarity index 100%
+rename from run.sh
+rename to scripts/run.sh
+`);
+    expect(renameChmod.files[0]).toMatchObject({ path: "scripts/run.sh", status: "renamed" });
+    expect(renameChmod.files[0]?.modeOnly).toBeUndefined();
+  });
+
   it("parses independently C-quoted diff-git paths and octal escapes", () => {
     const diff = parseDiff(`diff --git a/src/plain.ts "b/src/quoted\\040new.ts"
 index 1111111..2222222 100644

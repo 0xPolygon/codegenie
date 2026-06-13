@@ -125,6 +125,7 @@ func TestSaveUser(t *testing.T) {
     writeRepoFile(repo, "many/many.go", `package many\n\n${manyFunctions(130)}\n`);
     writeRepoFile(repo, "long/long.go", `package long\n\n${longFunction(320)}\n`);
     writeRepoFile(repo, "dups/dups.go", `package dups\n\n${duplicateLongFunctions(5)}\n`);
+    writeRepoFile(repo, "dups/many_defs.go", `package dups\n\n${duplicateFunctions("ManyDup", 25)}\n`);
     writeRepoFile(repo, "src/arrow.ts", "export const calc = (x: number) => x + 1\n");
     writeRepoFile(
       repo,
@@ -486,6 +487,9 @@ export { internal as Public }
     const duplicateDefinitions = await tools.findDefinition("BigDup");
     expect(duplicateDefinitions.meta.truncated).toBe(true);
     expect(JSON.stringify(duplicateDefinitions.definitions).length).toBeLessThanOrEqual(16_000);
+    const sameFileCappedDefinitions = await tools.findDefinition("ManyDup");
+    expect(sameFileCappedDefinitions.definitions).toHaveLength(20);
+    expect(sameFileCappedDefinitions.meta).toMatchObject({ truncated: true, omittedCount: 5 });
 
     const manyOutline = await tools.readFileOutline("many/many.go");
     expect(manyOutline.meta.truncated).toBe(true);
@@ -521,6 +525,16 @@ export { internal as Public }
     expect(optionLikeQuerySearch.results).toEqual([]);
     const range = await tools.readRange("store/user.go", 1, 2);
     expect(range.meta).toMatchObject({ backend: "text", precision: "exact", degraded: false });
+    const pastEofRange = await tools.readRange("store/user.go", 10_000, 10_010);
+    expect(pastEofRange.text).toBe("");
+    expect(pastEofRange.meta).toMatchObject({
+      backend: "text",
+      precision: "exact",
+      degraded: true,
+      degradationReason: "requested range starts after end of file",
+      truncated: true,
+      omittedCount: 0
+    });
     const listed = await tools.listFiles("store/*.go");
     expect(listed.paths).toEqual(expect.arrayContaining(["store/user.go", "store/user_test.go"]));
     expect(listed.meta).toMatchObject({ backend: "text", precision: "exact", degraded: false });
@@ -578,7 +592,6 @@ export { internal as Public }
     await expect(tools.findDefinition("SaveUser", { pathGlob: "../bad" })).rejects.toMatchObject({ code: "path_outside_repo" });
     expect(telemetry.toolCalls).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ tool: "search_files", engine: "ripgrep", status: "ok" }),
         expect.objectContaining({ tool: "search_files", engine: "git-grep", status: "ok", degraded: true }),
         expect.objectContaining({ tool: "search_files", status: "ok", truncated: true, omittedCount: expect.any(Number) }),
         expect.objectContaining({ tool: "search_files", status: "ok", args: expect.objectContaining({ query: "--follow" }) }),
@@ -632,7 +645,7 @@ export { internal as Public }
     );
   });
 
-  it("keeps ripgrep search safe and aligned with tracked tree semantics", async () => {
+  it("falls back to git grep when ignored or untracked paths would make ripgrep walk extra tree content", async () => {
     const repo = initRepo();
     const outsideDir = mkdtempSync(path.join(tmpdir(), "codeninja-outside-"));
     writeFileSync(path.join(outsideDir, "secret.txt"), "OutsideSecretLeak\n");
@@ -662,10 +675,24 @@ export { internal as Public }
     expect(symlinkContent.text).not.toContain("OutsideFileSecretLeak");
     expect(telemetry.toolCalls.filter((call) => call.tool === "search_files")).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ engine: "ripgrep", degraded: false })
+        expect.objectContaining({ engine: "git-grep", degraded: false })
       ])
     );
     expect(telemetry.toolCalls.filter((call) => call.tool === "search_files").every((call) => call.degraded === false)).toBe(true);
+  });
+
+  it("uses the ripgrep fast path for clean tracked worktrees", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "src/app.ts", "export const visible = 'VisibleNeedle'\n");
+    const head = commitAll(repo, "base");
+    const { telemetry, tools } = await buildIndexForRange(repo, head, head);
+
+    expect((await tools.searchFiles("VisibleNeedle")).results.map((result) => result.path)).toContain("src/app.ts");
+    expect(telemetry.toolCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ tool: "search_files", engine: "ripgrep", status: "ok", degraded: false })
+      ])
+    );
   });
 
   it("does not search checked-out submodule contents through the ripgrep fast path", async () => {
@@ -1325,6 +1352,10 @@ function lateDefMentions(fileIndex: number, count: number): string {
 
 function duplicateLongFunctions(count: number): string {
   return Array.from({ length: count }, (_, index) => `func BigDup() int {\n${longBody(index, 180)}\n}`).join("\n\n");
+}
+
+function duplicateFunctions(name: string, count: number): string {
+  return Array.from({ length: count }, () => `func ${name}() string { return "${name}" }`).join("\n\n");
 }
 
 function oversizedFiller(): string {

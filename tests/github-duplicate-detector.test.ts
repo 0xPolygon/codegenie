@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   detectDuplicateFindings,
-  fingerprintFindingForGitHub,
   formatCodeninjaMarker,
   parseCodeninjaMarker
 } from "../src/github/duplicate-detector.js";
@@ -14,14 +13,6 @@ describe("GitHub duplicate detector", () => {
 
     expect(parseCodeninjaMarker(`body\n${marker}`)).toEqual({ fingerprint, runId: "run-123" });
     expect(parseCodeninjaMarker("body only")).toBeUndefined();
-  });
-
-  it("uses the composed final finding fingerprint as the GitHub fingerprint", () => {
-    const first = finding({ title: "First wording", failureMode: "A" });
-    const second = finding({ title: "Different wording", failureMode: "B", fingerprint: "b".repeat(64) });
-
-    expect(fingerprintFindingForGitHub(first)).toBe(first.fingerprint);
-    expect(fingerprintFindingForGitHub(second)).toBe(second.fingerprint);
   });
 
   it("skips exact fingerprint and fuzzy nearby codeninja comments only", () => {

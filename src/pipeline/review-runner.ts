@@ -13,7 +13,7 @@ import type { LlmCallUsage, LlmRunner, ModelCallCache, PiAiAdapter } from "../ll
 import { buildModelCallCacheKey, createModelCallCache } from "../llm/model-call-cache.js";
 import { createFakeRunner, shouldUseFakeRunner } from "../llm/fake-runner.js";
 import { buildRepositoryIndex } from "../repo/repository-index.js";
-import { buildLensRegistry } from "../skills/lens-registry.js";
+import { buildLensRegistry, droppedLensesFromFailures } from "../skills/lens-registry.js";
 import { createPromptBuilder } from "../skills/prompt-builder.js";
 import { loadSkills } from "../skills/skill-loader.js";
 import type {
@@ -207,7 +207,7 @@ export async function runReview(
         }
       }
     });
-    discloseSkillLoadFailures(coverage, services.skillFailures);
+    discloseSkillLoadFailures(coverage, services.skills, services.skillFailures);
     const finalReview = await dedupeRankAndComposeReview(verified, plannerResult.plan, resolved, coverage, config, run.telemetry, {
       runner: services.runner,
       promptBuilder: services.promptBuilder,
@@ -523,7 +523,7 @@ async function createPipelineServices(
     logger: run.logger,
     telemetry: run.telemetry
   });
-  const lensRegistry = buildLensRegistry(skillsResult.skills, config.lenses, run.logger, run.telemetry);
+  const lensRegistry = buildLensRegistry(skillsResult.skills, config.lenses, run.logger, run.telemetry, skillsResult.failures);
   const promptBuilder = createPromptBuilder(lensRegistry, { telemetry: run.telemetry });
   const cache = overrides.runner === undefined
     ? await createReviewCache(config, repoRoot, resolved, lensRegistry.registryHash(), run)
@@ -554,7 +554,7 @@ async function validateExplicitCliLensesForZeroWork(
     logger: run.logger,
     telemetry: run.telemetry
   });
-  buildLensRegistry(skillsResult.skills, config.lenses, run.logger, run.telemetry);
+  buildLensRegistry(skillsResult.skills, config.lenses, run.logger, run.telemetry, skillsResult.failures);
 }
 
 async function resolveRunRepoRoot(input: string | undefined): Promise<string> {
@@ -814,6 +814,7 @@ function markCoverageBudgetStopped(coverage: RunCoverageStatus): void {
 
 function discloseSkillLoadFailures(
   coverage: RunCoverageStatus,
+  skills: Awaited<ReturnType<typeof loadSkills>>["skills"],
   failures: Awaited<ReturnType<typeof loadSkills>>["failures"]
 ): void {
   for (const failure of failures.slice(0, 10)) {
@@ -821,6 +822,9 @@ function discloseSkillLoadFailures(
   }
   if (failures.length > 10) {
     coverage.reasons.push(`skill guidance skipped: ${failures.length - 10} additional skill load failure(s) omitted`);
+  }
+  for (const lensId of droppedLensesFromFailures(skills, failures)) {
+    coverage.reasons.push(`lens ${lensId} disabled: all skills declaring it failed to load`);
   }
 }
 

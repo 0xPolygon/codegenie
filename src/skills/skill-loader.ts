@@ -26,7 +26,16 @@ export type Skill = {
 export type SkillLoadFailure = {
   filePath: string;
   reason: string;
+  // Lenses the skill declared before it failed to load, when frontmatter parsed.
+  // Lets the lens registry disclose a lens disabled because all its skills failed.
+  lenses?: string[];
 };
+
+// An extra skill path plus its trust provenance. Repo-config-sourced paths are
+// defensively re-contained to the repo root here, independent of the config
+// loader's trust partition, so a partition regression cannot load out-of-repo
+// markdown as trusted prompt content.
+export type ExtraSkillPathSpec = { path: string; source: "user" | "repo-config" };
 
 export type SkillLoadResult = {
   skills: Skill[];
@@ -35,7 +44,7 @@ export type SkillLoadResult = {
 
 export async function loadSkills(opts: {
   repoRoot: string;
-  extraSkillPaths: string[];
+  extraSkillPaths: Array<string | ExtraSkillPathSpec>;
   logger: Logger;
   telemetry: TelemetryRecorder;
 }): Promise<SkillLoadResult> {
@@ -46,10 +55,18 @@ export async function loadSkills(opts: {
   const skills: Skill[] = [];
   const seenIds = new Set<string>();
 
+  const extraSpecs = opts.extraSkillPaths.map((entry) =>
+    typeof entry === "string" ? { path: entry, source: "user" as const } : entry
+  );
+  const extra = discoverExtraSkillFiles(extraSpecs, repoRoot);
+  for (const failure of extra.failures) {
+    recordFailure(failure, opts.logger, opts.telemetry);
+    failures.push(failure);
+  }
   const sources: Array<{ source: SkillSource; files: string[] }> = [
     { source: "bundled", files: discoverMarkdownFiles(bundledRoot) },
     { source: "repo", files: discoverMarkdownFiles(repoSkillsRoot) },
-    { source: "extra", files: discoverExtraSkillFiles(opts.extraSkillPaths) }
+    { source: "extra", files: extra.files }
   ];
 
   for (const group of sources) {
@@ -63,7 +80,8 @@ export async function loadSkills(opts: {
       if (seenIds.has(parsed.skill.id)) {
         const failure = {
           filePath,
-          reason: `duplicate skill id ${parsed.skill.id}; earlier skill wins`
+          reason: `duplicate skill id ${parsed.skill.id}; earlier skill wins`,
+          lenses: [...parsed.skill.lenses]
         };
         recordFailure(failure, opts.logger, opts.telemetry);
         failures.push(failure);
@@ -93,8 +111,34 @@ function bundledSkillsRoot(): string {
   });
 }
 
-function discoverExtraSkillFiles(paths: string[]): string[] {
-  return paths.flatMap((input) => discoverMarkdownFiles(path.resolve(input))).sort(comparePaths);
+function discoverExtraSkillFiles(
+  specs: ExtraSkillPathSpec[],
+  repoRoot: string
+): { files: string[]; failures: SkillLoadFailure[] } {
+  const files: string[] = [];
+  const failures: SkillLoadFailure[] = [];
+  for (const spec of specs) {
+    const resolved = path.resolve(spec.path);
+    if (spec.source === "repo-config" && !isContainedIn(repoRoot, resolved)) {
+      failures.push({
+        filePath: resolved,
+        reason: "repo-configured extra skill path resolves outside the repository root and was refused"
+      });
+      continue;
+    }
+    files.push(...discoverMarkdownFiles(resolved));
+  }
+  return { files: files.sort(comparePaths), failures };
+}
+
+function isContainedIn(root: string, candidate: string): boolean {
+  const normalizedRoot = path.resolve(root);
+  const normalizedCandidate = path.resolve(candidate);
+  if (normalizedCandidate === normalizedRoot) {
+    return true;
+  }
+  const relative = path.relative(normalizedRoot, normalizedCandidate);
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 function discoverMarkdownFiles(root: string): string[] {
@@ -160,7 +204,8 @@ function parseSkillFile(
     return {
       failure: {
         filePath,
-        reason: "at least one guidance section is required: Checks, False Positives, Safe Patterns, or Examples"
+        reason: "at least one guidance section is required: Checks, False Positives, Safe Patterns, or Examples",
+        lenses: [...metadata.value.lenses]
       }
     };
   }

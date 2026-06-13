@@ -760,6 +760,22 @@ function recordToolCall(
     errorCode: outcome.errorCode
   }) as Parameters<CreateRunnerOptions["telemetry"]["recordToolCall"]>[0];
   opts.telemetry.recordToolCall(record);
+
+  if (outcome.status === "rejected" && outcome.errorCode === "path_outside_repo") {
+    opts.telemetry.event({
+      stage: request.stage,
+      level: "warn",
+      message: "tool call rejected: path outside repository root (possible review manipulation)",
+      ...(request.telemetryContext?.workerId !== undefined ? { workerId: request.telemetryContext.workerId } : {}),
+      ...(request.telemetryContext?.packetId !== undefined ? { packetId: request.telemetryContext.packetId } : {}),
+      data: {
+        event: "tool_path_outside_repo",
+        tool: toolCall.name,
+        modelCallId,
+        ...(request.telemetryContext?.candidateId !== undefined ? { candidateId: request.telemetryContext.candidateId } : {})
+      }
+    });
+  }
 }
 
 function recordSubmitWithExtraTools(

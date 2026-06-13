@@ -100,8 +100,7 @@ async function exportedSignatureSignalsForHunk(
   hunk: DiffFile["hunks"][number]
 ): Promise<StaticSignal[]> {
   const headContent = await resolver.readFile(file.path, { kind: "head" });
-  const baseContent = await resolver.readFile(file.oldPath ?? file.path, { kind: "base" });
-  if (!headContent || !baseContent) {
+  if (!headContent) {
     return [];
   }
   const adapter = registry.forPath(file.path);
@@ -115,6 +114,16 @@ async function exportedSignatureSignalsForHunk(
   if (headParsed.tree === undefined) {
     return [];
   }
+  // Head-exported gate: only parse the base side when the head side actually
+  // changed an exported symbol, so unaffected files never trigger a base parse.
+  const changedExported = adapter.getChangedSymbols(headParsed, hunk).filter((symbol) => symbol.exported);
+  if (changedExported.length === 0) {
+    return [];
+  }
+  const baseContent = await resolver.readFile(file.oldPath ?? file.path, { kind: "base" });
+  if (!baseContent) {
+    return [];
+  }
   const baseParsed = await adapter.parse({
     path: file.path,
     language: registry.languageForPath(file.path),
@@ -123,16 +132,13 @@ async function exportedSignatureSignalsForHunk(
     contentSha: baseContent.contentSha
   });
   const baseSymbols = adapter.listSymbols(baseParsed);
-  return adapter
-    .getChangedSymbols(headParsed, hunk)
-    .filter((symbol) => symbol.exported)
-    .flatMap((symbol) => {
-      const baseSymbol = findMatchingSymbol(baseSymbols, symbol);
-      if (!baseSymbol || normalizeSignature(baseSymbol.signature) === normalizeSignature(symbol.signature)) {
-        return [];
-      }
-      return [signal(file.path, symbol.changedLines[0] ?? hunk.newStart, "RIGHT", symbol, "An exported symbol signature changed.")];
-    });
+  return changedExported.flatMap((symbol) => {
+    const baseSymbol = findMatchingSymbol(baseSymbols, symbol);
+    if (!baseSymbol || normalizeSignature(baseSymbol.signature) === normalizeSignature(symbol.signature)) {
+      return [];
+    }
+    return [signal(file.path, symbol.changedLines[0] ?? hunk.newStart, "RIGHT", symbol, "An exported symbol signature changed.")];
+  });
 }
 
 async function deletedExportSignalsForChangedHunk(

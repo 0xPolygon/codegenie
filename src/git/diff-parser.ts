@@ -370,7 +370,10 @@ function finishFile(files: DiffFile[], file: MutableFile | undefined): void {
     file.path = file.newTokenPath;
   }
 
-  if (file.sawModeOnlyHeader && file.hunks.length === 0 && !file.isBinary) {
+  // Mode-only means an existing file's permission bits changed with no content
+  // diff. A rename/copy/add/delete that also carries a mode header is not
+  // mode-only — its identity change is the reviewable fact.
+  if (file.sawModeOnlyHeader && file.hunks.length === 0 && !file.isBinary && file.status === "modified") {
     file.modeOnly = true;
   }
 

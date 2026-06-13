@@ -2,7 +2,7 @@ import type { CodeninjaConfig, Logger } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../util/hashing.js";
 import { CodeninjaError } from "../util/errors.js";
-import type { Skill } from "./skill-loader.js";
+import type { Skill, SkillLoadFailure } from "./skill-loader.js";
 
 export type LensDescriptor = {
   id: string;
@@ -23,11 +23,27 @@ export interface LensRegistry {
   registryHash(): string;
 }
 
+// Lenses declared only by skills that failed to load (no surviving skill
+// declares them), so they cannot be registered and must be disclosed.
+export function droppedLensesFromFailures(skills: Skill[], failures: SkillLoadFailure[]): string[] {
+  const provided = new Set(skills.flatMap((skill) => skill.lenses));
+  const dropped = new Set<string>();
+  for (const failure of failures) {
+    for (const lensId of failure.lenses ?? []) {
+      if (!provided.has(lensId)) {
+        dropped.add(lensId);
+      }
+    }
+  }
+  return [...dropped].sort();
+}
+
 export function buildLensRegistry(
   skills: Skill[],
   lensConfig: CodeninjaConfig["lenses"],
   logger: Logger,
-  telemetry: TelemetryRecorder
+  telemetry: TelemetryRecorder,
+  failures: SkillLoadFailure[] = []
 ): LensRegistry {
   const duplicateConfigIds = lensConfig.enabled.filter((id) => lensConfig.disabled.includes(id));
   if (duplicateConfigIds.length > 0) {
@@ -85,6 +101,23 @@ export function buildLensRegistry(
         data: { lensId }
       });
     }
+  }
+
+  for (const lensId of droppedLensesFromFailures(skills, failures)) {
+    logger.warn({
+      runId: telemetry.runId,
+      stage: 0,
+      event: "lens_disabled_all_skills_failed",
+      message: `lens ${lensId} is disabled because all skills declaring it failed to load`,
+      lensId
+    });
+    telemetry.event({
+      stage: 0,
+      level: "warn",
+      message: "lens disabled because all declaring skills failed to load",
+      lensId,
+      data: { lensId }
+    });
   }
 
   const restrictedSet = lensConfig.restrictTo === undefined ? undefined : new Set(lensConfig.restrictTo);

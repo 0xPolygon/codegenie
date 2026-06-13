@@ -52,6 +52,19 @@ describe("git client", () => {
     await expect(runGit(repo, ["var", "GIT_PAGER"])).resolves.toBe("cat");
   });
 
+  it("treats a leading-dash grep glob as a pathspec, not a git option", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "needle.ts", "const needle = 1;\n");
+    commitAll(repo, "base");
+    const client = createGitClient(repo);
+
+    // A grep glob starting with '-' is wrapped as ':(glob)...' after a '--'
+    // separator, so it can never be parsed as a git flag and must not be rejected.
+    await expect(client.grep("HEAD", "needle", { glob: "-not-a-flag*.ts" })).resolves.toEqual([]);
+    // The same query with a matching glob still finds the match, proving grep works.
+    await expect(client.grep("HEAD", "needle", { glob: "*.ts" })).resolves.not.toEqual([]);
+  });
+
   it("redacts capped subprocess error contexts", async () => {
     const repo = initRepo();
     const secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";

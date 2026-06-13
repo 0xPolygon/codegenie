@@ -15,7 +15,7 @@ import {
   runProviderCommand
 } from "../src/provider/provider-services.js";
 import { loadProviderSettings } from "../src/provider/provider-settings.js";
-import { buildLensRegistry } from "../src/skills/lens-registry.js";
+import { buildLensRegistry, droppedLensesFromFailures } from "../src/skills/lens-registry.js";
 import { fenceUntrusted, projectSkills } from "../src/skills/prompt-builder.js";
 import { loadSkills, type Skill } from "../src/skills/skill-loader.js";
 import type { Logger, LogEvent, TelemetryEvent } from "../src/types.js";
@@ -173,6 +173,62 @@ Exercise normal YAML list frontmatter.
         harness.telemetry
       )
     ).toThrow(CodeninjaError);
+  });
+
+  it("discloses a lens disabled because all skills declaring it failed to load", async () => {
+    const harness = phase4Harness();
+    const { skills } = await loadSkills({
+      repoRoot: tempDir(),
+      extraSkillPaths: [],
+      logger: harness.logger,
+      telemetry: harness.telemetry
+    });
+    const failures = [
+      { filePath: "/repo/.codeninja/skills/custom.md", reason: "no guidance sections", lenses: ["team/custom"] },
+      // A lens that a surviving bundled skill still provides must NOT be disclosed as dropped.
+      { filePath: "/repo/.codeninja/skills/dup-go.md", reason: "duplicate id", lenses: ["lang/go"] }
+    ];
+
+    expect(droppedLensesFromFailures(skills, failures)).toEqual(["team/custom"]);
+
+    const registry = buildLensRegistry(skills, defaultConfig.lenses, harness.logger, harness.telemetry, failures);
+    expect(registry.lens("team/custom")).toBeUndefined();
+    expect(registry.lens("lang/go")).toBeDefined();
+    const disclosures = harness.events.filter(
+      (event) => event.message === "lens disabled because all declaring skills failed to load"
+    );
+    expect(disclosures).toHaveLength(1);
+    expect(disclosures[0]).toMatchObject({ stage: 0, level: "warn", lensId: "team/custom" });
+  });
+
+  it("refuses repo-config extra skill paths that resolve outside the repository root", async () => {
+    const repoRoot = tempDir();
+    const outside = tempDir();
+    writeFileSync(
+      path.join(outside, "escape.md"),
+      skillMarkdown({ id: "evil/injected", title: "Injected", lenses: ["evil/injected"], checks: "- attacker controlled" })
+    );
+    const harness = phase4Harness();
+
+    const refused = await loadSkills({
+      repoRoot,
+      extraSkillPaths: [{ path: path.join(outside, "escape.md"), source: "repo-config" }],
+      logger: harness.logger,
+      telemetry: harness.telemetry
+    });
+    expect(refused.skills.some((skill) => skill.id === "evil/injected")).toBe(false);
+    expect(refused.failures.map((failure) => failure.reason)).toEqual(
+      expect.arrayContaining([expect.stringContaining("outside the repository root")])
+    );
+
+    // The same path from a trusted user-scoped source loads normally.
+    const allowed = await loadSkills({
+      repoRoot,
+      extraSkillPaths: [{ path: path.join(outside, "escape.md"), source: "user" }],
+      logger: phase4Harness().logger,
+      telemetry: phase4Harness().telemetry
+    });
+    expect(allowed.skills.some((skill) => skill.id === "evil/injected")).toBe(true);
   });
 
   it("projects skills deterministically and fences hostile backtick content safely", () => {

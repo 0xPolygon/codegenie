@@ -367,6 +367,17 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         workerId: "worker-reject"
       })
     ]);
+    const manipulationEvents = telemetry.events.filter(
+      (event) => event.data?.event === "tool_path_outside_repo"
+    );
+    expect(manipulationEvents).toHaveLength(1);
+    expect(manipulationEvents[0]).toMatchObject({
+      stage: 7,
+      level: "warn",
+      workerId: "worker-reject",
+      packetId: "packet-rejected-tool",
+      data: { event: "tool_path_outside_repo", tool: "read_range" }
+    });
   });
 
   it("redacts provider responses before appending them to the live conversation", async () => {

@@ -135,7 +135,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     }
   ) {
     this.diffBlocks = new DiffBlockRenderer(opts.diff);
-    this.search = new SearchService(opts.resolver, opts.registry);
+    this.search = new SearchService(opts.resolver, opts.registry, this.limit);
   }
 
   bindPackets(packets: ReviewPacket[]): void {
@@ -192,17 +192,33 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           const meta = degradedMeta("text", "exact", "file missing at selected revision");
           return { value: { text: "", meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: 0 };
         }
-        const lines = content.content.split(/\n/u);
+        const lines = content.content.length === 0 ? [] : content.content.split(/\n/u);
+        if (startLine > lines.length) {
+          const meta: ToolResultMeta = {
+            backend: "text",
+            precision: "exact",
+            degraded: true,
+            degradationReason: "requested range starts after end of file",
+            truncated: true,
+            omittedCount: 0
+          };
+          return { value: { text: "", meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: 0 };
+        }
         const clampedStart = Math.min(Math.max(1, startLine), Math.max(1, lines.length));
         const requestedEnd = Math.min(endLine, lines.length);
         const cappedEnd = Math.min(requestedEnd, clampedStart + READ_RANGE_MAX_LINES - 1);
         const text = capText(lines.slice(clampedStart - 1, cappedEnd).join("\n"), READ_RANGE_MAX_CHARS);
-        const omitted = Math.max(0, startLine - clampedStart) + Math.max(0, endLine - cappedEnd) + text.omittedCount;
+        // omittedCount is a count of real in-file lines that fell outside the
+        // returned window because of the line cap. Lines past EOF never existed,
+        // and character truncation is signalled by `truncated` alone.
+        const omittedLines = Math.max(0, requestedEnd - cappedEnd);
         const meta: ToolResultMeta = {
           backend: "text",
           precision: "exact",
           degraded: false,
-          ...(omitted > 0 || text.truncated ? { truncated: true, omittedCount: omitted } : {})
+          ...(omittedLines > 0 || text.truncated
+            ? { truncated: true, ...(omittedLines > 0 ? { omittedCount: omittedLines } : {}) }
+            : {})
         };
         return { value: { text: text.text, meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: text.text.length };
       }
@@ -356,7 +372,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           word: true,
           ...(pathGlob !== undefined ? { glob: pathGlob } : {})
         };
-        const discoveryMatches = await this.opts.resolver.grep(discoveryName, grepOptions);
+        const discoveryMatches = await this.limit(() => this.opts.resolver.grep(discoveryName, grepOptions));
         const matches = discoveryMatches.slice(0, FIND_DEFINITION_DISCOVERY_MATCHES);
         const omittedDiscoveryMatches = Math.max(0, discoveryMatches.length - matches.length);
         const allCandidatePaths = [...new Set(matches.map((match) => match.path))];
@@ -365,24 +381,43 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         const definitions: Array<{ symbol: SymbolInfo; text?: string }> = [];
         let fallbackCount = 0;
         let omittedByTruncation = 0;
+        let omittedByDefinitionCap = 0;
+        let processedCandidates = 0;
         for (const candidate of candidatePaths) {
           if (definitions.length >= FIND_DEFINITION_MAX) {
             break;
           }
-          const content = await this.opts.resolver.readFile(candidate, source);
-          if (!content) {
+          processedCandidates += 1;
+          const candidateData = await this.limit(async () => {
+            const content = await this.opts.resolver.readFile(candidate, source);
+            if (!content) {
+              return undefined;
+            }
+            const adapter = this.opts.registry.forPath(candidate);
+            const parsed = await adapter.parse({
+              path: candidate,
+              language: this.opts.registry.languageForPath(candidate),
+              content: content.content,
+              source,
+              contentSha: content.contentSha
+            });
+            return { content, adapter, parsed };
+          });
+          if (!candidateData) {
             continue;
           }
-          const adapter = this.opts.registry.forPath(candidate);
-          const parsed = await adapter.parse({
-            path: candidate,
-            language: this.opts.registry.languageForPath(candidate),
-            content: content.content,
-            source,
-            contentSha: content.contentSha
-          });
+          const { content, adapter, parsed } = candidateData;
           if (parsed.tree !== undefined) {
-            for (const symbol of adapter.listSymbols(parsed).filter((symbol) => symbolMatches(symbol, symbolName))) {
+            const matchingSymbols = adapter.listSymbols(parsed).filter((symbol) => symbolMatches(symbol, symbolName));
+            for (let index = 0; index < matchingSymbols.length; index += 1) {
+              if (definitions.length >= FIND_DEFINITION_MAX) {
+                omittedByDefinitionCap += matchingSymbols.length - index;
+                break;
+              }
+              const symbol = matchingSymbols[index];
+              if (!symbol) {
+                continue;
+              }
               const definitionSnippet = snippet(content.content, symbol.lineRange, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS);
               definitions.push({
                 symbol,
@@ -390,9 +425,6 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
               });
               if (definitionSnippet.truncated) {
                 omittedByTruncation += definitionSnippet.omittedCount;
-              }
-              if (definitions.length >= FIND_DEFINITION_MAX) {
-                break;
               }
             }
           } else {
@@ -412,11 +444,14 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
             }
           }
         }
-        const parsedCount = definitions.length - fallbackCount;
-        const omittedByCap = definitions.length >= FIND_DEFINITION_MAX ? Math.max(0, matches.length - FIND_DEFINITION_MAX) : 0;
+        // When the definition cap is hit, omissions are remaining same-file
+        // definition symbols plus unprocessed candidate files, not raw grep
+        // line-match counts.
+        const cappedAtMax = definitions.length >= FIND_DEFINITION_MAX;
+        const omittedByCap = cappedAtMax ? Math.max(0, candidatePaths.length - processedCandidates) : 0;
         const cappedDefinitions = capDefinitionResultsTotal(
           definitions,
-          omittedByCap + omittedByTruncation + omittedCandidatePaths + omittedDiscoveryMatches
+          omittedByCap + omittedByDefinitionCap + omittedByTruncation + omittedCandidatePaths + omittedDiscoveryMatches
         );
         const meta: ToolResultMeta = {
           backend: fallbackCount === definitions.length ? "text" : "tree-sitter",
@@ -430,7 +465,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           meta,
           args: { symbolName, glob: pathGlob, source: source.kind },
           resultCount: cappedDefinitions.definitions.length,
-          resultChars: JSON.stringify(cappedDefinitions.definitions).length + parsedCount
+          resultChars: JSON.stringify(cappedDefinitions.definitions).length
         };
       }
     );
