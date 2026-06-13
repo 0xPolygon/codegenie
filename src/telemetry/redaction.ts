@@ -29,30 +29,42 @@ export function stripCredentials<T>(input: T): T {
   return stripValue(input, new WeakSet()) as T;
 }
 
-function stripValue(input: unknown, seen: WeakSet<object>): unknown {
+function stripValue(input: unknown, active: WeakSet<object>): unknown {
   if (typeof input === "string") {
     return stripString(input);
   }
 
   if (Array.isArray(input)) {
-    return input.map((item) => stripValue(item, seen));
+    if (active.has(input)) {
+      return "[redacted:circular]";
+    }
+    active.add(input);
+    try {
+      return input.map((item) => stripValue(item, active));
+    } finally {
+      active.delete(input);
+    }
   }
 
   if (input && typeof input === "object") {
-    if (seen.has(input)) {
+    if (active.has(input)) {
       return "[redacted:circular]";
     }
-    seen.add(input);
+    active.add(input);
 
-    if (input instanceof Date) {
-      return input.toISOString();
-    }
+    try {
+      if (input instanceof Date) {
+        return input.toISOString();
+      }
 
-    const output: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(input)) {
-      output[key] = stripValue(value, seen);
+      const output: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(input)) {
+        output[key] = stripValue(value, active);
+      }
+      return output;
+    } finally {
+      active.delete(input);
     }
-    return output;
   }
 
   return input;

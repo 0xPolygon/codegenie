@@ -36,6 +36,22 @@ import type { PiAuthStorage, ProviderAuthEntry } from "../src/provider/provider-
 import { CodeninjaError } from "../src/util/errors.js";
 
 describe("Phase 4 schemas and repository tool definitions", () => {
+  it("redacts shared object references without mistaking them for cycles", () => {
+    const shared = { token: "sk-shared-secret-value-1234567890" };
+    const cyclic: { self?: unknown } = {};
+    cyclic.self = cyclic;
+
+    const redacted = stripCredentials({ first: shared, second: shared, cyclic }) as {
+      first: { token: string };
+      second: { token: string };
+      cyclic: { self: string };
+    };
+
+    expect(redacted.first).toEqual({ token: "[redacted:pattern]" });
+    expect(redacted.second).toEqual({ token: "[redacted:pattern]" });
+    expect(redacted.cyclic.self).toBe("[redacted:circular]");
+  });
+
   it("rejects hallucinated fields and exposes stage submit tool names", () => {
     expect(submitToolNameForStage(5)).toBe("submit_plan");
     expect(submitToolNameForStage(7)).toBe("submit_review");
@@ -301,6 +317,84 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(usage).toHaveLength(2);
   });
 
+  it("continues after a path_outside_repo repository tool rejection and records the rejected tool call", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-outside",
+          name: "read_range",
+          arguments: { path: "../secret", startLine: 1, endLine: 1 }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-after-rejected-tool")])
+    ]);
+    const tools = fakeRepositoryTools();
+    tools.readRange = async () => {
+      throw new CodeninjaError("path_outside_repo", "outside repo");
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: {
+        checkpoint: () => "ok",
+        onUsage: () => undefined
+      }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-rejected-tool"),
+        tools: buildRepositoryToolDefinitions(tools),
+        toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 2000 },
+        telemetryContext: { workerId: "worker-reject", packetId: "packet-rejected-tool" }
+      })
+    ).resolves.toEqual({ findings: [], followUpHints: [], uncertainties: [] });
+
+    expect(adapter.contexts[1]).toContain("\"isError\":true");
+    expect(adapter.contexts[1]).toContain("path_outside_repo");
+    expect(telemetry.toolCalls).toEqual([
+      expect.objectContaining({
+        stage: 7,
+        tool: "read_range",
+        status: "rejected",
+        errorCode: "path_outside_repo",
+        packetId: "packet-rejected-tool",
+        workerId: "worker-reject"
+      })
+    ]);
+  });
+
+  it("redacts provider responses before appending them to the live conversation", async () => {
+    clearRegisteredSecretsForTests();
+    registerSecret("super-secret-provider-token");
+    const adapter = scriptedAdapter([
+      assistant([{ type: "text", text: "provider leaked super-secret-provider-token" }]),
+      assistant([validSubmitReviewCall("submit-after-redaction")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: {
+        checkpoint: () => "ok",
+        onUsage: () => undefined
+      }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-redaction"));
+
+    expect(adapter.contexts[1]).not.toContain("super-secret-provider-token");
+    expect(adapter.contexts[1]).toContain("[redacted:secret]");
+    clearRegisteredSecretsForTests();
+  });
+
   it("uses one timeout signal across provider and repository tool steps", async () => {
     const providerSignals: AbortSignal[] = [];
     const toolSignals: AbortSignal[] = [];
@@ -427,12 +521,12 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       schemaValid: false,
       errorCode: "llm_schema_invalid"
     });
-    expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["miss", "miss"]);
+    expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["miss", "write"]);
     expect(cache.put).toHaveBeenCalledTimes(1);
     expect(cache.put.mock.calls[0]?.[1].message.content).toEqual([validSubmitReviewCall("submit-repair")]);
   });
 
-  it("does not make a finalization provider call after checkpoint exhaustion", async () => {
+  it("makes one budget-exempt finalization provider call after checkpoint exhaustion", async () => {
     const adapter = scriptedAdapter([
       assistant([{ type: "text", text: "plain text instead of submit" }]),
       assistant([validSubmitReviewCall("must-not-run")])
@@ -453,12 +547,13 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       }
     });
 
-    await expect(runner.runStructured(submitReviewRequest("packet-budget-stop"))).rejects.toMatchObject({
-      code: "llm_call_failed",
-      recoverable: true,
-      context: { reason: "budget_exhausted", stage: 7 }
+    await expect(runner.runStructured(submitReviewRequest("packet-budget-stop"))).resolves.toMatchObject({
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
     });
-    expect(adapter.complete).toHaveBeenCalledTimes(1);
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(checkpoints).toBe(2);
   });
 
   it("does not cache plain-text non-submissions", async () => {
@@ -487,13 +582,14 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       }
     });
 
-    await expect(runner.runStructured(submitReviewRequest("packet-plain-no-cache"))).rejects.toMatchObject({
-      code: "llm_call_failed",
-      recoverable: true,
-      context: { reason: "budget_exhausted", stage: 7 }
+    await expect(runner.runStructured(submitReviewRequest("packet-plain-no-cache"))).resolves.toMatchObject({
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
     });
-    expect(adapter.complete).toHaveBeenCalledTimes(1);
-    expect(cache.put).not.toHaveBeenCalled();
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(cache.put).toHaveBeenCalledTimes(1);
+    expect(cache.put.mock.calls[0]?.[1].message.content).toEqual([validSubmitReviewCall("must-not-run")]);
   });
 
   it("includes tool budget in model-call cache keys", async () => {
@@ -559,7 +655,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await runner.runStructured(submitReviewRequest("packet-canonical"));
 
     expect(adapter.complete).toHaveBeenCalledTimes(1);
-    expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["miss", "hit"]);
+    expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["write", "hit"]);
     expect(telemetry.modelCalls[0]?.promptHash).toBe(telemetry.modelCalls[1]?.promptHash);
     expect(telemetry.modelCalls[0]?.promptChars).toBe(telemetry.modelCalls[1]?.promptChars);
   });
@@ -1003,7 +1099,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
-  it("treats persistent retryable provider errors as fatal provider outages", async () => {
+  it("treats persistent retryable provider errors as recoverable task failures", async () => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     const adapter: PiAiAdapter = {
       resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
@@ -1026,7 +1122,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
       await expect(runner.runStructured(submitReviewRequest("packet-provider-down"))).rejects.toMatchObject({
         code: "llm_call_failed",
-        recoverable: false,
+        recoverable: true,
         context: { reason: "transient_error" }
       });
       expect(adapter.complete).toHaveBeenCalledTimes(4);
@@ -1205,7 +1301,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(existsSync(modelCallCacheEntryPath(path.join(repoRoot, ".codeninja", "cache"), keyA))).toBe(true);
     expect(readCacheText(path.join(repoRoot, ".codeninja", "cache"))).not.toContain("super-secret-cache-token");
     expect(readCacheText(path.join(repoRoot, ".codeninja", "cache"))).toContain("[redacted:secret]");
-    await expect(cache.get(keyA, 7)).resolves.toMatchObject({ status: "hit" });
+    const hit = await cache.get(keyA, 7);
+    expect(hit).toMatchObject({ status: "hit" });
+    expect(JSON.stringify(hit)).not.toContain("super-secret-cache-token");
+    expect(JSON.stringify(hit)).toContain("[redacted:secret]");
     await expect(cache.get(keyB, 7)).resolves.toEqual({ status: "miss" });
     expect(telemetry.events).toEqual(
       expect.arrayContaining([
@@ -1260,6 +1359,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       ])
     );
     expect(existsSync(path.join(repoRoot, ".codeninja", "cache"))).toBe(true);
+    expect(readFileSync(path.join(repoRoot, ".codeninja", ".gitignore"), "utf8")).toContain("cache/");
+    expect(readFileSync(path.join(repoRoot, ".codeninja", ".gitignore"), "utf8")).toContain("locks/");
     clearRegisteredSecretsForTests();
   });
 

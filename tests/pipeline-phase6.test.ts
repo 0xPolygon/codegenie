@@ -54,6 +54,8 @@ describe("phase 6 live review path", () => {
       ]);
       expect(output.join("\n")).toContain("Live review found one issue.");
       expect(output.join("\n")).toContain("## Needs Human Attention");
+      expect(output.join("\n")).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
+      expect(output.join("\n")).toContain("[redacted:");
       expect(adapter.callsByPrompt).toMatchObject({
         planner: 1,
         packetReview: 2,
@@ -81,7 +83,24 @@ describe("phase 6 live review path", () => {
       expect(events.some((event) => event.stage === 8)).toBe(false);
       expect(deferredStage8Artifacts(runArtifactDir)).toEqual([]);
       expect(existsSync(path.join(runArtifactDir, "final-review.md"))).toBe(true);
-      expect(readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8")).toContain("Restoring the guard");
+      const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
+      expect(finalReview).toContain("Restoring the guard");
+      expect(finalReview).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
+      expect(finalReview).toContain("[redacted:");
+      const runJson = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8")) as {
+        totals: { packets: number; candidates: number; verified: number; finalFindings: number };
+      };
+      expect(runJson.totals).toMatchObject({ packets: 1, candidates: 1, verified: 1, finalFindings: 1 });
+      const telemetryJson = JSON.parse(readFileSync(path.join(runArtifactDir, "telemetry.json"), "utf8")) as {
+        packets: { generated: number; reviewed: number };
+        candidates: { generated: number; verificationScheduled: number };
+        verdicts: { accept: number };
+        finalSelection: { finalFindings: number };
+      };
+      expect(telemetryJson.packets).toMatchObject({ generated: 1, reviewed: 1 });
+      expect(telemetryJson.candidates).toMatchObject({ generated: 1, verificationScheduled: 1 });
+      expect(telemetryJson.verdicts).toMatchObject({ accept: 1 });
+      expect(telemetryJson.finalSelection).toMatchObject({ finalFindings: 1 });
     } finally {
       random.mockRestore();
     }
@@ -142,7 +161,8 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
           composedFindings: [
             {
               findingIds: [findingId],
-              finalBody: "Restoring the guard preserves the previous behavior when count is zero.",
+              finalBody:
+                "Restoring the guard preserves the previous behavior when count is zero. Diagnostic token: ghp_abcdefghijklmnopqrstuvwxyz1234567890.",
               publication: "inline"
             }
           ]

@@ -109,7 +109,8 @@ export const codeninjaConfigSchema = z
       .object({
         enabled: z.array(z.string().min(1)),
         disabled: z.array(z.string().min(1)),
-        extraSkillPaths: z.array(z.string().min(1))
+        extraSkillPaths: z.array(z.string().min(1)),
+        restrictTo: z.array(z.string().min(1)).optional()
       })
       .strict(),
     review: z

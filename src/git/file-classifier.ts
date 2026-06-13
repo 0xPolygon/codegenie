@@ -41,9 +41,10 @@ export async function filterDiffFiles(
   const memo = new Map<string, FileDetectionResult>();
   const kept: DiffFile[] = [];
   const decisions: FileFilterDecision[] = [];
+  const ignoredPaths = await batchIgnoredPaths(diff.files, git);
 
   for (const file of diff.files) {
-    const detections = await detectFile(resolved, file, git);
+    const detections = await detectFile(resolved, file, git, ignoredPaths === undefined ? {} : { ignoredPaths });
     memo.set(file.path, detections);
     const decision = filterDecision(file, detections, config);
     decisions.push(decision);
@@ -65,6 +66,21 @@ export async function filterDiffFiles(
   });
 
   return { kept, decisions };
+}
+
+async function batchIgnoredPaths(files: DiffFile[], git: InternalGitClient): Promise<Set<string> | undefined> {
+  const candidates = new Set<string>();
+  for (const file of files) {
+    candidates.add(file.path);
+    if (file.oldPath !== undefined) {
+      candidates.add(file.oldPath);
+    }
+  }
+  try {
+    return await git.checkIgnored([...candidates]);
+  } catch {
+    return undefined;
+  }
 }
 
 export async function classifyChangedFiles(
@@ -239,15 +255,12 @@ function effectiveConfiguredSkip(
   file: DiffFile,
   rules: ClassificationPathRule[]
 ): FactProvenance | undefined {
-  let skipProvenance: FactProvenance | undefined;
-  let lastMode: ProcessingMode | undefined;
   for (const match of matchPathRules(file, rules)) {
     if (match.rule.processingMode !== undefined) {
-      lastMode = match.rule.processingMode;
-      skipProvenance = { ...match.provenance, fact: "processingMode" };
+      return match.rule.processingMode === "skip" ? { ...match.provenance, fact: "processingMode" } : undefined;
     }
   }
-  return lastMode === "skip" ? skipProvenance : undefined;
+  return undefined;
 }
 
 function matchPathRules(file: DiffFile, rules: ClassificationPathRule[]): MatchedRule[] {

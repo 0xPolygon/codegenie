@@ -76,12 +76,13 @@ export async function buildReviewPackets(
 
   for (const file of filtered) {
     const facts = factsByPath.get(file.path) ?? fallbackFacts(file);
+    const fileSignals = repoIndex.staticSignals.filter((entry) => entry.path === file.path);
     const planned = file.hunks.map((hunk): PlannedHunk => ({
       file,
       hunk,
       facts,
       symbolFacts: repoIndex.symbolFacts.filter((entry) => entry.hunkId === hunk.id),
-      staticSignals: repoIndex.staticSignals.filter((entry) => entry.path === file.path),
+      staticSignals: staticSignalsForHunk(file, hunk, fileSignals),
       ...(decisions.get(hunk.id) !== undefined ? { decision: decisions.get(hunk.id) as HunkCoverageDecision } : {})
     }));
     const effectiveByHunk = new Map(planned.map((entry) => [entry.hunk.id, effectiveDecision(entry, opts.enabledLenses, telemetry)]));
@@ -304,11 +305,39 @@ function symbolIdentity(entry: PlannedHunk | undefined): string | undefined {
 }
 
 function nearbyHunk(previous: DiffHunk, next: DiffHunk): boolean {
-  const previousEnd = previous.newLines > 0
-    ? previous.newStart + previous.newLines - 1
-    : previous.newStart;
-  const nextStart = next.newLines > 0 ? next.newStart : next.oldStart;
-  return Math.abs(nextStart - previousEnd) <= NEARBY_GAP_LINES;
+  const previousRange = hunkProximityRange(previous);
+  const nextRange = hunkProximityRange(next);
+  if (previousRange.side !== nextRange.side) {
+    return false;
+  }
+  return Math.abs(nextRange.start - previousRange.end) <= NEARBY_GAP_LINES;
+}
+
+function hunkProximityRange(hunk: DiffHunk): { side: "old" | "new"; start: number; end: number } {
+  if (hunk.newLines === 0 && hunk.oldLines > 0) {
+    return { side: "old", start: hunk.oldStart, end: hunk.oldStart + hunk.oldLines - 1 };
+  }
+  return { side: "new", start: hunk.newStart, end: hunk.newStart + Math.max(1, hunk.newLines) - 1 };
+}
+
+function staticSignalsForHunk(file: DiffFile, hunk: DiffHunk, signals: StaticSignal[]): StaticSignal[] {
+  return signals.filter((signal) => {
+    if (signal.path !== file.path || signal.line === undefined) {
+      return signal.path === file.path;
+    }
+    const side = signal.side ?? "RIGHT";
+    if (side === "LEFT") {
+      return lineInRange(signal.line, hunk.oldStart, hunk.oldLines);
+    }
+    return lineInRange(signal.line, hunk.newStart, hunk.newLines);
+  });
+}
+
+function lineInRange(line: number, start: number, lines: number): boolean {
+  if (lines === 0) {
+    return false;
+  }
+  return line >= start && line <= start + lines - 1;
 }
 
 function packetGroup(hunks: PlannedHunk[], degradationReason?: string): PacketGroup {

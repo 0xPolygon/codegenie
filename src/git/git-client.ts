@@ -4,6 +4,7 @@ import {
   assertSafeGlob,
   assertSafeLogRange,
   assertSafePath,
+  assertSafePathspec,
   assertSafeRef,
   assertSafeRefspec,
   runGit,
@@ -117,7 +118,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
         return [];
       }
       for (const filePath of paths) {
-        assertSafePath(filePath);
+        assertSafePathspec(filePath);
       }
       const stdout = await runGit(repoRoot, ["ls-files", "-z", "--", ...paths], {
         stripFinalNewline: false,
@@ -326,7 +327,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
 
     async lsTreeEntry(ref: string, filePath: string): Promise<GitTreeEntry | undefined> {
       assertSafeRef(ref);
-      assertSafePath(filePath);
+      assertSafePathspec(filePath);
       const stdout = await runGit(repoRoot, ["ls-tree", ref, "--", filePath], {
         errorCode: "git_ref_missing"
       });
@@ -374,6 +375,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
       });
       return stdout
         .split("\n")
+        .slice(0, commitHeaderLineCount(stdout))
         .filter((line) => line.startsWith("parent "))
         .map((line) => line.slice("parent ".length).trim())
         .filter(Boolean);
@@ -384,7 +386,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
         return new Set();
       }
       for (const filePath of paths) {
-        assertSafePath(filePath);
+        assertSafePathspec(filePath);
       }
       const stdout = await runGit(repoRoot, ["check-ignore", "--no-index", "--stdin", "-z"], {
         input: `${paths.join("\0")}\0`,
@@ -420,6 +422,12 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
       throw error;
     }
   }
+}
+
+function commitHeaderLineCount(stdout: string): number {
+  const lines = stdout.split("\n");
+  const blankIndex = lines.findIndex((line) => line === "");
+  return blankIndex === -1 ? lines.length : blankIndex;
 }
 
 function parseLog(stdout: string): CommitInfo[] {

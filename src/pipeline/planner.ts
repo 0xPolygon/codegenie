@@ -611,7 +611,8 @@ function mergeDirectoryRollup(
     maxReviewPriority: file.reviewPriority,
     testFileCount: file.testStatus === "test" ? 1 : 0,
     representativePaths: [file.path],
-    hunkIds
+    hunkIds,
+    hunkLanguages: Object.fromEntries(hunkIds.map((hunkId) => [hunkId, file.language]))
   };
   const merged = existing ? mergeRollups(existing, addition) : normalizeRollup(addition);
   return [
@@ -631,7 +632,8 @@ function mergeRollups(a: DossierDirectoryRollup, b: DossierDirectoryRollup): Dos
     maxReviewPriority: strongestPriority(a.maxReviewPriority, b.maxReviewPriority),
     testFileCount: a.testFileCount + b.testFileCount,
     representativePaths: [...a.representativePaths, ...b.representativePaths],
-    hunkIds: [...a.hunkIds, ...b.hunkIds]
+    hunkIds: [...a.hunkIds, ...b.hunkIds],
+    hunkLanguages: { ...a.hunkLanguages, ...b.hunkLanguages }
   });
 }
 
@@ -641,7 +643,8 @@ function normalizeRollup(rollup: DossierDirectoryRollup): DossierDirectoryRollup
     languages: dedupe(rollup.languages).sort(),
     labels: dedupe(rollup.labels).sort(),
     representativePaths: dedupe(rollup.representativePaths).sort().slice(0, 5),
-    hunkIds: dedupe(rollup.hunkIds).sort()
+    hunkIds: dedupe(rollup.hunkIds).sort(),
+    hunkLanguages: Object.fromEntries(Object.entries(rollup.hunkLanguages).sort(([a], [b]) => a.localeCompare(b)))
   };
 }
 
@@ -794,7 +797,10 @@ function validatePlan(
     ...dossier.directories.flatMap((directory) => directory.hunkIds)
   ]);
   const enabledLensIds = new Set(lenses.filter((lens) => lens.enabled).map((lens) => lens.id));
-  const hunkLanguageById = new Map(dossier.files.flatMap((file) => file.hunks.map((hunk) => [hunk.hunkId, file.language] as const)));
+  const hunkLanguageById = new Map([
+    ...dossier.files.flatMap((file) => file.hunks.map((hunk) => [hunk.hunkId, file.language] as const)),
+    ...dossier.directories.flatMap((directory) => Object.entries(directory.hunkLanguages))
+  ]);
   const coverageByHunk = new Map<string, HunkCoverageDecision>();
   const coverageOrder: string[] = [];
 

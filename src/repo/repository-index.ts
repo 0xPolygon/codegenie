@@ -697,7 +697,7 @@ function capText(text: string, maxChars: number): { text: string; truncated: boo
   if (text.length <= maxChars) {
     return { text, truncated: false, omittedCount: 0 };
   }
-  return { text: text.slice(0, maxChars), truncated: true, omittedCount: text.length - maxChars };
+  return { text: text.slice(0, maxChars), truncated: true, omittedCount: 1 };
 }
 
 function fallbackSymbolText(

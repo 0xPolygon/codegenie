@@ -79,6 +79,25 @@ export async function runLensPackets(
       status: outcome.outcome === "not_dispatched" || budgetSkipped ? "skipped" : "failed"
     };
   });
+  telemetry.event({
+    stage: 7,
+    level: "info",
+    message: "pipeline_metrics",
+    data: {
+      totals: {
+        packetReviews: results.length,
+        candidates: results.reduce((sum, result) => sum + result.findings.length, 0)
+      },
+      workers: summarizeWorkerOutcomes(outcomes),
+      packets: {
+        reviewed: results.filter((result) => result.status === "completed").length,
+        failed: results.filter((result) => result.status === "failed" || result.status === "incomplete").length
+      },
+      candidates: {
+        generated: results.reduce((sum, result) => sum + result.findings.length, 0)
+      }
+    }
+  });
   telemetry.event({ stage: 7, level: "info", message: "stage_completed", data: { packets: results.length } });
   return results;
 }
@@ -203,4 +222,20 @@ function normalizeAnchor(
 
 function packetPriority(packet: ReviewPacket): ReviewPriority {
   return packet.reviewPriority;
+}
+
+function summarizeWorkerOutcomes<T>(outcomes: Array<{ outcome: string; attempts: number }>): {
+  started: number;
+  completed: number;
+  failed: number;
+  retried: number;
+  timedOut: number;
+} {
+  return {
+    started: outcomes.filter((outcome) => outcome.attempts > 0).length,
+    completed: outcomes.filter((outcome) => outcome.outcome === "completed").length,
+    failed: outcomes.filter((outcome) => outcome.outcome === "failed" || outcome.outcome === "cancelled" || outcome.outcome === "not_dispatched").length,
+    retried: outcomes.filter((outcome) => outcome.attempts > 1).length,
+    timedOut: outcomes.filter((outcome) => outcome.outcome === "timed_out").length
+  };
 }

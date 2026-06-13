@@ -26,7 +26,6 @@ export interface LensRegistry {
 export function buildLensRegistry(
   skills: Skill[],
   lensConfig: CodeninjaConfig["lenses"],
-  cliLenses: string[] | undefined,
   logger: Logger,
   telemetry: TelemetryRecorder
 ): LensRegistry {
@@ -60,8 +59,8 @@ export function buildLensRegistry(
   }
 
   const available = [...byLens.keys()].sort();
-  if (cliLenses !== undefined) {
-    const unknown = cliLenses.filter((id) => !byLens.has(id));
+  if (lensConfig.restrictTo !== undefined) {
+    const unknown = lensConfig.restrictTo.filter((id) => !byLens.has(id));
     if (unknown.length > 0) {
       throw new CodeninjaError("invalid_args", `unknown lens ${unknown.join(", ")}; available lenses: ${available.join(", ")}`, {
         context: { unknown, available }
@@ -88,7 +87,7 @@ export function buildLensRegistry(
     }
   }
 
-  const cliSet = cliLenses === undefined ? undefined : new Set(cliLenses);
+  const restrictedSet = lensConfig.restrictTo === undefined ? undefined : new Set(lensConfig.restrictTo);
   const enabledConfig = new Set(lensConfig.enabled);
   const disabledConfig = new Set(lensConfig.disabled);
   const descriptors = available.map((id) => {
@@ -97,7 +96,7 @@ export function buildLensRegistry(
       throw new Error(`missing registered lens ${id}`);
     }
     const defaultEnabled = entry.enabledByDefault;
-    const enabled = cliSet ? cliSet.has(id) : disabledConfig.has(id) ? false : enabledConfig.has(id) ? true : defaultEnabled;
+    const enabled = restrictedSet ? restrictedSet.has(id) : disabledConfig.has(id) ? false : enabledConfig.has(id) ? true : defaultEnabled;
     return {
       id,
       title: entry.firstSkill.title,

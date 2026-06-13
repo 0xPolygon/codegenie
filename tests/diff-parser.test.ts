@@ -32,6 +32,37 @@ describe("diff parser", () => {
     ]);
   });
 
+  it("uses golden hunk ids that are sensitive to hunk coordinate shifts", () => {
+    const original = parseDiff(`diff --git a/src/a.ts b/src/a.ts
+index 1111111..2222222 100644
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1,3 +1,4 @@ function a
+ line1
+-old
++new
++extra
+ line3
+`);
+    const shifted = parseDiff(`diff --git a/src/a.ts b/src/a.ts
+index 1111111..2222222 100644
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -11,3 +11,4 @@ function a
+ line1
+-old
++new
++extra
+ line3
+`);
+
+    const originalId = original.files[0]?.hunks[0]?.id;
+    const shiftedId = shifted.files[0]?.hunks[0]?.id;
+    expect(originalId).toBe("67b374e1b962d93f6e48a62c580d36498d2bbe3c3c03e35813c353894883d2e5");
+    expect(shiftedId).toMatch(/^[0-9a-f]{64}$/u);
+    expect(shiftedId).not.toBe(originalId);
+  });
+
   it("validates changed-line anchors on the correct side", () => {
     const diff = parseDiff(FIXTURE_DIFF);
     const index = buildDiffAnchorIndex(diff);
@@ -128,6 +159,74 @@ HcmV?d00001
     expect(diff.files[0]?.hunks[0]?.lines).toEqual(
       expect.arrayContaining([expect.objectContaining({ kind: "add", newLineNumber: 2, content: "two" })])
     );
+  });
+
+  it("does not mark hunkless added or deleted files as mode-only changes", () => {
+    const diff = parseDiff(`diff --git a/new-empty.ts b/new-empty.ts
+new file mode 100644
+index 0000000..e69de29
+diff --git a/old-empty.ts b/old-empty.ts
+deleted file mode 100644
+index e69de29..0000000
+`);
+
+    expect(diff.files).toMatchObject([
+      { path: "new-empty.ts", status: "added" },
+      { path: "old-empty.ts", status: "deleted" }
+    ]);
+    expect(diff.files[0]?.modeOnly).toBeUndefined();
+    expect(diff.files[1]?.modeOnly).toBeUndefined();
+  });
+
+  it("parses independently C-quoted diff-git paths and octal escapes", () => {
+    const diff = parseDiff(`diff --git a/src/plain.ts "b/src/quoted\\040new.ts"
+index 1111111..2222222 100644
+--- a/src/plain.ts
++++ "b/src/quoted\\040new.ts"
+@@ -1 +1 @@
+-old
++new
+`);
+
+    expect(diff.files[0]?.path).toBe("src/quoted new.ts");
+    expect(diff.files[0]?.hunks[0]?.path).toBe("src/quoted new.ts");
+  });
+
+  it("parses copied files, symlink diffs, and submodule pointer diffs", () => {
+    const diff = parseDiff(`diff --git a/src/source.ts b/src/copy.ts
+similarity index 100%
+copy from src/source.ts
+copy to src/copy.ts
+diff --git a/link b/link
+new file mode 120000
+index 0000000..1111111
+--- /dev/null
++++ b/link
+@@ -0,0 +1 @@
++target/file
+diff --git a/vendor/lib b/vendor/lib
+index 1234567..89abcde 160000
+--- a/vendor/lib
++++ b/vendor/lib
+@@ -1 +1 @@
+-Subproject commit 1111111111111111111111111111111111111111
++Subproject commit 2222222222222222222222222222222222222222
+`);
+
+    expect(diff.files[0]).toMatchObject({
+      path: "src/copy.ts",
+      oldPath: "src/source.ts",
+      status: "copied"
+    });
+    expect(diff.files[1]).toMatchObject({
+      path: "link",
+      status: "added",
+      isSymlink: true
+    });
+    expect(diff.files[2]).toMatchObject({
+      path: "vendor/lib",
+      isSubmodule: true
+    });
   });
 });
 

@@ -24,6 +24,10 @@ export type FileDetectionResult = {
   contentReadFailed: boolean;
 };
 
+export type DetectFileOptions = {
+  ignoredPaths?: Set<string>;
+};
+
 const VENDOR_SEGMENTS = new Set([
   "vendor",
   "node_modules",
@@ -87,17 +91,24 @@ const GENERATED_MARKERS = [
 export async function detectFile(
   resolved: ResolvedReviewInput,
   file: DiffFile,
-  git: InternalGitClient
+  git: InternalGitClient,
+  opts: DetectFileOptions = {}
 ): Promise<FileDetectionResult> {
-  const generated = await detectGenerated(resolved, file, git);
   const language = detectLanguage(file.path);
+  const vendored = detectVendored(file);
+  const lockfile = detectLockfile(file);
+  const binary = detectBinary(file);
+  const submodule = detectSubmodule(file);
+  const generated = await detectGenerated(resolved, file, git, {
+    allowContentRead: !(binary.value || lockfile.value || vendored.value || submodule.value)
+  });
   return {
     generated,
-    vendored: detectVendored(file),
-    lockfile: detectLockfile(file),
-    binary: detectBinary(file),
-    ignored: await detectIgnored(file, git),
-    submodule: detectSubmodule(file),
+    vendored,
+    lockfile,
+    binary,
+    ignored: await detectIgnored(file, git, opts.ignoredPaths),
+    submodule,
     symlink: await detectSymlink(resolved, file, git),
     language,
     testStatus: detectTestStatus(file.path, language.value),
@@ -220,12 +231,20 @@ function detectTestStatus(filePath: string, language: string): DetectorFact<"tes
 async function detectGenerated(
   resolved: ResolvedReviewInput,
   file: DiffFile,
-  git: InternalGitClient
+  git: InternalGitClient,
+  opts: { allowContentRead: boolean }
 ): Promise<DetectorFact<boolean>> {
   if (GENERATED_NAME_PATTERNS.some((pattern) => pattern.test(file.path))) {
     return {
       value: true,
       provenance: provenance("isGenerated", "filename", "medium", "generated filename pattern")
+    };
+  }
+
+  if (!opts.allowContentRead) {
+    return {
+      value: false,
+      provenance: provenance("isGenerated", "generated_detector", "medium", "content scan skipped after decisive cheap filter")
     };
   }
 
@@ -289,8 +308,14 @@ function detectBinary(file: DiffFile): DetectorFact<boolean> {
   };
 }
 
-async function detectIgnored(file: DiffFile, git: InternalGitClient): Promise<DetectorFact<boolean>> {
+async function detectIgnored(file: DiffFile, git: InternalGitClient, ignoredPaths: Set<string> | undefined): Promise<DetectorFact<boolean>> {
   const candidates = file.oldPath ? [file.path, file.oldPath] : [file.path];
+  if (ignoredPaths !== undefined) {
+    return {
+      value: candidates.some((candidate) => ignoredPaths.has(candidate)),
+      provenance: provenance("isIgnored", "git", "high", "batched git check-ignore")
+    };
+  }
   try {
     const ignored = await git.checkIgnored(candidates);
     return {

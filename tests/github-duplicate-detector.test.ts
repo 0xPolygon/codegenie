@@ -16,11 +16,12 @@ describe("GitHub duplicate detector", () => {
     expect(parseCodeninjaMarker("body only")).toBeUndefined();
   });
 
-  it("uses stable identity fields for fingerprints", () => {
+  it("uses the composed final finding fingerprint as the GitHub fingerprint", () => {
     const first = finding({ title: "First wording", failureMode: "A" });
-    const second = finding({ title: "Different wording", failureMode: "B" });
+    const second = finding({ title: "Different wording", failureMode: "B", fingerprint: "b".repeat(64) });
 
-    expect(fingerprintFindingForGitHub(first)).toBe(fingerprintFindingForGitHub(second));
+    expect(fingerprintFindingForGitHub(first)).toBe(first.fingerprint);
+    expect(fingerprintFindingForGitHub(second)).toBe(second.fingerprint);
   });
 
   it("skips exact fingerprint and fuzzy nearby codeninja comments only", () => {

@@ -198,4 +198,235 @@ describe("file filtering and classification", () => {
       expect.objectContaining({ path: "src/generated.go", action: "skip", reason: "generated file" })
     ]);
   });
+
+  it("batches ignored checks and skips generated content reads after decisive cheap filters", async () => {
+    const ignoredCheckBatches: string[][] = [];
+    const prefixReadPaths: string[] = [];
+    const gitClient: InternalGitClient = {
+      revParse: async () => "head",
+      catFile: async () => {
+        throw new Error("full catFile should not be used by detectors");
+      },
+      catFilePrefix: async (_ref, filePath) => {
+        prefixReadPaths.push(filePath);
+        return "export const value = 1;\n";
+      },
+      lsTree: async () => [],
+      lsFiles: async () => [],
+      grep: async () => [],
+      mergeBase: async () => "base",
+      log: async () => [],
+      diff: async () => "",
+      fetch: async () => undefined,
+      isShallow: async () => false,
+      currentBranch: async () => "feature",
+      isInsideWorktree: async () => true,
+      repoRoot: async () => "/tmp/repo",
+      commitExists: async () => true,
+      resolveBranch: async () => undefined,
+      remotes: async () => [],
+      fetchFrom: async () => undefined,
+      deleteRef: async () => undefined,
+      listRefs: async () => [],
+      lsTreeEntry: async () => undefined,
+      emptyTreeSha: async () => "empty",
+      firstParent: async () => "base",
+      parentShas: async () => ["base"],
+      checkIgnored: async (paths) => {
+        ignoredCheckBatches.push(paths);
+        return new Set();
+      }
+    };
+
+    const { decisions } = await filterDiffFiles(
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        baseRef: "base",
+        headRef: "head",
+        mergeBase: "base",
+        headSha: "head",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        files: [
+          {
+            path: "pnpm-lock.yaml",
+            status: "modified",
+            language: "yaml",
+            hunks: []
+          },
+          {
+            path: "src/a.ts",
+            status: "modified",
+            language: "typescript",
+            hunks: []
+          }
+        ]
+      },
+      defaultConfig,
+      nullTelemetry(),
+      { git: gitClient }
+    );
+
+    expect(ignoredCheckBatches).toEqual([["pnpm-lock.yaml", "src/a.ts"]]);
+    expect(prefixReadPaths).toEqual(["src/a.ts"]);
+    expect(decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "pnpm-lock.yaml", action: "skip", reason: "lockfile" }),
+        expect.objectContaining({ path: "src/a.ts", action: "keep" })
+      ])
+    );
+  });
+
+  it("treats the first matching configured processing mode as decisive for skips", async () => {
+    const config: CodeninjaConfig = {
+      ...defaultConfig,
+      classification: {
+        pathRules: [
+          { pattern: "src/**", processingMode: "skip", reason: "skip broad source tree" },
+          { pattern: "src/payments/**", processingMode: "whole-file", reason: "review payments deeply" }
+        ]
+      }
+    };
+    const { kept, decisions } = await filterDiffFiles(
+      resolvedFixture(),
+      {
+        files: [
+          {
+            path: "src/payments/charge.ts",
+            status: "modified",
+            language: "typescript",
+            hunks: []
+          }
+        ]
+      },
+      config,
+      nullTelemetry(),
+      { git: fakeGitClient() }
+    );
+
+    expect(kept).toEqual([]);
+    expect(decisions).toEqual([
+      expect.objectContaining({ path: "src/payments/charge.ts", action: "skip", reason: "configured skip rule" })
+    ]);
+  });
+
+  it("keeps deleted reviewable source files but skips deleted lock files", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "src/deleted.ts", "export const oldValue = 1;\n");
+    writeRepoFile(repo, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    git(repo, ["rm", "src/deleted.ts", "pnpm-lock.yaml"]);
+    git(repo, ["commit", "-m", "delete files"]);
+    const resolved = await resolveReviewInput(
+      { mode: "branch", branchName: "feature" },
+      defaultConfig,
+      nullTelemetry(),
+      { repoRoot: repo }
+    );
+    const diff = parseDiff(resolved.rawDiff);
+
+    const { kept, decisions } = await filterDiffFiles(resolved, diff, defaultConfig, nullTelemetry());
+    const facts = await classifyChangedFiles(resolved, kept, decisions, defaultConfig, nullTelemetry());
+
+    expect(decisions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "src/deleted.ts", action: "keep" }),
+        expect.objectContaining({ path: "pnpm-lock.yaml", action: "skip", reason: "lockfile" })
+      ])
+    );
+    expect(facts).toEqual([
+      expect.objectContaining({
+        path: "src/deleted.ts",
+        language: "typescript",
+        processingMode: "per-hunk"
+      })
+    ]);
+    expect(facts[0]?.degraded).toBeUndefined();
+  });
+
+  it("marks deleted reviewable files degraded when base content cannot be read", async () => {
+    const diff = {
+      files: [
+        {
+          path: "src/deleted.ts",
+          status: "deleted" as const,
+          language: "typescript",
+          hunks: [
+            {
+              id: "h1",
+              path: "src/deleted.ts",
+              oldStart: 1,
+              oldLines: 1,
+              newStart: 0,
+              newLines: 0,
+              header: "@@ -1 +0,0 @@",
+              lines: [{ kind: "delete" as const, oldLineNumber: 1, content: "export const oldValue = 1;" }]
+            }
+          ]
+        }
+      ]
+    };
+    const gitClient = fakeGitClient({
+      catFilePrefix: async () => {
+        throw new Error("base missing");
+      }
+    });
+
+    const { kept, decisions } = await filterDiffFiles(resolvedFixture(), diff, defaultConfig, nullTelemetry(), { git: gitClient });
+    const facts = await classifyChangedFiles(resolvedFixture(), kept, decisions, defaultConfig, nullTelemetry(), { git: gitClient });
+
+    expect(kept.map((file) => file.path)).toEqual(["src/deleted.ts"]);
+    expect(facts[0]).toMatchObject({
+      path: "src/deleted.ts",
+      degraded: { reason: "base content unavailable for deleted file" }
+    });
+  });
 });
+
+function resolvedFixture() {
+  return {
+    mode: "branch" as const,
+    repoRoot: "/tmp/repo",
+    baseRef: "base",
+    headRef: "head",
+    mergeBase: "base",
+    headSha: "head",
+    commits: [],
+    rawDiff: ""
+  };
+}
+
+function fakeGitClient(overrides: Partial<InternalGitClient> = {}): InternalGitClient {
+  return {
+    revParse: async () => "head",
+    catFile: async () => "",
+    catFilePrefix: async () => "export const value = 1;\n",
+    lsTree: async () => [],
+    lsFiles: async () => [],
+    grep: async () => [],
+    mergeBase: async () => "base",
+    log: async () => [],
+    diff: async () => "",
+    fetch: async () => undefined,
+    isShallow: async () => false,
+    currentBranch: async () => "feature",
+    isInsideWorktree: async () => true,
+    repoRoot: async () => "/tmp/repo",
+    commitExists: async () => true,
+    resolveBranch: async () => undefined,
+    remotes: async () => [],
+    fetchFrom: async () => undefined,
+    deleteRef: async () => undefined,
+    listRefs: async () => [],
+    lsTreeEntry: async () => undefined,
+    emptyTreeSha: async () => "empty",
+    firstParent: async () => "base",
+    parentShas: async () => ["base"],
+    checkIgnored: async () => new Set(),
+    ...overrides
+  };
+}

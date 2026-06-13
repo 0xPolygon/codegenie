@@ -61,7 +61,7 @@ async function extractHunkFacts(
     symbolKind: primary.kind,
     ...(primary.nativeKind !== undefined ? { symbolNativeKind: primary.nativeKind } : {}),
     symbolRange: primary.lineRange,
-    changedLines: primary.changedLines.length > 0 ? primary.changedLines : changedLines,
+    changedLines,
     changedLinesSide: side,
     ...(primary.signature !== undefined ? { signature: primary.signature } : {}),
     source: "tree-sitter",

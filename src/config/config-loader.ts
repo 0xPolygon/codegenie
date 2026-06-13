@@ -50,6 +50,7 @@ export type LoadedConfig = {
 const DEFAULT_SOURCE_PATHS = [
   "lenses.enabled",
   "lenses.disabled",
+  "lenses.restrictTo",
   "lenses.extraSkillPaths",
   "review.depth",
   "review.verify",
@@ -436,10 +437,8 @@ function applyCliOverrides(
     sources["review.depth"] = "cli";
   }
   if (cli.lenses !== undefined) {
-    config.lenses.enabled = [...cli.lenses];
-    config.lenses.disabled = [];
-    sources["lenses.enabled"] = "cli";
-    sources["lenses.disabled"] = "cli";
+    config.lenses.restrictTo = [...cli.lenses];
+    sources["lenses.restrictTo"] = "cli";
   }
   if (cli.provider !== undefined) {
     config.llm.provider = cli.provider;

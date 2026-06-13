@@ -226,6 +226,7 @@ class RunTelemetryImpl {
   private eventSeq = 0;
   private toolSeq = 0;
   private logOverflow: LogOverflowSummary = { droppedDebugInfo: 0, droppedWarnError: 0 };
+  private pipelineTotals = emptyPipelineTotals();
   private modelSummary = {
     totalRecords: 0,
     totalCalls: 0,
@@ -416,6 +417,7 @@ class RunTelemetryImpl {
     const capped = capTelemetryEventData(record);
     this.updateTelemetrySummary(capped);
     this.updateModelSummaryFromCacheEvent(capped);
+    this.updatePipelineSummaryFromEvent(capped);
     if (this.runDirectory) {
       this.appendJsonl("events.jsonl", capped);
     } else {
@@ -661,7 +663,6 @@ class RunTelemetryImpl {
   }
 
   private runTotals(): unknown {
-    const pipelineTotals = emptyPipelineTotals();
     return {
       events: this.eventSeq,
       modelCallRecords: this.modelSummary.totalRecords,
@@ -678,8 +679,25 @@ class RunTelemetryImpl {
       repairCalls: this.modelSummary.repairCalls,
       schemaInvalidCalls: this.modelSummary.schemaInvalidCalls,
       logOverflow: this.logOverflow,
-      ...pipelineTotals
+      ...this.pipelineTotals
     };
+  }
+
+  private updatePipelineSummaryFromEvent(event: TelemetryEvent): void {
+    if (event.message !== "pipeline_metrics" || !event.data || typeof event.data !== "object") {
+      return;
+    }
+    const data = event.data as Record<string, unknown>;
+    mergePipelineTotals(this.pipelineTotals, objectField(data.totals));
+    mergePipelineWorkers(this.pipelineSummary.workers, objectField(data.workers));
+    mergePipelinePackets(this.pipelineSummary.packets, objectField(data.packets));
+    mergePipelineLenses(this.pipelineSummary.lenses, objectField(data.lenses));
+    mergePipelineCoverage(this.pipelineSummary.coverage, objectField(data.coverage));
+    mergePipelineCandidates(this.pipelineSummary.candidates, objectField(data.candidates));
+    mergePipelineVerdicts(this.pipelineSummary.verdicts, objectField(data.verdicts));
+    mergePipelineDedup(this.pipelineSummary.dedup, objectField(data.dedup));
+    mergePipelineFinalSelection(this.pipelineSummary.finalSelection, objectField(data.finalSelection));
+    mergePipelinePosting(this.pipelineSummary.posting, objectField(data.posting));
   }
 
   private runReviewMetadata(): RunReviewArtifactMetadata {
@@ -913,6 +931,144 @@ function averageToolBuckets(buckets: Record<string, ToolBucket>): Record<string,
   return output;
 }
 
+function mergePipelineTotals(target: PipelineTotals, source: Record<string, unknown> | undefined): void {
+  if (!source) {
+    return;
+  }
+  setNumber(target, "filesChanged", source.filesChanged);
+  setNumber(target, "hunks", source.hunks);
+  setNumber(target, "packets", source.packets);
+  setNumber(target, "packetReviews", source.packetReviews);
+  setNumber(target, "candidates", source.candidates);
+  setNumber(target, "verified", source.verified);
+  setNumber(target, "finalFindings", source.finalFindings);
+  setNumber(target, "postedComments", source.postedComments);
+}
+
+function mergePipelineWorkers(target: PipelineTelemetrySummary["workers"], source: Record<string, unknown> | undefined): void {
+  if (!source) {
+    return;
+  }
+  addNumber(target, "started", source.started);
+  addNumber(target, "completed", source.completed);
+  addNumber(target, "failed", source.failed);
+  addNumber(target, "retried", source.retried);
+  addNumber(target, "timedOut", source.timedOut);
+}
+
+function mergePipelinePackets(target: PipelineTelemetrySummary["packets"], source: Record<string, unknown> | undefined): void {
+  if (!source) {
+    return;
+  }
+  setNumber(target, "generated", source.generated);
+  setNumber(target, "reviewed", source.reviewed);
+  setNumber(target, "failed", source.failed);
+  setNumber(target, "degraded", source.degraded);
+}
+
+function mergePipelineLenses(target: PipelineTelemetrySummary["lenses"], source: Record<string, unknown> | undefined): void {
+  if (!source) {
+    return;
+  }
+  if (typeof source.selected === "number" && Number.isFinite(source.selected)) {
+    target.selected = source.selected;
+  }
+  const byLens = objectField(source.byLens);
+  if (!byLens) {
+    return;
+  }
+  for (const [lens, count] of Object.entries(byLens)) {
+    if (typeof count === "number" && Number.isFinite(count)) {
+      target.byLens[lens] = count;
+    }
+  }
+}
+
+function mergePipelineCoverage(target: PipelineTelemetrySummary["coverage"], source: Record<string, unknown> | undefined): void {
+  if (!source) {
+    return;
+  }
+  const byLevel = objectField(source.byLevel);
+  if (byLevel) {
+    setNumber(target.byLevel, "deep", byLevel.deep);
+    setNumber(target.byLevel, "normal", byLevel.normal);
+    setNumber(target.byLevel, "light", byLevel.light);
+    setNumber(target.byLevel, "skip", byLevel.skip);
+  }
+  const hunks = objectField(source.hunks);
+  if (hunks) {
+    setNumber(target.hunks, "total", hunks.total);
+    setNumber(target.hunks, "reviewed", hunks.reviewed);
+    setNumber(target.hunks, "skipped", hunks.skipped);
+    setNumber(target.hunks, "failed", hunks.failed);
+    setNumber(target.hunks, "degraded", hunks.degraded);
+  }
+}
+
+function mergePipelineCandidates(target: PipelineTelemetrySummary["candidates"], source: Record<string, unknown> | undefined): void {
+  if (!source) {
+    return;
+  }
+  setNumber(target, "generated", source.generated);
+  setNumber(target, "gateRejected", source.gateRejected);
+  setNumber(target, "verificationScheduled", source.verificationScheduled);
+}
+
+function mergePipelineVerdicts(target: PipelineTelemetrySummary["verdicts"], source: Record<string, unknown> | undefined): void {
+  if (!source) {
+    return;
+  }
+  setNumber(target, "accept", source.accept);
+  setNumber(target, "revise", source.revise);
+  setNumber(target, "reject", source.reject);
+  setNumber(target, "incomplete", source.incomplete);
+}
+
+function mergePipelineDedup(target: PipelineTelemetrySummary["dedup"], source: Record<string, unknown> | undefined): void {
+  if (!source) {
+    return;
+  }
+  setNumber(target, "clusters", source.clusters);
+  setNumber(target, "duplicates", source.duplicates);
+  setNumber(target, "suppressed", source.suppressed);
+}
+
+function mergePipelineFinalSelection(target: PipelineTelemetrySummary["finalSelection"], source: Record<string, unknown> | undefined): void {
+  if (!source) {
+    return;
+  }
+  setNumber(target, "published", source.published);
+  setNumber(target, "merged", source.merged);
+  setNumber(target, "suppressed", source.suppressed);
+  setNumber(target, "finalFindings", source.finalFindings);
+}
+
+function mergePipelinePosting(target: PipelineTelemetrySummary["posting"], source: Record<string, unknown> | undefined): void {
+  if (!source) {
+    return;
+  }
+  setNumber(target, "attempted", source.attempted);
+  setNumber(target, "postedComments", source.postedComments);
+  setNumber(target, "skippedDuplicates", source.skippedDuplicates);
+  setNumber(target, "failed", source.failed);
+}
+
+function objectField(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function setNumber(target: Record<string, number>, key: string, value: unknown): void {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    target[key] = value;
+  }
+}
+
+function addNumber(target: Record<string, number>, key: string, value: unknown): void {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    target[key] = (target[key] ?? 0) + value;
+  }
+}
+
 function resolveRunRoot(repoRoot: string, runDir: string): string {
   return path.isAbsolute(runDir) ? runDir : path.resolve(repoRoot, runDir);
 }
@@ -923,15 +1079,28 @@ function provisionProjectGitignore(repoRoot: string, runsRoot: string): void {
     return;
   }
 
+  provisionCodeninjaGitignore(repoRoot);
+}
+
+export function provisionCodeninjaGitignore(repoRoot: string): void {
+  const codeninjaDir = path.resolve(repoRoot, ".codeninja");
   const codeninjaDirExisted = existsSync(codeninjaDir);
   mkdirSync(codeninjaDir, { recursive: true });
-  if (codeninjaDirExisted) {
+  const gitignorePath = path.join(codeninjaDir, ".gitignore");
+  const required = ["runs/", "cache/", "locks/"];
+  const existing = codeninjaDirExisted && existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : "";
+  const lines = new Set(existing.split(/\r?\n/u).map((line) => line.trim()).filter((line) => line.length > 0));
+  let changed = !existsSync(gitignorePath);
+  for (const requiredLine of required) {
+    if (!lines.has(requiredLine)) {
+      lines.add(requiredLine);
+      changed = true;
+    }
+  }
+  if (!changed) {
     return;
   }
-
-  const gitignorePath = path.join(codeninjaDir, ".gitignore");
-  const required = ["runs/", "cache/"];
-  writeFileSync(gitignorePath, `${required.join("\n")}\n`);
+  writeFileSync(gitignorePath, `${[...lines].join("\n")}\n`);
 }
 
 type PruneResult = {
@@ -956,7 +1125,7 @@ function pruneRuns(runsRoot: string, activeRunDir: string, retainRuns: number): 
       const entry = path.join(runsRoot, name);
       try {
         const stats = statSync(entry);
-        return stats.isDirectory() ? { path: entry, mtimeMs: stats.mtimeMs } : undefined;
+        return stats.isDirectory() && existsSync(path.join(entry, "run.json")) ? { path: entry, mtimeMs: stats.mtimeMs } : undefined;
       } catch (error) {
         result.failures.push({ path: entry, error: errorMessage(error) });
         return undefined;

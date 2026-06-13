@@ -30,6 +30,7 @@ export type CodeninjaConfig = {
     enabled: string[];
     disabled: string[];
     extraSkillPaths: string[];
+    restrictTo?: string[];
   };
   review: {
     depth: ReviewDepth;
@@ -103,7 +104,6 @@ export type ReviewCommandOptions = {
   format: OutputFormat;
   postGithubComments: boolean;
   cacheOverride?: boolean;
-  cliLenses?: string[];
 };
 
 export type ParsedReviewCommand = {
@@ -994,6 +994,7 @@ export type DossierDirectoryRollup = {
   testFileCount: number;
   representativePaths: string[];
   hunkIds: string[];
+  hunkLanguages: Record<string, string>;
 };
 
 export type DossierCompaction = {

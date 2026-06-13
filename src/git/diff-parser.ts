@@ -23,7 +23,7 @@ type MutableFile = {
   isSubmodule?: boolean;
   oldMode?: string;
   newMode?: string;
-  sawModeHeader: boolean;
+  sawModeOnlyHeader: boolean;
   hunks: DiffHunk[];
   renameFrom?: string;
   renameTo?: string;
@@ -178,7 +178,7 @@ function startFile(line: string, lineNumber: number): MutableFile {
     newTokenPath,
     path: newTokenPath,
     status: "modified",
-    sawModeHeader: false,
+    sawModeOnlyHeader: false,
     hunks: []
   };
 }
@@ -202,26 +202,24 @@ function consumeFileHeader(file: MutableFile, line: string, lineNumber: number):
   if (line.startsWith("new file mode ")) {
     file.status = "added";
     file.newMode = line.slice("new file mode ".length).trim();
-    file.sawModeHeader = true;
     markSpecialMode(file, file.newMode);
     return;
   }
   if (line.startsWith("deleted file mode ")) {
     file.status = "deleted";
     file.oldMode = line.slice("deleted file mode ".length).trim();
-    file.sawModeHeader = true;
     markSpecialMode(file, file.oldMode);
     return;
   }
   if (line.startsWith("old mode ")) {
     file.oldMode = line.slice("old mode ".length).trim();
-    file.sawModeHeader = true;
+    file.sawModeOnlyHeader = true;
     markSpecialMode(file, file.oldMode);
     return;
   }
   if (line.startsWith("new mode ")) {
     file.newMode = line.slice("new mode ".length).trim();
-    file.sawModeHeader = true;
+    file.sawModeOnlyHeader = true;
     markSpecialMode(file, file.newMode);
     return;
   }
@@ -372,7 +370,7 @@ function finishFile(files: DiffFile[], file: MutableFile | undefined): void {
     file.path = file.newTokenPath;
   }
 
-  if (file.sawModeHeader && file.hunks.length === 0 && !file.isBinary) {
+  if (file.sawModeOnlyHeader && file.hunks.length === 0 && !file.isBinary) {
     file.modeOnly = true;
   }
 
@@ -441,11 +439,13 @@ function sideMap(index: BuiltDiffAnchorIndex, side: "RIGHT" | "LEFT"): Map<strin
 }
 
 function parseDiffGitPaths(rest: string, lineNumber: number): { oldPath: string; newPath: string } {
-  if (rest.trimStart().startsWith("\"")) {
-    const tokens = parseDiffTokens(rest);
-    if (tokens.length === 2) {
-      return { oldPath: tokens[0] ?? "", newPath: tokens[1] ?? "" };
-    }
+  const tokens = parseDiffTokens(rest);
+  if (
+    tokens.length === 2 &&
+    (tokens[0]?.startsWith("a/") ?? false) &&
+    (tokens[1]?.startsWith("b/") ?? false)
+  ) {
+    return { oldPath: tokens[0] ?? "", newPath: tokens[1] ?? "" };
   }
 
   const splits: Array<{ oldPath: string; newPath: string }> = [];

@@ -7,6 +7,7 @@ import { executeProviderCommand } from "../src/cli/provider-command.js";
 import { getCodeninjaPaths } from "../src/config/paths.js";
 import { defaultConfig } from "../src/config/schema.js";
 import {
+  createFileAuthStorage,
   type PiAuthStorage,
   type PiModelRegistry,
   type ProviderAuthEntry,
@@ -146,7 +147,6 @@ Exercise normal YAML list frontmatter.
     const registry = buildLensRegistry(
       skills,
       { enabled: ["core/tests", "missing"], disabled: ["lang/go", "missing-too"], extraSkillPaths: [] },
-      undefined,
       harness.logger,
       harness.telemetry
     );
@@ -156,21 +156,19 @@ Exercise normal YAML list frontmatter.
 
     const cliRegistry = buildLensRegistry(
       skills,
-      defaultConfig.lenses,
-      ["lang/go"],
+      { ...defaultConfig.lenses, restrictTo: ["lang/go"] },
       harness.logger,
       harness.telemetry
     );
     expect(cliRegistry.enabledLenses().map((lens) => lens.id)).toEqual(["lang/go"]);
 
     expect(() =>
-      buildLensRegistry(skills, defaultConfig.lenses, ["does/not-exist"], harness.logger, harness.telemetry)
+      buildLensRegistry(skills, { ...defaultConfig.lenses, restrictTo: ["does/not-exist"] }, harness.logger, harness.telemetry)
     ).toThrow(/available lenses:/);
     expect(() =>
       buildLensRegistry(
         skills,
         { enabled: ["core/tests"], disabled: ["core/tests"], extraSkillPaths: [] },
-        undefined,
         harness.logger,
         harness.telemetry
       )
@@ -311,9 +309,59 @@ reasoning = "medium"
       defaultModel: "fake-large",
       defaultDepth: "deep",
       defaultReasoning: "medium",
+      effectiveProvider: "fake",
+      effectiveModel: "fake-large",
       effectiveDepth: "deep",
       effectiveReasoning: "medium"
     });
+  });
+
+  it("reports provider config effective env overrides through the shared config loader", async () => {
+    const home = tempDir();
+    const services = fakeProviderServices(home);
+    writeFileSync(
+      services.paths.configTomlPath,
+      `
+[review]
+depth = "deep"
+
+[llm]
+provider = "fake"
+model = "fake-large"
+reasoning = "medium"
+`
+    );
+    const output: string[] = [];
+
+    await runProviderCommand(["provider", "config"], {
+      services,
+      env: {
+        CODENINJA_PROVIDER: "other",
+        CODENINJA_MODEL: "other-large",
+        CODENINJA_REASONING: "xhigh"
+      },
+      writeOut: (text) => output.push(text)
+    });
+
+    expect(JSON.parse(output.join(""))).toMatchObject({
+      defaultProvider: "fake",
+      defaultModel: "fake-large",
+      defaultDepth: "deep",
+      defaultReasoning: "medium",
+      effectiveProvider: "other",
+      effectiveModel: "other-large",
+      effectiveDepth: "deep",
+      effectiveReasoning: "xhigh"
+    });
+  });
+
+  it("rejects malformed provider auth files as config errors", () => {
+    const paths = getCodeninjaPaths(tempDir(), {});
+    writeFileSync(paths.authPath, "{\"fake\":{\"type\":\"oauth\",\"credentials\":{\"access\":\"token\"},\"createdAt\":\"now\"}}\n");
+    const storage = createFileAuthStorage(paths);
+
+    expect(() => storage.loadAll()).toThrow(CodeninjaError);
+    expect(() => storage.loadAll()).toThrow(/invalid provider auth file/);
   });
 
   it("clears stale default models when switching provider defaults", async () => {

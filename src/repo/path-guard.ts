@@ -1,4 +1,3 @@
-import { realpath } from "node:fs/promises";
 import path from "node:path";
 import type { ReviewStage } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
@@ -16,19 +15,6 @@ export function containPath(repoRoot: string, input: string, opts: GuardTelemetr
 
 export function containGlob(repoRoot: string, input: string, opts: GuardTelemetry = {}): string {
   return guardPathLike(repoRoot, input, "glob", opts);
-}
-
-export async function assertWorktreeContained(repoRoot: string, relPath: string, opts: GuardTelemetry = {}): Promise<string> {
-  const contained = containPath(repoRoot, relPath, opts);
-  const [rootReal, targetReal] = await Promise.all([
-    realpath(repoRoot),
-    realpath(path.join(repoRoot, contained))
-  ]);
-  const relative = path.relative(rootReal, targetReal);
-  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) {
-    return contained;
-  }
-  throwViolation("path_outside_repo", "path resolves outside repository", relPath, opts);
 }
 
 export function containRef(ref: string): string {

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { Command, CommanderError } from "commander";
 import { loadConfig, type CliConfigOverrides, type LoadConfigOptions } from "../config/config-loader.js";
@@ -111,7 +112,7 @@ export function parseReviewCommand(
     throw new CodeninjaError("invalid_args", "expected command: codeninja review");
   }
 
-  const repoRoot = path.resolve(opts.repoRoot ?? process.cwd());
+  const repoRoot = resolveInitialRepoRoot(opts.repoRoot);
   const target = resolveTarget(commandOptions, commits);
   const cli = buildCliOverrides(commandOptions);
   const loadOptions: LoadConfigOptions = {
@@ -157,7 +158,6 @@ export async function executeReviewCommand(
   const review = await runReview(parsed.target, parsed.config, {
     ...overrides,
     configWarnings: parsed.warnings,
-    ...(parsed.options.cliLenses !== undefined ? { cliLenses: parsed.options.cliLenses } : {}),
     ...(opts.writeOutput !== undefined ? { writeOutput: opts.writeOutput } : {})
   });
   return {
@@ -247,8 +247,26 @@ function buildReviewOptions(options: CommanderReviewOptions): ParsedReviewComman
   return {
     ...parsed,
     ...(options.cache !== undefined ? { cacheOverride: options.cache } : {}),
-    ...(options.lens && options.lens.length > 0 ? { cliLenses: [...options.lens] } : {})
   };
+}
+
+function resolveInitialRepoRoot(input: string | undefined): string {
+  const candidate = path.resolve(input ?? process.cwd());
+  try {
+    const root = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: candidate,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_OPTIONAL_LOCKS: "0"
+      }
+    }).trim();
+    return root === "" ? candidate : path.resolve(root);
+  } catch {
+    return candidate;
+  }
 }
 
 function parsePrNumber(value: string | undefined): number {

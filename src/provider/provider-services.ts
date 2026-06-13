@@ -2,7 +2,6 @@ import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import path from "node:path";
-import { parse as parseToml } from "smol-toml";
 import {
   getEnvApiKey,
   getModels,
@@ -13,8 +12,8 @@ import {
   type Model
 } from "@earendil-works/pi-ai";
 import { getOAuthProvider, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
+import { loadConfig, type LoadedConfig } from "../config/config-loader.js";
 import { ensureCodeninjaHome, getCodeninjaPaths } from "../config/paths.js";
-import { rawConfigSchema } from "../config/schema.js";
 import { registerSecret } from "../telemetry/redaction.js";
 import type { CodeninjaPaths, ProviderSettings, ReasoningLevel, ReviewDepth } from "../types.js";
 import { CodeninjaError } from "../util/errors.js";
@@ -67,6 +66,11 @@ export type ProviderServices = {
   modelRegistry: PiModelRegistry;
 };
 
+type ProviderConfigLayers = {
+  defaults: LoadedConfig;
+  effective: LoadedConfig;
+};
+
 export type RunProviderCommandOptions = {
   yes?: boolean;
   all?: boolean;
@@ -75,6 +79,7 @@ export type RunProviderCommandOptions = {
   services?: ProviderServices;
   writeOut?: (text: string) => void;
   writeErr?: (text: string) => void;
+  env?: NodeJS.ProcessEnv;
 };
 
 export function createProviderServices(homeOverride?: string): ProviderServices {
@@ -166,7 +171,7 @@ export async function runProviderCommand(args: string[], opts: RunProviderComman
       return;
     }
     case "config":
-      await commandConfig(rest, services, writeOut);
+      await commandConfig(rest, services, writeOut, opts.env);
       return;
     default:
       throw new CodeninjaError("invalid_args", "expected provider command: list, login, logout, auth-status, models, or config");
@@ -243,12 +248,13 @@ function commandLogout(args: string[], services: ProviderServices, opts: RunProv
 async function commandConfig(
   args: string[],
   services: ProviderServices,
-  writeOut: (text: string) => void
+  writeOut: (text: string) => void,
+  env?: NodeJS.ProcessEnv
 ): Promise<void> {
   const [subcommand, ...rest] = args;
   if (!subcommand) {
     const settings = loadProviderSettings(services.paths);
-    writeOut(`${JSON.stringify(providerConfigJson(services, settings, loadUserConfigDefaults(services.paths)), null, 2)}\n`);
+    writeOut(`${JSON.stringify(providerConfigJson(services, settings, loadResolvedUserConfig(services.paths, env)), null, 2)}\n`);
     return;
   }
 
@@ -343,9 +349,9 @@ function renderModels(query: string | undefined, all: boolean, services: Provide
 function providerConfigJson(
   services: ProviderServices,
   settings: ProviderSettings,
-  userConfigDefaults: ProviderSettings = {}
+  layers: ProviderConfigLayers
 ): Record<string, unknown> {
-  const provider = settings.defaultProvider ?? userConfigDefaults.defaultProvider;
+  const provider = layers.effective.config.llm.provider;
   return {
     home: services.paths.home,
     authPath: services.paths.authPath,
@@ -353,50 +359,38 @@ function providerConfigJson(
     settingsPath: services.paths.settingsPath,
     configTomlPath: services.paths.configTomlPath,
     sessionsDir: services.paths.sessionsDir,
-    defaultProvider: settings.defaultProvider ?? userConfigDefaults.defaultProvider ?? null,
-    defaultModel: settings.defaultModel ?? userConfigDefaults.defaultModel ?? null,
-    defaultDepth: settings.defaultDepth ?? userConfigDefaults.defaultDepth ?? null,
-    defaultReasoning: settings.defaultReasoning ?? userConfigDefaults.defaultReasoning ?? null,
-    effectiveDepth: settings.defaultDepth ?? userConfigDefaults.defaultDepth ?? "normal",
-    effectiveReasoning: settings.defaultReasoning ?? userConfigDefaults.defaultReasoning ?? "high",
+    defaultProvider: configuredDefault(settings.defaultProvider, layers.defaults.config.llm.provider, layers.defaults.sources["llm.provider"]),
+    defaultModel: configuredDefault(settings.defaultModel, layers.defaults.config.llm.model, layers.defaults.sources["llm.model"]),
+    defaultDepth: configuredDefault(settings.defaultDepth, layers.defaults.config.review.depth, layers.defaults.sources["review.depth"]),
+    defaultReasoning: configuredDefault(settings.defaultReasoning, layers.defaults.config.llm.reasoning, layers.defaults.sources["llm.reasoning"]),
+    effectiveProvider: layers.effective.config.llm.provider ?? null,
+    effectiveModel: layers.effective.config.llm.model ?? null,
+    effectiveDepth: layers.effective.config.review.depth,
+    effectiveReasoning: layers.effective.config.llm.reasoning ?? "high",
     auth: provider ? services.modelRegistry.authStatus(provider) : null
   };
 }
 
-function loadUserConfigDefaults(paths: CodeninjaPaths): ProviderSettings {
-  if (!existsSync(paths.configTomlPath)) {
-    return {};
+function configuredDefault<T>(settingsValue: T | undefined, resolvedValue: T | undefined, source: string | undefined): T | null {
+  if (settingsValue !== undefined) {
+    return settingsValue;
   }
-  let parsed: unknown;
-  try {
-    parsed = parseToml(readFileSync(paths.configTomlPath, "utf8"));
-  } catch (cause) {
-    throw new CodeninjaError("config_error", `failed to parse config file at ${paths.configTomlPath}`, {
-      context: { path: paths.configTomlPath },
-      cause
-    });
-  }
-  const result = rawConfigSchema.safeParse(parsed);
-  if (!result.success) {
-    throw new CodeninjaError("config_error", `invalid config file at ${paths.configTomlPath}`, {
-      context: { path: paths.configTomlPath, issues: result.error.issues }
-    });
-  }
+  return source === "defaults" ? null : resolvedValue ?? null;
+}
 
-  const defaults: ProviderSettings = {};
-  if (result.data.llm?.provider !== undefined) {
-    defaults.defaultProvider = result.data.llm.provider;
-  }
-  if (result.data.llm?.model !== undefined) {
-    defaults.defaultModel = result.data.llm.model;
-  }
-  if (result.data.llm?.reasoning !== undefined) {
-    defaults.defaultReasoning = result.data.llm.reasoning;
-  }
-  if (result.data.review?.depth !== undefined) {
-    defaults.defaultDepth = result.data.review.depth;
-  }
-  return defaults;
+function loadResolvedUserConfig(paths: CodeninjaPaths, env?: NodeJS.ProcessEnv): ProviderConfigLayers {
+  const base = {
+    repoRoot: process.cwd(),
+    homeOverride: paths.home,
+    loadRepoConfig: false
+  } as const;
+  return {
+    defaults: loadConfig({ ...base, env: {} }),
+    effective: loadConfig({
+      ...base,
+      ...(env !== undefined ? { env } : {})
+    })
+  };
 }
 
 function modelsForProvider(provider: string): ProviderModelInfo[] {
@@ -435,11 +429,70 @@ function loadAuthFile(paths: CodeninjaPaths): Record<string, ProviderAuthEntry> 
   if (!existsSync(paths.authPath)) {
     return {};
   }
-  const parsed = JSON.parse(readFileSync(paths.authPath, "utf8")) as Record<string, ProviderAuthEntry>;
-  for (const entry of Object.values(parsed)) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(paths.authPath, "utf8"));
+  } catch (cause) {
+    throw new CodeninjaError("config_error", `failed to parse provider auth file at ${paths.authPath}`, {
+      context: { path: paths.authPath },
+      cause
+    });
+  }
+  const auth = validateAuthFile(parsed, paths.authPath);
+  for (const entry of Object.values(auth)) {
     registerAuthEntry(entry);
   }
-  return parsed;
+  return auth;
+}
+
+function validateAuthFile(input: unknown, filePath: string): Record<string, ProviderAuthEntry> {
+  if (!isPlainObject(input)) {
+    throw invalidAuthFile(filePath, "auth file must contain an object keyed by provider id");
+  }
+  const output: Record<string, ProviderAuthEntry> = {};
+  for (const [provider, value] of Object.entries(input)) {
+    if (!isPlainObject(value)) {
+      throw invalidAuthFile(filePath, `auth entry for ${provider} must be an object`);
+    }
+    if (value.type === "api_key") {
+      if (typeof value.apiKey !== "string" || value.apiKey.trim() === "" || typeof value.createdAt !== "string") {
+        throw invalidAuthFile(filePath, `api key auth entry for ${provider} is malformed`);
+      }
+      output[provider] = { type: "api_key", apiKey: value.apiKey, createdAt: value.createdAt };
+      continue;
+    }
+    if (value.type === "oauth") {
+      if (!isPlainObject(value.credentials) || typeof value.createdAt !== "string") {
+        throw invalidAuthFile(filePath, `OAuth auth entry for ${provider} is malformed`);
+      }
+      const credentials = value.credentials;
+      if (
+        typeof credentials.access !== "string" ||
+        typeof credentials.refresh !== "string" ||
+        typeof credentials.expires !== "number"
+      ) {
+        throw invalidAuthFile(filePath, `OAuth credentials for ${provider} are malformed`);
+      }
+      output[provider] = {
+        type: "oauth",
+        credentials: credentials as OAuthCredentials,
+        createdAt: value.createdAt
+      };
+      continue;
+    }
+    throw invalidAuthFile(filePath, `auth entry for ${provider} must have type api_key or oauth`);
+  }
+  return output;
+}
+
+function invalidAuthFile(filePath: string, reason: string): CodeninjaError {
+  return new CodeninjaError("config_error", `invalid provider auth file at ${filePath}`, {
+    context: { path: filePath, reason }
+  });
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function writeAuthFile(paths: CodeninjaPaths, auth: Record<string, ProviderAuthEntry>): void {

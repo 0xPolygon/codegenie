@@ -1,7 +1,9 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { createGitClient } from "../src/git/git-client.js";
-import { assertSafeRefspec, runGit, scrubSubprocessValue } from "../src/git/subprocess.js";
+import { assertSafeRefspec, runGit, runGitCapped, scrubSubprocessValue } from "../src/git/subprocess.js";
 import { CodeninjaError } from "../src/util/errors.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
@@ -29,6 +31,43 @@ describe("git client", () => {
     await expect(createGitClient(repo).revParse(`token=${secret}`)).rejects.toMatchObject({
       code: "git_ref_missing",
       message: expect.not.stringContaining(secret)
+    });
+  });
+
+  it("does not execute shell metacharacters passed as subprocess arguments", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "file.txt", "base\n");
+    commitAll(repo, "base");
+    const marker = path.join(repo, "shell-pwned");
+
+    await expect(
+      runGit(repo, ["rev-parse", `HEAD;touch ${marker}`], { errorCode: "git_ref_missing" })
+    ).rejects.toMatchObject({ code: "git_ref_missing" });
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("injects safe noninteractive git environment variables", async () => {
+    const repo = initRepo();
+
+    await expect(runGit(repo, ["var", "GIT_PAGER"])).resolves.toBe("cat");
+  });
+
+  it("redacts capped subprocess error contexts", async () => {
+    const repo = initRepo();
+    const secret = "ghp_abcdefghijklmnopqrstuvwxyz1234567890";
+
+    await expect(
+      runGitCapped(repo, ["show", `HEAD:${secret}`], {
+        maxBytes: 1024,
+        maxLines: 20,
+        errorCode: "git_ref_missing"
+      })
+    ).rejects.toMatchObject({
+      code: "git_ref_missing",
+      message: expect.not.stringContaining(secret),
+      context: expect.not.objectContaining({
+        args: expect.arrayContaining([expect.stringContaining(secret)])
+      })
     });
   });
 
@@ -79,6 +118,16 @@ describe("git client", () => {
     commitAll(repo, "base");
 
     await expect(createGitClient(repo).grep("HEAD", "definitely-not-present")).resolves.toEqual([]);
+  });
+
+  it("uses pathspec separators before untrusted paths where git supports them", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "--not-a-flag.txt", "needle\n");
+    commitAll(repo, "base");
+    const client = createGitClient(repo);
+
+    await expect(client.lsFiles(["--not-a-flag.txt"])).resolves.toEqual(["--not-a-flag.txt"]);
+    await expect(client.lsTreeEntry("HEAD", "--not-a-flag.txt")).resolves.toMatchObject({ type: "blob" });
   });
 
   it("maps missing grep refs to git_ref_missing", async () => {

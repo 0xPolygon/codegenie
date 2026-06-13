@@ -1,6 +1,6 @@
 import path from "node:path";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { createRunTelemetry } from "../telemetry/run-artifacts.js";
+import { createRunTelemetry, provisionCodeninjaGitignore } from "../telemetry/run-artifacts.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { parseDiff } from "../git/diff-parser.js";
 import { classifyChangedFiles, filterDiffFiles } from "../git/file-classifier.js";
@@ -49,7 +49,6 @@ type RunReviewOverrides = {
   runArtifactDir?: string;
   format?: OutputFormat;
   postGithubComments?: boolean;
-  cliLenses?: string[];
   configWarnings?: ConfigWarning[];
   writeOutput?: (text: string) => void;
   runner?: LlmRunner;
@@ -90,7 +89,7 @@ export async function runReview(
   config: CodeninjaConfig,
   overrides: RunReviewOverrides = {}
 ): Promise<ReviewResult> {
-  const repoRoot = path.resolve(overrides.repoRoot ?? process.cwd());
+  const repoRoot = await resolveRunRepoRoot(overrides.repoRoot);
   const run = await startRun(config, input, repoRoot, overrides);
 
   try {
@@ -100,6 +99,15 @@ export async function runReview(
     const diff = parseDiff(resolved.rawDiff);
     await run.telemetry.writeArtifact("resolved-input.json", summarizeResolvedInput(resolved));
     await run.telemetry.writeArtifact("diff.json", diff);
+    run.telemetry.event({
+      stage: 2,
+      level: "info",
+      message: "pipeline_metrics",
+      data: {
+        totals: { filesChanged: diff.files.length, hunks: diffHunkCount(diff.files) },
+        coverage: { hunks: { total: diffHunkCount(diff.files) } }
+      }
+    });
 
     const { kept, decisions } = await filterDiffFiles(resolved, diff, config, run.telemetry);
     throwIfHardAborted(run);
@@ -136,6 +144,22 @@ export async function runReview(
       enabledLenses: services.lenses.filter((lens) => lens.enabled).map((lens) => lens.id),
       reviewContext: packetReviewContextFromDossier(dossier)
     });
+    run.telemetry.event({
+      stage: 6,
+      level: "info",
+      message: "pipeline_metrics",
+      data: {
+        totals: { packets: packets.length },
+        packets: {
+          generated: packets.length,
+          degraded: packets.filter((packet) => packet.degraded !== undefined).length
+        },
+        lenses: {
+          selected: new Set(packets.flatMap((packet) => packet.lenses)).size,
+          byLens: lensCounts(packets)
+        }
+      }
+    });
     throwIfHardAborted(run);
     if (isToolsHost(repoIndex.tools)) {
       repoIndex.tools.bindPackets(packets);
@@ -166,6 +190,23 @@ export async function runReview(
       degradedPlanning: plannerResult.degradedPlanning,
       budgetStopped: run.budget.stopped
     });
+    run.telemetry.event({
+      stage: 9,
+      level: "info",
+      message: "pipeline_metrics",
+      data: {
+        coverage: {
+          byLevel: coverage.coverageByLevel,
+          hunks: {
+            total: coverage.totalHunks,
+            reviewed: coverage.reviewedHunks,
+            skipped: coverage.skippedHunks,
+            failed: coverage.failedHunks,
+            degraded: packets.filter((packet) => packet.degraded !== undefined).reduce((sum, packet) => sum + packet.hunks.length, 0)
+          }
+        }
+      }
+    });
     discloseSkillLoadFailures(coverage, services.skillFailures);
     const finalReview = await dedupeRankAndComposeReview(verified, plannerResult.plan, resolved, coverage, config, run.telemetry, {
       runner: services.runner,
@@ -183,10 +224,26 @@ export async function runReview(
       status: finalReview.coverage,
       records: buildCoverageRecords(diff.files, decisions, plannerResult.plan, packetResults, packets)
     });
-    await maybePublishToGitHub(finalReview, resolved, config, run.telemetry, {
+    const posting = await maybePublishToGitHub(finalReview, resolved, config, run.telemetry, {
       diff,
       ...(overrides.github !== undefined ? { github: overrides.github } : {})
     });
+    if (posting !== undefined) {
+      run.telemetry.event({
+        stage: 11,
+        level: posting.status === "failed" ? "error" : "info",
+        message: "pipeline_metrics",
+        data: {
+          totals: { postedComments: posting.inlinePosted },
+          posting: {
+            attempted: posting.attempted ? 1 : 0,
+            postedComments: posting.inlinePosted,
+            skippedDuplicates: posting.skippedDuplicates,
+            failed: posting.status === "failed" ? 1 : 0
+          }
+        }
+      });
+    }
     await renderOutputs(finalReview, overrides, run.telemetry);
     await run.finalize({ status: "completed", exitCode: 0 });
     return finalReview;
@@ -234,7 +291,7 @@ async function startRun(
         mode: input.mode,
         target: input,
         depth: config.review.depth,
-        lenses: config.lenses.enabled,
+        lenses: config.lenses.restrictTo ?? config.lenses.enabled,
         format: overrides.format ?? "markdown",
         postGithubComments: overrides.postGithubComments === true
       }
@@ -327,6 +384,7 @@ async function acquirePullRequestRefLock(
   prNumber: number,
   telemetry: TelemetryRecorder
 ): Promise<{ release: () => Promise<void> }> {
+  provisionCodeninjaGitignore(repoRoot);
   const lockDir = path.join(repoRoot, ".codeninja", "locks", `pr-${prNumber}.refs.lock`);
   await mkdir(path.dirname(lockDir), { recursive: true });
   const deadline = Date.now() + 300_000;
@@ -465,7 +523,7 @@ async function createPipelineServices(
     logger: run.logger,
     telemetry: run.telemetry
   });
-  const lensRegistry = buildLensRegistry(skillsResult.skills, config.lenses, overrides.cliLenses, run.logger, run.telemetry);
+  const lensRegistry = buildLensRegistry(skillsResult.skills, config.lenses, run.logger, run.telemetry);
   const promptBuilder = createPromptBuilder(lensRegistry, { telemetry: run.telemetry });
   const cache = overrides.runner === undefined
     ? await createReviewCache(config, repoRoot, resolved, lensRegistry.registryHash(), run)
@@ -487,7 +545,7 @@ async function validateExplicitCliLensesForZeroWork(
   run: RunContext,
   overrides: RunReviewOverrides
 ): Promise<void> {
-  if (overrides.cliLenses === undefined || overrides.cliLenses.length === 0) {
+  if (config.lenses.restrictTo === undefined || config.lenses.restrictTo.length === 0) {
     return;
   }
   const skillsResult = await loadSkills({
@@ -496,7 +554,20 @@ async function validateExplicitCliLensesForZeroWork(
     logger: run.logger,
     telemetry: run.telemetry
   });
-  buildLensRegistry(skillsResult.skills, config.lenses, overrides.cliLenses, run.logger, run.telemetry);
+  buildLensRegistry(skillsResult.skills, config.lenses, run.logger, run.telemetry);
+}
+
+async function resolveRunRepoRoot(input: string | undefined): Promise<string> {
+  const candidate = path.resolve(input ?? process.cwd());
+  const git = createGitClient(candidate);
+  try {
+    if (await git.isInsideWorktree()) {
+      return path.resolve(await git.repoRoot());
+    }
+  } catch {
+    return candidate;
+  }
+  return candidate;
 }
 
 async function createReviewCache(
@@ -753,6 +824,18 @@ function discloseSkillLoadFailures(
   }
 }
 
+function diffHunkCount(files: DiffFile[]): number {
+  return files.reduce((sum, file) => sum + file.hunks.length, 0);
+}
+
+function lensCounts(packets: ReviewPacket[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const lens of packets.flatMap((packet) => packet.lenses)) {
+    counts[lens] = (counts[lens] ?? 0) + 1;
+  }
+  return counts;
+}
+
 type CoverageRecord = {
   hunkId: string;
   path: string;
@@ -842,7 +925,7 @@ async function renderOutputs(
   const rendered = overrides.postGithubComments
     ? renderPostingSummaryForStdout(result, overrides.format ?? "markdown", { postRequested: true })
     : renderReviewForStdout(result, overrides.format ?? "markdown");
-  overrides.writeOutput?.(rendered);
+  overrides.writeOutput?.(scrubGitHubSecrets(rendered));
 }
 
 function summarizeResolvedInput(resolved: ResolvedReviewInput): Omit<ResolvedReviewInput, "rawDiff"> & { rawDiffChars: number } {

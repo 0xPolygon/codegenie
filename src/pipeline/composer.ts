@@ -186,6 +186,25 @@ export async function dedupeRankAndComposeReview(
     }))
   });
   await telemetry.writeArtifact("final-findings.json", scrubGitHubSecrets(capped.findings));
+  telemetry.event({
+    stage: 10,
+    level: "info",
+    message: "pipeline_metrics",
+    data: {
+      totals: { finalFindings: capped.findings.length },
+      dedup: {
+        clusters: groups.length,
+        duplicates: groups.reduce((sum, group) => sum + Math.max(0, group.findings.length - 1), 0),
+        suppressed: selection.filter((record) => record.decision === "suppressed").length
+      },
+      finalSelection: {
+        published: selection.filter((record) => record.decision === "published").length,
+        merged: selection.filter((record) => record.decision === "merged").length,
+        suppressed: selection.filter((record) => record.decision === "suppressed").length,
+        finalFindings: capped.findings.length
+      }
+    }
+  });
   telemetry.event({ stage: 10, level: "info", message: "stage_completed", data: { finalFindings: capped.findings.length } });
   return result;
 }
@@ -299,8 +318,9 @@ function isNoFindingsSummary(summary: string | undefined): boolean {
   if (!summary) {
     return false;
   }
-  return /\bno\b[\s\S]{0,80}\b(findings?|issues?|problems?|concerns?)\b/i.test(summary) ||
-    /\bnothing\b[\s\S]{0,80}\b(findings?|issues?|problems?|concerns?)\b/i.test(summary);
+  const normalized = summary.trim().replace(/\s+/gu, " ");
+  return /^(?:no|nothing)\b.{0,120}\b(?:findings?|issues?|problems?|concerns?)\b\.?$/iu.test(normalized) ||
+    /^no credible findings were found\.?$/iu.test(normalized);
 }
 
 function pretrimComposerInput(findings: CandidateFinding[]): { kept: CandidateFinding[]; suppressed: CandidateFinding[] } {

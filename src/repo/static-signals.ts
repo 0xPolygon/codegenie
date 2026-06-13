@@ -83,11 +83,11 @@ async function exportedApiSignals(
     if (hasAddedLines(file, hunk)) {
       output.push(...(await exportedSignatureSignalsForHunk(resolver, registry, file, hunk)));
     }
+    if (hasDeletedLines(file, hunk)) {
+      output.push(...(await deletedExportSignalsForChangedHunk(resolver, registry, file, hunk)));
+    }
     for (const hunkFacts of factsByHunk.get(hunk.id) ?? []) {
       output.push(...(await exportedApiSignalsForFact(resolver, registry, file, hunk, hunkFacts)));
-    }
-    if (isMixedHunk(file, hunk)) {
-      output.push(...(await deletedExportSignalsForMixedHunk(resolver, registry, file, hunk)));
     }
   }
   return output;
@@ -135,12 +135,15 @@ async function exportedSignatureSignalsForHunk(
     });
 }
 
-async function deletedExportSignalsForMixedHunk(
+async function deletedExportSignalsForChangedHunk(
   resolver: SourceResolver,
   registry: LanguageAdapterRegistry,
   file: DiffFile,
   hunk: DiffFile["hunks"][number]
 ): Promise<StaticSignal[]> {
+  if (typeof resolver.readFile !== "function") {
+    return [];
+  }
   const baseContent = await resolver.readFile(file.oldPath ?? file.path, { kind: "base" });
   if (!baseContent) {
     return [];
@@ -179,15 +182,12 @@ async function deletedExportSignalsForMixedHunk(
     .map((symbol) => signal(file.path, symbol.changedLines[0] ?? hunk.oldStart, "LEFT", symbol, "An exported symbol was deleted."));
 }
 
-function isMixedHunk(file: DiffFile, hunk: DiffFile["hunks"][number]): boolean {
-  if (file.status === "added" || file.status === "deleted") {
-    return false;
-  }
-  return hunk.lines.some((line) => line.kind === "add") && hunk.lines.some((line) => line.kind === "delete");
-}
-
 function hasAddedLines(file: DiffFile, hunk: DiffFile["hunks"][number]): boolean {
   return file.status !== "added" && hunk.lines.some((line) => line.kind === "add");
+}
+
+function hasDeletedLines(file: DiffFile, hunk: DiffFile["hunks"][number]): boolean {
+  return file.status !== "added" && hunk.lines.some((line) => line.kind === "delete");
 }
 
 async function exportedApiSignalsForFact(

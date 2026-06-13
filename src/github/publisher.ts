@@ -25,6 +25,7 @@ type PreparedInlineComment = {
   finding: FinalFinding;
   anchor: DiffAnchor;
   input: InlineCommentInput;
+  deletedFileAnchor: boolean;
 };
 
 type RejectedCommentDescriptor = {
@@ -68,6 +69,7 @@ export async function maybePublishToGitHub(
   }
   const diff = opts.diff ?? parseDiff(resolved.rawDiff);
   const index = buildDiffAnchorIndex(diff);
+  const deletedAnchors = deletedFileAnchorKeys(diff);
   const byId = new Map(finalReview.findings.map((finding) => [finding.id, finding]));
   const demoted: FinalFinding[] = [];
   const inlineCandidates: Array<{ finding: FinalFinding; anchor: DiffAnchor }> = [];
@@ -108,7 +110,7 @@ export async function maybePublishToGitHub(
   const duplicateById = new Map(duplicateDecisions.map((decision) => [decision.findingId, decision]));
   const prepared = inlineCandidates
     .filter(({ finding }) => duplicateById.get(finding.id)?.action === "post")
-    .map(({ finding, anchor }) => prepareInlineComment(finding, anchor, telemetry.runId));
+    .map(({ finding, anchor }) => prepareInlineComment(finding, anchor, telemetry.runId, deletedAnchors.has(anchorKey(anchor))));
   const skippedDuplicates = duplicateDecisions.filter((decision) => decision.action !== "post").length;
   const reviewBody = buildPostingBody(finalReview, demoted, config, { includeInlineSummary: prepared.length > 0 });
   const shouldPostBody = reviewBody.trim().length > 0;
@@ -213,11 +215,6 @@ async function postWithRecovery(
         comments = [];
         summaryOnly = true;
       }
-      if (attempt >= 2 && comments.length > 0) {
-        currentBody = demoteCommentsIntoBody(currentBody, comments, record);
-        comments = [];
-        summaryOnly = true;
-      }
       if (attempt === 3) {
         throw error;
       }
@@ -230,6 +227,10 @@ async function postWithRecovery(
 }
 
 function nextLocal422SuspectClass(comments: PreparedInlineComment[]): PreparedInlineComment[] {
+  const deletedFile = comments.filter((comment) => comment.deletedFileAnchor);
+  if (deletedFile.length > 0) {
+    return deletedFile;
+  }
   const leftSide = comments.filter((comment) => comment.anchor.side === "LEFT");
   if (leftSide.length > 0) {
     return leftSide;
@@ -241,7 +242,12 @@ function nextLocal422SuspectClass(comments: PreparedInlineComment[]): PreparedIn
   return [];
 }
 
-function prepareInlineComment(finding: FinalFinding, anchor: DiffAnchor, runId: string): PreparedInlineComment {
+function prepareInlineComment(
+  finding: FinalFinding,
+  anchor: DiffAnchor,
+  runId: string,
+  deletedFileAnchor: boolean
+): PreparedInlineComment {
   const input: InlineCommentInput = {
     path: anchor.path,
     line: anchor.line,
@@ -252,7 +258,7 @@ function prepareInlineComment(finding: FinalFinding, anchor: DiffAnchor, runId: 
     input.start_line = anchor.startLine;
     input.start_side = anchor.startSide ?? anchor.side;
   }
-  return { finding, anchor, input };
+  return { finding, anchor, input, deletedFileAnchor };
 }
 
 function prepareReviewBody(body: string): string {
@@ -333,9 +339,15 @@ function capBody(body: string, maxChars: number): string {
 }
 
 function isGithub422(error: unknown): boolean {
-  return error instanceof CodeninjaError &&
-    error.code === "github_post_failed" &&
-    /\b422\b/u.test(`${error.message}\n${JSON.stringify(error.context ?? {})}`);
+  return githubHttpStatus(error) === 422;
+}
+
+function githubHttpStatus(error: unknown): number | undefined {
+  if (!(error instanceof CodeninjaError) || error.code !== "github_post_failed") {
+    return undefined;
+  }
+  const status = error.context?.httpStatus;
+  return typeof status === "number" && Number.isInteger(status) ? status : undefined;
 }
 
 function extractRejectedCommentIndexes(error: unknown, comments: PreparedInlineComment[]): number[] {
@@ -353,7 +365,14 @@ function extractRejectedCommentIndexes(error: unknown, comments: PreparedInlineC
 }
 
 function parseGitHubErrorPayload(error: CodeninjaError): unknown | undefined {
-  const raw = [error.context?.stdout, error.context?.stderr, error.message]
+  const responseBody = error.context?.responseBody;
+  if (responseBody !== undefined) {
+    if (typeof responseBody === "string") {
+      return parseJsonPayload(responseBody);
+    }
+    return responseBody;
+  }
+  const raw = [error.context?.stdout, error.context?.stderr]
     .map((value) => typeof value === "string" ? value : "")
     .find((value) => value.includes("{"));
   if (raw === undefined) {
@@ -364,8 +383,12 @@ function parseGitHubErrorPayload(error: CodeninjaError): unknown | undefined {
   if (start < 0 || end < start) {
     return [];
   }
+  return parseJsonPayload(raw.slice(start, end + 1));
+}
+
+function parseJsonPayload(raw: string): unknown | undefined {
   try {
-    return JSON.parse(raw.slice(start, end + 1));
+    return JSON.parse(raw);
   } catch {
     return undefined;
   }
@@ -458,6 +481,28 @@ function indexFromField(value: unknown): number | undefined {
   }
   const match = /comments\[(\d+)\]/u.exec(value) ?? /comments\.(\d+)/u.exec(value);
   return match?.[1] !== undefined ? Number(match[1]) : undefined;
+}
+
+function deletedFileAnchorKeys(diff: UnifiedDiff): Set<string> {
+  const keys = new Set<string>();
+  for (const file of diff.files) {
+    if (file.status !== "deleted") {
+      continue;
+    }
+    const path = file.oldPath ?? file.path;
+    for (const hunk of file.hunks) {
+      for (const line of hunk.lines) {
+        if (line.kind === "delete" && line.oldLineNumber !== undefined) {
+          keys.add(anchorKey({ path, line: line.oldLineNumber, side: "LEFT", hunkId: hunk.id }));
+        }
+      }
+    }
+  }
+  return keys;
+}
+
+function anchorKey(anchor: Pick<DiffAnchor, "path" | "line" | "side" | "hunkId">): string {
+  return `${anchor.path}\0${anchor.side}\0${anchor.line}\0${anchor.hunkId}`;
 }
 
 async function persistPostingRecord(record: RunPostingRecord, telemetry: TelemetryRecorder): Promise<void> {

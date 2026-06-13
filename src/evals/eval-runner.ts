@@ -374,7 +374,6 @@ async function runLiveCase(
       runArtifactDir: path.join(allocated.dir, "telemetry"),
       format: "markdown",
       postGithubComments: false,
-      ...(entry.evalCase.review?.lenses !== undefined ? { cliLenses: entry.evalCase.review.lenses } : {}),
       configWarnings: repoLayer.warnings,
       onRunStart: (run) => {
         reviewRunId = run.runId;
@@ -632,8 +631,7 @@ function applyCaseReviewConfig(
     config.cache.dir = review.cacheDir;
   }
   if (review?.lenses !== undefined) {
-    config.lenses.enabled = [...review.lenses];
-    config.lenses.disabled = [];
+    config.lenses.restrictTo = [...review.lenses];
   }
   if (review?.provider !== undefined) {
     config.llm.provider = review.provider;

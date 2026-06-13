@@ -19,7 +19,7 @@ import { getOAuthApiKey, getOAuthProvider, type OAuthCredentials } from "@earend
 import pLimit from "p-limit";
 import { createFileAuthStorage } from "../provider/provider-services.js";
 import { getCodeninjaPaths } from "../config/paths.js";
-import { registerSecret } from "../telemetry/redaction.js";
+import { registerSecret, stripCredentials } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import type { ReviewStage, ToolCallRecord, ToolResultMeta } from "../types.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../provider/provider-services.js";
@@ -86,8 +86,12 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
     model?: string;
   });
   if (!model) {
-    throw new CodeninjaError("config_error", "no usable LLM model could be resolved", {
-      context: { provider: opts.llmConfig.provider ?? null, model: opts.llmConfig.model ?? null }
+    throw new CodeninjaError("config_error", "no usable LLM model could be resolved; run `codeninja provider login <provider>` or configure --provider/--model", {
+      context: {
+        provider: opts.llmConfig.provider ?? null,
+        model: opts.llmConfig.model ?? null,
+        hint: "run `codeninja provider login <provider>` and `codeninja provider models --all` to inspect available authenticated models"
+      }
     });
   }
 
@@ -109,6 +113,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       let schemaRepairUsed = false;
       let finalizeNudgeUsed = false;
       let forceFinalize = false;
+      let budgetForceFinalize = false;
       const taskTimeout = timeoutSignal(opts.runSignal, request.timeoutMs);
 
       try {
@@ -118,20 +123,36 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           const toolChoice = forceFinalize || repositoryTools.length === 0
             ? { type: "tool" as const, name: submitTool.name }
             : "auto";
-          const providerResult = await completeWithCache({
-            opts,
-            adapter,
-            request,
-            model,
-            messages,
-            tools: activeTools,
-            kind,
-            toolChoice,
-            providerLimit,
-            nextModelCallId,
-            taskSignal: taskTimeout.signal,
-            taskTimedOut: taskTimeout.timedOut
-          });
+          let providerResult: ProviderCallResult;
+          try {
+            providerResult = await completeWithCache({
+              opts,
+              adapter,
+              request,
+              model,
+              messages,
+              tools: activeTools,
+              kind,
+              toolChoice,
+              providerLimit,
+              nextModelCallId,
+              taskSignal: taskTimeout.signal,
+              taskTimedOut: taskTimeout.timedOut,
+              budgetExempt: budgetForceFinalize
+            });
+          } catch (cause) {
+            if (!forceFinalize && isBudgetExhaustedError(cause) && messages.length > 1) {
+              forceFinalize = true;
+              budgetForceFinalize = true;
+              messages.push({
+                role: "user",
+                content: `LLM provider call budget is exhausted. Call ${submitTool.name} now with the best schema-valid result supported by the evidence already gathered. Do not request more repository tools.`,
+                timestamp: 0
+              });
+              continue;
+            }
+            throw cause;
+          }
           const message = providerResult.message;
           messages.push(message as unknown as ConversationMessage);
 
@@ -148,15 +169,16 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               if (schemaRepairUsed) {
                 throw new CodeninjaError("llm_schema_invalid", "model submit payload failed schema validation after repair", {
                   recoverable: true,
-                  context: { submitTool: submitTool.name, error: cause instanceof Error ? cause.message : String(cause) },
+                  context: { submitTool: submitTool.name, error: truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause)) },
                   cause
                 });
               }
               schemaRepairUsed = true;
               forceFinalize = true;
+              budgetForceFinalize = false;
               messages.push({
                 role: "user",
-                content: `The ${submitTool.name} arguments were schema-invalid: ${cause instanceof Error ? cause.message : String(cause)}. Call ${submitTool.name} again with corrected schema-valid arguments.`,
+                content: `The ${submitTool.name} arguments were schema-invalid: ${truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause))}. Call ${submitTool.name} again with corrected schema-valid arguments.`,
                 timestamp: 0
               });
               continue;
@@ -200,7 +222,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 role: "toolResult",
                 toolCallId: toolCall.id,
                 toolName: toolCall.name,
-                content: [{ type: "text", text: fenceUntrusted(resultText, `tool-result-${toolCall.name}`) }],
+                content: [{ type: "text", text: fenceUntrusted(resultText, `tool-result-${safeFenceLabelPart(toolCall.name)}`) }],
                 isError: outcome.result.isError === true,
                 timestamp: 0
               });
@@ -209,6 +231,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
 
             if (toolCallsUsed >= budget.maxToolCalls || investigationRounds >= budget.maxInvestigationRounds) {
               forceFinalize = true;
+              budgetForceFinalize = false;
               messages.push({
                 role: "user",
                 content: `Tool budget is exhausted. Call ${submitTool.name} now with the best schema-valid result supported by the evidence already gathered.`,
@@ -218,17 +241,20 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             continue;
           }
 
-          if (finalizeNudgeUsed) {
-            throw new CodeninjaError("llm_schema_invalid", `model did not call ${submitTool.name} after repair/finalization`, {
-              recoverable: true,
-              context: { submitTool: submitTool.name }
+          if (!finalizeNudgeUsed) {
+            finalizeNudgeUsed = true;
+            messages.push({
+              role: "user",
+              content: `Continue reviewing with repository tools if useful, or call ${submitTool.name} with schema-valid arguments. Do not answer in plain text.`,
+              timestamp: 0
             });
+            continue;
           }
-          finalizeNudgeUsed = true;
           forceFinalize = true;
+          budgetForceFinalize = false;
           messages.push({
             role: "user",
-            content: `Finish by calling ${submitTool.name} with schema-valid arguments. Do not answer in plain text.`,
+            content: `Finish now by calling ${submitTool.name} with schema-valid arguments. Do not answer in plain text or call other tools.`,
             timestamp: 0
           });
         }
@@ -273,8 +299,9 @@ async function completeWithCache(input: {
   nextModelCallId: () => string;
   taskSignal: AbortSignal;
   taskTimedOut: () => boolean;
+  budgetExempt?: boolean;
 }): Promise<ProviderCallResult> {
-  const { opts, adapter, request, model, messages, tools, kind, toolChoice, providerLimit, nextModelCallId, taskSignal, taskTimedOut } = input;
+  const { opts, adapter, request, model, messages, tools, kind, toolChoice, providerLimit, nextModelCallId, taskSignal, taskTimedOut, budgetExempt } = input;
   const canonicalRequest = canonicalModelRequest({
     cacheSchemaVersion: MODEL_CALL_CACHE_SCHEMA_VERSION,
     runFingerprint: opts.cache?.runFingerprint ?? null,
@@ -298,7 +325,8 @@ async function completeWithCache(input: {
   if (opts.cache) {
     const cached = await opts.cache.get(cacheKey, request.stage);
     if (cached.status === "hit") {
-      const cachedSchemaValid = schemaValidityForResponse(adapter, request, tools, cached.response.message);
+      const cachedResponse = scrubStoredProviderResponse(cached.response);
+      const cachedSchemaValid = schemaValidityForResponse(adapter, request, tools, cachedResponse.message);
       if (cachedSchemaValid === false) {
         opts.telemetry.event({
           stage: request.stage,
@@ -309,16 +337,16 @@ async function completeWithCache(input: {
         });
       } else {
         const callId = nextModelCallId();
-          recordModelCall(opts, request, model, cached.response.message, {
-            callId,
-            kind,
-            attempt: 1,
-            cacheStatus: "hit",
-            promptText,
-            durationMs: 0,
-            usage: cached.response.usage
-          });
-        return { source: "cache", message: cached.response.message, callId };
+        recordModelCall(opts, request, model, cachedResponse.message, {
+          callId,
+          kind,
+          attempt: 1,
+          cacheStatus: "hit",
+          promptText,
+          durationMs: 0,
+          usage: cachedResponse.usage
+        });
+        return { source: "cache", message: cachedResponse.message, callId };
       }
     }
   }
@@ -326,21 +354,19 @@ async function completeWithCache(input: {
   let lastError: unknown;
   for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt += 1) {
     throwIfTaskAborted(taskSignal, taskTimedOut);
-    const checkpoint = opts.hooks.checkpoint(request.stage);
-    if (checkpoint === "exhausted") {
-      throw new CodeninjaError("llm_call_failed", "LLM provider call budget exhausted", {
-        recoverable: true,
-        context: { reason: "budget_exhausted", stage: request.stage }
-      });
+    let estimatedTokens = 0;
+    let reservationActive = false;
+    if (budgetExempt !== true) {
+      const checkpoint = opts.hooks.checkpoint(request.stage);
+      if (checkpoint === "exhausted") {
+        throw budgetExhaustedError(request.stage);
+      }
+      estimatedTokens = estimateProviderCallTokens(promptText);
+      if (opts.hooks.reserve?.(request.stage, estimatedTokens) === "exhausted") {
+        throw budgetExhaustedError(request.stage);
+      }
+      reservationActive = opts.hooks.reserve !== undefined;
     }
-    const estimatedTokens = estimateProviderCallTokens(promptText);
-    if (opts.hooks.reserve?.(request.stage, estimatedTokens) === "exhausted") {
-      throw new CodeninjaError("llm_call_failed", "LLM provider call budget exhausted", {
-        recoverable: true,
-        context: { reason: "budget_exhausted", stage: request.stage }
-      });
-    }
-    let reservationActive = opts.hooks.reserve !== undefined;
     const releaseReservation = (): void => {
       if (!reservationActive) {
         return;
@@ -352,7 +378,7 @@ async function completeWithCache(input: {
     const callId = nextModelCallId();
     const startedAt = Date.now();
     try {
-      const message = await providerLimit(() =>
+      const rawMessage = await providerLimit(() =>
         adapter.complete(
           model,
           { messages, tools: tools.map(toolSpec) },
@@ -364,9 +390,11 @@ async function completeWithCache(input: {
           }
         )
       );
+      const message = scrubAssistantMessage(rawMessage);
       const durationMs = Date.now() - startedAt;
       const schemaValid = schemaValidityForResponse(adapter, request, tools, message);
-      const cacheStatus = opts.cache ? "miss" : "disabled";
+      const cacheable = Boolean(opts.cache && isCacheableProviderResponse(schemaValid, message));
+      const cacheStatus = cacheable ? "write" : opts.cache ? "miss" : "disabled";
       const modelCallMeta = definedRecord({
         callId,
         kind,
@@ -393,7 +421,7 @@ async function completeWithCache(input: {
       }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodeninjaErrorCode });
       reportUsage(opts, request.stage, message);
       releaseReservation();
-      if (opts.cache && isCacheableProviderResponse(schemaValid, message)) {
+      if (opts.cache && cacheable) {
         await opts.cache.put(cacheKey, cacheEntry(request.stage, message));
       }
       return { source: "provider", message, callId };
@@ -481,6 +509,31 @@ function canonicalModelRequest(input: {
 
 function estimateProviderCallTokens(promptText: string): number {
   return Math.max(1, Math.ceil(promptText.length / 4));
+}
+
+function budgetExhaustedError(stage: ReviewStage): CodeninjaError {
+  return new CodeninjaError("llm_call_failed", "LLM provider call budget exhausted", {
+    recoverable: true,
+    context: { reason: "budget_exhausted", stage }
+  });
+}
+
+function isBudgetExhaustedError(cause: unknown): boolean {
+  return cause instanceof CodeninjaError &&
+    cause.code === "llm_call_failed" &&
+    cause.context?.reason === "budget_exhausted";
+}
+
+function truncatePromptDiagnostic(input: string): string {
+  const maxChars = 2_000;
+  if (input.length <= maxChars) {
+    return input;
+  }
+  return `${input.slice(0, maxChars).trimEnd()}\n[validation error truncated by codeninja]`;
+}
+
+function safeFenceLabelPart(input: string): string {
+  return input.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "tool";
 }
 
 function isForcedToolChoice(choice: unknown): choice is Extract<ToolChoiceMode, { type: "tool" }> {
@@ -879,6 +932,14 @@ function cacheEntry(stage: ReviewStage, message: PiAssistantMessage): StoredProv
   };
 }
 
+function scrubAssistantMessage(message: PiAssistantMessage): PiAssistantMessage {
+  return stripCredentials(message) as PiAssistantMessage;
+}
+
+function scrubStoredProviderResponse(response: StoredProviderResponse): StoredProviderResponse {
+  return stripCredentials(response) as StoredProviderResponse;
+}
+
 function stopReason(message: PiAssistantMessage): "submit" | "tool_calls" | "text" | "error" {
   if (message.stopReason === "error") {
     return "error";
@@ -924,9 +985,8 @@ function toLlmError(
     });
   }
   const reason = timedOut ? "timeout" : requestErrorReason(cause, status);
-  const fatalProviderFailure = status === "transient_error" && reason === "transient_error";
   return new CodeninjaError("llm_call_failed", timedOut ? "LLM provider call timed out" : "LLM provider call failed", {
-    recoverable: !fatalProviderFailure,
+    recoverable: true,
     context: { reason },
     cause
   });

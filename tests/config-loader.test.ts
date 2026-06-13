@@ -136,6 +136,82 @@ apiKey = "sk-this-should-not-be-in-repo-config"
     expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(CodeninjaError);
     expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(/credential-bearing/);
   });
+
+  it("keeps adjacent precedence rules isolated for settings, repo review config, and reasoning auto", () => {
+    const repoRoot = tempDir();
+    const home = tempDir();
+    writeFileSync(
+      path.join(home, "config.toml"),
+      `
+[llm]
+provider = "config-provider"
+model = "config-model"
+reasoning = "low"
+`
+    );
+    writeFileSync(
+      path.join(home, "settings.json"),
+      JSON.stringify({
+        defaultProvider: "settings-provider",
+        defaultModel: "settings-model",
+        defaultDepth: "light",
+        defaultReasoning: "medium"
+      })
+    );
+    writeFileSync(
+      path.join(repoRoot, "codeninja.toml"),
+      `
+[review]
+depth = "deep"
+`
+    );
+
+    const loaded = loadConfig({
+      repoRoot,
+      homeOverride: home,
+      cli: { reasoning: "auto" }
+    });
+
+    expect(loaded.config.llm.provider).toBe("settings-provider");
+    expect(loaded.sources["llm.provider"]).toBe("provider-settings");
+    expect(loaded.config.llm.model).toBe("settings-model");
+    expect(loaded.sources["llm.model"]).toBe("provider-settings");
+    expect(loaded.config.review.depth).toBe("deep");
+    expect(loaded.sources["review.depth"]).toBe("repo-config");
+    expect(loaded.config.llm.reasoning).toBe("medium");
+    expect(loaded.sources["llm.reasoning"]).toBe("provider-settings");
+  });
+
+  it("ignores repo-scoped telemetry and cache directories with narrow warnings", () => {
+    const repoRoot = tempDir();
+    const home = tempDir();
+    writeFileSync(
+      path.join(repoRoot, "codeninja.toml"),
+      `
+[telemetry]
+runDir = "../outside-runs"
+
+[cache]
+dir = "../outside-cache"
+enabled = false
+
+[review]
+maxFindings = 3
+`
+    );
+
+    const loaded = loadConfig({ repoRoot, homeOverride: home });
+
+    expect(loaded.config.telemetry.runDir).toBe(".codeninja/runs");
+    expect(loaded.config.cache.dir).toBe(".codeninja/cache");
+    expect(loaded.config.cache.enabled).toBe(false);
+    expect(loaded.config.review.maxFindings).toBe(3);
+    expect(loaded.warnings.map((warning) => warning.key).sort()).toEqual([
+      "cache.dir",
+      "cache.enabled",
+      "telemetry.runDir"
+    ]);
+  });
 });
 
 describe("codeninja paths and provider settings", () => {

@@ -4,7 +4,7 @@ import type {
   InlineCommentInput,
   PullRequestMetadata
 } from "../types.js";
-import { CodeninjaError, type CodeninjaErrorCode } from "../util/errors.js";
+import { CodeninjaError, isCodeninjaError, type CodeninjaErrorCode } from "../util/errors.js";
 import { runGh } from "../git/subprocess.js";
 import { parseCodeninjaMarker } from "./duplicate-detector.js";
 
@@ -154,10 +154,14 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
         commit_id: pr.headSha,
         comments: review.comments
       };
-      await gh(repoRoot, ["api", `repos/${loadedRepo.owner}/${loadedRepo.repo}/pulls/${number}/reviews`, "--method", "POST", "--input", "-"], {
-        input: JSON.stringify(payload),
-        errorCode: "github_post_failed"
-      });
+      try {
+        await gh(repoRoot, ["api", `repos/${loadedRepo.owner}/${loadedRepo.repo}/pulls/${number}/reviews`, "--method", "POST", "--input", "-"], {
+          input: JSON.stringify(payload),
+          errorCode: "github_post_failed"
+        });
+      } catch (error) {
+        throw normalizeCreateReviewError(error);
+      }
     },
 
     async listOwnComments(number: number): Promise<ExistingReviewThread[]> {
@@ -212,6 +216,68 @@ function parseJson<T>(stdout: string, message: string, code: CodeninjaErrorCode)
     return JSON.parse(stdout) as T;
   } catch (error) {
     throw new CodeninjaError(code, message, { cause: error });
+  }
+}
+
+function normalizeCreateReviewError(error: unknown): unknown {
+  if (!isCodeninjaError(error) || error.code !== "github_post_failed") {
+    return error;
+  }
+  const status = extractHttpStatus(error);
+  const responseBody = extractResponseBody(error);
+  return new CodeninjaError(
+    "github_post_failed",
+    status === undefined ? error.message : `GitHub review creation failed with HTTP ${status}`,
+    {
+      context: {
+        ...(error.context ?? {}),
+        ...(status !== undefined ? { httpStatus: status } : {}),
+        ...(responseBody !== undefined ? { responseBody } : {})
+      },
+      cause: error
+    }
+  );
+}
+
+function extractHttpStatus(error: CodeninjaError): number | undefined {
+  const existing = error.context?.httpStatus;
+  if (typeof existing === "number" && Number.isInteger(existing)) {
+    return existing;
+  }
+  const raw = [error.context?.stderr, error.context?.stdout, error.message]
+    .map((value) => typeof value === "string" ? value : "")
+    .join("\n");
+  const match = /\bHTTP\s+(\d{3})\b/iu.exec(raw) ?? /\bstatus(?:\s+code)?[=:]\s*(\d{3})\b/iu.exec(raw);
+  return match?.[1] !== undefined ? Number(match[1]) : undefined;
+}
+
+function extractResponseBody(error: CodeninjaError): unknown | undefined {
+  const existing = error.context?.responseBody;
+  if (existing !== undefined) {
+    return existing;
+  }
+  for (const value of [error.context?.stdout, error.context?.stderr]) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const parsed = parseFirstJsonObject(value);
+    if (parsed !== undefined) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function parseFirstJsonObject(raw: string): unknown | undefined {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start < 0 || end < start) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(raw.slice(start, end + 1)) as unknown;
+  } catch {
+    return undefined;
   }
 }
 

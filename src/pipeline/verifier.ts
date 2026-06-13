@@ -82,6 +82,19 @@ export async function verifyFindings(
     }));
     records.push(...verdicts.map((verdict) => verificationRecord(verdict, anchorStripped)));
     await telemetry.writeArtifact("verification.json", records);
+    telemetry.event({
+      stage: 9,
+      level: "info",
+      message: "pipeline_metrics",
+      data: {
+        totals: { verified: clustered.all.length },
+        candidates: {
+          gateRejected: gateRejections,
+          verificationScheduled: 0
+        },
+        verdicts: verdictCounts(verdicts)
+      }
+    });
     return { verified: clustered.all, verdicts, incompleteCount: 0, gateRejections, verificationSkipped: true };
   }
 
@@ -143,6 +156,20 @@ export async function verifyFindings(
   });
 
   await telemetry.writeArtifact("verification.json", records);
+  telemetry.event({
+    stage: 9,
+    level: "info",
+    message: "pipeline_metrics",
+    data: {
+      totals: { verified: verified.length },
+      workers: summarizeWorkerOutcomes(outcomes),
+      candidates: {
+        gateRejected: gateRejections,
+        verificationScheduled: clustered.representatives.length
+      },
+      verdicts: verdictCounts(verdicts)
+    }
+  });
   telemetry.event({ stage: 9, level: "info", message: "stage_completed", data: { verified: verified.length, incompleteCount, gateRejections } });
   return { verified, verdicts, incompleteCount, gateRejections, verificationSkipped: false };
 }
@@ -353,6 +380,31 @@ function belowConfidence(actual: CandidateFinding["confidence"], minimum: Candid
 
 function candidateCount(results: PacketReviewResult[]): number {
   return results.reduce((sum, result) => sum + result.findings.length, 0);
+}
+
+function verdictCounts(verdicts: VerificationVerdict[]): { accept: number; revise: number; reject: number; incomplete: number } {
+  return {
+    accept: verdicts.filter((verdict) => verdict.verdict === "keep").length,
+    revise: verdicts.filter((verdict) => verdict.verdict === "revise").length,
+    reject: verdicts.filter((verdict) => verdict.verdict === "reject" && verdict.verificationIncomplete !== true).length,
+    incomplete: verdicts.filter((verdict) => verdict.verificationIncomplete === true).length
+  };
+}
+
+function summarizeWorkerOutcomes(outcomes: Array<{ outcome: string; attempts: number }>): {
+  started: number;
+  completed: number;
+  failed: number;
+  retried: number;
+  timedOut: number;
+} {
+  return {
+    started: outcomes.filter((outcome) => outcome.attempts > 0).length,
+    completed: outcomes.filter((outcome) => outcome.outcome === "completed").length,
+    failed: outcomes.filter((outcome) => outcome.outcome === "failed" || outcome.outcome === "cancelled" || outcome.outcome === "not_dispatched").length,
+    retried: outcomes.filter((outcome) => outcome.attempts > 1).length,
+    timedOut: outcomes.filter((outcome) => outcome.outcome === "timed_out").length
+  };
 }
 
 function clusterCandidates(

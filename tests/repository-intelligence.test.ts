@@ -519,6 +519,11 @@ export { internal as Public }
     expect(ignoredUntrackedSearch.results).toEqual([]);
     const optionLikeQuerySearch = await tools.searchFiles("--follow", { maxResults: 20 });
     expect(optionLikeQuerySearch.results).toEqual([]);
+    const range = await tools.readRange("store/user.go", 1, 2);
+    expect(range.meta).toMatchObject({ backend: "text", precision: "exact", degraded: false });
+    const listed = await tools.listFiles("store/*.go");
+    expect(listed.paths).toEqual(expect.arrayContaining(["store/user.go", "store/user_test.go"]));
+    expect(listed.meta).toMatchObject({ backend: "text", precision: "exact", degraded: false });
 
     await withRepositoryToolCallContext(
       index.tools,
@@ -652,16 +657,15 @@ export { internal as Public }
     expect((await tools.searchFiles("--follow", { maxResults: 20 })).results).toEqual([]);
     expect((await tools.searchFiles("OutsideSecretLeak", { maxResults: 20 })).results).toEqual([]);
     expect((await tools.searchFiles("OutsideFileSecretLeak", { maxResults: 20 })).results).toEqual([]);
-    expect(telemetry.toolCalls).toEqual(
+    const symlinkContent = await tools.readRange("linked-outside-file.txt", 1, 1);
+    expect(symlinkContent.text).toContain(path.join(outsideDir, "secret-file.txt"));
+    expect(symlinkContent.text).not.toContain("OutsideFileSecretLeak");
+    expect(telemetry.toolCalls.filter((call) => call.tool === "search_files")).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          tool: "search_files",
-          engine: "git-grep",
-          degraded: true,
-          degradationReason: expect.stringContaining("tracked path resolved outside repo")
-        })
+        expect.objectContaining({ engine: "ripgrep", degraded: false })
       ])
     );
+    expect(telemetry.toolCalls.filter((call) => call.tool === "search_files").every((call) => call.degraded === false)).toBe(true);
   });
 
   it("does not search checked-out submodule contents through the ripgrep fast path", async () => {
@@ -974,6 +978,35 @@ export function second(count: string): string {
       expect.arrayContaining([
         expect.objectContaining({ snippet: expect.stringContaining("first(value: number): number") }),
         expect.objectContaining({ snippet: expect.stringContaining("second(count: string): string") })
+      ])
+    );
+  });
+
+  it("surfaces every deleted exported top-level symbol inside one deletion-only hunk", async () => {
+    const repo = initRepo();
+    writeRepoFile(
+      repo,
+      "src/api.ts",
+      `export function first(): string {
+  return "first"
+}
+export function second(): string {
+  return "second"
+}
+`
+    );
+    const base = commitAll(repo, "base");
+    writeRepoFile(repo, "src/api.ts", "");
+    const head = commitAll(repo, "delete exported functions");
+
+    const { index } = await buildIndexForRange(repo, base, head);
+    const signals = index.staticSignals.filter((signal) => signal.ruleId === "core/exported-api-change" && signal.path === "src/api.ts");
+
+    expect(signals).toHaveLength(2);
+    expect(signals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ side: "LEFT", snippet: expect.stringContaining("first()") }),
+        expect.objectContaining({ side: "LEFT", snippet: expect.stringContaining("second()") })
       ])
     );
   });

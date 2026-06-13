@@ -2,6 +2,7 @@
 import { executeReviewCommand, isCliDisplayExit, parseReviewCommand } from "./review-command.js";
 import { executeProviderCommand } from "./provider-command.js";
 import { executeEvalCommand } from "../evals/eval-command.js";
+import { stripCredentials } from "../telemetry/redaction.js";
 import { errorExitCode, isCodeninjaError } from "../util/errors.js";
 
 async function main(): Promise<void> {
@@ -26,9 +27,9 @@ async function main(): Promise<void> {
       return;
     }
     if (isCodeninjaError(error)) {
-      process.stderr.write(`${error.code}: ${error.message}\n`);
+      process.stderr.write(stripCredentials(`${error.code}: ${error.message}\n`));
     } else if (error instanceof Error) {
-      process.stderr.write(`${error.name}: ${error.message}\n`);
+      process.stderr.write(stripCredentials(`${error.name}: ${error.message}\n`));
     } else {
       process.stderr.write("unknown error\n");
     }

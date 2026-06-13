@@ -37,6 +37,25 @@ const MIXED_ANCHOR_DIFF = [
   ""
 ].join("\n");
 
+const DELETED_AND_LEFT_DIFF = [
+  "diff --git a/src/deleted.ts b/src/deleted.ts",
+  "deleted file mode 100644",
+  "index 1111111..0000000",
+  "--- a/src/deleted.ts",
+  "+++ /dev/null",
+  "@@ -1,1 +0,0 @@",
+  "-export const removed = true;",
+  "diff --git a/src/app.ts b/src/app.ts",
+  "index 1111111..2222222 100644",
+  "--- a/src/app.ts",
+  "+++ b/src/app.ts",
+  "@@ -1,1 +1,2 @@",
+  "-export const oldValue = 1;",
+  "+export const value = 1;",
+  "+export const next = 2;",
+  ""
+].join("\n");
+
 describe("GitHub publisher", () => {
   it("sanitizes GitHub comment bodies deterministically", () => {
     expect(
@@ -129,6 +148,78 @@ describe("GitHub publisher", () => {
     expect(created[0]?.body).toContain("Inline findings included in the review body");
   });
 
+  it("demotes low-confidence inline findings into the review body", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const hunk = diff.files[0]?.hunks[0];
+    if (!hunk) {
+      throw new Error("missing hunk");
+    }
+    const finding = finalFinding({ hunkId: hunk.id, line: 1, confidence: "low", finalBody: "Low confidence body." });
+    const created: Array<{ body: string; comments: unknown[] }> = [];
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        created.push(review);
+      }
+    });
+
+    const record = await maybePublishToGitHub(reviewResult(finding), resolved(), defaultConfig, nullTelemetry(), { github, diff });
+
+    expect(record?.status).toBe("posted");
+    expect(record?.inlinePosted).toBe(0);
+    expect(record?.demotedToBody).toBe(1);
+    expect(created[0]?.comments).toEqual([]);
+    expect(created[0]?.body).toContain("Low confidence body.");
+  });
+
+  it("posts a configured no-finding summary comment", async () => {
+    const created: Array<{ body: string; comments: unknown[] }> = [];
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        created.push(review);
+      }
+    });
+
+    const record = await maybePublishToGitHub(reviewResult(), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, summaryWhenNoFindings: true }
+    }, nullTelemetry(), { github, diff: parseDiff(RAW_DIFF) });
+
+    expect(record?.status).toBe("posted");
+    expect(record?.inlinePosted).toBe(0);
+    expect(created).toEqual([expect.objectContaining({ comments: [], body: "Found issues.", event: "COMMENT" })]);
+  });
+
+  it("caps oversized inline and review bodies before posting", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const hunk = diff.files[0]?.hunks[0];
+    if (!hunk) {
+      throw new Error("missing hunk");
+    }
+    const finding = finalFinding({
+      hunkId: hunk.id,
+      line: 1,
+      finalBody: "x".repeat(20_000)
+    });
+    const result = reviewResult(finding);
+    result.postingPlan = {
+      ...result.postingPlan!,
+      reviewBody: "y".repeat(100_000)
+    };
+    const created: Array<{ body: string; comments: Array<{ body: string }> }> = [];
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        created.push(review);
+      }
+    });
+
+    await maybePublishToGitHub(result, resolved(), defaultConfig, nullTelemetry(), { github, diff });
+
+    expect(created[0]?.body.length).toBeLessThanOrEqual(60_000);
+    expect(created[0]?.body).toContain("... (truncated)");
+    expect(created[0]?.comments[0]?.body.length).toBeLessThanOrEqual(10_200);
+    expect(created[0]?.comments[0]?.body).toContain("... (truncated)");
+  });
+
   it("skips duplicate inline findings without demoting them", async () => {
     const diff = parseDiff(RAW_DIFF);
     const hunk = diff.files[0]?.hunks[0];
@@ -176,9 +267,7 @@ describe("GitHub publisher", () => {
       createReview: async (_number, review) => {
         commentCounts.push(review.comments.length);
         if (commentCounts.length === 1) {
-          throw new CodeninjaError("github_post_failed", "HTTP 422", {
-            context: { stderr: JSON.stringify({ errors: [{ index: 0 }] }) }
-          });
+          throw github422({ errors: [{ index: 0 }] });
         }
       }
     });
@@ -234,9 +323,7 @@ describe("GitHub publisher", () => {
       createReview: async (_number, review) => {
         commentCounts.push(review.comments.length);
         if (commentCounts.length === 1) {
-          throw new CodeninjaError("github_post_failed", "HTTP 422", {
-            context: { stderr: "Validation failed without comment indexes" }
-          });
+          throw github422({ message: "Validation failed without comment indexes" });
         }
         postedBodies.push(review.body);
         postedCommentBodies.push(review.comments.map((comment) => comment.body));
@@ -258,6 +345,72 @@ describe("GitHub publisher", () => {
     expect(postedCommentBodies[0]).toEqual([
       expect.stringContaining("Valid multiline comment should stay inline."),
       expect.stringContaining("Right single-line comment should stay inline.")
+    ]);
+  });
+
+  it("demotes deleted-file anchors before other LEFT-side anchors on unidentified 422s", async () => {
+    const diff = parseDiff(DELETED_AND_LEFT_DIFF);
+    const deletedHunk = diff.files.find((file) => file.path === "src/deleted.ts")?.hunks[0];
+    const appHunk = diff.files.find((file) => file.path === "src/app.ts")?.hunks[0];
+    if (!deletedHunk || !appHunk) {
+      throw new Error("missing hunks");
+    }
+    const deleted = finalFinding({
+      id: "deleted",
+      path: "src/deleted.ts",
+      hunkId: deletedHunk.id,
+      line: 1,
+      side: "LEFT",
+      fingerprint: "b".repeat(64),
+      finalBody: "Deleted-file comment should move to the body first."
+    });
+    const left = finalFinding({
+      id: "left",
+      path: "src/app.ts",
+      hunkId: appHunk.id,
+      line: 1,
+      side: "LEFT",
+      fingerprint: "c".repeat(64),
+      finalBody: "Ordinary LEFT-side comment should stay inline."
+    });
+    const right = finalFinding({
+      id: "right",
+      path: "src/app.ts",
+      hunkId: appHunk.id,
+      line: 2,
+      side: "RIGHT",
+      fingerprint: "d".repeat(64),
+      finalBody: "Right-side comment should stay inline."
+    });
+    const commentCounts: number[] = [];
+    const postedBodies: string[] = [];
+    const postedCommentBodies: string[][] = [];
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        commentCounts.push(review.comments.length);
+        if (commentCounts.length === 1) {
+          throw github422({ message: "Validation failed without comment indexes" });
+        }
+        postedBodies.push(review.body);
+        postedCommentBodies.push(review.comments.map((comment) => comment.body));
+      }
+    });
+
+    const record = await maybePublishToGitHub(reviewResult(deleted, left, right), resolved(), defaultConfig, nullTelemetry(), {
+      github,
+      diff
+    });
+
+    expect(commentCounts).toEqual([3, 2]);
+    expect(record?.status).toBe("posted");
+    expect(record?.inlinePosted).toBe(2);
+    expect(record?.demotedToBody).toBe(1);
+    expect(postedBodies[0]).toContain("Deleted-file comment should move to the body first.");
+    expect(postedBodies[0]).not.toContain("Ordinary LEFT-side comment should stay inline.");
+    expect(postedBodies[0]).not.toContain("Right-side comment should stay inline.");
+    expect(postedCommentBodies[0]).toEqual([
+      expect.stringContaining("Ordinary LEFT-side comment should stay inline."),
+      expect.stringContaining("Right-side comment should stay inline.")
     ]);
   });
 
@@ -289,9 +442,7 @@ describe("GitHub publisher", () => {
       createReview: async (_number, review) => {
         commentCounts.push(review.comments.length);
         if (commentCounts.length === 1) {
-          throw new CodeninjaError("github_post_failed", "HTTP 422", {
-            context: { stderr: JSON.stringify({ errors: [{ path: "src/app.ts", line: 3, side: "RIGHT" }] }) }
-          });
+          throw github422({ errors: [{ path: "src/app.ts", line: 3, side: "RIGHT" }] });
         }
         postedBodies.push(review.body);
         postedCommentBodies.push(review.comments.map((comment) => comment.body));
@@ -312,7 +463,7 @@ describe("GitHub publisher", () => {
     expect(postedCommentBodies[0]).toEqual([expect.stringContaining("Valid LEFT-side comment should stay inline.")]);
   });
 
-  it("uses the third attempt as summary-only after a second unidentified 422 demotes a suspect class", async () => {
+  it("uses the third attempt to preserve remaining valid inline comments after a second unidentified 422", async () => {
     const diff = parseDiff(MIXED_ANCHOR_DIFF);
     const hunk = diff.files[0]?.hunks[0];
     if (!hunk) {
@@ -343,15 +494,15 @@ describe("GitHub publisher", () => {
     });
     const commentCounts: number[] = [];
     const postedBodies: string[] = [];
+    const postedCommentBodies: string[][] = [];
     const github = fakeGithub({
       createReview: async (_number, review) => {
         commentCounts.push(review.comments.length);
         if (commentCounts.length <= 2) {
-          throw new CodeninjaError("github_post_failed", "HTTP 422", {
-            context: { stderr: "Validation failed without comment indexes" }
-          });
+          throw github422({ message: "Validation failed without comment indexes" });
         }
         postedBodies.push(review.body);
+        postedCommentBodies.push(review.comments.map((comment) => comment.body));
       }
     });
 
@@ -360,13 +511,16 @@ describe("GitHub publisher", () => {
       diff
     });
 
-    expect(commentCounts).toEqual([3, 2, 0]);
-    expect(record?.status).toBe("summary_only_fallback");
-    expect(record?.inlinePosted).toBe(0);
-    expect(record?.demotedToBody).toBe(3);
+    expect(commentCounts).toEqual([3, 2, 1]);
+    expect(record?.status).toBe("posted");
+    expect(record?.inlinePosted).toBe(1);
+    expect(record?.demotedToBody).toBe(2);
     expect(postedBodies[0]).toContain("LEFT-side comment should move to the body.");
     expect(postedBodies[0]).toContain("Multiline comment should move to the body.");
-    expect(postedBodies[0]).toContain("Remaining right comment should move to the summary-only fallback.");
+    expect(postedBodies[0]).not.toContain("Remaining right comment should move to the summary-only fallback.");
+    expect(postedCommentBodies[0]).toEqual([
+      expect.stringContaining("Remaining right comment should move to the summary-only fallback.")
+    ]);
   });
 
   it("sanitizes 422-demoted findings and reports summary-only fallback when all comments demote", async () => {
@@ -387,9 +541,7 @@ describe("GitHub publisher", () => {
       createReview: async (_number, review) => {
         commentCounts.push(review.comments.length);
         if (commentCounts.length === 1) {
-          throw new CodeninjaError("github_post_failed", "HTTP 422", {
-            context: { stderr: JSON.stringify({ errors: [{ index: 0 }] }) }
-          });
+          throw github422({ errors: [{ index: 0 }] });
         }
         postedBodies.push(review.body);
       }
@@ -409,7 +561,7 @@ describe("GitHub publisher", () => {
     expect(postedBodies[0]).not.toContain("<!-- hidden -->");
   });
 
-  it("uses the third 422 attempt for summary-only fallback after repeated identified rejections", async () => {
+  it("uses the third attempt to preserve valid inline comments after repeated identified rejections", async () => {
     const diff = parseDiff(RAW_DIFF);
     const hunk = diff.files[0]?.hunks[0];
     if (!hunk) {
@@ -421,14 +573,14 @@ describe("GitHub publisher", () => {
       finalFinding({ id: "f3", hunkId: hunk.id, line: 1, fingerprint: "c".repeat(64) })
     ];
     const commentCounts: number[] = [];
+    const postedComments: string[][] = [];
     const github = fakeGithub({
       createReview: async (_number, review) => {
         commentCounts.push(review.comments.length);
         if (commentCounts.length <= 2) {
-          throw new CodeninjaError("github_post_failed", "HTTP 422", {
-            context: { stderr: JSON.stringify({ errors: [{ index: 0 }] }) }
-          });
+          throw github422({ errors: [{ index: 0 }] });
         }
+        postedComments.push(review.comments.map((comment) => comment.body));
       }
     });
 
@@ -437,10 +589,11 @@ describe("GitHub publisher", () => {
       diff
     });
 
-    expect(commentCounts).toEqual([3, 2, 0]);
-    expect(record?.status).toBe("summary_only_fallback");
-    expect(record?.inlinePosted).toBe(0);
-    expect(record?.demotedToBody).toBe(3);
+    expect(commentCounts).toEqual([3, 2, 1]);
+    expect(record?.status).toBe("posted");
+    expect(record?.inlinePosted).toBe(1);
+    expect(record?.demotedToBody).toBe(2);
+    expect(postedComments[0]).toHaveLength(1);
   });
 });
 
@@ -518,16 +671,19 @@ function finalFinding(
     id?: string;
     hunkId: string;
     line: number;
+    path?: string;
     side?: "RIGHT" | "LEFT";
     startLine?: number;
     startSide?: "RIGHT" | "LEFT";
     fingerprint?: string;
     finalBody?: string;
+    confidence?: FinalFinding["confidence"];
   }
 ): FinalFinding {
   const id = overrides.id ?? "f1";
+  const filePath = overrides.path ?? "src/app.ts";
   const anchor = {
-    path: "src/app.ts",
+    path: filePath,
     line: overrides.line,
     side: overrides.side ?? "RIGHT",
     hunkId: overrides.hunkId,
@@ -538,8 +694,8 @@ function finalFinding(
     id,
     title: "Changed value causes stale behavior",
     severity: "medium",
-    confidence: "high",
-    path: "src/app.ts",
+    confidence: overrides.confidence ?? "high",
+    path: filePath,
     anchor,
     changedLine: true,
     category: "correctness",
@@ -554,4 +710,10 @@ function finalFinding(
     publication: "inline",
     mergedCandidateIds: [id]
   };
+}
+
+function github422(responseBody: unknown): CodeninjaError {
+  return new CodeninjaError("github_post_failed", "GitHub review creation failed", {
+    context: { httpStatus: 422, responseBody }
+  });
 }

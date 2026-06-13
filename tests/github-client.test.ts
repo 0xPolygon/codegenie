@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createGitHubClient } from "../src/github/github-client.js";
 import type { runGh } from "../src/git/subprocess.js";
+import { CodeninjaError } from "../src/util/errors.js";
 
 type RunGh = typeof runGh;
 
@@ -136,6 +137,55 @@ describe("GitHub client", () => {
       event: "COMMENT",
       commit_id: "h".repeat(40),
       comments: [{ path: "src/app.ts", line: 2, side: "RIGHT", body: "inline" }]
+    });
+  });
+
+  it("surfaces structured HTTP status and response body for review creation failures", async () => {
+    const gh: RunGh = async (_repoRoot, args) => {
+      if (args[0] === "--version" || args.join(" ") === "auth status") {
+        return "";
+      }
+      if (args.join(" ") === "repo view --json owner,name") {
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codeninja" });
+      }
+      if (args[0] === "pr") {
+        return JSON.stringify({
+          number: 9,
+          title: "",
+          body: "",
+          url: "",
+          baseRefName: "main",
+          headRefName: "feature",
+          baseRefOid: "b".repeat(40),
+          headRefOid: "h".repeat(40)
+        });
+      }
+      if (args[0] === "api" && args[1] === "repos/0xPolygon/codeninja/pulls/9/reviews") {
+        throw new CodeninjaError("github_post_failed", "gh: Validation Failed (HTTP 422)", {
+          context: {
+            stderr: 'gh: Validation Failed (HTTP 422)\n{"message":"Validation Failed","errors":[{"index":0}]}'
+          }
+        });
+      }
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    };
+    const client = createGitHubClient("/repo", { runGh: gh });
+
+    await expect(
+      client.createReview(9, {
+        body: "review body",
+        event: "COMMENT",
+        comments: [{ path: "src/app.ts", line: 2, side: "RIGHT", body: "inline" }]
+      })
+    ).rejects.toMatchObject({
+      code: "github_post_failed",
+      context: {
+        httpStatus: 422,
+        responseBody: {
+          message: "Validation Failed",
+          errors: [{ index: 0 }]
+        }
+      }
     });
   });
 });

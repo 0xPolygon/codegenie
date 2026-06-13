@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import { parseDiff } from "../src/git/diff-parser.js";
-import type { InternalGitClient } from "../src/git/git-client.js";
+import { createGitClient, type InternalGitClient } from "../src/git/git-client.js";
 import { resolveReviewCommandTarget, resolveReviewInput } from "../src/git/review-input-resolver.js";
 import type { GitHubClient, PullRequestMetadata } from "../src/types.js";
 import { CodeninjaError } from "../src/util/errors.js";
@@ -62,6 +62,14 @@ describe("review input resolver", () => {
     expect(resolved.headSha).toBe(root);
     expect(resolved.mergeBase).not.toBe(root);
     expect(diff.files).toMatchObject([{ path: "root.go", status: "added" }]);
+  });
+
+  it("parses commit parents only from the commit header section", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "root.go", "package root\n");
+    const root = commitAll(repo, "root commit", `parent ${"a".repeat(40)} appears in the body`);
+
+    await expect(createGitClient(repo).parentShas(root)).resolves.toEqual([]);
   });
 
   it("resolves two-commit ranges as endpoint diffs", async () => {

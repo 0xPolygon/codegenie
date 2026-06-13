@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import { rgPath } from "@vscode/ripgrep";
+import picomatch from "picomatch";
 import type { SearchOptions, SearchResult, SourceSelector, ToolBackend, ToolPrecision } from "../types.js";
 import { CodeninjaError } from "../util/errors.js";
 import { containGlob, containPath } from "./path-guard.js";
@@ -35,7 +36,7 @@ const MAX_MATCH_TEXT_CHARS = 500;
 const MAX_TOTAL_RESULT_CHARS = 16_000;
 const MAX_RIPGREP_BUFFER_CHARS = 64 * 1024;
 const MAX_RIPGREP_OUTPUT_CHARS = 256 * 1024;
-const MAX_RIPGREP_TRACKED_PATHS = 5_000;
+const RIPGREP_RAW_RESULT_MULTIPLIER = 5;
 
 export class SearchService {
   constructor(
@@ -51,7 +52,6 @@ export class SearchService {
     const requested = maxResults + 1;
     let engine: SearchEngine = "git-grep";
     let raw: SearchResult[];
-    let fallbackReason: string | undefined;
 
     if (this.canUseRipgrep(source)) {
       const engineOptions = {
@@ -66,7 +66,6 @@ export class SearchService {
         engine = "ripgrep";
         raw = ripgrep.results;
       } else {
-        fallbackReason = ripgrep.reason;
         raw = await this.gitGrep(query, { ...engineOptions, source });
       }
     } else {
@@ -81,14 +80,14 @@ export class SearchService {
     const countOmitted = raw.length > maxResults ? raw.length - maxResults : 0;
     const lineCapped = capMatchTexts(raw.slice(0, maxResults));
     await this.enrich(lineCapped.results, source, options.contextMode ?? "none");
-    const capped = capSearchResultsTotal(lineCapped.results, countOmitted + lineCapped.omittedCount);
+    const capped = capSearchResultsTotal(lineCapped.results, countOmitted + lineCapped.truncatedTextCount);
     return {
       results: capped.results,
       engine,
       backend: "text",
       precision: "text",
-      degraded: fallbackReason !== undefined,
-      ...(fallbackReason !== undefined ? { degradationReason: fallbackReason } : {}),
+      degraded: capped.omittedCount > 0,
+      ...(capped.omittedCount > 0 ? { degradationReason: "search results truncated" } : {}),
       ...(capped.omittedCount > 0 ? { truncated: true, omittedCount: capped.omittedCount } : {})
     };
   }
@@ -161,20 +160,6 @@ export class SearchService {
     query: string,
     options: RawSearchOptions & { pathGlob?: string; maxResults: number }
   ): Promise<{ ok: true; results: SearchResult[] } | { ok: false; reason: string }> {
-    const trackedPaths = await this.resolver.listFiles(options.pathGlob);
-    if (trackedPaths.length === 0) {
-      return { ok: true, results: [] };
-    }
-    if (trackedPaths.length > MAX_RIPGREP_TRACKED_PATHS) {
-      return { ok: false, reason: "tracked file set exceeded ripgrep path cap; fell back to git grep" };
-    }
-    const safeTrackedPaths = await physicallyContainedRipgrepPaths(this.resolver, trackedPaths);
-    if (safeTrackedPaths === undefined) {
-      return { ok: false, reason: "tracked path resolved outside repo; fell back to git grep" };
-    }
-    if (safeTrackedPaths.length === 0) {
-      return { ok: true, results: [] };
-    }
     const args = [
       "--json",
       "--line-number",
@@ -185,6 +170,7 @@ export class SearchService {
       "--hidden",
       "--glob",
       "!.git/**",
+      ...(options.pathGlob !== undefined ? ["--glob", options.pathGlob] : []),
       "--max-count",
       String(options.maxResults),
       ...(options.caseSensitive === false ? ["-i"] : []),
@@ -192,17 +178,20 @@ export class SearchService {
       ...(options.word === true ? ["-w"] : []),
       "--regexp",
       query,
-      "--",
-      ...safeTrackedPaths
+      "."
     ];
-    return this.runRipgrepCapped(args, options.maxResults);
+    const ripgrep = await this.runRipgrepCapped(args, options.maxResults * RIPGREP_RAW_RESULT_MULTIPLIER);
+    if (!ripgrep.ok) {
+      return ripgrep;
+    }
+    return { ok: true, results: (await this.filterTrackedBlobResults(ripgrep.results, options.pathGlob)).slice(0, options.maxResults) };
   }
 
   private async runRipgrepCapped(
     args: string[],
     maxResults: number
   ): Promise<{ ok: true; results: SearchResult[] } | { ok: false; reason: string }> {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const child = spawn(rgPath, args, {
         cwd: this.resolver.repoRoot,
         shell: false,
@@ -245,7 +234,7 @@ export class SearchService {
       child.on("error", (error) => {
         if (!settled) {
           settled = true;
-          reject(error);
+          resolve({ ok: false, reason: `ripgrep failed to spawn: ${error.message}; fell back to git grep` });
         }
       });
 
@@ -269,6 +258,31 @@ export class SearchService {
         }
       });
     });
+  }
+
+  private async filterTrackedBlobResults(results: SearchResult[], pathGlob: string | undefined): Promise<SearchResult[]> {
+    const isMatch = pathGlob === undefined ? undefined : picomatch(pathGlob, { dot: true });
+    const tracked = new Map<string, boolean>();
+    const filtered: SearchResult[] = [];
+    for (const result of results) {
+      if (isMatch !== undefined && !isMatch(result.path)) {
+        continue;
+      }
+      let keep = tracked.get(result.path);
+      if (keep === undefined) {
+        try {
+          const entry = await this.resolver.git.lsTreeEntry(this.resolver.binding.headCommit, result.path);
+          keep = entry?.type === "blob";
+        } catch {
+          keep = false;
+        }
+        tracked.set(result.path, keep);
+      }
+      if (keep) {
+        filtered.push(result);
+      }
+    }
+    return filtered;
   }
 
   private canUseRipgrep(source: SourceSelector): boolean {
@@ -425,33 +439,17 @@ function containRipgrepPath(repoRoot: string, filePath: string | undefined): str
   return undefined;
 }
 
-async function physicallyContainedRipgrepPaths(resolver: SourceResolver, filePaths: string[]): Promise<string[] | undefined> {
-  const contained: string[] = [];
-  for (const filePath of filePaths) {
-    const safePath = containRipgrepPath(resolver.repoRoot, filePath);
-    if (safePath === undefined) {
-      return undefined;
-    }
-    const entry = await resolver.git.lsTreeEntry(resolver.binding.headCommit, safePath);
-    if (entry?.type !== "blob") {
-      continue;
-    }
-    contained.push(safePath);
-  }
-  return contained;
-}
-
-function capMatchTexts(results: SearchResult[]): { results: SearchResult[]; omittedCount: number } {
-  let omittedCount = 0;
+function capMatchTexts(results: SearchResult[]): { results: SearchResult[]; truncatedTextCount: number } {
+  let truncatedTextCount = 0;
   return {
     results: results.map((result) => {
       if (result.matchText.length <= MAX_MATCH_TEXT_CHARS) {
         return result;
       }
-      omittedCount += result.matchText.length - MAX_MATCH_TEXT_CHARS;
+      truncatedTextCount += 1;
       return { ...result, matchText: `${result.matchText.slice(0, MAX_MATCH_TEXT_CHARS)}...` };
     }),
-    omittedCount
+    truncatedTextCount
   };
 }
 

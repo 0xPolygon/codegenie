@@ -170,9 +170,7 @@ export class TreeSitterService {
     if (oldest === undefined) {
       return;
     }
-    const evicted = this.cache.get(oldest);
     this.cache.delete(oldest);
-    evicted?.tree?.delete();
   }
 }
 

@@ -1,10 +1,8 @@
 import type {
   ExistingReviewThread,
   FinalFinding,
-  FindingDuplicateDecision,
-  ReviewPacket
+  FindingDuplicateDecision
 } from "../types.js";
-import { sha256Hex } from "../util/hashing.js";
 
 export const CODENINJA_MARKER_PATTERN =
   /<!--\s*codeninja:fingerprint=([0-9a-f]{64});run=([A-Za-z0-9._-]+)\s*-->/u;
@@ -30,20 +28,9 @@ export function formatCodeninjaMarker(fingerprint: string, runId: string): strin
 }
 
 export function fingerprintFindingForGitHub(
-  finding: Pick<FinalFinding, "path" | "category" | "producedBy" | "anchor">,
-  packetsById: Map<string, ReviewPacket> = new Map()
+  finding: Pick<FinalFinding, "fingerprint">
 ): string {
-  const packet = packetsById.get(finding.producedBy.packetId);
-  const hunkId = finding.anchor?.hunkId;
-  const symbol = hunkId !== undefined
-    ? packet?.symbolFacts.find((fact) => fact.hunkId === hunkId)?.enclosingSymbol
-    : undefined;
-  return sha256Hex([
-    normalize(finding.path),
-    normalize(symbol ?? hunkId ?? finding.path),
-    normalize(finding.category),
-    normalize(finding.producedBy.lensId)
-  ].join("\0"));
+  return finding.fingerprint;
 }
 
 export function detectDuplicateFindings(
@@ -89,8 +76,4 @@ export function detectDuplicateFindings(
       reason: "no prior codeninja duplicate detected"
     };
   });
-}
-
-function normalize(value: string): string {
-  return value.toLowerCase().trim().replace(/\s+/gu, " ");
 }

@@ -768,6 +768,48 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
+  it("does not coalesce add and deletion-only hunks by comparing new and old coordinates", async () => {
+    const file: DiffFile = {
+      path: "app.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [
+        {
+          id: "h1",
+          path: "app.ts",
+          oldStart: 1,
+          oldLines: 0,
+          newStart: 1,
+          newLines: 1,
+          header: "@@ -1,0 +1 @@",
+          lines: [{ kind: "add", content: "export const added = true;", newLineNumber: 1 }]
+        },
+        {
+          id: "h2",
+          path: "app.ts",
+          oldStart: 20,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 0,
+          header: "@@ -20 +1,0 @@",
+          lines: [{ kind: "delete", content: "export const removed = true;", oldLineNumber: 20 }]
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      fakePlanForHunks(["h1", "h2"]),
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      fakeRepositoryIndex(),
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(packets).toHaveLength(2);
+    expect(packets.map((packet) => packet.kind)).toEqual(["hunk", "hunk"]);
+  });
+
   it("caps packet lenses while preserving language then core lenses and records drops", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const telemetry = {
@@ -1664,6 +1706,57 @@ describe("phase 5 pipeline regressions", () => {
     })).toContain("- app.ts: planner_invalid_skip");
   });
 
+  it("uses rollup hunk language when recovering invalid skip decisions for compacted hunks", async () => {
+    const dossier = fakeDossier(["app.ts"]);
+    const compacted: PlannerDossier = {
+      ...dossier,
+      files: dossier.files.map((file) => ({ ...file, hunks: [] })),
+      directories: [
+        {
+          root: ".",
+          fileCount: 1,
+          hunkCount: 1,
+          changedLines: 1,
+          languages: ["typescript"],
+          labels: [],
+          maxReviewPriority: "normal",
+          testFileCount: 0,
+          representativePaths: ["app.ts"],
+          hunkIds: ["h1"],
+          hunkLanguages: { h1: "typescript" }
+        }
+      ],
+      compaction: { level: "compacted", omitted: [{ what: "per-hunk detail", count: 1, reason: "test" }] }
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          diffUnderstanding: { declaredIntent: "invalid skip", inferredBehavior: "invalid skip" },
+          riskAreas: [],
+          coverage: [
+            { hunkId: "h1", path: "app.ts", coverage: "skip", lenses: [], surroundingContextHints: [], reason: " " }
+          ]
+        }) as T
+    };
+
+    const result = await runPlanner(compacted, config(), nullTelemetry(), {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [
+        { id: "core/code-review", title: "Core", description: "core", skillIds: [], enabledByDefault: true, enabled: true, languages: [] },
+        { id: "lang/typescript", title: "TS", description: "ts", skillIds: [], enabledByDefault: true, enabled: true, languages: ["typescript"] }
+      ],
+      skills: []
+    });
+
+    expect(result.plan.coverage[0]).toMatchObject({
+      hunkId: "h1",
+      coverage: "normal",
+      lenses: ["core/code-review", "lang/typescript"],
+      reason: "planner_invalid_skip"
+    });
+  });
+
   it("carries planner partial-review reasons into coverage disclosure", async () => {
     const partialReason = "planner reviewed only the first dossier chunk";
     const partialPlan: ReviewPlan = {
@@ -2548,7 +2641,7 @@ describe("phase 5 pipeline regressions", () => {
     ).rejects.toMatchObject({ code: "llm_call_failed", recoverable: false });
   });
 
-  it("fails the run on persistent provider-wide non-auth failures", async () => {
+  it("degrades the run on persistent provider-wide non-auth failures", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
     commitAll(repo, "base");
@@ -2569,21 +2662,22 @@ describe("phase 5 pipeline regressions", () => {
     };
 
     try {
-      await expect(
-        runReview(
-          { mode: "branch", branchName: "feature" },
-          {
-            ...config(),
-            llm: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 1 }
-          },
-          { repoRoot: repo, piAdapter: adapter }
-        )
-      ).rejects.toMatchObject({
-        code: "llm_call_failed",
-        recoverable: false,
-        context: { reason: "transient_error" }
+      const result = await runReview(
+        { mode: "branch", branchName: "feature" },
+        {
+          ...config(),
+          llm: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 1 }
+        },
+        { repoRoot: repo, piAdapter: adapter }
+      );
+
+      expect(result.coverage).toMatchObject({
+        partial: true,
+        failedHunks: 1,
+        reviewedHunks: 0
       });
-      expect(providerCalls).toBe(4);
+      expect(result.coverage.reasons).toContain("1 hunk(s) could not be reviewed");
+      expect(providerCalls).toBe(16);
     } finally {
       random.mockRestore();
     }
@@ -3724,6 +3818,50 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(result.noFindings).toBe(false);
     expect(result.summary).toBe("Found 1 verified issue.");
+    expect([...result.findings, ...result.summaryOnlyFindings]).toHaveLength(1);
+  });
+
+  it("keeps contrastive composer summaries that mention remaining issues", async () => {
+    const finding = fakeFinding();
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "No security issues, but one correctness bug remains.",
+              composedFindings: [{ findingIds: [finding.id], finalBody: "Grouped body", publication: "inline" }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [finding], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()],
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.summary).toBe("No security issues, but one correctness bug remains.");
     expect([...result.findings, ...result.summaryOnlyFindings]).toHaveLength(1);
   });
 

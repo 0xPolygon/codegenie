@@ -1,4 +1,5 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -69,9 +70,23 @@ describe("review command", () => {
     expect(parsed.target).toEqual({ mode: "branch", branchName: "feature", baseBranch: "main" });
     expect(parsed.options.format).toBe("json");
     expect(parsed.options.cacheOverride).toBe(true);
-    expect(parsed.options.cliLenses).toEqual(["core/tests", "lang/go"]);
-    expect(parsed.config.lenses.enabled).toEqual(["core/tests", "lang/go"]);
+    expect(parsed.config.lenses.restrictTo).toEqual(["core/tests", "lang/go"]);
     expect(parsed.config.cache.enabled).toBe(true);
+  });
+
+  it("loads repo config from the git worktree root when invoked inside a subdirectory", () => {
+    const ctx = testContext();
+    execFileSync("git", ["init"], { cwd: ctx.repoRoot, stdio: "ignore" });
+    writeFileSync(path.join(ctx.repoRoot, "codeninja.toml"), "[review]\ndepth = \"deep\"\n");
+    mkdirSync(path.join(ctx.repoRoot, "src", "nested"), { recursive: true });
+
+    const parsed = parseReviewCommand(["review", "--branch", "feature"], {
+      ...ctx,
+      repoRoot: path.join(ctx.repoRoot, "src", "nested")
+    });
+
+    expect(parsed.repoRoot).toBe(ctx.repoRoot);
+    expect(parsed.config.review.depth).toBe("deep");
   });
 
   it("lets --no-cache override a configured cache default", () => {

@@ -101,6 +101,35 @@ describe("run telemetry", () => {
       message: "stage_completed",
       cacheStatus: "miss"
     });
+    run.recorder.event({
+      stage: 7,
+      level: "info",
+      message: "pipeline_metrics",
+      data: {
+        totals: {
+          filesChanged: 2,
+          hunks: 3,
+          packets: 2,
+          packetReviews: 2,
+          candidates: 4,
+          verified: 1,
+          finalFindings: 1,
+          postedComments: 1
+        },
+        workers: { started: 2, completed: 1, failed: 1, retried: 1, timedOut: 0 },
+        packets: { generated: 2, reviewed: 1, failed: 1, degraded: 1 },
+        lenses: { selected: 2, byLens: { "core/code-review": 2, "lang/typescript": 1 } },
+        coverage: {
+          byLevel: { deep: 1, normal: 1, light: 0, skip: 1 },
+          hunks: { total: 3, reviewed: 1, skipped: 1, failed: 1, degraded: 1 }
+        },
+        candidates: { generated: 4, gateRejected: 1, verificationScheduled: 3 },
+        verdicts: { accept: 1, revise: 1, reject: 1, incomplete: 1 },
+        dedup: { clusters: 2, duplicates: 1, suppressed: 1 },
+        finalSelection: { published: 1, merged: 1, suppressed: 1, finalFindings: 1 },
+        posting: { attempted: 1, postedComments: 1, skippedDuplicates: 1, failed: 0 }
+      }
+    });
     run.recorder.recordModelCall({
       callId: "mc-1",
       stage: 5,
@@ -185,6 +214,7 @@ describe("run telemetry", () => {
     expect(existsSync(path.join(repoRoot, ".codeninja", ".gitignore"))).toBe(true);
     expect(readFileSync(path.join(repoRoot, ".codeninja", ".gitignore"), "utf8")).toContain("runs/");
     expect(readFileSync(path.join(repoRoot, ".codeninja", ".gitignore"), "utf8")).toContain("cache/");
+    expect(readFileSync(path.join(repoRoot, ".codeninja", ".gitignore"), "utf8")).toContain("locks/");
 
     for (const relPath of [
       "run.log",
@@ -231,7 +261,7 @@ describe("run telemetry", () => {
     expect(runJson.finishedAt).toEqual(expect.any(String));
     expect(runJson.durationMs).toEqual(expect.any(Number));
     expect(runJson.totals).toMatchObject({
-      events: 3,
+      events: 4,
       modelCallRecords: 3,
       modelCalls: 2,
       providerCalls: 2,
@@ -245,10 +275,14 @@ describe("run telemetry", () => {
       retryAttempts: 1,
       repairCalls: 1,
       schemaInvalidCalls: 1,
-      packets: 0,
-      candidates: 0,
-      verified: 0,
-      finalFindings: 0
+      filesChanged: 2,
+      hunks: 3,
+      packets: 2,
+      packetReviews: 2,
+      candidates: 4,
+      verified: 1,
+      finalFindings: 1,
+      postedComments: 1
     });
 
     const telemetryJson = readJson(path.join(attached.runDir, "telemetry.json"));
@@ -262,24 +296,28 @@ describe("run telemetry", () => {
       cache: { hit: 0, miss: 1, disabled: 0, write: 0 }
     });
     expect(telemetryJson.stages["5"].runtimeMs).toEqual(expect.any(Number));
+    expect(telemetryJson.stages["7"]).toMatchObject({
+      events: 1
+    });
     expect(telemetryJson.workers).toEqual({
-      started: 0,
-      completed: 0,
-      failed: 0,
-      retried: 0,
+      started: 2,
+      completed: 1,
+      failed: 1,
+      retried: 1,
       timedOut: 0
     });
     expect(telemetryJson.coverage).toMatchObject({
-      byLevel: { deep: 0, normal: 0, light: 0, skip: 0 },
-      hunks: { total: 0, reviewed: 0, skipped: 0, failed: 0, degraded: 0 }
+      byLevel: { deep: 1, normal: 1, light: 0, skip: 1 },
+      hunks: { total: 3, reviewed: 1, skipped: 1, failed: 1, degraded: 1 }
     });
     expect(telemetryJson).toMatchObject({
-      packets: { generated: 0, reviewed: 0, failed: 0, degraded: 0 },
-      candidates: { generated: 0, gateRejected: 0, verificationScheduled: 0 },
-      verdicts: { accept: 0, revise: 0, reject: 0, incomplete: 0 },
-      dedup: { clusters: 0, duplicates: 0, suppressed: 0 },
-      finalSelection: { published: 0, merged: 0, suppressed: 0, finalFindings: 0 },
-      posting: { attempted: 0, postedComments: 0, skippedDuplicates: 0, failed: 0 }
+      packets: { generated: 2, reviewed: 1, failed: 1, degraded: 1 },
+      lenses: { selected: 2, byLens: { "core/code-review": 2, "lang/typescript": 1 } },
+      candidates: { generated: 4, gateRejected: 1, verificationScheduled: 3 },
+      verdicts: { accept: 1, revise: 1, reject: 1, incomplete: 1 },
+      dedup: { clusters: 2, duplicates: 1, suppressed: 1 },
+      finalSelection: { published: 1, merged: 1, suppressed: 1, finalFindings: 1 },
+      posting: { attempted: 1, postedComments: 1, skippedDuplicates: 1, failed: 0 }
     });
 
     const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
@@ -428,7 +466,7 @@ describe("run telemetry", () => {
     });
     await run.attachRunDirectory(repoRoot);
 
-    expect(readdirSync(runsRoot).sort()).toEqual(["active-run", "old-3"]);
+    expect(readdirSync(runsRoot).sort()).toEqual(["active-run", "old-2", "old-3"]);
     const events = readFileSync(path.join(runsRoot, "active-run", "events.jsonl"), "utf8")
       .trim()
       .split("\n")
@@ -440,7 +478,7 @@ describe("run telemetry", () => {
     ]);
   });
 
-  it("does not modify an existing .codeninja gitignore", async () => {
+  it("preserves existing .codeninja gitignore entries while adding required runtime paths", async () => {
     const repoRoot = tempDir();
     const codeninjaDir = path.join(repoRoot, ".codeninja");
     mkdirSync(codeninjaDir, { recursive: true });
@@ -453,7 +491,7 @@ describe("run telemetry", () => {
     });
     await run.attachRunDirectory(repoRoot);
 
-    expect(readFileSync(gitignorePath, "utf8")).toBe("skills/\n");
+    expect(readFileSync(gitignorePath, "utf8")).toBe("skills/\nruns/\ncache/\nlocks/\n");
   });
 
   it("records pruning failures as warnings without aborting startup", async () => {
@@ -463,7 +501,13 @@ describe("run telemetry", () => {
     mkdirSync(runsRoot, { recursive: true });
     const protectedRun = path.join(runsRoot, "old-protected");
     mkdirSync(protectedRun);
+    writeFileSync(path.join(protectedRun, "run.json"), "{}");
     writeFileSync(path.join(protectedRun, "locked.txt"), "locked");
+    const newerRun = path.join(runsRoot, "newer-finalized");
+    mkdirSync(newerRun);
+    writeFileSync(path.join(newerRun, "run.json"), "{}");
+    const oldTime = new Date(Date.now() - 10_000);
+    utimesSync(protectedRun, oldTime, oldTime);
     chmodSync(protectedRun, 0o500);
 
     try {

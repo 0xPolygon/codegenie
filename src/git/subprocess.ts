@@ -106,7 +106,7 @@ export async function runGitCapped(
       settled = true;
       reject(
         new CodeninjaError(errorCode, commandFailureMessage("git", args, error.message), {
-          context: { command: "git", args, error: error.message },
+          context: scrubSubprocessValue("git", { command: "git", args, error: error.message }),
           cause: error
         })
       );
@@ -126,7 +126,7 @@ export async function runGitCapped(
       const detail = Buffer.concat(stderrChunks).toString("utf8").trim() || `exit ${code ?? signal ?? "unknown"}`;
       reject(
         new CodeninjaError(errorCode, commandFailureMessage("git", args, detail), {
-          context: { command: "git", args, exitCode: code, signal, stderr: detail }
+          context: scrubSubprocessValue("git", { command: "git", args, exitCode: code, signal, stderr: detail })
         })
       );
     });
@@ -276,12 +276,18 @@ export function assertSafePath(path: string, label = "path"): void {
   }
 }
 
+export function assertSafePathspec(pathspec: string, label = "pathspec"): void {
+  if (typeof pathspec !== "string" || pathspec.length === 0) {
+    throw new CodeninjaError("invalid_args", `${label} must be non-empty`);
+  }
+  if (pathspec.includes("\0")) {
+    throw new CodeninjaError("invalid_args", `${label} contains a NUL byte`);
+  }
+}
+
 export function assertSafeGlob(glob: string, label = "glob"): void {
   if (typeof glob !== "string" || glob.length === 0) {
     throw new CodeninjaError("invalid_args", `${label} must be non-empty`);
-  }
-  if (glob.startsWith("-")) {
-    throw new CodeninjaError("invalid_args", `${label} must not start with '-'`);
   }
   if (glob.includes("\0")) {
     throw new CodeninjaError("invalid_args", `${label} contains a NUL byte`);

@@ -105,6 +105,8 @@ export class SourceResolver {
     commit: string
   ): Promise<ResolvedContent | undefined> {
     try {
+      // Repository review tools read committed blobs through git plumbing. Do not
+      // replace this with worktree filesystem reads; symlinks must stay inert.
       const content = await this.git.catFile(commit, relPath);
       const entry = await this.git.lsTreeEntry(commit, relPath);
       const blobSha = entry?.type === "blob" ? entry.oid : undefined;
