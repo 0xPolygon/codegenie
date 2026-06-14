@@ -74,7 +74,7 @@ async function startRun(config: CodeninjaConfig): Promise<RunContext>
 //   abort: AbortController             — run-wide cancellation root
 ```
 
-The coverage ledger accumulates the per-hunk records serialized into `coverage.json` (`{ hunkId, path, coverage, status: "reviewed" | "skipped" | "review_failed" | "degraded", reason? }`, as defined in `architecture.md`). The budget ledger implements the checkpoints and reservation described under Failure And Budget Semantics.
+The coverage ledger accumulates the per-hunk records serialized into `coverage.json` (`{ hunkId, path, coverage, source: "planner" | "deterministic_default" | "config", status: "reviewed" | "skipped" | "review_failed" | "degraded", reason? }`, as defined in `architecture.md`). The budget ledger implements the checkpoints and reservation described under Failure And Budget Semantics.
 
 ### Stage Functions
 
@@ -117,7 +117,7 @@ async function buildReviewPackets(
 ): Promise<ReviewPacket[]>
 ```
 
-- Deterministic; never calls the LLM. Records planner-fallback reasons and skip coverage records on the coverage ledger via telemetry. Each packet is persisted as `packets/<packet-id>.json`.
+- Deterministic; never calls the LLM. Records malformed planner-fallback reasons and skip coverage records on the coverage ledger via telemetry. Each packet is persisted as `packets/<packet-id>.json`.
 
 ```ts
 // src/pipeline/lens-runner.ts — Stage 7
@@ -255,7 +255,7 @@ Rules:
 
 - Deleted files pass through the same rules: deleted generated/vendor/lock/binary files skip like ordinary files; deleted reviewable source, test, config, migration, and documentation files are kept. Filtering must never skip a file merely because `status === "deleted"`.
 - Kept files preserve diff order. `kept` contains the `DiffFile` records unchanged; filtering never mutates the diff.
-- For every skipped file, the coverage ledger records one per-hunk record per hunk of that file: `{ hunkId, path, coverage: "skip", status: "skipped", reason }`. Files with zero hunks (e.g. binary, mode-only) record a single file-level telemetry event instead.
+- For every skipped file, the coverage ledger records one per-hunk record per hunk of that file: `{ hunkId, path, coverage: "skip", source: "config", status: "skipped", reason }`. Files with zero hunks (e.g. binary, mode-only) record a single file-level telemetry event instead.
 - Decisions flow to two consumers: the planner dossier's filter summary (counts and paths as review-scope facts) and `coverage.json`.
 - Filtered files must not produce candidate findings; no later stage receives their content.
 
@@ -355,7 +355,7 @@ type DossierDirectoryRollup = {
   maxReviewPriority: ReviewPriority
   testFileCount: number
   representativePaths: string[]     // first 5 paths, lexicographic
-  hunkIds: string[]                 // every hunk id in the rollup — coverage decisions must still address all hunks
+  hunkIds: string[]                 // every hunk id in the rollup — planner overrides may target any of these hunks
 }
 
 type DossierCompaction = {
@@ -436,13 +436,14 @@ The packet builder is deterministic, never calls the LLM, performs no broad repo
 
 Step 1 — planned hunk records. For each hunk of each kept file, assemble an in-memory record: the `DiffHunk`, its `FileFacts`, its `HunkSymbolFacts` (when present in `repoIndex.symbolFacts`), the validated `HunkCoverageDecision` (when present), processing mode, labels, configured priority, and estimated patch size in characters.
 
-Step 2 — planner validation fallbacks. Applied per hunk, each recording a coverage-ledger reason and telemetry event:
+Step 2 — planner validation defaults/fallbacks. Applied per hunk:
 
-- No decision (missing, unknown-hunk-dropped, or invalid-skip) → coverage `normal`, default lens set, reason `planner_missing_coverage` or `planner_invalid_skip`.
-- Decision with empty lens set after validation → default lens set (enabled `core/*` lenses plus the file's enabled language lens), reason `planner_empty_lenses`.
-- Valid `skip` (non-empty reason) → no packet; coverage record `{ coverage: "skip", status: "skipped", reason: <planner reason> }`.
+- No decision → coverage `normal`, default lens set, coverage record source `deterministic_default`, no warning and no final-report disclosure reason.
+- Invalid skip (empty reason after trimming) → coverage `normal`, default lens set, coverage record source `planner`, reason `planner_invalid_skip`, and telemetry.
+- Decision with empty lens set after validation → default lens set (enabled `core/*` lenses plus the file's enabled language lens), coverage record source `planner`, reason `planner_empty_lenses`.
+- Valid `skip` (non-empty reason) → no packet; coverage record `{ coverage: "skip", source: "planner", status: "skipped", reason: <planner reason> }`.
 
-The packet builder validates and assembles; it never makes primary coverage decisions beyond these mechanical fallbacks.
+The packet builder validates and assembles; it never makes primary coverage decisions beyond these mechanical defaults/fallbacks.
 
 Step 3 — processing mode application, per file:
 
@@ -601,7 +602,7 @@ Telemetry per candidate: pre-gate decision, verifier prompt size, tool calls, to
 - `budgetStopped`: from the budget ledger.
 - `verificationIncompleteCount`: from Stage 9.
 - `partial`: true when `reviewedHunks + skippedHunks < totalHunks`, or `failedHunks > 0`, or `budgetStopped`, or the planner declared `partialReview.isPartial`.
-- `reasons`: deduplicated, ordered notes — filter summary line, planner fallback notes, degraded-planning note, per-chunk failure notes, `review_failed` packet notes, budget-stop notes, verification-incomplete note, truncation notes, degraded packet notes (missing base content).
+- `reasons`: deduplicated, ordered notes — filter summary line, malformed planner fallback notes, degraded-planning note, per-chunk failure notes, `review_failed` packet notes, budget-stop notes, verification-incomplete note, truncation notes, degraded packet notes (missing base content). Deterministic default coverage is tracked in per-hunk records, not disclosed as a human-facing warning.
 
 `coverage.json` serializes this `RunCoverageStatus` plus the per-hunk ledger records.
 
@@ -751,6 +752,4 @@ Budget and coverage:
 - `budget_each_dimension_triggers`: time, token, and model-call budgets each independently trigger the ladder at their checkpoint.
 - `coverage_aggregation_matrix`: fixtures combining filtered files, planner skips, completed packets, failed packets, undispatched packets, degraded planning, and incomplete verification produce the expected `RunCoverageStatus` counts, `coverageByLevel`, `partial` flag, and reasons; `coverage.json` includes every hunk exactly once.
 - `coverage_partial_definition`: degraded planning alone does not set `partial`; any failed hunk, budget stop, unreviewed hunk, or planner partial flag does.
-
-
 

@@ -188,7 +188,7 @@ describe("eval scoring", () => {
         verificationIncompleteCount: 0,
         partial: false,
         reasons: [],
-        hunks: [{ hunkId: "h-skip", path: "src/planner.ts", coverage: "skip", status: "skipped", reason: "planner skipped generated hunk" }]
+        hunks: [{ hunkId: "h-skip", path: "src/planner.ts", coverage: "skip", source: "planner", status: "skipped", reason: "planner skipped generated hunk" }]
       },
       metricsSources: {}
     }, "live");
@@ -216,7 +216,7 @@ describe("eval scoring", () => {
         verificationIncompleteCount: 0,
         partial: true,
         reasons: [],
-        hunks: [{ hunkId: "h-failed", path: "src/failed.ts", coverage: "normal", status: "review_failed", reason: "worker failed" }]
+        hunks: [{ hunkId: "h-failed", path: "src/failed.ts", coverage: "normal", source: "planner", status: "review_failed", reason: "worker failed" }]
       },
       metricsSources: {}
     }, "live");

@@ -477,13 +477,13 @@ type HunkCoverageDecision = {
 }
 ```
 
-The packet builder is the sole owner of packet identity and physical grouping. The planner emits per-hunk coverage, lenses, and priority only; it does not emit scheduling groups in v1 (see Future Considerations). Packet scheduling order is derived from coverage level and configured priority, and all packets may run concurrently because v1 packets never span files and workers are context-isolated.
+The packet builder is the sole owner of packet identity and physical grouping. The planner emits targeted per-hunk coverage/lens overrides only; it does not emit scheduling groups in v1 (see Future Considerations). Packet scheduling order is derived from effective coverage level and configured priority, and all packets may run concurrently because v1 packets never span files and workers are context-isolated.
 
-The planner is the only stage allowed to decide lens selection and coverage level. It must not select every lens for every packet by default. Every changed hunk must either be assigned a coverage level or explicitly skipped with a reason.
+The planner is the only stage allowed to raise or lower coverage, select non-default lenses, or skip a hunk. It must not select every lens for every packet by default. Omitted changed hunks are not planner failures; Stage 6 reviews them with deterministic `normal` coverage and default core/language lenses. Any explicit `skip` still requires a reason.
 
 The planner may request surrounding-code inspection by emitting `SurroundingContextHint` records. It should not broadly inspect files itself by default. Hints are instructions for packet construction or packet reviewers to inspect concrete symbols, files, tests, local patterns, or integration points.
 
-Later stages may validate planner decisions and apply deterministic fallbacks, but they must not become independent risk classifiers. If a reviewable hunk has no valid planner coverage, packet construction falls back to `normal` and records the fallback reason in telemetry. If the planner skips a reviewable hunk without a valid reason, packet construction also falls back to `normal`.
+Later stages may validate planner decisions and apply deterministic defaults, but they must not become independent risk classifiers. If a reviewable hunk has no planner coverage, packet construction quietly uses `normal` default coverage. If the planner skips a reviewable hunk without a valid reason, packet construction falls back to `normal` and records the malformed skip in telemetry.
 
 Large PRs use deterministic dossier compaction when the planner dossier exceeds configured model or budget limits:
 
@@ -1319,7 +1319,7 @@ type RunCoverageStatus = {
 }
 ```
 
-`coverage.json` serializes this plus per-hunk records.
+`coverage.json` serializes this plus per-hunk records that include source (`planner`, `deterministic_default`, or `config`) so evals can distinguish explicit planner decisions from routine defaults.
 
 Non-parallel stages:
 
@@ -1590,7 +1590,7 @@ type ToolCallRecord = {
 
 The telemetry recorder must support redaction before any future external export. V1 writes local files only. Typed telemetry artifacts should be the source of truth for metrics; `run.log` is the chronological narrative.
 
-`coverage.json` serializes the run-level `RunCoverageStatus` plus per-hunk records `{ hunkId, path, coverage, status: "reviewed" | "skipped" | "review_failed" | "degraded", reason? }`, including skipped reasons.
+`coverage.json` serializes the run-level `RunCoverageStatus` plus per-hunk records `{ hunkId, path, coverage, source: "planner" | "deterministic_default" | "config", status: "reviewed" | "skipped" | "review_failed" | "degraded", reason? }`, including skipped reasons.
 
 Run lifecycle:
 

@@ -1,4 +1,5 @@
 import type { FinalFinding, ReviewResult, RunCoverageStatus } from "../types.js";
+import { isDisclosableCoverageReason } from "../util/coverage-reasons.js";
 
 export function renderMarkdownReview(result: ReviewResult): string {
   const sections = [
@@ -36,7 +37,7 @@ function renderCoverage(coverage: RunCoverageStatus): string {
   if (coverage.verificationSkipped) {
     lines.push("Verification was skipped by configuration.");
   }
-  for (const reason of coverage.reasons) {
+  for (const reason of coverage.reasons.filter(isDisclosableCoverageReason)) {
     lines.push(`- ${reason}`);
   }
   return lines.join("\n");

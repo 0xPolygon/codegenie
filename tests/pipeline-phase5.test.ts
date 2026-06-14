@@ -1876,6 +1876,61 @@ describe("phase 5 pipeline regressions", () => {
     })).toContain("- app.ts: planner_invalid_skip");
   });
 
+  it("treats omitted planner coverage as a quiet deterministic default", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+        events.push(event);
+      }
+    };
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 1, content: "one" },
+      { id: "h2", newStart: 10, content: "two" }
+    ]);
+    const plan: ReviewPlan = {
+      ...fakePlanForHunks(["h2"]),
+      coverage: [{
+        hunkId: "h2",
+        path: "app.ts",
+        coverage: "deep",
+        lenses: ["core/code-review"],
+        surroundingContextHints: [],
+        reason: "explicit planner override"
+      }]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      fakeRepositoryIndex(),
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+    const packetHunks = packets.flatMap((packet) => packet.hunks);
+    const coverage = aggregateRunCoverage(
+      plan,
+      [],
+      packets.map((packet) => ({
+        packetId: packet.id,
+        lenses: packet.lenses,
+        findings: [],
+        followUpHints: [],
+        uncertainties: [],
+        status: "completed" as const
+      })),
+      { incompleteCount: 0 },
+      telemetry,
+      { allFiles: [file], packets }
+    );
+
+    expect(packetHunks.map((hunk) => hunk.hunkId).sort()).toEqual(["h1", "h2"]);
+    expect(packetHunks.find((hunk) => hunk.hunkId === "h1")?.plannerFallbackReason).toBeUndefined();
+    expect(events.some((event) => event.message === "planner_missing_coverage")).toBe(false);
+    expect(coverage.reasons.some((reason) => reason.includes("planner_missing_coverage") || reason.includes("default_coverage"))).toBe(false);
+  });
+
   it("uses rollup hunk language when recovering invalid skip decisions for compacted hunks", async () => {
     const dossier = fakeDossier(["app.ts"]);
     const compacted: PlannerDossier = {
@@ -1975,8 +2030,8 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.postingPlan?.reviewBody).toContain(partialReason);
   });
 
-  it("dedupes planner fallback hunk reasons into run coverage disclosure", () => {
-    const fallbackReason = "planner_missing_coverage: default review packet used";
+  it("does not disclose deterministic default coverage as a planner fallback", () => {
+    const fallbackReason = "default_coverage: default review packet used";
     const baseHunk = fakePacket().hunks[0];
     if (!baseHunk) {
       throw new Error("expected fake hunk");
@@ -1997,16 +2052,17 @@ describe("phase 5 pipeline regressions", () => {
       { allFiles: [fakeMultiHunkFile([{ id: "h1", newStart: 1, content: "one" }, { id: "h2", newStart: 10, content: "two" }])], packets: [packet] }
     );
 
-    const disclosedFallbacks = coverage.reasons.filter((reason) => reason.includes("planner_missing_coverage"));
-    expect(disclosedFallbacks).toEqual([`app.ts: ${fallbackReason}`]);
-    expect(renderMarkdownReview({
+    expect(coverage.reasons.some((reason) => reason.includes("planner_missing_coverage") || reason.includes("default_coverage"))).toBe(false);
+    const markdown = renderMarkdownReview({
       summary: "Review completed.",
       coverage,
       findings: [],
       summaryOnlyFindings: [],
       needsHumanAttention: [],
       noFindings: true
-    })).toContain(`- app.ts: ${fallbackReason}`);
+    });
+    expect(markdown).not.toContain("planner_missing_coverage");
+    expect(markdown).not.toContain("default_coverage");
   });
 
   it("counts incomplete packet results as failed partial coverage", () => {
@@ -3086,19 +3142,69 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as {
-      records: Array<{ hunkId: string; path: string; status: string; reason?: string }>;
+      records: Array<{ hunkId: string; path: string; source: string; status: string; reason?: string }>;
     };
-    expect(coverage.records).toContainEqual(expect.objectContaining({
+    const defaultRecord = coverage.records.find((record) => record.hunkId === aHunk.id);
+    expect(defaultRecord).toMatchObject({
       hunkId: aHunk.id,
       path: "a.ts",
-      status: "reviewed",
-      reason: "planner_missing_coverage"
-    }));
+      source: "deterministic_default",
+      status: "reviewed"
+    });
+    expect(defaultRecord?.reason).toBeUndefined();
     expect(coverage.records).toContainEqual(expect.objectContaining({
       hunkId: bHunk.id,
       path: "b.ts",
+      source: "planner",
       status: "reviewed",
       reason: expect.stringContaining("planner_empty_lenses")
+    }));
+  });
+
+  it("writes degraded planner default coverage records as deterministic defaults", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "export const value = 2;\n");
+    commitAll(repo, "feature");
+    const diff = parseDiff(git(repo, ["diff", "main...feature"]));
+    const hunk = diff.files.find((file) => file.path === "app.ts")?.hunks[0];
+    if (!hunk) {
+      throw new Error("expected test hunk");
+    }
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-run-")), "run-degraded-planner-default-records");
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        if (request.stage === 5) {
+          throw new Error("planner unavailable");
+        }
+        if (request.stage === 7) {
+          return { findings: [], followUpHints: [], uncertainties: [] } as T;
+        }
+        if (request.stage === 10) {
+          return { summary: "No credible findings.", composedFindings: [] } as T;
+        }
+        throw new Error(`unexpected stage ${String(request.stage)}`);
+      }
+    };
+
+    await runReview(
+      { mode: "branch", branchName: "feature" },
+      { ...config(), telemetry: { ...defaultConfig.telemetry, enabled: true, runDir: path.dirname(runArtifactDir) } },
+      { repoRoot: repo, runArtifactDir, runner }
+    );
+
+    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as {
+      status: { degradedPlanning: boolean };
+      records: Array<{ hunkId: string; path: string; source: string; status: string; reason?: string }>;
+    };
+    expect(coverage.status.degradedPlanning).toBe(true);
+    expect(coverage.records).toContainEqual(expect.objectContaining({
+      hunkId: hunk.id,
+      path: "app.ts",
+      source: "deterministic_default",
+      status: "reviewed"
     }));
   });
 

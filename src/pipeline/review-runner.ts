@@ -42,6 +42,7 @@ import { verifyFindings } from "./verifier.js";
 import { dedupeRankAndComposeReview } from "./composer.js";
 import { renderMarkdownReview } from "../output/markdown-renderer.js";
 import { renderReviewForStdout, renderPostingSummaryForStdout } from "../output/stdout-renderer.js";
+import { isDisclosableCoverageReason, uniqueDisclosableCoverageReasons } from "../util/coverage-reasons.js";
 import { sha256Hex } from "../util/hashing.js";
 
 type RunReviewOverrides = {
@@ -817,14 +818,14 @@ export function aggregateRunCoverage(
     verificationIncompleteCount: verified.incompleteCount,
     verificationSkipped: verified.verificationSkipped === true,
     partial: failedHunks > 0 || verified.incompleteCount > 0 || opts.budgetStopped === true || plan.partialReview?.isPartial === true,
-    reasons: [...new Set(reasons)]
+    reasons: uniqueDisclosableCoverageReasons(reasons)
   };
 }
 
 function plannerFallbackCoverageReasons(packet: ReviewPacket): string[] {
   return [...new Set(
     packet.hunks.flatMap((hunk) =>
-      hunk.plannerFallbackReason !== undefined && hunk.plannerFallbackReason.length > 0
+      hunk.plannerFallbackReason !== undefined && isDisclosableCoverageReason(hunk.plannerFallbackReason)
         ? [`${packet.path}: ${hunk.plannerFallbackReason}`]
         : []
     )
@@ -871,6 +872,7 @@ type CoverageRecord = {
   hunkId: string;
   path: string;
   coverage: CoverageLevel;
+  source: "planner" | "deterministic_default" | "config";
   status: "reviewed" | "skipped" | "review_failed" | "degraded";
   reason?: string;
 };
@@ -899,18 +901,19 @@ function buildCoverageRecords(
     const filterDecision = decisionByPath.get(file.path);
     for (const hunk of file.hunks) {
       if (filterDecision?.action === "skip") {
-        records.push({ hunkId: hunk.id, path: file.path, coverage: "skip", status: "skipped", reason: filterDecision.reason });
+        records.push({ hunkId: hunk.id, path: file.path, coverage: "skip", source: "config", status: "skipped", reason: filterDecision.reason });
         continue;
       }
       const planDecision = planByHunk.get(hunk.id);
+      const coverageSource = coverageSourceFor(planDecision);
       if (planDecision?.coverage === "skip") {
-        records.push({ hunkId: hunk.id, path: file.path, coverage: "skip", status: "skipped", reason: planDecision.reason });
+        records.push({ hunkId: hunk.id, path: file.path, coverage: "skip", source: "planner", status: "skipped", reason: planDecision.reason });
         continue;
       }
       const packet = packetByHunk.get(hunk.id);
       const result = packet ? resultByPacket.get(packet.id) : undefined;
       if (!packet) {
-        records.push({ hunkId: hunk.id, path: file.path, coverage: "normal", status: "degraded", reason: "no review packet was built" });
+        records.push({ hunkId: hunk.id, path: file.path, coverage: "normal", source: coverageSource, status: "degraded", reason: "no review packet was built" });
         continue;
       }
       if (result?.status === "completed") {
@@ -919,11 +922,19 @@ function buildCoverageRecords(
           hunkId: hunk.id,
           path: file.path,
           coverage: packet.coverage,
+          source: coverageSource,
           status: "reviewed",
           ...(reason !== undefined ? { reason } : {})
         });
       } else {
-        records.push({ hunkId: hunk.id, path: file.path, coverage: packet.coverage, status: "review_failed", reason: packetResultFailureReason(result) });
+        records.push({
+          hunkId: hunk.id,
+          path: file.path,
+          coverage: packet.coverage,
+          source: coverageSource,
+          status: "review_failed",
+          reason: packetResultFailureReason(result)
+        });
       }
     }
   }
@@ -931,8 +942,17 @@ function buildCoverageRecords(
   return records;
 }
 
+function coverageSourceFor(planDecision: ReviewPlan["coverage"][number] | undefined): CoverageRecord["source"] {
+  if (planDecision === undefined || planDecision.reason.startsWith("degraded planning:")) {
+    return "deterministic_default";
+  }
+  return "planner";
+}
+
 function reviewedCoverageReason(packet: ReviewPacket, hunk: ReviewPacket["hunks"][number] | undefined): string | undefined {
-  const reasons = [packet.degraded?.reason, hunk?.plannerFallbackReason].filter((reason): reason is string => reason !== undefined && reason.length > 0);
+  const reasons = [packet.degraded?.reason, hunk?.plannerFallbackReason].filter(
+    (reason): reason is string => reason !== undefined && isDisclosableCoverageReason(reason)
+  );
   return reasons.length > 0 ? reasons.join("; ") : undefined;
 }
 

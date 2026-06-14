@@ -314,7 +314,7 @@ Declared intent comes from PR title/body, commit titles/descriptions, and branch
 
 The v1 planner should not receive repository exploration tools by default. If it cannot decide from the dossier, it should mark uncertainty and schedule deeper hunk/file review rather than opening files itself.
 
-Planner output should include the diff understanding, risk areas, per-hunk coverage decisions, selected lenses, and partial-review disclosure when needed.
+Planner output should include the diff understanding, risk areas, targeted per-hunk coverage overrides, selected lenses, and partial-review disclosure when needed. The planner is not required to emit one coverage decision for every hunk; omitted reviewable hunks receive deterministic `normal` coverage with default core/language lenses in Stage 6.
 
 Findings claiming the implementation contradicts its declared intent must cite both the intent evidence and the changed-code behavior.
 
@@ -322,7 +322,7 @@ The planner should also identify where surrounding-code inspection matters. It s
 
 The planner must not skip a reviewable changed hunk without a reason.
 
-The planner owns coverage and lens decisions. It should decide `light`, `normal`, `deep`, or `skip` for each changed hunk, and select the lenses that should review that hunk or related system task. Later stages may validate or fall back from invalid planner output, but they should not become independent risk classifiers.
+The planner owns coverage and lens overrides. It should emit `light`, `normal`, `deep`, or `skip` decisions only for hunks where concrete evidence justifies non-default coverage, specific lenses, context hints, or a skip. Later stages may validate malformed planner output or apply deterministic default coverage to omitted hunks, but they should not become independent risk classifiers.
 
 Configured review depth should influence budgets and defaults, not replace judgment. A `light` run may still review a concrete critical-risk hunk at `normal`; a `deep` run may still skip generated files or keep mechanical hunks at `light`.
 
@@ -398,7 +398,7 @@ Review packet construction is deterministic in v1. It must not call the LLM and 
 
 Default packet construction should be hunk-first. Coalesce only nearby hunks in the same file or same enclosing symbol. Use file/whole-file packets for single-hunk files, small added files, small configured files, or explicit `processingMode = "whole-file"` rules.
 
-The packet builder validates and assembles planner decisions; it does not make primary coverage decisions. If a reviewable hunk has no valid planner coverage, the packet builder should fall back to `normal` with a recorded reason. If the planner skips a reviewable hunk without a valid reason, the packet builder should also fall back to `normal`.
+The packet builder validates and assembles planner decisions; it does not make primary risk decisions. If a reviewable hunk has no planner coverage, the packet builder quietly applies deterministic `normal` coverage with default core/language lenses. If the planner skips a reviewable hunk without a valid reason, the packet builder falls back to `normal` and records the malformed skip.
 
 Packet grouping should stay conservative in v1:
 

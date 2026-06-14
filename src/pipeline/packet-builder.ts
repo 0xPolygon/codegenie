@@ -399,18 +399,11 @@ function effectiveDecision(
 ): EffectiveDecision {
   const decision = planned.decision;
   if (!decision) {
-    telemetry.event({
-      stage: 6,
-      level: "warn",
-      message: "planner_missing_coverage",
-      file: planned.file.path,
-      data: { hunkId: planned.hunk.id }
-    });
     return {
       coverage: "normal",
       lenses: defaultLensesForLanguage(planned.facts.language, enabledLenses),
       surroundingContextHints: [],
-      reason: "planner_missing_coverage"
+      reason: "default_coverage"
     };
   }
   if (decision.coverage === "skip") {
@@ -444,7 +437,7 @@ function plannerFallbackReason(reason: string | undefined): string | undefined {
   if (reason === undefined) {
     return undefined;
   }
-  return reason.startsWith("planner_missing_coverage") || reason.startsWith("planner_empty_lenses") || reason.startsWith("planner_invalid_skip")
+  return reason.startsWith("planner_empty_lenses") || reason.startsWith("planner_invalid_skip")
     ? reason
     : undefined;
 }

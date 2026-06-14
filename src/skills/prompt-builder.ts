@@ -87,7 +87,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
       return buildPrompt(5, [
         reviewerFrame("planning"),
         injectionInstruction(),
-        "Build a review plan. Select only enabled lenses that have concrete evidence in the diff. Every reviewable hunk must receive coverage or a skip reason.",
+        "Build a review plan. Select only enabled lenses that have concrete evidence in the diff. Emit coverage entries only for hunks that need non-default coverage, specific lenses or context hints, or an explicit skip. Omitted reviewable hunks are reviewed later at normal coverage with default core/language lenses.",
         renderLensList(lenses),
         "Available skill summaries:\n" + projection.text,
         dossierBlock,

@@ -19,6 +19,7 @@ import type {
   UnifiedDiff,
   VerificationVerdict
 } from "../types.js";
+import { isDisclosableCoverageReason } from "../util/coverage-reasons.js";
 import { sha256Hex } from "../util/hashing.js";
 import { isFatalLlmError, validateAnchorForDiff } from "./pipeline-utils.js";
 
@@ -545,7 +546,7 @@ function coverageDisclosureLines(coverage: RunCoverageStatus): string[] {
   if (coverage.verificationSkipped === true) {
     lines.push("- Verification was skipped by configuration.");
   }
-  for (const reason of coverage.reasons) {
+  for (const reason of coverage.reasons.filter(isDisclosableCoverageReason)) {
     lines.push(`- ${reason}`);
   }
   return [...new Set(lines)];
