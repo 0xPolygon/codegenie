@@ -56,6 +56,48 @@ describe("phase 5 pipeline regressions", () => {
     ).rejects.toMatchObject({ code: "llm_call_failed", recoverable: false });
   });
 
+  it("marks Stage 7 schema-invalid packet output as failed without aborting the run", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        if (request.telemetryContext?.packetId === "bad-packet") {
+          throw new CodeninjaError("llm_schema_invalid", "model did not call submit_review", { recoverable: true });
+        }
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+
+    const results = await runLensPackets(
+      fakePlan(),
+      [fakePacket({ id: "bad-packet" }), fakePacket({ id: "good-packet" })],
+      fakeTools(),
+      { ...config(), review: { ...config().review, concurrency: 2 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(new Map(results.map((result) => [result.packetId, result.status]))).toEqual(new Map([
+      ["bad-packet", "failed"],
+      ["good-packet", "completed"]
+    ]));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 7,
+      level: "error",
+      message: "packet_review_failed",
+      packetId: "bad-packet"
+    }));
+  });
+
   it("demotes anchors whose path does not match the packet and diff", async () => {
     const runner: LlmRunner = {
       runStructured: async <T>() =>
@@ -605,6 +647,7 @@ describe("phase 5 pipeline regressions", () => {
           oldLines: 1,
           newStart: 1,
           newLines: 1,
+          header: "@@ -1 +1 @@",
           lines: [{ kind: "add", content: "import { quote } from 'quote-lib';", newLineNumber: 1 }]
         },
         {
@@ -614,6 +657,7 @@ describe("phase 5 pipeline regressions", () => {
           oldLines: 1,
           newStart: 20,
           newLines: 1,
+          header: "@@ -20 +20 @@",
           lines: [{ kind: "add", content: "  return quote.id;", newLineNumber: 20 }]
         }
       ]
@@ -645,7 +689,7 @@ describe("phase 5 pipeline regressions", () => {
     };
 
     const packets = await buildReviewPackets(
-      fakePlan("app.ts", ["h-import", "h-function"]),
+      fakePlanForHunks(["h-import", "h-function"], "app.ts"),
       [file],
       [fakeFacts("app.ts", "per-hunk")],
       repoIndex,
@@ -4314,7 +4358,21 @@ describe("phase 5 pipeline regressions", () => {
         allFiles: [fakeMultiHunkFile([{ id: "h1", newStart: 1, content: "one" }, { id: "h2", newStart: 10, content: "two" }])],
         packets,
         budgetStopped: true,
-        budgetStop: { reason: "max_model_calls", stage: 7, elapsedMs: 1, timeoutMs: 1000, hardTimeoutMs: 2000, remainingRuntimeMs: 999, reservedTailRuntimeMs: 100, modelCalls: 3, inFlightModelCalls: 0, projectedModelCalls: 3 }
+        budgetStop: {
+          reason: "max_model_calls",
+          stage: 7,
+          elapsedMs: 1,
+          timeoutMs: 1000,
+          hardTimeoutMs: 2000,
+          remainingRuntimeMs: 999,
+          reservedTailRuntimeMs: 100,
+          modelCalls: 3,
+          inFlightModelCalls: 0,
+          projectedModelCalls: 3,
+          totalTokens: 0,
+          inFlightTokens: 0,
+          projectedTokens: 0
+        }
       }
     );
     coverage.reasons.push("planner_missing_coverage: defaulted h1");

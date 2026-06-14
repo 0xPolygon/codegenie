@@ -1281,7 +1281,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["ok", "schema_invalid", "ok"]);
   });
 
-  it("rejects non-submit responses during forced finalization without a second nudge", async () => {
+  it("retries once when forced finalization calls a non-submit tool", async () => {
+    const telemetry = fakeTelemetry();
     const tool: ToolDefinition = {
       name: "read_range",
       description: "read",
@@ -1300,8 +1301,79 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           arguments: { path: "src/a.ts" }
         }
       ]),
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-during-finalize",
+          name: "read_file",
+          arguments: { path: "lib/quotes/parse.go" }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-after-finalize-tool-misfire")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-finalize-text"),
+        tools: [tool],
+        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 }
+      })
+    ).resolves.toMatchObject({
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
+    });
+    expect(adapter.complete).toHaveBeenCalledTimes(3);
+    expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["ok", "schema_invalid", "ok"]);
+    expect(telemetry.modelCalls[1]).toMatchObject({
+      kind: "finalize",
+      schemaValid: false,
+      errorCode: "llm_schema_invalid"
+    });
+    expect(telemetry.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 7,
+          level: "warn",
+          message: "finalize_missing_submit_retry",
+          data: expect.objectContaining({
+            submitTool: "submit_review",
+            unexpectedTools: ["read_file"]
+          })
+        })
+      ])
+    );
+  });
+
+  it("rejects forced finalization after the submit-only retry is ignored", async () => {
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read",
+      parameters: Type.Object({ path: Type.String() }),
+      execute: vi.fn(async () => ({
+        text: "line 1",
+        meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+      }))
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-before-finalize",
+          name: "read_range",
+          arguments: { path: "src/a.ts" }
+        }
+      ]),
       assistant([{ type: "text", text: "plain text during finalization" }]),
-      assistant([validSubmitReviewCall("must-not-run-after-finalize-text")])
+      assistant([{ type: "text", text: "still no submit during finalization" }])
     ]);
     const runner = createPiRunner({
       llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
@@ -1323,7 +1395,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       recoverable: true,
       context: { submitTool: "submit_review", kind: "finalize" }
     });
-    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(adapter.complete).toHaveBeenCalledTimes(3);
   });
 
   it("records submit_with_extra_tools telemetry and ignores extra model tool calls", async () => {

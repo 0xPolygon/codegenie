@@ -134,6 +134,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       let resultCharsUsed = 0;
       let schemaRepairUsed = false;
       let finalizeNudgeUsed = false;
+      let finalizeSubmitRetryUsed = false;
       let forceFinalize = false;
       let budgetForceFinalize = false;
       const taskTimeout = timeoutSignal(opts.runSignal, request.timeoutMs);
@@ -208,9 +209,19 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           }
 
           if (forceFinalize) {
+            if (!finalizeSubmitRetryUsed) {
+              finalizeSubmitRetryUsed = true;
+              recordFinalizeMissingSubmitRetry(opts, request, submitTool.name, kind, toolCalls);
+              messages.push({
+                role: "user",
+                content: `The previous response did not call ${submitTool.name}. You must call ${submitTool.name} now with schema-valid arguments. Do not call repository tools, ask for more context, or answer in plain text. If there are no findings, submit empty arrays where the schema requires arrays.`,
+                timestamp: 0
+              });
+              continue;
+            }
             throw new CodeninjaError("llm_schema_invalid", `model did not call ${submitTool.name} during ${kind}`, {
               recoverable: true,
-              context: { submitTool: submitTool.name, kind }
+              context: { submitTool: submitTool.name, kind, unexpectedTools: toolCalls.map((toolCall) => toolCall.name) }
             });
           }
 
@@ -349,7 +360,7 @@ async function completeWithCache(input: {
     if (cached.status === "hit") {
       const cachedResponse = scrubStoredProviderResponse(cached.response);
       const cachedFailure = providerFailureFromMessage(cachedResponse.message, false);
-      const cachedSchemaValid = schemaValidityForResponse(adapter, request, tools, cachedResponse.message);
+      const cachedSchemaValid = schemaValidityForResponse(adapter, request, tools, kind, cachedResponse.message);
       if (cachedFailure) {
         opts.telemetry.event({
           stage: request.stage,
@@ -488,8 +499,8 @@ async function completeWithCache(input: {
         }
         throw markRecordedProviderFailure(toLlmError(providerFailure.cause, providerFailure.status, taskTimedOut()));
       }
-      const schemaValid = schemaValidityForResponse(adapter, request, tools, message);
-      const cacheable = Boolean(opts.cache && isCacheableProviderResponse(schemaValid, message));
+      const schemaValid = schemaValidityForResponse(adapter, request, tools, kind, message);
+      const cacheable = Boolean(opts.cache && isCacheableProviderResponse(schemaValid, message, tools));
       const cacheStatus = cacheable ? "write" : opts.cache ? "miss" : "disabled";
       const modelCallMeta = definedRecord({
         callId,
@@ -909,6 +920,29 @@ function recordSubmitWithExtraTools(
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
 
+function recordFinalizeMissingSubmitRetry(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  submitTool: string,
+  kind: ModelCallKind,
+  toolCalls: PiToolCall[]
+): void {
+  opts.telemetry.event(definedRecord({
+    stage: request.stage,
+    level: "warn",
+    message: "finalize_missing_submit_retry",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      submitTool,
+      kind,
+      unexpectedTools: toolCalls.map((toolCall) => toolCall.name),
+      count: toolCalls.length,
+      candidateId: request.telemetryContext?.candidateId
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
 function writeModelCallRequestDebug(
   opts: CreateRunnerOptions,
   request: LlmStructuredRequest<unknown>,
@@ -1228,6 +1262,7 @@ function schemaValidityForResponse(
   adapter: PiAiAdapter,
   request: LlmStructuredRequest<unknown>,
   tools: ToolDefinition[],
+  kind: ModelCallKind,
   message: PiAssistantMessage
 ): boolean | undefined {
   const submitTool = tools.find((tool) => tool.name === submitToolNameForStage(request.stage));
@@ -1236,7 +1271,7 @@ function schemaValidityForResponse(
   }
   const submitCall = firstToolCall(message, submitTool.name);
   if (!submitCall) {
-    return undefined;
+    return kind === "finalize" || kind === "repair" ? false : undefined;
   }
   try {
     adapter.validateToolCall([toolSpec(submitTool)], submitCall);
@@ -1246,8 +1281,17 @@ function schemaValidityForResponse(
   }
 }
 
-function isCacheableProviderResponse(schemaValid: boolean | undefined, message: PiAssistantMessage): boolean {
-  return schemaValid === true || stopReason(message) === "tool_calls";
+function isCacheableProviderResponse(schemaValid: boolean | undefined, message: PiAssistantMessage, tools: ToolDefinition[]): boolean {
+  if (schemaValid === false) {
+    return false;
+  }
+  if (schemaValid === true) {
+    return true;
+  }
+  const toolCalls = message.content.filter((block): block is PiToolCall => isToolCall(block));
+  return stopReason(message) === "tool_calls" &&
+    toolCalls.length > 0 &&
+    toolCalls.every((toolCall) => tools.some((tool) => tool.name === toolCall.name));
 }
 
 function reportUsage(opts: CreateRunnerOptions, stage: ReviewStage, message: PiAssistantMessage): void {

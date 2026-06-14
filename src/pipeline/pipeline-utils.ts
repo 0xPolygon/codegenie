@@ -12,6 +12,10 @@ export function isBudgetExhaustedError(error: unknown): boolean {
   return isCodeninjaError(error) && (error.code === "budget_exhausted" || error.context?.reason === "budget_exhausted");
 }
 
+export function isSchemaInvalidError(error: unknown): boolean {
+  return isCodeninjaError(error) && error.code === "llm_schema_invalid";
+}
+
 export function isRecoverableWorkerError(error: unknown): boolean {
   return !isFatalLlmError(error) && !isBudgetExhaustedError(error);
 }

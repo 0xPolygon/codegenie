@@ -17,7 +17,7 @@ import type {
   UnifiedDiff
 } from "../types.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
-import { isBudgetExhaustedError, isFatalLlmError, isRecoverableWorkerError, validateAnchorForDiff, validateAnchorForPacket } from "./pipeline-utils.js";
+import { isBudgetExhaustedError, isFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff, validateAnchorForPacket } from "./pipeline-utils.js";
 
 type LensRunnerOptions = {
   runner: LlmRunner;
@@ -57,7 +57,7 @@ export async function runLensPackets(
     if (outcome.outcome === "completed" && outcome.value) {
       return outcome.value;
     }
-    if (isFatalLlmError(outcome.error)) {
+    if (isFatalLlmError(outcome.error) && !isSchemaInvalidError(outcome.error)) {
       throw outcome.error;
     }
     const packetId = outcome.task.packetId ?? "unknown";
