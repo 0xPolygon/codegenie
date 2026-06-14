@@ -1,5 +1,5 @@
 import type { FinalFinding, ReviewResult, RunCoverageStatus } from "../types.js";
-import { isDisclosableCoverageReason } from "../util/coverage-reasons.js";
+import { renderCoverageSummaryLines } from "../util/coverage-summary.js";
 
 export function renderMarkdownReview(result: ReviewResult): string {
   const sections = [
@@ -18,29 +18,7 @@ export function renderMarkdownReview(result: ReviewResult): string {
 }
 
 function renderCoverage(coverage: RunCoverageStatus): string {
-  const lines = [
-    "## Coverage",
-    "",
-    `Reviewed ${coverage.reviewedHunks}/${coverage.totalHunks} hunks.`,
-    `Skipped: ${coverage.skippedHunks}. Failed: ${coverage.failedHunks}. Verification incomplete: ${coverage.verificationIncompleteCount}.`,
-    `Coverage levels: deep ${coverage.coverageByLevel.deep}, normal ${coverage.coverageByLevel.normal}, light ${coverage.coverageByLevel.light}, skip ${coverage.coverageByLevel.skip}.`
-  ];
-  if (coverage.partial) {
-    lines.push("Partial review: yes.");
-  }
-  if (coverage.degradedPlanning) {
-    lines.push("Planning was degraded and deterministic fallbacks were used.");
-  }
-  if (coverage.budgetStopped) {
-    lines.push("Budget stopped further review work.");
-  }
-  if (coverage.verificationSkipped) {
-    lines.push("Verification was skipped by configuration.");
-  }
-  for (const reason of coverage.reasons.filter(isDisclosableCoverageReason)) {
-    lines.push(`- ${reason}`);
-  }
-  return lines.join("\n");
+  return ["## Coverage", "", ...renderCoverageSummaryLines(coverage)].join("\n");
 }
 
 function renderFindings(title: string, findings: FinalFinding[]): string {

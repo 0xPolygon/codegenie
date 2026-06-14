@@ -127,7 +127,7 @@ A PR is attacker-controlled input that flows into tool-equipped LLMs whose outpu
 
 ### Fail honestly, degrade predictably
 
-Budgets and failures don't produce silent gaps. A failed planner falls back to a deterministic default plan; a failed packet worker marks its hunks `review_failed` in coverage; budget exhaustion walks a defined ladder that always reserves spend for verification and composition, so completed work is never lost. Partial reviews exit `0` and *say they're partial*.
+Budgets and failures don't produce silent gaps. A failed planner falls back to a deterministic default plan; a failed packet worker marks its hunks `review_failed` in coverage; budget exhaustion walks a defined ladder that always reserves spend for verification and composition, so completed work is never lost. Partial reviews exit `0`, finalize as `completed_partial` in artifacts, and *say they're partial*.
 
 ### Build when evidence demands it
 

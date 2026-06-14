@@ -17,6 +17,8 @@ import { buildLensRegistry, droppedLensesFromFailures } from "../skills/lens-reg
 import { createPromptBuilder } from "../skills/prompt-builder.js";
 import { loadSkills } from "../skills/skill-loader.js";
 import type {
+  BudgetStop,
+  BudgetStopReason,
   CodeninjaConfig,
   ConfigWarning,
   CoverageLevel,
@@ -32,6 +34,7 @@ import type {
   ReviewPacket,
   ReviewPlan,
   ReviewResult,
+  ReviewStage,
   RunCoverageStatus
 } from "../types.js";
 import { CodeninjaError, errorExitCode, isCodeninjaError } from "../util/errors.js";
@@ -66,7 +69,7 @@ type RunContext = {
   budget: BudgetLedger;
   abort: AbortController;
   addCleanupTask(task: () => Promise<void>): void;
-  finalize(outcome: { status: "completed" | "failed"; errorCode?: import("../util/errors.js").CodeninjaErrorCode; exitCode: number }): Promise<void>;
+  finalize(outcome: { status: "completed_full" | "completed_partial" | "failed"; errorCode?: import("../util/errors.js").CodeninjaErrorCode; exitCode: number; budgetStop?: BudgetStop }): Promise<void>;
 };
 
 type CoverageOptions = {
@@ -74,6 +77,7 @@ type CoverageOptions = {
   packets?: ReviewPacket[];
   degradedPlanning?: boolean;
   budgetStopped?: boolean;
+  budgetStop?: BudgetStop;
 };
 
 type PullRequestRefLockOwner = {
@@ -119,7 +123,7 @@ export async function runReview(
     }
     const zeroWork = await maybeZeroWork(diff.files, kept, decisions, resolved, config, run, overrides);
     if (zeroWork) {
-      await run.finalize({ status: "completed", exitCode: 0 });
+      await run.finalize({ status: "completed_full", exitCode: 0 });
       return zeroWork;
     }
 
@@ -185,11 +189,13 @@ export async function runReview(
       diff
     });
     throwIfHardAborted(run);
+    const budgetStop = run.budget.stopSnapshot();
     const coverage = aggregateRunCoverage(plannerResult.plan, decisions, packetResults, verified, run.telemetry, {
       allFiles: diff.files,
       packets,
       degradedPlanning: plannerResult.degradedPlanning,
-      budgetStopped: run.budget.stopped
+      budgetStopped: run.budget.stopped,
+      ...(budgetStop !== undefined ? { budgetStop } : {})
     });
     run.telemetry.event({
       stage: 9,
@@ -218,8 +224,9 @@ export async function runReview(
       ...(overrides.postGithubComments !== undefined ? { postGithubComments: overrides.postGithubComments } : {})
     });
     if (run.budget.stopped) {
-      markCoverageBudgetStopped(finalReview.coverage);
+      markCoverageBudgetStopped(finalReview.coverage, run.budget.stopSnapshot());
     }
+    emitBudgetStop(run, finalReview.coverage.budgetStop);
     throwIfHardAborted(run);
     await run.telemetry.writeArtifact("coverage.json", {
       status: finalReview.coverage,
@@ -246,7 +253,11 @@ export async function runReview(
       });
     }
     await renderOutputs(finalReview, overrides, run.telemetry);
-    await run.finalize({ status: "completed", exitCode: 0 });
+    await run.finalize({
+      status: finalReview.coverage.partial ? "completed_partial" : "completed_full",
+      exitCode: 0,
+      ...(finalReview.coverage.budgetStop !== undefined ? { budgetStop: finalReview.coverage.budgetStop } : {})
+    });
     return finalReview;
   } catch (error) {
     const failure = reviewFailureRecord(error);
@@ -268,11 +279,14 @@ export async function runReview(
       runId: run.runId,
       ...failure
     });
+    const budgetStop = run.budget.stopSnapshot();
+    emitBudgetStop(run, budgetStop);
     await run.telemetry.flush();
     await run.finalize({
       status: "failed",
       ...(isCodeninjaError(error) ? { errorCode: error.code } : {}),
-      exitCode: errorExitCode(error)
+      exitCode: errorExitCode(error),
+      ...(budgetStop !== undefined ? { budgetStop } : {})
     });
     throw error;
   }
@@ -766,6 +780,7 @@ export function aggregateRunCoverage(
   let reviewedHunks = 0;
   let failedHunks = 0;
   const reasons: string[] = [];
+  const unreviewedHunksByPath = unreviewedCoverageGaps(plan, decisions, packetResults, packets, opts.allFiles ?? []);
   for (const result of packetResults) {
     const packet = packetById.get(result.packetId);
     const packetHunks = packet?.hunks.length ?? 0;
@@ -815,11 +830,69 @@ export function aggregateRunCoverage(
     coverageByLevel,
     degradedPlanning: opts.degradedPlanning === true,
     budgetStopped: opts.budgetStopped === true,
+    ...(opts.budgetStop !== undefined ? { budgetStop: opts.budgetStop } : {}),
+    ...(unreviewedHunksByPath.length > 0 ? { unreviewedHunksByPath } : {}),
     verificationIncompleteCount: verified.incompleteCount,
     verificationSkipped: verified.verificationSkipped === true,
     partial: failedHunks > 0 || verified.incompleteCount > 0 || opts.budgetStopped === true || plan.partialReview?.isPartial === true,
     reasons: uniqueDisclosableCoverageReasons(reasons)
   };
+}
+
+function unreviewedCoverageGaps(
+  plan: ReviewPlan,
+  decisions: FileFilterDecision[],
+  packetResults: PacketReviewResult[],
+  packets: ReviewPacket[],
+  allFiles: DiffFile[]
+): Array<{ path: string; hunks: number; reason: string }> {
+  const gaps = new Map<string, { path: string; hunks: number; reason: string }>();
+  const packetByHunk = new Map<string, ReviewPacket>();
+  for (const packet of packets) {
+    for (const hunk of packet.hunks) {
+      packetByHunk.set(hunk.hunkId, packet);
+    }
+  }
+  const resultByPacket = new Map(packetResults.map((result) => [result.packetId, result]));
+  const filterSkippedPaths = new Set(decisions.filter((decision) => decision.action === "skip").map((decision) => decision.path));
+  const plannerSkippedHunks = new Set(plan.coverage.filter((decision) => decision.coverage === "skip").map((decision) => decision.hunkId));
+
+  for (const file of allFiles) {
+    if (filterSkippedPaths.has(file.path)) {
+      continue;
+    }
+    for (const hunk of file.hunks) {
+      if (plannerSkippedHunks.has(hunk.id)) {
+        continue;
+      }
+      const packet = packetByHunk.get(hunk.id);
+      if (!packet) {
+        addCoverageGap(gaps, file.path, "no review packet was built");
+        continue;
+      }
+      const result = resultByPacket.get(packet.id);
+      if (result?.status === "completed") {
+        continue;
+      }
+      addCoverageGap(gaps, file.path, packetResultFailureReason(result));
+    }
+  }
+
+  return [...gaps.values()].sort((a, b) => a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason));
+}
+
+function addCoverageGap(
+  gaps: Map<string, { path: string; hunks: number; reason: string }>,
+  path: string,
+  reason: string
+): void {
+  const key = `${path}\0${reason}`;
+  const current = gaps.get(key);
+  if (current) {
+    current.hunks += 1;
+    return;
+  }
+  gaps.set(key, { path, hunks: 1, reason });
 }
 
 function plannerFallbackCoverageReasons(packet: ReviewPacket): string[] {
@@ -832,12 +905,27 @@ function plannerFallbackCoverageReasons(packet: ReviewPacket): string[] {
   )];
 }
 
-function markCoverageBudgetStopped(coverage: RunCoverageStatus): void {
+function markCoverageBudgetStopped(coverage: RunCoverageStatus, budgetStop: BudgetStop | undefined): void {
   coverage.budgetStopped = true;
   coverage.partial = true;
+  if (budgetStop !== undefined) {
+    coverage.budgetStop = budgetStop;
+  }
   if (!coverage.reasons.includes("budget exhausted before all review work completed")) {
     coverage.reasons.push("budget exhausted before all review work completed");
   }
+}
+
+function emitBudgetStop(run: RunContext, budgetStop: BudgetStop | undefined): void {
+  if (budgetStop === undefined) {
+    return;
+  }
+  run.telemetry.event({
+    stage: budgetStop.stage,
+    level: "warn",
+    message: "budget_stopped",
+    data: budgetStop
+  });
 }
 
 function discloseSkillLoadFailures(
@@ -1017,6 +1105,7 @@ export class BudgetLedger {
   private totalTokens = 0;
   private inFlightModelCalls = 0;
   private inFlightTokens = 0;
+  private stop: BudgetStop | undefined;
   stopped = false;
 
   constructor(private readonly config: CodeninjaConfig) {}
@@ -1024,13 +1113,14 @@ export class BudgetLedger {
   checkpoint(stage: number): "ok" | "exhausted" {
     const elapsed = Date.now() - this.startedAt;
     if (elapsed >= this.config.review.timeoutMs * 2) {
-      this.stopped = true;
+      this.markStopped("hard_timeout", stage, elapsed);
       throw new CodeninjaError("timeout", "review run exceeded hard timeout");
     }
 
     const reserveStage = stage >= 9;
-    if (this.runtimeExhausted(elapsed, reserveStage) || this.tokensExhausted(reserveStage) || this.modelCallsExhausted(reserveStage)) {
-      this.stopped = true;
+    const reason = this.exhaustionReason(elapsed, reserveStage);
+    if (reason !== undefined) {
+      this.markStopped(reason, stage, elapsed);
       return "exhausted";
     }
     return "ok";
@@ -1044,27 +1134,93 @@ export class BudgetLedger {
   reserve(stage: number, estimatedTokens = 0): "ok" | "exhausted" {
     const elapsed = Date.now() - this.startedAt;
     if (elapsed >= this.config.review.timeoutMs * 2) {
-      this.stopped = true;
+      this.markStopped("hard_timeout", stage, elapsed, estimatedTokens, 1);
       throw new CodeninjaError("timeout", "review run exceeded hard timeout");
     }
 
     const reserveStage = stage >= 9;
-    if (
-      this.runtimeExhausted(elapsed, reserveStage) ||
-      this.tokensExhausted(reserveStage, Math.max(0, estimatedTokens)) ||
-      this.modelCallsExhausted(reserveStage, 1)
-    ) {
-      this.stopped = true;
+    const reservedTokens = Math.max(0, estimatedTokens);
+    const reason = this.exhaustionReason(elapsed, reserveStage, reservedTokens, 1);
+    if (reason !== undefined) {
+      this.markStopped(reason, stage, elapsed, reservedTokens, 1);
       return "exhausted";
     }
     this.inFlightModelCalls += 1;
-    this.inFlightTokens += Math.max(0, estimatedTokens);
+    this.inFlightTokens += reservedTokens;
     return "ok";
   }
 
   releaseReservation(_stage: number, estimatedTokens = 0): void {
     this.inFlightModelCalls = Math.max(0, this.inFlightModelCalls - 1);
     this.inFlightTokens = Math.max(0, this.inFlightTokens - Math.max(0, estimatedTokens));
+  }
+
+  stopSnapshot(): BudgetStop | undefined {
+    return this.stop;
+  }
+
+  private exhaustionReason(
+    elapsed: number,
+    reserveStage: boolean,
+    additionalReservedTokens = 0,
+    additionalReservedCalls = 0
+  ): BudgetStopReason | undefined {
+    if (this.runtimeExhausted(elapsed, reserveStage)) {
+      return "runtime_reserved_tail";
+    }
+    if (this.tokensExhausted(reserveStage, additionalReservedTokens)) {
+      return "max_total_tokens";
+    }
+    if (this.modelCallsExhausted(reserveStage, additionalReservedCalls)) {
+      return "max_model_calls";
+    }
+    return undefined;
+  }
+
+  private markStopped(
+    reason: BudgetStopReason,
+    stage: number,
+    elapsed: number,
+    additionalReservedTokens = 0,
+    additionalReservedCalls = 0
+  ): void {
+    this.stopped = true;
+    if (this.stop !== undefined) {
+      return;
+    }
+    const timeoutMs = this.config.review.timeoutMs;
+    const hardTimeoutMs = timeoutMs * 2;
+    const projectedModelCalls = this.modelCalls + this.inFlightModelCalls + additionalReservedCalls;
+    const projectedTokens = this.totalTokens + this.inFlightTokens + additionalReservedTokens;
+    this.stop = {
+      reason,
+      stage: isReviewStage(stage) ? stage : 0,
+      elapsedMs: elapsed,
+      timeoutMs,
+      hardTimeoutMs,
+      remainingRuntimeMs: Math.max(0, timeoutMs - elapsed),
+      reservedTailRuntimeMs: runtimeReserveMs(timeoutMs),
+      modelCalls: this.modelCalls,
+      inFlightModelCalls: this.inFlightModelCalls,
+      projectedModelCalls,
+      ...(this.config.review.maxModelCalls !== undefined
+        ? {
+            maxModelCalls: this.config.review.maxModelCalls,
+            remainingModelCalls: Math.max(0, this.config.review.maxModelCalls - projectedModelCalls),
+            reservedModelCalls: reservedBudgetAmount(this.config.review.maxModelCalls)
+          }
+        : {}),
+      totalTokens: this.totalTokens,
+      inFlightTokens: this.inFlightTokens,
+      projectedTokens,
+      ...(this.config.review.maxTotalTokens !== undefined
+        ? {
+            maxTotalTokens: this.config.review.maxTotalTokens,
+            remainingTokens: Math.max(0, this.config.review.maxTotalTokens - projectedTokens),
+            reservedTokens: reservedBudgetAmount(this.config.review.maxTotalTokens)
+          }
+        : {})
+    };
   }
 
   private runtimeExhausted(elapsed: number, reserveStage: boolean): boolean {
@@ -1101,4 +1257,12 @@ function runtimeReserveMs(timeoutMs: number): number {
 
 function unreservedBudget(max: number): number {
   return Math.max(0, max - Math.max(1, Math.ceil(max * 0.15)));
+}
+
+function reservedBudgetAmount(max: number): number {
+  return max - unreservedBudget(max);
+}
+
+function isReviewStage(stage: number): stage is ReviewStage {
+  return Number.isInteger(stage) && stage >= 1 && stage <= 11;
 }

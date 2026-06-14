@@ -604,6 +604,8 @@ Telemetry per candidate: pre-gate decision, verifier prompt size, tool calls, to
 - `coverageByLevel`: effective per-hunk coverage — the packet's coverage for packeted hunks (post-fallback, post-coalescing max), `skip` for skipped hunks.
 - `degradedPlanning`: from `runPlanner` (full or per-chunk fallback).
 - `budgetStopped`: from the budget ledger.
+- `budgetStop`: first-stop snapshot from the budget ledger when present, including reason (`runtime_reserved_tail`, `max_model_calls`, `max_total_tokens`, or `hard_timeout`), stage, elapsed time, projected model-call/token counts, configured limits, and remaining/reserved budget estimates.
+- `unreviewedHunksByPath`: grouped file/path counts for hunks that were reviewable but did not complete packet review, with stable reasons such as `budget_stopped before dispatch`.
 - `verificationIncompleteCount`: from Stage 9.
 - `partial`: true when `reviewedHunks + skippedHunks < totalHunks`, or `failedHunks > 0`, or `budgetStopped`, or the planner declared `partialReview.isPartial`.
 - `reasons`: deduplicated, ordered notes — filter summary line, malformed planner fallback notes, degraded-planning note, per-chunk failure notes, `review_failed` packet notes, budget-stop notes, verification-incomplete note, truncation notes, degraded packet notes (missing base content). Deterministic default coverage is tracked in per-hunk records, not disclosed as a human-facing warning.
@@ -642,7 +644,7 @@ Composer terminal failure (after one repair retry, non-auth): deterministic fall
 
 The budget ledger tracks, per run: elapsed wall-clock time against `review.timeoutMs`, total tokens against `review.maxTotalTokens`, and model-call count against `review.maxModelCalls`. There is no cost budget in v1 (cost-based run budgets are deferred — see architecture.md Future Considerations); cost is observability only, disclosed through `cost-profile.json`. The LLM runner reports usage per call; the ledger is updated synchronously after every call.
 
-Reservation: at run start the ledger reserves approximately 15% of the configured token budget (when set) and a runtime tail of `max(60s, 10% of review.timeoutMs)` for stages 9-10, so completed review work is never lost to exhaustion. Stages 1-7 draw from the remainder; stages 9-10 may draw from both the remainder and the reserve.
+Reservation: at run start the ledger reserves approximately 15% of the configured token and model-call budgets (when set) and a runtime tail of `max(60s, 10% of review.timeoutMs)` for stages 9-10, so completed review work is never lost to exhaustion. Stages 1-7 draw from the remainder; stages 9-10 may draw from both the remainder and the reserve.
 
 Checkpoints: `budget.checkpoint(stage)` is evaluated before every new model call and every worker dispatch. It returns exhausted when any unreserved dimension is depleted for stages 1-7, or any total dimension is depleted for stages 9-10. Checkpoints never cancel in-flight work.
 
@@ -651,6 +653,8 @@ Exhaustion ladder, in order:
 1. Stop scheduling new packet reviews; in-flight packet workers run to completion; undispatched packets' hunks are marked `review_failed` with a budget reason.
 2. Verify already-produced candidates using the reserved slice; if the reserve also depletes, remaining candidates are marked `verificationIncomplete` and suppressed.
 3. Always run composition (the composer call uses the reserve; on depletion the deterministic fallback composition runs) and emit the partial-review disclosure. `budgetStopped: true`.
+
+Run outcome: full successful reviews finalize as `completed_full`; partial successful reviews finalize as `completed_partial` with exit code 0 by default; fatal runs finalize as `failed`. `run.json`, `telemetry.json`, `coverage.json`, and final Markdown all carry the budget-stop reason when budget exhaustion caused the partial review.
 
 Hard kill: at 2x `review.timeoutMs` the run aborts fatally (`timeout`): the root `AbortController` cancels all in-flight work, and codeninja attempts to write telemetry artifacts before exiting nonzero.
 

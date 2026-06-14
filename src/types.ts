@@ -669,6 +669,8 @@ export type RunCoverageStatus = {
   coverageByLevel: Record<CoverageLevel, number>;
   degradedPlanning: boolean;
   budgetStopped: boolean;
+  budgetStop?: BudgetStop;
+  unreviewedHunksByPath?: Array<{ path: string; hunks: number; reason: string }>;
   verificationIncompleteCount: number;
   verificationSkipped?: boolean;
   partial: boolean;
@@ -1163,8 +1165,39 @@ export type RepositoryToolCallContext = {
   modelCallId?: string;
 };
 
+export type RunOutcomeStatus = "completed_full" | "completed_partial" | "failed";
+
+export type BudgetStopReason =
+  | "runtime_reserved_tail"
+  | "max_model_calls"
+  | "max_total_tokens"
+  | "hard_timeout";
+
+export type BudgetStop = {
+  reason: BudgetStopReason;
+  stage: ReviewStage | 0;
+  elapsedMs: number;
+  timeoutMs: number;
+  hardTimeoutMs: number;
+  remainingRuntimeMs: number;
+  reservedTailRuntimeMs: number;
+  modelCalls: number;
+  inFlightModelCalls: number;
+  projectedModelCalls: number;
+  maxModelCalls?: number;
+  remainingModelCalls?: number;
+  reservedModelCalls?: number;
+  totalTokens: number;
+  inFlightTokens: number;
+  projectedTokens: number;
+  maxTotalTokens?: number;
+  remainingTokens?: number;
+  reservedTokens?: number;
+};
+
 export type RunOutcome = {
-  status: "completed" | "failed";
+  status: RunOutcomeStatus;
   errorCode?: import("./util/errors.js").CodeninjaErrorCode;
   exitCode: number;
+  budgetStop?: BudgetStop;
 };

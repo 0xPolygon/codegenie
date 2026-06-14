@@ -19,7 +19,7 @@ import type {
   UnifiedDiff,
   VerificationVerdict
 } from "../types.js";
-import { isDisclosableCoverageReason } from "../util/coverage-reasons.js";
+import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { sha256Hex } from "../util/hashing.js";
 import { isFatalLlmError, validateAnchorForDiff } from "./pipeline-utils.js";
 
@@ -507,7 +507,7 @@ function renderReviewBody(
   notes: NeedsHumanAttentionNote[],
   coverage: RunCoverageStatus
 ): string {
-  const lines = [summary || "codeninja review completed.", "", `Reviewed ${coverage.reviewedHunks}/${coverage.totalHunks} hunks.`];
+  const lines = [summary || "codeninja review completed.", "", ...renderCoverageSummaryLines(coverage).slice(0, 2)];
   const coverageDisclosures = coverageDisclosureLines(coverage);
   if (coverageDisclosures.length > 0) {
     lines.push("", "Coverage disclosure:", ...coverageDisclosures);
@@ -530,26 +530,6 @@ function renderReviewBody(
 
 function indentBlock(text: string): string {
   return text.split(/\r?\n/u).map((line) => `  ${line}`).join("\n");
-}
-
-function coverageDisclosureLines(coverage: RunCoverageStatus): string[] {
-  const lines: string[] = [];
-  if (coverage.partial) {
-    lines.push("- Review is partial.");
-  }
-  if (coverage.budgetStopped) {
-    lines.push("- Budget exhausted before all review work completed.");
-  }
-  if (coverage.verificationIncompleteCount > 0) {
-    lines.push(`- Verification incomplete for ${coverage.verificationIncompleteCount} candidate${coverage.verificationIncompleteCount === 1 ? "" : "s"}.`);
-  }
-  if (coverage.verificationSkipped === true) {
-    lines.push("- Verification was skipped by configuration.");
-  }
-  for (const reason of coverage.reasons.filter(isDisclosableCoverageReason)) {
-    lines.push(`- ${reason}`);
-  }
-  return [...new Set(lines)];
 }
 
 function templateBody(finding: CandidateFinding): string {

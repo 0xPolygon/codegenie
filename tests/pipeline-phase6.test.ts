@@ -105,6 +105,76 @@ describe("phase 6 live review path", () => {
       random.mockRestore();
     }
   });
+
+  it("marks budget-limited packet dispatch as a partial run with explicit artifacts", async () => {
+    const repo = initRepo();
+    for (const name of ["one", "two", "three", "four"]) {
+      writeRepoFile(repo, `${name}.ts`, `export const ${name} = 1;\n`);
+    }
+    const base = commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    for (const name of ["one", "two", "three", "four"]) {
+      writeRepoFile(repo, `${name}.ts`, `export const ${name} = 2;\n`);
+    }
+    const head = commitAll(repo, "feature");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-partial-budget-")), "live-review");
+    const adapter = partialBudgetAdapter();
+
+    const result = await runReview(
+      { mode: "commit_range", startCommit: base, endCommit: head },
+      {
+        ...liveConfig(runArtifactDir),
+        review: { ...defaultConfig.review, concurrency: 1, maxModelCalls: 3 },
+        llm: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 1 }
+      },
+      {
+        repoRoot: repo,
+        runArtifactDir,
+        piAdapter: adapter
+      }
+    );
+
+    expect(adapter.callsByPrompt).toMatchObject({ planner: 1, packetReview: 1, verifier: 0, composer: 1 });
+    expect(result.coverage).toMatchObject({
+      partial: true,
+      budgetStopped: true,
+      reviewedHunks: 1,
+      failedHunks: 3,
+      budgetStop: expect.objectContaining({ reason: "max_model_calls", stage: 7 })
+    });
+    expect(result.coverage.unreviewedHunksByPath).toHaveLength(3);
+
+    const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
+    expect(finalReview).toContain("Partial review: 3 hunks were not reviewed because budget was exhausted before dispatch.");
+    expect(finalReview).toContain("Unreviewed hunks by file:");
+    expect(finalReview).toContain("budget stopped before dispatch");
+
+    const coverageJson = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as {
+      status: { budgetStop?: { reason?: string }; unreviewedHunksByPath?: unknown[] };
+      records: Array<{ status: string; reason?: string }>;
+    };
+    expect(coverageJson.status.budgetStop).toMatchObject({ reason: "max_model_calls" });
+    expect(coverageJson.status.unreviewedHunksByPath).toHaveLength(3);
+    expect(coverageJson.records.filter((record) => record.reason === "budget_stopped before dispatch")).toHaveLength(3);
+
+    const runJson = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8")) as {
+      outcome: { status: string; exitCode: number; budgetStop?: { reason?: string } };
+      budgetStop?: { reason?: string };
+    };
+    expect(runJson.outcome).toMatchObject({ status: "completed_partial", exitCode: 0 });
+    expect(runJson.outcome.budgetStop).toMatchObject({ reason: "max_model_calls" });
+    expect(runJson.budgetStop).toMatchObject({ reason: "max_model_calls" });
+
+    const telemetryJson = JSON.parse(readFileSync(path.join(runArtifactDir, "telemetry.json"), "utf8")) as {
+      budgetStop?: { reason?: string };
+    };
+    expect(telemetryJson.budgetStop).toMatchObject({ reason: "max_model_calls" });
+
+    const events = readJsonl<{ message: string; data?: { reason?: string } }>(path.join(runArtifactDir, "events.jsonl"));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "budget_stopped", data: expect.objectContaining({ reason: "max_model_calls" }) })
+    ]));
+  });
 });
 
 function liveConfig(runArtifactDir: string): CodeninjaConfig {
@@ -181,6 +251,57 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
           reason: "The changed code divides by an unguarded parameter.",
           requiredEvidencePresent: true,
           falsePositiveRisk: "low"
+        })]);
+      }
+      throw new Error("unknown live review prompt");
+    },
+    validateToolCall: (tools, call) => validateToolCall(tools, call)
+  };
+}
+
+function partialBudgetAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | "packetReview" | "verifier" | "composer", number> } {
+  const callsByPrompt = {
+    planner: 0,
+    packetReview: 0,
+    verifier: 0,
+    composer: 0
+  };
+
+  return {
+    callsByPrompt,
+    resolveModel: () => ({ provider: "scripted", id: "scripted-model", raw: { id: "scripted-model", api: "faux" } }),
+    complete: async (_model, context) => {
+      const prompt = firstPrompt(context);
+      if (prompt.includes("planning")) {
+        callsByPrompt.planner += 1;
+        const dossier = extractPromptJson<PlannerDossier>(prompt, "planner-dossier");
+        if (!dossier) {
+          throw new Error("planner prompt did not include dossier");
+        }
+        return assistant([toolCall("submit-plan-partial", "submit_plan", planFromDossier(dossier))]);
+      }
+      if (prompt.includes("packet review")) {
+        callsByPrompt.packetReview += 1;
+        return assistant([toolCall("submit-review-empty", "submit_review", {
+          findings: [],
+          followUpHints: [],
+          uncertainties: []
+        })]);
+      }
+      if (prompt.includes("composition")) {
+        callsByPrompt.composer += 1;
+        return assistant([toolCall("submit-composition-empty", "submit_composition", {
+          summary: "No credible findings.",
+          composedFindings: []
+        })]);
+      }
+      if (prompt.includes("verification")) {
+        callsByPrompt.verifier += 1;
+        return assistant([toolCall("submit-verdict-unused", "submit_verdict", {
+          verdict: "reject",
+          reason: "No candidates should be verified in this test.",
+          requiredEvidencePresent: false,
+          falsePositiveRisk: "high"
         })]);
       }
       throw new Error("unknown live review prompt");

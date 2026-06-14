@@ -364,9 +364,10 @@ Budget exhaustion ladder, applying to `timeoutMs`, `maxTotalTokens`, and `maxMod
 
 - Budgets are checked before each new model call or worker dispatch.
 - On exhaustion: stop scheduling new packet reviews, then verify already-produced candidates using the reserved budget slice, and always run composition and emit a partial-review disclosure.
-- codeninja should reserve approximately 15% of the configured token budget, and a fixed tail of the runtime budget, for Stages 9-10 so completed review work is never lost to exhaustion.
+- codeninja should reserve approximately 15% of the configured token and model-call budgets, and a fixed tail of the runtime budget, for Stages 9-10 so completed review work is never lost to exhaustion.
 - A hard kill at 2x the configured runtime budget is fatal; even then codeninja should attempt to write telemetry artifacts before exiting.
 - The run-level coverage status is owned by the orchestrator. It aggregates plan-time coverage, runtime failures, budget stops, and verification incompleteness into the final coverage summary, not only the planner's partial-review flag.
+- Successful runs should finalize as either `completed_full` or `completed_partial` in `run.json`. A partial run still exits `0` by default, but `run.json`, `telemetry.json`, `coverage.json`, and the Markdown report must include the budget stop reason and grouped unreviewed hunk paths when budget exhaustion caused the partial review.
 
 Provider rate limiting: 429 and transient 5xx responses should get up to 3 retries with exponential backoff, and retries count against budgets.
 
@@ -981,7 +982,7 @@ Exit behavior:
 
 - Exit `0` when review completes successfully, including when findings are present.
 - Exit nonzero for runtime, configuration, authentication, parsing, or posting failures that prevent the requested operation from completing.
-- Disclosed partial reviews and reviews with `verificationIncomplete` suppressions are successful completions and exit `0`. The disclosure lives in the report, not the exit code.
+- Disclosed partial reviews and reviews with `verificationIncomplete` suppressions are successful completions and exit `0`. The disclosure lives in the report and artifacts (`completed_partial`), not the exit code.
 
 CI failure thresholds such as `--fail-on high` are out of scope for v1 unless explicitly added later.
 

@@ -1303,7 +1303,7 @@ Failure and budget handling:
   - Stage 10 composer → one repair retry; terminal failure triggers a deterministic fallback composition (verified findings rendered with template wording, fingerprint-level grouping only, ranked by severity/confidence) with a disclosure note that semantic composition was skipped.
   - Authentication or provider-wide failures at any stage fail the run.
 - Budgets (`timeoutMs`, `maxTotalTokens`, `maxModelCalls`) are checked before each new model call or worker dispatch. On exhaustion: stop scheduling new packet reviews → verify already-produced candidates using a reserved budget slice → always run composition and emit a partial-review disclosure.
-- Approximately 15% of the configured token budget (and a fixed tail of the runtime budget) is reserved for Stages 9-10 so completed review work is never lost to exhaustion. A hard kill at 2x the configured runtime budget is fatal; even then codeninja attempts to write telemetry artifacts before exiting.
+- Approximately 15% of the configured token and model-call budgets (and a fixed tail of the runtime budget) is reserved for Stages 9-10 so completed review work is never lost to exhaustion. A hard kill at 2x the configured runtime budget is fatal; even then codeninja attempts to write telemetry artifacts before exiting.
 - Provider 429 and transient 5xx responses get up to 3 retries with exponential backoff; retries count against budgets.
 - The run-level coverage status is owned by the orchestrator, which aggregates plan-time coverage, runtime failures, budget stops, and verification incompleteness into the final coverage summary (run-level, not only `ReviewPlan.partialReview`):
 
@@ -1316,13 +1316,37 @@ type RunCoverageStatus = {
   coverageByLevel: Record<"deep" | "normal" | "light" | "skip", number>
   degradedPlanning: boolean
   budgetStopped: boolean
+  budgetStop?: BudgetStop
+  unreviewedHunksByPath?: Array<{ path: string; hunks: number; reason: string }>
   verificationIncompleteCount: number
   partial: boolean
   reasons: string[]
 }
+
+type BudgetStop = {
+  reason: "runtime_reserved_tail" | "max_model_calls" | "max_total_tokens" | "hard_timeout"
+  stage: ReviewStage | 0
+  elapsedMs: number
+  timeoutMs: number
+  hardTimeoutMs: number
+  remainingRuntimeMs: number
+  reservedTailRuntimeMs: number
+  modelCalls: number
+  inFlightModelCalls: number
+  projectedModelCalls: number
+  maxModelCalls?: number
+  remainingModelCalls?: number
+  reservedModelCalls?: number
+  totalTokens: number
+  inFlightTokens: number
+  projectedTokens: number
+  maxTotalTokens?: number
+  remainingTokens?: number
+  reservedTokens?: number
+}
 ```
 
-`coverage.json` serializes this plus per-hunk records that include source (`planner`, `deterministic_default`, or `config`) so evals can distinguish explicit planner decisions from routine defaults.
+`coverage.json` serializes this plus per-hunk records that include source (`planner`, `deterministic_default`, or `config`) so evals can distinguish explicit planner decisions from routine defaults. Partial-but-successful runs finalize as `completed_partial` with exit code 0; full successful runs finalize as `completed_full`; fatal runs finalize as `failed`.
 
 Non-parallel stages:
 

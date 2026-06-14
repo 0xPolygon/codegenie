@@ -1,0 +1,102 @@
+import type { RunCoverageStatus } from "../types.js";
+import { isDisclosableCoverageReason } from "./coverage-reasons.js";
+
+export function renderCoverageSummaryLines(coverage: RunCoverageStatus): string[] {
+  const lines = [coverageHeadline(coverage)];
+  if (coverage.partial) {
+    lines.push(`Reviewed ${coverage.reviewedHunks}/${coverage.totalHunks} hunks before stopping.`);
+  }
+  lines.push(`Skipped: ${coverage.skippedHunks}. Failed: ${coverage.failedHunks}. Verification incomplete: ${coverage.verificationIncompleteCount}.`);
+  lines.push(`Coverage levels: deep ${coverage.coverageByLevel.deep}, normal ${coverage.coverageByLevel.normal}, light ${coverage.coverageByLevel.light}, skip ${coverage.coverageByLevel.skip}.`);
+  if (coverage.degradedPlanning) {
+    lines.push("Planning was degraded and deterministic fallbacks were used.");
+  }
+  if (coverage.verificationSkipped) {
+    lines.push("Verification was skipped by configuration.");
+  }
+  if (coverage.unreviewedHunksByPath && coverage.unreviewedHunksByPath.length > 0) {
+    lines.push("Unreviewed hunks by file:");
+    for (const gap of coverage.unreviewedHunksByPath.slice(0, 12)) {
+      lines.push(`- ${gap.path}: ${gap.hunks} hunk${gap.hunks === 1 ? "" : "s"} (${humanizeCoverageReason(gap.reason)})`);
+    }
+    const omitted = coverage.unreviewedHunksByPath.length - 12;
+    if (omitted > 0) {
+      lines.push(`- ${omitted} additional file${omitted === 1 ? "" : "s"} omitted.`);
+    }
+  }
+  for (const reason of coverageDisclosureLines(coverage)) {
+    lines.push(reason);
+  }
+  return uniqueLines(lines);
+}
+
+export function coverageDisclosureLines(coverage: RunCoverageStatus): string[] {
+  const lines: string[] = [];
+  if (coverage.budgetStopped) {
+    lines.push(`- Budget stopped review work${coverage.budgetStop ? ` (${humanizeBudgetReason(coverage.budgetStop.reason)})` : ""}.`);
+  }
+  if (coverage.verificationIncompleteCount > 0) {
+    lines.push(`- Verification incomplete for ${coverage.verificationIncompleteCount} candidate${coverage.verificationIncompleteCount === 1 ? "" : "s"}.`);
+  }
+  if (coverage.verificationSkipped === true) {
+    lines.push("- Verification was skipped by configuration.");
+  }
+  for (const reason of coverage.reasons.filter((item) => shouldRenderCoverageReason(item, coverage))) {
+    lines.push(`- ${reason}`);
+  }
+  return uniqueLines(lines);
+}
+
+function coverageHeadline(coverage: RunCoverageStatus): string {
+  if (!coverage.partial) {
+    return `Reviewed ${coverage.reviewedHunks}/${coverage.totalHunks} hunks.`;
+  }
+  const unreviewed = Math.max(0, coverage.failedHunks);
+  if (coverage.budgetStopped) {
+    return `Partial review: ${unreviewed} ${hunkNoun(unreviewed)} ${unreviewed === 1 ? "was" : "were"} not reviewed because budget was exhausted before dispatch.`;
+  }
+  return `Partial review: ${unreviewed} ${hunkNoun(unreviewed)} did not complete review.`;
+}
+
+function hunkNoun(count: number): string {
+  return count === 1 ? "hunk" : "hunks";
+}
+
+function humanizeCoverageReason(reason: string): string {
+  if (reason.includes("budget_stopped")) {
+    return "budget stopped before dispatch";
+  }
+  return reason.replaceAll("_", " ");
+}
+
+function shouldRenderCoverageReason(reason: string, coverage: RunCoverageStatus): boolean {
+  if (!isDisclosableCoverageReason(reason)) {
+    return false;
+  }
+  if (coverage.budgetStopped && reason === "budget exhausted before all review work completed") {
+    return false;
+  }
+  if (coverage.unreviewedHunksByPath && /^\d+ hunk\(s\) could not be reviewed$/u.test(reason)) {
+    return false;
+  }
+  return true;
+}
+
+function humanizeBudgetReason(reason: string): string {
+  switch (reason) {
+    case "runtime_reserved_tail":
+      return "runtime reserve reached";
+    case "max_model_calls":
+      return "model-call limit reached";
+    case "max_total_tokens":
+      return "token limit reached";
+    case "hard_timeout":
+      return "hard timeout reached";
+    default:
+      return reason.replaceAll("_", " ");
+  }
+}
+
+function uniqueLines(lines: string[]): string[] {
+  return [...new Set(lines)];
+}

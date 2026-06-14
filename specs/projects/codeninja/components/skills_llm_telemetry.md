@@ -427,9 +427,10 @@ interface TelemetryRecorder {
 // src/telemetry/run-artifacts.ts
 
 type RunOutcome = {
-  status: "completed" | "failed"
+  status: "completed_full" | "completed_partial" | "failed"
   errorCode?: CodeninjaErrorCode
   exitCode: number
+  budgetStop?: BudgetStop
 }
 
 type RunTelemetry = {

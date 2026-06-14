@@ -343,6 +343,7 @@ class RunTelemetryImpl {
     const finishedAt = this.clock().toISOString();
     const durationMs = durationBetween(this.startedAt, finishedAt);
     const totals = this.runTotals();
+    const normalizedOutcome = normalizeOutcome(outcome);
     this.writeJson("run.json", {
       schemaVersion: 1,
       runId: this.runId,
@@ -355,7 +356,8 @@ class RunTelemetryImpl {
       finishedAt,
       completedAt: finishedAt,
       durationMs,
-      outcome: normalizeOutcome(outcome),
+      outcome: normalizedOutcome,
+      ...(normalizedOutcome.budgetStop !== null ? { budgetStop: normalizedOutcome.budgetStop } : {}),
       totals
     });
     this.writeJson("telemetry.json", {
@@ -371,6 +373,7 @@ class RunTelemetryImpl {
       logs: {
         bufferedOverflow: this.logOverflow
       },
+      ...(normalizedOutcome.budgetStop !== null ? { budgetStop: normalizedOutcome.budgetStop } : {}),
       totals,
       stages: this.allStageSummaries(),
       workers: this.pipelineSummary.workers,
@@ -1335,11 +1338,13 @@ function normalizeOutcome(outcome: RunOutcome): {
   status: RunOutcome["status"];
   errorCode: RunOutcome["errorCode"] | null;
   exitCode: number;
+  budgetStop: RunOutcome["budgetStop"] | null;
 } {
   return {
     status: outcome.status,
     errorCode: outcome.errorCode ?? null,
-    exitCode: outcome.exitCode
+    exitCode: outcome.exitCode,
+    budgetStop: outcome.budgetStop ?? null
   };
 }
 

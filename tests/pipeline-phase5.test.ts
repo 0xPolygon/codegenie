@@ -2230,7 +2230,7 @@ describe("phase 5 pipeline regressions", () => {
       summaryOnlyFindings: [],
       needsHumanAttention: [],
       noFindings: true
-    })).toContain("Reviewed 0/1 hunks.");
+    })).toContain("Partial review: 1 hunk did not complete review.");
   });
 
   it("attaches left-side static signals to old-side dossier hunks", async () => {
@@ -4439,10 +4439,10 @@ describe("phase 5 pipeline regressions", () => {
       }
     );
 
-    expect(result.postingPlan?.reviewBody).toContain("Reviewed 1/3 hunks.");
+    expect(result.postingPlan?.reviewBody).toContain("Partial review: 2 hunks were not reviewed because budget was exhausted before dispatch.");
+    expect(result.postingPlan?.reviewBody).toContain("Reviewed 1/3 hunks before stopping.");
     expect(result.postingPlan?.reviewBody).toContain("Coverage disclosure:");
-    expect(result.postingPlan?.reviewBody).toContain("Review is partial.");
-    expect(result.postingPlan?.reviewBody).toContain("Budget exhausted before all review work completed.");
+    expect(result.postingPlan?.reviewBody).toContain("Budget stopped review work.");
     expect(result.postingPlan?.reviewBody).toContain("Verification incomplete for 2 candidates.");
     expect(result.postingPlan?.reviewBody).toContain("semantic composition skipped; deterministic fallback used");
   });

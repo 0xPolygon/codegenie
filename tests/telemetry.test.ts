@@ -208,7 +208,7 @@ describe("run telemetry", () => {
       zLast: true,
       aFirst: true
     });
-    await run.finalize({ status: "completed", exitCode: 0 });
+    await run.finalize({ status: "completed_full", exitCode: 0 });
 
     expect(toolCallId).toBe("tc-000001");
     expect(existsSync(path.join(repoRoot, ".codeninja", ".gitignore"))).toBe(true);
@@ -253,9 +253,10 @@ describe("run telemetry", () => {
         postGithubComments: false
       },
       outcome: {
-        status: "completed",
+        status: "completed_full",
         errorCode: null,
-        exitCode: 0
+        exitCode: 0,
+        budgetStop: null
       }
     });
     expect(runJson.finishedAt).toEqual(expect.any(String));
@@ -425,7 +426,7 @@ describe("run telemetry", () => {
       status: "ok"
     });
 
-    await run.finalize({ status: "completed", exitCode: 0 });
+    await run.finalize({ status: "completed_full", exitCode: 0 });
 
     const runJson = readJson(path.join(attached.runDir, "run.json"));
     expect(runJson.totals).toMatchObject({
@@ -532,7 +533,7 @@ describe("run telemetry", () => {
       cacheStatus: "write"
     });
 
-    await run.finalize({ status: "completed", exitCode: 0 });
+    await run.finalize({ status: "completed_full", exitCode: 0 });
 
     const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
     expect(modelSummary.cache).toMatchObject({ hit: 0, miss: 1, disabled: 0, write: 1 });
@@ -566,7 +567,7 @@ describe("run telemetry", () => {
     }
 
     const attached = await run.attachRunDirectory(repoRoot);
-    await run.finalize({ status: "completed", exitCode: 0 });
+    await run.finalize({ status: "completed_full", exitCode: 0 });
 
     const runLog = readFileSync(path.join(attached.runDir, "run.log"), "utf8");
     expect(runLog).toContain("important warning");
