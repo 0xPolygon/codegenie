@@ -297,6 +297,9 @@ function renderPacket(packet: ReviewPacket): string {
     relevantTests: packet.relevantTests,
     hunks: packet.hunks,
     symbolFacts: packet.symbolFacts,
+    packetSymbols: packet.packetSymbols,
+    contextQuality: packet.contextQuality,
+    contextDegradationReasons: packet.contextDegradationReasons,
     surroundingContextHints: packet.surroundingContextHints,
     degraded: packet.degraded
   });

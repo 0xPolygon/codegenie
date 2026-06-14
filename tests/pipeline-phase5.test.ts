@@ -541,17 +541,187 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     const contextText = packets[0]?.contextText ?? "";
-    expect(symbolReads).toEqual([{ path: "app.ts", selector: { line: 10 } }]);
-    expect(contextText).toContain("Enclosing symbol source for app.ts:changed");
+    expect(symbolReads).toEqual([{ path: "app.ts", selector: { symbolName: "changed" } }]);
+    expect(contextText).toContain("Primary symbol: app.ts:changed");
     expect(contextText).toContain("export function changed()");
-    expect(contextText.indexOf("Enclosing symbol source")).toBeLessThan(contextText.indexOf("Outline for app.ts"));
-    expect(contextText).toContain("content truncated to fit packet context budget");
+    expect(contextText.indexOf("Primary symbol")).toBeLessThan(contextText.indexOf("Outline for app.ts"));
+    expect(contextText).toContain("symbol source sliced around changed lines");
+    expect(packets[0]?.contextQuality).toBe("sliced");
     expect(packets[0]?.degraded?.reason).toContain("enclosing symbol source truncated");
     expect(events).toContainEqual(expect.objectContaining({
       stage: 6,
       level: "warn",
       message: "packet_symbol_source_truncated",
       file: "app.ts"
+    }));
+  });
+
+  it("uses the best available symbol context for mixed import and function hunks", async () => {
+    const events: TelemetryEvent[] = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: TelemetryEvent) => {
+        events.push(event);
+      }
+    };
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const symbolReads: Array<{ path: string; selector: { symbolName?: string; line?: number } }> = [];
+    const primarySymbol = { path: "app.ts", name: "processRelayQuote", kind: "function" as const, lineRange: [18, 80] as [number, number] };
+    const tools = {
+      ...fakeTools(),
+      readSymbol: async (pathName: string, selector: { symbolName?: string; line?: number }) => {
+        symbolReads.push({ path: pathName, selector });
+        return {
+          text: "export function processRelayQuote() {\n  return quote.id;\n}",
+          symbol: primarySymbol,
+          meta
+        };
+      },
+      buildPacketContext: async (file: DiffFile) => ({
+        context: { path: file.path, enclosingFunction: primarySymbol },
+        outline: {
+          path: file.path,
+          language: "typescript",
+          imports: ["quote-lib"],
+          topLevelSymbols: [primarySymbol],
+          testSymbols: [],
+          notes: []
+        },
+        primarySymbol,
+        packetSymbols: [primarySymbol],
+        noSymbolHunkIds: ["h-import"],
+        relevantTests: []
+      })
+    };
+    const file: DiffFile = {
+      path: "app.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [
+        {
+          id: "h-import",
+          path: "app.ts",
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: [{ kind: "add", content: "import { quote } from 'quote-lib';", newLineNumber: 1 }]
+        },
+        {
+          id: "h-function",
+          path: "app.ts",
+          oldStart: 20,
+          oldLines: 1,
+          newStart: 20,
+          newLines: 1,
+          lines: [{ kind: "add", content: "  return quote.id;", newLineNumber: 20 }]
+        }
+      ]
+    };
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(tools),
+      symbolFacts: [
+        {
+          path: "app.ts",
+          hunkId: "h-import",
+          changedLines: [1],
+          changedLinesSide: "new",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        },
+        {
+          path: "app.ts",
+          hunkId: "h-function",
+          enclosingSymbol: "processRelayQuote",
+          symbolKind: "function",
+          symbolRange: [18, 80],
+          changedLines: [20],
+          changedLinesSide: "new",
+          signature: "export function processRelayQuote()",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      fakePlan("app.ts", ["h-import", "h-function"]),
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      repoIndex,
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(packets).toHaveLength(1);
+    expect(packets[0]?.kind).toBe("file-diff");
+    expect(symbolReads).toEqual([{ path: "app.ts", selector: { symbolName: "processRelayQuote" } }]);
+    expect(packets[0]?.context.enclosingFunction).toMatchObject({ name: "processRelayQuote" });
+    expect(packets[0]?.packetSymbols).toEqual([expect.objectContaining({ name: "processRelayQuote" })]);
+    expect(packets[0]?.contextQuality).toBe("full");
+    expect(packets[0]?.contextDegradationReasons).toContain("no_enclosing_symbol: h-import");
+    expect(packets[0]?.degraded?.reason ?? "").not.toContain("symbol not found");
+    expect(packets[0]?.contextText).toContain("Primary symbol: app.ts:processRelayQuote");
+  });
+
+  it("keeps import-only packets outline-only without symbol-not-found degradation", async () => {
+    const events: TelemetryEvent[] = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: TelemetryEvent) => {
+        events.push(event);
+      }
+    };
+    const tools = {
+      ...fakeTools(),
+      readSymbol: async () => {
+        throw new Error("readSymbol should not be called for import-only packet context");
+      },
+      buildPacketContext: async (file: DiffFile) => ({
+        context: { path: file.path },
+        outline: {
+          path: file.path,
+          language: "typescript",
+          imports: ["dep"],
+          topLevelSymbols: [{ path: file.path, name: "run", kind: "function" as const, lineRange: [10, 20] as [number, number] }],
+          testSymbols: [],
+          notes: []
+        },
+        noSymbolHunkIds: ["h1"],
+        relevantTests: []
+      })
+    };
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(tools),
+      symbolFacts: [
+        {
+          path: "app.ts",
+          hunkId: "h1",
+          changedLines: [1],
+          changedLinesSide: "new",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      fakePlan(),
+      [fakeDiffFile("app.ts")],
+      [fakeFacts("app.ts", "per-hunk")],
+      repoIndex,
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(packets[0]?.contextQuality).toBe("outline_only");
+    expect(packets[0]?.contextText).toContain("Outline for app.ts");
+    expect(packets[0]?.contextDegradationReasons).toEqual(
+      expect.arrayContaining(["no_primary_symbol", "no_enclosing_symbol: h1"])
+    );
+    expect(packets[0]?.degraded).toBeUndefined();
+    expect(events).not.toContainEqual(expect.objectContaining({
+      message: "packet_context_degraded_high_risk"
     }));
   });
 

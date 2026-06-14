@@ -432,6 +432,8 @@ export type PacketContext = {
   enclosingMethod?: SymbolInfo;
 };
 
+export type PacketContextQuality = "full" | "sliced" | "outline_only" | "path_only";
+
 export type ReviewPacket = {
   id: string;
   kind: PacketKind;
@@ -449,6 +451,9 @@ export type ReviewPacket = {
   symbolFacts: HunkSymbolFacts[];
   context: PacketContext;
   contextText: string;
+  contextQuality?: PacketContextQuality;
+  contextDegradationReasons?: string[];
+  packetSymbols?: SymbolInfo[];
   relevantTests: SymbolInfo[];
   surroundingContextHints: SurroundingContextHint[];
   labels: string[];
@@ -496,7 +501,15 @@ export interface RepositoryToolsHost extends RepositoryTools {
     file: DiffFile,
     hunks: DiffHunk[],
     symbolFacts: HunkSymbolFacts[]
-  ): Promise<{ context: PacketContext; outline?: FileOutline; relevantTests: SymbolInfo[]; degradation?: string }>;
+  ): Promise<{
+    context: PacketContext;
+    outline?: FileOutline;
+    relevantTests: SymbolInfo[];
+    degradation?: string;
+    primarySymbol?: SymbolInfo;
+    packetSymbols?: SymbolInfo[];
+    noSymbolHunkIds?: string[];
+  }>;
   withToolCallContext<T>(context: RepositoryToolCallContext, run: () => Promise<T>): Promise<T>;
 }
 

@@ -95,14 +95,26 @@ export async function assemblePacketContext(
   file: DiffFile,
   hunks: DiffHunk[],
   symbolFacts: HunkSymbolFacts[]
-): Promise<{ context: PacketContext; outline?: FileOutline; relevantTests: SymbolInfo[]; degradation?: string }> {
+): Promise<{
+  context: PacketContext;
+  outline?: FileOutline;
+  relevantTests: SymbolInfo[];
+  degradation?: string;
+  primarySymbol?: SymbolInfo;
+  packetSymbols?: SymbolInfo[];
+  noSymbolHunkIds?: string[];
+}> {
   const side = hunks.some((hunk) => hunk.lines.some((line) => line.kind === "add")) && file.status !== "deleted" ? "head" : "base";
   const source: SourceSelector = { kind: side };
   const readPath = side === "base" ? file.oldPath ?? file.path : file.path;
   const outlineResult = await readOutline(resolver, registry, readPath, source);
   const outline = { ...outlineResult.outline, path: file.path };
-  const primaryFact = [...symbolFacts].sort((a, b) => (a.changedLines[0] ?? 0) - (b.changedLines[0] ?? 0))[0];
-  const primarySymbol = primaryFact ? findSymbolForFact(outline.topLevelSymbols, primaryFact) : undefined;
+  const symbolSelections = rankedSymbolSelections(outline.topLevelSymbols, symbolFacts);
+  const primarySymbol = symbolSelections[0]?.symbol;
+  const packetSymbols = uniqueSymbols(symbolSelections.map((selection) => selection.symbol)).slice(0, 8);
+  const noSymbolHunkIds = uniqueStrings(symbolFacts
+    .filter((fact) => !isRealSymbolFact(fact))
+    .map((fact) => fact.hunkId));
   const context: PacketContext = {
     path: file.path,
     ...(outline.packageName !== undefined ? { packageName: outline.packageName } : {})
@@ -131,6 +143,9 @@ export async function assemblePacketContext(
     context,
     outline,
     relevantTests: tests.tests.slice(0, 5) as SymbolInfo[],
+    ...(primarySymbol !== undefined ? { primarySymbol } : {}),
+    ...(packetSymbols.length > 0 ? { packetSymbols } : {}),
+    ...(noSymbolHunkIds.length > 0 ? { noSymbolHunkIds } : {}),
     ...(outlineResult.degraded ? { degradation: outlineResult.degradationReason ?? "packet context degraded" } : {})
   };
 }
@@ -203,6 +218,78 @@ function findSymbolForFact(symbols: SymbolInfo[], fact: HunkSymbolFacts): Symbol
     return symbols.find((symbol) => fact.enclosingSymbol?.endsWith(symbol.name));
   }
   return undefined;
+}
+
+type SymbolSelection = {
+  symbol: SymbolInfo;
+  fact: HunkSymbolFacts;
+  score: number;
+};
+
+function rankedSymbolSelections(symbols: SymbolInfo[], facts: HunkSymbolFacts[]): SymbolSelection[] {
+  const selections: SymbolSelection[] = [];
+  for (const fact of facts) {
+    if (!isRealSymbolFact(fact)) {
+      continue;
+    }
+    const symbol = findSymbolForFact(symbols, fact) ?? fallbackSymbolForFact(fact);
+    if (symbol === undefined) {
+      continue;
+    }
+    selections.push({ symbol, fact, score: symbolFactScore(fact) });
+  }
+  return selections.sort((a, b) =>
+    b.score - a.score ||
+    (a.fact.changedLines[0] ?? a.fact.symbolRange?.[0] ?? Number.MAX_SAFE_INTEGER) -
+      (b.fact.changedLines[0] ?? b.fact.symbolRange?.[0] ?? Number.MAX_SAFE_INTEGER) ||
+    a.symbol.name.localeCompare(b.symbol.name)
+  );
+}
+
+function isRealSymbolFact(fact: HunkSymbolFacts): boolean {
+  return fact.enclosingSymbol !== undefined || fact.symbolRange !== undefined;
+}
+
+function symbolFactScore(fact: HunkSymbolFacts): number {
+  const changedWeight = Math.max(1, fact.changedLines.length);
+  const namedWeight = fact.enclosingSymbol !== undefined ? 100 : 0;
+  const syntacticWeight = fact.confidence === "syntactic" ? 20 : 0;
+  const sourceWeight = fact.source === "tree-sitter" ? 20 : 0;
+  const kindWeight = fact.symbolKind !== undefined ? 10 : 0;
+  return namedWeight + syntacticWeight + sourceWeight + kindWeight + changedWeight;
+}
+
+function fallbackSymbolForFact(fact: HunkSymbolFacts): SymbolInfo | undefined {
+  if (fact.enclosingSymbol === undefined || fact.symbolRange === undefined) {
+    return undefined;
+  }
+  const name = fact.enclosingSymbol.split(".").at(-1)?.replace(/^\(\*?|\)$/gu, "") || fact.enclosingSymbol;
+  return {
+    path: fact.path,
+    name,
+    kind: fact.symbolKind ?? "other",
+    ...(fact.symbolNativeKind !== undefined ? { nativeKind: fact.symbolNativeKind } : {}),
+    lineRange: fact.symbolRange,
+    ...(fact.signature !== undefined ? { signature: fact.signature } : {})
+  };
+}
+
+function uniqueSymbols(symbols: SymbolInfo[]): SymbolInfo[] {
+  const seen = new Set<string>();
+  const output: SymbolInfo[] = [];
+  for (const symbol of symbols) {
+    const key = `${symbol.path}:${symbol.name}:${symbol.lineRange.join("-")}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(symbol);
+  }
+  return output;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function isTestSymbol(filePath: string, symbol: SymbolInfo): boolean {
