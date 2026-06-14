@@ -46,6 +46,7 @@ const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
 };
 
 const KNOWN_ARTIFACTS = new Set([
+  "error.json",
   "planner-dossier.json",
   "planner-dossier-chunks.json",
   "resolved-input.json",
@@ -418,10 +419,36 @@ class RunTelemetryImpl {
     this.updateTelemetrySummary(capped);
     this.updateModelSummaryFromCacheEvent(capped);
     this.updatePipelineSummaryFromEvent(capped);
+    this.mirrorTelemetryEventToRunLog(capped);
     if (this.runDirectory) {
       this.appendJsonl("events.jsonl", capped);
     } else {
       this.eventBuffer.push(capped);
+    }
+  }
+
+  private mirrorTelemetryEventToRunLog(event: TelemetryEvent): void {
+    if (LOG_LEVEL_ORDER[event.level] < LOG_LEVEL_ORDER[this.config.logLevel]) {
+      return;
+    }
+    const data = eventLogData(event);
+    const record: LogEvent = {
+      timestamp: event.timestamp,
+      level: event.level,
+      runId: event.runId,
+      stage: event.stage,
+      event: event.message,
+      message: event.message,
+      ...(event.workerId !== undefined ? { workerId: event.workerId } : {}),
+      ...(event.packetId !== undefined ? { packetId: event.packetId } : {}),
+      ...(event.file !== undefined ? { path: event.file } : {}),
+      ...(event.lensId !== undefined ? { lensId: event.lensId } : {}),
+      ...(data !== undefined ? { data } : {})
+    };
+    if (this.runDirectory) {
+      this.appendJsonl("run.log", record);
+    } else {
+      this.logBuffer.push(record);
     }
   }
 
@@ -1163,6 +1190,26 @@ function assertAllowedArtifactPath(relPath: string): void {
     return;
   }
   throw new Error(`unknown run artifact path: ${relPath}`);
+}
+
+function eventLogData(event: TelemetryEvent): Record<string, unknown> | undefined {
+  const output: Record<string, unknown> = {};
+  if (event.eventId !== undefined) {
+    output.eventId = event.eventId;
+  }
+  if (event.durationMs !== undefined) {
+    output.durationMs = event.durationMs;
+  }
+  if (event.cacheStatus !== undefined) {
+    output.cacheStatus = event.cacheStatus;
+  }
+  if (event.lineRange !== undefined) {
+    output.lineRange = event.lineRange;
+  }
+  if (event.data !== undefined) {
+    Object.assign(output, event.data);
+  }
+  return Object.keys(output).length > 0 ? output : undefined;
 }
 
 function capTelemetryEventData(event: TelemetryEvent): TelemetryEvent {

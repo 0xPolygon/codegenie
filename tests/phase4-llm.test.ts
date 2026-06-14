@@ -305,6 +305,32 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.contexts[1]).toContain("untrusted-data label=tool-result-read_range");
     expect(telemetry.modelCalls.map((call) => call.stopReason)).toEqual(["tool_calls", "submit"]);
     expect(telemetry.modelCalls[1]?.schemaValid).toBe(true);
+    const modelCallEvents = telemetry.events.filter((event) =>
+      event.message === "model_call_queued" || event.message === "model_call_started"
+    );
+    expect(modelCallEvents.map((event) => event.message)).toEqual([
+      "model_call_queued",
+      "model_call_started",
+      "model_call_queued",
+      "model_call_started"
+    ]);
+    expect(modelCallEvents[0]).toMatchObject({
+      stage: 7,
+      level: "debug",
+      workerId: "worker-1",
+      packetId: "packet-1",
+      data: expect.objectContaining({
+        callId: "mc-000001",
+        role: "packetReview",
+        provider: "fake",
+        model: "fake-model",
+        kind: "initial",
+        attempt: 1,
+        promptChars: expect.any(Number),
+        promptHash: expect.any(String),
+        toolNames: expect.arrayContaining(["read_range", "submit_review"])
+      })
+    });
     expect(telemetry.toolCalls).toHaveLength(1);
     expect(telemetry.toolCalls[0]).toMatchObject({
       stage: 7,
@@ -459,6 +485,45 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(providerSignals).toHaveLength(2);
     expect(new Set(providerSignals).size).toBe(1);
     expect(toolSignals).toEqual([providerSignals[0]]);
+  });
+
+  it("times out provider calls even when the adapter ignores the abort signal", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async () => new Promise<PiAssistantMessage>(() => undefined)),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-provider-timeout"),
+        timeoutMs: 20
+      })
+    ).rejects.toMatchObject({
+      code: "llm_call_failed",
+      context: { reason: "timeout" }
+    });
+
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+    expect(telemetry.events.map((event) => event.message)).toEqual(
+      expect.arrayContaining(["model_call_queued", "model_call_started"])
+    );
+    expect(telemetry.modelCalls).toEqual([
+      expect.objectContaining({
+        status: "timeout",
+        stopReason: "error",
+        errorCode: "llm_call_failed"
+      })
+    ]);
   });
 
   it("enforces maxConcurrentCalls across provider misses", async () => {
@@ -802,6 +867,46 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(submitOnly.options[0]?.toolChoice).toEqual({ type: "tool", name: "submit_review" });
   });
 
+  it("normalizes tuple schemas to draft 2020-12 for provider tool registration", async () => {
+    const providerToolsSeen: Array<Array<{ name: string; parameters: Record<string, unknown> }>> = [];
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async (_model, context) => {
+        providerToolsSeen.push(context.tools as Array<{ name: string; parameters: Record<string, unknown> }>);
+        return assistant([validSubmitPlanCall("submit-plan-normalized-schema")]);
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      stage: 5,
+      prompt: "plan",
+      schema: SubmitPlanSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1000
+    });
+
+    const submitPlan = providerToolsSeen[0]?.find((tool) => tool.name === "submit_plan");
+    const coverage = (submitPlan?.parameters.properties as Record<string, unknown>).coverage as Record<string, unknown>;
+    const coverageItem = coverage.items as Record<string, unknown>;
+    const hints = (coverageItem.properties as Record<string, unknown>).surroundingContextHints as Record<string, unknown>;
+    const hintItem = hints.items as Record<string, unknown>;
+    const lineRangeSchema = (hintItem.properties as Record<string, unknown>).lineRange as Record<string, unknown>;
+    expect(lineRangeSchema).toMatchObject({
+      prefixItems: [expect.objectContaining({ type: "integer" }), expect.objectContaining({ type: "integer" })],
+      items: false
+    });
+    expect(lineRangeSchema).not.toHaveProperty("additionalItems");
+  });
+
   it("rejects tools before execution when result-character budget is exhausted", async () => {
     const telemetry = fakeTelemetry();
     const execute = vi.fn(async () => ({
@@ -1059,6 +1164,37 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.complete).toHaveBeenCalledTimes(1);
   });
 
+  it("treats Pi stopReason error messages as provider failures instead of schema failures", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistantError("400 model claude-opus-4-8 does not exist")
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured(submitReviewRequest("packet-provider-message-error"))).rejects.toMatchObject({
+      code: "llm_call_failed",
+      context: { reason: "request_error" }
+    });
+
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+    expect(telemetry.modelCalls).toEqual([
+      expect.objectContaining({
+        status: "transient_error",
+        stopReason: "error",
+        errorCode: "llm_call_failed",
+        errorMessage: "400 model claude-opus-4-8 does not exist",
+        outputChars: 2
+      })
+    ]);
+  });
+
   it("retries retryable provider errors three times and preserves trace context", async () => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     const telemetry = fakeTelemetry();
@@ -1239,6 +1375,38 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         apiKey: "fake-api-key",
         reasoningEffort: "high",
         toolChoice: { type: "function", function: { name: "submit_review" } }
+      })
+    ]);
+    expect(rawOptionsSeen[0]).not.toHaveProperty("reasoning");
+  });
+
+  it("keeps Anthropic thinking enabled and avoids forced provider tool choice for submit turns", async () => {
+    const rawOptionsSeen: Record<string, unknown>[] = [];
+    const complete = (async (_model, _context, options) => {
+      rawOptionsSeen.push(options as Record<string, unknown>);
+      return assistant([validSubmitReviewCall("submit-anthropic-forced")]);
+    }) as typeof piComplete;
+    const completeSimple = vi.fn(async () => assistant([validSubmitReviewCall("must-not-use-simple")])) as unknown as typeof piCompleteSimple;
+    const adapter = createRealPiAiAdapter({ complete, completeSimple });
+
+    await adapter.complete(
+      {
+        provider: "anthropic",
+        id: "claude-test",
+        raw: { api: "anthropic-messages", provider: "anthropic", id: "claude-test", maxTokens: 4096, reasoning: true },
+        apiKey: "fake-api-key"
+      },
+      { messages: [], tools: [] },
+      { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0 }
+    );
+
+    expect(completeSimple).not.toHaveBeenCalled();
+    expect(rawOptionsSeen).toEqual([
+      expect.objectContaining({
+        apiKey: "fake-api-key",
+        thinkingEnabled: true,
+        effort: "high",
+        toolChoice: "auto"
       })
     ]);
     expect(rawOptionsSeen[0]).not.toHaveProperty("reasoning");
@@ -1482,6 +1650,24 @@ function assistant(content: PiAssistantMessage["content"]): PiAssistantMessage {
   };
 }
 
+function assistantError(errorMessage: string): PiAssistantMessage {
+  return {
+    role: "assistant",
+    provider: "fake",
+    model: "fake-model",
+    content: [],
+    usage: {
+      input: 0,
+      output: 0,
+      totalTokens: 0,
+      cost: { total: 0 }
+    },
+    stopReason: "error",
+    errorMessage,
+    timestamp: 0
+  };
+}
+
 function validSubmitReviewCall(id: string): PiToolCall {
   return {
     type: "toolCall",
@@ -1491,6 +1677,22 @@ function validSubmitReviewCall(id: string): PiToolCall {
       findings: [],
       followUpHints: [],
       uncertainties: []
+    }
+  };
+}
+
+function validSubmitPlanCall(id: string): PiToolCall {
+  return {
+    type: "toolCall",
+    id,
+    name: "submit_plan",
+    arguments: {
+      diffUnderstanding: {
+        declaredIntent: "test",
+        inferredBehavior: "test"
+      },
+      riskAreas: [],
+      coverage: []
     }
   };
 }

@@ -739,7 +739,7 @@ describe("phase 5 pipeline regressions", () => {
     );
     expect(coverage.reasons.some((reason) =>
       reason.includes("app.ts:") && reason.includes("whole-file downgraded: combined patch exceeds 12000 chars")
-    )).toBe(true);
+    )).toBe(false);
   });
 
   it("coalesces nearby hunk-first packets and leaves distant hunks separate", async () => {
@@ -2641,13 +2641,14 @@ describe("phase 5 pipeline regressions", () => {
     ).rejects.toMatchObject({ code: "llm_call_failed", recoverable: false });
   });
 
-  it("degrades the run on persistent provider-wide non-auth failures", async () => {
+  it("fails the run on persistent provider-wide non-auth failures and writes failure logs", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
     commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
     writeRepoFile(repo, "app.ts", "export const value = 2;\n");
     commitAll(repo, "feature");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-run-")), "run-provider-failed");
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     let providerCalls = 0;
     const adapter: PiAiAdapter = {
@@ -2662,22 +2663,36 @@ describe("phase 5 pipeline regressions", () => {
     };
 
     try {
-      const result = await runReview(
-        { mode: "branch", branchName: "feature" },
-        {
-          ...config(),
-          llm: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 1 }
-        },
-        { repoRoot: repo, piAdapter: adapter }
-      );
+      await expect(
+        runReview(
+          { mode: "branch", branchName: "feature" },
+          {
+            ...config(),
+            telemetry: { ...defaultConfig.telemetry, enabled: true, logLevel: "debug", runDir: path.dirname(runArtifactDir) },
+            llm: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 1 }
+          },
+          { repoRoot: repo, runArtifactDir, piAdapter: adapter }
+        )
+      ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "transient_error" } });
 
-      expect(result.coverage).toMatchObject({
-        partial: true,
-        failedHunks: 1,
-        reviewedHunks: 0
+      expect(providerCalls).toBe(4);
+      const runJson = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8")) as {
+        outcome: { status: string; errorCode: string | null };
+      };
+      expect(runJson.outcome).toMatchObject({ status: "failed", errorCode: "llm_call_failed" });
+      const errorJson = JSON.parse(readFileSync(path.join(runArtifactDir, "error.json"), "utf8")) as {
+        errorCode: string;
+        error: string;
+        context: { reason: string };
+      };
+      expect(errorJson).toMatchObject({
+        errorCode: "llm_call_failed",
+        error: "LLM provider call failed",
+        context: { reason: "transient_error" }
       });
-      expect(result.coverage.reasons).toContain("1 hunk(s) could not be reviewed");
-      expect(providerCalls).toBe(16);
+      const runLog = readFileSync(path.join(runArtifactDir, "run.log"), "utf8");
+      expect(runLog).toContain("model_call_started");
+      expect(runLog).toContain("review_pipeline_failed");
     } finally {
       random.mockRestore();
     }

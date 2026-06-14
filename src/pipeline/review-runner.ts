@@ -248,14 +248,24 @@ export async function runReview(
     await run.finalize({ status: "completed", exitCode: 0 });
     return finalReview;
   } catch (error) {
+    const failure = reviewFailureRecord(error);
+    run.logger.error({
+      runId: run.runId,
+      stage: 0,
+      event: "review_pipeline_failed",
+      message: "review pipeline failed",
+      data: failure
+    });
     run.telemetry.event({
       stage: 0,
       level: "error",
       message: "review pipeline failed",
-      data: {
-        errorCode: isCodeninjaError(error) ? error.code : undefined,
-        error: error instanceof Error ? error.message : String(error)
-      }
+      data: failure
+    });
+    await run.telemetry.writeArtifact("error.json", {
+      schemaVersion: 1,
+      runId: run.runId,
+      ...failure
     });
     await run.telemetry.flush();
     await run.finalize({
@@ -503,6 +513,26 @@ async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function reviewFailureRecord(error: unknown): Record<string, unknown> {
+  if (isCodeninjaError(error)) {
+    return {
+      errorCode: error.code,
+      error: error.message,
+      recoverable: error.recoverable,
+      ...(error.context !== undefined ? { context: error.context } : {}),
+      ...(error.stack !== undefined ? { stack: error.stack } : {})
+    };
+  }
+  if (error instanceof Error) {
+    return {
+      errorName: error.name,
+      error: error.message,
+      ...(error.stack !== undefined ? { stack: error.stack } : {})
+    };
+  }
+  return { error: String(error) };
+}
+
 async function createPipelineServices(
   config: CodeninjaConfig,
   repoRoot: string,
@@ -740,9 +770,6 @@ export function aggregateRunCoverage(
     const packetHunks = packet?.hunks.length ?? 0;
     if (packet) {
       coverageByLevel[packet.coverage] += packetHunks;
-      if (packet.degraded) {
-        reasons.push(`${packet.path}: ${packet.degraded.reason}`);
-      }
       for (const reason of plannerFallbackCoverageReasons(packet)) {
         reasons.push(reason);
       }

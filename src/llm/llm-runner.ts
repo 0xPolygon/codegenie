@@ -89,6 +89,7 @@ export type PiAssistantMessage = {
     cost?: { total?: number };
   };
   stopReason?: string;
+  errorMessage?: string;
   timestamp?: number;
 };
 

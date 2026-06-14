@@ -21,7 +21,7 @@ import type {
   ReviewPlan,
   StaticSignal
 } from "../types.js";
-import { CodeninjaError, isCodeninjaError } from "../util/errors.js";
+import { isFatalLlmError } from "./pipeline-utils.js";
 
 type PlannerOptions = {
   lenses?: LensDescriptor[];
@@ -1033,13 +1033,4 @@ function truncate(input: string, maxChars: number): string {
 
 function dedupe<T>(items: T[]): T[] {
   return [...new Set(items)];
-}
-
-function isFatalLlmError(error: unknown): boolean {
-  return (
-    isCodeninjaError(error) &&
-    error.code === "llm_call_failed" &&
-    error.recoverable === false &&
-    error.context?.reason !== "budget_exhausted"
-  );
 }

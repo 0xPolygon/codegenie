@@ -29,6 +29,7 @@ export type LlmCallRecord = {
   stopReason: "submit" | "tool_calls" | "text" | "error";
   status: "ok" | "schema_invalid" | "transient_error" | "auth_error" | "timeout" | "aborted";
   errorCode?: CodeninjaErrorCode;
+  errorMessage?: string;
 };
 
 export interface TelemetryRecorder {

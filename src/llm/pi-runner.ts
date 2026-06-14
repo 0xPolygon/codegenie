@@ -70,6 +70,7 @@ const MAX_PROVIDER_ATTEMPTS = 4;
 const BASE_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30_000;
 const RUNNER_MESSAGE_VERSION = "pi-runner-loop-v2";
+const RECORDED_PROVIDER_FAILURE = Symbol("recordedProviderFailure");
 
 type RealPiAiAdapterDeps = {
   complete?: typeof complete;
@@ -326,8 +327,17 @@ async function completeWithCache(input: {
     const cached = await opts.cache.get(cacheKey, request.stage);
     if (cached.status === "hit") {
       const cachedResponse = scrubStoredProviderResponse(cached.response);
+      const cachedFailure = providerFailureFromMessage(cachedResponse.message, false);
       const cachedSchemaValid = schemaValidityForResponse(adapter, request, tools, cachedResponse.message);
-      if (cachedSchemaValid === false) {
+      if (cachedFailure) {
+        opts.telemetry.event({
+          stage: request.stage,
+          level: "warn",
+          message: "model_call_cache_provider_error_miss",
+          cacheStatus: "miss",
+          data: { cacheKey, error: cachedFailure.message }
+        });
+      } else if (cachedSchemaValid === false) {
         opts.telemetry.event({
           stage: request.stage,
           level: "warn",
@@ -378,20 +388,63 @@ async function completeWithCache(input: {
     const callId = nextModelCallId();
     const startedAt = Date.now();
     try {
-      const rawMessage = await providerLimit(() =>
-        adapter.complete(
-          model,
-          { messages, tools: tools.map(toolSpec) },
-          {
-            signal: taskSignal,
-            maxRetries: 0,
-            reasoning: opts.llmConfig.reasoning ?? "high",
-            toolChoice
-          }
-        )
-      );
+      recordModelCallEvent(opts, request, model, {
+        callId,
+        kind,
+        attempt,
+        promptText,
+        message: "model_call_queued",
+        toolNames: tools.map((tool) => tool.name)
+      });
+      const rawMessage = await providerLimit(() => {
+        throwIfTaskAborted(taskSignal, taskTimedOut);
+        recordModelCallEvent(opts, request, model, {
+          callId,
+          kind,
+          attempt,
+          promptText,
+          message: "model_call_started",
+          toolNames: tools.map((tool) => tool.name)
+        });
+        return awaitProviderCall(
+          () => adapter.complete(
+            model,
+            { messages, tools: tools.map(providerToolSpec) },
+            {
+              signal: taskSignal,
+              maxRetries: 0,
+              reasoning: opts.llmConfig.reasoning ?? "high",
+              toolChoice
+            }
+          ),
+          taskSignal,
+          taskTimedOut
+        );
+      });
       const message = scrubAssistantMessage(rawMessage);
       const durationMs = Date.now() - startedAt;
+      const providerFailure = providerFailureFromMessage(message, taskTimedOut());
+      if (providerFailure) {
+        recordModelCall(opts, request, model, message, {
+          callId,
+          kind,
+          attempt,
+          cacheStatus: opts.cache ? "miss" : "disabled",
+          promptText,
+          durationMs,
+          status: providerFailure.status,
+          errorCode: "llm_call_failed",
+          errorMessage: providerFailure.message
+        });
+        reportUsage(opts, request.stage, message);
+        releaseReservation();
+        lastError = providerFailure.cause;
+        if (providerFailure.status === "transient_error" && isRetryableProviderError(providerFailure.cause, attempt) && attempt < MAX_PROVIDER_ATTEMPTS) {
+          await sleep(retryDelayMs(providerFailure.cause, attempt), taskSignal, taskTimedOut);
+          continue;
+        }
+        throw markRecordedProviderFailure(toLlmError(providerFailure.cause, providerFailure.status, taskTimedOut()));
+      }
       const schemaValid = schemaValidityForResponse(adapter, request, tools, message);
       const cacheable = Boolean(opts.cache && isCacheableProviderResponse(schemaValid, message));
       const cacheStatus = cacheable ? "write" : opts.cache ? "miss" : "disabled";
@@ -426,6 +479,9 @@ async function completeWithCache(input: {
       }
       return { source: "provider", message, callId };
     } catch (cause) {
+      if (isRecordedProviderFailure(cause)) {
+        throw cause;
+      }
       releaseReservation();
       reportAttemptUsage(opts, request.stage);
       lastError = cause;
@@ -495,7 +551,7 @@ function canonicalModelRequest(input: {
     messages: input.messages,
     tools: input.tools
       .map((tool) => {
-        const spec = toolSpec(tool);
+        const spec = providerToolSpec(tool);
         return {
           name: spec.name,
           description: spec.description,
@@ -522,6 +578,15 @@ function isBudgetExhaustedError(cause: unknown): boolean {
   return cause instanceof CodeninjaError &&
     cause.code === "llm_call_failed" &&
     cause.context?.reason === "budget_exhausted";
+}
+
+function markRecordedProviderFailure(error: CodeninjaError): CodeninjaError {
+  (error as CodeninjaError & { [RECORDED_PROVIDER_FAILURE]?: true })[RECORDED_PROVIDER_FAILURE] = true;
+  return error;
+}
+
+function isRecordedProviderFailure(cause: unknown): boolean {
+  return Boolean(cause && typeof cause === "object" && (cause as { [RECORDED_PROVIDER_FAILURE]?: true })[RECORDED_PROVIDER_FAILURE] === true);
 }
 
 function truncatePromptDiagnostic(input: string): string {
@@ -601,6 +666,7 @@ function mapProviderToolChoice(model: Model<Api>, choice: unknown): unknown {
   }
   switch (model.api) {
     case "anthropic-messages":
+      return "auto";
     case "bedrock-converse-stream":
       return { type: "tool", name: choice.name };
     case "google-generative-ai":
@@ -799,6 +865,41 @@ function recordSubmitWithExtraTools(
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
 
+function recordModelCallEvent(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  model: PiModelRef,
+  meta: {
+    callId: string;
+    kind: "initial" | "tool-continuation" | "repair" | "finalize";
+    attempt: number;
+    promptText: string;
+    message: "model_call_queued" | "model_call_started";
+    toolNames: string[];
+  }
+): void {
+  opts.telemetry.event(definedRecord({
+    stage: request.stage,
+    level: "debug",
+    message: meta.message,
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      callId: meta.callId,
+      role: roleForStage(request.stage),
+      provider: model.provider,
+      model: model.id,
+      kind: meta.kind,
+      attempt: meta.attempt,
+      promptChars: meta.promptText.length,
+      promptHash: sha256Hex(meta.promptText),
+      toolCount: meta.toolNames.length,
+      toolNames: meta.toolNames,
+      candidateId: request.telemetryContext?.candidateId
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
 function recordModelCall(
   opts: CreateRunnerOptions,
   request: LlmStructuredRequest<unknown>,
@@ -813,13 +914,14 @@ function recordModelCall(
     durationMs: number;
     usage?: StoredProviderResponse["usage"];
     schemaValid?: boolean;
-    status?: "ok" | "schema_invalid";
+    status?: "ok" | "schema_invalid" | "transient_error" | "auth_error" | "timeout" | "aborted";
     errorCode?: CodeninjaErrorCode;
+    errorMessage?: string;
   }
 ): void {
   const outputText = stableJson(message.content);
   const usage = meta.usage;
-  opts.telemetry.recordModelCall(definedRecord({
+  const record = definedRecord({
     callId: meta.callId,
     stage: request.stage,
     role: roleForStage(request.stage),
@@ -843,8 +945,14 @@ function recordModelCall(
     schemaValid: meta.schemaValid,
     stopReason: stopReason(message),
     status: meta.status ?? "ok",
-    errorCode: meta.errorCode
-  }) as Parameters<CreateRunnerOptions["telemetry"]["recordModelCall"]>[0]);
+    errorCode: meta.errorCode,
+    errorMessage: meta.errorMessage ?? providerErrorMessage(message)
+  }) as Parameters<CreateRunnerOptions["telemetry"]["recordModelCall"]>[0];
+  opts.telemetry.recordModelCall(record);
+  void opts.telemetry.writeDebug("llm-calls", meta.callId, {
+    ...record,
+    response: message
+  });
 }
 
 function recordErroredModelCall(
@@ -956,8 +1064,43 @@ function scrubStoredProviderResponse(response: StoredProviderResponse): StoredPr
   return stripCredentials(response) as StoredProviderResponse;
 }
 
+type ProviderFailure = {
+  status: "transient_error" | "auth_error" | "timeout" | "aborted";
+  cause: Error & { status?: number };
+  message: string;
+};
+
+function providerFailureFromMessage(message: PiAssistantMessage, timedOut: boolean): ProviderFailure | undefined {
+  if (message.stopReason !== "error" && message.stopReason !== "aborted") {
+    return undefined;
+  }
+  const cause = providerMessageError(message);
+  const status = message.stopReason === "aborted" ? timedOut ? "timeout" : "aborted" : errorStatus(cause);
+  return {
+    status,
+    cause,
+    message: cause.message
+  };
+}
+
+function providerMessageError(message: PiAssistantMessage): Error & { status?: number } {
+  const text = providerErrorMessage(message) ?? `LLM provider returned stopReason ${message.stopReason ?? "error"}`;
+  const error = new Error(text) as Error & { status?: number };
+  const status = parseHttpStatus(text);
+  if (status !== undefined) {
+    error.status = status;
+  }
+  return error;
+}
+
+function providerErrorMessage(message: PiAssistantMessage): string | undefined {
+  return typeof message.errorMessage === "string" && message.errorMessage.trim().length > 0
+    ? truncatePromptDiagnostic(message.errorMessage.trim())
+    : undefined;
+}
+
 function stopReason(message: PiAssistantMessage): "submit" | "tool_calls" | "text" | "error" {
-  if (message.stopReason === "error") {
+  if (message.stopReason === "error" || message.stopReason === "aborted") {
     return "error";
   }
   if (message.content.some(isToolCall)) {
@@ -972,6 +1115,9 @@ function errorStatus(cause: unknown): "transient_error" | "auth_error" | "aborte
   }
   const status = errorHttpStatus(cause);
   if (status === 401 || status === 403) {
+    return "auth_error";
+  }
+  if (errorMessageMatches(cause, /\b(auth|authentication|unauthorized|forbidden|api key|permission denied)\b/i)) {
     return "auth_error";
   }
   return "transient_error";
@@ -1022,7 +1168,26 @@ function errorHttpStatus(cause: unknown): number | undefined {
   }
   const record = cause as Record<string, unknown>;
   const status = record.status ?? record.statusCode ?? record.code;
-  return typeof status === "number" ? status : undefined;
+  if (typeof status === "number") {
+    return status;
+  }
+  if (typeof status === "string") {
+    return parseHttpStatus(status);
+  }
+  return undefined;
+}
+
+function parseHttpStatus(input: string): number | undefined {
+  const match = /\b([45]\d\d)\b/.exec(input);
+  if (!match) {
+    return undefined;
+  }
+  const status = Number(match[1]);
+  return Number.isInteger(status) ? status : undefined;
+}
+
+function errorMessageMatches(cause: unknown, pattern: RegExp): boolean {
+  return cause instanceof Error && pattern.test(cause.message);
 }
 
 function isAbortError(cause: unknown): boolean {
@@ -1072,6 +1237,23 @@ async function sleep(ms: number, signal: AbortSignal, timedOut: () => boolean = 
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+async function awaitProviderCall<T>(call: () => Promise<T>, signal: AbortSignal, timedOut: () => boolean): Promise<T> {
+  if (signal.aborted) {
+    throw taskAbortError(timedOut());
+  }
+  let cleanup = (): void => undefined;
+  const abort = new Promise<never>((_resolve, reject) => {
+    const onAbort = (): void => reject(taskAbortError(timedOut()));
+    cleanup = () => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([call(), abort]);
+  } finally {
+    cleanup();
+  }
 }
 
 function retryDelayMs(cause: unknown, attempt: number): number {
@@ -1135,6 +1317,38 @@ function toolSpec(tool: ToolDefinition): { name: string; description: string; pa
     description: tool.description,
     parameters: tool.parameters
   };
+}
+
+function providerToolSpec(tool: ToolDefinition): { name: string; description: string; parameters: ToolDefinition["parameters"] } {
+  return {
+    name: tool.name,
+    description: tool.description,
+    parameters: jsonSchemaDraft202012(tool.parameters) as ToolDefinition["parameters"]
+  };
+}
+
+function jsonSchemaDraft202012(schema: unknown): unknown {
+  if (Array.isArray(schema)) {
+    return schema.map(jsonSchemaDraft202012);
+  }
+  if (!schema || typeof schema !== "object") {
+    return schema;
+  }
+
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema)) {
+    output[key] = jsonSchemaDraft202012(value);
+  }
+
+  if (Array.isArray(output.items)) {
+    output.prefixItems = output.items;
+    output.items = output.additionalItems === false ? false : jsonSchemaDraft202012(output.additionalItems);
+  }
+  delete output.additionalItems;
+  if (output.items === undefined) {
+    delete output.items;
+  }
+  return output;
 }
 
 function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"] {
