@@ -343,6 +343,171 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(usage).toHaveLength(2);
   });
 
+  it("writes redacted reconstructable model request and response debug artifacts", async () => {
+    clearRegisteredSecretsForTests();
+    registerSecret("debug-secret-token");
+    const telemetry = fakeTelemetry();
+    const usage: LlmCallUsage[] = [];
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-debug",
+          name: "read_range",
+          arguments: { path: "src/a.ts", startLine: 1, endLine: 2 }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-debug")])
+    ]);
+    const tools = fakeRepositoryTools();
+    tools.readRange = async () => ({
+      text: "line 1 debug-secret-token\nline 2",
+      meta: { backend: "text", precision: "exact", degraded: false }
+    });
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: {
+        checkpoint: () => "ok",
+        onUsage: (entry) => usage.push(entry)
+      }
+    });
+
+    await runner.runStructured({
+      stage: 7,
+      prompt: "review debug-secret-token",
+      schema: SubmitPacketReviewSchema,
+      templateVersion: "debug-template",
+      tools: buildRepositoryToolDefinitions(tools),
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 2000 },
+      timeoutMs: 1000,
+      telemetryContext: { workerId: "worker-debug", packetId: "packet-debug" }
+    });
+
+    const request1 = debugRecord(telemetry, "mc-000001.request");
+    expect(request1).toMatchObject({
+      schemaVersion: 1,
+      artifactKind: "llm_call_request",
+      callId: "mc-000001",
+      stage: 7,
+      role: "packetReview",
+      kind: "initial",
+      workerId: "worker-debug",
+      packetId: "packet-debug",
+      provider: { provider: "fake", model: "fake-model", reasoning: "high" },
+      request: {
+        runnerMessageVersion: "pi-runner-loop-v2",
+        promptTemplateVersion: "debug-template",
+        schemaName: "submit_review",
+        schemaVersion: 1,
+        toolChoice: "auto",
+        messageCount: 1
+      },
+      redaction: {
+        applied: true,
+        markerCounts: { secret: 1 }
+      }
+    });
+    const request1Text = JSON.stringify(request1);
+    expect(request1Text).not.toContain("debug-secret-token");
+    expect(request1Text).toContain("[redacted:secret]");
+    const request1Payload = request1.request as { messages: unknown[]; tools: Array<Record<string, unknown>> };
+    expect(request1Payload.messages).toEqual([
+      expect.objectContaining({ role: "user", content: "review [redacted:secret]" })
+    ]);
+    expect(request1Payload.tools.find((tool) => tool.name === "read_range")).toMatchObject({
+      localParametersHash: expect.any(String),
+      providerParametersHash: expect.any(String),
+      providerParameters: expect.any(Object)
+    });
+    expect(request1Payload.tools.find((tool) => tool.name === "submit_review")).toMatchObject({
+      providerParametersHash: expect.any(String)
+    });
+
+    const response1 = debugRecord(telemetry, "mc-000001.response");
+    expect(response1).toMatchObject({
+      schemaVersion: 1,
+      artifactKind: "llm_call_response",
+      callId: "mc-000001",
+      stage: 7,
+      stopReason: "tool_calls",
+      response: { role: "assistant" }
+    });
+
+    const request2 = debugRecord(telemetry, "mc-000002.request");
+    const request2Text = JSON.stringify(request2);
+    expect(request2Text).not.toContain("debug-secret-token");
+    expect(request2Text).toContain("[redacted:secret]");
+    expect(request2Text).toContain("tool-result-read_range");
+    const request2Payload = request2.request as { messages: Array<Record<string, unknown>> };
+    expect(request2Payload.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: "toolResult",
+          toolCallId: "tool-debug",
+          toolName: "read_range"
+        })
+      ])
+    );
+    expect(usage).toHaveLength(2);
+    clearRegisteredSecretsForTests();
+  });
+
+  it("truncates oversized model debug artifacts and records a warning", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([assistant([validSubmitReviewCall("submit-large-debug")])]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: {
+        checkpoint: () => "ok",
+        onUsage: () => undefined
+      }
+    });
+
+    await runner.runStructured({
+      stage: 7,
+      prompt: "x".repeat(1_500_100),
+      schema: SubmitPacketReviewSchema,
+      templateVersion: "debug-template",
+      timeoutMs: 1000,
+      telemetryContext: { packetId: "packet-large-debug" }
+    });
+
+    expect(debugRecord(telemetry, "mc-000001.request")).toMatchObject({
+      schemaVersion: 1,
+      artifactKind: "truncated_debug_artifact",
+      stage: 7,
+      id: "mc-000001.request",
+      kind: "llm-calls",
+      originalChars: expect.any(Number),
+      maxChars: 1_500_000,
+      preview: expect.any(String)
+    });
+    expect(telemetry.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 7,
+          level: "warn",
+          message: "debug_artifact_truncated",
+          packetId: "packet-large-debug",
+          data: expect.objectContaining({
+            kind: "llm-calls",
+            id: "mc-000001.request",
+            originalChars: expect.any(Number),
+            maxChars: 1_500_000
+          })
+        })
+      ])
+    );
+  });
+
   it("continues after a path_outside_repo repository tool rejection and records the rejected tool call", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
@@ -524,6 +689,18 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         errorCode: "llm_call_failed"
       })
     ]);
+    expect(debugRecord(telemetry, "mc-000001.request")).toMatchObject({
+      artifactKind: "llm_call_request",
+      callId: "mc-000001",
+      kind: "initial"
+    });
+    expect(debugRecord(telemetry, "mc-000001.response")).toMatchObject({
+      artifactKind: "llm_call_response",
+      callId: "mc-000001",
+      status: "timeout",
+      errorCode: "llm_call_failed",
+      error: { message: "LLM model task timed out" }
+    });
   });
 
   it("enforces maxConcurrentCalls across provider misses", async () => {
@@ -734,6 +911,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["write", "hit"]);
     expect(telemetry.modelCalls[0]?.promptHash).toBe(telemetry.modelCalls[1]?.promptHash);
     expect(telemetry.modelCalls[0]?.promptChars).toBe(telemetry.modelCalls[1]?.promptChars);
+    expect(debugRecord(telemetry, "mc-000002.request")).toMatchObject({
+      artifactKind: "llm_call_request",
+      cache: expect.objectContaining({ enabled: true, status: "hit" })
+    });
   });
 
   it("replays cache hits without provider budget usage or checkpoint calls", async () => {
@@ -779,6 +960,15 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         costUSD: 0.01
       })
     ]);
+    expect(debugRecord(telemetry, "mc-000001.request")).toMatchObject({
+      artifactKind: "llm_call_request",
+      cache: expect.objectContaining({ enabled: true, status: "hit", key: expect.any(String) })
+    });
+    expect(debugRecord(telemetry, "mc-000001.response")).toMatchObject({
+      artifactKind: "llm_call_response",
+      cacheStatus: "hit",
+      response: { role: "assistant" }
+    });
   });
 
   it("includes the run fingerprint in model-call cache keys", async () => {
@@ -1737,10 +1927,12 @@ function fakeTelemetry(): {
   events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">>;
   modelCalls: Array<Omit<LlmCallRecord, "runId">>;
   toolCalls: Array<Omit<ToolCallRecord, "runId" | "toolCallId" | "timestamp">>;
+  debugWrites: Array<{ kind: "llm-calls" | "tool-calls"; id: string; record: unknown }>;
 } {
   const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
   const modelCalls: Array<Omit<LlmCallRecord, "runId">> = [];
   const toolCalls: Array<Omit<ToolCallRecord, "runId" | "toolCallId" | "timestamp">> = [];
+  const debugWrites: Array<{ kind: "llm-calls" | "tool-calls"; id: string; record: unknown }> = [];
   return {
     recorder: {
       runId: "phase4-llm",
@@ -1752,13 +1944,22 @@ function fakeTelemetry(): {
         return `tc-${toolCalls.length}`;
       },
       writeArtifact: vi.fn(async () => undefined),
-      writeDebug: vi.fn(async () => undefined),
+      writeDebug: vi.fn(async (kind, id, record) => {
+        debugWrites.push({ kind, id, record });
+      }),
       flush: vi.fn(async () => undefined)
     },
     events,
     modelCalls,
-    toolCalls
+    toolCalls,
+    debugWrites
   };
+}
+
+function debugRecord(telemetry: ReturnType<typeof fakeTelemetry>, id: string): Record<string, unknown> {
+  const write = telemetry.debugWrites.find((entry) => entry.kind === "llm-calls" && entry.id === id);
+  expect(write).toBeDefined();
+  return write?.record as Record<string, unknown>;
 }
 
 function fakeLogger(): Logger {

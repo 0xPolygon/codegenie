@@ -19,7 +19,7 @@ import { getOAuthApiKey, getOAuthProvider, type OAuthCredentials } from "@earend
 import pLimit from "p-limit";
 import { createFileAuthStorage } from "../provider/provider-services.js";
 import { getCodeninjaPaths } from "../config/paths.js";
-import { registerSecret, stripCredentials } from "../telemetry/redaction.js";
+import { registerSecret, stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import type { ReviewStage, ToolCallRecord, ToolResultMeta } from "../types.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../provider/provider-services.js";
@@ -60,6 +60,10 @@ type ToolRunOutcome = {
   durationMs: number;
 };
 
+type ModelCallKind = "initial" | "tool-continuation" | "repair" | "finalize";
+
+type ModelCallCacheStatus = "hit" | "miss" | "disabled" | "write";
+
 const NO_REPOSITORY_TOOL_BUDGET = {
   maxToolCalls: 0,
   maxInvestigationRounds: 0,
@@ -70,6 +74,8 @@ const MAX_PROVIDER_ATTEMPTS = 4;
 const BASE_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30_000;
 const RUNNER_MESSAGE_VERSION = "pi-runner-loop-v2";
+const DEBUG_ARTIFACT_SCHEMA_VERSION = 1;
+const MAX_DEBUG_ARTIFACT_CHARS = 1_500_000;
 const RECORDED_PROVIDER_FAILURE = Symbol("recordedProviderFailure");
 
 type RealPiAiAdapterDeps = {
@@ -347,6 +353,17 @@ async function completeWithCache(input: {
         });
       } else {
         const callId = nextModelCallId();
+        writeModelCallRequestDebug(opts, request, model, {
+          callId,
+          kind,
+          attempt: 1,
+          cacheStatus: "hit",
+          cacheKey,
+          promptText,
+          messages,
+          tools,
+          toolChoice
+        });
         recordModelCall(opts, request, model, cachedResponse.message, {
           callId,
           kind,
@@ -387,6 +404,17 @@ async function completeWithCache(input: {
 
     const callId = nextModelCallId();
     const startedAt = Date.now();
+    writeModelCallRequestDebug(opts, request, model, {
+      callId,
+      kind,
+      attempt,
+      cacheStatus: opts.cache ? "miss" : "disabled",
+      cacheKey,
+      promptText,
+      messages,
+      tools,
+      toolChoice
+    });
     try {
       recordModelCallEvent(opts, request, model, {
         callId,
@@ -494,7 +522,8 @@ async function completeWithCache(input: {
         promptText,
         durationMs: Date.now() - startedAt,
         status,
-        errorCode: "llm_call_failed"
+        errorCode: "llm_call_failed",
+        errorMessage: cause instanceof Error ? truncatePromptDiagnostic(cause.message) : truncatePromptDiagnostic(String(cause))
       });
       if (status === "transient_error" && isRetryableProviderError(cause, attempt) && attempt < MAX_PROVIDER_ATTEMPTS) {
         await sleep(retryDelayMs(cause, attempt), taskSignal, taskTimedOut);
@@ -865,13 +894,184 @@ function recordSubmitWithExtraTools(
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
 
+function writeModelCallRequestDebug(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  model: PiModelRef,
+  meta: {
+    callId: string;
+    kind: ModelCallKind;
+    attempt: number;
+    cacheStatus: ModelCallCacheStatus;
+    cacheKey: string;
+    promptText: string;
+    messages: ConversationMessage[];
+    tools: ToolDefinition[];
+    toolChoice: ToolChoiceMode;
+  }
+): void {
+  const schemaName = submitToolNameForStage(request.stage);
+  writeDebugRecord(opts, request, "llm-calls", `${meta.callId}.request`, definedRecord({
+    schemaVersion: DEBUG_ARTIFACT_SCHEMA_VERSION,
+    artifactKind: "llm_call_request",
+    callId: meta.callId,
+    stage: request.stage,
+    role: roleForStage(request.stage),
+    kind: meta.kind,
+    attempt: meta.attempt,
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    candidateId: request.telemetryContext?.candidateId,
+    provider: {
+      provider: model.provider,
+      model: model.id,
+      reasoning: opts.llmConfig.reasoning ?? "high"
+    },
+    cache: definedRecord({
+      enabled: Boolean(opts.cache),
+      status: meta.cacheStatus,
+      key: opts.cache ? meta.cacheKey : undefined
+    }),
+    request: {
+      runnerMessageVersion: RUNNER_MESSAGE_VERSION,
+      promptTemplateVersion: request.templateVersion,
+      schemaName,
+      schemaVersion: SCHEMA_VERSIONS[schemaName],
+      toolBudget: request.toolBudget ?? NO_REPOSITORY_TOOL_BUDGET,
+      toolChoice: meta.toolChoice,
+      promptChars: meta.promptText.length,
+      promptHash: sha256Hex(meta.promptText),
+      messageCount: meta.messages.length,
+      messages: meta.messages,
+      tools: toolDebugSpecs(meta.tools)
+    }
+  }));
+}
+
+function writeModelCallResponseDebug(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  id: string,
+  record: Omit<LlmCallRecordForDebug, "runId">,
+  payload: { response?: PiAssistantMessage; error?: { message: string } }
+): void {
+  writeDebugRecord(opts, request, "llm-calls", id, {
+    schemaVersion: DEBUG_ARTIFACT_SCHEMA_VERSION,
+    artifactKind: "llm_call_response",
+    ...record,
+    ...payload
+  });
+}
+
+type LlmCallRecordForDebug = Parameters<CreateRunnerOptions["telemetry"]["recordModelCall"]>[0];
+
+function writeDebugRecord(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  kind: "llm-calls" | "tool-calls",
+  id: string,
+  artifact: unknown
+): void {
+  const { value, summary } = stripCredentialsWithSummary(artifact);
+  const redactedRecord = appendRedactionSummary(value, summary);
+  const finalRecord = fitDebugArtifact(opts, request, kind, id, redactedRecord);
+  void opts.telemetry.writeDebug(kind, id, finalRecord).catch((cause) => {
+    opts.telemetry.event(definedRecord({
+      stage: request.stage,
+      level: "warn",
+      message: "debug_artifact_write_failed",
+      workerId: request.telemetryContext?.workerId,
+      packetId: request.telemetryContext?.packetId,
+      data: definedRecord({
+        kind,
+        id,
+        candidateId: request.telemetryContext?.candidateId,
+        error: cause instanceof Error ? stripCredentials(cause.message) : stripCredentials(String(cause))
+      })
+    }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+  });
+}
+
+function appendRedactionSummary(value: unknown, summary: { applied: boolean; markerCounts: Record<string, number> }): unknown {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return { ...(value as Record<string, unknown>), redaction: summary };
+  }
+  return { value, redaction: summary };
+}
+
+function fitDebugArtifact(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  kind: "llm-calls" | "tool-calls",
+  id: string,
+  artifact: unknown
+): unknown {
+  const serialized = stableJson(artifact);
+  if (serialized.length <= MAX_DEBUG_ARTIFACT_CHARS) {
+    return artifact;
+  }
+  opts.telemetry.event(definedRecord({
+    stage: request.stage,
+    level: "warn",
+    message: "debug_artifact_truncated",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      kind,
+      id,
+      originalChars: serialized.length,
+      maxChars: MAX_DEBUG_ARTIFACT_CHARS,
+      candidateId: request.telemetryContext?.candidateId
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+  return {
+    schemaVersion: DEBUG_ARTIFACT_SCHEMA_VERSION,
+    artifactKind: "truncated_debug_artifact",
+    stage: request.stage,
+    id,
+    kind,
+    originalChars: serialized.length,
+    maxChars: MAX_DEBUG_ARTIFACT_CHARS,
+    preview: serialized.slice(0, Math.max(0, MAX_DEBUG_ARTIFACT_CHARS - 256)),
+    redaction: valueRedactionSummary(artifact)
+  };
+}
+
+function valueRedactionSummary(artifact: unknown): { applied: boolean; markerCounts: Record<string, number> } {
+  if (artifact && typeof artifact === "object" && !Array.isArray(artifact)) {
+    const redaction = (artifact as Record<string, unknown>).redaction;
+    if (redaction && typeof redaction === "object") {
+      return redaction as { applied: boolean; markerCounts: Record<string, number> };
+    }
+  }
+  return { applied: false, markerCounts: {} };
+}
+
+function toolDebugSpecs(tools: ToolDefinition[]): Array<Record<string, unknown>> {
+  return tools
+    .map((tool) => {
+      const localSpec = toolSpec(tool);
+      const providerSpec = providerToolSpec(tool);
+      const localParametersText = stableJson(localSpec.parameters);
+      const providerParametersText = stableJson(providerSpec.parameters);
+      return {
+        name: providerSpec.name,
+        description: providerSpec.description,
+        localParametersHash: sha256Hex(localParametersText),
+        providerParametersHash: sha256Hex(providerParametersText),
+        providerParameters: providerSpec.parameters
+      };
+    })
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
 function recordModelCallEvent(
   opts: CreateRunnerOptions,
   request: LlmStructuredRequest<unknown>,
   model: PiModelRef,
   meta: {
     callId: string;
-    kind: "initial" | "tool-continuation" | "repair" | "finalize";
+    kind: ModelCallKind;
     attempt: number;
     promptText: string;
     message: "model_call_queued" | "model_call_started";
@@ -907,9 +1107,9 @@ function recordModelCall(
   message: PiAssistantMessage,
   meta: {
     callId: string;
-    kind: "initial" | "tool-continuation" | "repair" | "finalize";
+    kind: ModelCallKind;
     attempt: number;
-    cacheStatus: "hit" | "miss" | "disabled" | "write";
+    cacheStatus: ModelCallCacheStatus;
     promptText: string;
     durationMs: number;
     usage?: StoredProviderResponse["usage"];
@@ -949,10 +1149,8 @@ function recordModelCall(
     errorMessage: meta.errorMessage ?? providerErrorMessage(message)
   }) as Parameters<CreateRunnerOptions["telemetry"]["recordModelCall"]>[0];
   opts.telemetry.recordModelCall(record);
-  void opts.telemetry.writeDebug("llm-calls", meta.callId, {
-    ...record,
-    response: message
-  });
+  writeModelCallResponseDebug(opts, request, meta.callId, record, { response: message });
+  writeModelCallResponseDebug(opts, request, `${meta.callId}.response`, record, { response: message });
 }
 
 function recordErroredModelCall(
@@ -961,16 +1159,17 @@ function recordErroredModelCall(
   model: PiModelRef,
   meta: {
     callId: string;
-    kind: "initial" | "tool-continuation" | "repair" | "finalize";
+    kind: ModelCallKind;
     attempt: number;
-    cacheStatus: "hit" | "miss" | "disabled" | "write";
+    cacheStatus: ModelCallCacheStatus;
     promptText: string;
     durationMs: number;
     status: "transient_error" | "auth_error" | "timeout" | "aborted";
     errorCode: CodeninjaErrorCode;
+    errorMessage?: string;
   }
 ): void {
-  opts.telemetry.recordModelCall(definedRecord({
+  const record = definedRecord({
     callId: meta.callId,
     stage: request.stage,
     role: roleForStage(request.stage),
@@ -989,8 +1188,16 @@ function recordErroredModelCall(
     cacheStatus: meta.cacheStatus,
     stopReason: "error",
     status: meta.status,
-    errorCode: meta.errorCode
-  }) as Parameters<CreateRunnerOptions["telemetry"]["recordModelCall"]>[0]);
+    errorCode: meta.errorCode,
+    errorMessage: meta.errorMessage
+  }) as Parameters<CreateRunnerOptions["telemetry"]["recordModelCall"]>[0];
+  opts.telemetry.recordModelCall(record);
+  writeModelCallResponseDebug(opts, request, meta.callId, record, {
+    error: { message: meta.errorMessage ?? "LLM provider call failed" }
+  });
+  writeModelCallResponseDebug(opts, request, `${meta.callId}.response`, record, {
+    error: { message: meta.errorMessage ?? "LLM provider call failed" }
+  });
 }
 
 function schemaValidityForResponse(

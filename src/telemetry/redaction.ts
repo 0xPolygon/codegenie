@@ -29,6 +29,23 @@ export function stripCredentials<T>(input: T): T {
   return stripValue(input, new WeakSet()) as T;
 }
 
+export type RedactionSummary = {
+  applied: boolean;
+  markerCounts: Record<string, number>;
+};
+
+export function stripCredentialsWithSummary<T>(input: T): { value: T; summary: RedactionSummary } {
+  const value = stripCredentials(input);
+  const markerCounts = countRedactionMarkers(stableInspectableText(value));
+  return {
+    value,
+    summary: {
+      applied: Object.keys(markerCounts).length > 0,
+      markerCounts
+    }
+  };
+}
+
 function stripValue(input: unknown, active: WeakSet<object>): unknown {
   if (typeof input === "string") {
     return stripString(input);
@@ -86,4 +103,21 @@ function stripString(input: string): string {
     .replace(AWS_ACCESS_KEY_PATTERN, "[redacted:pattern]")
     .replace(JWT_PATTERN, "[redacted:pattern]")
     .replace(BEARER_VALUE_PATTERN, "$1[redacted:pattern]");
+}
+
+function stableInspectableText(input: unknown): string {
+  try {
+    return JSON.stringify(input) ?? "";
+  } catch {
+    return String(input);
+  }
+}
+
+function countRedactionMarkers(input: string): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const match of input.matchAll(/\[redacted(?::([a-z0-9_-]+))?\]/gi)) {
+    const key = match[1] ?? "url-userinfo";
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
 }
