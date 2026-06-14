@@ -6,7 +6,10 @@ export function renderCoverageSummaryLines(coverage: RunCoverageStatus): string[
   if (coverage.partial) {
     lines.push(`Reviewed ${coverage.reviewedHunks}/${coverage.totalHunks} hunks before stopping.`);
   }
-  lines.push(`Skipped: ${coverage.skippedHunks}. Failed: ${coverage.failedHunks}. Verification incomplete: ${coverage.verificationIncompleteCount}.`);
+  const statusLine = coverageStatusLine(coverage);
+  if (statusLine !== undefined) {
+    lines.push(statusLine);
+  }
   lines.push(`Coverage levels: deep ${coverage.coverageByLevel.deep}, normal ${coverage.coverageByLevel.normal}, light ${coverage.coverageByLevel.light}, skip ${coverage.coverageByLevel.skip}.`);
   if (coverage.degradedPlanning) {
     lines.push("Planning was degraded and deterministic fallbacks were used.");
@@ -51,9 +54,18 @@ function coverageHeadline(coverage: RunCoverageStatus): string {
   if (!coverage.partial) {
     return `Reviewed ${coverage.reviewedHunks}/${coverage.totalHunks} hunks.`;
   }
-  const unreviewed = Math.max(0, coverage.failedHunks);
-  if (coverage.budgetStopped) {
+  const unreviewed = unreviewedHunkCount(coverage);
+  if (coverage.budgetStopped && unreviewed > 0) {
     return `Partial review: ${unreviewed} ${hunkNoun(unreviewed)} ${unreviewed === 1 ? "was" : "were"} not reviewed because budget was exhausted before dispatch.`;
+  }
+  if (coverage.budgetStopped) {
+    return "Partial review: budget was exhausted after dispatched review work completed.";
+  }
+  if (unreviewed === 0 && coverage.verificationIncompleteCount > 0) {
+    return `Review completed with incomplete verification for ${coverage.verificationIncompleteCount} candidate${coverage.verificationIncompleteCount === 1 ? "" : "s"}.`;
+  }
+  if (unreviewed === 0 && coverage.degradedPlanning) {
+    return "Review completed with degraded planning.";
   }
   return `Partial review: ${unreviewed} ${hunkNoun(unreviewed)} did not complete review.`;
 }
@@ -62,8 +74,26 @@ function hunkNoun(count: number): string {
   return count === 1 ? "hunk" : "hunks";
 }
 
+function coverageStatusLine(coverage: RunCoverageStatus): string | undefined {
+  const parts: string[] = [];
+  if (coverage.skippedHunks > 0) {
+    parts.push(`skipped ${coverage.skippedHunks}`);
+  }
+  if (coverage.failedHunks > 0) {
+    parts.push(`failed ${coverage.failedHunks}`);
+  }
+  if (coverage.verificationIncompleteCount > 0) {
+    parts.push(`verification incomplete ${coverage.verificationIncompleteCount}`);
+  }
+  return parts.length > 0 ? `Incomplete work: ${parts.join(", ")}.` : undefined;
+}
+
+function unreviewedHunkCount(coverage: RunCoverageStatus): number {
+  return Math.max(0, coverage.totalHunks - coverage.reviewedHunks - coverage.skippedHunks);
+}
+
 function humanizeCoverageReason(reason: string): string {
-  if (reason.includes("budget_stopped")) {
+  if (reason === "budget_stopped before dispatch") {
     return "budget stopped before dispatch";
   }
   return reason.replaceAll("_", " ");
@@ -77,6 +107,9 @@ function shouldRenderCoverageReason(reason: string, coverage: RunCoverageStatus)
     return false;
   }
   if (coverage.unreviewedHunksByPath && /^\d+ hunk\(s\) could not be reviewed$/u.test(reason)) {
+    return false;
+  }
+  if (coverage.verificationIncompleteCount > 0 && /^\d+ candidate verification\(s\) were incomplete$/u.test(reason)) {
     return false;
   }
   return true;

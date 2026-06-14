@@ -4042,7 +4042,7 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0]?.mergedCandidateIds).toEqual(["finding-1"]);
-    expect(result.findings[0]?.finalBody).toContain("Evidence: bad");
+    expect(result.findings[0]?.finalBody).toContain("Changed code: bad");
     expect(result.findings[0]?.finalBody).not.toContain("invented wording");
     expect(events).toContainEqual(expect.objectContaining({
       stage: 10,
@@ -4167,6 +4167,176 @@ describe("phase 5 pipeline regressions", () => {
 
     expect([...result.findings, ...result.summaryOnlyFindings]).toHaveLength(1);
     expect([...result.findings, ...result.summaryOnlyFindings][0]?.mergedCandidateIds.sort()).toEqual(["finding-1", "finding-2"]);
+  });
+
+  it("merges summary-only duplicate root causes into changed-line fallback findings", async () => {
+    const anchored = {
+      ...fakeFinding(),
+      id: "finding-1",
+      title: "Relay decimals are applied twice",
+      severity: "high" as const,
+      confidence: "high" as const,
+      failureMode: "The relay amount is converted with token decimals twice, so relayed values are inflated before settlement.",
+      whyThisMatters: "Users can receive a materially different amount than the route preview promised.",
+      suggestedFix: "Keep the amount in base units after the first conversion and pass that through settlement.",
+      evidence: { changedCode: "relayAmount = applyDecimals(applyDecimals(amount, decimals), decimals)" }
+    };
+    const { anchor: _anchor, ...summaryBase } = anchored;
+    const summaryOnly = {
+      ...summaryBase,
+      id: "finding-2",
+      changedLine: false,
+      producedBy: { ...anchored.producedBy, packetId: "packet-2" },
+      evidence: {
+        changedCode: "settleRelay(applyDecimals(relayAmount, decimals))",
+        relatedCode: [{
+          path: "app.ts",
+          lines: "relayAmount = applyDecimals(applyDecimals(amount, decimals), decimals)",
+          whyRelevant: "same double-decimal conversion root cause"
+        }]
+      }
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [summaryOnly, anchored], verdicts: [] },
+      fakePlan(),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 2,
+        reviewedHunks: 2,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 2, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async () => {
+            throw new Error("force deterministic fallback");
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.summaryOnlyFindings).toHaveLength(0);
+    expect(result.findings[0]).toMatchObject({
+      id: "finding-1",
+      publication: "inline",
+      mergedCandidateIds: expect.arrayContaining(["finding-1", "finding-2"])
+    });
+    expect(result.findings[0]?.finalBody).toContain("Also reported in app.ts");
+  });
+
+  it("renders deterministic fallback findings without repeated field blocks", async () => {
+    const finding = {
+      ...fakeFinding(),
+      failureMode: "A canceled request can keep retrying after the worker is stopped.",
+      whyThisMatters: "Deploys can leave background work running longer than intended.",
+      suggestedFix: "Thread the original context into the retry loop.",
+      suggestedTest: "Cancel the context before the second retry and assert the worker exits."
+    };
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async () => {
+            throw new Error("force deterministic fallback");
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+    const markdown = renderMarkdownReview(result);
+
+    expect(markdown).not.toContain("Failure mode:");
+    expect(markdown).not.toContain("Why it matters:");
+    expect(markdown.match(/A canceled request can keep retrying after the worker is stopped\./gu)).toHaveLength(1);
+    expect(markdown).toContain("Suggested fix: Thread the original context into the retry loop.");
+    expect(markdown).toContain("Suggested test: Cancel the context before the second retry and assert the worker exits.");
+  });
+
+  it("groups unreviewed partial coverage by file and suppresses default planner reasons", () => {
+    const hunkOne = fakePacket().hunks[0];
+    if (!hunkOne) {
+      throw new Error("expected hunk");
+    }
+    const hunkTwo = { ...hunkOne, hunkId: "h2", newStart: 10, changedNewLineNumbers: [10] };
+    const packets = [
+      { ...fakePacket({ id: "packet-1" }), hunks: [{ ...hunkOne, hunkId: "h1" }] },
+      { ...fakePacket({ id: "packet-2" }), hunks: [hunkTwo] }
+    ];
+    const coverage = aggregateRunCoverage(
+      fakePlanForHunks(["h1", "h2"]),
+      [],
+      [
+        { packetId: "packet-1", lenses: ["core/code-review"], findings: [], followUpHints: [], uncertainties: [], status: "skipped" },
+        { packetId: "packet-2", lenses: ["core/code-review"], findings: [], followUpHints: [], uncertainties: [], status: "failed" }
+      ],
+      { incompleteCount: 1 },
+      nullTelemetry(),
+      {
+        allFiles: [fakeMultiHunkFile([{ id: "h1", newStart: 1, content: "one" }, { id: "h2", newStart: 10, content: "two" }])],
+        packets,
+        budgetStopped: true,
+        budgetStop: { reason: "max_model_calls", stage: 7, elapsedMs: 1, timeoutMs: 1000, hardTimeoutMs: 2000, remainingRuntimeMs: 999, reservedTailRuntimeMs: 100, modelCalls: 3, inFlightModelCalls: 0, projectedModelCalls: 3 }
+      }
+    );
+    coverage.reasons.push("planner_missing_coverage: defaulted h1");
+    coverage.reasons.push("default_coverage: normal fallback");
+
+    const markdown = renderMarkdownReview({
+      summary: "Review completed.",
+      coverage,
+      findings: [],
+      summaryOnlyFindings: [],
+      needsHumanAttention: [],
+      noFindings: true
+    });
+
+    expect(coverage.unreviewedHunksByPath).toEqual([
+      expect.objectContaining({ path: "app.ts", hunks: 2, reason: expect.stringContaining("multiple reasons") })
+    ]);
+    expect(markdown).toContain("Partial review: 2 hunks were not reviewed because budget was exhausted before dispatch.");
+    expect(markdown).toContain("- app.ts: 2 hunks (multiple reasons:");
+    expect(markdown).toContain("Verification incomplete for 1 candidate.");
+    expect(markdown).not.toContain("planner_missing_coverage");
+    expect(markdown).not.toContain("default_coverage");
   });
 
   it("pre-trims composer input over forty findings and records suppressed selections", async () => {

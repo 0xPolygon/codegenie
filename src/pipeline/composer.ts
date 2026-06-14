@@ -249,7 +249,7 @@ function groupFindings(findings: CandidateFinding[], packetsById: Map<string, Re
       findings: members
     }))
     .sort((a, b) => compareFindings(a.representative, b.representative));
-  return mergeProximityGroups(exactGroups, packetsById);
+  return mergeRootCauseGroups(mergeProximityGroups(exactGroups, packetsById), packetsById);
 }
 
 function expandClusterFindingIds(findingIds: string[], known: Map<string, CandidateFinding>): string[] {
@@ -274,7 +274,7 @@ function fallbackComposition(groups: FindingGroup[]): SubmitComposition {
     summary: groups.length === 0 ? "No credible findings." : `Found ${groups.length} verified issue${groups.length === 1 ? "" : "s"}.`,
     composedFindings: groups.map((group) => ({
       findingIds: group.findings.map((finding) => finding.id),
-      finalBody: templateBody(group.representative),
+      finalBody: templateBody(group.representative, group.findings),
       publication: group.representative.anchor ? "inline" : "summary-only"
     }))
   };
@@ -356,6 +356,21 @@ function mergeProximityGroups(groups: FindingGroup[], packetsById: Map<string, R
   return merged.sort((a, b) => compareFindings(a.representative, b.representative));
 }
 
+function mergeRootCauseGroups(groups: FindingGroup[], packetsById: Map<string, ReviewPacket>): FindingGroup[] {
+  const merged: FindingGroup[] = [];
+  for (const group of groups) {
+    const existing = merged.find((candidate) => rootCauseGroupsMatch(candidate, group, packetsById));
+    if (!existing) {
+      merged.push({ ...group, fingerprint: rootCauseGroupFingerprint(group, packetsById) });
+      continue;
+    }
+    existing.findings.push(...group.findings);
+    existing.representative = strongest(existing.findings);
+    existing.fingerprint = rootCauseGroupFingerprint(existing, packetsById);
+  }
+  return merged.sort((a, b) => compareFindings(a.representative, b.representative));
+}
+
 function nearbyGroup(a: FindingGroup, b: FindingGroup): boolean {
   return a.representative.path === b.representative.path &&
     a.representative.category === b.representative.category &&
@@ -367,6 +382,168 @@ function anchorsWithinFiveLines(a: CandidateFinding["anchor"], b: CandidateFindi
     return false;
   }
   return a.side === b.side && a.path === b.path && Math.abs(a.line - b.line) <= 5;
+}
+
+function rootCauseGroupsMatch(a: FindingGroup, b: FindingGroup, packetsById: Map<string, ReviewPacket>): boolean {
+  if (a.representative.path !== b.representative.path || a.representative.category !== b.representative.category) {
+    return false;
+  }
+  const similarity = rootCauseSimilarity(a.findings, b.findings);
+  if (similarity < 0.5) {
+    return false;
+  }
+  if (a.findings.some((left) => b.findings.some((right) => anchorsWithinFiveLines(left.anchor, right.anchor)))) {
+    return true;
+  }
+  if (groupsShareSymbol(a, b, packetsById)) {
+    return similarity >= 0.55;
+  }
+  if (groupsShareLocation(a, b, packetsById)) {
+    return similarity >= 0.6;
+  }
+  if (groupHasAnchor(a) !== groupHasAnchor(b)) {
+    return similarity >= 0.65;
+  }
+  return similarity >= 0.8;
+}
+
+function rootCauseSimilarity(a: CandidateFinding[], b: CandidateFinding[]): number {
+  let best = 0;
+  for (const left of a) {
+    for (const right of b) {
+      best = Math.max(best, tokenJaccard(rootCauseTerms(left), rootCauseTerms(right)));
+    }
+  }
+  return best;
+}
+
+function tokenJaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) {
+    return 0;
+  }
+  let intersection = 0;
+  for (const term of a) {
+    if (b.has(term)) {
+      intersection += 1;
+    }
+  }
+  return intersection / (a.size + b.size - intersection);
+}
+
+function rootCauseTerms(finding: CandidateFinding): Set<string> {
+  return normalizedTerms([
+    finding.title,
+    finding.failureMode,
+    finding.whyThisMatters,
+    finding.suggestedFix ?? "",
+    finding.evidence.changedCode,
+    ...(finding.evidence.relatedCode ?? []).flatMap((related) => [related.whyRelevant, related.lines])
+  ].join(" "));
+}
+
+function normalizedTerms(text: string): Set<string> {
+  const stopWords = new Set([
+    "about",
+    "after",
+    "also",
+    "before",
+    "because",
+    "being",
+    "cannot",
+    "code",
+    "could",
+    "from",
+    "have",
+    "into",
+    "line",
+    "more",
+    "should",
+    "that",
+    "this",
+    "when",
+    "where",
+    "will",
+    "with",
+    "without",
+    "would"
+  ]);
+  return new Set(text
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/gu, " ")
+    .split(/\s+/u)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 4 && !stopWords.has(term)));
+}
+
+function groupHasAnchor(group: FindingGroup): boolean {
+  return group.findings.some((finding) => finding.anchor !== undefined);
+}
+
+function groupsShareSymbol(a: FindingGroup, b: FindingGroup, packetsById: Map<string, ReviewPacket>): boolean {
+  const left = groupSymbols(a, packetsById);
+  const right = groupSymbols(b, packetsById);
+  return left.size > 0 && [...left].some((symbol) => right.has(symbol));
+}
+
+function groupSymbols(group: FindingGroup, packetsById: Map<string, ReviewPacket>): Set<string> {
+  return new Set(group.findings.flatMap((finding) => symbolsForFinding(finding, packetsById)).map(normalize));
+}
+
+function symbolsForFinding(finding: CandidateFinding, packetsById: Map<string, ReviewPacket>): string[] {
+  const packet = packetsById.get(finding.producedBy.packetId);
+  const symbols = new Set<string>();
+  if (finding.anchor?.hunkId) {
+    const symbol = symbolForHunk(packet, finding.anchor.hunkId);
+    if (symbol !== undefined) {
+      symbols.add(symbol);
+    }
+  }
+  for (const hunk of matchingEvidenceHunks(finding, packet)) {
+    const symbol = symbolForHunk(packet, hunk.hunkId);
+    if (symbol !== undefined) {
+      symbols.add(symbol);
+    }
+  }
+  const packetSymbol = uniquePacketSymbol(packet);
+  if (packetSymbol !== undefined) {
+    symbols.add(packetSymbol);
+  }
+  return [...symbols];
+}
+
+function groupsShareLocation(a: FindingGroup, b: FindingGroup, packetsById: Map<string, ReviewPacket>): boolean {
+  const left = groupLocationKeys(a, packetsById);
+  const right = groupLocationKeys(b, packetsById);
+  return left.size > 0 && [...left].some((location) => right.has(location));
+}
+
+function groupLocationKeys(group: FindingGroup, packetsById: Map<string, ReviewPacket>): Set<string> {
+  const keys = new Set<string>();
+  for (const finding of group.findings) {
+    const packet = packetsById.get(finding.producedBy.packetId);
+    keys.add(`packet:${finding.producedBy.packetId}`);
+    if (finding.anchor?.hunkId) {
+      keys.add(`hunk:${finding.anchor.hunkId}`);
+    }
+    for (const hunk of matchingEvidenceHunks(finding, packet)) {
+      keys.add(`hunk:${hunk.hunkId}`);
+    }
+  }
+  return keys;
+}
+
+function rootCauseGroupFingerprint(group: FindingGroup, packetsById: Map<string, ReviewPacket>): string {
+  const terms = [...new Set(group.findings.flatMap((finding) => [...rootCauseTerms(finding)]))]
+    .sort()
+    .slice(0, 24)
+    .join(" ");
+  const symbols = [...groupSymbols(group, packetsById)].sort().join(",");
+  return sha256Hex([
+    normalize(group.representative.path),
+    normalize(group.representative.category),
+    normalize(terms),
+    normalize(symbols)
+  ].join("\0"));
 }
 
 function applyCaps(findings: FinalFinding[], config: CodeninjaConfig): { findings: FinalFinding[]; suppressedReasons: Map<string, string>; downgradeReasons: Map<string, string> } {
@@ -532,17 +709,56 @@ function indentBlock(text: string): string {
   return text.split(/\r?\n/u).map((line) => `  ${line}`).join("\n");
 }
 
-function templateBody(finding: CandidateFinding): string {
+function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding]): string {
+  const evidenceLines = mergedEvidenceLines(finding, groupedFindings);
   return [
-    finding.failureMode,
+    `Impact: ${finding.failureMode}`,
+    finding.whyThisMatters,
     "",
-    `Evidence: ${finding.evidence.changedCode}`,
-    `Why it matters: ${finding.whyThisMatters}`,
-    finding.suggestedFix ? `Suggested fix: ${finding.suggestedFix}` : "",
-    finding.suggestedTest ? `Suggested test: ${finding.suggestedTest}` : ""
+    "Evidence:",
+    ...evidenceLines,
+    finding.suggestedFix ? "" : undefined,
+    finding.suggestedFix ? `Suggested fix: ${finding.suggestedFix}` : undefined,
+    finding.suggestedTest ? `Suggested test: ${finding.suggestedTest}` : undefined
   ]
-    .filter(Boolean)
+    .filter((line): line is string => line !== undefined && line.length > 0)
     .join("\n");
+}
+
+function mergedEvidenceLines(representative: CandidateFinding, groupedFindings: CandidateFinding[]): string[] {
+  const lines: string[] = [];
+  const seen = new Set<string>();
+  const add = (line: string) => {
+    const normalized = normalizeSnippet(line);
+    if (normalized.length === 0 || seen.has(normalized)) {
+      return;
+    }
+    seen.add(normalized);
+    lines.push(`- ${line}`);
+  };
+  add(`Changed code: ${compactEvidence(representative.evidence.changedCode)}`);
+  for (const related of representative.evidence.relatedCode ?? []) {
+    add(`${related.path}: ${compactEvidence(related.lines)} (${related.whyRelevant})`);
+  }
+  for (const finding of groupedFindings) {
+    if (finding.id === representative.id) {
+      continue;
+    }
+    add(`Also reported in ${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}: ${compactEvidence(finding.evidence.changedCode)}`);
+    for (const related of finding.evidence.relatedCode ?? []) {
+      add(`${related.path}: ${compactEvidence(related.lines)} (${related.whyRelevant})`);
+    }
+  }
+  return lines.length > 0 ? lines : ["- Evidence was present in the reviewed diff."];
+}
+
+function compactEvidence(text: string): string {
+  const compact = text
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" ");
+  return compact.length > 240 ? `${compact.slice(0, 237)}...` : compact;
 }
 
 function fingerprintFinding(finding: CandidateFinding, packetsById: Map<string, ReviewPacket> = new Map()): string {
@@ -581,7 +797,10 @@ function inferredHunkId(finding: CandidateFinding, packet: ReviewPacket | undefi
   return packet.hunks.length === 1 ? packet.hunks[0]?.hunkId : undefined;
 }
 
-function matchingEvidenceHunks(finding: CandidateFinding, packet: ReviewPacket): ReviewPacket["hunks"] {
+function matchingEvidenceHunks(finding: CandidateFinding, packet: ReviewPacket | undefined): ReviewPacket["hunks"] {
+  if (!packet) {
+    return [];
+  }
   const needle = normalizeSnippet(finding.evidence.changedCode);
   if (needle.length === 0) {
     return [];

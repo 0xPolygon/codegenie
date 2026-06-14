@@ -848,7 +848,7 @@ function unreviewedCoverageGaps(
   packets: ReviewPacket[],
   allFiles: DiffFile[]
 ): Array<{ path: string; hunks: number; reason: string }> {
-  const gaps = new Map<string, { path: string; hunks: number; reason: string }>();
+  const gaps = new Map<string, { path: string; hunks: number; reasons: Set<string> }>();
   const packetByHunk = new Map<string, ReviewPacket>();
   for (const packet of packets) {
     for (const hunk of packet.hunks) {
@@ -880,21 +880,37 @@ function unreviewedCoverageGaps(
     }
   }
 
-  return [...gaps.values()].sort((a, b) => a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason));
+  return [...gaps.values()]
+    .map((gap) => ({
+      path: gap.path,
+      hunks: gap.hunks,
+      reason: summarizeCoverageGapReasons([...gap.reasons].sort())
+    }))
+    .sort((a, b) => a.path.localeCompare(b.path) || a.reason.localeCompare(b.reason));
 }
 
 function addCoverageGap(
-  gaps: Map<string, { path: string; hunks: number; reason: string }>,
+  gaps: Map<string, { path: string; hunks: number; reasons: Set<string> }>,
   path: string,
   reason: string
 ): void {
-  const key = `${path}\0${reason}`;
-  const current = gaps.get(key);
+  const current = gaps.get(path);
   if (current) {
     current.hunks += 1;
+    current.reasons.add(reason);
     return;
   }
-  gaps.set(key, { path, hunks: 1, reason });
+  gaps.set(path, { path, hunks: 1, reasons: new Set([reason]) });
+}
+
+function summarizeCoverageGapReasons(reasons: string[]): string {
+  if (reasons.length === 0) {
+    return "not reviewed";
+  }
+  if (reasons.length === 1) {
+    return reasons[0] ?? "not reviewed";
+  }
+  return `multiple reasons: ${reasons.slice(0, 3).join("; ")}${reasons.length > 3 ? "; ..." : ""}`;
 }
 
 function plannerFallbackCoverageReasons(packet: ReviewPacket): string[] {

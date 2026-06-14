@@ -32,14 +32,6 @@ function renderFindings(title: string, findings: FinalFinding[]): string {
     lines.push(`File: ${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`);
     lines.push(`Confidence: ${finding.confidence}`);
     lines.push("", finding.finalBody.trim() || finding.failureMode);
-    lines.push("", `Failure mode: ${finding.failureMode}`);
-    lines.push(`Why it matters: ${finding.whyThisMatters}`);
-    if (finding.suggestedFix) {
-      lines.push(`Suggested fix: ${finding.suggestedFix}`);
-    }
-    if (finding.suggestedTest) {
-      lines.push(`Suggested test: ${finding.suggestedTest}`);
-    }
   }
   return lines.join("\n");
 }
