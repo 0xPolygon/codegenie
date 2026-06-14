@@ -16,7 +16,7 @@ Remaining deferred follow-ups:
 
 Run-quality follow-ups from the trails-api real run, in intended fix order:
 - [x] Issue 8: Persist reconstructable, redacted LLM request/debug artifacts so eval/debug runs can inspect prompts, tools, tool results, and provider payload shape. Plan: `plans/01-issue-8-debug-artifacts.md`.
-- [ ] Issue 7: Fix token/cost telemetry so prompt cache read/write tokens are explicit and Anthropic usage is not misread as near-zero input tokens. Plan: `plans/02-issue-7-token-telemetry.md`.
+- [x] Issue 7: Fix token/cost telemetry so prompt cache read/write tokens are explicit and Anthropic usage is not misread as near-zero input tokens. Plan: `plans/02-issue-7-token-telemetry.md`.
 - [ ] Issue 2: Reduce Stage 6 packet context degradation, especially `symbol not found` and oversized-symbol truncation on important packets. Plan: `plans/03-issue-2-packet-context-degradation.md`.
 - [ ] Issue 3: Treat planner hunk coverage as targeted overrides, not mandatory exhaustive output, and remove noisy `planner_missing_coverage` reporting. Plan: `plans/04-issue-3-planner-coverage-semantics.md`.
 - [ ] Issue 4: Reduce Stage 7 cost and repeated investigation by tightening lens routing, tool budgets, and one-call fast paths. Plan: `plans/05-issue-4-stage-7-cost.md`.

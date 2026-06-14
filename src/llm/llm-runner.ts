@@ -9,9 +9,17 @@ export type LlmRole = "planner" | "packetReview" | "verifier" | "composer";
 export type LlmCallUsage = {
   stage: ReviewStage;
   inputTokens?: number;
+  uncachedInputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  billableInputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
   costUSD?: number;
+  inputCostUSD?: number;
+  outputCostUSD?: number;
+  cacheReadCostUSD?: number;
+  cacheWriteCostUSD?: number;
   providerCalls: 1;
 };
 
@@ -85,8 +93,16 @@ export type PiAssistantMessage = {
   usage?: {
     input?: number;
     output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
     totalTokens?: number;
-    cost?: { total?: number };
+    cost?: {
+      input?: number;
+      output?: number;
+      cacheRead?: number;
+      cacheWrite?: number;
+      total?: number;
+    };
   };
   stopReason?: string;
   errorMessage?: string;
@@ -119,9 +135,17 @@ export type StoredProviderResponse = {
   finishReason: string;
   usage: {
     inputTokens?: number;
+    uncachedInputTokens?: number;
+    cacheReadTokens?: number;
+    cacheWriteTokens?: number;
+    billableInputTokens?: number;
     outputTokens?: number;
     totalTokens?: number;
     costUSD?: number;
+    inputCostUSD?: number;
+    outputCostUSD?: number;
+    cacheReadCostUSD?: number;
+    cacheWriteCostUSD?: number;
   };
 };
 

@@ -64,6 +64,21 @@ type ModelCallKind = "initial" | "tool-continuation" | "repair" | "finalize";
 
 type ModelCallCacheStatus = "hit" | "miss" | "disabled" | "write";
 
+type NormalizedUsage = {
+  inputTokens?: number;
+  uncachedInputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  billableInputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  costUSD?: number;
+  inputCostUSD?: number;
+  outputCostUSD?: number;
+  cacheReadCostUSD?: number;
+  cacheWriteCostUSD?: number;
+};
+
 const NO_REPOSITORY_TOOL_BUDGET = {
   maxToolCalls: 0,
   maxInvestigationRounds: 0,
@@ -953,7 +968,7 @@ function writeModelCallResponseDebug(
   request: LlmStructuredRequest<unknown>,
   id: string,
   record: Omit<LlmCallRecordForDebug, "runId">,
-  payload: { response?: PiAssistantMessage; error?: { message: string } }
+  payload: { response?: PiAssistantMessage; error?: { message: string }; usage?: Record<string, unknown> }
 ): void {
   writeDebugRecord(opts, request, "llm-calls", id, {
     schemaVersion: DEBUG_ARTIFACT_SCHEMA_VERSION,
@@ -1120,7 +1135,7 @@ function recordModelCall(
   }
 ): void {
   const outputText = stableJson(message.content);
-  const usage = meta.usage;
+  const usage = normalizeUsage(meta.usage ?? message.usage);
   const record = definedRecord({
     callId: meta.callId,
     stage: request.stage,
@@ -1136,10 +1151,18 @@ function recordModelCall(
     promptHash: sha256Hex(meta.promptText),
     outputChars: outputText.length,
     outputHash: sha256Hex(outputText),
-    inputTokens: usage !== undefined ? usage.inputTokens : message.usage?.input,
-    outputTokens: usage !== undefined ? usage.outputTokens : message.usage?.output,
-    totalTokens: usage !== undefined ? usage.totalTokens : message.usage?.totalTokens,
-    costUSD: usage !== undefined ? usage.costUSD : message.usage?.cost?.total,
+    inputTokens: usage?.inputTokens,
+    uncachedInputTokens: usage?.uncachedInputTokens,
+    cacheReadTokens: usage?.cacheReadTokens,
+    cacheWriteTokens: usage?.cacheWriteTokens,
+    billableInputTokens: usage?.billableInputTokens,
+    outputTokens: usage?.outputTokens,
+    totalTokens: usage?.totalTokens,
+    costUSD: usage?.costUSD,
+    inputCostUSD: usage?.inputCostUSD,
+    outputCostUSD: usage?.outputCostUSD,
+    cacheReadCostUSD: usage?.cacheReadCostUSD,
+    cacheWriteCostUSD: usage?.cacheWriteCostUSD,
     durationMs: meta.durationMs,
     cacheStatus: meta.cacheStatus,
     schemaValid: meta.schemaValid,
@@ -1149,8 +1172,9 @@ function recordModelCall(
     errorMessage: meta.errorMessage ?? providerErrorMessage(message)
   }) as Parameters<CreateRunnerOptions["telemetry"]["recordModelCall"]>[0];
   opts.telemetry.recordModelCall(record);
-  writeModelCallResponseDebug(opts, request, meta.callId, record, { response: message });
-  writeModelCallResponseDebug(opts, request, `${meta.callId}.response`, record, { response: message });
+  const usageDebug = usageDebugPayload(model, message.usage, usage);
+  writeModelCallResponseDebug(opts, request, meta.callId, record, { response: message, usage: usageDebug });
+  writeModelCallResponseDebug(opts, request, `${meta.callId}.response`, record, { response: message, usage: usageDebug });
 }
 
 function recordErroredModelCall(
@@ -1227,20 +1251,11 @@ function isCacheableProviderResponse(schemaValid: boolean | undefined, message: 
 }
 
 function reportUsage(opts: CreateRunnerOptions, stage: ReviewStage, message: PiAssistantMessage): void {
-  const usage: LlmCallUsage = { stage, providerCalls: 1 };
-  if (message.usage?.input !== undefined) {
-    usage.inputTokens = message.usage.input;
-  }
-  if (message.usage?.output !== undefined) {
-    usage.outputTokens = message.usage.output;
-  }
-  if (message.usage?.totalTokens !== undefined) {
-    usage.totalTokens = message.usage.totalTokens;
-  }
-  if (message.usage?.cost?.total !== undefined) {
-    usage.costUSD = message.usage.cost.total;
-  }
-  opts.hooks.onUsage(usage);
+  opts.hooks.onUsage(definedRecord({
+    stage,
+    providerCalls: 1,
+    ...normalizeUsage(message.usage)
+  }) as LlmCallUsage);
 }
 
 function reportAttemptUsage(opts: CreateRunnerOptions, stage: ReviewStage): void {
@@ -1248,19 +1263,98 @@ function reportAttemptUsage(opts: CreateRunnerOptions, stage: ReviewStage): void
 }
 
 function cacheEntry(stage: ReviewStage, message: PiAssistantMessage): StoredProviderResponse {
+  const usage = normalizeUsage(message.usage);
   return {
     cacheSchemaVersion: MODEL_CALL_CACHE_SCHEMA_VERSION,
     createdAt: new Date().toISOString(),
     stage,
     message,
     finishReason: message.stopReason ?? stopReason(message),
-    usage: definedRecord({
-      inputTokens: message.usage?.input,
-      outputTokens: message.usage?.output,
-      totalTokens: message.usage?.totalTokens,
-      costUSD: message.usage?.cost?.total
-    }) as StoredProviderResponse["usage"]
+    usage: definedRecord(usage ?? {}) as StoredProviderResponse["usage"]
   };
+}
+
+function normalizeUsage(input: unknown): NormalizedUsage | undefined {
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+  const record = input as Record<string, unknown>;
+  const cost = record.cost && typeof record.cost === "object" ? record.cost as Record<string, unknown> : {};
+  const cacheReadTokens = firstNumber(
+    record.cacheReadTokens,
+    record.cacheRead,
+    record.cache_read,
+    record.cache_read_input_tokens,
+    record.cachedTokens
+  );
+  const cacheWriteTokens = firstNumber(
+    record.cacheWriteTokens,
+    record.cacheWrite,
+    record.cache_write,
+    record.cache_creation_input_tokens,
+    record.cacheCreation
+  );
+  const storedInputTokens = firstNumber(record.inputTokens);
+  const hasExplicitCacheTokens = cacheReadTokens !== undefined || cacheWriteTokens !== undefined;
+  const uncachedInputTokens = firstNumber(record.uncachedInputTokens, record.input) ??
+    (hasExplicitCacheTokens ? undefined : storedInputTokens);
+  const computedInputTokens = sumDefined(uncachedInputTokens, cacheReadTokens, cacheWriteTokens);
+  const inputTokens = computedInputTokens ?? storedInputTokens;
+  const outputTokens = firstNumber(record.outputTokens, record.output);
+  const computedTotalTokens = sumDefined(inputTokens, outputTokens);
+  const totalTokens = firstNumber(record.totalTokens) ?? computedTotalTokens;
+  const billableInputTokens = firstNumber(record.billableInputTokens) ?? inputTokens;
+  const inputCostUSD = firstNumber(record.inputCostUSD, cost.input);
+  const outputCostUSD = firstNumber(record.outputCostUSD, cost.output);
+  const cacheReadCostUSD = firstNumber(record.cacheReadCostUSD, cost.cacheRead);
+  const cacheWriteCostUSD = firstNumber(record.cacheWriteCostUSD, cost.cacheWrite);
+  const costUSD = firstNumber(record.costUSD, cost.total) ??
+    sumDefined(inputCostUSD, outputCostUSD, cacheReadCostUSD, cacheWriteCostUSD);
+  const normalized = definedRecord({
+    inputTokens,
+    uncachedInputTokens,
+    cacheReadTokens: cacheReadTokens ?? (inputTokens !== undefined ? 0 : undefined),
+    cacheWriteTokens: cacheWriteTokens ?? (inputTokens !== undefined ? 0 : undefined),
+    billableInputTokens,
+    outputTokens,
+    totalTokens,
+    costUSD,
+    inputCostUSD,
+    outputCostUSD,
+    cacheReadCostUSD,
+    cacheWriteCostUSD
+  }) as NormalizedUsage;
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+function usageDebugPayload(model: PiModelRef, rawUsage: unknown, normalized: NormalizedUsage | undefined): Record<string, unknown> {
+  return definedRecord({
+    usageProvider: model.provider,
+    usageRaw: rawUsage,
+    usageNormalized: normalized
+  });
+}
+
+function firstNumber(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function sumDefined(...values: Array<number | undefined>): number | undefined {
+  let sawValue = false;
+  let total = 0;
+  for (const value of values) {
+    if (value === undefined) {
+      continue;
+    }
+    sawValue = true;
+    total += value;
+  }
+  return sawValue ? total : undefined;
 }
 
 function scrubAssistantMessage(message: PiAssistantMessage): PiAssistantMessage {

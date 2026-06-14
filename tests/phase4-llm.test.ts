@@ -508,6 +508,69 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     );
   });
 
+  it("normalizes prompt-cache usage into explicit token and cost fields", async () => {
+    const telemetry = fakeTelemetry();
+    const usage: LlmCallUsage[] = [];
+    const cache = {
+      get: vi.fn(async (_key: string) => ({ status: "miss" as const })),
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+    };
+    const response = assistant([validSubmitReviewCall("submit-cache-usage")]);
+    response.usage = {
+      input: 10,
+      output: 5,
+      cacheRead: 100,
+      cacheWrite: 2,
+      totalTokens: 117,
+      cost: {
+        input: 0.01,
+        output: 0.02,
+        cacheRead: 0.003,
+        cacheWrite: 0.004,
+        total: 0.037
+      }
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter: scriptedAdapter([response]),
+      cache,
+      hooks: {
+        checkpoint: () => "ok",
+        onUsage: (entry) => usage.push(entry)
+      }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-cache-usage"));
+
+    const expectedUsage = {
+      inputTokens: 112,
+      uncachedInputTokens: 10,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 2,
+      billableInputTokens: 112,
+      outputTokens: 5,
+      totalTokens: 117,
+      costUSD: 0.037,
+      inputCostUSD: 0.01,
+      outputCostUSD: 0.02,
+      cacheReadCostUSD: 0.003,
+      cacheWriteCostUSD: 0.004
+    };
+    expect(telemetry.modelCalls[0]).toMatchObject(expectedUsage);
+    expect(usage[0]).toMatchObject(expectedUsage);
+    expect(cache.put.mock.calls[0]?.[1].usage).toMatchObject(expectedUsage);
+    expect(debugRecord(telemetry, "mc-000001.response")).toMatchObject({
+      usage: {
+        usageProvider: "fake",
+        usageRaw: response.usage,
+        usageNormalized: expectedUsage
+      }
+    });
+  });
+
   it("continues after a path_outside_repo repository tool rejection and records the rejected tool call", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([

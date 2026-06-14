@@ -20,9 +20,17 @@ export type LlmCallRecord = {
   outputChars: number;
   outputHash: string;
   inputTokens?: number;
+  uncachedInputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  billableInputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
   costUSD?: number;
+  inputCostUSD?: number;
+  outputCostUSD?: number;
+  cacheReadCostUSD?: number;
+  cacheWriteCostUSD?: number;
   durationMs: number;
   cacheStatus: "hit" | "miss" | "disabled" | "write";
   schemaValid?: boolean;

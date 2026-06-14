@@ -257,6 +257,8 @@ function isMessageUsage(input: unknown): input is PiAssistantMessage["usage"] {
       isRecord(input) &&
       isOptionalNumber(input.input) &&
       isOptionalNumber(input.output) &&
+      isOptionalNumber(input.cacheRead) &&
+      isOptionalNumber(input.cacheWrite) &&
       isOptionalNumber(input.totalTokens) &&
       isMessageCost(input.cost)
     )
@@ -264,16 +266,31 @@ function isMessageUsage(input: unknown): input is PiAssistantMessage["usage"] {
 }
 
 function isMessageCost(input: unknown): input is NonNullable<NonNullable<PiAssistantMessage["usage"]>["cost"]> {
-  return input === undefined || (isRecord(input) && isOptionalNumber(input.total));
+  return input === undefined || (
+    isRecord(input) &&
+    isOptionalNumber(input.input) &&
+    isOptionalNumber(input.output) &&
+    isOptionalNumber(input.cacheRead) &&
+    isOptionalNumber(input.cacheWrite) &&
+    isOptionalNumber(input.total)
+  );
 }
 
 function isUsage(input: unknown): input is StoredProviderResponse["usage"] {
   return (
     isRecord(input) &&
     isOptionalNumber(input.inputTokens) &&
+    isOptionalNumber(input.uncachedInputTokens) &&
+    isOptionalNumber(input.cacheReadTokens) &&
+    isOptionalNumber(input.cacheWriteTokens) &&
+    isOptionalNumber(input.billableInputTokens) &&
     isOptionalNumber(input.outputTokens) &&
     isOptionalNumber(input.totalTokens) &&
-    isOptionalNumber(input.costUSD)
+    isOptionalNumber(input.costUSD) &&
+    isOptionalNumber(input.inputCostUSD) &&
+    isOptionalNumber(input.outputCostUSD) &&
+    isOptionalNumber(input.cacheReadCostUSD) &&
+    isOptionalNumber(input.cacheWriteCostUSD)
   );
 }
 

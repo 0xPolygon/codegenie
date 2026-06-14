@@ -76,9 +76,17 @@ type ModelStageSummary = {
   count: number;
   providerCalls: number;
   inputTokens: number;
+  uncachedInputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  billableInputTokens: number;
   outputTokens: number;
   totalTokens: number;
   costUSD: number;
+  inputCostUSD: number;
+  outputCostUSD: number;
+  cacheReadCostUSD: number;
+  cacheWriteCostUSD: number;
   unknownCostCalls: number;
   cache: CacheCounts;
   retryAttempts: number;
@@ -233,9 +241,17 @@ class RunTelemetryImpl {
     totalCalls: 0,
     providerCalls: 0,
     inputTokens: 0,
+    uncachedInputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    billableInputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
     costUSD: 0,
+    inputCostUSD: 0,
+    outputCostUSD: 0,
+    cacheReadCostUSD: 0,
+    cacheWriteCostUSD: 0,
     unknownCostCalls: 0,
     cache: emptyCacheCounts(),
     retryAttempts: 0,
@@ -577,6 +593,10 @@ class RunTelemetryImpl {
     this.modelSummary.providerCalls += providerCallCount;
     if (providerCallCount > 0) {
       this.modelSummary.inputTokens += record.inputTokens ?? 0;
+      this.modelSummary.uncachedInputTokens += record.uncachedInputTokens ?? 0;
+      this.modelSummary.cacheReadTokens += record.cacheReadTokens ?? 0;
+      this.modelSummary.cacheWriteTokens += record.cacheWriteTokens ?? 0;
+      this.modelSummary.billableInputTokens += record.billableInputTokens ?? 0;
       this.modelSummary.outputTokens += record.outputTokens ?? 0;
       this.modelSummary.totalTokens += record.totalTokens ?? 0;
     }
@@ -590,6 +610,10 @@ class RunTelemetryImpl {
       this.modelSummary.unknownCostCalls += 1;
     } else {
       this.modelSummary.costUSD += record.costUSD;
+      this.modelSummary.inputCostUSD += record.inputCostUSD ?? 0;
+      this.modelSummary.outputCostUSD += record.outputCostUSD ?? 0;
+      this.modelSummary.cacheReadCostUSD += record.cacheReadCostUSD ?? 0;
+      this.modelSummary.cacheWriteCostUSD += record.cacheWriteCostUSD ?? 0;
     }
 
     const stage = String(record.stage);
@@ -601,6 +625,10 @@ class RunTelemetryImpl {
     bucket.providerCalls += providerCallCount;
     if (providerCallCount > 0) {
       bucket.inputTokens += record.inputTokens ?? 0;
+      bucket.uncachedInputTokens += record.uncachedInputTokens ?? 0;
+      bucket.cacheReadTokens += record.cacheReadTokens ?? 0;
+      bucket.cacheWriteTokens += record.cacheWriteTokens ?? 0;
+      bucket.billableInputTokens += record.billableInputTokens ?? 0;
       bucket.outputTokens += record.outputTokens ?? 0;
       bucket.totalTokens += record.totalTokens ?? 0;
     }
@@ -616,6 +644,10 @@ class RunTelemetryImpl {
       bucket.unknownCostCalls += 1;
     } else {
       bucket.costUSD += record.costUSD;
+      bucket.inputCostUSD += record.inputCostUSD ?? 0;
+      bucket.outputCostUSD += record.outputCostUSD ?? 0;
+      bucket.cacheReadCostUSD += record.cacheReadCostUSD ?? 0;
+      bucket.cacheWriteCostUSD += record.cacheWriteCostUSD ?? 0;
     }
   }
 
@@ -658,6 +690,22 @@ class RunTelemetryImpl {
     return {
       totalCostUSD: this.modelSummary.costUSD,
       unknownCostCalls: this.modelSummary.unknownCostCalls,
+      tokens: {
+        inputTokens: this.modelSummary.inputTokens,
+        uncachedInputTokens: this.modelSummary.uncachedInputTokens,
+        cacheReadTokens: this.modelSummary.cacheReadTokens,
+        cacheWriteTokens: this.modelSummary.cacheWriteTokens,
+        billableInputTokens: this.modelSummary.billableInputTokens,
+        outputTokens: this.modelSummary.outputTokens,
+        totalTokens: this.modelSummary.totalTokens
+      },
+      cost: {
+        inputCostUSD: this.modelSummary.inputCostUSD,
+        outputCostUSD: this.modelSummary.outputCostUSD,
+        cacheReadCostUSD: this.modelSummary.cacheReadCostUSD,
+        cacheWriteCostUSD: this.modelSummary.cacheWriteCostUSD,
+        totalCostUSD: this.modelSummary.costUSD
+      },
       byStage: this.modelSummary.byStage
     };
   }
@@ -697,9 +745,17 @@ class RunTelemetryImpl {
       providerCalls: this.modelSummary.providerCalls,
       toolCalls: this.toolSummary.totalCalls,
       inputTokens: this.modelSummary.inputTokens,
+      uncachedInputTokens: this.modelSummary.uncachedInputTokens,
+      cacheReadTokens: this.modelSummary.cacheReadTokens,
+      cacheWriteTokens: this.modelSummary.cacheWriteTokens,
+      billableInputTokens: this.modelSummary.billableInputTokens,
       outputTokens: this.modelSummary.outputTokens,
       totalTokens: this.modelSummary.totalTokens,
       totalCostUSD: this.modelSummary.costUSD,
+      inputCostUSD: this.modelSummary.inputCostUSD,
+      outputCostUSD: this.modelSummary.outputCostUSD,
+      cacheReadCostUSD: this.modelSummary.cacheReadCostUSD,
+      cacheWriteCostUSD: this.modelSummary.cacheWriteCostUSD,
       unknownCostCalls: this.modelSummary.unknownCostCalls,
       cache: this.modelSummary.cache,
       retryAttempts: this.modelSummary.retryAttempts,
@@ -827,9 +883,17 @@ function emptyModelStageSummary(): ModelStageSummary {
     count: 0,
     providerCalls: 0,
     inputTokens: 0,
+    uncachedInputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    billableInputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
     costUSD: 0,
+    inputCostUSD: 0,
+    outputCostUSD: 0,
+    cacheReadCostUSD: 0,
+    cacheWriteCostUSD: 0,
     unknownCostCalls: 0,
     cache: emptyCacheCounts(),
     retryAttempts: 0,

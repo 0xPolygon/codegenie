@@ -355,6 +355,145 @@ describe("run telemetry", () => {
     clearRegisteredSecretsForTests();
   });
 
+  it("aggregates prompt-cache token and cost telemetry without counting cache-hit replays", async () => {
+    const repoRoot = tempDir();
+    const run = createRunTelemetry({
+      telemetryConfig: {
+        ...defaultConfig.telemetry,
+        logLevel: "debug"
+      },
+      idFactory: () => "20260611-120002-cache-token-summary"
+    });
+    const attached = await run.attachRunDirectory(repoRoot);
+
+    run.recorder.recordModelCall({
+      callId: "mc-provider",
+      stage: 7,
+      role: "packetReview",
+      model: "model",
+      provider: "anthropic",
+      kind: "initial",
+      attempt: 1,
+      promptChars: 12,
+      promptHash: "prompt",
+      outputChars: 5,
+      outputHash: "output",
+      inputTokens: 112,
+      uncachedInputTokens: 10,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 2,
+      billableInputTokens: 112,
+      outputTokens: 5,
+      totalTokens: 117,
+      costUSD: 0.037,
+      inputCostUSD: 0.01,
+      outputCostUSD: 0.02,
+      cacheReadCostUSD: 0.003,
+      cacheWriteCostUSD: 0.004,
+      durationMs: 10,
+      cacheStatus: "miss",
+      stopReason: "submit",
+      status: "ok"
+    });
+    run.recorder.recordModelCall({
+      callId: "mc-cache-hit",
+      stage: 7,
+      role: "packetReview",
+      model: "model",
+      provider: "anthropic",
+      kind: "initial",
+      attempt: 1,
+      promptChars: 12,
+      promptHash: "prompt",
+      outputChars: 5,
+      outputHash: "output",
+      inputTokens: 999,
+      uncachedInputTokens: 999,
+      cacheReadTokens: 999,
+      cacheWriteTokens: 999,
+      billableInputTokens: 999,
+      outputTokens: 999,
+      totalTokens: 3996,
+      costUSD: 9.99,
+      inputCostUSD: 9.99,
+      outputCostUSD: 9.99,
+      cacheReadCostUSD: 9.99,
+      cacheWriteCostUSD: 9.99,
+      durationMs: 0,
+      cacheStatus: "hit",
+      stopReason: "submit",
+      status: "ok"
+    });
+
+    await run.finalize({ status: "completed", exitCode: 0 });
+
+    const runJson = readJson(path.join(attached.runDir, "run.json"));
+    expect(runJson.totals).toMatchObject({
+      modelCallRecords: 2,
+      providerCalls: 1,
+      inputTokens: 112,
+      uncachedInputTokens: 10,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 2,
+      billableInputTokens: 112,
+      outputTokens: 5,
+      totalTokens: 117,
+      totalCostUSD: 0.037,
+      inputCostUSD: 0.01,
+      outputCostUSD: 0.02,
+      cacheReadCostUSD: 0.003,
+      cacheWriteCostUSD: 0.004,
+      cache: { hit: 1, miss: 1, disabled: 0, write: 0 }
+    });
+
+    const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
+    expect(modelSummary).toMatchObject({
+      totalRecords: 2,
+      providerCalls: 1,
+      inputTokens: 112,
+      uncachedInputTokens: 10,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 2,
+      billableInputTokens: 112,
+      outputTokens: 5,
+      totalTokens: 117,
+      costUSD: 0.037,
+      inputCostUSD: 0.01,
+      outputCostUSD: 0.02,
+      cacheReadCostUSD: 0.003,
+      cacheWriteCostUSD: 0.004
+    });
+    expect(modelSummary.byStage["7"]).toMatchObject({
+      providerCalls: 1,
+      inputTokens: 112,
+      uncachedInputTokens: 10,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 2,
+      billableInputTokens: 112
+    });
+
+    const costProfile = readJson(path.join(attached.runDir, "cost-profile.json"));
+    expect(costProfile).toMatchObject({
+      totalCostUSD: 0.037,
+      tokens: {
+        inputTokens: 112,
+        uncachedInputTokens: 10,
+        cacheReadTokens: 100,
+        cacheWriteTokens: 2,
+        billableInputTokens: 112,
+        outputTokens: 5,
+        totalTokens: 117
+      },
+      cost: {
+        inputCostUSD: 0.01,
+        outputCostUSD: 0.02,
+        cacheReadCostUSD: 0.003,
+        cacheWriteCostUSD: 0.004,
+        totalCostUSD: 0.037
+      }
+    });
+  });
+
   it("folds successful cache write events into model-call cache summaries", async () => {
     const repoRoot = tempDir();
     const run = createRunTelemetry({
