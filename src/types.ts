@@ -399,6 +399,7 @@ export type PacketHunk = {
 
 export type CoverageLevel = "deep" | "normal" | "light" | "skip";
 export type PacketKind = "hunk" | "coalesced-hunks" | "file-diff" | "whole-file";
+export type ReviewProfile = "simple" | "standard" | "investigate";
 
 export type ToolBudget = {
   maxToolCalls: number;
@@ -446,6 +447,7 @@ export type ReviewPacket = {
   language: string;
   reviewPriority: ReviewPriority;
   coverage: Exclude<CoverageLevel, "skip">;
+  reviewProfile: ReviewProfile;
   lenses: string[];
   hunks: PacketHunk[];
   symbolFacts: HunkSymbolFacts[];

@@ -1053,6 +1053,81 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("prunes the tests lens from routine source packets but keeps it for test packets", async () => {
+    const sourceFile = fakeDiffFile("src/app.ts", "export const value = 2;");
+    const testFile = fakeDiffFile("src/app.test.ts", "test('value', () => expect(value).toBe(2));");
+    const plan: ReviewPlan = {
+      diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
+      riskAreas: [],
+      coverage: [
+        {
+          hunkId: "h-source",
+          path: "src/app.ts",
+          coverage: "normal",
+          lenses: ["lang/typescript", "core/code-review", "core/tests"],
+          surroundingContextHints: [],
+          reason: "source change"
+        },
+        {
+          hunkId: "h-test",
+          path: "src/app.test.ts",
+          coverage: "normal",
+          lenses: ["lang/typescript", "core/code-review", "core/tests"],
+          surroundingContextHints: [],
+          reason: "test change"
+        }
+      ]
+    };
+    sourceFile.hunks[0]!.id = "h-source";
+    testFile.hunks[0]!.id = "h-test";
+
+    const packets = await buildReviewPackets(
+      plan,
+      [sourceFile, testFile],
+      [
+        fakeFacts("src/app.ts", "per-hunk"),
+        { ...fakeFacts("src/app.test.ts", "per-hunk"), testStatus: "test" }
+      ],
+      fakeRepositoryIndex(),
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["lang/typescript", "core/code-review", "core/tests"] }
+    );
+
+    expect(packets.find((packet) => packet.path === "src/app.ts")?.lenses).toEqual(["lang/typescript", "core/code-review"]);
+    expect(packets.find((packet) => packet.path === "src/app.test.ts")?.lenses).toEqual(["lang/typescript", "core/code-review", "core/tests"]);
+  });
+
+  it("demotes mechanical import-only source packets to language-only simple review", async () => {
+    const file = fakeDiffFile("src/imports.ts", "import { quote } from './quote';");
+    const plan: ReviewPlan = {
+      diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
+      riskAreas: [],
+      coverage: [{
+        hunkId: "h1",
+        path: "src/imports.ts",
+        coverage: "normal",
+        lenses: ["lang/typescript", "core/code-review", "core/tests"],
+        surroundingContextHints: [],
+        reason: "import update"
+      }]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [file],
+      [fakeFacts("src/imports.ts", "per-hunk")],
+      fakeRepositoryIndex(),
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["lang/typescript", "core/code-review", "core/tests"] }
+    );
+
+    expect(packets[0]).toMatchObject({
+      reviewProfile: "simple",
+      lenses: ["lang/typescript"],
+      toolBudget: { maxToolCalls: 0, maxInvestigationRounds: 0, maxResultChars: 0 }
+    });
+  });
+
   it("scales packet tool budgets with light-depth floors and deep-depth ceilings", async () => {
     const budgetFor = async (coverage: Exclude<CoverageLevel, "skip">, depth: CodeninjaConfig["review"]["depth"]) => {
       const plan = {
@@ -1076,15 +1151,45 @@ describe("phase 5 pipeline regressions", () => {
       maxResultChars: 16_000
     });
     await expect(budgetFor("light", "light")).resolves.toEqual({
-      maxToolCalls: 1,
-      maxInvestigationRounds: 1,
-      maxResultChars: 4_000
+      maxToolCalls: 0,
+      maxInvestigationRounds: 0,
+      maxResultChars: 0
     });
     await expect(budgetFor("normal", "deep")).resolves.toEqual({
-      maxToolCalls: 12,
-      maxInvestigationRounds: 5,
-      maxResultChars: 24_000
+      maxToolCalls: 6,
+      maxInvestigationRounds: 3,
+      maxResultChars: 15_000
     });
+  });
+
+  it("keeps synthetic large import-only PRs on the simple no-tool budget profile", async () => {
+    const files = Array.from({ length: 100 }, (_, index) => fakeDiffFile(`src/import-${index}.ts`, `import { value${index} } from './value-${index}';`));
+    const plan: ReviewPlan = {
+      diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
+      riskAreas: [],
+      coverage: files.map((file) => ({
+        hunkId: file.hunks[0]!.id,
+        path: file.path,
+        coverage: "normal" as const,
+        lenses: ["lang/typescript", "core/code-review", "core/tests"],
+        surroundingContextHints: [],
+        reason: "bulk import update"
+      }))
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      files,
+      files.map((file) => fakeFacts(file.path, "per-hunk")),
+      fakeRepositoryIndex(),
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["lang/typescript", "core/code-review", "core/tests"] }
+    );
+
+    expect(packets).toHaveLength(100);
+    expect(packets.every((packet) => packet.reviewProfile === "simple")).toBe(true);
+    expect(packets.reduce((sum, packet) => sum + packet.toolBudget.maxToolCalls, 0)).toBe(0);
+    expect(new Set(packets.flatMap((packet) => packet.lenses))).toEqual(new Set(["lang/typescript"]));
   });
 
   it("truncates oversized single hunks with omission markers", async () => {
@@ -1482,6 +1587,45 @@ describe("phase 5 pipeline regressions", () => {
     expect(adapter.calls).toBe(1);
     expect(results.map((result) => result.status).sort()).toEqual(["completed", "skipped"]);
     expect(budget.stopped).toBe(true);
+  });
+
+  it("runs simple Stage 7 packets as one no-tool model call", async () => {
+    let callCount = 0;
+    let toolCount: number | undefined;
+    let toolBudget: LlmStructuredRequest<unknown>["toolBudget"];
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        callCount += 1;
+        toolCount = request.tools?.length ?? 0;
+        toolBudget = request.toolBudget;
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+    const simplePacket: ReviewPacket = {
+      ...fakePacket({ id: "simple-packet" }),
+      reviewProfile: "simple",
+      lenses: ["lang/typescript"],
+      toolBudget: { maxToolCalls: 0, maxInvestigationRounds: 0, maxResultChars: 0 }
+    };
+
+    const results = await runLensPackets(
+      fakePlan(),
+      [simplePacket],
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(callCount).toBe(1);
+    expect(toolCount).toBe(0);
+    expect(toolBudget).toEqual({ maxToolCalls: 0, maxInvestigationRounds: 0, maxResultChars: 0 });
+    expect(results).toEqual([expect.objectContaining({ packetId: "simple-packet", status: "completed" })]);
   });
 
   it("records undispatched budget-stopped packets as failed coverage records", async () => {
@@ -4628,6 +4772,7 @@ function fakePacket(opts: {
     language: "typescript",
     reviewPriority: opts.reviewPriority ?? "normal",
     coverage: "normal",
+    reviewProfile: "standard",
     lenses: ["core/code-review"],
     hunks: [
       {

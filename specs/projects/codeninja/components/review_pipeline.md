@@ -472,24 +472,28 @@ Step 7 — size enforcement and truncation:
 
 Step 8 — packet coverage. `coverage` = the maximum coverage of included hunks, ordered `deep > normal > light`. (`skip` hunks never enter packets.)
 
-Step 9 — packet lenses. `lenses` = the deduplicated union of included hunks' lens lists. If the union exceeds `maxLensesPerPacket`, keep in priority order: the file's language lens, then `core/*` lenses in registry order, then remaining lenses by member frequency descending, then lexicographic; dropped lenses are recorded in telemetry.
+Step 9 — packet lenses and review profile. `lenses` = the deduplicated union of included hunks' lens lists. If the union exceeds `maxLensesPerPacket`, keep in priority order: the file's language lens, then `core/*` lenses in registry order, then remaining lenses by member frequency descending, then lexicographic; dropped lenses are recorded in telemetry. After that cap, deterministically prune low-value `core/tests` and `core/code-review` when another lens remains: keep `core/tests` for test files, deleted tests, static test signals, planner test hints/risk, or important untested behavior; keep `core/code-review` for real source behavior/design risk, not obvious mechanical import-only packets. Compute `reviewProfile` as `simple`, `standard`, or `investigate` from effective coverage, configured priority, planner hints, risk notes, and mechanical-change signals.
 
 Packet assembly details:
 
 - `id = sha256(path + sorted hunkIds + kind)` per `architecture.md`; stable across reruns of the same diff.
 - `prSummary`: deterministic one-paragraph projection of dossier metadata (PR title or first commit title plus totals), capped 500 chars; it is data framing, not model output.
 - `PacketHunk` line data is copied from the parsed diff with absolute old/new numbers preserved exactly; `changedNewLineNumbers` (add lines) and `changedOldLineNumbers` (delete lines) are derived from `DiffLine` kinds.
-- `toolBudget` is assigned from the coverage/depth table below.
+- `toolBudget` is assigned from the review-profile/coverage/depth table below.
 - `labels`, `riskNotes`: configured labels from `FileFacts`; risk notes from matching planner `riskAreas` entries (areas whose `files` include the packet path), truncated to 3 entries.
 - Every packet is persisted to `packets/<packet-id>.json` before Stage 7 dispatch.
 
-Tool budget table (implementation defaults; base budget by packet coverage, then scaled by configured run depth — `light` depth halves values rounding down with a floor of 1 call / 1 round / 4000 chars, `deep` depth multiplies by 1.5 rounding up):
+Tool budget table (implementation defaults; base budget by packet profile and coverage, then scaled by configured run depth — `light` depth halves values rounding down with a floor of 1 call / 1 round / 4000 chars for tool-capable profiles, `deep` depth multiplies by 1.5 rounding up):
 
-| Packet coverage | maxToolCalls | maxInvestigationRounds | maxResultChars |
-| --- | --- | --- | --- |
-| `light` | 2 | 1 | 4000 |
-| `normal` | 8 | 3 | 16000 |
-| `deep` | 15 | 5 | 32000 |
+| Packet profile | Packet coverage | maxToolCalls | maxInvestigationRounds | maxResultChars |
+| --- | --- | --- | --- | --- |
+| `simple` | any | 0 | 0 | 0 |
+| `standard` | `light` | 1 | 1 | 3000 |
+| `standard` | `normal` | 4 | 2 | 10000 |
+| `standard` | `deep` | 10 | 3 | 20000 |
+| `investigate` | `light` | 2 | 1 | 4000 |
+| `investigate` | `normal` | 6 | 2 | 12000 |
+| `investigate` | `deep` | 15 | 5 | 32000 |
 
 ### Worker Runner
 
@@ -504,8 +508,8 @@ Scheduling:
 
 Isolation:
 
-- Each worker receives exactly one packet or candidate; selected lenses with projected skill guidance (projection rules owned by `components/skills_llm_telemetry.md`); a `ToolBudget`; and a fresh prompt context. Workers never share mutable conversation state, never publish comments, and never mutate the repository.
-- Tool access is read-only and scoped: packet workers receive the full read-only `RepositoryTools` suite; verifiers receive the same suite for claim validation only. Path containment is enforced inside the tool layer.
+- Each worker receives exactly one packet or candidate; selected lenses with projected skill guidance (projection rules owned by `components/skills_llm_telemetry.md`); a `reviewProfile`; a `ToolBudget`; and a fresh prompt context. Workers never share mutable conversation state, never publish comments, and never mutate the repository.
+- Tool access is read-only and scoped: standard/investigate packet workers receive the full read-only `RepositoryTools` suite; simple packet workers receive no repository tools; verifiers receive the same suite for claim validation only. Path containment is enforced inside the tool layer.
 
 Execution:
 
@@ -752,4 +756,3 @@ Budget and coverage:
 - `budget_each_dimension_triggers`: time, token, and model-call budgets each independently trigger the ladder at their checkpoint.
 - `coverage_aggregation_matrix`: fixtures combining filtered files, planner skips, completed packets, failed packets, undispatched packets, degraded planning, and incomplete verification produce the expected `RunCoverageStatus` counts, `coverageByLevel`, `partial` flag, and reasons; `coverage.json` includes every hunk exactly once.
 - `coverage_partial_definition`: degraded planning alone does not set `partial`; any failed hunk, budget stop, unreviewed hunk, or planner partial flag does.
-

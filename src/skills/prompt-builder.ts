@@ -105,6 +105,11 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("packet review"),
         injectionInstruction(),
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
+        packet.reviewProfile === "simple"
+          ? "This packet is classified as simple. Review the provided packet only and return no findings unless the defect is clear from the packet text."
+          : packet.reviewProfile === "investigate"
+            ? "This packet is classified for investigation. Use repository tools when they can materially verify a concrete failure mode."
+            : "This packet has a standard review profile. Keep tool use focused and stop investigating once the concrete failure mode is either verified or ruled out.",
         "Skill guidance:\n" + projection.text,
         ...blocks,
         "Finish by calling submit_review with schema-valid arguments. Do not answer in plain text."
@@ -287,6 +292,7 @@ function renderPacket(packet: ReviewPacket): string {
     language: packet.language,
     reviewPriority: packet.reviewPriority,
     coverage: packet.coverage,
+    reviewProfile: packet.reviewProfile,
     lenses: packet.lenses,
     fileStatus: packet.fileStatus,
     isDeletedContent: packet.isDeletedContent,

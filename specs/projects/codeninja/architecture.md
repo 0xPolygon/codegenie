@@ -538,6 +538,8 @@ type ToolBudget = {
   maxResultChars: number
 }
 
+type ReviewProfile = "simple" | "standard" | "investigate"
+
 type ReviewPacket = {
   id: string
   kind: PacketKind
@@ -548,6 +550,7 @@ type ReviewPacket = {
   isDeletedContent: boolean // true for deletion-only packets; reviewers and anchor validation must treat content as old-side
   language: string
   coverage: Exclude<CoverageLevel, "skip">
+  reviewProfile: ReviewProfile // execution/cost profile derived deterministically from coverage, priority, hints, and mechanical-change signals
   lenses: string[]
   hunks: PacketHunk[]
   symbolFacts: HunkSymbolFacts[]
@@ -600,7 +603,7 @@ type StructuredUncertainty = {
 
 Packet `followUpHints` and `uncertainties` are still emitted in v1: they flow to telemetry and to coverage/report notes, not to new review tasks (cross-file system follow-up is deferred; see Future Considerations).
 
-Review packets are persisted to telemetry artifacts so evals can inspect what context the reviewer saw. Every packet contains one or more hunks. `ReviewPacket.kind` explains why those hunks are reviewed together, while `ReviewPacket.coverage` controls execution budget and prompting.
+Review packets are persisted to telemetry artifacts so evals can inspect what context the reviewer saw. Every packet contains one or more hunks. `ReviewPacket.kind` explains why those hunks are reviewed together, while `ReviewPacket.coverage` and `ReviewPacket.reviewProfile` control execution budget and prompting.
 
 Packet construction algorithm:
 
@@ -612,7 +615,7 @@ Packet construction algorithm:
 6. Attach cheap deterministic surrounding context when available — enclosing symbol source, file outline, likely tests — rendered into `contextText` within `maxContextChars`, plus planner-provided `surroundingContextHints`.
 7. Enforce max hunks, patch chars, context chars, and skill/lens prompt caps. Split oversized packets back into smaller packets. When one hunk alone exceeds `maxPatchChars`, the packet carries a truncated patch window centered on changed lines, with `truncated: true`, omitted-line counts, and a coverage note; never split below hunk granularity, never synthesize sub-hunk ids. Quantified defaults: `maxPatchChars = 12000`, `maxContextChars = 8000`, `maxHunksPerPacket = 5`.
 8. Compute packet coverage as the max coverage of included hunks, ordered `deep > normal > light`.
-9. Compute packet lenses as the bounded union of included hunk lenses, keeping core and primary language lenses when applicable.
+9. Compute packet lenses as the bounded union of included hunk lenses, keeping the primary language lens first, pruning low-value `core/tests` / `core/code-review` from routine source or mechanical packets when another lens remains, and capping the final list.
 
 ### Findings And Anchors
 
@@ -1282,10 +1285,10 @@ Lens execution rules:
 - Do not run one model call per lens by default.
 - Project and cap skill prompt sections for the review stage so large skill files do not dominate every packet prompt. Packet review prompts receive the skill's Checks, False Positives, and Examples sections; verifier prompts receive False Positives and Safe Patterns; the planner receives one-line skill/lens summaries only; the composer receives none. A per-skill projection cap and a total skill-content cap per prompt apply, with truncation recorded in telemetry. Defaults: 4000 chars per skill projection, 12000 chars total per prompt.
 - Use coverage-aware execution profiles:
-  - `light`: one structured call with a tiny optional read-only tool budget.
-  - `normal`: one structured/tool-capable task with real read-only tool access, focused review instructions, and bounded investigation.
-  - `deep`: one structured/tool-capable task with real read-only tool access, a larger budget, and more focused investigation rounds.
-- Normal and deep packet reviewers may use the same read-only tool suite. The difference is budget, investigation depth, and prompting, not capability.
+  - `simple`: one structured call with no repository tools; used for light or obvious mechanical packets.
+  - `standard`: one structured/tool-capable task with focused review instructions and a reduced normal-mode tool budget.
+  - `investigate`: one structured/tool-capable task with a larger budget for deep coverage, high/critical priority, planner hints, or risk notes.
+- Standard and investigate packet reviewers may use the same read-only tool suite. The difference is budget, investigation depth, and prompting, not capability. Simple packets receive no repository tools.
 - The reviewer should submit immediately when packet context is sufficient. Tool calls are for concrete missing evidence, not broad exploration.
 - Packet reviewers should not review hunks in isolation. They should use packet context first, then bounded read-only tools to inspect relevant surrounding code: enclosing symbols, sibling patterns, call sites, tests, setup/cleanup, lifecycle, authorization, configuration, resource-management code, and existing patterns in the same file/package/component.
 - Validate packet review output before verification. Schema-invalid output, missing evidence, low-confidence candidates, and anchors outside changed hunks are recorded in telemetry and suppressed or downgraded before verifier scheduling; low-confidence critical/high-severity candidates are not suppressed — they proceed to verification.

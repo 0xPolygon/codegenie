@@ -454,11 +454,13 @@ Each packet worker should have:
 
 Execution should be coverage-aware:
 
-- `light`: compact packet, tiny optional read-only tool budget.
-- `normal`: real read-only tool access with focused review instructions and bounded investigation.
-- `deep`: real read-only tool access, larger budget, and more focused investigation rounds.
+- `simple`: one structured call with no repository tools, used for light packets or obvious mechanical changes.
+- `standard`: real read-only tool access with focused review instructions and a reduced normal-mode tool budget.
+- `investigate`: real read-only tool access, larger budget, and more focused investigation rounds for deep/high-risk packets.
 
-Normal and deep packet reviewers may use the same read-only tool suite. The difference is budget, investigation depth, and prompting, not capability.
+Standard and investigate packet reviewers may use the same read-only tool suite. The difference is budget, investigation depth, and prompting, not capability. Simple packets receive no repository tools and should return no findings unless the issue is clear from packet text.
+
+Stage 6 should deterministically prune low-value lenses before Stage 7. The language lens remains the broad default for supported languages. `core/tests` should be kept for test files, deleted tests, static test signals, planner test risk, or important untested behavior; it should not be attached to every routine source packet. `core/code-review` should be kept for real source behavior/design risk, but mechanical import-only packets should usually be language-only/simple unless a configured priority, deep coverage, or planner risk note promotes them.
 
 Reviewer workers should submit an empty finding list when the packet evidence is insufficient. They should use tools only to support, narrow, or reject a concrete changed-code concern, not for broad repository exploration.
 

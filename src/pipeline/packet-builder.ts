@@ -16,6 +16,7 @@ import type {
   RepositoryToolsHost,
   ReviewPacket,
   ReviewPlan,
+  ReviewProfile,
   ReviewPriority,
   StaticSignal,
   SurroundingContextHint,
@@ -209,6 +210,27 @@ async function buildPacket(
       data: { maxContextChars: MAX_CONTEXT_CHARS }
     });
   }
+  const riskNotes = plan.riskAreas.filter((area) => area.files.includes(first.file.path)).slice(0, 3).map((area) => area.reason);
+  const reviewProfile = packetReviewProfile({
+    coverage,
+    reviewPriority,
+    planned,
+    riskNotes,
+    hintCount: decisions.reduce((sum, decision) => sum + decision.surroundingContextHints.length, 0)
+  });
+  const lenses = routedPacketLenses({
+    lenses: decisions.flatMap((decision) => decision.lenses),
+    language: first.facts.language,
+    file: first.file,
+    facts: first.facts,
+    planned,
+    relevantTests: context.relevantTests,
+    riskNotes,
+    coverage,
+    reviewPriority,
+    reviewProfile,
+    telemetry
+  });
   emitPacketContextQuality(telemetry, first.file.path, coverage, reviewPriority, contextQuality, contextDegradationReasons);
   const packet: ReviewPacket = {
     id: sha256Hex(`${first.file.path}\n${[...hunkIds].sort().join("\n")}\n${kind}`),
@@ -221,7 +243,8 @@ async function buildPacket(
     language: first.facts.language,
     reviewPriority,
     coverage,
-    lenses: boundedLensUnion(decisions.flatMap((decision) => decision.lenses), first.facts.language, first.file.path, telemetry),
+    reviewProfile,
+    lenses,
     hunks: packetHunks,
     symbolFacts,
     context: context.context,
@@ -232,8 +255,8 @@ async function buildPacket(
     relevantTests: context.relevantTests,
     surroundingContextHints: hintContext.workerHints,
     labels: first.facts.labels,
-    riskNotes: plan.riskAreas.filter((area) => area.files.includes(first.file.path)).slice(0, 3).map((area) => area.reason),
-    toolBudget: toolBudget(coverage, config.review.depth),
+    riskNotes,
+    toolBudget: toolBudget(coverage, config.review.depth, reviewProfile),
     ...(reviewContext?.intentText !== undefined ? { intentText: reviewContext.intentText } : {}),
     ...(context.degradation !== undefined || truncationReason.length > 0 || contextDropReason !== undefined || contextTruncationReason !== undefined || group.degradationReason !== undefined
       ? { degraded: { reason: [context.degradation, truncationReason, contextDropReason, contextTruncationReason, group.degradationReason].filter(Boolean).join("; ") } }
@@ -401,7 +424,7 @@ function effectiveDecision(
   if (!decision) {
     return {
       coverage: "normal",
-      lenses: defaultLensesForLanguage(planned.facts.language, enabledLenses),
+      lenses: defaultLensesForLanguage(planned.facts, enabledLenses),
       surroundingContextHints: [],
       reason: "default_coverage"
     };
@@ -426,7 +449,7 @@ function effectiveDecision(
     });
     return {
       ...decision,
-      lenses: defaultLensesForLanguage(planned.facts.language, enabledLenses),
+      lenses: defaultLensesForLanguage(planned.facts, enabledLenses),
       reason: `planner_empty_lenses: ${decision.reason}`
     };
   }
@@ -1120,6 +1143,93 @@ function maxCoverage(levels: Array<Exclude<CoverageLevel, "skip">>): Exclude<Cov
   return "light";
 }
 
+function routedPacketLenses(input: {
+  lenses: string[];
+  language: string;
+  file: DiffFile;
+  facts: FileFacts;
+  planned: PlannedHunk[];
+  relevantTests: SymbolInfo[];
+  riskNotes: string[];
+  coverage: Exclude<CoverageLevel, "skip">;
+  reviewPriority: ReviewPriority;
+  reviewProfile: ReviewProfile;
+  telemetry: TelemetryRecorder;
+}): string[] {
+  const initial = boundedLensUnion(input.lenses, input.language, input.file.path, input.telemetry);
+  const kept = initial.filter((lens) => {
+    if (lens === "core/tests") {
+      return shouldKeepTestsLens(input);
+    }
+    if (lens === "core/code-review") {
+      return shouldKeepCodeReviewLens(input);
+    }
+    return true;
+  });
+  if (kept.length === 0) {
+    return initial.slice(0, 1);
+  }
+  const dropped = initial.filter((lens) => !kept.includes(lens));
+  if (dropped.length > 0) {
+    input.telemetry.event({
+      stage: 6,
+      level: "info",
+      message: "packet_lenses_pruned",
+      file: input.file.path,
+      data: { kept, dropped, reviewProfile: input.reviewProfile }
+    });
+  }
+  return kept;
+}
+
+function shouldKeepTestsLens(input: {
+  file: DiffFile;
+  facts: FileFacts;
+  planned: PlannedHunk[];
+  relevantTests: SymbolInfo[];
+  riskNotes: string[];
+  coverage: Exclude<CoverageLevel, "skip">;
+  reviewPriority: ReviewPriority;
+}): boolean {
+  if (input.facts.testStatus === "test") {
+    return true;
+  }
+  if (input.planned.some((entry) => entry.staticSignals.some((signal) => signal.lensHint === "core/tests" || signal.category === "testing"))) {
+    return true;
+  }
+  if (input.planned.some((entry) => entry.decision?.surroundingContextHints.some((hint) => hint.kind === "test"))) {
+    return true;
+  }
+  if (input.riskNotes.some((note) => /\btests?|coverage|regression\b/iu.test(note))) {
+    return true;
+  }
+  const importantUntestedBehavior = input.relevantTests.length === 0 &&
+    input.coverage === "deep" &&
+    !isMechanicalPacket(input.planned);
+  return importantUntestedBehavior || input.reviewPriority === "critical";
+}
+
+function shouldKeepCodeReviewLens(input: {
+  file: DiffFile;
+  facts: FileFacts;
+  planned: PlannedHunk[];
+  riskNotes: string[];
+  coverage: Exclude<CoverageLevel, "skip">;
+  reviewPriority: ReviewPriority;
+  reviewProfile: ReviewProfile;
+}): boolean {
+  if (input.facts.testStatus === "test" || input.file.status === "deleted") {
+    return true;
+  }
+  if (input.reviewPriority === "critical" || input.reviewPriority === "high" || input.coverage === "deep") {
+    return true;
+  }
+  if (input.riskNotes.length > 0) {
+    return true;
+  }
+  return !isMechanicalPacket(input.planned) && input.reviewProfile !== "simple";
+}
+
 function boundedLensUnion(lenses: string[], language: string, filePath: string, telemetry: TelemetryRecorder): string[] {
   const frequencies = new Map<string, number>();
   for (const lens of lenses) {
@@ -1163,12 +1273,18 @@ function primaryLanguageLens(language: string, lenses: string[]): string | undef
   return lenses.includes(exact) ? exact : undefined;
 }
 
-function defaultLensesForLanguage(language: string, enabled: string[]): string[] {
-  const selected = enabled.filter((lens) => lens.startsWith("core/"));
+function defaultLensesForLanguage(facts: FileFacts, enabled: string[]): string[] {
+  const selected: string[] = [];
+  const language = facts.language;
   if (language === "go" && enabled.includes("lang/go")) {
     selected.push("lang/go");
   } else if (["typescript", "javascript", "ts", "js", "tsx", "jsx"].includes(language) && enabled.includes("lang/typescript")) {
     selected.push("lang/typescript");
+  }
+  if (facts.testStatus === "test" && enabled.includes("core/tests")) {
+    selected.push("core/tests");
+  } else if (enabled.includes("core/code-review")) {
+    selected.push("core/code-review");
   }
   return [...new Set(selected.length > 0 ? selected : enabled.slice(0, 1))];
 }
@@ -1178,12 +1294,22 @@ function maxReviewPriority(priorities: ReviewPriority[]): ReviewPriority {
   return [...priorities].sort((a, b) => order[a] - order[b])[0] ?? "normal";
 }
 
-function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: CodeninjaConfig["review"]["depth"]): ToolBudget {
-  const base = {
-    light: { maxToolCalls: 2, maxInvestigationRounds: 1, maxResultChars: 4000 },
-    normal: { maxToolCalls: 8, maxInvestigationRounds: 3, maxResultChars: 16000 },
-    deep: { maxToolCalls: 15, maxInvestigationRounds: 5, maxResultChars: 32000 }
-  }[coverage];
+function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: CodeninjaConfig["review"]["depth"], profile: ReviewProfile): ToolBudget {
+  if (profile === "simple") {
+    return { maxToolCalls: 0, maxInvestigationRounds: 0, maxResultChars: 0 };
+  }
+  const baseByProfile = profile === "investigate"
+    ? {
+        light: { maxToolCalls: 2, maxInvestigationRounds: 1, maxResultChars: 4000 },
+        normal: { maxToolCalls: 6, maxInvestigationRounds: 2, maxResultChars: 12000 },
+        deep: { maxToolCalls: 15, maxInvestigationRounds: 5, maxResultChars: 32000 }
+      }
+    : {
+        light: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 3000 },
+        normal: { maxToolCalls: 4, maxInvestigationRounds: 2, maxResultChars: 10000 },
+        deep: { maxToolCalls: 10, maxInvestigationRounds: 3, maxResultChars: 20000 }
+      };
+  const base = baseByProfile[coverage];
   const scale = depth === "deep" ? 1.5 : depth === "light" ? 0.5 : 1;
   const round = depth === "light" ? Math.floor : Math.ceil;
   return {
@@ -1191,6 +1317,57 @@ function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: CodeninjaCo
     maxInvestigationRounds: Math.max(1, round(base.maxInvestigationRounds * scale)),
     maxResultChars: Math.max(4000, round(base.maxResultChars * scale))
   };
+}
+
+function packetReviewProfile(input: {
+  coverage: Exclude<CoverageLevel, "skip">;
+  reviewPriority: ReviewPriority;
+  planned: PlannedHunk[];
+  riskNotes: string[];
+  hintCount: number;
+}): ReviewProfile {
+  if (
+    input.coverage === "deep" ||
+    input.reviewPriority === "critical" ||
+    input.reviewPriority === "high" ||
+    input.hintCount > 0 ||
+    input.riskNotes.length > 0
+  ) {
+    return "investigate";
+  }
+  if (
+    input.coverage === "light" ||
+    isMechanicalPacket(input.planned)
+  ) {
+    return "simple";
+  }
+  return "standard";
+}
+
+function isMechanicalPacket(planned: PlannedHunk[]): boolean {
+  const changedLines = planned.flatMap((entry) => changedCodeLines(entry.hunk));
+  if (changedLines.length === 0) {
+    return true;
+  }
+  const hasEnclosingSymbol = planned.some((entry) => entry.symbolFacts.some((fact) => fact.enclosingSymbol !== undefined));
+  return !hasEnclosingSymbol && changedLines.every(isImportOrBoilerplateLine);
+}
+
+function changedCodeLines(hunk: DiffHunk): string[] {
+  return hunk.lines
+    .filter((line) => line.kind === "add" || line.kind === "delete")
+    .map((line) => line.content.trim())
+    .filter((line) => line.length > 0);
+}
+
+function isImportOrBoilerplateLine(line: string): boolean {
+  return /^import(?:\s|\()/u.test(line) ||
+    /^from\s+["'][^"']+["']/u.test(line) ||
+    /^export\s+\{[^}]*\}\s+from\s+["'][^"']+["'];?$/u.test(line) ||
+    /^require\(["'][^"']+["']\);?$/u.test(line) ||
+    /^["'][^"']+["']$/u.test(line) ||
+    /^\)$/u.test(line) ||
+    /^\(.*\)$/u.test(line);
 }
 
 function fallbackFacts(file: DiffFile): FileFacts {

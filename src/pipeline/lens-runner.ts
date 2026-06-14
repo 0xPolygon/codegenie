@@ -113,12 +113,15 @@ async function runPacket(
 ): Promise<PacketReviewResult> {
   const skills = packet.lenses.flatMap((lensId) => opts.lensRegistry.skillsForLens(lensId));
   const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills });
+  const repositoryTools = packet.reviewProfile === "simple" || packet.toolBudget.maxToolCalls <= 0
+    ? []
+    : buildRepositoryToolDefinitions(tools);
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
     stage: 7,
     prompt: prompt.prompt,
     schema: SubmitPacketReviewSchema,
     templateVersion: prompt.templateVersion,
-    tools: buildRepositoryToolDefinitions(tools),
+    tools: repositoryTools,
     toolBudget: packet.toolBudget,
     timeoutMs: config.review.perPassTimeoutMs,
     telemetryContext: { workerId, packetId: packet.id }
