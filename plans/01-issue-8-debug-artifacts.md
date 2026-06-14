@@ -1,5 +1,7 @@
 # Issue 8: Debug Artifacts
 
+Status: COMPLETE
+
 ## Problem
 
 Real-run debugging needs more than model-call summaries. The current `debug/llm-calls/*.json` artifacts preserve provider responses and usage, but they do not reliably preserve the full redacted request context needed to reconstruct what the model saw: messages, system prompt, tool schemas, tool-choice mode, prior tool calls, and tool results.

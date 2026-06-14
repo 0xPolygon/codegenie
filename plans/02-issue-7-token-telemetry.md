@@ -1,5 +1,7 @@
 # Issue 7: Token Telemetry
 
+Status: COMPLETE
+
 ## Problem
 
 The trails-api run reported `inputTokens: 496` for 248 Anthropic calls while `totalTokens` was about 4.85M. This is technically explainable by Anthropic prompt caching, but misleading: `input` counted only uncached input tokens, while `cacheRead` and `cacheWrite` carried most prompt volume and cost.

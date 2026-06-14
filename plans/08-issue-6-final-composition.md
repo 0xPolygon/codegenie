@@ -1,5 +1,7 @@
 # Issue 6: Final Composition
 
+Status: COMPLETE
+
 ## Problem
 
 The fallback final review was rough:

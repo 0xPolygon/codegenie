@@ -1,5 +1,7 @@
 # Issue 4: Stage 7 Cost
 
+Status: COMPLETE
+
 ## Problem
 
 The trails-api run spent about $18.90 in Stage 7, with 231 packet-review model calls for 73 packets. Normal mode routed almost every packet through `lang/go`, `core/code-review`, and `core/tests`, causing broad repeated investigation across similar quote-helper hunks.

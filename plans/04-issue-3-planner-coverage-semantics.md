@@ -1,5 +1,7 @@
 # Issue 3: Planner Coverage Semantics
 
+Status: COMPLETE
+
 ## Problem
 
 The planner produced targeted coverage decisions for 20 of 131 hunks, which is reasonable for a large PR. Stage 6 then treated missing planner coverage as a warning for every other hunk, producing massive `planner_missing_coverage` noise in telemetry and the final report.

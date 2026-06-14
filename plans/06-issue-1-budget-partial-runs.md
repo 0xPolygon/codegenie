@@ -1,5 +1,7 @@
 # Issue 1: Budget And Partial Runs
 
+Status: COMPLETE
+
 ## Problem
 
 The real run exhausted budget before all packets were dispatched. It reviewed 121/131 hunks, left 10 hunks unreviewed, verified only part of the candidate set, and used fallback composition. `run.json` still reported `status: completed` and `exitCode: 0`.

@@ -1,5 +1,7 @@
 # Issue 2: Packet Context Degradation
 
+Status: COMPLETE
+
 ## Problem
 
 The real run produced degraded packet context for 38 of 73 packets. Some degradation is expected for import hunks and huge symbols, but important packets were degraded too. The worst example was a deep relay packet where one import/top-of-file hunk had no symbol and the packet-level context became only `{ packageName, path }`, despite other hunks in the same packet having useful `processRelayQuote` symbol facts.

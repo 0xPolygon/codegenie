@@ -1,5 +1,7 @@
 # Issue 5: Verification Degradation
 
+Status: COMPLETE
+
 ## Problem
 
 The run generated 13 candidates, suppressed 2 low-confidence candidates, scheduled 11 for verification, but only fully verified 4. Six candidates became incomplete/not-dispatched and one verifier call returned schema invalid with no repair attempt recorded.

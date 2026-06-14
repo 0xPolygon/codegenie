@@ -1,5 +1,7 @@
 # Issue 10: Final Body Metadata Duplication
 
+Status: PENDING
+
 ## Problem
 
 The latest final Markdown no longer repeats `Failure mode`, `Why it matters`, and `Suggested fix` blocks, but composed finding bodies still repeat title and metadata already owned by the renderer:
@@ -8,7 +10,7 @@ The latest final Markdown no longer repeats `Failure mode`, `Why it matters`, an
 - The renderer prints `File: ...` and `Confidence: ...`.
 - The LLM-composed `finalBody` then often starts with the same title and a `Severity / Confidence / Category` line.
 
-This is not a correctness bug, but it makes otherwise strong findings feel machine-generated and less polished.
+This is not a correctness bug, but it makes otherwise strong findings feel machine-generated and less polished. The fix should be deterministic and renderer-oriented; do not add another LLM cleanup pass.
 
 ## Plan
 
@@ -32,12 +34,13 @@ This is not a correctness bug, but it makes otherwise strong findings feel machi
    - Ask it to start with the concrete issue sentence.
 
 3. Add deterministic body cleanup:
-   - Add a small `normalizeFinalBodyForRendering` step before final findings are rendered or persisted.
+   - Add a small `normalizeFinalBodyForRendering` step before final findings are rendered or posted.
    - Strip only obvious redundant prefixes:
      - first line matching the finding title
      - first heading matching the finding title
      - metadata lines matching `Severity:`, `Confidence:`, `Category:`, or `Severity: ... · Confidence: ...`.
    - Do not strip body text that differs materially from the finding title.
+   - Preserve the raw composed body in debug artifacts if useful for prompt tuning.
 
 4. Keep fallback body format concise:
    - Confirm deterministic fallback bodies still do not add title/severity metadata.
@@ -53,6 +56,7 @@ This is not a correctness bug, but it makes otherwise strong findings feel machi
 - `src/output/markdown-renderer.ts`
 - `src/skills/prompt-builder.ts`
 - `tests/pipeline-phase5.test.ts`
+- `tests/output-markdown.test.ts` if renderer snapshots already live there
 
 ## Tests
 

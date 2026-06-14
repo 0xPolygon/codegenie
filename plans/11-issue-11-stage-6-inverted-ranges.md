@@ -1,8 +1,10 @@
 # Issue 11: Stage 6 Inverted Range Reads
 
+Status: PENDING
+
 ## Problem
 
-The latest trails-api run completed successfully, but Stage 6 emitted four internal `read_range` errors:
+Stage 6 packet construction can produce invalid internal `read_range` calls when it mixes base/head line coordinates or asks for context around an empty side of a hunk. One observed run emitted errors like:
 
 ```text
 readRange requires 1 <= startLine <= endLine
@@ -16,7 +18,7 @@ This did not break the run, but Stage 6 should never call repository tools with 
 
 ## Plan
 
-1. Add a range-normalization helper in packet building:
+1. Add a packet-context range guard:
    - Input:
      - path
      - source side (`base` or `head`)
@@ -26,6 +28,8 @@ This did not break the run, but Stage 6 should never call repository tools with 
      - normalized valid range
      - or a typed skipped-range reason.
    - It should reject or skip inverted ranges before calling `repoIndex.tools.readRange`.
+   - Do not silently swap `startLine` and `endLine`; an inverted range usually means the caller chose the wrong side or there is no valid range to read.
+   - Clamp only simple boundary issues such as `startLine < 1`.
 
 2. Make hunk-side selection explicit:
    - For deleted-only hunks, use base-side ranges when reading deleted code.
@@ -45,18 +49,21 @@ This did not break the run, but Stage 6 should never call repository tools with 
 4. Prevent invalid planner context hints:
    - Apply the same helper to planner-provided `packetContextHints`.
    - Invalid hints should become unresolved hints, not tool errors.
+   - Planner hints should never bypass packet-builder side/range validation.
 
 5. Improve telemetry:
    - Count skipped invalid ranges separately from repository-tool errors.
    - Keep true repository/tool failures visible.
    - Do not report expected deleted-hunk skips as scary degradation.
+   - Include enough fields to debug the caller bug: requested side, requested start/end, hunk id, and reason.
 
 ## Likely Files
 
 - `src/pipeline/packet-builder.ts`
 - `src/repo/repository-index.ts` only if caller-facing behavior needs a clearer error shape
 - `tests/pipeline-phase5.test.ts`
-- `tests/repository-intelligence.test.ts` if repository-tool behavior changes
+- `tests/pipeline-phase6.test.ts`
+- `tests/repository-intelligence.test.ts` only if repository-tool behavior changes
 
 ## Tests
 
@@ -64,6 +71,7 @@ This did not break the run, but Stage 6 should never call repository tools with 
 - Mixed hunk reads valid head and base ranges separately.
 - Planner hint with `startLine > endLine` is skipped with telemetry and no tool error.
 - Stage 6 packet builder emits no `read_range` tool errors for inverted ranges.
+- Inverted ranges are not "fixed" by swapping start/end.
 - Existing past-EOF `readRange` behavior remains unchanged.
 
 ## Acceptance Criteria
@@ -71,4 +79,4 @@ This did not break the run, but Stage 6 should never call repository tools with 
 - Stage 6 never emits `read_range` calls with `startLine > endLine`.
 - Deleted or side-specific hunks still receive useful context where possible.
 - Invalid range telemetry is clear and non-fatal.
-- The trails-api `fallbacks.go` case would produce no Stage 6 tool errors.
+- Observed inverted-range cases produce skipped context telemetry, not repository-tool errors.

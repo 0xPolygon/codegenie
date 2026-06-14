@@ -28,7 +28,10 @@ Follow-up plans from the completed trails-api validation run `20260614-214026-83
 - [ ] Issue 9: Deduplicate and cap `Needs Human Attention` so final reviews do not include repetitive follow-up noise. Plan: `plans/09-issue-9-human-attention-noise.md`.
 - [ ] Issue 10: Remove duplicated title/severity/confidence metadata from composed final finding bodies. Plan: `plans/10-issue-10-final-body-metadata-duplication.md`.
 - [ ] Issue 11: Prevent Stage 6 packet-context construction from issuing inverted `read_range` calls. Plan: `plans/11-issue-11-stage-6-inverted-ranges.md`.
-- [ ] Issue 12: Improve recall for relay-style raw-decimals/narrowing-cast bugs that are currently left as follow-up hints. Plan: `plans/12-issue-12-relay-decimals-recall.md`.
+- [ ] Issue 12: Improve recall for raw-value narrowing-cast bugs that are currently left as follow-up hints. Plan: `plans/12-issue-12-narrowing-cast-recall.md`.
+- [ ] Issue 13: Harden planner hunk-id normalization and candidate anchor validation so bad planner references or out-of-hunk anchors cannot leak into inline publication. Plan: `plans/13-issue-13-planner-anchor-hygiene.md`.
+- [ ] Issue 14: Add deleted-symbol/base-side lookup and a bounded evidence-reserve tool budget for strong review threads. Plan: `plans/14-issue-14-deleted-symbol-lookup-tool-budget.md`.
+- [ ] Issue 15: Split local response cache telemetry from provider prompt-cache accounting so cost artifacts are easier to interpret. Plan: `plans/15-issue-15-telemetry-cache-terminology.md`.
 
 Verification completed:
 - `pnpm test`
