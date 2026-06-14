@@ -24,6 +24,12 @@ Run-quality follow-ups from the trails-api real run, in intended fix order:
 - [x] Issue 5: Strengthen Stage 9 verification reservation and recovery so generated candidates are not silently lost to budget/schema failures. Plan: `plans/07-issue-5-verification-degradation.md`.
 - [x] Issue 6: Improve fallback composition, dedupe, and developer-facing final Markdown quality. Plan: `plans/08-issue-6-final-composition.md`.
 
+Follow-up plans from the completed trails-api validation run `20260614-214026-83d33b74`:
+- [ ] Issue 9: Deduplicate and cap `Needs Human Attention` so final reviews do not include repetitive follow-up noise. Plan: `plans/09-issue-9-human-attention-noise.md`.
+- [ ] Issue 10: Remove duplicated title/severity/confidence metadata from composed final finding bodies. Plan: `plans/10-issue-10-final-body-metadata-duplication.md`.
+- [ ] Issue 11: Prevent Stage 6 packet-context construction from issuing inverted `read_range` calls. Plan: `plans/11-issue-11-stage-6-inverted-ranges.md`.
+- [ ] Issue 12: Improve recall for relay-style raw-decimals/narrowing-cast bugs that are currently left as follow-up hints. Plan: `plans/12-issue-12-relay-decimals-recall.md`.
+
 Verification completed:
 - `pnpm test`
 - `make build`
