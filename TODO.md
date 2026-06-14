@@ -9,6 +9,7 @@ Final follow-up fixes applied after `reviews/projects/codeninja/post_review_veri
 
 Remaining deferred follow-ups:
 - Add per-worker runtime telemetry.
+- Simplify concurrency config to a single primary setting. `review.concurrency` and `llm.maxConcurrentCalls` now both default to 4, but the split should become an advanced provider-throttle override rather than two first-class knobs.
 - Reduce Stage 2 symlink `ls-tree` backfill fanout.
 - Split provider login hints between unknown provider/model and missing auth.
 - Expand test breadth for anchor validation, skill-loader validation, cache-key sensitivity, client pagination, and fingerprint golden vectors.

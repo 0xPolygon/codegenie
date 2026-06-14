@@ -854,7 +854,7 @@ Chosen defaults:
 - `review.maxFindings = 25` (report cap)
 - `review.softCommentCap = 7` (inline target)
 - `review.concurrency = 4`
-- `llm.maxConcurrentCalls = 2`
+- `llm.maxConcurrentCalls = 4`
 - `review.timeoutMs = 30 * 60 * 1000`
 - `review.perPassTimeoutMs = 5 * 60 * 1000` (per model task/worker, not per stage)
 - `review.minConfidence = "medium"`

@@ -201,7 +201,7 @@ export const defaultConfig: CodeninjaConfig = {
     pathRules: []
   },
   llm: {
-    maxConcurrentCalls: 2
+    maxConcurrentCalls: 4
   },
   cache: {
     enabled: false,
