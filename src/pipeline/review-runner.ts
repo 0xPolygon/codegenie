@@ -186,6 +186,8 @@ export async function runReview(
       lensRegistry: services.lensRegistry,
       signal: run.abort.signal,
       checkpoint: (stage) => run.budget.checkpoint(stage),
+      reserve: (stage, estimatedTokens, estimatedModelCalls) => run.budget.reserve(stage, estimatedTokens, estimatedModelCalls),
+      releaseReservation: (stage, estimatedTokens, estimatedModelCalls) => run.budget.releaseReservation(stage, estimatedTokens, estimatedModelCalls),
       diff
     });
     throwIfHardAborted(run);
@@ -1131,27 +1133,28 @@ export class BudgetLedger {
     this.totalTokens += usage.totalTokens ?? 0;
   }
 
-  reserve(stage: number, estimatedTokens = 0): "ok" | "exhausted" {
+  reserve(stage: number, estimatedTokens = 0, estimatedModelCalls = 1): "ok" | "exhausted" {
     const elapsed = Date.now() - this.startedAt;
+    const reservedCalls = Math.max(0, Math.ceil(estimatedModelCalls));
     if (elapsed >= this.config.review.timeoutMs * 2) {
-      this.markStopped("hard_timeout", stage, elapsed, estimatedTokens, 1);
+      this.markStopped("hard_timeout", stage, elapsed, estimatedTokens, reservedCalls);
       throw new CodeninjaError("timeout", "review run exceeded hard timeout");
     }
 
     const reserveStage = stage >= 9;
     const reservedTokens = Math.max(0, estimatedTokens);
-    const reason = this.exhaustionReason(elapsed, reserveStage, reservedTokens, 1);
+    const reason = this.exhaustionReason(elapsed, reserveStage, reservedTokens, reservedCalls);
     if (reason !== undefined) {
-      this.markStopped(reason, stage, elapsed, reservedTokens, 1);
+      this.markStopped(reason, stage, elapsed, reservedTokens, reservedCalls);
       return "exhausted";
     }
-    this.inFlightModelCalls += 1;
+    this.inFlightModelCalls += reservedCalls;
     this.inFlightTokens += reservedTokens;
     return "ok";
   }
 
-  releaseReservation(_stage: number, estimatedTokens = 0): void {
-    this.inFlightModelCalls = Math.max(0, this.inFlightModelCalls - 1);
+  releaseReservation(_stage: number, estimatedTokens = 0, estimatedModelCalls = 1): void {
+    this.inFlightModelCalls = Math.max(0, this.inFlightModelCalls - Math.max(0, Math.ceil(estimatedModelCalls)));
     this.inFlightTokens = Math.max(0, this.inFlightTokens - Math.max(0, estimatedTokens));
   }
 

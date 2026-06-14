@@ -2976,6 +2976,222 @@ describe("phase 5 pipeline regressions", () => {
     expect(verifierCalls).toEqual(["finding-2:w9-001", "finding-1:w9-002"]);
   });
 
+  it("prioritizes high-value verifier candidates and records budget-limited candidates before dispatch", async () => {
+    const calls: string[] = [];
+    const artifacts = new Map<string, unknown>();
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const low = {
+      ...fakeFinding(),
+      id: "finding-low",
+      title: "low candidate",
+      severity: "low" as const,
+      confidence: "high" as const,
+      evidence: { changedCode: "low issue" }
+    };
+    const high = {
+      ...fakeFinding(),
+      id: "finding-high",
+      title: "high candidate",
+      severity: "high" as const,
+      confidence: "medium" as const,
+      evidence: { changedCode: "high issue" }
+    };
+    const budget = new BudgetLedger({ ...config(), review: { ...config().review, maxModelCalls: 3 } });
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        calls.push(request.telemetryContext?.candidateId ?? "");
+        return {
+          verdict: "keep",
+          reason: "kept",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        } as T;
+      }
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [low, high], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      { ...config(), review: { ...config().review, concurrency: 2 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        },
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff(),
+        reserve: (stage, estimatedTokens, estimatedModelCalls) => budget.reserve(stage, estimatedTokens, estimatedModelCalls),
+        releaseReservation: (stage, estimatedTokens, estimatedModelCalls) => budget.releaseReservation(stage, estimatedTokens, estimatedModelCalls)
+      }
+    );
+
+    expect(calls).toEqual(["finding-high"]);
+    expect(verified.verified.map((finding) => finding.id)).toEqual(["finding-high"]);
+    expect(verified.incompleteCount).toBe(1);
+    expect(budget.stopSnapshot()).toMatchObject({ reason: "max_model_calls", stage: 9 });
+
+    const records = artifacts.get("verification.json") as Array<{ candidateId: string; incompleteReason?: string; verdict?: { verificationIncomplete?: boolean } }>;
+    expect(records.find((record) => record.candidateId === "finding-low")).toMatchObject({
+      incompleteReason: "budget_limited",
+      verdict: { verificationIncomplete: true }
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 9,
+      level: "warn",
+      message: "verification_scheduling",
+      data: expect.objectContaining({
+        scheduledCandidateIds: ["finding-high"],
+        budgetLimitedCandidateIds: ["finding-low"]
+      })
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 9,
+      message: "pipeline_metrics",
+      data: expect.objectContaining({
+        workers: expect.objectContaining({
+          scheduled: 2,
+          completed: 1,
+          budgetLimited: 1
+        })
+      })
+    }));
+  });
+
+  it("retries verifier schema-invalid output once and records repair telemetry", async () => {
+    let calls = 0;
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>() => {
+        calls += 1;
+        if (calls === 1) {
+          throw new CodeninjaError("llm_schema_invalid", "bad verifier schema", {
+            recoverable: true,
+            context: { error: "missing required property verdict" }
+          });
+        }
+        return {
+          verdict: "keep",
+          reason: "kept after repair",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        } as T;
+      }
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff(),
+        checkpoint: () => "ok"
+      }
+    );
+
+    expect(calls).toBe(2);
+    expect(verified.verified).toHaveLength(1);
+    expect(verified.incompleteCount).toBe(0);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 9,
+      level: "warn",
+      message: "verification_schema_invalid",
+      data: expect.objectContaining({ candidateId: "finding-1" })
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 9,
+      level: "info",
+      message: "verification_schema_repair_attempted",
+      data: expect.objectContaining({ candidateId: "finding-1" })
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 9,
+      message: "pipeline_metrics",
+      data: expect.objectContaining({
+        workers: expect.objectContaining({
+          schemaInvalid: 1,
+          repairAttempted: 1
+        })
+      })
+    }));
+  });
+
+  it("marks schema-invalid verifier output incomplete when repair cannot be dispatched", async () => {
+    let calls = 0;
+    let checkpoints = 0;
+    const artifacts = new Map<string, unknown>();
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        calls += 1;
+        throw new CodeninjaError("llm_schema_invalid", "bad verifier schema", {
+          recoverable: true,
+          context: { error: "missing required property verdict" }
+        });
+      }
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff(),
+        checkpoint: () => {
+          checkpoints += 1;
+          return checkpoints === 1 ? "ok" : "exhausted";
+        }
+      }
+    );
+
+    expect(calls).toBe(1);
+    expect(verified.verified).toEqual([]);
+    expect(verified.incompleteCount).toBe(1);
+    const records = artifacts.get("verification.json") as Array<{ candidateId: string; incompleteReason?: string; verdict?: { verificationIncomplete?: boolean } }>;
+    expect(records).toEqual([
+      expect.objectContaining({
+        candidateId: "finding-1",
+        incompleteReason: "schema_invalid",
+        verdict: expect.objectContaining({
+          verificationIncomplete: true,
+          reason: expect.stringContaining("repair not dispatched")
+        })
+      })
+    ]);
+  });
+
   it("rethrows fatal provider errors from composition instead of falling back", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {

@@ -58,8 +58,8 @@ export interface LlmRunner {
 
 export type CreateRunnerHooks = {
   checkpoint(stage: ReviewStage): "ok" | "exhausted";
-  reserve?(stage: ReviewStage, estimatedTokens: number): "ok" | "exhausted";
-  releaseReservation?(stage: ReviewStage, estimatedTokens: number): void;
+  reserve?(stage: ReviewStage, estimatedTokens: number, estimatedModelCalls?: number): "ok" | "exhausted";
+  releaseReservation?(stage: ReviewStage, estimatedTokens: number, estimatedModelCalls?: number): void;
   onUsage(usage: LlmCallUsage): void;
 };
 

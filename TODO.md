@@ -21,7 +21,7 @@ Run-quality follow-ups from the trails-api real run, in intended fix order:
 - [x] Issue 3: Treat planner hunk coverage as targeted overrides, not mandatory exhaustive output, and remove noisy `planner_missing_coverage` reporting. Plan: `plans/04-issue-3-planner-coverage-semantics.md`.
 - [x] Issue 4: Reduce Stage 7 cost and repeated investigation by tightening lens routing, tool budgets, and one-call fast paths. Plan: `plans/05-issue-4-stage-7-cost.md`.
 - [x] Issue 1: Improve budget exhaustion behavior and partial-run semantics so quality-impacting budget stops are planned, visible, and not mistaken for full reviews. Plan: `plans/06-issue-1-budget-partial-runs.md`.
-- [ ] Issue 5: Strengthen Stage 9 verification reservation and recovery so generated candidates are not silently lost to budget/schema failures. Plan: `plans/07-issue-5-verification-degradation.md`.
+- [x] Issue 5: Strengthen Stage 9 verification reservation and recovery so generated candidates are not silently lost to budget/schema failures. Plan: `plans/07-issue-5-verification-degradation.md`.
 - [ ] Issue 6: Improve fallback composition, dedupe, and developer-facing final Markdown quality. Plan: `plans/08-issue-6-final-composition.md`.
 
 Verification completed:
