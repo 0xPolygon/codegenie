@@ -43,6 +43,7 @@ export type CodeninjaConfig = {
     concurrency: number;
     timeoutMs: number;
     perPassTimeoutMs: number;
+    budgetMultiplier: number;
     maxTotalTokens?: number;
     maxModelCalls?: number;
   };
@@ -763,6 +764,7 @@ export type PostingPlan = {
 export type ReviewResult = {
   summary: string;
   coverage: RunCoverageStatus;
+  budgetSummary?: BudgetSummary;
   findings: FinalFinding[];
   summaryOnlyFindings: FinalFinding[];
   needsHumanAttention: NeedsHumanAttentionNote[];
@@ -799,6 +801,7 @@ export type EvalCase = {
     lenses?: string[];
     maxFindings?: number;
     concurrency?: number;
+    budgetMultiplier?: number;
     verify?: boolean;
     cache?: boolean;
     cacheDir?: string;
@@ -822,6 +825,8 @@ export type EvalCase = {
     maxModelCalls?: number;
     maxToolCalls?: number;
     maxPromptCharsByStage?: Partial<Record<ReviewStage | string, number>>;
+    reviewCompleteness?: "complete" | "partial";
+    maxBudgetOverruns?: number;
   };
   should_find?: EvalFindingExpectation[];
   should_find_candidate?: EvalFindingExpectation[];
@@ -900,13 +905,17 @@ export type EvalBudgetResult = {
     | "maxElapsedSeconds"
     | "maxModelCalls"
     | "maxToolCalls"
-    | "maxPromptCharsByStage";
+    | "maxPromptCharsByStage"
+    | "reviewCompleteness"
+    | "maxBudgetOverruns";
   stage?: ReviewStage;
   status: "pass" | "fail" | "skipped";
   skipReason?: string;
-  limit: number;
+  limit?: number;
   actual?: number;
-  direction: "minimum" | "maximum";
+  expected?: string;
+  actualText?: string;
+  direction: "minimum" | "maximum" | "equals";
   fromReplayedArtifacts?: boolean;
 };
 
@@ -923,6 +932,8 @@ export type EvalRunMetrics = {
   verificationCalls?: number;
   toolCalls?: number;
   maxPromptCharsByStage?: Partial<Record<ReviewStage, number>>;
+  reviewCompleteness?: "complete" | "partial";
+  budgetOverruns?: number;
   localModelCallCacheHits?: number;
   localModelCallCacheMisses?: number;
   localModelCallCacheWrites?: number;
@@ -1027,6 +1038,7 @@ export type EvalArtifacts = {
     costProfile?: unknown;
     modelCallsSummary?: unknown;
     toolCallsSummary?: unknown;
+    budgetSummary?: BudgetSummary;
     runJson?: unknown;
     modelCalls?: unknown[];
     toolCalls?: unknown[];
@@ -1299,6 +1311,48 @@ export type BudgetStop = {
   maxTotalTokens?: number;
   remainingTokens?: number;
   reservedTokens?: number;
+};
+
+export type BudgetUsageByStage = {
+  stage: ReviewStage;
+  modelCalls: number;
+  totalTokens: number;
+};
+
+export type BudgetLimitEvent = {
+  stage: ReviewStage | 0;
+  reason: BudgetStopReason;
+  elapsedMs: number;
+  kind: "runtime" | "model_calls" | "tokens";
+  actual: number;
+  limit: number;
+  totalTokens: number;
+  modelCalls: number;
+  afterDispatchedCall: boolean;
+};
+
+export type BudgetSummary = {
+  completeness: "complete" | "partial";
+  partialReasons: string[];
+  multiplier: number;
+  configured: {
+    timeoutMs: number;
+    maxModelCalls?: number;
+    maxTotalTokens?: number;
+  };
+  effective: {
+    timeoutMs: number;
+    maxModelCalls?: number;
+    maxTotalTokens?: number;
+  };
+  usage: {
+    modelCalls: number;
+    totalTokens: number;
+    costUSD?: number;
+    byStage: BudgetUsageByStage[];
+  };
+  overruns: BudgetLimitEvent[];
+  dispatchBlocks: BudgetLimitEvent[];
 };
 
 export type RunOutcome = {

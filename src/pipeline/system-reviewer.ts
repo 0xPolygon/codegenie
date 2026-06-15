@@ -19,6 +19,7 @@ import type {
   UnifiedDiff
 } from "../types.js";
 import { sha256Hex } from "../util/hashing.js";
+import { scaleToolBudget } from "../util/budget.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
 import { isFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
 
@@ -212,7 +213,7 @@ async function runSystemReviewTask(
     schema: SubmitSystemReviewSchema,
     templateVersion: prompt.templateVersion,
     tools: buildRepositoryToolDefinitions(tools),
-    toolBudget: SYSTEM_REVIEW_TOOL_BUDGET,
+    toolBudget: scaleToolBudget(SYSTEM_REVIEW_TOOL_BUDGET, config.review.budgetMultiplier),
     timeoutMs: config.review.perPassTimeoutMs,
     telemetryContext: { workerId, packetId: task.id }
   });

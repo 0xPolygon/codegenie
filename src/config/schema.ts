@@ -9,6 +9,7 @@ export const logLevelSchema = z.enum(["debug", "info", "warn", "error"]);
 
 const positiveIntSchema = z.number().int().positive();
 const nonNegativeIntSchema = z.number().int().nonnegative();
+const positiveFiniteNumberSchema = z.number().positive().finite();
 
 export const pathRuleSchema = z
   .object({
@@ -42,6 +43,7 @@ export const rawConfigSchema = z
         concurrency: positiveIntSchema.optional(),
         timeoutMs: positiveIntSchema.optional(),
         perPassTimeoutMs: positiveIntSchema.optional(),
+        budgetMultiplier: positiveFiniteNumberSchema.optional(),
         maxTotalTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional()
       })
@@ -125,6 +127,7 @@ export const codeninjaConfigSchema = z
         concurrency: positiveIntSchema,
         timeoutMs: positiveIntSchema,
         perPassTimeoutMs: positiveIntSchema,
+        budgetMultiplier: positiveFiniteNumberSchema,
         maxTotalTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional()
       })
@@ -191,7 +194,8 @@ export const defaultConfig: CodeninjaConfig = {
     minInlineConfidence: "medium",
     concurrency: 4,
     timeoutMs: 30 * 60 * 1000,
-    perPassTimeoutMs: 5 * 60 * 1000
+    perPassTimeoutMs: 5 * 60 * 1000,
+    budgetMultiplier: 1
   },
   github: {
     summaryWhenNoFindings: false

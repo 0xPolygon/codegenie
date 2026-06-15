@@ -1,6 +1,6 @@
 # Issue 26: Budget Completion, Overrun Telemetry, and Budget Multiplier
 
-Status: PENDING
+Status: COMPLETE
 Planned from: budget/completeness review after plan 25, 2026-06-15
 
 ## Problem

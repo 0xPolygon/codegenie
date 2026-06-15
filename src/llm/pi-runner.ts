@@ -527,8 +527,8 @@ async function completeWithCache(input: {
           errorCode: "llm_call_failed",
           errorMessage: providerFailure.message
         });
-        reportUsage(opts, request.stage, message);
         releaseReservation();
+        reportUsage(opts, request.stage, message);
         lastError = providerFailure.cause;
         if (providerFailure.status === "transient_error" && isRetryableProviderError(providerFailure.cause, attempt) && attempt < MAX_PROVIDER_ATTEMPTS) {
           await sleep(retryDelayMs(providerFailure.cause, attempt), taskSignal, taskTimedOut);
@@ -563,8 +563,8 @@ async function completeWithCache(input: {
         status: callStatus,
         errorCode: callErrorCode
       }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodeninjaErrorCode });
-      reportUsage(opts, request.stage, message);
       releaseReservation();
+      reportUsage(opts, request.stage, message);
       if (opts.cache && cacheable) {
         await opts.cache.put(cacheKey, cacheEntry(request.stage, message));
       }

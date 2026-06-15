@@ -57,6 +57,7 @@ baseBranch = "main"
 
 [review]
 depth = "normal"
+budgetMultiplier = 1.0 # scales review/tool/token-call budgets; does not change finding caps
 
 [[classification.pathRules]]
 pattern = "lib/payments/**"
@@ -71,6 +72,8 @@ reason = "Generated files are not reviewed."
 ```
 
 Teams can also version project-specific review expertise as Markdown skills in `.codeninja/skills/` — concrete checks, false-positive rules, and safe patterns that travel with the repo.
+
+Budget caps are dispatch controls, not mid-call interrupts. If a model call is already running and crosses a soft token/model-call cap, codeninja records the overrun, lets that call finish, and stops dispatching later non-essential work. Raise or lower `review.budgetMultiplier` to scale review effort/cost for a repo or eval run; high values can be expensive and are recorded in telemetry.
 
 ## How a review runs
 
@@ -119,7 +122,7 @@ A skill is a Markdown file of concrete checks, false-positive rules, safe patter
 
 ### Built to be evaluated
 
-Every run writes typed local artifacts — the plan, every packet, every candidate, every verdict, every selection decision, per-call token/cost telemetry. The `codeninja eval` command replays real repos and fixtures against expected findings and scores them *by loss stage*. The `--cache` flag controls codeninja's local model-call cache, which reuses prior LLM responses during iteration; provider-side prompt cache reads/writes are reported separately because they are billing/runtime metadata from the LLM provider. In telemetry artifacts, prefer `localModelCallCache` and `providerPromptCache`; the older `cache` field is only a compatibility alias for local model-call cache counts. The eval suite, the skills, and the telemetry are the compounding assets — models swap underneath them.
+Every run writes typed local artifacts — the plan, every packet, every candidate, every verdict, every selection decision, budget summary, and per-call token/cost telemetry. The `codeninja eval` command replays real repos and fixtures against expected findings and scores them *by loss stage*. Eval YAML can set `review.budgetMultiplier`, require `expect.reviewCompleteness: complete`, and bound budget crossings with `expect.maxBudgetOverruns: 0`. The `--cache` flag controls codeninja's local model-call cache, which reuses prior LLM responses during iteration; provider-side prompt cache reads/writes are reported separately because they are billing/runtime metadata from the LLM provider. In telemetry artifacts, prefer `localModelCallCache` and `providerPromptCache`; the older `cache` field is only a compatibility alias for local model-call cache counts. The eval suite, the skills, and the telemetry are the compounding assets — models swap underneath them.
 
 ### Reviewing untrusted code is a security problem
 
@@ -127,7 +130,7 @@ A PR is attacker-controlled input that flows into tool-equipped LLMs whose outpu
 
 ### Fail honestly, degrade predictably
 
-Budgets and failures don't produce silent gaps. A failed planner falls back to a deterministic default plan; a failed packet worker marks its hunks `review_failed` in coverage; budget exhaustion walks a defined ladder that always reserves spend for verification and composition, so completed work is never lost. Partial reviews exit `0`, finalize as `completed_partial` in artifacts, and *say they're partial*.
+Budgets and failures don't produce silent gaps. A failed planner falls back to a deterministic default plan; a failed packet worker marks its hunks `review_failed` in coverage; budget exhaustion blocks future dispatch without discarding already-completed work. Final reports include complete/partial status plus compact token/model-call budget accounting when useful. Partial reviews exit `0`, finalize as `completed_partial` in artifacts, and *say they're partial*.
 
 ### Build when evidence demands it
 

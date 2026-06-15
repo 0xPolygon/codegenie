@@ -122,6 +122,7 @@ const caseSchema = z
         lenses: z.array(z.string().min(1)).optional(),
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
+        budgetMultiplier: positiveNumberSchema.optional(),
         verify: z.boolean().optional(),
         cache: z.boolean().optional(),
         cacheDir: z.string().min(1).optional(),
@@ -153,7 +154,9 @@ const caseSchema = z
         maxElapsedSeconds: positiveNumberSchema.optional(),
         maxModelCalls: positiveNumberSchema.optional(),
         maxToolCalls: positiveNumberSchema.optional(),
-        maxPromptCharsByStage: z.record(z.string(), positiveIntSchema).optional()
+        maxPromptCharsByStage: z.record(z.string(), positiveIntSchema).optional(),
+        reviewCompleteness: z.enum(["complete", "partial"]).optional(),
+        maxBudgetOverruns: z.number().int().nonnegative().optional()
       })
       .strict()
       .optional(),
@@ -620,6 +623,9 @@ function applyCaseReviewConfig(
   }
   if (review?.concurrency !== undefined) {
     config.review.concurrency = review.concurrency;
+  }
+  if (review?.budgetMultiplier !== undefined) {
+    config.review.budgetMultiplier = review.budgetMultiplier;
   }
   if (review?.verify !== undefined) {
     config.review.verify = review.verify;

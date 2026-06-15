@@ -408,6 +408,12 @@ function scoreBudgets(
     const actual = metrics.maxPromptCharsByStage?.[stage];
     results.push(metricBudgetResult("maxPromptCharsByStage", limit, actual, replaySkip, stage));
   }
+  if (expect.reviewCompleteness !== undefined) {
+    results.push(completenessBudgetResult(expect.reviewCompleteness, metrics.reviewCompleteness));
+  }
+  if (expect.maxBudgetOverruns !== undefined) {
+    results.push(metricBudgetResult("maxBudgetOverruns", expect.maxBudgetOverruns, metrics.budgetOverruns, undefined));
+  }
   return results;
 }
 
@@ -426,6 +432,28 @@ function budgetResult(
     actual,
     direction,
     fromReplayedArtifacts: mode === "replay"
+  };
+}
+
+function completenessBudgetResult(
+  expected: "complete" | "partial",
+  actual: "complete" | "partial" | undefined
+): EvalBudgetResult {
+  if (actual === undefined) {
+    return {
+      check: "reviewCompleteness",
+      status: "skipped",
+      skipReason: "metric unavailable",
+      expected,
+      direction: "equals"
+    };
+  }
+  return {
+    check: "reviewCompleteness",
+    status: actual === expected ? "pass" : "fail",
+    expected,
+    actualText: actual,
+    direction: "equals"
   };
 }
 
@@ -480,6 +508,13 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
     duplicateGroups: artifacts.finalFindings.filter((finding) => finding.mergedCandidateIds.length >= 2).length,
     stageLossCounts: emptyLossCounts()
   };
+  const budgetSummary = artifacts.metricsSources.budgetSummary;
+  if (budgetSummary !== undefined) {
+    metrics.reviewCompleteness = budgetSummary.completeness;
+    metrics.budgetOverruns = budgetSummary.overruns.length;
+  } else if (artifacts.coverage !== undefined) {
+    metrics.reviewCompleteness = artifacts.coverage.partial ? "partial" : "complete";
+  }
   const costUSD = numberPath(artifacts.metricsSources.costProfile, ["totalCostUSD"]);
   if (costUSD !== undefined) {
     metrics.costUSD = costUSD;

@@ -143,6 +143,12 @@ export function renderCaseResult(result: EvalCaseResult): string {
   if (metrics.elapsedSeconds !== undefined) {
     parts.push(`${metrics.elapsedSeconds.toFixed(1)}s`);
   }
+  if (metrics.reviewCompleteness !== undefined) {
+    parts.push(`${metrics.reviewCompleteness} review`);
+  }
+  if (metrics.budgetOverruns !== undefined) {
+    parts.push(`${metrics.budgetOverruns} budget overruns`);
+  }
   const localCacheHits = metrics.localModelCallCacheHits ?? metrics.cacheHits;
   const localCacheMisses = metrics.localModelCallCacheMisses ?? metrics.cacheMisses;
   if (localCacheHits !== undefined) {
@@ -168,9 +174,12 @@ export function renderCaseResult(result: EvalCaseResult): string {
 }
 
 function formatBudgetComparison(budget: EvalCaseResult["info"]["score"]["budgetResults"][number]): string {
+  if (budget.direction === "equals") {
+    return `${budget.actualText ?? "n/a"} != ${budget.expected ?? "n/a"}`;
+  }
   const actual = budget.actual ?? "n/a";
   const operator = budget.direction === "minimum" ? "<" : ">";
-  return `${actual} ${operator} ${budget.limit}`;
+  return `${actual} ${operator} ${budget.limit ?? "n/a"}`;
 }
 
 function renderSuiteTotals(results: EvalCaseResult[]): string {

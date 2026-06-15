@@ -55,6 +55,7 @@ const KNOWN_ARTIFACTS = new Set([
   "file-facts.json",
   "review-plan.json",
   "coverage.json",
+  "budget-summary.json",
   "candidate-findings.json",
   "uncertainty-promotion.json",
   "verification.json",
@@ -150,6 +151,7 @@ type RunArtifactMetadata = {
     baseSha?: string;
     headSha?: string;
     depth?: string;
+    budgetMultiplier?: number;
     lenses?: string[];
     format?: string;
     postGithubComments?: boolean;
@@ -165,6 +167,7 @@ type RunReviewArtifactMetadata = {
   baseSha: string | null;
   headSha: string | null;
   depth: string | null;
+  budgetMultiplier: number | null;
   lenses: string[];
   format: string | null;
   postGithubComments: boolean;
@@ -867,6 +870,7 @@ class RunTelemetryImpl {
       baseSha: review.baseSha ?? null,
       headSha: review.headSha ?? null,
       depth: review.depth ?? null,
+      budgetMultiplier: review.budgetMultiplier ?? null,
       lenses: review.lenses ?? [],
       format: review.format ?? null,
       postGithubComments: review.postGithubComments ?? false

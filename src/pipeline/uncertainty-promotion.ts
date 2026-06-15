@@ -9,6 +9,7 @@ import type {
 } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../util/hashing.js";
+import { scaleBudgetValue } from "../util/budget.js";
 
 const MAX_PROMOTIONS = 4;
 const MIN_PROMOTIONS_WHEN_AVAILABLE = 2;
@@ -17,6 +18,7 @@ const MAX_EVIDENCE_CHARS = 2400;
 type PromotionInput = {
   packetResults: PacketReviewResult[];
   packets: ReviewPacket[];
+  budgetMultiplier?: number;
 };
 
 export type UncertaintyPromotionSummary = {
@@ -56,7 +58,7 @@ export async function promoteUncertaintiesForVerification(
 ): Promise<{ packetResults: PacketReviewResult[]; summary: UncertaintyPromotionSummary }> {
   const packetsById = new Map(input.packets.map((packet) => [packet.id, packet]));
   const sources = input.packetResults.flatMap((result) => promotionSources(result, packetsById));
-  const maxPromotions = promotionLimit(input.packetResults.length);
+  const maxPromotions = promotionLimit(input.packetResults.length, input.budgetMultiplier ?? 1);
   const decisions: PromotionDecision[] = [];
   const promotedByPacket = new Map<string, CandidateFinding[]>();
   const notPromoted: Record<string, number> = {};
@@ -112,6 +114,7 @@ export async function promoteUncertaintiesForVerification(
       considered: summary.considered,
       promoted: summary.promoted,
       laneLimited: summary.laneLimited,
+      maxPromotions,
       notPromoted: summary.notPromoted,
       promotedCandidateIds: summary.promotedCandidateIds
     }
@@ -394,8 +397,9 @@ function baseDecision(source: PromotionSource, promoted: boolean, reason: string
   };
 }
 
-function promotionLimit(packetResultCount: number): number {
-  return Math.min(MAX_PROMOTIONS, Math.max(MIN_PROMOTIONS_WHEN_AVAILABLE, Math.ceil(packetResultCount * 0.03)));
+function promotionLimit(packetResultCount: number, budgetMultiplier: number): number {
+  const base = Math.min(MAX_PROMOTIONS, Math.max(MIN_PROMOTIONS_WHEN_AVAILABLE, Math.ceil(packetResultCount * 0.03)));
+  return scaleBudgetValue(base, budgetMultiplier);
 }
 
 function mainScopeLabel(source: PromotionSource): string {

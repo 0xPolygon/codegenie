@@ -22,6 +22,7 @@ import {
   validateAnchorForPacket
 } from "./pipeline-utils.js";
 import { isCodeninjaError } from "../util/errors.js";
+import { scaleBudgetValue, scaleToolBudget } from "../util/budget.js";
 
 const VERIFIER_TOOL_BUDGET = {
   maxToolCalls: 8,
@@ -246,7 +247,7 @@ export async function verifyFindings(
   }
 
   const orderedRepresentatives = orderVerifierRepresentatives(clustered.representatives);
-  const scheduling = scheduleVerifierRepresentatives(orderedRepresentatives, packetsById, opts, telemetry, verificationLaneByCandidateId);
+  const scheduling = scheduleVerifierRepresentatives(orderedRepresentatives, packetsById, opts, telemetry, verificationLaneByCandidateId, config.review.budgetMultiplier);
   const runtimeStats: VerificationRuntimeStats = {
     schemaInvalid: 0,
     repairAttempted: 0,
@@ -556,7 +557,7 @@ async function runVerifierStructured(
     schema: SubmitVerificationVerdictSchema,
     templateVersion: prompt.templateVersion,
     tools: buildRepositoryToolDefinitions(tools),
-    toolBudget: VERIFIER_TOOL_BUDGET,
+    toolBudget: scaleToolBudget(VERIFIER_TOOL_BUDGET, config.review.budgetMultiplier),
     timeoutMs: config.review.perPassTimeoutMs,
     telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId }
   });
@@ -765,7 +766,8 @@ function scheduleVerifierRepresentatives(
   packetsById: Map<string, ReviewPacket>,
   opts: VerifyOptions,
   telemetry: TelemetryRecorder,
-  verificationLaneByCandidateId: Map<string, VerificationLane>
+  verificationLaneByCandidateId: Map<string, VerificationLane>,
+  budgetMultiplier: number
 ): {
   scheduled: CandidateFinding[];
   budgetLimited: CandidateFinding[];
@@ -781,8 +783,9 @@ function scheduleVerifierRepresentatives(
   const canHoldReservations = opts.reserve !== undefined && opts.releaseReservation !== undefined;
   const standardCandidates = candidates.filter((candidate) => verificationLaneByCandidateId.get(candidate.id) !== "evidence_resolution");
   const evidenceResolutionCandidates = candidates.filter((candidate) => verificationLaneByCandidateId.get(candidate.id) === "evidence_resolution");
-  const evidenceResolutionScheduledCandidates = evidenceResolutionCandidates.slice(0, EVIDENCE_RESOLUTION_LANE_MAX);
-  laneLimited.push(...evidenceResolutionCandidates.slice(EVIDENCE_RESOLUTION_LANE_MAX));
+  const evidenceResolutionLaneMax = scaleBudgetValue(EVIDENCE_RESOLUTION_LANE_MAX, budgetMultiplier);
+  const evidenceResolutionScheduledCandidates = evidenceResolutionCandidates.slice(0, evidenceResolutionLaneMax);
+  laneLimited.push(...evidenceResolutionCandidates.slice(evidenceResolutionLaneMax));
 
   for (const candidate of [...standardCandidates, ...evidenceResolutionScheduledCandidates]) {
     if (budgetLimited.length > 0) {
@@ -811,6 +814,7 @@ function scheduleVerifierRepresentatives(
     message: "verification_scheduling",
     data: {
       expectedCallsPerCandidate: VERIFIER_EXPECTED_CALLS_PER_CANDIDATE,
+      evidenceResolutionLaneMax,
       orderedCandidateIds: candidates.map((candidate) => candidate.id),
       scheduledCandidateIds: scheduled.map((candidate) => candidate.id),
       budgetLimitedCandidateIds: budgetLimited.map((candidate) => candidate.id),

@@ -61,6 +61,7 @@ const DEFAULT_SOURCE_PATHS = [
   "review.concurrency",
   "review.timeoutMs",
   "review.perPassTimeoutMs",
+  "review.budgetMultiplier",
   "github.summaryWhenNoFindings",
   "classification.pathRules",
   "llm.maxConcurrentCalls",
@@ -74,7 +75,7 @@ const DEFAULT_SOURCE_PATHS = [
   "eval.logsDir"
 ];
 
-const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap"]);
+const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap", "budgetMultiplier"]);
 const CREDENTIAL_KEY_PATTERN = /(?:api[_-]?key|apikey|secret|token|password|passwd|authorization|credentials|auth)/i;
 
 export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
@@ -245,6 +246,10 @@ function applyRawConfig(
     config.review.perPassTimeoutMs = raw.review.perPassTimeoutMs;
     sources["review.perPassTimeoutMs"] = source;
   }
+  if (raw.review?.budgetMultiplier !== undefined) {
+    config.review.budgetMultiplier = raw.review.budgetMultiplier;
+    sources["review.budgetMultiplier"] = source;
+  }
   if (raw.review?.maxTotalTokens !== undefined) {
     config.review.maxTotalTokens = raw.review.maxTotalTokens;
     sources["review.maxTotalTokens"] = source;
@@ -344,6 +349,9 @@ function filterRepoConfig(raw: RawCodeninjaConfig, warnings: ConfigWarning[]): R
     }
     if (raw.review.softCommentCap !== undefined) {
       safe.review.softCommentCap = raw.review.softCommentCap;
+    }
+    if (raw.review.budgetMultiplier !== undefined) {
+      safe.review.budgetMultiplier = raw.review.budgetMultiplier;
     }
   }
 

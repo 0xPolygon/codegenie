@@ -1425,8 +1425,8 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
-  it("scales packet tool budgets with light-depth floors and deep-depth ceilings", async () => {
-    const budgetFor = async (coverage: Exclude<CoverageLevel, "skip">, depth: CodeninjaConfig["review"]["depth"]) => {
+  it("scales packet tool budgets with light-depth floors, deep-depth ceilings, and budget multipliers", async () => {
+    const budgetFor = async (coverage: Exclude<CoverageLevel, "skip">, depth: CodeninjaConfig["review"]["depth"], budgetMultiplier = 1) => {
       const plan = {
         ...fakePlan(),
         coverage: [{ ...fakePlan().coverage[0]!, coverage }]
@@ -1437,7 +1437,7 @@ describe("phase 5 pipeline regressions", () => {
         [fakeFacts("app.ts", "per-hunk")],
         fakeRepositoryIndex(),
         nullTelemetry(),
-        { config: { ...config(), review: { ...config().review, depth } }, enabledLenses: ["core/code-review"] }
+        { config: { ...config(), review: { ...config().review, depth, budgetMultiplier } }, enabledLenses: ["core/code-review"] }
       );
       return packets[0]?.toolBudget;
     };
@@ -1453,6 +1453,11 @@ describe("phase 5 pipeline regressions", () => {
       maxResultChars: 0
     });
     await expect(budgetFor("normal", "deep")).resolves.toEqual({
+      maxToolCalls: 6,
+      maxInvestigationRounds: 3,
+      maxResultChars: 15_000
+    });
+    await expect(budgetFor("normal", "normal", 1.5)).resolves.toEqual({
       maxToolCalls: 6,
       maxInvestigationRounds: 3,
       maxResultChars: 15_000
@@ -1845,6 +1850,76 @@ describe("phase 5 pipeline regressions", () => {
     } finally {
       random.mockRestore();
     }
+  });
+
+  it("tracks post-call overruns separately from pre-dispatch budget blocks", () => {
+    const budget = new BudgetLedger({ ...config(), review: { ...config().review, maxModelCalls: 2, maxTotalTokens: 100 } });
+
+    budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 60 });
+    budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 50 });
+
+    expect(budget.hasDispatchBlocks()).toBe(false);
+    expect(budget.summary().overruns).toEqual([
+      expect.objectContaining({
+        reason: "max_total_tokens",
+        stage: 7,
+        kind: "tokens",
+        actual: 110,
+        limit: 100,
+        afterDispatchedCall: true
+      })
+    ]);
+
+    expect(budget.checkpoint(7)).toBe("exhausted");
+    const summary = budget.summary();
+    expect(budget.hasDispatchBlocks()).toBe(true);
+    expect(summary.dispatchBlocks).toEqual([
+      expect.objectContaining({
+        reason: "max_total_tokens",
+        stage: 7,
+        afterDispatchedCall: false
+      })
+    ]);
+    expect(summary.usage.byStage).toEqual([{ stage: 7, modelCalls: 2, totalTokens: 110 }]);
+  });
+
+  it("does not include active reservations in post-call overrun actuals", () => {
+    const budget = new BudgetLedger({ ...config(), review: { ...config().review, maxTotalTokens: 100 } });
+
+    expect(budget.reserve(7, 80)).toBe("ok");
+    budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 110 });
+
+    const summary = budget.summary();
+    expect(summary.overruns).toEqual([
+      expect.objectContaining({
+        reason: "max_total_tokens",
+        actual: 110,
+        totalTokens: 110,
+        afterDispatchedCall: true
+      })
+    ]);
+    expect(budget.stopSnapshot()).toMatchObject({
+      totalTokens: 110,
+      inFlightTokens: 0,
+      projectedTokens: 110
+    });
+  });
+
+  it("scales effective model-call and token caps with budgetMultiplier", () => {
+    const budget = new BudgetLedger({
+      ...config(),
+      review: { ...config().review, maxModelCalls: 4, maxTotalTokens: 100, budgetMultiplier: 1.5 }
+    });
+
+    budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 50 });
+    budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 50 });
+
+    expect(budget.checkpoint(7)).toBe("ok");
+    const summary = budget.summary();
+    expect(summary.multiplier).toBe(1.5);
+    expect(summary.configured).toMatchObject({ maxModelCalls: 4, maxTotalTokens: 100 });
+    expect(summary.effective).toMatchObject({ maxModelCalls: 6, maxTotalTokens: 150 });
+    expect(summary.overruns).toHaveLength(0);
   });
 
   it("prevents concurrent Stage 7 workers from overshooting model-call budget", async () => {
@@ -5154,6 +5229,59 @@ describe("phase 5 pipeline regressions", () => {
     expect(markdown).toContain("Verification incomplete for 1 candidate.");
     expect(markdown).not.toContain("planner_missing_coverage");
     expect(markdown).not.toContain("default_coverage");
+  });
+
+  it("renders compact budget usage and overrun details", () => {
+    const output = renderMarkdownReview({
+      summary: "Review complete.",
+      coverage: {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      budgetSummary: {
+        completeness: "complete",
+        partialReasons: [],
+        multiplier: 2,
+        configured: { timeoutMs: 30_000, maxModelCalls: 2, maxTotalTokens: 100 },
+        effective: { timeoutMs: 30_000, maxModelCalls: 4, maxTotalTokens: 200 },
+        usage: {
+          modelCalls: 5,
+          totalTokens: 225,
+          costUSD: 0.1234,
+          byStage: [{ stage: 7, modelCalls: 5, totalTokens: 225 }]
+        },
+        overruns: [{
+          stage: 7,
+          reason: "max_total_tokens",
+          elapsedMs: 1000,
+          kind: "tokens",
+          actual: 225,
+          limit: 200,
+          totalTokens: 225,
+          modelCalls: 5,
+          afterDispatchedCall: true
+        }],
+        dispatchBlocks: []
+      },
+      findings: [],
+      summaryOnlyFindings: [],
+      needsHumanAttention: [],
+      noFindings: true
+    });
+
+    expect(output).toContain("## Budget");
+    expect(output).toContain("Review completeness: complete.");
+    expect(output).toContain("Usage: model calls 5, tokens 225, cost $0.1234.");
+    expect(output).toContain("Effective caps: model calls 4 (configured 2, multiplier 2), tokens 200 (configured 100, multiplier 2).");
+    expect(output).toContain("Budget overruns: stage 7 tokens 225/200.");
   });
 
   it("pre-trims composer input over forty findings and records suppressed selections", async () => {

@@ -8,6 +8,7 @@ import type {
   EvalSelectionRecord,
   EvalVerificationRecord,
   FinalFinding,
+  BudgetSummary,
   ReviewPacket,
   ReviewPlan,
   RunCoverageStatus
@@ -43,6 +44,7 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
   const costProfile = await readOptionalJson<unknown>(dir, "cost-profile.json");
   const modelCallsSummary = await readOptionalJson<unknown>(dir, "model-calls-summary.json");
   const toolCallsSummary = await readOptionalJson<unknown>(dir, "tool-calls-summary.json");
+  const budgetSummary = await readOptionalJson<BudgetSummary>(dir, "budget-summary.json");
   const runJson = await readOptionalJson<unknown>(dir, "run.json");
   const modelCalls = await readOptionalJsonl(path.join(dir, "model-calls.jsonl"));
   const toolCalls = await readOptionalJsonl(path.join(dir, "tool-calls.jsonl"));
@@ -54,6 +56,9 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
   }
   if (toolCallsSummary !== undefined) {
     metricsSources.toolCallsSummary = toolCallsSummary;
+  }
+  if (budgetSummary !== undefined) {
+    metricsSources.budgetSummary = budgetSummary;
   }
   if (runJson !== undefined) {
     metricsSources.runJson = runJson;

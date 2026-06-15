@@ -86,6 +86,31 @@ describe("eval suite validation", () => {
       })
     });
   });
+
+  it("accepts budget multiplier and budget/completeness expectations", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-budget-fields-"));
+    writeFileSync(path.join(suiteDir, "budget.yml"), [
+      "name: budget-fields",
+      "artifacts:",
+      "  path: logs/1",
+      "review:",
+      "  budgetMultiplier: 1.5",
+      "expect:",
+      "  reviewCompleteness: complete",
+      "  maxBudgetOverruns: 0",
+      "should_find:",
+      "  - id: expected",
+      "    path: src/app.ts"
+    ].join("\n"));
+
+    const suite = await loadEvalSuite(suiteDir);
+
+    expect(suite.cases[0]?.evalCase.review?.budgetMultiplier).toBe(1.5);
+    expect(suite.cases[0]?.evalCase.expect).toMatchObject({
+      reviewCompleteness: "complete",
+      maxBudgetOverruns: 0
+    });
+  });
 });
 
 describe("eval scoring", () => {
@@ -208,6 +233,62 @@ describe("eval scoring", () => {
         score
       }
     })).toContain("BUDGET maxFindings: 1 > 0");
+  });
+
+  it("scores and renders review completeness and budget overrun expectations", () => {
+    const score = scoreEvalRun({
+      name: "budget-completeness",
+      artifacts: { path: "unused" },
+      expect: { reviewCompleteness: "complete", maxBudgetOverruns: 0 }
+    }, {
+      candidates: [],
+      verification: [],
+      finalSelection: [],
+      finalFindings: [],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {
+        budgetSummary: {
+          completeness: "partial",
+          partialReasons: ["budget exhausted before all review work completed"],
+          multiplier: 1,
+          configured: { timeoutMs: 1000, maxModelCalls: 2 },
+          effective: { timeoutMs: 1000, maxModelCalls: 2 },
+          usage: { modelCalls: 3, totalTokens: 100, byStage: [{ stage: 7, modelCalls: 3, totalTokens: 100 }] },
+          overruns: [
+            { stage: 7, reason: "max_model_calls", elapsedMs: 1, kind: "model_calls", actual: 3, limit: 2, totalTokens: 100, modelCalls: 3, afterDispatchedCall: true },
+            { stage: 9, reason: "max_total_tokens", elapsedMs: 2, kind: "tokens", actual: 125, limit: 100, totalTokens: 125, modelCalls: 3, afterDispatchedCall: true }
+          ],
+          dispatchBlocks: []
+        }
+      }
+    }, "live");
+
+    expect(score.budgetResults).toEqual([
+      expect.objectContaining({ check: "reviewCompleteness", status: "fail", expected: "complete", actualText: "partial", direction: "equals" }),
+      expect.objectContaining({ check: "maxBudgetOverruns", status: "fail", actual: 2, limit: 0, direction: "maximum" })
+    ]);
+    const rendered = renderCaseResult({
+      caseName: "budget-completeness",
+      runDir: "unused",
+      status: "fail",
+      info: {
+        runNumber: 1,
+        caseName: "budget-completeness",
+        caseHash: "hash",
+        caseSnapshot: { name: "budget-completeness", artifacts: { path: "unused" } },
+        mode: "live",
+        cache: { enabled: false, source: "config" },
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: "2026-01-01T00:00:01.000Z",
+        score
+      }
+    });
+
+    expect(rendered).toContain("partial review");
+    expect(rendered).toContain("2 budget overruns");
+    expect(rendered).toContain("BUDGET reviewCompleteness: partial != complete");
+    expect(rendered).toContain("BUDGET maxBudgetOverruns: 2 > 0");
   });
 
   it("matches reported final findings through merged source candidate locations", () => {

@@ -18,7 +18,10 @@ import { createPromptBuilder } from "../skills/prompt-builder.js";
 import { loadSkills } from "../skills/skill-loader.js";
 import type {
   BudgetStop,
+  BudgetLimitEvent,
+  BudgetSummary,
   BudgetStopReason,
+  BudgetUsageByStage,
   CodeninjaConfig,
   ConfigWarning,
   CoverageLevel,
@@ -49,6 +52,7 @@ import { renderMarkdownReview } from "../output/markdown-renderer.js";
 import { renderReviewForStdout, renderPostingSummaryForStdout } from "../output/stdout-renderer.js";
 import { isDisclosableCoverageReason, uniqueDisclosableCoverageReasons } from "../util/coverage-reasons.js";
 import { sha256Hex } from "../util/hashing.js";
+import { scaleOptionalBudgetValue } from "../util/budget.js";
 
 type RunReviewOverrides = {
   repoRoot?: string;
@@ -193,7 +197,10 @@ export async function runReview(
     throwIfHardAborted(run);
     const allPacketResults = [...packetResults, ...systemReview.packetResults];
     const packetResultsForFinal = suppressResolvedFollowUpHints(allPacketResults, systemReview.resolvedHints);
-    const promoted = await promoteUncertaintiesForVerification({ packetResults: packetResultsForFinal, packets }, run.telemetry);
+    const promoted = await promoteUncertaintiesForVerification(
+      { packetResults: packetResultsForFinal, packets, budgetMultiplier: config.review.budgetMultiplier },
+      run.telemetry
+    );
     const packetResultsForVerification = promoted.packetResults;
     const candidateFindings = packetResultsForVerification.flatMap((result) => result.findings);
     await run.telemetry.writeArtifact("candidate-findings.json", candidateFindings);
@@ -209,12 +216,13 @@ export async function runReview(
     });
     throwIfHardAborted(run);
     const budgetStop = run.budget.stopSnapshot();
+    const budgetStopped = run.budget.hasDispatchBlocks();
     const coverage = aggregateRunCoverage(plannerResult.plan, decisions, packetResults, verified, run.telemetry, {
       allFiles: diff.files,
       packets,
       degradedPlanning: plannerResult.degradedPlanning,
-      budgetStopped: run.budget.stopped,
-      ...(budgetStop !== undefined ? { budgetStop } : {})
+      budgetStopped,
+      ...(budgetStopped && budgetStop !== undefined ? { budgetStop } : {})
     });
     run.telemetry.event({
       stage: 9,
@@ -242,15 +250,17 @@ export async function runReview(
       diff,
       ...(overrides.postGithubComments !== undefined ? { postGithubComments: overrides.postGithubComments } : {})
     });
-    if (run.budget.stopped) {
+    if (run.budget.hasDispatchBlocks()) {
       markCoverageBudgetStopped(finalReview.coverage, run.budget.stopSnapshot());
     }
     emitBudgetStop(run, finalReview.coverage.budgetStop);
+    finalReview.budgetSummary = run.budget.summary(finalReview.coverage);
     throwIfHardAborted(run);
     await run.telemetry.writeArtifact("coverage.json", {
       status: finalReview.coverage,
       records: buildCoverageRecords(diff.files, decisions, plannerResult.plan, packetResults, packets)
     });
+    await run.telemetry.writeArtifact("budget-summary.json", finalReview.budgetSummary);
     const posting = await maybePublishToGitHub(finalReview, resolved, config, run.telemetry, {
       diff,
       ...(overrides.github !== undefined ? { github: overrides.github } : {})
@@ -335,6 +345,7 @@ async function startRun(
         mode: input.mode,
         target: input,
         depth: config.review.depth,
+        budgetMultiplier: config.review.budgetMultiplier,
         lenses: config.lenses.restrictTo ?? config.lenses.enabled,
         format: overrides.format ?? "markdown",
         postGithubComments: overrides.postGithubComments === true
@@ -344,7 +355,7 @@ async function startRun(
   const attached = await run.attachRunDirectory(repoRoot);
   overrides.onRunStart?.(attached);
   emitConfigWarnings(overrides.configWarnings ?? [], run.recorder.runId, run.logger, run.recorder);
-  const budget = new BudgetLedger(config);
+  const budget = new BudgetLedger(config, run.recorder);
   const abort = new AbortController();
   const hardTimeoutMs = config.review.timeoutMs * 2;
   const hardKillTimer = setTimeout(
@@ -753,6 +764,7 @@ async function maybeZeroWork(
   const result: ReviewResult = {
     summary: "Nothing to review.",
     coverage,
+    budgetSummary: run.budget.summary(coverage),
     findings: [],
     summaryOnlyFindings: [],
     needsHumanAttention: [],
@@ -769,6 +781,7 @@ async function maybeZeroWork(
   await run.telemetry.writeArtifact("verification.json", []);
   await run.telemetry.writeArtifact("final-selection.json", { records: [], groups: [] });
   await run.telemetry.writeArtifact("final-findings.json", []);
+  await run.telemetry.writeArtifact("budget-summary.json", result.budgetSummary);
   await maybePublishToGitHub(result, resolved, config, run.telemetry, {
     ...(overrides.github !== undefined ? { github: overrides.github } : {})
   });
@@ -1138,39 +1151,57 @@ export class BudgetLedger {
   private startedAt = Date.now();
   private modelCalls = 0;
   private totalTokens = 0;
+  private costUSD = 0;
   private inFlightModelCalls = 0;
   private inFlightTokens = 0;
+  private readonly effectiveMaxModelCalls: number | undefined;
+  private readonly effectiveMaxTotalTokens: number | undefined;
+  private readonly usageByStage = new Map<ReviewStage, BudgetUsageByStage>();
+  private readonly overrunRecords: BudgetLimitEvent[] = [];
+  private readonly dispatchBlockRecords: BudgetLimitEvent[] = [];
+  private readonly overrunKeys = new Set<string>();
   private stop: BudgetStop | undefined;
   stopped = false;
 
-  constructor(private readonly config: CodeninjaConfig) {}
+  constructor(
+    private readonly config: CodeninjaConfig,
+    private readonly telemetry?: TelemetryRecorder
+  ) {
+    this.effectiveMaxModelCalls = scaleOptionalBudgetValue(config.review.maxModelCalls, config.review.budgetMultiplier);
+    this.effectiveMaxTotalTokens = scaleOptionalBudgetValue(config.review.maxTotalTokens, config.review.budgetMultiplier);
+  }
 
   checkpoint(stage: number): "ok" | "exhausted" {
     const elapsed = Date.now() - this.startedAt;
     if (elapsed >= this.config.review.timeoutMs * 2) {
-      this.markStopped("hard_timeout", stage, elapsed);
+      this.markDispatchBlocked("hard_timeout", stage, elapsed);
       throw new CodeninjaError("timeout", "review run exceeded hard timeout");
     }
 
     const reserveStage = stage >= 9;
     const reason = this.exhaustionReason(elapsed, reserveStage);
     if (reason !== undefined) {
-      this.markStopped(reason, stage, elapsed);
+      this.markDispatchBlocked(reason, stage, elapsed);
       return "exhausted";
     }
     return "ok";
   }
 
   recordUsage(usage: LlmCallUsage): void {
+    const previousModelCalls = this.modelCalls;
+    const previousTotalTokens = this.totalTokens;
     this.modelCalls += usage.providerCalls;
     this.totalTokens += usage.totalTokens ?? 0;
+    this.costUSD += usage.costUSD ?? 0;
+    this.recordStageUsage(usage);
+    this.recordPostCallOverruns(usage, previousModelCalls, previousTotalTokens);
   }
 
   reserve(stage: number, estimatedTokens = 0, estimatedModelCalls = 1): "ok" | "exhausted" {
     const elapsed = Date.now() - this.startedAt;
     const reservedCalls = Math.max(0, Math.ceil(estimatedModelCalls));
     if (elapsed >= this.config.review.timeoutMs * 2) {
-      this.markStopped("hard_timeout", stage, elapsed, estimatedTokens, reservedCalls);
+      this.markDispatchBlocked("hard_timeout", stage, elapsed, estimatedTokens, reservedCalls);
       throw new CodeninjaError("timeout", "review run exceeded hard timeout");
     }
 
@@ -1178,7 +1209,7 @@ export class BudgetLedger {
     const reservedTokens = Math.max(0, estimatedTokens);
     const reason = this.exhaustionReason(elapsed, reserveStage, reservedTokens, reservedCalls);
     if (reason !== undefined) {
-      this.markStopped(reason, stage, elapsed, reservedTokens, reservedCalls);
+      this.markDispatchBlocked(reason, stage, elapsed, reservedTokens, reservedCalls);
       return "exhausted";
     }
     this.inFlightModelCalls += reservedCalls;
@@ -1193,6 +1224,36 @@ export class BudgetLedger {
 
   stopSnapshot(): BudgetStop | undefined {
     return this.stop;
+  }
+
+  hasDispatchBlocks(): boolean {
+    return this.dispatchBlockRecords.length > 0;
+  }
+
+  summary(coverage?: RunCoverageStatus): BudgetSummary {
+    return {
+      completeness: coverage?.partial === true ? "partial" : "complete",
+      partialReasons: coverage?.partial === true ? [...coverage.reasons] : [],
+      multiplier: this.config.review.budgetMultiplier,
+      configured: {
+        timeoutMs: this.config.review.timeoutMs,
+        ...(this.config.review.maxModelCalls !== undefined ? { maxModelCalls: this.config.review.maxModelCalls } : {}),
+        ...(this.config.review.maxTotalTokens !== undefined ? { maxTotalTokens: this.config.review.maxTotalTokens } : {})
+      },
+      effective: {
+        timeoutMs: this.config.review.timeoutMs,
+        ...(this.effectiveMaxModelCalls !== undefined ? { maxModelCalls: this.effectiveMaxModelCalls } : {}),
+        ...(this.effectiveMaxTotalTokens !== undefined ? { maxTotalTokens: this.effectiveMaxTotalTokens } : {})
+      },
+      usage: {
+        modelCalls: this.modelCalls,
+        totalTokens: this.totalTokens,
+        ...(this.costUSD > 0 ? { costUSD: this.costUSD } : {}),
+        byStage: [...this.usageByStage.values()].sort((a, b) => a.stage - b.stage)
+      },
+      overruns: [...this.overrunRecords],
+      dispatchBlocks: [...this.dispatchBlockRecords]
+    };
   }
 
   private exhaustionReason(
@@ -1213,7 +1274,7 @@ export class BudgetLedger {
     return undefined;
   }
 
-  private markStopped(
+  private markDispatchBlocked(
     reason: BudgetStopReason,
     stage: number,
     elapsed: number,
@@ -1221,14 +1282,54 @@ export class BudgetLedger {
     additionalReservedCalls = 0
   ): void {
     this.stopped = true;
+    const event = this.limitEvent(reason, stage, elapsed, additionalReservedTokens, additionalReservedCalls, false);
+    this.dispatchBlockRecords.push(event);
+    this.telemetry?.event({
+      stage: event.stage,
+      level: "warn",
+      message: "budget_dispatch_blocked",
+      data: event
+    });
     if (this.stop !== undefined) {
       return;
     }
+    this.stop = this.stopFor(reason, stage, elapsed, additionalReservedTokens, additionalReservedCalls);
+  }
+
+  private markPostCallOverrun(event: BudgetLimitEvent): void {
+    this.stopped = true;
+    const key = `${event.reason}:${event.stage}`;
+    if (this.overrunKeys.has(key)) {
+      return;
+    }
+    this.overrunKeys.add(key);
+    this.overrunRecords.push(event);
+    this.telemetry?.event({
+      stage: event.stage,
+      level: "warn",
+      message: "budget_overrun",
+      data: event
+    });
+    if (this.stop === undefined) {
+      this.stop = this.stopFor(event.reason, event.stage, event.elapsedMs, 0, 0, false);
+    }
+  }
+
+  private stopFor(
+    reason: BudgetStopReason,
+    stage: number,
+    elapsed: number,
+    additionalReservedTokens = 0,
+    additionalReservedCalls = 0,
+    includeInFlight = true
+  ): BudgetStop {
     const timeoutMs = this.config.review.timeoutMs;
     const hardTimeoutMs = timeoutMs * 2;
-    const projectedModelCalls = this.modelCalls + this.inFlightModelCalls + additionalReservedCalls;
-    const projectedTokens = this.totalTokens + this.inFlightTokens + additionalReservedTokens;
-    this.stop = {
+    const snapshotInFlightModelCalls = includeInFlight ? this.inFlightModelCalls : 0;
+    const snapshotInFlightTokens = includeInFlight ? this.inFlightTokens : 0;
+    const projectedModelCalls = this.modelCalls + snapshotInFlightModelCalls + additionalReservedCalls;
+    const projectedTokens = this.totalTokens + snapshotInFlightTokens + additionalReservedTokens;
+    return {
       reason,
       stage: isReviewStage(stage) ? stage : 0,
       elapsedMs: elapsed,
@@ -1237,25 +1338,87 @@ export class BudgetLedger {
       remainingRuntimeMs: Math.max(0, timeoutMs - elapsed),
       reservedTailRuntimeMs: runtimeReserveMs(timeoutMs),
       modelCalls: this.modelCalls,
-      inFlightModelCalls: this.inFlightModelCalls,
+      inFlightModelCalls: snapshotInFlightModelCalls,
       projectedModelCalls,
-      ...(this.config.review.maxModelCalls !== undefined
+      ...(this.effectiveMaxModelCalls !== undefined
         ? {
-            maxModelCalls: this.config.review.maxModelCalls,
-            remainingModelCalls: Math.max(0, this.config.review.maxModelCalls - projectedModelCalls),
-            reservedModelCalls: reservedBudgetAmount(this.config.review.maxModelCalls)
+            maxModelCalls: this.effectiveMaxModelCalls,
+            remainingModelCalls: Math.max(0, this.effectiveMaxModelCalls - projectedModelCalls),
+            reservedModelCalls: reservedBudgetAmount(this.effectiveMaxModelCalls)
           }
         : {}),
       totalTokens: this.totalTokens,
-      inFlightTokens: this.inFlightTokens,
+      inFlightTokens: snapshotInFlightTokens,
       projectedTokens,
-      ...(this.config.review.maxTotalTokens !== undefined
+      ...(this.effectiveMaxTotalTokens !== undefined
         ? {
-            maxTotalTokens: this.config.review.maxTotalTokens,
-            remainingTokens: Math.max(0, this.config.review.maxTotalTokens - projectedTokens),
-            reservedTokens: reservedBudgetAmount(this.config.review.maxTotalTokens)
+            maxTotalTokens: this.effectiveMaxTotalTokens,
+            remainingTokens: Math.max(0, this.effectiveMaxTotalTokens - projectedTokens),
+            reservedTokens: reservedBudgetAmount(this.effectiveMaxTotalTokens)
           }
         : {})
+    };
+  }
+
+  private recordStageUsage(usage: LlmCallUsage): void {
+    const current = this.usageByStage.get(usage.stage) ?? { stage: usage.stage, modelCalls: 0, totalTokens: 0 };
+    current.modelCalls += usage.providerCalls;
+    current.totalTokens += usage.totalTokens ?? 0;
+    this.usageByStage.set(usage.stage, current);
+  }
+
+  private recordPostCallOverruns(
+    usage: LlmCallUsage,
+    previousModelCalls: number,
+    previousTotalTokens: number
+  ): void {
+    const elapsed = Date.now() - this.startedAt;
+    if (
+      this.effectiveMaxModelCalls !== undefined &&
+      previousModelCalls <= this.effectiveMaxModelCalls &&
+      this.modelCalls > this.effectiveMaxModelCalls
+    ) {
+      this.markPostCallOverrun(this.limitEvent("max_model_calls", usage.stage, elapsed, 0, 0, true));
+    }
+    if (
+      this.effectiveMaxTotalTokens !== undefined &&
+      previousTotalTokens <= this.effectiveMaxTotalTokens &&
+      this.totalTokens > this.effectiveMaxTotalTokens
+    ) {
+      this.markPostCallOverrun(this.limitEvent("max_total_tokens", usage.stage, elapsed, 0, 0, true));
+    }
+  }
+
+  private limitEvent(
+    reason: BudgetStopReason,
+    stage: number,
+    elapsed: number,
+    additionalReservedTokens: number,
+    additionalReservedCalls: number,
+    afterDispatchedCall: boolean
+  ): BudgetLimitEvent {
+    const projectedModelCalls = this.modelCalls + (afterDispatchedCall ? 0 : this.inFlightModelCalls) + additionalReservedCalls;
+    const projectedTokens = this.totalTokens + (afterDispatchedCall ? 0 : this.inFlightTokens) + additionalReservedTokens;
+    const limit = reason === "max_model_calls"
+      ? this.effectiveMaxModelCalls ?? 0
+      : reason === "max_total_tokens"
+        ? this.effectiveMaxTotalTokens ?? 0
+        : this.config.review.timeoutMs;
+    const actual = reason === "max_model_calls"
+      ? projectedModelCalls
+      : reason === "max_total_tokens"
+        ? projectedTokens
+        : elapsed;
+    return {
+      stage: isReviewStage(stage) ? stage : 0,
+      reason,
+      elapsedMs: elapsed,
+      kind: reason === "max_model_calls" ? "model_calls" : reason === "max_total_tokens" ? "tokens" : "runtime",
+      actual,
+      limit,
+      totalTokens: this.totalTokens,
+      modelCalls: this.modelCalls,
+      afterDispatchedCall
     };
   }
 
@@ -1265,7 +1428,7 @@ export class BudgetLedger {
   }
 
   private tokensExhausted(reserveStage: boolean, additionalReservedTokens = 0): boolean {
-    const max = this.config.review.maxTotalTokens;
+    const max = this.effectiveMaxTotalTokens;
     if (max === undefined) {
       return false;
     }
@@ -1275,7 +1438,7 @@ export class BudgetLedger {
   }
 
   private modelCallsExhausted(reserveStage: boolean, additionalReservedCalls = 0): boolean {
-    const max = this.config.review.maxModelCalls;
+    const max = this.effectiveMaxModelCalls;
     if (max === undefined) {
       return false;
     }

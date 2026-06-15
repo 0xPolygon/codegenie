@@ -26,6 +26,7 @@ import type {
   ToolBudget
 } from "../types.js";
 import { sha256Hex } from "../util/hashing.js";
+import { scaleToolBudget } from "../util/budget.js";
 
 type PacketBuildOptions = {
   config: CodeninjaConfig;
@@ -260,7 +261,7 @@ async function buildPacket(
     surroundingContextHints: hintContext.workerHints,
     labels: first.facts.labels,
     riskNotes,
-    toolBudget: toolBudget(coverage, config.review.depth, reviewProfile),
+    toolBudget: scaleToolBudget(toolBudget(coverage, config.review.depth, reviewProfile), config.review.budgetMultiplier),
     ...(reviewContext?.intentText !== undefined ? { intentText: reviewContext.intentText } : {}),
     ...(context.degradation !== undefined || truncationReason.length > 0 || contextDropReason !== undefined || contextTruncationReason !== undefined || group.degradationReason !== undefined
       ? { degraded: { reason: [context.degradation, truncationReason, contextDropReason, contextTruncationReason, group.degradationReason].filter(Boolean).join("; ") } }
