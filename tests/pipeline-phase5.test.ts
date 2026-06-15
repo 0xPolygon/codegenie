@@ -1633,6 +1633,57 @@ describe("phase 5 pipeline regressions", () => {
     expect(budget.stopped).toBe(true);
   });
 
+  it("passes a compact replacement schema-repair prompt to the planner runner", async () => {
+    let repairPrompt = "";
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        expect(request.stage).toBe(5);
+        expect(request.schemaRepair?.replaceConversation).toBe(true);
+        expect(request.schemaRepair?.failAfterRepair).toBe(true);
+        repairPrompt = request.schemaRepair?.buildPrompt({
+          stage: 5,
+          submitTool: "submit_plan",
+          error: "Stage 5 planner responses must call submit_plan exactly once; received 2 submit_plan calls.",
+          submitCalls: [
+            {
+              id: "submit-a",
+              arguments: {
+                diffUnderstanding: { declaredIntent: "partial", inferredBehavior: "partial" },
+                riskAreas: [],
+                coverage: []
+              }
+            },
+            {
+              id: "submit-b",
+              arguments: {
+                diffUnderstanding: { declaredIntent: "partial", inferredBehavior: "partial" },
+                riskAreas: [],
+                coverage: []
+              }
+            }
+          ],
+          extraToolNames: ["read_range"]
+        }) ?? "";
+        return fakePlan("app.ts") as T;
+      }
+    };
+
+    await runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [],
+      skills: []
+    });
+
+    expect(repairPrompt).toContain("exactly once");
+    expect(repairPrompt).toContain("submit-a");
+    expect(repairPrompt).toContain("submit-b");
+    expect(repairPrompt).toContain("read_range");
+    expect(repairPrompt).toContain("planner-repair-dossier");
+    expect(repairPrompt).toContain("\"hunkId\": \"h1\"");
+    expect(repairPrompt).not.toContain("+changed");
+  });
+
   it("runs simple Stage 7 packets as one no-tool model call", async () => {
     let callCount = 0;
     let toolCount: number | undefined;

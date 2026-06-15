@@ -63,7 +63,7 @@ export type PromptBuilder = {
 };
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 9 | 10, string> = {
-  5: "p5.1",
+  5: "p5.2",
   7: "p7.1",
   9: "p9.1",
   10: "p10.1"
@@ -91,7 +91,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         renderLensList(lenses),
         "Available skill summaries:\n" + projection.text,
         dossierBlock,
-        "Finish by calling submit_plan with schema-valid arguments. Do not answer in plain text."
+        "Finish by calling submit_plan exactly once with the complete schema-valid plan. Do not split the plan across multiple submit_plan calls. Do not answer in plain text."
       ], projection, 1);
     },
     buildPacketReviewPrompt: ({ packet, skills }) => {

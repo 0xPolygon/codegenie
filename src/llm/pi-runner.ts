@@ -29,6 +29,7 @@ import {
   roleForStage,
   type CreateRunnerOptions,
   type LlmCallUsage,
+  type LlmSchemaRepairInput,
   type LlmRunner,
   type LlmStructuredRequest,
   type PiAiAdapter,
@@ -179,8 +180,26 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           const message = providerResult.message;
           messages.push(message as unknown as ConversationMessage);
 
-          const submitCall = firstToolCall(message, submitTool.name);
+          const submitCalls = toolCallsNamed(message, submitTool.name);
+          const submitCall = submitCalls[0];
           const toolCalls = toolCallsExcept(message, submitTool.name);
+          const submitDisciplineError = submitResponseDisciplineError(request, submitTool.name, submitCalls);
+          if (submitDisciplineError !== undefined) {
+            queueSchemaRepair({
+              opts,
+              request,
+              messages,
+              submitToolName: submitTool.name,
+              submitCalls,
+              extraToolNames: toolCalls.map((toolCall) => toolCall.name),
+              error: submitDisciplineError,
+              schemaRepairUsed
+            });
+            schemaRepairUsed = true;
+            forceFinalize = true;
+            budgetForceFinalize = false;
+            continue;
+          }
           if (submitCall) {
             try {
               const validated = adapter.validateToolCall([toolSpec(submitTool)], submitCall);
@@ -189,21 +208,20 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               }
               return validated as T;
             } catch (cause) {
-              if (schemaRepairUsed) {
-                throw new CodeninjaError("llm_schema_invalid", "model submit payload failed schema validation after repair", {
-                  recoverable: true,
-                  context: { submitTool: submitTool.name, error: truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause)) },
-                  cause
-                });
-              }
+              queueSchemaRepair({
+                opts,
+                request,
+                messages,
+                submitToolName: submitTool.name,
+                submitCalls,
+                extraToolNames: toolCalls.map((toolCall) => toolCall.name),
+                error: `The ${submitTool.name} arguments were schema-invalid: ${truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause))}`,
+                schemaRepairUsed,
+                cause
+              });
               schemaRepairUsed = true;
               forceFinalize = true;
               budgetForceFinalize = false;
-              messages.push({
-                role: "user",
-                content: `The ${submitTool.name} arguments were schema-invalid: ${truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause))}. Call ${submitTool.name} again with corrected schema-valid arguments.`,
-                timestamp: 0
-              });
               continue;
             }
           }
@@ -755,8 +773,8 @@ function withToolChoicePayload(
   };
 }
 
-function firstToolCall(message: PiAssistantMessage, name: string): PiToolCall | undefined {
-  return message.content.find((block): block is PiToolCall => isToolCall(block) && block.name === name);
+function toolCallsNamed(message: PiAssistantMessage, name: string): PiToolCall[] {
+  return message.content.filter((block): block is PiToolCall => isToolCall(block) && block.name === name);
 }
 
 function toolCallsExcept(message: PiAssistantMessage, excludedName: string): PiToolCall[] {
@@ -939,6 +957,63 @@ function recordFinalizeMissingSubmitRetry(
       unexpectedTools: toolCalls.map((toolCall) => toolCall.name),
       count: toolCalls.length,
       candidateId: request.telemetryContext?.candidateId
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
+function queueSchemaRepair(input: {
+  opts: CreateRunnerOptions;
+  request: LlmStructuredRequest<unknown>;
+  messages: ConversationMessage[];
+  submitToolName: string;
+  submitCalls: PiToolCall[];
+  extraToolNames: string[];
+  error: string;
+  schemaRepairUsed: boolean;
+  cause?: unknown;
+}): void {
+  const error = truncatePromptDiagnostic(input.error);
+  if (input.schemaRepairUsed) {
+    throw new CodeninjaError("llm_schema_invalid", "model submit payload failed schema validation after repair", {
+      recoverable: input.request.schemaRepair?.failAfterRepair === true ? false : true,
+      context: { submitTool: input.submitToolName, error },
+      cause: input.cause
+    });
+  }
+  const repairInput: LlmSchemaRepairInput = {
+    stage: input.request.stage,
+    submitTool: input.submitToolName,
+    error,
+    submitCalls: input.submitCalls.map((call) => ({ id: call.id, arguments: call.arguments })),
+    extraToolNames: input.extraToolNames
+  };
+  const content = input.request.schemaRepair?.buildPrompt(repairInput) ??
+    `${error}. Call ${input.submitToolName} again with exactly one corrected schema-valid set of arguments.`;
+  const replaceConversation = input.request.schemaRepair?.replaceConversation === true;
+  const repairMessage = {
+    role: "user",
+    content,
+    timestamp: 0
+  };
+  if (replaceConversation) {
+    input.messages.splice(0, input.messages.length, repairMessage);
+  } else {
+    input.messages.push(repairMessage);
+  }
+  input.opts.telemetry.event(definedRecord({
+    stage: input.request.stage,
+    level: "warn",
+    message: input.request.stage === 5 ? "planner_schema_repair_scheduled" : "schema_repair_scheduled",
+    workerId: input.request.telemetryContext?.workerId,
+    packetId: input.request.telemetryContext?.packetId,
+    data: definedRecord({
+      submitTool: input.submitToolName,
+      invalidSubmitCallCount: input.submitCalls.length,
+      extraToolNames: input.extraToolNames,
+      repairPromptChars: content.length,
+      replaceConversation,
+      candidateId: input.request.telemetryContext?.candidateId,
+      error
     })
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
@@ -1269,7 +1344,12 @@ function schemaValidityForResponse(
   if (!submitTool) {
     return undefined;
   }
-  const submitCall = firstToolCall(message, submitTool.name);
+  const submitCalls = toolCallsNamed(message, submitTool.name);
+  const disciplineError = submitResponseDisciplineError(request, submitTool.name, submitCalls);
+  if (disciplineError !== undefined) {
+    return false;
+  }
+  const submitCall = submitCalls[0];
   if (!submitCall) {
     return kind === "finalize" || kind === "repair" ? false : undefined;
   }
@@ -1279,6 +1359,20 @@ function schemaValidityForResponse(
   } catch {
     return false;
   }
+}
+
+function submitResponseDisciplineError(
+  request: LlmStructuredRequest<unknown>,
+  submitToolName: string,
+  submitCalls: PiToolCall[]
+): string | undefined {
+  if (request.stage !== 5) {
+    return undefined;
+  }
+  if (submitCalls.length === 1) {
+    return undefined;
+  }
+  return `Stage 5 planner responses must call ${submitToolName} exactly once; received ${submitCalls.length} ${submitToolName} call${submitCalls.length === 1 ? "" : "s"}.`;
 }
 
 function isCacheableProviderResponse(schemaValid: boolean | undefined, message: PiAssistantMessage, tools: ToolDefinition[]): boolean {

@@ -842,6 +842,146 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(cache.put.mock.calls[0]?.[1].message.content).toEqual([validSubmitReviewCall("submit-repair")]);
   });
 
+  it("requires planner responses to submit exactly one plan and repairs with replacement context", async () => {
+    const telemetry = fakeTelemetry();
+    const cache = {
+      get: vi.fn(async (_key: string) => ({ status: "miss" as const })),
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+    };
+    const adapter = scriptedAdapter([
+      assistant([validSubmitPlanCall("submit-plan-a"), validSubmitPlanCall("submit-plan-b")]),
+      assistant([validSubmitPlanCall("submit-plan-repaired")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      cache,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const originalPromptMarker = "ORIGINAL_PLANNER_PROMPT_SHOULD_NOT_BE_RESENT";
+
+    await expect(runner.runStructured({
+      stage: 5,
+      prompt: `${originalPromptMarker} ${"x".repeat(12_000)}`,
+      schema: SubmitPlanSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1000,
+      schemaRepair: {
+        replaceConversation: true,
+        buildPrompt: (input) => {
+          expect(input.submitTool).toBe("submit_plan");
+          expect(input.submitCalls.map((call) => call.id)).toEqual(["submit-plan-a", "submit-plan-b"]);
+          return `compact planner repair for ${input.submitCalls.map((call) => call.id).join(",")}`;
+        }
+      }
+    })).resolves.toMatchObject({
+      diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" },
+      riskAreas: [],
+      coverage: []
+    });
+
+    expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
+    expect(telemetry.modelCalls.map((call) => call.kind)).toEqual(["initial", "repair"]);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 5,
+        message: "planner_schema_repair_scheduled",
+        data: expect.objectContaining({
+          submitTool: "submit_plan",
+          invalidSubmitCallCount: 2,
+          repairPromptChars: "compact planner repair for submit-plan-a,submit-plan-b".length,
+          replaceConversation: true
+        })
+      })
+    ]));
+    expect(adapter.contexts[1]).toContain("compact planner repair");
+    expect(adapter.contexts[1]).not.toContain(originalPromptMarker);
+    expect(cache.put).toHaveBeenCalledTimes(1);
+    expect(cache.put.mock.calls[0]?.[1].message.content).toEqual([validSubmitPlanCall("submit-plan-repaired")]);
+  });
+
+  it("repairs planner responses that omit submit_plan without generic finalization nudges", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{ type: "text", text: "plain planning text" }]),
+      assistant([validSubmitPlanCall("submit-plan-after-missing")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured({
+      stage: 5,
+      prompt: "planner",
+      schema: SubmitPlanSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1000,
+      schemaRepair: {
+        replaceConversation: true,
+        buildPrompt: (input) => {
+          expect(input.submitCalls).toEqual([]);
+          return "compact missing-submit repair";
+        }
+      }
+    })).resolves.toMatchObject({
+      diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" }
+    });
+
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
+    expect(telemetry.modelCalls.map((call) => call.kind)).toEqual(["initial", "repair"]);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 5,
+        message: "planner_schema_repair_scheduled",
+        data: expect.objectContaining({ invalidSubmitCallCount: 0 })
+      })
+    ]));
+  });
+
+  it("can fail fast when planner schema repair is invalid twice", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([validSubmitPlanCall("submit-plan-a"), validSubmitPlanCall("submit-plan-b")]),
+      assistant([validSubmitPlanCall("submit-plan-c"), validSubmitPlanCall("submit-plan-d")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured({
+      stage: 5,
+      prompt: "planner",
+      schema: SubmitPlanSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1000,
+      schemaRepair: {
+        replaceConversation: true,
+        failAfterRepair: true,
+        buildPrompt: () => "compact planner repair"
+      }
+    })).rejects.toMatchObject({
+      code: "llm_schema_invalid",
+      recoverable: false
+    });
+
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "schema_invalid"]);
+  });
+
   it("makes one budget-exempt finalization provider call after checkpoint exhaustion", async () => {
     const adapter = scriptedAdapter([
       assistant([{ type: "text", text: "plain text instead of submit" }]),

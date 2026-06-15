@@ -1,7 +1,7 @@
-import type { LlmRunner } from "../llm/llm-runner.js";
+import type { LlmRunner, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import { SubmitPlanSchema, type SubmitPlan } from "../llm/schemas.js";
 import type { LensDescriptor } from "../skills/lens-registry.js";
-import type { PromptBuilder } from "../skills/prompt-builder.js";
+import { fenceUntrusted, stableJson, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { Skill } from "../skills/skill-loader.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
@@ -218,9 +218,105 @@ async function runPlannerCall(
     prompt: prompt.prompt,
     schema: SubmitPlanSchema,
     templateVersion: prompt.templateVersion,
-    timeoutMs: config.review.perPassTimeoutMs
+    timeoutMs: config.review.perPassTimeoutMs,
+    schemaRepair: {
+      replaceConversation: true,
+      failAfterRepair: true,
+      buildPrompt: (input) => buildPlannerSchemaRepairPrompt(dossier, opts.lenses, input)
+    }
   });
   return validatePlan(submitted as ReviewPlan, dossier, opts.lenses, telemetry);
+}
+
+function buildPlannerSchemaRepairPrompt(
+  dossier: PlannerDossier,
+  lenses: LensDescriptor[],
+  input: LlmSchemaRepairInput
+): string {
+  const invalidSubmissions = input.submitCalls.map((call, index) => ({
+    index: index + 1,
+    id: call.id,
+    arguments: call.arguments
+  }));
+  const repairDossier = plannerRepairDossierSummary(dossier, lenses);
+  return [
+    "Repair the Stage 5 review plan output.",
+    `Validation error: ${input.error}`,
+    "You must call submit_plan exactly once with one complete schema-valid ReviewPlan.",
+    "Do not split the plan across multiple submit_plan calls. Do not answer in plain text.",
+    "If the invalid submit_plan calls contain useful risk areas or coverage entries, merge them into the single corrected plan.",
+    input.extraToolNames.length > 0
+      ? `The invalid response also called non-submit tools, which are ignored in Stage 5 repair: ${input.extraToolNames.join(", ")}.`
+      : "No repository tools are available in Stage 5 repair.",
+    fenceUntrusted(truncate(stableJson(invalidSubmissions), 50_000), "invalid-submit-plan-calls"),
+    fenceUntrusted(truncate(stableJson(repairDossier), 60_000), "planner-repair-dossier"),
+    "Finish now by calling submit_plan exactly once."
+  ].join("\n\n");
+}
+
+function plannerRepairDossierSummary(dossier: PlannerDossier, lenses: LensDescriptor[]): Record<string, unknown> {
+  return {
+    mode: dossier.mode,
+    depth: dossier.depth,
+    target: dossier.target,
+    pr: dossier.pr === undefined
+      ? undefined
+      : {
+          title: dossier.pr.title,
+          body: truncate(dossier.pr.body, 1200),
+          baseRefName: dossier.pr.baseRefName,
+          headRefName: dossier.pr.headRefName
+        },
+    commits: dossier.commits.map((commit) => ({
+      sha: commit.sha,
+      title: commit.title,
+      body: truncate(commit.body, 400)
+    })),
+    policyFilesChanged: dossier.policyFilesChanged,
+    totals: dossier.totals,
+    compaction: dossier.compaction,
+    enabledLenses: lenses
+      .filter((lens) => lens.enabled)
+      .map((lens) => ({ id: lens.id, languages: lens.languages, summary: lens.description })),
+    files: dossier.files.map((file) => ({
+      path: file.path,
+      oldPath: file.oldPath,
+      status: file.status,
+      language: file.language,
+      processingMode: file.processingMode,
+      testStatus: file.testStatus,
+      packageRoot: file.packageRoot,
+      labels: file.labels,
+      reviewPriority: file.reviewPriority,
+      changedLines: file.changedLines,
+      hunkCount: file.hunkCount,
+      hunks: file.hunks.map((hunk) => ({
+        hunkId: hunk.hunkId,
+        header: hunk.header,
+        oldStart: hunk.oldStart,
+        oldLines: hunk.oldLines,
+        newStart: hunk.newStart,
+        newLines: hunk.newLines,
+        changedNewLineNumbers: hunk.changedNewLineNumbers,
+        changedOldLineNumbers: hunk.changedOldLineNumbers,
+        enclosingSymbol: hunk.symbolFacts?.enclosingSymbol,
+        staticSignalRuleIds: hunk.staticSignals.map((signal) => signal.ruleId)
+      }))
+    })),
+    directories: dossier.directories.map((directory) => ({
+      root: directory.root,
+      fileCount: directory.fileCount,
+      hunkCount: directory.hunkCount,
+      changedLines: directory.changedLines,
+      languages: directory.languages,
+      labels: directory.labels,
+      maxReviewPriority: directory.maxReviewPriority,
+      testFileCount: directory.testFileCount,
+      representativePaths: directory.representativePaths,
+      hunkIds: directory.hunkIds,
+      hunkLanguages: directory.hunkLanguages
+    }))
+  };
 }
 
 async function runChunkedPlanner(

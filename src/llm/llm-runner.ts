@@ -50,11 +50,24 @@ export type LlmStructuredRequest<T> = {
     packetId?: string;
     candidateId?: string;
   };
+  schemaRepair?: {
+    replaceConversation?: boolean;
+    failAfterRepair?: boolean;
+    buildPrompt(input: LlmSchemaRepairInput): string;
+  };
 };
 
 export interface LlmRunner {
   runStructured<T>(request: LlmStructuredRequest<T>): Promise<T>;
 }
+
+export type LlmSchemaRepairInput = {
+  stage: ReviewStage;
+  submitTool: string;
+  error: string;
+  submitCalls: Array<{ id: string; arguments: Record<string, unknown> }>;
+  extraToolNames: string[];
+};
 
 export type CreateRunnerHooks = {
   checkpoint(stage: ReviewStage): "ok" | "exhausted";
