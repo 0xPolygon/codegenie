@@ -1,7 +1,8 @@
 # Issue 16: Eval Matching for Merged Findings
 
-Status: PENDING
+Status: COMPLETE
 Planned at: a47a23b, 2026-06-14
+Completed at: 2026-06-14
 
 ## Problem
 

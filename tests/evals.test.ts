@@ -153,7 +153,97 @@ describe("eval scoring", () => {
     expect(score.budgetResults.every((result) => result.status === "pass")).toBe(true);
   });
 
-  it("attributes planner skips, failed packet reviews, and duplicate verification records", () => {
+  it("matches reported final findings through merged source candidate locations", () => {
+    const source = candidate("source-routing", "src/caller.ts", 42, {
+      title: "Explicit preference fallback is skipped",
+      category: "correctness",
+      severity: "high",
+      failureMode: "The explicit provider preference no longer falls back when the preferred route is unavailable."
+    });
+    const final = finalFinding("final-routing", "src/shared.ts", 10, {
+      title: source.title,
+      category: source.category,
+      severity: source.severity,
+      failureMode: source.failureMode,
+      fingerprint: "routing-root-cause",
+      mergedCandidateIds: ["source-routing"],
+      evidence: {
+        changedCode: "+ return fallbackProvider",
+        relatedCode: [{
+          path: "src/caller.ts",
+          lines: "42: routeWithPreference(preferred)",
+          whyRelevant: "This caller supplies the explicit preference affected by the shared fallback."
+        }]
+      }
+    });
+
+    const score = scoreEvalRun({
+      name: "merged-final-location",
+      artifacts: { path: "unused" },
+      should_find: [{
+        id: "routing",
+        path: "src/caller.ts",
+        lineRange: [42, 42],
+        category: "correctness",
+        severityAtLeast: "medium",
+        titlePattern: "preference fallback"
+      }]
+    }, {
+      candidates: [source],
+      verification: [
+        { candidateId: "source-routing", gate: "passed", verdict: { candidateId: "source-routing", verdict: "keep", reason: "ok", requiredEvidencePresent: true, falsePositiveRisk: "low" } }
+      ],
+      finalSelection: [{ findingId: "source-routing", decision: "merged", reason: "composer-merged", mergedIntoFingerprint: "routing-root-cause" }],
+      finalFindings: [final],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {}
+    }, "live");
+
+    expect(score.status).toBe("pass");
+    expect(score.expectationResults[0]).toMatchObject({
+      status: "pass",
+      matched: [{ findingId: "final-routing", artifact: "final-findings" }]
+    });
+    expect(score.metrics.stageLossCounts["lost-at-composition"]).toBe(0);
+  });
+
+  it("does not let related-path matching override mismatched expectation fields", () => {
+    const final = finalFinding("final-related", "src/root.ts", 10, {
+      title: "Cache invalidation can be skipped",
+      category: "performance",
+      failureMode: "The shared cache path can return stale values.",
+      evidence: {
+        changedCode: "+ cache.set(key, value)",
+        relatedCode: [{
+          path: "src/caller.ts",
+          lines: "18: loadThroughCache(key)",
+          whyRelevant: "This caller observes the stale cache value."
+        }]
+      }
+    });
+
+    const outcome = matchExpectation({
+      id: "wrong-category",
+      path: "src/caller.ts",
+      category: "security",
+      titlePattern: "cache"
+    }, final, {
+      candidates: [],
+      verification: [],
+      finalSelection: [],
+      finalFindings: [final],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {}
+    });
+
+    expect(outcome.fields.find((field) => field.field === "path")?.matched).toBe(true);
+    expect(outcome.fields.find((field) => field.field === "category")?.matched).toBe(false);
+    expect(outcome.matched).toBe(false);
+  });
+
+  it("attributes planner skips and failed packet reviews, and scores merged duplicate final findings", () => {
     const skipped = scoreEvalRun({
       name: "planner-skip",
       artifacts: { path: "unused" },
@@ -241,9 +331,9 @@ describe("eval scoring", () => {
       hintEvents: [],
       metricsSources: {}
     }, "live");
-    expect(duplicateScore.expectationResults[0]?.loss).toMatchObject({
-      label: "lost-at-composition",
-      subReason: "merged-deduped-away"
+    expect(duplicateScore.expectationResults[0]).toMatchObject({
+      status: "pass",
+      matched: [{ findingId: "rep", artifact: "final-findings" }]
     });
   });
 
@@ -261,16 +351,16 @@ describe("eval scoring", () => {
         { candidateId: "rejected", gate: "passed", verdict: { candidateId: "rejected", verdict: "reject", reason: "false positive", requiredEvidencePresent: false, falsePositiveRisk: "high" } }
       ],
       finalSelection: [{ findingId: "merged", decision: "merged", reason: "composer-merged", mergedIntoFingerprint: "absorber" }],
-      finalFindings: [finalFinding("absorber", "src/other.ts", 10, { fingerprint: "absorber", mergedCandidateIds: ["merged"] })],
+      finalFindings: [finalFinding("absorber", "src/other.ts", 10, { fingerprint: "absorber", publication: "suppressed", mergedCandidateIds: ["merged"] })],
       packets: [],
       hintEvents: [],
       metricsSources: {}
     }, "live");
 
     const loss = score.expectationResults[0]?.loss;
-    expect(loss).toMatchObject({ label: "lost-at-composition", subReason: "merged-deduped-away" });
-    expect(loss?.nearestInstances.map((instance) => instance.findingId)).toEqual(["merged", "rejected"]);
-    expect(loss?.nearestInstances[1]?.outcome).toContain("verdict=reject");
+    expect(loss).toMatchObject({ label: "lost-at-composition", subReason: "composer-merged" });
+    expect(loss?.nearestInstances.map((instance) => instance.findingId)).toEqual(["absorber", "merged", "rejected"]);
+    expect(loss?.nearestInstances[2]?.outcome).toContain("verdict=reject");
   });
 });
 

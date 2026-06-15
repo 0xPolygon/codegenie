@@ -23,6 +23,12 @@ import type {
 
 type ScorableFinding = CandidateFinding | FinalFinding;
 type ScoreMode = "live" | "replay";
+type FindingLocationVariant = {
+  path: string;
+  range?: [number, number];
+  source: "finding" | "merged-candidate" | "related-evidence";
+  findingId?: string;
+};
 
 const severityRank: Record<Severity, number> = {
   low: 1,
@@ -74,27 +80,27 @@ export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode:
 
 export function matchExpectation(
   expectation: EvalFindingExpectation,
-  finding: ScorableFinding
+  finding: ScorableFinding,
+  artifacts?: EvalArtifacts
 ): EvalMatchOutcome {
   const fields: EvalMatchOutcome["fields"] = [];
+  const location = matchFindingLocation(expectation, finding, artifacts);
   if (expectation.path !== undefined) {
-    const actual = normalizePath(finding.path);
     fields.push({
       field: "path",
       present: true,
-      matched: pathMatches(expectation.path, actual),
+      matched: location.pathMatched,
       expected: expectation.path,
-      actual
+      actual: location.actualPaths.join(", ")
     });
   }
   if (expectation.lineRange !== undefined) {
-    const actualRange = findingLineRange(finding);
     fields.push({
       field: "lineRange",
       present: true,
-      matched: actualRange !== undefined && rangesOverlap(expectation.lineRange, actualRange),
+      matched: location.lineRangeMatched,
       expected: `${expectation.lineRange[0]}-${expectation.lineRange[1]}`,
-      ...(actualRange !== undefined ? { actual: `${actualRange[0]}-${actualRange[1]}` } : {})
+      ...(location.actualRanges.length > 0 ? { actual: location.actualRanges.join(", ") } : {})
     });
   }
   if (expectation.category !== undefined) {
@@ -141,10 +147,11 @@ export function matchExpectation(
 
 export function assignExpectations(
   expectations: EvalFindingExpectation[],
-  findings: ScorableFinding[]
+  findings: ScorableFinding[],
+  artifacts?: EvalArtifacts
 ): EvalAssignment {
   const matches = expectations.map((expectation) =>
-    findings.map((finding) => matchExpectation(expectation, finding).matched)
+    findings.map((finding) => matchExpectation(expectation, finding, artifacts).matched)
   );
   const findingToExpectation = new Array<number>(findings.length).fill(-1);
 
@@ -209,7 +216,7 @@ function exactLossInstances(expectation: EvalFindingExpectation, artifacts: Eval
   const instances: RankedLossInstance[] = [];
 
   for (const finding of artifacts.finalFindings) {
-    if (finding.publication !== "suppressed" || !matchExpectation(expectation, finding).matched) {
+    if (finding.publication !== "suppressed" || !matchExpectation(expectation, finding, artifacts).matched) {
       continue;
     }
     const subReason = selectionReasonForFinding(finding, artifacts.finalSelection) ?? "suppressed";
@@ -227,7 +234,7 @@ function exactLossInstances(expectation: EvalFindingExpectation, artifacts: Eval
   }
 
   for (const finding of verifiedKeptFindings(artifacts)) {
-    if (!matchExpectation(expectation, finding).matched) {
+    if (!matchExpectation(expectation, finding, artifacts).matched) {
       continue;
     }
     const absorbing = artifacts.finalFindings.find((finalFinding) =>
@@ -250,7 +257,7 @@ function exactLossInstances(expectation: EvalFindingExpectation, artifacts: Eval
   }
 
   for (const candidate of artifacts.candidates) {
-    if (!matchExpectation(expectation, candidate).matched || verificationKeptCandidate(candidate, artifacts)) {
+    if (!matchExpectation(expectation, candidate, artifacts).matched || verificationKeptCandidate(candidate, artifacts)) {
       continue;
     }
     const outcome = verificationOutcome(candidate, artifacts.verification, artifacts.candidates);
@@ -277,7 +284,7 @@ function scorePositiveList(
   artifacts: EvalArtifacts,
   mode: ScoreMode
 ): EvalExpectationResult[] {
-  const assignment = assignExpectations(expectations, findings);
+  const assignment = assignExpectations(expectations, findings, artifacts);
   const pairByExpectation = new Map(assignment.pairs.map((pair) => [pair.expectationId, pair.findingId]));
   return expectations.map((expectation) => {
     const findingId = pairByExpectation.get(expectation.id);
@@ -319,7 +326,7 @@ function scoreShouldNotFind(
   const violations: EvalViolation[] = [];
   const nearViolations: Array<{ expectationId: string; findingId: string; artifact: string }> = [];
   const results = expectations.map((expectation): EvalExpectationResult => {
-    const matches = reportedFinals.filter((finding) => matchExpectation(expectation, finding).matched);
+    const matches = reportedFinals.filter((finding) => matchExpectation(expectation, finding, artifacts).matched);
     for (const finding of matches) {
       violations.push({
         expectationId: expectation.id,
@@ -327,11 +334,11 @@ function scoreShouldNotFind(
         publication: finding.publication
       });
     }
-    for (const finding of artifacts.candidates.filter((candidate) => matchExpectation(expectation, candidate).matched)) {
+    for (const finding of artifacts.candidates.filter((candidate) => matchExpectation(expectation, candidate, artifacts).matched)) {
       nearViolations.push({ expectationId: expectation.id, findingId: finding.id, artifact: "candidate-findings" });
     }
     for (const finding of artifacts.finalFindings.filter((candidate) =>
-      candidate.publication === "suppressed" && matchExpectation(expectation, candidate).matched
+      candidate.publication === "suppressed" && matchExpectation(expectation, candidate, artifacts).matched
     )) {
       nearViolations.push({ expectationId: expectation.id, findingId: finding.id, artifact: "final-findings:suppressed" });
     }
@@ -648,8 +655,11 @@ function nearestPartialMatches(
     ...(target === "all" ? artifacts.finalFindings.map((finding) => ({ artifact: "final-findings" as const, finding })) : [])
   ];
   return findings
-    .map(({ artifact, finding }) => ({ artifact, finding, outcome: matchExpectation(expectation, finding) }))
-    .filter((item) => pathMatches(expectation.path ?? "", normalizePath(item.finding.path)) && !item.outcome.matched)
+    .map(({ artifact, finding }) => ({ artifact, finding, outcome: matchExpectation(expectation, finding, artifacts) }))
+    .filter((item) =>
+      findingLocationVariants(item.finding, artifacts).some((location) => pathMatches(expectation.path ?? "", location.path)) &&
+      !item.outcome.matched
+    )
     .sort((a, b) => failedFieldCount(a.outcome) - failedFieldCount(b.outcome))
     .slice(0, 5)
     .map((item) => ({
@@ -822,6 +832,119 @@ function augment(
     }
   }
   return false;
+}
+
+function matchFindingLocation(
+  expectation: EvalFindingExpectation,
+  finding: ScorableFinding,
+  artifacts?: EvalArtifacts
+): {
+  pathMatched: boolean;
+  lineRangeMatched: boolean;
+  actualPaths: string[];
+  actualRanges: string[];
+} {
+  const variants = findingLocationVariants(finding, artifacts);
+  const pathMatchedVariants = expectation.path === undefined
+    ? variants
+    : variants.filter((variant) => pathMatches(expectation.path ?? "", variant.path));
+  const rangeCandidates = expectation.path === undefined ? variants : pathMatchedVariants;
+  const pathMatched = expectation.path === undefined || pathMatchedVariants.length > 0;
+  const lineRangeMatched = expectation.lineRange === undefined ||
+    rangeCandidates.some((variant) => variant.range !== undefined && rangesOverlap(expectation.lineRange ?? [0, 0], variant.range));
+
+  return {
+    pathMatched,
+    lineRangeMatched,
+    actualPaths: uniqueStrings(variants.map((variant) => variant.path)),
+    actualRanges: uniqueStrings(rangeCandidates.flatMap((variant) =>
+      variant.range === undefined ? [] : [`${variant.path}:${variant.range[0]}-${variant.range[1]}`]
+    ))
+  };
+}
+
+function findingLocationVariants(finding: ScorableFinding, artifacts?: EvalArtifacts): FindingLocationVariant[] {
+  const variants: FindingLocationVariant[] = [];
+  addFindingLocationVariant(variants, finding, "finding", finding.id);
+
+  if (artifacts !== undefined && isFinalFinding(finding)) {
+    for (const candidate of sourceCandidatesForFinal(finding, artifacts)) {
+      addFindingLocationVariant(variants, candidate, "merged-candidate", candidate.id);
+      addRelatedEvidenceLocationVariants(variants, candidate, "related-evidence", candidate.id);
+    }
+    addRelatedEvidenceLocationVariants(variants, finding, "related-evidence", finding.id);
+  }
+
+  return dedupeLocationVariants(variants);
+}
+
+function addFindingLocationVariant(
+  variants: FindingLocationVariant[],
+  finding: ScorableFinding,
+  source: FindingLocationVariant["source"],
+  findingId?: string
+): void {
+  const path = normalizePath(finding.anchor?.path ?? finding.path);
+  const range = findingLineRange(finding);
+  variants.push({
+    path,
+    ...(range !== undefined ? { range } : {}),
+    source,
+    ...(findingId !== undefined ? { findingId } : {})
+  });
+}
+
+function addRelatedEvidenceLocationVariants(
+  variants: FindingLocationVariant[],
+  finding: ScorableFinding,
+  source: FindingLocationVariant["source"],
+  findingId?: string
+): void {
+  for (const related of finding.evidence.relatedCode ?? []) {
+    variants.push({
+      path: normalizePath(related.path),
+      source,
+      ...(findingId !== undefined ? { findingId } : {})
+    });
+  }
+}
+
+function sourceCandidatesForFinal(finding: FinalFinding, artifacts: EvalArtifacts): CandidateFinding[] {
+  const sourceIds = new Set<string>([finding.id, ...finding.mergedCandidateIds]);
+  for (const record of artifacts.finalSelection) {
+    if (record.mergedIntoFingerprint === finding.fingerprint) {
+      sourceIds.add(record.findingId);
+    }
+  }
+  const candidatesById = new Map(artifacts.candidates.map((candidate) => [candidate.id, candidate]));
+  return [...sourceIds].flatMap((id) => {
+    const candidate = candidatesById.get(id);
+    return candidate === undefined ? [] : [candidate];
+  });
+}
+
+function dedupeLocationVariants(variants: FindingLocationVariant[]): FindingLocationVariant[] {
+  const seen = new Set<string>();
+  const output: FindingLocationVariant[] = [];
+  for (const variant of variants) {
+    const range = variant.range === undefined ? "" : `${variant.range[0]}-${variant.range[1]}`;
+    const key = `${variant.path}:${range}:${variant.source}:${variant.findingId ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(variant);
+  }
+  return output;
+}
+
+function uniqueStrings(input: string[]): string[] {
+  return [...new Set(input)].sort();
+}
+
+function isFinalFinding(finding: ScorableFinding): finding is FinalFinding {
+  return Array.isArray((finding as FinalFinding).mergedCandidateIds) &&
+    typeof (finding as FinalFinding).fingerprint === "string";
 }
 
 function findingLineRange(finding: ScorableFinding): [number, number] | undefined {

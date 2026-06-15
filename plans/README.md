@@ -19,7 +19,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 13 | PENDING | Verification efficiency |
 | 14 | PENDING | Final review human-attention noise |
 | 15 | PENDING | Telemetry cache terminology |
-| 16 | PENDING | Eval matching for merged findings |
+| 16 | COMPLETE | Eval matching for merged findings |
 | 17 | PENDING | Planner submit-plan schema discipline |
 | 18 | PENDING | Stage 6 read range guard |
 | 19 | PENDING | Follow-up hint deduplication |
