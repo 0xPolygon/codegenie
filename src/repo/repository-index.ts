@@ -18,6 +18,7 @@ import type {
   SearchOptions,
   SearchResult,
   SourceSelector,
+  SymbolLookupSourceSelector,
   SymbolInfo,
   SymbolRef,
   ToolBackend,
@@ -254,7 +255,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
   async readSymbol(
     filePath: string,
     selector: { symbolName?: string; line?: number },
-    source: SourceSelector = { kind: "head" }
+    source: SymbolLookupSourceSelector = { kind: "head" }
   ): Promise<{ text?: string; symbol?: SymbolInfo; meta: ToolResultMeta }> {
     return this.measure(
       "read_symbol",
@@ -265,61 +266,92 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           throw new CodeninjaError("invalid_args", "readSymbol requires exactly one selector");
         }
         const path = containPath(this.opts.resolver.repoRoot, filePath, this.guardTelemetry("read_symbol"));
-        const content = await this.limit(() => this.opts.resolver.readFile(path, source));
-        if (!content) {
-          const meta = degradedMeta("text", "text", "file missing at selected revision");
-          return { value: { meta }, meta, args: { path, symbolName: selector.symbolName, line: selector.line, source: source.kind }, resultChars: 0 };
+        if (source.kind !== "auto") {
+          return this.readSymbolAtSource(path, selector, source, source.kind);
         }
-        const adapter = this.opts.registry.forPath(path);
-        const parsed = await adapter.parse({
-          path,
-          language: this.opts.registry.languageForPath(path),
-          content: content.content,
-          source,
-          contentSha: content.contentSha
-        });
-        if (parsed.tree !== undefined) {
-          const symbols = adapter.listSymbols(parsed);
-          const matches =
-            selector.line !== undefined
-              ? [adapter.getEnclosingSymbol(parsed, selector.line)].filter((symbol): symbol is SymbolInfo => symbol !== undefined)
-              : symbols.filter((symbol) => symbolMatches(symbol, selector.symbolName ?? ""));
-          const symbol = matches[0];
-          const meta: ToolResultMeta = {
-            backend: "tree-sitter",
-            precision: "syntactic",
-            degraded: symbol === undefined,
-            ...(symbol === undefined ? { degradationReason: "symbol not found" } : {}),
-            ...(matches.length > 1 ? { truncated: true, omittedCount: matches.length - 1 } : {})
-          };
-          const symbolSnippet = symbol ? snippet(content.content, symbol.lineRange, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS) : undefined;
-          if (symbolSnippet?.truncated) {
-            meta.truncated = true;
-            meta.omittedCount = (meta.omittedCount ?? 0) + symbolSnippet.omittedCount;
-          }
-          const text = symbolSnippet?.text;
-          return {
-            value: { ...(text !== undefined ? { text } : {}), ...(symbol !== undefined ? { symbol } : {}), meta },
-            meta,
-            args: { path, symbolName: selector.symbolName, line: selector.line, source: source.kind },
-            resultCount: symbol ? 1 : 0,
-            resultChars: text?.length ?? 0
-          };
+        const head = await this.readSymbolAtSource(path, selector, { kind: "head" }, "auto");
+        if (head.resultCount && head.resultCount > 0) {
+          return withSourceMeta(head, "auto", "head", false, false);
         }
-        const fallback = fallbackSymbolText(content.content, selector);
-        const meta = degradedMeta("text", "text", "tree-sitter unavailable; returned text window");
-        if (fallback?.truncated) {
-          meta.truncated = true;
-          meta.omittedCount = fallback.omittedCount;
+        const base = await this.readSymbolAtSource(path, selector, { kind: "base" }, "auto");
+        if (base.resultCount && base.resultCount > 0) {
+          return withSourceMeta(base, "auto", "base", true, true);
         }
-        return {
-          value: { ...(fallback !== undefined ? { text: fallback.text } : {}), meta },
-          meta,
-          args: { path, symbolName: selector.symbolName, line: selector.line, source: source.kind },
-          resultChars: fallback?.text.length ?? 0
-        };
+        return withSourceMeta(base, "auto", "base", true, false);
       }
     );
+  }
+
+  private async readSymbolAtSource(
+    path: string,
+    selector: { symbolName?: string; line?: number },
+    source: SourceSelector,
+    requestedSource: "head" | "base" | "auto"
+  ): Promise<ToolMeasurement<{ text?: string; symbol?: SymbolInfo; meta: ToolResultMeta }>> {
+    const content = await this.limit(() => this.opts.resolver.readFile(path, source));
+    if (!content) {
+      const meta = {
+        ...degradedMeta("text", "text", "file missing at selected revision"),
+        requestedSource,
+        sourceUsed: source.kind
+      };
+      return { value: { meta }, meta, args: { path, symbolName: selector.symbolName, line: selector.line, source: requestedSource }, resultChars: 0 };
+    }
+    const adapter = this.opts.registry.forPath(path);
+    const parsed = await adapter.parse({
+      path,
+      language: this.opts.registry.languageForPath(path),
+      content: content.content,
+      source,
+      contentSha: content.contentSha
+    });
+    if (parsed.tree !== undefined) {
+      const symbols = adapter.listSymbols(parsed);
+      const matches =
+        selector.line !== undefined
+          ? [adapter.getEnclosingSymbol(parsed, selector.line)].filter((symbol): symbol is SymbolInfo => symbol !== undefined)
+          : symbols.filter((symbol) => symbolMatches(symbol, selector.symbolName ?? ""));
+      const symbol = matches[0];
+      const meta: ToolResultMeta = {
+        backend: "tree-sitter",
+        precision: "syntactic",
+        degraded: symbol === undefined,
+        requestedSource,
+        sourceUsed: source.kind,
+        ...(symbol === undefined ? { degradationReason: "symbol not found" } : {}),
+        ...(matches.length > 1 ? { truncated: true, omittedCount: matches.length - 1 } : {})
+      };
+      const symbolSnippet = symbol ? snippet(content.content, symbol.lineRange, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS) : undefined;
+      if (symbolSnippet?.truncated) {
+        meta.truncated = true;
+        meta.omittedCount = (meta.omittedCount ?? 0) + symbolSnippet.omittedCount;
+      }
+      const text = symbolSnippet?.text;
+      return {
+        value: { ...(text !== undefined ? { text } : {}), ...(symbol !== undefined ? { symbol } : {}), meta },
+        meta,
+        args: { path, symbolName: selector.symbolName, line: selector.line, source: requestedSource },
+        resultCount: symbol ? 1 : 0,
+        resultChars: text?.length ?? 0
+      };
+    }
+    const fallback = fallbackSymbolText(content.content, selector);
+    const meta: ToolResultMeta = {
+      ...degradedMeta("text", "text", "tree-sitter unavailable; returned text window"),
+      requestedSource,
+      sourceUsed: source.kind
+    };
+    if (fallback?.truncated) {
+      meta.truncated = true;
+      meta.omittedCount = fallback.omittedCount;
+    }
+    return {
+      value: { ...(fallback !== undefined ? { text: fallback.text } : {}), meta },
+      meta,
+      args: { path, symbolName: selector.symbolName, line: selector.line, source: requestedSource },
+      resultCount: fallback === undefined ? 0 : 1,
+      resultChars: fallback?.text.length ?? 0
+    };
   }
 
   async readDiffBlocks(input: { packetId?: string; path?: string }): Promise<{ blocks: string[]; meta: ToolResultMeta }> {
@@ -349,7 +381,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
 
   async findDefinition(
     symbolName: string,
-    options: { pathGlob?: string; source?: SourceSelector } = {}
+    options: { pathGlob?: string; source?: SymbolLookupSourceSelector } = {}
   ): Promise<{ definitions: Array<{ symbol: SymbolInfo; text?: string }>; meta: ToolResultMeta }> {
     return this.measure(
       "find_definition",
@@ -359,116 +391,139 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         if (symbolName.length === 0) {
           throw new CodeninjaError("invalid_args", "symbolName must be non-empty");
         }
-        const source = options.source ?? { kind: "head" };
         const pathGlob =
           options.pathGlob === undefined
             ? undefined
             : containGlob(this.opts.resolver.repoRoot, options.pathGlob, this.guardTelemetry("find_definition"));
-        const discoveryName = bareIdentifierForDiscovery(symbolName);
-        const grepOptions = {
-          source,
-          maxResults: FIND_DEFINITION_DISCOVERY_MATCHES + 1,
-          fixedString: true,
-          word: true,
-          ...(pathGlob !== undefined ? { glob: pathGlob } : {})
-        };
-        const discoveryMatches = await this.limit(() => this.opts.resolver.grep(discoveryName, grepOptions));
-        const matches = discoveryMatches.slice(0, FIND_DEFINITION_DISCOVERY_MATCHES);
-        const omittedDiscoveryMatches = Math.max(0, discoveryMatches.length - matches.length);
-        const allCandidatePaths = [...new Set(matches.map((match) => match.path))];
-        const candidatePaths = allCandidatePaths.slice(0, FIND_DEFINITION_CANDIDATES);
-        const omittedCandidatePaths = Math.max(0, allCandidatePaths.length - candidatePaths.length);
-        const definitions: Array<{ symbol: SymbolInfo; text?: string }> = [];
-        let fallbackCount = 0;
-        let omittedByTruncation = 0;
-        let omittedByDefinitionCap = 0;
-        let processedCandidates = 0;
-        for (const candidate of candidatePaths) {
-          if (definitions.length >= FIND_DEFINITION_MAX) {
-            break;
-          }
-          processedCandidates += 1;
-          const candidateData = await this.limit(async () => {
-            const content = await this.opts.resolver.readFile(candidate, source);
-            if (!content) {
-              return undefined;
-            }
-            const adapter = this.opts.registry.forPath(candidate);
-            const parsed = await adapter.parse({
-              path: candidate,
-              language: this.opts.registry.languageForPath(candidate),
-              content: content.content,
-              source,
-              contentSha: content.contentSha
-            });
-            return { content, adapter, parsed };
-          });
-          if (!candidateData) {
-            continue;
-          }
-          const { content, adapter, parsed } = candidateData;
-          if (parsed.tree !== undefined) {
-            const matchingSymbols = adapter.listSymbols(parsed).filter((symbol) => symbolMatches(symbol, symbolName));
-            for (let index = 0; index < matchingSymbols.length; index += 1) {
-              if (definitions.length >= FIND_DEFINITION_MAX) {
-                omittedByDefinitionCap += matchingSymbols.length - index;
-                break;
-              }
-              const symbol = matchingSymbols[index];
-              if (!symbol) {
-                continue;
-              }
-              const definitionSnippet = snippet(content.content, symbol.lineRange, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS);
-              definitions.push({
-                symbol,
-                text: definitionSnippet.text
-              });
-              if (definitionSnippet.truncated) {
-                omittedByTruncation += definitionSnippet.omittedCount;
-              }
-            }
-          } else {
-            const match = matches.find((item) => item.path === candidate);
-            if (match) {
-              fallbackCount += 1;
-              definitions.push({
-                symbol: {
-                  path: candidate,
-                  name: symbolName,
-                  kind: "other",
-                  nativeKind: "text match",
-                  lineRange: [match.line, match.line]
-                },
-                text: match.matchText
-              });
-            }
-          }
+        const requestedSource = options.source?.kind ?? "head";
+        if (requestedSource !== "auto") {
+          const exactSource: SourceSelector = requestedSource === "base" ? { kind: "base" } : { kind: "head" };
+          return this.findDefinitionAtSource(symbolName, pathGlob, exactSource, requestedSource);
         }
-        // When the definition cap is hit, omissions are remaining same-file
-        // definition symbols plus unprocessed candidate files, not raw grep
-        // line-match counts.
-        const cappedAtMax = definitions.length >= FIND_DEFINITION_MAX;
-        const omittedByCap = cappedAtMax ? Math.max(0, candidatePaths.length - processedCandidates) : 0;
-        const cappedDefinitions = capDefinitionResultsTotal(
-          definitions,
-          omittedByCap + omittedByDefinitionCap + omittedByTruncation + omittedCandidatePaths + omittedDiscoveryMatches
-        );
-        const meta: ToolResultMeta = {
-          backend: fallbackCount === definitions.length ? "text" : "tree-sitter",
-          precision: fallbackCount === definitions.length ? "text" : "syntactic",
-          degraded: fallbackCount > 0,
-          ...(fallbackCount > 0 ? { degradationReason: `${fallbackCount} definition candidate(s) used text fallback` } : {}),
-          ...(cappedDefinitions.omittedCount > 0 ? { truncated: true, omittedCount: cappedDefinitions.omittedCount } : {})
-        };
-        return {
-          value: { definitions: cappedDefinitions.definitions, meta },
-          meta,
-          args: { symbolName, glob: pathGlob, source: source.kind },
-          resultCount: cappedDefinitions.definitions.length,
-          resultChars: JSON.stringify(cappedDefinitions.definitions).length
-        };
+        const head = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "head" }, "auto");
+        if (head.resultCount && head.resultCount > 0) {
+          return withSourceMeta(head, "auto", "head", false, false);
+        }
+        const base = await this.findDefinitionAtSource(symbolName, pathGlob, { kind: "base" }, "auto");
+        if (base.resultCount && base.resultCount > 0) {
+          return withSourceMeta(base, "auto", "base", true, true);
+        }
+        return withSourceMeta(base, "auto", "base", true, false);
       }
     );
+  }
+
+  private async findDefinitionAtSource(
+    symbolName: string,
+    pathGlob: string | undefined,
+    source: SourceSelector,
+    requestedSource: "head" | "base" | "auto"
+  ): Promise<ToolMeasurement<{ definitions: Array<{ symbol: SymbolInfo; text?: string }>; meta: ToolResultMeta }>> {
+    const discoveryName = bareIdentifierForDiscovery(symbolName);
+    const grepOptions = {
+      source,
+      maxResults: FIND_DEFINITION_DISCOVERY_MATCHES + 1,
+      fixedString: true,
+      word: true,
+      ...(pathGlob !== undefined ? { glob: pathGlob } : {})
+    };
+    const discoveryMatches = await this.limit(() => this.opts.resolver.grep(discoveryName, grepOptions));
+    const matches = discoveryMatches.slice(0, FIND_DEFINITION_DISCOVERY_MATCHES);
+    const omittedDiscoveryMatches = Math.max(0, discoveryMatches.length - matches.length);
+    const allCandidatePaths = [...new Set(matches.map((match) => match.path))];
+    const candidatePaths = allCandidatePaths.slice(0, FIND_DEFINITION_CANDIDATES);
+    const omittedCandidatePaths = Math.max(0, allCandidatePaths.length - candidatePaths.length);
+    const definitions: Array<{ symbol: SymbolInfo; text?: string }> = [];
+    let fallbackCount = 0;
+    let omittedByTruncation = 0;
+    let omittedByDefinitionCap = 0;
+    let processedCandidates = 0;
+    for (const candidate of candidatePaths) {
+      if (definitions.length >= FIND_DEFINITION_MAX) {
+        break;
+      }
+      processedCandidates += 1;
+      const candidateData = await this.limit(async () => {
+        const content = await this.opts.resolver.readFile(candidate, source);
+        if (!content) {
+          return undefined;
+        }
+        const adapter = this.opts.registry.forPath(candidate);
+        const parsed = await adapter.parse({
+          path: candidate,
+          language: this.opts.registry.languageForPath(candidate),
+          content: content.content,
+          source,
+          contentSha: content.contentSha
+        });
+        return { content, adapter, parsed };
+      });
+      if (!candidateData) {
+        continue;
+      }
+      const { content, adapter, parsed } = candidateData;
+      if (parsed.tree !== undefined) {
+        const matchingSymbols = adapter.listSymbols(parsed).filter((symbol) => symbolMatches(symbol, symbolName));
+        for (let index = 0; index < matchingSymbols.length; index += 1) {
+          if (definitions.length >= FIND_DEFINITION_MAX) {
+            omittedByDefinitionCap += matchingSymbols.length - index;
+            break;
+          }
+          const symbol = matchingSymbols[index];
+          if (!symbol) {
+            continue;
+          }
+          const definitionSnippet = snippet(content.content, symbol.lineRange, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS);
+          definitions.push({
+            symbol,
+            text: definitionSnippet.text
+          });
+          if (definitionSnippet.truncated) {
+            omittedByTruncation += definitionSnippet.omittedCount;
+          }
+        }
+      } else {
+        const match = matches.find((item) => item.path === candidate);
+        if (match) {
+          fallbackCount += 1;
+          definitions.push({
+            symbol: {
+              path: candidate,
+              name: symbolName,
+              kind: "other",
+              nativeKind: "text match",
+              lineRange: [match.line, match.line]
+            },
+            text: match.matchText
+          });
+        }
+      }
+    }
+    // When the definition cap is hit, omissions are remaining same-file
+    // definition symbols plus unprocessed candidate files, not raw grep
+    // line-match counts.
+    const cappedAtMax = definitions.length >= FIND_DEFINITION_MAX;
+    const omittedByCap = cappedAtMax ? Math.max(0, candidatePaths.length - processedCandidates) : 0;
+    const cappedDefinitions = capDefinitionResultsTotal(
+      definitions,
+      omittedByCap + omittedByDefinitionCap + omittedByTruncation + omittedCandidatePaths + omittedDiscoveryMatches
+    );
+    const meta: ToolResultMeta = {
+      backend: fallbackCount === cappedDefinitions.definitions.length ? "text" : "tree-sitter",
+      precision: fallbackCount === cappedDefinitions.definitions.length ? "text" : "syntactic",
+      degraded: fallbackCount > 0,
+      requestedSource,
+      sourceUsed: source.kind,
+      ...(fallbackCount > 0 ? { degradationReason: `${fallbackCount} definition candidate(s) used text fallback` } : {}),
+      ...(cappedDefinitions.omittedCount > 0 ? { truncated: true, omittedCount: cappedDefinitions.omittedCount } : {})
+    };
+    return {
+      value: { definitions: cappedDefinitions.definitions, meta },
+      meta,
+      args: { symbolName, glob: pathGlob, source: requestedSource },
+      resultCount: cappedDefinitions.definitions.length,
+      resultChars: JSON.stringify(cappedDefinitions.definitions).length
+    };
   }
 
   async searchFiles(query: string, options: SearchOptions = {}): Promise<{ results: SearchResult[]; meta: ToolResultMeta }> {
@@ -707,6 +762,27 @@ function degradedMeta(backend: ToolBackend, precision: ToolPrecision, reason: st
     precision,
     degraded: true,
     degradationReason: reason
+  };
+}
+
+function withSourceMeta<T extends { meta: ToolResultMeta }>(
+  measurement: ToolMeasurement<T>,
+  requestedSource: "head" | "base" | "auto",
+  sourceUsed: "head" | "base",
+  sourceFallback: boolean,
+  baseOnly: boolean
+): ToolMeasurement<T> {
+  const meta: ToolResultMeta = {
+    ...measurement.meta,
+    requestedSource,
+    sourceUsed,
+    ...(sourceFallback ? { sourceFallback: true } : {}),
+    ...(baseOnly ? { baseOnly: true } : {})
+  };
+  return {
+    ...measurement,
+    meta,
+    value: { ...measurement.value, meta }
   };
 }
 

@@ -309,6 +309,7 @@ export type StaticSignal = {
 };
 
 export type SourceSelector = { kind: "head" } | { kind: "base" };
+export type SymbolLookupSourceSelector = SourceSelector | { kind: "auto" };
 
 export type ToolBackend = "tree-sitter" | "text" | "language-analyzer";
 export type ToolPrecision = "exact" | "semantic" | "syntactic" | "heuristic" | "text";
@@ -320,6 +321,10 @@ export type ToolResultMeta = {
   degradationReason?: string;
   truncated?: boolean;
   omittedCount?: number;
+  requestedSource?: "head" | "base" | "auto";
+  sourceUsed?: "head" | "base";
+  sourceFallback?: boolean;
+  baseOnly?: boolean;
 };
 
 export type FileOutline = {
@@ -481,12 +486,12 @@ export interface RepositoryTools {
   readSymbol(
     path: string,
     selector: { symbolName?: string; line?: number },
-    source?: SourceSelector
+    source?: SymbolLookupSourceSelector
   ): Promise<{ text?: string; symbol?: SymbolInfo; meta: ToolResultMeta }>;
   readDiffBlocks(input: { packetId?: string; path?: string }): Promise<{ blocks: string[]; meta: ToolResultMeta }>;
   findDefinition(
     symbolName: string,
-    options?: { pathGlob?: string; source?: SourceSelector }
+    options?: { pathGlob?: string; source?: SymbolLookupSourceSelector }
   ): Promise<{ definitions: Array<{ symbol: SymbolInfo; text?: string }>; meta: ToolResultMeta }>;
   searchFiles(query: string, options?: SearchOptions): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>;
   findSymbolMentions(

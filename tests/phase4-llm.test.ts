@@ -191,6 +191,54 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(invalid?.text).toContain("read_symbol requires exactly one");
   });
 
+  it("allows auto source for model-facing symbol lookups and renders fallback metadata", async () => {
+    const tools: RepositoryTools = {
+      ...fakeRepositoryTools(),
+      readSymbol: async (_path, _selector, source) => ({
+        text: "func DeletedHelper() {}",
+        symbol: { path: "src/a.ts", name: "DeletedHelper", kind: "function", lineRange: [1, 1] },
+        meta: {
+          backend: "tree-sitter",
+          precision: "syntactic",
+          degraded: false,
+          requestedSource: source?.kind ?? "head",
+          sourceUsed: "base",
+          sourceFallback: true,
+          baseOnly: true
+        }
+      }),
+      findDefinition: async (_symbolName, options) => ({
+        definitions: [{ symbol: { path: "src/a.ts", name: "DeletedHelper", kind: "function", lineRange: [1, 1] }, text: "func DeletedHelper() {}" }],
+        meta: {
+          backend: "tree-sitter",
+          precision: "syntactic",
+          degraded: false,
+          requestedSource: options?.source?.kind ?? "head",
+          sourceUsed: "base",
+          sourceFallback: true,
+          baseOnly: true
+        }
+      })
+    };
+    const defs = buildRepositoryToolDefinitions(tools);
+    const readSymbol = defs.find((tool) => tool.name === "read_symbol");
+    const findDefinition = defs.find((tool) => tool.name === "find_definition");
+
+    const symbol = await readSymbol?.execute(
+      { path: "src/a.ts", symbolName: "DeletedHelper", source: { kind: "auto" } },
+      new AbortController().signal
+    );
+    const definition = await findDefinition?.execute(
+      { symbolName: "DeletedHelper", source: { kind: "auto" } },
+      new AbortController().signal
+    );
+
+    expect(symbol?.text).toContain("source: requested auto, used base");
+    expect(symbol?.text).toContain("source fallback: head to base");
+    expect(symbol?.text).toContain("symbol exists only in base");
+    expect(definition?.text).toContain("source: requested auto, used base");
+  });
+
   it("suppresses facade recording and preserves path rejection metadata for model tools", async () => {
     const facadeRecords: string[] = [];
     let suppressFacadeRecord = false;

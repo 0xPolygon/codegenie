@@ -110,6 +110,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         injectionInstruction(),
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
         "Validate raw external/provider/API/config/database values before lossy conversion; validation after overflow, truncation, rounding, precision loss, or coercion may be too late. Treat packet staticSignals as hints to investigate, not automatic findings.",
+        "When assessing removed helpers, renamed symbols, deleted guards, or behavior-preserving refactors, inspect the base side if needed. Prefer read_symbol or find_definition with source {kind:\"auto\"} unless the exact revision matters; auto searches head first and falls back to base.",
         packet.reviewProfile === "simple"
           ? "This packet is classified as simple. Review the provided packet only and return no findings unless the defect is clear from the packet text."
           : packet.reviewProfile === "investigate"

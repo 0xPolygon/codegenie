@@ -1038,6 +1038,72 @@ export function second(): string {
     );
   });
 
+  it("auto symbol lookup falls back to base for deleted symbols while explicit head stays strict", async () => {
+    const repo = initRepo();
+    writeRepoFile(
+      repo,
+      "pkg/helpers.go",
+      `package pkg
+
+func DeletedHelper(value string) string {
+	return value + "-old"
+}
+
+func Kept() string {
+	return "kept"
+}
+`
+    );
+    const base = commitAll(repo, "base");
+    writeRepoFile(
+      repo,
+      "pkg/helpers.go",
+      `package pkg
+
+func Kept() string {
+	return "kept"
+}
+`
+    );
+    const head = commitAll(repo, "delete helper");
+    const { index, tools } = await buildIndexForRange(repo, base, head);
+
+    const explicitHead = await tools.readSymbol("pkg/helpers.go", { symbolName: "DeletedHelper" }, { kind: "head" });
+    const autoSymbol = await tools.readSymbol("pkg/helpers.go", { symbolName: "DeletedHelper" }, { kind: "auto" });
+    const autoDefinition = await tools.findDefinition("DeletedHelper", { pathGlob: "pkg/*.go", source: { kind: "auto" } });
+
+    expect(index.staticSignals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: "core/exported-api-change",
+          path: "pkg/helpers.go",
+          side: "LEFT"
+        })
+      ])
+    );
+    expect(explicitHead.symbol).toBeUndefined();
+    expect(explicitHead.meta).toMatchObject({
+      requestedSource: "head",
+      sourceUsed: "head",
+      degraded: true
+    });
+    expect(autoSymbol.symbol).toMatchObject({ name: "DeletedHelper" });
+    expect(autoSymbol.text).toContain("value + \"-old\"");
+    expect(autoSymbol.meta).toMatchObject({
+      requestedSource: "auto",
+      sourceUsed: "base",
+      sourceFallback: true,
+      baseOnly: true
+    });
+    expect(autoDefinition.definitions[0]?.symbol).toMatchObject({ name: "DeletedHelper" });
+    expect(autoDefinition.meta).toMatchObject({
+      requestedSource: "auto",
+      sourceUsed: "base",
+      sourceFallback: true,
+      baseOnly: true
+    });
+  });
+
   it("surfaces deletion-only exported shape changes in surviving types", async () => {
     const repo = initRepo();
     writeRepoFile(

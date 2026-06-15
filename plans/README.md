@@ -17,7 +17,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 11 | COMPLETE | Issue 11: Stage 6 Inverted Range Reads |
 | 12 | COMPLETE | Issue 12: Lossy Conversion Recall |
 | 13 | COMPLETE | Issue 13: Planner and Anchor Hygiene |
-| 14 | PENDING | Issue 14: Deleted Symbol Lookup and Targeted Tool Budget |
+| 14 | COMPLETE | Issue 14: Deleted Symbol Lookup and Targeted Tool Budget |
 | 15 | PENDING | Issue 15: Telemetry Cache Terminology |
 | 16 | COMPLETE | Issue 16: Eval Matching for Merged Findings |
 | 17 | COMPLETE | Issue 17: Planner Submit Plan Schema Discipline |

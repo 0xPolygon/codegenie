@@ -1,5 +1,5 @@
 import { Type } from "@earendil-works/pi-ai";
-import type { RepositoryTools, SourceSelector, ToolResultMeta } from "../types.js";
+import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector, ToolResultMeta } from "../types.js";
 import { CodeninjaError, isCodeninjaError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
@@ -8,6 +8,15 @@ const SourceSelectorSchema = Type.Optional(
   Type.Object(
     {
       kind: Type.Union([Type.Literal("head"), Type.Literal("base")])
+    },
+    { additionalProperties: false }
+  )
+);
+
+const SymbolLookupSourceSelectorSchema = Type.Optional(
+  Type.Object(
+    {
+      kind: Type.Union([Type.Literal("head"), Type.Literal("base"), Type.Literal("auto")])
     },
     { additionalProperties: false }
   )
@@ -51,18 +60,18 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools): ToolDefi
     },
     {
       name: "read_symbol",
-      description: "Read a symbol by exact symbolName or by the smallest enclosing symbol at line; provide exactly one selector.",
+      description: "Read a symbol by exact symbolName or by the smallest enclosing symbol at line; provide exactly one selector. Use source {kind:\"auto\"} for renamed or deleted symbols so head is searched first, then base.",
       parameters: Type.Object(
         {
           path: Type.String({ minLength: 1 }),
           symbolName: Type.Optional(Type.String({ minLength: 1 })),
           line: Type.Optional(Type.Integer({ minimum: 1 })),
-          source: SourceSelectorSchema
+          source: SymbolLookupSourceSelectorSchema
         },
         { additionalProperties: false }
       ),
       execute: (args, signal) => wrapTool(signal, async () => {
-        const input = args as { path: string; symbolName?: string; line?: number; source?: SourceSelector };
+        const input = args as { path: string; symbolName?: string; line?: number; source?: SymbolLookupSourceSelector };
         if ((input.symbolName === undefined) === (input.line === undefined)) {
           throw new CodeninjaError("invalid_args", "read_symbol requires exactly one of symbolName or line");
         }
@@ -82,17 +91,17 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools): ToolDefi
     },
     {
       name: "find_definition",
-      description: "Find definition candidates for an exact symbol name, optionally constrained by pathGlob and source.",
+      description: "Find definition candidates for an exact symbol name, optionally constrained by pathGlob and source. Use source {kind:\"auto\"} for renamed or deleted symbols so head is searched first, then base.",
       parameters: Type.Object(
         {
           symbolName: Type.String({ minLength: 1, maxLength: 200 }),
           pathGlob: Type.Optional(Type.String({ minLength: 1 })),
-          source: SourceSelectorSchema
+          source: SymbolLookupSourceSelectorSchema
         },
         { additionalProperties: false }
       ),
       execute: (args, signal) => wrapTool(signal, async () => {
-        const input = args as { symbolName: string; pathGlob?: string; source?: SourceSelector };
+        const input = args as { symbolName: string; pathGlob?: string; source?: SymbolLookupSourceSelector };
         const result = await runWithoutFacadeRecording(tools, () => tools.findDefinition(input.symbolName, optionalOptions({ pathGlob: input.pathGlob, source: input.source })));
         return { text: withMeta(JSON.stringify(result.definitions, null, 2), result.meta), meta: result.meta };
       })
@@ -257,6 +266,15 @@ async function runWithoutFacadeRecording<T>(tools: RepositoryTools, run: () => P
 
 function withMeta(text: string, meta: ToolResultMeta): string {
   const notes: string[] = [];
+  if (meta.requestedSource !== undefined || meta.sourceUsed !== undefined) {
+    notes.push(`source: requested ${meta.requestedSource ?? "unspecified"}, used ${meta.sourceUsed ?? "unknown"}`);
+  }
+  if (meta.sourceFallback) {
+    notes.push("source fallback: head to base");
+  }
+  if (meta.baseOnly) {
+    notes.push("symbol exists only in base");
+  }
   if (meta.degraded) {
     notes.push(`degraded${meta.degradationReason ? `: ${meta.degradationReason}` : ""}`);
   }
