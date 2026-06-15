@@ -179,18 +179,26 @@ function stampFinding(
   const anchor = normalizeAnchor(submitted.anchor, packet, diff);
   const changedLine = anchor !== undefined;
   const path = anchor?.path ?? packet.path;
+  const candidateId = `${packet.id.slice(0, 8)}-f${index + 1}`;
   if (submitted.anchor !== undefined && anchor === undefined) {
     telemetry.event({
       stage: 7,
       level: "warn",
       message: "out_of_hunk_anchor",
       packetId: packet.id,
-      data: { finding: submitted.title, anchor: submitted.anchor }
+      data: { candidateId, finding: submitted.title, anchor: submitted.anchor }
+    });
+    telemetry.event({
+      stage: 7,
+      level: "info",
+      message: "candidate_anchor_summary_only",
+      packetId: packet.id,
+      data: { candidateId, finding: submitted.title, anchor: submitted.anchor }
     });
   }
   const primaryLens = packet.lenses[0] ?? "core/code-review";
   return {
-    id: `${packet.id.slice(0, 8)}-f${index + 1}`,
+    id: candidateId,
     title: submitted.title,
     severity: submitted.severity,
     confidence: submitted.confidence,

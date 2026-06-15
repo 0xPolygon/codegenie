@@ -1,6 +1,8 @@
 # Issue 13: Planner and Anchor Hygiene
 
-Status: PENDING
+Status: COMPLETE
+
+Implementation note: the audit found that planner hunk-id normalization, Stage 7 anchor stripping, verifier anchor stripping, composer validation, and GitHub publisher validation were already largely present. This pass completed the remaining gaps by adding explicit Stage 7 `candidate_anchor_summary_only` telemetry and regression tests proving unknown planner hunk ids do not reduce deterministic review coverage.
 
 ## Problem
 

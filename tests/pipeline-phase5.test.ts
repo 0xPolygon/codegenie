@@ -101,6 +101,7 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it("demotes anchors whose path does not match the packet and diff", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const runner: LlmRunner = {
       runStructured: async <T>() =>
         ({
@@ -123,17 +124,45 @@ describe("phase 5 pipeline regressions", () => {
         }) as T
     };
 
-    const [result] = await runLensPackets(fakePlan(), [fakePacket()], fakeTools(), config(), nullTelemetry(), {
-      runner,
-      promptBuilder: fakePromptBuilder(),
-      lensRegistry: fakeLensRegistry(),
-      diff: fakeDiff()
-    });
+    const [result] = await runLensPackets(
+      fakePlan(),
+      [fakePacket()],
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
 
     expect(result?.findings[0]).toMatchObject({
       changedLine: false
     });
     expect(result?.findings[0]?.anchor).toBeUndefined();
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 7,
+          level: "warn",
+          message: "out_of_hunk_anchor",
+          data: expect.objectContaining({ candidateId: expect.any(String) })
+        }),
+        expect.objectContaining({
+          stage: 7,
+          level: "info",
+          message: "candidate_anchor_summary_only",
+          data: expect.objectContaining({ candidateId: expect.any(String) })
+        })
+      ])
+    );
   });
 
   it("normalizes finding path from a valid Stage 7 anchor", async () => {
@@ -2392,6 +2421,104 @@ describe("phase 5 pipeline regressions", () => {
     expect(packetHunks.find((hunk) => hunk.hunkId === "h1")?.plannerFallbackReason).toBeUndefined();
     expect(events.some((event) => event.message === "planner_missing_coverage")).toBe(false);
     expect(coverage.reasons.some((reason) => reason.includes("planner_missing_coverage") || reason.includes("default_coverage"))).toBe(false);
+  });
+
+  it("ignores unknown planner hunk ids without reducing deterministic packet coverage", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+        events.push(event);
+      }
+    };
+    const baseDossier = fakeDossier(["app.ts"]);
+    const dossier: PlannerDossier = {
+      ...baseDossier,
+      files: [
+        {
+          ...baseDossier.files[0]!,
+          hunkCount: 2,
+          hunks: [
+            {
+              hunkId: "h1",
+              header: "@@ -1 +1 @@",
+              oldStart: 1,
+              oldLines: 1,
+              newStart: 1,
+              newLines: 1,
+              changedNewLineNumbers: [1],
+              changedOldLineNumbers: [],
+              staticSignals: [],
+              omittedSignalCount: 0,
+              excerpt: "+one"
+            },
+            {
+              hunkId: "h2",
+              header: "@@ -10 +10 @@",
+              oldStart: 10,
+              oldLines: 1,
+              newStart: 10,
+              newLines: 1,
+              changedNewLineNumbers: [10],
+              changedOldLineNumbers: [],
+              staticSignals: [],
+              omittedSignalCount: 0,
+              excerpt: "+two"
+            }
+          ]
+        }
+      ],
+      totals: { ...baseDossier.totals, hunks: 2 }
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          diffUnderstanding: { declaredIntent: "unknown hunk", inferredBehavior: "unknown hunk" },
+          riskAreas: [],
+          coverage: [
+            { hunkId: "h1-suffix", path: "app.ts", coverage: "skip", lenses: [], surroundingContextHints: [], reason: "bad model hunk id" },
+            { hunkId: "h2", path: "app.ts", coverage: "deep", lenses: ["core/code-review"], surroundingContextHints: [], reason: "valid override" }
+          ]
+        }) as T
+    };
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 1, content: "one" },
+      { id: "h2", newStart: 10, content: "two" }
+    ]);
+
+    const result = await runPlanner(dossier, config(), telemetry, {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{
+        id: "core/code-review",
+        title: "Core",
+        description: "core",
+        skillIds: [],
+        enabledByDefault: true,
+        enabled: true,
+        languages: []
+      }],
+      skills: []
+    });
+    const packets = await buildReviewPackets(
+      result.plan,
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      fakeRepositoryIndex(),
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+    const packetHunks = packets.flatMap((packet) => packet.hunks);
+
+    expect(result.plan.coverage.map((decision) => decision.hunkId)).toEqual(["h2"]);
+    expect(packetHunks.map((hunk) => hunk.hunkId).sort()).toEqual(["h1", "h2"]);
+    expect(packetHunks.find((hunk) => hunk.hunkId === "h2")?.plannerFallbackReason).toBeUndefined();
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 5,
+      level: "warn",
+      message: "planner_unknown_hunk",
+      data: expect.objectContaining({ hunkId: "h1-suffix" })
+    }));
   });
 
   it("uses rollup hunk language when recovering invalid skip decisions for compacted hunks", async () => {

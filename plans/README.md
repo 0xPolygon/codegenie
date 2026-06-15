@@ -16,7 +16,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 10 | COMPLETE | Issue 10: Final Body Metadata Duplication |
 | 11 | COMPLETE | Issue 11: Stage 6 Inverted Range Reads |
 | 12 | COMPLETE | Issue 12: Lossy Conversion Recall |
-| 13 | PENDING | Issue 13: Planner and Anchor Hygiene |
+| 13 | COMPLETE | Issue 13: Planner and Anchor Hygiene |
 | 14 | PENDING | Issue 14: Deleted Symbol Lookup and Targeted Tool Budget |
 | 15 | PENDING | Issue 15: Telemetry Cache Terminology |
 | 16 | COMPLETE | Issue 16: Eval Matching for Merged Findings |
