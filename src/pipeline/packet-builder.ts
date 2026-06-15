@@ -18,6 +18,7 @@ import type {
   ReviewPlan,
   ReviewProfile,
   ReviewPriority,
+  SourceSelector,
   StaticSignal,
   SurroundingContextHint,
   SymbolInfo,
@@ -773,7 +774,7 @@ async function readEnclosingSymbolSource(
     if (!truncated && result.meta.truncated !== true) {
       return { text: block, quality: "full", reasons: [] };
     }
-    const sliced = await readChangedLineExcerpts(repoIndex, readPath, fact, source);
+    const sliced = await readChangedLineExcerpts(repoIndex, readPath, fact, source, telemetry);
     const text = truncateTail(renderSlicedSymbolContext(readPath, label, fact, sliced, result.text), MAX_SYMBOL_CONTEXT_CHARS);
     if (truncated || result.meta.truncated === true) {
       telemetry.event({
@@ -869,19 +870,33 @@ async function readChangedLineExcerpts(
   repoIndex: RepositoryIndex,
   readPath: string,
   fact: HunkSymbolFacts,
-  source: { kind: "base" } | { kind: "head" }
+  source: { kind: "base" } | { kind: "head" },
+  telemetry: TelemetryRecorder
 ): Promise<string[]> {
   const ranges = excerptRanges(fact);
   const excerpts: string[] = [];
   for (const range of ranges) {
+    const normalized = normalizeStage6ReadRange({
+      startLine: range[0],
+      endLine: range[1],
+      ...(fact.symbolRange?.[1] !== undefined ? { maxLine: fact.symbolRange[1] } : {}),
+      telemetry,
+      path: readPath,
+      source,
+      context: "symbol_excerpt",
+      hunkId: fact.hunkId
+    });
+    if (normalized === undefined) {
+      continue;
+    }
     try {
       const result = await withRepositoryToolCallContext(
         repoIndex.tools,
         { stage: 6, initiator: "harness" },
-        () => repoIndex.tools.readRange(readPath, range[0], range[1], source)
+        () => repoIndex.tools.readRange(readPath, normalized.startLine, normalized.endLine, source)
       );
       if (result.text.trim().length > 0) {
-        excerpts.push(`Excerpt ${readPath}:${range[0]}-${range[1]}\n${result.text.trimEnd()}`);
+        excerpts.push(`Excerpt ${readPath}:${normalized.startLine}-${normalized.endLine}\n${result.text.trimEnd()}`);
       }
     } catch {
       // Best-effort debug context; readSymbol output remains the fallback.
@@ -899,9 +914,8 @@ function excerptRanges(fact: HunkSymbolFacts): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
   for (const line of changedLines) {
     const min = fact.symbolRange?.[0] ?? 1;
-    const max = fact.symbolRange?.[1] ?? Number.MAX_SAFE_INTEGER;
     const start = Math.max(min, line - SYMBOL_EXCERPT_WINDOW);
-    const end = Math.min(max, line + SYMBOL_EXCERPT_WINDOW);
+    const end = line + SYMBOL_EXCERPT_WINDOW;
     const previous = ranges[ranges.length - 1];
     if (previous && start <= previous[1] + 1) {
       previous[1] = Math.max(previous[1], end);
@@ -970,7 +984,7 @@ async function resolvePacketContextHints(
       continue;
     }
     try {
-      const resolved = await resolvePacketContextHint(repoIndex, hint, hintPath);
+      const resolved = await resolvePacketContextHint(repoIndex, hint, hintPath, telemetry);
       if (resolved === undefined) {
         workerHints.push(toToolLookupHint(hint));
         continue;
@@ -1000,17 +1014,28 @@ async function resolvePacketContextHints(
 async function resolvePacketContextHint(
   repoIndex: RepositoryIndex,
   hint: SurroundingContextHint,
-  path: string
+  path: string,
+  telemetry: TelemetryRecorder
 ): Promise<string | undefined> {
   if (hint.lineRange !== undefined) {
-    const start = Math.max(1, Math.min(hint.lineRange[0], hint.lineRange[1]));
-    const end = Math.min(Math.max(hint.lineRange[0], hint.lineRange[1]), start + MAX_HINT_CONTEXT_LINES - 1);
+    const normalized = normalizeStage6ReadRange({
+      startLine: hint.lineRange[0],
+      endLine: Math.min(hint.lineRange[1], hint.lineRange[0] + MAX_HINT_CONTEXT_LINES - 1),
+      telemetry,
+      path,
+      source: { kind: "head" },
+      context: "planner_hint",
+      reason: hint.reason
+    });
+    if (normalized === undefined) {
+      return undefined;
+    }
     const result = await withRepositoryToolCallContext(
       repoIndex.tools,
       { stage: 6, initiator: "harness" },
-      () => repoIndex.tools.readRange(path, start, end, { kind: "head" })
+      () => repoIndex.tools.readRange(path, normalized.startLine, normalized.endLine, { kind: "head" })
     );
-    return renderHintContextBlock(hint, path, `${start}-${end}`, result.text);
+    return renderHintContextBlock(hint, path, `${normalized.startLine}-${normalized.endLine}`, result.text);
   }
   const symbol = hint.symbol;
   if (symbol !== undefined) {
@@ -1023,6 +1048,80 @@ async function resolvePacketContextHint(
       return undefined;
     }
     return renderHintContextBlock(hint, path, symbol, result.text);
+  }
+  return undefined;
+}
+
+function normalizeStage6ReadRange(input: {
+  startLine: number;
+  endLine: number;
+  maxLine?: number;
+  telemetry: TelemetryRecorder;
+  path: string;
+  source: SourceSelector;
+  context: "symbol_excerpt" | "planner_hint";
+  hunkId?: string;
+  reason?: string;
+}): { startLine: number; endLine: number } | undefined {
+  const invalidReason = invalidStage6RangeReason(input.startLine, input.endLine, input.maxLine);
+  if (invalidReason !== undefined) {
+    input.telemetry.event({
+      stage: 6,
+      level: "debug",
+      message: "stage6_read_range_skipped",
+      file: input.path,
+      data: {
+        context: input.context,
+        path: input.path,
+        source: input.source.kind,
+        startLine: input.startLine,
+        endLine: input.endLine,
+        ...(input.maxLine !== undefined ? { maxLine: input.maxLine } : {}),
+        ...(input.hunkId !== undefined ? { hunkId: input.hunkId } : {}),
+        ...(input.reason !== undefined ? { reason: input.reason } : {}),
+        invalidReason
+      }
+    });
+    return undefined;
+  }
+  const endLine = input.maxLine === undefined ? input.endLine : Math.min(input.endLine, input.maxLine);
+  if (endLine !== input.endLine) {
+    input.telemetry.event({
+      stage: 6,
+      level: "debug",
+      message: "stage6_read_range_clamped",
+      file: input.path,
+      data: {
+        context: input.context,
+        path: input.path,
+        source: input.source.kind,
+        startLine: input.startLine,
+        requestedEndLine: input.endLine,
+        endLine,
+        maxLine: input.maxLine,
+        ...(input.hunkId !== undefined ? { hunkId: input.hunkId } : {}),
+        ...(input.reason !== undefined ? { reason: input.reason } : {})
+      }
+    });
+  }
+  return { startLine: input.startLine, endLine };
+}
+
+function invalidStage6RangeReason(startLine: number, endLine: number, maxLine: number | undefined): string | undefined {
+  if (!Number.isInteger(startLine) || !Number.isInteger(endLine)) {
+    return "range lines must be integers";
+  }
+  if (startLine < 1) {
+    return "startLine must be at least 1";
+  }
+  if (endLine < startLine) {
+    return "endLine is before startLine";
+  }
+  if (maxLine !== undefined && (!Number.isInteger(maxLine) || maxLine < 1)) {
+    return "maxLine must be a positive integer";
+  }
+  if (maxLine !== undefined && startLine > maxLine) {
+    return "startLine is after known range end";
   }
   return undefined;
 }

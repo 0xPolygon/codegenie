@@ -522,6 +522,71 @@ describe("phase 5 pipeline regressions", () => {
     ]);
   });
 
+  it("skips inverted planner packet-context ranges before readRange", async () => {
+    const events: TelemetryEvent[] = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: TelemetryEvent) => {
+        events.push(event);
+      }
+    };
+    const readRange = vi.fn(async () => {
+      throw new Error("readRange should not be called for an inverted planner hint range");
+    });
+    const tools = {
+      ...fakeTools(),
+      readRange
+    };
+
+    const packets = await buildReviewPackets(
+      {
+        diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
+        riskAreas: [],
+        coverage: [
+          {
+            hunkId: "h1",
+            path: "app.ts",
+            coverage: "normal",
+            lenses: ["core/code-review"],
+            surroundingContextHints: [
+              {
+                kind: "call_site",
+                path: "app.ts",
+                lineRange: [6, 4],
+                reason: "include local caller",
+                expectedUse: "packet_context"
+              }
+            ],
+            reason: "test"
+          }
+        ]
+      },
+      [fakeDiffFile("app.ts")],
+      [fakeFacts("app.ts", "per-hunk")],
+      fakeRepositoryIndex(tools),
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(readRange).not.toHaveBeenCalled();
+    expect(packets[0]?.contextText).not.toContain("Planner packet context");
+    expect(packets[0]?.surroundingContextHints).toEqual([
+      expect.objectContaining({ expectedUse: "tool_lookup", reason: "include local caller" })
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "debug",
+      message: "stage6_read_range_skipped",
+      file: "app.ts",
+      data: expect.objectContaining({
+        context: "planner_hint",
+        startLine: 6,
+        endLine: 4,
+        invalidReason: "endLine is before startLine"
+      })
+    }));
+  });
+
   it("includes bounded enclosing symbol source in packet context and discloses truncation", async () => {
     const events: TelemetryEvent[] = [];
     const telemetry = {
@@ -595,6 +660,163 @@ describe("phase 5 pipeline regressions", () => {
       level: "warn",
       message: "packet_symbol_source_truncated",
       file: "app.ts"
+    }));
+  });
+
+  it("skips inverted symbol excerpt ranges before readRange", async () => {
+    const events: TelemetryEvent[] = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: TelemetryEvent) => {
+        events.push(event);
+      }
+    };
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const longSource = `export function changed() {\n${"  doWork();\n".repeat(400)}}`;
+    const readRange = vi.fn(async () => {
+      throw new Error("readRange should not be called for an inverted symbol excerpt range");
+    });
+    const tools = {
+      ...fakeTools(),
+      readRange,
+      readSymbol: async () => ({
+        text: longSource,
+        symbol: { path: "app.ts", name: "changed", kind: "function" as const, lineRange: [18, 9] as [number, number] },
+        meta
+      }),
+      buildPacketContext: async (file: DiffFile) => ({
+        context: { path: file.path },
+        outline: {
+          path: file.path,
+          language: "typescript",
+          imports: [],
+          topLevelSymbols: [{ path: file.path, name: "changed", kind: "function" as const, lineRange: [18, 9] as [number, number] }],
+          testSymbols: [],
+          notes: []
+        },
+        relevantTests: []
+      })
+    };
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(tools),
+      symbolFacts: [
+        {
+          path: "app.ts",
+          hunkId: "h1",
+          enclosingSymbol: "changed",
+          symbolKind: "function",
+          symbolRange: [18, 9],
+          changedLines: [5],
+          changedLinesSide: "new",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      fakePlan(),
+      [fakeDiffFile("app.ts")],
+      [fakeFacts("app.ts", "per-hunk")],
+      repoIndex,
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(readRange).not.toHaveBeenCalled();
+    expect(packets[0]?.contextText).toContain("symbol source sliced around changed lines");
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "debug",
+      message: "stage6_read_range_skipped",
+      file: "app.ts",
+      data: expect.objectContaining({
+        context: "symbol_excerpt",
+        hunkId: "h1",
+        startLine: 18,
+        endLine: 13,
+        maxLine: 9,
+        invalidReason: "endLine is before startLine"
+      })
+    }));
+  });
+
+  it("clamps symbol excerpt ranges to the known symbol end before readRange", async () => {
+    const events: TelemetryEvent[] = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: TelemetryEvent) => {
+        events.push(event);
+      }
+    };
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const longSource = `export function changed() {\n${"  doWork();\n".repeat(400)}}`;
+    const readRanges: Array<{ path: string; startLine: number; endLine: number }> = [];
+    const tools = {
+      ...fakeTools(),
+      readRange: async (pathName: string, startLine: number, endLine: number) => {
+        readRanges.push({ path: pathName, startLine, endLine });
+        return { text: "  return done;", meta };
+      },
+      readSymbol: async () => ({
+        text: longSource,
+        symbol: { path: "app.ts", name: "changed", kind: "function" as const, lineRange: [90, 100] as [number, number] },
+        meta
+      }),
+      buildPacketContext: async (file: DiffFile) => ({
+        context: { path: file.path },
+        outline: {
+          path: file.path,
+          language: "typescript",
+          imports: [],
+          topLevelSymbols: [{ path: file.path, name: "changed", kind: "function" as const, lineRange: [90, 100] as [number, number] }],
+          testSymbols: [],
+          notes: []
+        },
+        relevantTests: []
+      })
+    };
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(tools),
+      symbolFacts: [
+        {
+          path: "app.ts",
+          hunkId: "h1",
+          enclosingSymbol: "changed",
+          symbolKind: "function",
+          symbolRange: [90, 100],
+          changedLines: [98],
+          changedLinesSide: "new",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      fakePlan(),
+      [fakeDiffFile("app.ts")],
+      [fakeFacts("app.ts", "per-hunk")],
+      repoIndex,
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(readRanges).toEqual([{ path: "app.ts", startLine: 90, endLine: 100 }]);
+    expect(packets[0]?.contextText).toContain("Excerpt app.ts:90-100");
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "debug",
+      message: "stage6_read_range_clamped",
+      file: "app.ts",
+      data: expect.objectContaining({
+        context: "symbol_excerpt",
+        hunkId: "h1",
+        startLine: 90,
+        requestedEndLine: 106,
+        endLine: 100,
+        maxLine: 100
+      })
     }));
   });
 
