@@ -4,7 +4,7 @@ import type { CodeninjaErrorCode } from "../util/errors.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type { Logger } from "../types.js";
 
-export type LlmRole = "planner" | "packetReview" | "verifier" | "composer";
+export type LlmRole = "planner" | "packetReview" | "systemReview" | "verifier" | "composer";
 
 export type LlmCallUsage = {
   stage: ReviewStage;
@@ -176,6 +176,8 @@ export function roleForStage(stage: ReviewStage): LlmRole {
       return "planner";
     case 7:
       return "packetReview";
+    case 8:
+      return "systemReview";
     case 9:
       return "verifier";
     case 10:

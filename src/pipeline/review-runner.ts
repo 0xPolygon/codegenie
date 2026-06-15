@@ -41,6 +41,7 @@ import { CodeninjaError, errorExitCode, isCodeninjaError } from "../util/errors.
 import { buildPlannerDossier, runPlanner } from "./planner.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
 import { runLensPackets } from "./lens-runner.js";
+import { buildSystemReviewTasks, runTargetedSystemReviews, suppressResolvedFollowUpHints } from "./system-reviewer.js";
 import { verifyFindings } from "./verifier.js";
 import { dedupeRankAndComposeReview } from "./composer.js";
 import { renderMarkdownReview } from "../output/markdown-renderer.js";
@@ -178,9 +179,22 @@ export async function runReview(
       diff
     });
     throwIfHardAborted(run);
-    const candidateFindings = packetResults.flatMap((result) => result.findings);
+    const systemReview = buildSystemReviewTasks(packetResults, packets).length > 0
+      ? await runTargetedSystemReviews({ packetResults, packets }, repoIndex.tools, config, run.telemetry, {
+          runner: services.runner,
+          promptBuilder: services.promptBuilder,
+          lensRegistry: services.lensRegistry,
+          signal: run.abort.signal,
+          checkpoint: (stage) => run.budget.checkpoint(stage),
+          diff
+        })
+      : { tasks: [], packetResults: [], resolvedHints: [] };
+    throwIfHardAborted(run);
+    const allPacketResults = [...packetResults, ...systemReview.packetResults];
+    const packetResultsForFinal = suppressResolvedFollowUpHints(allPacketResults, systemReview.resolvedHints);
+    const candidateFindings = allPacketResults.flatMap((result) => result.findings);
     await run.telemetry.writeArtifact("candidate-findings.json", candidateFindings);
-    const verified = await verifyFindings({ packetResults, packets }, repoIndex.tools, config, run.telemetry, {
+    const verified = await verifyFindings({ packetResults: allPacketResults, packets }, repoIndex.tools, config, run.telemetry, {
       runner: services.runner,
       promptBuilder: services.promptBuilder,
       lensRegistry: services.lensRegistry,
@@ -220,7 +234,7 @@ export async function runReview(
     const finalReview = await dedupeRankAndComposeReview(verified, plannerResult.plan, resolved, coverage, config, run.telemetry, {
       runner: services.runner,
       promptBuilder: services.promptBuilder,
-      packetResults,
+      packetResults: packetResultsForFinal,
       packets,
       diff,
       ...(overrides.postGithubComments !== undefined ? { postGithubComments: overrides.postGithubComments } : {})

@@ -1,7 +1,7 @@
 import type { ReviewStage, TelemetryEvent, ToolCallRecord } from "../types.js";
 import type { CodeninjaErrorCode } from "../util/errors.js";
 
-export type LlmRole = "planner" | "packetReview" | "verifier" | "composer";
+export type LlmRole = "planner" | "packetReview" | "systemReview" | "verifier" | "composer";
 
 export type LlmCallRecord = {
   callId: string;

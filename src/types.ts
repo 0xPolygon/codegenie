@@ -643,6 +643,32 @@ export type PacketReviewResult = {
   status: "completed" | "incomplete" | "failed" | "skipped";
 };
 
+export type SystemReviewTask = {
+  id: string;
+  question: string;
+  reason: string;
+  confidence: Exclude<Confidence, "low">;
+  packetIds: string[];
+  files: string[];
+  symbols: string[];
+  suggestedLenses: string[];
+  representativeFindings: CandidateFinding[];
+};
+
+export type ResolvedFollowUpHint = {
+  taskId: string;
+  question: string;
+  files: string[];
+  symbols: string[];
+  resolution: string;
+};
+
+export type SystemReviewResult = {
+  tasks: SystemReviewTask[];
+  packetResults: PacketReviewResult[];
+  resolvedHints: ResolvedFollowUpHint[];
+};
+
 export type VerificationVerdict = {
   candidateId: string;
   verdict: "keep" | "reject" | "revise";

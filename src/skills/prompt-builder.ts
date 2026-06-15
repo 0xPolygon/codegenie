@@ -3,7 +3,8 @@ import type {
   PlannerDossier,
   ReviewPacket,
   ReviewStage,
-  RunCoverageStatus
+  RunCoverageStatus,
+  SystemReviewTask
 } from "../types.js";
 import type { Skill, SkillSectionName } from "./skill-loader.js";
 import type { LensDescriptor, LensRegistry } from "./lens-registry.js";
@@ -48,6 +49,7 @@ export type PromptBuilder = {
   renderDossier(dossier: PlannerDossier): string;
   buildPlannerPrompt(input: { dossier: PlannerDossier; lenses: LensDescriptor[]; skills: Skill[] }): BuiltPrompt;
   buildPacketReviewPrompt(input: { packet: ReviewPacket; skills: Skill[] }): BuiltPrompt;
+  buildSystemReviewPrompt(input: { task: SystemReviewTask; skills: Skill[] }): BuiltPrompt;
   buildVerifierPrompt(input: {
     candidate: CandidateFinding;
     originContext: string;
@@ -62,9 +64,10 @@ export type PromptBuilder = {
   }): BuiltPrompt;
 };
 
-export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 9 | 10, string> = {
+export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
   5: "p5.2",
   7: "p7.1",
+  8: "p8.1",
   9: "p9.1",
   10: "p10.1"
 };
@@ -75,6 +78,7 @@ const MIN_FRAGMENT_CHARS = 600;
 
 const STAGE_SECTION_MAP: Partial<Record<ReviewStage, SkillSectionName[]>> = {
   7: ["checks", "falsePositives", "examples"],
+  8: ["checks", "falsePositives", "safePatterns"],
   9: ["falsePositives", "safePatterns"]
 };
 
@@ -113,6 +117,20 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Skill guidance:\n" + projection.text,
         ...blocks,
         "Finish by calling submit_review with schema-valid arguments. Do not answer in plain text."
+      ], projection, blocks.length);
+    },
+    buildSystemReviewPrompt: ({ task, skills }) => {
+      const projection = projectSkills(skills, 8, options);
+      const blocks = [
+        fenceUntrusted(stableJson(task), "system-review-task")
+      ];
+      return buildPrompt(8, [
+        reviewerFrame("targeted system follow-up review"),
+        injectionInstruction(),
+        "Resolve only the targeted repeated question. Use repository tools if they can materially confirm or reject a concrete failure mode. Produce findings only with direct evidence; otherwise return no findings. If the question is resolved without a finding, include a resolved hint so the final review does not ask the same question again.",
+        "Skill guidance:\n" + projection.text,
+        ...blocks,
+        "Finish by calling submit_system_review with schema-valid arguments. Do not answer in plain text."
       ], projection, blocks.length);
     },
     buildVerifierPrompt: ({ candidate, originContext, hunksText, skills }) => {
@@ -255,7 +273,7 @@ export function stableJson(input: unknown): string {
 }
 
 function buildPrompt(
-  stage: 5 | 7 | 9 | 10,
+  stage: 5 | 7 | 8 | 9 | 10,
   parts: string[],
   projection: SkillProjection | undefined,
   untrustedBlockCount: number
