@@ -147,6 +147,8 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("verification"),
         injectionInstruction(),
         "Verify whether the candidate is a real, actionable finding. Reject false positives. Revise only when the same issue is real but the evidence or anchor needs correction.",
+        "For helper/callee-dependent claims, inspect the complete decisive helper branch before keeping the finding. If a read_symbol/find_definition result says delivery is truncated, includes a recovery hint, or contains '[tool result truncated by codeninja tool budget]', use the recovery read_range when possible. If the decisive helper behavior remains unavailable, reject or mark requiredEvidencePresent=false instead of inferring from partial source.",
+        "Be especially skeptical of removed-guard findings where the replacement helper may enforce the same condition. Keep only when complete source proves the guard is no longer enforced on the reachable path.",
         "Same-PR tests that assert new behavior prove the behavior changed; they do not by themselves prove the behavior is safe or intended. If the PR intent says refactor, cleanup, consolidation, behavior-preserving, or similar, compare base versus head behavior and keep or revise material semantic regressions that can break callers. Reject when the PR text/spec clearly states the behavior change is intentional, or when the verifier cannot resolve the missing evidence predicate.",
         "Skill false-positive guidance:\n" + projection.text,
         ...blocks,

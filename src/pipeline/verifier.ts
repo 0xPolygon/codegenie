@@ -23,7 +23,13 @@ import {
 } from "./pipeline-utils.js";
 import { isCodeninjaError } from "../util/errors.js";
 
-const VERIFIER_TOOL_BUDGET = { maxToolCalls: 6, maxInvestigationRounds: 2, maxResultChars: 12_000 };
+const VERIFIER_TOOL_BUDGET = {
+  maxToolCalls: 8,
+  maxInvestigationRounds: 3,
+  maxResultChars: 16_000,
+  maxSingleToolResultChars: 6_000,
+  reservedSourceResultChars: 4_000
+};
 const VERIFIER_EXPECTED_CALLS_PER_CANDIDATE = 2;
 const VERIFIER_BASE_TOKEN_ESTIMATE = 1_000;
 const EVIDENCE_RESOLUTION_LANE_MAX = 4;

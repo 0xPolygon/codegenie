@@ -27,3 +27,6 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 21 | COMPLETE | Issue 21: Targeted Cross-System Review |
 | 22 | COMPLETE | Issue 22: Cache Telemetry Clarity |
 | 23 | COMPLETE | Issue 23: Evidence-Aware Verification Recall |
+| 24 | PENDING | Issue 24: Uncertainty Promotion and Verifier Policy Discipline |
+| 25 | COMPLETE | Issue 25: Repository Source Recovery and Tool Budget Diagnostics |
+| 26 | PENDING | Issue 26: Budget Completion, Overrun Telemetry, and Budget Multiplier |

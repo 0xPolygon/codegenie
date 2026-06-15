@@ -3248,7 +3248,13 @@ describe("phase 5 pipeline regressions", () => {
       { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
     );
 
-    expect(verifierBudget).toEqual({ maxToolCalls: 6, maxInvestigationRounds: 2, maxResultChars: 12_000 });
+    expect(verifierBudget).toEqual({
+      maxToolCalls: 8,
+      maxInvestigationRounds: 3,
+      maxResultChars: 16_000,
+      maxSingleToolResultChars: 6_000,
+      reservedSourceResultChars: 4_000
+    });
   });
 
   it("allows verifier revisions to raise candidates above minSeverity", async () => {

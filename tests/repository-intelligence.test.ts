@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import { parseDiff } from "../src/git/diff-parser.js";
-import { buildRepositoryIndex, withRepositoryToolCallContext } from "../src/repo/repository-index.js";
+import { buildRepositoryIndex, RepositoryToolsFacade, withRepositoryToolCallContext } from "../src/repo/repository-index.js";
 import { LanguageAdapterRegistry } from "../src/repo/language-adapter.js";
 import { containGlob, containPath, containRef } from "../src/repo/path-guard.js";
 import type { SourceResolver } from "../src/repo/source-resolver.js";
@@ -484,6 +484,25 @@ export { internal as Public }
     const longDefinition = await tools.findDefinition("LongFunction");
     expect(longDefinition.meta.truncated).toBe(true);
     expect(longDefinition.meta.omittedCount).toBeGreaterThan(0);
+    expect(longDefinition.meta.lookupStatus).toBe("found");
+    expect(longDefinition.meta.deliveryStatus).toBe("truncated");
+    expect(longDefinition.meta.recovery).toMatchObject({
+      tool: "read_range",
+      path: "long/long.go",
+      source: "head"
+    });
+    const longSymbol = await tools.readSymbol("long/long.go", { symbolName: "LongFunction" });
+    expect(longSymbol.meta).toMatchObject({
+      lookupStatus: "found",
+      deliveryStatus: "truncated",
+      truncated: true,
+      recovery: {
+        tool: "read_range",
+        path: "long/long.go",
+        source: "head"
+      }
+    });
+    expect(longSymbol.meta.recovery?.startLine).toBeLessThanOrEqual(longSymbol.meta.recovery?.endLine ?? 0);
     const duplicateDefinitions = await tools.findDefinition("BigDup");
     expect(duplicateDefinitions.meta.truncated).toBe(true);
     expect(JSON.stringify(duplicateDefinitions.definitions).length).toBeLessThanOrEqual(16_000);
@@ -643,6 +662,80 @@ export { internal as Public }
         })
       ])
     );
+  });
+
+  it("finds declaration text when parser summaries miss a symbol in a parsed file", async () => {
+    const source = `package quotes
+
+func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64, error) {
+	if amount <= 0 {
+		return 0, fmt.Errorf("amount must be positive")
+	}
+	return amountUSD / float64(amount), nil
+}
+`;
+    const telemetry = recordingTelemetry();
+    const resolver = {
+      repoRoot: "/repo",
+      readFile: async (relPath: string, selectedSource: SourceSelector = { kind: "head" }) => ({
+        path: relPath,
+        source: selectedSource,
+        commit: selectedSource.kind,
+        content: source,
+        contentSha: `${selectedSource.kind}:${relPath}`
+      }),
+      grep: async () => [
+        {
+          path: "lib/quotes/fees.go",
+          line: 3,
+          column: 6,
+          matchText: "func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64, error) {"
+        }
+      ]
+    } as unknown as SourceResolver;
+    const adapter: LanguageAdapter = {
+      id: "fake-go",
+      extensions: [".go"],
+      init: async () => undefined,
+      parse: async (input) => ({
+        path: input.path,
+        language: input.language,
+        adapterId: "fake-go",
+        source: input.source,
+        content: input.content,
+        tree: {},
+        hasErrors: false,
+        ...(input.contentSha !== undefined ? { contentSha: input.contentSha } : {})
+      }),
+      listSymbols: () => [],
+      getEnclosingSymbol: () => undefined,
+      getImports: () => [],
+      getChangedSymbols: () => []
+    };
+    const registry = {
+      forPath: () => adapter,
+      languageForPath: () => "go"
+    } as unknown as LanguageAdapterRegistry;
+    const tools = new RepositoryToolsFacade({ diff: { files: [] }, resolver, registry, telemetry });
+
+    const definition = await tools.findDefinition("CalculatePriceUSD");
+
+    expect(definition.definitions).toHaveLength(1);
+    expect(definition.definitions[0]?.symbol).toMatchObject({
+      path: "lib/quotes/fees.go",
+      name: "CalculatePriceUSD",
+      nativeKind: "text declaration",
+      lineRange: [3, 9]
+    });
+    expect(definition.definitions[0]?.text).toContain("amount must be positive");
+    expect(definition.meta).toMatchObject({
+      backend: "text",
+      precision: "text",
+      degraded: true,
+      degradationReason: "1 definition candidate(s) used text fallback",
+      lookupStatus: "found",
+      deliveryStatus: "full"
+    });
   });
 
   it("falls back to git grep when ignored or untracked paths would make ripgrep walk extra tree content", async () => {

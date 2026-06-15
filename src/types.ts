@@ -321,10 +321,33 @@ export type ToolResultMeta = {
   degradationReason?: string;
   truncated?: boolean;
   omittedCount?: number;
+  lookupStatus?: "found" | "not_found" | "ambiguous" | "file_missing" | "unavailable";
+  deliveryStatus?: "full" | "truncated" | "budget_rejected" | "empty";
+  recovery?: {
+    tool: "read_range";
+    path: string;
+    startLine: number;
+    endLine: number;
+    source: "head" | "base";
+    reason: string;
+  };
   requestedSource?: "head" | "base" | "auto";
   sourceUsed?: "head" | "base";
   sourceFallback?: boolean;
   baseOnly?: boolean;
+};
+
+export type ToolBudgetState = {
+  toolCallsUsed: number;
+  maxToolCalls: number;
+  investigationRoundsUsed: number;
+  maxInvestigationRounds: number;
+  resultCharsUsed: number;
+  maxResultChars: number;
+  remainingResultChars: number;
+  maxSingleToolResultChars?: number;
+  reservedSourceResultChars?: number;
+  toolResultCharLimit?: number;
 };
 
 export type FileOutline = {
@@ -412,6 +435,8 @@ export type ToolBudget = {
   maxToolCalls: number;
   maxInvestigationRounds: number;
   maxResultChars: number;
+  maxSingleToolResultChars?: number;
+  reservedSourceResultChars?: number;
 };
 
 export type SurroundingContextHint = {
@@ -1210,6 +1235,10 @@ export type ToolCallRecord = {
   degradationReason?: string;
   truncated?: boolean;
   omittedCount?: number;
+  lookupStatus?: ToolResultMeta["lookupStatus"];
+  deliveryStatus?: ToolResultMeta["deliveryStatus"];
+  recovery?: ToolResultMeta["recovery"];
+  budgetState?: ToolBudgetState;
   resultCount?: number;
   resultChars: number;
   durationMs: number;

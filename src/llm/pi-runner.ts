@@ -21,7 +21,7 @@ import { createFileAuthStorage } from "../provider/provider-services.js";
 import { getCodeninjaPaths } from "../config/paths.js";
 import { registerSecret, stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
-import type { ReviewStage, ToolCallRecord, ToolResultMeta } from "../types.js";
+import type { ReviewStage, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../provider/provider-services.js";
 import { sha256Hex } from "../util/hashing.js";
 import { CodeninjaError, type CodeninjaErrorCode } from "../util/errors.js";
@@ -57,9 +57,17 @@ type ToolRunOutcome = {
   result: ToolExecutionResult;
   status: ToolCallRecord["status"];
   errorCode?: CodeninjaErrorCode;
+  rejectionReason?: ToolRejectionReason;
+  budgetState?: ToolBudgetState;
   args: Record<string, unknown>;
   durationMs: number;
 };
+
+type ToolRejectionReason =
+  | "tool_result_budget_exhausted"
+  | "tool_call_budget_exhausted"
+  | "investigation_round_budget_exhausted"
+  | "unknown_tool";
 
 type ModelCallKind = "initial" | "tool-continuation" | "repair" | "finalize";
 
@@ -248,15 +256,26 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             const toolResults: ConversationMessage[] = [];
             for (const toolCall of toolCalls) {
               const tool = repositoryTools.find((candidate) => candidate.name === toolCall.name);
-              const remainingResultChars = Math.max(0, budget.maxResultChars - resultCharsUsed);
+              const budgetState = toolBudgetState({
+                toolCallsUsed,
+                investigationRounds,
+                resultCharsUsed,
+                budget,
+                toolName: toolCall.name
+              });
+              const remainingResultChars = budgetState.toolResultCharLimit ?? budgetState.remainingResultChars;
               const outcome =
                 remainingResultChars <= 0
-                  ? rejectedToolOutcome(toolCall, "tool result character budget exhausted")
-                  : toolCallsUsed >= budget.maxToolCalls || investigationRounds > budget.maxInvestigationRounds
-                  ? rejectedToolOutcome(toolCall, "tool budget exhausted")
+                  ? rejectedToolOutcome(toolCall, "tool_result_budget_exhausted", "tool result character budget exhausted", budgetState)
+                  : toolCallsUsed >= budget.maxToolCalls
+                  ? rejectedToolOutcome(toolCall, "tool_call_budget_exhausted", "tool call budget exhausted", budgetState)
+                  : investigationRounds > budget.maxInvestigationRounds
+                  ? rejectedToolOutcome(toolCall, "investigation_round_budget_exhausted", "investigation round budget exhausted", budgetState)
                   : tool
                     ? await executeToolCall(adapter, repositoryTools, tool, toolCall, taskTimeout.signal, taskTimeout.timedOut)
-                    : rejectedToolOutcome(toolCall, `unknown tool ${toolCall.name}`);
+                    : rejectedToolOutcome(toolCall, "unknown_tool", `unknown tool ${toolCall.name}`, budgetState);
+
+              outcome.budgetState ??= budgetState;
 
               toolCallsUsed += 1;
               let resultText = fitToolResultText(outcome.result.text, remainingResultChars);
@@ -843,17 +862,66 @@ async function executeToolCall(
   }
 }
 
-function rejectedToolOutcome(toolCall: PiToolCall, reason: string): ToolRunOutcome {
+function rejectedToolOutcome(
+  toolCall: PiToolCall,
+  reasonCode: ToolRejectionReason,
+  message: string,
+  budgetState: ToolBudgetState
+): ToolRunOutcome {
   return {
     result: {
-      text: `tool rejected: ${reason}`,
+      text: `tool rejected: ${message}`,
       isError: true,
-      meta: { backend: "text", precision: "text", degraded: true, degradationReason: "budget_or_tool_rejected" }
+      meta: { backend: "text", precision: "text", degraded: true, degradationReason: reasonCode }
     },
     status: "rejected",
+    rejectionReason: reasonCode,
+    budgetState,
     args: toolCall.arguments,
     durationMs: 0
   };
+}
+
+function toolBudgetState(input: {
+  toolCallsUsed: number;
+  investigationRounds: number;
+  resultCharsUsed: number;
+  budget: {
+    maxToolCalls: number;
+    maxInvestigationRounds: number;
+    maxResultChars: number;
+    maxSingleToolResultChars?: number;
+    reservedSourceResultChars?: number;
+  };
+  toolName: string;
+}): ToolBudgetState {
+  const remainingResultChars = Math.max(0, input.budget.maxResultChars - input.resultCharsUsed);
+  const reservedSourceResultChars = input.budget.reservedSourceResultChars ?? 0;
+  const sourceTool = isSourceReadTool(input.toolName);
+  const budgetCeilingForTool = sourceTool
+    ? input.budget.maxResultChars
+    : Math.max(0, input.budget.maxResultChars - reservedSourceResultChars);
+  const remainingForTool = Math.max(0, Math.min(remainingResultChars, budgetCeilingForTool - input.resultCharsUsed));
+  const toolResultCharLimit =
+    input.budget.maxSingleToolResultChars === undefined
+      ? remainingForTool
+      : Math.min(remainingForTool, input.budget.maxSingleToolResultChars);
+  return {
+    toolCallsUsed: input.toolCallsUsed,
+    maxToolCalls: input.budget.maxToolCalls,
+    investigationRoundsUsed: input.investigationRounds,
+    maxInvestigationRounds: input.budget.maxInvestigationRounds,
+    resultCharsUsed: input.resultCharsUsed,
+    maxResultChars: input.budget.maxResultChars,
+    remainingResultChars,
+    ...(input.budget.maxSingleToolResultChars !== undefined ? { maxSingleToolResultChars: input.budget.maxSingleToolResultChars } : {}),
+    ...(input.budget.reservedSourceResultChars !== undefined ? { reservedSourceResultChars: input.budget.reservedSourceResultChars } : {}),
+    toolResultCharLimit
+  };
+}
+
+function isSourceReadTool(toolName: string): boolean {
+  return toolName === "read_symbol" || toolName === "read_range" || toolName === "find_definition";
 }
 
 function fitToolResultText(text: string, remainingChars: number): string {
@@ -893,12 +961,17 @@ function recordToolCall(
     degradationReason: meta.degradationReason,
     truncated: meta.truncated,
     omittedCount: meta.omittedCount,
+    lookupStatus: meta.lookupStatus,
+    deliveryStatus: meta.deliveryStatus,
+    recovery: meta.recovery,
+    budgetState: outcome.budgetState,
     resultChars: outcome.result.text.length,
     durationMs: outcome.durationMs,
     status: outcome.status,
     errorCode: outcome.errorCode
   }) as Parameters<CreateRunnerOptions["telemetry"]["recordToolCall"]>[0];
   opts.telemetry.recordToolCall(record);
+  writeToolCallDebug(opts, request, modelCallId, toolCall, outcome, record);
 
   if (outcome.status === "rejected" && outcome.errorCode === "path_outside_repo") {
     opts.telemetry.event({
@@ -915,6 +988,60 @@ function recordToolCall(
       }
     });
   }
+  if (outcome.status === "rejected" && outcome.rejectionReason !== undefined) {
+    opts.telemetry.event(definedRecord({
+      stage: request.stage,
+      level: "warn",
+      message: "tool_call_rejected",
+      workerId: request.telemetryContext?.workerId,
+      packetId: request.telemetryContext?.packetId,
+      data: definedRecord({
+        tool: toolCall.name,
+        modelCallId,
+        reason: outcome.rejectionReason,
+        candidateId: request.telemetryContext?.candidateId,
+        budgetState: outcome.budgetState
+      })
+    }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+  }
+}
+
+function writeToolCallDebug(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  modelCallId: string,
+  toolCall: PiToolCall,
+  outcome: ToolRunOutcome,
+  record: Omit<ToolCallRecord, "runId" | "toolCallId" | "timestamp">
+): void {
+  const id = `${modelCallId}.${toolCall.id || safeFenceLabelPart(toolCall.name)}`;
+  writeDebugRecord(opts, request, "tool-calls", id, {
+    schemaVersion: DEBUG_ARTIFACT_SCHEMA_VERSION,
+    artifactKind: "tool_call",
+    stage: request.stage,
+    role: roleForStage(request.stage),
+    modelCallId,
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    candidateId: request.telemetryContext?.candidateId,
+    toolCall: {
+      id: toolCall.id,
+      name: toolCall.name,
+      arguments: stripCredentials(toolCall.arguments)
+    },
+    outcome: {
+      status: outcome.status,
+      errorCode: outcome.errorCode,
+      rejectionReason: outcome.rejectionReason,
+      degradationReason: record.degradationReason,
+      lookupStatus: record.lookupStatus,
+      deliveryStatus: record.deliveryStatus,
+      recovery: record.recovery,
+      resultChars: record.resultChars,
+      durationMs: record.durationMs,
+      budgetState: outcome.budgetState
+    }
+  });
 }
 
 function recordSubmitWithExtraTools(
@@ -1816,6 +1943,7 @@ function markTruncated(meta: ToolResultMeta | undefined): ToolResultMeta {
     ...(meta ?? defaultToolMeta()),
     degraded: true,
     truncated: true,
+    deliveryStatus: "truncated",
     degradationReason: meta?.degradationReason ?? "tool_result_budget"
   };
 }

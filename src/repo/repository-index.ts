@@ -190,7 +190,11 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         const path = containPath(this.opts.resolver.repoRoot, filePath, this.guardTelemetry("read_range"));
         const content = await this.limit(() => this.opts.resolver.readFile(path, source));
         if (!content) {
-          const meta = degradedMeta("text", "exact", "file missing at selected revision");
+          const meta: ToolResultMeta = {
+            ...degradedMeta("text", "exact", "file missing at selected revision"),
+            lookupStatus: "file_missing",
+            deliveryStatus: "empty"
+          };
           return { value: { text: "", meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: 0 };
         }
         const lines = content.content.length === 0 ? [] : content.content.split(/\n/u);
@@ -201,7 +205,9 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
             degraded: true,
             degradationReason: "requested range starts after end of file",
             truncated: true,
-            omittedCount: 0
+            omittedCount: 0,
+            lookupStatus: "found",
+            deliveryStatus: "empty"
           };
           return { value: { text: "", meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: 0 };
         }
@@ -217,6 +223,8 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           backend: "text",
           precision: "exact",
           degraded: false,
+          lookupStatus: "found",
+          deliveryStatus: omittedLines > 0 || text.truncated ? "truncated" : "full",
           ...(omittedLines > 0 || text.truncated
             ? { truncated: true, ...(omittedLines > 0 ? { omittedCount: omittedLines } : {}) }
             : {})
@@ -292,6 +300,8 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     if (!content) {
       const meta = {
         ...degradedMeta("text", "text", "file missing at selected revision"),
+        lookupStatus: "file_missing" as const,
+        deliveryStatus: "empty" as const,
         requestedSource,
         sourceUsed: source.kind
       };
@@ -312,19 +322,22 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ? [adapter.getEnclosingSymbol(parsed, selector.line)].filter((symbol): symbol is SymbolInfo => symbol !== undefined)
           : symbols.filter((symbol) => symbolMatches(symbol, selector.symbolName ?? ""));
       const symbol = matches[0];
+      const symbolSnippet = symbol ? snippet(content.content, symbol.lineRange, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS) : undefined;
       const meta: ToolResultMeta = {
         backend: "tree-sitter",
         precision: "syntactic",
         degraded: symbol === undefined,
+        lookupStatus: symbol === undefined ? "not_found" : matches.length > 1 ? "ambiguous" : "found",
+        deliveryStatus: symbol === undefined ? "empty" : symbolSnippet?.truncated ? "truncated" : "full",
         requestedSource,
         sourceUsed: source.kind,
         ...(symbol === undefined ? { degradationReason: "symbol not found" } : {}),
         ...(matches.length > 1 ? { truncated: true, omittedCount: matches.length - 1 } : {})
       };
-      const symbolSnippet = symbol ? snippet(content.content, symbol.lineRange, SYMBOL_MAX_LINES, SYMBOL_MAX_CHARS) : undefined;
-      if (symbolSnippet?.truncated) {
+      if (symbol !== undefined && symbolSnippet?.truncated) {
         meta.truncated = true;
         meta.omittedCount = (meta.omittedCount ?? 0) + symbolSnippet.omittedCount;
+        meta.recovery = recoveryReadRange(path, symbol.lineRange, source, "read exact symbol range because read_symbol was truncated");
       }
       const text = symbolSnippet?.text;
       return {
@@ -338,6 +351,8 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     const fallback = fallbackSymbolText(content.content, selector);
     const meta: ToolResultMeta = {
       ...degradedMeta("text", "text", "tree-sitter unavailable; returned text window"),
+      lookupStatus: fallback === undefined ? "not_found" : "found",
+      deliveryStatus: fallback === undefined ? "empty" : fallback.truncated ? "truncated" : "full",
       requestedSource,
       sourceUsed: source.kind
     };
@@ -464,6 +479,13 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       const { content, adapter, parsed } = candidateData;
       if (parsed.tree !== undefined) {
         const matchingSymbols = adapter.listSymbols(parsed).filter((symbol) => symbolMatches(symbol, symbolName));
+        if (matchingSymbols.length === 0 && definitions.length < FIND_DEFINITION_MAX) {
+          const fallbackDefinition = fallbackDefinitionFromText(content.content, candidate, symbolName);
+          if (fallbackDefinition !== undefined) {
+            fallbackCount += 1;
+            definitions.push(fallbackDefinition);
+          }
+        }
         for (let index = 0; index < matchingSymbols.length; index += 1) {
           if (definitions.length >= FIND_DEFINITION_MAX) {
             omittedByDefinitionCap += matchingSymbols.length - index;
@@ -508,13 +530,34 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       definitions,
       omittedByCap + omittedByDefinitionCap + omittedByTruncation + omittedCandidatePaths + omittedDiscoveryMatches
     );
+    const definitionLookupStatus =
+      cappedDefinitions.definitions.length === 0
+        ? cappedDefinitions.omittedCount > 0 ? "ambiguous" : "not_found"
+        : cappedDefinitions.definitions.length > 1 ? "ambiguous" : "found";
+    const definitionDeliveryStatus =
+      cappedDefinitions.definitions.length === 0
+        ? "empty"
+        : cappedDefinitions.omittedCount > 0 ? "truncated" : "full";
+    const singleDefinition = cappedDefinitions.definitions.length === 1 ? cappedDefinitions.definitions[0] : undefined;
+    const definitionRecovery =
+      singleDefinition !== undefined && definitionDeliveryStatus === "truncated"
+        ? recoveryReadRange(
+            singleDefinition.symbol.path,
+            singleDefinition.symbol.lineRange,
+            source,
+            "read exact definition range because find_definition was truncated"
+          )
+        : undefined;
     const meta: ToolResultMeta = {
       backend: fallbackCount === cappedDefinitions.definitions.length ? "text" : "tree-sitter",
       precision: fallbackCount === cappedDefinitions.definitions.length ? "text" : "syntactic",
       degraded: fallbackCount > 0,
+      lookupStatus: definitionLookupStatus,
+      deliveryStatus: definitionDeliveryStatus,
       requestedSource,
       sourceUsed: source.kind,
       ...(fallbackCount > 0 ? { degradationReason: `${fallbackCount} definition candidate(s) used text fallback` } : {}),
+      ...(definitionRecovery !== undefined ? { recovery: definitionRecovery } : {}),
       ...(cappedDefinitions.omittedCount > 0 ? { truncated: true, omittedCount: cappedDefinitions.omittedCount } : {})
     };
     return {
@@ -659,6 +702,9 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ...(measurement.meta.degradationReason !== undefined ? { degradationReason: measurement.meta.degradationReason } : {}),
           ...(measurement.meta.truncated !== undefined ? { truncated: measurement.meta.truncated } : {}),
           ...(measurement.meta.omittedCount !== undefined ? { omittedCount: measurement.meta.omittedCount } : {}),
+          ...(measurement.meta.lookupStatus !== undefined ? { lookupStatus: measurement.meta.lookupStatus } : {}),
+          ...(measurement.meta.deliveryStatus !== undefined ? { deliveryStatus: measurement.meta.deliveryStatus } : {}),
+          ...(measurement.meta.recovery !== undefined ? { recovery: measurement.meta.recovery } : {}),
           ...(measurement.resultCount !== undefined ? { resultCount: measurement.resultCount } : {}),
           resultChars: measurement.resultChars,
           durationMs: Date.now() - started,
@@ -833,6 +879,54 @@ function fallbackSymbolText(
   return undefined;
 }
 
+function fallbackDefinitionFromText(content: string, path: string, symbolName: string): { symbol: SymbolInfo; text?: string } | undefined {
+  const bareName = bareIdentifierForDiscovery(symbolName);
+  if (!/^[A-Za-z_$][\w$]*$/u.test(bareName)) {
+    return undefined;
+  }
+  const escaped = escapeRegExp(bareName);
+  const patterns = [
+    new RegExp(`^\\s*func\\s+(?:\\([^)]*\\)\\s*)?${escaped}\\s*\\(`, "u"),
+    new RegExp(`^\\s*(?:export\\s+)?(?:async\\s+)?function\\s+${escaped}\\b`, "u"),
+    new RegExp(`^\\s*(?:export\\s+)?(?:const|let|var)\\s+${escaped}\\b`, "u"),
+    new RegExp(`^\\s*(?:export\\s+)?(?:class|interface|type|enum)\\s+${escaped}\\b`, "u"),
+    new RegExp(`^\\s*(?:pub\\s+)?(?:async\\s+)?fn\\s+${escaped}\\b`, "u"),
+    new RegExp(`^\\s*(?:pub\\s+)?(?:struct|enum|trait|type)\\s+${escaped}\\b`, "u"),
+    new RegExp(`^\\s*(?:function|contract|interface|library|struct|enum|modifier|event|error)\\s+${escaped}\\b`, "u")
+  ];
+  const lines = content.split(/\n/u);
+  const index = lines.findIndex((line) => patterns.some((pattern) => pattern.test(line)));
+  if (index < 0) {
+    return undefined;
+  }
+  const line = index + 1;
+  const endLine = Math.min(lines.length, line + 39);
+  const declaration = lines[index]?.trim() ?? bareName;
+  const text = snippet(content, [line, endLine], 80, SYMBOL_MAX_CHARS);
+  return {
+    symbol: {
+      path,
+      name: bareName,
+      kind: fallbackSymbolKind(declaration),
+      nativeKind: "text declaration",
+      lineRange: [line, endLine],
+      exported: /^[A-Z]/u.test(bareName) || /\bexport\b|\bpub\b/u.test(declaration),
+      signature: declaration
+    },
+    text: text.text
+  };
+}
+
+function fallbackSymbolKind(declaration: string): SymbolInfo["kind"] {
+  if (/\b(?:class|interface|type|enum|struct|trait|contract|library)\b/u.test(declaration)) {
+    return "type";
+  }
+  if (/\b(?:const|let|var)\b/u.test(declaration)) {
+    return "value";
+  }
+  return "function";
+}
+
 function symbolMatches(symbol: SymbolInfo, query: string): boolean {
   return symbol.name === query || `${symbol.ownerType ?? ""}.${symbol.name}`.replace(/^\./u, "") === normalizeQualifiedQuery(query);
 }
@@ -893,6 +987,17 @@ function capDefinitionResultsTotal(
     omittedCount += 1;
   }
   return { definitions: capped, omittedCount };
+}
+
+function recoveryReadRange(path: string, lineRange: [number, number], source: SourceSelector, reason: string): NonNullable<ToolResultMeta["recovery"]> {
+  return {
+    tool: "read_range",
+    path,
+    startLine: lineRange[0],
+    endLine: lineRange[1],
+    source: source.kind,
+    reason
+  };
 }
 
 function escapeRegExp(value: string): string {

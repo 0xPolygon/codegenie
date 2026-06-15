@@ -83,8 +83,15 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools): ToolDefi
           selector.line = input.line;
         }
         const result = await runWithoutFacadeRecording(tools, () => tools.readSymbol(input.path, selector, input.source));
+        const payload = {
+          lookupStatus: result.meta.lookupStatus,
+          deliveryStatus: result.meta.deliveryStatus,
+          recovery: result.meta.recovery,
+          symbol: result.symbol,
+          text: result.text ?? ""
+        };
         return {
-          text: withMeta(JSON.stringify({ symbol: result.symbol, text: result.text ?? "" }, null, 2), result.meta),
+          text: withMeta(JSON.stringify(payload, null, 2), result.meta),
           meta: result.meta
         };
       })
@@ -274,6 +281,17 @@ function withMeta(text: string, meta: ToolResultMeta): string {
   }
   if (meta.baseOnly) {
     notes.push("symbol exists only in base");
+  }
+  if (meta.lookupStatus !== undefined) {
+    notes.push(`lookup: ${meta.lookupStatus}`);
+  }
+  if (meta.deliveryStatus !== undefined) {
+    notes.push(`delivery: ${meta.deliveryStatus}`);
+  }
+  if (meta.recovery !== undefined) {
+    notes.push(
+      `recovery: call ${meta.recovery.tool} path=${meta.recovery.path} startLine=${String(meta.recovery.startLine)} endLine=${String(meta.recovery.endLine)} source=${meta.recovery.source}`
+    );
   }
   if (meta.degraded) {
     notes.push(`degraded${meta.degradationReason ? `: ${meta.degradationReason}` : ""}`);
