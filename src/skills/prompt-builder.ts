@@ -109,6 +109,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("packet review"),
         injectionInstruction(),
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
+        "Validate raw external/provider/API/config/database values before lossy conversion; validation after overflow, truncation, rounding, precision loss, or coercion may be too late. Treat packet staticSignals as hints to investigate, not automatic findings.",
         packet.reviewProfile === "simple"
           ? "This packet is classified as simple. Review the provided packet only and return no findings unless the defect is clear from the packet text."
           : packet.reviewProfile === "investigate"
@@ -161,6 +162,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
       return buildPrompt(10, [
         reviewerFrame("composition"),
         "Compose the final review from verified findings only. Do not invent new findings. Keep wording direct, specific, and actionable.",
+        "For each finalBody, do not include a Markdown heading, repeated title, severity/confidence/category/file metadata, or generic report labels. Start with the concrete issue, impact, evidence, or fix.",
         ...blocks,
         "Finish by calling submit_composition with schema-valid arguments. Do not answer in plain text."
       ], undefined, blocks.length);

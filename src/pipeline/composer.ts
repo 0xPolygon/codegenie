@@ -292,12 +292,13 @@ function toFinalFinding(
 ): FinalFinding {
   const { anchor: _unvalidatedAnchor, ...findingWithoutAnchor } = finding;
   const anchor = validateAnchorForDiff(finding.anchor, diff);
+  const normalizedFinalBody = normalizeFinalBodyForRendering(finalBody, finding) || templateBody(finding);
   return {
     ...findingWithoutAnchor,
     ...(anchor !== undefined ? { anchor } : {}),
     changedLine: anchor !== undefined,
     fingerprint,
-    finalBody,
+    finalBody: normalizedFinalBody,
     publication: publication === "suppressed" ? "suppressed" : anchor ? publication : "summary-only",
     mergedCandidateIds: [...new Set(mergedCandidateIds)]
   };
@@ -846,6 +847,82 @@ function renderReviewBody(
 
 function indentBlock(text: string): string {
   return text.split(/\r?\n/u).map((line) => `  ${line}`).join("\n");
+}
+
+function normalizeFinalBodyForRendering(finalBody: string, finding: CandidateFinding): string {
+  const lines = finalBody.replace(/\r\n/g, "\n").split("\n");
+  let index = 0;
+  let stripped = false;
+
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      index += 1;
+      stripped = true;
+      continue;
+    }
+    if (isDuplicateTitleLine(trimmed, finding.title) || isRendererOwnedMetadataLine(trimmed)) {
+      index += 1;
+      stripped = true;
+      continue;
+    }
+    break;
+  }
+
+  const cleaned = lines.slice(index).join("\n").trim();
+  return stripped ? cleaned : finalBody.trim();
+}
+
+function isDuplicateTitleLine(line: string, title: string): boolean {
+  const withoutHeading = line.replace(/^#{1,6}\s+/u, "");
+  const withoutTitleLabel = withoutHeading.replace(/^title\s*:\s*/iu, "");
+  const withoutSeverityPrefix = withoutTitleLabel.replace(/^(?:critical|high|medium|low)\s*:\s*/iu, "");
+  return normalizeBodyPrefix(withoutSeverityPrefix) === normalizeBodyPrefix(title);
+}
+
+function isRendererOwnedMetadataLine(line: string): boolean {
+  const normalized = line
+    .replace(/^[-*]\s+/u, "")
+    .replace(/\*\*/gu, "")
+    .replace(/`/gu, "")
+    .trim();
+  if (/^(?:severity|confidence|category)\s*:/iu.test(normalized)) {
+    return true;
+  }
+  const parts = normalized.split(/\s*(?:[|·•]|,\s*)\s*/u).filter(Boolean);
+  if (parts.length > 1) {
+    return parts.every(isRendererOwnedMetadataPart);
+  }
+  return isRendererOwnedMetadataPart(normalized);
+}
+
+function isRendererOwnedMetadataPart(part: string): boolean {
+  if (/^(?:severity|confidence|category)\s*:/iu.test(part)) {
+    return true;
+  }
+  const file = /^file\s*:\s*(.+)$/iu.exec(part);
+  return file !== null && looksLikeFileLocation(file[1] ?? "");
+}
+
+function looksLikeFileLocation(value: string): boolean {
+  const trimmed = value.trim();
+  if (/\s/u.test(trimmed)) {
+    return false;
+  }
+  return /^[\w@./\\ -]+(?::\d+)?(?:-\d+)?$/u.test(trimmed) && (
+    /[./\\]/u.test(trimmed) ||
+    /:\d+(?:-\d+)?$/u.test(trimmed)
+  );
+}
+
+function normalizeBodyPrefix(text: string): string {
+  return text
+    .replace(/[*_`~]/gu, "")
+    .replace(/[.:;,\s]+$/u, "")
+    .trim()
+    .replace(/\s+/gu, " ")
+    .toLowerCase();
 }
 
 function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding]): string {

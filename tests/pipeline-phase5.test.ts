@@ -31,6 +31,7 @@ import type {
   RepositoryToolsHost,
   ReviewPacket,
   ReviewPlan,
+  StaticSignal,
   TelemetryEvent,
   UnifiedDiff
 } from "../src/types.js";
@@ -2647,6 +2648,39 @@ describe("phase 5 pipeline regressions", () => {
     ]);
   });
 
+  it("passes hunk static signals into review packets and packet prompts", async () => {
+    const signal: StaticSignal = {
+      ruleId: "correctness/lossy-conversion-before-validation",
+      path: "app.ts",
+      line: 1,
+      side: "RIGHT",
+      category: "correctness",
+      lensHint: "core/code-review",
+      confidence: "medium",
+      explanation: "raw value is converted before validation",
+      snippet: "+ value = uint8(raw)\n- if raw > 255 {"
+    };
+    const packets = await buildReviewPackets(
+      fakePlan(),
+      [fakeDiffFile("app.ts", "value = uint8(raw)")],
+      [fakeFacts("app.ts", "per-hunk")],
+      {
+        ...fakeRepositoryIndex(),
+        staticSignals: [signal]
+      },
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(packets[0]?.hunks[0]?.staticSignals).toEqual([
+      expect.objectContaining({ ruleId: "correctness/lossy-conversion-before-validation" })
+    ]);
+
+    const prompt = createPromptBuilder(fakeLensRegistry()).buildPacketReviewPrompt({ packet: packets[0] as ReviewPacket, skills: [] });
+    expect(prompt.prompt).toContain("correctness/lossy-conversion-before-validation");
+    expect(prompt.prompt).toContain("Validate raw external/provider/API/config/database values before lossy conversion");
+  });
+
   it("records policy-file changes from old paths on renames", async () => {
     const file: DiffFile = {
       path: "src/review-note.md",
@@ -4774,6 +4808,157 @@ describe("phase 5 pipeline regressions", () => {
     expect(markdown.match(/A canceled request can keep retrying after the worker is stopped\./gu)).toHaveLength(1);
     expect(markdown).toContain("Suggested fix: Thread the original context into the retry loop.");
     expect(markdown).toContain("Suggested test: Cancel the context before the second retry and assert the worker exits.");
+  });
+
+  it("cleans duplicate composer titles and metadata before rendering", async () => {
+    const finding = {
+      ...fakeFinding(),
+      title: "Canceled context keeps retrying",
+      severity: "high" as const,
+      confidence: "high" as const,
+      failureMode: "A canceled request can keep retrying after shutdown.",
+      whyThisMatters: "Workers can leak during deploys."
+    };
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "one issue",
+              composedFindings: [{
+                findingIds: ["finding-1"],
+                finalBody: [
+                  "### HIGH: Canceled context keeps retrying",
+                  "Severity: high · Confidence: high · Category: correctness",
+                  "File: app.ts:1",
+                  "",
+                  "The new retry path swaps the request context for a background context, so cancellation no longer stops the worker."
+                ].join("\n"),
+                publication: "inline"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+    const markdown = renderMarkdownReview(result);
+
+    expect(result.findings[0]?.finalBody).toBe("The new retry path swaps the request context for a background context, so cancellation no longer stops the worker.");
+    expect(markdown.match(/Canceled context keeps retrying/gu)).toHaveLength(1);
+    expect(markdown.match(/Confidence: high/gu)).toHaveLength(1);
+    expect(markdown).not.toContain("Category: correctness");
+    expect(markdown).not.toContain("File: app.ts:1\n\nThe new retry path");
+  });
+
+  it("preserves useful opening body text that only mentions title terms", async () => {
+    const result = await dedupeRankAndComposeReview(
+      { verified: [fakeFinding()], verdicts: [] },
+      fakePlan(),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "one issue",
+              composedFindings: [{
+                findingIds: ["finding-1"],
+                finalBody: "The finding is that the changed branch skips cleanup before returning.\nThat can leave stale state for the next request.",
+                publication: "inline"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.findings[0]?.finalBody).toBe("The finding is that the changed branch skips cleanup before returning.\nThat can leave stale state for the next request.");
+  });
+
+  it("does not strip useful opening sentences that start with File", async () => {
+    const result = await dedupeRankAndComposeReview(
+      { verified: [fakeFinding()], verdicts: [] },
+      fakePlan(),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "one issue",
+              composedFindings: [{
+                findingIds: ["finding-1"],
+                finalBody: "File: descriptors remain open when the new early return runs.\nClose them before returning.",
+                publication: "inline"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.findings[0]?.finalBody).toBe("File: descriptors remain open when the new early return runs.\nClose them before returning.");
   });
 
   it("groups unreviewed partial coverage by file and suppresses default planner reasons", () => {

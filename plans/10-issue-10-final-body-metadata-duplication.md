@@ -1,6 +1,6 @@
 # Issue 10: Final Body Metadata Duplication
 
-Status: PENDING
+Status: COMPLETE
 
 ## Problem
 

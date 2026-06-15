@@ -392,6 +392,8 @@ export type PacketHunk = {
   lines: PacketLine[];
   changedNewLineNumbers: number[];
   changedOldLineNumbers: number[];
+  staticSignals?: StaticSignal[];
+  omittedSignalCount?: number;
   truncated?: boolean;
   omittedLineCount?: number;
   plannerFallbackReason?: string;

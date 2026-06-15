@@ -4,25 +4,25 @@ This directory tracks implementation plans for confirmed improvements. Status va
 
 | Plan | Status | Topic |
 | --- | --- | --- |
-| 01 | COMPLETE | Debug artifacts |
-| 02 | COMPLETE | Provider failure handling |
-| 03 | COMPLETE | Tool result persistence |
-| 04 | COMPLETE | Packet coverage accounting |
-| 05 | COMPLETE | Finalization behavior |
-| 06 | COMPLETE | Stage telemetry |
-| 07 | COMPLETE | Packet review completion |
-| 08 | COMPLETE | Large review stability |
-| 09 | PENDING | Eval expectation matching |
-| 10 | PENDING | Stage 5 planner cost and schema handling |
-| 11 | PENDING | Stage 6 inverted ranges |
-| 12 | PENDING | Review packet context quality |
-| 13 | PENDING | Verification efficiency |
-| 14 | PENDING | Final review human-attention noise |
-| 15 | PENDING | Telemetry cache terminology |
-| 16 | COMPLETE | Eval matching for merged findings |
-| 17 | COMPLETE | Planner submit-plan schema discipline |
-| 18 | COMPLETE | Stage 6 read range guard |
-| 19 | PENDING | Follow-up hint deduplication |
-| 20 | PENDING | Pre-verification candidate clustering |
-| 21 | PENDING | Targeted cross-system review |
-| 22 | PENDING | Cache telemetry clarity |
+| 01 | COMPLETE | Issue 8: Debug Artifacts |
+| 02 | COMPLETE | Issue 7: Token Telemetry |
+| 03 | COMPLETE | Issue 2: Packet Context Degradation |
+| 04 | COMPLETE | Issue 3: Planner Coverage Semantics |
+| 05 | COMPLETE | Issue 4: Stage 7 Cost |
+| 06 | COMPLETE | Issue 1: Budget And Partial Runs |
+| 07 | COMPLETE | Issue 5: Verification Degradation |
+| 08 | COMPLETE | Issue 6: Final Composition |
+| 09 | PENDING | Issue 9: Human Attention Noise |
+| 10 | COMPLETE | Issue 10: Final Body Metadata Duplication |
+| 11 | COMPLETE | Issue 11: Stage 6 Inverted Range Reads |
+| 12 | COMPLETE | Issue 12: Lossy Conversion Recall |
+| 13 | PENDING | Issue 13: Planner and Anchor Hygiene |
+| 14 | PENDING | Issue 14: Deleted Symbol Lookup and Targeted Tool Budget |
+| 15 | PENDING | Issue 15: Telemetry Cache Terminology |
+| 16 | COMPLETE | Issue 16: Eval Matching for Merged Findings |
+| 17 | COMPLETE | Issue 17: Planner Submit Plan Schema Discipline |
+| 18 | COMPLETE | Issue 18: Stage 6 Read Range Guard |
+| 19 | COMPLETE | Issue 19: Follow-Up Hint Deduplication |
+| 20 | COMPLETE | Issue 20: Pre-Verification Candidate Clustering |
+| 21 | COMPLETE | Issue 21: Targeted Cross-System Review |
+| 22 | COMPLETE | Issue 22: Cache Telemetry Clarity |

@@ -5,6 +5,9 @@ import type { LanguageAdapterRegistry } from "./language-adapter.js";
 
 const MAX_SIGNALS_PER_FILE = 20;
 const MAX_SIGNALS_PER_RUN = 200;
+const LOSSY_CONVERSION_RULE_ID = "correctness/lossy-conversion-before-validation";
+const GO_NARROWING_TYPES = new Set(["uint8", "uint16", "int8", "int16", "int32"]);
+const VALIDATION_TERMS = ["validate", "check", "range", "bound", "min", "max", "overflow"];
 
 export async function extractStaticSignals(
   resolver: SourceResolver,
@@ -36,6 +39,7 @@ export async function extractStaticSignals(
     }
 
     perFile.push(...(await exportedApiSignals(resolver, registry, file, factsByHunk)));
+    perFile.push(...lossyConversionSignals(file));
     const uniquePerFile = dedupeSignals(perFile);
     const perFileOmitted = Math.max(0, uniquePerFile.length - MAX_SIGNALS_PER_FILE);
     if (perFileOmitted > 0) {
@@ -91,6 +95,161 @@ async function exportedApiSignals(
     }
   }
   return output;
+}
+
+function lossyConversionSignals(file: DiffFile): StaticSignal[] {
+  if (file.language !== "go") {
+    return [];
+  }
+
+  const output: StaticSignal[] = [];
+  for (const hunk of file.hunks) {
+    const validationLines = hunk.lines
+      .filter((line) => line.kind === "delete" && isValidationLike(line.content))
+      .map((line) => line.content.trim());
+    if (validationLines.length === 0) {
+      continue;
+    }
+
+    for (const line of hunk.lines) {
+      if (line.kind !== "add" || line.newLineNumber === undefined || isCommentOnly(line.content)) {
+        continue;
+      }
+      const conversion = findLossyGoConversion(line.content);
+      if (!conversion || isObviousLiteralExpression(conversion.argument)) {
+        continue;
+      }
+      const evidence = bestValidationEvidence(validationLines, identifierHints(conversion.argument));
+      if (!evidence) {
+        continue;
+      }
+      output.push({
+        ruleId: LOSSY_CONVERSION_RULE_ID,
+        path: file.path,
+        line: line.newLineNumber,
+        side: "RIGHT",
+        category: "correctness",
+        lensHint: "core/code-review",
+        confidence: "medium",
+        explanation: `A non-literal value is converted to ${conversion.targetType} after nearby raw-value validation changed; validation after the conversion may be too late.`,
+        snippet: [`+ ${line.content.trim()}`, `- ${evidence}`].join("\n")
+      });
+    }
+  }
+  return output;
+}
+
+function findLossyGoConversion(content: string): { targetType: string; argument: string } | undefined {
+  const pattern = /\b(uint8|uint16|int8|int16|int32)\s*\(/gu;
+  for (const match of content.matchAll(pattern)) {
+    const targetType = match[1];
+    if (!targetType || !GO_NARROWING_TYPES.has(targetType)) {
+      continue;
+    }
+    const argumentStart = (match.index ?? 0) + match[0].length;
+    const argumentEnd = matchingParenIndex(content, argumentStart - 1);
+    if (argumentEnd === undefined) {
+      continue;
+    }
+    const argument = content.slice(argumentStart, argumentEnd).trim();
+    if (argument.length > 0) {
+      return { targetType, argument };
+    }
+  }
+  return undefined;
+}
+
+function matchingParenIndex(content: string, openIndex: number): number | undefined {
+  let depth = 0;
+  for (let index = openIndex; index < content.length; index += 1) {
+    const char = content[index];
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return undefined;
+}
+
+function isCommentOnly(content: string): boolean {
+  const trimmed = content.trim();
+  return trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*");
+}
+
+function isObviousLiteralExpression(argument: string): boolean {
+  const normalized = argument.replace(/\s+/gu, "");
+  if (normalized.length === 0) {
+    return true;
+  }
+  if (isNumericLiteral(normalized)) {
+    return true;
+  }
+  if (/^(?:'.*'|".*"|`.*`)$/u.test(normalized)) {
+    return true;
+  }
+  const tokens = normalized.split(/[+\-*/%()]+/u).filter(Boolean);
+  return tokens.length > 0 && tokens.every(isNumericLiteral);
+}
+
+function isNumericLiteral(value: string): boolean {
+  return (
+    /^[-+]?(?:\d[\d_]*|0[xX][0-9a-fA-F_]+|0[bB][01_]+|0[oO]?[0-7_]+)$/u.test(value) ||
+    /^[-+]?(?:\d[\d_]*\.\d[\d_]*|\.\d[\d_]+)$/u.test(value)
+  );
+}
+
+function isValidationLike(content: string): boolean {
+  const lower = content.toLowerCase();
+  return VALIDATION_TERMS.some((term) => lower.includes(term)) || /\bif\b.*(?:<=|>=|<|>)/u.test(content);
+}
+
+function identifierHints(argument: string): Set<string> {
+  const hints = new Set<string>();
+  for (const match of argument.matchAll(/[A-Za-z_]\w*/gu)) {
+    const rawIdentifier = match[0];
+    const identifier = rawIdentifier.toLowerCase();
+    hints.add(identifier);
+    for (const part of identifier.split(/_/u)) {
+      if (part.length >= 3) {
+        hints.add(part);
+      }
+    }
+    for (const part of splitCamel(rawIdentifier)) {
+      if (part.length >= 3) {
+        hints.add(part);
+      }
+    }
+  }
+  return hints;
+}
+
+function splitCamel(identifier: string): string[] {
+  return identifier
+    .replace(/([a-z0-9])([A-Z])/gu, "$1 $2")
+    .toLowerCase()
+    .split(/\s+/u)
+    .filter(Boolean);
+}
+
+function bestValidationEvidence(validationLines: string[], hints: Set<string>): string | undefined {
+  if (hints.size === 0) {
+    return undefined;
+  }
+  return validationLines.find((line) => {
+    const lower = line.toLowerCase();
+    for (const hint of hints) {
+      if (lower.includes(hint)) {
+        return true;
+      }
+    }
+    return false;
+  });
 }
 
 async function exportedSignatureSignalsForHunk(

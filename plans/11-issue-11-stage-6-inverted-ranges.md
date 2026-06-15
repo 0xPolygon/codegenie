@@ -1,6 +1,10 @@
 # Issue 11: Stage 6 Inverted Range Reads
 
-Status: PENDING
+Status: COMPLETE
+
+Completed by: Issue 18 plus follow-up audit
+
+Audit note: Issue 18 implemented the Stage 6 range guard for derived context reads, including skipped/clamped debug telemetry. Current Stage 6 code also uses base-side reads for deleted whole-file content and old-side symbol facts, head-side reads for new-side facts, and the same range guard for planner packet-context hints. Mixed hunks keep deleted lines in the packet diff and use valid head-side symbol context when additions exist; deleted/exported base-side signals are handled by repository static-signal extraction. No remaining invalid-range implementation work is tracked here.
 
 ## Problem
 

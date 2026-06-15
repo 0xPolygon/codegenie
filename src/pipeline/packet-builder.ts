@@ -64,6 +64,7 @@ const SYMBOL_EXCERPT_WINDOW = 8;
 const MAX_SYMBOL_EXCERPT_CHARS = 2_500;
 const MAX_HINT_CONTEXT_CHARS = 2_000;
 const MAX_HINT_CONTEXT_LINES = 80;
+const MAX_STATIC_SIGNALS_PER_PACKET_HUNK = 5;
 const NEARBY_GAP_LINES = 30;
 
 export async function buildReviewPackets(
@@ -185,7 +186,9 @@ async function buildPacket(
   const symbolFacts = planned.flatMap((entry) => entry.symbolFacts);
   const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry);
   const hintContext = await resolvePacketContextHints(repoIndex, first.file, decisions.flatMap((decision) => decision.surroundingContextHints), telemetry);
-  const packetHunks = planned.map((entry, index) => renderPacketHunk(entry.hunk, telemetry, plannerFallbackReason(decisions[index]?.reason)));
+  const packetHunks = planned.map((entry, index) =>
+    renderPacketHunk(entry.hunk, entry.staticSignals, telemetry, plannerFallbackReason(decisions[index]?.reason))
+  );
   const truncationReason = truncationReasons(packetHunks).join("; ");
   const auxiliaryContextText = [context.text, hintContext.text].filter((text) => text.trim().length > 0).join("\n\n");
   const renderedContext = renderPacketContextText(first.file.path, group.wholeFileText, auxiliaryContextText);
@@ -466,11 +469,18 @@ function plannerFallbackReason(reason: string | undefined): string | undefined {
     : undefined;
 }
 
-function renderPacketHunk(hunk: DiffHunk, telemetry: TelemetryRecorder, plannerFallback: string | undefined = undefined): PacketHunk {
+function renderPacketHunk(
+  hunk: DiffHunk,
+  staticSignals: StaticSignal[],
+  telemetry: TelemetryRecorder,
+  plannerFallback: string | undefined = undefined
+): PacketHunk {
   const lines = hunk.lines.map(packetLine);
   const changedNewLineNumbers = lines.flatMap((line) => (line.kind === "add" && line.newLine !== undefined ? [line.newLine] : []));
   const changedOldLineNumbers = lines.flatMap((line) => (line.kind === "delete" && line.oldLine !== undefined ? [line.oldLine] : []));
   const window = patchWindow(lines);
+  const packetSignals = staticSignals.slice(0, MAX_STATIC_SIGNALS_PER_PACKET_HUNK);
+  const omittedSignalCount = Math.max(0, staticSignals.length - packetSignals.length);
   if (window.truncated) {
     telemetry.event({
       stage: 6,
@@ -491,6 +501,8 @@ function renderPacketHunk(hunk: DiffHunk, telemetry: TelemetryRecorder, plannerF
     contentWithLineNumbers: window.contentWithLineNumbers,
     changedNewLineNumbers,
     changedOldLineNumbers,
+    ...(packetSignals.length > 0 ? { staticSignals: packetSignals } : {}),
+    ...(omittedSignalCount > 0 ? { omittedSignalCount } : {}),
     ...(plannerFallback !== undefined ? { plannerFallbackReason: plannerFallback } : {}),
     ...(window.truncated ? { truncated: true, omittedLineCount: window.omittedLineCount } : {})
   };

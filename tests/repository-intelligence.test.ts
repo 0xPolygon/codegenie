@@ -1174,6 +1174,142 @@ ${filler}
     );
   });
 
+  it("detects lossy conversion before raw-value validation in Go changes", async () => {
+    const repo = initRepo();
+    writeRepoFile(
+      repo,
+      "pkg/decimals.go",
+      `package pkg
+
+func NormalizeDecimals(externalDecimals uint64) uint8 {
+	if externalDecimals > 255 {
+		return 0
+	}
+	return uint8(externalDecimals)
+}
+`
+    );
+    const base = commitAll(repo, "base");
+    writeRepoFile(
+      repo,
+      "pkg/decimals.go",
+      `package pkg
+
+func NormalizeDecimals(externalDecimals uint64) uint8 {
+	decimals := uint8(externalDecimals)
+	if decimals > 255 {
+		return 0
+	}
+	return decimals
+}
+`
+    );
+    const head = commitAll(repo, "move validation after conversion");
+
+    const { index } = await buildIndexForRange(repo, base, head);
+
+    expect(index.staticSignals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: "correctness/lossy-conversion-before-validation",
+          path: "pkg/decimals.go",
+          side: "RIGHT",
+          category: "correctness",
+          snippet: expect.stringContaining("uint8(externalDecimals)")
+        })
+      ])
+    );
+  });
+
+  it("does not emit lossy-conversion signals for obvious literal casts", async () => {
+    const file: DiffFile = {
+      path: "pkg/decimals.go",
+      status: "modified",
+      language: "go",
+      hunks: [
+        {
+          id: "h1",
+          path: "pkg/decimals.go",
+          oldStart: 10,
+          oldLines: 1,
+          newStart: 10,
+          newLines: 1,
+          header: "@@ -10 +10 @@",
+          lines: [
+            { kind: "delete", oldLineNumber: 10, content: "if externalDecimals > 255 {" },
+            { kind: "add", newLineNumber: 10, content: "decimals := uint8(18)" }
+          ]
+        }
+      ]
+    };
+
+    const signals = await extractStaticSignals(emptySourceResolver(), {} as LanguageAdapterRegistry, [file], [fileFacts(file)], [], recordingTelemetry());
+
+    expect(signals.some((signal) => signal.ruleId === "correctness/lossy-conversion-before-validation")).toBe(false);
+  });
+
+  it("does not mistake hex-looking identifiers for literal casts", async () => {
+    const file: DiffFile = {
+      path: "pkg/decimals.go",
+      status: "modified",
+      language: "go",
+      hunks: [
+        {
+          id: "h1",
+          path: "pkg/decimals.go",
+          oldStart: 10,
+          oldLines: 1,
+          newStart: 10,
+          newLines: 1,
+          header: "@@ -10 +10 @@",
+          lines: [
+            { kind: "delete", oldLineNumber: 10, content: "if fee > 255 {" },
+            { kind: "add", newLineNumber: 10, content: "decimals := uint8(fee)" }
+          ]
+        }
+      ]
+    };
+
+    const signals = await extractStaticSignals(emptySourceResolver(), {} as LanguageAdapterRegistry, [file], [fileFacts(file)], [], recordingTelemetry());
+
+    expect(signals).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: "correctness/lossy-conversion-before-validation",
+          path: "pkg/decimals.go",
+          line: 10
+        })
+      ])
+    );
+  });
+
+  it("does not emit lossy-conversion signals without nearby validation-change evidence", async () => {
+    const file: DiffFile = {
+      path: "pkg/decimals.go",
+      status: "modified",
+      language: "go",
+      hunks: [
+        {
+          id: "h1",
+          path: "pkg/decimals.go",
+          oldStart: 10,
+          oldLines: 1,
+          newStart: 10,
+          newLines: 1,
+          header: "@@ -10 +10 @@",
+          lines: [
+            { kind: "delete", oldLineNumber: 10, content: "return oldDecimals" },
+            { kind: "add", newLineNumber: 10, content: "decimals := uint8(externalDecimals)" }
+          ]
+        }
+      ]
+    };
+
+    const signals = await extractStaticSignals(emptySourceResolver(), {} as LanguageAdapterRegistry, [file], [fileFacts(file)], [], recordingTelemetry());
+
+    expect(signals.some((signal) => signal.ruleId === "correctness/lossy-conversion-before-validation")).toBe(false);
+  });
+
   it("records telemetry when static signal caps omit results", async () => {
     const telemetry = recordingTelemetry();
     const files = Array.from({ length: 205 }, (_, index): DiffFile => {
@@ -1282,6 +1418,12 @@ function fileFacts(file: DiffFile): FileFacts {
     reasons: [],
     provenance: []
   };
+}
+
+function emptySourceResolver(): SourceResolver {
+  return {
+    readFile: async () => undefined
+  } as unknown as SourceResolver;
 }
 
 async function buildIndexForRange(

@@ -21,12 +21,14 @@ Find Go-specific correctness, lifecycle, and concurrency bugs in changed code.
 - Channel deadlocks: sends without receivers, receives without close/cancel, double close, and buffering assumptions that break under load.
 - Slice aliasing: append or sub-slice sharing that mutates caller-owned data or cached data unexpectedly.
 - Mixed access without mutex: maps, slices, counters, and structs read and written from multiple goroutines.
+- Lossy conversion ordering: validate raw provider/API/config/database values before narrowing casts such as `uint8(...)`, `uint16(...)`, `int8(...)`, `int16(...)`, or `int32(...)`; validation after the cast may be too late.
 
 # False Positives
 
 - Do not flag goroutines that are intentionally process-lifetime workers and have explicit ownership.
 - Do not flag nil receiver methods when the method is intentionally nil-safe and handles that case.
 - Do not report context background use in tests or startup code unless it can leak into request-scoped behavior.
+- Do not flag narrowing casts of literals, generated enum-like values, or values already bounded by an immediately visible validator.
 
 # Safe Patterns
 
