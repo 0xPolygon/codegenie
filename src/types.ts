@@ -716,6 +716,7 @@ export type NeedsHumanAttentionNote = {
   symbols: string[];
   reason: string;
   confidence: Exclude<Confidence, "low">;
+  sourcePacketIds?: string[];
 };
 
 export type PostingPlan = {
@@ -729,6 +730,7 @@ export type ReviewResult = {
   findings: FinalFinding[];
   summaryOnlyFindings: FinalFinding[];
   needsHumanAttention: NeedsHumanAttentionNote[];
+  needsHumanAttentionOmittedCount?: number;
   noFindings: boolean;
   postingPlan?: PostingPlan;
   posting?: RunPostingRecord;

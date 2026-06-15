@@ -1,6 +1,6 @@
 # Issue 9: Human Attention Noise
 
-Status: PENDING
+Status: COMPLETE
 
 ## Problem
 

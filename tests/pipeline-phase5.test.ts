@@ -2946,7 +2946,7 @@ describe("phase 5 pipeline regressions", () => {
       title: "Preferred provider fallback ignores disabled provider",
       failureMode: "Fallback routing can still select a disabled preferred provider.",
       evidence: { changedCode: "return PreferredSwapProvider" },
-      anchor: { path: "app.ts", line: 2, side: "RIGHT", hunkId: "h1" },
+      anchor: { path: "app.ts", line: 2, side: "RIGHT" as const, hunkId: "h1" },
       producedBy: { ...fakeFinding().producedBy, packetId: "packet-2" }
     };
     const runner: LlmRunner = {
@@ -3051,7 +3051,7 @@ describe("phase 5 pipeline regressions", () => {
       title: "Request validation can be bypassed",
       failureMode: "Unauthenticated users can reach the handler.",
       evidence: { changedCode: "if userID == \"\" { allow() }" },
-      anchor: { path: "app.ts", line: 2, side: "RIGHT", hunkId: "h1" },
+      anchor: { path: "app.ts", line: 2, side: "RIGHT" as const, hunkId: "h1" },
       producedBy: { ...fakeFinding().producedBy, packetId: "packet-2" }
     };
 
@@ -6045,9 +6045,10 @@ describe("phase 5 pipeline regressions", () => {
       }
     );
 
-    expect(result.needsHumanAttention).toHaveLength(8);
+    expect(result.needsHumanAttention).toHaveLength(5);
     expect(result.needsHumanAttention[0]?.question).toBe("Should retry cancellation be checked against the worker shutdown path?");
     expect(result.needsHumanAttention.some((note) => note.reason.includes("Grouped from 2 related hints"))).toBe(true);
+    expect(result.needsHumanAttentionOmittedCount).toBe(5);
     expect(events).toContainEqual(expect.objectContaining({
       stage: 10,
       message: "human_attention_hints_grouped",
@@ -6055,12 +6056,273 @@ describe("phase 5 pipeline regressions", () => {
         rawHints: 11,
         eligibleHints: 11,
         groups: 10,
-        emitted: 8,
-        suppressedGroups: 2,
+        emitted: 5,
+        suppressedGroups: 5,
         duplicateHints: 1,
-        maxHumanAttentionNotes: 8
+        maxHumanAttentionNotes: 5
       })
     }));
+  });
+
+  it("normalizes uncertainties into human-attention notes and preserves raw artifacts", async () => {
+    const artifacts = new Map<string, unknown>();
+    const result = await dedupeRankAndComposeReview(
+      { verified: [], verdicts: [] },
+      fakePlan("api/session.ts"),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      {
+        ...nullTelemetry(),
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packetResults: [
+          {
+            packetId: "packet-unclear",
+            lenses: ["core/code-review"],
+            findings: [],
+            followUpHints: [],
+            uncertainties: [
+              {
+                question: "Can legacy clients omit the tenant id?",
+                files: ["api/session.ts"],
+                symbols: ["createSession"]
+              }
+            ],
+            status: "completed"
+          }
+        ]
+      }
+    );
+
+    expect(result.needsHumanAttention).toEqual([
+      expect.objectContaining({
+        question: "Can legacy clients omit the tenant id?",
+        files: ["api/session.ts"],
+        symbols: ["createSession"],
+        reason: "Packet reviewer could not resolve this question from the reviewed context.",
+        confidence: "medium",
+        sourcePacketIds: ["packet-unclear"]
+      })
+    ]);
+    expect(artifacts.get("human-attention-notes.json")).toMatchObject({
+      raw: [
+        expect.objectContaining({
+          source: "uncertainty",
+          packetId: "packet-unclear",
+          question: "Can legacy clients omit the tenant id?"
+        })
+      ],
+      outputNotes: [
+        expect.objectContaining({ question: "Can legacy clients omit the tenant id?" })
+      ]
+    });
+  });
+
+  it("suppresses human-attention notes already covered by final findings", async () => {
+    const finding: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-cache-stale",
+      title: "refreshCache leaves stale cache entries",
+      path: "cache.ts",
+      anchor: { path: "cache.ts", line: 12, side: "RIGHT", hunkId: "h1" },
+      evidence: { changedCode: "refreshCache(config)" },
+      failureMode: "refreshCache does not invalidate stale cache entries when configuration changes.",
+      whyThisMatters: "Stale cache entries can be served after configuration changes.",
+      producedBy: { kind: "packet", stage: 7, packetId: "packet-cache", lensId: "core/code-review", skillIds: [] }
+    };
+    const packet = {
+      ...fakePacket({ id: "packet-cache", path: "cache.ts" }),
+      symbolFacts: [
+        {
+          path: "cache.ts",
+          hunkId: "h1",
+          enclosingSymbol: "refreshCache",
+          changedLines: [12],
+          changedLinesSide: "new" as const,
+          source: "fallback" as const,
+          confidence: "heuristic" as const
+        }
+      ]
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan("cache.ts"),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            summary: "found cache issue",
+            composedFindings: [
+              {
+                findingIds: ["finding-cache-stale"],
+                finalBody: "The cache invalidation issue is real.",
+                publication: "inline"
+              }
+            ]
+          }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packets: [packet],
+        packetResults: [
+          packetResultWithHint("packet-cache", {
+            question: "Check whether refreshCache invalidates stale cache entries.",
+            files: ["cache.ts"],
+            symbols: ["refreshCache"],
+            reason: "The stale cache invalidation behavior may be incomplete.",
+            confidence: "medium"
+          })
+        ]
+      }
+    );
+
+    expect(result.summaryOnlyFindings).toHaveLength(1);
+    expect(result.needsHumanAttention).toEqual([]);
+  });
+
+  it("passes deduped and capped human-attention notes to the composer prompt", async () => {
+    let composerNotes: string[] | undefined;
+    const promptBuilder = {
+      ...fakePromptBuilder(),
+      buildComposerPrompt: (input: { followUpHintNotes?: string[] }) => {
+        composerNotes = input.followUpHintNotes;
+        return { prompt: "", templateVersion: "test", untrustedBlockCount: 0 };
+      }
+    };
+
+    await dedupeRankAndComposeReview(
+      { verified: [], verdicts: [] },
+      fakePlan("worker/retry.ts"),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 7,
+        reviewedHunks: 7,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 7, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
+        },
+        promptBuilder,
+        packetResults: [
+          packetResultWithHint("duplicate-1", {
+            question: "Should retry cancellation be checked against shutdown?",
+            files: ["worker/retry.ts"],
+            symbols: ["runRetry"],
+            reason: "shutdown behavior spans packets",
+            confidence: "medium"
+          }),
+          packetResultWithHint("duplicate-2", {
+            question: "Should retry cancellation be checked against shutdown?",
+            files: ["worker/retry.ts"],
+            symbols: ["runRetry"],
+            reason: "same question",
+            confidence: "medium"
+          }),
+          ...Array.from({ length: 6 }, (_, index) => packetResultWithHint(`extra-${String(index + 1)}`, {
+            question: `Check unrelated concern ${String(index + 1)}.`,
+            files: [`pkg/file-${String(index + 1)}.ts`],
+            symbols: [`symbol${String(index + 1)}`],
+            reason: "unrelated concern",
+            confidence: "medium" as const
+          }))
+        ]
+      }
+    );
+
+    expect(composerNotes).toHaveLength(5);
+    expect(composerNotes?.filter((note) => note.includes("retry cancellation"))).toHaveLength(1);
+  });
+
+  it("renders overflow counts for human-attention notes", () => {
+    const output = renderMarkdownReview({
+      summary: "Review complete.",
+      coverage: {
+        totalHunks: 6,
+        reviewedHunks: 6,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 6, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      findings: [],
+      summaryOnlyFindings: [],
+      needsHumanAttention: [
+        {
+          question: "Check the remaining migration case.",
+          files: ["migrations/001.sql"],
+          symbols: [],
+          reason: "The reviewer could not verify the external migration order.",
+          confidence: "medium"
+        }
+      ],
+      needsHumanAttentionOmittedCount: 3,
+      noFindings: true
+    });
+
+    expect(output).toContain("## Needs Human Attention");
+    expect(output).toContain("Additional unresolved notes suppressed: 3.");
   });
 });
 
@@ -6485,6 +6747,7 @@ function fakePromptBuilder() {
     renderDossier: () => "",
     buildPlannerPrompt: () => ({ prompt: "", templateVersion: "test", untrustedBlockCount: 0 }),
     buildPacketReviewPrompt: () => ({ prompt: "", templateVersion: "test", untrustedBlockCount: 0 }),
+    buildSystemReviewPrompt: () => ({ prompt: "", templateVersion: "test", untrustedBlockCount: 0 }),
     buildVerifierPrompt: () => ({ prompt: "", templateVersion: "test", untrustedBlockCount: 0 }),
     buildComposerPrompt: () => ({ prompt: "", templateVersion: "test", untrustedBlockCount: 0 })
   };

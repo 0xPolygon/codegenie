@@ -46,7 +46,7 @@ type SelectionRecord = {
 };
 
 const MAX_COMPOSER_FINDINGS = 40;
-const MAX_HUMAN_ATTENTION_NOTES = 8;
+const MAX_HUMAN_ATTENTION_NOTES = 5;
 const HUMAN_ATTENTION_LOCATION_CAP = 6;
 
 export async function dedupeRankAndComposeReview(
@@ -62,7 +62,7 @@ export async function dedupeRankAndComposeReview(
   const packetsById = new Map((opts.packets ?? []).map((packet) => [packet.id, packet]));
   const pretrim = pretrimComposerInput(verified.verified);
   const groups = groupFindings(pretrim.kept, packetsById);
-  const notes = needsHumanAttention(opts.packetResults ?? [], telemetry);
+  const attention = buildHumanAttentionNotes(opts.packetResults ?? [], telemetry);
   if (pretrim.suppressed.length > 0) {
     const reason = `composer pre-trim suppressed ${pretrim.suppressed.length} verified finding${pretrim.suppressed.length === 1 ? "" : "s"} above the ${MAX_COMPOSER_FINDINGS}-finding composer input cap`;
     coverage.reasons.push(reason);
@@ -75,7 +75,7 @@ export async function dedupeRankAndComposeReview(
   }
   let fallbackUsed = false;
   let compositionDegraded = false;
-  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, notes).catch((error) => {
+  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, attention.notes).catch((error) => {
     if (isFatalLlmError(error)) {
       throw error;
     }
@@ -158,6 +158,12 @@ export async function dedupeRankAndComposeReview(
   const findings = capped.findings.filter((finding) => finding.publication === "inline");
   const summaryOnlyFindings = capped.findings.filter((finding) => finding.publication === "summary-only");
   const publishableCount = findings.length + summaryOnlyFindings.length;
+  const humanAttention = selectHumanAttentionForOutput(
+    attention.groups,
+    capped.findings.filter((finding) => finding.publication !== "suppressed"),
+    packetsById,
+    telemetry
+  );
   const summary = publishableCount === 0
     ? fallbackSummary(0)
     : fallbackUsed || compositionDegraded || isNoFindingsSummary(composition.summary)
@@ -169,13 +175,14 @@ export async function dedupeRankAndComposeReview(
     coverage,
     findings,
     summaryOnlyFindings,
-    needsHumanAttention: notes,
+    needsHumanAttention: humanAttention.notes,
+    ...(humanAttention.omittedCount > 0 ? { needsHumanAttentionOmittedCount: humanAttention.omittedCount } : {}),
     noFindings: findings.length === 0 && summaryOnlyFindings.length === 0,
     ...(createPostingPlan
       ? {
           postingPlan: {
             inline: findings.flatMap((finding) => (finding.anchor ? [{ findingId: finding.id, anchor: finding.anchor }] : [])),
-            reviewBody: renderReviewBody(summary, summaryOnlyFindings, notes, coverage)
+            reviewBody: renderReviewBody(summary, summaryOnlyFindings, humanAttention.notes, coverage, humanAttention.omittedCount)
           }
         }
       : {})
@@ -188,6 +195,14 @@ export async function dedupeRankAndComposeReview(
       findingIds: group.findings.map((finding) => finding.id)
     }))
   });
+  await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets({
+    raw: attention.raw,
+    grouped: attention.groups.map(attentionGroupArtifact),
+    composerPromptNotes: attention.notes,
+    outputNotes: humanAttention.notes,
+    omittedCount: humanAttention.omittedCount,
+    suppressedByFindings: humanAttention.suppressedByFindings
+  }));
   await telemetry.writeArtifact("final-findings.json", scrubGitHubSecrets(capped.findings));
   telemetry.event({
     stage: 10,
@@ -638,10 +653,18 @@ function buildSelectionRecords(
   return [...records.values()].sort((a, b) => a.findingId.localeCompare(b.findingId));
 }
 
-type AttentionHint = Omit<PacketReviewResult["followUpHints"][number], "confidence"> & {
-  confidence: Exclude<Confidence, "low">;
+type RawAttentionHint = {
+  source: "follow_up_hint" | "uncertainty";
+  question: string;
+  files: string[];
+  symbols: string[];
+  suggestedLenses: string[];
+  reason: string;
+  confidence: Confidence;
   packetId: string;
 };
+
+type AttentionHint = RawAttentionHint & { confidence: Exclude<Confidence, "low"> };
 
 type AttentionHintGroup = {
   key: string;
@@ -649,69 +672,75 @@ type AttentionHintGroup = {
   files: string[];
   symbols: string[];
   packetIds: Set<string>;
+  sources: Set<RawAttentionHint["source"]>;
   count: number;
 };
 
-function needsHumanAttention(packetResults: PacketReviewResult[], telemetry?: TelemetryRecorder): NeedsHumanAttentionNote[] {
+type HumanAttentionNotes = {
+  raw: RawAttentionHint[];
+  groups: AttentionHintGroup[];
+  notes: NeedsHumanAttentionNote[];
+  omittedCount: number;
+};
+
+type HumanAttentionOutput = {
+  notes: NeedsHumanAttentionNote[];
+  omittedCount: number;
+  suppressedByFindings: NeedsHumanAttentionNote[];
+};
+
+function buildHumanAttentionNotes(packetResults: PacketReviewResult[], telemetry?: TelemetryRecorder): HumanAttentionNotes {
+  const raw = rawAttentionHints(packetResults);
   const groups = new Map<string, AttentionHintGroup>();
-  let rawHints = 0;
   let eligibleHints = 0;
 
-  for (const result of packetResults) {
-    for (const hint of result.followUpHints) {
-      rawHints += 1;
-      const confidence = hint.confidence;
-      if (confidence === "low") {
-        continue;
-      }
-      const question = hint.question.trim();
-      if (question.length === 0) {
-        continue;
-      }
-      eligibleHints += 1;
-      const normalized: AttentionHint = {
-        question,
-        files: cleanStrings(hint.files),
-        symbols: cleanStrings(hint.symbols),
-        reason: hint.reason.trim(),
-        suggestedLenses: hint.suggestedLenses,
-        confidence,
-        packetId: result.packetId
-      };
-      const key = followUpHintKey(normalized);
-      const existing = groups.get(key);
-      if (!existing) {
-        groups.set(key, {
-          key,
-          representative: normalized,
-          files: normalized.files,
-          symbols: normalized.symbols,
-          packetIds: new Set([result.packetId]),
-          count: 1
-        });
-        continue;
-      }
-      existing.count += 1;
-      existing.packetIds.add(result.packetId);
-      existing.files = mergeStrings(existing.files, normalized.files);
-      existing.symbols = mergeStrings(existing.symbols, normalized.symbols);
-      existing.representative = strongerAttentionHint(existing.representative, normalized);
+  for (const hint of raw) {
+    if (hint.confidence === "low") {
+      continue;
     }
+    const question = hint.question.trim();
+    if (question.length === 0) {
+      continue;
+    }
+    eligibleHints += 1;
+    const normalized: AttentionHint = { ...hint, question, confidence: hint.confidence };
+    const key = followUpHintKey(normalized);
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, {
+        key,
+        representative: normalized,
+        files: normalized.files,
+        symbols: normalized.symbols,
+        packetIds: new Set([normalized.packetId]),
+        sources: new Set([normalized.source]),
+        count: 1
+      });
+      continue;
+    }
+    existing.count += 1;
+    existing.packetIds.add(normalized.packetId);
+    existing.sources.add(normalized.source);
+    existing.files = mergeStrings(existing.files, normalized.files);
+    existing.symbols = mergeStrings(existing.symbols, normalized.symbols);
+    existing.representative = strongerAttentionHint(existing.representative, normalized);
   }
 
   const ranked = [...groups.values()].sort(compareAttentionGroups);
-  const emitted = ranked.slice(0, MAX_HUMAN_ATTENTION_NOTES).map(toAttentionNote);
-  if (rawHints > 0) {
+  const selected = selectHumanAttentionGroups(ranked);
+  if (raw.length > 0) {
     telemetry?.event({
       stage: 10,
       level: "info",
       message: "human_attention_hints_grouped",
       data: {
-        rawHints,
+        rawHints: raw.length,
+        rawFollowUpHints: raw.filter((hint) => hint.source === "follow_up_hint").length,
+        rawUncertainties: raw.filter((hint) => hint.source === "uncertainty").length,
         eligibleHints,
         groups: ranked.length,
-        emitted: emitted.length,
-        suppressedGroups: Math.max(0, ranked.length - emitted.length),
+        emitted: selected.notes.length,
+        suppressedGroups: selected.omittedCount,
         duplicateHints: Math.max(0, eligibleHints - ranked.length),
         maxHumanAttentionNotes: MAX_HUMAN_ATTENTION_NOTES,
         groupedHints: ranked.map((group, index) => ({
@@ -721,12 +750,155 @@ function needsHumanAttention(packetResults: PacketReviewResult[], telemetry?: Te
           packets: group.packetIds.size,
           files: capStrings(group.files),
           symbols: capStrings(group.symbols),
+          sources: [...group.sources].sort(),
           emitted: index < MAX_HUMAN_ATTENTION_NOTES
         }))
       }
     });
   }
-  return emitted;
+  return { raw, groups: ranked, notes: selected.notes, omittedCount: selected.omittedCount };
+}
+
+function rawAttentionHints(packetResults: PacketReviewResult[]): RawAttentionHint[] {
+  const raw: RawAttentionHint[] = [];
+  for (const result of packetResults) {
+    for (const hint of result.followUpHints) {
+      raw.push({
+        source: "follow_up_hint",
+        question: hint.question.trim(),
+        files: cleanStrings(hint.files),
+        symbols: cleanStrings(hint.symbols),
+        reason: hint.reason.trim(),
+        suggestedLenses: cleanStrings(hint.suggestedLenses),
+        confidence: hint.confidence,
+        packetId: result.packetId
+      });
+    }
+    for (const uncertainty of result.uncertainties) {
+      raw.push({
+        source: "uncertainty",
+        question: uncertainty.question.trim(),
+        files: cleanStrings(uncertainty.files),
+        symbols: cleanStrings(uncertainty.symbols),
+        reason: "Packet reviewer could not resolve this question from the reviewed context.",
+        suggestedLenses: [],
+        confidence: "medium",
+        packetId: result.packetId
+      });
+    }
+  }
+  return raw;
+}
+
+function selectHumanAttentionGroups(groups: AttentionHintGroup[]): { notes: NeedsHumanAttentionNote[]; omittedCount: number } {
+  const emitted = groups.slice(0, MAX_HUMAN_ATTENTION_NOTES).map(toAttentionNote);
+  return { notes: emitted, omittedCount: Math.max(0, groups.length - emitted.length) };
+}
+
+function selectHumanAttentionForOutput(
+  groups: AttentionHintGroup[],
+  findings: FinalFinding[],
+  packetsById: Map<string, ReviewPacket>,
+  telemetry?: TelemetryRecorder
+): HumanAttentionOutput {
+  const available = groups.filter((group) => !findings.some((finding) => attentionGroupCoveredByFinding(group, finding, packetsById)));
+  const selected = selectHumanAttentionGroups(available);
+  const suppressedByFindings = groups
+    .filter((group) => !available.includes(group))
+    .map(toAttentionNote);
+
+  if (suppressedByFindings.length > 0) {
+    telemetry?.event({
+      stage: 10,
+      level: "info",
+      message: "human_attention_hints_suppressed_by_findings",
+      data: {
+        suppressed: suppressedByFindings.length,
+        remainingGroups: available.length
+      }
+    });
+  }
+
+  return {
+    notes: selected.notes,
+    omittedCount: selected.omittedCount,
+    suppressedByFindings
+  };
+}
+
+function attentionGroupCoveredByFinding(
+  group: AttentionHintGroup,
+  finding: FinalFinding,
+  packetsById: Map<string, ReviewPacket>
+): boolean {
+  const sharesSymbol = groupSharesFindingSymbol(group, finding, packetsById);
+  const sharesFile = groupSharesFindingFile(group, finding);
+  if (!sharesSymbol && !sharesFile) {
+    return false;
+  }
+
+  const groupTerms = normalizedTerms([
+    group.representative.question,
+    group.representative.reason,
+    group.symbols.join(" ")
+  ].join(" "));
+  const findingTerms = rootCauseTerms(finding);
+  const sharedTerms = intersectionCount(groupTerms, findingTerms);
+  const similarity = tokenJaccard(groupTerms, findingTerms);
+
+  if (sharesSymbol) {
+    return sharedTerms >= 4 || similarity >= 0.35;
+  }
+  return sharedTerms >= 5 || similarity >= 0.45;
+}
+
+function groupSharesFindingSymbol(
+  group: AttentionHintGroup,
+  finding: FinalFinding,
+  packetsById: Map<string, ReviewPacket>
+): boolean {
+  const left = new Set(group.symbols.map(normalize).filter(Boolean));
+  if (left.size === 0) {
+    return false;
+  }
+  const right = new Set(symbolsForFinding(finding, packetsById).map(normalize).filter(Boolean));
+  return right.size > 0 && [...left].some((symbol) => right.has(symbol));
+}
+
+function groupSharesFindingFile(group: AttentionHintGroup, finding: FinalFinding): boolean {
+  const groupFiles = new Set(group.files.map(normalize).filter(Boolean));
+  if (groupFiles.size === 0) {
+    return false;
+  }
+  const findingFiles = new Set([
+    finding.path,
+    ...(finding.evidence.relatedCode ?? []).map((related) => related.path)
+  ].map(normalize).filter(Boolean));
+  return [...groupFiles].some((file) => findingFiles.has(file));
+}
+
+function intersectionCount(a: Set<string>, b: Set<string>): number {
+  let count = 0;
+  for (const value of a) {
+    if (b.has(value)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function attentionGroupArtifact(group: AttentionHintGroup): Record<string, unknown> {
+  return {
+    key: group.key,
+    question: group.representative.question,
+    reason: group.representative.reason,
+    confidence: group.representative.confidence,
+    files: group.files,
+    symbols: group.symbols,
+    packetIds: [...group.packetIds].sort(),
+    sources: [...group.sources].sort(),
+    count: group.count
+  };
 }
 
 function toAttentionNote(group: AttentionHintGroup): NeedsHumanAttentionNote {
@@ -737,7 +909,8 @@ function toAttentionNote(group: AttentionHintGroup): NeedsHumanAttentionNote {
     reason: group.count > 1
       ? `${group.representative.reason} Grouped from ${group.count} related hints across ${group.packetIds.size} packet${group.packetIds.size === 1 ? "" : "s"}.`
       : group.representative.reason,
-    confidence: group.representative.confidence
+    confidence: group.representative.confidence,
+    sourcePacketIds: [...group.packetIds].sort()
   };
 }
 
@@ -822,7 +995,8 @@ function renderReviewBody(
   summary: string,
   summaryOnly: FinalFinding[],
   notes: NeedsHumanAttentionNote[],
-  coverage: RunCoverageStatus
+  coverage: RunCoverageStatus,
+  omittedNoteCount = 0
 ): string {
   const lines = [summary || "codeninja review completed.", "", ...renderCoverageSummaryLines(coverage).slice(0, 2)];
   const coverageDisclosures = coverageDisclosureLines(coverage);
@@ -840,6 +1014,9 @@ function renderReviewBody(
     lines.push("", "Needs human attention:");
     for (const note of notes) {
       lines.push(`- ${note.question}`);
+    }
+    if (omittedNoteCount > 0) {
+      lines.push(`- Additional unresolved notes suppressed: ${omittedNoteCount}`);
     }
   }
   return lines.join("\n");

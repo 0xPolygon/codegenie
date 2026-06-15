@@ -37,7 +37,8 @@ function renderFindings(title: string, findings: FinalFinding[]): string {
 }
 
 function renderNeedsHumanAttention(result: ReviewResult): string {
-  if (result.needsHumanAttention.length === 0) {
+  const omittedCount = result.needsHumanAttentionOmittedCount ?? 0;
+  if (result.needsHumanAttention.length === 0 && omittedCount === 0) {
     return "";
   }
 
@@ -49,6 +50,9 @@ function renderNeedsHumanAttention(result: ReviewResult): string {
       lines.push(`  Symbols: ${note.symbols.join(", ")}`);
     }
     lines.push(`  Reason: ${note.reason}`);
+  }
+  if (omittedCount > 0) {
+    lines.push("", `Additional unresolved notes suppressed: ${omittedCount}.`);
   }
   return lines.join("\n");
 }

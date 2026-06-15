@@ -10,7 +10,7 @@ import type { CodeninjaConfig, PlannerDossier, ReviewPacket } from "../src/types
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("phase 6 live review path", () => {
-  it("uses the Pi runner end to end for branch reviews with repair, retry, and follow-up notes", async () => {
+  it("uses the Pi runner end to end for branch reviews with repair, retry, and covered follow-up suppression", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export function divide(total: number, count: number) {\n  return total / Math.max(1, count);\n}\n");
     commitAll(repo, "base");
@@ -43,17 +43,9 @@ describe("phase 6 live review path", () => {
         publication: "inline",
         finalBody: expect.stringContaining("Restoring the guard")
       });
-      expect(result.needsHumanAttention).toEqual([
-        {
-          question: "Check whether callers can pass zero count.",
-          files: ["app.ts"],
-          symbols: ["divide"],
-          reason: "The changed function now divides by count directly.",
-          confidence: "medium"
-        }
-      ]);
+      expect(result.needsHumanAttention).toEqual([]);
       expect(output.join("\n")).toContain("Live review found one issue.");
-      expect(output.join("\n")).toContain("## Needs Human Attention");
+      expect(output.join("\n")).not.toContain("## Needs Human Attention");
       expect(output.join("\n")).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
       expect(output.join("\n")).toContain("[redacted:");
       expect(adapter.callsByPrompt).toMatchObject({

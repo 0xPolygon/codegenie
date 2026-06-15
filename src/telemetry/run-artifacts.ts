@@ -58,6 +58,7 @@ const KNOWN_ARTIFACTS = new Set([
   "candidate-findings.json",
   "verification.json",
   "final-selection.json",
+  "human-attention-notes.json",
   "final-findings.json",
   "cost-profile.json",
   "final-review.md",
