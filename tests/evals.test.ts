@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "../src/evals/eval-compare.js";
-import { executeEvalCommand, runEvalCommand } from "../src/evals/eval-command.js";
+import { executeEvalCommand, renderCaseResult, runEvalCommand } from "../src/evals/eval-command.js";
 import { loadEvalSuite, replayFromArtifacts, runEvalCase } from "../src/evals/eval-runner.js";
 import { assignExpectations, matchExpectation, scoreEvalRun } from "../src/evals/eval-scoring.js";
 import type {
@@ -153,6 +153,61 @@ describe("eval scoring", () => {
     expect(score.expectationResults.find((result) => result.expectationId === "partial")?.loss?.label).toBe("partial-match");
     expect(score.violations).toHaveLength(1);
     expect(score.budgetResults.every((result) => result.status === "pass")).toBe(true);
+  });
+
+  it("renders minimum and maximum budget failures with the correct comparison direction", () => {
+    const score = scoreEvalRun({
+      name: "budget-direction",
+      artifacts: { path: "unused" },
+      expect: { minFindings: 2, maxFindings: 0 }
+    }, {
+      candidates: [candidate("cand-1", "src/app.ts", 3)],
+      verification: [
+        { candidateId: "cand-1", gate: "passed", verdict: { candidateId: "cand-1", verdict: "keep", reason: "ok", requiredEvidencePresent: true, falsePositiveRisk: "low" } }
+      ],
+      finalSelection: [{ findingId: "cand-1", decision: "published", reason: "composer-selected" }],
+      finalFindings: [finalFinding("cand-1", "src/app.ts", 3)],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {}
+    }, "live");
+
+    expect(score.budgetResults).toEqual([
+      expect.objectContaining({ check: "minFindings", status: "fail", actual: 1, limit: 2, direction: "minimum" }),
+      expect.objectContaining({ check: "maxFindings", status: "fail", actual: 1, limit: 0, direction: "maximum" })
+    ]);
+    expect(renderCaseResult({
+      caseName: "budget-direction",
+      runDir: "unused",
+      status: "fail",
+      info: {
+        runNumber: 1,
+        caseName: "budget-direction",
+        caseHash: "hash",
+        caseSnapshot: { name: "budget-direction", artifacts: { path: "unused" } },
+        mode: "live",
+        cache: { enabled: false, source: "config" },
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: "2026-01-01T00:00:01.000Z",
+        score
+      }
+    })).toContain("BUDGET minFindings: 1 < 2");
+    expect(renderCaseResult({
+      caseName: "budget-direction",
+      runDir: "unused",
+      status: "fail",
+      info: {
+        runNumber: 1,
+        caseName: "budget-direction",
+        caseHash: "hash",
+        caseSnapshot: { name: "budget-direction", artifacts: { path: "unused" } },
+        mode: "live",
+        cache: { enabled: false, source: "config" },
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: "2026-01-01T00:00:01.000Z",
+        score
+      }
+    })).toContain("BUDGET maxFindings: 1 > 0");
   });
 
   it("matches reported final findings through merged source candidate locations", () => {

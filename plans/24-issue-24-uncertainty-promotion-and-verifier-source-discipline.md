@@ -1,6 +1,6 @@
 # Issue 24: Uncertainty Promotion and Verifier Policy Discipline
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 4, 2026-06-15
 Updated after plan 25 completion: 2026-06-15
 

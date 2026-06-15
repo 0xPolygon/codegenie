@@ -129,7 +129,7 @@ function validateEvalOptions(options: EvalCommandOptions, config: CodeninjaConfi
   }
 }
 
-function renderCaseResult(result: EvalCaseResult): string {
+export function renderCaseResult(result: EvalCaseResult): string {
   const score = result.info.score;
   const metrics = score.metrics;
   const parts = [
@@ -159,12 +159,18 @@ function renderCaseResult(result: EvalCaseResult): string {
     lines.push(`  VIOLATION ${violation.expectationId}: ${violation.findingId} ${violation.publication}`);
   }
   for (const budget of score.budgetResults.filter((item) => item.status === "fail")) {
-    lines.push(`  BUDGET ${budget.check}${budget.stage !== undefined ? `:${budget.stage}` : ""}: ${budget.actual ?? "n/a"} > ${budget.limit}`);
+    lines.push(`  BUDGET ${budget.check}${budget.stage !== undefined ? `:${budget.stage}` : ""}: ${formatBudgetComparison(budget)}`);
   }
   if (score.error !== undefined) {
     lines.push(`  ERROR ${score.error.code}: ${score.error.message}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function formatBudgetComparison(budget: EvalCaseResult["info"]["score"]["budgetResults"][number]): string {
+  const actual = budget.actual ?? "n/a";
+  const operator = budget.direction === "minimum" ? "<" : ">";
+  return `${actual} ${operator} ${budget.limit}`;
 }
 
 function renderSuiteTotals(results: EvalCaseResult[]): string {

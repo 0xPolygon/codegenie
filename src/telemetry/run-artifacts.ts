@@ -56,6 +56,7 @@ const KNOWN_ARTIFACTS = new Set([
   "review-plan.json",
   "coverage.json",
   "candidate-findings.json",
+  "uncertainty-promotion.json",
   "verification.json",
   "final-selection.json",
   "human-attention-notes.json",

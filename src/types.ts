@@ -630,6 +630,16 @@ export type FindingProducer = {
   workerId?: string;
 };
 
+export type CandidateFindingProvenance = {
+  source: "uncertainty_promotion";
+  sourceKind: "uncertainty" | "follow_up_hint";
+  sourcePacketId: string;
+  question: string;
+  files: string[];
+  symbols: string[];
+  reason: string;
+};
+
 export type CandidateFinding = {
   id: string;
   title: string;
@@ -649,6 +659,7 @@ export type CandidateFinding = {
   suggestedTest?: string;
   verification: string;
   producedBy: FindingProducer;
+  provenance?: CandidateFindingProvenance;
   clusterId?: string;
   duplicateOf?: string;
 };
@@ -895,6 +906,7 @@ export type EvalBudgetResult = {
   skipReason?: string;
   limit: number;
   actual?: number;
+  direction: "minimum" | "maximum";
   fromReplayedArtifacts?: boolean;
 };
 
@@ -969,6 +981,7 @@ export type EvalVerificationRecord =
       gateReason: string;
       verificationLane?: "standard" | "evidence_resolution";
       gateFacts?: Record<string, unknown>;
+      candidateProvenance?: CandidateFindingProvenance;
       duplicateOf?: string;
       clusterId?: string;
     }
@@ -980,6 +993,7 @@ export type EvalVerificationRecord =
       gateReason?: string;
       verificationLane?: "standard" | "evidence_resolution";
       gateFacts?: Record<string, unknown>;
+      candidateProvenance?: CandidateFindingProvenance;
       duplicateOf?: string;
       clusterId?: string;
     };

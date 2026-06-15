@@ -67,6 +67,7 @@ type VerificationRecord =
       gateReason: string;
       verificationLane?: VerificationLane;
       gateFacts?: VerificationGateFacts;
+      candidateProvenance?: CandidateFinding["provenance"];
       duplicateOf?: string;
       clusterId?: string;
     }
@@ -86,6 +87,7 @@ type VerificationRecord =
       gateReason?: string;
       verificationLane?: VerificationLane;
       gateFacts?: VerificationGateFacts;
+      candidateProvenance?: CandidateFinding["provenance"];
       duplicateOf?: string;
       clusterId?: string;
       verificationStatus?: "completed" | "incomplete";
@@ -122,6 +124,12 @@ export async function verifyFindings(
 ): Promise<{ verified: CandidateFinding[]; verdicts: VerificationVerdict[]; incompleteCount: number; gateRejections: number; verificationSkipped: boolean }> {
   telemetry.event({ stage: 9, level: "info", message: "stage_started", data: { candidates: candidateCount(input.packetResults) } });
   const packetsById = new Map(input.packets.map((packet) => [packet.id, packet]));
+  const inputCandidates = input.packetResults.flatMap((result) => result.findings);
+  const candidateProvenanceById = new Map(
+    inputCandidates
+      .filter((candidate) => candidate.provenance !== undefined)
+      .map((candidate) => [candidate.id, candidate.provenance])
+  );
   const records: VerificationRecord[] = [];
   const gatePassed: CandidateFinding[] = [];
   const anchorStripped = new Set<string>();
@@ -132,7 +140,7 @@ export async function verifyFindings(
   let lowConfidenceSuppressed = 0;
   let lowConfidenceEvidenceEligible = 0;
 
-  for (const candidate of input.packetResults.flatMap((result) => result.findings)) {
+  for (const candidate of inputCandidates) {
     const preGated = preGateAnchor(candidate, packetsById.get(candidate.producedBy.packetId), opts.diff, telemetry);
     if (preGated.anchorStripped) {
       anchorStripped.add(candidate.id);
@@ -164,7 +172,12 @@ export async function verifyFindings(
         stage: 9,
         level: "info",
         message: "verification_gate_suppressed",
-        data: { candidateId: candidate.id, gateReason: gateDecision.reason, gateFacts: gateDecision.facts }
+        data: {
+          candidateId: candidate.id,
+          gateReason: gateDecision.reason,
+          gateFacts: gateDecision.facts,
+          ...(preGated.candidate.provenance !== undefined ? { candidateProvenance: preGated.candidate.provenance } : {})
+        }
       });
       continue;
     }
@@ -203,7 +216,9 @@ export async function verifyFindings(
       gateReasonByCandidateId,
       gateFactsByCandidateId
     ))));
-    await telemetry.writeArtifact("verification.json", records);
+    const recordsWithProvenance = attachCandidateProvenance(records, candidateProvenanceById);
+    await telemetry.writeArtifact("verification.json", recordsWithProvenance);
+    const promotedCounts = promotedVerificationCounts(inputCandidates, recordsWithProvenance, verdicts);
     telemetry.event({
       stage: 9,
       level: "info",
@@ -221,7 +236,8 @@ export async function verifyFindings(
           lowConfidenceEvidenceLaneLimited: 0,
           lowConfidenceEvidenceKept: clustered.all.filter((candidate) => verificationLaneByCandidateId.get(candidate.id) === "evidence_resolution").length,
           lowConfidenceEvidenceRejected: 0,
-          lowConfidenceEvidenceIncomplete: 0
+          lowConfidenceEvidenceIncomplete: 0,
+          ...promotedCounts
         },
         verdicts: verdictCounts(verdicts)
       }
@@ -329,7 +345,9 @@ export async function verifyFindings(
   });
 
   const evidenceResolutionCounts = evidenceResolutionVerdictCounts(verdicts, verificationLaneByCandidateId);
-  await telemetry.writeArtifact("verification.json", records);
+  const recordsWithProvenance = attachCandidateProvenance(records, candidateProvenanceById);
+  await telemetry.writeArtifact("verification.json", recordsWithProvenance);
+  const promotedCounts = promotedVerificationCounts(inputCandidates, recordsWithProvenance, verdicts);
   telemetry.event({
     stage: 9,
     level: "info",
@@ -352,7 +370,8 @@ export async function verifyFindings(
         lowConfidenceEvidenceRejected: evidenceResolutionCounts.rejected,
         lowConfidenceEvidenceIncomplete: evidenceResolutionCounts.incomplete,
         clusteredDuplicates: clustered.duplicateCount,
-        verificationRepresentatives: clustered.representatives.length
+        verificationRepresentatives: clustered.representatives.length,
+        ...promotedCounts
       },
       verdicts: verdictCounts(verdicts)
     }
@@ -477,19 +496,47 @@ async function verifyCandidate(
     skills
   });
   const submitted = await runVerifierStructured(candidate, prompt, tools, config, opts, workerId, telemetry, runtimeStats);
-  const revised = submitted.finalFinding !== undefined
-    ? revisedFinding(candidate, submitted.finalFinding, packet, opts.diff)
+  const normalized = normalizeSubmittedVerdict(candidate, submitted, telemetry);
+  const revised = normalized.finalFinding !== undefined
+    ? revisedFinding(candidate, normalized.finalFinding, packet, opts.diff)
     : undefined;
-  const revisedAnchor = normalizeAnchor(submitted.revisedAnchor, packet, opts.diff);
+  const revisedAnchor = normalizeAnchor(normalized.revisedAnchor, packet, opts.diff);
   return {
     candidateId: candidate.id,
-    verdict: submitted.verdict,
-    reason: submitted.reason,
-    requiredEvidencePresent: submitted.requiredEvidencePresent,
-    falsePositiveRisk: submitted.falsePositiveRisk,
+    verdict: normalized.verdict,
+    reason: normalized.reason,
+    requiredEvidencePresent: normalized.requiredEvidencePresent,
+    falsePositiveRisk: normalized.falsePositiveRisk,
     ...(revised !== undefined ? { finalFinding: revised } : {}),
     ...(revisedAnchor !== undefined ? { revisedAnchor } : {}),
-    ...(submitted.reason.startsWith("verification incomplete:") ? { verificationIncomplete: true } : {})
+    ...(normalized.reason.startsWith("verification incomplete:") ? { verificationIncomplete: true } : {})
+  };
+}
+
+function normalizeSubmittedVerdict(
+  candidate: CandidateFinding,
+  submitted: SubmitVerificationVerdict,
+  telemetry: TelemetryRecorder
+): SubmitVerificationVerdict {
+  if (submitted.verdict === "reject" || submitted.requiredEvidencePresent === true) {
+    return submitted;
+  }
+  telemetry.event({
+    stage: 9,
+    level: "warn",
+    message: "verification_missing_evidence_normalized_to_reject",
+    file: candidate.path,
+    data: {
+      candidateId: candidate.id,
+      originalVerdict: submitted.verdict,
+      falsePositiveRisk: submitted.falsePositiveRisk
+    }
+  });
+  return {
+    verdict: "reject",
+    reason: `required evidence missing; original ${submitted.verdict} verdict rejected: ${submitted.reason}`,
+    requiredEvidencePresent: false,
+    falsePositiveRisk: "high"
   };
 }
 
@@ -847,6 +894,52 @@ function candidateRecordMeta(
     ...(verificationLane !== undefined ? { gateDecision: verificationLane === "evidence_resolution" ? "scheduled_for_evidence_resolution" : "scheduled" } : {}),
     ...(gateReason !== undefined ? { gateReason } : {}),
     ...(gateFacts !== undefined ? { gateFacts } : {})
+  };
+}
+
+function attachCandidateProvenance(
+  records: VerificationRecord[],
+  candidateProvenanceById: Map<string, CandidateFinding["provenance"]>
+): VerificationRecord[] {
+  return records.map((record) => {
+    const provenance = candidateProvenanceById.get(record.candidateId);
+    return provenance !== undefined ? { ...record, candidateProvenance: provenance } : record;
+  });
+}
+
+function promotedVerificationCounts(
+  candidates: CandidateFinding[],
+  records: VerificationRecord[],
+  verdicts: VerificationVerdict[]
+): {
+  promotedCandidates: number;
+  promotedGateRejected: number;
+  promotedVerificationScheduled: number;
+  promotedVerificationKept: number;
+  promotedVerificationRejected: number;
+  promotedVerificationIncomplete: number;
+  promotedVerificationLaneLimited: number;
+} {
+  const promotedIds = new Set(
+    candidates
+      .filter((candidate) => candidate.provenance?.source === "uncertainty_promotion")
+      .map((candidate) => candidate.id)
+  );
+  const promotedVerdicts = verdicts.filter((verdict) => promotedIds.has(verdict.candidateId));
+  const promotedRecords = records.filter((record) => promotedIds.has(record.candidateId));
+  return {
+    promotedCandidates: promotedIds.size,
+    promotedGateRejected: promotedRecords.filter((record) =>
+      record.gate === "suppressed" &&
+      record.gateDecision === "suppressed"
+    ).length,
+    promotedVerificationScheduled: promotedVerdicts.length,
+    promotedVerificationKept: promotedVerdicts.filter((verdict) => verdict.verificationIncomplete !== true && verdict.verdict !== "reject").length,
+    promotedVerificationRejected: promotedVerdicts.filter((verdict) => verdict.verificationIncomplete !== true && verdict.verdict === "reject").length,
+    promotedVerificationIncomplete: promotedVerdicts.filter((verdict) => verdict.verificationIncomplete === true).length,
+    promotedVerificationLaneLimited: promotedRecords.filter((record) =>
+      record.gateReason === "low_confidence_evidence_resolution_lane_limit"
+    ).length
   };
 }
 

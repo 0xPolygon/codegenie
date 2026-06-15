@@ -42,6 +42,7 @@ import { buildPlannerDossier, runPlanner } from "./planner.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
 import { runLensPackets } from "./lens-runner.js";
 import { buildSystemReviewTasks, runTargetedSystemReviews, suppressResolvedFollowUpHints } from "./system-reviewer.js";
+import { promoteUncertaintiesForVerification } from "./uncertainty-promotion.js";
 import { verifyFindings } from "./verifier.js";
 import { dedupeRankAndComposeReview } from "./composer.js";
 import { renderMarkdownReview } from "../output/markdown-renderer.js";
@@ -192,9 +193,11 @@ export async function runReview(
     throwIfHardAborted(run);
     const allPacketResults = [...packetResults, ...systemReview.packetResults];
     const packetResultsForFinal = suppressResolvedFollowUpHints(allPacketResults, systemReview.resolvedHints);
-    const candidateFindings = allPacketResults.flatMap((result) => result.findings);
+    const promoted = await promoteUncertaintiesForVerification({ packetResults: packetResultsForFinal, packets }, run.telemetry);
+    const packetResultsForVerification = promoted.packetResults;
+    const candidateFindings = packetResultsForVerification.flatMap((result) => result.findings);
     await run.telemetry.writeArtifact("candidate-findings.json", candidateFindings);
-    const verified = await verifyFindings({ packetResults: allPacketResults, packets }, repoIndex.tools, config, run.telemetry, {
+    const verified = await verifyFindings({ packetResults: packetResultsForVerification, packets }, repoIndex.tools, config, run.telemetry, {
       runner: services.runner,
       promptBuilder: services.promptBuilder,
       lensRegistry: services.lensRegistry,

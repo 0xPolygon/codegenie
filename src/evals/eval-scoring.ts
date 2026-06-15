@@ -376,13 +376,13 @@ function scoreBudgets(
   const expect = evalCase.expect ?? {};
   const results: EvalBudgetResult[] = [];
   if (expect.minFindings !== undefined) {
-    results.push(budgetResult("minFindings", expect.minFindings, metrics.reportedFindings, metrics.reportedFindings >= expect.minFindings, mode));
+    results.push(budgetResult("minFindings", expect.minFindings, metrics.reportedFindings, "minimum", metrics.reportedFindings >= expect.minFindings, mode));
   }
   if (expect.maxFindings !== undefined) {
-    results.push(budgetResult("maxFindings", expect.maxFindings, metrics.reportedFindings, metrics.reportedFindings <= expect.maxFindings, mode));
+    results.push(budgetResult("maxFindings", expect.maxFindings, metrics.reportedFindings, "maximum", metrics.reportedFindings <= expect.maxFindings, mode));
   }
   if (expect.maxDuplicateGroups !== undefined) {
-    results.push(budgetResult("maxDuplicateGroups", expect.maxDuplicateGroups, metrics.duplicateGroups, metrics.duplicateGroups <= expect.maxDuplicateGroups, mode));
+    results.push(budgetResult("maxDuplicateGroups", expect.maxDuplicateGroups, metrics.duplicateGroups, "maximum", metrics.duplicateGroups <= expect.maxDuplicateGroups, mode));
   }
   const replaySkip = mode === "replay" ? "stage not executed in artifact replay" : undefined;
   if (expect.maxCostUSD !== undefined) {
@@ -415,6 +415,7 @@ function budgetResult(
   check: EvalBudgetResult["check"],
   limit: number,
   actual: number,
+  direction: EvalBudgetResult["direction"],
   passed: boolean,
   mode: ScoreMode
 ): EvalBudgetResult {
@@ -423,6 +424,7 @@ function budgetResult(
     status: passed ? "pass" : "fail",
     limit,
     actual,
+    direction,
     fromReplayedArtifacts: mode === "replay"
   };
 }
@@ -440,7 +442,8 @@ function metricBudgetResult(
       ...(stage !== undefined ? { stage } : {}),
       status: "skipped",
       skipReason: replaySkip,
-      limit
+      limit,
+      direction: "maximum"
     };
   }
   if (actual === undefined) {
@@ -449,7 +452,8 @@ function metricBudgetResult(
       ...(stage !== undefined ? { stage } : {}),
       status: "skipped",
       skipReason: "metric unavailable",
-      limit
+      limit,
+      direction: "maximum"
     };
   }
   return {
@@ -457,7 +461,8 @@ function metricBudgetResult(
     ...(stage !== undefined ? { stage } : {}),
     status: actual <= limit ? "pass" : "fail",
     limit,
-    actual
+    actual,
+    direction: "maximum"
   };
 }
 

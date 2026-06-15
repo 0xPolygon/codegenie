@@ -195,6 +195,121 @@ describe("stage 9 evidence-aware verification", () => {
       })
     ]));
   });
+
+  it("keeps promoted uncertainty provenance in verification records and metrics", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const finding = candidate("promoted-uncertainty", fixture.packets[0]!, {
+      confidence: "low",
+      evidence: {
+        changedCode: "+ return route(provider)",
+        relatedCode: [{
+          path: "src/app.ts",
+          lines: "function changed0(provider: string)",
+          whyRelevant: "Changed symbol attached to the promoted uncertainty."
+        }]
+      },
+      provenance: {
+        source: "uncertainty_promotion",
+        sourceKind: "uncertainty",
+        sourcePacketId: fixture.packets[0]!.id,
+        question: "Verify fallback behavior still preserves caller contract",
+        files: ["src/app.ts"],
+        symbols: ["changed0"],
+        reason: "packet reviewer reported an unresolved uncertainty"
+      }
+    });
+    const telemetry = captureTelemetry();
+
+    await verifyFindings(
+      { packetResults: [packetResult(fixture.packets[0]!.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict: "keep",
+          reason: "The verifier confirmed the promoted predicate.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(telemetry.artifacts.get("verification.json")).toEqual([
+      expect.objectContaining({
+        candidateId: "promoted-uncertainty",
+        candidateProvenance: expect.objectContaining({
+          source: "uncertainty_promotion",
+          sourceKind: "uncertainty",
+          sourcePacketId: fixture.packets[0]!.id
+        }),
+        verdict: expect.objectContaining({ verdict: "keep" })
+      })
+    ]);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 9,
+        message: "pipeline_metrics",
+        data: expect.objectContaining({
+          candidates: expect.objectContaining({
+            promotedCandidates: 1,
+            promotedVerificationScheduled: 1,
+            promotedVerificationKept: 1
+          })
+        })
+      })
+    ]));
+  });
+
+  it("rejects keep verdicts that report required evidence is missing", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const finding = candidate("missing-evidence-keep", fixture.packets[0]!);
+    const telemetry = captureTelemetry();
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(fixture.packets[0]!.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict: "keep",
+          reason: "The helper source was unavailable, so this could not be confirmed.",
+          requiredEvidencePresent: false,
+          falsePositiveRisk: "medium"
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(result.verified).toEqual([]);
+    expect(telemetry.artifacts.get("verification.json")).toEqual([
+      expect.objectContaining({
+        candidateId: "missing-evidence-keep",
+        verdict: expect.objectContaining({
+          verdict: "reject",
+          requiredEvidencePresent: false,
+          falsePositiveRisk: "high",
+          reason: expect.stringContaining("required evidence missing")
+        })
+      })
+    ]);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 9,
+        message: "verification_missing_evidence_normalized_to_reject",
+        data: expect.objectContaining({
+          candidateId: "missing-evidence-keep",
+          originalVerdict: "keep"
+        })
+      })
+    ]));
+  });
 });
 
 describe("stage 9 eval diagnostics and prompts", () => {
@@ -253,6 +368,7 @@ describe("stage 9 eval diagnostics and prompts", () => {
     expect(packetPrompt).toContain("verifier-resolvable predicate remains");
     expect(verifierPrompt).toContain("Same-PR tests that assert new behavior prove the behavior changed");
     expect(verifierPrompt).toContain("refactor, cleanup, consolidation, behavior-preserving");
+    expect(verifierPrompt).toContain("cite the exact helper/callee branch that proves the failure mode");
   });
 });
 
