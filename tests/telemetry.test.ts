@@ -273,6 +273,8 @@ describe("run telemetry", () => {
       totalCostUSD: 0.01,
       unknownCostCalls: 1,
       cache: { hit: 1, miss: 1, disabled: 0, write: 1 },
+      localModelCallCache: { hit: 1, miss: 1, disabled: 0, write: 1 },
+      providerPromptCache: { readTokens: 0, writeTokens: 0, readCostUSD: 0, writeCostUSD: 0 },
       retryAttempts: 1,
       repairCalls: 1,
       schemaInvalidCalls: 1,
@@ -332,6 +334,8 @@ describe("run telemetry", () => {
       costUSD: 0.01,
       unknownCostCalls: 1,
       cache: { hit: 1, miss: 1, disabled: 0, write: 1 },
+      localModelCallCache: { hit: 1, miss: 1, disabled: 0, write: 1 },
+      providerPromptCache: { readTokens: 0, writeTokens: 0, readCostUSD: 0, writeCostUSD: 0 },
       retryAttempts: 1,
       repairCalls: 1,
       schemaInvalidCalls: 1
@@ -344,6 +348,8 @@ describe("run telemetry", () => {
       outputTokens: 20,
       totalTokens: 120,
       cache: { hit: 1, miss: 1, disabled: 0, write: 1 },
+      localModelCallCache: { hit: 1, miss: 1, disabled: 0, write: 1 },
+      providerPromptCache: { readTokens: 0, writeTokens: 0, readCostUSD: 0, writeCostUSD: 0 },
       retryAttempts: 1,
       repairCalls: 1,
       schemaInvalidCalls: 1
@@ -444,7 +450,9 @@ describe("run telemetry", () => {
       outputCostUSD: 0.02,
       cacheReadCostUSD: 0.003,
       cacheWriteCostUSD: 0.004,
-      cache: { hit: 1, miss: 1, disabled: 0, write: 0 }
+      cache: { hit: 1, miss: 1, disabled: 0, write: 0 },
+      localModelCallCache: { hit: 1, miss: 1, disabled: 0, write: 0 },
+      providerPromptCache: { readTokens: 100, writeTokens: 2, readCostUSD: 0.003, writeCostUSD: 0.004 }
     });
 
     const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
@@ -462,7 +470,9 @@ describe("run telemetry", () => {
       inputCostUSD: 0.01,
       outputCostUSD: 0.02,
       cacheReadCostUSD: 0.003,
-      cacheWriteCostUSD: 0.004
+      cacheWriteCostUSD: 0.004,
+      localModelCallCache: { hit: 1, miss: 1, disabled: 0, write: 0 },
+      providerPromptCache: { readTokens: 100, writeTokens: 2, readCostUSD: 0.003, writeCostUSD: 0.004 }
     });
     expect(modelSummary.byStage["7"]).toMatchObject({
       providerCalls: 1,
@@ -470,12 +480,15 @@ describe("run telemetry", () => {
       uncachedInputTokens: 10,
       cacheReadTokens: 100,
       cacheWriteTokens: 2,
-      billableInputTokens: 112
+      billableInputTokens: 112,
+      localModelCallCache: { hit: 1, miss: 1, disabled: 0, write: 0 },
+      providerPromptCache: { readTokens: 100, writeTokens: 2, readCostUSD: 0.003, writeCostUSD: 0.004 }
     });
 
     const costProfile = readJson(path.join(attached.runDir, "cost-profile.json"));
     expect(costProfile).toMatchObject({
       totalCostUSD: 0.037,
+      providerPromptCache: { readTokens: 100, writeTokens: 2, readCostUSD: 0.003, writeCostUSD: 0.004 },
       tokens: {
         inputTokens: 112,
         uncachedInputTokens: 10,
@@ -537,7 +550,9 @@ describe("run telemetry", () => {
 
     const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
     expect(modelSummary.cache).toMatchObject({ hit: 0, miss: 1, disabled: 0, write: 1 });
+    expect(modelSummary.localModelCallCache).toMatchObject({ hit: 0, miss: 1, disabled: 0, write: 1 });
     expect(modelSummary.byStage["7"].cache).toMatchObject({ hit: 0, miss: 1, disabled: 0, write: 1 });
+    expect(modelSummary.byStage["7"].localModelCallCache).toMatchObject({ hit: 0, miss: 1, disabled: 0, write: 1 });
   });
 
   it("drops buffered debug/info before warnings and records overflow", async () => {

@@ -505,13 +505,64 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   if (Object.keys(maxPromptCharsByStage).length > 0) {
     metrics.maxPromptCharsByStage = maxPromptCharsByStage;
   }
-  const cacheHits = numberPath(artifacts.metricsSources.modelCallsSummary, ["cache", "hit"]);
-  if (cacheHits !== undefined) {
-    metrics.cacheHits = cacheHits;
+  const localCacheHits = firstNumberPath([
+    [artifacts.metricsSources.modelCallsSummary, ["localModelCallCache", "hit"]],
+    [artifacts.metricsSources.modelCallsSummary, ["cache", "hit"]]
+  ]);
+  if (localCacheHits !== undefined) {
+    metrics.localModelCallCacheHits = localCacheHits;
+    metrics.cacheHits = localCacheHits;
   }
-  const cacheMisses = numberPath(artifacts.metricsSources.modelCallsSummary, ["cache", "miss"]);
-  if (cacheMisses !== undefined) {
-    metrics.cacheMisses = cacheMisses;
+  const localCacheMisses = firstNumberPath([
+    [artifacts.metricsSources.modelCallsSummary, ["localModelCallCache", "miss"]],
+    [artifacts.metricsSources.modelCallsSummary, ["cache", "miss"]]
+  ]);
+  if (localCacheMisses !== undefined) {
+    metrics.localModelCallCacheMisses = localCacheMisses;
+    metrics.cacheMisses = localCacheMisses;
+  }
+  const localCacheWrites = firstNumberPath([
+    [artifacts.metricsSources.modelCallsSummary, ["localModelCallCache", "write"]],
+    [artifacts.metricsSources.modelCallsSummary, ["cache", "write"]]
+  ]);
+  if (localCacheWrites !== undefined) {
+    metrics.localModelCallCacheWrites = localCacheWrites;
+  }
+  const providerPromptCacheReadTokens = firstNumberPath([
+    [artifacts.metricsSources.modelCallsSummary, ["providerPromptCache", "readTokens"]],
+    [artifacts.metricsSources.costProfile, ["providerPromptCache", "readTokens"]],
+    [artifacts.metricsSources.modelCallsSummary, ["cacheReadTokens"]],
+    [artifacts.metricsSources.costProfile, ["tokens", "cacheReadTokens"]]
+  ]);
+  if (providerPromptCacheReadTokens !== undefined) {
+    metrics.providerPromptCacheReadTokens = providerPromptCacheReadTokens;
+  }
+  const providerPromptCacheWriteTokens = firstNumberPath([
+    [artifacts.metricsSources.modelCallsSummary, ["providerPromptCache", "writeTokens"]],
+    [artifacts.metricsSources.costProfile, ["providerPromptCache", "writeTokens"]],
+    [artifacts.metricsSources.modelCallsSummary, ["cacheWriteTokens"]],
+    [artifacts.metricsSources.costProfile, ["tokens", "cacheWriteTokens"]]
+  ]);
+  if (providerPromptCacheWriteTokens !== undefined) {
+    metrics.providerPromptCacheWriteTokens = providerPromptCacheWriteTokens;
+  }
+  const providerPromptCacheReadCostUSD = firstNumberPath([
+    [artifacts.metricsSources.modelCallsSummary, ["providerPromptCache", "readCostUSD"]],
+    [artifacts.metricsSources.costProfile, ["providerPromptCache", "readCostUSD"]],
+    [artifacts.metricsSources.modelCallsSummary, ["cacheReadCostUSD"]],
+    [artifacts.metricsSources.costProfile, ["cost", "cacheReadCostUSD"]]
+  ]);
+  if (providerPromptCacheReadCostUSD !== undefined) {
+    metrics.providerPromptCacheReadCostUSD = providerPromptCacheReadCostUSD;
+  }
+  const providerPromptCacheWriteCostUSD = firstNumberPath([
+    [artifacts.metricsSources.modelCallsSummary, ["providerPromptCache", "writeCostUSD"]],
+    [artifacts.metricsSources.costProfile, ["providerPromptCache", "writeCostUSD"]],
+    [artifacts.metricsSources.modelCallsSummary, ["cacheWriteCostUSD"]],
+    [artifacts.metricsSources.costProfile, ["cost", "cacheWriteCostUSD"]]
+  ]);
+  if (providerPromptCacheWriteCostUSD !== undefined) {
+    metrics.providerPromptCacheWriteCostUSD = providerPromptCacheWriteCostUSD;
   }
   return metrics;
 }
@@ -1016,6 +1067,16 @@ function numberPath(input: unknown, pathParts: string[]): number | undefined {
     cursor = cursor[part];
   }
   return typeof cursor === "number" && Number.isFinite(cursor) ? cursor : undefined;
+}
+
+function firstNumberPath(paths: Array<[unknown, string[]]>): number | undefined {
+  for (const [input, pathParts] of paths) {
+    const value = numberPath(input, pathParts);
+    if (value !== undefined) {
+      return value;
+    }
+  }
+  return undefined;
 }
 
 function isReviewStage(input: number): input is ReviewStage {

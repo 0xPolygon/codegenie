@@ -877,7 +877,16 @@ export type EvalRunMetrics = {
   verificationCalls?: number;
   toolCalls?: number;
   maxPromptCharsByStage?: Partial<Record<ReviewStage, number>>;
+  localModelCallCacheHits?: number;
+  localModelCallCacheMisses?: number;
+  localModelCallCacheWrites?: number;
+  providerPromptCacheReadTokens?: number;
+  providerPromptCacheWriteTokens?: number;
+  providerPromptCacheReadCostUSD?: number;
+  providerPromptCacheWriteCostUSD?: number;
+  /** @deprecated Use localModelCallCacheHits. */
   cacheHits?: number;
+  /** @deprecated Use localModelCallCacheMisses. */
   cacheMisses?: number;
   stageLossCounts: Record<EvalLossLabel, number>;
 };

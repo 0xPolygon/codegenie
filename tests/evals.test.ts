@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
+import { compareToPrevious, renderEvalCompareText } from "../src/evals/eval-compare.js";
 import { executeEvalCommand, runEvalCommand } from "../src/evals/eval-command.js";
 import { loadEvalSuite, replayFromArtifacts, runEvalCase } from "../src/evals/eval-runner.js";
 import { assignExpectations, matchExpectation, scoreEvalRun } from "../src/evals/eval-scoring.js";
@@ -12,6 +13,7 @@ import type {
   CandidateFinding,
   EvalCase,
   EvalRunInfo,
+  EvalRunMetrics,
   EvalScore,
   FinalFinding
 } from "../src/types.js";
@@ -361,6 +363,104 @@ describe("eval scoring", () => {
     expect(loss).toMatchObject({ label: "lost-at-composition", subReason: "composer-merged" });
     expect(loss?.nearestInstances.map((instance) => instance.findingId)).toEqual(["absorber", "merged", "rejected"]);
     expect(loss?.nearestInstances[2]?.outcome).toContain("verdict=reject");
+  });
+
+  it("separates local model-call cache metrics from provider prompt-cache metrics", () => {
+    const fresh = scoreEvalRun({
+      name: "fresh-cache-metrics",
+      artifacts: { path: "unused" }
+    }, {
+      candidates: [],
+      verification: [],
+      finalSelection: [],
+      finalFindings: [],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {
+        modelCallsSummary: {
+          localModelCallCache: { hit: 2, miss: 1, disabled: 0, write: 1 },
+          providerPromptCache: { readTokens: 100, writeTokens: 4, readCostUSD: 0.003, writeCostUSD: 0.004 }
+        }
+      }
+    }, "live");
+
+    expect(fresh.metrics).toMatchObject({
+      localModelCallCacheHits: 2,
+      localModelCallCacheMisses: 1,
+      localModelCallCacheWrites: 1,
+      providerPromptCacheReadTokens: 100,
+      providerPromptCacheWriteTokens: 4,
+      providerPromptCacheReadCostUSD: 0.003,
+      providerPromptCacheWriteCostUSD: 0.004,
+      cacheHits: 2,
+      cacheMisses: 1
+    });
+
+    const legacy = scoreEvalRun({
+      name: "legacy-cache-metrics",
+      artifacts: { path: "unused" }
+    }, {
+      candidates: [],
+      verification: [],
+      finalSelection: [],
+      finalFindings: [],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {
+        modelCallsSummary: {
+          cache: { hit: 3, miss: 2, disabled: 0, write: 1 },
+          cacheReadTokens: 44,
+          cacheWriteTokens: 5,
+          cacheReadCostUSD: 0.1,
+          cacheWriteCostUSD: 0.2
+        }
+      }
+    }, "replay");
+
+    expect(legacy.metrics).toMatchObject({
+      localModelCallCacheHits: 3,
+      localModelCallCacheMisses: 2,
+      localModelCallCacheWrites: 1,
+      providerPromptCacheReadTokens: 44,
+      providerPromptCacheWriteTokens: 5,
+      providerPromptCacheReadCostUSD: 0.1,
+      providerPromptCacheWriteCostUSD: 0.2,
+      cacheHits: 3,
+      cacheMisses: 2
+    });
+  });
+});
+
+describe("eval compare", () => {
+  it("renders explicit cache metric names and hides duplicate legacy aliases when available", () => {
+    const previous = evalRunInfoWithMetrics(1, {
+      cacheHits: 1,
+      cacheMisses: 5,
+      providerPromptCacheReadTokens: 0,
+      providerPromptCacheWriteTokens: 0
+    });
+    const current = evalRunInfoWithMetrics(2, {
+      localModelCallCacheHits: 3,
+      localModelCallCacheMisses: 2,
+      cacheHits: 3,
+      cacheMisses: 2,
+      providerPromptCacheReadTokens: 100,
+      providerPromptCacheWriteTokens: 4
+    });
+
+    const report = compareToPrevious(
+      { info: current, finalFindings: [] },
+      { info: previous, finalFindings: [] }
+    );
+    const text = renderEvalCompareText(report);
+
+    expect(report.metricDeltas.cacheHits).toBeUndefined();
+    expect(report.metricDeltas.localModelCallCacheHits).toMatchObject({ previous: 1, current: 3, delta: 2 });
+    expect(text).toContain("Cache metrics:");
+    expect(text).toContain("local model-call cache hits: 1 -> 3 (+2)");
+    expect(text).toContain("local model-call cache misses: 5 -> 2 (-3)");
+    expect(text).toContain("provider prompt cache read tokens: 0 -> 100 (+100)");
+    expect(text).not.toContain("cacheHits");
   });
 });
 
@@ -819,6 +919,29 @@ function passingScore(): EvalScore {
         "lost-at-verification": 0,
         "lost-at-composition": 0,
         "partial-match": 0
+      }
+    }
+  };
+}
+
+function evalRunInfoWithMetrics(runNumber: number, metrics: Partial<EvalRunMetrics>): EvalRunInfo {
+  return {
+    runNumber,
+    caseName: "cache-compare",
+    caseHash: "same",
+    caseSnapshot: {
+      name: "cache-compare",
+      artifacts: { path: "unused" }
+    },
+    mode: "replay",
+    cache: { enabled: false, source: "config", dir: ".codeninja/cache" },
+    startedAt: "2026-01-01T00:00:00.000Z",
+    finishedAt: "2026-01-01T00:00:01.000Z",
+    score: {
+      ...passingScore(),
+      metrics: {
+        ...passingScore().metrics,
+        ...metrics
       }
     }
   };

@@ -92,8 +92,8 @@ export function parseEvalCommand(
     .description("run codeninja eval suites")
     .option("--eval-dir <path>", "eval suite directory")
     .option("--from-artifacts <path>", "re-score a previous eval run directory")
-    .option("--cache", "enable model-call cache for live cases")
-    .option("--no-cache", "disable model-call cache for live cases")
+    .option("--cache", "enable local model-call cache for live cases; provider prompt caching is reported separately")
+    .option("--no-cache", "disable local model-call cache for live cases; provider prompt caching is reported separately")
     .action((options: CommanderEvalOptions) => {
       parsed = {
         ...(options.evalDir !== undefined ? { evalDir: options.evalDir } : {}),
@@ -143,8 +143,13 @@ function renderCaseResult(result: EvalCaseResult): string {
   if (metrics.elapsedSeconds !== undefined) {
     parts.push(`${metrics.elapsedSeconds.toFixed(1)}s`);
   }
-  if (metrics.cacheHits !== undefined) {
-    parts.push(`${metrics.cacheHits} cache hits`);
+  const localCacheHits = metrics.localModelCallCacheHits ?? metrics.cacheHits;
+  const localCacheMisses = metrics.localModelCallCacheMisses ?? metrics.cacheMisses;
+  if (localCacheHits !== undefined) {
+    parts.push(`${localCacheHits} local model-call cache hits${localCacheMisses !== undefined ? `/${localCacheMisses} misses` : ""}`);
+  }
+  if (metrics.providerPromptCacheReadTokens !== undefined || metrics.providerPromptCacheWriteTokens !== undefined) {
+    parts.push(`provider prompt cache ${metrics.providerPromptCacheReadTokens ?? 0} read/${metrics.providerPromptCacheWriteTokens ?? 0} write tokens`);
   }
   const lines = [parts.join(" | ")];
   for (const failure of score.expectationResults.filter((item) => item.status === "fail")) {

@@ -76,6 +76,11 @@ export function renderEvalCompareText(report: EvalCompareReport): string {
     lines.push(`Resolved violations: ${report.resolvedViolations.map((item) => `${item.expectationId}/${item.findingId}`).join(", ")}`);
   }
   lines.push(`Findings: +${report.findingDiff.added.length} -${report.findingDiff.removed.length} ~${report.findingDiff.changed.length}`);
+  const cacheMetricLines = renderCacheMetricDeltaLines(report.metricDeltas);
+  if (cacheMetricLines.length > 0) {
+    lines.push("Cache metrics:");
+    lines.push(...cacheMetricLines.map((line) => `  ${line}`));
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -156,7 +161,22 @@ function metricDeltas(current: EvalRunMetrics, previous: EvalRunMetrics): EvalCo
 
 function flattenNumericMetrics(metrics: EvalRunMetrics): Record<string, number> {
   const output: Record<string, number> = {};
+  const localCacheHits = metrics.localModelCallCacheHits ?? metrics.cacheHits;
+  const localCacheMisses = metrics.localModelCallCacheMisses ?? metrics.cacheMisses;
+  if (localCacheHits !== undefined) {
+    output.localModelCallCacheHits = localCacheHits;
+  }
+  if (localCacheMisses !== undefined) {
+    output.localModelCallCacheMisses = localCacheMisses;
+  }
+  if (metrics.localModelCallCacheWrites !== undefined) {
+    output.localModelCallCacheWrites = metrics.localModelCallCacheWrites;
+  }
+  const localCacheKeys = new Set(["localModelCallCacheHits", "localModelCallCacheMisses", "localModelCallCacheWrites", "cacheHits", "cacheMisses"]);
   for (const [key, value] of Object.entries(metrics)) {
+    if (localCacheKeys.has(key)) {
+      continue;
+    }
     if (typeof value === "number") {
       output[key] = value;
       continue;
@@ -170,6 +190,42 @@ function flattenNumericMetrics(metrics: EvalRunMetrics): Record<string, number> 
     }
   }
   return output;
+}
+
+function renderCacheMetricDeltaLines(metricDeltas: EvalCompareReport["metricDeltas"]): string[] {
+  return Object.entries(cacheMetricLabels)
+    .flatMap(([key, label]) => {
+      const delta = metricDeltas[key];
+      if (delta === undefined) {
+        return [];
+      }
+      return [`${label}: ${formatMetricDelta(delta)}`];
+    });
+}
+
+const cacheMetricLabels: Record<string, string> = {
+  localModelCallCacheHits: "local model-call cache hits",
+  localModelCallCacheMisses: "local model-call cache misses",
+  localModelCallCacheWrites: "local model-call cache writes",
+  providerPromptCacheReadTokens: "provider prompt cache read tokens",
+  providerPromptCacheWriteTokens: "provider prompt cache write tokens",
+  providerPromptCacheReadCostUSD: "provider prompt cache read cost USD",
+  providerPromptCacheWriteCostUSD: "provider prompt cache write cost USD"
+};
+
+function formatMetricDelta(delta: EvalCompareReport["metricDeltas"][string]): string {
+  const previous = delta.previous !== undefined ? formatNumber(delta.previous) : "n/a";
+  const current = delta.current !== undefined ? formatNumber(delta.current) : "n/a";
+  const change = delta.delta !== undefined ? ` (${formatSignedNumber(delta.delta)})` : "";
+  return `${previous} -> ${current}${change}`;
+}
+
+function formatSignedNumber(value: number): string {
+  return value > 0 ? `+${formatNumber(value)}` : formatNumber(value);
+}
+
+function formatNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(6).replace(/0+$/u, "").replace(/\.$/u, "");
 }
 
 function keyedViolations(violations: EvalViolation[]): Map<string, EvalViolation> {

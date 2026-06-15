@@ -1,6 +1,6 @@
 # Issue 22: Cache Telemetry Clarity
 
-Status: PENDING
+Status: COMPLETE
 Planned at: a47a23b, 2026-06-14
 
 ## Problem
@@ -12,7 +12,7 @@ This complements Issue 15 by applying the terminology consistently across run su
 ## Plan
 
 1. Rename or group telemetry fields so local cache and provider cache are visibly separate:
-   - local model-call cache: hit, miss, read, write, disabled
+   - local model-call cache: hit, miss, write, disabled
    - provider prompt cache: input cached tokens, cache read cost, cache write cost if available
 2. Update run summaries and eval summaries to use the same terms.
 3. Update eval compare output so cache changes do not look like model behavior changes.

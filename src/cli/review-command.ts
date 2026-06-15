@@ -80,8 +80,8 @@ export function parseReviewCommand(
     .option("--reasoning <level>", "reasoning level: low, medium, high, xhigh, or auto")
     .option("--format <format>", "output format: markdown or json", "markdown")
     .option("--post-github-comments", "post inline comments to GitHub for --pr runs")
-    .option("--cache", "enable model-call cache for this run")
-    .option("--no-cache", "disable model-call cache for this run")
+    .option("--cache", "enable local model-call cache for this run; provider prompt caching is reported separately")
+    .option("--no-cache", "disable local model-call cache for this run; provider prompt caching is reported separately")
     .action((commitArgs: string[], options: CommanderReviewOptions) => {
       commits = commitArgs;
       commandOptions = options;

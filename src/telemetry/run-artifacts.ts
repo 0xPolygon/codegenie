@@ -70,6 +70,18 @@ const KNOWN_ARTIFACTS = new Set([
 
 type CacheCounts = Record<"hit" | "miss" | "disabled" | "write", number>;
 type ModelStatusCounts = Record<LlmCallRecord["status"], number>;
+type ProviderPromptCacheSummary = {
+  readTokens: number;
+  writeTokens: number;
+  readCostUSD: number;
+  writeCostUSD: number;
+};
+type ProviderPromptCacheSource = {
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  cacheReadCostUSD: number;
+  cacheWriteCostUSD: number;
+};
 
 type ModelStageSummary = {
   recordCount: number;
@@ -360,6 +372,7 @@ class RunTelemetryImpl {
       ...(normalizedOutcome.budgetStop !== null ? { budgetStop: normalizedOutcome.budgetStop } : {}),
       totals
     });
+    const modelSummary = this.finalModelSummary();
     this.writeJson("telemetry.json", {
       schemaVersion: 1,
       runId: this.runId,
@@ -385,10 +398,10 @@ class RunTelemetryImpl {
       dedup: this.pipelineSummary.dedup,
       finalSelection: this.pipelineSummary.finalSelection,
       posting: this.pipelineSummary.posting,
-      modelCalls: this.modelSummary,
+      modelCalls: modelSummary,
       toolCalls: this.finalToolSummary()
     });
-    this.writeJson("model-calls-summary.json", this.modelSummary);
+    this.writeJson("model-calls-summary.json", modelSummary);
     this.writeJson("tool-calls-summary.json", this.finalToolSummary());
     this.writeJson("cost-profile.json", this.costProfile());
   }
@@ -689,10 +702,26 @@ class RunTelemetryImpl {
     };
   }
 
+  private finalModelSummary(): unknown {
+    const byStage = Object.fromEntries(
+      Object.entries(this.modelSummary.byStage).map(([stage, bucket]) => [
+        stage,
+        withCacheAliases(bucket)
+      ])
+    );
+    return {
+      ...this.modelSummary,
+      localModelCallCache: copyCacheCounts(this.modelSummary.cache),
+      providerPromptCache: providerPromptCacheSummary(this.modelSummary),
+      byStage
+    };
+  }
+
   private costProfile(): unknown {
     return {
       totalCostUSD: this.modelSummary.costUSD,
       unknownCostCalls: this.modelSummary.unknownCostCalls,
+      providerPromptCache: providerPromptCacheSummary(this.modelSummary),
       tokens: {
         inputTokens: this.modelSummary.inputTokens,
         uncachedInputTokens: this.modelSummary.uncachedInputTokens,
@@ -761,6 +790,8 @@ class RunTelemetryImpl {
       cacheWriteCostUSD: this.modelSummary.cacheWriteCostUSD,
       unknownCostCalls: this.modelSummary.unknownCostCalls,
       cache: this.modelSummary.cache,
+      localModelCallCache: copyCacheCounts(this.modelSummary.cache),
+      providerPromptCache: providerPromptCacheSummary(this.modelSummary),
       retryAttempts: this.modelSummary.retryAttempts,
       repairCalls: this.modelSummary.repairCalls,
       schemaInvalidCalls: this.modelSummary.schemaInvalidCalls,
@@ -857,6 +888,35 @@ function emptyCacheCounts(): CacheCounts {
     miss: 0,
     disabled: 0,
     write: 0
+  };
+}
+
+function copyCacheCounts(cache: CacheCounts): CacheCounts {
+  return {
+    hit: cache.hit,
+    miss: cache.miss,
+    disabled: cache.disabled,
+    write: cache.write
+  };
+}
+
+function providerPromptCacheSummary(source: ProviderPromptCacheSource): ProviderPromptCacheSummary {
+  return {
+    readTokens: source.cacheReadTokens,
+    writeTokens: source.cacheWriteTokens,
+    readCostUSD: source.cacheReadCostUSD,
+    writeCostUSD: source.cacheWriteCostUSD
+  };
+}
+
+function withCacheAliases<T extends ProviderPromptCacheSource & { cache: CacheCounts }>(summary: T): T & {
+  localModelCallCache: CacheCounts;
+  providerPromptCache: ProviderPromptCacheSummary;
+} {
+  return {
+    ...summary,
+    localModelCallCache: copyCacheCounts(summary.cache),
+    providerPromptCache: providerPromptCacheSummary(summary)
   };
 }
 
