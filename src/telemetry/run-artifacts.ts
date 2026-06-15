@@ -83,6 +83,21 @@ type ProviderPromptCacheSource = {
   cacheReadCostUSD: number;
   cacheWriteCostUSD: number;
 };
+type CostBreakdownSource = ProviderPromptCacheSource & {
+  uncachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  inputCostUSD: number;
+  outputCostUSD: number;
+  costUSD: number;
+};
+type CostBreakdownSummary = {
+  uncachedInput: { tokens: number; costUSD: number };
+  providerPromptCacheRead: { tokens: number; costUSD: number };
+  providerPromptCacheWrite: { tokens: number; costUSD: number };
+  output: { tokens: number; costUSD: number };
+  total: { tokens: number; costUSD: number };
+};
 
 type ModelStageSummary = {
   recordCount: number;
@@ -197,6 +212,16 @@ type PipelineTelemetrySummary = {
     generated: number;
     gateRejected: number;
     verificationScheduled: number;
+    verificationBudgetLimited: number;
+    clusteredDuplicates: number;
+    verificationRepresentatives: number;
+    lowConfidenceSuppressed: number;
+    lowConfidenceEvidenceEligible: number;
+    lowConfidenceEvidenceScheduled: number;
+    lowConfidenceEvidenceLaneLimited: number;
+    lowConfidenceEvidenceKept: number;
+    lowConfidenceEvidenceRejected: number;
+    lowConfidenceEvidenceIncomplete: number;
   };
   verdicts: {
     accept: number;
@@ -719,10 +744,21 @@ class RunTelemetryImpl {
   }
 
   private costProfile(): unknown {
+    const byStage = Object.fromEntries(
+      Object.entries(this.modelSummary.byStage).map(([stage, bucket]) => [
+        stage,
+        {
+          ...withCacheAliases(bucket),
+          costBreakdown: costBreakdownSummary(bucket)
+        }
+      ])
+    );
     return {
       totalCostUSD: this.modelSummary.costUSD,
       unknownCostCalls: this.modelSummary.unknownCostCalls,
+      localModelCallCache: copyCacheCounts(this.modelSummary.cache),
       providerPromptCache: providerPromptCacheSummary(this.modelSummary),
+      costBreakdown: costBreakdownSummary(this.modelSummary),
       tokens: {
         inputTokens: this.modelSummary.inputTokens,
         uncachedInputTokens: this.modelSummary.uncachedInputTokens,
@@ -739,7 +775,7 @@ class RunTelemetryImpl {
         cacheWriteCostUSD: this.modelSummary.cacheWriteCostUSD,
         totalCostUSD: this.modelSummary.costUSD
       },
-      byStage: this.modelSummary.byStage
+      byStage
     };
   }
 
@@ -789,6 +825,7 @@ class RunTelemetryImpl {
       outputCostUSD: this.modelSummary.outputCostUSD,
       cacheReadCostUSD: this.modelSummary.cacheReadCostUSD,
       cacheWriteCostUSD: this.modelSummary.cacheWriteCostUSD,
+      costBreakdown: costBreakdownSummary(this.modelSummary),
       unknownCostCalls: this.modelSummary.unknownCostCalls,
       cache: this.modelSummary.cache,
       localModelCallCache: copyCacheCounts(this.modelSummary.cache),
@@ -910,6 +947,31 @@ function providerPromptCacheSummary(source: ProviderPromptCacheSource): Provider
   };
 }
 
+function costBreakdownSummary(source: CostBreakdownSource): CostBreakdownSummary {
+  return {
+    uncachedInput: {
+      tokens: source.uncachedInputTokens,
+      costUSD: source.inputCostUSD
+    },
+    providerPromptCacheRead: {
+      tokens: source.cacheReadTokens,
+      costUSD: source.cacheReadCostUSD
+    },
+    providerPromptCacheWrite: {
+      tokens: source.cacheWriteTokens,
+      costUSD: source.cacheWriteCostUSD
+    },
+    output: {
+      tokens: source.outputTokens,
+      costUSD: source.outputCostUSD
+    },
+    total: {
+      tokens: source.totalTokens,
+      costUSD: source.costUSD
+    }
+  };
+}
+
 function withCacheAliases<T extends ProviderPromptCacheSource & { cache: CacheCounts }>(summary: T): T & {
   localModelCallCache: CacheCounts;
   providerPromptCache: ProviderPromptCacheSummary;
@@ -1017,7 +1079,17 @@ function emptyPipelineTelemetrySummary(): PipelineTelemetrySummary {
     candidates: {
       generated: 0,
       gateRejected: 0,
-      verificationScheduled: 0
+      verificationScheduled: 0,
+      verificationBudgetLimited: 0,
+      clusteredDuplicates: 0,
+      verificationRepresentatives: 0,
+      lowConfidenceSuppressed: 0,
+      lowConfidenceEvidenceEligible: 0,
+      lowConfidenceEvidenceScheduled: 0,
+      lowConfidenceEvidenceLaneLimited: 0,
+      lowConfidenceEvidenceKept: 0,
+      lowConfidenceEvidenceRejected: 0,
+      lowConfidenceEvidenceIncomplete: 0
     },
     verdicts: {
       accept: 0,
@@ -1167,6 +1239,16 @@ function mergePipelineCandidates(target: PipelineTelemetrySummary["candidates"],
   setNumber(target, "generated", source.generated);
   setNumber(target, "gateRejected", source.gateRejected);
   setNumber(target, "verificationScheduled", source.verificationScheduled);
+  setNumber(target, "verificationBudgetLimited", source.verificationBudgetLimited);
+  setNumber(target, "clusteredDuplicates", source.clusteredDuplicates);
+  setNumber(target, "verificationRepresentatives", source.verificationRepresentatives);
+  setNumber(target, "lowConfidenceSuppressed", source.lowConfidenceSuppressed);
+  setNumber(target, "lowConfidenceEvidenceEligible", source.lowConfidenceEvidenceEligible);
+  setNumber(target, "lowConfidenceEvidenceScheduled", source.lowConfidenceEvidenceScheduled);
+  setNumber(target, "lowConfidenceEvidenceLaneLimited", source.lowConfidenceEvidenceLaneLimited);
+  setNumber(target, "lowConfidenceEvidenceKept", source.lowConfidenceEvidenceKept);
+  setNumber(target, "lowConfidenceEvidenceRejected", source.lowConfidenceEvidenceRejected);
+  setNumber(target, "lowConfidenceEvidenceIncomplete", source.lowConfidenceEvidenceIncomplete);
 }
 
 function mergePipelineVerdicts(target: PipelineTelemetrySummary["verdicts"], source: Record<string, unknown> | undefined): void {

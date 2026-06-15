@@ -12,13 +12,13 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 06 | COMPLETE | Issue 1: Budget And Partial Runs |
 | 07 | COMPLETE | Issue 5: Verification Degradation |
 | 08 | COMPLETE | Issue 6: Final Composition |
-| 09 | PENDING | Issue 9: Human Attention Noise |
+| 09 | COMPLETE | Issue 9: Human Attention Noise |
 | 10 | COMPLETE | Issue 10: Final Body Metadata Duplication |
 | 11 | COMPLETE | Issue 11: Stage 6 Inverted Range Reads |
 | 12 | COMPLETE | Issue 12: Lossy Conversion Recall |
 | 13 | COMPLETE | Issue 13: Planner and Anchor Hygiene |
 | 14 | COMPLETE | Issue 14: Deleted Symbol Lookup and Targeted Tool Budget |
-| 15 | PENDING | Issue 15: Telemetry Cache Terminology |
+| 15 | COMPLETE | Issue 15: Telemetry Cache Terminology |
 | 16 | COMPLETE | Issue 16: Eval Matching for Merged Findings |
 | 17 | COMPLETE | Issue 17: Planner Submit Plan Schema Discipline |
 | 18 | COMPLETE | Issue 18: Stage 6 Read Range Guard |
@@ -26,3 +26,4 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 20 | COMPLETE | Issue 20: Pre-Verification Candidate Clustering |
 | 21 | COMPLETE | Issue 21: Targeted Cross-System Review |
 | 22 | COMPLETE | Issue 22: Cache Telemetry Clarity |
+| 23 | COMPLETE | Issue 23: Evidence-Aware Verification Recall |

@@ -937,8 +937,27 @@ export type EvalCaseResult = {
 };
 
 export type EvalVerificationRecord =
-  | { candidateId: string; gate: "suppressed" | "gate_anchor_stripped"; gateReason: string; duplicateOf?: string; clusterId?: string }
-  | { candidateId: string; gate: "passed" | "gate_anchor_stripped"; verdict: VerificationVerdict; duplicateOf?: string; clusterId?: string };
+  | {
+      candidateId: string;
+      gate: "suppressed" | "gate_anchor_stripped";
+      gateDecision?: "suppressed" | "scheduled" | "scheduled_for_evidence_resolution";
+      gateReason: string;
+      verificationLane?: "standard" | "evidence_resolution";
+      gateFacts?: Record<string, unknown>;
+      duplicateOf?: string;
+      clusterId?: string;
+    }
+  | {
+      candidateId: string;
+      gate: "passed" | "gate_anchor_stripped";
+      verdict: VerificationVerdict;
+      gateDecision?: "suppressed" | "scheduled" | "scheduled_for_evidence_resolution";
+      gateReason?: string;
+      verificationLane?: "standard" | "evidence_resolution";
+      gateFacts?: Record<string, unknown>;
+      duplicateOf?: string;
+      clusterId?: string;
+    };
 
 export type EvalSelectionRecord = {
   findingId: string;

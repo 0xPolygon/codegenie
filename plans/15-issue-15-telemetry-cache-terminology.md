@@ -1,6 +1,6 @@
 # Issue 15: Telemetry Cache Terminology
 
-Status: PENDING
+Status: COMPLETE
 
 ## Problem
 
@@ -23,13 +23,15 @@ This is not a review-quality bug, but it makes cost telemetry harder to reason a
 
 ## Plan
 
+Implementation note: codeninja uses `localModelCallCache` as the canonical field name instead of the earlier `localResponseCache` wording. This matches the actual cache contract: complete model-call responses keyed by normalized model request. The legacy `cache` field remains as a deprecated alias for compatibility.
+
 1. Split cache concepts in telemetry:
-   - Add `localResponseCache` for Codeninja's own cached model responses.
+   - Add `localModelCallCache` for Codeninja's own cached model-call responses.
    - Add `providerPromptCache` for provider-reported prompt-cache read/write tokens and costs.
    - Keep both in `run.json`, `telemetry.json`, `model-calls-summary.json`, and `cost-profile.json`.
 
 2. Preserve compatibility carefully:
-   - Keep the old `cache` field as a deprecated alias for local response cache for now.
+   - Keep the old `cache` field as a deprecated alias for local model-call cache for now.
    - Add clearer fields first; remove ambiguous aliases only in a later schema version.
    - Document which fields should be used by eval tooling.
 
@@ -64,7 +66,7 @@ This is not a review-quality bug, but it makes cost telemetry harder to reason a
 
 ## Tests
 
-- Model-call summary separates local response cache counters from provider prompt-cache tokens/cost.
+- Model-call summary separates local model-call cache counters from provider prompt-cache tokens/cost.
 - Cost profile groups provider cache read/write cost separately from uncached input and output.
 - Existing artifact readers continue to work or are updated with a schema-version test.
 - Human-readable debug output does not use ambiguous cache wording.
@@ -72,7 +74,7 @@ This is not a review-quality bug, but it makes cost telemetry harder to reason a
 
 ## Acceptance Criteria
 
-- A run can show local response cache disabled and provider prompt-cache usage without looking contradictory.
+- A run can show local model-call cache disabled and provider prompt-cache usage without looking contradictory.
 - Eval tooling can reliably compare token/cost behavior across runs.
 - `totalCostUSD` remains unchanged by the naming cleanup.
 - Old artifacts remain readable through the deprecated alias.

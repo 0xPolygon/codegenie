@@ -119,7 +119,7 @@ A skill is a Markdown file of concrete checks, false-positive rules, safe patter
 
 ### Built to be evaluated
 
-Every run writes typed local artifacts — the plan, every packet, every candidate, every verdict, every selection decision, per-call token/cost telemetry. The `codeninja eval` command replays real repos and fixtures against expected findings and scores them *by loss stage*. The `--cache` flag controls codeninja's local model-call cache, which reuses prior LLM responses during iteration; provider-side prompt cache reads/writes are reported separately because they are billing/runtime metadata from the LLM provider. The eval suite, the skills, and the telemetry are the compounding assets — models swap underneath them.
+Every run writes typed local artifacts — the plan, every packet, every candidate, every verdict, every selection decision, per-call token/cost telemetry. The `codeninja eval` command replays real repos and fixtures against expected findings and scores them *by loss stage*. The `--cache` flag controls codeninja's local model-call cache, which reuses prior LLM responses during iteration; provider-side prompt cache reads/writes are reported separately because they are billing/runtime metadata from the LLM provider. In telemetry artifacts, prefer `localModelCallCache` and `providerPromptCache`; the older `cache` field is only a compatibility alias for local model-call cache counts. The eval suite, the skills, and the telemetry are the compounding assets — models swap underneath them.
 
 ### Reviewing untrusted code is a security problem
 

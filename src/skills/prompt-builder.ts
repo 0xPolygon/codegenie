@@ -109,6 +109,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("packet review"),
         injectionInstruction(),
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
+        "Confidence calibration: do not mark a changed-line correctness/security finding low confidence solely because one optional tool lookup or supporting range read was unavailable. Use medium confidence when the changed-code evidence and failure mode are concrete but a narrow verifier-resolvable predicate remains. Reserve low confidence for speculative reachability, ambiguous product intent, or weak path matching.",
         "Validate raw external/provider/API/config/database values before lossy conversion; validation after overflow, truncation, rounding, precision loss, or coercion may be too late. Treat packet staticSignals as hints to investigate, not automatic findings.",
         "When assessing removed helpers, renamed symbols, deleted guards, or behavior-preserving refactors, inspect the base side if needed. Prefer read_symbol or find_definition with source {kind:\"auto\"} unless the exact revision matters; auto searches head first and falls back to base.",
         packet.reviewProfile === "simple"
@@ -146,6 +147,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("verification"),
         injectionInstruction(),
         "Verify whether the candidate is a real, actionable finding. Reject false positives. Revise only when the same issue is real but the evidence or anchor needs correction.",
+        "Same-PR tests that assert new behavior prove the behavior changed; they do not by themselves prove the behavior is safe or intended. If the PR intent says refactor, cleanup, consolidation, behavior-preserving, or similar, compare base versus head behavior and keep or revise material semantic regressions that can break callers. Reject when the PR text/spec clearly states the behavior change is intentional, or when the verifier cannot resolve the missing evidence predicate.",
         "Skill false-positive guidance:\n" + projection.text,
         ...blocks,
         "Finish by calling submit_verdict with schema-valid arguments. Do not answer in plain text."

@@ -507,6 +507,7 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   }
   const localCacheHits = firstNumberPath([
     [artifacts.metricsSources.modelCallsSummary, ["localModelCallCache", "hit"]],
+    [artifacts.metricsSources.costProfile, ["localModelCallCache", "hit"]],
     [artifacts.metricsSources.modelCallsSummary, ["cache", "hit"]]
   ]);
   if (localCacheHits !== undefined) {
@@ -515,6 +516,7 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   }
   const localCacheMisses = firstNumberPath([
     [artifacts.metricsSources.modelCallsSummary, ["localModelCallCache", "miss"]],
+    [artifacts.metricsSources.costProfile, ["localModelCallCache", "miss"]],
     [artifacts.metricsSources.modelCallsSummary, ["cache", "miss"]]
   ]);
   if (localCacheMisses !== undefined) {
@@ -523,6 +525,7 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   }
   const localCacheWrites = firstNumberPath([
     [artifacts.metricsSources.modelCallsSummary, ["localModelCallCache", "write"]],
+    [artifacts.metricsSources.costProfile, ["localModelCallCache", "write"]],
     [artifacts.metricsSources.modelCallsSummary, ["cache", "write"]]
   ]);
   if (localCacheWrites !== undefined) {
@@ -531,6 +534,7 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   const providerPromptCacheReadTokens = firstNumberPath([
     [artifacts.metricsSources.modelCallsSummary, ["providerPromptCache", "readTokens"]],
     [artifacts.metricsSources.costProfile, ["providerPromptCache", "readTokens"]],
+    [artifacts.metricsSources.costProfile, ["costBreakdown", "providerPromptCacheRead", "tokens"]],
     [artifacts.metricsSources.modelCallsSummary, ["cacheReadTokens"]],
     [artifacts.metricsSources.costProfile, ["tokens", "cacheReadTokens"]]
   ]);
@@ -540,6 +544,7 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   const providerPromptCacheWriteTokens = firstNumberPath([
     [artifacts.metricsSources.modelCallsSummary, ["providerPromptCache", "writeTokens"]],
     [artifacts.metricsSources.costProfile, ["providerPromptCache", "writeTokens"]],
+    [artifacts.metricsSources.costProfile, ["costBreakdown", "providerPromptCacheWrite", "tokens"]],
     [artifacts.metricsSources.modelCallsSummary, ["cacheWriteTokens"]],
     [artifacts.metricsSources.costProfile, ["tokens", "cacheWriteTokens"]]
   ]);
@@ -549,6 +554,7 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   const providerPromptCacheReadCostUSD = firstNumberPath([
     [artifacts.metricsSources.modelCallsSummary, ["providerPromptCache", "readCostUSD"]],
     [artifacts.metricsSources.costProfile, ["providerPromptCache", "readCostUSD"]],
+    [artifacts.metricsSources.costProfile, ["costBreakdown", "providerPromptCacheRead", "costUSD"]],
     [artifacts.metricsSources.modelCallsSummary, ["cacheReadCostUSD"]],
     [artifacts.metricsSources.costProfile, ["cost", "cacheReadCostUSD"]]
   ]);
@@ -558,6 +564,7 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   const providerPromptCacheWriteCostUSD = firstNumberPath([
     [artifacts.metricsSources.modelCallsSummary, ["providerPromptCache", "writeCostUSD"]],
     [artifacts.metricsSources.costProfile, ["providerPromptCache", "writeCostUSD"]],
+    [artifacts.metricsSources.costProfile, ["costBreakdown", "providerPromptCacheWrite", "costUSD"]],
     [artifacts.metricsSources.modelCallsSummary, ["cacheWriteCostUSD"]],
     [artifacts.metricsSources.costProfile, ["cost", "cacheWriteCostUSD"]]
   ]);
@@ -1043,8 +1050,11 @@ function normalizeGateReason(reason: string): string {
   if (/invalid_anchor/u.test(reason)) {
     return "invalid-anchor";
   }
+  if (/evidence_resolution_lane_limit/u.test(reason)) {
+    return "evidence-resolution-lane-limit";
+  }
   if (/low_confidence|confidence/u.test(reason)) {
-    return "low-confidence-suppressed";
+    return "low-confidence-pre-gate-suppressed";
   }
   if (/evidence/u.test(reason)) {
     return "no-evidence";

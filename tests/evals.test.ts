@@ -396,6 +396,37 @@ describe("eval scoring", () => {
       cacheMisses: 1
     });
 
+    const costProfileOnly = scoreEvalRun({
+      name: "cost-profile-cache-metrics",
+      artifacts: { path: "unused" }
+    }, {
+      candidates: [],
+      verification: [],
+      finalSelection: [],
+      finalFindings: [],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {
+        costProfile: {
+          localModelCallCache: { hit: 4, miss: 6, disabled: 0, write: 2 },
+          costBreakdown: {
+            providerPromptCacheRead: { tokens: 77, costUSD: 0.007 },
+            providerPromptCacheWrite: { tokens: 8, costUSD: 0.008 }
+          }
+        }
+      }
+    }, "live");
+
+    expect(costProfileOnly.metrics).toMatchObject({
+      localModelCallCacheHits: 4,
+      localModelCallCacheMisses: 6,
+      localModelCallCacheWrites: 2,
+      providerPromptCacheReadTokens: 77,
+      providerPromptCacheWriteTokens: 8,
+      providerPromptCacheReadCostUSD: 0.007,
+      providerPromptCacheWriteCostUSD: 0.008
+    });
+
     const legacy = scoreEvalRun({
       name: "legacy-cache-metrics",
       artifacts: { path: "unused" }

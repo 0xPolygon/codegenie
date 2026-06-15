@@ -123,7 +123,21 @@ describe("run telemetry", () => {
           byLevel: { deep: 1, normal: 1, light: 0, skip: 1 },
           hunks: { total: 3, reviewed: 1, skipped: 1, failed: 1, degraded: 1 }
         },
-        candidates: { generated: 4, gateRejected: 1, verificationScheduled: 3 },
+        candidates: {
+          generated: 4,
+          gateRejected: 1,
+          verificationScheduled: 3,
+          verificationBudgetLimited: 1,
+          clusteredDuplicates: 2,
+          verificationRepresentatives: 3,
+          lowConfidenceSuppressed: 1,
+          lowConfidenceEvidenceEligible: 2,
+          lowConfidenceEvidenceScheduled: 1,
+          lowConfidenceEvidenceLaneLimited: 1,
+          lowConfidenceEvidenceKept: 1,
+          lowConfidenceEvidenceRejected: 1,
+          lowConfidenceEvidenceIncomplete: 0
+        },
         verdicts: { accept: 1, revise: 1, reject: 1, incomplete: 1 },
         dedup: { clusters: 2, duplicates: 1, suppressed: 1 },
         finalSelection: { published: 1, merged: 1, suppressed: 1, finalFindings: 1 },
@@ -316,7 +330,21 @@ describe("run telemetry", () => {
     expect(telemetryJson).toMatchObject({
       packets: { generated: 2, reviewed: 1, failed: 1, degraded: 1 },
       lenses: { selected: 2, byLens: { "core/code-review": 2, "lang/typescript": 1 } },
-      candidates: { generated: 4, gateRejected: 1, verificationScheduled: 3 },
+      candidates: {
+        generated: 4,
+        gateRejected: 1,
+        verificationScheduled: 3,
+        verificationBudgetLimited: 1,
+        clusteredDuplicates: 2,
+        verificationRepresentatives: 3,
+        lowConfidenceSuppressed: 1,
+        lowConfidenceEvidenceEligible: 2,
+        lowConfidenceEvidenceScheduled: 1,
+        lowConfidenceEvidenceLaneLimited: 1,
+        lowConfidenceEvidenceKept: 1,
+        lowConfidenceEvidenceRejected: 1,
+        lowConfidenceEvidenceIncomplete: 0
+      },
       verdicts: { accept: 1, revise: 1, reject: 1, incomplete: 1 },
       dedup: { clusters: 2, duplicates: 1, suppressed: 1 },
       finalSelection: { published: 1, merged: 1, suppressed: 1, finalFindings: 1 },
@@ -488,7 +516,15 @@ describe("run telemetry", () => {
     const costProfile = readJson(path.join(attached.runDir, "cost-profile.json"));
     expect(costProfile).toMatchObject({
       totalCostUSD: 0.037,
+      localModelCallCache: { hit: 1, miss: 1, disabled: 0, write: 0 },
       providerPromptCache: { readTokens: 100, writeTokens: 2, readCostUSD: 0.003, writeCostUSD: 0.004 },
+      costBreakdown: {
+        uncachedInput: { tokens: 10, costUSD: 0.01 },
+        providerPromptCacheRead: { tokens: 100, costUSD: 0.003 },
+        providerPromptCacheWrite: { tokens: 2, costUSD: 0.004 },
+        output: { tokens: 5, costUSD: 0.02 },
+        total: { tokens: 117, costUSD: 0.037 }
+      },
       tokens: {
         inputTokens: 112,
         uncachedInputTokens: 10,
@@ -504,6 +540,22 @@ describe("run telemetry", () => {
         cacheReadCostUSD: 0.003,
         cacheWriteCostUSD: 0.004,
         totalCostUSD: 0.037
+      }
+    });
+    const groupedCost = costProfile.costBreakdown.uncachedInput.costUSD +
+      costProfile.costBreakdown.providerPromptCacheRead.costUSD +
+      costProfile.costBreakdown.providerPromptCacheWrite.costUSD +
+      costProfile.costBreakdown.output.costUSD;
+    expect(groupedCost).toBeCloseTo(costProfile.totalCostUSD);
+    expect(costProfile.byStage["7"]).toMatchObject({
+      localModelCallCache: { hit: 1, miss: 1, disabled: 0, write: 0 },
+      providerPromptCache: { readTokens: 100, writeTokens: 2, readCostUSD: 0.003, writeCostUSD: 0.004 },
+      costBreakdown: {
+        uncachedInput: { tokens: 10, costUSD: 0.01 },
+        providerPromptCacheRead: { tokens: 100, costUSD: 0.003 },
+        providerPromptCacheWrite: { tokens: 2, costUSD: 0.004 },
+        output: { tokens: 5, costUSD: 0.02 },
+        total: { tokens: 117, costUSD: 0.037 }
       }
     });
   });
