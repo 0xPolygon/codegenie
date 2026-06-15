@@ -160,10 +160,10 @@ export function suppressResolvedFollowUpHints(
   if (resolvedHints.length === 0) {
     return packetResults;
   }
-  const resolvedKeys = new Set(resolvedHints.map((hint) => followUpHintKey(hint.question)));
+  const resolvedKeys = new Set(resolvedHints.map((hint) => followUpHintKey(hint)));
   return packetResults.map((result) => ({
     ...result,
-    followUpHints: result.followUpHints.filter((hint) => !resolvedKeys.has(followUpHintKey(hint.question)))
+    followUpHints: result.followUpHints.filter((hint) => !resolvedKeys.has(followUpHintKey(hint)))
   }));
 }
 
@@ -293,11 +293,11 @@ function repeatedHintGroups(packetResults: PacketReviewResult[]): HintGroup[] {
       if (question.length === 0 || hint.confidence === "low") {
         continue;
       }
-      const key = followUpHintKey(question);
-      const existing = groups.get(key);
       const files = cleanStrings(hint.files);
       const symbols = cleanStrings(hint.symbols);
       const suggestedLenses = cleanStrings(hint.suggestedLenses);
+      const key = followUpHintKey({ question, files, symbols });
+      const existing = groups.get(key);
       const packetIds = [result.packetId];
       if (!existing) {
         groups.set(key, {
@@ -343,11 +343,20 @@ function cleanStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))].sort();
 }
 
-function followUpHintKey(question: string): string {
-  return normalizeFollowUpQuestion(question)
+type FollowUpHintKeyInput = {
+  question: string;
+  files: string[];
+  symbols: string[];
+};
+
+function followUpHintKey(input: FollowUpHintKeyInput): string {
+  const question = normalizeFollowUpQuestion(input.question)
     .replace(/^(please\s+)?(check|confirm|verify|investigate|review)\s+(whether|if|that)?\s*/u, "")
     .replace(/^(whether|if)\s+/u, "")
     .trim();
+  const files = cleanStrings(input.files).map(normalizeScopeValue).slice(0, 5).join(",");
+  const symbols = cleanStrings(input.symbols).map(normalizeScopeValue).slice(0, 5).join(",");
+  return `q:${question}|files:${files || "none"}|symbols:${symbols || "none"}`;
 }
 
 function normalizeFollowUpQuestion(question: string): string {
@@ -356,4 +365,8 @@ function normalizeFollowUpQuestion(question: string): string {
     .replace(/[^a-z0-9_./:-]+/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
+}
+
+function normalizeScopeValue(input: string): string {
+  return input.toLowerCase().replace(/\s+/gu, " ").trim();
 }

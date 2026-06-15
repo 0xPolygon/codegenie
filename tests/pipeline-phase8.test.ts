@@ -49,6 +49,20 @@ describe("phase 8 targeted system review", () => {
     });
   });
 
+  it("does not group identical follow-up questions from different scopes", () => {
+    const packetResults = [
+      packetResult("packet-1", [hint("Check whether this request needs tenant authorization.", ["auth/session.ts"], ["refreshSession"])]),
+      packetResult("packet-2", [hint("Verify if this request needs tenant authorization.", ["billing/charge.ts"], ["chargeTenant"])])
+    ];
+
+    const tasks = buildSystemReviewTasks(packetResults, [
+      fakePacket("packet-1", "auth/session.ts", "refreshSession"),
+      fakePacket("packet-2", "billing/charge.ts", "chargeTenant")
+    ]);
+
+    expect(tasks).toEqual([]);
+  });
+
   it("does not dispatch Stage 8 when hints are isolated", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const result = await runTargetedSystemReviews(
@@ -100,6 +114,23 @@ describe("phase 8 targeted system review", () => {
     ]);
 
     expect(filtered.flatMap((result) => result.followUpHints)).toEqual([]);
+  });
+
+  it("keeps same-question human-attention hints when Stage 8 resolves a different scope", () => {
+    const first = packetResult("packet-1", [hint("Check whether this request needs tenant authorization.", ["auth/session.ts"], ["refreshSession"])]);
+    const second = packetResult("packet-2", [hint("Verify if this request needs tenant authorization.", ["billing/charge.ts"], ["chargeTenant"])]);
+
+    const filtered = suppressResolvedFollowUpHints([first, second], [
+      {
+        taskId: "system-1",
+        question: "Check whether this request needs tenant authorization.",
+        files: ["auth/session.ts"],
+        symbols: ["refreshSession"],
+        resolution: "The session refresh path already checks tenant membership."
+      }
+    ]);
+
+    expect(filtered.flatMap((result) => result.followUpHints).map((hint) => hint.files)).toEqual([["billing/charge.ts"]]);
   });
 
   it("passes Stage 8 candidate findings into normal verification", async () => {
@@ -204,7 +235,7 @@ function packetResult(packetId: string, followUpHints: PacketReviewResult["follo
   };
 }
 
-function fakePacket(id: string, path: string): ReviewPacket {
+function fakePacket(id: string, path: string, symbol = "divide"): ReviewPacket {
   return {
     id,
     kind: "hunk",
@@ -237,12 +268,12 @@ function fakePacket(id: string, path: string): ReviewPacket {
       {
         path,
         hunkId: "h1",
-        enclosingSymbol: "divide",
+        enclosingSymbol: symbol,
         symbolKind: "function",
         symbolRange: [1, 3],
         changedLines: [2],
         changedLinesSide: "new",
-        signature: "function divide(total: number, count: number)",
+        signature: `function ${symbol}(total: number, count: number)`,
         source: "tree-sitter",
         confidence: "syntactic"
       }
