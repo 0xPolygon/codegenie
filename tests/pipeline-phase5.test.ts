@@ -2768,6 +2768,173 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
+  it("clusters duplicate root-cause candidates across packet anchors and passes sibling evidence to the verifier", async () => {
+    let verifierCalls = 0;
+    const verifierCandidates: CandidateFinding[] = [];
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const first = {
+      ...fakeFinding(),
+      id: "routing-1",
+      title: "Fallback can use a disabled preferred provider",
+      failureMode: "Fallback routing can still select a disabled preferred provider.",
+      evidence: { changedCode: "if provider == PreferredSwapProvider { return route }" }
+    };
+    const second = {
+      ...fakeFinding(),
+      id: "routing-2",
+      title: "Preferred provider fallback ignores disabled provider",
+      failureMode: "Fallback routing can still select a disabled preferred provider.",
+      evidence: { changedCode: "return PreferredSwapProvider" },
+      anchor: { path: "app.ts", line: 2, side: "RIGHT", hunkId: "h1" },
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-2" }
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() => {
+        verifierCalls += 1;
+        return {
+          verdict: "keep",
+          reason: "cluster representative kept",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        } as T;
+      }
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [
+          { packetId: "packet-1", lenses: ["core/code-review"], findings: [first], followUpHints: [], uncertainties: [], status: "completed" },
+          { packetId: "packet-2", lenses: ["core/code-review"], findings: [second], followUpHints: [], uncertainties: [], status: "completed" }
+        ],
+        packets: [
+          fakePacket({ id: "packet-1" }),
+          fakePacket({
+            id: "packet-2",
+            hunkLines: [{ kind: "add", content: "return PreferredSwapProvider", newLine: 2 }],
+            changedNewLineNumbers: [2]
+          })
+        ]
+      },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner,
+        promptBuilder: {
+          ...fakePromptBuilder(),
+          buildVerifierPrompt: (input) => {
+            verifierCandidates.push(input.candidate);
+            return { prompt: "", templateVersion: "test", untrustedBlockCount: 0 };
+          }
+        },
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeTwoLineDiff()
+      }
+    );
+
+    expect(verifierCalls).toBe(1);
+    expect(verifierCandidates).toHaveLength(1);
+    expect(verifierCandidates[0]?.evidence.relatedCode).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: "app.ts",
+        lines: "return PreferredSwapProvider",
+        whyRelevant: expect.stringContaining("routing-2")
+      })
+    ]));
+    expect(verified.verified.map((finding) => finding.id).sort()).toEqual(["routing-1", "routing-2"]);
+    expect(verified.verified.find((finding) => finding.id === "routing-2")).toMatchObject({
+      clusterId: "routing-1",
+      duplicateOf: "routing-1"
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 9,
+      level: "info",
+      message: "verification_candidate_clustering",
+      data: expect.objectContaining({
+        candidates: 2,
+        representatives: 1,
+        clusters: 1,
+        duplicateCandidates: 1
+      })
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 9,
+      level: "info",
+      message: "verification_candidates_clustered",
+      data: expect.objectContaining({
+        representativeId: "routing-1",
+        duplicateIds: ["routing-2"],
+        clusterSize: 2,
+        skippedVerificationCandidates: 1
+      })
+    }));
+  });
+
+  it("does not cluster similar titles when failure modes and evidence differ", async () => {
+    let verifierCalls = 0;
+    const first = {
+      ...fakeFinding(),
+      id: "validation-1",
+      title: "Request validation can be bypassed",
+      failureMode: "Negative amounts can pass through validation.",
+      evidence: { changedCode: "if amount < 0 { return nil }" }
+    };
+    const second = {
+      ...fakeFinding(),
+      id: "validation-2",
+      title: "Request validation can be bypassed",
+      failureMode: "Unauthenticated users can reach the handler.",
+      evidence: { changedCode: "if userID == \"\" { allow() }" },
+      anchor: { path: "app.ts", line: 2, side: "RIGHT", hunkId: "h1" },
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-2" }
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [
+          { packetId: "packet-1", lenses: ["core/code-review"], findings: [first], followUpHints: [], uncertainties: [], status: "completed" },
+          { packetId: "packet-2", lenses: ["core/code-review"], findings: [second], followUpHints: [], uncertainties: [], status: "completed" }
+        ],
+        packets: [
+          fakePacket({ id: "packet-1" }),
+          fakePacket({
+            id: "packet-2",
+            hunkLines: [{ kind: "add", content: "if userID == \"\" { allow() }", newLine: 2 }],
+            changedNewLineNumbers: [2]
+          })
+        ]
+      },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => {
+            verifierCalls += 1;
+            return {
+              verdict: "keep",
+              reason: "kept",
+              requiredEvidencePresent: true,
+              falsePositiveRisk: "low"
+            } as T;
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeTwoLineDiff()
+      }
+    );
+
+    expect(verifierCalls).toBe(2);
+    expect(verified.verified.map((finding) => finding.id).sort()).toEqual(["validation-1", "validation-2"]);
+    expect(verified.verified.some((finding) => finding.duplicateOf !== undefined || finding.clusterId !== undefined)).toBe(false);
+  });
+
   it("applies verifier keep finalFinding revisions to duplicate clusters", async () => {
     const artifacts = new Map<string, unknown>();
     const duplicate = {

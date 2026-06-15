@@ -66,6 +66,8 @@ type VerifierReservation = {
   released: boolean;
 };
 
+type RelatedCodeEvidence = NonNullable<CandidateFinding["evidence"]["relatedCode"]>[number];
+
 export async function verifyFindings(
   input: { packetResults: PacketReviewResult[]; packets: ReviewPacket[] },
   tools: RepositoryTools,
@@ -116,10 +118,12 @@ export async function verifyFindings(
       message: "pipeline_metrics",
       data: {
         totals: { verified: clustered.all.length },
-        candidates: {
-          gateRejected: gateRejections,
-          verificationScheduled: 0
-        },
+      candidates: {
+        gateRejected: gateRejections,
+        verificationScheduled: 0,
+        clusteredDuplicates: clustered.duplicateCount,
+        verificationRepresentatives: clustered.representatives.length
+      },
         verdicts: verdictCounts(verdicts)
       }
     });
@@ -221,7 +225,9 @@ export async function verifyFindings(
       candidates: {
         gateRejected: gateRejections,
         verificationScheduled: scheduling.scheduled.length,
-        verificationBudgetLimited: scheduling.budgetLimited.length
+        verificationBudgetLimited: scheduling.budgetLimited.length,
+        clusteredDuplicates: clustered.duplicateCount,
+        verificationRepresentatives: clustered.representatives.length
       },
       verdicts: verdictCounts(verdicts)
     }
@@ -740,6 +746,7 @@ function clusterCandidates(
   all: CandidateFinding[];
   representatives: CandidateFinding[];
   duplicatesByRepresentative: Map<string, CandidateFinding[]>;
+  duplicateCount: number;
 } {
   const clusters: CandidateFinding[][] = [];
   for (const candidate of candidates) {
@@ -757,7 +764,6 @@ function clusterCandidates(
 
   for (const cluster of clusters) {
     const representative = verifierRepresentative(cluster);
-    const clusteredRepresentative = cluster.length > 1 ? { ...representative, clusterId: representative.id } : representative;
     const duplicates = cluster
       .filter((candidate) => candidate.id !== representative.id)
       .map((candidate) => ({
@@ -765,6 +771,9 @@ function clusterCandidates(
         clusterId: representative.id,
         duplicateOf: representative.id
       }));
+    const clusteredRepresentative = cluster.length > 1
+      ? withSiblingEvidence({ ...representative, clusterId: representative.id }, duplicates)
+      : representative;
     representatives.push(clusteredRepresentative);
     all.push(clusteredRepresentative, ...duplicates);
     if (duplicates.length > 0) {
@@ -773,12 +782,36 @@ function clusterCandidates(
         stage: 9,
         level: "info",
         message: "verification_candidates_clustered",
-        data: { representativeId: representative.id, duplicateIds: duplicates.map((candidate) => candidate.id) }
+        data: {
+          representativeId: representative.id,
+          duplicateIds: duplicates.map((candidate) => candidate.id),
+          clusterSize: cluster.length,
+          skippedVerificationCandidates: duplicates.length,
+          paths: [...new Set(cluster.map((candidate) => candidate.path))].sort()
+        }
       });
     }
   }
 
-  return { all, representatives, duplicatesByRepresentative };
+  const duplicateCount = all.length - representatives.length;
+  telemetry.event({
+    stage: 9,
+    level: "info",
+    message: "verification_candidate_clustering",
+    data: {
+      candidates: candidates.length,
+      representatives: representatives.length,
+      clusters: clusters.length,
+      duplicateCandidates: duplicateCount,
+      clusteredGroups: [...duplicatesByRepresentative.entries()].map(([representativeId, duplicates]) => ({
+        representativeId,
+        duplicateIds: duplicates.map((candidate) => candidate.id),
+        clusterSize: duplicates.length + 1
+      }))
+    }
+  });
+
+  return { all, representatives, duplicatesByRepresentative, duplicateCount };
 }
 
 function duplicateCandidate(
@@ -786,37 +819,204 @@ function duplicateCandidate(
   b: CandidateFinding | undefined,
   packetsById: Map<string, ReviewPacket>
 ): boolean {
-  if (!b || a.path !== b.path || a.category !== b.category) {
+  if (!b) {
     return false;
   }
+  const failureMatches = strongTextMatch(a.failureMode, b.failureMode);
+  if (a.category !== b.category && !failureMatches) {
+    return false;
+  }
+  if (!candidateScopesOverlap(a, b, packetsById)) {
+    return false;
+  }
+  const titleMatches = strongTextMatch(a.title, b.title);
+  const evidenceMatches = changedEvidenceMatches(a, b);
+  const symbolMatches = candidateSymbolsOverlap(a, b, packetsById);
+  const exactLocationMatches = locationClusterKey(a, packetsById) !== undefined && locationClusterKey(a, packetsById) === locationClusterKey(b, packetsById);
+  if (exactLocationMatches && (titleMatches || failureMatches || evidenceMatches)) {
+    return true;
+  }
+  if (highImpactAmbiguous(a, b) && !failureMatches && !evidenceMatches) {
+    return false;
+  }
+  return (failureMatches && (titleMatches || evidenceMatches || symbolMatches || a.path === b.path)) ||
+    (evidenceMatches && (titleMatches || failureMatches)) ||
+    (titleMatches && failureMatches);
+}
+
+function withSiblingEvidence(representative: CandidateFinding, duplicates: CandidateFinding[]): CandidateFinding {
+  const relatedCode = dedupeRelatedCode([
+    ...(representative.evidence.relatedCode ?? []),
+    ...duplicates.flatMap((duplicate): RelatedCodeEvidence[] => [
+      {
+        path: duplicate.path,
+        lines: truncateEvidenceLines(duplicate.evidence.changedCode),
+        whyRelevant: `Duplicate candidate ${duplicate.id} reported the same root issue: ${truncateReason(duplicate.failureMode)}`
+      },
+      ...(duplicate.evidence.relatedCode ?? [])
+    ])
+  ]).slice(0, 10);
+  return {
+    ...representative,
+    evidence: {
+      ...representative.evidence,
+      ...(relatedCode.length > 0 ? { relatedCode } : {})
+    }
+  };
+}
+
+function dedupeRelatedCode(entries: RelatedCodeEvidence[]): RelatedCodeEvidence[] {
+  const seen = new Set<string>();
+  const deduped: RelatedCodeEvidence[] = [];
+  for (const entry of entries) {
+    const key = `${entry.path}\n${normalizeCode(entry.lines)}\n${normalize(entry.whyRelevant)}`;
+    if (seen.has(key) || entry.lines.trim().length === 0) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(entry);
+  }
+  return deduped;
+}
+
+function candidateScopesOverlap(a: CandidateFinding, b: CandidateFinding, packetsById: Map<string, ReviewPacket>): boolean {
   const aLocation = locationClusterKey(a, packetsById);
   const bLocation = locationClusterKey(b, packetsById);
-  if (aLocation === undefined || aLocation !== bLocation) {
-    return false;
+  if (aLocation !== undefined && aLocation === bLocation) {
+    return true;
   }
-  return normalize(a.title) === normalize(b.title) || normalize(a.evidence.changedCode) === normalize(b.evidence.changedCode);
+  if (a.path === b.path) {
+    const aSymbols = candidateSymbols(a, packetsById);
+    const bSymbols = candidateSymbols(b, packetsById);
+    if (!a.anchor && !b.anchor && aSymbols.size > 0 && bSymbols.size > 0 && !setsIntersect(aSymbols, bSymbols)) {
+      return false;
+    }
+    return true;
+  }
+  if (setsIntersect(candidateEvidencePaths(a), candidateEvidencePaths(b))) {
+    return true;
+  }
+  return relatedRoot(a.path) === relatedRoot(b.path) && candidateSymbolsOverlap(a, b, packetsById);
 }
 
 function locationClusterKey(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): string | undefined {
   if (candidate.anchor) {
     return `anchor:${candidate.anchor.path}:${candidate.anchor.side}:${candidate.anchor.line}:${candidate.anchor.hunkId}`;
   }
-  const packet = packetsById.get(candidate.producedBy.packetId);
-  const symbols = [...new Set(
-    (packet?.symbolFacts ?? [])
-      .map((fact) => fact.enclosingSymbol)
-      .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
-  )];
-  if (symbols.length !== 1) {
+  const symbols = candidateSymbols(candidate, packetsById);
+  if (symbols.size !== 1) {
     return undefined;
   }
-  return `symbol:${candidate.path}:${symbols[0]}`;
+  return `symbol:${candidate.path}:${[...symbols][0]}`;
+}
+
+function candidateEvidencePaths(candidate: CandidateFinding): Set<string> {
+  return new Set([candidate.path, ...(candidate.evidence.relatedCode ?? []).map((entry) => entry.path)]);
+}
+
+function candidateSymbolsOverlap(a: CandidateFinding, b: CandidateFinding, packetsById: Map<string, ReviewPacket>): boolean {
+  return setsIntersect(candidateSymbols(a, packetsById), candidateSymbols(b, packetsById));
+}
+
+function candidateSymbols(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): Set<string> {
+  const packet = packetsById.get(candidate.producedBy.packetId);
+  return new Set(
+    (packet?.symbolFacts ?? [])
+      .flatMap((fact) => [fact.enclosingSymbol, fact.signature])
+      .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
+      .map(normalize)
+  );
+}
+
+function changedEvidenceMatches(a: CandidateFinding, b: CandidateFinding): boolean {
+  const aChanged = normalizeCode(a.evidence.changedCode);
+  const bChanged = normalizeCode(b.evidence.changedCode);
+  if (aChanged.length > 0 && aChanged === bChanged) {
+    return true;
+  }
+  const aRelated = relatedEvidenceKeys(a);
+  const bRelated = relatedEvidenceKeys(b);
+  return setsIntersect(aRelated, bRelated);
+}
+
+function relatedEvidenceKeys(candidate: CandidateFinding): Set<string> {
+  return new Set((candidate.evidence.relatedCode ?? [])
+    .map((entry) => `${entry.path}:${normalizeCode(entry.lines)}`)
+    .filter((entry) => !entry.endsWith(":")));
+}
+
+function highImpactAmbiguous(a: CandidateFinding, b: CandidateFinding): boolean {
+  return isHighImpact(a) || isHighImpact(b);
+}
+
+function isHighImpact(candidate: CandidateFinding): boolean {
+  return candidate.severity === "critical" || candidate.severity === "high";
+}
+
+function strongTextMatch(a: string, b: string): boolean {
+  const left = normalize(a);
+  const right = normalize(b);
+  if (left.length === 0 || right.length === 0) {
+    return false;
+  }
+  if (left === right) {
+    return isSubstantiveText(left);
+  }
+  const shorter = left.length < right.length ? left : right;
+  const longer = left.length < right.length ? right : left;
+  if (shorter.length >= 24 && longer.includes(shorter)) {
+    return true;
+  }
+  const leftTokens = significantTokens(left);
+  const rightTokens = significantTokens(right);
+  if (leftTokens.size < 4 || rightTokens.size < 4) {
+    return false;
+  }
+  const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+  const union = new Set([...leftTokens, ...rightTokens]).size;
+  return union > 0 && intersection / union >= 0.82;
+}
+
+function isSubstantiveText(input: string): boolean {
+  return input.length >= 12 || significantTokens(input).size >= 3;
+}
+
+function significantTokens(input: string): Set<string> {
+  const stopWords = new Set(["a", "an", "and", "are", "as", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "with"]);
+  return new Set(input.split(" ").filter((token) => token.length > 1 && !stopWords.has(token)));
+}
+
+function setsIntersect<T>(a: Set<T>, b: Set<T>): boolean {
+  for (const value of a) {
+    if (b.has(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function relatedRoot(filePath: string): string {
+  const parts = filePath.split("/").filter(Boolean);
+  if (parts.length <= 2) {
+    return parts[0] ?? filePath;
+  }
+  return parts.slice(0, 2).join("/");
+}
+
+function truncateEvidenceLines(lines: string): string {
+  const trimmed = lines.trim();
+  return trimmed.length <= 4000 ? trimmed : `${trimmed.slice(0, 3997)}...`;
+}
+
+function truncateReason(reason: string): string {
+  const trimmed = reason.trim().replace(/\s+/gu, " ");
+  return trimmed.length <= 240 ? trimmed : `${trimmed.slice(0, 237)}...`;
 }
 
 function verifierRepresentative(candidates: CandidateFinding[]): CandidateFinding {
   const first = [...candidates].sort((a, b) =>
-    confidenceRank(a.confidence) - confidenceRank(b.confidence) ||
     severityRank(a.severity) - severityRank(b.severity) ||
+    confidenceRank(a.confidence) - confidenceRank(b.confidence) ||
     a.id.localeCompare(b.id)
   )[0];
   if (!first) {
@@ -834,5 +1034,9 @@ function confidenceRank(confidence: CandidateFinding["confidence"]): number {
 }
 
 function normalize(input: string): string {
-  return input.toLowerCase().replace(/\s+/gu, " ").trim();
+  return input.toLowerCase().replace(/[^a-z0-9_./:-]+/gu, " ").replace(/\s+/gu, " ").trim();
+}
+
+function normalizeCode(input: string): string {
+  return input.trim().replace(/\s+/gu, " ");
 }
