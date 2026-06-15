@@ -46,6 +46,8 @@ type SelectionRecord = {
 };
 
 const MAX_COMPOSER_FINDINGS = 40;
+const MAX_HUMAN_ATTENTION_NOTES = 8;
+const HUMAN_ATTENTION_LOCATION_CAP = 6;
 
 export async function dedupeRankAndComposeReview(
   verified: { verified: CandidateFinding[]; verdicts: VerificationVerdict[] },
@@ -60,7 +62,7 @@ export async function dedupeRankAndComposeReview(
   const packetsById = new Map((opts.packets ?? []).map((packet) => [packet.id, packet]));
   const pretrim = pretrimComposerInput(verified.verified);
   const groups = groupFindings(pretrim.kept, packetsById);
-  const notes = needsHumanAttention(opts.packetResults ?? []);
+  const notes = needsHumanAttention(opts.packetResults ?? [], telemetry);
   if (pretrim.suppressed.length > 0) {
     const reason = `composer pre-trim suppressed ${pretrim.suppressed.length} verified finding${pretrim.suppressed.length === 1 ? "" : "s"} above the ${MAX_COMPOSER_FINDINGS}-finding composer input cap`;
     coverage.reasons.push(reason);
@@ -73,7 +75,7 @@ export async function dedupeRankAndComposeReview(
   }
   let fallbackUsed = false;
   let compositionDegraded = false;
-  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts).catch((error) => {
+  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, notes).catch((error) => {
     if (isFatalLlmError(error)) {
       throw error;
     }
@@ -216,9 +218,9 @@ async function runComposer(
   coverage: RunCoverageStatus,
   config: CodeninjaConfig,
   telemetry: TelemetryRecorder,
-  opts: ComposeOptions
+  opts: ComposeOptions,
+  notes: NeedsHumanAttentionNote[]
 ): Promise<SubmitComposition> {
-  const notes = needsHumanAttention(opts.packetResults ?? []);
   const prompt = opts.promptBuilder.buildComposerPrompt({
     groupedFindingsJson: JSON.stringify(groups, null, 2),
     intent: `Declared intent: ${plan.diffUnderstanding.declaredIntent}\nInferred behavior: ${plan.diffUnderstanding.inferredBehavior}`,
@@ -635,39 +637,176 @@ function buildSelectionRecords(
   return [...records.values()].sort((a, b) => a.findingId.localeCompare(b.findingId));
 }
 
-function needsHumanAttention(packetResults: PacketReviewResult[]): NeedsHumanAttentionNote[] {
-  const byQuestion = new Map<string, NeedsHumanAttentionNote>();
-  for (const hint of packetResults.flatMap((result) => result.followUpHints)) {
-    if (hint.confidence === "low") {
-      continue;
+type AttentionHint = Omit<PacketReviewResult["followUpHints"][number], "confidence"> & {
+  confidence: Exclude<Confidence, "low">;
+  packetId: string;
+};
+
+type AttentionHintGroup = {
+  key: string;
+  representative: AttentionHint;
+  files: string[];
+  symbols: string[];
+  packetIds: Set<string>;
+  count: number;
+};
+
+function needsHumanAttention(packetResults: PacketReviewResult[], telemetry?: TelemetryRecorder): NeedsHumanAttentionNote[] {
+  const groups = new Map<string, AttentionHintGroup>();
+  let rawHints = 0;
+  let eligibleHints = 0;
+
+  for (const result of packetResults) {
+    for (const hint of result.followUpHints) {
+      rawHints += 1;
+      const confidence = hint.confidence;
+      if (confidence === "low") {
+        continue;
+      }
+      const question = hint.question.trim();
+      if (question.length === 0) {
+        continue;
+      }
+      eligibleHints += 1;
+      const normalized: AttentionHint = {
+        question,
+        files: cleanStrings(hint.files),
+        symbols: cleanStrings(hint.symbols),
+        reason: hint.reason.trim(),
+        suggestedLenses: hint.suggestedLenses,
+        confidence,
+        packetId: result.packetId
+      };
+      const key = followUpHintKey(normalized);
+      const existing = groups.get(key);
+      if (!existing) {
+        groups.set(key, {
+          key,
+          representative: normalized,
+          files: normalized.files,
+          symbols: normalized.symbols,
+          packetIds: new Set([result.packetId]),
+          count: 1
+        });
+        continue;
+      }
+      existing.count += 1;
+      existing.packetIds.add(result.packetId);
+      existing.files = mergeStrings(existing.files, normalized.files);
+      existing.symbols = mergeStrings(existing.symbols, normalized.symbols);
+      existing.representative = strongerAttentionHint(existing.representative, normalized);
     }
-    const key = hint.question.trim();
-    if (key.length === 0) {
-      continue;
-    }
-    const existing = byQuestion.get(key);
-    if (!existing) {
-      byQuestion.set(key, {
-        question: key,
-        files: [...new Set(hint.files)].sort(),
-        symbols: [...new Set(hint.symbols)].sort(),
-        reason: hint.reason,
-        confidence: hint.confidence
-      });
-      continue;
-    }
-    const confidence = strongerConfidence(existing.confidence, hint.confidence);
-    byQuestion.set(key, {
-      question: key,
-      files: mergeStrings(existing.files, hint.files),
-      symbols: mergeStrings(existing.symbols, hint.symbols),
-      reason: confidence === hint.confidence && confidenceRank(hint.confidence) < confidenceRank(existing.confidence)
-        ? hint.reason
-        : existing.reason,
-      confidence
+  }
+
+  const ranked = [...groups.values()].sort(compareAttentionGroups);
+  const emitted = ranked.slice(0, MAX_HUMAN_ATTENTION_NOTES).map(toAttentionNote);
+  if (rawHints > 0) {
+    telemetry?.event({
+      stage: 10,
+      level: "info",
+      message: "human_attention_hints_grouped",
+      data: {
+        rawHints,
+        eligibleHints,
+        groups: ranked.length,
+        emitted: emitted.length,
+        suppressedGroups: Math.max(0, ranked.length - emitted.length),
+        duplicateHints: Math.max(0, eligibleHints - ranked.length),
+        maxHumanAttentionNotes: MAX_HUMAN_ATTENTION_NOTES,
+        groupedHints: ranked.map((group, index) => ({
+          key: group.key,
+          question: group.representative.question,
+          count: group.count,
+          packets: group.packetIds.size,
+          files: capStrings(group.files),
+          symbols: capStrings(group.symbols),
+          emitted: index < MAX_HUMAN_ATTENTION_NOTES
+        }))
+      }
     });
   }
-  return [...byQuestion.values()];
+  return emitted;
+}
+
+function toAttentionNote(group: AttentionHintGroup): NeedsHumanAttentionNote {
+  return {
+    question: group.representative.question,
+    files: capStrings(group.files),
+    symbols: capStrings(group.symbols),
+    reason: group.count > 1
+      ? `${group.representative.reason} Grouped from ${group.count} related hints across ${group.packetIds.size} packet${group.packetIds.size === 1 ? "" : "s"}.`
+      : group.representative.reason,
+    confidence: group.representative.confidence
+  };
+}
+
+function compareAttentionGroups(a: AttentionHintGroup, b: AttentionHintGroup): number {
+  return attentionGroupRank(b) - attentionGroupRank(a) ||
+    a.representative.question.localeCompare(b.representative.question) ||
+    a.key.localeCompare(b.key);
+}
+
+function attentionGroupRank(group: AttentionHintGroup): number {
+  const confidenceScore = (2 - confidenceRank(group.representative.confidence)) * 1000;
+  const packetScore = Math.min(group.packetIds.size, 5) * 100;
+  const duplicateScore = Math.min(group.count, 10) * 10;
+  const specificityScore = Math.min(group.files.length, 3) + Math.min(group.symbols.length, 3) + (normalizedQuestionWords(group.representative.question).length >= 6 ? 2 : 0);
+  return confidenceScore + packetScore + duplicateScore + specificityScore;
+}
+
+function strongerAttentionHint(a: AttentionHint, b: AttentionHint): AttentionHint {
+  const confidenceDelta = confidenceRank(a.confidence) - confidenceRank(b.confidence);
+  if (confidenceDelta !== 0) {
+    return confidenceDelta < 0 ? a : b;
+  }
+  if (cleanReasonLength(b.reason) > cleanReasonLength(a.reason)) {
+    return b;
+  }
+  return a;
+}
+
+function followUpHintKey(hint: AttentionHint): string {
+  const exactQuestion = normalizeFollowUpQuestion(hint.question);
+  const looseQuestion = normalizeLooseFollowUpQuestion(exactQuestion);
+  if (exactQuestion === looseQuestion) {
+    return `follow_up|exact|${exactQuestion}`;
+  }
+  const files = cleanStrings(hint.files).slice(0, 3).join(",");
+  const symbols = cleanStrings(hint.symbols).slice(0, 3).join(",");
+  return `follow_up|near|${looseQuestion}|files:${files}|symbols:${symbols}`;
+}
+
+function normalizeFollowUpQuestion(question: string): string {
+  return question.toLowerCase()
+    .replace(/[`"'’]/gu, "")
+    .replace(/[^a-z0-9_./:-]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function normalizeLooseFollowUpQuestion(question: string): string {
+  return question
+    .replace(/^(please\s+)?(check|confirm|verify|investigate|review)\s+(whether|if|that)?\s*/u, "")
+    .replace(/^(whether|if)\s+/u, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+function normalizedQuestionWords(question: string): string[] {
+  const normalized = normalizeLooseFollowUpQuestion(normalizeFollowUpQuestion(question));
+  return normalized.length === 0 ? [] : normalized.split(" ");
+}
+
+function cleanStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))].sort();
+}
+
+function capStrings(values: string[]): string[] {
+  return values.slice(0, HUMAN_ATTENTION_LOCATION_CAP);
+}
+
+function cleanReasonLength(reason: string): number {
+  return reason.trim().length;
 }
 
 function mergeStrings(a: string[], b: string[]): string[] {

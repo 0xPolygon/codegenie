@@ -1,6 +1,6 @@
 # Issue 19: Follow-Up Hint Deduplication
 
-Status: PENDING
+Status: COMPLETE
 Planned at: a47a23b, 2026-06-14
 
 ## Problem

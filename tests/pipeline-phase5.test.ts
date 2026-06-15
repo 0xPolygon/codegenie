@@ -24,6 +24,7 @@ import type {
   CoverageLevel,
   DiffFile,
   FileFacts,
+  PacketReviewResult,
   PlannerDossier,
   RepositoryIndex,
   RepositoryTools,
@@ -5294,6 +5295,7 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it("merges duplicate follow-up questions across files and keeps strongest confidence", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const result = await dedupeRankAndComposeReview(
       { verified: [], verdicts: [] },
       fakePlan(),
@@ -5316,7 +5318,12 @@ describe("phase 5 pipeline regressions", () => {
         reasons: []
       },
       config(),
-      nullTelemetry(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
       {
         runner: {
           runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
@@ -5362,14 +5369,219 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(result.needsHumanAttention).toEqual([
-      {
+      expect.objectContaining({
         question: "Should this be migrated?",
         files: ["a.ts", "b.ts"],
         symbols: ["alpha", "beta"],
-        reason: "stronger hint",
+        reason: expect.stringContaining("Grouped from 2 related hints across 2 packets."),
         confidence: "high"
-      }
+      })
     ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 10,
+      level: "info",
+      message: "human_attention_hints_grouped",
+      data: expect.objectContaining({
+        rawHints: 2,
+        eligibleHints: 2,
+        groups: 1,
+        emitted: 1,
+        duplicateHints: 1
+      })
+    }));
+  });
+
+  it("groups near-duplicate follow-up hints when they share the same scope", async () => {
+    const result = await dedupeRankAndComposeReview(
+      { verified: [], verdicts: [] },
+      fakePlan("auth/session.ts"),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 2,
+        reviewedHunks: 2,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 2, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packetResults: [
+          packetResultWithHint("packet-1", {
+            question: "Check whether session refresh preserves the tenant boundary.",
+            files: ["auth/session.ts"],
+            symbols: ["refreshSession"],
+            reason: "tenant context is not obvious from the hunk",
+            confidence: "medium"
+          }),
+          packetResultWithHint("packet-2", {
+            question: "Verify if session refresh preserves the tenant boundary.",
+            files: ["auth/session.ts"],
+            symbols: ["refreshSession"],
+            reason: "same unresolved boundary question",
+            confidence: "medium"
+          })
+        ]
+      }
+    );
+
+    expect(result.needsHumanAttention).toHaveLength(1);
+    expect(result.needsHumanAttention[0]).toEqual(expect.objectContaining({
+      question: expect.stringContaining("session refresh preserves the tenant boundary"),
+      files: ["auth/session.ts"],
+      symbols: ["refreshSession"],
+      reason: expect.stringContaining("Grouped from 2 related hints across 2 packets."),
+      confidence: "medium"
+    }));
+  });
+
+  it("does not merge near-duplicate follow-up hints across different scopes", async () => {
+    const result = await dedupeRankAndComposeReview(
+      { verified: [], verdicts: [] },
+      fakePlan("auth/session.ts"),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 2,
+        reviewedHunks: 2,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 2, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packetResults: [
+          packetResultWithHint("packet-1", {
+            question: "Check whether this request needs tenant authorization.",
+            files: ["auth/session.ts"],
+            symbols: ["refreshSession"],
+            reason: "auth path",
+            confidence: "medium"
+          }),
+          packetResultWithHint("packet-2", {
+            question: "Verify if this request needs tenant authorization.",
+            files: ["billing/charge.ts"],
+            symbols: ["chargeTenant"],
+            reason: "billing path",
+            confidence: "medium"
+          })
+        ]
+      }
+    );
+
+    expect(result.needsHumanAttention.map((note) => note.question).sort()).toEqual([
+      "Check whether this request needs tenant authorization.",
+      "Verify if this request needs tenant authorization."
+    ]);
+  });
+
+  it("caps final follow-up notes while retaining repeated high-value groups", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packetResults = [
+      packetResultWithHint("important-1", {
+        question: "Should retry cancellation be checked against the worker shutdown path?",
+        files: ["worker/retry.ts"],
+        symbols: ["runRetry"],
+        reason: "shutdown behavior spans packets",
+        confidence: "high"
+      }),
+      packetResultWithHint("important-2", {
+        question: "Should retry cancellation be checked against the worker shutdown path?",
+        files: ["worker/retry.ts"],
+        symbols: ["runRetry"],
+        reason: "same shutdown concern",
+        confidence: "high"
+      }),
+      ...Array.from({ length: 9 }, (_, index) => packetResultWithHint(`single-${String(index + 1)}`, {
+        question: `Confirm follow-up ${String(index + 1)} for unrelated path.`,
+        files: [`pkg/file-${String(index + 1)}.ts`],
+        symbols: [`symbol${String(index + 1)}`],
+        reason: `single ${String(index + 1)}`,
+        confidence: "medium" as const
+      }))
+    ];
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [], verdicts: [] },
+      fakePlan("worker/retry.ts"),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 11,
+        reviewedHunks: 11,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 11, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packetResults
+      }
+    );
+
+    expect(result.needsHumanAttention).toHaveLength(8);
+    expect(result.needsHumanAttention[0]?.question).toBe("Should retry cancellation be checked against the worker shutdown path?");
+    expect(result.needsHumanAttention.some((note) => note.reason.includes("Grouped from 2 related hints"))).toBe(true);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 10,
+      message: "human_attention_hints_grouped",
+      data: expect.objectContaining({
+        rawHints: 11,
+        eligibleHints: 11,
+        groups: 10,
+        emitted: 8,
+        suppressedGroups: 2,
+        duplicateHints: 1,
+        maxHumanAttentionNotes: 8
+      })
+    }));
   });
 });
 
@@ -5433,6 +5645,20 @@ function fakeLogger() {
     info: () => undefined,
     warn: () => undefined,
     error: () => undefined
+  };
+}
+
+function packetResultWithHint(
+  packetId: string,
+  hint: Omit<PacketReviewResult["followUpHints"][number], "suggestedLenses"> & { suggestedLenses?: string[] }
+): PacketReviewResult {
+  return {
+    packetId,
+    lenses: ["core/code-review"],
+    findings: [],
+    followUpHints: [{ suggestedLenses: [], ...hint }],
+    uncertainties: [],
+    status: "completed"
   };
 }
 
