@@ -62,7 +62,8 @@ const MAX_HUNKS_PER_PACKET = 5;
 const MAX_LENSES_PER_PACKET = 6;
 const MAX_PATCH_CHARS = 12_000;
 const MAX_CONTEXT_CHARS = 8_000;
-const MAX_SYMBOL_CONTEXT_CHARS = 3_000;
+const DEFAULT_SYMBOL_CONTEXT_CHARS = 3_000;
+const MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS = 6_000;
 const SYMBOL_EXCERPT_WINDOW = 8;
 const MAX_SYMBOL_EXCERPT_CHARS = 2_500;
 const MAX_HINT_CONTEXT_CHARS = 2_000;
@@ -82,6 +83,7 @@ export async function buildReviewPackets(
   const factsByPath = new Map(fileFacts.map((facts) => [facts.path, facts]));
   const decisions = new Map(plan.coverage.map((decision) => [decision.hunkId, decision]));
   const packets: ReviewPacket[] = [];
+  const symbolContextMetrics = emptySymbolContextMetrics();
 
   for (const file of filtered) {
     const facts = factsByPath.get(file.path) ?? fallbackFacts(file);
@@ -108,13 +110,13 @@ export async function buildReviewPackets(
       }
       const groupDecisions = group.hunks.map((entry) => effectiveByHunk.get(entry.hunk.id)).filter((decision): decision is EffectiveDecision => decision !== undefined);
       const includedDecisions = groupDecisions.filter(isNonSkipDecision);
-      const packet = await buildPacket(group.hunks, includedDecisions, group, plan, repoIndex, opts.config, telemetry, opts.reviewContext);
+      const packet = await buildPacket(group.hunks, includedDecisions, group, plan, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics);
       packets.push(packet);
       await telemetry.writeArtifact(`packets/${packet.id}.json`, packet);
     }
   }
 
-  telemetry.event({ stage: 6, level: "info", message: "stage_completed", data: { packets: packets.length } });
+  telemetry.event({ stage: 6, level: "info", message: "stage_completed", data: { packets: packets.length, symbolContext: symbolContextMetrics } });
   return packets;
 }
 
@@ -176,7 +178,8 @@ async function buildPacket(
   repoIndex: RepositoryIndex,
   config: CodeninjaConfig,
   telemetry: TelemetryRecorder,
-  reviewContext: PacketReviewContext | undefined
+  reviewContext: PacketReviewContext | undefined,
+  symbolContextMetrics: SymbolContextMetrics
 ): Promise<ReviewPacket> {
   const first = planned[0];
   if (!first) {
@@ -187,11 +190,17 @@ async function buildPacket(
   const coverage = maxCoverage(decisions.map((decision) => decision.coverage));
   const reviewPriority = maxReviewPriority(planned.map((entry) => entry.facts.reviewPriority));
   const symbolFacts = planned.flatMap((entry) => entry.symbolFacts);
-  const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry);
-  const hintContext = await resolvePacketContextHints(repoIndex, first.file, decisions.flatMap((decision) => decision.surroundingContextHints), telemetry);
   const packetHunks = planned.map((entry, index) =>
     renderPacketHunk(entry.hunk, entry.staticSignals, telemetry, plannerFallbackReason(decisions[index]?.reason))
   );
+  const patchChars = packetHunks.reduce((sum, hunk) => sum + hunk.contentWithLineNumbers.length, 0);
+  const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry, {
+    coverage,
+    reviewPriority,
+    hunkCount: planned.length,
+    patchChars
+  }, symbolContextMetrics);
+  const hintContext = await resolvePacketContextHints(repoIndex, first.file, decisions.flatMap((decision) => decision.surroundingContextHints), telemetry);
   const truncationReason = truncationReasons(packetHunks).join("; ");
   const auxiliaryContextText = [context.text, hintContext.text].filter((text) => text.trim().length > 0).join("\n\n");
   const renderedContext = renderPacketContextText(first.file.path, group.wholeFileText, auxiliaryContextText);
@@ -201,9 +210,10 @@ async function buildPacket(
   const contextTruncationReason = renderedContext.contextTruncated
     ? `packet context truncated to ${MAX_CONTEXT_CHARS} chars`
     : undefined;
-  const contextQuality = finalContextQuality(context.contextQuality, renderedContext.text);
+  const contextQuality = finalContextQuality(context.contextQuality, renderedContext.text, truncationReason.length > 0 || renderedContext.contextTruncated);
   const contextDegradationReasons = [
     ...context.contextDegradationReasons,
+    ...(truncationReason.length > 0 ? [truncationReason] : []),
     ...(hintContext.degradation !== undefined ? [hintContext.degradation] : []),
     ...(contextDropReason !== undefined ? [contextDropReason] : []),
     ...(contextTruncationReason !== undefined ? [contextTruncationReason] : [])
@@ -710,14 +720,52 @@ type SymbolSourceContext = {
   reasons: string[];
 };
 
+type PacketSymbolContextInput = {
+  coverage: Exclude<CoverageLevel, "skip">;
+  reviewPriority: ReviewPriority;
+  hunkCount: number;
+  patchChars: number;
+};
+
+type SymbolContextBudget = PacketSymbolContextInput & {
+  maxChars: number;
+  reason: string;
+  singlePrimarySymbol: boolean;
+  uniqueSymbolCount: number;
+  adaptive: boolean;
+};
+
+type SymbolContextMetrics = {
+  defaultFull: number;
+  defaultSliced: number;
+  adaptiveFull: number;
+  adaptiveSliced: number;
+  outlineOnly: number;
+  materialOmission: number;
+};
+
+function emptySymbolContextMetrics(): SymbolContextMetrics {
+  return {
+    defaultFull: 0,
+    defaultSliced: 0,
+    adaptiveFull: 0,
+    adaptiveSliced: 0,
+    outlineOnly: 0,
+    materialOmission: 0
+  };
+}
+
 async function buildContext(
   repoIndex: RepositoryIndex,
   file: DiffFile,
   hunks: DiffHunk[],
   symbolFacts: HunkSymbolFacts[],
-  telemetry: TelemetryRecorder
+  telemetry: TelemetryRecorder,
+  symbolContextInput: PacketSymbolContextInput,
+  symbolContextMetrics: SymbolContextMetrics
 ): Promise<PacketContextBuildResult> {
   if (!isToolsHost(repoIndex.tools)) {
+    symbolContextMetrics.outlineOnly += 1;
     return {
       context: { path: file.path },
       text: "",
@@ -729,7 +777,7 @@ async function buildContext(
   }
   try {
     const result = await repoIndex.tools.buildPacketContext(file, hunks, symbolFacts);
-    const symbolSource = await readEnclosingSymbolSource(repoIndex, file, symbolFacts, telemetry);
+    const symbolSource = await readEnclosingSymbolSource(repoIndex, file, symbolFacts, telemetry, symbolContextInput, symbolContextMetrics);
     const contextText = renderContext(result, symbolSource.text);
     const reasons = [
       ...(result.degradation !== undefined ? [result.degradation] : []),
@@ -747,6 +795,7 @@ async function buildContext(
       ...(degradation.length > 0 ? { degradation } : {})
     };
   } catch (error) {
+    symbolContextMetrics.outlineOnly += 1;
     const message = error instanceof Error ? error.message : String(error);
     telemetry.event({ stage: 6, level: "warn", message: "packet_context_degraded", file: file.path, data: { error: message } });
     return {
@@ -765,13 +814,17 @@ async function readEnclosingSymbolSource(
   repoIndex: RepositoryIndex,
   file: DiffFile,
   symbolFacts: HunkSymbolFacts[],
-  telemetry: TelemetryRecorder
+  telemetry: TelemetryRecorder,
+  symbolContextInput: PacketSymbolContextInput,
+  symbolContextMetrics: SymbolContextMetrics
 ): Promise<SymbolSourceContext> {
   const fact = primarySymbolFact(symbolFacts);
   const selector = fact === undefined ? undefined : symbolSourceSelector(fact);
   if (fact === undefined || selector === undefined) {
+    symbolContextMetrics.outlineOnly += 1;
     return { text: "", reasons: ["no_primary_symbol"] };
   }
+  const budget = computeSymbolContextBudget({ ...symbolContextInput, symbolFacts });
   const source = fact.changedLinesSide === "old" ? { kind: "base" as const } : { kind: "head" as const };
   const readPath = fact.changedLinesSide === "old" ? file.oldPath ?? file.path : file.path;
   try {
@@ -781,41 +834,73 @@ async function readEnclosingSymbolSource(
       () => repoIndex.tools.readSymbol(readPath, selector, source)
     );
     if (result.text === undefined || result.text.trim().length === 0) {
+      symbolContextMetrics.outlineOnly += 1;
       return result.meta.degraded
         ? { text: "", reasons: [result.meta.degradationReason ?? "enclosing symbol source unavailable"], degradation: result.meta.degradationReason ?? "enclosing symbol source unavailable" }
         : { text: "", reasons: ["enclosing symbol source empty"] };
     }
     const label = result.symbol?.name ?? fact.enclosingSymbol ?? `line ${String(selector.line ?? "")}`.trim();
     const block = renderFullSymbolContext(readPath, label, fact, result.text);
-    const truncated = block.length > MAX_SYMBOL_CONTEXT_CHARS;
+    const truncated = block.length > budget.maxChars;
     if (!truncated && result.meta.truncated !== true) {
-      return { text: block, quality: "full", reasons: [] };
-    }
-    const sliced = await readChangedLineExcerpts(repoIndex, readPath, fact, source, telemetry);
-    const text = truncateTail(renderSlicedSymbolContext(readPath, label, fact, sliced, result.text), MAX_SYMBOL_CONTEXT_CHARS);
-    if (truncated || result.meta.truncated === true) {
+      recordSymbolContextMetric(symbolContextMetrics, budget, "full");
       telemetry.event({
         stage: 6,
-        level: "warn",
-        message: "packet_symbol_source_truncated",
+        level: "debug",
+        message: "packet_symbol_context_selected",
         file: file.path,
         data: {
           hunkId: fact.hunkId,
           symbol: result.symbol?.name ?? fact.enclosingSymbol,
           path: readPath,
-          maxChars: MAX_SYMBOL_CONTEXT_CHARS,
-          providerTruncated: result.meta.truncated === true
+          coverage: budget.coverage,
+          reviewPriority: budget.reviewPriority,
+          originalChars: block.length,
+          selectedBudgetChars: budget.maxChars,
+          emittedChars: block.length,
+          omittedChars: 0,
+          singlePrimarySymbol: budget.singlePrimarySymbol,
+          uniqueSymbolCount: budget.uniqueSymbolCount,
+          mode: budget.adaptive ? "adaptive_full" : "default_full",
+          reason: budget.reason
         }
       });
-      return {
-        text,
-        quality: "sliced",
-        reasons: ["enclosing symbol source sliced"],
-        degradation: "enclosing symbol source truncated"
-      };
+      return { text: block, quality: "full", reasons: [] };
     }
-    return { text, quality: "full", reasons: [] };
+    const sliced = await readChangedLineExcerpts(repoIndex, readPath, fact, source, telemetry);
+    const text = renderSlicedSymbolContext(readPath, label, fact, sliced, result.text, budget.maxChars);
+    recordSymbolContextMetric(symbolContextMetrics, budget, "sliced");
+    symbolContextMetrics.materialOmission += 1;
+    telemetry.event({
+      stage: 6,
+      level: "warn",
+      message: "packet_symbol_source_truncated",
+      file: file.path,
+      data: {
+        hunkId: fact.hunkId,
+        symbol: result.symbol?.name ?? fact.enclosingSymbol,
+        path: readPath,
+        coverage: budget.coverage,
+        reviewPriority: budget.reviewPriority,
+        originalChars: block.length,
+        selectedBudgetChars: budget.maxChars,
+        emittedChars: text.length,
+        omittedChars: Math.max(0, block.length - text.length),
+        singlePrimarySymbol: budget.singlePrimarySymbol,
+        uniqueSymbolCount: budget.uniqueSymbolCount,
+        budgetReason: budget.reason,
+        maxChars: budget.maxChars,
+        providerTruncated: result.meta.truncated === true
+      }
+    });
+    return {
+      text,
+      quality: "sliced",
+      reasons: ["enclosing symbol source sliced"],
+      degradation: "enclosing symbol source truncated"
+    };
   } catch (error) {
+    symbolContextMetrics.outlineOnly += 1;
     const message = error instanceof Error ? error.message : String(error);
     telemetry.event({
       stage: 6,
@@ -851,6 +936,87 @@ function symbolSourceSelector(fact: HunkSymbolFacts): { symbolName?: string; lin
   return line !== undefined ? { line } : undefined;
 }
 
+function computeSymbolContextBudget(input: PacketSymbolContextInput & { symbolFacts: HunkSymbolFacts[] }): SymbolContextBudget {
+  const realFacts = rankedPrimarySymbolFacts(input.symbolFacts);
+  const uniqueSymbols = new Set(realFacts.map(symbolFactIdentity));
+  const singlePrimarySymbol = uniqueSymbols.size === 1 && realFacts.length > 0;
+  const highRisk = isHighRiskPacket(input.coverage, input.reviewPriority);
+  const patchPressure =
+    input.patchChars > MAX_PATCH_CHARS * 0.75
+      ? "high"
+      : input.patchChars > MAX_PATCH_CHARS * 0.5
+        ? "medium"
+        : "low";
+  const hunkPressure =
+    input.hunkCount >= 4
+      ? "high"
+      : input.hunkCount >= 2
+        ? "medium"
+        : "low";
+
+  let maxChars = DEFAULT_SYMBOL_CONTEXT_CHARS;
+  let reason = "default_symbol_context_budget";
+
+  if (!singlePrimarySymbol) {
+    reason = uniqueSymbols.size === 0 ? "no_primary_symbol_for_adaptive_budget" : "multiple_symbols_keep_compact";
+  } else if (!highRisk) {
+    reason = "ordinary_packet_keep_compact";
+  } else if (patchPressure === "high" || hunkPressure === "high") {
+    reason = "high_patch_or_hunk_pressure_keep_compact";
+  } else if (patchPressure === "low" && hunkPressure === "low") {
+    maxChars = MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS;
+    reason = "single_high_risk_symbol_low_pressure";
+  } else {
+    maxChars = 5_000;
+    reason = "single_high_risk_symbol_medium_pressure";
+  }
+
+  return {
+    coverage: input.coverage,
+    reviewPriority: input.reviewPriority,
+    hunkCount: input.hunkCount,
+    patchChars: input.patchChars,
+    maxChars: Math.min(maxChars, MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS, MAX_CONTEXT_CHARS),
+    reason,
+    singlePrimarySymbol,
+    uniqueSymbolCount: uniqueSymbols.size,
+    adaptive: maxChars > DEFAULT_SYMBOL_CONTEXT_CHARS
+  };
+}
+
+function symbolFactIdentity(fact: HunkSymbolFacts): string {
+  if (fact.enclosingSymbol !== undefined && fact.symbolRange !== undefined) {
+    return `${fact.path}:${fact.enclosingSymbol}:${fact.symbolRange[0]}-${fact.symbolRange[1]}`;
+  }
+  if (fact.symbolRange !== undefined) {
+    return `${fact.path}:${fact.symbolRange[0]}-${fact.symbolRange[1]}`;
+  }
+  if (fact.enclosingSymbol !== undefined) {
+    return `${fact.path}:${fact.enclosingSymbol}`;
+  }
+  return `${fact.path}:${fact.hunkId}`;
+}
+
+function recordSymbolContextMetric(
+  metrics: SymbolContextMetrics,
+  budget: SymbolContextBudget,
+  mode: "full" | "sliced"
+): void {
+  if (budget.adaptive && mode === "full") {
+    metrics.adaptiveFull += 1;
+    return;
+  }
+  if (budget.adaptive && mode === "sliced") {
+    metrics.adaptiveSliced += 1;
+    return;
+  }
+  if (mode === "full") {
+    metrics.defaultFull += 1;
+    return;
+  }
+  metrics.defaultSliced += 1;
+}
+
 function renderFullSymbolContext(readPath: string, label: string, fact: HunkSymbolFacts, sourceText: string): string {
   return [
     `Primary symbol: ${readPath}:${label}`,
@@ -867,20 +1033,50 @@ function renderSlicedSymbolContext(
   label: string,
   fact: HunkSymbolFacts,
   excerpts: string[],
-  fallbackSource: string
+  fallbackSource: string,
+  maxChars: number
 ): string {
-  const excerptText = excerpts.length > 0
-    ? excerpts.join("\n\n")
-    : truncateTail(fallbackSource.trimEnd(), MAX_SYMBOL_EXCERPT_CHARS);
-  return [
+  const header = [
     `Primary symbol: ${readPath}:${label}`,
     fact.signature !== undefined ? `Signature: ${fact.signature}` : undefined,
     fact.symbolRange !== undefined ? `Line range: ${fact.symbolRange[0]}-${fact.symbolRange[1]}` : undefined,
     fact.changedLines.length > 0 ? `Changed ranges: ${compactLineRanges(fact.changedLines).join(", ")}` : undefined,
-    "Relevant source excerpts:",
-    excerptText,
-    "[symbol source sliced around changed lines]"
+    "Relevant source excerpts:"
   ].filter((part): part is string => part !== undefined && part.length > 0).join("\n");
+  const footer = "[symbol source sliced around changed lines; source outside excerpt ranges omitted]";
+  const bodyBudget = Math.max(0, maxChars - header.length - footer.length - 2);
+  const excerptText = excerpts.length > 0
+    ? fitSymbolExcerpts(excerpts, bodyBudget)
+    : truncateToBudget(fallbackSource.trimEnd(), Math.min(MAX_SYMBOL_EXCERPT_CHARS, bodyBudget));
+  return [
+    header,
+    excerptText,
+    footer
+  ].filter((part) => part.length > 0).join("\n");
+}
+
+function fitSymbolExcerpts(excerpts: string[], maxChars: number): string {
+  if (maxChars <= 0) {
+    return "";
+  }
+  const separatorChars = Math.max(0, excerpts.length - 1) * 2;
+  const perExcerptBudget = Math.max(0, Math.floor((maxChars - separatorChars) / Math.max(1, excerpts.length)));
+  const fitted = excerpts.map((excerpt) => truncateToBudget(excerpt, perExcerptBudget)).join("\n\n");
+  return fitted.length <= maxChars ? fitted : truncateToBudget(fitted, maxChars);
+}
+
+function truncateToBudget(input: string, maxChars: number): string {
+  if (input.length <= maxChars) {
+    return input;
+  }
+  if (maxChars <= 0) {
+    return "";
+  }
+  const marker = "\n[... content truncated to fit packet context budget ...]";
+  if (maxChars <= marker.length) {
+    return input.slice(0, maxChars);
+  }
+  return `${input.slice(0, maxChars - marker.length).trimEnd()}${marker}`;
 }
 
 async function readChangedLineExcerpts(
@@ -1201,8 +1397,14 @@ function contextQualityFor(
   return "path_only";
 }
 
-function finalContextQuality(initial: PacketContextQuality, renderedText: string): PacketContextQuality {
-  return renderedText.trim().length === 0 ? "path_only" : initial;
+function finalContextQuality(initial: PacketContextQuality, renderedText: string, materialTruncation: boolean): PacketContextQuality {
+  if (renderedText.trim().length === 0) {
+    return "path_only";
+  }
+  if (materialTruncation && initial === "full") {
+    return "sliced";
+  }
+  return initial;
 }
 
 function emitPacketContextQuality(

@@ -128,10 +128,10 @@ Those plans reduce the amount of avoidable investigation before finalization. Th
 ## Likely Files
 
 - `src/pipeline/lens-runner.ts`
-- `src/pipeline/llm-runner.ts`
+- `src/llm/llm-runner.ts`
 - `src/skills/prompt-builder.ts`
 - `src/types.ts`
-- `src/telemetry/collector.ts`
+- `src/telemetry/telemetry-recorder.ts`
 - `src/telemetry/run-artifacts.ts`
 - `tests/phase4-llm.test.ts`
 - `tests/pipeline-phase5.test.ts`

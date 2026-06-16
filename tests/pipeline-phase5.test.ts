@@ -695,6 +695,346 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("lets deep single-symbol packets use adaptive enclosing symbol budget", async () => {
+    const events: TelemetryEvent[] = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: TelemetryEvent) => {
+        events.push(event);
+      }
+    };
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const sourceLines = Array.from({ length: 260 }, (_, index) => `  step${String(index).padStart(3, "0")}();`);
+    const mediumSource = `export function changed() {\n${sourceLines.join("\n")}\n}`;
+    const readRange = vi.fn(async () => {
+      throw new Error("readRange should not be needed when adaptive symbol context fits");
+    });
+    const tools = {
+      ...fakeTools(),
+      readRange,
+      readSymbol: async () => ({
+        text: mediumSource,
+        symbol: { path: "app.ts", name: "changed", kind: "function" as const, lineRange: [10, 280] as [number, number] },
+        meta
+      }),
+      buildPacketContext: async (file: DiffFile) => ({
+        context: { path: file.path },
+        outline: {
+          path: file.path,
+          language: "typescript",
+          imports: [],
+          topLevelSymbols: [{ path: file.path, name: "changed", kind: "function" as const, lineRange: [10, 280] as [number, number] }],
+          testSymbols: [],
+          notes: []
+        },
+        relevantTests: []
+      })
+    };
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(tools),
+      symbolFacts: [
+        {
+          path: "app.ts",
+          hunkId: "h1",
+          enclosingSymbol: "changed",
+          symbolKind: "function",
+          symbolRange: [10, 280],
+          changedLines: [24],
+          changedLinesSide: "new",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        }
+      ]
+    };
+    const plan: ReviewPlan = {
+      ...fakePlan(),
+      coverage: [{ hunkId: "h1", path: "app.ts", coverage: "deep", lenses: ["core/code-review"], surroundingContextHints: [], reason: "high risk" }]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [fakeDiffFile("app.ts")],
+      [fakeFacts("app.ts", "per-hunk")],
+      repoIndex,
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const contextText = packets[0]?.contextText ?? "";
+    expect(contextText.length).toBeGreaterThan(3000);
+    expect(contextText).toContain("step259");
+    expect(contextText).not.toContain("symbol source sliced around changed lines");
+    expect(readRange).not.toHaveBeenCalled();
+    expect(packets[0]?.contextQuality).toBe("full");
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "debug",
+      message: "packet_symbol_context_selected",
+      file: "app.ts",
+      data: expect.objectContaining({
+        mode: "adaptive_full",
+        selectedBudgetChars: 6000,
+        singlePrimarySymbol: true,
+        reason: "single_high_risk_symbol_low_pressure"
+      })
+    }));
+  });
+
+  it("keeps ordinary multi-hunk symbol context compact", async () => {
+    const events: TelemetryEvent[] = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: TelemetryEvent) => {
+        events.push(event);
+      }
+    };
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const sourceLines = Array.from({ length: 260 }, (_, index) => `  step${String(index).padStart(3, "0")}();`);
+    const mediumSource = `export function changed() {\n${sourceLines.join("\n")}\n}`;
+    const tools = {
+      ...fakeTools(),
+      readRange: async (_pathName: string, startLine: number, endLine: number) => ({ text: `// excerpt ${startLine}-${endLine}`, meta }),
+      readSymbol: async () => ({
+        text: mediumSource,
+        symbol: { path: "app.ts", name: "changed", kind: "function" as const, lineRange: [10, 280] as [number, number] },
+        meta
+      }),
+      buildPacketContext: async (file: DiffFile) => ({
+        context: { path: file.path },
+        outline: {
+          path: file.path,
+          language: "typescript",
+          imports: [],
+          topLevelSymbols: [{ path: file.path, name: "changed", kind: "function" as const, lineRange: [10, 280] as [number, number] }],
+          testSymbols: [],
+          notes: []
+        },
+        relevantTests: []
+      })
+    };
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 24, content: "  step024();" },
+      { id: "h2", newStart: 26, content: "  step026();" }
+    ]);
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(tools),
+      symbolFacts: [
+        {
+          path: "app.ts",
+          hunkId: "h1",
+          enclosingSymbol: "changed",
+          symbolKind: "function",
+          symbolRange: [10, 280],
+          changedLines: [24],
+          changedLinesSide: "new",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        },
+        {
+          path: "app.ts",
+          hunkId: "h2",
+          enclosingSymbol: "changed",
+          symbolKind: "function",
+          symbolRange: [10, 280],
+          changedLines: [26],
+          changedLinesSide: "new",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      fakePlanForHunks(["h1", "h2"], "app.ts"),
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      repoIndex,
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(packets).toHaveLength(1);
+    expect(packets[0]?.contextQuality).toBe("sliced");
+    expect(packets[0]?.contextText.length ?? 0).toBeLessThanOrEqual(8000);
+    expect(packets[0]?.contextText).toContain("symbol source sliced around changed lines");
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "warn",
+      message: "packet_symbol_source_truncated",
+      file: "app.ts",
+      data: expect.objectContaining({
+        selectedBudgetChars: 3000,
+        budgetReason: "ordinary_packet_keep_compact"
+      })
+    }));
+  });
+
+  it("does not treat same-named symbols with different ranges as a single adaptive symbol", async () => {
+    const events: TelemetryEvent[] = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: TelemetryEvent) => {
+        events.push(event);
+      }
+    };
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const sourceLines = Array.from({ length: 260 }, (_, index) => `  step${String(index).padStart(3, "0")}();`);
+    const mediumSource = `export function handle() {\n${sourceLines.join("\n")}\n}`;
+    const tools = {
+      ...fakeTools(),
+      readRange: async (_pathName: string, startLine: number, endLine: number) => ({ text: `// excerpt ${startLine}-${endLine}`, meta }),
+      readSymbol: async () => ({
+        text: mediumSource,
+        symbol: { path: "app.ts", name: "handle", kind: "function" as const, lineRange: [10, 280] as [number, number] },
+        meta
+      }),
+      buildPacketContext: async (file: DiffFile) => ({
+        context: { path: file.path },
+        outline: {
+          path: file.path,
+          language: "typescript",
+          imports: [],
+          topLevelSymbols: [
+            { path: file.path, name: "handle", kind: "function" as const, lineRange: [10, 80] as [number, number] },
+            { path: file.path, name: "handle", kind: "function" as const, lineRange: [150, 280] as [number, number] }
+          ],
+          testSymbols: [],
+          notes: []
+        },
+        relevantTests: []
+      })
+    };
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 24, content: "  step024();" },
+      { id: "h2", newStart: 40, content: "  step040();" }
+    ]);
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(tools),
+      symbolFacts: [
+        {
+          path: "app.ts",
+          hunkId: "h1",
+          enclosingSymbol: "handle",
+          symbolKind: "function",
+          symbolRange: [10, 80],
+          changedLines: [24],
+          changedLinesSide: "new",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        },
+        {
+          path: "app.ts",
+          hunkId: "h2",
+          enclosingSymbol: "handle",
+          symbolKind: "function",
+          symbolRange: [35, 280],
+          changedLines: [40],
+          changedLinesSide: "new",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        }
+      ]
+    };
+    const plan: ReviewPlan = {
+      ...fakePlanForHunks(["h1", "h2"], "app.ts"),
+      coverage: ["h1", "h2"].map((hunkId) => ({
+        hunkId,
+        path: "app.ts",
+        coverage: "deep" as const,
+        lenses: ["core/code-review"],
+        surroundingContextHints: [],
+        reason: "high risk"
+      }))
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      repoIndex,
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(packets).toHaveLength(1);
+    expect(packets[0]?.contextQuality).toBe("sliced");
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "warn",
+      message: "packet_symbol_source_truncated",
+      file: "app.ts",
+      data: expect.objectContaining({
+        selectedBudgetChars: 3000,
+        uniqueSymbolCount: 2,
+        singlePrimarySymbol: false,
+        budgetReason: "multiple_symbols_keep_compact"
+      })
+    }));
+  });
+
+  it("slices very large symbols around each changed line range", async () => {
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const hugeSource = `export function changed() {\n${"  doWork();\n".repeat(1000)}}`;
+    const readRanges: Array<{ startLine: number; endLine: number }> = [];
+    const tools = {
+      ...fakeTools(),
+      readRange: async (_pathName: string, startLine: number, endLine: number) => {
+        readRanges.push({ startLine, endLine });
+        return { text: `// changed-line excerpt ${startLine}-${endLine}`, meta };
+      },
+      readSymbol: async () => ({
+        text: hugeSource,
+        symbol: { path: "app.ts", name: "changed", kind: "function" as const, lineRange: [1, 220] as [number, number] },
+        meta
+      }),
+      buildPacketContext: async (file: DiffFile) => ({
+        context: { path: file.path },
+        outline: {
+          path: file.path,
+          language: "typescript",
+          imports: [],
+          topLevelSymbols: [{ path: file.path, name: "changed", kind: "function" as const, lineRange: [1, 220] as [number, number] }],
+          testSymbols: [],
+          notes: []
+        },
+        relevantTests: []
+      })
+    };
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(tools),
+      symbolFacts: [
+        {
+          path: "app.ts",
+          hunkId: "h1",
+          enclosingSymbol: "changed",
+          symbolKind: "function",
+          symbolRange: [1, 220],
+          changedLines: [50, 150],
+          changedLinesSide: "new",
+          signature: "export function changed()",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      fakePlan(),
+      [fakeDiffFile("app.ts", "changed();")],
+      [fakeFacts("app.ts", "per-hunk")],
+      repoIndex,
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(readRanges).toEqual([{ startLine: 42, endLine: 58 }, { startLine: 142, endLine: 158 }]);
+    expect(packets[0]?.contextText).toContain("Signature: export function changed()");
+    expect(packets[0]?.contextText).toContain("Excerpt app.ts:42-58");
+    expect(packets[0]?.contextText).toContain("Excerpt app.ts:142-158");
+    expect(packets[0]?.contextText).toContain("source outside excerpt ranges omitted");
+    expect(packets[0]?.contextText.length ?? 0).toBeLessThanOrEqual(8000);
+  });
+
   it("skips inverted symbol excerpt ranges before readRange", async () => {
     const events: TelemetryEvent[] = [];
     const telemetry = {

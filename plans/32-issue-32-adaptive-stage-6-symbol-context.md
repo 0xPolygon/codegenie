@@ -1,6 +1,6 @@
 # Issue 32: Adaptive Stage 6 Symbol Context
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 6 review, 2026-06-16
 Planned at: commit `506fa43`
 

@@ -157,7 +157,7 @@ The plan is careful not to overclaim cost savings. It should reduce local backen
 - `src/llm/pi-runner.ts`
 - `src/llm/llm-runner.ts`
 - `src/llm/tool-definitions.ts`
-- `src/pipeline/pipeline.ts` or wherever the single runner/cache instance is created
+- `src/pipeline/review-runner.ts` (the orchestrator that creates the single runner/cache instance)
 - `src/telemetry/run-artifacts.ts`
 - `src/types.ts`
 - `tests/phase4-llm.test.ts`

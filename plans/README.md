@@ -35,7 +35,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 29 | COMPLETE | Issue 29: Adaptive Local Source Budget Extensions |
 | 30 | COMPLETE | Issue 30: Post-Verification Human-Attention Reconciliation |
 | 31 | COMPLETE | Issue 31: Intent-Aware Behavior-Change Framing |
-| 32 | PENDING | Issue 32: Adaptive Stage 6 Symbol Context |
+| 32 | COMPLETE | Issue 32: Adaptive Stage 6 Symbol Context |
 | 33 | PENDING | Issue 33: Stage 7 Compact Finalize for No-Finding Packet Reviews |
 | 34 | PENDING | Issue 34: Run-Level Tool Result Memoization |
 | 35 | PENDING | Issue 35: Telemetry and Cache Diagnostics |
@@ -43,3 +43,11 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 37 | PENDING | Issue 37: Verifier Forced-Submit Schema Repair Hardening |
 | 38 | BACKLOG | Issue 38: Eval and Runtime Concurrency Tuning |
 | 39 | BACKLOG | Issue 39: Shared Prompt-Prefix Cache Spike |
+
+## Deferred (watching for evidence)
+
+Observations from the trails-api run-6 review (Opus 4.8 + GPT-5.5) that we intentionally did **not** plan yet — promote to a plan only if a later eval run shows the pattern recurring:
+
+- **Test-rewrite packet summaries** — deterministic summaries (deleted/added test names, removed mocks/helpers, changed production-symbol coverage) for large test-file rewrites; the run-6 outliers were two ~43k-char single test hunks.
+- **Structured planner hints on every packet** — keep `surroundingContextHints` structured per packet for telemetry/debug, not only embedded in prompt text.
+- **Broad risk-note propagation** — 45/73 packets carried risk notes from shared route/helper migration themes; consider risk-area shared context vs. re-litigating the same helper assumptions per packet.
