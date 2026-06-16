@@ -1,4 +1,4 @@
-import type { ReviewStage, TelemetryEvent, ToolCallRecord } from "../types.js";
+import type { ContextPressureSummary, ReviewStage, TelemetryEvent, ToolCallRecord } from "../types.js";
 import type { CodeninjaErrorCode } from "../util/errors.js";
 
 export type LlmRole = "planner" | "packetReview" | "systemReview" | "verifier" | "composer";
@@ -46,6 +46,10 @@ export interface TelemetryRecorder {
   event(e: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">): void;
   recordModelCall(record: Omit<LlmCallRecord, "runId">): void;
   recordToolCall(record: Omit<ToolCallRecord, "runId" | "toolCallId" | "timestamp">): string;
+  snapshotContextPressure?(): Pick<
+    ContextPressureSummary,
+    "toolBudgetRejections" | "toolBudgetRejectionsByStage" | "degradedToolResults" | "degradedToolResultsByStage" | "rejectionReasons"
+  >;
   writeArtifact(relPath: string, data: unknown): Promise<void>;
   writeDebug(kind: "llm-calls" | "tool-calls", id: string, record: unknown): Promise<void>;
   flush(): Promise<void>;

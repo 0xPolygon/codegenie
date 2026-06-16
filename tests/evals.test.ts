@@ -98,6 +98,9 @@ describe("eval suite validation", () => {
       "expect:",
       "  reviewCompleteness: complete",
       "  maxBudgetOverruns: 0",
+      "  maxToolBudgetRejections: 0",
+      "  maxDegradedHunks: 0",
+      "  maxUnresolvedNotesSuppressed: 0",
       "should_find:",
       "  - id: expected",
       "    path: src/app.ts"
@@ -108,7 +111,10 @@ describe("eval suite validation", () => {
     expect(suite.cases[0]?.evalCase.review?.budgetMultiplier).toBe(1.5);
     expect(suite.cases[0]?.evalCase.expect).toMatchObject({
       reviewCompleteness: "complete",
-      maxBudgetOverruns: 0
+      maxBudgetOverruns: 0,
+      maxToolBudgetRejections: 0,
+      maxDegradedHunks: 0,
+      maxUnresolvedNotesSuppressed: 0
     });
   });
 
@@ -349,6 +355,79 @@ describe("eval scoring", () => {
     expect(rendered).toContain("2 budget overruns");
     expect(rendered).toContain("BUDGET reviewCompleteness: partial != complete");
     expect(rendered).toContain("BUDGET maxBudgetOverruns: 2 > 0");
+  });
+
+  it("scores local context pressure metrics and optional thresholds from budget artifacts", () => {
+    const score = scoreEvalRun({
+      name: "context-pressure",
+      artifacts: { path: "unused" },
+      expect: {
+        maxToolBudgetRejections: 10,
+        maxDegradedHunks: 50,
+        maxUnresolvedNotesSuppressed: 10
+      }
+    }, {
+      candidates: [],
+      verification: [],
+      finalSelection: [],
+      finalFindings: [],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {
+        budgetSummary: {
+          completeness: "complete",
+          partialReasons: [],
+          multiplier: 1,
+          configured: { timeoutMs: 1000 },
+          effective: { timeoutMs: 1000 },
+          usage: { modelCalls: 3, totalTokens: 100, byStage: [{ stage: 7, modelCalls: 3, totalTokens: 100 }] },
+          overruns: [],
+          dispatchBlocks: [],
+          contextPressure: {
+            toolBudgetRejections: 23,
+            toolBudgetRejectionsByStage: { 7: 18, 9: 5 },
+            degradedToolResults: 4,
+            degradedToolResultsByStage: { 9: 4 },
+            degradedHunks: 77,
+            rejectionReasons: [{ reason: "tool_result_budget_exhausted", count: 23 }],
+            unresolvedNotes: { emitted: 5, omitted: 50 }
+          }
+        }
+      }
+    }, "live");
+
+    expect(score.metrics).toMatchObject({
+      toolBudgetRejections: 23,
+      degradedHunks: 77,
+      unresolvedNotesSuppressed: 50
+    });
+    expect(score.budgetResults).toEqual([
+      expect.objectContaining({ check: "maxToolBudgetRejections", status: "fail", actual: 23, limit: 10, direction: "maximum" }),
+      expect.objectContaining({ check: "maxDegradedHunks", status: "fail", actual: 77, limit: 50, direction: "maximum" }),
+      expect.objectContaining({ check: "maxUnresolvedNotesSuppressed", status: "fail", actual: 50, limit: 10, direction: "maximum" })
+    ]);
+
+    const rendered = renderCaseResult({
+      caseName: "context-pressure",
+      runDir: "unused",
+      status: "fail",
+      info: {
+        runNumber: 1,
+        caseName: "context-pressure",
+        caseHash: "hash",
+        caseSnapshot: { name: "context-pressure", artifacts: { path: "unused" } },
+        mode: "live",
+        cache: { enabled: false, source: "config" },
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: "2026-01-01T00:00:01.000Z",
+        score
+      }
+    });
+
+    expect(rendered).toContain("context pressure 23 tool-budget rejections, 77 degraded hunks, 50 unresolved notes suppressed");
+    expect(rendered).toContain("BUDGET maxToolBudgetRejections: 23 > 10");
+    expect(rendered).toContain("BUDGET maxDegradedHunks: 77 > 50");
+    expect(rendered).toContain("BUDGET maxUnresolvedNotesSuppressed: 50 > 10");
   });
 
   it("matches reported final findings through merged source candidate locations", () => {

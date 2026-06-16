@@ -1,6 +1,6 @@
 # Issue 28: Local Context Budget Pressure Reporting
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 5 review, 2026-06-15
 Planned at: commit `db41ed7`
 
@@ -88,4 +88,3 @@ These are not global token-budget overruns. They are local investigation/tool-re
 - Structured artifacts expose local tool rejections and degraded hunk counts.
 - Existing evals remain compatible unless new thresholds are configured.
 - The output stays compact and useful; no long per-packet dump appears in normal markdown.
-

@@ -833,6 +833,9 @@ export type EvalCase = {
     maxPromptCharsByStage?: Partial<Record<ReviewStage | string, number>>;
     reviewCompleteness?: "complete" | "partial";
     maxBudgetOverruns?: number;
+    maxToolBudgetRejections?: number;
+    maxDegradedHunks?: number;
+    maxUnresolvedNotesSuppressed?: number;
   };
   should_find?: EvalFindingExpectation[];
   should_find_candidate?: EvalFindingExpectation[];
@@ -913,7 +916,10 @@ export type EvalBudgetResult = {
     | "maxToolCalls"
     | "maxPromptCharsByStage"
     | "reviewCompleteness"
-    | "maxBudgetOverruns";
+    | "maxBudgetOverruns"
+    | "maxToolBudgetRejections"
+    | "maxDegradedHunks"
+    | "maxUnresolvedNotesSuppressed";
   stage?: ReviewStage;
   status: "pass" | "fail" | "skipped";
   skipReason?: string;
@@ -940,6 +946,9 @@ export type EvalRunMetrics = {
   maxPromptCharsByStage?: Partial<Record<ReviewStage, number>>;
   reviewCompleteness?: "complete" | "partial";
   budgetOverruns?: number;
+  toolBudgetRejections?: number;
+  degradedHunks?: number;
+  unresolvedNotesSuppressed?: number;
   localModelCallCacheHits?: number;
   localModelCallCacheMisses?: number;
   localModelCallCacheWrites?: number;
@@ -1348,6 +1357,19 @@ export type BudgetLimitEvent = {
   afterDispatchedCall: boolean;
 };
 
+export type ContextPressureSummary = {
+  toolBudgetRejections: number;
+  toolBudgetRejectionsByStage: Partial<Record<ReviewStage, number>>;
+  degradedToolResults: number;
+  degradedToolResultsByStage: Partial<Record<ReviewStage, number>>;
+  degradedHunks: number;
+  rejectionReasons: Array<{ reason: string; count: number }>;
+  unresolvedNotes: {
+    emitted: number;
+    omitted: number;
+  };
+};
+
 export type BudgetSummary = {
   completeness: "complete" | "partial";
   partialReasons: string[];
@@ -1370,6 +1392,7 @@ export type BudgetSummary = {
   };
   overruns: BudgetLimitEvent[];
   dispatchBlocks: BudgetLimitEvent[];
+  contextPressure?: ContextPressureSummary;
 };
 
 export type RunOutcome = {

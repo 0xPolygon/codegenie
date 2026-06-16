@@ -2110,6 +2110,74 @@ describe("phase 5 pipeline regressions", () => {
     ]));
   });
 
+  it("persists local tool-budget pressure from recorded tool calls into budget artifacts", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export function value() {\n  return 1;\n}\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "export function value() {\n  return 2;\n}\n");
+    commitAll(repo, "feature");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-runs-")), "run-context-pressure");
+    let packetReviewCalls = 0;
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "scripted", id: "scripted-model", raw: { id: "scripted-model", api: "faux" } }),
+      complete: async (_model, context) => {
+        const prompt = JSON.stringify(context.messages);
+        if (prompt.includes("submit_plan")) {
+          return assistantMessage([toolCall("submit-plan", "submit_plan", {
+            diffUnderstanding: { declaredIntent: "context pressure test", inferredBehavior: "context pressure test" },
+            riskAreas: [],
+            coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review" }]
+          })]);
+        }
+        if (prompt.includes("submit_review")) {
+          packetReviewCalls += 1;
+          if (packetReviewCalls === 1) {
+            return assistantMessage(Array.from({ length: 8 }, (_, index) =>
+              toolCall(`read-${index}`, "read_range", { path: "app.ts", startLine: 1, endLine: 3 })
+            ));
+          }
+          return assistantMessage([toolCall("submit-review", "submit_review", {
+            findings: [],
+            followUpHints: [],
+            uncertainties: []
+          })]);
+        }
+        return assistantMessage([toolCall("submit-composition", "submit_composition", { summary: "No credible findings.", composedFindings: [] })]);
+      },
+      validateToolCall: (_tools, call) => call.arguments
+    };
+
+    await runReview(
+      { mode: "branch", branchName: "feature" },
+      {
+        ...config(),
+        telemetry: { ...defaultConfig.telemetry, enabled: true, runDir: path.dirname(runArtifactDir) },
+        llm: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 1 }
+      },
+      { repoRoot: repo, runArtifactDir, piAdapter: adapter }
+    );
+
+    const budgetSummary = JSON.parse(readFileSync(path.join(runArtifactDir, "budget-summary.json"), "utf8")) as {
+      contextPressure?: {
+        toolBudgetRejections: number;
+        toolBudgetRejectionsByStage: Record<string, number>;
+        rejectionReasons: Array<{ reason: string; count: number }>;
+      };
+    };
+    expect(budgetSummary.contextPressure).toMatchObject({
+      toolBudgetRejections: expect.any(Number),
+      toolBudgetRejectionsByStage: expect.objectContaining({ "7": expect.any(Number) })
+    });
+    expect(budgetSummary.contextPressure?.toolBudgetRejections).toBeGreaterThan(0);
+    expect(budgetSummary.contextPressure?.rejectionReasons).toContainEqual(
+      expect.objectContaining({ reason: "tool_call_budget_exhausted", count: expect.any(Number) })
+    );
+    const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
+    expect(finalReview).toContain("Local context pressure:");
+    expect(finalReview).toContain("tool-budget rejection");
+  });
+
   it("greedily packs small planner roots into budget-sized chunks", async () => {
     const promptRoots: string[] = [];
     const runner: LlmRunner = {
@@ -5282,6 +5350,94 @@ describe("phase 5 pipeline regressions", () => {
     expect(output).toContain("Usage: model calls 5, tokens 225, cost $0.1234.");
     expect(output).toContain("Effective caps: model calls 4 (configured 2, multiplier 2), tokens 200 (configured 100, multiplier 2).");
     expect(output).toContain("Budget overruns: stage 7 tokens 225/200.");
+  });
+
+  it("renders local context pressure without marking the review partial", () => {
+    const output = renderMarkdownReview({
+      summary: "Review complete.",
+      coverage: {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      budgetSummary: {
+        completeness: "complete",
+        partialReasons: [],
+        multiplier: 1,
+        configured: { timeoutMs: 30_000 },
+        effective: { timeoutMs: 30_000 },
+        usage: { modelCalls: 0, totalTokens: 0, byStage: [] },
+        overruns: [],
+        dispatchBlocks: [],
+        contextPressure: {
+          toolBudgetRejections: 23,
+          toolBudgetRejectionsByStage: { 7: 18, 9: 5 },
+          degradedToolResults: 4,
+          degradedToolResultsByStage: { 9: 4 },
+          degradedHunks: 77,
+          rejectionReasons: [{ reason: "tool_result_budget_exhausted", count: 23 }],
+          unresolvedNotes: { emitted: 5, omitted: 50 }
+        }
+      },
+      findings: [],
+      summaryOnlyFindings: [],
+      needsHumanAttention: [],
+      noFindings: true
+    });
+
+    expect(output).toContain("Review completeness: complete.");
+    expect(output).toContain("Local context pressure: 23 tool-budget rejections, 4 degraded tool results, 77 degraded hunks, 50 unresolved notes suppressed.");
+  });
+
+  it("omits local context pressure when all pressure counts are zero", () => {
+    const output = renderMarkdownReview({
+      summary: "Review complete.",
+      coverage: {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      budgetSummary: {
+        completeness: "complete",
+        partialReasons: [],
+        multiplier: 1,
+        configured: { timeoutMs: 30_000 },
+        effective: { timeoutMs: 30_000 },
+        usage: { modelCalls: 0, totalTokens: 0, byStage: [] },
+        overruns: [],
+        dispatchBlocks: [],
+        contextPressure: {
+          toolBudgetRejections: 0,
+          toolBudgetRejectionsByStage: {},
+          degradedToolResults: 0,
+          degradedToolResultsByStage: {},
+          degradedHunks: 0,
+          rejectionReasons: [],
+          unresolvedNotes: { emitted: 2, omitted: 0 }
+        }
+      },
+      findings: [],
+      summaryOnlyFindings: [],
+      needsHumanAttention: [],
+      noFindings: true
+    });
+
+    expect(output).not.toContain("## Budget");
+    expect(output).not.toContain("Local context pressure");
   });
 
   it("pre-trims composer input over forty findings and records suppressed selections", async () => {

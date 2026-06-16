@@ -20,6 +20,7 @@ import type {
   ReviewStage,
   Severity
 } from "../types.js";
+import { isLocalToolBudgetRejectionReason } from "../util/context-pressure.js";
 
 type ScorableFinding = CandidateFinding | FinalFinding;
 type ScoreMode = "live" | "replay";
@@ -414,6 +415,15 @@ function scoreBudgets(
   if (expect.maxBudgetOverruns !== undefined) {
     results.push(metricBudgetResult("maxBudgetOverruns", expect.maxBudgetOverruns, metrics.budgetOverruns, undefined));
   }
+  if (expect.maxToolBudgetRejections !== undefined) {
+    results.push(metricBudgetResult("maxToolBudgetRejections", expect.maxToolBudgetRejections, metrics.toolBudgetRejections, undefined));
+  }
+  if (expect.maxDegradedHunks !== undefined) {
+    results.push(metricBudgetResult("maxDegradedHunks", expect.maxDegradedHunks, metrics.degradedHunks, undefined));
+  }
+  if (expect.maxUnresolvedNotesSuppressed !== undefined) {
+    results.push(metricBudgetResult("maxUnresolvedNotesSuppressed", expect.maxUnresolvedNotesSuppressed, metrics.unresolvedNotesSuppressed, undefined));
+  }
   return results;
 }
 
@@ -512,6 +522,11 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   if (budgetSummary !== undefined) {
     metrics.reviewCompleteness = budgetSummary.completeness;
     metrics.budgetOverruns = budgetSummary.overruns.length;
+    if (budgetSummary.contextPressure !== undefined) {
+      metrics.toolBudgetRejections = budgetSummary.contextPressure.toolBudgetRejections;
+      metrics.degradedHunks = budgetSummary.contextPressure.degradedHunks;
+      metrics.unresolvedNotesSuppressed = budgetSummary.contextPressure.unresolvedNotes.omitted;
+    }
   } else if (artifacts.coverage !== undefined) {
     metrics.reviewCompleteness = artifacts.coverage.partial ? "partial" : "complete";
   }
@@ -541,6 +556,12 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   const toolCallTotal = toolCalls.length > 0 ? toolCalls.length : numberPath(artifacts.metricsSources.toolCallsSummary, ["totalCalls"]);
   if (toolCallTotal !== undefined) {
     metrics.toolCalls = toolCallTotal;
+  }
+  if (metrics.toolBudgetRejections === undefined) {
+    const toolBudgetRejections = countRawToolBudgetRejections(toolCalls);
+    if (toolBudgetRejections !== undefined) {
+      metrics.toolBudgetRejections = toolBudgetRejections;
+    }
   }
   if (Object.keys(maxPromptCharsByStage).length > 0) {
     metrics.maxPromptCharsByStage = maxPromptCharsByStage;
@@ -612,6 +633,22 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
     metrics.providerPromptCacheWriteCostUSD = providerPromptCacheWriteCostUSD;
   }
   return metrics;
+}
+
+function countRawToolBudgetRejections(toolCalls: unknown[]): number | undefined {
+  if (toolCalls.length === 0) {
+    return undefined;
+  }
+  let count = 0;
+  for (const call of toolCalls) {
+    if (!isRecord(call) || call.status !== "rejected") {
+      continue;
+    }
+    if (isLocalToolBudgetRejectionReason(call.degradationReason)) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 function maxPromptChars(modelCalls: unknown[]): Partial<Record<ReviewStage, number>> {

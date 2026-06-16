@@ -66,6 +66,7 @@ function renderBudgetSummary(summary: BudgetSummary | undefined): string {
   const lines = ["## Budget"];
   lines.push("");
   lines.push(`Review completeness: ${summary.completeness}.`);
+  const pressure = renderContextPressure(summary);
   const usage = [`model calls ${summary.usage.modelCalls}`, `tokens ${summary.usage.totalTokens}`];
   if (summary.usage.costUSD !== undefined) {
     usage.push(`cost $${summary.usage.costUSD.toFixed(4)}`);
@@ -81,6 +82,9 @@ function renderBudgetSummary(summary: BudgetSummary | undefined): string {
   if (summary.dispatchBlocks.length > 0) {
     lines.push(`Budget dispatch blocks: ${summary.dispatchBlocks.map(renderBudgetEvent).join("; ")}.`);
   }
+  if (pressure.length > 0) {
+    lines.push(`Local context pressure: ${pressure.join(", ")}.`);
+  }
   return lines.join("\n");
 }
 
@@ -92,7 +96,8 @@ function shouldRenderBudgetSummary(summary: BudgetSummary): boolean {
     summary.effective.maxModelCalls !== undefined ||
     summary.effective.maxTotalTokens !== undefined ||
     summary.overruns.length > 0 ||
-    summary.dispatchBlocks.length > 0;
+    summary.dispatchBlocks.length > 0 ||
+    renderContextPressure(summary).length > 0;
 }
 
 function budgetCapParts(summary: BudgetSummary): string[] {
@@ -118,4 +123,25 @@ function capSource(configured: number | undefined, effective: number, multiplier
 
 function renderBudgetEvent(event: BudgetLimitEvent): string {
   return `stage ${event.stage} ${event.kind} ${event.actual}/${event.limit}`;
+}
+
+function renderContextPressure(summary: BudgetSummary): string[] {
+  const pressure = summary.contextPressure;
+  if (pressure === undefined) {
+    return [];
+  }
+  const parts: string[] = [];
+  if (pressure.toolBudgetRejections > 0) {
+    parts.push(`${pressure.toolBudgetRejections} tool-budget rejection${pressure.toolBudgetRejections === 1 ? "" : "s"}`);
+  }
+  if (pressure.degradedToolResults > 0) {
+    parts.push(`${pressure.degradedToolResults} degraded tool result${pressure.degradedToolResults === 1 ? "" : "s"}`);
+  }
+  if (pressure.degradedHunks > 0) {
+    parts.push(`${pressure.degradedHunks} degraded hunk${pressure.degradedHunks === 1 ? "" : "s"}`);
+  }
+  if (pressure.unresolvedNotes.omitted > 0) {
+    parts.push(`${pressure.unresolvedNotes.omitted} unresolved note${pressure.unresolvedNotes.omitted === 1 ? "" : "s"} suppressed`);
+  }
+  return parts;
 }

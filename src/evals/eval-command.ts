@@ -149,6 +149,10 @@ export function renderCaseResult(result: EvalCaseResult): string {
   if (metrics.budgetOverruns !== undefined) {
     parts.push(`${metrics.budgetOverruns} budget overruns`);
   }
+  const contextPressureParts = contextPressureSummaryParts(metrics);
+  if (contextPressureParts.length > 0) {
+    parts.push(`context pressure ${contextPressureParts.join(", ")}`);
+  }
   const localCacheHits = metrics.localModelCallCacheHits ?? metrics.cacheHits;
   const localCacheMisses = metrics.localModelCallCacheMisses ?? metrics.cacheMisses;
   if (localCacheHits !== undefined) {
@@ -171,6 +175,20 @@ export function renderCaseResult(result: EvalCaseResult): string {
     lines.push(`  ERROR ${score.error.code}: ${score.error.message}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function contextPressureSummaryParts(metrics: EvalCaseResult["info"]["score"]["metrics"]): string[] {
+  const parts: string[] = [];
+  if ((metrics.toolBudgetRejections ?? 0) > 0) {
+    parts.push(`${metrics.toolBudgetRejections} tool-budget rejections`);
+  }
+  if ((metrics.degradedHunks ?? 0) > 0) {
+    parts.push(`${metrics.degradedHunks} degraded hunks`);
+  }
+  if ((metrics.unresolvedNotesSuppressed ?? 0) > 0) {
+    parts.push(`${metrics.unresolvedNotesSuppressed} unresolved notes suppressed`);
+  }
+  return parts;
 }
 
 function formatBudgetComparison(budget: EvalCaseResult["info"]["score"]["budgetResults"][number]): string {

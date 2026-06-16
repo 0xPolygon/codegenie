@@ -14,15 +14,18 @@ import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type {
   CodeninjaConfig,
+  ContextPressureSummary,
   LogEvent,
   Logger,
   LogLevel,
+  ReviewStage,
   RunOutcome,
   TelemetryEvent,
   ToolCallRecord
 } from "../types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "./telemetry-recorder.js";
 import { stripCredentials } from "./redaction.js";
+import { isLocalToolBudgetRejectionReason } from "../util/context-pressure.js";
 
 type CreateRunTelemetryOptions = {
   telemetryConfig: CodeninjaConfig["telemetry"];
@@ -310,6 +313,13 @@ class RunTelemetryImpl {
     byTool: {} as Record<string, { count: number; errors: number; rejections: number; degraded: number; totalDurationMs: number; totalResultChars: number }>,
     byStage: {} as Record<string, { count: number; errors: number; rejections: number; degraded: number; totalDurationMs: number; totalResultChars: number }>
   };
+  private contextPressure = {
+    toolBudgetRejections: 0,
+    toolBudgetRejectionsByStage: {} as Partial<Record<ReviewStage, number>>,
+    degradedToolResults: 0,
+    degradedToolResultsByStage: {} as Partial<Record<ReviewStage, number>>,
+    rejectionReasons: {} as Record<string, number>
+  };
   private telemetrySummary = {
     events: 0,
     levels: emptyLevelCounts(),
@@ -344,6 +354,7 @@ class RunTelemetryImpl {
       event: (event) => this.recordEvent(event),
       recordModelCall: (record) => this.recordModelCall(record),
       recordToolCall: (record) => this.recordToolCall(record),
+      snapshotContextPressure: () => this.snapshotContextPressure(),
       writeArtifact: async (relPath, data) => {
         this.writeArtifact(relPath, data);
       },
@@ -714,6 +725,39 @@ class RunTelemetryImpl {
         (this.toolSummary.byStage[stage] = emptyToolBucket()),
       record
     );
+    this.updateContextPressure(record);
+  }
+
+  private updateContextPressure(record: ToolCallRecord): void {
+    if (record.status === "rejected") {
+      const reason = record.degradationReason ?? record.errorCode ?? "rejected";
+      if (isLocalToolBudgetRejectionReason(reason)) {
+        this.contextPressure.toolBudgetRejections += 1;
+        addStageCount(this.contextPressure.toolBudgetRejectionsByStage, record.stage, 1);
+        this.contextPressure.rejectionReasons[reason] = (this.contextPressure.rejectionReasons[reason] ?? 0) + 1;
+      }
+      return;
+    }
+
+    if (record.degraded) {
+      this.contextPressure.degradedToolResults += 1;
+      addStageCount(this.contextPressure.degradedToolResultsByStage, record.stage, 1);
+    }
+  }
+
+  private snapshotContextPressure(): Pick<
+    ContextPressureSummary,
+    "toolBudgetRejections" | "toolBudgetRejectionsByStage" | "degradedToolResults" | "degradedToolResultsByStage" | "rejectionReasons"
+  > {
+    return {
+      toolBudgetRejections: this.contextPressure.toolBudgetRejections,
+      toolBudgetRejectionsByStage: { ...this.contextPressure.toolBudgetRejectionsByStage },
+      degradedToolResults: this.contextPressure.degradedToolResults,
+      degradedToolResultsByStage: { ...this.contextPressure.degradedToolResultsByStage },
+      rejectionReasons: Object.entries(this.contextPressure.rejectionReasons)
+        .map(([reason, count]) => ({ reason, count }))
+        .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason))
+    };
   }
 
   private updateModelSummaryFromCacheEvent(event: TelemetryEvent): void {
@@ -1155,6 +1199,10 @@ function updateToolBucket(bucket: ToolBucket, record: ToolCallRecord): void {
   bucket.degraded += record.degraded ? 1 : 0;
   bucket.totalDurationMs += record.durationMs;
   bucket.totalResultChars += record.resultChars;
+}
+
+function addStageCount(target: Partial<Record<ReviewStage, number>>, stage: ReviewStage, amount: number): void {
+  target[stage] = (target[stage] ?? 0) + amount;
 }
 
 function averageToolBuckets(buckets: Record<string, ToolBucket>): Record<string, ToolBucket & { averageDurationMs: number; averageResultChars: number }> {

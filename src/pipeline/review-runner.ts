@@ -22,6 +22,7 @@ import type {
   BudgetSummary,
   BudgetStopReason,
   BudgetUsageByStage,
+  ContextPressureSummary,
   CodeninjaConfig,
   ConfigWarning,
   CoverageLevel,
@@ -254,7 +255,7 @@ export async function runReview(
       markCoverageBudgetStopped(finalReview.coverage, run.budget.stopSnapshot());
     }
     emitBudgetStop(run, finalReview.coverage.budgetStop);
-    finalReview.budgetSummary = run.budget.summary(finalReview.coverage);
+    finalReview.budgetSummary = run.budget.summary(finalReview.coverage, buildContextPressureSummary(run.telemetry, packets, finalReview));
     throwIfHardAborted(run);
     await run.telemetry.writeArtifact("coverage.json", {
       status: finalReview.coverage,
@@ -1117,6 +1118,36 @@ async function renderOutputs(
   overrides.writeOutput?.(scrubGitHubSecrets(rendered));
 }
 
+function buildContextPressureSummary(
+  telemetry: TelemetryRecorder,
+  packets: ReviewPacket[],
+  result: ReviewResult
+): ContextPressureSummary | undefined {
+  const toolPressure = telemetry.snapshotContextPressure?.();
+  const summary: ContextPressureSummary = {
+    toolBudgetRejections: toolPressure?.toolBudgetRejections ?? 0,
+    toolBudgetRejectionsByStage: toolPressure?.toolBudgetRejectionsByStage ?? {},
+    degradedToolResults: toolPressure?.degradedToolResults ?? 0,
+    degradedToolResultsByStage: toolPressure?.degradedToolResultsByStage ?? {},
+    degradedHunks: packets
+      .filter((packet) => packet.degraded !== undefined)
+      .reduce((sum, packet) => sum + packet.hunks.length, 0),
+    rejectionReasons: toolPressure?.rejectionReasons ?? [],
+    unresolvedNotes: {
+      emitted: result.needsHumanAttention.length,
+      omitted: result.needsHumanAttentionOmittedCount ?? 0
+    }
+  };
+  return hasContextPressure(summary) ? summary : undefined;
+}
+
+function hasContextPressure(summary: ContextPressureSummary): boolean {
+  return summary.toolBudgetRejections > 0 ||
+    summary.degradedToolResults > 0 ||
+    summary.degradedHunks > 0 ||
+    summary.unresolvedNotes.omitted > 0;
+}
+
 function summarizeResolvedInput(resolved: ResolvedReviewInput): Omit<ResolvedReviewInput, "rawDiff"> & { rawDiffChars: number } {
   return {
     mode: resolved.mode,
@@ -1232,7 +1263,7 @@ export class BudgetLedger {
     return this.dispatchBlockRecords.length > 0;
   }
 
-  summary(coverage?: RunCoverageStatus): BudgetSummary {
+  summary(coverage?: RunCoverageStatus, contextPressure?: ContextPressureSummary): BudgetSummary {
     return {
       completeness: coverage?.partial === true ? "partial" : "complete",
       partialReasons: coverage?.partial === true ? [...coverage.reasons] : [],
@@ -1254,7 +1285,8 @@ export class BudgetLedger {
         byStage: [...this.usageByStage.values()].sort((a, b) => a.stage - b.stage)
       },
       overruns: [...this.overrunRecords],
-      dispatchBlocks: [...this.dispatchBlockRecords]
+      dispatchBlocks: [...this.dispatchBlockRecords],
+      ...(contextPressure !== undefined ? { contextPressure } : {})
     };
   }
 
