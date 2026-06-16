@@ -133,6 +133,8 @@ llm:
 
 Increasing both can finish large evals faster, but it can also hit provider rate limits or increase burst spend. The `--cache` flag controls codeninja's local model-call cache, which reuses prior LLM responses during iteration; provider-side prompt cache reads/writes are reported separately because they are billing/runtime metadata from the LLM provider. In telemetry artifacts, prefer `localModelCallCache` and `providerPromptCache`; the older `cache` field is only a compatibility alias for local model-call cache counts. The eval suite, the skills, and the telemetry are the compounding assets — models swap underneath them.
 
+For high-throughput evals, set `review.concurrency` and `llm.maxConcurrentCalls` to the same value unless you are intentionally throttling provider calls. A value of `6` is a reasonable first step; try `8` only when the provider account tolerates the burst rate. Higher concurrency reduces elapsed time, not token use or model cost, and codeninja records a `concurrency_mismatch` telemetry event when workers outnumber provider slots.
+
 ### Reviewing untrusted code is a security problem
 
 A PR is attacker-controlled input that flows into tool-equipped LLMs whose output gets posted publicly. codeninja draws explicit trust boundaries: untrusted content is structurally delimited in prompts as data-not-instructions; repository tools enforce repo-root path containment (no traversal, no symlink escapes); repo-resident config can never enable command execution or posting — those need user-level opt-in; review policy loads from *your* checkout, never the PR's; model-composed comments pass deterministic sanitization (mention-neutralizing, marker stripping, secret scrubbing) before posting.

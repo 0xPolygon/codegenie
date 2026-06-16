@@ -1090,14 +1090,14 @@ describe("eval command fixture suite", () => {
       "  provider: not-real",
       "  model: not-real-model",
       "  reasoning: low",
-      "  concurrency: 2",
+      "  concurrency: 3",
       "  lenses:",
       "    - core/code-review",
       "llm:",
       "  provider: fake",
       "  model: fake-model",
       "  reasoning: high",
-      "  maxConcurrentCalls: 3",
+      "  maxConcurrentCalls: 2",
       "should_find:",
       "  - id: fake-finding",
       "    path: src/app.js",
@@ -1114,13 +1114,62 @@ describe("eval command fixture suite", () => {
 
     expect(result.status).toBe("pass");
     expect(result.info.effectiveConfig).toMatchObject({
-      review: { concurrency: 2 },
-      llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 3 }
+      review: { concurrency: 3 },
+      llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 2 }
     });
     const runJson = JSON.parse(readFileSync(path.join(result.runDir, "telemetry", "run.json"), "utf8")) as {
       review: { concurrency: number; llmMaxConcurrentCalls: number };
     };
-    expect(runJson.review).toMatchObject({ concurrency: 2, llmMaxConcurrentCalls: 3 });
+    expect(runJson.review).toMatchObject({ concurrency: 3, llmMaxConcurrentCalls: 2 });
+    const events = readJsonl(path.join(result.runDir, "telemetry", "events.jsonl"));
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "concurrency_mismatch",
+        data: expect.objectContaining({
+          reviewConcurrency: 3,
+          llmMaxConcurrentCalls: 2
+        })
+      })
+    ]));
+    expect(renderCaseResult(result)).toContain("concurrency 3 workers/2 provider calls");
+  }, 60_000);
+
+  it("does not emit concurrency mismatch telemetry when provider slots match workers", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-concurrency-match-suite-"));
+    const repo = initRepo();
+    writeRepoFile(repo, "src/app.js", "export const base = true;\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "src/app.js", "export const value = 'CODENINJA_FAKE_FINDING';\n");
+    commitAll(repo, "feature");
+    writeFileSync(path.join(suiteDir, "concurrency-match.yml"), [
+      "name: concurrency-match",
+      "repo:",
+      `  external: ${JSON.stringify(repo)}`,
+      "command:",
+      "  branch: feature",
+      "  base: main",
+      "review:",
+      "  concurrency: 2",
+      "  lenses:",
+      "    - core/code-review",
+      "llm:",
+      "  provider: fake",
+      "  model: fake-model",
+      "  maxConcurrentCalls: 2",
+      "should_find:",
+      "  - id: fake-finding",
+      "    path: src/app.js",
+      "    titlePattern: Fake finding"
+    ].join("\n"));
+
+    const suite = await loadEvalSuite(suiteDir);
+    const result = await runEvalCase(suite, suite.cases[0]!, { config: defaultConfig });
+
+    expect(result.status).toBe("pass");
+    const events = readJsonl(path.join(result.runDir, "telemetry", "events.jsonl"));
+    expect(events.some((event) => isTelemetryMessage(event, "concurrency_mismatch"))).toBe(false);
+    expect(renderCaseResult(result)).toContain("concurrency 2 workers/2 provider calls");
   }, 60_000);
 
   it("records eval llm overrides on live eval errors after case config is applied", async () => {
@@ -1346,6 +1395,18 @@ function evalRunInfoWithMetrics(runNumber: number, metrics: Partial<EvalRunMetri
       }
     }
   };
+}
+
+function readJsonl(filePath: string): unknown[] {
+  const raw = readFileSync(filePath, "utf8").trim();
+  if (raw.length === 0) {
+    return [];
+  }
+  return raw.split("\n").map((line) => JSON.parse(line) as unknown);
+}
+
+function isTelemetryMessage(value: unknown, message: string): boolean {
+  return typeof value === "object" && value !== null && "message" in value && value.message === message;
 }
 
 function findNestedGitDirs(root: string): string[] {

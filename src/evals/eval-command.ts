@@ -149,6 +149,10 @@ export function renderCaseResult(result: EvalCaseResult): string {
   if (metrics.budgetOverruns !== undefined) {
     parts.push(`${metrics.budgetOverruns} budget overruns`);
   }
+  const concurrencySummary = effectiveConcurrencySummary(result.info.effectiveConfig);
+  if (concurrencySummary !== undefined) {
+    parts.push(concurrencySummary);
+  }
   const contextPressureParts = contextPressureSummaryParts(metrics);
   if (contextPressureParts.length > 0) {
     parts.push(`context pressure ${contextPressureParts.join(", ")}`);
@@ -175,6 +179,13 @@ export function renderCaseResult(result: EvalCaseResult): string {
     lines.push(`  ERROR ${score.error.code}: ${score.error.message}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function effectiveConcurrencySummary(effectiveConfig: EvalCaseResult["info"]["effectiveConfig"]): string | undefined {
+  if (effectiveConfig === undefined) {
+    return undefined;
+  }
+  return `concurrency ${effectiveConfig.review.concurrency} workers/${effectiveConfig.llm.maxConcurrentCalls} provider calls`;
 }
 
 function contextPressureSummaryParts(metrics: EvalCaseResult["info"]["score"]["metrics"]): string[] {

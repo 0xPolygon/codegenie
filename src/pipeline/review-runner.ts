@@ -407,6 +407,7 @@ async function startRun(
   const attached = await run.attachRunDirectory(repoRoot);
   overrides.onRunStart?.(attached);
   emitConfigWarnings(overrides.configWarnings ?? [], run.recorder.runId, run.logger, run.recorder);
+  emitConcurrencyTuningEvent(config, run.recorder);
   const budget = new BudgetLedger(config, run.recorder);
   const abort = new AbortController();
   const hardTimeoutMs = config.review.timeoutMs * 2;
@@ -435,6 +436,24 @@ async function startRun(
       await run.finalize(outcome);
     }
   };
+}
+
+function emitConcurrencyTuningEvent(config: CodeninjaConfig, telemetry: TelemetryRecorder): void {
+  const reviewConcurrency = config.review.concurrency;
+  const providerConcurrency = config.llm.maxConcurrentCalls;
+  if (reviewConcurrency <= providerConcurrency) {
+    return;
+  }
+  telemetry.event({
+    stage: 0,
+    level: "info",
+    message: "concurrency_mismatch",
+    data: {
+      reviewConcurrency,
+      llmMaxConcurrentCalls: providerConcurrency,
+      effect: "review workers may wait for provider call slots; set both values equal for maximum throughput unless throttling provider calls intentionally"
+    }
+  });
 }
 
 function emitConfigWarnings(

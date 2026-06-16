@@ -41,7 +41,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 35 | COMPLETE | Issue 35: Telemetry and Cache Diagnostics |
 | 36 | COMPLETE | Issue 36: Human-Attention and Uncertainty Hygiene |
 | 37 | COMPLETE | Issue 37: Verifier Forced-Submit Schema Repair Hardening |
-| 38 | BACKLOG | Issue 38: Eval and Runtime Concurrency Tuning |
+| 38 | COMPLETE | Issue 38: Eval and Runtime Concurrency Tuning |
 | 39 | BACKLOG | Issue 39: Shared Prompt-Prefix Cache Spike |
 
 ## Deferred (watching for evidence)
