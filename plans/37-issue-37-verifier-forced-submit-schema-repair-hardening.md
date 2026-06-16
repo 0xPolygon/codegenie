@@ -1,6 +1,6 @@
 # Issue 37: Verifier Forced-Submit Schema Repair Hardening
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 6 review and Opus 4.8 follow-up, 2026-06-16
 Planned at: commit `506fa43`
 

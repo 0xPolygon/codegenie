@@ -4568,18 +4568,25 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("retries verifier schema-invalid output once and records repair telemetry", async () => {
+  it("uses compact verifier schema repair and records XML classification", async () => {
     let calls = 0;
+    let repairPrompt = "";
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const runner: LlmRunner = {
-      runStructured: async <T>() => {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         calls += 1;
-        if (calls === 1) {
-          throw new CodeninjaError("llm_schema_invalid", "bad verifier schema", {
-            recoverable: true,
-            context: { error: "missing required property verdict" }
-          });
-        }
+        expect(request.schemaRepair?.replaceConversation).toBe(true);
+        expect(request.schemaRepair?.failAfterRepair).toBe(false);
+        repairPrompt = request.schemaRepair?.buildPrompt({
+          stage: 9,
+          submitTool: "submit_verdict",
+          error: "schema-invalid arguments: <parameter>BAD_PRIOR_XML_BODY</parameter> missing required property verdict",
+          submitCalls: [{
+            id: "submit-verdict-bad",
+            arguments: { parameter: "<parameter>BAD_PRIOR_XML_BODY</parameter>" }
+          }],
+          extraToolNames: []
+        }) ?? "";
         return {
           verdict: "keep",
           reason: "kept after repair",
@@ -4611,20 +4618,34 @@ describe("phase 5 pipeline regressions", () => {
       }
     );
 
-    expect(calls).toBe(2);
+    expect(calls).toBe(1);
+    expect(repairPrompt).toContain("untrusted-data label=verifier-repair-candidate-summary");
+    expect(repairPrompt).toContain("\"id\": \"finding-1\"");
+    expect(repairPrompt).toContain("- class: xml_parameter_bleed");
+    expect(repairPrompt).toContain("Do not output XML.");
+    expect(repairPrompt).toContain("Do not write `<parameter>` tags.");
+    expect(repairPrompt).toContain("Call `submit_verdict` exactly once");
+    expect(repairPrompt).not.toContain("BAD_PRIOR_XML_BODY");
     expect(verified.verified).toHaveLength(1);
     expect(verified.incompleteCount).toBe(0);
     expect(events).toContainEqual(expect.objectContaining({
       stage: 9,
       level: "warn",
       message: "verification_schema_invalid",
-      data: expect.objectContaining({ candidateId: "finding-1" })
+      data: expect.objectContaining({
+        candidateId: "finding-1",
+        classification: "xml_parameter_bleed",
+        error: expect.not.stringContaining("BAD_PRIOR_XML_BODY")
+      })
     }));
     expect(events).toContainEqual(expect.objectContaining({
       stage: 9,
       level: "info",
       message: "verification_schema_repair_attempted",
-      data: expect.objectContaining({ candidateId: "finding-1" })
+      data: expect.objectContaining({
+        candidateId: "finding-1",
+        classification: "xml_parameter_bleed"
+      })
     }));
     expect(events).toContainEqual(expect.objectContaining({
       stage: 9,
@@ -4632,7 +4653,87 @@ describe("phase 5 pipeline regressions", () => {
       data: expect.objectContaining({
         workers: expect.objectContaining({
           schemaInvalid: 1,
-          repairAttempted: 1
+          repairAttempted: 1,
+          repairSucceeded: 1
+        })
+      })
+    }));
+  });
+
+  it("marks verifier schema-invalid after compact repair incomplete with classification", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const artifacts = new Map<string, unknown>();
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        request.schemaRepair?.buildPrompt({
+          stage: 9,
+          submitTool: "submit_verdict",
+          error: "schema-invalid arguments: <parameter>BAD_PRIOR_XML_BODY</parameter>",
+          submitCalls: [{ id: "submit-verdict-bad", arguments: { parameter: "<parameter>BAD_PRIOR_XML_BODY</parameter>" } }],
+          extraToolNames: []
+        });
+        throw new CodeninjaError("llm_schema_invalid", "bad verifier schema after repair", {
+          recoverable: true,
+          context: { error: "missing required property verdict after repair" }
+        });
+      }
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        },
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff(),
+        checkpoint: () => "ok"
+      }
+    );
+
+    expect(verified.verified).toEqual([]);
+    expect(verified.incompleteCount).toBe(1);
+    const records = artifacts.get("verification.json") as Array<{ candidateId: string; incompleteReason?: string; verdict?: { reason?: string; verificationIncomplete?: boolean } }>;
+    expect(records).toEqual([
+      expect.objectContaining({
+        candidateId: "finding-1",
+        incompleteReason: "schema_invalid",
+        verdict: expect.objectContaining({
+          verificationIncomplete: true,
+          reason: expect.stringContaining("schema_invalid_after_repair: xml_parameter_bleed")
+        })
+      })
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 9,
+      level: "warn",
+      message: "verification_schema_repair_failed",
+      data: expect.objectContaining({
+        candidateId: "finding-1",
+        classification: "xml_parameter_bleed"
+      })
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 9,
+      message: "pipeline_metrics",
+      data: expect.objectContaining({
+        workers: expect.objectContaining({
+          schemaInvalid: 2,
+          repairAttempted: 1,
+          repairFailed: 1
         })
       })
     }));
@@ -4640,14 +4741,20 @@ describe("phase 5 pipeline regressions", () => {
 
   it("marks schema-invalid verifier output incomplete when repair cannot be dispatched", async () => {
     let calls = 0;
-    let checkpoints = 0;
     const artifacts = new Map<string, unknown>();
     const runner: LlmRunner = {
-      runStructured: async () => {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         calls += 1;
-        throw new CodeninjaError("llm_schema_invalid", "bad verifier schema", {
+        request.schemaRepair?.buildPrompt({
+          stage: 9,
+          submitTool: "submit_verdict",
+          error: "missing required property verdict",
+          submitCalls: [{ id: "submit-verdict-bad", arguments: { reason: "missing verdict" } }],
+          extraToolNames: []
+        });
+        throw new CodeninjaError("budget_exhausted", "budget exhausted before repair dispatch", {
           recoverable: true,
-          context: { error: "missing required property verdict" }
+          context: { reason: "budget_exhausted" }
         });
       }
     };
@@ -4670,10 +4777,7 @@ describe("phase 5 pipeline regressions", () => {
         promptBuilder: fakePromptBuilder(),
         lensRegistry: fakeLensRegistry(),
         diff: fakeDiff(),
-        checkpoint: () => {
-          checkpoints += 1;
-          return checkpoints === 1 ? "ok" : "exhausted";
-        }
+        checkpoint: () => "ok"
       }
     );
 

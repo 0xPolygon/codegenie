@@ -1298,6 +1298,72 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "schema_invalid"]);
   });
 
+  it("repairs verifier schema-invalid submits with replacement context and submit-only tools", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-verdict-xml",
+        name: "submit_verdict",
+        arguments: { parameter: "<parameter>BAD_PRIOR_XML_BODY</parameter>" }
+      }]),
+      assistant([validSubmitVerdictCall("submit-verdict-repaired")])
+    ]);
+    const readRange: ToolDefinition = {
+      name: "read_range",
+      description: "read range",
+      parameters: Type.Object({ path: Type.String() }, { additionalProperties: false }),
+      execute: vi.fn(async () => ({ text: "source", meta: { backend: "text" as const, precision: "exact" as const, degraded: false } }))
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const originalPromptMarker = "ORIGINAL_VERIFIER_PROMPT_SHOULD_NOT_BE_RESENT";
+
+    await expect(runner.runStructured({
+      stage: 9,
+      prompt: `${originalPromptMarker} ${"x".repeat(4000)}`,
+      schema: SubmitVerificationVerdictSchema,
+      templateVersion: "test-template",
+      tools: [readRange],
+      timeoutMs: 1000,
+      schemaRepair: {
+        replaceConversation: true,
+        failAfterRepair: false,
+        buildPrompt: (input) => {
+          expect(input.submitTool).toBe("submit_verdict");
+          expect(input.submitCalls.map((call) => call.id)).toEqual(["submit-verdict-xml"]);
+          expect(JSON.stringify(input.submitCalls[0]?.arguments)).toContain("BAD_PRIOR_XML_BODY");
+          return [
+            "compact verifier repair",
+            "Do not output XML.",
+            "Do not write `<parameter>` tags.",
+            "Call `submit_verdict` exactly once."
+          ].join("\n");
+        }
+      }
+    })).resolves.toMatchObject({
+      verdict: "reject",
+      requiredEvidencePresent: false,
+      falsePositiveRisk: "high"
+    });
+
+    expect(adapter.toolNames[0]).toEqual(["read_range", "submit_verdict"]);
+    expect(adapter.toolNames[1]).toEqual(["submit_verdict"]);
+    expect(adapter.options[1]).toMatchObject({ toolChoice: { type: "tool", name: "submit_verdict" } });
+    expect(adapter.contexts[1]).toContain("compact verifier repair");
+    expect(adapter.contexts[1]).toContain("Do not write `<parameter>` tags.");
+    expect(adapter.contexts[1]).not.toContain(originalPromptMarker);
+    expect(adapter.contexts[1]).not.toContain("BAD_PRIOR_XML_BODY");
+    expect(telemetry.modelCalls.map((call) => call.kind)).toEqual(["initial", "repair"]);
+    expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
+  });
+
   it("makes one budget-exempt finalization provider call after checkpoint exhaustion", async () => {
     const adapter = scriptedAdapter([
       assistant([{ type: "text", text: "plain text instead of submit" }]),
@@ -3181,16 +3247,19 @@ describe("Phase 4 Pi runner and model-call cache", () => {
   });
 });
 
-function scriptedAdapter(messages: PiAssistantMessage[]): PiAiAdapter & { contexts: string[]; options: Record<string, unknown>[] } {
+function scriptedAdapter(messages: PiAssistantMessage[]): PiAiAdapter & { contexts: string[]; options: Record<string, unknown>[]; toolNames: string[][] } {
   const contexts: string[] = [];
   const optionsSeen: Record<string, unknown>[] = [];
+  const toolNames: string[][] = [];
   return {
     contexts,
     options: optionsSeen,
+    toolNames,
     resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model", api: "faux" } }),
     complete: vi.fn(async (_model, context, options) => {
       contexts.push(JSON.stringify(context.messages));
       optionsSeen.push(options);
+      toolNames.push(context.tools.map((tool) => tool.name));
       const next = messages.shift();
       if (!next) {
         throw new Error("no scripted message");

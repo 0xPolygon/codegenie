@@ -40,7 +40,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 34 | COMPLETE | Issue 34: Run-Level Tool Result Memoization |
 | 35 | COMPLETE | Issue 35: Telemetry and Cache Diagnostics |
 | 36 | COMPLETE | Issue 36: Human-Attention and Uncertainty Hygiene |
-| 37 | PENDING | Issue 37: Verifier Forced-Submit Schema Repair Hardening |
+| 37 | COMPLETE | Issue 37: Verifier Forced-Submit Schema Repair Hardening |
 | 38 | BACKLOG | Issue 38: Eval and Runtime Concurrency Tuning |
 | 39 | BACKLOG | Issue 39: Shared Prompt-Prefix Cache Spike |
 

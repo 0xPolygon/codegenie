@@ -1,8 +1,8 @@
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
-import type { LlmRunner } from "../llm/llm-runner.js";
+import type { LlmRunner, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import { SubmitVerificationVerdictSchema, type SubmitVerificationVerdict } from "../llm/schemas.js";
 import type { LensRegistry } from "../skills/lens-registry.js";
-import type { PromptBuilder } from "../skills/prompt-builder.js";
+import { fenceUntrusted, stableJson, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
   CandidateFinding,
@@ -105,6 +105,18 @@ type VerificationRuntimeStats = {
   repairAttempted: number;
   repairSucceeded: number;
   repairFailed: number;
+};
+
+type VerifierSchemaInvalidKind =
+  | "xml_parameter_bleed"
+  | "missing_submit_tool"
+  | "invalid_tool_arguments"
+  | "extra_tool_calls"
+  | "unknown";
+
+type VerifierRepairAttempt = {
+  classification: VerifierSchemaInvalidKind;
+  errorSummary: string;
 };
 
 type VerifierReservation = {
@@ -566,56 +578,32 @@ async function runVerifierStructured(
   telemetry: TelemetryRecorder,
   runtimeStats: VerificationRuntimeStats
 ): Promise<SubmitVerificationVerdict> {
-  const request = (promptText: string) => opts.runner.runStructured<SubmitVerificationVerdict>({
-    stage: 9,
-    prompt: promptText,
-    schema: SubmitVerificationVerdictSchema,
-    templateVersion: prompt.templateVersion,
-    tools: buildRepositoryToolDefinitions(tools),
-    toolBudget: scaleToolBudget(VERIFIER_TOOL_BUDGET, config.review.budgetMultiplier),
-    timeoutMs: config.review.perPassTimeoutMs,
-    telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId }
-  });
-
+  let repairAttempt: VerifierRepairAttempt | undefined;
   try {
-    return await request(prompt.prompt);
-  } catch (error) {
-    if (!isSchemaInvalidError(error)) {
-      throw error;
-    }
-    runtimeStats.schemaInvalid += 1;
-    telemetry.event({
+    const result = await opts.runner.runStructured<SubmitVerificationVerdict>({
       stage: 9,
-      level: "warn",
-      message: "verification_schema_invalid",
-      file: candidate.path,
-      data: {
-        candidateId: candidate.id,
-        error: verifierErrorSummary(error)
+      prompt: prompt.prompt,
+      schema: SubmitVerificationVerdictSchema,
+      templateVersion: prompt.templateVersion,
+      tools: buildRepositoryToolDefinitions(tools),
+      toolBudget: scaleToolBudget(VERIFIER_TOOL_BUDGET, config.review.budgetMultiplier),
+      timeoutMs: config.review.perPassTimeoutMs,
+      telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId },
+      schemaRepair: {
+        replaceConversation: true,
+        failAfterRepair: false,
+        buildPrompt: (input) => {
+          repairAttempt = recordVerifierSchemaRepairAttempt(candidate, input, telemetry, runtimeStats);
+          return buildVerifierSchemaRepairPrompt(candidate, input, repairAttempt);
+        }
       }
     });
-    if (opts.checkpoint?.(9) === "exhausted") {
-      runtimeStats.repairFailed += 1;
-      return incompleteSubmittedVerdict("schema_invalid; repair not dispatched because budget was exhausted");
-    }
-
-    runtimeStats.repairAttempted += 1;
-    telemetry.event({
-      stage: 9,
-      level: "info",
-      message: "verification_schema_repair_attempted",
-      file: candidate.path,
-      data: { candidateId: candidate.id }
-    });
-    try {
-      const repaired = await request(`${prompt.prompt}\n\nThe previous verifier response failed submit_verdict schema validation. Retry once and call submit_verdict with schema-valid arguments only.`);
+    if (repairAttempt !== undefined) {
       runtimeStats.repairSucceeded += 1;
-      return repaired;
-    } catch (repairError) {
-      if (!isSchemaInvalidError(repairError)) {
-        throw repairError;
-      }
-      runtimeStats.schemaInvalid += 1;
+    }
+    return result;
+  } catch (error) {
+    if (repairAttempt !== undefined && isBudgetExhaustedWorkerError(error)) {
       runtimeStats.repairFailed += 1;
       telemetry.event({
         stage: 9,
@@ -624,11 +612,171 @@ async function runVerifierStructured(
         file: candidate.path,
         data: {
           candidateId: candidate.id,
-          error: verifierErrorSummary(repairError)
+          classification: repairAttempt.classification,
+          error: "budget exhausted before repair dispatch"
         }
       });
-      return incompleteSubmittedVerdict(`schema_invalid after repair: ${verifierErrorSummary(repairError)}`);
+      return incompleteSubmittedVerdict(`schema_invalid; repair not dispatched because budget was exhausted: ${repairAttempt.classification}`);
     }
+    if (!isSchemaInvalidError(error)) {
+      throw error;
+    }
+    const errorSummary = sanitizeVerifierSchemaError(verifierErrorSummary(error));
+    const fallbackAttempt = repairAttempt ?? recordVerifierSchemaInvalid(candidate, errorSummary, classifyVerifierSchemaInvalid(errorSummary), telemetry, runtimeStats);
+    if (opts.checkpoint?.(9) === "exhausted") {
+      runtimeStats.repairFailed += 1;
+      return incompleteSubmittedVerdict(`schema_invalid; repair not dispatched because budget was exhausted: ${fallbackAttempt.classification}`);
+    }
+    const repairedFailed = repairAttempt !== undefined;
+    if (repairedFailed) {
+      runtimeStats.schemaInvalid += 1;
+    }
+    runtimeStats.repairFailed += 1;
+    telemetry.event({
+      stage: 9,
+      level: "warn",
+      message: "verification_schema_repair_failed",
+      file: candidate.path,
+      data: {
+        candidateId: candidate.id,
+        classification: fallbackAttempt.classification,
+        error: errorSummary
+      }
+    });
+    return incompleteSubmittedVerdict(`${repairedFailed ? "schema_invalid_after_repair" : "schema_invalid"}: ${fallbackAttempt.classification}`);
+  }
+}
+
+function recordVerifierSchemaRepairAttempt(
+  candidate: CandidateFinding,
+  input: LlmSchemaRepairInput,
+  telemetry: TelemetryRecorder,
+  runtimeStats: VerificationRuntimeStats
+): VerifierRepairAttempt {
+  const classification = classifyVerifierSchemaInvalid(input);
+  const attempt = recordVerifierSchemaInvalid(candidate, sanitizeVerifierSchemaError(input.error), classification, telemetry, runtimeStats);
+  runtimeStats.repairAttempted += 1;
+  telemetry.event({
+    stage: 9,
+    level: "info",
+    message: "verification_schema_repair_attempted",
+    file: candidate.path,
+    data: {
+      candidateId: candidate.id,
+      classification
+    }
+  });
+  return attempt;
+}
+
+function recordVerifierSchemaInvalid(
+  candidate: CandidateFinding,
+  errorSummary: string,
+  classification: VerifierSchemaInvalidKind,
+  telemetry: TelemetryRecorder,
+  runtimeStats: VerificationRuntimeStats
+): VerifierRepairAttempt {
+  runtimeStats.schemaInvalid += 1;
+  telemetry.event({
+    stage: 9,
+    level: "warn",
+    message: "verification_schema_invalid",
+    file: candidate.path,
+    data: {
+      candidateId: candidate.id,
+      classification,
+      error: errorSummary
+    }
+  });
+  return { classification, errorSummary };
+}
+
+function buildVerifierSchemaRepairPrompt(
+  candidate: CandidateFinding,
+  input: LlmSchemaRepairInput,
+  attempt: VerifierRepairAttempt
+): string {
+  const anchor = candidate.anchor
+    ? `${candidate.anchor.path}:${String(candidate.anchor.line)} ${candidate.anchor.side}`
+    : `${candidate.path}:unanchored`;
+  const candidateSummary = fenceUntrusted(stableJson({
+    id: candidate.id,
+    title: candidate.title,
+    path: candidate.path,
+    anchor
+  }), "verifier-repair-candidate-summary");
+  return [
+    "Repair the Stage 9 verifier response for codeninja.",
+    "",
+    candidateSummary,
+    "",
+    "Validation problem:",
+    `- class: ${attempt.classification}`,
+    `- summary: ${attempt.errorSummary}`,
+    `- submit tool: ${input.submitTool}`,
+    "",
+    "Required action:",
+    `- Call \`${input.submitTool}\` exactly once with schema-valid arguments.`,
+    "- Do not output XML.",
+    "- Do not write `<parameter>` tags.",
+    "- Do not describe the schema.",
+    "- Do not answer in plain text.",
+    "- Do not call repository tools or ask for more context.",
+    "",
+    "Verdict reminder:",
+    "- keep only if the candidate is proven by concrete evidence.",
+    "- revise only when the same issue is real but the evidence, wording, or anchor needs correction.",
+    "- reject when required evidence is missing, the claim is speculative, or false-positive risk is high.",
+    "- If rejecting because verification cannot be completed, set requiredEvidencePresent=false and falsePositiveRisk=high."
+  ].join("\n");
+}
+
+function classifyVerifierSchemaInvalid(input: LlmSchemaRepairInput | string): VerifierSchemaInvalidKind {
+  const errorText = typeof input === "string" ? input : input.error;
+  const serializedSubmitArgs = typeof input === "string"
+    ? ""
+    : input.submitCalls.map((call) => safeStringify(call.arguments)).join("\n");
+  const text = `${errorText}\n${serializedSubmitArgs}`.toLowerCase();
+  if (/<\/?\s*parameter\b/u.test(text) || /&lt;\/?\s*parameter\b/u.test(text)) {
+    return "xml_parameter_bleed";
+  }
+  if (typeof input !== "string" && input.extraToolNames.length > 0) {
+    return "extra_tool_calls";
+  }
+  if (/did not call|missing submit|no submit|plain text/u.test(text)) {
+    return "missing_submit_tool";
+  }
+  if (typeof input !== "string" && input.submitCalls.length === 0) {
+    return "missing_submit_tool";
+  }
+  if (/schema|validation|required property|additional propert|invalid|arguments/u.test(text)) {
+    return "invalid_tool_arguments";
+  }
+  if (typeof input !== "string" && input.submitCalls.length > 0) {
+    return "invalid_tool_arguments";
+  }
+  return "unknown";
+}
+
+function sanitizeVerifierSchemaError(error: string): string {
+  return clampVerifierDiagnostic(
+    error
+      .replace(/<\s*parameter\b[^>]*>[\s\S]*?<\s*\/\s*parameter\s*>/giu, "[xml-parameter-block]")
+      .replace(/&lt;\s*parameter\b[\s\S]*?&lt;\s*\/\s*parameter\s*&gt;/giu, "[xml-parameter-block]")
+      .replace(/<[^>]{1,200}>/gu, "[xml-like-tag]")
+  );
+}
+
+function clampVerifierDiagnostic(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length > 500 ? `${trimmed.slice(0, 497)}...` : trimmed;
+}
+
+function safeStringify(input: unknown): string {
+  try {
+    return JSON.stringify(input) ?? "";
+  } catch {
+    return "";
   }
 }
 
@@ -1010,6 +1158,8 @@ function summarizeWorkerOutcomes(
   timedOut: number;
   schemaInvalid: number;
   repairAttempted: number;
+  repairSucceeded: number;
+  repairFailed: number;
   notDispatched: number;
   budgetLimited: number;
 } {
@@ -1022,6 +1172,8 @@ function summarizeWorkerOutcomes(
     timedOut: outcomes.filter((outcome) => outcome.outcome === "timed_out").length,
     schemaInvalid: opts.runtimeStats.schemaInvalid + outcomes.filter((outcome) => isSchemaInvalidError(outcome.error)).length,
     repairAttempted: opts.runtimeStats.repairAttempted,
+    repairSucceeded: opts.runtimeStats.repairSucceeded,
+    repairFailed: opts.runtimeStats.repairFailed,
     notDispatched: outcomes.filter((outcome) => outcome.outcome === "not_dispatched").length,
     budgetLimited: opts.budgetLimited
   };
