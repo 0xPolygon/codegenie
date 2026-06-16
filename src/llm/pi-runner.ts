@@ -287,11 +287,28 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           if (submitCall) {
             try {
               const validated = adapter.validateToolCall([toolSpec(submitTool)], submitCall);
+              if (request.stage === 7 && schemaRepairUsed) {
+                recordStage7SchemaRepairRecovered(opts, request, "schema_valid_after_retry");
+              }
               if (toolCalls.length > 0) {
                 recordSubmitWithExtraTools(opts, request, submitTool.name, toolCalls);
               }
               return validated as T;
             } catch (cause) {
+              const stage7Repair = stage7SubmitRepairDecision(request, submitCall, cause, candidateDrafted);
+              if (stage7Repair !== undefined) {
+                recordStage7SchemaRepairAttempted(opts, request, submitTool.name, submitCalls, toolCalls, stage7Repair.classification, cause);
+                if (stage7Repair.recovered !== undefined) {
+                  const validated = adapter.validateToolCall([toolSpec(submitTool)], {
+                    type: "toolCall",
+                    id: `${submitCall.id || submitTool.name}-stage7-recovered`,
+                    name: submitTool.name,
+                    arguments: stage7Repair.recovered
+                  });
+                  recordStage7SchemaRepairRecovered(opts, request, stage7Repair.classification);
+                  return validated as T;
+                }
+              }
               queueSchemaRepair({
                 opts,
                 request,
@@ -301,6 +318,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 extraToolNames: toolCalls.map((toolCall) => toolCall.name),
                 error: `The ${submitTool.name} arguments were schema-invalid: ${truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause))}`,
                 schemaRepairUsed,
+                ...(stage7Repair?.classification !== undefined ? { repairClassification: stage7Repair.classification } : {}),
                 cause
               });
               schemaRepairUsed = true;
@@ -600,6 +618,14 @@ function recordProviderPromptCacheStrategy(
 function submitCallHasFindings(toolCall: PiToolCall): boolean {
   const findings = toolCall.arguments.findings;
   return Array.isArray(findings) && findings.length > 0;
+}
+
+function safeStringify(input: unknown): string {
+  try {
+    return JSON.stringify(input) ?? "";
+  } catch {
+    return "";
+  }
 }
 
 function summarizeToolResult(toolCall: PiToolCall, outcome: ToolRunOutcome, resultText: string): LlmToolResultSummary {
@@ -1793,10 +1819,20 @@ function queueSchemaRepair(input: {
   extraToolNames: string[];
   error: string;
   schemaRepairUsed: boolean;
+  repairClassification?: Stage7SchemaInvalidKind;
   cause?: unknown;
 }): void {
   const error = truncatePromptDiagnostic(input.error);
   if (input.schemaRepairUsed) {
+    if (input.request.stage === 7) {
+      recordStage7SchemaRepairFailed(
+        input.opts,
+        input.request,
+        input.submitToolName,
+        input.repairClassification ?? classifyStage7SchemaInvalid(input.error, input.submitCalls),
+        error
+      );
+    }
     throw new CodeninjaError("llm_schema_invalid", "model submit payload failed schema validation after repair", {
       recoverable: input.request.schemaRepair?.failAfterRepair === true ? false : true,
       context: { submitTool: input.submitToolName, error },
@@ -1811,7 +1847,7 @@ function queueSchemaRepair(input: {
     extraToolNames: input.extraToolNames
   };
   const content = input.request.schemaRepair?.buildPrompt(repairInput) ??
-    `${error}. Call ${input.submitToolName} again with exactly one corrected schema-valid set of arguments.`;
+    defaultSchemaRepairPrompt(input.request, input.submitToolName, error);
   const replaceConversation = input.request.schemaRepair?.replaceConversation === true;
   const repairMessage = {
     role: "user",
@@ -1836,6 +1872,182 @@ function queueSchemaRepair(input: {
       repairPromptChars: content.length,
       replaceConversation,
       candidateId: input.request.telemetryContext?.candidateId,
+      error
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
+function defaultSchemaRepairPrompt(
+  request: LlmStructuredRequest<unknown>,
+  submitToolName: string,
+  error: string
+): string {
+  if (request.stage === 7) {
+    return [
+      "Repair the Stage 7 packet-review response for codeninja.",
+      "",
+      `Validation problem: ${error}`,
+      "",
+      "Required action:",
+      `- Call \`${submitToolName}\` exactly once with schema-valid arguments.`,
+      "- Do not output XML.",
+      "- Do not write `<parameter>` tags.",
+      "- Do not describe the schema.",
+      "- Do not answer in plain text.",
+      "- Do not call repository tools or ask for more context.",
+      `- ${noResultInstruction(request)}`
+    ].join("\n");
+  }
+  return `${error}. Call ${submitToolName} again with exactly one corrected schema-valid set of arguments.`;
+}
+
+type Stage7SubmitRepairDecision = {
+  classification: Stage7SchemaInvalidKind;
+  recovered?: Record<string, unknown>;
+};
+
+type Stage7SchemaInvalidKind =
+  | "xml_parameter_bleed"
+  | "empty_no_findings_missing_fields"
+  | "unsafe_candidate_like_payload"
+  | "invalid_tool_arguments";
+
+function stage7SubmitRepairDecision(
+  request: LlmStructuredRequest<unknown>,
+  submitCall: PiToolCall,
+  cause: unknown,
+  candidateDrafted: boolean
+): Stage7SubmitRepairDecision | undefined {
+  if (request.stage !== 7 || submitCall.name !== "submit_review") {
+    return undefined;
+  }
+  const classification = classifyStage7SchemaInvalid(cause instanceof Error ? cause.message : String(cause), [submitCall]);
+  if (candidateDrafted) {
+    return { classification: "unsafe_candidate_like_payload" };
+  }
+  if (!isSafeStage7NoFindingsSalvage(submitCall.arguments)) {
+    return { classification: stage7PayloadLooksCandidateLike(submitCall.arguments) ? "unsafe_candidate_like_payload" : classification };
+  }
+  return {
+    classification,
+    recovered: {
+      reviewStatus: "no_findings",
+      findings: [],
+      followUpHints: [],
+      uncertainties: [],
+      noFindingReason: cleanStage7NoFindingReason(submitCall.arguments.noFindingReason)
+    }
+  };
+}
+
+function classifyStage7SchemaInvalid(error: string, submitCalls: PiToolCall[]): Stage7SchemaInvalidKind {
+  const text = `${error}\n${submitCalls.map((call) => safeStringify(call.arguments)).join("\n")}`.toLowerCase();
+  if (/<\/?\s*parameter\b/u.test(text) || /&lt;\/?\s*parameter\b/u.test(text)) {
+    return "xml_parameter_bleed";
+  }
+  if (submitCalls.some((call) => stage7PayloadLooksCandidateLike(call.arguments))) {
+    return "unsafe_candidate_like_payload";
+  }
+  if (submitCalls.some((call) => call.arguments.reviewStatus === "no_findings")) {
+    return "empty_no_findings_missing_fields";
+  }
+  return "invalid_tool_arguments";
+}
+
+function isSafeStage7NoFindingsSalvage(args: Record<string, unknown>): boolean {
+  if (args.reviewStatus !== "no_findings") {
+    return false;
+  }
+  if (stage7PayloadLooksCandidateLike(args)) {
+    return false;
+  }
+  const findings = args.findings;
+  if (findings !== undefined && (!Array.isArray(findings) || findings.length > 0)) {
+    return false;
+  }
+  return true;
+}
+
+function stage7PayloadLooksCandidateLike(args: Record<string, unknown>): boolean {
+  const findings = args.findings;
+  if (Array.isArray(findings) && findings.length > 0) {
+    return true;
+  }
+  const text = safeStringify(args).toLowerCase();
+  return /"(?:title|failuremode|whythismatters|suggestedfix|suggestedtest|category|severity|confidence|evidence)"\s*:/u.test(text) ||
+    /<\s*parameter\b[^>]*name=["']?(?:title|failuremode|whythismatters|suggestedfix|suggestedtest|category|severity|confidence|evidence)["']?/iu.test(text) ||
+    /\bcandidate\b/u.test(text);
+}
+
+function cleanStage7NoFindingReason(value: unknown): string {
+  const raw = typeof value === "string" ? value : "Reviewed the packet and found no concrete failure mode.";
+  const cleaned = raw
+    .replace(/<\s*\/?\s*parameter\b[^>]*>/giu, " ")
+    .replace(/&lt;\s*\/?\s*parameter\b[^&]*(?:&gt;)?/giu, " ")
+    .replace(/<[^>]{1,200}>/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return cleaned.slice(0, 1000) || "Reviewed the packet and found no concrete failure mode.";
+}
+
+function recordStage7SchemaRepairAttempted(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  submitTool: string,
+  submitCalls: PiToolCall[],
+  extraToolCalls: PiToolCall[],
+  classification: Stage7SchemaInvalidKind,
+  cause: unknown
+): void {
+  opts.telemetry.event(definedRecord({
+    stage: 7,
+    level: "warn",
+    message: "stage7_schema_repair_attempted",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      submitTool,
+      invalidSubmitCallCount: submitCalls.length,
+      extraToolNames: extraToolCalls.map((toolCall) => toolCall.name),
+      classification,
+      error: truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause))
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
+function recordStage7SchemaRepairRecovered(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  classification: Stage7SchemaInvalidKind | "schema_valid_after_retry"
+): void {
+  opts.telemetry.event(definedRecord({
+    stage: 7,
+    level: "info",
+    message: "stage7_schema_repair_recovered",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      classification
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
+function recordStage7SchemaRepairFailed(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  submitTool: string,
+  classification: Stage7SchemaInvalidKind,
+  error: string
+): void {
+  opts.telemetry.event(definedRecord({
+    stage: 7,
+    level: "warn",
+    message: "stage7_schema_repair_failed",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      submitTool,
+      classification,
       error
     })
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);

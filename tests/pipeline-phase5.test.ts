@@ -7016,6 +7016,154 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.summaryOnlyFindings).toEqual([]);
   });
 
+  it("publishes verified low-confidence changed-line behavior deltas with concrete evidence", async () => {
+    const finding: CandidateFinding = {
+      ...fakeFinding(),
+      confidence: "low",
+      category: "correctness",
+      evidence: {
+        changedCode: "+ return calculateAmountFromUSD(price, decimals)",
+        relatedCode: [{
+          path: "src/caller.ts",
+          lines: "42: calculateAmountFromUSD(price, decimals)",
+          whyRelevant: "The caller still reaches the changed conversion path."
+        }]
+      },
+      failureMode: "The changed conversion path rejects a concrete token-decimal case that the previous implementation accepted.",
+      whyThisMatters: "A reachable caller can now fail a request that previously succeeded.",
+      suggestedTest: "Add a regression test for the changed conversion path with the affected decimal case.",
+      verification: "Verifier confirmed the changed line and related caller path; reachability should remain explicit in the final review."
+    };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+
+    const result = await dedupeRankAndComposeReview(
+      {
+        verified: [finding],
+        verdicts: [{
+          candidateId: finding.id,
+          verdict: "revise",
+          reason: "Concrete behavior delta confirmed, reachability remains narrow.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "medium"
+        }]
+      },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner: {
+          runStructured: async () => {
+            throw composerTransientError();
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({ id: finding.id, confidence: "low", publication: "inline" });
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 10,
+      message: "low_confidence_verified_delta_published",
+      file: finding.path,
+      data: expect.objectContaining({ findingId: finding.id })
+    }));
+  });
+
+  it("continues suppressing broad low-confidence findings even after verification", async () => {
+    const artifacts = new Map<string, unknown>();
+    const finding: CandidateFinding = {
+      ...fakeFinding(),
+      confidence: "low",
+      evidence: { changedCode: "+ maybeDoThing()" },
+      failureMode: "The behavior might change in some unclear cases.",
+      whyThisMatters: "This could matter if the unclear cases are reachable.",
+      verification: "Verifier could not establish a concrete related caller path."
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      {
+        verified: [finding],
+        verdicts: [{
+          candidateId: finding.id,
+          verdict: "keep",
+          reason: "Kept by test fixture despite weak evidence.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "medium"
+        }]
+      },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      {
+        ...nullTelemetry(),
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner: {
+          runStructured: async () => {
+            throw composerTransientError();
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    const selection = artifacts.get("final-selection.json") as { records: Array<{ findingId: string; decision: string; reason: string }> };
+    expect(result.noFindings).toBe(true);
+    expect(selection.records).toEqual([
+      expect.objectContaining({ findingId: finding.id, decision: "suppressed", reason: "confidence-threshold" })
+    ]);
+  });
+
+  it("normalizes composer summary counts to reported findings after suppression", async () => {
+    const reported = { ...fakeFinding(), id: "finding-reported" };
+    const suppressed = {
+      ...fakeFinding(),
+      id: "finding-suppressed",
+      confidence: "low" as const,
+      evidence: { changedCode: "+ maybeDoThing()" },
+      verification: "Weak low-confidence claim."
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [reported, suppressed], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            summary: "Found 2 verified issues.",
+            composedFindings: [
+              { findingIds: [reported.id], finalBody: "reported body", publication: "inline" },
+              { findingIds: [suppressed.id], finalBody: "suppressed body", publication: "inline" }
+            ]
+          }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.summary).toBe("Found 1 verified issue.");
+  });
+
   it("normalizes no-finding composer summaries when omitted verified findings are reinserted", async () => {
     const result = await dedupeRankAndComposeReview(
       { verified: [fakeFinding()], verdicts: [] },

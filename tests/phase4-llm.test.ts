@@ -1909,7 +1909,59 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
   });
 
+  it("salvages Stage 7 XML-bleed no-finding submits without failing the packet", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-xml-no-findings",
+        name: "submit_review",
+        arguments: {
+          reviewStatus: "no_findings",
+          noFindingReason: "Reviewed the packet and found no concrete failure mode.</noFindingReason>\n<parameter name=\"findings\">[]"
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-xml-no-findings"),
+        telemetryContext: { packetId: "packet-xml-no-findings" }
+      })
+    ).resolves.toMatchObject({
+      reviewStatus: "no_findings",
+      findings: [],
+      followUpHints: [],
+      uncertainties: [],
+      noFindingReason: expect.stringContaining("Reviewed the packet")
+    });
+    expect(adapter.contexts).toHaveLength(1);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_repair_attempted",
+        packetId: "packet-xml-no-findings",
+        data: expect.objectContaining({ classification: "xml_parameter_bleed" })
+      }),
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_repair_recovered",
+        packetId: "packet-xml-no-findings",
+        data: expect.objectContaining({ classification: "xml_parameter_bleed" })
+      })
+    ]));
+  });
+
   it("keeps candidate-shaped invalid submissions on the full repair path", async () => {
+    const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
       assistant([{
         type: "toolCall",
@@ -1925,7 +1977,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ]);
     const runner = createPiRunner({
       llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-      telemetry: fakeTelemetry().recorder,
+      telemetry: telemetry.recorder,
       logger: fakeLogger(),
       runSignal: new AbortController().signal,
       adapter,
@@ -1933,9 +1985,115 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
 
     await expect(
-      runner.runStructured(submitReviewRequest("packet-candidate-repair"))
+      runner.runStructured({
+        ...submitReviewRequest("packet-candidate-repair"),
+        telemetryContext: { packetId: "packet-candidate-repair" }
+      })
     ).resolves.toMatchObject({ findings: [] });
     expect(adapter.contexts[1]).toContain("review packet-candidate-repair");
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_repair_attempted",
+        packetId: "packet-candidate-repair",
+        data: expect.objectContaining({ classification: "unsafe_candidate_like_payload" })
+      }),
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_repair_recovered",
+        packetId: "packet-candidate-repair",
+        data: expect.objectContaining({ classification: "schema_valid_after_retry" })
+      })
+    ]));
+  });
+
+  it("fails Stage 7 schema repair after a second malformed candidate-shaped submit", async () => {
+    const telemetry = fakeTelemetry();
+    const invalidCandidate = (id: string): PiToolCall => ({
+      type: "toolCall",
+      id,
+      name: "submit_review",
+      arguments: {
+        findings: [{ title: "candidate was drafted" }],
+        followUpHints: [],
+        uncertainties: []
+      }
+    });
+    const adapter = scriptedAdapter([
+      assistant([invalidCandidate("submit-invalid-candidate-1")]),
+      assistant([invalidCandidate("submit-invalid-candidate-2")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-candidate-repair-fails"),
+        telemetryContext: { packetId: "packet-candidate-repair-fails" }
+      })
+    ).rejects.toMatchObject({ code: "llm_schema_invalid" });
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_repair_failed",
+        packetId: "packet-candidate-repair-fails",
+        data: expect.objectContaining({ classification: "unsafe_candidate_like_payload" })
+      })
+    ]));
+  });
+
+  it("does not salvage no-findings after a prior candidate-shaped Stage 7 submit", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-invalid-candidate",
+        name: "submit_review",
+        arguments: {
+          findings: [{ title: "candidate was drafted" }],
+          followUpHints: [],
+          uncertainties: []
+        }
+      }]),
+      assistant([{
+        type: "toolCall",
+        id: "submit-xml-no-findings-after-candidate",
+        name: "submit_review",
+        arguments: {
+          reviewStatus: "no_findings",
+          noFindingReason: "No findings.</noFindingReason><parameter name=\"findings\">[]"
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-no-salvage-after-candidate"),
+        telemetryContext: { packetId: "packet-no-salvage-after-candidate" }
+      })
+    ).rejects.toMatchObject({ code: "llm_schema_invalid" });
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_repair_failed",
+        packetId: "packet-no-salvage-after-candidate",
+        data: expect.objectContaining({ classification: "unsafe_candidate_like_payload" })
+      })
+    ]));
   });
 
   it("adds configured post-tool close nudges before continuing packet review", async () => {

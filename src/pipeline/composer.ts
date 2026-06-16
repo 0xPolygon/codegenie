@@ -165,7 +165,11 @@ export async function dedupeRankAndComposeReview(
     compositionDegraded = true;
   }
 
-  const capped = applyCaps(finalFindings, config);
+  const lowConfidencePublishableIds = lowConfidencePublishableCandidateIds(verified.verdicts);
+  const capped = applyCaps(finalFindings, config, {
+    lowConfidencePublishableIds,
+    telemetry
+  });
   const compositionMode: CompositionMode = fallbackUsed ? "deterministic_fallback" : compositionDegraded ? "llm_degraded" : "llm";
   for (const [id, reason] of anchorDowngradeReasons) {
     if (!capped.downgradeReasons.has(id)) {
@@ -185,7 +189,7 @@ export async function dedupeRankAndComposeReview(
   );
   const summary = publishableCount === 0
     ? fallbackSummary(0)
-    : fallbackUsed || compositionDegraded || isNoFindingsSummary(composition.summary)
+    : fallbackUsed || compositionDegraded || isNoFindingsSummary(composition.summary) || summaryCountConflicts(composition.summary, publishableCount)
       ? fallbackSummary(publishableCount)
       : composition.summary || fallbackSummary(publishableCount);
   const createPostingPlan = opts.postGithubComments === true && (publishableCount > 0 || config.github.summaryWhenNoFindings);
@@ -238,6 +242,7 @@ export async function dedupeRankAndComposeReview(
         merged: selection.filter((record) => record.decision === "merged").length,
         suppressed: selection.filter((record) => record.decision === "suppressed").length,
         finalFindings: capped.findings.length,
+        reportedFindings: publishableCount,
         compositionMode,
         ...(fallbackReason !== undefined ? { fallbackReason } : {})
       }
@@ -415,6 +420,19 @@ function recordAnchorDowngrade(
 
 function fallbackSummary(publishableCount: number): string {
   return publishableCount === 0 ? "No credible findings." : `Found ${publishableCount} verified issue${publishableCount === 1 ? "" : "s"}.`;
+}
+
+function summaryCountConflicts(summary: string | undefined, publishableCount: number): boolean {
+  const count = summaryFindingCount(summary);
+  return count !== undefined && count !== publishableCount;
+}
+
+function summaryFindingCount(summary: string | undefined): number | undefined {
+  if (!summary) {
+    return undefined;
+  }
+  const match = summary.trim().match(/\b(?:found|reported|identified|composed)\s+(\d+)\s+(?:verified\s+)?(?:issue|issues|finding|findings)\b/iu);
+  return match ? Number(match[1]) : undefined;
 }
 
 function isNoFindingsSummary(summary: string | undefined): boolean {
@@ -648,7 +666,16 @@ function rootCauseGroupFingerprint(group: FindingGroup, packetsById: Map<string,
   ].join("\0"));
 }
 
-function applyCaps(findings: FinalFinding[], config: CodeninjaConfig): { findings: FinalFinding[]; suppressedReasons: Map<string, string>; downgradeReasons: Map<string, string> } {
+type ApplyCapsOptions = {
+  lowConfidencePublishableIds: Set<string>;
+  telemetry: TelemetryRecorder;
+};
+
+function applyCaps(
+  findings: FinalFinding[],
+  config: CodeninjaConfig,
+  opts: ApplyCapsOptions
+): { findings: FinalFinding[]; suppressedReasons: Map<string, string>; downgradeReasons: Map<string, string> } {
   const suppressedReasons = new Map<string, string>();
   const downgradeReasons = new Map<string, string>();
   const ranked = [...findings].sort(compareFindings);
@@ -658,6 +685,22 @@ function applyCaps(findings: FinalFinding[], config: CodeninjaConfig): { finding
       return { ...finding, publication: "suppressed" as const };
     }
     if (belowConfidence(finding.confidence, config.review.minConfidence)) {
+      if (isPublishableLowConfidenceBehaviorDelta(finding, opts.lowConfidencePublishableIds)) {
+        opts.telemetry.event({
+          stage: 10,
+          level: "info",
+          message: "low_confidence_verified_delta_published",
+          file: finding.path,
+          data: {
+            findingId: finding.id,
+            mergedCandidateIds: finding.mergedCandidateIds,
+            category: finding.category,
+            confidence: finding.confidence,
+            severity: finding.severity
+          }
+        });
+        return finding;
+      }
       suppressedReasons.set(finding.id, "confidence-threshold");
       return { ...finding, publication: "suppressed" as const };
     }
@@ -694,6 +737,54 @@ function applyCaps(findings: FinalFinding[], config: CodeninjaConfig): { finding
     return finding;
   });
   return { findings: capped, suppressedReasons, downgradeReasons };
+}
+
+function lowConfidencePublishableCandidateIds(verdicts: VerificationVerdict[]): Set<string> {
+  return new Set(verdicts
+    .filter((verdict) => verdict.verdict === "keep" || verdict.verdict === "revise")
+    .map((verdict) => verdict.candidateId));
+}
+
+function isPublishableLowConfidenceBehaviorDelta(
+  finding: FinalFinding,
+  verifiedPublishableIds: Set<string>
+): boolean {
+  if (finding.confidence !== "low") {
+    return false;
+  }
+  if (!finding.mergedCandidateIds.some((id) => verifiedPublishableIds.has(id))) {
+    return false;
+  }
+  if (finding.publication === "suppressed" || finding.anchor === undefined || finding.changedLine !== true) {
+    return false;
+  }
+  if (!isBehaviorDeltaCategory(finding.category)) {
+    return false;
+  }
+  if (!hasConcreteText(finding.evidence.changedCode, 12) || (finding.evidence.relatedCode ?? []).length === 0) {
+    return false;
+  }
+  if (!hasConcreteText(finding.failureMode, 36) || !hasConcreteText(finding.whyThisMatters, 24)) {
+    return false;
+  }
+  return hasConfirmationPath(finding);
+}
+
+function isBehaviorDeltaCategory(category: CandidateFinding["category"]): boolean {
+  return category === "logic_bug" ||
+    category === "correctness" ||
+    category === "security" ||
+    category === "performance" ||
+    category === "testing";
+}
+
+function hasConcreteText(value: string | undefined, minLength: number): boolean {
+  return (value ?? "").trim().length >= minLength;
+}
+
+function hasConfirmationPath(finding: FinalFinding): boolean {
+  const text = `${finding.suggestedTest ?? ""}\n${finding.verification}`.toLowerCase();
+  return /\b(test|assert|confirm|verify|reproduce|coverage|case|scenario)\b/u.test(text);
 }
 
 function buildSelectionRecords(

@@ -369,6 +369,9 @@ describe("stage 9 eval diagnostics and prompts", () => {
     expect(verifierPrompt).toContain("Same-PR tests that assert new behavior prove the behavior changed");
     expect(verifierPrompt).toContain("refactor, cleanup, consolidation, behavior-preserving");
     expect(verifierPrompt).toContain("cite the exact helper/callee branch that proves the failure mode");
+    expect(verifierPrompt).toContain("For category:\"testing\" candidates, production code does not need to change");
+    expect(verifierPrompt).toContain("old/base tests covered a named behavior boundary");
+    expect(verifierPrompt).toContain("reject generic add-more-tests comments");
   });
 });
 
