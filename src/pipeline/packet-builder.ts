@@ -194,11 +194,15 @@ async function buildPacket(
     renderPacketHunk(entry.hunk, entry.staticSignals, telemetry, plannerFallbackReason(decisions[index]?.reason))
   );
   const patchChars = packetHunks.reduce((sum, hunk) => sum + hunk.contentWithLineNumbers.length, 0);
+  const riskNotes = plan.riskAreas.filter((area) => area.files.includes(first.file.path)).slice(0, 3).map((area) => area.reason);
   const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry, {
     coverage,
     reviewPriority,
     hunkCount: planned.length,
-    patchChars
+    patchChars,
+    lenses: decisions.flatMap((decision) => decision.lenses),
+    riskNotes,
+    labels: first.facts.labels
   }, symbolContextMetrics);
   const hintContext = await resolvePacketContextHints(repoIndex, first.file, decisions.flatMap((decision) => decision.surroundingContextHints), telemetry);
   const truncationReason = truncationReasons(packetHunks).join("; ");
@@ -227,7 +231,6 @@ async function buildPacket(
       data: { maxContextChars: MAX_CONTEXT_CHARS }
     });
   }
-  const riskNotes = plan.riskAreas.filter((area) => area.files.includes(first.file.path)).slice(0, 3).map((area) => area.reason);
   const reviewProfile = packetReviewProfile({
     coverage,
     reviewPriority,
@@ -725,14 +728,30 @@ type PacketSymbolContextInput = {
   reviewPriority: ReviewPriority;
   hunkCount: number;
   patchChars: number;
+  lenses: string[];
+  riskNotes: string[];
+  labels: string[];
 };
+
+type SymbolContextPressure = "low" | "medium" | "high";
+
+type SymbolContextBudgetMode = "default" | "adaptive_full" | "adaptive_sliced";
 
 type SymbolContextBudget = PacketSymbolContextInput & {
   maxChars: number;
   reason: string;
+  mode: SymbolContextBudgetMode;
   singlePrimarySymbol: boolean;
   uniqueSymbolCount: number;
   adaptive: boolean;
+  adaptiveEligible: boolean;
+  blockedReason?: string;
+  patchPressure: SymbolContextPressure;
+  hunkPressure: SymbolContextPressure;
+  originalChars: number;
+  defaultWouldMateriallyOmit: boolean;
+  riskSignals: string[];
+  hunkIds: string[];
 };
 
 type SymbolContextMetrics = {
@@ -740,8 +759,12 @@ type SymbolContextMetrics = {
   defaultSliced: number;
   adaptiveFull: number;
   adaptiveSliced: number;
+  adaptiveEligible: number;
+  adaptiveBlocked: number;
+  adaptiveBlockedByReason: Record<string, number>;
   outlineOnly: number;
   materialOmission: number;
+  defaultSlicedMaterialOmission: number;
 };
 
 function emptySymbolContextMetrics(): SymbolContextMetrics {
@@ -750,8 +773,12 @@ function emptySymbolContextMetrics(): SymbolContextMetrics {
     defaultSliced: 0,
     adaptiveFull: 0,
     adaptiveSliced: 0,
+    adaptiveEligible: 0,
+    adaptiveBlocked: 0,
+    adaptiveBlockedByReason: {},
     outlineOnly: 0,
-    materialOmission: 0
+    materialOmission: 0,
+    defaultSlicedMaterialOmission: 0
   };
 }
 
@@ -818,13 +845,12 @@ async function readEnclosingSymbolSource(
   symbolContextInput: PacketSymbolContextInput,
   symbolContextMetrics: SymbolContextMetrics
 ): Promise<SymbolSourceContext> {
-  const fact = primarySymbolFact(symbolFacts);
+  const fact = primarySymbolFactWithMergedChanges(symbolFacts);
   const selector = fact === undefined ? undefined : symbolSourceSelector(fact);
   if (fact === undefined || selector === undefined) {
     symbolContextMetrics.outlineOnly += 1;
     return { text: "", reasons: ["no_primary_symbol"] };
   }
-  const budget = computeSymbolContextBudget({ ...symbolContextInput, symbolFacts });
   const source = fact.changedLinesSide === "old" ? { kind: "base" as const } : { kind: "head" as const };
   const readPath = fact.changedLinesSide === "old" ? file.oldPath ?? file.path : file.path;
   try {
@@ -841,9 +867,24 @@ async function readEnclosingSymbolSource(
     }
     const label = result.symbol?.name ?? fact.enclosingSymbol ?? `line ${String(selector.line ?? "")}`.trim();
     const block = renderFullSymbolContext(readPath, label, fact, result.text);
-    const truncated = block.length > budget.maxChars;
+    const budget = computeSymbolContextBudget({
+      ...symbolContextInput,
+      symbolFacts,
+      originalChars: block.length,
+      providerTruncated: result.meta.truncated === true
+    });
+    recordSymbolContextBudgetMetric(symbolContextMetrics, budget);
+    const forceSlicedContext = budget.mode === "adaptive_sliced";
+    const truncated = forceSlicedContext || block.length > budget.maxChars;
     if (!truncated && result.meta.truncated !== true) {
       recordSymbolContextMetric(symbolContextMetrics, budget, "full");
+      emitSymbolContextBudgetAudit(telemetry, file.path, readPath, fact, result.symbol?.name, budget, {
+        emittedChars: block.length,
+        omittedChars: 0,
+        outputMode: budget.adaptive ? "adaptive_full" : "default_full",
+        materialOmission: false,
+        providerTruncated: false
+      });
       telemetry.event({
         stage: 6,
         level: "debug",
@@ -862,6 +903,11 @@ async function readEnclosingSymbolSource(
           singlePrimarySymbol: budget.singlePrimarySymbol,
           uniqueSymbolCount: budget.uniqueSymbolCount,
           mode: budget.adaptive ? "adaptive_full" : "default_full",
+          budgetMode: budget.mode,
+          patchPressure: budget.patchPressure,
+          hunkPressure: budget.hunkPressure,
+          adaptiveEligible: budget.adaptiveEligible,
+          ...(budget.blockedReason !== undefined ? { blockedReason: budget.blockedReason } : {}),
           reason: budget.reason
         }
       });
@@ -871,6 +917,17 @@ async function readEnclosingSymbolSource(
     const text = renderSlicedSymbolContext(readPath, label, fact, sliced, result.text, budget.maxChars);
     recordSymbolContextMetric(symbolContextMetrics, budget, "sliced");
     symbolContextMetrics.materialOmission += 1;
+    if (!budget.adaptive) {
+      symbolContextMetrics.defaultSlicedMaterialOmission += 1;
+    }
+    const outputMode = budget.adaptive ? "adaptive_sliced" : "default_sliced";
+    emitSymbolContextBudgetAudit(telemetry, file.path, readPath, fact, result.symbol?.name, budget, {
+      emittedChars: text.length,
+      omittedChars: Math.max(0, block.length - text.length),
+      outputMode,
+      materialOmission: true,
+      providerTruncated: result.meta.truncated === true
+    });
     telemetry.event({
       stage: 6,
       level: "warn",
@@ -889,6 +946,12 @@ async function readEnclosingSymbolSource(
         singlePrimarySymbol: budget.singlePrimarySymbol,
         uniqueSymbolCount: budget.uniqueSymbolCount,
         budgetReason: budget.reason,
+        mode: outputMode,
+        budgetMode: budget.mode,
+        patchPressure: budget.patchPressure,
+        hunkPressure: budget.hunkPressure,
+        adaptiveEligible: budget.adaptiveEligible,
+        ...(budget.blockedReason !== undefined ? { blockedReason: budget.blockedReason } : {}),
         maxChars: budget.maxChars,
         providerTruncated: result.meta.truncated === true
       }
@@ -917,6 +980,23 @@ function primarySymbolFact(symbolFacts: HunkSymbolFacts[]): HunkSymbolFacts | un
   return rankedPrimarySymbolFacts(symbolFacts)[0];
 }
 
+function primarySymbolFactWithMergedChanges(symbolFacts: HunkSymbolFacts[]): HunkSymbolFacts | undefined {
+  const primary = primarySymbolFact(symbolFacts);
+  if (primary === undefined) {
+    return undefined;
+  }
+  const primaryIdentity = symbolFactIdentity(primary);
+  const sameSymbolFacts = rankedPrimarySymbolFacts(symbolFacts)
+    .filter((fact) => symbolFactIdentity(fact) === primaryIdentity && fact.changedLinesSide === primary.changedLinesSide);
+  if (sameSymbolFacts.length <= 1) {
+    return primary;
+  }
+  return {
+    ...primary,
+    changedLines: [...new Set(sameSymbolFacts.flatMap((fact) => fact.changedLines))].sort((a, b) => a - b)
+  };
+}
+
 function rankedPrimarySymbolFacts(symbolFacts: HunkSymbolFacts[]): HunkSymbolFacts[] {
   return [...symbolFacts]
     .filter(isRealSymbolFact)
@@ -936,11 +1016,19 @@ function symbolSourceSelector(fact: HunkSymbolFacts): { symbolName?: string; lin
   return line !== undefined ? { line } : undefined;
 }
 
-function computeSymbolContextBudget(input: PacketSymbolContextInput & { symbolFacts: HunkSymbolFacts[] }): SymbolContextBudget {
+function computeSymbolContextBudget(input: PacketSymbolContextInput & {
+  symbolFacts: HunkSymbolFacts[];
+  originalChars: number;
+  providerTruncated: boolean;
+}): SymbolContextBudget {
   const realFacts = rankedPrimarySymbolFacts(input.symbolFacts);
   const uniqueSymbols = new Set(realFacts.map(symbolFactIdentity));
+  const hunkIds = [...new Set(realFacts.map((fact) => fact.hunkId))].sort();
   const singlePrimarySymbol = uniqueSymbols.size === 1 && realFacts.length > 0;
   const highRisk = isHighRiskPacket(input.coverage, input.reviewPriority);
+  const riskSignals = symbolContextRiskSignals(input, highRisk);
+  const importantPacket = riskSignals.length > 0;
+  const defaultWouldMateriallyOmit = input.originalChars > DEFAULT_SYMBOL_CONTEXT_CHARS || input.providerTruncated;
   const patchPressure =
     input.patchChars > MAX_PATCH_CHARS * 0.75
       ? "high"
@@ -956,32 +1044,119 @@ function computeSymbolContextBudget(input: PacketSymbolContextInput & { symbolFa
 
   let maxChars = DEFAULT_SYMBOL_CONTEXT_CHARS;
   let reason = "default_symbol_context_budget";
+  let mode: SymbolContextBudgetMode = "default";
+  let blockedReason: string | undefined;
 
   if (!singlePrimarySymbol) {
     reason = uniqueSymbols.size === 0 ? "no_primary_symbol_for_adaptive_budget" : "multiple_symbols_keep_compact";
-  } else if (!highRisk) {
-    reason = "ordinary_packet_keep_compact";
+    blockedReason = reason;
+  } else if (!importantPacket) {
+    reason = defaultWouldMateriallyOmit ? "ordinary_material_omission_keep_compact" : "ordinary_packet_keep_compact";
+    blockedReason = reason;
   } else if (patchPressure === "high" || hunkPressure === "high") {
-    reason = "high_patch_or_hunk_pressure_keep_compact";
+    if (defaultWouldMateriallyOmit) {
+      maxChars = MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS;
+      mode = "adaptive_sliced";
+      reason = "single_important_symbol_high_pressure_adaptive_slice";
+    } else {
+      reason = "important_high_pressure_without_material_omission_keep_compact";
+      blockedReason = reason;
+    }
   } else if (patchPressure === "low" && hunkPressure === "low") {
     maxChars = MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS;
+    mode = "adaptive_full";
     reason = "single_high_risk_symbol_low_pressure";
-  } else {
+  } else if (highRisk) {
     maxChars = 5_000;
+    mode = "adaptive_full";
     reason = "single_high_risk_symbol_medium_pressure";
+  } else if (defaultWouldMateriallyOmit) {
+    maxChars = 5_000;
+    mode = "adaptive_sliced";
+    reason = "single_risk_signal_material_omission_adaptive_slice";
+  } else {
+    reason = "risk_signal_without_material_omission_keep_compact";
+    blockedReason = reason;
   }
+  const adaptive = mode !== "default";
 
   return {
     coverage: input.coverage,
     reviewPriority: input.reviewPriority,
     hunkCount: input.hunkCount,
     patchChars: input.patchChars,
+    lenses: input.lenses,
+    riskNotes: input.riskNotes,
+    labels: input.labels,
     maxChars: Math.min(maxChars, MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS, MAX_CONTEXT_CHARS),
     reason,
+    mode,
     singlePrimarySymbol,
     uniqueSymbolCount: uniqueSymbols.size,
-    adaptive: maxChars > DEFAULT_SYMBOL_CONTEXT_CHARS
+    adaptive,
+    adaptiveEligible: singlePrimarySymbol && importantPacket,
+    ...(blockedReason !== undefined ? { blockedReason } : {}),
+    patchPressure,
+    hunkPressure,
+    originalChars: input.originalChars,
+    defaultWouldMateriallyOmit,
+    riskSignals,
+    hunkIds
   };
+}
+
+function symbolContextRiskSignals(
+  input: PacketSymbolContextInput & { symbolFacts: HunkSymbolFacts[] },
+  highRisk: boolean
+): string[] {
+  const signals: string[] = [];
+  if (highRisk) {
+    signals.push("high_risk_coverage_or_priority");
+  }
+  if (input.riskNotes.length > 0) {
+    signals.push("planner_risk_notes");
+  }
+  if (input.lenses.some(isRiskLensForContext)) {
+    signals.push("risk_lens");
+  }
+  if (input.labels.some(isRiskLabelForContext)) {
+    signals.push("file_label");
+  }
+  return [...new Set(signals)];
+}
+
+function isRiskLensForContext(lens: string): boolean {
+  const segments = lens.toLowerCase().split(/[^a-z0-9]+/u).filter(Boolean);
+  return segments.some((segment) => RISK_LENS_SEGMENTS.has(segment));
+}
+
+const RISK_LENS_SEGMENTS = new Set([
+  "architecture",
+  "architectural",
+  "bug",
+  "bugs",
+  "concurrency",
+  "correctness",
+  "database",
+  "db",
+  "logic",
+  "performance",
+  "security",
+  "test",
+  "tests"
+]);
+
+function isRiskLabelForContext(label: string): boolean {
+  const normalized = label.toLowerCase();
+  return normalized === "critical" ||
+    normalized === "high-risk" ||
+    normalized === "public-api" ||
+    normalized === "public-surface" ||
+    normalized === "security" ||
+    normalized === "database" ||
+    normalized === "performance" ||
+    normalized === "architecture" ||
+    normalized === "testing";
 }
 
 function symbolFactIdentity(fact: HunkSymbolFacts): string {
@@ -1015,6 +1190,66 @@ function recordSymbolContextMetric(
     return;
   }
   metrics.defaultSliced += 1;
+}
+
+function recordSymbolContextBudgetMetric(metrics: SymbolContextMetrics, budget: SymbolContextBudget): void {
+  if (budget.adaptiveEligible) {
+    metrics.adaptiveEligible += 1;
+  }
+  if (!budget.adaptive && budget.blockedReason !== undefined) {
+    metrics.adaptiveBlocked += 1;
+    metrics.adaptiveBlockedByReason[budget.blockedReason] = (metrics.adaptiveBlockedByReason[budget.blockedReason] ?? 0) + 1;
+  }
+}
+
+function emitSymbolContextBudgetAudit(
+  telemetry: TelemetryRecorder,
+  filePath: string,
+  readPath: string,
+  fact: HunkSymbolFacts,
+  resolvedSymbol: string | undefined,
+  budget: SymbolContextBudget,
+  outcome: {
+    emittedChars: number;
+    omittedChars: number;
+    outputMode: "default_full" | "default_sliced" | "adaptive_full" | "adaptive_sliced";
+    materialOmission: boolean;
+    providerTruncated: boolean;
+  }
+): void {
+  telemetry.event({
+    stage: 6,
+    level: "debug",
+    message: "packet_symbol_context_budget",
+    file: filePath,
+    data: {
+      hunkIds: budget.hunkIds,
+      primaryHunkId: fact.hunkId,
+      symbol: resolvedSymbol ?? fact.enclosingSymbol,
+      path: readPath,
+      coverage: budget.coverage,
+      reviewPriority: budget.reviewPriority,
+      patchChars: budget.patchChars,
+      hunkCount: budget.hunkCount,
+      uniqueSymbolCount: budget.uniqueSymbolCount,
+      originalChars: budget.originalChars,
+      selectedBudgetChars: budget.maxChars,
+      selectedMode: budget.mode,
+      outputMode: outcome.outputMode,
+      emittedChars: outcome.emittedChars,
+      omittedChars: outcome.omittedChars,
+      materialOmission: outcome.materialOmission,
+      defaultWouldMateriallyOmit: budget.defaultWouldMateriallyOmit,
+      patchPressure: budget.patchPressure,
+      hunkPressure: budget.hunkPressure,
+      adaptiveEligible: budget.adaptiveEligible,
+      adaptiveSelected: budget.adaptive,
+      riskSignals: budget.riskSignals,
+      reason: budget.reason,
+      providerTruncated: outcome.providerTruncated,
+      ...(budget.blockedReason !== undefined ? { blockedReason: budget.blockedReason } : {})
+    }
+  });
 }
 
 function renderFullSymbolContext(readPath: string, label: string, fact: HunkSymbolFacts, sourceText: string): string {

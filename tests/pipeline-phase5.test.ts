@@ -1089,7 +1089,134 @@ describe("phase 5 pipeline regressions", () => {
       file: "app.ts",
       data: expect.objectContaining({
         selectedBudgetChars: 3000,
-        budgetReason: "ordinary_packet_keep_compact"
+        budgetReason: "ordinary_material_omission_keep_compact"
+      })
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "debug",
+      message: "packet_symbol_context_budget",
+      file: "app.ts",
+      data: expect.objectContaining({
+        selectedMode: "default",
+        outputMode: "default_sliced",
+        blockedReason: "ordinary_material_omission_keep_compact",
+        hunkIds: ["h1", "h2"]
+      })
+    }));
+  });
+
+  it("uses adaptive sliced context for high-pressure same-symbol packets with planner risk notes", async () => {
+    const events: TelemetryEvent[] = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: TelemetryEvent) => {
+        events.push(event);
+      }
+    };
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const sourceLines = Array.from({ length: 320 }, (_, index) => `  step${String(index).padStart(3, "0")}();`);
+    const largeSource = `export function changed() {\n${sourceLines.join("\n")}\n}`;
+    const readRanges: Array<{ startLine: number; endLine: number }> = [];
+    const tools = {
+      ...fakeTools(),
+      readRange: async (_pathName: string, startLine: number, endLine: number) => {
+        readRanges.push({ startLine, endLine });
+        return { text: `// excerpt ${startLine}-${endLine}`, meta };
+      },
+      readSymbol: async () => ({
+        text: largeSource,
+        symbol: { path: "app.ts", name: "changed", kind: "function" as const, lineRange: [10, 340] as [number, number] },
+        meta
+      }),
+      buildPacketContext: async (file: DiffFile) => ({
+        context: { path: file.path },
+        outline: {
+          path: file.path,
+          language: "typescript",
+          imports: [],
+          topLevelSymbols: [{ path: file.path, name: "changed", kind: "function" as const, lineRange: [10, 340] as [number, number] }],
+          testSymbols: [],
+          notes: []
+        },
+        relevantTests: []
+      })
+    };
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 24, content: "  step024();" },
+      { id: "h2", newStart: 26, content: "  step026();" },
+      { id: "h3", newStart: 160, content: "  step160();" },
+      { id: "h4", newStart: 220, content: "  step220();" }
+    ]);
+    const symbolFacts = ["h1", "h2", "h3", "h4"].map((hunkId, index) => ({
+      path: "app.ts",
+      hunkId,
+      enclosingSymbol: "changed",
+      symbolKind: "function" as const,
+      symbolRange: [10, 340] as [number, number],
+      changedLines: [[24], [26], [160], [220]][index] ?? [],
+      changedLinesSide: "new" as const,
+      source: "tree-sitter" as const,
+      confidence: "syntactic" as const
+    }));
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(tools),
+      symbolFacts
+    };
+    const plan: ReviewPlan = {
+      ...fakePlanForHunks(["h1", "h2", "h3", "h4"], "app.ts"),
+      riskAreas: [{
+        area: "changed behavior",
+        reason: "Planner marked this file as correctness-sensitive.",
+        files: ["app.ts"],
+        suggestedLenses: ["team/security"]
+      }],
+      coverage: ["h1", "h2", "h3", "h4"].map((hunkId) => ({
+        hunkId,
+        path: "app.ts",
+        coverage: "normal" as const,
+        lenses: ["team/security"],
+        surroundingContextHints: [],
+        reason: "planner selected normal review with risk note"
+      }))
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      repoIndex,
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(packets).toHaveLength(1);
+    expect(packets[0]?.contextQuality).toBe("sliced");
+    expect(packets[0]?.contextText).toContain("Excerpt app.ts:16-34");
+    expect(packets[0]?.contextText).toContain("Excerpt app.ts:152-168");
+    expect(packets[0]?.contextText).toContain("Excerpt app.ts:212-228");
+    expect(packets[0]?.contextText).toContain("symbol source sliced around changed lines");
+    expect(packets[0]?.contextText.length ?? 0).toBeLessThanOrEqual(8000);
+    expect(readRanges).toEqual([
+      { startLine: 16, endLine: 34 },
+      { startLine: 152, endLine: 168 },
+      { startLine: 212, endLine: 228 }
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "debug",
+      message: "packet_symbol_context_budget",
+      file: "app.ts",
+      data: expect.objectContaining({
+        selectedMode: "adaptive_sliced",
+        outputMode: "adaptive_sliced",
+        adaptiveEligible: true,
+        adaptiveSelected: true,
+        hunkCount: 4,
+        hunkPressure: "high",
+        hunkIds: ["h1", "h2", "h3", "h4"],
+        riskSignals: expect.arrayContaining(["planner_risk_notes", "risk_lens"]),
+        reason: "single_important_symbol_high_pressure_adaptive_slice"
       })
     }));
   });

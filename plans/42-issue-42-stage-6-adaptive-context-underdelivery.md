@@ -1,6 +1,6 @@
 # Issue 42: Stage 6 Adaptive Context Underdelivery
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 8 review, 2026-06-16
 Depends on: Issue 32
 Recommended priority: before Issue 43 if the next goal is review-quality stability
