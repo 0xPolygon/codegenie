@@ -11,7 +11,6 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import type {
   CodeninjaConfig,
   ContextPressureSummary,
@@ -26,6 +25,7 @@ import type {
 import type { LlmCallRecord, TelemetryRecorder } from "./telemetry-recorder.js";
 import { stripCredentials } from "./redaction.js";
 import { isLocalToolBudgetRejectionReason } from "../util/context-pressure.js";
+import { resolveCodeninjaRuntimeProvenance } from "../util/runtime-provenance.js";
 
 type CreateRunTelemetryOptions = {
   telemetryConfig: CodeninjaConfig["telemetry"];
@@ -439,10 +439,12 @@ class RunTelemetryImpl {
     const durationMs = durationBetween(this.startedAt, finishedAt);
     const totals = this.runTotals();
     const normalizedOutcome = normalizeOutcome(outcome);
+    const codeninjaRuntime = resolveCodeninjaRuntimeProvenance();
     this.writeJson("run.json", {
       schemaVersion: 1,
       runId: this.runId,
-      codeninjaVersion: readCodeninjaVersion(),
+      codeninjaVersion: codeninjaRuntime.packageVersion,
+      codeninjaRuntime,
       nodeVersion: process.version,
       argv: this.metadata.argv ?? process.argv,
       repoRoot: this.metadata.repoRoot ?? this.repoRoot ?? null,
@@ -459,6 +461,7 @@ class RunTelemetryImpl {
     this.writeJson("telemetry.json", {
       schemaVersion: 1,
       runId: this.runId,
+      codeninjaRuntime,
       startedAt: this.startedAt,
       finishedAt,
       completedAt: finishedAt,
@@ -1727,31 +1730,6 @@ function normalizeOutcome(outcome: RunOutcome): {
     exitCode: outcome.exitCode,
     budgetStop: outcome.budgetStop ?? null
   };
-}
-
-function readCodeninjaVersion(): string {
-  let currentDir = path.dirname(fileURLToPath(import.meta.url));
-  for (let depth = 0; depth < 8; depth += 1) {
-    const packageJsonPath = path.join(currentDir, "package.json");
-    if (existsSync(packageJsonPath)) {
-      try {
-        const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version?: unknown };
-        if (typeof parsed.version === "string") {
-          return parsed.version;
-        }
-      } catch {
-        return "unknown";
-      }
-    }
-
-    const parent = path.dirname(currentDir);
-    if (parent === currentDir) {
-      break;
-    }
-    currentDir = parent;
-  }
-
-  return process.env.npm_package_version ?? "unknown";
 }
 
 function canonicalize(input: unknown): unknown {

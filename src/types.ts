@@ -1046,6 +1046,15 @@ export type EvalScore = {
   error?: { code: import("./util/errors.js").CodeninjaErrorCode; message: string };
 };
 
+export type CodeninjaRuntimeProvenance = {
+  packageVersion: string;
+  commit?: string;
+  shortCommit?: string;
+  branch?: string;
+  dirty?: boolean;
+  source: "build_env" | "git" | "package" | "unknown";
+};
+
 export type EvalRunInfo = {
   runNumber: number;
   caseName: string;
@@ -1059,6 +1068,7 @@ export type EvalRunInfo = {
   };
   repo?: { root: string; baseSha?: string; headSha?: string; mergeBase?: string };
   reviewRunId?: string;
+  codeninjaRuntime?: CodeninjaRuntimeProvenance;
   cache: { enabled: boolean; source: "cli" | "case" | "config"; dir?: string };
   effectiveConfig?: {
     review: {

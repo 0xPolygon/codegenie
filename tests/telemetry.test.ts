@@ -255,6 +255,10 @@ describe("run telemetry", () => {
     expect(runJson).toMatchObject({
       schemaVersion: 1,
       codeninjaVersion: expect.any(String),
+      codeninjaRuntime: {
+        packageVersion: expect.any(String),
+        source: expect.stringMatching(/^(build_env|git|package|unknown)$/)
+      },
       nodeVersion: process.version,
       argv: ["codeninja", "review", "--branch", "feature"],
       repoRoot,
@@ -276,6 +280,7 @@ describe("run telemetry", () => {
       }
     });
     expect(runJson.finishedAt).toEqual(expect.any(String));
+    expect(runJson.codeninjaRuntime.packageVersion).toBe(runJson.codeninjaVersion);
     expect(runJson.durationMs).toEqual(expect.any(Number));
     expect(runJson.totals).toMatchObject({
       events: 4,

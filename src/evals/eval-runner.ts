@@ -24,6 +24,7 @@ import type {
 import { runGit } from "../git/subprocess.js";
 import { CodeninjaError, isCodeninjaError } from "../util/errors.js";
 import { sha256Hex } from "../util/hashing.js";
+import { resolveCodeninjaRuntimeProvenance } from "../util/runtime-provenance.js";
 import {
   allocateRunDir,
   copyReviewOutput,
@@ -578,6 +579,7 @@ function buildRunInfo(input: {
     ...(input.replay !== undefined ? { replay: input.replay } : {}),
     ...(input.repo !== undefined ? { repo: input.repo } : {}),
     ...(input.reviewRunId !== undefined ? { reviewRunId: input.reviewRunId } : {}),
+    codeninjaRuntime: resolveCodeninjaRuntimeProvenance(),
     cache: input.cache ?? { enabled: input.config.cache.enabled, source: "config", dir: input.config.cache.dir },
     effectiveConfig: evalEffectiveConfig(input.config),
     startedAt: input.startedAt,

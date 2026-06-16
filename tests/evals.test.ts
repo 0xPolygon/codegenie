@@ -1284,9 +1284,16 @@ describe("eval command fixture suite", () => {
       review: { concurrency: 3 },
       llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 2 }
     });
+    expect(result.info.codeninjaRuntime).toMatchObject({
+      packageVersion: expect.any(String),
+      source: expect.stringMatching(/^(build_env|git|package|unknown)$/)
+    });
     const runJson = JSON.parse(readFileSync(path.join(result.runDir, "telemetry", "run.json"), "utf8")) as {
+      codeninjaRuntime: { packageVersion: string };
+      codeninjaVersion: string;
       review: { concurrency: number; llmMaxConcurrentCalls: number };
     };
+    expect(runJson.codeninjaRuntime.packageVersion).toBe(runJson.codeninjaVersion);
     expect(runJson.review).toMatchObject({ concurrency: 3, llmMaxConcurrentCalls: 2 });
     const events = readJsonl(path.join(result.runDir, "telemetry", "events.jsonl"));
     expect(events).toEqual(expect.arrayContaining([

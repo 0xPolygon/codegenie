@@ -49,7 +49,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 43 | COMPLETE | Issue 43: Stage 7 Compact Removal and Generic Test-Rewrite Recall |
 | 44 | COMPLETE | Issue 44: Stage 7 Recall Recalibration (Generate Liberally, Verify Strictly) |
 | 45 | COMPLETE | Issue 45: Provider Overload Retry and Composer Fallback |
-| 46 | PENDING | Issue 46: Codeninja Runtime Provenance in Eval and Telemetry |
+| 46 | COMPLETE | Issue 46: Codeninja Runtime Provenance in Eval and Telemetry |
 
 ## Deferred (watching for evidence)
 

@@ -1,6 +1,6 @@
 # Issue 46: Codeninja Runtime Provenance in Eval and Telemetry
 
-Status: PENDING
+Status: COMPLETE
 Planned from: eval/debugging workflow, 2026-06-16
 Recommended priority: small observability item; implement before the next serious eval comparison
 
@@ -52,7 +52,7 @@ type CodeninjaRuntimeProvenance = {
 ## Plan
 
 1. Add a small runtime provenance helper.
-   - Create a focused helper such as `src/utils/runtime-provenance.ts`.
+   - Create a focused helper such as `src/util/runtime-provenance.ts`.
    - Read package version from `package.json` or `npm_package_version`.
    - Prefer environment/build metadata when set:
      - `CODENINJA_BUILD_VERSION`
@@ -90,7 +90,7 @@ type CodeninjaRuntimeProvenance = {
 
 ## Likely Files
 
-- `src/utils/runtime-provenance.ts`
+- `src/util/runtime-provenance.ts`
 - `src/telemetry/run-artifacts.ts`
 - `src/evals/eval-runner.ts`
 - `tests/*runtime*provenance*.test.ts`
