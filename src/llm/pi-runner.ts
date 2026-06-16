@@ -76,6 +76,7 @@ type ModelCallCacheDiagnostics = {
   toolSpecHash: string;
   toolCount: number;
   promptChars: number;
+  providerPromptCache: ProviderPromptCacheDebug;
 };
 
 type ToolRunOutcome = {
@@ -119,6 +120,20 @@ type ToolBudgetExtensionDecision =
 type ModelCallKind = "initial" | "tool-continuation" | "repair" | "finalize";
 
 type ModelCallCacheStatus = "hit" | "miss" | "disabled" | "write";
+
+type ProviderPromptCacheOptions = {
+  strategy: "pi-session";
+  sessionId: string;
+  cacheRetention: "short";
+};
+
+type ProviderPromptCacheDebug = {
+  strategy: ProviderPromptCacheOptions["strategy"];
+  sessionId: string;
+  cacheRetention: ProviderPromptCacheOptions["cacheRetention"];
+  scope: "run-stage";
+  explicitCacheBlocks: false;
+};
 
 type NormalizedUsage = {
   inputTokens?: number;
@@ -175,6 +190,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
 
   let modelCallSeq = 0;
   const nextModelCallId = (): string => `mc-${String(++modelCallSeq).padStart(6, "0")}`;
+  const recordedPromptCacheStages = new Set<ReviewStage>();
 
   return {
     runStructured: async <T>(request: LlmStructuredRequest<T>): Promise<T> => {
@@ -182,6 +198,8 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       const repositoryTools = request.tools ?? [];
       const allTools = [...repositoryTools, submitTool];
       const budget = request.toolBudget ?? NO_REPOSITORY_TOOL_BUDGET;
+      const providerPromptCache = providerPromptCacheOptions(opts.telemetry.runId, request.stage);
+      recordProviderPromptCacheStrategy(opts, request, providerPromptCache, recordedPromptCacheStages);
       const messages: ConversationMessage[] = [
         { role: "user", content: request.prompt, timestamp: 0 }
       ];
@@ -223,6 +241,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               nextModelCallId,
               taskSignal: taskTimeout.signal,
               taskTimedOut: taskTimeout.timedOut,
+              providerPromptCache,
               budgetExempt: budgetForceFinalize,
               finalizeMode,
               finalizeTarget
@@ -566,6 +585,52 @@ function recordFinalizeStart(
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
 
+function providerPromptCacheOptions(runId: string, stage: ReviewStage): ProviderPromptCacheOptions {
+  return {
+    strategy: "pi-session",
+    sessionId: `codeninja-${safePromptCacheSessionPart(runId)}-stage-${stage}`,
+    cacheRetention: "short"
+  };
+}
+
+function providerPromptCacheDebug(options: ProviderPromptCacheOptions): ProviderPromptCacheDebug {
+  return {
+    strategy: options.strategy,
+    sessionId: options.sessionId,
+    cacheRetention: options.cacheRetention,
+    scope: "run-stage",
+    explicitCacheBlocks: false
+  };
+}
+
+function safePromptCacheSessionPart(input: string): string {
+  return input.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 96) || "run";
+}
+
+function recordProviderPromptCacheStrategy(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  options: ProviderPromptCacheOptions,
+  recordedStages: Set<ReviewStage>
+): void {
+  if (recordedStages.has(request.stage)) {
+    return;
+  }
+  recordedStages.add(request.stage);
+  opts.telemetry.event(definedRecord({
+    stage: request.stage,
+    level: "debug",
+    message: "provider_prompt_cache_strategy",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      ...providerPromptCacheDebug(options),
+      sessionIdHash: sha256Hex(options.sessionId),
+      note: "Pi session-based prompt cache hint; codeninja does not emit provider-specific explicit cache-control blocks"
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
 function submitCallHasFindings(toolCall: PiToolCall): boolean {
   const findings = toolCall.arguments.findings;
   return Array.isArray(findings) && findings.length > 0;
@@ -651,6 +716,7 @@ async function completeWithCache(input: {
   nextModelCallId: () => string;
   taskSignal: AbortSignal;
   taskTimedOut: () => boolean;
+  providerPromptCache: ProviderPromptCacheOptions;
   budgetExempt?: boolean;
   finalizeMode?: "compact" | "full" | undefined;
   finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
@@ -668,6 +734,7 @@ async function completeWithCache(input: {
     nextModelCallId,
     taskSignal,
     taskTimedOut,
+    providerPromptCache,
     budgetExempt,
     finalizeMode,
     finalizeTarget
@@ -693,7 +760,7 @@ async function completeWithCache(input: {
   });
   const promptText = stableJson(canonicalRequest);
   const cacheKey = buildModelCallCacheKey(canonicalRequest);
-  const cacheDiagnostics = modelCallCacheDiagnostics(canonicalRequest, cacheKey, promptText.length);
+  const cacheDiagnostics = modelCallCacheDiagnostics(canonicalRequest, cacheKey, promptText.length, providerPromptCache);
 
   if (opts.cache) {
     const cached = await opts.cache.get(cacheKey, request.stage);
@@ -730,6 +797,7 @@ async function completeWithCache(input: {
           messages,
           tools,
           toolChoice,
+          providerPromptCache,
           finalizeMode,
           finalizeTarget
         });
@@ -788,6 +856,7 @@ async function completeWithCache(input: {
       messages,
       tools,
       toolChoice,
+      providerPromptCache,
       finalizeMode,
       finalizeTarget
     });
@@ -822,7 +891,9 @@ async function completeWithCache(input: {
               signal: taskSignal,
               maxRetries: 0,
               reasoning: opts.llmConfig.reasoning ?? "high",
-              toolChoice
+              toolChoice,
+              sessionId: providerPromptCache.sessionId,
+              cacheRetention: providerPromptCache.cacheRetention
             }
           ),
           taskSignal,
@@ -1765,7 +1836,8 @@ function queueSchemaRepair(input: {
 function modelCallCacheDiagnostics(
   canonicalRequest: Record<string, unknown>,
   cacheKey: string,
-  promptChars: number
+  promptChars: number,
+  providerPromptCache: ProviderPromptCacheOptions
 ): ModelCallCacheDiagnostics {
   const tools = Array.isArray(canonicalRequest.tools) ? canonicalRequest.tools : [];
   const runFingerprint = typeof canonicalRequest.runFingerprint === "string" ? canonicalRequest.runFingerprint : undefined;
@@ -1785,7 +1857,8 @@ function modelCallCacheDiagnostics(
     messageCount: Array.isArray(canonicalRequest.messages) ? canonicalRequest.messages.length : 0,
     toolSpecHash: sha256Hex(stableJson(tools)),
     toolCount: tools.length,
-    promptChars
+    promptChars,
+    providerPromptCache: providerPromptCacheDebug(providerPromptCache)
   };
 }
 
@@ -1827,6 +1900,7 @@ function writeModelCallRequestDebug(
     messages: ConversationMessage[];
     tools: ToolDefinition[];
     toolChoice: ToolChoiceMode;
+    providerPromptCache: ProviderPromptCacheOptions;
   }
 ): void {
   const schemaName = submitToolNameForStage(request.stage);
@@ -1861,6 +1935,7 @@ function writeModelCallRequestDebug(
       schemaVersion: SCHEMA_VERSIONS[schemaName],
       toolBudget: request.toolBudget ?? NO_REPOSITORY_TOOL_BUDGET,
       toolChoice: meta.toolChoice,
+      providerPromptCache: providerPromptCacheDebug(meta.providerPromptCache),
       promptChars: meta.promptText.length,
       promptHash: sha256Hex(meta.promptText),
       messageCount: meta.messages.length,

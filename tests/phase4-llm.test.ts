@@ -849,6 +849,79 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(maxActive).toBe(1);
   });
 
+  it("passes stage-scoped Pi prompt cache hints and records debug visibility", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([validSubmitReviewCall("submit-cache-hint-review")]),
+      assistant([validSubmitVerdictCall("submit-cache-hint-verdict")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 2 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("cache-hint-review"));
+    await runner.runStructured({
+      stage: 9,
+      prompt: "verify cache hint",
+      schema: SubmitVerificationVerdictSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1000
+    });
+
+    expect(adapter.options).toEqual([
+      expect.objectContaining({
+        sessionId: "codeninja-phase4-llm-stage-7",
+        cacheRetention: "short"
+      }),
+      expect.objectContaining({
+        sessionId: "codeninja-phase4-llm-stage-9",
+        cacheRetention: "short"
+      })
+    ]);
+    const strategyEvents = telemetry.events.filter((event) => event.message === "provider_prompt_cache_strategy");
+    expect(strategyEvents).toHaveLength(2);
+    expect(strategyEvents).toEqual([
+      expect.objectContaining({
+        stage: 7,
+        data: expect.objectContaining({
+          strategy: "pi-session",
+          sessionId: "codeninja-phase4-llm-stage-7",
+          cacheRetention: "short",
+          scope: "run-stage",
+          explicitCacheBlocks: false,
+          sessionIdHash: expect.any(String)
+        })
+      }),
+      expect.objectContaining({
+        stage: 9,
+        data: expect.objectContaining({
+          strategy: "pi-session",
+          sessionId: "codeninja-phase4-llm-stage-9",
+          cacheRetention: "short",
+          scope: "run-stage",
+          explicitCacheBlocks: false,
+          sessionIdHash: expect.any(String)
+        })
+      })
+    ]);
+    expect(debugRecord(telemetry, "mc-000001.request")).toMatchObject({
+      request: {
+        providerPromptCache: {
+          strategy: "pi-session",
+          sessionId: "codeninja-phase4-llm-stage-7",
+          cacheRetention: "short",
+          scope: "run-stage",
+          explicitCacheBlocks: false
+        }
+      }
+    });
+  });
+
   it("reuses identical deterministic repository tool results within one runner", async () => {
     const telemetry = fakeTelemetry();
     const readRange = vi.fn(async () => ({
