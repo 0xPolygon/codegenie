@@ -142,6 +142,38 @@ describe("uncertainty promotion", () => {
       notPromoted: { covered_by_existing_candidate: 1 }
     });
   });
+
+  it("does not promote broad follow-ups without a concrete failure predicate", async () => {
+    const packet = fakePacket("packet-broad", "src/charge.ts", {
+      symbol: "charge",
+      line: "+ return calculateCharge(input)"
+    });
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/code-review"],
+        findings: [],
+        followUpHints: [{
+          question: "Verify this looks safe overall.",
+          files: [packet.path],
+          symbols: ["charge"],
+          suggestedLenses: ["core/code-review"],
+          reason: "General safety concern without a concrete failure mode.",
+          confidence: "high"
+        }],
+        uncertainties: [],
+        status: "completed"
+      }]
+    }, captureTelemetry().recorder);
+
+    expect(result.packetResults[0]?.findings).toEqual([]);
+    expect(result.summary).toMatchObject({
+      considered: 1,
+      promoted: 0,
+      notPromoted: { broad_follow_up_only: 1 }
+    });
+  });
 });
 
 function fakePacket(

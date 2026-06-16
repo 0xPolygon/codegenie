@@ -63,13 +63,18 @@ export async function dedupeRankAndComposeReview(
   const packetsById = new Map((opts.packets ?? []).map((packet) => [packet.id, packet]));
   const pretrim = pretrimComposerInput(verified.verified);
   const groups = groupFindings(pretrim.kept, packetsById);
-  const attention = buildHumanAttentionNotes(opts.packetResults ?? [], telemetry);
+  const attention = buildHumanAttentionNotes(opts.packetResults ?? [], {
+    packets: opts.packets ?? [],
+    ...(opts.diff !== undefined ? { diff: opts.diff } : {}),
+    telemetry
+  });
   const verificationResolutions = buildVerificationResolutionIndex(verified.verdicts, opts.packetResults ?? [], verified.verified, packetsById, coverage);
   const preComposerAttentionGroups = suppressAttentionGroupsResolvedByVerification(
     attention.groups,
     verificationResolutions.filter((resolution) => resolution.verdict === "reject")
   ).available;
-  const composerPromptNotes = selectHumanAttentionGroups(preComposerAttentionGroups).notes;
+  const composerPromptSelection = selectHumanAttentionGroups(preComposerAttentionGroups);
+  const composerPromptNotes = composerPromptSelection.notes;
   if (pretrim.suppressed.length > 0) {
     const reason = `composer pre-trim suppressed ${pretrim.suppressed.length} verified finding${pretrim.suppressed.length === 1 ? "" : "s"} above the ${MAX_COMPOSER_FINDINGS}-finding composer input cap`;
     coverage.reasons.push(reason);
@@ -203,16 +208,9 @@ export async function dedupeRankAndComposeReview(
       findingIds: group.findings.map((finding) => finding.id)
     }))
   });
-  await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets({
-    raw: attention.raw,
-    grouped: attention.groups.map(attentionGroupArtifact),
-    composerPromptNotes,
-    outputNotes: humanAttention.notes,
-    omittedCount: humanAttention.omittedCount,
-    suppressedByFindings: humanAttention.suppressedByFindings,
-    suppressedByVerification: humanAttention.suppressedByVerification,
-    keptForOutput: humanAttention.keptGroups.map(attentionGroupArtifact)
-  }));
+  await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets(
+    humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups)
+  ));
   await telemetry.writeArtifact("final-findings.json", scrubGitHubSecrets(capped.findings));
   telemetry.event({
     stage: 10,
@@ -664,9 +662,12 @@ function buildSelectionRecords(
 }
 
 type RawAttentionHint = {
+  id: string;
   source: "follow_up_hint" | "uncertainty";
   question: string;
   files: string[];
+  originalFiles: string[];
+  droppedPaths: Array<{ path: string; reason: string }>;
   symbols: string[];
   suggestedLenses: string[];
   reason: string;
@@ -681,6 +682,9 @@ type AttentionHintGroup = {
   representative: AttentionHint;
   files: string[];
   symbols: string[];
+  rawNoteIds: Set<string>;
+  droppedPaths: Array<{ path: string; reason: string }>;
+  invalidPathCount: number;
   packetIds: Set<string>;
   sources: Set<RawAttentionHint["source"]>;
   count: number;
@@ -705,6 +709,7 @@ type VerificationResolution = {
 
 type VerificationSuppressionRecord = {
   groupKey: string;
+  noteIds: string[];
   note: NeedsHumanAttentionNote;
   candidateId: string;
   verdict: VerificationVerdict["verdict"];
@@ -723,12 +728,17 @@ type HumanAttentionOutput = {
   notes: NeedsHumanAttentionNote[];
   omittedCount: number;
   suppressedByFindings: NeedsHumanAttentionNote[];
+  suppressedByFindingGroups: AttentionHintGroup[];
   suppressedByVerification: VerificationSuppressionRecord[];
   keptGroups: AttentionHintGroup[];
+  selectedGroups: AttentionHintGroup[];
 };
 
-function buildHumanAttentionNotes(packetResults: PacketReviewResult[], telemetry?: TelemetryRecorder): HumanAttentionNotes {
-  const raw = rawAttentionHints(packetResults);
+function buildHumanAttentionNotes(
+  packetResults: PacketReviewResult[],
+  options: { packets: ReviewPacket[]; diff?: UnifiedDiff; telemetry?: TelemetryRecorder }
+): HumanAttentionNotes {
+  const raw = rawAttentionHints(packetResults, knownAttentionPaths(options.packets, options.diff), options.telemetry);
   const groups = new Map<string, AttentionHintGroup>();
   let eligibleHints = 0;
 
@@ -738,6 +748,20 @@ function buildHumanAttentionNotes(packetResults: PacketReviewResult[], telemetry
     }
     const question = hint.question.trim();
     if (question.length === 0) {
+      continue;
+    }
+    if (hint.files.length === 0 && hint.symbols.length === 0) {
+      options.telemetry?.event({
+        stage: 10,
+        level: "warn",
+        message: "human_attention_note_dropped",
+        packetId: hint.packetId,
+        data: {
+          reason: "no_valid_file_or_symbol",
+          noteId: hint.id,
+          droppedPaths: hint.droppedPaths
+        }
+      });
       continue;
     }
     eligibleHints += 1;
@@ -750,6 +774,9 @@ function buildHumanAttentionNotes(packetResults: PacketReviewResult[], telemetry
         representative: normalized,
         files: normalized.files,
         symbols: normalized.symbols,
+        rawNoteIds: new Set([normalized.id]),
+        droppedPaths: normalized.droppedPaths,
+        invalidPathCount: normalized.droppedPaths.length,
         packetIds: new Set([normalized.packetId]),
         sources: new Set([normalized.source]),
         count: 1
@@ -759,15 +786,18 @@ function buildHumanAttentionNotes(packetResults: PacketReviewResult[], telemetry
     existing.count += 1;
     existing.packetIds.add(normalized.packetId);
     existing.sources.add(normalized.source);
+    existing.rawNoteIds.add(normalized.id);
     existing.files = mergeStrings(existing.files, normalized.files);
     existing.symbols = mergeStrings(existing.symbols, normalized.symbols);
+    existing.droppedPaths = mergeDroppedPaths(existing.droppedPaths, normalized.droppedPaths);
+    existing.invalidPathCount += normalized.droppedPaths.length;
     existing.representative = strongerAttentionHint(existing.representative, normalized);
   }
 
   const ranked = [...groups.values()].sort(compareAttentionGroups);
   const selected = selectHumanAttentionGroups(ranked);
   if (raw.length > 0) {
-    telemetry?.event({
+    options.telemetry?.event({
       stage: 10,
       level: "info",
       message: "human_attention_hints_grouped",
@@ -797,14 +827,22 @@ function buildHumanAttentionNotes(packetResults: PacketReviewResult[], telemetry
   return { raw, groups: ranked, notes: selected.notes, omittedCount: selected.omittedCount };
 }
 
-function rawAttentionHints(packetResults: PacketReviewResult[]): RawAttentionHint[] {
+function rawAttentionHints(
+  packetResults: PacketReviewResult[],
+  knownPaths: Set<string>,
+  telemetry: TelemetryRecorder | undefined
+): RawAttentionHint[] {
   const raw: RawAttentionHint[] = [];
   for (const result of packetResults) {
     for (const hint of result.followUpHints) {
+      const files = validateAttentionFiles(result.packetId, hint.files, knownPaths, telemetry);
       raw.push({
+        id: rawAttentionHintId(result.packetId, "follow_up_hint", hint.question, files.files, hint.symbols),
         source: "follow_up_hint",
         question: hint.question.trim(),
-        files: cleanStrings(hint.files),
+        files: files.files,
+        originalFiles: cleanStrings(hint.files),
+        droppedPaths: files.dropped,
         symbols: cleanStrings(hint.symbols),
         reason: hint.reason.trim(),
         suggestedLenses: cleanStrings(hint.suggestedLenses),
@@ -813,10 +851,14 @@ function rawAttentionHints(packetResults: PacketReviewResult[]): RawAttentionHin
       });
     }
     for (const uncertainty of result.uncertainties) {
+      const files = validateAttentionFiles(result.packetId, uncertainty.files, knownPaths, telemetry);
       raw.push({
+        id: rawAttentionHintId(result.packetId, "uncertainty", uncertainty.question, files.files, uncertainty.symbols),
         source: "uncertainty",
         question: uncertainty.question.trim(),
-        files: cleanStrings(uncertainty.files),
+        files: files.files,
+        originalFiles: cleanStrings(uncertainty.files),
+        droppedPaths: files.dropped,
         symbols: cleanStrings(uncertainty.symbols),
         reason: "Packet reviewer could not resolve this question from the reviewed context.",
         suggestedLenses: [],
@@ -828,9 +870,134 @@ function rawAttentionHints(packetResults: PacketReviewResult[]): RawAttentionHin
   return raw;
 }
 
-function selectHumanAttentionGroups(groups: AttentionHintGroup[]): { notes: NeedsHumanAttentionNote[]; omittedCount: number } {
-  const emitted = groups.slice(0, MAX_HUMAN_ATTENTION_NOTES).map(toAttentionNote);
-  return { notes: emitted, omittedCount: Math.max(0, groups.length - emitted.length) };
+function knownAttentionPaths(packets: ReviewPacket[], diff: UnifiedDiff | undefined): Set<string> {
+  const paths = new Set<string>();
+  const add = (value: string | undefined) => {
+    const normalized = normalizeAttentionPath(value ?? "");
+    if (normalized !== undefined) {
+      paths.add(normalized);
+    }
+  };
+  for (const file of diff?.files ?? []) {
+    add(file.path);
+    add(file.oldPath);
+  }
+  for (const packet of packets) {
+    add(packet.path);
+    add(packet.oldPath);
+    add(packet.context.path);
+    for (const fact of packet.symbolFacts) {
+      add(fact.path);
+    }
+    for (const symbol of packet.relevantTests) {
+      add(symbol.path);
+    }
+    for (const symbol of packet.packetSymbols ?? []) {
+      add(symbol.path);
+    }
+    for (const hint of packet.surroundingContextHints) {
+      add(hint.path);
+    }
+    if (packet.context.enclosingFunction !== undefined) {
+      add(packet.context.enclosingFunction.path);
+    }
+    if (packet.context.enclosingType !== undefined) {
+      add(packet.context.enclosingType.path);
+    }
+    if (packet.context.enclosingMethod !== undefined) {
+      add(packet.context.enclosingMethod.path);
+    }
+  }
+  return paths;
+}
+
+function validateAttentionFiles(
+  packetId: string,
+  files: string[],
+  knownPaths: Set<string>,
+  telemetry: TelemetryRecorder | undefined
+): { files: string[]; dropped: Array<{ path: string; reason: string }> } {
+  const valid: string[] = [];
+  const dropped: Array<{ path: string; reason: string }> = [];
+  for (const original of cleanStrings(files)) {
+    const validation = validateAttentionPath(original, knownPaths);
+    if (validation.validPath !== undefined) {
+      valid.push(validation.validPath);
+      continue;
+    }
+    dropped.push({ path: original, reason: validation.reason });
+    telemetry?.event({
+      stage: 10,
+      level: "warn",
+      message: "human_attention_note_path_dropped",
+      packetId,
+      data: {
+        originalPath: original,
+        reason: validation.reason
+      }
+    });
+  }
+  return { files: cleanStrings(valid), dropped };
+}
+
+function validateAttentionPath(pathValue: string, knownPaths: Set<string>): { validPath?: string; reason: string } {
+  const trimmed = pathValue.trim();
+  if (trimmed.length === 0) {
+    return { reason: "empty" };
+  }
+  if (isAbsolutePathLike(trimmed)) {
+    return { reason: "absolute_path" };
+  }
+  const normalized = normalizeAttentionPath(trimmed);
+  if (normalized === undefined) {
+    return { reason: "invalid_path" };
+  }
+  if (normalized.split("/").some((part) => part === "..")) {
+    return { reason: "traversal" };
+  }
+  if (knownPaths.size > 0 && !knownPaths.has(normalized)) {
+    return { reason: "unknown_path" };
+  }
+  return { validPath: normalized, reason: "valid" };
+}
+
+function normalizeAttentionPath(pathValue: string): string | undefined {
+  const normalized = pathValue
+    .trim()
+    .replace(/\\/gu, "/")
+    .replace(/:\d+(?:-\d+)?$/u, "")
+    .replace(/^\.\//u, "")
+    .replace(/\/{2,}/gu, "/");
+  if (normalized.length === 0 || normalized === ".") {
+    return undefined;
+  }
+  return normalized;
+}
+
+function isAbsolutePathLike(pathValue: string): boolean {
+  return pathValue.startsWith("/") || /^[a-z]:[\\/]/iu.test(pathValue);
+}
+
+function rawAttentionHintId(
+  packetId: string,
+  source: RawAttentionHint["source"],
+  question: string,
+  files: string[],
+  symbols: string[]
+): string {
+  return `note-${sha256Hex([
+    packetId,
+    source,
+    normalizeFollowUpQuestion(question),
+    cleanStrings(files).join(","),
+    cleanStrings(symbols).join(",")
+  ].join("\0")).slice(0, 12)}`;
+}
+
+function selectHumanAttentionGroups(groups: AttentionHintGroup[]): { groups: AttentionHintGroup[]; notes: NeedsHumanAttentionNote[]; omittedCount: number } {
+  const emittedGroups = groups.slice(0, MAX_HUMAN_ATTENTION_NOTES);
+  const emitted = emittedGroups.map(toAttentionNote);
+  return { groups: emittedGroups, notes: emitted, omittedCount: Math.max(0, groups.length - emitted.length) };
 }
 
 function selectHumanAttentionForOutput(
@@ -841,9 +1008,8 @@ function selectHumanAttentionForOutput(
   telemetry?: TelemetryRecorder
 ): HumanAttentionOutput {
   const availableAfterFindings = groups.filter((group) => !findings.some((finding) => attentionGroupCoveredByFinding(group, finding, packetsById)));
-  const suppressedByFindings = groups
-    .filter((group) => !availableAfterFindings.includes(group))
-    .map(toAttentionNote);
+  const suppressedByFindingGroups = groups.filter((group) => !availableAfterFindings.includes(group));
+  const suppressedByFindings = suppressedByFindingGroups.map(toAttentionNote);
   const verificationSuppression = suppressAttentionGroupsResolvedByVerification(availableAfterFindings, verificationResolutions);
   const selected = selectHumanAttentionGroups(verificationSuppression.available);
 
@@ -879,8 +1045,10 @@ function selectHumanAttentionForOutput(
     notes: selected.notes,
     omittedCount: selected.omittedCount,
     suppressedByFindings,
+    suppressedByFindingGroups,
     suppressedByVerification: verificationSuppression.suppressed,
-    keptGroups: verificationSuppression.available
+    keptGroups: verificationSuppression.available,
+    selectedGroups: selected.groups
   };
 }
 
@@ -901,6 +1069,7 @@ function suppressAttentionGroupsResolvedByVerification(
     }
     suppressed.push({
       groupKey: group.key,
+      noteIds: [...group.rawNoteIds].sort(),
       note: toAttentionNote(group),
       candidateId: match.resolution.candidateId,
       verdict: match.resolution.verdict,
@@ -954,6 +1123,19 @@ function attentionGroupResolvedByVerification(
   const resolutionSymbols = new Set(resolution.symbols.map(normalize).filter(Boolean));
   const sharedSymbols = sortedIntersection(groupSymbols, resolutionSymbols);
   if (sharedFiles.length === 0 && sharedSymbols.length === 0) {
+    if (group.invalidPathCount > 0) {
+      const groupTerms = normalizedTerms([
+        group.representative.question,
+        group.representative.reason,
+        group.symbols.join(" ")
+      ].join(" "));
+      const sharedTerms = intersectionCount(groupTerms, resolution.terms);
+      const similarity = tokenJaccard(groupTerms, resolution.terms);
+      const questionMatched = attentionGroupQuestionKeys(group).some((key) => resolution.questionKeys.has(key));
+      return questionMatched || sharedTerms >= 7 || similarity >= 0.55
+        ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched }
+        : undefined;
+    }
     return undefined;
   }
 
@@ -989,7 +1171,18 @@ function attentionGroupCoveredByFinding(
   const sharesSymbol = groupSharesFindingSymbol(group, finding, packetsById);
   const sharesFile = groupSharesFindingFile(group, finding);
   if (!sharesSymbol && !sharesFile) {
-    return false;
+    if (group.invalidPathCount === 0) {
+      return false;
+    }
+    const groupTerms = normalizedTerms([
+      group.representative.question,
+      group.representative.reason,
+      group.symbols.join(" ")
+    ].join(" "));
+    const findingTerms = rootCauseTerms(finding);
+    const sharedTerms = intersectionCount(groupTerms, findingTerms);
+    const similarity = tokenJaccard(groupTerms, findingTerms);
+    return sharedTerms >= 7 || similarity >= 0.55;
   }
 
   const groupTerms = normalizedTerms([
@@ -1159,14 +1352,63 @@ function sortedIntersection(a: Set<string>, b: Set<string>): string[] {
 function attentionGroupArtifact(group: AttentionHintGroup): Record<string, unknown> {
   return {
     key: group.key,
+    noteIds: [...group.rawNoteIds].sort(),
     question: group.representative.question,
     reason: group.representative.reason,
     confidence: group.representative.confidence,
     files: group.files,
+    droppedPaths: group.droppedPaths,
+    invalidPathCount: group.invalidPathCount,
     symbols: group.symbols,
     packetIds: [...group.packetIds].sort(),
     sources: [...group.sources].sort(),
     count: group.count
+  };
+}
+
+function rawAttentionHintArtifact(hint: RawAttentionHint): Record<string, unknown> {
+  return {
+    id: hint.id,
+    source: hint.source,
+    packetId: hint.packetId,
+    question: hint.question,
+    reason: hint.reason,
+    confidence: hint.confidence,
+    files: hint.files,
+    originalFiles: hint.originalFiles,
+    droppedPaths: hint.droppedPaths,
+    symbols: hint.symbols,
+    suggestedLenses: hint.suggestedLenses
+  };
+}
+
+function humanAttentionArtifact(
+  attention: HumanAttentionNotes,
+  output: HumanAttentionOutput,
+  composerPromptGroups: AttentionHintGroup[]
+): Record<string, unknown> {
+  return {
+    schemaVersion: 2,
+    notes: attention.raw.map(rawAttentionHintArtifact),
+    groups: attention.groups.map(attentionGroupArtifact),
+    composerPromptGroupIds: composerPromptGroups.map((group) => group.key),
+    outputGroupIds: output.selectedGroups.map((group) => group.key),
+    outputNotes: output.notes,
+    omittedCount: output.omittedCount,
+    suppressedByFindings: output.suppressedByFindingGroups.map((group) => ({
+      groupKey: group.key,
+      noteIds: [...group.rawNoteIds].sort()
+    })),
+    suppressedByVerification: output.suppressedByVerification.map((record) => ({
+      groupKey: record.groupKey,
+      noteIds: record.noteIds,
+      candidateId: record.candidateId,
+      verdict: record.verdict,
+      reason: record.reason,
+      verdictReason: record.verdictReason,
+      match: record.match
+    })),
+    keptForOutputGroupIds: output.keptGroups.map((group) => group.key)
   };
 }
 
@@ -1264,6 +1506,17 @@ function cleanReasonLength(reason: string): number {
 
 function mergeStrings(a: string[], b: string[]): string[] {
   return [...new Set([...a, ...b])].sort();
+}
+
+function mergeDroppedPaths(
+  a: Array<{ path: string; reason: string }>,
+  b: Array<{ path: string; reason: string }>
+): Array<{ path: string; reason: string }> {
+  const byKey = new Map<string, { path: string; reason: string }>();
+  for (const item of [...a, ...b]) {
+    byKey.set(`${item.path}\0${item.reason}`, item);
+  }
+  return [...byKey.values()].sort((left, right) => left.path.localeCompare(right.path) || left.reason.localeCompare(right.reason));
 }
 
 function strongerConfidence(a: Exclude<Confidence, "low">, b: Exclude<Confidence, "low">): Exclude<Confidence, "low"> {

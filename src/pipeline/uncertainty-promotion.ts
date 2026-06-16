@@ -173,8 +173,23 @@ function promotionDecision(source: PromotionSource): { eligible: boolean; reason
   if (!risk.promotable) {
     return { eligible: false, reason: "weak_or_non_actionable_risk" };
   }
+  if (isBroadFollowUpOnly(source, risk.category)) {
+    return { eligible: false, reason: "broad_follow_up_only" };
+  }
+  if (!hasConcreteFailurePredicate(source, risk.category)) {
+    return { eligible: false, reason: "no_concrete_failure_predicate" };
+  }
+  if (!hasChangedAnchorForPredicate(source)) {
+    return { eligible: false, reason: "no_changed_anchor_for_predicate" };
+  }
+  if (!hasPromotionEvidence(source, risk.category)) {
+    return { eligible: false, reason: "insufficient_promotion_evidence" };
+  }
   if (risk.category === "testing" && !mentionsChangedTestOrDeletedCoverage(source)) {
     return { eligible: false, reason: "test_risk_without_changed_test_or_deleted_coverage" };
+  }
+  if (risk.category === "testing" && !mentionsNamedProductionScope(source)) {
+    return { eligible: false, reason: "insufficient_promotion_evidence" };
   }
   if (!mentionsProductionImpact(source) && risk.category !== "testing") {
     return { eligible: false, reason: "no_production_impact" };
@@ -353,6 +368,77 @@ function riskProfile(source: PromotionSource): { promotable: boolean; category: 
   return { promotable: false, category: "maintainability" };
 }
 
+function isBroadFollowUpOnly(source: PromotionSource, category: FindingCategory): boolean {
+  const text = normalizedSourceText(source);
+  if (category === "testing") {
+    return /\b(needs?\s+tests?|add\s+tests?|test\s+coverage)\b/u.test(text) &&
+      source.symbols.length === 0 &&
+      !source.files.some((file) => !isTestPath(file));
+  }
+  const predicateText = text.replace(/\bwithout (?:a )?concrete failure mode\b/gu, "");
+  const hasSpecificPredicate = /\b(if|whether|when|without|breaks?|regression|contract|auth|permission|zero|nil|null|panic|overflow|precision|fallback|default|timeout|leak|race|incorrect|wrong|lost|removed|missing|no longer)\b/u.test(predicateText);
+  return /\b(check|verify|confirm|investigate|review)\b.*\b(safe|okay|ok|fine|acceptable|looks good|needs review)\b/u.test(text) &&
+    !hasSpecificPredicate;
+}
+
+function hasConcreteFailurePredicate(source: PromotionSource, category: FindingCategory): boolean {
+  const text = normalizedSourceText(source);
+  if (category === "testing") {
+    return /\b(deleted|removed|missing|lost|coverage|regression|production path|behavior|symbol|caller|contract)\b/u.test(text) &&
+      mentionsNamedProductionScope(source);
+  }
+  return /\b(if|whether|when|without|allows?|fails?|breaks?|regression|contract|invariant|auth|permission|zero|nil|null|panic|overflow|precision|fallback|default|timeout|leak|race|incorrect|wrong|lost|removed|missing|no longer)\b/u.test(text);
+}
+
+function hasChangedAnchorForPredicate(source: PromotionSource): boolean {
+  return firstChangedAnchor(source.packet) !== undefined && mentionsChangedScope(source);
+}
+
+function hasPromotionEvidence(source: PromotionSource, category: FindingCategory): boolean {
+  if (source.files.includes(source.packet.path) || (source.packet.oldPath !== undefined && source.files.includes(source.packet.oldPath))) {
+    return true;
+  }
+  if (source.symbols.some((symbol) => source.packet.symbolFacts.some((fact) =>
+    symbolMatchesFact(symbol, fact.enclosingSymbol) || symbolMatchesFact(symbol, fact.signature)
+  ))) {
+    return true;
+  }
+  if (category === "testing" && mentionsNamedProductionScope(source) && mentionsChangedTestOrDeletedCoverage(source)) {
+    return true;
+  }
+  return changedHunkMentionsPredicate(source);
+}
+
+function changedHunkMentionsPredicate(source: PromotionSource): boolean {
+  const predicateTerms = predicateKeywords(normalizedSourceText(source));
+  if (predicateTerms.size === 0) {
+    return false;
+  }
+  const changedText = normalize(source.packet.hunks.flatMap((hunk) =>
+    hunk.lines
+      .filter((line) => line.kind === "add" || line.kind === "delete")
+      .map((line) => line.content)
+  ).join(" "));
+  let matches = 0;
+  for (const term of predicateTerms) {
+    if (changedText.includes(term)) {
+      matches += 1;
+    }
+  }
+  return matches >= Math.min(2, predicateTerms.size);
+}
+
+function predicateKeywords(text: string): Set<string> {
+  const stop = new Set([
+    "check", "verify", "confirm", "whether", "should", "still", "this", "that", "with", "from", "through", "changed",
+    "behavior", "contract", "caller", "production", "path", "risk", "issue", "bug", "fail", "failure"
+  ]);
+  return new Set(text.split(/\s+/u)
+    .map((word) => word.replace(/[^a-z0-9_./:-]/gu, ""))
+    .filter((word) => word.length >= 4 && !stop.has(word))
+    .slice(0, 12));
+}
+
 function mentionsChangedScope(source: PromotionSource): boolean {
   if (source.files.includes(source.packet.path) || (source.packet.oldPath !== undefined && source.files.includes(source.packet.oldPath))) {
     return true;
@@ -371,6 +457,12 @@ function mentionsChangedTestOrDeletedCoverage(source: PromotionSource): boolean 
     source.packet.isDeletedContent ||
     source.files.some(isTestPath) ||
     /\b(deleted|removed|drop|missing|coverage)\b/u.test(normalizedSourceText(source));
+}
+
+function mentionsNamedProductionScope(source: PromotionSource): boolean {
+  return source.symbols.length > 0 ||
+    source.files.some((file) => !isTestPath(file)) ||
+    /\b(production|prod|handler|service|worker|client|api|caller|symbol|function|method|behavior)\b/u.test(normalizedSourceText(source));
 }
 
 function mentionsProductionImpact(source: PromotionSource): boolean {

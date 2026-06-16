@@ -340,6 +340,85 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("caps packet follow-up hints and uncertainties after ranking scoped entries", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packet = packetWithSymbol("packet-1", "chargeTenant");
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          findings: [],
+          followUpHints: [
+            {
+              question: "Verify broad repo safety.",
+              files: ["other.ts"],
+              symbols: [],
+              suggestedLenses: [],
+              reason: "broad",
+              confidence: "low"
+            },
+            {
+              question: "Check whether chargeTenant preserves tenant authorization.",
+              files: ["app.ts"],
+              symbols: ["chargeTenant"],
+              suggestedLenses: ["domain/security"],
+              reason: "The changed symbol is security-sensitive.",
+              confidence: "high"
+            },
+            {
+              question: "Check whether chargeTenant still handles zero totals.",
+              files: ["app.ts"],
+              symbols: ["chargeTenant"],
+              suggestedLenses: ["core/logic-bugs"],
+              reason: "The changed symbol handles billing totals.",
+              confidence: "medium"
+            },
+            {
+              question: "Check related logging behavior.",
+              files: ["app.ts"],
+              symbols: [],
+              suggestedLenses: [],
+              reason: "lower value",
+              confidence: "medium"
+            }
+          ],
+          uncertainties: [
+            { question: "Can chargeTenant leak tenant data?", files: ["app.ts"], symbols: ["chargeTenant"] },
+            { question: "Is this generally safe?", files: ["other.ts"], symbols: [] }
+          ]
+        }) as T
+    };
+
+    const [result] = await runLensPackets(fakePlan(), [packet], fakeTools(), config(), {
+      ...nullTelemetry(),
+      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+        events.push(event);
+      }
+    }, {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lensRegistry: fakeLensRegistry(),
+      diff: fakeDiff()
+    });
+
+    expect(result?.followUpHints.map((hint) => hint.question)).toEqual([
+      "Check whether chargeTenant preserves tenant authorization.",
+      "Check whether chargeTenant still handles zero totals."
+    ]);
+    expect(result?.uncertainties).toEqual([
+      { question: "Can chargeTenant leak tenant data?", files: ["app.ts"], symbols: ["chargeTenant"] }
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 7,
+      message: "follow_up_hint_capped",
+      data: expect.objectContaining({ cap: 2, droppedCount: 2 })
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 7,
+      message: "uncertainty_capped",
+      data: expect.objectContaining({ cap: 1, droppedCount: 1 })
+    }));
+  });
+
   it("builds whole-file packets for configured whole-file files", async () => {
     const file: DiffFile = {
       path: "app.ts",
@@ -7046,7 +7125,8 @@ describe("phase 5 pipeline regressions", () => {
       })
     ]);
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
-      raw: [
+      schemaVersion: 2,
+      notes: [
         expect.objectContaining({
           source: "uncertainty",
           packetId: "packet-unclear",
@@ -7194,20 +7274,19 @@ describe("phase 5 pipeline regressions", () => {
     expect(composerNotes).toEqual([]);
     expect(result.needsHumanAttention).toEqual([]);
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
+      schemaVersion: 2,
       suppressedByVerification: [
         expect.objectContaining({
           candidateId: "finding-helper-guard",
           verdict: "reject",
-          note: expect.objectContaining({
-            question: "Check whether normalizeAmount rejects zero prices before fee calculation."
-          }),
+          noteIds: [expect.stringMatching(/^note-/u)],
           match: expect.objectContaining({
             sharedFiles: ["billing/fee.ts"],
             questionMatched: true
           })
         })
       ],
-      keptForOutput: []
+      keptForOutputGroupIds: []
     });
     expect(events).toContainEqual(expect.objectContaining({
       stage: 10,
@@ -7288,6 +7367,7 @@ describe("phase 5 pipeline regressions", () => {
         },
         promptBuilder: fakePromptBuilder(),
         packets: [verifierResolutionPacket()],
+        diff: { files: [fakeDiffFile("billing/fee.ts"), fakeDiffFile("reports/fee.ts")] },
         packetResults: [packetResultWithFindingAndHint(candidate, "reports/fee.ts")]
       }
     );
@@ -7299,6 +7379,76 @@ describe("phase 5 pipeline regressions", () => {
         symbols: ["calculateFee", "normalizeAmount"]
       })
     ]);
+  });
+
+  it("drops unknown human-attention paths and allows verifier suppression by predicate", async () => {
+    const artifacts = new Map<string, unknown>();
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const candidate = verifierResolutionCandidate();
+    const result = await dedupeRankAndComposeReview(
+      {
+        verified: [],
+        verdicts: [{
+          candidateId: candidate.id,
+          verdict: "reject",
+          reason: "normalizeAmount already returns an error when the price is zero, so the suspected missing guard is not real.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        }]
+      },
+      fakePlan("billing/fee.ts"),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      fakeCoverage(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        },
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packets: [verifierResolutionPacket()],
+        packetResults: [packetResultWithFindingAndHint(candidate, "billing/quotes.ts")]
+      }
+    );
+
+    expect(result.needsHumanAttention).toEqual([]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 10,
+      message: "human_attention_note_path_dropped",
+      packetId: "packet-helper",
+      data: expect.objectContaining({
+        originalPath: "billing/quotes.ts",
+        reason: "unknown_path"
+      })
+    }));
+    expect(artifacts.get("human-attention-notes.json")).toMatchObject({
+      notes: [
+        expect.objectContaining({
+          originalFiles: ["billing/quotes.ts"],
+          files: [],
+          droppedPaths: [{ path: "billing/quotes.ts", reason: "unknown_path" }]
+        })
+      ],
+      suppressedByVerification: [
+        expect.objectContaining({
+          candidateId: "finding-helper-guard",
+          match: expect.objectContaining({ sharedFiles: [] })
+        })
+      ]
+    });
   });
 
   it("passes deduped and capped human-attention notes to the composer prompt", async () => {

@@ -29,6 +29,12 @@ type LensRunnerOptions = {
   diff?: UnifiedDiff;
 };
 
+type SubmittedFollowUpHint = SubmitPacketReview["followUpHints"][number];
+type SubmittedUncertainty = SubmitPacketReview["uncertainties"][number];
+
+const MAX_FOLLOW_UP_HINTS_PER_PACKET = 2;
+const MAX_UNCERTAINTIES_PER_PACKET = 1;
+
 export async function runLensPackets(
   _plan: ReviewPlan,
   packets: ReviewPacket[],
@@ -161,27 +167,131 @@ async function runPacket(
       }
     });
   }
-  const followUpHints = submitted.followUpHints.flatMap((hint) => {
-    const question = hint.question.trim();
-    const pointerRich = hint.files.length > 0 || hint.symbols.length > 0;
-    const valid = pointerRich && question.length > 0;
+  const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, telemetry, workerId);
+  const uncertainties = normalizeUncertainties(submitted.uncertainties, packet, telemetry, workerId);
+  return {
+    packetId: packet.id,
+    lenses: packet.lenses,
+    findings,
+    reviewStatus,
+    ...(submitted.noFindingReason !== undefined ? { noFindingReason: submitted.noFindingReason } : {}),
+    ...(submitted.unresolvedQuestions !== undefined ? { unresolvedQuestions: submitted.unresolvedQuestions } : {}),
+    followUpHints,
+    uncertainties,
+    status: reviewStatus === "incomplete" ? "incomplete" : "completed"
+  };
+}
+
+function normalizeFollowUpHints(
+  hints: SubmittedFollowUpHint[],
+  packet: ReviewPacket,
+  telemetry: TelemetryRecorder,
+  workerId: string
+): PacketReviewResult["followUpHints"] {
+  const valid: PacketReviewResult["followUpHints"] = [];
+  for (const hint of hints) {
+    const normalized = {
+      ...hint,
+      question: hint.question.trim(),
+      files: cleanStrings(hint.files),
+      symbols: cleanStrings(hint.symbols),
+      suggestedLenses: cleanStrings(hint.suggestedLenses),
+      reason: hint.reason.trim()
+    };
+    const pointerRich = normalized.files.length > 0 || normalized.symbols.length > 0;
+    if (normalized.question.length === 0 || !pointerRich) {
+      telemetry.event({
+        stage: 7,
+        level: "warn",
+        message: normalized.question.length === 0 ? "vague_hint" : "follow_up_hint_dropped",
+        packetId: packet.id,
+        workerId,
+        data: {
+          question: normalized.question,
+          files: normalized.files,
+          symbols: normalized.symbols,
+          reason: normalized.reason,
+          confidence: normalized.confidence
+        }
+      });
+      continue;
+    }
+    valid.push(normalized);
+  }
+
+  const ranked = [...valid].sort((a, b) => followUpHintRank(b, packet) - followUpHintRank(a, packet) ||
+    a.question.localeCompare(b.question));
+  const kept = ranked.slice(0, MAX_FOLLOW_UP_HINTS_PER_PACKET);
+  const dropped = ranked.slice(MAX_FOLLOW_UP_HINTS_PER_PACKET);
+  for (const hint of kept) {
     telemetry.event({
       stage: 7,
-      level: valid ? "info" : "warn",
-      message: valid ? "follow_up_hint" : question.length === 0 ? "vague_hint" : "follow_up_hint_dropped",
+      level: "info",
+      message: "follow_up_hint",
       packetId: packet.id,
       workerId,
       data: {
-        question,
+        question: hint.question,
         files: hint.files,
         symbols: hint.symbols,
         reason: hint.reason,
         confidence: hint.confidence
       }
     });
-    return valid ? [{ ...hint, question }] : [];
+  }
+  if (dropped.length > 0) {
+    telemetry.event({
+      stage: 7,
+      level: "info",
+      message: "follow_up_hint_capped",
+      packetId: packet.id,
+      workerId,
+      data: {
+        cap: MAX_FOLLOW_UP_HINTS_PER_PACKET,
+        keptCount: kept.length,
+        droppedCount: dropped.length,
+        dropped: dropped.slice(0, 5).map((hint) => ({
+          question: hint.question,
+          files: hint.files,
+          symbols: hint.symbols,
+          confidence: hint.confidence
+        }))
+      }
+    });
+  }
+  return kept;
+}
+
+function normalizeUncertainties(
+  uncertainties: SubmittedUncertainty[],
+  packet: ReviewPacket,
+  telemetry: TelemetryRecorder,
+  workerId: string
+): PacketReviewResult["uncertainties"] {
+  const valid = uncertainties.flatMap((uncertainty): PacketReviewResult["uncertainties"] => {
+    const normalized = {
+      question: uncertainty.question.trim(),
+      files: cleanStrings(uncertainty.files),
+      symbols: cleanStrings(uncertainty.symbols)
+    };
+    if (normalized.question.length === 0) {
+      telemetry.event({
+        stage: 7,
+        level: "warn",
+        message: "uncertainty_dropped",
+        packetId: packet.id,
+        workerId,
+        data: { reason: "empty_question", uncertainty }
+      });
+      return [];
+    }
+    return [normalized];
   });
-  for (const uncertainty of submitted.uncertainties) {
+  const ranked = [...valid].sort((a, b) => uncertaintyRank(b, packet) - uncertaintyRank(a, packet) ||
+    a.question.localeCompare(b.question));
+  const kept = ranked.slice(0, MAX_UNCERTAINTIES_PER_PACKET);
+  const dropped = ranked.slice(MAX_UNCERTAINTIES_PER_PACKET);
+  for (const uncertainty of kept) {
     telemetry.event({
       stage: 7,
       level: "info",
@@ -191,17 +301,76 @@ async function runPacket(
       data: uncertainty
     });
   }
-  return {
-    packetId: packet.id,
-    lenses: packet.lenses,
-    findings,
-    reviewStatus,
-    ...(submitted.noFindingReason !== undefined ? { noFindingReason: submitted.noFindingReason } : {}),
-    ...(submitted.unresolvedQuestions !== undefined ? { unresolvedQuestions: submitted.unresolvedQuestions } : {}),
-    followUpHints,
-    uncertainties: submitted.uncertainties,
-    status: reviewStatus === "incomplete" ? "incomplete" : "completed"
-  };
+  if (dropped.length > 0) {
+    telemetry.event({
+      stage: 7,
+      level: "info",
+      message: "uncertainty_capped",
+      packetId: packet.id,
+      workerId,
+      data: {
+        cap: MAX_UNCERTAINTIES_PER_PACKET,
+        keptCount: kept.length,
+        droppedCount: dropped.length,
+        dropped: dropped.slice(0, 5).map((uncertainty) => ({
+          question: uncertainty.question,
+          files: uncertainty.files,
+          symbols: uncertainty.symbols
+        }))
+      }
+    });
+  }
+  return kept;
+}
+
+function followUpHintRank(hint: PacketReviewResult["followUpHints"][number], packet: ReviewPacket): number {
+  return confidenceScore(hint.confidence) * 30 +
+    pointerScore(hint.files, hint.symbols, packet) * 10 +
+    concretenessScore(hint.question, hint.reason);
+}
+
+function uncertaintyRank(uncertainty: PacketReviewResult["uncertainties"][number], packet: ReviewPacket): number {
+  return pointerScore(uncertainty.files, uncertainty.symbols, packet) * 10 +
+    concretenessScore(uncertainty.question, "");
+}
+
+function confidenceScore(confidence: PacketReviewResult["followUpHints"][number]["confidence"]): number {
+  return { high: 3, medium: 2, low: 1 }[confidence];
+}
+
+function pointerScore(files: string[], symbols: string[], packet: ReviewPacket): number {
+  const packetPaths = new Set([packet.path, ...(packet.oldPath !== undefined ? [packet.oldPath] : [])]);
+  const changedFile = files.some((file) => packetPaths.has(stripLocationSuffix(file)));
+  const symbolMatch = symbols.some((symbol) => packet.symbolFacts.some((fact) =>
+    symbolMatches(symbol, fact.enclosingSymbol) || symbolMatches(symbol, fact.signature)
+  ));
+  return (files.length > 0 ? 1 : 0) +
+    (symbols.length > 0 ? 1 : 0) +
+    (changedFile ? 2 : 0) +
+    (symbolMatch ? 2 : 0);
+}
+
+function concretenessScore(question: string, reason: string): number {
+  const text = `${question} ${reason}`.toLowerCase();
+  return (/\b(if|when|whether|because|fails?|breaks?|regression|contract|auth|permission|coverage|test|zero|nil|null|overflow|timeout|leak|race)\b/u.test(text) ? 2 : 0) +
+    (question.length <= 180 ? 1 : 0);
+}
+
+function symbolMatches(symbol: string, factValue: string | undefined): boolean {
+  if (!factValue) {
+    return false;
+  }
+  const left = symbol.toLowerCase().trim();
+  const right = factValue.toLowerCase();
+  return left.length > 0 && (right === left || right.includes(left));
+}
+
+function cleanStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))].sort();
+}
+
+function stripLocationSuffix(value: string): string {
+  return value.trim().replace(/:\d+(?:-\d+)?$/u, "");
 }
 
 function normalizedReviewStatus(submitted: SubmitPacketReview, findingCount: number): NonNullable<PacketReviewResult["reviewStatus"]> {
