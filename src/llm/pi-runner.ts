@@ -34,6 +34,7 @@ import {
   type LlmRunner,
   type LlmStructuredRequest,
   type LlmToolResultSummary,
+  type ModelCallCacheMissReason,
   type PiAiAdapter,
   type PiAssistantMessage,
   type PiModelRef,
@@ -57,6 +58,25 @@ type ProviderCallResult =
 type ProviderLimit = <T>(fn: () => Promise<T>) => Promise<T>;
 
 type ToolChoiceMode = "auto" | { type: "tool"; name: string };
+
+type ModelCallCacheDiagnostics = {
+  keyPrefix: string;
+  requestHash: string;
+  runFingerprintHash?: string;
+  runnerMessageVersion: string;
+  stage: ReviewStage;
+  kind: ModelCallKind;
+  templateVersion: string;
+  schemaName: string;
+  schemaVersion: number;
+  toolChoiceHash: string;
+  toolBudgetHash: string;
+  messageHash: string;
+  messageCount: number;
+  toolSpecHash: string;
+  toolCount: number;
+  promptChars: number;
+};
 
 type ToolRunOutcome = {
   result: ToolExecutionResult;
@@ -673,6 +693,7 @@ async function completeWithCache(input: {
   });
   const promptText = stableJson(canonicalRequest);
   const cacheKey = buildModelCallCacheKey(canonicalRequest);
+  const cacheDiagnostics = modelCallCacheDiagnostics(canonicalRequest, cacheKey, promptText.length);
 
   if (opts.cache) {
     const cached = await opts.cache.get(cacheKey, request.stage);
@@ -686,7 +707,7 @@ async function completeWithCache(input: {
           level: "warn",
           message: "model_call_cache_provider_error_miss",
           cacheStatus: "miss",
-          data: { cacheKey, error: cachedFailure.message }
+          data: { ...cacheDiagnostics, missReason: "cached_provider_error", error: cachedFailure.message }
         });
       } else if (cachedSchemaValid === false) {
         opts.telemetry.event({
@@ -694,7 +715,7 @@ async function completeWithCache(input: {
           level: "warn",
           message: "model_call_cache_schema_invalid_miss",
           cacheStatus: "miss",
-          data: { cacheKey }
+          data: { ...cacheDiagnostics, missReason: "cached_schema_invalid" }
         });
       } else {
         const callId = nextModelCallId();
@@ -704,6 +725,7 @@ async function completeWithCache(input: {
           attempt: 1,
           cacheStatus: "hit",
           cacheKey,
+          cacheDiagnostics,
           promptText,
           messages,
           tools,
@@ -724,6 +746,8 @@ async function completeWithCache(input: {
         });
         return { source: "cache", message: cachedResponse.message, callId };
       }
+    } else {
+      emitModelCallCacheDiagnostic(opts, request, cached.reason, cacheDiagnostics);
     }
   }
 
@@ -759,6 +783,7 @@ async function completeWithCache(input: {
       attempt,
       cacheStatus: opts.cache ? "miss" : "disabled",
       cacheKey,
+      cacheDiagnostics,
       promptText,
       messages,
       tools,
@@ -832,7 +857,9 @@ async function completeWithCache(input: {
       }
       const schemaValid = schemaValidityForResponse(adapter, request, tools, kind, message);
       const cacheable = Boolean(opts.cache && isCacheableProviderResponse(schemaValid, message, tools));
-      const cacheStatus = cacheable ? "write" : opts.cache ? "miss" : "disabled";
+      releaseReservation();
+      reportUsage(opts, request.stage, message);
+      const cacheStatus = await modelCallCacheWriteStatus(opts, cacheKey, request.stage, message, cacheable);
       const modelCallMeta = definedRecord({
         callId,
         kind,
@@ -861,11 +888,6 @@ async function completeWithCache(input: {
         status: callStatus,
         errorCode: callErrorCode
       }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodeninjaErrorCode });
-      releaseReservation();
-      reportUsage(opts, request.stage, message);
-      if (opts.cache && cacheable) {
-        await opts.cache.put(cacheKey, cacheEntry(request.stage, message));
-      }
       return { source: "provider", message, callId };
     } catch (cause) {
       if (isRecordedProviderFailure(cause)) {
@@ -907,6 +929,42 @@ function buildSubmitTool<T>(request: LlmStructuredRequest<T>): ToolDefinition {
     parameters: request.schema,
     execute: async () => ({ text: "submit tool is handled by codeninja" })
   };
+}
+
+async function modelCallCacheWriteStatus(
+  opts: CreateRunnerOptions,
+  cacheKey: string,
+  stage: ReviewStage,
+  message: PiAssistantMessage,
+  cacheable: boolean
+): Promise<ModelCallCacheStatus> {
+  if (!opts.cache) {
+    return "disabled";
+  }
+  if (!cacheable) {
+    return "miss";
+  }
+  try {
+    const result = await opts.cache.put(cacheKey, cacheEntry(stage, message));
+    return result.status;
+  } catch (cause) {
+    const error = cause instanceof Error ? stripCredentials(cause.message) : stripCredentials(String(cause));
+    opts.logger.warn({
+      runId: opts.telemetry.runId,
+      stage,
+      event: "model_call_cache_write_failed",
+      message: "failed to write model-call cache entry",
+      data: { error }
+    });
+    opts.telemetry.event({
+      stage,
+      level: "warn",
+      message: "model_call_cache_write_failed",
+      cacheStatus: "miss",
+      data: { error }
+    });
+    return "miss";
+  }
 }
 
 function canonicalModelRequest(input: {
@@ -1704,6 +1762,54 @@ function queueSchemaRepair(input: {
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
 
+function modelCallCacheDiagnostics(
+  canonicalRequest: Record<string, unknown>,
+  cacheKey: string,
+  promptChars: number
+): ModelCallCacheDiagnostics {
+  const tools = Array.isArray(canonicalRequest.tools) ? canonicalRequest.tools : [];
+  const runFingerprint = typeof canonicalRequest.runFingerprint === "string" ? canonicalRequest.runFingerprint : undefined;
+  return {
+    keyPrefix: cacheKey.slice(0, 12),
+    requestHash: cacheKey,
+    ...(runFingerprint !== undefined ? { runFingerprintHash: sha256Hex(runFingerprint) } : {}),
+    runnerMessageVersion: String(canonicalRequest.runnerMessageVersion ?? ""),
+    stage: canonicalRequest.stage as ReviewStage,
+    kind: canonicalRequest.kind as ModelCallKind,
+    templateVersion: String(canonicalRequest.templateVersion ?? ""),
+    schemaName: String(canonicalRequest.schemaName ?? ""),
+    schemaVersion: Number(canonicalRequest.schemaVersion ?? 0),
+    toolChoiceHash: sha256Hex(stableJson(canonicalRequest.toolChoice)),
+    toolBudgetHash: sha256Hex(stableJson(canonicalRequest.toolBudget)),
+    messageHash: sha256Hex(stableJson(canonicalRequest.messages)),
+    messageCount: Array.isArray(canonicalRequest.messages) ? canonicalRequest.messages.length : 0,
+    toolSpecHash: sha256Hex(stableJson(tools)),
+    toolCount: tools.length,
+    promptChars
+  };
+}
+
+function emitModelCallCacheDiagnostic(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  missReason: ModelCallCacheMissReason,
+  diagnostics: ModelCallCacheDiagnostics
+): void {
+  opts.telemetry.event(definedRecord({
+    stage: request.stage,
+    level: "debug",
+    message: "model_call_cache_key_diagnostic",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      ...diagnostics,
+      missReason,
+      role: roleForStage(request.stage),
+      candidateId: request.telemetryContext?.candidateId
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
 function writeModelCallRequestDebug(
   opts: CreateRunnerOptions,
   request: LlmStructuredRequest<unknown>,
@@ -1716,6 +1822,7 @@ function writeModelCallRequestDebug(
     attempt: number;
     cacheStatus: ModelCallCacheStatus;
     cacheKey: string;
+    cacheDiagnostics: ModelCallCacheDiagnostics;
     promptText: string;
     messages: ConversationMessage[];
     tools: ToolDefinition[];
@@ -1744,7 +1851,8 @@ function writeModelCallRequestDebug(
     cache: definedRecord({
       enabled: Boolean(opts.cache),
       status: meta.cacheStatus,
-      key: opts.cache ? meta.cacheKey : undefined
+      key: opts.cache ? meta.cacheKey : undefined,
+      diagnostics: opts.cache ? meta.cacheDiagnostics : undefined
     }),
     request: {
       runnerMessageVersion: RUNNER_MESSAGE_VERSION,

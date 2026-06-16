@@ -46,7 +46,7 @@ import { CodeninjaError, errorExitCode, isCodeninjaError } from "../util/errors.
 import { buildPlannerDossier, runPlanner } from "./planner.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
 import { runLensPackets } from "./lens-runner.js";
-import { buildSystemReviewTasks, runTargetedSystemReviews, suppressResolvedFollowUpHints } from "./system-reviewer.js";
+import { runTargetedSystemReviews, suppressResolvedFollowUpHints } from "./system-reviewer.js";
 import { promoteUncertaintiesForVerification } from "./uncertainty-promotion.js";
 import { verifyFindings } from "./verifier.js";
 import { dedupeRankAndComposeReview } from "./composer.js";
@@ -107,10 +107,32 @@ export async function runReview(
 
   try {
     await registerPullRequestRefCleanup(input, repoRoot, run);
+    run.telemetry.event({
+      stage: 1,
+      level: "info",
+      message: "stage_started",
+      data: { name: "input_resolution" }
+    });
     const resolved = await resolveInput(input, config, run.telemetry, repoRoot, overrides);
     throwIfHardAborted(run);
-    const diff = parseDiff(resolved.rawDiff);
     await run.telemetry.writeArtifact("resolved-input.json", summarizeResolvedInput(resolved));
+    run.telemetry.event({
+      stage: 1,
+      level: "info",
+      message: "stage_completed",
+      data: {
+        mode: resolved.mode,
+        commits: resolved.commits.length,
+        prNumber: resolved.pr?.number ?? null
+      }
+    });
+    run.telemetry.event({
+      stage: 2,
+      level: "info",
+      message: "stage_started",
+      data: { name: "diff_parsing_filtering" }
+    });
+    const diff = parseDiff(resolved.rawDiff);
     await run.telemetry.writeArtifact("diff.json", diff);
     run.telemetry.event({
       stage: 2,
@@ -125,6 +147,16 @@ export async function runReview(
     const { kept, decisions } = await filterDiffFiles(resolved, diff, config, run.telemetry);
     throwIfHardAborted(run);
     await run.telemetry.writeArtifact("file-filter-decisions.json", decisions);
+    run.telemetry.event({
+      stage: 2,
+      level: "info",
+      message: "stage_completed",
+      data: {
+        files: diff.files.length,
+        keptFiles: kept.length,
+        skippedFiles: decisions.filter((decision) => decision.action === "skip").length
+      }
+    });
     overrides.onInventory?.({ filesChanged: diff.files.length, keptFiles: kept.length });
     if (isZeroWork(diff.files, kept)) {
       await validateExplicitCliLensesForZeroWork(config, repoRoot, run, overrides);
@@ -135,9 +167,27 @@ export async function runReview(
       return zeroWork;
     }
 
+    run.telemetry.event({
+      stage: 3,
+      level: "info",
+      message: "stage_started",
+      data: { name: "file_classification", keptFiles: kept.length }
+    });
     const fileFacts = await classifyChangedFiles(resolved, kept, decisions, config, run.telemetry);
     throwIfHardAborted(run);
     await run.telemetry.writeArtifact("file-facts.json", fileFacts);
+    run.telemetry.event({
+      stage: 3,
+      level: "info",
+      message: "stage_completed",
+      data: {
+        files: fileFacts.length,
+        keptFiles: kept.length,
+        highPriorityFiles: fileFacts
+          .filter((fact) => fact.reviewPriority === "critical" || fact.reviewPriority === "high")
+          .length
+      }
+    });
     const repoIndex = await buildRepositoryIndex(resolved, kept, fileFacts, config, run.telemetry);
     throwIfHardAborted(run);
     const services = await createPipelineServices(config, repoRoot, resolved, run, overrides);
@@ -186,16 +236,14 @@ export async function runReview(
       diff
     });
     throwIfHardAborted(run);
-    const systemReview = buildSystemReviewTasks(packetResults, packets).length > 0
-      ? await runTargetedSystemReviews({ packetResults, packets }, repoIndex.tools, config, run.telemetry, {
-          runner: services.runner,
-          promptBuilder: services.promptBuilder,
-          lensRegistry: services.lensRegistry,
-          signal: run.abort.signal,
-          checkpoint: (stage) => run.budget.checkpoint(stage),
-          diff
-        })
-      : { tasks: [], packetResults: [], resolvedHints: [] };
+    const systemReview = await runTargetedSystemReviews({ packetResults, packets }, repoIndex.tools, config, run.telemetry, {
+      runner: services.runner,
+      promptBuilder: services.promptBuilder,
+      lensRegistry: services.lensRegistry,
+      signal: run.abort.signal,
+      checkpoint: (stage) => run.budget.checkpoint(stage),
+      diff
+    });
     throwIfHardAborted(run);
     const allPacketResults = [...packetResults, ...systemReview.packetResults];
     const packetResultsForFinal = suppressResolvedFollowUpHints(allPacketResults, systemReview.resolvedHints);
@@ -668,7 +716,7 @@ async function createReviewCache(
   });
 }
 
-function reviewCacheFingerprint(
+export function reviewCacheFingerprint(
   config: CodeninjaConfig,
   repoRoot: string,
   resolved: ResolvedReviewInput,

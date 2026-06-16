@@ -38,7 +38,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 32 | COMPLETE | Issue 32: Adaptive Stage 6 Symbol Context |
 | 33 | COMPLETE | Issue 33: Stage 7 Compact Finalize for No-Finding Packet Reviews |
 | 34 | COMPLETE | Issue 34: Run-Level Tool Result Memoization |
-| 35 | PENDING | Issue 35: Telemetry and Cache Diagnostics |
+| 35 | COMPLETE | Issue 35: Telemetry and Cache Diagnostics |
 | 36 | PENDING | Issue 36: Human-Attention and Uncertainty Hygiene |
 | 37 | PENDING | Issue 37: Verifier Forced-Submit Schema Repair Hardening |
 | 38 | BACKLOG | Issue 38: Eval and Runtime Concurrency Tuning |

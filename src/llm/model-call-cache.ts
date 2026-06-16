@@ -60,7 +60,7 @@ export async function createModelCallCache(opts: CreateModelCallCacheOptions): P
       const filePath = cacheEntryPath(dir, key);
       if (!existsSync(filePath)) {
         opts.telemetry.event({ stage: stage ?? 0, level: "debug", message: "model_call_cache_miss", cacheStatus: "miss" });
-        return { status: "miss" };
+        return { status: "miss", reason: "not_found" };
       }
       try {
         const parsed = JSON.parse(readFileSync(filePath, "utf8")) as unknown;
@@ -72,7 +72,7 @@ export async function createModelCallCache(opts: CreateModelCallCacheOptions): P
             message: "model_call_cache_schema_miss",
             cacheStatus: "miss"
           });
-          return { status: "miss" };
+          return { status: "miss", reason: "schema_mismatch" };
         }
         if (!isStoredProviderResponse(parsed)) {
           unlinkBestEffort(filePath);
@@ -82,14 +82,14 @@ export async function createModelCallCache(opts: CreateModelCallCacheOptions): P
             message: "model_call_cache_invalid_miss",
             cacheStatus: "miss"
           });
-          return { status: "miss" };
+          return { status: "miss", reason: "invalid_entry" };
         }
         opts.telemetry.event({ stage: parsed.stage, level: "debug", message: "model_call_cache_hit", cacheStatus: "hit" });
         return { status: "hit", response: parsed };
       } catch {
         unlinkBestEffort(filePath);
         opts.telemetry.event({ stage: stage ?? 0, level: "debug", message: "model_call_cache_unreadable", cacheStatus: "miss" });
-        return { status: "miss" };
+        return { status: "miss", reason: "unreadable" };
       }
     },
     put: async (key, entry) => {
@@ -100,15 +100,25 @@ export async function createModelCallCache(opts: CreateModelCallCacheOptions): P
         writeFileSync(tmpPath, `${JSON.stringify(stripCredentials(entry), null, 2)}\n`, { mode: 0o600 });
         renameSync(tmpPath, filePath);
         opts.telemetry.event({ stage: entry.stage, level: "debug", message: "model_call_cache_write", cacheStatus: "write" });
+        return { status: "write" };
       } catch (cause) {
         unlinkBestEffort(tmpPath);
+        const error = cause instanceof Error ? stripCredentials(cause.message) : stripCredentials(String(cause));
         opts.logger.warn({
           runId: opts.telemetry.runId,
           stage: entry.stage,
           event: "model_call_cache_write_failed",
           message: "failed to write model-call cache entry",
-          data: { error: cause instanceof Error ? cause.message : String(cause) }
+          data: { error }
         });
+        opts.telemetry.event({
+          stage: entry.stage,
+          level: "warn",
+          message: "model_call_cache_write_failed",
+          cacheStatus: "miss",
+          data: { error }
+        });
+        return { status: "miss", reason: "write_failed" };
       }
     }
   };

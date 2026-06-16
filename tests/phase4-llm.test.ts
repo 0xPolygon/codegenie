@@ -562,8 +562,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const telemetry = fakeTelemetry();
     const usage: LlmCallUsage[] = [];
     const cache = {
-      get: vi.fn(async (_key: string) => ({ status: "miss" as const })),
-      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+      get: vi.fn(async (_key: string) => ({ status: "miss" as const, reason: "not_found" as const })),
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => ({ status: "write" as const }))
     };
     const response = assistant([validSubmitReviewCall("submit-cache-usage")]);
     response.usage = {
@@ -1118,8 +1118,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
   it("records schema-invalid submits and does not cache them before repair", async () => {
     const telemetry = fakeTelemetry();
     const cache = {
-      get: vi.fn(async (_key: string) => ({ status: "miss" as const })),
-      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+      get: vi.fn(async (_key: string) => ({ status: "miss" as const, reason: "not_found" as const })),
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => ({ status: "write" as const }))
     };
     const adapter = scriptedAdapter([
       assistant([
@@ -1161,8 +1161,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
   it("requires planner responses to submit exactly one plan and repairs with replacement context", async () => {
     const telemetry = fakeTelemetry();
     const cache = {
-      get: vi.fn(async (_key: string) => ({ status: "miss" as const })),
-      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+      get: vi.fn(async (_key: string) => ({ status: "miss" as const, reason: "not_found" as const })),
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => ({ status: "write" as const }))
     };
     const adapter = scriptedAdapter([
       assistant([validSubmitPlanCall("submit-plan-a"), validSubmitPlanCall("submit-plan-b")]),
@@ -1330,8 +1330,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
   it("does not cache plain-text non-submissions", async () => {
     const cache = {
-      get: vi.fn(async (_key: string) => ({ status: "miss" as const })),
-      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+      get: vi.fn(async (_key: string) => ({ status: "miss" as const, reason: "not_found" as const })),
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => ({ status: "write" as const }))
     };
     const adapter = scriptedAdapter([
       assistant([{ type: "text", text: "plain text instead of submit" }]),
@@ -1369,9 +1369,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const cache = {
       get: vi.fn(async (key: string) => {
         cacheKeys.push(key);
-        return { status: "miss" as const };
+        return { status: "miss" as const, reason: "not_found" as const };
       }),
-      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => ({ status: "write" as const }))
     };
     const adapter = scriptedAdapter([
       assistant([validSubmitReviewCall("submit-budget-a")]),
@@ -1406,10 +1406,11 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const cache = {
       get: vi.fn(async (key: string) => {
         const entry = entries.get(key);
-        return entry ? { status: "hit" as const, response: entry } : { status: "miss" as const };
+        return entry ? { status: "hit" as const, response: entry } : { status: "miss" as const, reason: "not_found" as const };
       }),
       put: vi.fn(async (key: string, entry: StoredProviderResponse) => {
         entries.set(key, entry);
+        return { status: "write" as const };
       })
     };
     const adapter = scriptedAdapter([assistant([validSubmitReviewCall("submit-canonical-cache")])]);
@@ -1430,10 +1431,60 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["write", "hit"]);
     expect(telemetry.modelCalls[0]?.promptHash).toBe(telemetry.modelCalls[1]?.promptHash);
     expect(telemetry.modelCalls[0]?.promptChars).toBe(telemetry.modelCalls[1]?.promptChars);
+    expect(telemetry.events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: 7,
+          message: "model_call_cache_key_diagnostic",
+          data: expect.objectContaining({
+            missReason: "not_found",
+            keyPrefix: expect.any(String),
+            requestHash: expect.any(String),
+            templateVersion: "test-template",
+            toolBudgetHash: expect.any(String),
+            toolSpecHash: expect.any(String),
+            messageHash: expect.any(String),
+            promptChars: expect.any(Number)
+          })
+        })
+      ])
+    );
     expect(debugRecord(telemetry, "mc-000002.request")).toMatchObject({
       artifactKind: "llm_call_request",
       cache: expect.objectContaining({ enabled: true, status: "hit" })
     });
+  });
+
+  it("records cacheable provider responses as misses when cache persistence fails", async () => {
+    const telemetry = fakeTelemetry();
+    const cache = {
+      get: vi.fn(async (_key: string) => ({ status: "miss" as const, reason: "not_found" as const })),
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => ({ status: "miss" as const, reason: "write_failed" as const }))
+    };
+    const adapter = scriptedAdapter([assistant([validSubmitReviewCall("submit-cache-write-failed")])]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      cache,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured(submitReviewRequest("packet-cache-write-failed"))).resolves.toMatchObject({
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
+    });
+
+    expect(cache.put).toHaveBeenCalledTimes(1);
+    expect(telemetry.modelCalls).toEqual([
+      expect.objectContaining({
+        status: "ok",
+        cacheStatus: "miss"
+      })
+    ]);
   });
 
   it("replays cache hits without provider budget usage or checkpoint calls", async () => {
@@ -1441,7 +1492,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const cache = {
       runFingerprint: "run-hit",
       get: vi.fn(async (_key: string) => ({ status: "hit" as const, response: cacheEntry(7) })),
-      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => ({ status: "write" as const }))
     };
     const adapter: PiAiAdapter = {
       resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
@@ -1496,9 +1547,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       runFingerprint,
       get: vi.fn(async (key: string) => {
         keys.push(key);
-        return { status: "miss" as const };
+        return { status: "miss" as const, reason: "not_found" as const };
       }),
-      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => undefined)
+      put: vi.fn(async (_key: string, _entry: StoredProviderResponse) => ({ status: "write" as const }))
     });
     const adapter = scriptedAdapter([
       assistant([validSubmitReviewCall("submit-run-a")]),
@@ -3001,7 +3052,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(hit).toMatchObject({ status: "hit" });
     expect(JSON.stringify(hit)).not.toContain("super-secret-cache-token");
     expect(JSON.stringify(hit)).toContain("[redacted:secret]");
-    await expect(cache.get(keyB, 7)).resolves.toEqual({ status: "miss" });
+    await expect(cache.get(keyB, 7)).resolves.toEqual({ status: "miss", reason: "not_found" });
     expect(telemetry.events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -3013,7 +3064,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     );
 
     await cache.put("old-schema", { ...entry, cacheSchemaVersion: 0 });
-    await expect(cache.get("old-schema", 7)).resolves.toEqual({ status: "miss" });
+    await expect(cache.get("old-schema", 7)).resolves.toEqual({ status: "miss", reason: "schema_mismatch" });
     const malformedKey = "malformed-current-schema";
     const malformedPath = modelCallCacheEntryPath(path.join(repoRoot, ".codeninja", "cache"), malformedKey);
     mkdirSync(path.dirname(malformedPath), { recursive: true });
@@ -3028,7 +3079,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         usage: {}
       })}\n`
     );
-    await expect(cache.get(malformedKey, 7)).resolves.toEqual({ status: "miss" });
+    await expect(cache.get(malformedKey, 7)).resolves.toEqual({ status: "miss", reason: "invalid_entry" });
     expect(existsSync(malformedPath)).toBe(false);
     const malformedContentKey = "malformed-current-schema-content";
     const malformedContentPath = modelCallCacheEntryPath(path.join(repoRoot, ".codeninja", "cache"), malformedContentKey);
@@ -3043,7 +3094,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         }
       })}\n`
     );
-    await expect(cache.get(malformedContentKey, 7)).resolves.toEqual({ status: "miss" });
+    await expect(cache.get(malformedContentKey, 7)).resolves.toEqual({ status: "miss", reason: "invalid_entry" });
     expect(existsSync(malformedContentPath)).toBe(false);
     expect(telemetry.events).toEqual(
       expect.arrayContaining([

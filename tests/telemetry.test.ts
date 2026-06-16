@@ -298,8 +298,8 @@ describe("run telemetry", () => {
       totalTokens: 120,
       totalCostUSD: 0.01,
       unknownCostCalls: 1,
-      cache: { hit: 1, miss: 1, disabled: 0, write: 1 },
-      localModelCallCache: { hit: 1, miss: 1, disabled: 0, write: 1 },
+      cache: { hit: 1, miss: 2, disabled: 0, write: 1 },
+      localModelCallCache: { hit: 1, miss: 2, disabled: 0, write: 1 },
       providerPromptCache: { readTokens: 0, writeTokens: 0, readCostUSD: 0, writeCostUSD: 0 },
       retryAttempts: 1,
       repairCalls: 1,
@@ -373,8 +373,8 @@ describe("run telemetry", () => {
       totalTokens: 120,
       costUSD: 0.01,
       unknownCostCalls: 1,
-      cache: { hit: 1, miss: 1, disabled: 0, write: 1 },
-      localModelCallCache: { hit: 1, miss: 1, disabled: 0, write: 1 },
+      cache: { hit: 1, miss: 2, disabled: 0, write: 1 },
+      localModelCallCache: { hit: 1, miss: 2, disabled: 0, write: 1 },
       providerPromptCache: { readTokens: 0, writeTokens: 0, readCostUSD: 0, writeCostUSD: 0 },
       retryAttempts: 1,
       repairCalls: 1,
@@ -387,8 +387,8 @@ describe("run telemetry", () => {
       inputTokens: 100,
       outputTokens: 20,
       totalTokens: 120,
-      cache: { hit: 1, miss: 1, disabled: 0, write: 1 },
-      localModelCallCache: { hit: 1, miss: 1, disabled: 0, write: 1 },
+      cache: { hit: 1, miss: 2, disabled: 0, write: 1 },
+      localModelCallCache: { hit: 1, miss: 2, disabled: 0, write: 1 },
       providerPromptCache: { readTokens: 0, writeTokens: 0, readCostUSD: 0, writeCostUSD: 0 },
       retryAttempts: 1,
       repairCalls: 1,
@@ -663,7 +663,7 @@ describe("run telemetry", () => {
     });
   });
 
-  it("folds successful cache write events into model-call cache summaries", async () => {
+  it("counts miss-then-write model-call records once even when write events are emitted", async () => {
     const repoRoot = tempDir();
     const run = createRunTelemetry({
       telemetryConfig: {
@@ -690,7 +690,7 @@ describe("run telemetry", () => {
       outputTokens: 5,
       totalTokens: 15,
       durationMs: 10,
-      cacheStatus: "miss",
+      cacheStatus: "write",
       stopReason: "submit",
       status: "ok"
     });

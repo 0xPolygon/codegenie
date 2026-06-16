@@ -530,7 +530,6 @@ class RunTelemetryImpl {
 
     const capped = capTelemetryEventData(record);
     this.updateTelemetrySummary(capped);
-    this.updateModelSummaryFromCacheEvent(capped);
     this.updatePipelineSummaryFromEvent(capped);
     this.updateContextPressureFromEvent(capped);
     this.mirrorTelemetryEventToRunLog(capped);
@@ -703,7 +702,7 @@ class RunTelemetryImpl {
       this.modelSummary.outputTokens += record.outputTokens ?? 0;
       this.modelSummary.totalTokens += record.totalTokens ?? 0;
     }
-    this.modelSummary.cache[record.cacheStatus] += 1;
+    updateModelCacheCounts(this.modelSummary.cache, record.cacheStatus);
     this.modelSummary.retryAttempts += providerCallCount > 0 && record.attempt > 1 ? 1 : 0;
     this.modelSummary.repairCalls += record.kind === "repair" ? 1 : 0;
     this.modelSummary.schemaInvalidCalls += record.status === "schema_invalid" ? 1 : 0;
@@ -736,7 +735,7 @@ class RunTelemetryImpl {
       bucket.outputTokens += record.outputTokens ?? 0;
       bucket.totalTokens += record.totalTokens ?? 0;
     }
-    bucket.cache[record.cacheStatus] += 1;
+    updateModelCacheCounts(bucket.cache, record.cacheStatus);
     bucket.retryAttempts += providerCallCount > 0 && record.attempt > 1 ? 1 : 0;
     bucket.repairCalls += record.kind === "repair" ? 1 : 0;
     bucket.schemaInvalidCalls += record.status === "schema_invalid" ? 1 : 0;
@@ -830,18 +829,6 @@ class RunTelemetryImpl {
         .map(([reason, count]) => ({ reason, count }))
         .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason))
     };
-  }
-
-  private updateModelSummaryFromCacheEvent(event: TelemetryEvent): void {
-    if (event.cacheStatus !== "write" || event.message !== "model_call_cache_write") {
-      return;
-    }
-    this.modelSummary.cache.write += 1;
-    const stage = String(event.stage);
-    const bucket =
-      this.modelSummary.byStage[stage] ??
-      (this.modelSummary.byStage[stage] = emptyModelStageSummary());
-    bucket.cache.write += 1;
   }
 
   private finalToolSummary(): unknown {
@@ -1068,6 +1055,15 @@ function copyCacheCounts(cache: CacheCounts): CacheCounts {
     disabled: cache.disabled,
     write: cache.write
   };
+}
+
+function updateModelCacheCounts(cache: CacheCounts, status: keyof CacheCounts): void {
+  if (status === "write") {
+    cache.miss += 1;
+    cache.write += 1;
+    return;
+  }
+  cache[status] += 1;
 }
 
 function providerPromptCacheSummary(source: ProviderPromptCacheSource): ProviderPromptCacheSummary {
@@ -1466,7 +1462,7 @@ function mergePipelineCandidates(target: PipelineTelemetrySummary["candidates"],
   if (!source) {
     return;
   }
-  setNumber(target, "generated", source.generated);
+  addNumber(target, "generated", source.generated);
   setNumber(target, "gateRejected", source.gateRejected);
   setNumber(target, "verificationScheduled", source.verificationScheduled);
   setNumber(target, "verificationBudgetLimited", source.verificationBudgetLimited);

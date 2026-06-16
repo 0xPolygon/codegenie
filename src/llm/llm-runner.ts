@@ -223,12 +223,20 @@ export type StoredProviderResponse = {
   };
 };
 
-export type CacheLookup = { status: "hit"; response: StoredProviderResponse } | { status: "miss" };
+export type ModelCallCacheMissReason = "not_found" | "schema_mismatch" | "invalid_entry" | "unreadable";
+
+export type CacheLookup =
+  | { status: "hit"; response: StoredProviderResponse }
+  | { status: "miss"; reason: ModelCallCacheMissReason };
+
+export type ModelCallCacheWriteResult =
+  | { status: "write" }
+  | { status: "miss"; reason: "write_failed" };
 
 export interface ModelCallCache {
   readonly runFingerprint?: string;
   get(key: string, stage?: ReviewStage): Promise<CacheLookup>;
-  put(key: string, entry: StoredProviderResponse): Promise<void>;
+  put(key: string, entry: StoredProviderResponse): Promise<ModelCallCacheWriteResult>;
 }
 
 export function roleForStage(stage: ReviewStage): LlmRole {

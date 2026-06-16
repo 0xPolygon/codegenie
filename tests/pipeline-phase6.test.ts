@@ -5,11 +5,48 @@ import { validateToolCall } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import type { PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
-import { runReview } from "../src/pipeline/review-runner.js";
-import type { CodeninjaConfig, PlannerDossier, ReviewPacket } from "../src/types.js";
+import { reviewCacheFingerprint, runReview } from "../src/pipeline/review-runner.js";
+import type { CodeninjaConfig, PlannerDossier, ResolvedReviewInput, ReviewPacket } from "../src/types.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("phase 6 live review path", () => {
+  it("keeps review cache fingerprints stable across telemetry output directories", () => {
+    const resolved: ResolvedReviewInput = {
+      mode: "commit_range",
+      repoRoot: "/repo",
+      startCommit: "base",
+      endCommit: "head",
+      mergeBase: "base",
+      commits: [{ sha: "head", title: "change", body: "" }],
+      rawDiff: "diff --git a/app.ts b/app.ts\n"
+    };
+    const baseConfig = {
+      ...defaultConfig,
+      telemetry: { ...defaultConfig.telemetry, runDir: ".codeninja/runs-a", debugTrace: false },
+      eval: { ...defaultConfig.eval, logsDir: "logs-a" },
+      cache: { ...defaultConfig.cache, dir: ".codeninja/cache-a" }
+    };
+    const changedOutputDirs = {
+      ...baseConfig,
+      telemetry: { ...baseConfig.telemetry, runDir: ".codeninja/runs-b", debugTrace: true },
+      eval: { ...baseConfig.eval, logsDir: "logs-b" },
+      cache: { ...baseConfig.cache, dir: ".codeninja/cache-b" }
+    };
+
+    expect(reviewCacheFingerprint(baseConfig, "/repo", resolved, "registry")).toBe(
+      reviewCacheFingerprint(changedOutputDirs, "/repo", resolved, "registry")
+    );
+    expect(
+      reviewCacheFingerprint(baseConfig, "/repo", { ...resolved, rawDiff: `${resolved.rawDiff}+changed\n` }, "registry")
+    ).not.toBe(reviewCacheFingerprint(baseConfig, "/repo", resolved, "registry"));
+    expect(
+      reviewCacheFingerprint({
+        ...baseConfig,
+        llm: { ...baseConfig.llm, model: "different-model" }
+      }, "/repo", resolved, "registry")
+    ).not.toBe(reviewCacheFingerprint(baseConfig, "/repo", resolved, "registry"));
+  });
+
   it("uses the Pi runner end to end for branch reviews with repair, retry, and covered follow-up suppression", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export function divide(total: number, count: number) {\n  return total / Math.max(1, count);\n}\n");
@@ -68,11 +105,21 @@ describe("phase 6 live review path", () => {
         expect.objectContaining({ stage: 10, role: "composer", status: "ok" })
       ]));
 
-      const events = readJsonl<{ stage: number; message: string }>(path.join(runArtifactDir, "events.jsonl"));
+      const events = readJsonl<{ stage: number; message: string; data?: Record<string, unknown> }>(path.join(runArtifactDir, "events.jsonl"));
       expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ stage: 1, message: "stage_started" }),
+        expect.objectContaining({ stage: 1, message: "stage_completed" }),
+        expect.objectContaining({ stage: 2, message: "stage_started" }),
+        expect.objectContaining({ stage: 2, message: "stage_completed" }),
+        expect.objectContaining({ stage: 3, message: "stage_started" }),
+        expect.objectContaining({ stage: 3, message: "stage_completed" }),
         expect.objectContaining({ stage: 7, message: "follow_up_hint" })
       ]));
-      expect(events.some((event) => event.stage === 8)).toBe(false);
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ stage: 8, message: "stage_started" }),
+        expect.objectContaining({ stage: 8, message: "system_review_skipped" }),
+        expect.objectContaining({ stage: 8, message: "stage_completed" })
+      ]));
       expect(deferredStage8Artifacts(runArtifactDir)).toEqual([]);
       expect(existsSync(path.join(runArtifactDir, "final-review.md"))).toBe(true);
       const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
@@ -84,11 +131,16 @@ describe("phase 6 live review path", () => {
       };
       expect(runJson.totals).toMatchObject({ packets: 1, candidates: 1, verified: 1, finalFindings: 1 });
       const telemetryJson = JSON.parse(readFileSync(path.join(runArtifactDir, "telemetry.json"), "utf8")) as {
+        stages: Record<string, { startedAt?: string; completedAt?: string; runtimeMs: number }>;
         packets: { generated: number; reviewed: number };
         candidates: { generated: number; verificationScheduled: number };
         verdicts: { accept: number };
         finalSelection: { finalFindings: number };
       };
+      expect(telemetryJson.stages["1"]).toMatchObject({ startedAt: expect.any(String), completedAt: expect.any(String) });
+      expect(telemetryJson.stages["2"]).toMatchObject({ startedAt: expect.any(String), completedAt: expect.any(String) });
+      expect(telemetryJson.stages["3"]).toMatchObject({ startedAt: expect.any(String), completedAt: expect.any(String) });
+      expect(telemetryJson.stages["8"]).toMatchObject({ startedAt: expect.any(String), completedAt: expect.any(String) });
       expect(telemetryJson.packets).toMatchObject({ generated: 1, reviewed: 1 });
       expect(telemetryJson.candidates).toMatchObject({ generated: 1, verificationScheduled: 1 });
       expect(telemetryJson.verdicts).toMatchObject({ accept: 1 });
