@@ -1445,7 +1445,11 @@ describe("phase 5 pipeline regressions", () => {
     await expect(budgetFor("deep", "light")).resolves.toEqual({
       maxToolCalls: 7,
       maxInvestigationRounds: 2,
-      maxResultChars: 16_000
+      maxResultChars: 16_000,
+      sourceExtension: {
+        maxToolCalls: 1,
+        maxResultChars: 4_000
+      }
     });
     await expect(budgetFor("light", "light")).resolves.toEqual({
       maxToolCalls: 0,
@@ -3396,7 +3400,11 @@ describe("phase 5 pipeline regressions", () => {
       maxInvestigationRounds: 3,
       maxResultChars: 16_000,
       maxSingleToolResultChars: 6_000,
-      reservedSourceResultChars: 4_000
+      reservedSourceResultChars: 4_000,
+      sourceExtension: {
+        maxToolCalls: 2,
+        maxResultChars: 8_000
+      }
     });
   });
 

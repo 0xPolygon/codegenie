@@ -21,7 +21,7 @@ import { createFileAuthStorage } from "../provider/provider-services.js";
 import { getCodeninjaPaths } from "../config/paths.js";
 import { registerSecret, stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
-import type { ReviewStage, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
+import type { ReviewStage, ToolBudget, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../provider/provider-services.js";
 import { sha256Hex } from "../util/hashing.js";
 import { CodeninjaError, type CodeninjaErrorCode } from "../util/errors.js";
@@ -68,6 +68,24 @@ type ToolRejectionReason =
   | "tool_call_budget_exhausted"
   | "investigation_round_budget_exhausted"
   | "unknown_tool";
+
+type ToolBudgetExtensionState = {
+  toolCallsUsed: number;
+  resultCharsUsed: number;
+};
+
+type ToolBudgetExtensionDecision =
+  | {
+      status: "granted";
+      triggerReason: Exclude<ToolRejectionReason, "unknown_tool">;
+      resultCharLimit: number;
+      remainingResultChars: number;
+    }
+  | {
+      status: "denied";
+      triggerReason: Exclude<ToolRejectionReason, "unknown_tool">;
+      denyReason: string;
+    };
 
 type ModelCallKind = "initial" | "tool-continuation" | "repair" | "finalize";
 
@@ -141,6 +159,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       let toolCallsUsed = 0;
       let investigationRounds = 0;
       let resultCharsUsed = 0;
+      const sourceExtensionState: ToolBudgetExtensionState = { toolCallsUsed: 0, resultCharsUsed: 0 };
       let schemaRepairUsed = false;
       let finalizeNudgeUsed = false;
       let finalizeSubmitRetryUsed = false;
@@ -261,21 +280,48 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 investigationRounds,
                 resultCharsUsed,
                 budget,
-                toolName: toolCall.name
+                toolName: toolCall.name,
+                extension: sourceExtensionState
               });
-              const remainingResultChars = budgetState.toolResultCharLimit ?? budgetState.remainingResultChars;
+              const baseResultCharLimit = budgetState.toolResultCharLimit ?? budgetState.remainingResultChars;
+              const localBudgetReason = localBudgetRejectionReason({
+                resultCharLimit: baseResultCharLimit,
+                toolCallsUsed,
+                investigationRounds,
+                budget
+              });
+              const extensionDecision = localBudgetReason === undefined
+                ? undefined
+                : decideToolBudgetExtension({
+                    opts,
+                    request,
+                    toolCall,
+                    toolFound: tool !== undefined,
+                    budget,
+                    extension: sourceExtensionState,
+                    triggerReason: localBudgetReason
+                  });
+              if (extensionDecision?.status === "denied" && shouldRecordToolBudgetExtensionDenied(extensionDecision)) {
+                recordToolBudgetExtensionDenied(opts, request, providerResult.callId, toolCall, extensionDecision, budgetState);
+              }
+              const remainingResultChars = extensionDecision?.status === "granted"
+                ? extensionDecision.resultCharLimit
+                : baseResultCharLimit;
               const outcome =
-                remainingResultChars <= 0
-                  ? rejectedToolOutcome(toolCall, "tool_result_budget_exhausted", "tool result character budget exhausted", budgetState)
-                  : toolCallsUsed >= budget.maxToolCalls
-                  ? rejectedToolOutcome(toolCall, "tool_call_budget_exhausted", "tool call budget exhausted", budgetState)
-                  : investigationRounds > budget.maxInvestigationRounds
-                  ? rejectedToolOutcome(toolCall, "investigation_round_budget_exhausted", "investigation round budget exhausted", budgetState)
+                localBudgetReason !== undefined && extensionDecision?.status !== "granted"
+                  ? rejectedToolOutcome(toolCall, localBudgetReason, toolRejectionMessage(localBudgetReason), budgetState)
                   : tool
                     ? await executeToolCall(adapter, repositoryTools, tool, toolCall, taskTimeout.signal, taskTimeout.timedOut)
                     : rejectedToolOutcome(toolCall, "unknown_tool", `unknown tool ${toolCall.name}`, budgetState);
 
               outcome.budgetState ??= budgetState;
+              if (extensionDecision?.status === "granted") {
+                outcome.budgetState = {
+                  ...outcome.budgetState,
+                  toolResultCharLimit: extensionDecision.resultCharLimit,
+                  sourceExtensionActive: true
+                };
+              }
 
               toolCallsUsed += 1;
               let resultText = fitToolResultText(outcome.result.text, remainingResultChars);
@@ -287,6 +333,11 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 };
               }
               resultCharsUsed += resultText.length;
+              if (extensionDecision?.status === "granted") {
+                sourceExtensionState.toolCallsUsed += 1;
+                sourceExtensionState.resultCharsUsed += resultText.length;
+                recordToolBudgetExtensionGranted(opts, request, providerResult.callId, toolCall, extensionDecision, resultText.length);
+              }
               recordToolCall(opts, request, providerResult.callId, toolCall, outcome);
               toolResults.push({
                 role: "toolResult",
@@ -299,7 +350,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             }
             messages.push(...toolResults);
 
-            if (toolCallsUsed >= budget.maxToolCalls || investigationRounds >= budget.maxInvestigationRounds) {
+            if (toolCallsUsed >= effectiveToolCallLimit(budget) || investigationRounds >= budget.maxInvestigationRounds) {
               forceFinalize = true;
               budgetForceFinalize = false;
               messages.push({
@@ -882,6 +933,145 @@ function rejectedToolOutcome(
   };
 }
 
+function localBudgetRejectionReason(input: {
+  resultCharLimit: number;
+  toolCallsUsed: number;
+  investigationRounds: number;
+  budget: {
+    maxToolCalls: number;
+    maxInvestigationRounds: number;
+  };
+}): Exclude<ToolRejectionReason, "unknown_tool"> | undefined {
+  if (input.resultCharLimit <= 0) {
+    return "tool_result_budget_exhausted";
+  }
+  if (input.toolCallsUsed >= input.budget.maxToolCalls) {
+    return "tool_call_budget_exhausted";
+  }
+  if (input.investigationRounds > input.budget.maxInvestigationRounds) {
+    return "investigation_round_budget_exhausted";
+  }
+  return undefined;
+}
+
+function toolRejectionMessage(reason: Exclude<ToolRejectionReason, "unknown_tool">): string {
+  switch (reason) {
+    case "tool_result_budget_exhausted":
+      return "tool result character budget exhausted";
+    case "tool_call_budget_exhausted":
+      return "tool call budget exhausted";
+    case "investigation_round_budget_exhausted":
+      return "investigation round budget exhausted";
+  }
+}
+
+function decideToolBudgetExtension(input: {
+  opts: CreateRunnerOptions;
+  request: LlmStructuredRequest<unknown>;
+  toolCall: PiToolCall;
+  toolFound: boolean;
+  budget: ToolBudget;
+  extension: ToolBudgetExtensionState;
+  triggerReason: Exclude<ToolRejectionReason, "unknown_tool">;
+}): ToolBudgetExtensionDecision {
+  if (input.triggerReason === "investigation_round_budget_exhausted") {
+    return { status: "denied", triggerReason: input.triggerReason, denyReason: "round_budget_exhausted" };
+  }
+  if (!input.toolFound) {
+    return { status: "denied", triggerReason: input.triggerReason, denyReason: "unknown_tool" };
+  }
+  const allowance = input.budget.sourceExtension;
+  if (allowance === undefined || allowance.maxToolCalls <= 0 || allowance.maxResultChars <= 0) {
+    return { status: "denied", triggerReason: input.triggerReason, denyReason: "no_source_extension_budget" };
+  }
+  if (unsafePathLikeArgument(input.toolCall)) {
+    return { status: "denied", triggerReason: input.triggerReason, denyReason: "unsafe_path_arg" };
+  }
+  if (!isExactSourceExtensionTool(input.toolCall)) {
+    return { status: "denied", triggerReason: input.triggerReason, denyReason: "not_exact_source_tool" };
+  }
+  if (input.extension.toolCallsUsed >= allowance.maxToolCalls) {
+    return { status: "denied", triggerReason: input.triggerReason, denyReason: "source_extension_call_budget_exhausted" };
+  }
+  const remainingResultChars = Math.max(0, allowance.maxResultChars - input.extension.resultCharsUsed);
+  if (remainingResultChars <= 0) {
+    return { status: "denied", triggerReason: input.triggerReason, denyReason: "source_extension_result_budget_exhausted" };
+  }
+  if (input.opts.hooks.checkpoint(input.request.stage) !== "ok") {
+    return { status: "denied", triggerReason: input.triggerReason, denyReason: "global_budget_exhausted" };
+  }
+  const resultCharLimit = input.budget.maxSingleToolResultChars === undefined
+    ? remainingResultChars
+    : Math.min(remainingResultChars, input.budget.maxSingleToolResultChars);
+  return {
+    status: "granted",
+    triggerReason: input.triggerReason,
+    resultCharLimit,
+    remainingResultChars
+  };
+}
+
+function shouldRecordToolBudgetExtensionDenied(decision: Extract<ToolBudgetExtensionDecision, { status: "denied" }>): boolean {
+  return decision.denyReason !== "no_source_extension_budget";
+}
+
+function isExactSourceExtensionTool(toolCall: PiToolCall): boolean {
+  const args = toolCall.arguments;
+  switch (toolCall.name) {
+    case "read_range":
+      return safeRepoRelativePath(args.path) && finiteNumber(args.startLine) && finiteNumber(args.endLine);
+    case "read_symbol": {
+      const symbolName = nonEmptyString(args.symbolName);
+      const line = finiteNumber(args.line);
+      return safeRepoRelativePath(args.path) && symbolName !== line;
+    }
+    case "find_definition":
+      return nonEmptyString(args.symbolName) && (args.pathGlob === undefined || safeRepoRelativePath(args.pathGlob));
+    case "read_diff_blocks": {
+      const packetId = nonEmptyString(args.packetId);
+      const path = safeRepoRelativePath(args.path);
+      return packetId !== path;
+    }
+    default:
+      return false;
+  }
+}
+
+function unsafePathLikeArgument(toolCall: PiToolCall): boolean {
+  const args = toolCall.arguments;
+  switch (toolCall.name) {
+    case "read_range":
+    case "read_symbol":
+      return nonEmptyString(args.path) && !safeRepoRelativePath(args.path);
+    case "find_definition":
+      return args.pathGlob !== undefined && nonEmptyString(args.pathGlob) && !safeRepoRelativePath(args.pathGlob);
+    case "read_diff_blocks":
+      return nonEmptyString(args.path) && !safeRepoRelativePath(args.path);
+    default:
+      return false;
+  }
+}
+
+function nonEmptyString(input: unknown): input is string {
+  return typeof input === "string" && input.trim().length > 0;
+}
+
+function safeRepoRelativePath(input: unknown): input is string {
+  if (!nonEmptyString(input) || input.includes("\0") || input.startsWith("/") || input.startsWith("//") || input.includes("\\")) {
+    return false;
+  }
+  const parts = input.split("/").filter((part) => part.length > 0 && part !== ".");
+  return parts.length > 0 && !parts.some((part) => part === "..") && parts[0] !== ".git";
+}
+
+function finiteNumber(input: unknown): input is number {
+  return typeof input === "number" && Number.isFinite(input);
+}
+
+function effectiveToolCallLimit(budget: { maxToolCalls: number; sourceExtension?: { maxToolCalls: number } }): number {
+  return budget.maxToolCalls + Math.max(0, budget.sourceExtension?.maxToolCalls ?? 0);
+}
+
 function toolBudgetState(input: {
   toolCallsUsed: number;
   investigationRounds: number;
@@ -892,8 +1082,13 @@ function toolBudgetState(input: {
     maxResultChars: number;
     maxSingleToolResultChars?: number;
     reservedSourceResultChars?: number;
+    sourceExtension?: {
+      maxToolCalls: number;
+      maxResultChars: number;
+    };
   };
   toolName: string;
+  extension?: ToolBudgetExtensionState;
 }): ToolBudgetState {
   const remainingResultChars = Math.max(0, input.budget.maxResultChars - input.resultCharsUsed);
   const reservedSourceResultChars = input.budget.reservedSourceResultChars ?? 0;
@@ -916,12 +1111,21 @@ function toolBudgetState(input: {
     remainingResultChars,
     ...(input.budget.maxSingleToolResultChars !== undefined ? { maxSingleToolResultChars: input.budget.maxSingleToolResultChars } : {}),
     ...(input.budget.reservedSourceResultChars !== undefined ? { reservedSourceResultChars: input.budget.reservedSourceResultChars } : {}),
-    toolResultCharLimit
+    toolResultCharLimit,
+    ...(input.budget.sourceExtension !== undefined
+      ? {
+          sourceExtensionCallsUsed: input.extension?.toolCallsUsed ?? 0,
+          sourceExtensionMaxCalls: input.budget.sourceExtension.maxToolCalls,
+          sourceExtensionResultCharsUsed: input.extension?.resultCharsUsed ?? 0,
+          sourceExtensionMaxResultChars: input.budget.sourceExtension.maxResultChars,
+          sourceExtensionRemainingResultChars: Math.max(0, input.budget.sourceExtension.maxResultChars - (input.extension?.resultCharsUsed ?? 0))
+        }
+      : {})
   };
 }
 
 function isSourceReadTool(toolName: string): boolean {
-  return toolName === "read_symbol" || toolName === "read_range" || toolName === "find_definition";
+  return toolName === "read_symbol" || toolName === "read_range" || toolName === "find_definition" || toolName === "read_diff_blocks";
 }
 
 function fitToolResultText(text: string, remainingChars: number): string {
@@ -1004,6 +1208,57 @@ function recordToolCall(
       })
     }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
   }
+}
+
+function recordToolBudgetExtensionGranted(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  modelCallId: string,
+  toolCall: PiToolCall,
+  decision: Extract<ToolBudgetExtensionDecision, { status: "granted" }>,
+  resultChars: number
+): void {
+  opts.telemetry.event(definedRecord({
+    stage: request.stage,
+    level: "info",
+    message: "tool_budget_extension_granted",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      tool: toolCall.name,
+      modelCallId,
+      triggerReason: decision.triggerReason,
+      resultChars,
+      resultCharLimit: decision.resultCharLimit,
+      remainingResultCharsBeforeCall: decision.remainingResultChars,
+      candidateId: request.telemetryContext?.candidateId
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
+function recordToolBudgetExtensionDenied(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  modelCallId: string,
+  toolCall: PiToolCall,
+  decision: Extract<ToolBudgetExtensionDecision, { status: "denied" }>,
+  budgetState: ToolBudgetState
+): void {
+  opts.telemetry.event(definedRecord({
+    stage: request.stage,
+    level: "debug",
+    message: "tool_budget_extension_denied",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      tool: toolCall.name,
+      modelCallId,
+      triggerReason: decision.triggerReason,
+      denyReason: decision.denyReason,
+      candidateId: request.telemetryContext?.candidateId,
+      budgetState
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
 
 function writeToolCallDebug(

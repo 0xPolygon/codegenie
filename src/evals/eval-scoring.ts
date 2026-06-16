@@ -524,6 +524,10 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
     metrics.budgetOverruns = budgetSummary.overruns.length;
     if (budgetSummary.contextPressure !== undefined) {
       metrics.toolBudgetRejections = budgetSummary.contextPressure.toolBudgetRejections;
+      if (budgetSummary.contextPressure.toolBudgetExtensions !== undefined) {
+        metrics.toolBudgetExtensions = budgetSummary.contextPressure.toolBudgetExtensions.granted;
+        metrics.toolBudgetExtensionDenials = budgetSummary.contextPressure.toolBudgetExtensions.denied;
+      }
       metrics.degradedHunks = budgetSummary.contextPressure.degradedHunks;
       metrics.unresolvedNotesSuppressed = budgetSummary.contextPressure.unresolvedNotes.omitted;
     }

@@ -182,6 +182,9 @@ function contextPressureSummaryParts(metrics: EvalCaseResult["info"]["score"]["m
   if ((metrics.toolBudgetRejections ?? 0) > 0) {
     parts.push(`${metrics.toolBudgetRejections} tool-budget rejections`);
   }
+  if ((metrics.toolBudgetExtensions ?? 0) > 0 || (metrics.toolBudgetExtensionDenials ?? 0) > 0) {
+    parts.push(`${metrics.toolBudgetExtensions ?? 0} source-budget extensions${(metrics.toolBudgetExtensionDenials ?? 0) > 0 ? `/${metrics.toolBudgetExtensionDenials} denied` : ""}`);
+  }
   if ((metrics.degradedHunks ?? 0) > 0) {
     parts.push(`${metrics.degradedHunks} degraded hunks`);
   }

@@ -1427,7 +1427,15 @@ function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: CodeninjaCo
   return {
     maxToolCalls: Math.max(1, round(base.maxToolCalls * scale)),
     maxInvestigationRounds: Math.max(1, round(base.maxInvestigationRounds * scale)),
-    maxResultChars: Math.max(4000, round(base.maxResultChars * scale))
+    maxResultChars: Math.max(4000, round(base.maxResultChars * scale)),
+    ...(profile === "investigate"
+      ? {
+          sourceExtension: {
+            maxToolCalls: 1,
+            maxResultChars: 4_000
+          }
+        }
+      : {})
   };
 }
 

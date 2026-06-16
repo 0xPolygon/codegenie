@@ -1,6 +1,6 @@
 # Issue 29: Adaptive Local Source Budget Extensions
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 5 review, 2026-06-15
 Planned at: commit `db41ed7`
 
@@ -86,4 +86,3 @@ Run 5 had 23 local tool-call rejections while global budget overruns were zero. 
 - Verifier quality improves by resolving decisive source reads instead of keeping or rejecting with incomplete evidence.
 - Telemetry makes every extension visible.
 - The solution is generic and language-agnostic.
-

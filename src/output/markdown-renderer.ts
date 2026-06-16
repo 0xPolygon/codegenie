@@ -134,6 +134,16 @@ function renderContextPressure(summary: BudgetSummary): string[] {
   if (pressure.toolBudgetRejections > 0) {
     parts.push(`${pressure.toolBudgetRejections} tool-budget rejection${pressure.toolBudgetRejections === 1 ? "" : "s"}`);
   }
+  if (pressure.toolBudgetExtensions !== undefined && (pressure.toolBudgetExtensions.granted > 0 || pressure.toolBudgetExtensions.denied > 0)) {
+    const extensionParts = [`${pressure.toolBudgetExtensions.granted} source-budget extension${pressure.toolBudgetExtensions.granted === 1 ? "" : "s"}`];
+    if (pressure.toolBudgetExtensions.denied > 0) {
+      extensionParts.push(`${pressure.toolBudgetExtensions.denied} denied`);
+    }
+    if (pressure.toolBudgetExtensions.resultChars > 0) {
+      extensionParts.push(`${pressure.toolBudgetExtensions.resultChars} chars`);
+    }
+    parts.push(extensionParts.join(" / "));
+  }
   if (pressure.degradedToolResults > 0) {
     parts.push(`${pressure.degradedToolResults} degraded tool result${pressure.degradedToolResults === 1 ? "" : "s"}`);
   }

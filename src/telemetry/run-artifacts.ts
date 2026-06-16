@@ -316,6 +316,13 @@ class RunTelemetryImpl {
   private contextPressure = {
     toolBudgetRejections: 0,
     toolBudgetRejectionsByStage: {} as Partial<Record<ReviewStage, number>>,
+    toolBudgetExtensions: {
+      granted: 0,
+      denied: 0,
+      resultChars: 0,
+      grantedByStage: {} as Partial<Record<ReviewStage, number>>,
+      deniedByStage: {} as Partial<Record<ReviewStage, number>>
+    },
     degradedToolResults: 0,
     degradedToolResultsByStage: {} as Partial<Record<ReviewStage, number>>,
     rejectionReasons: {} as Record<string, number>
@@ -496,6 +503,7 @@ class RunTelemetryImpl {
     this.updateTelemetrySummary(capped);
     this.updateModelSummaryFromCacheEvent(capped);
     this.updatePipelineSummaryFromEvent(capped);
+    this.updateContextPressureFromEvent(capped);
     this.mirrorTelemetryEventToRunLog(capped);
     if (this.runDirectory) {
       this.appendJsonl("events.jsonl", capped);
@@ -745,13 +753,40 @@ class RunTelemetryImpl {
     }
   }
 
+  private updateContextPressureFromEvent(event: TelemetryEvent): void {
+    if (event.message === "tool_budget_extension_granted") {
+      this.contextPressure.toolBudgetExtensions.granted += 1;
+      if (event.stage !== 0) {
+        addStageCount(this.contextPressure.toolBudgetExtensions.grantedByStage, event.stage, 1);
+      }
+      this.contextPressure.toolBudgetExtensions.resultChars += numberPath(event.data, ["resultChars"]) ?? 0;
+    } else if (event.message === "tool_budget_extension_denied") {
+      this.contextPressure.toolBudgetExtensions.denied += 1;
+      if (event.stage !== 0) {
+        addStageCount(this.contextPressure.toolBudgetExtensions.deniedByStage, event.stage, 1);
+      }
+    }
+  }
+
   private snapshotContextPressure(): Pick<
     ContextPressureSummary,
-    "toolBudgetRejections" | "toolBudgetRejectionsByStage" | "degradedToolResults" | "degradedToolResultsByStage" | "rejectionReasons"
+    | "toolBudgetRejections"
+    | "toolBudgetRejectionsByStage"
+    | "toolBudgetExtensions"
+    | "degradedToolResults"
+    | "degradedToolResultsByStage"
+    | "rejectionReasons"
   > {
     return {
       toolBudgetRejections: this.contextPressure.toolBudgetRejections,
       toolBudgetRejectionsByStage: { ...this.contextPressure.toolBudgetRejectionsByStage },
+      toolBudgetExtensions: {
+        granted: this.contextPressure.toolBudgetExtensions.granted,
+        denied: this.contextPressure.toolBudgetExtensions.denied,
+        resultChars: this.contextPressure.toolBudgetExtensions.resultChars,
+        grantedByStage: { ...this.contextPressure.toolBudgetExtensions.grantedByStage },
+        deniedByStage: { ...this.contextPressure.toolBudgetExtensions.deniedByStage }
+      },
       degradedToolResults: this.contextPressure.degradedToolResults,
       degradedToolResultsByStage: { ...this.contextPressure.degradedToolResultsByStage },
       rejectionReasons: Object.entries(this.contextPressure.rejectionReasons)
@@ -1203,6 +1238,17 @@ function updateToolBucket(bucket: ToolBucket, record: ToolCallRecord): void {
 
 function addStageCount(target: Partial<Record<ReviewStage, number>>, stage: ReviewStage, amount: number): void {
   target[stage] = (target[stage] ?? 0) + amount;
+}
+
+function numberPath(input: unknown, pathParts: string[]): number | undefined {
+  let current = input;
+  for (const part of pathParts) {
+    if (!current || typeof current !== "object") {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return typeof current === "number" && Number.isFinite(current) ? current : undefined;
 }
 
 function averageToolBuckets(buckets: Record<string, ToolBucket>): Record<string, ToolBucket & { averageDurationMs: number; averageResultChars: number }> {

@@ -34,6 +34,7 @@ import { clearRegisteredSecretsForTests, registerSecret, stripCredentials } from
 import type { ToolDefinition } from "../src/llm/llm-runner.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../src/provider/provider-services.js";
 import { CodeninjaError } from "../src/util/errors.js";
+import { scaleToolBudget } from "../src/util/budget.js";
 
 describe("Phase 4 schemas and repository tool definitions", () => {
   it("redacts shared object references without mistaking them for cycles", () => {
@@ -1419,6 +1420,348 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         rejectionReason: "tool_result_budget_exhausted",
         degradationReason: "tool_result_budget_exhausted",
         budgetState: expect.objectContaining({ maxResultChars: 0 })
+      }
+    });
+  });
+
+  it("uses source budget extension for exact reads after result budget exhaustion", async () => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async () => ({
+      text: "decisive helper branch",
+      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+    }));
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read",
+      parameters: Type.Object({ path: Type.String(), startLine: Type.Number(), endLine: Type.Number() }),
+      execute
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-extension",
+          name: "read_range",
+          arguments: { path: "src/a.ts", startLine: 10, endLine: 20 }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-after-extension")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("packet-extension"),
+      tools: [tool],
+      toolBudget: {
+        maxToolCalls: 2,
+        maxInvestigationRounds: 2,
+        maxResultChars: 0,
+        sourceExtension: { maxToolCalls: 1, maxResultChars: 1000 }
+      }
+    });
+
+    expect(execute).toHaveBeenCalledWith(
+      { path: "src/a.ts", startLine: 10, endLine: 20 },
+      expect.any(AbortSignal)
+    );
+    expect(telemetry.toolCalls[0]).toMatchObject({
+      status: "ok",
+      budgetState: expect.objectContaining({
+        maxResultChars: 0,
+        sourceExtensionActive: true,
+        sourceExtensionCallsUsed: 0,
+        sourceExtensionMaxCalls: 1,
+        sourceExtensionResultCharsUsed: 0,
+        sourceExtensionMaxResultChars: 1000,
+        toolResultCharLimit: 1000
+      }),
+      resultChars: "decisive helper branch".length
+    });
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "tool_budget_extension_granted",
+        data: expect.objectContaining({
+          tool: "read_range",
+          triggerReason: "tool_result_budget_exhausted",
+          resultChars: "decisive helper branch".length
+        })
+      })
+    ]));
+    expect(telemetry.events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "tool_call_rejected" })
+    ]));
+  });
+
+  it("does not extend broad tools after local budget exhaustion", async () => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async () => ({
+      text: "should not execute",
+      meta: { backend: "text" as const, precision: "text" as const, degraded: false }
+    }));
+    const tool: ToolDefinition = {
+      name: "search_files",
+      description: "search",
+      parameters: Type.Object({ query: Type.String() }),
+      execute
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-broad-extension",
+          name: "search_files",
+          arguments: { query: "helper" }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-after-broad-denied")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("packet-broad-extension"),
+      tools: [tool],
+      toolBudget: {
+        maxToolCalls: 2,
+        maxInvestigationRounds: 2,
+        maxResultChars: 0,
+        sourceExtension: { maxToolCalls: 1, maxResultChars: 1000 }
+      }
+    });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(telemetry.toolCalls[0]).toMatchObject({
+      status: "rejected",
+      degradationReason: "tool_result_budget_exhausted"
+    });
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "tool_budget_extension_denied",
+        data: expect.objectContaining({
+          tool: "search_files",
+          triggerReason: "tool_result_budget_exhausted",
+          denyReason: "not_exact_source_tool"
+        })
+      }),
+      expect.objectContaining({
+        message: "tool_call_rejected",
+        data: expect.objectContaining({
+          tool: "search_files",
+          reason: "tool_result_budget_exhausted"
+        })
+      })
+    ]));
+  });
+
+  it("does not grant source budget extensions after global budget exhaustion", async () => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async () => ({
+      text: "should not execute",
+      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+    }));
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read",
+      parameters: Type.Object({ path: Type.String(), startLine: Type.Number(), endLine: Type.Number() }),
+      execute
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-global-exhausted",
+          name: "read_range",
+          arguments: { path: "src/a.ts", startLine: 10, endLine: 20 }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-after-global-extension-denied")])
+    ]);
+    const checkpoint = vi.fn()
+      .mockReturnValueOnce("ok")
+      .mockReturnValue("exhausted");
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint, onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("packet-global-extension-denied"),
+      tools: [tool],
+      toolBudget: {
+        maxToolCalls: 2,
+        maxInvestigationRounds: 2,
+        maxResultChars: 0,
+        sourceExtension: { maxToolCalls: 1, maxResultChars: 1000 }
+      }
+    });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(telemetry.toolCalls[0]).toMatchObject({
+      status: "rejected",
+      degradationReason: "tool_result_budget_exhausted"
+    });
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "tool_budget_extension_denied",
+        data: expect.objectContaining({
+          tool: "read_range",
+          triggerReason: "tool_result_budget_exhausted",
+          denyReason: "global_budget_exhausted"
+        })
+      })
+    ]));
+  });
+
+  it("does not grant source budget extensions for unsafe path arguments", async () => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async () => ({
+      text: "should not execute",
+      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+    }));
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read",
+      parameters: Type.Object({ path: Type.String(), startLine: Type.Number(), endLine: Type.Number() }),
+      execute
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-unsafe-extension",
+          name: "read_range",
+          arguments: { path: "../secret.ts", startLine: 1, endLine: 2 }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-after-unsafe-extension-denied")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("packet-unsafe-extension-denied"),
+      tools: [tool],
+      toolBudget: {
+        maxToolCalls: 2,
+        maxInvestigationRounds: 2,
+        maxResultChars: 0,
+        sourceExtension: { maxToolCalls: 1, maxResultChars: 1000 }
+      }
+    });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(telemetry.toolCalls[0]).toMatchObject({
+      status: "rejected",
+      degradationReason: "tool_result_budget_exhausted"
+    });
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "tool_budget_extension_denied",
+        data: expect.objectContaining({
+          tool: "read_range",
+          triggerReason: "tool_result_budget_exhausted",
+          denyReason: "unsafe_path_arg"
+        })
+      })
+    ]));
+    expect(telemetry.events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "tool_budget_extension_granted" })
+    ]));
+  });
+
+  it("does not treat repository safety rejections as source budget extensions", async () => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async () => ({
+      text: "tool error: path outside repository root",
+      isError: true,
+      errorCode: "path_outside_repo" as const,
+      meta: { backend: "text" as const, precision: "text" as const, degraded: true, degradationReason: "path_outside_repo" }
+    }));
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read",
+      parameters: Type.Object({ path: Type.String(), startLine: Type.Number(), endLine: Type.Number() }),
+      execute
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-path-outside",
+          name: "read_range",
+          arguments: { path: "../secret.ts", startLine: 1, endLine: 2 }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-after-path-outside")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("packet-path-outside-extension"),
+      tools: [tool],
+      toolBudget: {
+        maxToolCalls: 2,
+        maxInvestigationRounds: 2,
+        maxResultChars: 1000,
+        sourceExtension: { maxToolCalls: 1, maxResultChars: 1000 }
+      }
+    });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(telemetry.toolCalls[0]).toMatchObject({
+      status: "rejected",
+      errorCode: "path_outside_repo",
+      degradationReason: "path_outside_repo",
+      budgetState: expect.not.objectContaining({ sourceExtensionActive: true })
+    });
+    expect(telemetry.events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "tool_budget_extension_granted" })
+    ]));
+  });
+
+  it("scales source budget extension with the tool budget multiplier", () => {
+    expect(scaleToolBudget({
+      maxToolCalls: 4,
+      maxInvestigationRounds: 2,
+      maxResultChars: 10_000,
+      sourceExtension: { maxToolCalls: 1, maxResultChars: 4_000 }
+    }, 1.5)).toMatchObject({
+      maxToolCalls: 6,
+      maxInvestigationRounds: 3,
+      maxResultChars: 15_000,
+      sourceExtension: {
+        maxToolCalls: 2,
+        maxResultChars: 6_000
       }
     });
   });

@@ -607,6 +607,39 @@ describe("run telemetry", () => {
     expect(modelSummary.byStage["7"].localModelCallCache).toMatchObject({ hit: 0, miss: 1, disabled: 0, write: 1 });
   });
 
+  it("summarizes source budget extension events as context pressure", () => {
+    const run = createRunTelemetry({
+      telemetryConfig: {
+        ...defaultConfig.telemetry,
+        logLevel: "debug"
+      },
+      idFactory: () => "source-extension-pressure"
+    });
+
+    run.recorder.event({
+      stage: 9,
+      level: "info",
+      message: "tool_budget_extension_granted",
+      workerId: "worker-verify",
+      data: { tool: "read_range", triggerReason: "tool_result_budget_exhausted", resultChars: 321 }
+    });
+    run.recorder.event({
+      stage: 7,
+      level: "debug",
+      message: "tool_budget_extension_denied",
+      packetId: "packet-1",
+      data: { tool: "search_files", triggerReason: "tool_result_budget_exhausted", denyReason: "not_exact_source_tool" }
+    });
+
+    expect(run.recorder.snapshotContextPressure?.().toolBudgetExtensions).toEqual({
+      granted: 1,
+      denied: 1,
+      resultChars: 321,
+      grantedByStage: { 9: 1 },
+      deniedByStage: { 7: 1 }
+    });
+  });
+
   it("drops buffered debug/info before warnings and records overflow", async () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const repoRoot = tempDir();

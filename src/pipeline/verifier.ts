@@ -29,7 +29,11 @@ const VERIFIER_TOOL_BUDGET = {
   maxInvestigationRounds: 3,
   maxResultChars: 16_000,
   maxSingleToolResultChars: 6_000,
-  reservedSourceResultChars: 4_000
+  reservedSourceResultChars: 4_000,
+  sourceExtension: {
+    maxToolCalls: 2,
+    maxResultChars: 8_000
+  }
 };
 const VERIFIER_EXPECTED_CALLS_PER_CANDIDATE = 2;
 const VERIFIER_BASE_TOKEN_ESTIMATE = 1_000;

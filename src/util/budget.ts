@@ -23,5 +23,11 @@ export function scaleToolBudget(budget: ToolBudget, multiplier: number): ToolBud
   if (budget.reservedSourceResultChars !== undefined) {
     scaled.reservedSourceResultChars = scaleBudgetValue(budget.reservedSourceResultChars, multiplier);
   }
+  if (budget.sourceExtension !== undefined) {
+    scaled.sourceExtension = {
+      maxToolCalls: scaleBudgetValue(budget.sourceExtension.maxToolCalls, multiplier),
+      maxResultChars: scaleBudgetValue(budget.sourceExtension.maxResultChars, multiplier)
+    };
+  }
   return scaled;
 }

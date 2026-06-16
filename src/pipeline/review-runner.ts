@@ -1127,6 +1127,9 @@ function buildContextPressureSummary(
   const summary: ContextPressureSummary = {
     toolBudgetRejections: toolPressure?.toolBudgetRejections ?? 0,
     toolBudgetRejectionsByStage: toolPressure?.toolBudgetRejectionsByStage ?? {},
+    ...(toolPressure?.toolBudgetExtensions !== undefined && hasToolBudgetExtensionPressure(toolPressure.toolBudgetExtensions)
+      ? { toolBudgetExtensions: toolPressure.toolBudgetExtensions }
+      : {}),
     degradedToolResults: toolPressure?.degradedToolResults ?? 0,
     degradedToolResultsByStage: toolPressure?.degradedToolResultsByStage ?? {},
     degradedHunks: packets
@@ -1143,9 +1146,14 @@ function buildContextPressureSummary(
 
 function hasContextPressure(summary: ContextPressureSummary): boolean {
   return summary.toolBudgetRejections > 0 ||
+    (summary.toolBudgetExtensions !== undefined && hasToolBudgetExtensionPressure(summary.toolBudgetExtensions)) ||
     summary.degradedToolResults > 0 ||
     summary.degradedHunks > 0 ||
     summary.unresolvedNotes.omitted > 0;
+}
+
+function hasToolBudgetExtensionPressure(extension: NonNullable<ContextPressureSummary["toolBudgetExtensions"]>): boolean {
+  return extension.granted > 0 || extension.denied > 0 || extension.resultChars > 0;
 }
 
 function summarizeResolvedInput(resolved: ResolvedReviewInput): Omit<ResolvedReviewInput, "rawDiff"> & { rawDiffChars: number } {

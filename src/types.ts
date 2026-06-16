@@ -349,6 +349,12 @@ export type ToolBudgetState = {
   maxSingleToolResultChars?: number;
   reservedSourceResultChars?: number;
   toolResultCharLimit?: number;
+  sourceExtensionCallsUsed?: number;
+  sourceExtensionMaxCalls?: number;
+  sourceExtensionResultCharsUsed?: number;
+  sourceExtensionMaxResultChars?: number;
+  sourceExtensionRemainingResultChars?: number;
+  sourceExtensionActive?: boolean;
 };
 
 export type FileOutline = {
@@ -438,6 +444,10 @@ export type ToolBudget = {
   maxResultChars: number;
   maxSingleToolResultChars?: number;
   reservedSourceResultChars?: number;
+  sourceExtension?: {
+    maxToolCalls: number;
+    maxResultChars: number;
+  };
 };
 
 export type SurroundingContextHint = {
@@ -947,6 +957,8 @@ export type EvalRunMetrics = {
   reviewCompleteness?: "complete" | "partial";
   budgetOverruns?: number;
   toolBudgetRejections?: number;
+  toolBudgetExtensions?: number;
+  toolBudgetExtensionDenials?: number;
   degradedHunks?: number;
   unresolvedNotesSuppressed?: number;
   localModelCallCacheHits?: number;
@@ -1360,6 +1372,13 @@ export type BudgetLimitEvent = {
 export type ContextPressureSummary = {
   toolBudgetRejections: number;
   toolBudgetRejectionsByStage: Partial<Record<ReviewStage, number>>;
+  toolBudgetExtensions?: {
+    granted: number;
+    denied: number;
+    resultChars: number;
+    grantedByStage: Partial<Record<ReviewStage, number>>;
+    deniedByStage: Partial<Record<ReviewStage, number>>;
+  };
   degradedToolResults: number;
   degradedToolResultsByStage: Partial<Record<ReviewStage, number>>;
   degradedHunks: number;

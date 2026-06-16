@@ -48,7 +48,12 @@ export interface TelemetryRecorder {
   recordToolCall(record: Omit<ToolCallRecord, "runId" | "toolCallId" | "timestamp">): string;
   snapshotContextPressure?(): Pick<
     ContextPressureSummary,
-    "toolBudgetRejections" | "toolBudgetRejectionsByStage" | "degradedToolResults" | "degradedToolResultsByStage" | "rejectionReasons"
+    | "toolBudgetRejections"
+    | "toolBudgetRejectionsByStage"
+    | "toolBudgetExtensions"
+    | "degradedToolResults"
+    | "degradedToolResultsByStage"
+    | "rejectionReasons"
   >;
   writeArtifact(relPath: string, data: unknown): Promise<void>;
   writeDebug(kind: "llm-calls" | "tool-calls", id: string, record: unknown): Promise<void>;
