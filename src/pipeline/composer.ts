@@ -106,7 +106,7 @@ export async function dedupeRankAndComposeReview(
   const anchorDowngradeReasons = new Map<string, string>();
   const finalFindings: FinalFinding[] = pretrim.suppressed.map((finding) => {
     const requestedPublication = "suppressed" as const;
-    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding), requestedPublication, [finding.id], opts.diff);
+    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding), requestedPublication, [finding], opts.diff);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     return final;
   });
@@ -136,7 +136,8 @@ export async function dedupeRankAndComposeReview(
     }
     const representative = strongest(ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined));
     const fingerprint = fingerprintFinding(representative, packetsById);
-    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, ids, opts.diff);
+    const mergedFindings = ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined);
+    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, mergedFindings, opts.diff);
     recordAnchorDowngrade(final, composed.publication, anchorDowngradeReasons);
     finalFindings.push(final);
     used.add(representative.id);
@@ -153,7 +154,7 @@ export async function dedupeRankAndComposeReview(
     }
     const fingerprint = fingerprintFinding(finding, packetsById);
     const requestedPublication = finding.anchor ? "inline" : "summary-only";
-    const final = toFinalFinding(finding, fingerprint, templateBody(finding), requestedPublication, [finding.id], opts.diff);
+    const final = toFinalFinding(finding, fingerprint, templateBody(finding), requestedPublication, [finding], opts.diff);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     finalFindings.push(final);
     baseSelection.set(finding.id, { findingId: finding.id, decision: "published", reason: "composer_omitted_finding" });
@@ -310,12 +311,16 @@ function toFinalFinding(
   fingerprint: string,
   finalBody: string,
   publication: FinalFinding["publication"],
-  mergedCandidateIds: string[],
+  mergedFindings: CandidateFinding[],
   diff: UnifiedDiff | undefined
 ): FinalFinding {
   const { anchor: _unvalidatedAnchor, ...findingWithoutAnchor } = finding;
   const anchor = validateAnchorForDiff(finding.anchor, diff);
   const normalizedFinalBody = normalizeFinalBodyForRendering(finalBody, finding) || templateBody(finding);
+  const mergedCandidateIds = uniqueStrings(mergedFindings.map((item) => item.id));
+  const mergedAnchors = dedupeAnchors(mergedFindings.flatMap((item) => item.anchor === undefined ? [] : [item.anchor]));
+  const mergedCategories = uniqueStrings(mergedFindings.map((item) => item.category)) as Array<CandidateFinding["category"]>;
+  const mergedSeverities = uniqueStrings(mergedFindings.map((item) => item.severity)) as Array<CandidateFinding["severity"]>;
   return {
     ...findingWithoutAnchor,
     ...(anchor !== undefined ? { anchor } : {}),
@@ -323,8 +328,38 @@ function toFinalFinding(
     fingerprint,
     finalBody: normalizedFinalBody,
     publication: publication === "suppressed" ? "suppressed" : anchor ? publication : "summary-only",
-    mergedCandidateIds: [...new Set(mergedCandidateIds)]
+    mergedCandidateIds,
+    mergedCategories,
+    mergedSeverities,
+    mergedPaths: uniqueStrings(mergedFindings.map((item) => item.anchor?.path ?? item.path)),
+    mergedTitles: uniqueStrings(mergedFindings.map((item) => item.title)),
+    ...(mergedAnchors.length > 0 ? { mergedAnchors } : {})
   };
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.length > 0))].sort();
+}
+
+function dedupeAnchors(anchors: NonNullable<CandidateFinding["anchor"]>[]): NonNullable<FinalFinding["mergedAnchors"]> {
+  const seen = new Set<string>();
+  const output: NonNullable<FinalFinding["mergedAnchors"]> = [];
+  for (const anchor of anchors) {
+    const key = [
+      anchor.path,
+      anchor.side,
+      anchor.line,
+      anchor.startLine ?? "",
+      anchor.startSide ?? "",
+      anchor.hunkId
+    ].join(":");
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(anchor);
+  }
+  return output;
 }
 
 function recordAnchorDowngrade(

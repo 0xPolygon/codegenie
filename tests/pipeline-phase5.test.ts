@@ -5309,6 +5309,78 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.findings[0]?.mergedCandidateIds.sort()).toEqual(["finding-1", "finding-2"]);
   });
 
+  it("preserves merged candidate provenance on final findings", async () => {
+    const correctness = {
+      ...fakeFinding(),
+      id: "finding-correctness",
+      title: "Explicit preference no longer falls back",
+      category: "correctness" as const,
+      severity: "high" as const,
+      path: "routes/v1.ts",
+      anchor: { path: "routes/v1.ts", line: 10, side: "RIGHT" as const, hunkId: "h1" },
+      evidence: { changedCode: "routeWithPreference()" }
+    };
+    const logicBug = {
+      ...fakeFinding(),
+      id: "finding-logic",
+      title: "Preferred route skips fallback",
+      category: "logic_bug" as const,
+      path: "routes/v15.ts",
+      anchor: { path: "routes/v15.ts", line: 12, side: "RIGHT" as const, hunkId: "h2" },
+      evidence: { changedCode: "routeWithPreferenceV15()" }
+    };
+    const runner: LlmRunner = {
+      runStructured: async () => ({
+        summary: "Found routing behavior changes.",
+        composedFindings: [{
+          findingIds: ["finding-correctness", "finding-logic"],
+          finalBody: "The explicit preference behavior no longer falls back for either route.",
+          publication: "inline"
+        }]
+      })
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [correctness, logicBug], verdicts: [] },
+      fakePlan(),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 2,
+        reviewedHunks: 2,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 2, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder() }
+    );
+
+    const finalFindings = [...result.findings, ...result.summaryOnlyFindings];
+    expect(finalFindings).toHaveLength(1);
+    expect(finalFindings[0]).toMatchObject({
+      mergedCandidateIds: ["finding-correctness", "finding-logic"],
+      mergedCategories: ["correctness", "logic_bug"],
+      mergedSeverities: ["high", "medium"],
+      mergedPaths: ["routes/v1.ts", "routes/v15.ts"],
+      mergedTitles: ["Explicit preference no longer falls back", "Preferred route skips fallback"],
+      mergedAnchors: expect.arrayContaining([
+        expect.objectContaining({ path: "routes/v1.ts", line: 10 }),
+        expect.objectContaining({ path: "routes/v15.ts", line: 12 })
+      ])
+    });
+  });
+
   it("uses the earliest anchor line as proximity-group representative after severity and confidence ties", async () => {
     const diff: UnifiedDiff = {
       files: [

@@ -16,6 +16,7 @@ import type {
   EvalSelectionRecord,
   EvalVerificationRecord,
   EvalViolation,
+  FindingCategory,
   FinalFinding,
   ReviewStage,
   Severity
@@ -29,6 +30,20 @@ type FindingLocationVariant = {
   range?: [number, number];
   source: "finding" | "merged-candidate" | "related-evidence";
   findingId?: string;
+};
+type FindingMatchView = {
+  id?: string;
+  title: string;
+  category: FindingCategory;
+  severity: Severity;
+  failureMode: string;
+  finalBody?: string;
+  source: "finding" | "merged-candidate" | "merged-metadata";
+};
+type FieldMatch = {
+  matched: boolean;
+  actual: string;
+  via?: string;
 };
 
 const severityRank: Record<Severity, number> = {
@@ -105,39 +120,47 @@ export function matchExpectation(
     });
   }
   if (expectation.category !== undefined) {
+    const category = matchCategory(expectation.category, finding, artifacts);
     fields.push({
       field: "category",
       present: true,
-      matched: expectation.category === finding.category,
+      matched: category.matched,
       expected: expectation.category,
-      actual: finding.category
+      actual: category.actual,
+      ...(category.via !== undefined ? { via: category.via } : {})
     });
   }
   if (expectation.severityAtLeast !== undefined) {
+    const severity = matchSeverity(expectation.severityAtLeast, finding, artifacts);
     fields.push({
       field: "severityAtLeast",
       present: true,
-      matched: severityRank[finding.severity] >= severityRank[expectation.severityAtLeast],
+      matched: severity.matched,
       expected: expectation.severityAtLeast,
-      actual: finding.severity
+      actual: severity.actual,
+      ...(severity.via !== undefined ? { via: severity.via } : {})
     });
   }
   if (expectation.titlePattern !== undefined) {
+    const title = matchTitlePattern(expectation.titlePattern, finding, artifacts);
     fields.push({
       field: "titlePattern",
       present: true,
-      matched: regexMatches(expectation.titlePattern, finding.title),
+      matched: title.matched,
       expected: expectation.titlePattern,
-      actual: finding.title
+      actual: title.actual,
+      ...(title.via !== undefined ? { via: title.via } : {})
     });
   }
   if (expectation.failureModePattern !== undefined) {
+    const failureMode = matchFailureModePattern(expectation.failureModePattern, finding, artifacts);
     fields.push({
       field: "failureModePattern",
       present: true,
-      matched: regexMatches(expectation.failureModePattern, finding.failureMode),
+      matched: failureMode.matched,
       expected: expectation.failureModePattern,
-      actual: finding.failureMode
+      actual: failureMode.actual,
+      ...(failureMode.via !== undefined ? { via: failureMode.via } : {})
     });
   }
   return {
@@ -973,6 +996,169 @@ function augment(
   return false;
 }
 
+function matchCategory(
+  expected: FindingCategory,
+  finding: ScorableFinding,
+  artifacts?: EvalArtifacts
+): FieldMatch {
+  const views = findingMatchViews(finding, artifacts);
+  const actual = uniqueStrings(views.map((view) => view.category));
+  const exact = views.find((view) => view.category === expected);
+  if (exact !== undefined) {
+    return { matched: true, actual: actual.join(", "), via: exact.source === "finding" ? "category" : exact.source };
+  }
+  const compatible = views.find((view) => categoriesCompatible(expected, view.category));
+  if (compatible !== undefined) {
+    return { matched: true, actual: actual.join(", "), via: "category-compatible" };
+  }
+  return { matched: false, actual: actual.join(", ") };
+}
+
+function matchSeverity(
+  expected: Severity,
+  finding: ScorableFinding,
+  artifacts?: EvalArtifacts
+): FieldMatch {
+  const views = findingMatchViews(finding, artifacts);
+  const actual = uniqueStrings(views.map((view) => view.severity));
+  const matched = views.some((view) => severityRank[view.severity] >= severityRank[expected]);
+  return {
+    matched,
+    actual: actual.join(", "),
+    ...(matched && views.some((view) => view.source !== "finding" && severityRank[view.severity] >= severityRank[expected])
+      ? { via: "merged-candidate" }
+      : {})
+  };
+}
+
+function matchTitlePattern(
+  pattern: string,
+  finding: ScorableFinding,
+  artifacts?: EvalArtifacts
+): FieldMatch {
+  const checks: Array<{ value: string; via: string }> = [];
+  for (const view of findingMatchViews(finding, artifacts)) {
+    checks.push({ value: view.title, via: view.source === "finding" ? "title" : "mergedTitle" });
+    if (view.finalBody !== undefined) {
+      checks.push({ value: firstParagraph(view.finalBody), via: "body" });
+    }
+  }
+  return matchPatternAcrossText(pattern, checks);
+}
+
+function matchFailureModePattern(
+  pattern: string,
+  finding: ScorableFinding,
+  artifacts?: EvalArtifacts
+): FieldMatch {
+  const checks = findingMatchViews(finding, artifacts).map((view) => ({
+    value: view.failureMode,
+    via: view.source === "finding" ? "failureMode" : "mergedFailureMode"
+  }));
+  return matchPatternAcrossText(pattern, checks);
+}
+
+function matchPatternAcrossText(pattern: string, checks: Array<{ value: string; via: string }>): FieldMatch {
+  const actual = uniqueStrings(checks.map((check) => check.value)).join(" | ");
+  for (const check of checks) {
+    if (regexMatches(pattern, check.value)) {
+      return { matched: true, actual: check.value, via: check.via };
+    }
+  }
+  for (const check of checks) {
+    if (tokenFallbackMatches(pattern, check.value)) {
+      return { matched: true, actual: check.value, via: "tokenFallback" };
+    }
+  }
+  return { matched: false, actual };
+}
+
+function findingMatchViews(finding: ScorableFinding, artifacts?: EvalArtifacts): FindingMatchView[] {
+  const views: FindingMatchView[] = [{
+    id: finding.id,
+    title: finding.title,
+    category: finding.category,
+    severity: finding.severity,
+    failureMode: finding.failureMode,
+    ...(isFinalFinding(finding) ? { finalBody: finding.finalBody } : {}),
+    source: "finding"
+  }];
+
+  if (artifacts !== undefined && isFinalFinding(finding)) {
+    const sourceCandidates = sourceCandidatesForFinal(finding, artifacts);
+    for (const candidate of sourceCandidates) {
+      views.push({
+        id: candidate.id,
+        title: candidate.title,
+        category: candidate.category,
+        severity: candidate.severity,
+        failureMode: candidate.failureMode,
+        source: "merged-candidate"
+      });
+    }
+    if (sourceCandidates.length === 0) {
+      views.push(...metadataViewsForFinal(finding));
+    }
+  }
+
+  return dedupeMatchViews(views);
+}
+
+function metadataViewsForFinal(finding: FinalFinding): FindingMatchView[] {
+  const count = Math.max(
+    finding.mergedTitles?.length ?? 0,
+    finding.mergedCategories?.length ?? 0,
+    finding.mergedSeverities?.length ?? 0
+  );
+  const views: FindingMatchView[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const title = finding.mergedTitles?.[index];
+    const category = finding.mergedCategories?.[index];
+    const severity = finding.mergedSeverities?.[index];
+    if (title === undefined && category === undefined && severity === undefined) {
+      continue;
+    }
+    views.push({
+      title: title ?? finding.title,
+      category: category ?? finding.category,
+      severity: severity ?? finding.severity,
+      failureMode: finding.failureMode,
+      source: "merged-metadata"
+    });
+  }
+  return views;
+}
+
+function dedupeMatchViews(views: FindingMatchView[]): FindingMatchView[] {
+  const seen = new Set<string>();
+  const output: FindingMatchView[] = [];
+  for (const view of views) {
+    const key = [
+      view.id ?? "",
+      view.title,
+      view.category,
+      view.severity,
+      view.failureMode,
+      view.source
+    ].join("\0");
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    output.push(view);
+  }
+  return output;
+}
+
+function categoriesCompatible(expected: FindingCategory, actual: FindingCategory): boolean {
+  return (expected === "correctness" && actual === "logic_bug") ||
+    (expected === "logic_bug" && actual === "correctness");
+}
+
+function firstParagraph(input: string): string {
+  return input.split(/\n\s*\n/u)[0]?.trim() ?? input.trim();
+}
+
 function matchFindingLocation(
   expectation: EvalFindingExpectation,
   finding: ScorableFinding,
@@ -1007,14 +1193,36 @@ function findingLocationVariants(finding: ScorableFinding, artifacts?: EvalArtif
   addFindingLocationVariant(variants, finding, "finding", finding.id);
 
   if (artifacts !== undefined && isFinalFinding(finding)) {
-    for (const candidate of sourceCandidatesForFinal(finding, artifacts)) {
+    const sourceCandidates = sourceCandidatesForFinal(finding, artifacts);
+    for (const candidate of sourceCandidates) {
       addFindingLocationVariant(variants, candidate, "merged-candidate", candidate.id);
       addRelatedEvidenceLocationVariants(variants, candidate, "related-evidence", candidate.id);
+    }
+    if (sourceCandidates.length === 0) {
+      addFinalMetadataLocationVariants(variants, finding);
     }
     addRelatedEvidenceLocationVariants(variants, finding, "related-evidence", finding.id);
   }
 
   return dedupeLocationVariants(variants);
+}
+
+function addFinalMetadataLocationVariants(variants: FindingLocationVariant[], finding: FinalFinding): void {
+  for (const anchor of finding.mergedAnchors ?? []) {
+    const start = anchor.startLine ?? anchor.line;
+    const end = anchor.line;
+    variants.push({
+      path: normalizePath(anchor.path),
+      range: [Math.min(start, end), Math.max(start, end)],
+      source: "merged-candidate"
+    });
+  }
+  for (const path of finding.mergedPaths ?? []) {
+    variants.push({
+      path: normalizePath(path),
+      source: "merged-candidate"
+    });
+  }
 }
 
 function addFindingLocationVariant(
@@ -1117,6 +1325,42 @@ function hasGlobMeta(input: string): boolean {
 
 function regexMatches(pattern: string, input: string): boolean {
   return new RegExp(pattern, "i").test(input);
+}
+
+function tokenFallbackMatches(pattern: string, input: string): boolean {
+  const alternatives = tokenAlternativesForPattern(pattern);
+  if (alternatives.length === 0) {
+    return false;
+  }
+  const inputTokens = new Set(tokensForText(input));
+  return alternatives.some((tokens) => tokens.every((token) => inputTokens.has(token)));
+}
+
+function tokenAlternativesForPattern(pattern: string): string[][] {
+  return pattern
+    .split("|")
+    .map((part) => tokensForSimplePattern(part))
+    .filter((tokens): tokens is string[] => tokens !== undefined && tokens.length >= 2);
+}
+
+function tokensForSimplePattern(pattern: string): string[] | undefined {
+  const simplified = pattern
+    .replace(/\\b/gu, " ")
+    .replace(/\\s\+/gu, " ")
+    .replace(/\.\*/gu, " ")
+    .replace(/[\^$]/gu, " ");
+  if (/[()[\]{}+?]/u.test(simplified)) {
+    return undefined;
+  }
+  const tokens = tokensForText(simplified);
+  if (tokens.some((token) => token.length < 3)) {
+    return undefined;
+  }
+  return tokens;
+}
+
+function tokensForText(input: string): string[] {
+  return [...new Set(input.toLowerCase().match(/[a-z0-9][a-z0-9_-]*/gu) ?? [])];
 }
 
 function failedFieldCount(outcome: EvalMatchOutcome): number {

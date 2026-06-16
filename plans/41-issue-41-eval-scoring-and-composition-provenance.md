@@ -1,6 +1,6 @@
 # Issue 41: Eval Scoring and Composition Provenance Under-Credit
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 8 review, 2026-06-16
 
 ## Problem

@@ -770,6 +770,11 @@ export type FinalFinding = CandidateFinding & {
   finalBody: string;
   publication: "inline" | "summary-only" | "suppressed";
   mergedCandidateIds: string[];
+  mergedCategories?: FindingCategory[];
+  mergedSeverities?: Severity[];
+  mergedPaths?: string[];
+  mergedTitles?: string[];
+  mergedAnchors?: DiffAnchor[];
 };
 
 export type RunCoverageStatus = {
@@ -899,6 +904,7 @@ export type EvalMatchOutcome = {
     matched: boolean;
     expected?: string;
     actual?: string;
+    via?: string;
   }>;
 };
 

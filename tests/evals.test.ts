@@ -485,6 +485,136 @@ describe("eval scoring", () => {
     expect(score.metrics.stageLossCounts["lost-at-composition"]).toBe(0);
   });
 
+  it("credits merged source candidate categories without reporting a composition loss", () => {
+    const source = candidate("source-routing", "src/caller.ts", 42, {
+      title: "Explicit preference fallback is skipped",
+      category: "correctness",
+      severity: "high",
+      failureMode: "The explicit provider preference no longer falls back when the preferred route is unavailable."
+    });
+    const final = finalFinding("final-routing", "src/shared.ts", 10, {
+      title: "Preferred route selection can skip fallback",
+      category: "logic_bug",
+      severity: "high",
+      failureMode: "The merged routing behavior now skips fallback for explicit provider preferences.",
+      fingerprint: "routing-root-cause",
+      mergedCandidateIds: ["source-routing"],
+      mergedCategories: ["correctness", "logic_bug"],
+      mergedTitles: ["Explicit preference fallback is skipped", "Preferred route selection can skip fallback"],
+      finalBody: "The explicit provider preference no longer falls back in both route versions."
+    });
+
+    const score = scoreEvalRun({
+      name: "merged-category-credit",
+      artifacts: { path: "unused" },
+      should_find: [{
+        id: "routing",
+        path: "src/caller.ts",
+        category: "correctness",
+        severityAtLeast: "medium",
+        titlePattern: "explicit.*preference.*fallback"
+      }]
+    }, {
+      candidates: [source],
+      verification: [
+        { candidateId: "source-routing", gate: "passed", verdict: { candidateId: "source-routing", verdict: "keep", reason: "ok", requiredEvidencePresent: true, falsePositiveRisk: "low" } }
+      ],
+      finalSelection: [{ findingId: "source-routing", decision: "merged", reason: "composer-merged", mergedIntoFingerprint: "routing-root-cause" }],
+      finalFindings: [final],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {}
+    }, "live");
+
+    expect(score.expectationResults[0]).toMatchObject({
+      status: "pass",
+      matched: [{ findingId: "final-routing", artifact: "final-findings" }]
+    });
+    expect(score.metrics.stageLossCounts["lost-at-composition"]).toBe(0);
+    const outcome = matchExpectation({
+      id: "routing",
+      path: "src/caller.ts",
+      category: "correctness",
+      titlePattern: "explicit.*preference.*fallback"
+    }, final, {
+      candidates: [source],
+      verification: [],
+      finalSelection: [],
+      finalFindings: [final],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {}
+    });
+    expect(outcome.fields.find((field) => field.field === "category")).toMatchObject({
+      matched: true,
+      via: "merged-candidate"
+    });
+  });
+
+  it("uses conservative category compatibility for logic bug and correctness findings", () => {
+    const final = finalFinding("final-logic", "src/app.ts", 12, {
+      title: "Amount conversion rejects a valid value",
+      category: "logic_bug",
+      failureMode: "The conversion now rejects a valid amount that the old path accepted."
+    });
+
+    const compatible = matchExpectation({
+      id: "compatible",
+      path: "src/app.ts",
+      category: "correctness",
+      titlePattern: "amount conversion"
+    }, final);
+    expect(compatible.fields.find((field) => field.field === "category")).toMatchObject({
+      matched: true,
+      via: "category-compatible"
+    });
+    expect(compatible.matched).toBe(true);
+
+    const strict = matchExpectation({
+      id: "strict",
+      path: "src/app.ts",
+      category: "security",
+      titlePattern: "amount conversion"
+    }, final);
+    expect(strict.fields.find((field) => field.field === "category")).toMatchObject({
+      matched: false
+    });
+    expect(strict.matched).toBe(false);
+  });
+
+  it("matches simple title patterns through body text and token order fallback", () => {
+    const nativePrice = finalFinding("native-price", "fees.go", 100, {
+      title: "Hard failure when native token price is zero",
+      category: "correctness",
+      failureMode: "A zero native token price now turns a quote into a hard failure.",
+      finalBody: "The fee calculation can now fail a quote that previously continued."
+    });
+
+    const titleOutcome = matchExpectation({
+      id: "native-price",
+      path: "fees.go",
+      category: "correctness",
+      titlePattern: "zero.*native.*price|native.*price.*hard"
+    }, nativePrice);
+    expect(titleOutcome.fields.find((field) => field.field === "titlePattern")).toMatchObject({
+      matched: true,
+      via: "tokenFallback"
+    });
+    expect(titleOutcome.matched).toBe(true);
+
+    const bodyOutcome = matchExpectation({
+      id: "body",
+      path: "fees.go",
+      category: "correctness",
+      titlePattern: "fee.*calculation.*fail"
+    }, nativePrice);
+    expect(bodyOutcome.fields.find((field) => field.field === "titlePattern")).toMatchObject({
+      matched: true,
+      via: "body"
+    });
+    expect(bodyOutcome.matched).toBe(true);
+  });
+
   it("does not let related-path matching override mismatched expectation fields", () => {
     const final = finalFinding("final-related", "src/root.ts", 10, {
       title: "Cache invalidation can be skipped",
@@ -517,6 +647,43 @@ describe("eval scoring", () => {
 
     expect(outcome.fields.find((field) => field.field === "path")?.matched).toBe(true);
     expect(outcome.fields.find((field) => field.field === "category")?.matched).toBe(false);
+    expect(outcome.matched).toBe(false);
+  });
+
+  it("does not credit a different root cause just because title tokens overlap", () => {
+    const final = finalFinding("final-related", "src/root.ts", 10, {
+      title: "Native token price cache can return stale values",
+      category: "performance",
+      failureMode: "The cache can return stale values.",
+      finalBody: "This is about cache staleness, not fee calculation failures.",
+      evidence: {
+        changedCode: "+ cache.set(key, value)",
+        relatedCode: [{
+          path: "src/fees.go",
+          lines: "18: CalculateIntentFees(ctx)",
+          whyRelevant: "This caller reads the cached value."
+        }]
+      }
+    });
+
+    const outcome = matchExpectation({
+      id: "wrong-root-cause",
+      path: "src/fees.go",
+      category: "correctness",
+      titlePattern: "native.*price.*hard"
+    }, final, {
+      candidates: [],
+      verification: [],
+      finalSelection: [],
+      finalFindings: [final],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {}
+    });
+
+    expect(outcome.fields.find((field) => field.field === "path")?.matched).toBe(true);
+    expect(outcome.fields.find((field) => field.field === "category")?.matched).toBe(false);
+    expect(outcome.fields.find((field) => field.field === "titlePattern")?.matched).toBe(false);
     expect(outcome.matched).toBe(false);
   });
 
