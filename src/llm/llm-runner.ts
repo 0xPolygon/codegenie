@@ -112,6 +112,7 @@ export type LlmStructuredRequest<T> = {
   };
   finalization?: {
     noResultInstruction?: string;
+    shouldUseCompactPrompt?(input: LlmCompactFinalizeInput): boolean;
     buildCompactPrompt?(input: LlmCompactFinalizeInput): string | undefined;
     buildPostToolNudge?(input: LlmPostToolNudgeInput): string | undefined;
   };

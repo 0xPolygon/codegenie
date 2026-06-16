@@ -1845,6 +1845,80 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ]));
   });
 
+  it("uses full forced finalization when compact closeout policy rejects the packet", async () => {
+    const telemetry = fakeTelemetry();
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read",
+      parameters: Type.Object({ path: Type.String() }),
+      execute: vi.fn(async () => ({
+        text: "decisive source evidence",
+        meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+      }))
+    };
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "tool-before-full-finalize",
+        name: "read_range",
+        arguments: { path: "src/a.ts", startLine: 1, endLine: 2 }
+      }]),
+      assistant([{
+        type: "toolCall",
+        id: "submit-full-no-findings",
+        name: "submit_review",
+        arguments: {
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [{
+            question: "Verify whether the changed branch still handles nil input.",
+            files: ["src/a.ts"],
+            symbols: ["decisive"],
+            suggestedLenses: ["core/code-review"],
+            reason: "The full transcript kept source context for a concrete unresolved predicate.",
+            confidence: "medium"
+          }],
+          uncertainties: [],
+          noFindingReason: "No concrete finding from gathered evidence."
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-full-finalize"),
+        tools: [tool],
+        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 2, maxResultChars: 5000 },
+        telemetryContext: { workerId: "worker-full", packetId: "packet-full-finalize" },
+        finalization: {
+          shouldUseCompactPrompt: () => false,
+          buildCompactPrompt: () => "COMPACT CLOSEOUT SHOULD NOT BE USED",
+          noResultInstruction: "If there are no findings, submit reviewStatus:\"no_findings\", findings: []. Concrete unresolved risk may still use followUpHints or uncertainties."
+        }
+      })
+    ).resolves.toMatchObject({
+      reviewStatus: "no_findings",
+      findings: [],
+      followUpHints: [expect.objectContaining({ files: ["src/a.ts"] })]
+    });
+    expect(adapter.contexts[1]).not.toContain("COMPACT CLOSEOUT SHOULD NOT BE USED");
+    expect(adapter.contexts[1]).toContain("decisive source evidence");
+    expect(adapter.contexts[1]).toContain("Concrete unresolved risk may still use followUpHints");
+    expect(telemetry.modelCalls[1]).toMatchObject({
+      kind: "finalize",
+      finalizeMode: "full",
+      finalizeTarget: "no_findings"
+    });
+  });
+
   it("keeps candidate-shaped invalid submissions on the full repair path", async () => {
     const compactPrompt = vi.fn(() => "SHOULD NOT BE USED");
     const adapter = scriptedAdapter([

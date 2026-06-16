@@ -32,7 +32,7 @@ export type UncertaintyPromotionSummary = {
 
 export type PromotionDecision = {
   packetId: string;
-  sourceKind: "uncertainty" | "follow_up_hint";
+  sourceKind: PromotionSourceKind;
   question: string;
   files: string[];
   symbols: string[];
@@ -44,13 +44,15 @@ export type PromotionDecision = {
 type PromotionSource = {
   packetResult: PacketReviewResult;
   packet: ReviewPacket;
-  sourceKind: "uncertainty" | "follow_up_hint";
+  sourceKind: PromotionSourceKind;
   question: string;
   files: string[];
   symbols: string[];
   reason: string;
   confidence?: Confidence;
 };
+
+type PromotionSourceKind = "uncertainty" | "follow_up_hint" | "unresolved_question";
 
 export async function promoteUncertaintiesForVerification(
   input: PromotionInput,
@@ -124,13 +126,16 @@ export async function promoteUncertaintiesForVerification(
 }
 
 function promotionSources(result: PacketReviewResult, packetsById: Map<string, ReviewPacket>): PromotionSource[] {
-  if (result.status !== "completed") {
+  if (result.status !== "completed" && result.status !== "incomplete") {
     return [];
   }
   const packet = packetsById.get(result.packetId);
   if (!packet) {
     return [];
   }
+  const unresolvedSymbols = packet.symbolFacts
+    .map((fact) => fact.enclosingSymbol ?? fact.signature)
+    .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0);
   return [
     ...result.uncertainties.map((uncertainty): PromotionSource => ({
       packetResult: result,
@@ -150,6 +155,15 @@ function promotionSources(result: PacketReviewResult, packetsById: Map<string, R
       symbols: cleanStrings(hint.symbols),
       reason: hint.reason,
       confidence: hint.confidence
+    })),
+    ...(result.unresolvedQuestions ?? []).map((question): PromotionSource => ({
+      packetResult: result,
+      packet,
+      sourceKind: "unresolved_question",
+      question,
+      files: cleanStrings([packet.path, ...(packet.oldPath !== undefined ? [packet.oldPath] : [])]),
+      symbols: cleanStrings(unresolvedSymbols),
+      reason: "packet reviewer reported an unresolved closeout question"
     }))
   ];
 }
@@ -170,6 +184,7 @@ function promotionDecision(source: PromotionSource): { eligible: boolean; reason
     return { eligible: false, reason: "not_tied_to_changed_scope" };
   }
   const risk = riskProfile(source);
+  const testScoped = isTestScopedSource(source);
   if (!risk.promotable) {
     return { eligible: false, reason: "weak_or_non_actionable_risk" };
   }
@@ -185,10 +200,10 @@ function promotionDecision(source: PromotionSource): { eligible: boolean; reason
   if (!hasPromotionEvidence(source, risk.category)) {
     return { eligible: false, reason: "insufficient_promotion_evidence" };
   }
-  if (risk.category === "testing" && !mentionsChangedTestOrDeletedCoverage(source)) {
+  if (risk.category === "testing" && testScoped && !mentionsChangedTestOrDeletedCoverage(source)) {
     return { eligible: false, reason: "test_risk_without_changed_test_or_deleted_coverage" };
   }
-  if (risk.category === "testing" && !mentionsNamedProductionScope(source)) {
+  if (risk.category === "testing" && testScoped && !mentionsNamedProductionScope(source)) {
     return { eligible: false, reason: "insufficient_promotion_evidence" };
   }
   if (!mentionsProductionImpact(source) && risk.category !== "testing") {
@@ -346,7 +361,7 @@ function firstChangedAnchor(packet: ReviewPacket): CandidateFinding["anchor"] | 
 
 function promotionRank(source: PromotionSource): number {
   const risk = riskProfile(source);
-  return (source.sourceKind === "follow_up_hint" ? 8 : 4) +
+  return (source.sourceKind === "follow_up_hint" ? 8 : source.sourceKind === "unresolved_question" ? 3 : 4) +
     (source.confidence === "high" ? 8 : source.confidence === "medium" ? 4 : 0) +
     (risk.category === "security" ? 12 : risk.category === "correctness" || risk.category === "logic_bug" ? 8 : 6) +
     (source.packet.reviewPriority === "critical" ? 8 : source.packet.reviewPriority === "high" ? 4 : 0) +
@@ -359,11 +374,17 @@ function riskProfile(source: PromotionSource): { promotable: boolean; category: 
   if (/\b(auth|authorization|authentication|permission|tenant|signature|token|secret|security|access control)\b/u.test(text)) {
     return { promotable: true, category: "security" };
   }
-  if (/\b(test|coverage|regression|fixture|assert|expect|deleted test|missing test)\b/u.test(text)) {
+  const testScoped = isTestScopedSource(source);
+  const testRisk = /\b(test|coverage|fixture|assert|expect|deleted test|missing test)\b/u.test(text);
+  const correctnessRisk = /\b(bug|incorrect|wrong|break|broken|fail|failure|regression|behavior|semantic|contract|caller|invariant|fallback|default|zero|nil|null|panic|overflow|round|precision|race|leak|retry|timeout|context|close|cleanup)\b/u.test(text);
+  if (testScoped && testRisk) {
     return { promotable: true, category: "testing" };
   }
-  if (/\b(bug|incorrect|wrong|break|broken|fail|failure|regression|behavior|semantic|contract|caller|invariant|fallback|default|zero|nil|null|panic|overflow|round|precision|race|leak|retry|timeout|context|close|cleanup)\b/u.test(text)) {
+  if (correctnessRisk) {
     return { promotable: true, category: text.includes("logic") ? "logic_bug" : "correctness" };
+  }
+  if (testRisk) {
+    return { promotable: true, category: "testing" };
   }
   return { promotable: false, category: "maintainability" };
 }
@@ -467,6 +488,12 @@ function mentionsNamedProductionScope(source: PromotionSource): boolean {
 
 function mentionsProductionImpact(source: PromotionSource): boolean {
   return !isTestPath(source.packet.path) || source.files.some((file) => !isTestPath(file));
+}
+
+function isTestScopedSource(source: PromotionSource): boolean {
+  return isTestPath(source.packet.path) ||
+    source.files.some(isTestPath) ||
+    source.packet.lenses.some((lens) => /(^|[/_-])tests?($|[/_-])/iu.test(lens));
 }
 
 function duplicateOfExistingFinding(source: PromotionSource): boolean {

@@ -174,6 +174,77 @@ describe("uncertainty promotion", () => {
       notPromoted: { broad_follow_up_only: 1 }
     });
   });
+
+  it("promotes concrete unresolved closeout questions from incomplete packet reviews", async () => {
+    const packet = fakePacket("packet-unresolved", "src/fees.ts", {
+      symbol: "AmountFromUSD",
+      line: "+ return amount / decimals"
+    });
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/code-review"],
+        findings: [],
+        reviewStatus: "incomplete",
+        noFindingReason: "Tool budget ended before this predicate was fully proven.",
+        unresolvedQuestions: ["Whether AmountFromUSD handles zero decimals without divide-by-zero or incorrect rounding."],
+        followUpHints: [],
+        uncertainties: [],
+        status: "incomplete"
+      }]
+    }, captureTelemetry().recorder);
+
+    expect(result.summary).toMatchObject({
+      considered: 1,
+      promoted: 1
+    });
+    expect(result.packetResults[0]?.findings[0]).toMatchObject({
+      category: "correctness",
+      provenance: {
+        sourceKind: "unresolved_question",
+        question: "Whether AmountFromUSD handles zero decimals without divide-by-zero or incorrect rounding.",
+        files: ["src/fees.ts"],
+        symbols: ["AmountFromUSD"]
+      }
+    });
+  });
+
+  it("does not reject non-test correctness uncertainty through the test coverage lane", async () => {
+    const packet = fakePacket("packet-routing", "src/routing.ts", {
+      symbol: "SolveQuoteRoutingWithFallbacks",
+      line: "+ return fallbackProvider(intent)"
+    });
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/code-review"],
+        findings: [],
+        followUpHints: [],
+        uncertainties: [{
+          question: "Verify whether this fallback contract still preserves caller behavior when the preferred provider fails in tests.",
+          files: ["src/routing.ts"],
+          symbols: ["SolveQuoteRoutingWithFallbacks"]
+        }],
+        status: "completed"
+      }]
+    }, captureTelemetry().recorder);
+
+    expect(result.summary.decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        promoted: true,
+        reason: "promoted_for_verification"
+      })
+    ]));
+    expect(result.summary.notPromoted).not.toHaveProperty("test_risk_without_changed_test_or_deleted_coverage");
+    expect(result.packetResults[0]?.findings[0]).toMatchObject({
+      category: "correctness",
+      provenance: { sourceKind: "uncertainty" }
+    });
+  });
 });
 
 function fakePacket(

@@ -523,19 +523,22 @@ function queueForcedFinalizePrompt(input: {
   toolResults: LlmToolResultSummary[];
 }): boolean {
   if (!input.candidateDrafted) {
-    const compactPrompt = input.request.finalization?.buildCompactPrompt?.({
+    const compactInput: LlmCompactFinalizeInput = {
       submitToolName: input.submitToolName,
       reason: input.reason,
       toolCallsUsed: input.toolCallsUsed,
       investigationRounds: input.investigationRounds,
       resultCharsUsed: input.resultCharsUsed,
       toolResults: input.toolResults
-    });
-    const compactContent = compactPrompt?.trim();
-    if (compactContent) {
-      input.messages.splice(0, input.messages.length, { role: "user", content: compactContent, timestamp: 0 });
-      recordFinalizeStart(input.opts, input.request, "compact", "no_findings", input.reason, compactContent.length);
-      return true;
+    };
+    if (input.request.finalization?.shouldUseCompactPrompt?.(compactInput) !== false) {
+      const compactPrompt = input.request.finalization?.buildCompactPrompt?.(compactInput);
+      const compactContent = compactPrompt?.trim();
+      if (compactContent) {
+        input.messages.splice(0, input.messages.length, { role: "user", content: compactContent, timestamp: 0 });
+        recordFinalizeStart(input.opts, input.request, "compact", "no_findings", input.reason, compactContent.length);
+        return true;
+      }
     }
   }
 

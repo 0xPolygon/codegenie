@@ -667,7 +667,7 @@ export type FindingProducer = {
 
 export type CandidateFindingProvenance = {
   source: "uncertainty_promotion";
-  sourceKind: "uncertainty" | "follow_up_hint";
+  sourceKind: "uncertainty" | "follow_up_hint" | "unresolved_question";
   sourcePacketId: string;
   question: string;
   files: string[];
