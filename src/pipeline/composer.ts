@@ -63,6 +63,12 @@ export async function dedupeRankAndComposeReview(
   const pretrim = pretrimComposerInput(verified.verified);
   const groups = groupFindings(pretrim.kept, packetsById);
   const attention = buildHumanAttentionNotes(opts.packetResults ?? [], telemetry);
+  const verificationResolutions = buildVerificationResolutionIndex(verified.verdicts, opts.packetResults ?? [], verified.verified, packetsById, coverage);
+  const preComposerAttentionGroups = suppressAttentionGroupsResolvedByVerification(
+    attention.groups,
+    verificationResolutions.filter((resolution) => resolution.verdict === "reject")
+  ).available;
+  const composerPromptNotes = selectHumanAttentionGroups(preComposerAttentionGroups).notes;
   if (pretrim.suppressed.length > 0) {
     const reason = `composer pre-trim suppressed ${pretrim.suppressed.length} verified finding${pretrim.suppressed.length === 1 ? "" : "s"} above the ${MAX_COMPOSER_FINDINGS}-finding composer input cap`;
     coverage.reasons.push(reason);
@@ -75,7 +81,7 @@ export async function dedupeRankAndComposeReview(
   }
   let fallbackUsed = false;
   let compositionDegraded = false;
-  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, attention.notes).catch((error) => {
+  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes).catch((error) => {
     if (isFatalLlmError(error)) {
       throw error;
     }
@@ -162,6 +168,7 @@ export async function dedupeRankAndComposeReview(
     attention.groups,
     capped.findings.filter((finding) => finding.publication !== "suppressed"),
     packetsById,
+    verificationResolutions,
     telemetry
   );
   const summary = publishableCount === 0
@@ -198,10 +205,12 @@ export async function dedupeRankAndComposeReview(
   await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets({
     raw: attention.raw,
     grouped: attention.groups.map(attentionGroupArtifact),
-    composerPromptNotes: attention.notes,
+    composerPromptNotes,
     outputNotes: humanAttention.notes,
     omittedCount: humanAttention.omittedCount,
-    suppressedByFindings: humanAttention.suppressedByFindings
+    suppressedByFindings: humanAttention.suppressedByFindings,
+    suppressedByVerification: humanAttention.suppressedByVerification,
+    keptForOutput: humanAttention.keptGroups.map(attentionGroupArtifact)
   }));
   await telemetry.writeArtifact("final-findings.json", scrubGitHubSecrets(capped.findings));
   telemetry.event({
@@ -683,10 +692,38 @@ type HumanAttentionNotes = {
   omittedCount: number;
 };
 
+type VerificationResolution = {
+  candidateId: string;
+  verdict: VerificationVerdict["verdict"];
+  reason: string;
+  files: string[];
+  symbols: string[];
+  terms: Set<string>;
+  questionKeys: Set<string>;
+};
+
+type VerificationSuppressionRecord = {
+  groupKey: string;
+  note: NeedsHumanAttentionNote;
+  candidateId: string;
+  verdict: VerificationVerdict["verdict"];
+  reason: string;
+  verdictReason: string;
+  match: {
+    sharedFiles: string[];
+    sharedSymbols: string[];
+    sharedTerms: number;
+    similarity: number;
+    questionMatched: boolean;
+  };
+};
+
 type HumanAttentionOutput = {
   notes: NeedsHumanAttentionNote[];
   omittedCount: number;
   suppressedByFindings: NeedsHumanAttentionNote[];
+  suppressedByVerification: VerificationSuppressionRecord[];
+  keptGroups: AttentionHintGroup[];
 };
 
 function buildHumanAttentionNotes(packetResults: PacketReviewResult[], telemetry?: TelemetryRecorder): HumanAttentionNotes {
@@ -799,13 +836,15 @@ function selectHumanAttentionForOutput(
   groups: AttentionHintGroup[],
   findings: FinalFinding[],
   packetsById: Map<string, ReviewPacket>,
+  verificationResolutions: VerificationResolution[],
   telemetry?: TelemetryRecorder
 ): HumanAttentionOutput {
-  const available = groups.filter((group) => !findings.some((finding) => attentionGroupCoveredByFinding(group, finding, packetsById)));
-  const selected = selectHumanAttentionGroups(available);
+  const availableAfterFindings = groups.filter((group) => !findings.some((finding) => attentionGroupCoveredByFinding(group, finding, packetsById)));
   const suppressedByFindings = groups
-    .filter((group) => !available.includes(group))
+    .filter((group) => !availableAfterFindings.includes(group))
     .map(toAttentionNote);
+  const verificationSuppression = suppressAttentionGroupsResolvedByVerification(availableAfterFindings, verificationResolutions);
+  const selected = selectHumanAttentionGroups(verificationSuppression.available);
 
   if (suppressedByFindings.length > 0) {
     telemetry?.event({
@@ -814,7 +853,23 @@ function selectHumanAttentionForOutput(
       message: "human_attention_hints_suppressed_by_findings",
       data: {
         suppressed: suppressedByFindings.length,
-        remainingGroups: available.length
+        remainingGroups: availableAfterFindings.length
+      }
+    });
+  }
+  if (verificationSuppression.suppressed.length > 0) {
+    telemetry?.event({
+      stage: 10,
+      level: "info",
+      message: "human_attention_hints_suppressed_by_verification",
+      data: {
+        suppressed: verificationSuppression.suppressed.length,
+        remainingGroups: verificationSuppression.available.length,
+        candidates: verificationSuppression.suppressed.map((record) => ({
+          candidateId: record.candidateId,
+          verdict: record.verdict,
+          groupKey: record.groupKey
+        }))
       }
     });
   }
@@ -822,8 +877,107 @@ function selectHumanAttentionForOutput(
   return {
     notes: selected.notes,
     omittedCount: selected.omittedCount,
-    suppressedByFindings
+    suppressedByFindings,
+    suppressedByVerification: verificationSuppression.suppressed,
+    keptGroups: verificationSuppression.available
   };
+}
+
+function suppressAttentionGroupsResolvedByVerification(
+  groups: AttentionHintGroup[],
+  resolutions: VerificationResolution[]
+): { available: AttentionHintGroup[]; suppressed: VerificationSuppressionRecord[] } {
+  if (resolutions.length === 0) {
+    return { available: groups, suppressed: [] };
+  }
+  const available: AttentionHintGroup[] = [];
+  const suppressed: VerificationSuppressionRecord[] = [];
+  for (const group of groups) {
+    const match = firstVerificationResolutionMatch(group, resolutions);
+    if (match === undefined) {
+      available.push(group);
+      continue;
+    }
+    suppressed.push({
+      groupKey: group.key,
+      note: toAttentionNote(group),
+      candidateId: match.resolution.candidateId,
+      verdict: match.resolution.verdict,
+      reason: `resolved by stage 9 ${match.resolution.verdict} verdict for ${match.resolution.candidateId}`,
+      verdictReason: match.resolution.reason,
+      match: {
+        sharedFiles: match.sharedFiles,
+        sharedSymbols: match.sharedSymbols,
+        sharedTerms: match.sharedTerms,
+        similarity: match.similarity,
+        questionMatched: match.questionMatched
+      }
+    });
+  }
+  return { available, suppressed };
+}
+
+function firstVerificationResolutionMatch(
+  group: AttentionHintGroup,
+  resolutions: VerificationResolution[]
+): (VerificationResolutionMatch & { resolution: VerificationResolution }) | undefined {
+  for (const resolution of resolutions) {
+    const match = attentionGroupResolvedByVerification(group, resolution);
+    if (match !== undefined) {
+      return { ...match, resolution };
+    }
+  }
+  return undefined;
+}
+
+type VerificationResolutionMatch = {
+  sharedFiles: string[];
+  sharedSymbols: string[];
+  sharedTerms: number;
+  similarity: number;
+  questionMatched: boolean;
+};
+
+function attentionGroupResolvedByVerification(
+  group: AttentionHintGroup,
+  resolution: VerificationResolution
+): VerificationResolutionMatch | undefined {
+  const groupFiles = new Set(group.files.map(normalize).filter(Boolean));
+  const resolutionFiles = new Set(resolution.files.map(normalize).filter(Boolean));
+  const sharedFiles = sortedIntersection(groupFiles, resolutionFiles);
+  if (groupFiles.size > 0 && resolutionFiles.size > 0 && sharedFiles.length === 0) {
+    return undefined;
+  }
+
+  const groupSymbols = new Set(group.symbols.map(normalize).filter(Boolean));
+  const resolutionSymbols = new Set(resolution.symbols.map(normalize).filter(Boolean));
+  const sharedSymbols = sortedIntersection(groupSymbols, resolutionSymbols);
+  if (sharedFiles.length === 0 && sharedSymbols.length === 0) {
+    return undefined;
+  }
+
+  const groupTerms = normalizedTerms([
+    group.representative.question,
+    group.representative.reason,
+    group.symbols.join(" ")
+  ].join(" "));
+  const sharedTerms = intersectionCount(groupTerms, resolution.terms);
+  const similarity = tokenJaccard(groupTerms, resolution.terms);
+  const questionMatched = attentionGroupQuestionKeys(group).some((key) => resolution.questionKeys.has(key));
+
+  if (sharedFiles.length > 0 && sharedSymbols.length > 0) {
+    return questionMatched || sharedTerms >= 3 || similarity >= 0.3
+      ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched }
+      : undefined;
+  }
+  if (sharedSymbols.length > 0) {
+    return questionMatched || sharedTerms >= 4 || similarity >= 0.35
+      ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched }
+      : undefined;
+  }
+  return questionMatched || sharedTerms >= 5 || similarity >= 0.45
+    ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched }
+    : undefined;
 }
 
 function attentionGroupCoveredByFinding(
@@ -877,6 +1031,116 @@ function groupSharesFindingFile(group: AttentionHintGroup, finding: FinalFinding
   return [...groupFiles].some((file) => findingFiles.has(file));
 }
 
+function buildVerificationResolutionIndex(
+  verdicts: VerificationVerdict[],
+  packetResults: PacketReviewResult[],
+  verifiedFindings: CandidateFinding[],
+  packetsById: Map<string, ReviewPacket>,
+  coverage: RunCoverageStatus
+): VerificationResolution[] {
+  if (coverage.verificationSkipped === true || verdicts.length === 0) {
+    return [];
+  }
+  const candidatesById = candidateFindingsById(packetResults, verifiedFindings, verdicts);
+  return verdicts.flatMap((verdict): VerificationResolution[] => {
+    if (!verdictResolvesPredicate(verdict)) {
+      return [];
+    }
+    const original = candidatesById.get(verdict.candidateId);
+    const resolved = verdict.finalFinding ?? original;
+    if (original === undefined && resolved === undefined) {
+      return [];
+    }
+    const files = cleanStrings([
+      ...(original !== undefined ? candidateFiles(original, packetsById) : []),
+      ...(resolved !== undefined ? candidateFiles(resolved, packetsById) : [])
+    ]);
+    const symbols = cleanStrings([
+      ...(original !== undefined ? candidateSymbols(original, packetsById) : []),
+      ...(resolved !== undefined ? candidateSymbols(resolved, packetsById) : [])
+    ]);
+    const normalizedQuestionKeys = new Set([
+      ...(original?.provenance !== undefined ? questionKeys(original.provenance.question) : []),
+      ...(resolved?.provenance !== undefined ? questionKeys(resolved.provenance.question) : [])
+    ]);
+    const terms = normalizedTerms([
+      original !== undefined ? candidateResolutionText(original) : "",
+      resolved !== undefined && resolved !== original ? candidateResolutionText(resolved) : "",
+      verdict.reason,
+      symbols.join(" ")
+    ].join(" "));
+    return [{
+      candidateId: verdict.candidateId,
+      verdict: verdict.verdict,
+      reason: verdict.reason,
+      files,
+      symbols,
+      terms,
+      questionKeys: normalizedQuestionKeys
+    }];
+  });
+}
+
+function candidateFindingsById(
+  packetResults: PacketReviewResult[],
+  verifiedFindings: CandidateFinding[],
+  verdicts: VerificationVerdict[]
+): Map<string, CandidateFinding> {
+  const candidates = new Map<string, CandidateFinding>();
+  for (const result of packetResults) {
+    for (const finding of result.findings) {
+      candidates.set(finding.id, finding);
+    }
+  }
+  for (const finding of verifiedFindings) {
+    candidates.set(finding.id, finding);
+  }
+  for (const verdict of verdicts) {
+    if (verdict.finalFinding !== undefined) {
+      candidates.set(verdict.finalFinding.id, verdict.finalFinding);
+    }
+  }
+  return candidates;
+}
+
+function verdictResolvesPredicate(verdict: VerificationVerdict): boolean {
+  return verdict.verificationIncomplete !== true &&
+    verdict.requiredEvidencePresent === true &&
+    !/^verification disabled by config$/iu.test(verdict.reason.trim());
+}
+
+function candidateFiles(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): string[] {
+  const packet = packetsById.get(candidate.producedBy.packetId);
+  return cleanStrings([
+    candidate.path,
+    candidate.anchor?.path ?? "",
+    ...(candidate.provenance?.files ?? []),
+    packet?.path ?? "",
+    packet?.oldPath ?? ""
+  ]);
+}
+
+function candidateSymbols(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): string[] {
+  return cleanStrings([
+    ...symbolsForFinding(candidate, packetsById),
+    ...(candidate.provenance?.symbols ?? [])
+  ]);
+}
+
+function candidateResolutionText(candidate: CandidateFinding): string {
+  return [
+    candidate.title,
+    candidate.failureMode,
+    candidate.whyThisMatters,
+    candidate.verification,
+    candidate.suggestedFix ?? "",
+    candidate.evidence.changedCode,
+    ...(candidate.evidence.relatedCode ?? []).flatMap((related) => [related.path, related.lines, related.whyRelevant]),
+    candidate.provenance?.question ?? "",
+    candidate.provenance?.reason ?? ""
+  ].join(" ");
+}
+
 function intersectionCount(a: Set<string>, b: Set<string>): number {
   let count = 0;
   for (const value of a) {
@@ -885,6 +1149,10 @@ function intersectionCount(a: Set<string>, b: Set<string>): number {
     }
   }
   return count;
+}
+
+function sortedIntersection(a: Set<string>, b: Set<string>): string[] {
+  return [...a].filter((value) => b.has(value)).sort();
 }
 
 function attentionGroupArtifact(group: AttentionHintGroup): Record<string, unknown> {
@@ -964,6 +1232,16 @@ function normalizeLooseFollowUpQuestion(question: string): string {
     .replace(/^(whether|if)\s+/u, "")
     .replace(/\s+/gu, " ")
     .trim();
+}
+
+function questionKeys(question: string): string[] {
+  const exact = normalizeFollowUpQuestion(question);
+  const loose = normalizeLooseFollowUpQuestion(exact);
+  return [...new Set([exact, loose].filter((key) => key.length > 0))];
+}
+
+function attentionGroupQuestionKeys(group: AttentionHintGroup): string[] {
+  return questionKeys(group.representative.question);
 }
 
 function normalizedQuestionWords(question: string): string[] {

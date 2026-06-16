@@ -33,5 +33,5 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 27 | COMPLETE | Issue 27: Eval LLM Concurrency Overrides |
 | 28 | COMPLETE | Issue 28: Local Context Budget Pressure Reporting |
 | 29 | COMPLETE | Issue 29: Adaptive Local Source Budget Extensions |
-| 30 | PENDING | Issue 30: Post-Verification Human-Attention Reconciliation |
+| 30 | COMPLETE | Issue 30: Post-Verification Human-Attention Reconciliation |
 | 31 | PENDING | Issue 31: Intent-Aware Behavior-Change Framing |

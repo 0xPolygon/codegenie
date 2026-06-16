@@ -1,6 +1,6 @@
 # Issue 30: Post-Verification Human-Attention Reconciliation
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 5 review, 2026-06-15
 Planned at: commit `db41ed7`
 
@@ -75,4 +75,3 @@ Human-attention notes are valuable when codeninja genuinely cannot resolve a que
 - `human-attention-notes.json` explains what was suppressed and why.
 - Matching is based on normalized path/symbol/question overlap, not trails-api-specific strings.
 - The final report becomes shorter and more credible without losing genuine uncertainty.
-

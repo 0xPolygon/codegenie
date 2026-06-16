@@ -31,6 +31,7 @@ import type {
   RepositoryToolsHost,
   ReviewPacket,
   ReviewPlan,
+  RunCoverageStatus,
   StaticSignal,
   TelemetryEvent,
   UnifiedDiff
@@ -6521,6 +6522,167 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.needsHumanAttention).toEqual([]);
   });
 
+  it("suppresses human-attention notes resolved by verifier rejection with evidence", async () => {
+    const artifacts = new Map<string, unknown>();
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    let composerNotes: string[] | undefined;
+    const promptBuilder = {
+      ...fakePromptBuilder(),
+      buildComposerPrompt: (input: { followUpHintNotes?: string[] }) => {
+        composerNotes = input.followUpHintNotes;
+        return { prompt: "", templateVersion: "test", untrustedBlockCount: 0 };
+      }
+    };
+    const candidate = verifierResolutionCandidate();
+    const result = await dedupeRankAndComposeReview(
+      {
+        verified: [],
+        verdicts: [{
+          candidateId: candidate.id,
+          verdict: "reject",
+          reason: "normalizeAmount already returns an error when the price is zero, so the suspected missing guard is not real.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        }]
+      },
+      fakePlan("billing/fee.ts"),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      fakeCoverage(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        },
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
+        },
+        promptBuilder,
+        packets: [verifierResolutionPacket()],
+        packetResults: [packetResultWithFindingAndHint(candidate, "billing/fee.ts")]
+      }
+    );
+
+    expect(composerNotes).toEqual([]);
+    expect(result.needsHumanAttention).toEqual([]);
+    expect(artifacts.get("human-attention-notes.json")).toMatchObject({
+      suppressedByVerification: [
+        expect.objectContaining({
+          candidateId: "finding-helper-guard",
+          verdict: "reject",
+          note: expect.objectContaining({
+            question: "Check whether normalizeAmount rejects zero prices before fee calculation."
+          }),
+          match: expect.objectContaining({
+            sharedFiles: ["billing/fee.ts"],
+            questionMatched: true
+          })
+        })
+      ],
+      keptForOutput: []
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 10,
+      message: "human_attention_hints_suppressed_by_verification",
+      data: expect.objectContaining({ suppressed: 1, remainingGroups: 0 })
+    }));
+  });
+
+  it("keeps human-attention notes when verifier evidence is incomplete", async () => {
+    const candidate = verifierResolutionCandidate();
+    const result = await dedupeRankAndComposeReview(
+      {
+        verified: [],
+        verdicts: [{
+          candidateId: candidate.id,
+          verdict: "reject",
+          reason: "verification incomplete: decisive helper source remained unavailable",
+          requiredEvidencePresent: false,
+          falsePositiveRisk: "high",
+          verificationIncomplete: true
+        }]
+      },
+      fakePlan("billing/fee.ts"),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packets: [verifierResolutionPacket()],
+        packetResults: [packetResultWithFindingAndHint(candidate, "billing/fee.ts")]
+      }
+    );
+
+    expect(result.needsHumanAttention).toEqual([
+      expect.objectContaining({
+        question: "Check whether normalizeAmount rejects zero prices before fee calculation.",
+        files: ["billing/fee.ts"],
+        symbols: ["calculateFee", "normalizeAmount"]
+      })
+    ]);
+  });
+
+  it("keeps same-symbol human-attention notes when verification resolved a different file scope", async () => {
+    const candidate = verifierResolutionCandidate();
+    const result = await dedupeRankAndComposeReview(
+      {
+        verified: [],
+        verdicts: [{
+          candidateId: candidate.id,
+          verdict: "reject",
+          reason: "normalizeAmount is safe for the billing fee call site.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        }]
+      },
+      fakePlan("billing/fee.ts"),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packets: [verifierResolutionPacket()],
+        packetResults: [packetResultWithFindingAndHint(candidate, "reports/fee.ts")]
+      }
+    );
+
+    expect(result.needsHumanAttention).toEqual([
+      expect.objectContaining({
+        question: "Check whether normalizeAmount rejects zero prices before fee calculation.",
+        files: ["reports/fee.ts"],
+        symbols: ["calculateFee", "normalizeAmount"]
+      })
+    ]);
+  });
+
   it("passes deduped and capped human-attention notes to the composer prompt", async () => {
     let composerNotes: string[] | undefined;
     const promptBuilder = {
@@ -6698,6 +6860,87 @@ function packetResultWithHint(
     followUpHints: [{ suggestedLenses: [], ...hint }],
     uncertainties: [],
     status: "completed"
+  };
+}
+
+function packetResultWithFindingAndHint(candidate: CandidateFinding, hintFile: string): PacketReviewResult {
+  return {
+    packetId: "packet-helper",
+    lenses: ["core/code-review"],
+    findings: [candidate],
+    followUpHints: [{
+      question: "Check whether normalizeAmount rejects zero prices before fee calculation.",
+      files: [hintFile],
+      symbols: ["calculateFee", "normalizeAmount"],
+      suggestedLenses: [],
+      reason: "The helper guard determines whether the changed fee path can accept an invalid zero price.",
+      confidence: "medium"
+    }],
+    uncertainties: [],
+    status: "completed"
+  };
+}
+
+function verifierResolutionCandidate(): CandidateFinding {
+  return {
+    ...fakeFinding(),
+    id: "finding-helper-guard",
+    title: "fee calculation may miss the zero-price guard",
+    path: "billing/fee.ts",
+    anchor: { path: "billing/fee.ts", line: 12, side: "RIGHT", hunkId: "h1" },
+    evidence: {
+      changedCode: "return calculateFee(input)",
+      relatedCode: [{
+        path: "billing/amount.ts",
+        lines: "function normalizeAmount(price) { if (price <= 0) return error; }",
+        whyRelevant: "normalizeAmount is the helper that enforces the zero-price guard."
+      }]
+    },
+    failureMode: "calculateFee could pass a zero price unless normalizeAmount rejects it first.",
+    whyThisMatters: "A zero price can produce incorrect fee calculations.",
+    verification: "The candidate depends on whether normalizeAmount rejects zero prices.",
+    producedBy: { kind: "packet", stage: 7, packetId: "packet-helper", lensId: "core/code-review", skillIds: [] },
+    provenance: {
+      source: "uncertainty_promotion",
+      sourceKind: "follow_up_hint",
+      sourcePacketId: "packet-helper",
+      question: "Check whether normalizeAmount rejects zero prices before fee calculation.",
+      files: ["billing/fee.ts"],
+      symbols: ["calculateFee", "normalizeAmount"],
+      reason: "promoted unresolved helper-guard question"
+    }
+  };
+}
+
+function verifierResolutionPacket(): ReviewPacket {
+  return {
+    ...fakePacket({ id: "packet-helper", path: "billing/fee.ts" }),
+    symbolFacts: [
+      {
+        path: "billing/fee.ts",
+        hunkId: "h1",
+        enclosingSymbol: "calculateFee",
+        changedLines: [12],
+        changedLinesSide: "new",
+        source: "fallback",
+        confidence: "heuristic"
+      }
+    ]
+  };
+}
+
+function fakeCoverage(): RunCoverageStatus {
+  return {
+    totalHunks: 1,
+    reviewedHunks: 1,
+    skippedHunks: 0,
+    failedHunks: 0,
+    coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+    degradedPlanning: false,
+    budgetStopped: false,
+    verificationIncompleteCount: 0,
+    partial: false,
+    reasons: []
   };
 }
 

@@ -246,7 +246,7 @@ export async function runReview(
     const finalReview = await dedupeRankAndComposeReview(verified, plannerResult.plan, resolved, coverage, config, run.telemetry, {
       runner: services.runner,
       promptBuilder: services.promptBuilder,
-      packetResults: packetResultsForFinal,
+      packetResults: packetResultsForVerification,
       packets,
       diff,
       ...(overrides.postGithubComments !== undefined ? { postGithubComments: overrides.postGithubComments } : {})
