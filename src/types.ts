@@ -1335,6 +1335,10 @@ export type ToolCallRecord = {
   deliveryStatus?: ToolResultMeta["deliveryStatus"];
   recovery?: ToolResultMeta["recovery"];
   budgetState?: ToolBudgetState;
+  cacheStatus?: "hit" | "miss" | "disabled" | "write";
+  backendExecuted?: boolean;
+  cacheHitKind?: "stored" | "inflight";
+  cacheEvictedEntries?: number;
   resultCount?: number;
   resultChars: number;
   durationMs: number;

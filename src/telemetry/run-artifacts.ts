@@ -144,6 +144,17 @@ type ModelFinalizeSummary = {
   unknownCostCalls: number;
 };
 
+type ToolResultCacheSummary = {
+  hits: number;
+  misses: number;
+  writes: number;
+  disabled: number;
+  inflightHits: number;
+  evictions: number;
+  backendExecutions: number;
+  savedBackendCalls: number;
+};
+
 type TelemetryStageSummary = {
   events: number;
   levels: Record<LogLevel, number>;
@@ -327,8 +338,9 @@ class RunTelemetryImpl {
   };
   private toolSummary = {
     totalCalls: 0,
-    byTool: {} as Record<string, { count: number; errors: number; rejections: number; degraded: number; totalDurationMs: number; totalResultChars: number }>,
-    byStage: {} as Record<string, { count: number; errors: number; rejections: number; degraded: number; totalDurationMs: number; totalResultChars: number }>
+    resultCache: emptyToolResultCacheSummary(),
+    byTool: {} as Record<string, ToolBucket>,
+    byStage: {} as Record<string, ToolBucket>
   };
   private contextPressure = {
     toolBudgetRejections: 0,
@@ -586,7 +598,12 @@ class RunTelemetryImpl {
       ...(record.packetId !== undefined ? { packetId: record.packetId } : {}),
       ...(record.workerId !== undefined ? { workerId: record.workerId } : {}),
       ...(record.candidateId !== undefined ? { candidateId: record.candidateId } : {}),
-      data: { status: record.status, resultChars: record.resultChars }
+      data: {
+        status: record.status,
+        resultChars: record.resultChars,
+        cacheStatus: record.cacheStatus,
+        backendExecuted: record.backendExecuted
+      }
     });
 
     if (this.config.enabled) {
@@ -741,6 +758,7 @@ class RunTelemetryImpl {
 
   private updateToolSummary(record: ToolCallRecord): void {
     this.toolSummary.totalCalls += 1;
+    updateToolResultCacheSummary(this.toolSummary.resultCache, record);
     updateToolBucket(
       this.toolSummary.byTool[record.tool] ??
         (this.toolSummary.byTool[record.tool] = emptyToolBucket()),
@@ -829,6 +847,7 @@ class RunTelemetryImpl {
   private finalToolSummary(): unknown {
     return {
       totalCalls: this.toolSummary.totalCalls,
+      resultCache: { ...this.toolSummary.resultCache },
       byTool: averageToolBuckets(this.toolSummary.byTool),
       byStage: averageToolBuckets(this.toolSummary.byStage)
     };
@@ -919,6 +938,7 @@ class RunTelemetryImpl {
       modelCalls: this.modelSummary.providerCalls,
       providerCalls: this.modelSummary.providerCalls,
       toolCalls: this.toolSummary.totalCalls,
+      toolResultCache: { ...this.toolSummary.resultCache },
       inputTokens: this.modelSummary.inputTokens,
       uncachedInputTokens: this.modelSummary.uncachedInputTokens,
       cacheReadTokens: this.modelSummary.cacheReadTokens,
@@ -1025,8 +1045,11 @@ type ToolBucket = {
   errors: number;
   rejections: number;
   degraded: number;
+  backendExecutions: number;
+  savedBackendCalls: number;
   totalDurationMs: number;
   totalResultChars: number;
+  resultCache: ToolResultCacheSummary;
 };
 
 function emptyCacheCounts(): CacheCounts {
@@ -1284,8 +1307,11 @@ function emptyToolBucket(): ToolBucket {
     errors: 0,
     rejections: 0,
     degraded: 0,
+    backendExecutions: 0,
+    savedBackendCalls: 0,
     totalDurationMs: 0,
-    totalResultChars: 0
+    totalResultChars: 0,
+    resultCache: emptyToolResultCacheSummary()
   };
 }
 
@@ -1294,8 +1320,45 @@ function updateToolBucket(bucket: ToolBucket, record: ToolCallRecord): void {
   bucket.errors += record.status === "error" ? 1 : 0;
   bucket.rejections += record.status === "rejected" ? 1 : 0;
   bucket.degraded += record.degraded ? 1 : 0;
+  bucket.backendExecutions += record.backendExecuted === true ? 1 : 0;
+  bucket.savedBackendCalls += record.cacheStatus === "hit" ? 1 : 0;
+  updateToolResultCacheSummary(bucket.resultCache, record);
   bucket.totalDurationMs += record.durationMs;
   bucket.totalResultChars += record.resultChars;
+}
+
+function emptyToolResultCacheSummary(): ToolResultCacheSummary {
+  return {
+    hits: 0,
+    misses: 0,
+    writes: 0,
+    disabled: 0,
+    inflightHits: 0,
+    evictions: 0,
+    backendExecutions: 0,
+    savedBackendCalls: 0
+  };
+}
+
+function updateToolResultCacheSummary(summary: ToolResultCacheSummary, record: ToolCallRecord): void {
+  if (record.backendExecuted === true) {
+    summary.backendExecutions += 1;
+  }
+  if (record.cacheStatus === "hit") {
+    summary.hits += 1;
+    summary.savedBackendCalls += 1;
+    if (record.cacheHitKind === "inflight") {
+      summary.inflightHits += 1;
+    }
+  } else if (record.cacheStatus === "write") {
+    summary.misses += 1;
+    summary.writes += 1;
+  } else if (record.cacheStatus === "miss") {
+    summary.misses += 1;
+  } else {
+    summary.disabled += 1;
+  }
+  summary.evictions += record.cacheEvictedEntries ?? 0;
 }
 
 function addStageCount(target: Partial<Record<ReviewStage, number>>, stage: ReviewStage, amount: number): void {

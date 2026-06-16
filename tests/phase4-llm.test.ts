@@ -19,6 +19,7 @@ import {
   MODEL_CALL_CACHE_SCHEMA_VERSION,
   modelCallCacheEntryPath
 } from "../src/llm/model-call-cache.js";
+import { createToolResultCache } from "../src/llm/tool-result-cache.js";
 import {
   SCHEMA_VERSIONS,
   SubmitCompositionSchema,
@@ -846,6 +847,272 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ]);
 
     expect(maxActive).toBe(1);
+  });
+
+  it("reuses identical deterministic repository tool results within one runner", async () => {
+    const telemetry = fakeTelemetry();
+    const readRange = vi.fn(async () => ({
+      text: "cached source",
+      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+    }));
+    const tools: RepositoryTools = { ...fakeRepositoryTools(), readRange };
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async (_model, context) => {
+        const messages = context.messages as unknown[];
+        if (messages.length === 1) {
+          return assistant([
+            {
+              type: "toolCall",
+              id: "read-cache",
+              name: "read_range",
+              arguments: { path: "src/a.ts", startLine: 1, endLine: 3 }
+            }
+          ]);
+        }
+        return assistant([validSubmitReviewCall(`submit-${messages.length}`)]);
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 2 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      toolResultCache: createToolResultCache(),
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const request = {
+      ...submitReviewRequest("packet-cache"),
+      tools: buildRepositoryToolDefinitions(tools),
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 1000 }
+    };
+
+    await runner.runStructured(request);
+    await runner.runStructured(request);
+
+    expect(readRange).toHaveBeenCalledTimes(1);
+    expect(telemetry.toolCalls).toHaveLength(2);
+    expect(telemetry.toolCalls.map((call) => call.cacheStatus)).toEqual(["write", "hit"]);
+    expect(telemetry.toolCalls.map((call) => call.backendExecuted)).toEqual([true, false]);
+    expect(telemetry.toolCalls[1]?.cacheHitKind).toBe("stored");
+  });
+
+  it("coalesces concurrent identical repository tool requests in flight", async () => {
+    const telemetry = fakeTelemetry();
+    const readRange = vi.fn(async () => {
+      await delay(50);
+      return {
+        text: "shared source",
+        meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+      };
+    });
+    const tools: RepositoryTools = { ...fakeRepositoryTools(), readRange };
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async (_model, context) => {
+        const messages = context.messages as unknown[];
+        if (messages.length === 1) {
+          return assistant([
+            {
+              type: "toolCall",
+              id: "read-inflight",
+              name: "read_range",
+              arguments: { path: "src/a.ts", startLine: 1, endLine: 3 }
+            }
+          ]);
+        }
+        return assistant([validSubmitReviewCall(`submit-${messages.length}`)]);
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 4 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      toolResultCache: createToolResultCache(),
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const request = {
+      ...submitReviewRequest("packet-inflight"),
+      tools: buildRepositoryToolDefinitions(tools),
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 }
+    };
+
+    await Promise.all([runner.runStructured(request), runner.runStructured(request)]);
+
+    expect(readRange).toHaveBeenCalledTimes(1);
+    expect(telemetry.toolCalls).toHaveLength(2);
+    expect(telemetry.toolCalls.map((call) => call.cacheStatus).sort()).toEqual(["hit", "write"]);
+    expect(telemetry.toolCalls.filter((call) => call.backendExecuted === true)).toHaveLength(1);
+    expect(telemetry.toolCalls.some((call) => call.cacheHitKind === "inflight")).toBe(true);
+  });
+
+  it("lets an in-flight cache waiter honor its own timeout", async () => {
+    const telemetry = fakeTelemetry();
+    const readRange = vi.fn(async () => {
+      await delay(80);
+      return {
+        text: "slow shared source",
+        meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+      };
+    });
+    const tools: RepositoryTools = { ...fakeRepositoryTools(), readRange };
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async (_model, context) => {
+        const messages = context.messages as unknown[];
+        if (messages.length === 1) {
+          return assistant([
+            {
+              type: "toolCall",
+              id: "read-inflight-timeout",
+              name: "read_range",
+              arguments: { path: "src/a.ts", startLine: 1, endLine: 3 }
+            }
+          ]);
+        }
+        return assistant([validSubmitReviewCall(`submit-${messages.length}`)]);
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 4 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      toolResultCache: createToolResultCache(),
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const request = {
+      ...submitReviewRequest("packet-inflight-timeout"),
+      tools: buildRepositoryToolDefinitions(tools),
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 },
+      timeoutMs: 250
+    };
+    const first = runner.runStructured(request);
+    await delay(5);
+    const second = runner.runStructured({ ...request, timeoutMs: 20 });
+
+    await expect(second).rejects.toMatchObject({
+      code: "llm_call_failed",
+      context: { reason: "timeout" }
+    });
+    await expect(first).resolves.toMatchObject({
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
+    });
+
+    expect(readRange).toHaveBeenCalledTimes(1);
+    expect(telemetry.toolCalls).toHaveLength(1);
+    expect(telemetry.toolCalls[0]).toMatchObject({
+      cacheStatus: "write",
+      backendExecuted: true
+    });
+  });
+
+  it("does not cache repository tool errors", async () => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async () => ({
+      text: "tool error: invalid_args: bad range",
+      isError: true,
+      errorCode: "invalid_args" as const,
+      meta: { backend: "text" as const, precision: "text" as const, degraded: true, degradationReason: "invalid_args" }
+    }));
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read range",
+      parameters: Type.Object({ path: Type.String({ minLength: 1 }) }, { additionalProperties: false }),
+      execute
+    };
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async (_model, context) => {
+        const messages = context.messages as unknown[];
+        if (messages.length === 1) {
+          return assistant([{ type: "toolCall", id: "read-error", name: "read_range", arguments: { path: "src/a.ts" } }]);
+        }
+        return assistant([validSubmitReviewCall(`submit-${messages.length}`)]);
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 2 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      toolResultCache: createToolResultCache(),
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const request = {
+      ...submitReviewRequest("packet-error-cache"),
+      tools: [tool],
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 }
+    };
+
+    await runner.runStructured(request);
+    await runner.runStructured(request);
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(telemetry.toolCalls.map((call) => call.status)).toEqual(["error", "error"]);
+    expect(telemetry.toolCalls.map((call) => call.cacheStatus)).toEqual(["miss", "miss"]);
+    expect(telemetry.toolCalls.map((call) => call.backendExecuted)).toEqual([true, true]);
+  });
+
+  it("keeps different repository tool arguments in separate cache entries", async () => {
+    const telemetry = fakeTelemetry();
+    const readRange = vi.fn(async (_path: string, startLine: number) => ({
+      text: `source from ${startLine}`,
+      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+    }));
+    const tools: RepositoryTools = { ...fakeRepositoryTools(), readRange };
+    const requestedStarts = [1, 2];
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async (_model, context) => {
+        const messages = context.messages as unknown[];
+        if (messages.length === 1) {
+          const startLine = requestedStarts.shift() ?? 1;
+          return assistant([
+            {
+              type: "toolCall",
+              id: `read-${startLine}`,
+              name: "read_range",
+              arguments: { path: "src/a.ts", startLine, endLine: startLine + 1 }
+            }
+          ]);
+        }
+        return assistant([validSubmitReviewCall(`submit-${messages.length}`)]);
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 2 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      toolResultCache: createToolResultCache(),
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const request = {
+      ...submitReviewRequest("packet-cache-args"),
+      tools: buildRepositoryToolDefinitions(tools),
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 }
+    };
+
+    await runner.runStructured(request);
+    await runner.runStructured(request);
+
+    expect(readRange).toHaveBeenCalledTimes(2);
+    expect(readRange.mock.calls.map((call) => call[1])).toEqual([1, 2]);
+    expect(telemetry.toolCalls.map((call) => call.cacheStatus)).toEqual(["write", "write"]);
   });
 
   it("records schema-invalid submits and does not cache them before repair", async () => {

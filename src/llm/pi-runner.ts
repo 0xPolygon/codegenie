@@ -40,7 +40,10 @@ import {
   type PiToolCall,
   type StoredProviderResponse,
   type ToolDefinition,
-  type ToolExecutionResult
+  type ToolExecutionResult,
+  type ToolResultCache,
+  type ToolResultCacheHitKind,
+  type ToolResultCacheStatus
 } from "./llm-runner.js";
 import { MODEL_CALL_CACHE_SCHEMA_VERSION, buildModelCallCacheKey } from "./model-call-cache.js";
 import { SCHEMA_VERSIONS, submitToolNameForStage } from "./schemas.js";
@@ -63,6 +66,10 @@ type ToolRunOutcome = {
   budgetState?: ToolBudgetState;
   args: Record<string, unknown>;
   durationMs: number;
+  cacheStatus: ToolResultCacheStatus;
+  backendExecuted: boolean;
+  cacheHitKind?: ToolResultCacheHitKind;
+  cacheEvictedEntries?: number;
 };
 
 type ToolRejectionReason =
@@ -328,7 +335,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 localBudgetReason !== undefined && extensionDecision?.status !== "granted"
                   ? rejectedToolOutcome(toolCall, localBudgetReason, toolRejectionMessage(localBudgetReason), budgetState)
                   : tool
-                    ? await executeToolCall(adapter, repositoryTools, tool, toolCall, taskTimeout.signal, taskTimeout.timedOut)
+                    ? await executeToolCall(adapter, repositoryTools, tool, toolCall, taskTimeout.signal, taskTimeout.timedOut, opts.toolResultCache)
                     : rejectedToolOutcome(toolCall, "unknown_tool", `unknown tool ${toolCall.name}`, budgetState);
 
               outcome.budgetState ??= budgetState;
@@ -1107,56 +1114,97 @@ async function executeToolCall(
   tool: ToolDefinition,
   toolCall: PiToolCall,
   taskSignal: AbortSignal,
-  taskTimedOut: () => boolean
+  taskTimedOut: () => boolean,
+  toolResultCache?: ToolResultCache
 ): Promise<ToolRunOutcome> {
   const startedAt = Date.now();
   try {
     throwIfTaskAborted(taskSignal, taskTimedOut);
-    const args = adapter.validateToolCall(tools.map(toolSpec), toolCall) as Record<string, unknown>;
     try {
-      const result = await tool.execute(args, taskSignal);
-      return {
-        result,
-        status: result.isError ? result.errorCode === "path_outside_repo" ? "rejected" : "error" : "ok",
-        ...(result.errorCode !== undefined ? { errorCode: result.errorCode } : {}),
-        args,
-        durationMs: Date.now() - startedAt
-      };
+      const args = adapter.validateToolCall(tools.map(toolSpec), toolCall) as Record<string, unknown>;
+      try {
+        const cacheLookup = toolResultCache === undefined
+          ? {
+              result: await tool.execute(args, taskSignal),
+              status: "disabled" as const,
+              backendExecuted: true
+            }
+          : await toolResultCache.execute({
+              toolName: tool.name,
+              args,
+              signal: taskSignal,
+              run: () => tool.execute(args, taskSignal)
+            });
+        const result = cacheLookup.result;
+        return {
+          result,
+          status: result.isError ? result.errorCode === "path_outside_repo" ? "rejected" : "error" : "ok",
+          ...(result.errorCode !== undefined ? { errorCode: result.errorCode } : {}),
+          args,
+          durationMs: Date.now() - startedAt,
+          cacheStatus: cacheLookup.status,
+          backendExecuted: cacheLookup.backendExecuted,
+          ...(cacheLookup.hitKind !== undefined ? { cacheHitKind: cacheLookup.hitKind } : {}),
+          ...(cacheLookup.evictedEntries !== undefined ? { cacheEvictedEntries: cacheLookup.evictedEntries } : {})
+        };
+      } catch (cause) {
+        if (taskSignal.aborted && isAbortError(cause)) {
+          throw taskAbortError(taskTimedOut());
+        }
+        return toolExecutionErrorOutcome(cause, args, Date.now() - startedAt, true, "miss");
+      }
     } catch (cause) {
+      if (taskSignal.aborted && cause instanceof CodeninjaError && cause.code === "llm_call_failed") {
+        throw cause;
+      }
       if (taskSignal.aborted && isAbortError(cause)) {
         throw taskAbortError(taskTimedOut());
       }
-      throw cause;
+      return toolExecutionErrorOutcome(cause, toolCall.arguments, Date.now() - startedAt, false, "disabled");
     }
   } catch (cause) {
     if (taskSignal.aborted && cause instanceof CodeninjaError && cause.code === "llm_call_failed") {
       throw cause;
     }
-    if (cause instanceof CodeninjaError) {
-      return {
-        result: {
-          text: `tool error: ${cause.code}: ${cause.message}`,
-          isError: true,
-          meta: { backend: "text", precision: "text", degraded: true, degradationReason: cause.code }
-        },
-        status: cause.code === "path_outside_repo" ? "rejected" : "error",
-        errorCode: cause.code,
-        args: toolCall.arguments,
-        durationMs: Date.now() - startedAt
-      };
-    }
+    return toolExecutionErrorOutcome(cause, toolCall.arguments, Date.now() - startedAt, false, "disabled");
+  }
+}
+
+function toolExecutionErrorOutcome(
+  cause: unknown,
+  args: Record<string, unknown>,
+  durationMs: number,
+  backendExecuted: boolean,
+  cacheStatus: ToolResultCacheStatus
+): ToolRunOutcome {
+  if (cause instanceof CodeninjaError) {
     return {
       result: {
-        text: `tool error: ${cause instanceof Error ? cause.message : String(cause)}`,
+        text: `tool error: ${cause.code}: ${cause.message}`,
         isError: true,
-        meta: { backend: "text", precision: "text", degraded: true, degradationReason: "tool_failed" }
+        meta: { backend: "text", precision: "text", degraded: true, degradationReason: cause.code }
       },
-      status: "error",
-      errorCode: "llm_call_failed",
-      args: toolCall.arguments,
-      durationMs: Date.now() - startedAt
+      status: cause.code === "path_outside_repo" ? "rejected" : "error",
+      errorCode: cause.code,
+      args,
+      durationMs,
+      cacheStatus,
+      backendExecuted
     };
   }
+  return {
+    result: {
+      text: `tool error: ${cause instanceof Error ? cause.message : String(cause)}`,
+      isError: true,
+      meta: { backend: "text", precision: "text", degraded: true, degradationReason: "tool_failed" }
+    },
+    status: "error",
+    errorCode: "llm_call_failed",
+    args,
+    durationMs,
+    cacheStatus,
+    backendExecuted
+  };
 }
 
 function rejectedToolOutcome(
@@ -1175,7 +1223,9 @@ function rejectedToolOutcome(
     rejectionReason: reasonCode,
     budgetState,
     args: toolCall.arguments,
-    durationMs: 0
+    durationMs: 0,
+    cacheStatus: "disabled",
+    backendExecuted: false
   };
 }
 
@@ -1415,6 +1465,10 @@ function recordToolCall(
     deliveryStatus: meta.deliveryStatus,
     recovery: meta.recovery,
     budgetState: outcome.budgetState,
+    cacheStatus: outcome.cacheStatus,
+    backendExecuted: outcome.backendExecuted,
+    cacheHitKind: outcome.cacheHitKind,
+    cacheEvictedEntries: outcome.cacheEvictedEntries,
     resultChars: outcome.result.text.length,
     durationMs: outcome.durationMs,
     status: outcome.status,
@@ -1539,6 +1593,10 @@ function writeToolCallDebug(
       deliveryStatus: record.deliveryStatus,
       recovery: record.recovery,
       resultChars: record.resultChars,
+      cacheStatus: record.cacheStatus,
+      backendExecuted: record.backendExecuted,
+      cacheHitKind: record.cacheHitKind,
+      cacheEvictedEntries: record.cacheEvictedEntries,
       durationMs: record.durationMs,
       budgetState: outcome.budgetState
     }

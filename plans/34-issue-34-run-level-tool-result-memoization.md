@@ -1,6 +1,6 @@
 # Issue 34: Run-Level Tool Result Memoization
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 6 review and Opus 4.8 notes, 2026-06-16
 Planned at: commit `506fa43`
 

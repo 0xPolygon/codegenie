@@ -11,6 +11,7 @@ import { maybePublishToGitHub } from "../github/publisher.js";
 import { createPiRunner } from "../llm/pi-runner.js";
 import type { LlmCallUsage, LlmRunner, ModelCallCache, PiAiAdapter } from "../llm/llm-runner.js";
 import { buildModelCallCacheKey, createModelCallCache } from "../llm/model-call-cache.js";
+import { createToolResultCache } from "../llm/tool-result-cache.js";
 import { createFakeRunner, shouldUseFakeRunner } from "../llm/fake-runner.js";
 import { buildRepositoryIndex } from "../repo/repository-index.js";
 import { buildLensRegistry, droppedLensesFromFailures } from "../skills/lens-registry.js";
@@ -698,11 +699,15 @@ function createRunner(config: CodeninjaConfig, run: RunContext, cache?: ModelCal
   if (shouldUseFakeRunner(config.llm)) {
     return createFakeRunner();
   }
+  const toolResultCache = cache?.runFingerprint === undefined
+    ? createToolResultCache()
+    : createToolResultCache({ runFingerprint: cache.runFingerprint });
   return createPiRunner({
     llmConfig: config.llm,
     telemetry: run.telemetry,
     logger: run.logger,
     ...(cache !== undefined ? { cache } : {}),
+    toolResultCache,
     runSignal: run.abort.signal,
     ...(adapter !== undefined ? { adapter } : {}),
     hooks: {

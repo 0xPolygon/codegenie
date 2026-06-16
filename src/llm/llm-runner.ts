@@ -30,6 +30,27 @@ export type ToolExecutionResult = {
   meta?: ToolResultMeta;
 };
 
+export type ToolResultCacheStatus = "hit" | "miss" | "write" | "disabled";
+
+export type ToolResultCacheHitKind = "stored" | "inflight";
+
+export type ToolResultCacheLookup = {
+  result: ToolExecutionResult;
+  status: ToolResultCacheStatus;
+  backendExecuted: boolean;
+  hitKind?: ToolResultCacheHitKind;
+  evictedEntries?: number;
+};
+
+export interface ToolResultCache {
+  execute(input: {
+    toolName: string;
+    args: Record<string, unknown>;
+    signal?: AbortSignal;
+    run: () => Promise<ToolExecutionResult>;
+  }): Promise<ToolResultCacheLookup>;
+}
+
 export type LlmToolResultSummary = {
   id: string;
   tool: string;
@@ -120,6 +141,7 @@ export type CreateRunnerOptions = {
   telemetry: TelemetryRecorder;
   logger: Logger;
   cache?: ModelCallCache;
+  toolResultCache?: ToolResultCache;
   runSignal: AbortSignal;
   adapter?: PiAiAdapter;
   hooks: CreateRunnerHooks;

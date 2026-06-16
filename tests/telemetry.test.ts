@@ -212,6 +212,8 @@ describe("run telemetry", () => {
       backend: "text",
       precision: "exact",
       degraded: false,
+      cacheStatus: "disabled",
+      backendExecuted: true,
       resultChars: 42,
       durationMs: 3,
       status: "ok"
@@ -281,6 +283,16 @@ describe("run telemetry", () => {
       modelCalls: 2,
       providerCalls: 2,
       toolCalls: 1,
+      toolResultCache: {
+        hits: 0,
+        misses: 0,
+        writes: 0,
+        disabled: 1,
+        inflightHits: 0,
+        evictions: 0,
+        backendExecutions: 1,
+        savedBackendCalls: 0
+      },
       inputTokens: 100,
       outputTokens: 20,
       totalTokens: 120,
@@ -388,6 +400,97 @@ describe("run telemetry", () => {
     expect(stderr).not.toHaveBeenCalled();
     stderr.mockRestore();
     clearRegisteredSecretsForTests();
+  });
+
+  it("aggregates tool-result cache telemetry in run artifacts", async () => {
+    const repoRoot = tempDir();
+    const run = createRunTelemetry({
+      telemetryConfig: {
+        ...defaultConfig.telemetry,
+        logLevel: "debug"
+      },
+      idFactory: () => "20260611-120001-tool-result-cache-summary"
+    });
+    const attached = await run.attachRunDirectory(repoRoot);
+    const common = {
+      stage: 7 as const,
+      initiator: "model" as const,
+      tool: "read_range",
+      args: { path: "src/index.ts", startLine: 1, endLine: 2 },
+      backend: "text" as const,
+      precision: "exact" as const,
+      degraded: false,
+      resultChars: 20,
+      durationMs: 5
+    };
+
+    run.recorder.recordToolCall({
+      ...common,
+      cacheStatus: "write",
+      backendExecuted: true,
+      cacheEvictedEntries: 2,
+      status: "ok"
+    });
+    run.recorder.recordToolCall({
+      ...common,
+      cacheStatus: "hit",
+      cacheHitKind: "stored",
+      backendExecuted: false,
+      durationMs: 1,
+      status: "ok"
+    });
+    run.recorder.recordToolCall({
+      ...common,
+      cacheStatus: "hit",
+      cacheHitKind: "inflight",
+      backendExecuted: false,
+      durationMs: 1,
+      status: "ok"
+    });
+    run.recorder.recordToolCall({
+      ...common,
+      cacheStatus: "miss",
+      backendExecuted: true,
+      status: "error",
+      errorCode: "llm_call_failed"
+    });
+    run.recorder.recordToolCall({
+      ...common,
+      cacheStatus: "disabled",
+      backendExecuted: true,
+      status: "ok"
+    });
+
+    await run.finalize({ status: "completed_full", exitCode: 0 });
+
+    const expected = {
+      hits: 2,
+      misses: 2,
+      writes: 1,
+      disabled: 1,
+      inflightHits: 1,
+      evictions: 2,
+      backendExecutions: 3,
+      savedBackendCalls: 2
+    };
+    const runJson = readJson(path.join(attached.runDir, "run.json"));
+    expect(runJson.totals.toolResultCache).toEqual(expected);
+    const toolSummary = readJson(path.join(attached.runDir, "tool-calls-summary.json"));
+    expect(toolSummary.resultCache).toEqual(expected);
+    expect(toolSummary.byTool.read_range).toMatchObject({
+      count: 5,
+      errors: 1,
+      backendExecutions: 3,
+      savedBackendCalls: 2,
+      resultCache: expected
+    });
+    expect(toolSummary.byStage["7"]).toMatchObject({
+      count: 5,
+      errors: 1,
+      backendExecutions: 3,
+      savedBackendCalls: 2,
+      resultCache: expected
+    });
   });
 
   it("aggregates prompt-cache token and cost telemetry without counting cache-hit replays", async () => {
