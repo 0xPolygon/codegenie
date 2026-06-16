@@ -870,6 +870,7 @@ async function completeWithCache(input: {
       const durationMs = Date.now() - startedAt;
       const providerFailure = providerFailureFromMessage(message, taskTimedOut());
       if (providerFailure) {
+        const retry = classifyProviderRetry(providerFailure.cause, attempt);
         recordModelCall(opts, request, model, message, {
           callId,
           kind,
@@ -881,14 +882,34 @@ async function completeWithCache(input: {
           durationMs,
           status: providerFailure.status,
           errorCode: "llm_call_failed",
-          errorMessage: providerFailure.message
+          errorMessage: providerFailure.message,
+          retryable: retry.retryable,
+          retryReason: retry.reason,
+          maxAttempts: MAX_PROVIDER_ATTEMPTS,
+          retryExhausted: retry.retryable && attempt >= MAX_PROVIDER_ATTEMPTS
         });
         releaseReservation();
         reportUsage(opts, request.stage, message);
         lastError = providerFailure.cause;
-        if (providerFailure.status === "transient_error" && isRetryableProviderError(providerFailure.cause, attempt) && attempt < MAX_PROVIDER_ATTEMPTS) {
-          await sleep(retryDelayMs(providerFailure.cause, attempt), taskSignal, taskTimedOut);
+        if (providerFailure.status === "transient_error" && retry.retryable && attempt < MAX_PROVIDER_ATTEMPTS) {
+          const delayMs = retryDelayMs(providerFailure.cause, attempt);
+          recordProviderRetryEvent(opts, request, {
+            callId,
+            attempt,
+            maxAttempts: MAX_PROVIDER_ATTEMPTS,
+            reason: retry.reason,
+            nextDelayMs: delayMs
+          });
+          await sleep(delayMs, taskSignal, taskTimedOut);
           continue;
+        }
+        if (providerFailure.status === "transient_error" && retry.retryable) {
+          recordProviderRetryExhaustedEvent(opts, request, {
+            callId,
+            attempt,
+            maxAttempts: MAX_PROVIDER_ATTEMPTS,
+            reason: retry.reason
+          });
         }
         throw markRecordedProviderFailure(toLlmError(providerFailure.cause, providerFailure.status, taskTimedOut()));
       }
@@ -934,6 +955,7 @@ async function completeWithCache(input: {
       reportAttemptUsage(opts, request.stage);
       lastError = cause;
       const status = taskTimedOut() ? "timeout" : errorStatus(cause);
+      const retry = classifyProviderRetry(cause, attempt);
       recordErroredModelCall(opts, request, model, {
         callId,
         kind,
@@ -945,11 +967,31 @@ async function completeWithCache(input: {
         durationMs: Date.now() - startedAt,
         status,
         errorCode: "llm_call_failed",
-        errorMessage: cause instanceof Error ? truncatePromptDiagnostic(cause.message) : truncatePromptDiagnostic(String(cause))
+        errorMessage: cause instanceof Error ? truncatePromptDiagnostic(cause.message) : truncatePromptDiagnostic(String(cause)),
+        retryable: retry.retryable,
+        retryReason: retry.reason,
+        maxAttempts: MAX_PROVIDER_ATTEMPTS,
+        retryExhausted: retry.retryable && attempt >= MAX_PROVIDER_ATTEMPTS
       });
-      if (status === "transient_error" && isRetryableProviderError(cause, attempt) && attempt < MAX_PROVIDER_ATTEMPTS) {
-        await sleep(retryDelayMs(cause, attempt), taskSignal, taskTimedOut);
+      if (status === "transient_error" && retry.retryable && attempt < MAX_PROVIDER_ATTEMPTS) {
+        const delayMs = retryDelayMs(cause, attempt);
+        recordProviderRetryEvent(opts, request, {
+          callId,
+          attempt,
+          maxAttempts: MAX_PROVIDER_ATTEMPTS,
+          reason: retry.reason,
+          nextDelayMs: delayMs
+        });
+        await sleep(delayMs, taskSignal, taskTimedOut);
         continue;
+      }
+      if (status === "transient_error" && retry.retryable) {
+        recordProviderRetryExhaustedEvent(opts, request, {
+          callId,
+          attempt,
+          maxAttempts: MAX_PROVIDER_ATTEMPTS,
+          reason: retry.reason
+        });
       }
       throw toLlmError(cause, status, taskTimedOut());
     }
@@ -2067,6 +2109,51 @@ function recordModelCallEvent(
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
 
+function recordProviderRetryEvent(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  meta: { callId: string; attempt: number; maxAttempts: number; reason: string; nextDelayMs: number }
+): void {
+  opts.telemetry.event(definedRecord({
+    stage: request.stage,
+    level: "warn",
+    message: "provider_retry_scheduled",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      callId: meta.callId,
+      role: roleForStage(request.stage),
+      attempt: meta.attempt,
+      maxAttempts: meta.maxAttempts,
+      retryReason: meta.reason,
+      nextDelayMs: meta.nextDelayMs,
+      candidateId: request.telemetryContext?.candidateId
+    }) as Record<string, unknown>
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
+function recordProviderRetryExhaustedEvent(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  meta: { callId: string; attempt: number; maxAttempts: number; reason: string }
+): void {
+  opts.telemetry.event(definedRecord({
+    stage: request.stage,
+    level: "warn",
+    message: "provider_retry_exhausted",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      callId: meta.callId,
+      role: roleForStage(request.stage),
+      attempt: meta.attempt,
+      maxAttempts: meta.maxAttempts,
+      retryReason: meta.reason,
+      candidateId: request.telemetryContext?.candidateId
+    }) as Record<string, unknown>
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
 function recordModelCall(
   opts: CreateRunnerOptions,
   request: LlmStructuredRequest<unknown>,
@@ -2086,6 +2173,10 @@ function recordModelCall(
     status?: "ok" | "schema_invalid" | "transient_error" | "auth_error" | "timeout" | "aborted";
     errorCode?: CodeninjaErrorCode;
     errorMessage?: string;
+    retryable?: boolean;
+    retryReason?: string;
+    maxAttempts?: number;
+    retryExhausted?: boolean;
   }
 ): void {
   const outputText = stableJson(message.content);
@@ -2125,7 +2216,11 @@ function recordModelCall(
     stopReason: stopReason(message),
     status: meta.status ?? "ok",
     errorCode: meta.errorCode,
-    errorMessage: meta.errorMessage ?? providerErrorMessage(message)
+    errorMessage: meta.errorMessage ?? providerErrorMessage(message),
+    retryable: meta.retryable,
+    retryReason: meta.retryReason,
+    maxAttempts: meta.maxAttempts,
+    retryExhausted: meta.retryExhausted
   }) as Parameters<CreateRunnerOptions["telemetry"]["recordModelCall"]>[0];
   opts.telemetry.recordModelCall(record);
   const usageDebug = usageDebugPayload(model, message.usage, usage);
@@ -2149,6 +2244,10 @@ function recordErroredModelCall(
     status: "transient_error" | "auth_error" | "timeout" | "aborted";
     errorCode: CodeninjaErrorCode;
     errorMessage?: string;
+    retryable?: boolean;
+    retryReason?: string;
+    maxAttempts?: number;
+    retryExhausted?: boolean;
   }
 ): void {
   const record = definedRecord({
@@ -2173,7 +2272,11 @@ function recordErroredModelCall(
     stopReason: "error",
     status: meta.status,
     errorCode: meta.errorCode,
-    errorMessage: meta.errorMessage
+    errorMessage: meta.errorMessage,
+    retryable: meta.retryable,
+    retryReason: meta.retryReason,
+    maxAttempts: meta.maxAttempts,
+    retryExhausted: meta.retryExhausted
   }) as Parameters<CreateRunnerOptions["telemetry"]["recordModelCall"]>[0];
   opts.telemetry.recordModelCall(record);
   writeModelCallResponseDebug(opts, request, meta.callId, record, {
@@ -2413,15 +2516,38 @@ function errorStatus(cause: unknown): "transient_error" | "auth_error" | "aborte
   return "transient_error";
 }
 
-function isRetryableProviderError(cause: unknown, attempt: number): boolean {
+type ProviderRetryClassification = {
+  retryable: boolean;
+  reason: string;
+};
+
+function classifyProviderRetry(cause: unknown, attempt: number): ProviderRetryClassification {
   if (isAbortError(cause)) {
-    return false;
+    return { retryable: false, reason: "aborted" };
+  }
+  if (errorStatus(cause) === "auth_error") {
+    return { retryable: false, reason: "auth_error" };
   }
   const status = errorHttpStatus(cause);
   if (status !== undefined) {
-    return status === 429 || status >= 500;
+    if (status === 429) {
+      return { retryable: true, reason: "rate_limited" };
+    }
+    if (status >= 500) {
+      return { retryable: true, reason: "server_error" };
+    }
+    return { retryable: false, reason: "request_error" };
   }
-  return isLikelyNetworkError(cause) || attempt === 1;
+  const messageReason = transientProviderMessageReason(cause);
+  if (messageReason !== undefined) {
+    return { retryable: true, reason: messageReason };
+  }
+  if (isLikelyNetworkError(cause)) {
+    return { retryable: true, reason: "network_error" };
+  }
+  return attempt === 1
+    ? { retryable: true, reason: "unknown_initial" }
+    : { retryable: false, reason: "unknown_non_retryable" };
 }
 
 function toLlmError(
@@ -2437,9 +2563,10 @@ function toLlmError(
     });
   }
   const reason = timedOut ? "timeout" : requestErrorReason(cause, status);
+  const retry = status === "transient_error" ? classifyProviderRetry(cause, MAX_PROVIDER_ATTEMPTS) : undefined;
   return new CodeninjaError("llm_call_failed", timedOut ? "LLM provider call timed out" : "LLM provider call failed", {
     recoverable: true,
-    context: { reason },
+    context: definedRecord({ reason, retryReason: retry?.reason }) as Record<string, unknown>,
     cause
   });
 }
@@ -2450,6 +2577,54 @@ function requestErrorReason(cause: unknown, status: "transient_error" | "auth_er
     return "request_error";
   }
   return status;
+}
+
+function transientProviderMessageReason(cause: unknown): string | undefined {
+  const text = providerErrorText(cause);
+  if (text.length === 0) {
+    return undefined;
+  }
+  if (/\boverloaded(?:_error)?\b/iu.test(text)) {
+    return "provider_overloaded";
+  }
+  if (/\brate[ _-]?limit(?:ed|ing)?\b|\btoo many requests\b/iu.test(text)) {
+    return "rate_limited";
+  }
+  if (/\btemporarily unavailable\b|\btry again later\b|\bservice unavailable\b/iu.test(text)) {
+    return "temporarily_unavailable";
+  }
+  if (/\bserver error\b|\binternal server error\b/iu.test(text)) {
+    return "server_error";
+  }
+  return undefined;
+}
+
+function providerErrorText(cause: unknown): string {
+  if (cause instanceof Error) {
+    const parts = [cause.message];
+    const record = cause as unknown as Record<string, unknown>;
+    collectProviderErrorText(record, parts);
+    return parts.filter((part) => part.trim().length > 0).join("\n");
+  }
+  if (!cause || typeof cause !== "object") {
+    return String(cause ?? "");
+  }
+  const parts: string[] = [];
+  collectProviderErrorText(cause as Record<string, unknown>, parts);
+  return parts.join("\n");
+}
+
+function collectProviderErrorText(record: Record<string, unknown>, parts: string[]): void {
+  for (const key of ["type", "code", "message", "errorMessage"]) {
+    const value = record[key];
+    if (typeof value === "string") {
+      parts.push(value);
+    }
+  }
+  const nested = record.error ?? record.response;
+  if (nested && typeof nested === "object") {
+    collectProviderErrorText(nested as Record<string, unknown>, parts);
+  }
 }
 
 function errorHttpStatus(cause: unknown): number | undefined {

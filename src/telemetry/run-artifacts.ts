@@ -277,6 +277,8 @@ type PipelineTelemetrySummary = {
     merged: number;
     suppressed: number;
     finalFindings: number;
+    compositionMode: string | null;
+    fallbackReason: string | null;
   };
   posting: {
     attempted: number;
@@ -1277,7 +1279,9 @@ function emptyPipelineTelemetrySummary(): PipelineTelemetrySummary {
       published: 0,
       merged: 0,
       suppressed: 0,
-      finalFindings: 0
+      finalFindings: 0,
+      compositionMode: null,
+      fallbackReason: null
     },
     posting: {
       attempted: 0,
@@ -1504,6 +1508,8 @@ function mergePipelineFinalSelection(target: PipelineTelemetrySummary["finalSele
   setNumber(target, "merged", source.merged);
   setNumber(target, "suppressed", source.suppressed);
   setNumber(target, "finalFindings", source.finalFindings);
+  setString(target, "compositionMode", source.compositionMode);
+  setString(target, "fallbackReason", source.fallbackReason);
 }
 
 function mergePipelinePosting(target: PipelineTelemetrySummary["posting"], source: Record<string, unknown> | undefined): void {
@@ -1520,8 +1526,14 @@ function objectField(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
-function setNumber(target: Record<string, number>, key: string, value: unknown): void {
+function setNumber(target: Record<string, unknown>, key: string, value: unknown): void {
   if (typeof value === "number" && Number.isFinite(value)) {
+    target[key] = value;
+  }
+}
+
+function setString(target: Record<string, unknown>, key: string, value: unknown): void {
+  if (typeof value === "string" && value.length > 0) {
     target[key] = value;
   }
 }

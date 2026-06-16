@@ -5178,6 +5178,75 @@ describe("phase 5 pipeline regressions", () => {
     ).rejects.toMatchObject({ code: "llm_call_failed", recoverable: false });
   });
 
+  it("rethrows non-transient composition failures instead of falling back", async () => {
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodeninjaError("llm_call_failed", "bad request", {
+          recoverable: true,
+          context: { reason: "request_error" }
+        });
+      }
+    };
+    const coverage: RunCoverageStatus = {
+      totalHunks: 1,
+      reviewedHunks: 1,
+      skippedHunks: 0,
+      failedHunks: 0,
+      coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+      degradedPlanning: false,
+      budgetStopped: false,
+      verificationIncompleteCount: 0,
+      partial: false,
+      reasons: []
+    };
+
+    await expect(
+      dedupeRankAndComposeReview(
+        { verified: [fakeFinding()], verdicts: [] },
+        fakePlan(),
+        { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+        coverage,
+        config(),
+        nullTelemetry(),
+        { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+      )
+    ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "request_error" } });
+  });
+
+  it("rethrows schema-invalid composition failures instead of falling back", async () => {
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodeninjaError("llm_schema_invalid", "model did not call submit_composition", {
+          recoverable: true
+        });
+      }
+    };
+    const coverage: RunCoverageStatus = {
+      totalHunks: 1,
+      reviewedHunks: 1,
+      skippedHunks: 0,
+      failedHunks: 0,
+      coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+      degradedPlanning: false,
+      budgetStopped: false,
+      verificationIncompleteCount: 0,
+      partial: false,
+      reasons: []
+    };
+
+    await expect(
+      dedupeRankAndComposeReview(
+        { verified: [fakeFinding()], verdicts: [] },
+        fakePlan(),
+        { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+        coverage,
+        config(),
+        nullTelemetry(),
+        { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+      )
+    ).rejects.toMatchObject({ code: "llm_schema_invalid" });
+  });
+
   it("fails the run on persistent provider-wide non-auth failures and writes failure logs", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
@@ -5281,7 +5350,7 @@ describe("phase 5 pipeline regressions", () => {
             falsePositiveRisk: "low"
           } as T;
         }
-        throw new Error("composer unavailable");
+        throw composerTransientError();
       }
     };
 
@@ -5293,6 +5362,24 @@ describe("phase 5 pipeline regressions", () => {
 
     const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as { status: { reasons: string[] } };
     expect(coverage.status.reasons).toContain("semantic composition skipped; deterministic fallback used");
+    const finalSelection = JSON.parse(readFileSync(path.join(runArtifactDir, "final-selection.json"), "utf8")) as {
+      composition: { mode: string; fallbackReason: string };
+      records: Array<{ findingId: string; decision: string }>;
+    };
+    expect(finalSelection.composition).toEqual({
+      mode: "deterministic_fallback",
+      fallbackReason: "semantic composition skipped; deterministic fallback used"
+    });
+    expect(finalSelection.records).toEqual(
+      expect.arrayContaining([expect.objectContaining({ decision: "published" })])
+    );
+    const telemetry = JSON.parse(readFileSync(path.join(runArtifactDir, "telemetry.json"), "utf8")) as {
+      finalSelection: { compositionMode: string; fallbackReason: string };
+    };
+    expect(telemetry.finalSelection).toMatchObject({
+      compositionMode: "deterministic_fallback",
+      fallbackReason: "semantic composition skipped; deterministic fallback used"
+    });
   });
 
   it("writes run artifacts for explicit runArtifactDir even when telemetry config is disabled", async () => {
@@ -5529,7 +5616,7 @@ describe("phase 5 pipeline regressions", () => {
     };
     const runner: LlmRunner = {
       runStructured: async () => {
-        throw new Error("force deterministic fallback");
+        throw composerTransientError();
       }
     };
     const result = await dedupeRankAndComposeReview(
@@ -5705,7 +5792,7 @@ describe("phase 5 pipeline regressions", () => {
       {
         runner: {
           runStructured: async () => {
-            throw new Error("force deterministic fallback");
+            throw composerTransientError();
           }
         },
         promptBuilder: fakePromptBuilder(),
@@ -5800,7 +5887,7 @@ describe("phase 5 pipeline regressions", () => {
       {
         runner: {
           runStructured: async () => {
-            throw new Error("force deterministic fallback");
+            throw composerTransientError();
           }
         },
         promptBuilder: fakePromptBuilder(),
@@ -5845,7 +5932,7 @@ describe("phase 5 pipeline regressions", () => {
       {
         runner: {
           runStructured: async () => {
-            throw new Error("force deterministic fallback");
+            throw composerTransientError();
           }
         },
         promptBuilder: fakePromptBuilder(),
@@ -5923,7 +6010,7 @@ describe("phase 5 pipeline regressions", () => {
       {
         runner: {
           runStructured: async () => {
-            throw new Error("force deterministic fallback");
+            throw composerTransientError();
           }
         },
         promptBuilder: fakePromptBuilder(),
@@ -6007,7 +6094,7 @@ describe("phase 5 pipeline regressions", () => {
       {
         runner: {
           runStructured: async () => {
-            throw new Error("force deterministic fallback");
+            throw composerTransientError();
           }
         },
         promptBuilder: fakePromptBuilder(),
@@ -6181,7 +6268,7 @@ describe("phase 5 pipeline regressions", () => {
       {
         runner: {
           runStructured: async () => {
-            throw new Error("force deterministic fallback");
+            throw composerTransientError();
           }
         },
         promptBuilder: fakePromptBuilder()
@@ -6246,7 +6333,7 @@ describe("phase 5 pipeline regressions", () => {
       {
         runner: {
           runStructured: async () => {
-            throw new Error("force deterministic fallback");
+            throw composerTransientError();
           }
         },
         promptBuilder: fakePromptBuilder(),
@@ -6298,7 +6385,7 @@ describe("phase 5 pipeline regressions", () => {
       {
         runner: {
           runStructured: async () => {
-            throw new Error("force deterministic fallback");
+            throw composerTransientError();
           }
         },
         promptBuilder: fakePromptBuilder(),
@@ -6871,7 +6958,7 @@ describe("phase 5 pipeline regressions", () => {
       {
         runner: {
           runStructured: async () => {
-            throw new Error("force deterministic fallback");
+            throw composerTransientError();
           }
         },
         promptBuilder: fakePromptBuilder()
@@ -7278,7 +7365,7 @@ describe("phase 5 pipeline regressions", () => {
       {
         runner: {
           runStructured: async () => {
-            throw new Error("force deterministic fallback");
+            throw composerTransientError();
           }
         },
         promptBuilder: fakePromptBuilder()
@@ -8495,6 +8582,13 @@ function fakeTwoLineDiff(): UnifiedDiff {
       }
     ]
   };
+}
+
+function composerTransientError(): CodeninjaError {
+  return new CodeninjaError("llm_call_failed", "composer transient failure", {
+    recoverable: true,
+    context: { reason: "transient_error", retryReason: "provider_overloaded" }
+  });
 }
 
 function fakeFinding(): CandidateFinding {

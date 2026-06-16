@@ -9,15 +9,32 @@ export function isFatalLlmError(error: unknown): boolean {
 }
 
 export function isBudgetExhaustedError(error: unknown): boolean {
-  return isCodeninjaError(error) && (error.code === "budget_exhausted" || error.context?.reason === "budget_exhausted");
+  return errorField(error, "code") === "budget_exhausted" || errorContextReason(error) === "budget_exhausted";
 }
 
 export function isSchemaInvalidError(error: unknown): boolean {
   return isCodeninjaError(error) && error.code === "llm_schema_invalid";
 }
 
+export function isRecoverableTransientLlmError(error: unknown): boolean {
+  if (errorField(error, "code") !== "llm_call_failed" || errorField(error, "recoverable") !== true) {
+    return false;
+  }
+  const reason = errorContextReason(error);
+  return reason === "transient_error" || reason === "timeout";
+}
+
 export function isRecoverableWorkerError(error: unknown): boolean {
   return !isFatalLlmError(error) && !isBudgetExhaustedError(error);
+}
+
+function errorContextReason(error: unknown): unknown {
+  const context = errorField(error, "context");
+  return context && typeof context === "object" ? (context as Record<string, unknown>).reason : undefined;
+}
+
+function errorField(error: unknown, field: string): unknown {
+  return error && typeof error === "object" ? (error as Record<string, unknown>)[field] : undefined;
 }
 
 export function validateAnchorForPacket(anchor: DiffAnchor | undefined, packet: ReviewPacket): DiffAnchor | undefined {

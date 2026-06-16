@@ -21,7 +21,7 @@ import type {
 } from "../types.js";
 import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { sha256Hex } from "../util/hashing.js";
-import { isFatalLlmError, validateAnchorForDiff } from "./pipeline-utils.js";
+import { isBudgetExhaustedError, isRecoverableTransientLlmError, validateAnchorForDiff } from "./pipeline-utils.js";
 import { summarizeIntentSignals } from "./intent-signals.js";
 
 type ComposeOptions = {
@@ -45,6 +45,8 @@ type SelectionRecord = {
   reason: string;
   mergedIntoFingerprint?: string;
 };
+
+type CompositionMode = "llm" | "llm_degraded" | "deterministic_fallback";
 
 const MAX_COMPOSER_FINDINGS = 40;
 const MAX_HUMAN_ATTENTION_NOTES = 5;
@@ -86,19 +88,21 @@ export async function dedupeRankAndComposeReview(
     });
   }
   let fallbackUsed = false;
+  let fallbackReason: string | undefined;
   let compositionDegraded = false;
   const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes).catch((error) => {
-    if (isFatalLlmError(error)) {
+    if (!canUseComposerFallback(error, groups, coverage)) {
       throw error;
     }
     fallbackUsed = true;
+    fallbackReason = composerFallbackCoverageReason();
     telemetry.event({
       stage: 10,
       level: "warn",
-      message: "composer fallback used",
-      data: { error: error instanceof Error ? error.message : String(error) }
+      message: "composer_fallback_used",
+      data: composerFallbackTelemetry(error, groups, fallbackReason)
     });
-    coverage.reasons.push("semantic composition skipped; deterministic fallback used");
+    coverage.reasons.push(fallbackReason);
     return fallbackComposition(groups);
   });
 
@@ -162,6 +166,7 @@ export async function dedupeRankAndComposeReview(
   }
 
   const capped = applyCaps(finalFindings, config);
+  const compositionMode: CompositionMode = fallbackUsed ? "deterministic_fallback" : compositionDegraded ? "llm_degraded" : "llm";
   for (const [id, reason] of anchorDowngradeReasons) {
     if (!capped.downgradeReasons.has(id)) {
       capped.downgradeReasons.set(id, reason);
@@ -203,6 +208,10 @@ export async function dedupeRankAndComposeReview(
   };
 
   await telemetry.writeArtifact("final-selection.json", {
+    composition: {
+      mode: compositionMode,
+      ...(fallbackReason !== undefined ? { fallbackReason } : {})
+    },
     records: selection,
     groups: groups.map((group) => ({
       fingerprint: group.fingerprint,
@@ -228,11 +237,13 @@ export async function dedupeRankAndComposeReview(
         published: selection.filter((record) => record.decision === "published").length,
         merged: selection.filter((record) => record.decision === "merged").length,
         suppressed: selection.filter((record) => record.decision === "suppressed").length,
-        finalFindings: capped.findings.length
+        finalFindings: capped.findings.length,
+        compositionMode,
+        ...(fallbackReason !== undefined ? { fallbackReason } : {})
       }
     }
   });
-  telemetry.event({ stage: 10, level: "info", message: "stage_completed", data: { finalFindings: capped.findings.length } });
+  telemetry.event({ stage: 10, level: "info", message: "stage_completed", data: { finalFindings: capped.findings.length, compositionMode } });
   return result;
 }
 
@@ -293,6 +304,36 @@ function expandClusterFindingIds(findingIds: string[], known: Map<string, Candid
     }
   }
   return [...expanded];
+}
+
+function canUseComposerFallback(error: unknown, groups: FindingGroup[], coverage: RunCoverageStatus): boolean {
+  if (isBudgetExhaustedError(error)) {
+    return true;
+  }
+  if (groups.length > 0) {
+    return isRecoverableTransientLlmError(error);
+  }
+  return isRecoverableTransientLlmError(error) &&
+    !coverage.partial &&
+    !coverage.budgetStopped &&
+    coverage.verificationIncompleteCount === 0;
+}
+
+function composerFallbackCoverageReason(): string {
+  return "semantic composition skipped; deterministic fallback used";
+}
+
+function composerFallbackTelemetry(error: unknown, groups: FindingGroup[], fallbackReason: string): Record<string, unknown> {
+  const errorRecord = error && typeof error === "object" ? error as { code?: unknown; recoverable?: unknown; context?: unknown } : {};
+  return {
+    compositionMode: "deterministic_fallback",
+    fallbackReason,
+    verifiedGroups: groups.length,
+    error: error instanceof Error ? error.message : String(error),
+    ...(typeof errorRecord.code === "string" ? { errorCode: errorRecord.code } : {}),
+    ...(typeof errorRecord.recoverable === "boolean" ? { recoverable: errorRecord.recoverable } : {}),
+    ...(errorRecord.context && typeof errorRecord.context === "object" ? { context: errorRecord.context } : {})
+  };
 }
 
 function fallbackComposition(groups: FindingGroup[]): SubmitComposition {

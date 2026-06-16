@@ -2929,6 +2929,33 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.complete).toHaveBeenCalledTimes(1);
   });
 
+  it("does not retry authentication provider errors", async () => {
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async () => {
+        const error = new Error("unauthorized api key") as Error & { status: number };
+        error.status = 401;
+        throw error;
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured(submitReviewRequest("packet-auth"))).rejects.toMatchObject({
+      code: "llm_call_failed",
+      recoverable: false,
+      context: { reason: "auth" }
+    });
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+  });
+
   it("treats Pi stopReason error messages as provider failures instead of schema failures", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
@@ -3011,8 +3038,51 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
+  it("retries provider overload messages without an HTTP status for all configured attempts", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const telemetry = fakeTelemetry();
+    let calls = 0;
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async () => {
+        calls += 1;
+        if (calls <= 3) {
+          return assistantError('{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}');
+        }
+        return assistant([validSubmitReviewCall("submit-after-overload")]);
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    try {
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder,
+        logger: fakeLogger(),
+        runSignal: new AbortController().signal,
+        adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+
+      await runner.runStructured(submitReviewRequest("packet-overload"));
+
+      expect(adapter.complete).toHaveBeenCalledTimes(4);
+      expect(telemetry.modelCalls.map((call) => call.attempt)).toEqual([1, 2, 3, 4]);
+      expect(telemetry.modelCalls.slice(0, 3).every((call) =>
+        call.status === "transient_error" &&
+        call.retryable === true &&
+        call.retryReason === "provider_overloaded" &&
+        call.maxAttempts === 4
+      )).toBe(true);
+      expect(telemetry.modelCalls[3]).toMatchObject({ status: "ok", attempt: 4 });
+      expect(telemetry.events.filter((event) => event.message === "provider_retry_scheduled")).toHaveLength(3);
+    } finally {
+      random.mockRestore();
+    }
+  });
+
   it("treats persistent retryable provider errors as recoverable task failures", async () => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const telemetry = fakeTelemetry();
     const adapter: PiAiAdapter = {
       resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
       complete: vi.fn(async () => {
@@ -3025,7 +3095,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     try {
       const runner = createPiRunner({
         llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-        telemetry: fakeTelemetry().recorder,
+        telemetry: telemetry.recorder,
         logger: fakeLogger(),
         runSignal: new AbortController().signal,
         adapter,
@@ -3038,6 +3108,20 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         context: { reason: "transient_error" }
       });
       expect(adapter.complete).toHaveBeenCalledTimes(4);
+      expect(telemetry.modelCalls.at(-1)).toMatchObject({
+        attempt: 4,
+        retryable: true,
+        retryReason: "server_error",
+        retryExhausted: true
+      });
+      expect(telemetry.events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            message: "provider_retry_exhausted",
+            data: expect.objectContaining({ retryReason: "server_error", maxAttempts: 4 })
+          })
+        ])
+      );
     } finally {
       random.mockRestore();
     }

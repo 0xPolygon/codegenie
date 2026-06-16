@@ -40,6 +40,10 @@ export type LlmCallRecord = {
   status: "ok" | "schema_invalid" | "transient_error" | "auth_error" | "timeout" | "aborted";
   errorCode?: CodeninjaErrorCode;
   errorMessage?: string;
+  retryable?: boolean;
+  retryReason?: string;
+  maxAttempts?: number;
+  retryExhausted?: boolean;
 };
 
 export interface TelemetryRecorder {
