@@ -68,7 +68,7 @@ export type PromptBuilder = {
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
   5: "p5.2",
-  7: "p7.2",
+  7: "p7.3",
   8: "p8.1",
   9: "p9.1",
   10: "p10.1"
@@ -111,8 +111,9 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("packet review"),
         injectionInstruction(),
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
-        "No finding is a successful high-quality review outcome. Once you have checked the packet's concrete risk and targeted context, call submit_review with reviewStatus:\"no_findings\", findings: [], followUpHints: [], uncertainties: [], and a short noFindingReason instead of continuing broad exploration.",
-        "Use followUpHints and uncertainties sparingly. Emit only concrete, actionable unresolved questions with file or symbol scope; do not emit broad reminders like \"check if this is safe\". Prefer a candidate finding when changed-line evidence proves a failure mode, and prefer no finding/no hint when the concern is speculative. At most two followUpHints and one uncertainty will be kept from this packet.",
+        "Raise candidate findings for concrete changed-line failure modes. If the evidence shows a plausible changed-line correctness, security, performance, architecture, or testing risk but one narrow predicate still needs confirmation, surface it as a candidate finding or a pointer-rich followUpHint/uncertainty for the verifier instead of suppressing it.",
+        "A later verification stage filters false positives. Do not publish speculation as a finding, but do not hide a plausible verifier-resolvable concern behind reviewStatus:\"no_findings\". No-findings is appropriate only after the changed-line risk has been checked and no concrete failure mode or pointer-rich unresolved predicate remains.",
+        "Emit followUpHints and uncertainties for concrete unresolved risks with file or symbol scope. Do not emit broad reminders like \"check if this is safe\". For behavior-preserving refactors or refactor-like changes, surface changed-line anchored changes to validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries as a candidate or verifier-bound hint when they may alter caller-visible behavior.",
         "Confidence calibration: do not mark a changed-line correctness/security finding low confidence solely because one optional tool lookup or supporting range read was unavailable. Use medium confidence when the changed-code evidence and failure mode are concrete but a narrow verifier-resolvable predicate remains. Reserve low confidence for speculative reachability, ambiguous product intent, or weak path matching.",
         "Validate raw external/provider/API/config/database values before lossy conversion; validation after overflow, truncation, rounding, precision loss, or coercion may be too late. Treat packet staticSignals as hints to investigate, not automatic findings.",
         "Use declared intent signals to frame behavior changes precisely. Refactor-like intent without explicit behavior-change signals can support accidental-regression framing. Mixed refactor and behavior-change signals should usually be framed as a contract change needing caller/spec confirmation. If task, PR, or spec context explicitly requires the new behavior and caller impact is covered, do not report it as a bug.",
@@ -120,10 +121,10 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "When assessing removed helpers, renamed symbols, deleted guards, or behavior-preserving refactors, inspect the base side if needed. Prefer read_symbol or find_definition with source {kind:\"auto\"} unless the exact revision matters; auto searches head first and falls back to base.",
         "When local context feels tight, prefer exact source reads such as read_symbol, read_range, find_definition, or read_diff_blocks over broad search/list tools. Broad exploration may be refused after local budget pressure, while narrow source reads may receive a small extension.",
         packet.reviewProfile === "simple"
-          ? "This packet is classified as simple. Review the provided packet only and return no findings unless the defect is clear from the packet text."
+          ? "This packet is classified as simple. Review the provided packet only, but surface a clear changed-line defect or pointer-rich unresolved predicate visible from the packet text."
           : packet.reviewProfile === "investigate"
-            ? "This packet is classified for investigation. Use repository tools when they can materially verify a concrete failure mode."
-            : "This packet has a standard review profile. Keep tool use focused and stop investigating once the concrete failure mode is either verified or ruled out.",
+            ? "This packet is classified for investigation. Use repository tools when they can materially decide a concrete suspected failure mode."
+            : "This packet has a standard review profile. Keep tool use focused on changed-line risks and stop once the concrete failure mode is either verified, ruled out, or ready for verifier-bound follow-up.",
         depthCloseGuidance(packet),
         "Skill guidance:\n" + projection.text,
         ...blocks,
@@ -195,12 +196,12 @@ function plannerDossierPromptProjection(dossier: PlannerDossier): Omit<PlannerDo
 
 function depthCloseGuidance(packet: ReviewPacket): string {
   if (packet.coverage === "light" || packet.reviewProfile === "simple") {
-    return "Close quickly: submit no findings after packet-only review unless a concrete defect is visible from the packet or one narrow source read is decisive.";
+    return "For light/simple review, decide from the packet text and at most one narrow source read. Submit no findings only when no concrete defect or verifier-bound unresolved predicate is visible.";
   }
   if (packet.coverage === "deep" || packet.reviewProfile === "investigate") {
-    return "Investigate deeply only while pursuing a concrete suspected failure mode. When the decisive branch is verified or ruled out, submit findings or no findings immediately.";
+    return "Investigate while pursuing concrete suspected failure modes. When the decisive branch is verified or ruled out, submit findings; if one narrow predicate remains unresolved, surface it as a pointer-rich followUpHint or uncertainty for verification.";
   }
-  return "Use targeted tools when they can decide a concrete failure mode. Do not continue broad exploration after the likely risk is resolved; submit findings or no findings.";
+  return "Use targeted tools when they can decide a concrete failure mode. Avoid broad exploration, but do not abandon a plausible changed-line concern unsurfaced because one lookup was inconclusive.";
 }
 
 export function projectSkills(skills: Skill[], stage: ReviewStage, options: ProjectSkillsOptions = {}): SkillProjection {

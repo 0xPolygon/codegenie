@@ -447,6 +447,106 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("reports Stage 7 generation volume for recall diagnostics", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        if (request.telemetryContext?.packetId === "packet-finding") {
+          return {
+            findings: [{
+              title: "changed fallback can break callers",
+              severity: "medium",
+              confidence: "medium",
+              path: "app.ts",
+              anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+              category: "correctness",
+              evidence: { changedCode: "+bad" },
+              failureMode: "The changed fallback may now reject a caller-visible path.",
+              whyThisMatters: "Callers can fail unexpectedly.",
+              verification: "Changed-line fallback behavior needs verifier confirmation."
+            }],
+            followUpHints: [
+              {
+                question: "Verify whether handler keeps the fallback contract.",
+                files: ["app.ts"],
+                symbols: ["handler"],
+                suggestedLenses: ["core/code-review"],
+                reason: "The changed fallback path is caller-visible.",
+                confidence: "medium"
+              },
+              {
+                question: "Verify whether handler still accepts zero values.",
+                files: ["app.ts"],
+                symbols: ["handler"],
+                suggestedLenses: ["core/code-review"],
+                reason: "The changed branch touches a zero-value path.",
+                confidence: "medium"
+              },
+              {
+                question: "Verify related logging.",
+                files: ["app.ts"],
+                symbols: [],
+                suggestedLenses: ["core/code-review"],
+                reason: "Lower-value extra hint.",
+                confidence: "low"
+              }
+            ],
+            uncertainties: [
+              { question: "Whether handler changed fallback behavior.", files: ["app.ts"], symbols: ["handler"] },
+              { question: "Whether logging changed.", files: ["app.ts"], symbols: [] }
+            ]
+          } as T;
+        }
+        return {
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [],
+          uncertainties: [],
+          noFindingReason: "No changed-line failure mode."
+        } as T;
+      }
+    };
+
+    await runLensPackets(
+      fakePlan(),
+      [fakePacket({ id: "packet-finding" }), fakePacket({ id: "packet-none" })],
+      fakeTools(),
+      { ...config(), review: { ...config().review, concurrency: 2 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 7,
+      message: "pipeline_metrics",
+      data: expect.objectContaining({
+        generation: expect.objectContaining({
+          directCandidates: 1,
+          packetsWithCandidates: 1,
+          noFindingsPackets: 1,
+          submittedFollowUpHints: 3,
+          keptFollowUpHints: 2,
+          droppedFollowUpHints: 1,
+          submittedUncertainties: 2,
+          keptUncertainties: 1,
+          droppedUncertainties: 1,
+          submittedHintsAndUncertainties: 5,
+          keptHintsAndUncertainties: 3
+        })
+      })
+    }));
+  });
+
   it("builds whole-file packets for configured whole-file files", async () => {
     const file: DiffFile = {
       path: "app.ts",
@@ -3581,6 +3681,32 @@ describe("phase 5 pipeline regressions", () => {
     const prompt = createPromptBuilder(fakeLensRegistry()).buildPacketReviewPrompt({ packet: packets[0] as ReviewPacket, skills: [] });
     expect(prompt.prompt).toContain("correctness/lossy-conversion-before-validation");
     expect(prompt.prompt).toContain("Validate raw external/provider/API/config/database values before lossy conversion");
+  });
+
+  it("keeps Stage 7 packet prompts recall-oriented while leaving verification as the precision gate", () => {
+    const prompt = createPromptBuilder(fakeLensRegistry()).buildPacketReviewPrompt({
+      packet: {
+        ...fakePacket(),
+        intentSignals: {
+          refactorLike: true,
+          behaviorChangeLike: false,
+          explicitlyBehaviorPreserving: true,
+          signals: [],
+          summary: "refactor-like behavior-preserving change"
+        }
+      },
+      skills: []
+    }).prompt;
+
+    expect(prompt).not.toContain("No finding is a successful high-quality review outcome");
+    expect(prompt).not.toContain("followUpHints: [], uncertainties: []");
+    expect(prompt).not.toContain("At most two followUpHints");
+    expect(prompt).not.toContain("instead of continuing broad exploration");
+    expect(prompt).toContain("A later verification stage filters false positives");
+    expect(prompt).toContain("verifier-bound hint");
+    expect(prompt).toContain("behavior-preserving refactors");
+    expect(prompt).toContain("validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries");
+    expect(prompt).toContain("do not mark a changed-line correctness/security finding low confidence solely");
   });
 
   it("detects generic test rewrites that replace boundary coverage with helper-level tests", () => {

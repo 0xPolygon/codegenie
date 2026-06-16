@@ -47,7 +47,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 41 | COMPLETE | Issue 41: Eval Scoring and Composition Provenance Under-Credit |
 | 42 | COMPLETE | Issue 42: Stage 6 Adaptive Context Underdelivery |
 | 43 | COMPLETE | Issue 43: Stage 7 Compact Removal and Generic Test-Rewrite Recall |
-| 44 | PENDING | Issue 44: Stage 7 Recall Recalibration (Generate Liberally, Verify Strictly) |
+| 44 | COMPLETE | Issue 44: Stage 7 Recall Recalibration (Generate Liberally, Verify Strictly) |
 | 45 | PENDING | Issue 45: Provider Overload Retry and Composer Fallback |
 | 46 | PENDING | Issue 46: Codeninja Runtime Provenance in Eval and Telemetry |
 

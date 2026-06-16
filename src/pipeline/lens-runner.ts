@@ -31,9 +31,29 @@ type LensRunnerOptions = {
 
 type SubmittedFollowUpHint = SubmitPacketReview["followUpHints"][number];
 type SubmittedUncertainty = SubmitPacketReview["uncertainties"][number];
+type NormalizedHints = {
+  kept: PacketReviewResult["followUpHints"];
+  submittedCount: number;
+  droppedCount: number;
+};
+type NormalizedUncertainties = {
+  kept: PacketReviewResult["uncertainties"];
+  submittedCount: number;
+  droppedCount: number;
+};
+type Stage7PacketGeneration = {
+  directCandidates: number;
+  submittedFollowUpHints: number;
+  keptFollowUpHints: number;
+  droppedFollowUpHints: number;
+  submittedUncertainties: number;
+  keptUncertainties: number;
+  droppedUncertainties: number;
+};
 
 const MAX_FOLLOW_UP_HINTS_PER_PACKET = 2;
 const MAX_UNCERTAINTIES_PER_PACKET = 1;
+const stage7Generation = new WeakMap<PacketReviewResult, Stage7PacketGeneration>();
 
 export async function runLensPackets(
   _plan: ReviewPlan,
@@ -102,7 +122,8 @@ export async function runLensPackets(
       },
       candidates: {
         generated: results.reduce((sum, result) => sum + result.findings.length, 0)
-      }
+      },
+      generation: summarizeStage7Generation(results)
     }
   });
   telemetry.event({ stage: 7, level: "info", message: "stage_completed", data: { packets: results.length } });
@@ -168,17 +189,27 @@ async function runPacket(
   }
   const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, telemetry, workerId);
   const uncertainties = normalizeUncertainties(submitted.uncertainties, packet, telemetry, workerId);
-  return {
+  const result: PacketReviewResult = {
     packetId: packet.id,
     lenses: packet.lenses,
     findings,
     reviewStatus,
     ...(submitted.noFindingReason !== undefined ? { noFindingReason: submitted.noFindingReason } : {}),
     ...(submitted.unresolvedQuestions !== undefined ? { unresolvedQuestions: submitted.unresolvedQuestions } : {}),
-    followUpHints,
-    uncertainties,
+    followUpHints: followUpHints.kept,
+    uncertainties: uncertainties.kept,
     status: reviewStatus === "incomplete" ? "incomplete" : "completed"
   };
+  stage7Generation.set(result, {
+    directCandidates: findings.length,
+    submittedFollowUpHints: followUpHints.submittedCount,
+    keptFollowUpHints: followUpHints.kept.length,
+    droppedFollowUpHints: followUpHints.droppedCount,
+    submittedUncertainties: uncertainties.submittedCount,
+    keptUncertainties: uncertainties.kept.length,
+    droppedUncertainties: uncertainties.droppedCount
+  });
+  return result;
 }
 
 function normalizeFollowUpHints(
@@ -186,7 +217,7 @@ function normalizeFollowUpHints(
   packet: ReviewPacket,
   telemetry: TelemetryRecorder,
   workerId: string
-): PacketReviewResult["followUpHints"] {
+): NormalizedHints {
   const valid: PacketReviewResult["followUpHints"] = [];
   for (const hint of hints) {
     const normalized = {
@@ -258,7 +289,11 @@ function normalizeFollowUpHints(
       }
     });
   }
-  return kept;
+  return {
+    kept,
+    submittedCount: hints.length,
+    droppedCount: hints.length - kept.length
+  };
 }
 
 function normalizeUncertainties(
@@ -266,7 +301,7 @@ function normalizeUncertainties(
   packet: ReviewPacket,
   telemetry: TelemetryRecorder,
   workerId: string
-): PacketReviewResult["uncertainties"] {
+): NormalizedUncertainties {
   const valid = uncertainties.flatMap((uncertainty): PacketReviewResult["uncertainties"] => {
     const normalized = {
       question: uncertainty.question.trim(),
@@ -319,7 +354,56 @@ function normalizeUncertainties(
       }
     });
   }
-  return kept;
+  return {
+    kept,
+    submittedCount: uncertainties.length,
+    droppedCount: uncertainties.length - kept.length
+  };
+}
+
+function summarizeStage7Generation(results: PacketReviewResult[]): {
+  directCandidates: number;
+  packetsWithCandidates: number;
+  noFindingsPackets: number;
+  incompletePackets: number;
+  submittedFollowUpHints: number;
+  keptFollowUpHints: number;
+  droppedFollowUpHints: number;
+  submittedUncertainties: number;
+  keptUncertainties: number;
+  droppedUncertainties: number;
+  submittedHintsAndUncertainties: number;
+  keptHintsAndUncertainties: number;
+} {
+  const generations = results.map((result): Stage7PacketGeneration => stage7Generation.get(result) ?? {
+    directCandidates: result.findings.length,
+    submittedFollowUpHints: result.followUpHints.length,
+    keptFollowUpHints: result.followUpHints.length,
+    droppedFollowUpHints: 0,
+    submittedUncertainties: result.uncertainties.length,
+    keptUncertainties: result.uncertainties.length,
+    droppedUncertainties: 0
+  });
+  const submittedFollowUpHints = generations.reduce((sum, item) => sum + item.submittedFollowUpHints, 0);
+  const keptFollowUpHints = generations.reduce((sum, item) => sum + item.keptFollowUpHints, 0);
+  const droppedFollowUpHints = generations.reduce((sum, item) => sum + item.droppedFollowUpHints, 0);
+  const submittedUncertainties = generations.reduce((sum, item) => sum + item.submittedUncertainties, 0);
+  const keptUncertainties = generations.reduce((sum, item) => sum + item.keptUncertainties, 0);
+  const droppedUncertainties = generations.reduce((sum, item) => sum + item.droppedUncertainties, 0);
+  return {
+    directCandidates: generations.reduce((sum, item) => sum + item.directCandidates, 0),
+    packetsWithCandidates: results.filter((result) => result.findings.length > 0).length,
+    noFindingsPackets: results.filter((result) => result.reviewStatus === "no_findings").length,
+    incompletePackets: results.filter((result) => result.reviewStatus === "incomplete" || result.status === "incomplete").length,
+    submittedFollowUpHints,
+    keptFollowUpHints,
+    droppedFollowUpHints,
+    submittedUncertainties,
+    keptUncertainties,
+    droppedUncertainties,
+    submittedHintsAndUncertainties: submittedFollowUpHints + submittedUncertainties,
+    keptHintsAndUncertainties: keptFollowUpHints + keptUncertainties
+  };
 }
 
 function followUpHintRank(hint: PacketReviewResult["followUpHints"][number], packet: ReviewPacket): number {

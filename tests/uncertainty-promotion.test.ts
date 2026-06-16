@@ -175,6 +175,126 @@ describe("uncertainty promotion", () => {
     });
   });
 
+  it("promotes low-confidence concrete behavior-delta hints for verifier adjudication", async () => {
+    const packet = fakePacket("packet-refactor", "src/routing.ts", {
+      symbol: "routeWithFallback",
+      line: "+ return routeStrictFallback(request)"
+    });
+    packet.intentSignals = {
+      refactorLike: true,
+      behaviorChangeLike: false,
+      explicitlyBehaviorPreserving: true,
+      signals: [],
+      summary: "refactor-like behavior-preserving change"
+    };
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/code-review"],
+        findings: [],
+        followUpHints: [{
+          question: "Verify whether routeWithFallback now rejects explicit fallback requests that previously used the default provider.",
+          files: ["src/routing.ts"],
+          symbols: ["routeWithFallback"],
+          suggestedLenses: ["core/code-review"],
+          reason: "This behavior-preserving refactor changes a fallback contract boundary.",
+          confidence: "low"
+        }],
+        uncertainties: [],
+        status: "completed"
+      }]
+    }, captureTelemetry().recorder);
+
+    expect(result.summary).toMatchObject({
+      considered: 1,
+      promoted: 1,
+      notPromoted: {}
+    });
+    expect(result.packetResults[0]?.findings[0]).toMatchObject({
+      category: "correctness",
+      provenance: {
+        sourceKind: "follow_up_hint",
+        sourcePacketId: packet.id
+      }
+    });
+  });
+
+  it("still suppresses low-confidence broad hints that lack a behavior-delta predicate", async () => {
+    const packet = fakePacket("packet-low-broad", "src/routing.ts", {
+      symbol: "route",
+      line: "+ return route(request)"
+    });
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/code-review"],
+        findings: [],
+        followUpHints: [{
+          question: "Check whether this routing change is okay.",
+          files: ["src/routing.ts"],
+          symbols: ["route"],
+          suggestedLenses: ["core/code-review"],
+          reason: "General low-confidence concern.",
+          confidence: "low"
+        }],
+        uncertainties: [],
+        status: "completed"
+      }]
+    }, captureTelemetry().recorder);
+
+    expect(result.packetResults[0]?.findings).toEqual([]);
+    expect(result.summary).toMatchObject({
+      considered: 1,
+      promoted: 0,
+      notPromoted: { low_confidence_hint: 1 }
+    });
+  });
+
+  it("reserves a promotion lane for concrete behavior deltas", async () => {
+    const packets = Array.from({ length: 6 }, (_value, index) =>
+      fakePacket(`packet-lane-${index}`, `src/case-${index}.ts`, {
+        symbol: `changed${index}`,
+        line: `+ return changed${index}(value)`
+      })
+    );
+    packets[5]!.intentSignals = {
+      refactorLike: true,
+      behaviorChangeLike: false,
+      explicitlyBehaviorPreserving: true,
+      signals: [],
+      summary: "refactor-like behavior-preserving change"
+    };
+    const packetResults: PacketReviewResult[] = packets.map((packet, index) => ({
+      packetId: packet.id,
+      lenses: ["core/code-review"],
+      findings: [],
+      followUpHints: [{
+        question: index === 5
+          ? "Verify whether changed5 now rejects zero values that previously used the default fallback."
+          : `Verify whether changed${index} allows tenant access when the token is missing.`,
+        files: [packet.path],
+        symbols: [`changed${index}`],
+        suggestedLenses: ["core/code-review"],
+        reason: index === 5
+          ? "This behavior-preserving refactor changes a fallback boundary."
+          : "The authorization path can affect production callers.",
+        confidence: index === 5 ? "low" : "high"
+      }],
+      uncertainties: [],
+      status: "completed"
+    }));
+
+    const result = await promoteUncertaintiesForVerification({ packets, packetResults }, captureTelemetry().recorder);
+
+    expect(result.summary.promoted).toBe(2);
+    expect(result.summary.laneLimited).toBe(4);
+    expect(result.packetResults.find((item) => item.packetId === "packet-lane-5")?.findings).toHaveLength(1);
+  });
+
   it("promotes concrete unresolved closeout questions from incomplete packet reviews", async () => {
     const packet = fakePacket("packet-unresolved", "src/fees.ts", {
       symbol: "AmountFromUSD",

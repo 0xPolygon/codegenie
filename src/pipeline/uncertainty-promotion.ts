@@ -53,6 +53,7 @@ type PromotionSource = {
 };
 
 type PromotionSourceKind = "uncertainty" | "follow_up_hint" | "unresolved_question";
+type RankedPromotionSource = { source: PromotionSource; rank: number };
 
 export async function promoteUncertaintiesForVerification(
   input: PromotionInput,
@@ -65,7 +66,7 @@ export async function promoteUncertaintiesForVerification(
   const promotedByPacket = new Map<string, CandidateFinding[]>();
   const notPromoted: Record<string, number> = {};
 
-  const eligible = sources.flatMap((source) => {
+  const eligible = sources.flatMap((source): RankedPromotionSource[] => {
     const decision = promotionDecision(source);
     if (!decision.eligible) {
       decisions.push(baseDecision(source, false, decision.reason));
@@ -75,8 +76,9 @@ export async function promoteUncertaintiesForVerification(
     return [{ source, rank: promotionRank(source) }];
   }).sort((a, b) => b.rank - a.rank || a.source.question.localeCompare(b.source.question));
 
-  const selected = eligible.slice(0, maxPromotions);
-  const laneLimited = eligible.slice(maxPromotions);
+  const selected = selectPromotionSources(eligible, maxPromotions);
+  const selectedSet = new Set(selected);
+  const laneLimited = eligible.filter((item) => !selectedSet.has(item));
   for (const limited of laneLimited) {
     decisions.push(baseDecision(limited.source, false, "promotion_lane_limited"));
   }
@@ -177,7 +179,7 @@ function promotionDecision(source: PromotionSource): { eligible: boolean; reason
   if (source.files.length === 0 && source.symbols.length === 0) {
     return { eligible: false, reason: "no_concrete_file_or_symbol" };
   }
-  if (source.sourceKind === "follow_up_hint" && source.confidence === "low") {
+  if (source.sourceKind === "follow_up_hint" && source.confidence === "low" && !isConcreteBehaviorDeltaSource(source)) {
     return { eligible: false, reason: "low_confidence_hint" };
   }
   if (!mentionsChangedScope(source)) {
@@ -210,6 +212,21 @@ function promotionDecision(source: PromotionSource): { eligible: boolean; reason
     return { eligible: false, reason: "no_production_impact" };
   }
   return { eligible: true, reason: "eligible" };
+}
+
+function selectPromotionSources(eligible: RankedPromotionSource[], maxPromotions: number): RankedPromotionSource[] {
+  if (maxPromotions <= 0 || eligible.length === 0) {
+    return [];
+  }
+  const selected = eligible.slice(0, maxPromotions);
+  const behaviorDelta = eligible.find((item) => isConcreteBehaviorDeltaSource(item.source));
+  if (behaviorDelta === undefined || selected.includes(behaviorDelta)) {
+    return selected;
+  }
+  if (selected.length < maxPromotions) {
+    return [...selected, behaviorDelta];
+  }
+  return [...selected.slice(0, Math.max(0, maxPromotions - 1)), behaviorDelta];
 }
 
 function pointsAtDistinctScope(source: PromotionSource): boolean {
@@ -488,6 +505,27 @@ function mentionsNamedProductionScope(source: PromotionSource): boolean {
 
 function mentionsProductionImpact(source: PromotionSource): boolean {
   return !isTestPath(source.packet.path) || source.files.some((file) => !isTestPath(file));
+}
+
+function isConcreteBehaviorDeltaSource(source: PromotionSource): boolean {
+  if (!hasChangedAnchorForPredicate(source)) {
+    return false;
+  }
+  if (source.files.length === 0 && source.symbols.length === 0) {
+    return false;
+  }
+  const risk = riskProfile(source);
+  if (!risk.promotable || !hasConcreteFailurePredicate(source, risk.category)) {
+    return false;
+  }
+  const text = normalizedSourceText(source);
+  const refactorLike = source.packet.intentSignals?.refactorLike === true ||
+    source.packet.intentSignals?.explicitlyBehaviorPreserving === true ||
+    /\b(refactor|behavior-preserving|preserve(?:s|d)? behavior|same behavior|equivalent|no behavior change|cleanup|consolidat(?:e|ion))\b/u.test(text);
+  const changedBoundary = /\b(validation|validate|guard|predicate|fallback|default|contract|boundary|conversion|convert|coercion|truncat(?:e|ion)|round(?:ing)?|precision|overflow|coverage|test|helper)\b/u.test(text);
+  const oldNewPredicate = /\b(previously|before|old|used to|now|new|no longer|removed|deleted|replaced|changed|instead|after)\b/u.test(text);
+  const impact = risk.category === "testing" ? mentionsChangedTestOrDeletedCoverage(source) : mentionsProductionImpact(source);
+  return impact && changedBoundary && (refactorLike || oldNewPredicate);
 }
 
 function isTestScopedSource(source: PromotionSource): boolean {
