@@ -348,6 +348,7 @@ function renderPacket(packet: ReviewPacket): string {
     labels: packet.labels,
     riskNotes: packet.riskNotes,
     contextText: packet.contextText,
+    testCoverageDelta: packet.testCoverageDelta,
     intentSignals: packet.intentSignals,
     relevantTests: packet.relevantTests,
     hunks: packet.hunks,

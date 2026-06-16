@@ -478,6 +478,29 @@ export type PacketContext = {
 
 export type PacketContextQuality = "full" | "sliced" | "outline_only" | "path_only";
 
+export type TestCoverageDeltaSymbol = {
+  name: string;
+  side: "LEFT" | "RIGHT";
+  kind: "test" | "helper" | "mock" | "fixture" | "boundary" | "other";
+  source: "diff" | "symbol";
+  line?: number;
+  lineRange?: [number, number];
+};
+
+export type TestCoverageDelta = {
+  deletedTestSymbols: TestCoverageDeltaSymbol[];
+  addedTestSymbols: TestCoverageDeltaSymbol[];
+  deletedHelperSymbols: TestCoverageDeltaSymbol[];
+  addedHelperSymbols: TestCoverageDeltaSymbol[];
+  deletedImports: string[];
+  addedImports: string[];
+  deletedProductionRefs: string[];
+  addedProductionRefs: string[];
+  boundaryIndicators: string[];
+  replacementRisk?: "specialized_boundary_to_helper";
+  summary: string;
+};
+
 export type ReviewPacket = {
   id: string;
   kind: PacketKind;
@@ -499,6 +522,7 @@ export type ReviewPacket = {
   contextText: string;
   contextQuality?: PacketContextQuality;
   contextDegradationReasons?: string[];
+  testCoverageDelta?: TestCoverageDelta;
   packetSymbols?: SymbolInfo[];
   relevantTests: SymbolInfo[];
   surroundingContextHints: SurroundingContextHint[];

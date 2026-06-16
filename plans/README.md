@@ -46,7 +46,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 40 | COMPLETE | Issue 40: Stage 7 Closeout Recall Regression |
 | 41 | COMPLETE | Issue 41: Eval Scoring and Composition Provenance Under-Credit |
 | 42 | COMPLETE | Issue 42: Stage 6 Adaptive Context Underdelivery |
-| 43 | PENDING | Issue 43: Stage 7 Compact Removal and Generic Test-Rewrite Recall |
+| 43 | COMPLETE | Issue 43: Stage 7 Compact Removal and Generic Test-Rewrite Recall |
 
 ## Deferred (watching for evidence)
 

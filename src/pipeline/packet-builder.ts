@@ -1,5 +1,6 @@
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
+import { buildTestCoverageDelta } from "../repo/test-coverage-delta.js";
 import type {
   CodeninjaConfig,
   CoverageLevel,
@@ -194,6 +195,7 @@ async function buildPacket(
     renderPacketHunk(entry.hunk, entry.staticSignals, telemetry, plannerFallbackReason(decisions[index]?.reason))
   );
   const patchChars = packetHunks.reduce((sum, hunk) => sum + hunk.contentWithLineNumbers.length, 0);
+  const testCoverageDelta = buildTestCoverageDelta(first.file, planned.map((entry) => entry.hunk), first.facts, symbolFacts);
   const riskNotes = plan.riskAreas.filter((area) => area.files.includes(first.file.path)).slice(0, 3).map((area) => area.reason);
   const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry, {
     coverage,
@@ -271,6 +273,7 @@ async function buildPacket(
     contextText: renderedContext.text,
     contextQuality,
     ...(contextDegradationReasons.length > 0 ? { contextDegradationReasons } : {}),
+    ...(testCoverageDelta !== undefined ? { testCoverageDelta } : {}),
     ...(context.packetSymbols.length > 0 ? { packetSymbols: context.packetSymbols } : {}),
     relevantTests: context.relevantTests,
     surroundingContextHints: hintContext.workerHints,

@@ -2,6 +2,7 @@ import type { DiffFile, FileFacts, HunkSymbolFacts, StaticSignal, SymbolInfo } f
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type { SourceResolver } from "./source-resolver.js";
 import type { LanguageAdapterRegistry } from "./language-adapter.js";
+import { testCoverageRewriteSignals } from "./test-coverage-delta.js";
 
 const MAX_SIGNALS_PER_FILE = 20;
 const MAX_SIGNALS_PER_RUN = 200;
@@ -36,6 +37,9 @@ export async function extractStaticSignals(
         confidence: "high",
         explanation: "A test file was deleted."
       });
+    }
+    if (fact !== undefined) {
+      perFile.push(...testCoverageRewriteSignals(file, fact));
     }
 
     perFile.push(...(await exportedApiSignals(resolver, registry, file, factsByHunk)));

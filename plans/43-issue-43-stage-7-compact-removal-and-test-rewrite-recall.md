@@ -1,6 +1,6 @@
 # Issue 43: Stage 7 Compact Removal and Generic Test-Rewrite Recall
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 8 review, 2026-06-16
 
 ## Problem

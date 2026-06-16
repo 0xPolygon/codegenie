@@ -68,15 +68,6 @@ export type LlmToolResultSummary = {
   recovery?: ToolResultMeta["recovery"];
 };
 
-export type LlmCompactFinalizeInput = {
-  submitToolName: string;
-  reason: "budget_exhausted" | "tool_budget_exhausted" | "plain_text_or_empty_response";
-  toolCallsUsed: number;
-  investigationRounds: number;
-  resultCharsUsed: number;
-  toolResults: LlmToolResultSummary[];
-};
-
 export type LlmPostToolNudgeInput = {
   submitToolName: string;
   toolCallsUsed: number;
@@ -112,8 +103,6 @@ export type LlmStructuredRequest<T> = {
   };
   finalization?: {
     noResultInstruction?: string;
-    shouldUseCompactPrompt?(input: LlmCompactFinalizeInput): boolean;
-    buildCompactPrompt?(input: LlmCompactFinalizeInput): string | undefined;
     buildPostToolNudge?(input: LlmPostToolNudgeInput): string | undefined;
   };
 };

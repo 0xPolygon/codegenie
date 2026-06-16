@@ -29,7 +29,6 @@ import {
   roleForStage,
   type CreateRunnerOptions,
   type LlmCallUsage,
-  type LlmCompactFinalizeInput,
   type LlmSchemaRepairInput,
   type LlmRunner,
   type LlmStructuredRequest,
@@ -212,7 +211,6 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       let finalizeSubmitRetryUsed = false;
       let forceFinalize = false;
       let budgetForceFinalize = false;
-      let compactFinalizeActive = false;
       let candidateDrafted = false;
       const toolResultSummaries: LlmToolResultSummary[] = [];
       const taskTimeout = timeoutSignal(opts.runSignal, request.timeoutMs);
@@ -221,7 +219,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
         for (;;) {
           const activeTools = forceFinalize ? [submitTool] : allTools;
           const kind = forceFinalize ? schemaRepairUsed ? "repair" : "finalize" : messages.length === 1 ? "initial" : "tool-continuation";
-          const finalizeMode = forceFinalize ? compactFinalizeActive ? "compact" : "full" : undefined;
+          const finalizeMode = forceFinalize ? "full" : undefined;
           const finalizeTarget = forceFinalize ? candidateDrafted ? "candidate_or_unknown" : "no_findings" : undefined;
           const toolChoice = forceFinalize || repositoryTools.length === 0
             ? { type: "tool" as const, name: submitTool.name }
@@ -250,17 +248,13 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             if (!forceFinalize && isBudgetExhaustedError(cause) && messages.length > 1) {
               forceFinalize = true;
               budgetForceFinalize = true;
-              compactFinalizeActive = queueForcedFinalizePrompt({
+              queueForcedFinalizePrompt({
                 opts,
                 request,
                 messages,
                 submitToolName: submitTool.name,
                 reason: "budget_exhausted",
-                candidateDrafted,
-                toolCallsUsed,
-                investigationRounds,
-                resultCharsUsed,
-                toolResults: toolResultSummaries
+                candidateDrafted
               });
               continue;
             }
@@ -417,17 +411,13 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             if (toolCallsUsed >= effectiveToolCallLimit(budget) || investigationRounds >= budget.maxInvestigationRounds) {
               forceFinalize = true;
               budgetForceFinalize = false;
-              compactFinalizeActive = queueForcedFinalizePrompt({
+              queueForcedFinalizePrompt({
                 opts,
                 request,
                 messages,
                 submitToolName: submitTool.name,
-                reason: "tool_budget_exhausted",
                 candidateDrafted,
-                toolCallsUsed,
-                investigationRounds,
-                resultCharsUsed,
-                toolResults: toolResultSummaries
+                reason: "tool_budget_exhausted"
               });
             } else {
               const nudge = request.finalization?.buildPostToolNudge?.({
@@ -469,17 +459,13 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           }
           forceFinalize = true;
           budgetForceFinalize = false;
-          compactFinalizeActive = queueForcedFinalizePrompt({
+          queueForcedFinalizePrompt({
             opts,
             request,
             messages,
             submitToolName: submitTool.name,
-            reason: "plain_text_or_empty_response",
             candidateDrafted,
-            toolCallsUsed,
-            investigationRounds,
-            resultCharsUsed,
-            toolResults: toolResultSummaries
+            reason: "plain_text_or_empty_response"
           });
         }
       } finally {
@@ -515,33 +501,9 @@ function queueForcedFinalizePrompt(input: {
   request: LlmStructuredRequest<unknown>;
   messages: ConversationMessage[];
   submitToolName: string;
-  reason: LlmCompactFinalizeInput["reason"];
+  reason: ForcedFinalizeReason;
   candidateDrafted: boolean;
-  toolCallsUsed: number;
-  investigationRounds: number;
-  resultCharsUsed: number;
-  toolResults: LlmToolResultSummary[];
-}): boolean {
-  if (!input.candidateDrafted) {
-    const compactInput: LlmCompactFinalizeInput = {
-      submitToolName: input.submitToolName,
-      reason: input.reason,
-      toolCallsUsed: input.toolCallsUsed,
-      investigationRounds: input.investigationRounds,
-      resultCharsUsed: input.resultCharsUsed,
-      toolResults: input.toolResults
-    };
-    if (input.request.finalization?.shouldUseCompactPrompt?.(compactInput) !== false) {
-      const compactPrompt = input.request.finalization?.buildCompactPrompt?.(compactInput);
-      const compactContent = compactPrompt?.trim();
-      if (compactContent) {
-        input.messages.splice(0, input.messages.length, { role: "user", content: compactContent, timestamp: 0 });
-        recordFinalizeStart(input.opts, input.request, "compact", "no_findings", input.reason, compactContent.length);
-        return true;
-      }
-    }
-  }
-
+}): void {
   const content = input.reason === "budget_exhausted"
     ? `LLM provider call budget is exhausted. Call ${input.submitToolName} now with the best schema-valid result supported by the evidence already gathered. Do not request more repository tools. ${noResultInstruction(input.request)}`
     : input.reason === "tool_budget_exhausted"
@@ -556,7 +518,6 @@ function queueForcedFinalizePrompt(input: {
     input.reason,
     content.length
   );
-  return false;
 }
 
 function noResultInstruction(request: LlmStructuredRequest<unknown>): string {
@@ -567,15 +528,15 @@ function noResultInstruction(request: LlmStructuredRequest<unknown>): string {
 function recordFinalizeStart(
   opts: CreateRunnerOptions,
   request: LlmStructuredRequest<unknown>,
-  mode: "compact" | "full",
+  mode: "full",
   target: "no_findings" | "candidate_or_unknown",
-  reason: LlmCompactFinalizeInput["reason"],
+  reason: ForcedFinalizeReason,
   promptChars: number
 ): void {
   opts.telemetry.event(definedRecord({
     stage: request.stage,
     level: "debug",
-    message: mode === "compact" ? "compact_finalize_started" : "full_finalize_started",
+    message: "full_finalize_started",
     workerId: request.telemetryContext?.workerId,
     packetId: request.telemetryContext?.packetId,
     data: definedRecord({
@@ -587,6 +548,8 @@ function recordFinalizeStart(
     })
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
+
+type ForcedFinalizeReason = "budget_exhausted" | "tool_budget_exhausted" | "plain_text_or_empty_response";
 
 function providerPromptCacheOptions(runId: string, stage: ReviewStage): ProviderPromptCacheOptions {
   return {

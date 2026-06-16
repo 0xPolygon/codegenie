@@ -1766,7 +1766,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(submitOnly.options[0]?.toolChoice).toEqual({ type: "tool", name: "submit_review" });
   });
 
-  it("uses compact forced finalization for no-candidate packet closeout", async () => {
+  it("uses full forced finalization for no-candidate packet closeout", async () => {
     const telemetry = fakeTelemetry();
     const tool: ToolDefinition = {
       name: "read_range",
@@ -1781,14 +1781,14 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       assistant([
         {
           type: "toolCall",
-          id: "tool-before-compact-finalize",
+          id: "tool-before-full-finalize",
           name: "read_range",
           arguments: { path: "src/a.ts", startLine: 1, endLine: 80 }
         }
       ]),
       assistant([{
         type: "toolCall",
-        id: "submit-compact-no-findings",
+        id: "submit-full-no-findings",
         name: "submit_review",
         arguments: {
           reviewStatus: "no_findings",
@@ -1810,17 +1810,12 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-compact-finalize"),
+        ...submitReviewRequest("packet-full-finalize"),
         tools: [tool],
         toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 2, maxResultChars: 5000 },
-        telemetryContext: { workerId: "worker-compact", packetId: "packet-compact-finalize" },
+        telemetryContext: { workerId: "worker-full", packetId: "packet-full-finalize" },
         finalization: {
-          buildCompactPrompt: (input) => [
-            "COMPACT CLOSEOUT",
-            `submit=${input.submitToolName}`,
-            `reason=${input.reason}`,
-            `tools=${input.toolResults.map((result) => `${result.tool}:${result.target}:${result.resultChars}`).join(";")}`
-          ].join("\n")
+          noResultInstruction: "If there are no findings, submit reviewStatus:\"no_findings\", findings: []."
         }
       })
     ).resolves.toMatchObject({
@@ -1828,24 +1823,22 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       findings: [],
       noFindingReason: "Reviewed changed hunk and helper summary; no concrete failure mode."
     });
-    expect(adapter.contexts[1]).toContain("COMPACT CLOSEOUT");
-    expect(adapter.contexts[1]).toContain("read_range:path=src/a.ts lines=1-80");
-    expect(adapter.contexts[1]).not.toContain("function decisive");
+    expect(adapter.contexts[1]).toContain("function decisive");
     expect(telemetry.modelCalls[1]).toMatchObject({
       kind: "finalize",
-      finalizeMode: "compact",
+      finalizeMode: "full",
       finalizeTarget: "no_findings"
     });
     expect(telemetry.events).toEqual(expect.arrayContaining([
       expect.objectContaining({
-        message: "compact_finalize_started",
-        packetId: "packet-compact-finalize",
-        data: expect.objectContaining({ mode: "compact", target: "no_findings", reason: "tool_budget_exhausted" })
+        message: "full_finalize_started",
+        packetId: "packet-full-finalize",
+        data: expect.objectContaining({ mode: "full", target: "no_findings", reason: "tool_budget_exhausted" })
       })
     ]));
   });
 
-  it("uses full forced finalization when compact closeout policy rejects the packet", async () => {
+  it("uses full forced finalization during packet closeout", async () => {
     const telemetry = fakeTelemetry();
     const tool: ToolDefinition = {
       name: "read_range",
@@ -1899,8 +1892,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 2, maxResultChars: 5000 },
         telemetryContext: { workerId: "worker-full", packetId: "packet-full-finalize" },
         finalization: {
-          shouldUseCompactPrompt: () => false,
-          buildCompactPrompt: () => "COMPACT CLOSEOUT SHOULD NOT BE USED",
           noResultInstruction: "If there are no findings, submit reviewStatus:\"no_findings\", findings: []. Concrete unresolved risk may still use followUpHints or uncertainties."
         }
       })
@@ -1909,7 +1900,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       findings: [],
       followUpHints: [expect.objectContaining({ files: ["src/a.ts"] })]
     });
-    expect(adapter.contexts[1]).not.toContain("COMPACT CLOSEOUT SHOULD NOT BE USED");
     expect(adapter.contexts[1]).toContain("decisive source evidence");
     expect(adapter.contexts[1]).toContain("Concrete unresolved risk may still use followUpHints");
     expect(telemetry.modelCalls[1]).toMatchObject({
@@ -1920,7 +1910,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
   });
 
   it("keeps candidate-shaped invalid submissions on the full repair path", async () => {
-    const compactPrompt = vi.fn(() => "SHOULD NOT BE USED");
     const adapter = scriptedAdapter([
       assistant([{
         type: "toolCall",
@@ -1944,14 +1933,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
 
     await expect(
-      runner.runStructured({
-        ...submitReviewRequest("packet-candidate-repair"),
-        finalization: { buildCompactPrompt: compactPrompt }
-      })
+      runner.runStructured(submitReviewRequest("packet-candidate-repair"))
     ).resolves.toMatchObject({ findings: [] });
-    expect(compactPrompt).not.toHaveBeenCalled();
     expect(adapter.contexts[1]).toContain("review packet-candidate-repair");
-    expect(adapter.contexts[1]).not.toContain("SHOULD NOT BE USED");
   });
 
   it("adds configured post-tool close nudges before continuing packet review", async () => {
