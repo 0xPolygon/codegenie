@@ -31,6 +31,13 @@ const FindingCategorySchema = Type.Union([
   Type.Literal("maintainability")
 ]);
 
+const BehaviorChangeAssessmentSchema = Type.Union([
+  Type.Literal("accidental_regression"),
+  Type.Literal("intentional_needs_confirmation"),
+  Type.Literal("specified_change"),
+  Type.Literal("unknown")
+]);
+
 const DiffAnchorSchema = Type.Object(
   {
     path: Type.String({ minLength: 1, maxLength: 500 }),
@@ -146,7 +153,9 @@ const SubmittedFindingSchema = Type.Object(
     whyThisMatters: Type.String({ minLength: 1, maxLength: 2000 }),
     suggestedFix: Type.Optional(Type.String({ maxLength: 4000 })),
     suggestedTest: Type.Optional(Type.String({ maxLength: 2000 })),
-    verification: Type.String({ minLength: 1, maxLength: 2000 })
+    verification: Type.String({ minLength: 1, maxLength: 2000 }),
+    behaviorChange: Type.Optional(BehaviorChangeAssessmentSchema),
+    intentEvidence: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 8 }))
   },
   { additionalProperties: false }
 );
@@ -206,7 +215,9 @@ export const SubmitVerificationVerdictSchema = Type.Object(
     requiredEvidencePresent: Type.Boolean(),
     falsePositiveRisk: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")]),
     finalFinding: Type.Optional(SubmittedFindingSchema),
-    revisedAnchor: Type.Optional(DiffAnchorSchema)
+    revisedAnchor: Type.Optional(DiffAnchorSchema),
+    behaviorChange: Type.Optional(BehaviorChangeAssessmentSchema),
+    intentEvidence: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 8 }))
   },
   { additionalProperties: false }
 );

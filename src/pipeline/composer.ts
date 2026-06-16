@@ -22,6 +22,7 @@ import type {
 import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { sha256Hex } from "../util/hashing.js";
 import { isFatalLlmError, validateAnchorForDiff } from "./pipeline-utils.js";
+import { summarizeIntentSignals } from "./intent-signals.js";
 
 type ComposeOptions = {
   runner: LlmRunner;
@@ -247,7 +248,7 @@ async function runComposer(
 ): Promise<SubmitComposition> {
   const prompt = opts.promptBuilder.buildComposerPrompt({
     groupedFindingsJson: JSON.stringify(groups, null, 2),
-    intent: `Declared intent: ${plan.diffUnderstanding.declaredIntent}\nInferred behavior: ${plan.diffUnderstanding.inferredBehavior}`,
+    intent: `Declared intent: ${plan.diffUnderstanding.declaredIntent}\nInferred behavior: ${plan.diffUnderstanding.inferredBehavior}\n${summarizeIntentSignals(plan.intentSignals)}`,
     coverage,
     followUpHintNotes: notes.map((note) => `${note.question} (${note.files.join(", ")})`)
   });
@@ -1326,7 +1327,37 @@ function normalizeFinalBodyForRendering(finalBody: string, finding: CandidateFin
   }
 
   const cleaned = lines.slice(index).join("\n").trim();
-  return stripped ? cleaned : finalBody.trim();
+  const normalized = stripped ? cleaned : finalBody.trim();
+  return normalizeUnsupportedIntentFraming(normalized, finding);
+}
+
+function normalizeUnsupportedIntentFraming(body: string, finding: CandidateFinding): string {
+  if (
+    finding.behaviorChange === "accidental_regression" ||
+    ((finding.behaviorChange === undefined || finding.behaviorChange === "unknown") && intentEvidenceSupportsAccidentalFraming(finding))
+  ) {
+    return body;
+  }
+  if (finding.behaviorChange === undefined && !hasUnsupportedIntentFraming(body)) {
+    return body;
+  }
+  return body
+    .replace(/\baccidentally\s+/giu, "")
+    .replace(/\baccidental\s+regression\b/giu, "behavior change")
+    .replace(/\bsilently\s+(changes?|changed|changing)\s+/giu, "$1 ")
+    .replace(/\bcontradicts?\s+(?:the\s+)?(?:declared\s+)?intent\b/giu, "changes the contract")
+    .replace(/[ \t]{2,}/gu, " ")
+    .trim();
+}
+
+function hasUnsupportedIntentFraming(body: string): boolean {
+  return /\baccidentally\b|\baccidental\s+regression\b|\bcontradicts?\s+(?:the\s+)?(?:declared\s+)?intent\b|\bsilently\s+(?:changes?|changed|changing)\b/iu.test(body);
+}
+
+function intentEvidenceSupportsAccidentalFraming(finding: CandidateFinding): boolean {
+  return (finding.intentEvidence ?? []).some((entry) =>
+    /\b(no\s+behaviou?r\s+change|behaviou?r[-\s]?preserving|preserve\s+(?:existing\s+)?behaviou?r|no\s+semantic\s+change|semantically\s+equivalent|refactor)\b/iu.test(entry)
+  );
 }
 
 function isDuplicateTitleLine(line: string, title: string): boolean {

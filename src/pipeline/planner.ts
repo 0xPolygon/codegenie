@@ -4,6 +4,7 @@ import type { LensDescriptor } from "../skills/lens-registry.js";
 import { fenceUntrusted, stableJson, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { Skill } from "../skills/skill-loader.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
+import { buildIntentSignals } from "./intent-signals.js";
 import type {
   CodeninjaConfig,
   CoverageLevel,
@@ -67,6 +68,10 @@ export async function buildPlannerDossier(
   const totals = totalChangedLines(filtered);
   const lenses = (opts.lenses ?? []).filter((lens) => lens.enabled);
   const policyInventory = opts.allFiles ?? filtered;
+  const intentSignals = buildIntentSignals({
+    ...(resolved.pr !== undefined ? { pr: resolved.pr } : {}),
+    commits: resolved.commits
+  });
 
   const dossier: PlannerDossier = {
     runId: telemetry.runId,
@@ -94,6 +99,7 @@ export async function buildPlannerDossier(
       title: truncate(commit.title, 200),
       body: truncate(commit.body, 1000)
     })),
+    intentSignals,
     policyFilesChanged: dedupe([
       ...decisions.map((decision) => decision.path),
       ...policyInventory.flatMap((file) => [file.path, file.oldPath].filter((entry): entry is string => entry !== undefined))
@@ -158,8 +164,20 @@ export async function buildPlannerDossier(
     stage: 5,
     level: "info",
     message: "planner dossier built",
-    data: { files: dossier.files.length, hunks: dossier.totals.hunks, policyFilesChanged: dossier.policyFilesChanged.length }
+    data: {
+      files: dossier.files.length,
+      hunks: dossier.totals.hunks,
+      policyFilesChanged: dossier.policyFilesChanged.length,
+      intentSignals: {
+        refactorLike: intentSignals.refactorLike,
+        behaviorChangeLike: intentSignals.behaviorChangeLike,
+        explicitlyBehaviorPreserving: intentSignals.explicitlyBehaviorPreserving,
+        count: intentSignals.signals.length,
+        summary: intentSignals.summary
+      }
+    }
   });
+  await telemetry.writeArtifact("intent-signals.json", intentSignals);
   await telemetry.writeArtifact("planner-dossier.json", dossier);
   return dossier;
 }
@@ -272,6 +290,7 @@ function plannerRepairDossierSummary(dossier: PlannerDossier, lenses: LensDescri
       title: commit.title,
       body: truncate(commit.body, 400)
     })),
+    intentSignals: dossier.intentSignals,
     policyFilesChanged: dossier.policyFilesChanged,
     totals: dossier.totals,
     compaction: dossier.compaction,
@@ -590,6 +609,7 @@ function mergeChunkPlans(
       declaredIntent: intents[0] ?? "Review local diff.",
       inferredBehavior: behaviors.join("\n")
     },
+    ...(plans[0]?.intentSignals !== undefined ? { intentSignals: plans[0].intentSignals } : {}),
     riskAreas,
     coverage,
     ...(partialPlans.length > 0
@@ -856,6 +876,7 @@ export function defaultPlan(
       declaredIntent: deterministicDeclaredIntent(dossier),
       inferredBehavior: "unavailable (degraded planning)"
     },
+    ...(dossier.intentSignals !== undefined ? { intentSignals: dossier.intentSignals } : {}),
     riskAreas: [],
     coverage: dossier.files.flatMap((file) =>
       file.hunks.map((hunk) => ({
@@ -969,6 +990,7 @@ function validatePlan(
 
   return {
     diffUnderstanding: plan.diffUnderstanding,
+    ...(dossier.intentSignals !== undefined ? { intentSignals: dossier.intentSignals } : {}),
     riskAreas: (plan.riskAreas ?? []).map((area) => ({
       ...area,
       suggestedLenses: area.suggestedLenses.filter((lens) => enabledLensIds.has(lens))

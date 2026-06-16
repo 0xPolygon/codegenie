@@ -2956,6 +2956,202 @@ describe("phase 5 pipeline regressions", () => {
     expect(prompt.prompt).toContain("Validate raw external/provider/API/config/database values before lossy conversion");
   });
 
+  it("threads deterministic intent signals through dossier, packets, and verifier prompts", async () => {
+    const dossier = await buildPlannerDossier(
+      {
+        mode: "branch",
+        pr: {
+          title: "Refactor routing fallback handling",
+          body: "This should preserve existing behavior for unspecified routes.",
+          url: "https://example.test/pr/1",
+          baseRefName: "main",
+          headRefName: "feature",
+        },
+        commits: [{
+          sha: "abc123",
+          title: "refactor: enhance preference handling",
+          body: "Use stricter handling for explicit route preferences and reject unsupported fallbacks."
+        }]
+      },
+      [fakeDiffFile("routing.ts", "return chooseStrictFallback(request)")],
+      [fakeFacts("routing.ts", "per-hunk")],
+      [{ path: "routing.ts", action: "keep", reason: "test", provenance: [] }],
+      fakeRepositoryIndex(),
+      config(),
+      nullTelemetry()
+    );
+
+    expect(dossier.intentSignals).toMatchObject({
+      refactorLike: true,
+      behaviorChangeLike: true,
+      explicitlyBehaviorPreserving: true
+    });
+    if (dossier.intentSignals === undefined) {
+      throw new Error("expected intent signals");
+    }
+
+    const packets = await buildReviewPackets(
+      {
+        ...fakePlan("routing.ts"),
+        intentSignals: dossier.intentSignals
+      },
+      [fakeDiffFile("routing.ts", "return chooseStrictFallback(request)")],
+      [fakeFacts("routing.ts", "per-hunk")],
+      fakeRepositoryIndex(),
+      nullTelemetry(),
+      {
+        config: config(),
+        enabledLenses: ["core/code-review"],
+        reviewContext: packetReviewContextFromDossier(dossier)
+      }
+    );
+
+    expect(packets[0]?.intentSignals).toEqual(dossier.intentSignals);
+    const builder = createPromptBuilder(fakeLensRegistry());
+    const packetPrompt = builder.buildPacketReviewPrompt({ packet: packets[0] as ReviewPacket, skills: [] });
+    const packetBlock = extractPromptJson<ReviewPacket>(packetPrompt.prompt, "review-packet");
+    expect(packetBlock?.intentSignals).toMatchObject({ refactorLike: true, behaviorChangeLike: true });
+    expect(packetPrompt.prompt).toContain("intentional_needs_confirmation");
+
+    const verifierPrompt = builder.buildVerifierPrompt({
+      candidate: { ...fakeFinding(), behaviorChange: "intentional_needs_confirmation" },
+      originContext: "",
+      hunksText: "",
+      intentSignals: dossier.intentSignals,
+      skills: []
+    });
+    expect(extractPromptJson(verifierPrompt.prompt, "intent-signals")).toMatchObject({ behaviorChangeLike: true });
+    expect(verifierPrompt.prompt).toContain("Do not use accidental-regression framing");
+  });
+
+  it("preserves behavior-change assessment from packet reviewer output", async () => {
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        findings: [
+          {
+            title: "fallback contract now rejects explicit preferences",
+            severity: "medium",
+            confidence: "medium",
+            path: "app.ts",
+            anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+            category: "correctness",
+            evidence: { changedCode: "bad" },
+            failureMode: "An explicit preference that previously fell back is now rejected.",
+            whyThisMatters: "Callers that rely on fallback behavior can fail.",
+            verification: "The changed branch returns an error.",
+            behaviorChange: "intentional_needs_confirmation",
+            intentEvidence: ["refactor: enhance preference handling", "strict handling for explicit route preferences"]
+          }
+        ],
+        followUpHints: [],
+        uncertainties: []
+      }) as T
+    };
+
+    const [result] = await runLensPackets(
+      fakePlan(),
+      [fakePacket()],
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(result?.findings[0]).toMatchObject({
+      behaviorChange: "intentional_needs_confirmation",
+      intentEvidence: ["refactor: enhance preference handling", "strict handling for explicit route preferences"]
+    });
+  });
+
+  it("normalizes unsupported accidental intent wording during final composition", async () => {
+    const finding: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-intent",
+      title: "routing preference contract changes",
+      behaviorChange: "intentional_needs_confirmation",
+      intentEvidence: ["refactor: enhance preference handling", "strict handling for explicit route preferences"],
+      failureMode: "The changed path rejects an explicit preference that previously fell back.",
+      whyThisMatters: "Existing callers may need to opt into or document the stricter contract."
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        summary: "Found 1 verified issue.",
+        composedFindings: [{
+          findingIds: [finding.id],
+          finalBody: "This accidentally contradicts intent and silently changes the routing fallback contract.",
+          publication: "inline"
+        }]
+      }) as T
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      {
+        ...fakePlan(),
+        intentSignals: {
+          refactorLike: true,
+          behaviorChangeLike: true,
+          explicitlyBehaviorPreserving: false,
+          summary: "refactorLike: 1, behaviorChangeLike: 1",
+          signals: [
+            {
+              kind: "refactorLike",
+              source: "commit_title",
+              snippet: "refactor: enhance preference handling",
+              reason: "text presents the change as a refactor or cleanup"
+            },
+            {
+              kind: "behaviorChangeLike",
+              source: "commit_body",
+              snippet: "strict handling for explicit route preferences",
+              reason: "text suggests a caller-visible behavior or contract change"
+            }
+          ]
+        }
+      },
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), packets: [fakePacket()], diff: fakeDiff() }
+    );
+
+    expect(result.findings[0]?.finalBody).not.toMatch(/\baccidentally\b|\bsilently\b|contradicts intent/iu);
+    expect(result.findings[0]?.finalBody).toContain("changes the contract");
+  });
+
+  it("does not strip non-intent silent-failure wording from final composition", async () => {
+    const finding: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-silent-error",
+      title: "ignored write failure",
+      failureMode: "The changed path silently ignores write errors.",
+      whyThisMatters: "A failed write can be reported as successful."
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        summary: "Found 1 verified issue.",
+        composedFindings: [{
+          findingIds: [finding.id],
+          finalBody: "This silently ignores the write error, so callers can observe a successful response even though persistence failed.",
+          publication: "inline"
+        }]
+      }) as T
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), packets: [fakePacket()], diff: fakeDiff() }
+    );
+
+    expect(result.findings[0]?.finalBody).toContain("silently ignores the write error");
+  });
+
   it("records policy-file changes from old paths on renames", async () => {
     const file: DiffFile = {
       path: "src/review-note.md",
@@ -3074,6 +3270,35 @@ describe("phase 5 pipeline regressions", () => {
     expect(records.find((record) => record.candidateId === "finding-2")).toMatchObject({
       duplicateOf: "finding-1",
       verdict: { candidateId: "finding-2", verdict: "keep" }
+    });
+  });
+
+  it("applies verifier-level behavior-change assessment to kept findings", async () => {
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        verdict: "keep",
+        reason: "the behavior change is real but intent is mixed",
+        requiredEvidencePresent: true,
+        falsePositiveRisk: "medium",
+        behaviorChange: "intentional_needs_confirmation",
+        intentEvidence: ["refactor: enhance preference handling", "strict handling for explicit route preferences"]
+      }) as T
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(verified.verified[0]).toMatchObject({
+      behaviorChange: "intentional_needs_confirmation",
+      intentEvidence: ["refactor: enhance preference handling", "strict handling for explicit route preferences"]
     });
   });
 

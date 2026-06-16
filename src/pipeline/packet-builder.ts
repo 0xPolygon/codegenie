@@ -23,7 +23,8 @@ import type {
   SurroundingContextHint,
   SymbolInfo,
   PacketContextQuality,
-  ToolBudget
+  ToolBudget,
+  IntentSignals
 } from "../types.js";
 import { sha256Hex } from "../util/hashing.js";
 import { scaleToolBudget } from "../util/budget.js";
@@ -37,6 +38,7 @@ type PacketBuildOptions = {
 type PacketReviewContext = {
   prSummary: string;
   intentText?: string;
+  intentSignals?: IntentSignals;
 };
 
 type PlannedHunk = {
@@ -263,6 +265,7 @@ async function buildPacket(
     riskNotes,
     toolBudget: scaleToolBudget(toolBudget(coverage, config.review.depth, reviewProfile), config.review.budgetMultiplier),
     ...(reviewContext?.intentText !== undefined ? { intentText: reviewContext.intentText } : {}),
+    ...(reviewContext?.intentSignals !== undefined ? { intentSignals: reviewContext.intentSignals } : {}),
     ...(context.degradation !== undefined || truncationReason.length > 0 || contextDropReason !== undefined || contextTruncationReason !== undefined || group.degradationReason !== undefined
       ? { degraded: { reason: [context.degradation, truncationReason, contextDropReason, contextTruncationReason, group.degradationReason].filter(Boolean).join("; ") } }
       : {}),
@@ -286,7 +289,8 @@ export function packetReviewContextFromDossier(dossier: PlannerDossier): PacketR
   const intentParts = [title, body && body.length > 0 ? body : commitBody].filter((part): part is string => part !== undefined && part.length > 0);
   return {
     prSummary: summary,
-    ...(intentParts.length > 0 ? { intentText: truncateTail(intentParts.join("\n\n"), 1000) } : {})
+    ...(intentParts.length > 0 ? { intentText: truncateTail(intentParts.join("\n\n"), 1000) } : {}),
+    ...(dossier.intentSignals !== undefined ? { intentSignals: dossier.intentSignals } : {})
   };
 }
 

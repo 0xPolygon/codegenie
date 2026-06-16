@@ -50,6 +50,7 @@ const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
 
 const KNOWN_ARTIFACTS = new Set([
   "error.json",
+  "intent-signals.json",
   "planner-dossier.json",
   "planner-dossier-chunks.json",
   "resolved-input.json",

@@ -212,6 +212,8 @@ function stampFinding(
     ...(submitted.suggestedFix !== undefined ? { suggestedFix: submitted.suggestedFix } : {}),
     ...(submitted.suggestedTest !== undefined ? { suggestedTest: submitted.suggestedTest } : {}),
     verification: submitted.verification,
+    ...(submitted.behaviorChange !== undefined ? { behaviorChange: submitted.behaviorChange } : {}),
+    ...(submitted.intentEvidence !== undefined ? { intentEvidence: submitted.intentEvidence } : {}),
     producedBy: {
       kind: "packet",
       stage: 7,

@@ -1,6 +1,6 @@
 # Issue 31: Intent-Aware Behavior-Change Framing
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 5 review, 2026-06-15
 Planned at: commit `db41ed7`
 
@@ -84,4 +84,3 @@ This is a general code-review quality issue, not a trails-api-specific rule.
 - Same-PR tests still do not automatically suppress material behavior changes.
 - Structured artifacts expose the intent signals used for framing.
 - The solution uses generic intent keywords and source context, not project-specific rules.
-

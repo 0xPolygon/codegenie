@@ -1,5 +1,6 @@
 import type {
   CandidateFinding,
+  IntentSignals,
   PlannerDossier,
   ReviewPacket,
   ReviewStage,
@@ -54,6 +55,7 @@ export type PromptBuilder = {
     candidate: CandidateFinding;
     originContext: string;
     hunksText: string;
+    intentSignals?: IntentSignals;
     skills: Skill[];
   }): BuiltPrompt;
   buildComposerPrompt(input: {
@@ -111,6 +113,8 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
         "Confidence calibration: do not mark a changed-line correctness/security finding low confidence solely because one optional tool lookup or supporting range read was unavailable. Use medium confidence when the changed-code evidence and failure mode are concrete but a narrow verifier-resolvable predicate remains. Reserve low confidence for speculative reachability, ambiguous product intent, or weak path matching.",
         "Validate raw external/provider/API/config/database values before lossy conversion; validation after overflow, truncation, rounding, precision loss, or coercion may be too late. Treat packet staticSignals as hints to investigate, not automatic findings.",
+        "Use declared intent signals to frame behavior changes precisely. Refactor-like intent without explicit behavior-change signals can support accidental-regression framing. Mixed refactor and behavior-change signals should usually be framed as a contract change needing caller/spec confirmation. If task, PR, or spec context explicitly requires the new behavior and caller impact is covered, do not report it as a bug.",
+        "For behavior-change findings, set behaviorChange when applicable: accidental_regression, intentional_needs_confirmation, specified_change, or unknown. Include short intentEvidence snippets when the framing depends on PR or commit text.",
         "When assessing removed helpers, renamed symbols, deleted guards, or behavior-preserving refactors, inspect the base side if needed. Prefer read_symbol or find_definition with source {kind:\"auto\"} unless the exact revision matters; auto searches head first and falls back to base.",
         "When local context feels tight, prefer exact source reads such as read_symbol, read_range, find_definition, or read_diff_blocks over broad search/list tools. Broad exploration may be refused after local budget pressure, while narrow source reads may receive a small extension.",
         packet.reviewProfile === "simple"
@@ -137,13 +141,14 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Finish by calling submit_system_review with schema-valid arguments. Do not answer in plain text."
       ], projection, blocks.length);
     },
-    buildVerifierPrompt: ({ candidate, originContext, hunksText, skills }) => {
+    buildVerifierPrompt: ({ candidate, originContext, hunksText, intentSignals, skills }) => {
       const projection = projectSkills(skills, 9, options);
       const blocks = [
         fenceUntrusted(stableJson(candidate), "candidate-finding"),
+        intentSignals !== undefined ? fenceUntrusted(stableJson(intentSignals), "intent-signals") : "",
         fenceUntrusted(originContext, "origin-context"),
         fenceUntrusted(hunksText, "diff-hunks")
-      ];
+      ].filter(Boolean);
       return buildPrompt(9, [
         reviewerFrame("verification"),
         injectionInstruction(),
@@ -151,7 +156,9 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "For helper/callee-dependent claims, inspect the complete decisive helper branch before keeping the finding. When keeping such a finding, cite the exact helper/callee branch that proves the failure mode in the reason or final verification text. If a read_symbol/find_definition result says delivery is truncated, includes a recovery hint, or contains '[tool result truncated by codeninja tool budget]', use the recovery read_range when possible. If the decisive helper behavior remains unavailable, reject or mark requiredEvidencePresent=false instead of inferring from partial source.",
         "If local tool budget is tight, use exact source reads for decisive evidence. Broad searches may be refused after local budget pressure; narrow read_symbol/read_range/find_definition/read_diff_blocks calls may receive a small extension.",
         "Be especially skeptical of removed-guard findings where the replacement helper may enforce the same condition. Keep only when complete source proves the guard is no longer enforced on the reachable path.",
-        "Same-PR tests that assert new behavior prove the behavior changed; they do not by themselves prove the behavior is safe or intended. If the PR intent says refactor, cleanup, consolidation, behavior-preserving, or similar, compare base versus head behavior and keep or revise material semantic regressions that can break callers. Reject when the PR text/spec clearly states the behavior change is intentional, or when the verifier cannot resolve the missing evidence predicate.",
+        "Same-PR tests that assert new behavior prove the behavior changed; they do not by themselves prove the behavior is safe or intended. If intent signals are refactor-like or behavior-preserving without explicit behavior-change intent, compare base versus head behavior and keep or revise material semantic regressions that can break callers. If intent signals are mixed, frame the issue as intentional_needs_confirmation unless evidence proves accidental regression. Reject accidental-regression framing when PR text/spec clearly requires the behavior change and caller impact is covered.",
+        "Examples of refactor-like or behavior-preserving intent include refactor, cleanup, consolidation, behavior-preserving, no behavior change, and equivalent behavior.",
+        "When revising or keeping a behavior-change finding, preserve or set behaviorChange and intentEvidence. Do not use accidental-regression framing without behavior-preserving/refactor evidence and a concrete caller-visible regression.",
         "Skill false-positive guidance:\n" + projection.text,
         ...blocks,
         "Finish by calling submit_verdict with schema-valid arguments. Do not answer in plain text."
@@ -170,6 +177,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("composition"),
         "Compose the final review from verified findings only. Do not invent new findings. Keep wording direct, specific, and actionable.",
         "For each finalBody, do not include a Markdown heading, repeated title, severity/confidence/category/file metadata, or generic report labels. Start with the concrete issue, impact, evidence, or fix.",
+        "For behavior changes, match the wording to structured behaviorChange/intentEvidence. Do not say accidentally, silently, or contradicts intent unless a finding is marked accidental_regression or cites direct intent evidence for that claim. With mixed intent, say the contract changes and ask for caller/spec confirmation instead of assuming a bug.",
         ...blocks,
         "Finish by calling submit_composition with schema-valid arguments. Do not answer in plain text."
       ], undefined, blocks.length);
@@ -327,6 +335,7 @@ function renderPacket(packet: ReviewPacket): string {
     labels: packet.labels,
     riskNotes: packet.riskNotes,
     contextText: packet.contextText,
+    intentSignals: packet.intentSignals,
     relevantTests: packet.relevantTests,
     hunks: packet.hunks,
     symbolFacts: packet.symbolFacts,

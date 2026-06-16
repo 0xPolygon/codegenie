@@ -483,6 +483,7 @@ export type ReviewPacket = {
   kind: PacketKind;
   prSummary: string;
   intentText?: string;
+  intentSignals?: IntentSignals;
   path: string;
   oldPath?: string;
   fileStatus: DiffFile["status"];
@@ -601,6 +602,28 @@ export type FindingCategory =
   | "testing"
   | "maintainability";
 
+export type BehaviorChangeAssessment =
+  | "accidental_regression"
+  | "intentional_needs_confirmation"
+  | "specified_change"
+  | "unknown";
+
+export type IntentSignal = {
+  kind: "refactorLike" | "behaviorChangeLike" | "explicitlyBehaviorPreserving";
+  source: "pr_title" | "pr_body" | "commit_title" | "commit_body";
+  snippet: string;
+  reason: string;
+  commitSha?: string;
+};
+
+export type IntentSignals = {
+  refactorLike: boolean;
+  behaviorChangeLike: boolean;
+  explicitlyBehaviorPreserving: boolean;
+  signals: IntentSignal[];
+  summary: string;
+};
+
 export type DiffUnderstanding = {
   declaredIntent: string;
   inferredBehavior: string;
@@ -617,6 +640,7 @@ export type HunkCoverageDecision = {
 
 export type ReviewPlan = {
   diffUnderstanding: DiffUnderstanding;
+  intentSignals?: IntentSignals;
   riskAreas: Array<{
     area: string;
     reason: string;
@@ -669,6 +693,8 @@ export type CandidateFinding = {
   suggestedFix?: string;
   suggestedTest?: string;
   verification: string;
+  behaviorChange?: BehaviorChangeAssessment;
+  intentEvidence?: string[];
   producedBy: FindingProducer;
   provenance?: CandidateFindingProvenance;
   clusterId?: string;
@@ -732,6 +758,8 @@ export type VerificationVerdict = {
   finalFinding?: CandidateFinding;
   revisedAnchor?: DiffAnchor;
   verificationIncomplete?: boolean;
+  behaviorChange?: BehaviorChangeAssessment;
+  intentEvidence?: string[];
 };
 
 export type FinalFinding = CandidateFinding & {
@@ -1192,6 +1220,7 @@ export type PlannerDossier = {
     headRefName: string;
   };
   commits: Array<{ sha: string; title: string; body: string }>;
+  intentSignals?: IntentSignals;
   policyFilesChanged: string[];
   files: DossierFileEntry[];
   directories: DossierDirectoryRollup[];

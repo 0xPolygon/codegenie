@@ -433,7 +433,7 @@ function applyVerificationVerdict(candidate: CandidateFinding, verdict: Verifica
   const revised = verdict.finalFinding !== undefined
     ? applyFindingRevision(candidate, verdict.finalFinding)
     : candidate;
-  return applyVerdictAnchor(revised, verdict);
+  return applyVerdictIntentAssessment(applyVerdictAnchor(revised, verdict), verdict);
 }
 
 function applyFindingRevision(candidate: CandidateFinding, revision: CandidateFinding): CandidateFinding {
@@ -444,6 +444,14 @@ function applyFindingRevision(candidate: CandidateFinding, revision: CandidateFi
     producedBy: candidate.producedBy,
     ...(candidate.clusterId !== undefined ? { clusterId: candidate.clusterId } : {}),
     ...(candidate.duplicateOf !== undefined ? { duplicateOf: candidate.duplicateOf } : {})
+  };
+}
+
+function applyVerdictIntentAssessment(candidate: CandidateFinding, verdict: VerificationVerdict): CandidateFinding {
+  return {
+    ...candidate,
+    ...(verdict.behaviorChange !== undefined ? { behaviorChange: verdict.behaviorChange } : {}),
+    ...(verdict.intentEvidence !== undefined ? { intentEvidence: verdict.intentEvidence } : {})
   };
 }
 
@@ -498,6 +506,7 @@ async function verifyCandidate(
     candidate,
     originContext: packet?.contextText ?? "",
     hunksText: packet?.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n") ?? "",
+    ...(packet?.intentSignals !== undefined ? { intentSignals: packet.intentSignals } : {}),
     skills
   });
   const submitted = await runVerifierStructured(candidate, prompt, tools, config, opts, workerId, telemetry, runtimeStats);
@@ -514,7 +523,9 @@ async function verifyCandidate(
     falsePositiveRisk: normalized.falsePositiveRisk,
     ...(revised !== undefined ? { finalFinding: revised } : {}),
     ...(revisedAnchor !== undefined ? { revisedAnchor } : {}),
-    ...(normalized.reason.startsWith("verification incomplete:") ? { verificationIncomplete: true } : {})
+    ...(normalized.reason.startsWith("verification incomplete:") ? { verificationIncomplete: true } : {}),
+    ...(normalized.behaviorChange !== undefined ? { behaviorChange: normalized.behaviorChange } : {}),
+    ...(normalized.intentEvidence !== undefined ? { intentEvidence: normalized.intentEvidence } : {})
   };
 }
 
@@ -645,6 +656,8 @@ function revisedFinding(
     failureMode: submitted.failureMode,
     whyThisMatters: submitted.whyThisMatters,
     verification: submitted.verification,
+    ...(submitted.behaviorChange !== undefined ? { behaviorChange: submitted.behaviorChange } : {}),
+    ...(submitted.intentEvidence !== undefined ? { intentEvidence: submitted.intentEvidence } : {}),
     producedBy: original.producedBy,
     ...(original.clusterId !== undefined ? { clusterId: original.clusterId } : {}),
     ...(original.duplicateOf !== undefined ? { duplicateOf: original.duplicateOf } : {})
