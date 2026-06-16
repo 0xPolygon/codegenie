@@ -127,6 +127,21 @@ type ModelStageSummary = {
   repairCalls: number;
   schemaInvalidCalls: number;
   statuses: ModelStatusCounts;
+  finalize: ModelFinalizeSummary;
+};
+
+type ModelFinalizeSummary = {
+  compactCalls: number;
+  fullCalls: number;
+  noFindingCalls: number;
+  candidateOrUnknownCalls: number;
+  promptChars: number;
+  noFindingPromptChars: number;
+  candidateOrUnknownPromptChars: number;
+  costUSD: number;
+  noFindingCostUSD: number;
+  candidateOrUnknownCostUSD: number;
+  unknownCostCalls: number;
 };
 
 type TelemetryStageSummary = {
@@ -307,6 +322,7 @@ class RunTelemetryImpl {
     retryAttempts: 0,
     repairCalls: 0,
     schemaInvalidCalls: 0,
+    finalize: emptyModelFinalizeSummary(),
     byStage: {} as Record<string, ModelStageSummary>
   };
   private toolSummary = {
@@ -685,6 +701,7 @@ class RunTelemetryImpl {
       this.modelSummary.cacheReadCostUSD += record.cacheReadCostUSD ?? 0;
       this.modelSummary.cacheWriteCostUSD += record.cacheWriteCostUSD ?? 0;
     }
+    updateFinalizeSummary(this.modelSummary.finalize, record, providerCallCount);
 
     const stage = String(record.stage);
     const bucket =
@@ -707,6 +724,7 @@ class RunTelemetryImpl {
     bucket.repairCalls += record.kind === "repair" ? 1 : 0;
     bucket.schemaInvalidCalls += record.status === "schema_invalid" ? 1 : 0;
     bucket.statuses[record.status] += 1;
+    updateFinalizeSummary(bucket.finalize, record, providerCallCount);
     if (providerCallCount === 0) {
       return;
     }
@@ -1116,8 +1134,51 @@ function emptyModelStageSummary(): ModelStageSummary {
     retryAttempts: 0,
     repairCalls: 0,
     schemaInvalidCalls: 0,
-    statuses: emptyModelStatusCounts()
+    statuses: emptyModelStatusCounts(),
+    finalize: emptyModelFinalizeSummary()
   };
+}
+
+function emptyModelFinalizeSummary(): ModelFinalizeSummary {
+  return {
+    compactCalls: 0,
+    fullCalls: 0,
+    noFindingCalls: 0,
+    candidateOrUnknownCalls: 0,
+    promptChars: 0,
+    noFindingPromptChars: 0,
+    candidateOrUnknownPromptChars: 0,
+    costUSD: 0,
+    noFindingCostUSD: 0,
+    candidateOrUnknownCostUSD: 0,
+    unknownCostCalls: 0
+  };
+}
+
+function updateFinalizeSummary(summary: ModelFinalizeSummary, record: LlmCallRecord, providerCallCount: number): void {
+  if (providerCallCount <= 0 || record.finalizeMode === undefined) {
+    return;
+  }
+  if (record.finalizeMode === "compact") {
+    summary.compactCalls += 1;
+  } else {
+    summary.fullCalls += 1;
+  }
+  if (record.finalizeTarget === "no_findings") {
+    summary.noFindingCalls += 1;
+    summary.noFindingPromptChars += record.promptChars;
+    summary.noFindingCostUSD += record.costUSD ?? 0;
+  } else if (record.finalizeTarget === "candidate_or_unknown") {
+    summary.candidateOrUnknownCalls += 1;
+    summary.candidateOrUnknownPromptChars += record.promptChars;
+    summary.candidateOrUnknownCostUSD += record.costUSD ?? 0;
+  }
+  summary.promptChars += record.promptChars;
+  if (record.costUSD === undefined) {
+    summary.unknownCostCalls += 1;
+  } else {
+    summary.costUSD += record.costUSD;
+  }
 }
 
 function emptyPipelineTotals(): PipelineTotals {

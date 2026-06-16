@@ -711,6 +711,9 @@ export type PacketReviewResult = {
   packetId: string;
   lenses: string[];
   findings: CandidateFinding[];
+  reviewStatus?: "findings" | "no_findings" | "incomplete";
+  noFindingReason?: string;
+  unresolvedQuestions?: string[];
   followUpHints: Array<{
     question: string;
     files: string[];

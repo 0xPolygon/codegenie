@@ -448,10 +448,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       packetId: "packet-debug",
       provider: { provider: "fake", model: "fake-model", reasoning: "high" },
       request: {
-        runnerMessageVersion: "pi-runner-loop-v2",
+        runnerMessageVersion: "pi-runner-loop-v3",
         promptTemplateVersion: "debug-template",
         schemaName: "submit_review",
-        schemaVersion: 1,
+        schemaVersion: 2,
         toolChoice: "auto",
         messageCount: 1
       },
@@ -1309,6 +1309,161 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(submitOnly.options[0]?.toolChoice).toEqual({ type: "tool", name: "submit_review" });
   });
 
+  it("uses compact forced finalization for no-candidate packet closeout", async () => {
+    const telemetry = fakeTelemetry();
+    const tool: ToolDefinition = {
+      name: "read_range",
+      description: "read",
+      parameters: Type.Object({ path: Type.String() }),
+      execute: vi.fn(async () => ({
+        text: `function decisive() {\n${"return true;\n".repeat(200)}}`,
+        meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+      }))
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-before-compact-finalize",
+          name: "read_range",
+          arguments: { path: "src/a.ts", startLine: 1, endLine: 80 }
+        }
+      ]),
+      assistant([{
+        type: "toolCall",
+        id: "submit-compact-no-findings",
+        name: "submit_review",
+        arguments: {
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [],
+          uncertainties: [],
+          noFindingReason: "Reviewed changed hunk and helper summary; no concrete failure mode."
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-compact-finalize"),
+        tools: [tool],
+        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 2, maxResultChars: 5000 },
+        telemetryContext: { workerId: "worker-compact", packetId: "packet-compact-finalize" },
+        finalization: {
+          buildCompactPrompt: (input) => [
+            "COMPACT CLOSEOUT",
+            `submit=${input.submitToolName}`,
+            `reason=${input.reason}`,
+            `tools=${input.toolResults.map((result) => `${result.tool}:${result.target}:${result.resultChars}`).join(";")}`
+          ].join("\n")
+        }
+      })
+    ).resolves.toMatchObject({
+      reviewStatus: "no_findings",
+      findings: [],
+      noFindingReason: "Reviewed changed hunk and helper summary; no concrete failure mode."
+    });
+    expect(adapter.contexts[1]).toContain("COMPACT CLOSEOUT");
+    expect(adapter.contexts[1]).toContain("read_range:path=src/a.ts lines=1-80");
+    expect(adapter.contexts[1]).not.toContain("function decisive");
+    expect(telemetry.modelCalls[1]).toMatchObject({
+      kind: "finalize",
+      finalizeMode: "compact",
+      finalizeTarget: "no_findings"
+    });
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "compact_finalize_started",
+        packetId: "packet-compact-finalize",
+        data: expect.objectContaining({ mode: "compact", target: "no_findings", reason: "tool_budget_exhausted" })
+      })
+    ]));
+  });
+
+  it("keeps candidate-shaped invalid submissions on the full repair path", async () => {
+    const compactPrompt = vi.fn(() => "SHOULD NOT BE USED");
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-invalid-candidate",
+        name: "submit_review",
+        arguments: {
+          findings: [{ title: "candidate was drafted" }],
+          followUpHints: [],
+          uncertainties: []
+        }
+      }]),
+      assistant([validSubmitReviewCall("submit-valid-after-candidate-repair")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-candidate-repair"),
+        finalization: { buildCompactPrompt: compactPrompt }
+      })
+    ).resolves.toMatchObject({ findings: [] });
+    expect(compactPrompt).not.toHaveBeenCalled();
+    expect(adapter.contexts[1]).toContain("review packet-candidate-repair");
+    expect(adapter.contexts[1]).not.toContain("SHOULD NOT BE USED");
+  });
+
+  it("adds configured post-tool close nudges before continuing packet review", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([
+        {
+          type: "toolCall",
+          id: "tool-before-nudge",
+          name: "read_range",
+          arguments: { path: "src/a.ts" }
+        }
+      ]),
+      assistant([validSubmitReviewCall("submit-after-nudge")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("packet-nudge"),
+      tools: [{
+        name: "read_range",
+        description: "read",
+        parameters: Type.Object({ path: Type.String() }),
+        execute: vi.fn(async () => ({ text: "line 1", meta: { backend: "text" as const, precision: "exact" as const, degraded: false } }))
+      }],
+      toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 1000 },
+      finalization: {
+        buildPostToolNudge: () => "NUDGE: submit no findings unless the next tool is decisive."
+      }
+    });
+    expect(adapter.contexts[1]).toContain("NUDGE: submit no findings");
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "post_tool_close_nudge" })
+    ]));
+  });
+
   it("normalizes tuple schemas to draft 2020-12 for provider tool registration", async () => {
     const providerToolsSeen: Array<Array<{ name: string; parameters: Record<string, unknown> }>> = [];
     const adapter: PiAiAdapter = {
@@ -2100,6 +2255,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       uncertainties: []
     });
     expect(adapter.complete).toHaveBeenCalledTimes(3);
+    expect(adapter.contexts[1]).not.toContain("reviewStatus");
+    expect(adapter.contexts[1]).toContain("smallest schema-valid empty or negative result");
     expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["ok", "schema_invalid", "ok"]);
     expect(telemetry.modelCalls[1]).toMatchObject({
       kind: "finalize",

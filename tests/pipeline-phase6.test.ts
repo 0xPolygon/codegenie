@@ -162,9 +162,10 @@ describe("phase 6 live review path", () => {
     };
     expect(telemetryJson.budgetStop).toMatchObject({ reason: "max_model_calls" });
 
-    const events = readJsonl<{ message: string; data?: { reason?: string } }>(path.join(runArtifactDir, "events.jsonl"));
+    const events = readJsonl<{ stage?: number; message: string; data?: { reason?: string } }>(path.join(runArtifactDir, "events.jsonl"));
     expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ message: "budget_stopped", data: expect.objectContaining({ reason: "max_model_calls" }) })
+      expect.objectContaining({ message: "budget_stopped", data: expect.objectContaining({ reason: "max_model_calls" }) }),
+      expect.objectContaining({ stage: 7, message: "packet_review_no_findings" })
     ]));
   });
 });
@@ -275,9 +276,11 @@ function partialBudgetAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner"
       if (prompt.includes("packet review")) {
         callsByPrompt.packetReview += 1;
         return assistant([toolCall("submit-review-empty", "submit_review", {
+          reviewStatus: "no_findings",
           findings: [],
           followUpHints: [],
-          uncertainties: []
+          uncertainties: [],
+          noFindingReason: "Reviewed the packet and found no concrete failure mode."
         })]);
       }
       if (prompt.includes("composition")) {

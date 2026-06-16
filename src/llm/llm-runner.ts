@@ -30,6 +30,40 @@ export type ToolExecutionResult = {
   meta?: ToolResultMeta;
 };
 
+export type LlmToolResultSummary = {
+  id: string;
+  tool: string;
+  target: string;
+  status: "ok" | "error" | "rejected" | "skipped";
+  resultChars: number;
+  preview?: string;
+  errorCode?: CodeninjaErrorCode;
+  rejectionReason?: string;
+  degraded?: boolean;
+  degradationReason?: string;
+  truncated?: boolean;
+  lookupStatus?: ToolResultMeta["lookupStatus"];
+  deliveryStatus?: ToolResultMeta["deliveryStatus"];
+  recovery?: ToolResultMeta["recovery"];
+};
+
+export type LlmCompactFinalizeInput = {
+  submitToolName: string;
+  reason: "budget_exhausted" | "tool_budget_exhausted" | "plain_text_or_empty_response";
+  toolCallsUsed: number;
+  investigationRounds: number;
+  resultCharsUsed: number;
+  toolResults: LlmToolResultSummary[];
+};
+
+export type LlmPostToolNudgeInput = {
+  submitToolName: string;
+  toolCallsUsed: number;
+  investigationRounds: number;
+  resultCharsUsed: number;
+  lastToolResults: LlmToolResultSummary[];
+};
+
 export type ToolDefinition = {
   name: string;
   description: string;
@@ -54,6 +88,11 @@ export type LlmStructuredRequest<T> = {
     replaceConversation?: boolean;
     failAfterRepair?: boolean;
     buildPrompt(input: LlmSchemaRepairInput): string;
+  };
+  finalization?: {
+    noResultInstruction?: string;
+    buildCompactPrompt?(input: LlmCompactFinalizeInput): string | undefined;
+    buildPostToolNudge?(input: LlmPostToolNudgeInput): string | undefined;
   };
 };
 

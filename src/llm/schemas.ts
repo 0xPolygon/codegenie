@@ -183,9 +183,16 @@ const StructuredUncertaintySchema = Type.Object(
 
 export const SubmitPacketReviewSchema = Type.Object(
   {
+    reviewStatus: Type.Optional(Type.Union([
+      Type.Literal("findings"),
+      Type.Literal("no_findings"),
+      Type.Literal("incomplete")
+    ])),
     findings: Type.Array(SubmittedFindingSchema, { maxItems: 20 }),
     followUpHints: Type.Array(FollowUpHintSchema, { maxItems: 20 }),
-    uncertainties: Type.Array(StructuredUncertaintySchema, { maxItems: 20 })
+    uncertainties: Type.Array(StructuredUncertaintySchema, { maxItems: 20 }),
+    noFindingReason: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
+    unresolvedQuestions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 10 }))
   },
   { additionalProperties: false }
 );
@@ -248,7 +255,7 @@ export type SubmitComposition = Static<typeof SubmitCompositionSchema>;
 
 export const SCHEMA_VERSIONS = {
   submit_plan: 1,
-  submit_review: 1,
+  submit_review: 2,
   submit_system_review: 1,
   submit_verdict: 1,
   submit_composition: 1

@@ -29,9 +29,11 @@ import {
   roleForStage,
   type CreateRunnerOptions,
   type LlmCallUsage,
+  type LlmCompactFinalizeInput,
   type LlmSchemaRepairInput,
   type LlmRunner,
   type LlmStructuredRequest,
+  type LlmToolResultSummary,
   type PiAiAdapter,
   type PiAssistantMessage,
   type PiModelRef,
@@ -115,7 +117,7 @@ const NO_REPOSITORY_TOOL_BUDGET = {
 const MAX_PROVIDER_ATTEMPTS = 4;
 const BASE_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30_000;
-const RUNNER_MESSAGE_VERSION = "pi-runner-loop-v2";
+const RUNNER_MESSAGE_VERSION = "pi-runner-loop-v3";
 const DEBUG_ARTIFACT_SCHEMA_VERSION = 1;
 const MAX_DEBUG_ARTIFACT_CHARS = 1_500_000;
 const RECORDED_PROVIDER_FAILURE = Symbol("recordedProviderFailure");
@@ -165,12 +167,17 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       let finalizeSubmitRetryUsed = false;
       let forceFinalize = false;
       let budgetForceFinalize = false;
+      let compactFinalizeActive = false;
+      let candidateDrafted = false;
+      const toolResultSummaries: LlmToolResultSummary[] = [];
       const taskTimeout = timeoutSignal(opts.runSignal, request.timeoutMs);
 
       try {
         for (;;) {
           const activeTools = forceFinalize ? [submitTool] : allTools;
           const kind = forceFinalize ? schemaRepairUsed ? "repair" : "finalize" : messages.length === 1 ? "initial" : "tool-continuation";
+          const finalizeMode = forceFinalize ? compactFinalizeActive ? "compact" : "full" : undefined;
+          const finalizeTarget = forceFinalize ? candidateDrafted ? "candidate_or_unknown" : "no_findings" : undefined;
           const toolChoice = forceFinalize || repositoryTools.length === 0
             ? { type: "tool" as const, name: submitTool.name }
             : "auto";
@@ -189,16 +196,25 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               nextModelCallId,
               taskSignal: taskTimeout.signal,
               taskTimedOut: taskTimeout.timedOut,
-              budgetExempt: budgetForceFinalize
+              budgetExempt: budgetForceFinalize,
+              finalizeMode,
+              finalizeTarget
             });
           } catch (cause) {
             if (!forceFinalize && isBudgetExhaustedError(cause) && messages.length > 1) {
               forceFinalize = true;
               budgetForceFinalize = true;
-              messages.push({
-                role: "user",
-                content: `LLM provider call budget is exhausted. Call ${submitTool.name} now with the best schema-valid result supported by the evidence already gathered. Do not request more repository tools.`,
-                timestamp: 0
+              compactFinalizeActive = queueForcedFinalizePrompt({
+                opts,
+                request,
+                messages,
+                submitToolName: submitTool.name,
+                reason: "budget_exhausted",
+                candidateDrafted,
+                toolCallsUsed,
+                investigationRounds,
+                resultCharsUsed,
+                toolResults: toolResultSummaries
               });
               continue;
             }
@@ -210,6 +226,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           const submitCalls = toolCallsNamed(message, submitTool.name);
           const submitCall = submitCalls[0];
           const toolCalls = toolCallsExcept(message, submitTool.name);
+          candidateDrafted = candidateDrafted || submitCalls.some(submitCallHasFindings);
           const submitDisciplineError = submitResponseDisciplineError(request, submitTool.name, submitCalls);
           if (submitDisciplineError !== undefined) {
             queueSchemaRepair({
@@ -259,7 +276,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               recordFinalizeMissingSubmitRetry(opts, request, submitTool.name, kind, toolCalls);
               messages.push({
                 role: "user",
-                content: `The previous response did not call ${submitTool.name}. You must call ${submitTool.name} now with schema-valid arguments. Do not call repository tools, ask for more context, or answer in plain text. If there are no findings, submit empty arrays where the schema requires arrays.`,
+                content: `The previous response did not call ${submitTool.name}. You must call ${submitTool.name} now with schema-valid arguments. Do not call repository tools, ask for more context, or answer in plain text. ${noResultInstruction(request)}`,
                 timestamp: 0
               });
               continue;
@@ -339,6 +356,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 recordToolBudgetExtensionGranted(opts, request, providerResult.callId, toolCall, extensionDecision, resultText.length);
               }
               recordToolCall(opts, request, providerResult.callId, toolCall, outcome);
+              toolResultSummaries.push(summarizeToolResult(toolCall, outcome, resultText));
               toolResults.push({
                 role: "toolResult",
                 toolCallId: toolCall.id,
@@ -353,11 +371,43 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             if (toolCallsUsed >= effectiveToolCallLimit(budget) || investigationRounds >= budget.maxInvestigationRounds) {
               forceFinalize = true;
               budgetForceFinalize = false;
-              messages.push({
-                role: "user",
-                content: `Tool budget is exhausted. Call ${submitTool.name} now with the best schema-valid result supported by the evidence already gathered.`,
-                timestamp: 0
+              compactFinalizeActive = queueForcedFinalizePrompt({
+                opts,
+                request,
+                messages,
+                submitToolName: submitTool.name,
+                reason: "tool_budget_exhausted",
+                candidateDrafted,
+                toolCallsUsed,
+                investigationRounds,
+                resultCharsUsed,
+                toolResults: toolResultSummaries
               });
+            } else {
+              const nudge = request.finalization?.buildPostToolNudge?.({
+                submitToolName: submitTool.name,
+                toolCallsUsed,
+                investigationRounds,
+                resultCharsUsed,
+                lastToolResults: toolResultSummaries.slice(-toolCalls.length)
+              });
+              if (nudge !== undefined && nudge.trim().length > 0) {
+                messages.push({ role: "user", content: nudge.trim(), timestamp: 0 });
+                opts.telemetry.event(definedRecord({
+                  stage: request.stage,
+                  level: "debug",
+                  message: "post_tool_close_nudge",
+                  workerId: request.telemetryContext?.workerId,
+                  packetId: request.telemetryContext?.packetId,
+                  data: definedRecord({
+                    investigationRounds,
+                    toolCallsUsed,
+                    resultCharsUsed,
+                    nudgeChars: nudge.trim().length,
+                    candidateId: request.telemetryContext?.candidateId
+                  })
+                }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+              }
             }
             continue;
           }
@@ -373,10 +423,17 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           }
           forceFinalize = true;
           budgetForceFinalize = false;
-          messages.push({
-            role: "user",
-            content: `Finish now by calling ${submitTool.name} with schema-valid arguments. Do not answer in plain text or call other tools.`,
-            timestamp: 0
+          compactFinalizeActive = queueForcedFinalizePrompt({
+            opts,
+            request,
+            messages,
+            submitToolName: submitTool.name,
+            reason: "plain_text_or_empty_response",
+            candidateDrafted,
+            toolCallsUsed,
+            investigationRounds,
+            resultCharsUsed,
+            toolResults: toolResultSummaries
           });
         }
       } finally {
@@ -407,6 +464,153 @@ export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): PiAiAdapt
   };
 }
 
+function queueForcedFinalizePrompt(input: {
+  opts: CreateRunnerOptions;
+  request: LlmStructuredRequest<unknown>;
+  messages: ConversationMessage[];
+  submitToolName: string;
+  reason: LlmCompactFinalizeInput["reason"];
+  candidateDrafted: boolean;
+  toolCallsUsed: number;
+  investigationRounds: number;
+  resultCharsUsed: number;
+  toolResults: LlmToolResultSummary[];
+}): boolean {
+  if (!input.candidateDrafted) {
+    const compactPrompt = input.request.finalization?.buildCompactPrompt?.({
+      submitToolName: input.submitToolName,
+      reason: input.reason,
+      toolCallsUsed: input.toolCallsUsed,
+      investigationRounds: input.investigationRounds,
+      resultCharsUsed: input.resultCharsUsed,
+      toolResults: input.toolResults
+    });
+    const compactContent = compactPrompt?.trim();
+    if (compactContent) {
+      input.messages.splice(0, input.messages.length, { role: "user", content: compactContent, timestamp: 0 });
+      recordFinalizeStart(input.opts, input.request, "compact", "no_findings", input.reason, compactContent.length);
+      return true;
+    }
+  }
+
+  const content = input.reason === "budget_exhausted"
+    ? `LLM provider call budget is exhausted. Call ${input.submitToolName} now with the best schema-valid result supported by the evidence already gathered. Do not request more repository tools. ${noResultInstruction(input.request)}`
+    : input.reason === "tool_budget_exhausted"
+      ? `Tool budget is exhausted. Call ${input.submitToolName} now with the best schema-valid result supported by the evidence already gathered. ${noResultInstruction(input.request)}`
+      : `Finish now by calling ${input.submitToolName} with schema-valid arguments. Do not answer in plain text or call other tools. ${noResultInstruction(input.request)}`;
+  input.messages.push({ role: "user", content, timestamp: 0 });
+  recordFinalizeStart(
+    input.opts,
+    input.request,
+    "full",
+    input.candidateDrafted ? "candidate_or_unknown" : "no_findings",
+    input.reason,
+    content.length
+  );
+  return false;
+}
+
+function noResultInstruction(request: LlmStructuredRequest<unknown>): string {
+  return request.finalization?.noResultInstruction ??
+    "If there is no concrete result to report, submit the smallest schema-valid empty or negative result supported by the evidence.";
+}
+
+function recordFinalizeStart(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  mode: "compact" | "full",
+  target: "no_findings" | "candidate_or_unknown",
+  reason: LlmCompactFinalizeInput["reason"],
+  promptChars: number
+): void {
+  opts.telemetry.event(definedRecord({
+    stage: request.stage,
+    level: "debug",
+    message: mode === "compact" ? "compact_finalize_started" : "full_finalize_started",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      mode,
+      target,
+      reason,
+      promptChars,
+      candidateId: request.telemetryContext?.candidateId
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
+function submitCallHasFindings(toolCall: PiToolCall): boolean {
+  const findings = toolCall.arguments.findings;
+  return Array.isArray(findings) && findings.length > 0;
+}
+
+function summarizeToolResult(toolCall: PiToolCall, outcome: ToolRunOutcome, resultText: string): LlmToolResultSummary {
+  const meta = outcome.result.meta;
+  return definedRecord({
+    id: toolCall.id || safeFenceLabelPart(toolCall.name),
+    tool: toolCall.name,
+    target: toolTargetSummary(toolCall),
+    status: outcome.status,
+    resultChars: resultText.length,
+    preview: firstMeaningfulLine(resultText),
+    errorCode: outcome.errorCode,
+    rejectionReason: outcome.rejectionReason,
+    degraded: meta?.degraded,
+    degradationReason: meta?.degradationReason,
+    truncated: meta?.truncated,
+    lookupStatus: meta?.lookupStatus,
+    deliveryStatus: meta?.deliveryStatus,
+    recovery: meta?.recovery
+  }) as LlmToolResultSummary;
+}
+
+function toolTargetSummary(toolCall: PiToolCall): string {
+  const args = stripCredentials(toolCall.arguments) as Record<string, unknown>;
+  const parts: string[] = [];
+  const path = typeof args.path === "string" ? args.path : undefined;
+  const pathGlob = typeof args.pathGlob === "string" ? args.pathGlob : undefined;
+  const symbolName = typeof args.symbolName === "string" ? args.symbolName : undefined;
+  const query = typeof args.query === "string" ? args.query : undefined;
+  const glob = typeof args.glob === "string" ? args.glob : undefined;
+  if (path) {
+    parts.push(`path=${path}`);
+  }
+  if (pathGlob) {
+    parts.push(`pathGlob=${pathGlob}`);
+  }
+  if (symbolName) {
+    parts.push(`symbol=${symbolName}`);
+  }
+  if (typeof args.line === "number") {
+    parts.push(`line=${args.line}`);
+  }
+  if (typeof args.startLine === "number" || typeof args.endLine === "number") {
+    parts.push(`lines=${String(args.startLine ?? "?")}-${String(args.endLine ?? "?")}`);
+  }
+  if (query) {
+    parts.push(`query=${truncateDiagnosticPart(query, 80)}`);
+  }
+  if (glob) {
+    parts.push(`glob=${glob}`);
+  }
+  return parts.length > 0 ? parts.join(" ") : stableJson(args).slice(0, 200);
+}
+
+function firstMeaningfulLine(text: string): string | undefined {
+  for (const line of text.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("```") || trimmed.startsWith("The following block is")) {
+      continue;
+    }
+    return truncateDiagnosticPart(trimmed, 240);
+  }
+  return undefined;
+}
+
+function truncateDiagnosticPart(text: string, maxChars: number): string {
+  return text.length <= maxChars ? text : `${text.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
 async function completeWithCache(input: {
   opts: CreateRunnerOptions;
   adapter: PiAiAdapter;
@@ -421,8 +625,26 @@ async function completeWithCache(input: {
   taskSignal: AbortSignal;
   taskTimedOut: () => boolean;
   budgetExempt?: boolean;
+  finalizeMode?: "compact" | "full" | undefined;
+  finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
 }): Promise<ProviderCallResult> {
-  const { opts, adapter, request, model, messages, tools, kind, toolChoice, providerLimit, nextModelCallId, taskSignal, taskTimedOut, budgetExempt } = input;
+  const {
+    opts,
+    adapter,
+    request,
+    model,
+    messages,
+    tools,
+    kind,
+    toolChoice,
+    providerLimit,
+    nextModelCallId,
+    taskSignal,
+    taskTimedOut,
+    budgetExempt,
+    finalizeMode,
+    finalizeTarget
+  } = input;
   const canonicalRequest = canonicalModelRequest({
     cacheSchemaVersion: MODEL_CALL_CACHE_SCHEMA_VERSION,
     runFingerprint: opts.cache?.runFingerprint ?? null,
@@ -436,6 +658,8 @@ async function completeWithCache(input: {
     schemaVersion: SCHEMA_VERSIONS[submitToolNameForStage(request.stage)],
     toolBudget: request.toolBudget ?? NO_REPOSITORY_TOOL_BUDGET,
     kind,
+    finalizeMode,
+    finalizeTarget,
     toolChoice,
     messages,
     tools
@@ -476,11 +700,15 @@ async function completeWithCache(input: {
           promptText,
           messages,
           tools,
-          toolChoice
+          toolChoice,
+          finalizeMode,
+          finalizeTarget
         });
         recordModelCall(opts, request, model, cachedResponse.message, {
           callId,
           kind,
+          finalizeMode,
+          finalizeTarget,
           attempt: 1,
           cacheStatus: "hit",
           promptText,
@@ -527,12 +755,16 @@ async function completeWithCache(input: {
       promptText,
       messages,
       tools,
-      toolChoice
+      toolChoice,
+      finalizeMode,
+      finalizeTarget
     });
     try {
       recordModelCallEvent(opts, request, model, {
         callId,
         kind,
+        finalizeMode,
+        finalizeTarget,
         attempt,
         promptText,
         message: "model_call_queued",
@@ -543,6 +775,8 @@ async function completeWithCache(input: {
         recordModelCallEvent(opts, request, model, {
           callId,
           kind,
+          finalizeMode,
+          finalizeTarget,
           attempt,
           promptText,
           message: "model_call_started",
@@ -570,6 +804,8 @@ async function completeWithCache(input: {
         recordModelCall(opts, request, model, message, {
           callId,
           kind,
+          finalizeMode,
+          finalizeTarget,
           attempt,
           cacheStatus: opts.cache ? "miss" : "disabled",
           promptText,
@@ -593,6 +829,8 @@ async function completeWithCache(input: {
       const modelCallMeta = definedRecord({
         callId,
         kind,
+        finalizeMode,
+        finalizeTarget,
         attempt,
         cacheStatus,
         promptText,
@@ -601,6 +839,8 @@ async function completeWithCache(input: {
       }) as {
         callId: string;
         kind: "initial" | "tool-continuation" | "repair" | "finalize";
+        finalizeMode?: "compact" | "full" | undefined;
+        finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
         attempt: number;
         cacheStatus: "hit" | "miss" | "disabled" | "write";
         promptText: string;
@@ -631,6 +871,8 @@ async function completeWithCache(input: {
       recordErroredModelCall(opts, request, model, {
         callId,
         kind,
+        finalizeMode,
+        finalizeTarget,
         attempt,
         cacheStatus: opts.cache ? "miss" : "disabled",
         promptText,
@@ -673,6 +915,8 @@ function canonicalModelRequest(input: {
   schemaVersion: number;
   toolBudget: unknown;
   kind: "initial" | "tool-continuation" | "repair" | "finalize";
+  finalizeMode?: "compact" | "full" | undefined;
+  finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
   toolChoice: ToolChoiceMode;
   messages: ConversationMessage[];
   tools: ToolDefinition[];
@@ -690,6 +934,8 @@ function canonicalModelRequest(input: {
     schemaVersion: input.schemaVersion,
     toolBudget: input.toolBudget,
     kind: input.kind,
+    finalizeMode: input.finalizeMode,
+    finalizeTarget: input.finalizeTarget,
     toolChoice: input.toolChoice,
     messages: input.messages,
     tools: input.tools
@@ -1407,6 +1653,8 @@ function writeModelCallRequestDebug(
   meta: {
     callId: string;
     kind: ModelCallKind;
+    finalizeMode?: "compact" | "full" | undefined;
+    finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
     attempt: number;
     cacheStatus: ModelCallCacheStatus;
     cacheKey: string;
@@ -1424,6 +1672,8 @@ function writeModelCallRequestDebug(
     stage: request.stage,
     role: roleForStage(request.stage),
     kind: meta.kind,
+    finalizeMode: meta.finalizeMode,
+    finalizeTarget: meta.finalizeTarget,
     attempt: meta.attempt,
     workerId: request.telemetryContext?.workerId,
     packetId: request.telemetryContext?.packetId,
@@ -1578,6 +1828,8 @@ function recordModelCallEvent(
   meta: {
     callId: string;
     kind: ModelCallKind;
+    finalizeMode?: "compact" | "full" | undefined;
+    finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
     attempt: number;
     promptText: string;
     message: "model_call_queued" | "model_call_started";
@@ -1596,6 +1848,8 @@ function recordModelCallEvent(
       provider: model.provider,
       model: model.id,
       kind: meta.kind,
+      finalizeMode: meta.finalizeMode,
+      finalizeTarget: meta.finalizeTarget,
       attempt: meta.attempt,
       promptChars: meta.promptText.length,
       promptHash: sha256Hex(meta.promptText),
@@ -1614,6 +1868,8 @@ function recordModelCall(
   meta: {
     callId: string;
     kind: ModelCallKind;
+    finalizeMode?: "compact" | "full" | undefined;
+    finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
     attempt: number;
     cacheStatus: ModelCallCacheStatus;
     promptText: string;
@@ -1637,6 +1893,8 @@ function recordModelCall(
     packetId: request.telemetryContext?.packetId,
     candidateId: request.telemetryContext?.candidateId,
     kind: meta.kind,
+    finalizeMode: meta.finalizeMode,
+    finalizeTarget: meta.finalizeTarget,
     attempt: meta.attempt,
     promptChars: meta.promptText.length,
     promptHash: sha256Hex(meta.promptText),
@@ -1675,6 +1933,8 @@ function recordErroredModelCall(
   meta: {
     callId: string;
     kind: ModelCallKind;
+    finalizeMode?: "compact" | "full" | undefined;
+    finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
     attempt: number;
     cacheStatus: ModelCallCacheStatus;
     promptText: string;
@@ -1694,6 +1954,8 @@ function recordErroredModelCall(
     packetId: request.telemetryContext?.packetId,
     candidateId: request.telemetryContext?.candidateId,
     kind: meta.kind,
+    finalizeMode: meta.finalizeMode,
+    finalizeTarget: meta.finalizeTarget,
     attempt: meta.attempt,
     promptChars: meta.promptText.length,
     promptHash: sha256Hex(meta.promptText),

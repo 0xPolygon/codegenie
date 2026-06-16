@@ -14,6 +14,8 @@ export type LlmCallRecord = {
   packetId?: string;
   candidateId?: string;
   kind: "initial" | "tool-continuation" | "repair" | "finalize";
+  finalizeMode?: "compact" | "full" | undefined;
+  finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
   attempt: number;
   promptChars: number;
   promptHash: string;

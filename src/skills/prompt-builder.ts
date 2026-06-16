@@ -68,7 +68,7 @@ export type PromptBuilder = {
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
   5: "p5.2",
-  7: "p7.1",
+  7: "p7.2",
   8: "p8.1",
   9: "p9.1",
   10: "p10.1"
@@ -111,6 +111,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("packet review"),
         injectionInstruction(),
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
+        "No finding is a successful high-quality review outcome. Once you have checked the packet's concrete risk and targeted context, call submit_review with reviewStatus:\"no_findings\", findings: [], followUpHints: [], uncertainties: [], and a short noFindingReason instead of continuing broad exploration.",
         "Confidence calibration: do not mark a changed-line correctness/security finding low confidence solely because one optional tool lookup or supporting range read was unavailable. Use medium confidence when the changed-code evidence and failure mode are concrete but a narrow verifier-resolvable predicate remains. Reserve low confidence for speculative reachability, ambiguous product intent, or weak path matching.",
         "Validate raw external/provider/API/config/database values before lossy conversion; validation after overflow, truncation, rounding, precision loss, or coercion may be too late. Treat packet staticSignals as hints to investigate, not automatic findings.",
         "Use declared intent signals to frame behavior changes precisely. Refactor-like intent without explicit behavior-change signals can support accidental-regression framing. Mixed refactor and behavior-change signals should usually be framed as a contract change needing caller/spec confirmation. If task, PR, or spec context explicitly requires the new behavior and caller impact is covered, do not report it as a bug.",
@@ -122,6 +123,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
           : packet.reviewProfile === "investigate"
             ? "This packet is classified for investigation. Use repository tools when they can materially verify a concrete failure mode."
             : "This packet has a standard review profile. Keep tool use focused and stop investigating once the concrete failure mode is either verified or ruled out.",
+        depthCloseGuidance(packet),
         "Skill guidance:\n" + projection.text,
         ...blocks,
         "Finish by calling submit_review with schema-valid arguments. Do not answer in plain text."
@@ -188,6 +190,16 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
 function plannerDossierPromptProjection(dossier: PlannerDossier): Omit<PlannerDossier, "runId"> {
   const { runId: _runId, ...projection } = dossier;
   return projection;
+}
+
+function depthCloseGuidance(packet: ReviewPacket): string {
+  if (packet.coverage === "light" || packet.reviewProfile === "simple") {
+    return "Close quickly: submit no findings after packet-only review unless a concrete defect is visible from the packet or one narrow source read is decisive.";
+  }
+  if (packet.coverage === "deep" || packet.reviewProfile === "investigate") {
+    return "Investigate deeply only while pursuing a concrete suspected failure mode. When the decisive branch is verified or ruled out, submit findings or no findings immediately.";
+  }
+  return "Use targeted tools when they can decide a concrete failure mode. Do not continue broad exploration after the likely risk is resolved; submit findings or no findings.";
 }
 
 export function projectSkills(skills: Skill[], stage: ReviewStage, options: ProjectSkillsOptions = {}): SkillProjection {
