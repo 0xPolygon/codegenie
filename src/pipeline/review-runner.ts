@@ -345,7 +345,9 @@ async function startRun(
         mode: input.mode,
         target: input,
         depth: config.review.depth,
+        concurrency: config.review.concurrency,
         budgetMultiplier: config.review.budgetMultiplier,
+        llmMaxConcurrentCalls: config.llm.maxConcurrentCalls,
         lenses: config.lenses.restrictTo ?? config.lenses.enabled,
         format: overrides.format ?? "markdown",
         postGithubComments: overrides.postGithubComments === true

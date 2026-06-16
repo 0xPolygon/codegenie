@@ -30,7 +30,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 24 | COMPLETE | Issue 24: Uncertainty Promotion and Verifier Policy Discipline |
 | 25 | COMPLETE | Issue 25: Repository Source Recovery and Tool Budget Diagnostics |
 | 26 | COMPLETE | Issue 26: Budget Completion, Overrun Telemetry, and Budget Multiplier |
-| 27 | PENDING | Issue 27: Eval LLM Concurrency Overrides |
+| 27 | COMPLETE | Issue 27: Eval LLM Concurrency Overrides |
 | 28 | PENDING | Issue 28: Local Context Budget Pressure Reporting |
 | 29 | PENDING | Issue 29: Adaptive Local Source Budget Extensions |
 | 30 | PENDING | Issue 30: Post-Verification Human-Attention Reconciliation |

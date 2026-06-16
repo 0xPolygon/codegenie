@@ -111,6 +111,66 @@ describe("eval suite validation", () => {
       maxBudgetOverruns: 0
     });
   });
+
+  it("accepts eval llm overrides and preserves legacy review llm fields", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-llm-fields-"));
+    writeFileSync(path.join(suiteDir, "llm.yml"), [
+      "name: llm-fields",
+      "artifacts:",
+      "  path: logs/1",
+      "review:",
+      "  provider: legacy-provider",
+      "  model: legacy-model",
+      "  reasoning: low",
+      "  concurrency: 6",
+      "llm:",
+      "  provider: fake",
+      "  model: fake-model",
+      "  reasoning: high",
+      "  maxConcurrentCalls: 6",
+      "should_find:",
+      "  - id: expected",
+      "    path: src/app.ts"
+    ].join("\n"));
+
+    const suite = await loadEvalSuite(suiteDir);
+
+    expect(suite.cases[0]?.evalCase.review).toMatchObject({
+      provider: "legacy-provider",
+      model: "legacy-model",
+      reasoning: "low",
+      concurrency: 6
+    });
+    expect(suite.cases[0]?.evalCase.llm).toMatchObject({
+      provider: "fake",
+      model: "fake-model",
+      reasoning: "high",
+      maxConcurrentCalls: 6
+    });
+  });
+
+  it("rejects non-positive eval llm maxConcurrentCalls", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-llm-invalid-"));
+    writeFileSync(path.join(suiteDir, "bad.yml"), [
+      "name: invalid-llm-concurrency",
+      "artifacts:",
+      "  path: logs/1",
+      "llm:",
+      "  maxConcurrentCalls: 0",
+      "should_find:",
+      "  - id: expected",
+      "    path: src/app.ts"
+    ].join("\n"));
+
+    await expect(loadEvalSuite(suiteDir)).rejects.toMatchObject({
+      code: "config_error",
+      context: expect.objectContaining({
+        errors: expect.arrayContaining([
+          expect.stringContaining("llm.maxConcurrentCalls")
+        ])
+      })
+    });
+  });
 });
 
 describe("eval scoring", () => {
@@ -930,6 +990,101 @@ describe("eval command fixture suite", () => {
 
     expect(result.status).toBe("pass");
     expect(result.info.cache).toMatchObject({ enabled: true, source: "config" });
+  });
+
+  it("applies eval llm overrides over legacy review llm fields and records effective concurrency", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-llm-override-suite-"));
+    const repo = initRepo();
+    writeRepoFile(repo, "src/app.js", "export const base = true;\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "src/app.js", "export const value = 'CODENINJA_FAKE_FINDING';\n");
+    commitAll(repo, "feature");
+    writeFileSync(path.join(suiteDir, "llm-override.yml"), [
+      "name: llm-override",
+      "repo:",
+      `  external: ${JSON.stringify(repo)}`,
+      "command:",
+      "  branch: feature",
+      "  base: main",
+      "review:",
+      "  provider: not-real",
+      "  model: not-real-model",
+      "  reasoning: low",
+      "  concurrency: 2",
+      "  lenses:",
+      "    - core/code-review",
+      "llm:",
+      "  provider: fake",
+      "  model: fake-model",
+      "  reasoning: high",
+      "  maxConcurrentCalls: 3",
+      "should_find:",
+      "  - id: fake-finding",
+      "    path: src/app.js",
+      "    titlePattern: Fake finding"
+    ].join("\n"));
+
+    const suite = await loadEvalSuite(suiteDir);
+    const config = {
+      ...defaultConfig,
+      llm: { ...defaultConfig.llm, provider: "not-real", model: "not-real-model", maxConcurrentCalls: 1 },
+      review: { ...defaultConfig.review, concurrency: 1 }
+    };
+    const result = await runEvalCase(suite, suite.cases[0]!, { config });
+
+    expect(result.status).toBe("pass");
+    expect(result.info.effectiveConfig).toMatchObject({
+      review: { concurrency: 2 },
+      llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 3 }
+    });
+    const runJson = JSON.parse(readFileSync(path.join(result.runDir, "telemetry", "run.json"), "utf8")) as {
+      review: { concurrency: number; llmMaxConcurrentCalls: number };
+    };
+    expect(runJson.review).toMatchObject({ concurrency: 2, llmMaxConcurrentCalls: 3 });
+  }, 60_000);
+
+  it("records eval llm overrides on live eval errors after case config is applied", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-llm-error-suite-"));
+    const repo = initRepo();
+    writeRepoFile(repo, "src/app.js", "export const base = true;\n");
+    commitAll(repo, "base");
+    writeFileSync(path.join(suiteDir, "llm-error.yml"), [
+      "name: llm-error",
+      "repo:",
+      `  external: ${JSON.stringify(repo)}`,
+      "command:",
+      "  branch: missing-branch",
+      "  base: main",
+      "review:",
+      "  concurrency: 2",
+      "  cache: false",
+      "llm:",
+      "  provider: fake",
+      "  model: fake-model",
+      "  reasoning: high",
+      "  maxConcurrentCalls: 3",
+      "should_find:",
+      "  - id: fake-finding",
+      "    path: src/app.js",
+      "    titlePattern: Fake finding"
+    ].join("\n"));
+
+    const suite = await loadEvalSuite(suiteDir);
+    const config = {
+      ...defaultConfig,
+      llm: { ...defaultConfig.llm, provider: "not-real", model: "not-real-model", maxConcurrentCalls: 1 },
+      review: { ...defaultConfig.review, concurrency: 1 },
+      cache: { ...defaultConfig.cache, enabled: true }
+    };
+    const result = await runEvalCase(suite, suite.cases[0]!, { config });
+
+    expect(result.status).toBe("error");
+    expect(result.info.effectiveConfig).toMatchObject({
+      review: { concurrency: 2 },
+      llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 3 }
+    });
+    expect(result.info.cache).toMatchObject({ enabled: false, source: "case" });
   });
 
   it("applies the reviewed repository codeninja.toml layer before eval YAML overrides", async () => {

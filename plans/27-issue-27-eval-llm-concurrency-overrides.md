@@ -1,6 +1,6 @@
 # Issue 27: Eval LLM Concurrency Overrides
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 5 review, 2026-06-15
 Planned at: commit `db41ed7`
 
@@ -80,4 +80,3 @@ This makes eval tuning confusing. Operators should be able to make a high-cost e
 - Eval artifacts record the effective workflow concurrency and provider-call concurrency.
 - README explains the two concurrency knobs clearly.
 - The solution is generic and does not mention or hard-code trails-api.
-

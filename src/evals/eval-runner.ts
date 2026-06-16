@@ -133,6 +133,15 @@ const caseSchema = z
       })
       .strict()
       .optional(),
+    llm: z
+      .object({
+        provider: z.string().min(1).optional(),
+        model: z.string().min(1).optional(),
+        reasoning: reasoningLevelSchema.optional(),
+        maxConcurrentCalls: positiveIntSchema.optional()
+      })
+      .strict()
+      .optional(),
     logs: z
       .object({
         dir: z.string().min(1).optional()
@@ -359,6 +368,8 @@ async function runLiveCase(
 ): Promise<EvalCaseResult> {
   const startedAt = new Date().toISOString();
   let reviewRunId: string | undefined;
+  let errorConfig = options.config;
+  let errorCache: EvalRunInfo["cache"] | undefined;
   try {
     const repoRoot = await resolveRepoRoot(suite.dir, entry.evalCase, allocated.dir);
     const git = createGitClient(repoRoot);
@@ -370,6 +381,8 @@ async function runLiveCase(
     const actualRepoRoot = await git.repoRoot();
     const repoLayer = applyRepoConfigLayer(options.config, actualRepoRoot);
     const caseConfig = applyCaseReviewConfig(repoLayer.config, entry.evalCase, options.cacheOverride);
+    errorConfig = caseConfig.config;
+    errorCache = caseConfig.cache;
     const target = targetForCase(entry.evalCase);
     let reviewOutput = "";
     await runReview(target, caseConfig.config, {
@@ -409,7 +422,7 @@ async function runLiveCase(
     await writeRunOutputs(allocated.dir, path.dirname(allocated.dir), info, artifacts.finalFindings);
     return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
   } catch (error) {
-    return writeErroredCase(allocated, entry, options.config, startedAt, error, "live");
+    return writeErroredCase(allocated, entry, errorConfig, startedAt, error, "live", undefined, errorCache);
   }
 }
 
@@ -420,7 +433,8 @@ async function writeErroredCase(
   startedAt: string,
   error: unknown,
   mode: "live" | "replay",
-  replay?: EvalRunInfo["replay"]
+  replay?: EvalRunInfo["replay"],
+  cache?: EvalRunInfo["cache"]
 ): Promise<EvalCaseResult> {
   const finishedAt = new Date().toISOString();
   const score = errorScore(error);
@@ -434,7 +448,8 @@ async function writeErroredCase(
     startedAt,
     finishedAt,
     score,
-    config
+    config,
+    ...(cache !== undefined ? { cache } : {})
   });
   await writeFile(path.join(allocated.dir, "out.log"), `${JSON.stringify({ level: "error", message: score.error?.message, code: score.error?.code })}\n`);
   await writeCompareIfAvailable(allocated.dir, path.dirname(allocated.dir), info, []);
@@ -561,6 +576,7 @@ function buildRunInfo(input: {
     ...(input.repo !== undefined ? { repo: input.repo } : {}),
     ...(input.reviewRunId !== undefined ? { reviewRunId: input.reviewRunId } : {}),
     cache: input.cache ?? { enabled: input.config.cache.enabled, source: "config", dir: input.config.cache.dir },
+    effectiveConfig: evalEffectiveConfig(input.config),
     startedAt: input.startedAt,
     finishedAt: input.finishedAt,
     score: input.score
@@ -615,6 +631,7 @@ function applyCaseReviewConfig(
 ): { config: CodeninjaConfig; cache: EvalRunInfo["cache"] } {
   const config = structuredClone(loaded) as CodeninjaConfig;
   const review = evalCase.review;
+  const llm = evalCase.llm;
   if (review?.depth !== undefined) {
     config.review.depth = review.depth;
   }
@@ -639,14 +656,20 @@ function applyCaseReviewConfig(
   if (review?.lenses !== undefined) {
     config.lenses.restrictTo = [...review.lenses];
   }
-  if (review?.provider !== undefined) {
-    config.llm.provider = review.provider;
+  const provider = llm?.provider ?? review?.provider;
+  const model = llm?.model ?? review?.model;
+  const reasoning = llm?.reasoning ?? review?.reasoning;
+  if (provider !== undefined) {
+    config.llm.provider = provider;
   }
-  if (review?.model !== undefined) {
-    config.llm.model = review.model;
+  if (model !== undefined) {
+    config.llm.model = model;
   }
-  if (review?.reasoning !== undefined) {
-    config.llm.reasoning = review.reasoning;
+  if (reasoning !== undefined) {
+    config.llm.reasoning = reasoning;
+  }
+  if (llm?.maxConcurrentCalls !== undefined) {
+    config.llm.maxConcurrentCalls = llm.maxConcurrentCalls;
   }
   const cacheEnabled = cacheOverride ?? review?.cache ?? config.cache.enabled;
   const cacheSource = cacheOverride !== undefined ? "cli" : review?.cache !== undefined ? "case" : "config";
@@ -654,6 +677,20 @@ function applyCaseReviewConfig(
   return {
     config,
     cache: { enabled: cacheEnabled, source: cacheSource, dir: config.cache.dir }
+  };
+}
+
+function evalEffectiveConfig(config: CodeninjaConfig): NonNullable<EvalRunInfo["effectiveConfig"]> {
+  return {
+    review: {
+      concurrency: config.review.concurrency
+    },
+    llm: {
+      ...(config.llm.provider !== undefined ? { provider: config.llm.provider } : {}),
+      ...(config.llm.model !== undefined ? { model: config.llm.model } : {}),
+      ...(config.llm.reasoning !== undefined ? { reasoning: config.llm.reasoning } : {}),
+      maxConcurrentCalls: config.llm.maxConcurrentCalls
+    }
   };
 }
 

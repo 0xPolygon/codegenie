@@ -810,6 +810,12 @@ export type EvalCase = {
     model?: string;
     reasoning?: ReasoningLevel;
   };
+  llm?: {
+    provider?: string;
+    model?: string;
+    reasoning?: ReasoningLevel;
+    maxConcurrentCalls?: number;
+  };
   logs?: {
     dir?: string;
   };
@@ -972,6 +978,17 @@ export type EvalRunInfo = {
   repo?: { root: string; baseSha?: string; headSha?: string; mergeBase?: string };
   reviewRunId?: string;
   cache: { enabled: boolean; source: "cli" | "case" | "config"; dir?: string };
+  effectiveConfig?: {
+    review: {
+      concurrency: number;
+    };
+    llm: {
+      provider?: string;
+      model?: string;
+      reasoning?: ReasoningLevel;
+      maxConcurrentCalls: number;
+    };
+  };
   startedAt: string;
   finishedAt: string;
   score: EvalScore;
