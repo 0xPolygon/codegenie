@@ -1,6 +1,6 @@
 # Issue 53: Human-Attention Note Deduplication
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 17, 2026-06-17
 Recommended priority: after Stage 7 schema repair cost
 

@@ -8127,6 +8127,92 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("merges structurally overlapping human-attention notes with different wording", async () => {
+    const artifacts = new Map<string, unknown>();
+    const result = await dedupeRankAndComposeReview(
+      { verified: [], verdicts: [] },
+      fakePlan("workers/txn_status.go"),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 3,
+        reviewedHunks: 3,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 3, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      {
+        ...nullTelemetry(),
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packetResults: [
+          packetResultWithHint("lock-1", {
+            question: "Check whether relay, LZ, and Hyperlane transaction implementations still match LockForStatusUpdate.",
+            files: ["workers/txn_status.go", "workers/relay_tx.go"],
+            symbols: ["LockForStatusUpdate"],
+            reason: "The generic helper and concrete implementations both touch status updates.",
+            confidence: "medium"
+          }),
+          packetResultWithHint("lock-2", {
+            question: "Verify if LockForStatusUpdate remains equivalent across relay and LZ transaction implementations.",
+            files: ["workers/txn_status.go", "workers/relay_tx.go"],
+            symbols: ["LockForStatusUpdate"],
+            reason: "The same status update path appears in multiple implementation files.",
+            confidence: "medium"
+          }),
+          packetResultWithHint("lock-3", {
+            question: "Confirm unverified implementations did not drop update columns or field mutations.",
+            files: ["workers/txn_status.go", "workers/relay_tx.go"],
+            symbols: ["LockForStatusUpdate"],
+            reason: "Column and field mutation parity is unresolved for the shared status lock helper.",
+            confidence: "medium"
+          })
+        ]
+      }
+    );
+
+    expect(result.needsHumanAttention).toHaveLength(1);
+    expect(result.needsHumanAttention[0]).toEqual(expect.objectContaining({
+      files: ["workers/relay_tx.go", "workers/txn_status.go"],
+      symbols: ["LockForStatusUpdate"],
+      reason: expect.stringContaining("Grouped from 3 related hints across 3 packets.")
+    }));
+    expect(artifacts.get("human-attention-notes.json")).toMatchObject({
+      mergeStats: {
+        exactDuplicateHints: 0,
+        nearDuplicateHints: 2,
+        nearDuplicateGroupsMerged: 2
+      },
+      groups: [
+        expect.objectContaining({
+          count: 3,
+          reasons: expect.arrayContaining([
+            "The generic helper and concrete implementations both touch status updates.",
+            "The same status update path appears in multiple implementation files.",
+            "Column and field mutation parity is unresolved for the shared status lock helper."
+          ])
+        })
+      ]
+    });
+  });
+
   it("does not merge near-duplicate follow-up hints across different scopes", async () => {
     const result = await dedupeRankAndComposeReview(
       { verified: [], verdicts: [] },
