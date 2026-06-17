@@ -1,4 +1,4 @@
-# codeninja 🥷
+# codeninja 🧞
 
 **High-signal AI code review for pull requests.** codeninja is a TypeScript CLI that reviews PR-style diffs at a staff-engineer level — real bugs, logic errors, security issues, architectural risks, and missing tests — and refuses to waste your attention on nitpicks. It prefers no comments over weak comments.
 
