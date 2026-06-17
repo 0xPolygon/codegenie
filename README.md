@@ -82,12 +82,15 @@ diff → detect/filter → classify kept files → changed-symbol extraction (de
   → planner: intent, risk areas, targeted coverage/lenses    (LLM)
   → review packets: focused diff slices + local context      (deterministic)
   → packet reviewers: candidate findings, in parallel        (LLM, tool-equipped)
+  → optional system follow-up: repeated unresolved hints only (LLM, tightly capped)
   → independent verifier: keep / revise / reject             (LLM, per candidate)
   → dedupe, rank, compose final review                       (deterministic + 1 LLM call)
   → stdout report or GitHub review                           (deterministic)
 ```
 
-The unit of review is the changed hunk; the unit of understanding is the affected system. Reviewers don't get the repository dumped into context — they get a compact packet (the hunk, absolute line numbers, enclosing symbol source, a file outline, likely tests) plus bounded read-only repository tools (`read_symbol`, `search_files`, `find_likely_tests`, …) to chase down exactly the surrounding code a concern depends on.
+The unit of review is the changed hunk; the unit of understanding is the affected system. Reviewers don't get the repository dumped into context — they get a compact packet (the hunk, absolute line numbers, enclosing symbol source, a file outline, likely tests) plus bounded read-only repository tools (`read_symbol`, `search_files`, `find_definition`, …) to chase down exactly the surrounding code a concern depends on. The likely-test lookup remains available for test-focused review contexts, while ordinary packet reviewers usually rely on the likely tests already attached to the packet.
+
+Stage 8 is deliberately narrow. It is not a broad whole-repo review pass. It runs only when multiple packet reviewers raise the same scoped follow-up question; otherwise it logs `system_review_skipped` and costs nothing beyond bookkeeping. When it does run, it creates at most a few focused system-review tasks, may resolve duplicate human-attention notes, and any findings still go through the normal verifier before publication.
 
 ## Design and philosophy
 
@@ -145,7 +148,7 @@ Budgets and failures don't produce silent gaps. A failed planner falls back to a
 
 ### Build when evidence demands it
 
-Several richer designs — a cross-file system follow-up pass, hierarchical planning with sub-planners, a cross-packet signal index, spec-document alignment, per-role model tiering, a changed-symbol graph — are specified but deliberately **deferred** behind simple v1 behavior. Each has a written trigger ("build when evals show…"). The rule is the project's own: advanced machinery is added behind stable interfaces when telemetry shows it improves review quality — never speculatively.
+Several richer designs — a broad cross-file system review pass, hierarchical planning with sub-planners, a cross-packet signal index, spec-document alignment, per-role model tiering, a changed-symbol graph — are specified but deliberately **deferred** behind simple v1 behavior. The shipped Stage 8 is only the small repeated-follow-up variant, not the broad system pass. Each richer design has a written trigger ("build when evals show…"). The rule is the project's own: advanced machinery is added behind stable interfaces when telemetry shows it improves review quality — never speculatively.
 
 ## Status
 

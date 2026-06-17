@@ -53,7 +53,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 47 | COMPLETE | Issue 47: Run 10 Verification, Composition, and Submit Robustness |
 | 48 | COMPLETE | Issue 48: Prioritize Local Behavior-Delta Uncertainty Promotions |
 | 49 | COMPLETE | Issue 49: Stage 5 Planner Dossier Efficiency |
-| 50 | PENDING | Issue 50: Narrow `find_likely_tests` Tool Surface |
+| 50 | COMPLETE | Issue 50: Narrow `find_likely_tests` Tool Surface |
 | 51 | COMPLETE | Issue 51: Stage 10 Composer Schema Repair and Salvage |
 | 52 | PENDING | Issue 52: Stage 7 Candidate Schema Repair Cost |
 | 53 | PENDING | Issue 53: Human-Attention Note Deduplication |

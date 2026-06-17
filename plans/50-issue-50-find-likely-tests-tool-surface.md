@@ -1,6 +1,6 @@
 # Issue 50: Narrow `find_likely_tests` Tool Surface
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval runs 14 and 15 tool-use review, 2026-06-17
 Recommended priority: small tool-surface cleanup after the higher-cost schema/report hygiene plans
 
@@ -71,8 +71,8 @@ That suggests the current Stage 6 packet context is doing the useful part. The e
      - packet path is a test file,
      - packet selected lenses include `core/tests`,
      - packet risk tags include test coverage,
-     - changed symbol has known related tests from Stage 6,
      - review mode is deep and the packet is explicitly testing-related.
+   - Do not use Stage 6 `relevantTests` alone as a Stage 7 exposure trigger; those facts are already in the packet and should not re-expand the broad tool surface.
    - Prefer a small helper such as `shouldExposeLikelyTestsTool(packet, context)` over inline conditionals.
 
 4. Do not add new deterministic packet enrichment in this plan.

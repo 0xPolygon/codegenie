@@ -193,6 +193,21 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(invalid?.text).toContain("read_symbol requires exactly one");
   });
 
+  it("can omit likely-test lookup from model-facing repository tools", () => {
+    const defs = buildRepositoryToolDefinitions(fakeRepositoryTools(), { includeLikelyTests: false });
+
+    expect(defs.map((tool) => tool.name)).toEqual([
+      "read_range",
+      "read_file_outline",
+      "read_symbol",
+      "find_definition",
+      "read_diff_blocks",
+      "search_files",
+      "find_symbol_mentions",
+      "list_files"
+    ]);
+  });
+
   it("allows auto source for model-facing symbol lookups and renders fallback metadata", async () => {
     const tools: RepositoryTools = {
       ...fakeRepositoryTools(),

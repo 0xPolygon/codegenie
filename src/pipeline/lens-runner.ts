@@ -143,7 +143,7 @@ async function runPacket(
   const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills });
   const repositoryTools = packet.reviewProfile === "simple" || packet.toolBudget.maxToolCalls <= 0
     ? []
-    : buildRepositoryToolDefinitions(tools);
+    : buildRepositoryToolDefinitions(tools, { includeLikelyTests: shouldExposeLikelyTestsForPacket(packet) });
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
     stage: 7,
     prompt: prompt.prompt,
@@ -437,6 +437,29 @@ function concretenessScore(question: string, reason: string): number {
   const text = `${question} ${reason}`.toLowerCase();
   return (/\b(if|when|whether|because|fails?|breaks?|regression|contract|auth|permission|coverage|test|zero|nil|null|overflow|timeout|leak|race)\b/u.test(text) ? 2 : 0) +
     (question.length <= 180 ? 1 : 0);
+}
+
+function shouldExposeLikelyTestsForPacket(packet: ReviewPacket): boolean {
+  return isTestPath(packet.path) ||
+    (packet.oldPath !== undefined && isTestPath(packet.oldPath)) ||
+    packet.lenses.some(isTestingLens) ||
+    packet.testCoverageDelta !== undefined ||
+    packet.labels.some(isTestingSignal) ||
+    packet.riskNotes.some(isTestingSignal);
+}
+
+function isTestingLens(lens: string): boolean {
+  return /(^|[/_-])tests?($|[/_-])/iu.test(lens) || /(^|[/_-])testing($|[/_-])/iu.test(lens);
+}
+
+function isTestingSignal(value: string): boolean {
+  return /\b(test|tests|testing|coverage)\b/iu.test(value);
+}
+
+function isTestPath(filePath: string): boolean {
+  const normalized = filePath.toLowerCase().replace(/\\/gu, "/");
+  return /(^|\/)(__tests__|tests?|specs?)(\/|$)/u.test(normalized) ||
+    /(^|[._-])(test|spec)(?=\.[^/]+$)/u.test(normalized);
 }
 
 function symbolMatches(symbol: string, factValue: string | undefined): boolean {

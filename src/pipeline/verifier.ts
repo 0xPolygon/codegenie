@@ -585,7 +585,7 @@ async function runVerifierStructured(
       prompt: prompt.prompt,
       schema: SubmitVerificationVerdictSchema,
       templateVersion: prompt.templateVersion,
-      tools: buildRepositoryToolDefinitions(tools),
+      tools: buildRepositoryToolDefinitions(tools, { includeLikelyTests: candidate.category === "testing" }),
       toolBudget: scaleToolBudget(VERIFIER_TOOL_BUDGET, config.review.budgetMultiplier),
       timeoutMs: config.review.perPassTimeoutMs,
       telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId },

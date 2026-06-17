@@ -201,14 +201,14 @@ Pipeline stages are identified by the numeric stage ids from the functional spec
 ```ts
 // 1 diff parsing, 2 filtering, 3 classification, 4 symbol extraction,
 // 5 planning, 6 packet construction, 7 lens review,
-// 8 reserved (deferred cross-file system follow-up; see Future Considerations),
+// 8 optional targeted system follow-up for repeated scoped hints,
 // 9 verification, 10 composition, 11 publishing
 // Logging and telemetry additionally use stage 0 for pre-pipeline events
 // (CLI parse, config load, input validation).
 type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11
 ```
 
-Stage ids are stable for telemetry and evals. Mentally the pipeline is six phases: Inventory (1-4), Plan (5), Review (6-7), Verify (9), Compose (10), Publish (11); stage 8 is reserved for the deferred system follow-up.
+Stage ids are stable for telemetry and evals. Mentally the pipeline is six phases: Inventory (1-4), Plan (5), Review (6-7 plus optional Stage 8), Verify (9), Compose (10), Publish (11). Stage 8 is narrow: it runs only when repeated scoped follow-up hints justify a focused system task.
 
 ### Review Input
 
@@ -601,7 +601,7 @@ type StructuredUncertainty = {
 
 `PacketReviewResult` does not duplicate worker tool usage: tool calls and files read live in `tool-calls.jsonl`, and readers join on `workerId`.
 
-Packet `followUpHints` and `uncertainties` are still emitted in v1: they flow to telemetry and to coverage/report notes, not to new review tasks (cross-file system follow-up is deferred; see Future Considerations).
+Packet `followUpHints` and `uncertainties` are still emitted in v1: they flow to telemetry, to coverage/report notes, and, when multiple packet reviewers raise the same scoped question, into the narrow Stage 8 targeted system follow-up. Single unresolved hints remain human-attention notes rather than review tasks.
 
 Review packets are persisted to telemetry artifacts so evals can inspect what context the reviewer saw. Every packet contains one or more hunks. `ReviewPacket.kind` explains why those hunks are reviewed together, while `ReviewPacket.coverage` and `ReviewPacket.reviewProfile` control execution budget and prompting.
 
@@ -611,7 +611,7 @@ Packet construction algorithm:
 2. Validate planner output and apply deterministic fallbacks for missing coverage, invalid skip reasons, or empty lens sets.
 3. Apply file processing mode: the skip branch is defensive only — configured-skip files never reach Stage 6 under filter-first — and produces coverage records only; whole-file files produce one file packet when size limits allow; all other files default to hunk-first packets.
 4. Group hunks conservatively: one packet per hunk by default; coalesce only same-file hunks that share an enclosing symbol or are very nearby and still fit strict size limits.
-5. Never coalesce across files in v1. Cross-file concerns are recorded as follow-up hints (telemetry + report notes).
+5. Never coalesce across files in v1. Cross-file concerns are recorded as follow-up hints; repeated scoped hints may trigger the narrow Stage 8 follow-up, while isolated hints remain telemetry/report notes.
 6. Attach cheap deterministic surrounding context when available — enclosing symbol source, file outline, likely tests — rendered into `contextText` within `maxContextChars`, plus planner-provided `surroundingContextHints`.
 7. Enforce max hunks, patch chars, context chars, and skill/lens prompt caps. Split oversized packets back into smaller packets. When one hunk alone exceeds `maxPatchChars`, the packet carries a truncated patch window centered on changed lines, with `truncated: true`, omitted-line counts, and a coverage note; never split below hunk granularity, never synthesize sub-hunk ids. Quantified defaults: `maxPatchChars = 12000`, `maxContextChars = 8000`, `maxHunksPerPacket = 5`.
 8. Compute packet coverage as the max coverage of included hunks, ordered `deep > normal > light`.
@@ -1584,7 +1584,7 @@ type ToolCallRecord = {
   initiator: "model" | "harness" // model = issued inside an LLM tool loop; harness = deterministic pipeline use
   workerId?: string
   packetId?: string
-  taskId?: string // reserved for the deferred system follow-up stage
+  taskId?: string // Stage 8 targeted system follow-up task id
   candidateId?: string // verifier-issued calls
   modelCallId?: string // joins to model-calls.jsonl: the LLM call whose loop step issued this tool call
   tool: string
@@ -1885,9 +1885,9 @@ Deferred designs, recorded as target shapes. Build any of these only when teleme
 
 Group summaries, per-group sub-planners, and a meta-planner merging group plans into one `ReviewPlan`. V1 uses deterministic dossier compaction plus chunked planning with mechanical concatenation. Trigger: chunked planning measurably degrades plan quality (bad coverage decisions, missed risk areas) on large reviews.
 
-### Cross-file system follow-up (Stage 8)
+### Broad Cross-File System Review
 
-Stage 8 ran cross-file system review tasks between packet review and verification; it is deferred entirely. Stage id 8 stays reserved so stage ids never renumber. Deferred shapes:
+The shipped Stage 8 is intentionally narrow: it builds at most a few focused system-review tasks only from repeated, scoped Stage 7 follow-up hints. A broader cross-file system review remains deferred. Deferred shapes:
 
 ```ts
 type SystemFollowUpTask = {
@@ -1908,7 +1908,7 @@ type SystemReviewResult = {
 }
 ```
 
-With the stage, the following return: `ReviewPlan.systemFollowUpTasks` (planner-emitted tasks that must name files or symbols), the promotion rule (packet hints, candidate findings, and structured uncertainties become a task only when at least two independent sources name the same file or symbol; duplicates merge into one task carrying per-task file/symbol constraints and a tool budget; vague single-hint sources are suppressed), context-isolated system workers scheduled like packet workers with their own exhaustion-ladder slot, the `{ kind: "system_task"; stage; taskId; relatedPacketIds; lensId; skillIds; workerId? }` `FindingProducer` variant, the `"system_follow_up"` value in `SurroundingContextHint.expectedUse`, and the `systemReview` config block (`maxTasks: 8`, `maxFilesPerTask: 10`, `maxToolCallsPerTask: 15`, `maxResultChars: 20000`, `taskTimeoutMs: 120000`). The cross-packet `ReviewSignal` index (next subsection) belongs to this same future. Trigger: hint-only eval losses show real cross-file misses that packet review plus telemetry/report notes do not surface.
+With the broad stage, the following return: `ReviewPlan.systemFollowUpTasks` (planner-emitted tasks that must name files or symbols), richer promotion rules (packet hints, candidate findings, and structured uncertainties become tasks through a typed signal index), context-isolated system workers with per-task file/symbol constraints and larger but explicit budgets, the `{ kind: "system_task"; stage; taskId; relatedPacketIds; lensId; skillIds; workerId? }` `FindingProducer` variant if distinct producer provenance is needed, the `"system_follow_up"` value in `SurroundingContextHint.expectedUse`, and a `systemReview` config block (`maxTasks`, `maxFilesPerTask`, `maxToolCallsPerTask`, `maxResultChars`, `taskTimeoutMs`). The cross-packet `ReviewSignal` index (next subsection) belongs to this same future. Trigger: hint-only eval losses show real cross-file misses that packet review plus the narrow repeated-hint Stage 8 do not surface.
 
 ### Cross-packet ReviewSignal index
 
@@ -1929,7 +1929,7 @@ type ReviewSignal = {
 }
 ```
 
-Trigger: Stage 8 is built and evals show missed cross-file findings or noisy/duplicated system tasks under the simple rule.
+Trigger: evals show missed cross-file findings or noisy/duplicated Stage 8 tasks under the simple repeated-hint rule.
 
 ### Planner scheduling groups
 
@@ -1978,7 +1978,7 @@ Opt-in execution of configured test/typecheck commands (`tools.testCommands` plu
 
 ### Per-role model and reasoning tiering
 
-`llm.roleModels` and `llm.roleReasoning` maps keyed by role (`planner`, `packetReview`, `verifier`, `composer`, plus `systemReview` if Stage 8 ships) overriding the single `llm.model`/`llm.reasoning` per role. They remain provider-routing keys under the config trust partition (user-scoped sources only). Trigger: evals identify roles where cheaper models or lower reasoning hold review quality.
+`llm.roleModels` and `llm.roleReasoning` maps keyed by role (`planner`, `packetReview`, `systemReview`, `verifier`, `composer`) overriding the single `llm.model`/`llm.reasoning` per role. They remain provider-routing keys under the config trust partition (user-scoped sources only). Trigger: evals identify roles where cheaper models or lower reasoning hold review quality.
 
 ### Rich pre-attached packet context
 

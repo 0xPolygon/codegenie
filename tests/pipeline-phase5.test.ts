@@ -108,6 +108,39 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("does not expose likely-test lookup to ordinary Stage 7 packets", async () => {
+    const toolsByPacket = new Map<string, string[]>();
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        toolsByPacket.set(
+          request.telemetryContext?.packetId ?? "unknown",
+          (request.tools ?? []).map((tool) => tool.name)
+        );
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+
+    await runLensPackets(
+      fakePlan(),
+      [
+        fakePacket({ id: "source-packet", path: "src/app.ts" }),
+        fakePacket({ id: "test-packet", path: "src/app.test.ts", lenses: ["core/tests"] })
+      ],
+      fakeTools(),
+      { ...config(), review: { ...config().review, concurrency: 2 } },
+      nullTelemetry(),
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(toolsByPacket.get("source-packet")).not.toContain("find_likely_tests");
+    expect(toolsByPacket.get("test-packet")).toContain("find_likely_tests");
+  });
+
   it("does not wire compact Stage 7 closeout prompts", async () => {
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
@@ -4978,6 +5011,47 @@ describe("phase 5 pipeline regressions", () => {
     expect(verifierCalls).toEqual(["finding-2:w9-001", "finding-1:w9-002"]);
   });
 
+  it("exposes likely-test lookup to Stage 9 only for testing candidates", async () => {
+    const toolsByCandidate = new Map<string, string[]>();
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        toolsByCandidate.set(
+          request.telemetryContext?.candidateId ?? "unknown",
+          (request.tools ?? []).map((tool) => tool.name)
+        );
+        return {
+          verdict: "keep",
+          reason: "kept",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        } as T;
+      }
+    };
+    const packet = fakePacket();
+    const testing: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-testing",
+      category: "testing",
+      title: "test coverage finding",
+      failureMode: "The changed test no longer covers a live behavior boundary.",
+      whyThisMatters: "A regression can ship without targeted coverage."
+    };
+
+    await verifyFindings(
+      {
+        packetResults: [{ packetId: packet.id, lenses: ["core/code-review"], findings: [fakeFinding(), testing], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [packet]
+      },
+      fakeTools(),
+      { ...config(), review: { ...config().review, concurrency: 2 } },
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(toolsByCandidate.get("finding-1")).not.toContain("find_likely_tests");
+    expect(toolsByCandidate.get("finding-testing")).toContain("find_likely_tests");
+  });
+
   it("prioritizes high-value verifier candidates and records budget-limited candidates before dispatch", async () => {
     const calls: string[] = [];
     const artifacts = new Map<string, unknown>();
@@ -8878,6 +8952,11 @@ function fakePacket(opts: {
   path?: string;
   oldPath?: string;
   reviewPriority?: ReviewPacket["reviewPriority"];
+  lenses?: string[];
+  relevantTests?: ReviewPacket["relevantTests"];
+  testCoverageDelta?: ReviewPacket["testCoverageDelta"];
+  labels?: string[];
+  riskNotes?: string[];
   hunkLines?: ReviewPacket["hunks"][number]["lines"];
   changedNewLineNumbers?: number[];
   changedOldLineNumbers?: number[];
@@ -8895,7 +8974,7 @@ function fakePacket(opts: {
     reviewPriority: opts.reviewPriority ?? "normal",
     coverage: "normal",
     reviewProfile: "standard",
-    lenses: ["core/code-review"],
+    lenses: opts.lenses ?? ["core/code-review"],
     hunks: [
       {
         hunkId: "h1",
@@ -8912,10 +8991,11 @@ function fakePacket(opts: {
     symbolFacts: [],
     context: { path: packetPath },
     contextText: "",
-    relevantTests: [],
+    ...(opts.testCoverageDelta !== undefined ? { testCoverageDelta: opts.testCoverageDelta } : {}),
+    relevantTests: opts.relevantTests ?? [],
     surroundingContextHints: [],
-    labels: [],
-    riskNotes: [],
+    labels: opts.labels ?? [],
+    riskNotes: opts.riskNotes ?? [],
     toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 4000 }
   };
 }

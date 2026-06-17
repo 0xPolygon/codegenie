@@ -173,12 +173,12 @@ codeninja should use a staged review pipeline:
 5. Run the planning pass.
 6. Build compact review packets per hunk or file.
 7. Run selected lenses on relevant packets, with bounded parallelism where packets can be reviewed independently.
-8. (Reserved — deferred.) Cross-file/system follow-up review is a Future Consideration; stage id 8 stays reserved for it.
+8. Run optional cross-file/system follow-up review only for repeated scoped follow-up hints from Stage 7; skip otherwise.
 9. Verify candidate findings, with only minimal duplicate suppression needed to avoid repeated verifier calls.
 10. Deduplicate, rank, and compose final output.
 11. Optionally post verified inline comments and a PR summary through GitHub.
 
-Stage ids are stable for telemetry and evals. Mentally, the pipeline is six phases: Inventory (stages 1-4), Plan (5), Review (6-7), Verify (9), Compose (10), Publish (11), with stage 8 reserved for the deferred system follow-up.
+Stage ids are stable for telemetry and evals. Mentally, the pipeline is six phases: Inventory (stages 1-4), Plan (5), Review (6-7 plus the optional Stage 8 follow-up), Verify (9), Compose (10), Publish (11). Stage 8 is intentionally narrow and often skips itself.
 
 The unit of candidate review is the changed hunk or file. The unit of understanding is the affected system.
 
@@ -480,11 +480,11 @@ Skill and lens prompt content should be projected and capped for the review stag
 
 After each packet review, codeninja should validate the structured result before sending candidates to verification. It should record schema failures, out-of-hunk anchors, missing evidence, low-confidence findings, tool calls, prompt size, token usage, runtime, and task status in telemetry. Findings outside the changed hunk should not be treated as inline candidates unless they can be re-anchored to a changed line with concrete evidence.
 
-## Stage 8: Cross-File / System Follow-Up Review (Deferred)
+## Stage 8: Cross-File / System Follow-Up Review
 
-Cross-file/system follow-up review — promoting cross-file concerns into focused system review tasks — is deferred from v1 (see Future Considerations). Stage id 8 stays reserved for it so stage numbering remains stable for telemetry and evals.
+Stage 8 is a narrow targeted follow-up, not a broad whole-repo review pass. It promotes repeated, scoped Stage 7 follow-up hints into a small number of focused system review tasks. If no repeated scoped hints exist, Stage 8 records `system_review_skipped` and performs no model work.
 
-Packet reviewers still emit structured follow-up hints when they need cross-file evidence they cannot resolve locally:
+Packet reviewers emit structured follow-up hints when they need cross-file evidence they cannot resolve locally:
 
 ```ts
 type FollowUpHint = {
@@ -505,7 +505,18 @@ type FollowUpHint = {
 
 Hints must be pointer-rich. Vague hints such as "check architecture" should be rejected or ignored unless they include a specific question with named files or symbols.
 
-In v1, hints are not promoted into new review tasks. Every hint is recorded in telemetry, and medium- and high-confidence hints are surfaced in the final report as "needs human attention" notes so the cross-file question reaches a human reviewer instead of disappearing silently.
+Stage 8 should:
+
+- Ignore low-confidence hints.
+- Group hints by normalized question plus concrete file/symbol scope.
+- Require the same scoped question to appear from more than one packet before scheduling work.
+- Cap work to a small number of tasks per run.
+- Give each task the same read-only repository tool suite as packet review, under a stricter task budget.
+- Produce either candidate findings, resolved hint notes, or no output.
+- Send every Stage 8 candidate finding through Stage 9 verification before it can reach composition or publishing.
+- Suppress duplicate human-attention notes only when Stage 8 explicitly resolves the same scoped question.
+
+Hints that are not promoted, or that remain unresolved, are still recorded in telemetry. Medium- and high-confidence unresolved hints are surfaced in the final report as "needs human attention" notes so the cross-file question reaches a human reviewer instead of disappearing silently.
 
 ## Stage 9: Candidate Verification
 
@@ -991,8 +1002,8 @@ CI failure thresholds such as `--fail-on high` are out of scope for v1 unless ex
 These designs are deliberately deferred from v1. They are recorded as target shapes to build only when telemetry or evals show the simple v1 behavior falling short — never speculatively.
 
 - Hierarchical planning. Compact group summaries, per-group sub-planners, and a meta-planner that merges group plans into one prioritized review plan. V1 uses a single planner call with deterministic dossier compaction and, when necessary, deterministic chunked planning with mechanical concatenation. Build when chunked planning measurably degrades plan quality on large reviews.
-- Cross-packet review-signal index. Normalizing planner tasks, packet hints, candidate findings, and uncertainties into typed `ReviewSignal` records indexed by symbol, file, category, and configured labels, with graded promotion rules. This is the richer follow-on shape for the deferred system follow-up stage in the next bullet. Build when the simple promotion rule, once built, misses real cross-file findings or produces noisy/duplicate system tasks.
-- Cross-file/system follow-up review (Stage 8). The deferred stage promotes cross-file concerns into question-sized system review tasks. Target shape: the planner may emit `systemFollowUpTasks` validated to name specific files or symbols; packet hints, candidate findings, and uncertainties are promoted only when at least two independent sources name the same file or symbol (name-based matching over `files`/`symbols`, duplicates merged into one task); each `SystemFollowUpTask` carries a stable id, topic, concrete question, sources, related packet ids, bounded file/symbol sets, lenses, priority, and a tool budget; system workers share the packet-reviewer read-only tool suite under task-specific constraints and tight default caps (tasks, files per task, tool calls, result size, timeout), and their findings still pass verification and composition. The `ReviewSignal` index above already lives here as the richer promotion follow-on. V1 records `FollowUpHint`s and surfaces medium/high-confidence ones as needs-human-attention notes instead (see Stage 8). Build when telemetry shows recurring medium/high-confidence hints left unresolved, or evals attribute missed findings to the absent cross-file pass.
+- Cross-packet review-signal index. Normalizing planner tasks, packet hints, candidate findings, and uncertainties into typed `ReviewSignal` records indexed by symbol, file, category, and configured labels, with graded promotion rules. This is the richer follow-on shape for the narrow Stage 8 repeated-hint rule. Build when the simple promotion rule misses real cross-file findings or produces noisy/duplicate system tasks.
+- Broad cross-file/system review. The shipped Stage 8 only promotes repeated scoped packet hints into a few focused tasks. The broader target shape remains deferred: the planner may emit `systemFollowUpTasks`; packet hints, candidate findings, and uncertainties may be promoted through a typed signal index; each task carries a stable topic, sources, related packet ids, bounded file/symbol sets, lenses, priority, and a tool budget; system workers may inspect wider subsystem relationships under explicit constraints. Build when telemetry shows recurring medium/high-confidence hints left unresolved, or evals attribute missed findings to the narrow repeated-hint rule.
 - Planner scheduling groups. Planner-emitted hunk groups carrying parallelism and ordering intent. V1 packets are independent by construction and scheduling is priority-only; groups become meaningful only if cross-packet context sharing or dependent review ordering is introduced.
 - Changed-symbol graph edges. Caller, implements, imports, and test relationships between changed symbols (`SymbolEdge`, `ChangedSymbolGraph`). V1 ships `HunkSymbolFacts` and file outlines only; reviewers answer relationship questions on demand with `find_symbol_mentions` and `find_likely_tests`. Build when evals show reviewer or verifier misses attributable to missing precomputed relationship data.
 - Language analyzer backends. Optional semantic enrichment (gopls, TypeScript compiler API, Rust Analyzer) behind the same repository tool contract, already anticipated by the tool layer's backend and precision metadata.

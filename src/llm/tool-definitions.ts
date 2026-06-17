@@ -22,8 +22,12 @@ const SymbolLookupSourceSelectorSchema = Type.Optional(
   )
 );
 
-export function buildRepositoryToolDefinitions(tools: RepositoryTools): ToolDefinition[] {
-  return [
+export type RepositoryToolDefinitionOptions = {
+  includeLikelyTests?: boolean;
+};
+
+export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: RepositoryToolDefinitionOptions = {}): ToolDefinition[] {
+  const definitions: ToolDefinition[] = [
     {
       name: "read_range",
       description: "Read an inclusive 1-based line range from a file at the head or base revision.",
@@ -218,6 +222,9 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools): ToolDefi
       })
     }
   ];
+  return options.includeLikelyTests === false
+    ? definitions.filter((tool) => tool.name !== "find_likely_tests")
+    : definitions;
 }
 
 async function wrapTool(signal: AbortSignal, run: () => Promise<ToolExecutionResult>): Promise<ToolExecutionResult> {

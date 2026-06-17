@@ -30,7 +30,7 @@ This component is explicitly not responsible for:
 - Git and GitHub mechanics, diff parsing, anchor validation, posting, and GitHub comment sanitization — `components/repository_and_github.md`.
 - CLI argument parsing itself — `src/cli/*`; this component provides the provider command handler invoked by `src/cli/provider-command.ts`.
 - Eval scoring, replay, and eval run directories — `components/evals.md`; evals consumes this component's telemetry artifacts as reader contracts.
-- Everything under Future Considerations in the parent specs, including executable skill packages, external telemetry export, language analyzer backends, the cross-packet `ReviewSignal` index, the Stage 8 system follow-up, per-role model/reasoning tiering (`llm.roleModels`/`llm.roleReasoning`), existing-PR-thread planner hints, and spec-doc discovery. The telemetry recorder keeps a redaction-capable design as `architecture.md` requires, but no export path is designed here.
+- Everything under Future Considerations in the parent specs, including executable skill packages, external telemetry export, language analyzer backends, the cross-packet `ReviewSignal` index, the broad system-review expansion beyond the narrow Stage 8 repeated-hint follow-up, per-role model/reasoning tiering (`llm.roleModels`/`llm.roleReasoning`), existing-PR-thread planner hints, and spec-doc discovery. The telemetry recorder keeps a redaction-capable design as `architecture.md` requires, but no export path is designed here.
 
 ## Public Interface
 
