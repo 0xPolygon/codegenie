@@ -94,6 +94,120 @@ describe("review input resolver", () => {
     expect(resolved.rawDiff).toContain("+three");
   });
 
+  it("resolves one positional branch target as a merge-base branch review", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "base\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "base\nfeature one\n");
+    commitAll(repo, "feature one");
+    writeRepoFile(repo, "app.ts", "base\nfeature one\nfeature two\n");
+    const feature = commitAll(repo, "feature two");
+    git(repo, ["checkout", "main"]);
+    writeRepoFile(repo, "main.ts", "main only\n");
+    commitAll(repo, "main change");
+
+    const branch = await resolveReviewCommandTarget(
+      { mode: "single_ref", ref: "feature" },
+      defaultConfig,
+      nullTelemetry(),
+      { repoRoot: repo }
+    );
+    const explicit = await resolveReviewInput(
+      { mode: "branch", branchName: "feature" },
+      defaultConfig,
+      nullTelemetry(),
+      { repoRoot: repo }
+    );
+
+    expect(branch.mode).toBe("branch");
+    expect(branch.headSha).toBe(feature);
+    expect(branch.rawDiff).toBe(explicit.rawDiff);
+    expect(branch.rawDiff).toContain("+feature one");
+    expect(branch.rawDiff).toContain("+feature two");
+    expect(branch.rawDiff).not.toContain("main.ts");
+    expect(branch.commits.map((commit) => commit.title)).toEqual(["feature two", "feature one"]);
+  });
+
+  it("falls one positional non-branch refs back to single-commit review", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "one\n");
+    commitAll(repo, "first");
+    writeRepoFile(repo, "app.ts", "one\ntwo\n");
+    const second = commitAll(repo, "second");
+
+    const resolved = await resolveReviewCommandTarget(
+      { mode: "single_ref", ref: second },
+      defaultConfig,
+      nullTelemetry(),
+      { repoRoot: repo }
+    );
+
+    expect(resolved.mode).toBe("commit_range");
+    expect(resolved.headSha).toBe(second);
+    expect(resolved.rawDiff).toContain("+two");
+    expect(resolved.commits.map((commit) => commit.title)).toEqual(["second"]);
+  });
+
+  it("applies --base to one positional branch targets", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "base\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "develop"]);
+    writeRepoFile(repo, "develop.ts", "develop only\n");
+    commitAll(repo, "develop change");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "base\nfeature\n");
+    const feature = commitAll(repo, "feature change");
+    git(repo, ["checkout", "main"]);
+    writeRepoFile(repo, "main.ts", "main only\n");
+    commitAll(repo, "main change");
+
+    const resolved = await resolveReviewCommandTarget(
+      { mode: "single_ref", ref: "feature", baseBranch: "develop" },
+      defaultConfig,
+      nullTelemetry(),
+      { repoRoot: repo }
+    );
+
+    expect(resolved.mode).toBe("branch");
+    expect(resolved.headSha).toBe(feature);
+    expect(resolved.rawDiff).toContain("+feature");
+    expect(resolved.rawDiff).not.toContain("develop.ts");
+    expect(resolved.rawDiff).not.toContain("main.ts");
+  });
+
+  it("rejects --base when one positional target is not a branch", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "one\n");
+    commitAll(repo, "first");
+    writeRepoFile(repo, "app.ts", "one\ntwo\n");
+    const second = commitAll(repo, "second");
+
+    await expect(
+      resolveReviewCommandTarget(
+        { mode: "single_ref", ref: second, baseBranch: "main" },
+        defaultConfig,
+        nullTelemetry(),
+        { repoRoot: repo }
+      )
+    ).rejects.toMatchObject({
+      code: "invalid_args",
+      message: expect.stringContaining("--base can only be used when")
+    });
+  });
+
+  it("checks the worktree before resolving one positional branch-or-commit refs", async () => {
+    await expect(
+      resolveReviewCommandTarget(
+        { mode: "single_ref", ref: "feature" },
+        defaultConfig,
+        nullTelemetry(),
+        { git: fakeGitClient({ isInsideWorktree: async () => false }) }
+      )
+    ).rejects.toMatchObject({ code: "not_git_worktree" });
+  });
+
   it("resolves head/base inputs as merge-base diffs for pinned PR-style evals", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "base\n");

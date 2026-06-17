@@ -212,11 +212,20 @@ Stage ids are stable for telemetry and evals. Mentally the pipeline is six phase
 ### Review Input
 
 ```ts
-type ReviewMode = "github_pr" | "branch" | "commit_range"
+type ReviewMode = "github_pr" | "branch" | "head" | "commit_range"
+
+type ReviewCommandTarget =
+  | { mode: "default_branch"; baseBranch?: string }
+  | { mode: "github_pr"; prNumber: number }
+  | { mode: "branch"; branchName: string; baseBranch?: string }
+  | { mode: "head"; headRef: string; baseRef: string }
+  | { mode: "single_ref"; ref: string } // CLI-only: branch-first, then single-commit fallback
+  | { mode: "commit_range"; startCommit: string; endCommit?: string }
 
 type ReviewInput =
   | { mode: "github_pr"; prNumber: number }
   | { mode: "branch"; branchName: string; baseBranch?: string }
+  | { mode: "head"; headRef: string; baseRef: string }
   | { mode: "commit_range"; startCommit: string; endCommit?: string }
 
 type ResolvedReviewInput = {
@@ -739,9 +748,9 @@ type RepositoryIndex = {
 
 Responsibilities:
 
-- Parse `codeninja review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--depth`, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
+- Parse `codeninja review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, `--depth`, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
 - Parse `codeninja provider ...` arguments and dispatch to the provider command layer.
-- Enforce flag rules: `--pr`, `--branch`, and positional commits are mutually exclusive — passing more than one is `invalid_args`. `--post-github-comments` outside `--pr` mode is `invalid_args`.
+- Enforce flag rules: `--pr`, `--branch`, `--head`, and positional commits are mutually exclusive — passing more than one is `invalid_args`. `--head` requires `--base`; `--base` is allowed for branch, explicit head/base, and default-branch review only. `--post-github-comments` outside `--pr` mode is `invalid_args`.
 - Load `codeninja.toml`.
 - Merge review config from defaults, user-scoped config, repo config, the four provider/home environment variables, and CLI flags, while enforcing the trust partition.
 - Validate config with `zod`.
@@ -958,7 +967,23 @@ Shallow and partial clones are detected via `git rev-parse --is-shallow-reposito
 5. Diff `mergeBase..branchHead`.
 6. Collect commit metadata with `git log mergeBase..branchHead`.
 
+Single positional branch shorthand:
+
+1. For `codeninja review <target>`, first try to resolve `<target>` as a local or remote branch.
+2. If branch resolution succeeds, use the branch review flow above.
+3. If branch resolution fails, use the single-commit flow below.
+4. `--base` is allowed with this shorthand only when branch resolution succeeds; if branch resolution fails, the resolver rejects `--base` and tells the user to use `<base>...<head>` for explicit head/base review.
+5. This `single_ref` shape is a CLI/resolver convenience only; later stages receive either `branch` or `commit_range`.
+
 With no target arguments, the resolver uses branch mode with the current branch from `git rev-parse --abbrev-ref HEAD`. A detached HEAD, or a current branch that resolves to the base branch itself, fails with a clear error asking for an explicit review target.
+
+Explicit head/base flow:
+
+1. Parse either `--head <head-ref> --base <base-ref>` or the Git/GitHub-style shorthand `<base-ref>...<head-ref>`.
+2. Resolve both refs locally.
+3. Compute the merge base between base and head.
+4. Diff `mergeBase..head`.
+5. Collect commit metadata with `git log mergeBase..head`.
 
 Commit or commit range flow:
 

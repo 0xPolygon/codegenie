@@ -16,7 +16,10 @@ It is not a chatbot pointed at a diff. It is a **review harness**: a staged pipe
 ```bash
 codeninja review                          # current branch vs its base (merge-base semantics)
 codeninja review --pr 123                 # a GitHub PR — no checkout needed, fork PRs included
+codeninja review feat                     # branch vs resolved base, if feat is a branch
 codeninja review --branch feat --base main
+codeninja review --head 49f4645b --base master # pinned PR-style review
+codeninja review master...49f4645b        # shorthand for --base master --head 49f4645b
 codeninja review abc1234                  # one commit
 codeninja review abc1234 def5678          # a commit range
 ```
@@ -34,6 +37,8 @@ codeninja eval --eval-dir ./evals                 # run the eval suite
 ```
 
 By default codeninja prints a structured Markdown report to stdout and exits `0` whether or not it found issues (a review with findings is a *successful* review). Posting to GitHub is a single `COMMENT`-type review with inline comments anchored to changed lines — it never approves or requests changes, and it only ever happens when you pass the flag.
+
+A single positional target is branch-first: if it resolves as a local or remote branch, codeninja reviews that branch against its base. If it does not resolve as a branch, codeninja treats it as a single commit. `--base` can be used with this shorthand only when the target resolves as a branch.
 
 Model provider auth is configured through Pi-backed user state:
 

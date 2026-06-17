@@ -13,7 +13,7 @@ All data contracts referenced here — `ReviewInput`, `ResolvedReviewInput`, `Pu
 This component is responsible for:
 
 - The `GitClient` and `GitHubClient` implementations behind the interface seams defined in `architecture.md`, including subprocess invocation via `execa` with the Trust Boundaries subprocess-hygiene rules (no shell, `--` separators, option-injection rejection, SHA preference, credential scrubbing).
-- The review input resolver: turning a `ReviewInput` for any of the three modes (`github_pr`, `branch`, `commit_range`), plus the bare-command default, into a `ResolvedReviewInput` with pinned SHAs, merge base, commit metadata, and raw unified diff.
+- The review input resolver: turning a `ReviewInput` for the resolved modes (`github_pr`, `branch`, `head`, `commit_range`), plus CLI-only default and single-ref targets, into a `ResolvedReviewInput` with pinned SHAs, merge base, commit metadata, and raw unified diff.
 - PR ref fetching: the `refs/codeninja/pr/<n>/*` lifecycle, fork-PR head fetching via `refs/pull/<n>/head`, `baseRefOid`/`headRefOid`-anchored diffs, and the fixed diff flags shared by all modes.
 - Shallow/partial clone detection and bounded deepening.
 - Prior codeninja comment listing (`listOwnComments`): REST pagination, deterministic `ExistingReviewThread` mapping, and codeninja-author fingerprint detection for rerun duplicate avoidance. (Human review-thread fetching is deferred to Future Considerations — see architecture.md.)
@@ -43,6 +43,12 @@ These functions are the seams the pipeline orchestrator calls, matching the main
 function createGitClient(repoRoot: string, opts?: { defaultRemote?: string }): GitClient
 
 // src/git/review-input-resolver.ts
+function resolveReviewCommandTarget(
+  target: ReviewCommandTarget,
+  config: CodeninjaConfig,
+  telemetry: TelemetryRecorder
+): Promise<ResolvedReviewInput>
+
 function resolveReviewInput(
   input: ReviewInput,
   config: CodeninjaConfig,
@@ -345,6 +351,8 @@ With no target arguments, the CLI passes `{ mode: "branch", branchName: <current
 An empty resulting diff (branch fully merged) is not an error: the resolver returns `rawDiff: ""` and the orchestrator's zero-work path short-circuits (`components/review_pipeline.md`).
 
 #### Branch Mode And Base Resolution
+
+For a single positional CLI target (`codeninja review <target>`), the command resolver first tries branch resolution. If `<target>` resolves as a local or remote branch, it uses this branch-mode flow. If it does not resolve as a branch, the resolver falls back to single-commit mode. `--base` is accepted with the shorthand only when the target resolves as a branch; otherwise the resolver fails clearly and asks for `<base>...<head>` when the user intended explicit head/base review. The single-ref shape is CLI/resolver-only; later stages see either `branch` or `commit_range`.
 
 1. Resolve the review branch: `refs/heads/<name>` first, then `refs/remotes/<remote>/<name>` (remote order: `origin` first, remaining remotes sorted by name). Unresolvable → `git_ref_missing`.
 2. Resolve the base branch in precedence order, stopping at the first level that yields a resolvable branch:

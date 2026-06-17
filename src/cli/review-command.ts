@@ -36,6 +36,7 @@ type ExecuteReviewCommandOptions = {
 type CommanderReviewOptions = {
   pr?: string;
   branch?: string;
+  head?: string;
   base?: string;
   depth?: string;
   lens?: string[];
@@ -69,10 +70,11 @@ export function parseReviewCommand(
   program
     .command("review")
     .description("review pull-request-style changes")
-    .argument("[commits...]", "commit or commit range to review")
+    .argument("[target...]", "branch, commit, commit range, or <base>...<head> shorthand to review")
     .option("--pr <number>", "GitHub pull request number")
     .option("--branch <branch>", "branch to review")
-    .option("--base <branch>", "base branch for branch/default review")
+    .option("--head <ref>", "head ref or commit to review with --base")
+    .option("--base <branch>", "base branch/ref for branch/head/default review")
     .option("--depth <depth>", "review depth: light, normal, or deep")
     .option("--lens <lens>", "review lens to enable for this run", collect, [])
     .option("--provider <provider>", "provider override")
@@ -172,26 +174,27 @@ export async function executeReviewCommand(
 function resolveTarget(options: CommanderReviewOptions, commits: string[]): ReviewCommandTarget {
   const hasPr = options.pr !== undefined;
   const hasBranch = options.branch !== undefined;
+  const hasHead = options.head !== undefined;
   const hasCommits = commits.length > 0;
-  const targetModeCount = [hasPr, hasBranch, hasCommits].filter(Boolean).length;
+  const targetModeCount = [hasPr, hasBranch, hasHead, hasCommits].filter(Boolean).length;
 
   if (targetModeCount > 1) {
     throw new CodeninjaError(
       "invalid_args",
-      "--pr, --branch, and positional commits are mutually exclusive"
+      "--pr, --branch, --head, and positional commits are mutually exclusive"
     );
   }
 
   if (commits.length > 2) {
-    throw new CodeninjaError("invalid_args", "commit review accepts at most two positional commits");
+    throw new CodeninjaError("invalid_args", "review accepts at most two positional targets");
   }
 
   if (options.postGithubComments && !hasPr) {
     throw new CodeninjaError("invalid_args", "--post-github-comments requires --pr");
   }
 
-  if (options.base !== undefined && (hasPr || hasCommits)) {
-    throw new CodeninjaError("invalid_args", "--base is only valid for branch review");
+  if (options.base !== undefined && (hasPr || (hasCommits && !isSingleRef(commits)))) {
+    throw new CodeninjaError("invalid_args", "--base is only valid for branch, head, or default review");
   }
 
   if (hasPr) {
@@ -203,17 +206,57 @@ function resolveTarget(options: CommanderReviewOptions, commits: string[]): Revi
     return withOptionalBase({ mode: "branch", branchName }, options.base);
   }
 
+  if (hasHead) {
+    const headRef = requireNonEmpty(options.head, "--head");
+    const baseRef = requireNonEmpty(options.base, "--base");
+    return { mode: "head", headRef, baseRef };
+  }
+
   if (hasCommits) {
-    const [startCommit, endCommit] = commits;
-    if (!startCommit) {
-      throw new CodeninjaError("invalid_args", "commit review requires a start commit");
+    const shorthand = parseBaseHeadShorthand(commits);
+    if (shorthand !== undefined) {
+      return shorthand;
+    }
+    const [startRef, endCommit] = commits;
+    if (!startRef) {
+      throw new CodeninjaError("invalid_args", "review target requires a branch, commit, or range");
     }
     return endCommit === undefined
-      ? { mode: "commit_range", startCommit }
-      : { mode: "commit_range", startCommit, endCommit };
+      ? withOptionalBase({ mode: "single_ref", ref: startRef }, options.base)
+      : { mode: "commit_range", startCommit: startRef, endCommit };
   }
 
   return withOptionalBase({ mode: "default_branch" }, options.base);
+}
+
+function isBaseHeadShorthand(commits: string[]): boolean {
+  return commits.length === 1 && commits[0]?.includes("...") === true;
+}
+
+function isSingleRef(commits: string[]): boolean {
+  return commits.length === 1 && !isBaseHeadShorthand(commits);
+}
+
+function parseBaseHeadShorthand(commits: string[]): ReviewCommandTarget | undefined {
+  if (!isBaseHeadShorthand(commits)) {
+    return undefined;
+  }
+  const raw = commits[0] ?? "";
+  const parts = raw.split("...");
+  if (parts.length !== 2) {
+    throw new CodeninjaError(
+      "invalid_args",
+      "base/head shorthand must be exactly <base>...<head>"
+    );
+  }
+  const [baseRef, headRef] = parts.map((part) => part.trim());
+  if (!baseRef || !headRef) {
+    throw new CodeninjaError(
+      "invalid_args",
+      "base/head shorthand must be exactly <base>...<head>"
+    );
+  }
+  return { mode: "head", headRef, baseRef };
 }
 
 function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides {
@@ -308,7 +351,7 @@ function requireNonEmpty(value: string | undefined, flag: string): string {
   return value;
 }
 
-function withOptionalBase<T extends { mode: "default_branch" | "branch" }>(
+function withOptionalBase<T extends { mode: "default_branch" | "branch" | "single_ref" }>(
   target: T,
   base: string | undefined
 ): T & { baseBranch?: string } {

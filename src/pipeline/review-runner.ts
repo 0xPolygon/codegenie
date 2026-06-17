@@ -5,7 +5,7 @@ import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { parseDiff } from "../git/diff-parser.js";
 import { classifyChangedFiles, filterDiffFiles } from "../git/file-classifier.js";
 import { createGitClient } from "../git/git-client.js";
-import { cleanupPullRequestRefs, resolveReviewCommandTarget, resolveReviewInput } from "../git/review-input-resolver.js";
+import { cleanupPullRequestRefs, resolveReviewCommandTarget } from "../git/review-input-resolver.js";
 import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import { maybePublishToGitHub } from "../github/publisher.js";
 import { createPiRunner } from "../llm/pi-runner.js";
@@ -803,10 +803,7 @@ async function resolveInput(
   repoRoot: string,
   overrides: RunReviewOverrides
 ): Promise<ResolvedReviewInput> {
-  if (input.mode === "default_branch") {
-    return resolveReviewCommandTarget(input, config, telemetry, { repoRoot, ...(overrides.github !== undefined ? { github: overrides.github } : {}) });
-  }
-  return resolveReviewInput(input, config, telemetry, { repoRoot, ...(overrides.github !== undefined ? { github: overrides.github } : {}) });
+  return resolveReviewCommandTarget(input, config, telemetry, { repoRoot, ...(overrides.github !== undefined ? { github: overrides.github } : {}) });
 }
 
 async function maybeZeroWork(

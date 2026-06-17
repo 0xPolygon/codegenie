@@ -100,6 +100,7 @@ export type ReviewCommandTarget =
   | { mode: "github_pr"; prNumber: number }
   | { mode: "branch"; branchName: string; baseBranch?: string }
   | { mode: "head"; headRef: string; baseRef: string }
+  | { mode: "single_ref"; ref: string; baseBranch?: string }
   | { mode: "commit_range"; startCommit: string; endCommit?: string };
 
 export type ReviewCommandOptions = {

@@ -74,6 +74,72 @@ describe("review command", () => {
     expect(parsed.config.cache.enabled).toBe(true);
   });
 
+  it("parses explicit head/base review flags", () => {
+    const parsed = parseReviewCommand(
+      ["review", "--head", "49f4645b40e3", "--base", "master"],
+      testContext()
+    );
+
+    expect(parsed.target).toEqual({
+      mode: "head",
+      headRef: "49f4645b40e3",
+      baseRef: "master"
+    });
+  });
+
+  it("parses base...head shorthand as pinned PR-style review", () => {
+    const parsed = parseReviewCommand(["review", "master...49f4645b40e3"], testContext());
+
+    expect(parsed.target).toEqual({
+      mode: "head",
+      headRef: "49f4645b40e3",
+      baseRef: "master"
+    });
+  });
+
+  it("rejects head review without base", () => {
+    expect(() => parseReviewCommand(["review", "--head", "49f4645b40e3"], testContext())).toThrow(
+      /--base requires a value/
+    );
+  });
+
+  it("rejects invalid base...head shorthand", () => {
+    expect(() => parseReviewCommand(["review", "master..."], testContext())).toThrow(
+      /base\/head shorthand/
+    );
+  });
+
+  it("rejects --base with positional base...head shorthand", () => {
+    expect(() =>
+      parseReviewCommand(["review", "master...49f4645b40e3", "--base", "main"], testContext())
+    ).toThrow(/--base is only valid/);
+  });
+
+  it("parses one positional target as a branch-or-commit ref", () => {
+    const parsed = parseReviewCommand(["review", "feature"], testContext());
+
+    expect(parsed.target).toEqual({
+      mode: "single_ref",
+      ref: "feature"
+    });
+  });
+
+  it("allows --base with one positional branch-or-commit ref", () => {
+    const parsed = parseReviewCommand(["review", "feature", "--base", "develop"], testContext());
+
+    expect(parsed.target).toEqual({
+      mode: "single_ref",
+      ref: "feature",
+      baseBranch: "develop"
+    });
+  });
+
+  it("rejects --base with two positional range refs", () => {
+    expect(() =>
+      parseReviewCommand(["review", "abc123", "def456", "--base", "main"], testContext())
+    ).toThrow(/--base is only valid/);
+  });
+
   it("loads repo config from the git worktree root when invoked inside a subdirectory", () => {
     const ctx = testContext();
     execFileSync("git", ["init"], { cwd: ctx.repoRoot, stdio: "ignore" });

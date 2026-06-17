@@ -56,6 +56,27 @@ export async function resolveReviewCommandTarget(
     );
   }
 
+  if (target.mode === "single_ref") {
+    await ensureWorktree(git);
+    const branch = await resolveBranchWithShallowRecovery(target.ref, git, telemetry);
+    if (branch) {
+      return resolveBranchReview(
+        { mode: "branch", branchName: target.ref, ...(target.baseBranch ? { baseBranch: target.baseBranch } : {}) },
+        config,
+        telemetry,
+        git,
+        { preResolvedBranch: branch }
+      );
+    }
+    if (target.baseBranch !== undefined) {
+      throw new CodeninjaError(
+        "invalid_args",
+        `--base can only be used when '${target.ref}' resolves as a branch; use <base>...<head> for explicit head/base review.`
+      );
+    }
+    return resolveCommitReview({ mode: "commit_range", startCommit: target.ref }, telemetry, git);
+  }
+
   return resolveReviewInput(target, config, telemetry, { ...opts, git });
 }
 
@@ -329,10 +350,10 @@ async function resolveBranchReview(
   config: CodeninjaConfig,
   telemetry: TelemetryRecorder,
   git: InternalGitClient,
-  opts: { defaultBranchName?: string } = {}
+  opts: { defaultBranchName?: string; preResolvedBranch?: ResolvedBranch } = {}
 ): Promise<ResolvedReviewInput> {
   const repoRoot = await git.repoRoot();
-  const branch = await resolveBranchWithShallowRecovery(input.branchName, git, telemetry);
+  const branch = opts.preResolvedBranch ?? await resolveBranchWithShallowRecovery(input.branchName, git, telemetry);
   if (!branch) {
     throw new CodeninjaError("git_ref_missing", `review branch '${input.branchName}' could not be resolved`);
   }

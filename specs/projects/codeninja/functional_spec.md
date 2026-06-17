@@ -26,11 +26,14 @@ codeninja should expose a primary command:
 codeninja review
 ```
 
-The command supports three primary review targets:
+The command supports these primary review target forms:
 
 ```bash
 codeninja review --pr 123
+codeninja review <branch-name>
 codeninja review --branch feature-branch [--base main]
+codeninja review --head <head-ref> --base <base-ref>
+codeninja review <base-ref>...<head-ref>
 codeninja review <commit> [end-commit]
 ```
 
@@ -77,7 +80,7 @@ Behavior:
 
 ### `--branch` / `--base`
 
-`--branch <branch-name> [--base <base-branch>]` reviews the head of a branch against a base branch.
+`--branch <branch-name> [--base <base-branch>]` reviews the head of a branch against a base branch. `codeninja review <branch-name> [--base <base-branch>]` is shorthand for the same branch review when the single positional target resolves as a local or remote branch.
 
 Behavior:
 
@@ -90,7 +93,24 @@ Behavior:
 - If no base branch can be resolved, fail with a clear error asking the user to pass `--base` or configure the default base branch.
 - Collect commit titles and commit descriptions across the reviewed range as planner input.
 - Prefer merge-base semantics for branch review so the reviewed diff matches pull-request-style changes.
+- Prefer branch interpretation for a single positional target that resolves as a branch. If the target does not resolve as a branch, fall back to single-commit review.
+- Allow `--base` with the single positional shorthand only when the target resolves as a branch; otherwise fail clearly and ask for `<base>...<head>` when the user intended explicit head/base review.
 - Do not attempt to post GitHub comments in v1 from branch-review mode.
+
+### `--head` / `--base` And `<base>...<head>`
+
+`--head <head-ref> --base <base-ref>` reviews a pinned head ref or commit against an explicit base ref.
+
+`codeninja review <base-ref>...<head-ref>` is shorthand for the same pinned PR-style review, following Git and GitHub compare ordering. For example, `codeninja review master...49f4645b40e3` is equivalent to `codeninja review --head 49f4645b40e3 --base master`.
+
+Behavior:
+
+- Resolve both refs locally and fail clearly if either ref is missing.
+- Compute the merge base between base and head.
+- Diff `mergeBase..head` so the output matches pull-request-style changes from base to head.
+- Collect commit titles and commit descriptions across `mergeBase..head` as planner input.
+- Treat this as distinct from one-commit review: `codeninja review <commit>` reviews that single commit against its first parent, while `<base>...<head>` reviews the full merge-base comparison.
+- Do not attempt to post GitHub comments in v1 from explicit head/base mode.
 
 ### Commit Or Commit Range
 
@@ -98,7 +118,7 @@ Behavior:
 
 Behavior:
 
-- With one commit, review the changes introduced by that commit.
+- With one positional target that does not resolve as a branch, review the changes introduced by that commit.
 - With two commits, review the range from the first commit to the second commit.
 - Collect commit titles and commit descriptions across the reviewed commit or range as planner input.
 - Do not attempt to post GitHub comments in v1 from commit or commit-range mode.
