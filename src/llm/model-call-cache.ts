@@ -257,7 +257,10 @@ function isMessageContentBlock(input: unknown): input is PiAssistantMessage["con
   if (input.type === "toolCall") {
     return typeof input.id === "string" && typeof input.name === "string" && isRecord(input.arguments);
   }
-  return false;
+  // Pi may preserve provider-specific assistant blocks such as Anthropic
+  // `thinking`. They are safe to cache as opaque JSON as long as they are
+  // typed records; callers that understand them can pass them back unchanged.
+  return typeof input.type === "string";
 }
 
 function isMessageUsage(input: unknown): input is PiAssistantMessage["usage"] {

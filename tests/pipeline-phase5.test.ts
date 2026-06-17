@@ -7682,6 +7682,50 @@ describe("phase 5 pipeline regressions", () => {
     expect([...result.findings, ...result.summaryOnlyFindings]).toHaveLength(1);
   });
 
+  it("normalizes no-new-finding composer summaries when findings are published", async () => {
+    const finding = fakeFinding();
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "No new findings introduced; coverage was complete.",
+              composedFindings: [{ findingIds: [finding.id], finalBody: "Grouped body", publication: "inline" }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [finding], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()],
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.summary).toBe("Found 1 verified issue.");
+    expect([...result.findings, ...result.summaryOnlyFindings]).toHaveLength(1);
+  });
+
   it("keeps contrastive composer summaries that mention remaining issues", async () => {
     const finding = fakeFinding();
     const result = await dedupeRankAndComposeReview(

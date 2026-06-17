@@ -669,7 +669,7 @@ describe("eval scoring", () => {
 
   it("matches simple title patterns through body text and token order fallback", () => {
     const nativePrice = finalFinding("native-price", "fees.go", 100, {
-      title: "Hard failure when native token price is zero",
+      title: "Refactor introduces a fatal error path for non-positive native token price",
       category: "correctness",
       failureMode: "A zero native token price now turns a quote into a hard failure.",
       finalBody: "The fee calculation can now fail a quote that previously continued."

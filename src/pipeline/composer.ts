@@ -821,7 +821,8 @@ function isNoFindingsSummary(summary: string | undefined): boolean {
     return false;
   }
   const normalized = summary.trim().replace(/\s+/gu, " ");
-  return /^(?:no|nothing)\b.{0,120}\b(?:findings?|issues?|problems?|concerns?)\b\.?$/iu.test(normalized) ||
+  return /\bno\s+(?:new\s+)?(?:credible\s+|actionable\s+|verified\s+)?(?:findings?|issues?|problems?|concerns?)\b/iu.test(normalized) ||
+    /\bnothing\b.{0,120}\b(?:findings?|issues?|problems?|concerns?)\b/iu.test(normalized) ||
     /^no credible findings were found\.?$/iu.test(normalized);
 }
 

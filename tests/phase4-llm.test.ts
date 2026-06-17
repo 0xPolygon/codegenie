@@ -3829,6 +3829,30 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(hit).toMatchObject({ status: "hit" });
     expect(JSON.stringify(hit)).not.toContain("super-secret-cache-token");
     expect(JSON.stringify(hit)).toContain("[redacted:secret]");
+    const thinkingKey = buildModelCallCacheKey({ runFingerprint: "cache-test", prompt: "thinking" });
+    await cache.put(thinkingKey, {
+      ...cacheEntry(7),
+      message: assistant([
+        {
+          type: "thinking",
+          thinking: "provider reasoning block",
+          thinkingSignature: "signed"
+        },
+        {
+          type: "toolCall",
+          id: "submit-thinking-cache",
+          name: "submit_review",
+          arguments: {
+            findings: [],
+            followUpHints: [],
+            uncertainties: []
+          }
+        }
+      ])
+    });
+    const thinkingHit = await cache.get(thinkingKey, 7);
+    expect(thinkingHit).toMatchObject({ status: "hit" });
+    expect(JSON.stringify(thinkingHit)).toContain("provider reasoning block");
     await expect(cache.get(keyB, 7)).resolves.toEqual({ status: "miss", reason: "not_found" });
     expect(telemetry.events).toEqual(
       expect.arrayContaining([

@@ -1449,7 +1449,17 @@ function tokenFallbackMatches(pattern: string, input: string): boolean {
     return false;
   }
   const inputTokens = new Set(tokensForText(input));
-  return alternatives.some((tokens) => tokens.every((token) => inputTokens.has(token)));
+  return alternatives.some((tokens) => tokens.every((token) => tokenPresent(token, inputTokens)));
+}
+
+function tokenPresent(token: string, inputTokens: Set<string>): boolean {
+  if (inputTokens.has(token)) {
+    return true;
+  }
+  if (token === "zero") {
+    return inputTokens.has("non-positive") || inputTokens.has("nonpositive");
+  }
+  return false;
 }
 
 function tokenAlternativesForPattern(pattern: string): string[][] {
