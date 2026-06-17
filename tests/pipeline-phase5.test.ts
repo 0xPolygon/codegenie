@@ -7610,6 +7610,36 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.summary).toBe("Found 1 verified issue.");
   });
 
+  it("normalizes word-form composer summary counts to published findings", async () => {
+    const findings = manyFindings(7);
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: findings, verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            summary: "The refactor is largely faithful, but twenty-one verified findings show behavior changes.",
+            composedFindings: findings.map((finding) => ({
+              findingIds: [finding.id],
+              finalBody: `${finding.title} body`,
+              publication: "inline"
+            }))
+          }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect([...result.findings, ...result.summaryOnlyFindings]).toHaveLength(7);
+    expect(result.summary).toBe("Found 7 verified issues.");
+  });
+
   it("normalizes no-finding composer summaries when omitted verified findings are reinserted", async () => {
     const result = await dedupeRankAndComposeReview(
       { verified: [fakeFinding()], verdicts: [] },

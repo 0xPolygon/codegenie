@@ -748,8 +748,72 @@ function summaryFindingCount(summary: string | undefined): number | undefined {
   if (!summary) {
     return undefined;
   }
-  const match = summary.trim().match(/\b(?:found|reported|identified|composed)\s+(\d+)\s+(?:verified\s+)?(?:issue|issues|finding|findings)\b/iu);
-  return match ? Number(match[1]) : undefined;
+  const normalized = summary.trim().replace(/\s+/gu, " ");
+  const countToken = "(\\d+|[a-z]+(?:[- ][a-z]+)?)";
+  const leadingMatch = normalized.match(new RegExp(`\\b(?:found|reported|identified|composed)\\s+${countToken}\\s+(?:verified\\s+)?(?:issue|issues|finding|findings)\\b`, "iu"));
+  const verifiedMatch = normalized.match(new RegExp(`\\b${countToken}\\s+verified\\s+(?:issue|issues|finding|findings)\\b`, "iu"));
+  return parseSummaryCountToken((leadingMatch ?? verifiedMatch)?.[1]);
+}
+
+function parseSummaryCountToken(value: string | undefined): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (/^\d+$/u.test(value)) {
+    return Number(value);
+  }
+  const normalized = value.toLowerCase().replace(/-/gu, " ").trim();
+  const words: Record<string, number> = {
+    no: 0,
+    zero: 0,
+    a: 1,
+    an: 1,
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+    six: 6,
+    seven: 7,
+    eight: 8,
+    nine: 9,
+    ten: 10,
+    eleven: 11,
+    twelve: 12,
+    thirteen: 13,
+    fourteen: 14,
+    fifteen: 15,
+    sixteen: 16,
+    seventeen: 17,
+    eighteen: 18,
+    nineteen: 19
+  };
+  if (words[normalized] !== undefined) {
+    return words[normalized];
+  }
+  const tens: Record<string, number> = {
+    twenty: 20,
+    thirty: 30,
+    forty: 40,
+    fifty: 50,
+    sixty: 60,
+    seventy: 70,
+    eighty: 80,
+    ninety: 90
+  };
+  const parts = normalized.split(/\s+/u);
+  if (parts.length === 1) {
+    return tens[parts[0] ?? ""];
+  }
+  if (parts.length === 2) {
+    const [tenWord, oneWord] = parts;
+    const ten = tens[tenWord ?? ""];
+    const one = words[oneWord ?? ""];
+    if (ten !== undefined && one !== undefined && one > 0 && one < 10) {
+      return ten + one;
+    }
+  }
+  return undefined;
 }
 
 function isNoFindingsSummary(summary: string | undefined): boolean {
