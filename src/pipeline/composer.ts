@@ -21,8 +21,9 @@ import type {
 } from "../types.js";
 import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { sha256Hex } from "../util/hashing.js";
-import { isBudgetExhaustedError, isRecoverableTransientLlmError, validateAnchorForDiff } from "./pipeline-utils.js";
+import { isBudgetExhaustedError, isRecoverableTransientLlmError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
 import { summarizeIntentSignals } from "./intent-signals.js";
+import type { LlmSchemaInvalidSubmitRecoveryInput, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 
 type ComposeOptions = {
   runner: LlmRunner;
@@ -46,11 +47,12 @@ type SelectionRecord = {
   mergedIntoFingerprint?: string;
 };
 
-type CompositionMode = "llm" | "llm_degraded" | "deterministic_fallback";
+type CompositionMode = "llm" | "llm_degraded" | "deterministic_fallback" | "schema_repair_fallback";
 
 const MAX_COMPOSER_FINDINGS = 40;
 const MAX_HUMAN_ATTENTION_NOTES = 5;
 const HUMAN_ATTENTION_LOCATION_CAP = 6;
+const MAX_COMPOSER_SUMMARY_CHARS = 4000;
 
 export async function dedupeRankAndComposeReview(
   verified: { verified: CandidateFinding[]; verdicts: VerificationVerdict[] },
@@ -89,18 +91,26 @@ export async function dedupeRankAndComposeReview(
   }
   let fallbackUsed = false;
   let fallbackReason: string | undefined;
+  let fallbackMode: CompositionMode | undefined;
   let compositionDegraded = false;
   const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes).catch((error) => {
     if (!canUseComposerFallback(error, groups, coverage)) {
+      telemetry.event({
+        stage: 10,
+        level: "error",
+        message: "stage_failed",
+        data: composerFailureTelemetry(error, groups)
+      });
       throw error;
     }
     fallbackUsed = true;
-    fallbackReason = composerFallbackCoverageReason();
+    fallbackMode = isSchemaInvalidError(error) ? "schema_repair_fallback" : "deterministic_fallback";
+    fallbackReason = composerFallbackCoverageReason(fallbackMode);
     telemetry.event({
       stage: 10,
       level: "warn",
       message: "composer_fallback_used",
-      data: composerFallbackTelemetry(error, groups, fallbackReason)
+      data: composerFallbackTelemetry(error, groups, fallbackReason, fallbackMode)
     });
     coverage.reasons.push(fallbackReason);
     return fallbackComposition(groups);
@@ -170,7 +180,7 @@ export async function dedupeRankAndComposeReview(
     lowConfidencePublishableIds,
     telemetry
   });
-  const compositionMode: CompositionMode = fallbackUsed ? "deterministic_fallback" : compositionDegraded ? "llm_degraded" : "llm";
+  const compositionMode: CompositionMode = fallbackMode ?? (fallbackUsed ? "deterministic_fallback" : compositionDegraded ? "llm_degraded" : "llm");
   for (const [id, reason] of anchorDowngradeReasons) {
     if (!capped.downgradeReasons.has(id)) {
       capped.downgradeReasons.set(id, reason);
@@ -272,10 +282,291 @@ async function runComposer(
     prompt: prompt.prompt,
     schema: SubmitCompositionSchema,
     templateVersion: prompt.templateVersion,
-    timeoutMs: config.review.perPassTimeoutMs
+    timeoutMs: config.review.perPassTimeoutMs,
+    schemaRepair: {
+      replaceConversation: true,
+      recoverInvalidSubmit: (input) => recoverComposerInvalidSubmit(input, groups, telemetry),
+      buildPrompt: (input) => buildComposerSchemaRepairPrompt(input, groups)
+    }
   });
   telemetry.event({ stage: 10, level: "info", message: "composer_completed", data: { composed: submitted.composedFindings.length } });
   return submitted;
+}
+
+type ComposerSchemaInvalidKind =
+  | "xml_parameter_bleed"
+  | "missing_composed_findings"
+  | "summary_overflow"
+  | "missing_submit_call"
+  | "invalid_tool_arguments";
+
+function recoverComposerInvalidSubmit(
+  input: LlmSchemaInvalidSubmitRecoveryInput,
+  groups: FindingGroup[],
+  telemetry: TelemetryRecorder
+): Record<string, unknown> | undefined {
+  const classification = classifyComposerSchemaInvalid(input);
+  telemetry.event({
+    stage: 10,
+    level: "warn",
+    message: "composer_schema_invalid_classified",
+    data: {
+      submitTool: input.submitTool,
+      invalidSubmitCallCount: input.submitCalls.length,
+      schemaRepairUsed: input.schemaRepairUsed,
+      schemaInvalidKind: classification
+    }
+  });
+
+  if (input.submitTool !== "submit_composition" || input.submitCalls.length === 0 || classification !== "xml_parameter_bleed") {
+    return undefined;
+  }
+
+  telemetry.event({
+    stage: 10,
+    level: "warn",
+    message: "composer_payload_salvage_attempted",
+    data: { schemaInvalidKind: classification, invalidSubmitCallCount: input.submitCalls.length }
+  });
+
+  const args = input.submitCalls[0]?.arguments;
+  const summary = typeof args?.summary === "string" ? args.summary : undefined;
+  if (summary === undefined) {
+    telemetry.event({
+      stage: 10,
+      level: "warn",
+      message: "composer_payload_salvage_failed",
+      data: { reason: "missing_summary", schemaInvalidKind: classification }
+    });
+    return undefined;
+  }
+
+  const marker = summary.match(/<\s*parameter\b[^>]*\bname\s*=\s*["']composedFindings["'][^>]*>/iu);
+  if (!marker || marker.index === undefined) {
+    telemetry.event({
+      stage: 10,
+      level: "warn",
+      message: "composer_payload_salvage_failed",
+      data: { reason: "missing_composed_findings_parameter", schemaInvalidKind: classification }
+    });
+    return undefined;
+  }
+
+  const jsonText = extractFirstJsonArray(summary.slice(marker.index + marker[0].length));
+  if (jsonText === undefined) {
+    telemetry.event({
+      stage: 10,
+      level: "warn",
+      message: "composer_payload_salvage_failed",
+      data: { reason: "missing_or_truncated_json_array", schemaInvalidKind: classification }
+    });
+    return undefined;
+  }
+
+  let composedFindings: unknown;
+  try {
+    composedFindings = JSON.parse(jsonText);
+  } catch {
+    telemetry.event({
+      stage: 10,
+      level: "warn",
+      message: "composer_payload_salvage_failed",
+      data: { reason: "invalid_json_array", schemaInvalidKind: classification }
+    });
+    return undefined;
+  }
+
+  const knownIds = new Set(groups.flatMap((group) => group.findings.map((finding) => finding.id)));
+  const unknownIds = unknownComposedFindingIds(composedFindings, knownIds);
+  if (unknownIds === undefined) {
+    telemetry.event({
+      stage: 10,
+      level: "warn",
+      message: "composer_payload_salvage_failed",
+      data: { reason: "invalid_composed_findings_shape", schemaInvalidKind: classification }
+    });
+    return undefined;
+  }
+  if (unknownIds.length > 0) {
+    telemetry.event({
+      stage: 10,
+      level: "warn",
+      message: "composer_payload_salvage_failed",
+      data: { reason: "unknown_finding_ids", unknownIds, schemaInvalidKind: classification }
+    });
+    return undefined;
+  }
+
+  const recovered = {
+    summary: sanitizeComposerSummary(summary.slice(0, marker.index)),
+    composedFindings
+  };
+  telemetry.event({
+    stage: 10,
+    level: "info",
+    message: "composer_payload_salvage_succeeded",
+    data: {
+      schemaInvalidKind: classification,
+      composedFindings: Array.isArray(composedFindings) ? composedFindings.length : 0,
+      summaryChars: recovered.summary.length
+    }
+  });
+  return recovered;
+}
+
+function classifyComposerSchemaInvalid(input: LlmSchemaInvalidSubmitRecoveryInput): ComposerSchemaInvalidKind {
+  if (input.submitCalls.length === 0) {
+    return "missing_submit_call";
+  }
+  const argsText = input.submitCalls.map((call) => safeComposerJson(call.arguments)).join("\n");
+  const text = `${input.error}\n${argsText}`.toLowerCase();
+  if (/<\/?\s*parameter\b/u.test(text) || /&lt;\/?\s*parameter\b/u.test(text)) {
+    return "xml_parameter_bleed";
+  }
+  if (/\bcomposedfindings\b/u.test(text) && /\b(required|missing|expected)\b/u.test(text)) {
+    return "missing_composed_findings";
+  }
+  if (/\bsummary\b/u.test(text) && /\b(?:4000|max(?:imum)?|length|characters?)\b/u.test(text)) {
+    return "summary_overflow";
+  }
+  return "invalid_tool_arguments";
+}
+
+function sanitizeComposerSummary(input: string): string {
+  const cleaned = input
+    .replace(/<\s*\/?\s*parameter\b[^>]*>/giu, " ")
+    .replace(/&lt;\s*\/?\s*parameter\b[^&]*(?:&gt;)?/giu, " ")
+    .replace(/<[^>]{1,200}>/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return cleaned.slice(0, MAX_COMPOSER_SUMMARY_CHARS);
+}
+
+function extractFirstJsonArray(input: string): string | undefined {
+  const start = input.indexOf("[");
+  if (start < 0) {
+    return undefined;
+  }
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < input.length; index += 1) {
+    const char = input[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === "\"") {
+      inString = true;
+      continue;
+    }
+    if (char === "[") {
+      depth += 1;
+    } else if (char === "]") {
+      depth -= 1;
+      if (depth === 0) {
+        return input.slice(start, index + 1);
+      }
+    }
+  }
+  return undefined;
+}
+
+function unknownComposedFindingIds(input: unknown, knownIds: Set<string>): string[] | undefined {
+  if (!Array.isArray(input)) {
+    return undefined;
+  }
+  const unknownIds = new Set<string>();
+  for (const item of input) {
+    if (!item || typeof item !== "object") {
+      return undefined;
+    }
+    const record = item as Record<string, unknown>;
+    const findingIds = record.findingIds;
+    if (!Array.isArray(findingIds) || findingIds.length === 0) {
+      return undefined;
+    }
+    if (typeof record.finalBody !== "string" || record.finalBody.trim().length === 0) {
+      return undefined;
+    }
+    if (record.publication !== "inline" && record.publication !== "summary-only") {
+      return undefined;
+    }
+    for (const id of findingIds) {
+      if (typeof id !== "string" || id.trim().length === 0) {
+        return undefined;
+      }
+      if (!knownIds.has(id)) {
+        unknownIds.add(id);
+      }
+    }
+  }
+  return [...unknownIds];
+}
+
+function buildComposerSchemaRepairPrompt(input: LlmSchemaRepairInput, groups: FindingGroup[]): string {
+  return [
+    "Repair the Stage 10 review-composition response for codeninja.",
+    "",
+    `Validation problem: ${input.error}`,
+    "",
+    "Required action:",
+    "- Call `submit_composition` exactly once with schema-valid arguments.",
+    "- Use only the verified finding IDs listed below.",
+    "- Do not invent, remove, or re-review findings.",
+    "- Do not output XML.",
+    "- Do not write `<parameter>` tags.",
+    "- Do not use Markdown code fences.",
+    "- Do not answer in prose outside the tool call.",
+    "- Do not ask for repository tools or more context.",
+    "",
+    "Schema constraints:",
+    "- summary: string, 4000 characters or fewer.",
+    "- composedFindings: array of objects { findingIds, finalBody, publication }.",
+    "- findingIds: non-empty array of known finding IDs.",
+    "- finalBody: non-empty string.",
+    "- publication: \"inline\" or \"summary-only\".",
+    "",
+    "Verified finding groups:",
+    safeComposerJson(compactComposerRepairGroups(groups))
+  ].join("\n");
+}
+
+function compactComposerRepairGroups(groups: FindingGroup[]): unknown[] {
+  return groups.map((group) => ({
+    findingIds: group.findings.map((finding) => finding.id),
+    representative: {
+      id: group.representative.id,
+      title: group.representative.title,
+      severity: group.representative.severity,
+      confidence: group.representative.confidence,
+      path: group.representative.path,
+      anchorLine: group.representative.anchor?.line,
+      category: group.representative.category,
+      failureMode: truncateComposerRepairText(group.representative.failureMode, 700),
+      whyThisMatters: truncateComposerRepairText(group.representative.whyThisMatters, 700)
+    },
+    defaultPublication: group.representative.anchor ? "inline" : "summary-only",
+    defaultBody: truncateComposerRepairText(templateBody(group.representative, group.findings), 2400)
+  }));
+}
+
+function truncateComposerRepairText(input: string, maxChars: number): string {
+  return input.length <= maxChars ? input : `${input.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
+}
+
+function safeComposerJson(input: unknown): string {
+  try {
+    return JSON.stringify(input);
+  } catch {
+    return "";
+  }
 }
 
 function groupFindings(findings: CandidateFinding[], packetsById: Map<string, ReviewPacket>): FindingGroup[] {
@@ -315,6 +606,9 @@ function canUseComposerFallback(error: unknown, groups: FindingGroup[], coverage
   if (isBudgetExhaustedError(error)) {
     return true;
   }
+  if (isRecoverableComposerSchemaInvalid(error) && groups.length > 0) {
+    return true;
+  }
   if (groups.length > 0) {
     return isRecoverableTransientLlmError(error);
   }
@@ -324,15 +618,32 @@ function canUseComposerFallback(error: unknown, groups: FindingGroup[], coverage
     coverage.verificationIncompleteCount === 0;
 }
 
-function composerFallbackCoverageReason(): string {
-  return "semantic composition skipped; deterministic fallback used";
+function isRecoverableComposerSchemaInvalid(error: unknown): boolean {
+  return isSchemaInvalidError(error) && (!error || typeof error !== "object" || (error as { recoverable?: unknown }).recoverable !== false);
 }
 
-function composerFallbackTelemetry(error: unknown, groups: FindingGroup[], fallbackReason: string): Record<string, unknown> {
+function composerFallbackCoverageReason(mode: CompositionMode): string {
+  return mode === "schema_repair_fallback"
+    ? "semantic composition schema repair failed; deterministic fallback used"
+    : "semantic composition skipped; deterministic fallback used";
+}
+
+function composerFallbackTelemetry(error: unknown, groups: FindingGroup[], fallbackReason: string, compositionMode: CompositionMode): Record<string, unknown> {
   const errorRecord = error && typeof error === "object" ? error as { code?: unknown; recoverable?: unknown; context?: unknown } : {};
   return {
-    compositionMode: "deterministic_fallback",
+    compositionMode,
     fallbackReason,
+    verifiedGroups: groups.length,
+    error: error instanceof Error ? error.message : String(error),
+    ...(typeof errorRecord.code === "string" ? { errorCode: errorRecord.code } : {}),
+    ...(typeof errorRecord.recoverable === "boolean" ? { recoverable: errorRecord.recoverable } : {}),
+    ...(errorRecord.context && typeof errorRecord.context === "object" ? { context: errorRecord.context } : {})
+  };
+}
+
+function composerFailureTelemetry(error: unknown, groups: FindingGroup[]): Record<string, unknown> {
+  const errorRecord = error && typeof error === "object" ? error as { code?: unknown; recoverable?: unknown; context?: unknown } : {};
+  return {
     verifiedGroups: groups.length,
     error: error instanceof Error ? error.message : String(error),
     ...(typeof errorRecord.code === "string" ? { errorCode: errorRecord.code } : {}),

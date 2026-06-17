@@ -29,6 +29,7 @@ import {
   roleForStage,
   type CreateRunnerOptions,
   type LlmCallUsage,
+  type LlmSchemaInvalidSubmitRecoveryInput,
   type LlmSchemaRepairInput,
   type LlmRunner,
   type LlmStructuredRequest,
@@ -309,6 +310,26 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                   return validated as T;
                 }
               }
+              const submitError = `The ${submitTool.name} arguments were schema-invalid: ${truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause))}`;
+              const repairInput = schemaRepairInput({
+                request,
+                submitToolName: submitTool.name,
+                error: submitError,
+                submitCalls,
+                extraToolNames: toolCalls.map((toolCall) => toolCall.name),
+                schemaRepairUsed
+              });
+              const recovered = tryRecoverInvalidSubmit({
+                opts,
+                adapter,
+                request,
+                submitTool,
+                repairInput,
+                cause
+              });
+              if (recovered !== undefined) {
+                return recovered as T;
+              }
               queueSchemaRepair({
                 opts,
                 request,
@@ -316,7 +337,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 submitToolName: submitTool.name,
                 submitCalls,
                 extraToolNames: toolCalls.map((toolCall) => toolCall.name),
-                error: `The ${submitTool.name} arguments were schema-invalid: ${truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause))}`,
+                error: submitError,
                 schemaRepairUsed,
                 ...(stage7Repair?.classification !== undefined ? { repairClassification: stage7Repair.classification } : {}),
                 cause
@@ -1810,6 +1831,76 @@ function recordFinalizeMissingSubmitRetry(
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
 
+function schemaRepairInput(input: {
+  request: LlmStructuredRequest<unknown>;
+  submitToolName: string;
+  error: string;
+  submitCalls: PiToolCall[];
+  extraToolNames: string[];
+  schemaRepairUsed: boolean;
+}): LlmSchemaInvalidSubmitRecoveryInput {
+  return {
+    stage: input.request.stage,
+    submitTool: input.submitToolName,
+    error: truncatePromptDiagnostic(input.error),
+    submitCalls: input.submitCalls.map((call) => ({ id: call.id, arguments: call.arguments })),
+    extraToolNames: input.extraToolNames,
+    schemaRepairUsed: input.schemaRepairUsed
+  };
+}
+
+function tryRecoverInvalidSubmit(input: {
+  opts: CreateRunnerOptions;
+  adapter: PiAiAdapter;
+  request: LlmStructuredRequest<unknown>;
+  submitTool: ToolDefinition;
+  repairInput: LlmSchemaInvalidSubmitRecoveryInput;
+  cause: unknown;
+}): unknown | undefined {
+  const recovered = input.request.schemaRepair?.recoverInvalidSubmit?.(input.repairInput);
+  if (recovered === undefined) {
+    return undefined;
+  }
+  try {
+    const validated = input.adapter.validateToolCall([toolSpec(input.submitTool)], {
+      type: "toolCall",
+      id: `${input.repairInput.submitTool}-recovered`,
+      name: input.repairInput.submitTool,
+      arguments: recovered
+    });
+    input.opts.telemetry.event(definedRecord({
+      stage: input.request.stage,
+      level: "info",
+      message: "schema_invalid_submit_recovered",
+      workerId: input.request.telemetryContext?.workerId,
+      packetId: input.request.telemetryContext?.packetId,
+      data: definedRecord({
+        submitTool: input.repairInput.submitTool,
+        invalidSubmitCallCount: input.repairInput.submitCalls.length,
+        schemaRepairUsed: input.repairInput.schemaRepairUsed,
+        candidateId: input.request.telemetryContext?.candidateId
+      })
+    }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+    return validated;
+  } catch (recoveryCause) {
+    input.opts.telemetry.event(definedRecord({
+      stage: input.request.stage,
+      level: "warn",
+      message: "schema_invalid_submit_recovery_invalid",
+      workerId: input.request.telemetryContext?.workerId,
+      packetId: input.request.telemetryContext?.packetId,
+      data: definedRecord({
+        submitTool: input.repairInput.submitTool,
+        schemaRepairUsed: input.repairInput.schemaRepairUsed,
+        error: truncatePromptDiagnostic(recoveryCause instanceof Error ? recoveryCause.message : String(recoveryCause)),
+        originalError: truncatePromptDiagnostic(input.cause instanceof Error ? input.cause.message : String(input.cause)),
+        candidateId: input.request.telemetryContext?.candidateId
+      })
+    }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+    return undefined;
+  }
+}
+
 function queueSchemaRepair(input: {
   opts: CreateRunnerOptions;
   request: LlmStructuredRequest<unknown>;
@@ -2532,13 +2623,14 @@ function submitResponseDisciplineError(
   submitToolName: string,
   submitCalls: PiToolCall[]
 ): string | undefined {
-  if (request.stage !== 5) {
+  if (request.stage !== 5 && request.stage !== 10) {
     return undefined;
   }
   if (submitCalls.length === 1) {
     return undefined;
   }
-  return `Stage 5 planner responses must call ${submitToolName} exactly once; received ${submitCalls.length} ${submitToolName} call${submitCalls.length === 1 ? "" : "s"}.`;
+  const stageName = request.stage === 5 ? "planner" : "composer";
+  return `Stage ${request.stage} ${stageName} responses must call ${submitToolName} exactly once; received ${submitCalls.length} ${submitToolName} call${submitCalls.length === 1 ? "" : "s"}.`;
 }
 
 function isCacheableProviderResponse(schemaValid: boolean | undefined, message: PiAssistantMessage, tools: ToolDefinition[]): boolean {

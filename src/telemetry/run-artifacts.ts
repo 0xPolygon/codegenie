@@ -915,7 +915,7 @@ class RunTelemetryImpl {
     if (event.message === "stage_started" && bucket.startedAt === undefined) {
       bucket.startedAt = event.timestamp;
     }
-    if (event.message === "stage_completed") {
+    if (event.message === "stage_completed" || event.message === "stage_failed") {
       bucket.completedAt = event.timestamp;
       if (bucket.startedAt !== undefined) {
         bucket.runtimeMs += durationBetween(bucket.startedAt, event.timestamp);

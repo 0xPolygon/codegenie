@@ -1437,6 +1437,126 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
   });
 
+  it("lets stages recover invalid submit arguments before model schema repair", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-composition-xml",
+        name: "submit_composition",
+        arguments: {
+          summary: "summary</parameter><parameter name=\"composedFindings\">[]</parameter>"
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured({
+      stage: 10,
+      prompt: "compose",
+      schema: SubmitCompositionSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1000,
+      schemaRepair: {
+        replaceConversation: true,
+        buildPrompt: () => {
+          throw new Error("model repair should not be needed");
+        },
+        recoverInvalidSubmit: (input) => {
+          expect(input.submitTool).toBe("submit_composition");
+          expect(input.submitCalls.map((call) => call.id)).toEqual(["submit-composition-xml"]);
+          return {
+            summary: "Recovered summary.",
+            composedFindings: [{ findingIds: ["finding-1"], finalBody: "Recovered body.", publication: "inline" }]
+          };
+        }
+      }
+    })).resolves.toMatchObject({
+      summary: "Recovered summary.",
+      composedFindings: [{ findingIds: ["finding-1"], finalBody: "Recovered body.", publication: "inline" }]
+    });
+
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+    expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid"]);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 10,
+        message: "schema_invalid_submit_recovered",
+        data: expect.objectContaining({ submitTool: "submit_composition" })
+      })
+    ]));
+  });
+
+  it("repairs composer responses that omit submit_composition with replacement context", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{ type: "text", text: "BAD_PRIOR_COMPOSER_TEXT" }]),
+      assistant([{
+        type: "toolCall",
+        id: "submit-composition-repaired",
+        name: "submit_composition",
+        arguments: {
+          summary: "Recovered composition.",
+          composedFindings: [{ findingIds: ["finding-1"], finalBody: "Recovered body.", publication: "inline" }]
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const originalPromptMarker = "ORIGINAL_COMPOSER_PROMPT_SHOULD_NOT_BE_RESENT";
+
+    await expect(runner.runStructured({
+      stage: 10,
+      prompt: `${originalPromptMarker} compose`,
+      schema: SubmitCompositionSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1000,
+      schemaRepair: {
+        replaceConversation: true,
+        buildPrompt: (input) => {
+          expect(input.submitTool).toBe("submit_composition");
+          expect(input.submitCalls).toEqual([]);
+          return [
+            "compact composer repair",
+            "Do not output XML.",
+            "Do not write `<parameter>` tags.",
+            "Call `submit_composition` exactly once."
+          ].join("\n");
+        }
+      }
+    })).resolves.toMatchObject({
+      summary: "Recovered composition.",
+      composedFindings: [{ findingIds: ["finding-1"], finalBody: "Recovered body.", publication: "inline" }]
+    });
+
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(adapter.contexts[1]).toContain("compact composer repair");
+    expect(adapter.contexts[1]).not.toContain(originalPromptMarker);
+    expect(adapter.contexts[1]).not.toContain("BAD_PRIOR_COMPOSER_TEXT");
+    expect(telemetry.modelCalls.map((call) => call.kind)).toEqual(["initial", "repair"]);
+    expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 10,
+        message: "schema_repair_scheduled",
+        data: expect.objectContaining({ invalidSubmitCallCount: 0, replaceConversation: true })
+      })
+    ]));
+  });
+
   it("makes one budget-exempt finalization provider call after checkpoint exhaustion", async () => {
     const adapter = scriptedAdapter([
       assistant([{ type: "text", text: "plain text instead of submit" }]),

@@ -5368,7 +5368,42 @@ describe("phase 5 pipeline regressions", () => {
     ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "request_error" } });
   });
 
-  it("rethrows schema-invalid composition failures instead of falling back", async () => {
+  it("uses deterministic fallback for schema-invalid composition failures with verified findings", async () => {
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodeninjaError("llm_schema_invalid", "model did not call submit_composition", {
+          recoverable: true
+        });
+      }
+    };
+    const coverage: RunCoverageStatus = {
+      totalHunks: 1,
+      reviewedHunks: 1,
+      skippedHunks: 0,
+      failedHunks: 0,
+      coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+      degradedPlanning: false,
+      budgetStopped: false,
+      verificationIncompleteCount: 0,
+      partial: false,
+      reasons: []
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [fakeFinding()], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      coverage,
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    );
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.coverage.reasons).toContain("semantic composition schema repair failed; deterministic fallback used");
+  });
+
+  it("rethrows schema-invalid composition failures when no verified findings can be formatted", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {
         throw new CodeninjaError("llm_schema_invalid", "model did not call submit_composition", {
@@ -5391,7 +5426,7 @@ describe("phase 5 pipeline regressions", () => {
 
     await expect(
       dedupeRankAndComposeReview(
-        { verified: [fakeFinding()], verdicts: [] },
+        { verified: [], verdicts: [] },
         fakePlan(),
         { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
         coverage,
@@ -5400,6 +5435,188 @@ describe("phase 5 pipeline regressions", () => {
         { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
       )
     ).rejects.toMatchObject({ code: "llm_schema_invalid" });
+  });
+
+  it("salvages composer XML parameter bleed when embedded composed findings are valid", async () => {
+    const finding = fakeFinding();
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        expect(request.stage).toBe(10);
+        const recovered = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 10,
+          submitTool: "submit_composition",
+          error: "The submit_composition arguments were schema-invalid: composedFindings is required and summary exceeds 4000 characters",
+          submitCalls: [{
+            id: "bad-composition",
+            arguments: {
+              summary: [
+                "Reviewed the verified findings.",
+                "</parameter>",
+                `<parameter name="composedFindings">${JSON.stringify([
+                  { findingIds: [finding.id], finalBody: "Recovered final body.", publication: "inline" }
+                ])}</parameter>`
+              ].join("\n")
+            }
+          }],
+          extraToolNames: [],
+          schemaRepairUsed: false
+        });
+        expect(recovered).toMatchObject({
+          summary: "Reviewed the verified findings.",
+          composedFindings: [{ findingIds: [finding.id], finalBody: "Recovered final body.", publication: "inline" }]
+        });
+        return recovered as T;
+      }
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event) => events.push(event)
+      },
+      { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    );
+
+    expect(result.findings[0]?.finalBody).toContain("Recovered final body.");
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 10,
+        message: "composer_payload_salvage_succeeded",
+        data: expect.objectContaining({ schemaInvalidKind: "xml_parameter_bleed", composedFindings: 1 })
+      })
+    ]));
+  });
+
+  it("rejects composer salvage when leaked composed findings reference unknown ids", async () => {
+    const finding = fakeFinding();
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        const recovered = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 10,
+          submitTool: "submit_composition",
+          error: "The submit_composition arguments were schema-invalid: <parameter> bleed",
+          submitCalls: [{
+            id: "bad-composition",
+            arguments: {
+              summary: `<parameter name="composedFindings">${JSON.stringify([
+                { findingIds: ["unverified-finding"], finalBody: "Do not publish this.", publication: "inline" }
+              ])}</parameter>`
+            }
+          }],
+          extraToolNames: [],
+          schemaRepairUsed: false
+        });
+        expect(recovered).toBeUndefined();
+        return {
+          summary: "One verified finding.",
+          composedFindings: [{ findingIds: [finding.id], finalBody: "Repaired final body.", publication: "inline" }]
+        } as T;
+      }
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event) => events.push(event)
+      },
+      { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    );
+
+    expect(result.findings[0]?.finalBody).toContain("Repaired final body.");
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 10,
+        message: "composer_payload_salvage_failed",
+        data: expect.objectContaining({ reason: "unknown_finding_ids", unknownIds: ["unverified-finding"] })
+      })
+    ]));
+  });
+
+  it("uses a compact replacement composer repair prompt without raw invalid assistant content", async () => {
+    const finding = fakeFinding();
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        expect(request.schemaRepair?.replaceConversation).toBe(true);
+        const repairPrompt = request.schemaRepair?.buildPrompt({
+          stage: 10,
+          submitTool: "submit_composition",
+          error: "summary exceeds 4000 characters; composedFindings is missing",
+          submitCalls: [{
+            id: "bad-composition",
+            arguments: {
+              summary: "BAD_PRIOR_XML_BODY</parameter><parameter name=\"composedFindings\">[]</parameter>"
+            }
+          }],
+          extraToolNames: []
+        });
+        expect(repairPrompt).toContain("Call `submit_composition` exactly once");
+        expect(repairPrompt).toContain("Do not output XML.");
+        expect(repairPrompt).toContain("Do not write `<parameter>` tags.");
+        expect(repairPrompt).toContain(finding.id);
+        expect(repairPrompt).not.toContain("BAD_PRIOR_XML_BODY");
+        return {
+          summary: "One verified finding.",
+          composedFindings: [{ findingIds: [finding.id], finalBody: "Compact repaired body.", publication: "inline" }]
+        } as T;
+      }
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    );
+
+    expect(result.findings[0]?.finalBody).toContain("Compact repaired body.");
   });
 
   it("fails the run on persistent provider-wide non-auth failures and writes failure logs", async () => {

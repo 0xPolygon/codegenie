@@ -99,6 +99,7 @@ export type LlmStructuredRequest<T> = {
   schemaRepair?: {
     replaceConversation?: boolean;
     failAfterRepair?: boolean;
+    recoverInvalidSubmit?(input: LlmSchemaInvalidSubmitRecoveryInput): Record<string, unknown> | undefined;
     buildPrompt(input: LlmSchemaRepairInput): string;
   };
   finalization?: {
@@ -117,6 +118,10 @@ export type LlmSchemaRepairInput = {
   error: string;
   submitCalls: Array<{ id: string; arguments: Record<string, unknown> }>;
   extraToolNames: string[];
+};
+
+export type LlmSchemaInvalidSubmitRecoveryInput = LlmSchemaRepairInput & {
+  schemaRepairUsed: boolean;
 };
 
 export type CreateRunnerHooks = {

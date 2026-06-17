@@ -407,6 +407,41 @@ describe("run telemetry", () => {
     clearRegisteredSecretsForTests();
   });
 
+  it("uses stage_failed as a lifecycle endpoint for stage runtime telemetry", async () => {
+    const repoRoot = tempDir();
+    let now = Date.parse("2026-06-17T10:00:00.000Z");
+    const run = createRunTelemetry({
+      telemetryConfig: {
+        ...defaultConfig.telemetry,
+        logLevel: "debug"
+      },
+      idFactory: () => "20260617-100000-stage-failed",
+      clock: () => new Date(now)
+    });
+    const attached = await run.attachRunDirectory(repoRoot);
+
+    run.recorder.event({
+      stage: 10,
+      level: "info",
+      message: "stage_started",
+      data: { name: "composition" }
+    });
+    now += 4321;
+    run.recorder.event({
+      stage: 10,
+      level: "error",
+      message: "stage_failed",
+      data: { errorCode: "llm_schema_invalid" }
+    });
+    await run.finalize({ status: "failed", errorCode: "llm_schema_invalid", exitCode: 1 });
+
+    const telemetryJson = readJson(path.join(attached.runDir, "telemetry.json"));
+    expect(telemetryJson.stages["10"]).toMatchObject({
+      events: 2,
+      runtimeMs: 4321
+    });
+  });
+
   it("aggregates tool-result cache telemetry in run artifacts", async () => {
     const repoRoot = tempDir();
     const run = createRunTelemetry({
