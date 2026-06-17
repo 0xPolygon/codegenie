@@ -94,6 +94,37 @@ describe("review input resolver", () => {
     expect(resolved.rawDiff).toContain("+three");
   });
 
+  it("resolves head/base inputs as merge-base diffs for pinned PR-style evals", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "base\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "base\nfeature\n");
+    const feature = commitAll(repo, "feature change");
+    git(repo, ["checkout", "main"]);
+    writeRepoFile(repo, "other.ts", "main only\n");
+    commitAll(repo, "main change");
+
+    const endpoint = await resolveReviewInput(
+      { mode: "commit_range", startCommit: "main", endCommit: feature },
+      defaultConfig,
+      nullTelemetry(),
+      { repoRoot: repo }
+    );
+    const head = await resolveReviewInput(
+      { mode: "head", baseRef: "main", headRef: feature },
+      defaultConfig,
+      nullTelemetry(),
+      { repoRoot: repo }
+    );
+
+    expect(head.mode).toBe("head");
+    expect(head.headSha).toBe(feature);
+    expect(head.rawDiff).toContain("+feature");
+    expect(head.rawDiff).not.toContain("other.ts");
+    expect(endpoint.rawDiff).toContain("other.ts");
+  });
+
   it("deepens shallow branch history and retries merge-base and log", async () => {
     const deepenCalls: Array<{ refspec: string; deepen?: number }> = [];
     let mergeAttempts = 0;

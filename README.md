@@ -134,6 +134,8 @@ llm:
   maxConcurrentCalls: 6 # simultaneous provider calls
 ```
 
+For PR-style evals pinned to an immutable revision, prefer `command.head: <sha>` with `command.base: <branch>`; codeninja computes the merge-base diff just like GitHub rather than doing an endpoint `base..head` diff.
+
 Increasing both can finish large evals faster, but it can also hit provider rate limits or increase burst spend. The `--cache` flag controls codeninja's local model-call cache, which reuses prior LLM responses during iteration; provider-side prompt cache reads/writes are reported separately because they are billing/runtime metadata from the LLM provider. codeninja passes Pi a short, stage-scoped prompt-cache session hint so providers that support session caching can reuse repeated reviewer/verifier prefixes without changing prompt text. In telemetry artifacts, prefer `localModelCallCache` and `providerPromptCache`; the older `cache` field is only a compatibility alias for local model-call cache counts. The eval suite, the skills, and the telemetry are the compounding assets — models swap underneath them.
 
 For high-throughput evals, set `review.concurrency` and `llm.maxConcurrentCalls` to the same value unless you are intentionally throttling provider calls. A value of `6` is a reasonable first step; try `8` only when the provider account tolerates the burst rate. Higher concurrency reduces elapsed time, not token use or model cost, and codeninja records a `concurrency_mismatch` telemetry event when workers outnumber provider slots.

@@ -73,6 +73,8 @@ export async function resolveReviewInput(
       return resolvePullRequestReview(input, telemetry, git, opts.github ?? createGitHubClient(await git.repoRoot()));
     case "branch":
       return resolveBranchReview(input, config, telemetry, git);
+    case "head":
+      return resolveHeadReview(input, telemetry, git);
     case "commit_range":
       return resolveCommitReview(input, telemetry, git);
   }
@@ -483,6 +485,55 @@ async function resolveCommitReview(
     endCommit: endSha,
     mergeBase: startSha,
     headSha: endSha,
+    commits,
+    rawDiff
+  };
+}
+
+async function resolveHeadReview(
+  input: Extract<ReviewInput, { mode: "head" }>,
+  telemetry: TelemetryRecorder,
+  git: InternalGitClient
+): Promise<ResolvedReviewInput> {
+  const repoRoot = await git.repoRoot();
+  const baseSha = await revParseWithShallowRecovery(input.baseRef, git, telemetry);
+  const headSha = await revParseWithShallowRecovery(input.headRef, git, telemetry);
+  const mergeBase = await withShallowDeepening(
+    git,
+    telemetry,
+    [input.baseRef, input.headRef],
+    () => git.mergeBase(baseSha, headSha)
+  );
+  const rawDiff = await git.diff(mergeBase, headSha);
+  const commits = await withShallowDeepening(
+    git,
+    telemetry,
+    [input.baseRef, input.headRef],
+    () => git.log(`${mergeBase}..${headSha}`)
+  );
+
+  telemetry.event({
+    stage: 1,
+    level: "info",
+    message: "head input resolved",
+    data: {
+      mode: "head",
+      baseRef: input.baseRef,
+      headRef: input.headRef,
+      baseSha,
+      headSha,
+      mergeBase,
+      commitCount: commits.length
+    }
+  });
+
+  return {
+    mode: "head",
+    repoRoot,
+    baseRef: baseSha,
+    headRef: headSha,
+    mergeBase,
+    headSha,
     commits,
     rawDiff
   };

@@ -99,6 +99,7 @@ export type ReviewCommandTarget =
   | { mode: "default_branch"; baseBranch?: string }
   | { mode: "github_pr"; prNumber: number }
   | { mode: "branch"; branchName: string; baseBranch?: string }
+  | { mode: "head"; headRef: string; baseRef: string }
   | { mode: "commit_range"; startCommit: string; endCommit?: string };
 
 export type ReviewCommandOptions = {
@@ -116,11 +117,12 @@ export type ParsedReviewCommand = {
   configSources: Record<string, ConfigSource>;
 };
 
-export type ReviewMode = "github_pr" | "branch" | "commit_range";
+export type ReviewMode = "github_pr" | "branch" | "head" | "commit_range";
 
 export type ReviewInput =
   | { mode: "github_pr"; prNumber: number }
   | { mode: "branch"; branchName: string; baseBranch?: string }
+  | { mode: "head"; headRef: string; baseRef: string }
   | { mode: "commit_range"; startCommit: string; endCommit?: string };
 
 export type PullRequestMetadata = {
@@ -864,6 +866,7 @@ export type EvalCase = {
   command?: {
     pr?: number;
     branch?: string;
+    head?: string;
     base?: string;
     target?: string;
   };

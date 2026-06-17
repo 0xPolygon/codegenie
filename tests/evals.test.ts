@@ -118,6 +118,49 @@ describe("eval suite validation", () => {
     });
   });
 
+  it("accepts pinned head/base eval commands", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-head-base-"));
+    writeFileSync(path.join(suiteDir, "head.yml"), [
+      "name: head-base",
+      "repo:",
+      "  fixture: repo",
+      "command:",
+      "  head: 49f4645b40e3e17f3a7f7c243d4d1de0a0a6e95c",
+      "  base: master",
+      "expect:",
+      "  minFindings: 1"
+    ].join("\n"));
+
+    const suite = await loadEvalSuite(suiteDir);
+
+    expect(suite.cases[0]?.evalCase.command).toEqual({
+      head: "49f4645b40e3e17f3a7f7c243d4d1de0a0a6e95c",
+      base: "master"
+    });
+  });
+
+  it("rejects head eval commands without a base ref", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-head-missing-base-"));
+    writeFileSync(path.join(suiteDir, "head.yml"), [
+      "name: head-missing-base",
+      "repo:",
+      "  fixture: repo",
+      "command:",
+      "  head: 49f4645b40e3e17f3a7f7c243d4d1de0a0a6e95c",
+      "expect:",
+      "  minFindings: 1"
+    ].join("\n"));
+
+    await expect(loadEvalSuite(suiteDir)).rejects.toMatchObject({
+      code: "config_error",
+      context: expect.objectContaining({
+        errors: expect.arrayContaining([
+          expect.stringContaining("command.head requires command.base")
+        ])
+      })
+    });
+  });
+
   it("accepts optional positive expectations without failing the suite when unmatched", async () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-optional-expectation-"));
     writeFileSync(path.join(suiteDir, "optional.yml"), [

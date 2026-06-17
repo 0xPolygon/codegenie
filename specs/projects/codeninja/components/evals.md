@@ -418,7 +418,7 @@ Validation rules (all violations are collected across all case files and reporte
 - `name` is required, non-empty, and unique across the suite. It keys previous-run lookup and `info.json`.
 - Exactly one execution source must be present: `repo.external`, `repo.fixture`, or `artifacts.path`. Zero or more than one is invalid.
 - `repo.external` should be an absolute path (with `~` expansion). `repo.fixture` resolves relative to the suite directory when relative. Both must be existing git worktrees at execution time; v1 does not materialize fixtures (no bundles, no archives) — a missing or non-git path is a per-case `error` at run time, not a load-time failure, so suites with some unavailable private repos still run their other cases.
-- `command` is only meaningful with `repo`. At most one of `command.pr`, `command.branch`, `command.target` may be set. `command.base` requires `command.branch`. `command.target` accepts `<commit>` or `<start>..<end>` and maps to the engine's commit / commit-range mode. With no target fields, the engine's default branch-mode resolution applies inside the case repo. Per-case settings are the structured `review.*` and `command.*` fields only; there is no raw CLI-argument passthrough (an `args` key under `command` is an unknown-key validation error, like any unknown key).
+- `command` is only meaningful with `repo`. At most one of `command.pr`, `command.branch`, `command.head`, or `command.target` may be set. `command.base` requires `command.branch` or `command.head`; `command.head` requires `command.base`. `command.head + command.base` is the pinned PR-style form: resolve both refs, compute `merge-base(base, head)`, and review that merge-base diff to `head`. `command.branch + command.base` is the same merge-base behavior for a movable branch name. `command.target` accepts `<commit>` or `<start>..<end>` and maps to the engine's single-commit / endpoint commit-range mode, not PR-style merge-base mode. With no target fields, the engine's default branch-mode resolution applies inside the case repo. Per-case settings are the structured `review.*` and `command.*` fields only; there is no raw CLI-argument passthrough (an `args` key under `command` is an unknown-key validation error, like any unknown key).
 - `artifacts` carries only `path` in v1 (replay-mode selection is deferred with stage-level replay — see architecture.md Future Considerations); unknown keys under `artifacts` are validation errors like everywhere else. `artifacts.path` resolves relative to the suite directory when relative.
 - Every `EvalFindingExpectation` must set `id` (unique across `should_find`, `should_find_candidate`, and `should_not_find` together — one id namespace per case) plus at least one matching field. An expectation with only an `id` would match everything (or, under `should_not_find`, ban everything) and is rejected as an authoring error.
 - `lineRange` must be `[a, b]` with integers `1 <= a <= b`.
@@ -435,7 +435,7 @@ name: payments-savetx-rollback
 repo:
   external: ~/dev/acme/payments-service
 command:
-  branch: feature/savetx
+  head: 49f4645b40e3e17f3a7f7c243d4d1de0a0a6e95c
   base: main
 review:
   depth: normal
@@ -771,8 +771,8 @@ Case loading and validation (`eval-case-loader.test.ts`):
 - `rejects_unknown_keys`: a case with `shoud_find` fails with an error naming the key and file.
 - `rejects_missing_or_duplicate_names`: missing `name`; two files sharing a name.
 - `rejects_ambiguous_execution_source`: both `repo.external` and `artifacts.path`; neither; `external` + `fixture` together.
-- `rejects_conflicting_command_targets`: `pr` + `branch`; `base` without `branch`; an `args` key under `command` rejected as an unknown key (no raw CLI passthrough).
-- `parses_target_forms`: `target: "abc123"` → single commit; `target: "abc123..def456"` → range.
+- `rejects_conflicting_command_targets`: `pr` + `branch`; `branch` + `head`; `base` without `branch`/`head`; `head` without `base`; an `args` key under `command` rejected as an unknown key (no raw CLI passthrough).
+- `parses_target_forms`: `head: "abc123" + base: "main"` → merge-base PR-style diff; `target: "abc123"` → single commit; `target: "abc123..def456"` → endpoint range.
 - `rejects_bad_expectations`: duplicate expectation ids across lists; expectation with only `id`; `lineRange` `[10, 5]`; invalid `category`/`severityAtLeast`; uncompilable `titlePattern`; a `verifier` or `merge` block (unknown keys); non-numeric `maxPromptCharsByStage` key.
 - `collects_all_errors_before_failing`: a suite with three invalid files reports all errors in one `config_error`.
 

@@ -114,6 +114,7 @@ const caseSchema = z
       .object({
         pr: positiveIntSchema.optional(),
         branch: z.string().min(1).optional(),
+        head: z.string().min(1).optional(),
         base: z.string().min(1).optional(),
         target: z.string().min(1).optional()
       })
@@ -198,13 +199,17 @@ const caseSchema = z
     const commandModes = [
       evalCase.command?.pr !== undefined,
       evalCase.command?.branch !== undefined,
+      evalCase.command?.head !== undefined,
       evalCase.command?.target !== undefined
     ].filter(Boolean).length;
     if (commandModes > 1) {
-      ctx.addIssue({ code: "custom", path: ["command"], message: "at most one of command.pr, command.branch, or command.target may be set" });
+      ctx.addIssue({ code: "custom", path: ["command"], message: "at most one of command.pr, command.branch, command.head, or command.target may be set" });
     }
-    if (evalCase.command?.base !== undefined && evalCase.command.branch === undefined) {
-      ctx.addIssue({ code: "custom", path: ["command", "base"], message: "command.base requires command.branch" });
+    if (evalCase.command?.base !== undefined && evalCase.command.branch === undefined && evalCase.command.head === undefined) {
+      ctx.addIssue({ code: "custom", path: ["command", "base"], message: "command.base requires command.branch or command.head" });
+    }
+    if (evalCase.command?.head !== undefined && evalCase.command.base === undefined) {
+      ctx.addIssue({ code: "custom", path: ["command", "base"], message: "command.head requires command.base" });
     }
     if (evalCase.command?.target !== undefined && evalCase.command.target.includes("..")) {
       const parts = evalCase.command.target.split("..");
@@ -712,6 +717,9 @@ function targetForCase(evalCase: EvalCase): ReviewCommandTarget {
       branchName: command.branch,
       ...(command.base !== undefined ? { baseBranch: command.base } : {})
     };
+  }
+  if (command?.head !== undefined) {
+    return { mode: "head", headRef: command.head, baseRef: command.base! };
   }
   if (command?.target !== undefined) {
     const parts = command.target.split("..");
