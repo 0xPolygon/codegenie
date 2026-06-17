@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { executeReviewCommand, isCliDisplayExit, parseReviewCommand } from "./review-command.js";
+import { createReviewProgress, type ReviewProgress } from "./review-progress.js";
 import { executeProviderCommand } from "./provider-command.js";
 import { executeEvalCommand } from "../evals/eval-command.js";
 import { stripCredentials } from "../telemetry/redaction.js";
 import { errorExitCode, isCodeninjaError } from "../util/errors.js";
 
 async function main(): Promise<void> {
+  let progress: ReviewProgress | undefined;
   try {
     const argv = process.argv.slice(2);
     if (argv[0] === "provider" || (argv[0] === "help" && argv[1] === "provider")) {
@@ -20,8 +22,22 @@ async function main(): Promise<void> {
       return;
     }
     const parsed = parseReviewCommand(argv, { allowOutput: true });
-    await executeReviewCommand(parsed, { writeOutput: (text) => process.stdout.write(text) });
+    progress = createReviewProgress({
+      enabled: parsed.options.progress,
+      env: process.env,
+      stream: process.stderr
+    });
+    await executeReviewCommand(parsed, {
+      ...(progress !== undefined ? { onTelemetryEvent: progress.onTelemetryEvent } : {}),
+      writeOutput: (text) => {
+        progress?.stop();
+        progress = undefined;
+        process.stdout.write(text);
+      }
+    });
+    progress?.stop();
   } catch (error) {
+    progress?.stop();
     if (isCliDisplayExit(error)) {
       process.exitCode = error.exitCode;
       return;

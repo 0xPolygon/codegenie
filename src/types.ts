@@ -107,6 +107,7 @@ export type ReviewCommandOptions = {
   format: OutputFormat;
   postGithubComments: boolean;
   cacheOverride?: boolean;
+  progress: boolean;
 };
 
 export type ParsedReviewCommand = {

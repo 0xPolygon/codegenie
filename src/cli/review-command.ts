@@ -8,7 +8,8 @@ import type {
   ReasoningLevel,
   ReviewCommandTarget,
   ReviewDepth,
-  ReviewResult
+  ReviewResult,
+  TelemetryEvent
 } from "../types.js";
 import { CodeninjaError } from "../util/errors.js";
 import { runReview } from "../pipeline/review-runner.js";
@@ -31,6 +32,7 @@ type ExecuteReviewCommandResult = {
 
 type ExecuteReviewCommandOptions = {
   writeOutput?: (text: string) => void;
+  onTelemetryEvent?: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => void;
 };
 
 type CommanderReviewOptions = {
@@ -46,6 +48,8 @@ type CommanderReviewOptions = {
   format?: string;
   postGithubComments?: boolean;
   cache?: boolean;
+  ci?: boolean;
+  progress?: boolean;
 };
 
 export function parseReviewCommand(
@@ -82,6 +86,8 @@ export function parseReviewCommand(
     .option("--reasoning <level>", "reasoning level: low, medium, high, xhigh, or auto")
     .option("--format <format>", "output format: markdown or json", "markdown")
     .option("--post-github-comments", "post inline comments to GitHub for --pr runs")
+    .option("--ci", "disable interactive progress output for CI-friendly logs")
+    .option("--no-progress", "disable the interactive progress spinner")
     .option("--cache", "enable local model-call cache for this run; provider prompt caching is reported separately")
     .option("--no-cache", "disable local model-call cache for this run; provider prompt caching is reported separately")
     .action((commitArgs: string[], options: CommanderReviewOptions) => {
@@ -155,7 +161,8 @@ export async function executeReviewCommand(
     },
     onInventory: (nextInventory: { filesChanged: number; keptFiles: number }) => {
       inventory = nextInventory;
-    }
+    },
+    ...(opts.onTelemetryEvent !== undefined ? { onTelemetryEvent: opts.onTelemetryEvent } : {})
   };
   const review = await runReview(parsed.target, parsed.config, {
     ...overrides,
@@ -285,7 +292,8 @@ function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides 
 function buildReviewOptions(options: CommanderReviewOptions): ParsedReviewCommand["options"] {
   const parsed = {
     format: parseFormat(options.format ?? "markdown"),
-    postGithubComments: options.postGithubComments ?? false
+    postGithubComments: options.postGithubComments ?? false,
+    progress: options.ci === true ? false : options.progress !== false
   };
   return {
     ...parsed,

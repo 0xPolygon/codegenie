@@ -74,6 +74,12 @@ describe("review command", () => {
     expect(parsed.config.cache.enabled).toBe(true);
   });
 
+  it("enables progress by default and disables it for CI-friendly output", () => {
+    expect(parseReviewCommand(["review", "feature"], testContext()).options.progress).toBe(true);
+    expect(parseReviewCommand(["review", "feature", "--ci"], testContext()).options.progress).toBe(false);
+    expect(parseReviewCommand(["review", "feature", "--no-progress"], testContext()).options.progress).toBe(false);
+  });
+
   it("parses explicit head/base review flags", () => {
     const parsed = parseReviewCommand(
       ["review", "--head", "49f4645b40e3", "--base", "master"],

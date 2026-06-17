@@ -748,13 +748,14 @@ type RepositoryIndex = {
 
 Responsibilities:
 
-- Parse `codeninja review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, `--depth`, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
+- Parse `codeninja review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, `--depth`, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, `--ci`, `--no-progress`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
 - Parse `codeninja provider ...` arguments and dispatch to the provider command layer.
 - Enforce flag rules: `--pr`, `--branch`, `--head`, and positional commits are mutually exclusive — passing more than one is `invalid_args`. `--head` requires `--base`; `--base` is allowed for branch, explicit head/base, and default-branch review only. `--post-github-comments` outside `--pr` mode is `invalid_args`.
 - Load `codeninja.toml`.
 - Merge review config from defaults, user-scoped config, repo config, the four provider/home environment variables, and CLI flags, while enforcing the trust partition.
 - Validate config with `zod`.
 - Start a run and create `.codeninja/runs/<run-id>/`.
+- Render interactive progress on stderr only when enabled and attached to a TTY; never mix progress text into stdout Markdown/JSON output.
 
 Review behavior precedence for safe keys (project policy outranks personal defaults; per-run flags outrank both). The only codeninja environment variables in v1 are `CODENINJA_PROVIDER`, `CODENINJA_MODEL`, `CODENINJA_REASONING`, and `CODENINJA_HOME`, so safe review keys have no environment layer:
 

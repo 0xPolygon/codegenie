@@ -40,7 +40,8 @@ import type {
   ReviewPlan,
   ReviewResult,
   ReviewStage,
-  RunCoverageStatus
+  RunCoverageStatus,
+  TelemetryEvent
 } from "../types.js";
 import { CodeninjaError, errorExitCode, isCodeninjaError } from "../util/errors.js";
 import { buildPlannerDossier, runPlanner } from "./planner.js";
@@ -68,6 +69,7 @@ type RunReviewOverrides = {
   github?: GitHubClient;
   onRunStart?: (run: { runId: string; runDir: string }) => void;
   onInventory?: (inventory: { filesChanged: number; keptFiles: number }) => void;
+  onTelemetryEvent?: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => void;
 };
 
 type RunContext = {
@@ -406,9 +408,10 @@ async function startRun(
   });
   const attached = await run.attachRunDirectory(repoRoot);
   overrides.onRunStart?.(attached);
-  emitConfigWarnings(overrides.configWarnings ?? [], run.recorder.runId, run.logger, run.recorder);
-  emitConcurrencyTuningEvent(config, run.recorder);
-  const budget = new BudgetLedger(config, run.recorder);
+  const telemetry = observeTelemetry(run.recorder, overrides.onTelemetryEvent);
+  emitConfigWarnings(overrides.configWarnings ?? [], telemetry.runId, run.logger, telemetry);
+  emitConcurrencyTuningEvent(config, telemetry);
+  const budget = new BudgetLedger(config, telemetry);
   const abort = new AbortController();
   const hardTimeoutMs = config.review.timeoutMs * 2;
   const hardKillTimer = setTimeout(
@@ -420,7 +423,7 @@ async function startRun(
   let finalized = false;
   return {
     runId: run.recorder.runId,
-    telemetry: run.recorder,
+    telemetry,
     logger: run.logger,
     budget,
     abort,
@@ -436,6 +439,40 @@ async function startRun(
       await run.finalize(outcome);
     }
   };
+}
+
+function observeTelemetry(
+  recorder: TelemetryRecorder,
+  onTelemetryEvent: RunReviewOverrides["onTelemetryEvent"] | undefined
+): TelemetryRecorder {
+  if (onTelemetryEvent === undefined) {
+    return recorder;
+  }
+  const observed: TelemetryRecorder = {
+    get runId() {
+      return recorder.runId;
+    },
+    get runDir() {
+      return recorder.runDir;
+    },
+    event(event) {
+      recorder.event(event);
+      try {
+        onTelemetryEvent(event);
+      } catch {
+        // Progress/UI observers must never fail the review pipeline.
+      }
+    },
+    recordModelCall: (record) => recorder.recordModelCall(record),
+    recordToolCall: (record) => recorder.recordToolCall(record),
+    writeArtifact: (relPath, data) => recorder.writeArtifact(relPath, data),
+    writeDebug: (kind, id, record) => recorder.writeDebug(kind, id, record),
+    flush: () => recorder.flush()
+  };
+  if (recorder.snapshotContextPressure !== undefined) {
+    observed.snapshotContextPressure = recorder.snapshotContextPressure.bind(recorder);
+  }
+  return observed;
 }
 
 function emitConcurrencyTuningEvent(config: CodeninjaConfig, telemetry: TelemetryRecorder): void {

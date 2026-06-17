@@ -32,6 +32,8 @@ codeninja review --lens lang/go --lens core/tests # restrict/enable lenses for t
 codeninja review --provider openai --model gpt-5  # override the user-level model default
 codeninja review --reasoning high                 # override model reasoning effort
 codeninja review --format json                    # machine-readable final review object
+codeninja review --ci                             # disable interactive progress output
+codeninja review --no-progress                    # disable the local spinner explicitly
 codeninja review --pr 123 --post-github-comments  # publish inline comments (explicit flag, never config)
 codeninja eval --eval-dir ./evals                 # run the eval suite
 ```
@@ -39,6 +41,8 @@ codeninja eval --eval-dir ./evals                 # run the eval suite
 By default codeninja prints a structured Markdown report to stdout and exits `0` whether or not it found issues (a review with findings is a *successful* review). Posting to GitHub is a single `COMMENT`-type review with inline comments anchored to changed lines — it never approves or requests changes, and it only ever happens when you pass the flag.
 
 A single positional target is branch-first: if it resolves as a local or remote branch, codeninja reviews that branch against its base. If it does not resolve as a branch, codeninja treats it as a single commit. `--base` can be used with this shorthand only when the target resolves as a branch.
+
+Interactive reviews show a small stderr progress spinner with the active pipeline stage. It is automatically disabled when stderr is not a TTY or `CI` is set, and it can be disabled explicitly with `--ci` or `--no-progress`. The final Markdown/JSON report is still written only to stdout.
 
 Model provider auth is configured through Pi-backed user state:
 

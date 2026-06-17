@@ -48,6 +48,8 @@ codeninja review --provider <provider>
 codeninja review --model <model-or-provider/model>
 codeninja review --reasoning low|medium|high|xhigh|auto
 codeninja review --format markdown|json
+codeninja review --ci
+codeninja review --no-progress
 ```
 
 `--depth` controls the global review budget and planner bias. The default is `normal`. `light` should favor cheaper packet review and smaller tool budgets. `deep` should allow more `deep` packet coverage and larger tool budgets. Per-hunk coverage may still vary inside the selected depth when the planner sees concrete risk evidence.
@@ -55,6 +57,8 @@ codeninja review --format markdown|json
 `--lens` restricts the run to the named lenses and may be repeated. It overrides the config-enabled lens set for the run, and it may explicitly enable a lens that is disabled by default, such as a lint/style lens. The planner still decides which of the selected lenses apply to each hunk.
 
 `--format` selects the stdout output format. The default is `markdown`. `json` prints the final review object instead of the Markdown report.
+
+Interactive review runs should show a small ASCII progress spinner on stderr, including the active pipeline stage number when known. The progress line must clear before the final Markdown or JSON report is printed to stdout. Progress output is disabled automatically when stderr is not a TTY or `CI` is set, and it is disabled explicitly by `--ci` or `--no-progress`.
 
 `--provider`, `--model`, and `--reasoning` override the user-level provider defaults for one review run. `--provider` scopes model resolution. `--model` may be a provider-specific model id when `--provider` is also passed, or a provider-qualified `<provider>/<model>` value when no provider flag is passed; a qualified value is split on the first `/` only when the prefix matches a Pi-known provider id, otherwise the whole value is the model id (model ids may themselves contain slashes). `--reasoning auto` clears the CLI layer only; resolution then continues `CODENINJA_REASONING` > `~/.codeninja/settings.json` > `~/.codeninja/config.toml` > the built-in `high` default. Providers exposing different reasoning scales map them onto codeninja's four levels (`low|medium|high|xhigh`).
 
