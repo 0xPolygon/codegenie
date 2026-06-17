@@ -22,7 +22,7 @@
   },
   "license": "UNLICENSED",
   "dependencies": {
-    "@earendil-works/pi-ai": "0.79.3",
+    "@earendil-works/pi-ai": "0.79.6",
     "@vscode/ripgrep": "1.18.0",
     "commander": "15.0.0",
     "execa": "9.6.1",

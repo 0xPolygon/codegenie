@@ -846,6 +846,7 @@ export type ReviewResult = {
 
 export type EvalFindingExpectation = {
   id: string;
+  tier?: "required" | "optional";
   path?: string;
   lineRange?: [number, number];
   category?: FindingCategory;
@@ -962,6 +963,7 @@ export type EvalLossDetail = {
 export type EvalExpectationResult = {
   expectationId: string;
   list: EvalExpectationList;
+  tier?: "required" | "optional";
   status: "pass" | "fail" | "skipped";
   skipReason?: string;
   fromReplayedArtifacts?: boolean;

@@ -49,6 +49,7 @@ export type EvalRunOptions = {
 
 const positiveNumberSchema = z.number().positive();
 const positiveIntSchema = z.number().int().positive();
+const expectationTierSchema = z.enum(["required", "optional"]);
 const findingCategorySchema = z.enum([
   "logic_bug",
   "correctness",
@@ -62,6 +63,7 @@ const findingCategorySchema = z.enum([
 const expectationSchema = z
   .object({
     id: z.string().min(1),
+    tier: expectationTierSchema.optional(),
     path: z.string().min(1).optional(),
     lineRange: z.tuple([positiveIntSchema, positiveIntSchema]).optional(),
     category: findingCategorySchema.optional(),

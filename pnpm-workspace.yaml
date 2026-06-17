@@ -1,0 +1,2 @@
+minimumReleaseAgeExclude:
+  - '@earendil-works/pi-ai@0.79.6'

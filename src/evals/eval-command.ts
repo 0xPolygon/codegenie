@@ -132,10 +132,11 @@ function validateEvalOptions(options: EvalCommandOptions, config: CodeninjaConfi
 export function renderCaseResult(result: EvalCaseResult): string {
   const score = result.info.score;
   const metrics = score.metrics;
+  const expectationParts = expectationSummaryParts(score);
   const parts = [
     `${result.caseName} run ${result.info.runNumber}: ${result.status}`,
     `${metrics.reportedFindings} reported`,
-    `${score.expectationResults.filter((item) => item.status === "pass").length}/${score.expectationResults.length} expectations`
+    ...expectationParts
   ];
   if (metrics.costUSD !== undefined) {
     parts.push(`$${metrics.costUSD.toFixed(4)}`);
@@ -179,6 +180,18 @@ export function renderCaseResult(result: EvalCaseResult): string {
     lines.push(`  ERROR ${score.error.code}: ${score.error.message}`);
   }
   return `${lines.join("\n")}\n`;
+}
+
+function expectationSummaryParts(score: EvalCaseResult["info"]["score"]): string[] {
+  const optional = score.expectationResults.filter((item) => item.tier === "optional");
+  if (optional.length === 0) {
+    return [`${score.expectationResults.filter((item) => item.status === "pass").length}/${score.expectationResults.length} expectations`];
+  }
+  const required = score.expectationResults.filter((item) => item.tier !== "optional");
+  return [
+    `${required.filter((item) => item.status === "pass").length}/${required.length} required expectations`,
+    `${optional.filter((item) => item.status === "pass").length}/${optional.length} optional expectations`
+  ];
 }
 
 function effectiveConcurrencySummary(effectiveConfig: EvalCaseResult["info"]["effectiveConfig"]): string | undefined {

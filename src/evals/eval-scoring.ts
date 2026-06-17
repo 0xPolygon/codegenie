@@ -308,14 +308,16 @@ function scorePositiveList(
   artifacts: EvalArtifacts,
   mode: ScoreMode
 ): EvalExpectationResult[] {
-  const assignment = assignExpectations(expectations, findings, artifacts);
+  const assignment = assignPositiveExpectations(expectations, findings, artifacts);
   const pairByExpectation = new Map(assignment.pairs.map((pair) => [pair.expectationId, pair.findingId]));
   return expectations.map((expectation) => {
+    const tier = expectation.tier ?? "required";
     const findingId = pairByExpectation.get(expectation.id);
     if (findingId !== undefined) {
       return {
         expectationId: expectation.id,
         list,
+        tier,
         status: "pass",
         fromReplayedArtifacts: mode === "replay",
         matched: [{
@@ -324,9 +326,21 @@ function scorePositiveList(
         }]
       };
     }
+    if (tier === "optional") {
+      return {
+        expectationId: expectation.id,
+        list,
+        tier,
+        status: "skipped",
+        skipReason: "optional-unmatched",
+        fromReplayedArtifacts: mode === "replay",
+        matched: []
+      };
+    }
     return {
       expectationId: expectation.id,
       list,
+      tier,
       status: "fail",
       fromReplayedArtifacts: mode === "replay",
       matched: [],
@@ -335,6 +349,40 @@ function scorePositiveList(
         : attributeCandidateLoss(expectation, artifacts)
     };
   });
+}
+
+function assignPositiveExpectations(
+  expectations: EvalFindingExpectation[],
+  findings: ScorableFinding[],
+  artifacts: EvalArtifacts
+): EvalAssignment {
+  const requiredExpectations = expectations.filter((expectation) => (expectation.tier ?? "required") !== "optional");
+  const optionalExpectations = expectations.filter((expectation) => expectation.tier === "optional");
+  if (optionalExpectations.length === 0) {
+    return assignExpectations(expectations, findings, artifacts);
+  }
+
+  const requiredAssignment = assignExpectations(requiredExpectations, findings, artifacts);
+  const requiredFindingIds = new Set(requiredAssignment.pairs.map((pair) => pair.findingId));
+  const remainingFindings = findings.filter((finding) => !requiredFindingIds.has(finding.id));
+  const optionalAssignment = assignExpectations(optionalExpectations, remainingFindings, artifacts);
+  const matchedExpectationIds = new Set([
+    ...requiredAssignment.pairs.map((pair) => pair.expectationId),
+    ...optionalAssignment.pairs.map((pair) => pair.expectationId)
+  ]);
+  const matchedFindingIds = new Set([
+    ...requiredAssignment.pairs.map((pair) => pair.findingId),
+    ...optionalAssignment.pairs.map((pair) => pair.findingId)
+  ]);
+  return {
+    pairs: [...requiredAssignment.pairs, ...optionalAssignment.pairs],
+    unmatchedExpectationIds: expectations
+      .map((expectation) => expectation.id)
+      .filter((id) => !matchedExpectationIds.has(id)),
+    unmatchedFindingIds: findings
+      .map((finding) => finding.id)
+      .filter((id) => !matchedFindingIds.has(id))
+  };
 }
 
 function scoreShouldNotFind(
@@ -350,13 +398,18 @@ function scoreShouldNotFind(
   const violations: EvalViolation[] = [];
   const nearViolations: Array<{ expectationId: string; findingId: string; artifact: string }> = [];
   const results = expectations.map((expectation): EvalExpectationResult => {
+    const tier = expectation.tier ?? "required";
     const matches = reportedFinals.filter((finding) => matchExpectation(expectation, finding, artifacts).matched);
     for (const finding of matches) {
-      violations.push({
-        expectationId: expectation.id,
-        findingId: finding.id,
-        publication: finding.publication
-      });
+      if (tier === "optional") {
+        nearViolations.push({ expectationId: expectation.id, findingId: finding.id, artifact: "final-findings" });
+      } else {
+        violations.push({
+          expectationId: expectation.id,
+          findingId: finding.id,
+          publication: finding.publication
+        });
+      }
     }
     for (const finding of artifacts.candidates.filter((candidate) => matchExpectation(expectation, candidate, artifacts).matched)) {
       nearViolations.push({ expectationId: expectation.id, findingId: finding.id, artifact: "candidate-findings" });
@@ -369,7 +422,9 @@ function scoreShouldNotFind(
     return {
       expectationId: expectation.id,
       list: "should_not_find",
-      status: matches.length === 0 ? "pass" : "fail",
+      tier,
+      status: matches.length === 0 ? "pass" : tier === "optional" ? "skipped" : "fail",
+      ...(matches.length > 0 && tier === "optional" ? { skipReason: "optional-matched" } : {}),
       fromReplayedArtifacts: mode === "replay",
       matched: matches.map((finding) => ({ findingId: finding.id, artifact: "final-findings" }))
     };

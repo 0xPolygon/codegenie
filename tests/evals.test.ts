@@ -118,6 +118,91 @@ describe("eval suite validation", () => {
     });
   });
 
+  it("accepts optional positive expectations without failing the suite when unmatched", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-optional-expectation-"));
+    writeFileSync(path.join(suiteDir, "optional.yml"), [
+      "name: optional-expectation",
+      "artifacts:",
+      "  path: logs/1",
+      "should_find:",
+      "  - id: optional",
+      "    tier: optional",
+      "    path: src/app.ts",
+      "  - id: required",
+      "    path: src/app.ts"
+    ].join("\n"));
+
+    const suite = await loadEvalSuite(suiteDir);
+    expect(suite.cases[0]?.evalCase.should_find?.[0]).toMatchObject({ id: "optional", tier: "optional" });
+
+    const score = scoreEvalRun(suite.cases[0]!.evalCase, {
+      candidates: [],
+      verification: [],
+      finalSelection: [],
+      finalFindings: [finalFinding("required-finding", "src/app.ts", 4)],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {}
+    }, "live");
+
+    expect(score.status).toBe("pass");
+    expect(score.expectationResults.find((result) => result.expectationId === "optional")).toMatchObject({
+      tier: "optional",
+      status: "skipped",
+      skipReason: "optional-unmatched"
+    });
+    expect(score.metrics.stageLossCounts["missed-before-candidate-generation"]).toBe(0);
+    expect(renderCaseResult({
+      caseName: "optional-expectation",
+      runDir: "unused",
+      status: "pass",
+      info: {
+        runNumber: 1,
+        caseName: "optional-expectation",
+        caseHash: "hash",
+        caseSnapshot: suite.cases[0]!.evalCase,
+        mode: "live",
+        cache: { enabled: false, source: "config" },
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: "2026-01-01T00:00:01.000Z",
+        score
+      }
+    })).toContain("1/1 required expectations | 0/1 optional expectations");
+  });
+
+  it("tracks optional should_not_find matches without failing the suite", () => {
+    const score = scoreEvalRun({
+      name: "optional-negative-expectation",
+      artifacts: { path: "unused" },
+      should_not_find: [{
+        id: "optional-false-positive-watch",
+        tier: "optional",
+        path: "src/app.ts"
+      }]
+    }, {
+      candidates: [],
+      verification: [],
+      finalSelection: [],
+      finalFindings: [finalFinding("reported-finding", "src/app.ts", 4)],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {}
+    }, "live");
+
+    expect(score.status).toBe("pass");
+    expect(score.violations).toEqual([]);
+    expect(score.nearViolations).toEqual([{
+      expectationId: "optional-false-positive-watch",
+      findingId: "reported-finding",
+      artifact: "final-findings"
+    }]);
+    expect(score.expectationResults[0]).toMatchObject({
+      tier: "optional",
+      status: "skipped",
+      skipReason: "optional-matched"
+    });
+  });
+
   it("accepts eval llm overrides and preserves legacy review llm fields", async () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-llm-fields-"));
     writeFileSync(path.join(suiteDir, "llm.yml"), [
