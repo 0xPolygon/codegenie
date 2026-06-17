@@ -20,7 +20,7 @@
   "engines": {
     "node": ">=22.19.0"
   },
-  "license": "UNLICENSED",
+  "license": "MIT",
   "dependencies": {
     "@earendil-works/pi-ai": "0.79.6",
     "@vscode/ripgrep": "1.18.0",

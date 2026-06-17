@@ -51,7 +51,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 45 | COMPLETE | Issue 45: Provider Overload Retry and Composer Fallback |
 | 46 | COMPLETE | Issue 46: Codeninja Runtime Provenance in Eval and Telemetry |
 | 47 | COMPLETE | Issue 47: Run 10 Verification, Composition, and Submit Robustness |
-| 48 | PENDING | Issue 48: Prioritize Local Behavior-Delta Uncertainty Promotions |
+| 48 | COMPLETE | Issue 48: Prioritize Local Behavior-Delta Uncertainty Promotions |
 
 ## Deferred (watching for evidence)
 

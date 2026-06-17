@@ -1,6 +1,6 @@
 # Issue 48: Prioritize Local Behavior-Delta Uncertainty Promotions
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval runs 6/11/14 comparison, 2026-06-17
 Planned at: commit `9471756`
 Recommended priority: next quality item; implement before more prompt tuning

@@ -38,6 +38,10 @@ export type PromotionDecision = {
   symbols: string[];
   promoted: boolean;
   reason: string;
+  rank?: number;
+  promotionClass?: PromotionClass;
+  localityScore?: number;
+  selectedBy?: PromotionSelectionReason;
   candidateId?: string;
 };
 
@@ -53,7 +57,15 @@ type PromotionSource = {
 };
 
 type PromotionSourceKind = "uncertainty" | "follow_up_hint" | "unresolved_question";
-type RankedPromotionSource = { source: PromotionSource; rank: number };
+type PromotionClass = "local_behavior_delta" | "broad_behavior_delta" | "test_boundary" | "security_boundary" | "other";
+type PromotionSelectionReason = "rank" | "local_behavior_delta_reserve";
+type RankedPromotionSource = {
+  source: PromotionSource;
+  rank: number;
+  promotionClass: PromotionClass;
+  localityScore: number;
+};
+type SelectedPromotionSource = RankedPromotionSource & { selectedBy: PromotionSelectionReason };
 
 export async function promoteUncertaintiesForVerification(
   input: PromotionInput,
@@ -73,23 +85,24 @@ export async function promoteUncertaintiesForVerification(
       notPromoted[decision.reason] = (notPromoted[decision.reason] ?? 0) + 1;
       return [];
     }
-    return [{ source, rank: promotionRank(source) }];
+    return [rankPromotionSource(source)];
   }).sort((a, b) => b.rank - a.rank || a.source.question.localeCompare(b.source.question));
 
   const selected = selectPromotionSources(eligible, maxPromotions);
-  const selectedSet = new Set(selected);
-  const laneLimited = eligible.filter((item) => !selectedSet.has(item));
+  const selectedSet = new Set(selected.map((item) => item.source));
+  const laneLimited = eligible.filter((item) => !selectedSet.has(item.source));
   for (const limited of laneLimited) {
-    decisions.push(baseDecision(limited.source, false, "promotion_lane_limited"));
+    decisions.push(baseDecision(limited.source, false, "promotion_lane_limited", promotionDecisionMetadata(limited)));
   }
 
-  selected.forEach(({ source }, index) => {
+  selected.forEach((selectedItem, index) => {
+    const { source } = selectedItem;
     const candidate = promotedCandidate(source, index);
     const existing = promotedByPacket.get(source.packet.id) ?? [];
     existing.push(candidate);
     promotedByPacket.set(source.packet.id, existing);
     decisions.push({
-      ...baseDecision(source, true, "promoted_for_verification"),
+      ...baseDecision(source, true, "promoted_for_verification", promotionDecisionMetadata(selectedItem)),
       candidateId: candidate.id
     });
   });
@@ -214,19 +227,26 @@ function promotionDecision(source: PromotionSource): { eligible: boolean; reason
   return { eligible: true, reason: "eligible" };
 }
 
-function selectPromotionSources(eligible: RankedPromotionSource[], maxPromotions: number): RankedPromotionSource[] {
+function selectPromotionSources(eligible: RankedPromotionSource[], maxPromotions: number): SelectedPromotionSource[] {
   if (maxPromotions <= 0 || eligible.length === 0) {
     return [];
   }
-  const selected = eligible.slice(0, maxPromotions);
-  const behaviorDelta = eligible.find((item) => isConcreteBehaviorDeltaSource(item.source));
-  if (behaviorDelta === undefined || selected.includes(behaviorDelta)) {
+  const selected: SelectedPromotionSource[] = eligible.slice(0, maxPromotions)
+    .map((item) => ({ ...item, selectedBy: "rank" }));
+  const behaviorDelta = bestLocalBehaviorDelta(eligible);
+  if (behaviorDelta === undefined || selected.some((item) => item.source === behaviorDelta.source)) {
     return selected;
   }
   if (selected.length < maxPromotions) {
-    return [...selected, behaviorDelta];
+    return [...selected, { ...behaviorDelta, selectedBy: "local_behavior_delta_reserve" }];
   }
-  return [...selected.slice(0, Math.max(0, maxPromotions - 1)), behaviorDelta];
+  const replacementIndex = replacementIndexForLocalBehaviorDelta(selected, behaviorDelta);
+  if (replacementIndex === -1) {
+    return selected;
+  }
+  const updated = [...selected];
+  updated[replacementIndex] = { ...behaviorDelta, selectedBy: "local_behavior_delta_reserve" };
+  return updated;
 }
 
 function pointsAtDistinctScope(source: PromotionSource): boolean {
@@ -376,6 +396,28 @@ function firstChangedAnchor(packet: ReviewPacket): CandidateFinding["anchor"] | 
   return undefined;
 }
 
+function rankPromotionSource(source: PromotionSource): RankedPromotionSource {
+  const localityScore = behaviorDeltaLocalityScore(source);
+  return {
+    source,
+    rank: promotionRank(source),
+    promotionClass: promotionClassForSource(source, localityScore),
+    localityScore
+  };
+}
+
+function promotionDecisionMetadata(item: RankedPromotionSource | SelectedPromotionSource): Pick<
+  PromotionDecision,
+  "rank" | "promotionClass" | "localityScore" | "selectedBy"
+> {
+  return {
+    rank: item.rank,
+    promotionClass: item.promotionClass,
+    localityScore: item.localityScore,
+    ...("selectedBy" in item ? { selectedBy: item.selectedBy } : {})
+  };
+}
+
 function promotionRank(source: PromotionSource): number {
   const risk = riskProfile(source);
   return (source.sourceKind === "follow_up_hint" ? 8 : source.sourceKind === "unresolved_question" ? 3 : 4) +
@@ -384,6 +426,96 @@ function promotionRank(source: PromotionSource): number {
     (source.packet.reviewPriority === "critical" ? 8 : source.packet.reviewPriority === "high" ? 4 : 0) +
     (source.symbols.length > 0 ? 2 : 0) +
     (mentionsChangedTestOrDeletedCoverage(source) ? 2 : 0);
+}
+
+function bestLocalBehaviorDelta(eligible: RankedPromotionSource[]): RankedPromotionSource | undefined {
+  return eligible
+    .filter((item) => isConcreteBehaviorDeltaSource(item.source))
+    .sort((a, b) =>
+      b.localityScore - a.localityScore ||
+      b.rank - a.rank ||
+      a.source.question.localeCompare(b.source.question)
+    )[0];
+}
+
+function replacementIndexForLocalBehaviorDelta(
+  selected: SelectedPromotionSource[],
+  behaviorDelta: RankedPromotionSource
+): number {
+  const replacementCandidates = selected
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => !isStrongerLocalBehaviorDelta(item, behaviorDelta))
+    .sort((a, b) =>
+      a.item.rank - b.item.rank ||
+      a.item.localityScore - b.item.localityScore ||
+      a.index - b.index
+    );
+  return replacementCandidates[0]?.index ?? -1;
+}
+
+function isStrongerLocalBehaviorDelta(
+  selected: RankedPromotionSource,
+  incoming: RankedPromotionSource
+): boolean {
+  return selected.promotionClass === "local_behavior_delta" &&
+    (selected.localityScore > incoming.localityScore ||
+      (selected.localityScore === incoming.localityScore && selected.rank >= incoming.rank));
+}
+
+function promotionClassForSource(source: PromotionSource, localityScore: number): PromotionClass {
+  const risk = riskProfile(source);
+  if (risk.category === "testing") {
+    return "test_boundary";
+  }
+  if (isConcreteBehaviorDeltaSource(source)) {
+    return isLocalBehaviorDeltaSource(source, localityScore) ? "local_behavior_delta" : "broad_behavior_delta";
+  }
+  if (risk.category === "security") {
+    return "security_boundary";
+  }
+  return "other";
+}
+
+function behaviorDeltaLocalityScore(source: PromotionSource): number {
+  const text = normalizedSourceText(source);
+  let score = 0;
+
+  if (sourceReferencesPacketPath(source)) {
+    score += 8;
+  } else if (source.files.some((file) => sameRoot(file, source.packet.path))) {
+    score += 2;
+  }
+  if (sourceNamesChangedSymbol(source)) {
+    score += 8;
+  }
+  if (changedHunkMentionsSourceSymbol(source)) {
+    score += 4;
+  }
+  if (changedHunkMentionsPredicate(source)) {
+    score += 3;
+  }
+  if (/\b(helper|guard|fallback|conversion|convert|validation|validate|boundary|contract|coercion|truncat(?:e|ion)|round(?:ing)?|precision|coverage|test)\b/u.test(text)) {
+    score += 3;
+  }
+  if (/\b(old|previously|before|used to|now|new|removed|deleted|replaced|no longer|instead|after)\b/u.test(text)) {
+    score += 4;
+  }
+  if (source.packet.intentSignals?.refactorLike === true || source.packet.intentSignals?.explicitlyBehaviorPreserving === true) {
+    score += 2;
+  }
+
+  const packetPaths = new Set([source.packet.path, ...(source.packet.oldPath !== undefined ? [source.packet.oldPath] : [])]);
+  const unrelatedFiles = source.files.filter((file) => !packetPaths.has(file) && !sameRoot(file, source.packet.path));
+  score -= Math.min(6, Math.max(0, source.files.length - 2) * 2);
+  score -= Math.min(6, unrelatedFiles.length * 2);
+  if (/\b(across all|every route|all call sites|system-wide|system wide|cross-system|cross system)\b/u.test(text)) {
+    score -= 8;
+  }
+  if (!sourceNamesChangedSymbol(source) && !changedHunkMentionsSourceSymbol(source)) {
+    score -= 4;
+  }
+
+  return score;
 }
 
 function riskProfile(source: PromotionSource): { promotable: boolean; category: FindingCategory } {
@@ -489,6 +621,36 @@ function mentionsChangedScope(source: PromotionSource): boolean {
   return source.files.some((file) => sameRoot(file, source.packet.path));
 }
 
+function sourceReferencesPacketPath(source: PromotionSource): boolean {
+  return source.files.includes(source.packet.path) || (source.packet.oldPath !== undefined && source.files.includes(source.packet.oldPath));
+}
+
+function sourceNamesChangedSymbol(source: PromotionSource): boolean {
+  return source.symbols.some((symbol) => source.packet.symbolFacts.some((fact) =>
+    symbolMatchesFact(symbol, fact.enclosingSymbol) || symbolMatchesFact(symbol, fact.signature)
+  ));
+}
+
+function changedHunkMentionsSourceSymbol(source: PromotionSource): boolean {
+  if (source.symbols.length === 0) {
+    return false;
+  }
+  const changedText = normalize(source.packet.hunks.flatMap((hunk) =>
+    hunk.lines
+      .filter((line) => line.kind === "add" || line.kind === "delete")
+      .map((line) => line.content)
+  ).join(" "));
+  return source.symbols.some((symbol) => {
+    const normalizedSymbol = normalize(symbol);
+    return normalizedSymbol.length > 0 && changedText.includes(normalizedSymbol);
+  });
+}
+
+function isLocalBehaviorDeltaSource(source: PromotionSource, localityScore: number): boolean {
+  return localityScore > 0 &&
+    (sourceReferencesPacketPath(source) || sourceNamesChangedSymbol(source) || changedHunkMentionsSourceSymbol(source));
+}
+
 function mentionsChangedTestOrDeletedCoverage(source: PromotionSource): boolean {
   return isTestPath(source.packet.path) ||
     source.packet.fileStatus === "deleted" ||
@@ -542,8 +704,13 @@ function duplicateOfExistingFinding(source: PromotionSource): boolean {
   });
 }
 
-function baseDecision(source: PromotionSource, promoted: boolean, reason: string): PromotionDecision {
-  return {
+function baseDecision(
+  source: PromotionSource,
+  promoted: boolean,
+  reason: string,
+  metadata?: Pick<PromotionDecision, "rank" | "promotionClass" | "localityScore" | "selectedBy">
+): PromotionDecision {
+  const decision: PromotionDecision = {
     packetId: source.packet.id,
     sourceKind: source.sourceKind,
     question: source.question.trim(),
@@ -552,6 +719,7 @@ function baseDecision(source: PromotionSource, promoted: boolean, reason: string
     promoted,
     reason
   };
+  return metadata === undefined ? decision : { ...decision, ...metadata };
 }
 
 function promotionLimit(packetResultCount: number, budgetMultiplier: number): number {

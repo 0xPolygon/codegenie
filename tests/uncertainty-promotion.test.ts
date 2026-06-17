@@ -295,6 +295,177 @@ describe("uncertainty promotion", () => {
     expect(result.packetResults.find((item) => item.packetId === "packet-lane-5")?.findings).toHaveLength(1);
   });
 
+  it("prioritizes local behavior deltas over broad behavior deltas when the lane is saturated", async () => {
+    const localPacket = fakePacket("packet-local-delta", "src/billing/fees.ts", {
+      symbol: "computeFees",
+      line: "+ return convertFromUsdStrict(value)"
+    });
+    localPacket.intentSignals = {
+      refactorLike: true,
+      behaviorChangeLike: false,
+      explicitlyBehaviorPreserving: true,
+      signals: [],
+      summary: "behavior-preserving helper replacement"
+    };
+    const securityPackets = [0, 1].map((index) =>
+      fakePacket(`packet-security-${index}`, `src/security/check-${index}.ts`, {
+        symbol: `authorizeTenant${index}`,
+        line: `+ return authorizeTenant${index}(request, token)`
+      })
+    );
+    const telemetry = captureTelemetry();
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [localPacket, ...securityPackets],
+      packetResults: [
+        {
+          packetId: localPacket.id,
+          lenses: ["core/code-review"],
+          findings: [],
+          followUpHints: [
+            {
+              question: "Verify whether convertFromUsdStrict now fails for a concrete edge input that the old computeFees conversion accepted.",
+              files: ["src/billing/fees.ts"],
+              symbols: ["computeFees", "convertFromUsdStrict"],
+              suggestedLenses: ["core/code-review"],
+              reason: "The behavior-preserving helper replacement changes a local conversion boundary.",
+              confidence: "low"
+            },
+            {
+              question: "Verify whether convertFromUsdStrict now fails for value after this replacement across all billing modules.",
+              files: [
+                "src/billing/invoices.ts",
+                "src/billing/payments.ts",
+                "src/billing/reports.ts",
+                "src/billing/subscriptions.ts"
+              ],
+              symbols: [],
+              suggestedLenses: ["core/code-review"],
+              reason: "The broader conversion behavior might affect every billing caller after the replacement.",
+              confidence: "high"
+            }
+          ],
+          uncertainties: [],
+          status: "completed"
+        },
+        ...securityPackets.map((packet, index): PacketReviewResult => ({
+          packetId: packet.id,
+          lenses: ["domain/security"],
+          findings: [],
+          followUpHints: [{
+            question: `Verify whether authorizeTenant${index} allows tenant access when the token is missing.`,
+            files: [packet.path],
+            symbols: [`authorizeTenant${index}`],
+            suggestedLenses: ["domain/security"],
+            reason: "The changed authorization path can affect production access control.",
+            confidence: "high"
+          }],
+          uncertainties: [],
+          status: "completed"
+        }))
+      ]
+    }, telemetry.recorder);
+
+    expect(result.summary.promoted).toBe(2);
+    expect(result.packetResults.find((item) => item.packetId === localPacket.id)?.findings).toHaveLength(1);
+
+    const localDecision = result.summary.decisions.find((decision) =>
+      decision.question.includes("old computeFees conversion")
+    );
+    const broadDecision = result.summary.decisions.find((decision) =>
+      decision.question.includes("across all billing modules")
+    );
+    expect(localDecision).toMatchObject({
+      promoted: true,
+      reason: "promoted_for_verification",
+      promotionClass: "local_behavior_delta",
+      selectedBy: "local_behavior_delta_reserve"
+    });
+    expect(localDecision?.localityScore).toBeGreaterThan(broadDecision?.localityScore ?? 0);
+    expect(broadDecision).toMatchObject({
+      promoted: false,
+      reason: "promotion_lane_limited",
+      promotionClass: "broad_behavior_delta",
+      rank: expect.any(Number),
+      localityScore: expect.any(Number)
+    });
+
+    expect(telemetry.artifacts.get("uncertainty-promotion.json")).toMatchObject({
+      promoted: 2,
+      decisions: expect.arrayContaining([
+        expect.objectContaining({
+          promotionClass: "local_behavior_delta",
+          selectedBy: "local_behavior_delta_reserve"
+        }),
+        expect.objectContaining({
+          promotionClass: "broad_behavior_delta",
+          promoted: false,
+          reason: "promotion_lane_limited"
+        })
+      ])
+    });
+  });
+
+  it("still promotes broad behavior deltas when no local behavior delta exists", async () => {
+    const broadPacket = fakePacket("packet-broad-delta", "src/billing/fees.ts", {
+      symbol: "computeFees",
+      line: "+ return convertFromUsdStrict(value)"
+    });
+    const securityPackets = [0, 1].map((index) =>
+      fakePacket(`packet-broad-security-${index}`, `src/security/check-${index}.ts`, {
+        symbol: `authorizeTenant${index}`,
+        line: `+ return authorizeTenant${index}(request, token)`
+      })
+    );
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [broadPacket, ...securityPackets],
+      packetResults: [
+        {
+          packetId: broadPacket.id,
+          lenses: ["core/code-review"],
+          findings: [],
+          followUpHints: [{
+            question: "Verify whether convertFromUsdStrict now fails for value after this replacement across all billing modules.",
+            files: ["src/billing/invoices.ts", "src/billing/payments.ts", "src/billing/reports.ts"],
+            symbols: [],
+            suggestedLenses: ["core/code-review"],
+            reason: "The broader conversion behavior might affect every billing caller after the helper replacement.",
+            confidence: "high"
+          }],
+          uncertainties: [],
+          status: "completed"
+        },
+        ...securityPackets.map((packet, index): PacketReviewResult => ({
+          packetId: packet.id,
+          lenses: ["domain/security"],
+          findings: [],
+          followUpHints: [{
+            question: `Verify whether authorizeTenant${index} allows tenant access when the token is missing.`,
+            files: [packet.path],
+            symbols: [`authorizeTenant${index}`],
+            suggestedLenses: ["domain/security"],
+            reason: "The changed authorization path can affect production access control.",
+            confidence: "high"
+          }],
+          uncertainties: [],
+          status: "completed"
+        }))
+      ]
+    }, captureTelemetry().recorder);
+
+    const broadDecision = result.summary.decisions.find((decision) =>
+      decision.question.includes("across all billing modules")
+    );
+    expect(result.summary.promoted).toBe(2);
+    expect(broadDecision).toMatchObject({
+      promoted: true,
+      reason: "promoted_for_verification",
+      promotionClass: "broad_behavior_delta",
+      selectedBy: "local_behavior_delta_reserve"
+    });
+  });
+
   it("promotes concrete unresolved closeout questions from incomplete packet reviews", async () => {
     const packet = fakePacket("packet-unresolved", "src/fees.ts", {
       symbol: "AmountFromUSD",
