@@ -1,6 +1,6 @@
 # Issue 52: Stage 7 Candidate Schema Repair Cost
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run 17, 2026-06-17
 Recommended priority: next reliability/cost fix
 

@@ -2095,7 +2095,64 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ]));
   });
 
-  it("keeps candidate-shaped invalid submissions on the full repair path", async () => {
+  it("strips harmless extra candidate fields before model repair", async () => {
+    const telemetry = fakeTelemetry();
+    const candidate = validCandidateReviewFinding();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-candidate-extra-empty-field",
+        name: "submit_review",
+        arguments: {
+          findings: [{ ...candidate, category_note: "" }],
+          followUpHints: [],
+          uncertainties: []
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-candidate-cleanup"),
+        telemetryContext: { packetId: "packet-candidate-cleanup" }
+      })
+    ).resolves.toMatchObject({
+      findings: [expect.objectContaining({ title: candidate.title })]
+    });
+    expect(adapter.contexts).toHaveLength(1);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_cleanup_attempted",
+        packetId: "packet-candidate-cleanup",
+        data: expect.objectContaining({
+          cleanupKind: "candidate_payload",
+          classification: "extra_finding_properties",
+          strippedKeys: ["findings.0.category_note"]
+        })
+      }),
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_cleanup_recovered",
+        packetId: "packet-candidate-cleanup",
+        data: expect.objectContaining({
+          cleanupKind: "candidate_payload",
+          classification: "extra_finding_properties",
+          strippedKeys: ["findings.0.category_note"]
+        })
+      })
+    ]));
+  });
+
+  it("repairs candidate-shaped invalid submissions with compact replacement context", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
       assistant([{
@@ -2108,7 +2165,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           uncertainties: []
         }
       }]),
-      assistant([validSubmitReviewCall("submit-valid-after-candidate-repair")])
+      assistant([validCandidateSubmitReviewCall("submit-valid-after-candidate-repair")])
     ]);
     const runner = createPiRunner({
       llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
@@ -2124,20 +2181,126 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         ...submitReviewRequest("packet-candidate-repair"),
         telemetryContext: { packetId: "packet-candidate-repair" }
       })
-    ).resolves.toMatchObject({ findings: [] });
-    expect(adapter.contexts[1]).toContain("review packet-candidate-repair");
+    ).resolves.toMatchObject({ findings: [expect.objectContaining({ title: "Candidate finding" })] });
+    expect(adapter.contexts[1]).toContain("Repair only the structured Stage 7 packet-review submit payload");
+    expect(adapter.contexts[1]).toContain("stage7-invalid-submit-arguments");
+    expect(adapter.contexts[1]).not.toContain("review packet-candidate-repair");
     expect(telemetry.events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         stage: 7,
         message: "stage7_schema_repair_attempted",
         packetId: "packet-candidate-repair",
-        data: expect.objectContaining({ classification: "unsafe_candidate_like_payload" })
+        data: expect.objectContaining({ classification: "missing_required_finding_fields" })
+      }),
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_compact_repair_scheduled",
+        packetId: "packet-candidate-repair",
+        data: expect.objectContaining({
+          classification: "missing_required_finding_fields",
+          replaceConversation: true
+        })
       }),
       expect.objectContaining({
         stage: 7,
         message: "stage7_schema_repair_recovered",
         packetId: "packet-candidate-repair",
         data: expect.objectContaining({ classification: "schema_valid_after_retry" })
+      })
+    ]));
+  });
+
+  it("does not strip substantive unknown candidate fields before compact repair", async () => {
+    const telemetry = fakeTelemetry();
+    const candidate = validCandidateReviewFinding();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-candidate-extra-substantive-field",
+        name: "submit_review",
+        arguments: {
+          findings: [{ ...candidate, category_note: "Model intended this as a correctness issue." }],
+          followUpHints: [],
+          uncertainties: []
+        }
+      }]),
+      assistant([validCandidateSubmitReviewCall("submit-repaired-substantive-field")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-candidate-substantive-extra"),
+        telemetryContext: { packetId: "packet-candidate-substantive-extra" }
+      })
+    ).resolves.toMatchObject({ findings: [expect.objectContaining({ title: "Candidate finding" })] });
+
+    expect(adapter.contexts).toHaveLength(2);
+    expect(adapter.contexts[1]).toContain("category_note");
+    expect(adapter.contexts[1]).not.toContain("review packet-candidate-substantive-extra");
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_cleanup_rejected",
+        packetId: "packet-candidate-substantive-extra",
+        data: expect.objectContaining({
+          classification: "extra_finding_properties",
+          rejectReason: expect.stringContaining("unsafe_unknown_fields")
+        })
+      }),
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_compact_repair_scheduled",
+        packetId: "packet-candidate-substantive-extra",
+        data: expect.objectContaining({ replaceConversation: true })
+      })
+    ]));
+  });
+
+  it("does not guess invalid candidate enum values locally", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-candidate-invalid-enum",
+        name: "submit_review",
+        arguments: {
+          findings: [{ ...validCandidateReviewFinding(), category: "bug" }],
+          followUpHints: [],
+          uncertainties: []
+        }
+      }]),
+      assistant([validCandidateSubmitReviewCall("submit-repaired-invalid-enum")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-candidate-invalid-enum"),
+        telemetryContext: { packetId: "packet-candidate-invalid-enum" }
+      })
+    ).resolves.toMatchObject({ findings: [expect.objectContaining({ category: "correctness" })] });
+    expect(adapter.contexts[1]).not.toContain("review packet-candidate-invalid-enum");
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_compact_repair_scheduled",
+        packetId: "packet-candidate-invalid-enum",
+        data: expect.objectContaining({ classification: "invalid_enum_value" })
       })
     ]));
   });
@@ -2178,6 +2341,46 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         stage: 7,
         message: "stage7_schema_repair_failed",
         packetId: "packet-candidate-repair-fails",
+        data: expect.objectContaining({ classification: "missing_required_finding_fields" })
+      })
+    ]));
+  });
+
+  it("rejects candidate repair that downgrades malformed findings to no-findings", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-invalid-candidate",
+        name: "submit_review",
+        arguments: {
+          findings: [{ title: "candidate was drafted" }],
+          followUpHints: [],
+          uncertainties: []
+        }
+      }]),
+      assistant([validSubmitReviewCall("submit-no-findings-after-candidate-repair")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-candidate-not-no-findings"),
+        telemetryContext: { packetId: "packet-candidate-not-no-findings" }
+      })
+    ).rejects.toMatchObject({ code: "llm_schema_invalid" });
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_repair_failed",
+        packetId: "packet-candidate-not-no-findings",
         data: expect.objectContaining({ classification: "unsafe_candidate_like_payload" })
       })
     ]));
@@ -3823,6 +4026,35 @@ function validSubmitReviewCall(id: string): PiToolCall {
       followUpHints: [],
       uncertainties: []
     }
+  };
+}
+
+function validCandidateSubmitReviewCall(id: string): PiToolCall {
+  return {
+    type: "toolCall",
+    id,
+    name: "submit_review",
+    arguments: {
+      findings: [validCandidateReviewFinding()],
+      followUpHints: [],
+      uncertainties: []
+    }
+  };
+}
+
+function validCandidateReviewFinding(): Record<string, unknown> {
+  return {
+    title: "Candidate finding",
+    severity: "medium",
+    confidence: "high",
+    path: "src/a.ts",
+    category: "correctness",
+    evidence: {
+      changedCode: "+ return value"
+    },
+    failureMode: "The changed branch returns the wrong value for a reachable case.",
+    whyThisMatters: "Callers can observe incorrect behavior from the changed code.",
+    verification: "The packet hunk changes the returned value on the affected branch."
   };
 }
 

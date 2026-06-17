@@ -164,6 +164,23 @@ type TelemetryStageSummary = {
   runtimeMs: number;
 };
 
+type Stage7SchemaRepairSummary = {
+  candidateInvalidSubmits: number;
+  noFindingInvalidSubmits: number;
+  cleanupAttempted: number;
+  cleanupRecovered: number;
+  cleanupRejected: number;
+  compactRepairScheduled: number;
+  appendRepairScheduled: number;
+  repairRecovered: number;
+  repairFailed: number;
+  repairPromptChars: number;
+  compactRepairPromptChars: number;
+  appendRepairPromptChars: number;
+  actualRepairCalls: number;
+  actualRepairPromptChars: number;
+};
+
 type LogOverflowSummary = {
   droppedDebugInfo: number;
   droppedWarnError: number;
@@ -364,6 +381,7 @@ class RunTelemetryImpl {
     cache: emptyCacheCounts(),
     byStage: {} as Record<string, TelemetryStageSummary>
   };
+  private stage7SchemaRepairSummary = emptyStage7SchemaRepairSummary();
   private pipelineSummary = emptyPipelineTelemetrySummary();
 
   readonly logger: Logger = {
@@ -484,6 +502,9 @@ class RunTelemetryImpl {
       dedup: this.pipelineSummary.dedup,
       finalSelection: this.pipelineSummary.finalSelection,
       posting: this.pipelineSummary.posting,
+      schemaRepair: {
+        stage7: this.stage7SchemaRepairSummary
+      },
       modelCalls: modelSummary,
       toolCalls: this.finalToolSummary()
     });
@@ -537,6 +558,7 @@ class RunTelemetryImpl {
     this.updateTelemetrySummary(capped);
     this.updatePipelineSummaryFromEvent(capped);
     this.updateContextPressureFromEvent(capped);
+    this.updateStage7SchemaRepairSummaryFromEvent(capped);
     this.mirrorTelemetryEventToRunLog(capped);
     if (this.runDirectory) {
       this.appendJsonl("events.jsonl", capped);
@@ -711,6 +733,7 @@ class RunTelemetryImpl {
     this.modelSummary.retryAttempts += providerCallCount > 0 && record.attempt > 1 ? 1 : 0;
     this.modelSummary.repairCalls += record.kind === "repair" ? 1 : 0;
     this.modelSummary.schemaInvalidCalls += record.status === "schema_invalid" ? 1 : 0;
+    this.updateStage7SchemaRepairSummaryFromModelCall(record);
     if (providerCallCount === 0) {
       // Cache-hit records carry stored usage for visibility, but do not consume provider budgets.
     } else if (record.costUSD === undefined) {
@@ -951,9 +974,73 @@ class RunTelemetryImpl {
       retryAttempts: this.modelSummary.retryAttempts,
       repairCalls: this.modelSummary.repairCalls,
       schemaInvalidCalls: this.modelSummary.schemaInvalidCalls,
+      stage7SchemaRepair: this.stage7SchemaRepairSummary,
       logOverflow: this.logOverflow,
       ...this.pipelineTotals
     };
+  }
+
+  private updateStage7SchemaRepairSummaryFromEvent(event: TelemetryEvent): void {
+    if (event.stage !== 7) {
+      return;
+    }
+    const data = objectField(event.data);
+    const classification = typeof data?.classification === "string" ? data.classification : "";
+    const payloadKind = typeof data?.payloadKind === "string" ? data.payloadKind : "";
+    if (event.message === "stage7_schema_repair_attempted") {
+      if (payloadKind === "no_findings" || classification === "empty_no_findings_missing_fields") {
+        this.stage7SchemaRepairSummary.noFindingInvalidSubmits += 1;
+      } else {
+        this.stage7SchemaRepairSummary.candidateInvalidSubmits += 1;
+      }
+      return;
+    }
+    if (event.message === "stage7_schema_cleanup_attempted") {
+      this.stage7SchemaRepairSummary.cleanupAttempted += 1;
+      return;
+    }
+    if (event.message === "stage7_schema_cleanup_recovered") {
+      this.stage7SchemaRepairSummary.cleanupRecovered += 1;
+      return;
+    }
+    if (event.message === "stage7_schema_cleanup_rejected") {
+      this.stage7SchemaRepairSummary.cleanupRejected += 1;
+      return;
+    }
+    if (event.message === "stage7_schema_compact_repair_scheduled") {
+      this.stage7SchemaRepairSummary.compactRepairScheduled += 1;
+      const promptChars = numberField(data?.repairPromptChars);
+      this.stage7SchemaRepairSummary.repairPromptChars += promptChars;
+      this.stage7SchemaRepairSummary.compactRepairPromptChars += promptChars;
+      return;
+    }
+    if (event.message === "schema_repair_scheduled") {
+      const replaceConversation = data?.replaceConversation === true;
+      if (!replaceConversation) {
+        this.stage7SchemaRepairSummary.appendRepairScheduled += 1;
+        const promptChars = numberField(data?.repairPromptChars);
+        this.stage7SchemaRepairSummary.repairPromptChars += promptChars;
+        this.stage7SchemaRepairSummary.appendRepairPromptChars += promptChars;
+      }
+      return;
+    }
+    if (event.message === "stage7_schema_repair_recovered") {
+      if (classification === "schema_valid_after_retry") {
+        this.stage7SchemaRepairSummary.repairRecovered += 1;
+      }
+      return;
+    }
+    if (event.message === "stage7_schema_repair_failed") {
+      this.stage7SchemaRepairSummary.repairFailed += 1;
+    }
+  }
+
+  private updateStage7SchemaRepairSummaryFromModelCall(record: LlmCallRecord): void {
+    if (record.stage !== 7 || record.kind !== "repair") {
+      return;
+    }
+    this.stage7SchemaRepairSummary.actualRepairCalls += 1;
+    this.stage7SchemaRepairSummary.actualRepairPromptChars += record.promptChars;
   }
 
   private updatePipelineSummaryFromEvent(event: TelemetryEvent): void {
@@ -1304,6 +1391,25 @@ function emptyTelemetryStageSummary(): TelemetryStageSummary {
   };
 }
 
+function emptyStage7SchemaRepairSummary(): Stage7SchemaRepairSummary {
+  return {
+    candidateInvalidSubmits: 0,
+    noFindingInvalidSubmits: 0,
+    cleanupAttempted: 0,
+    cleanupRecovered: 0,
+    cleanupRejected: 0,
+    compactRepairScheduled: 0,
+    appendRepairScheduled: 0,
+    repairRecovered: 0,
+    repairFailed: 0,
+    repairPromptChars: 0,
+    compactRepairPromptChars: 0,
+    appendRepairPromptChars: 0,
+    actualRepairCalls: 0,
+    actualRepairPromptChars: 0
+  };
+}
+
 function emptyToolBucket(): ToolBucket {
   return {
     count: 0,
@@ -1527,6 +1633,10 @@ function mergePipelinePosting(target: PipelineTelemetrySummary["posting"], sourc
 
 function objectField(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function numberField(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function setNumber(target: Record<string, unknown>, key: string, value: unknown): void {
