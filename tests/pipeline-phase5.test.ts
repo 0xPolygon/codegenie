@@ -6116,14 +6116,14 @@ describe("phase 5 pipeline regressions", () => {
       evidence: { changedCode: "routeWithPreferenceV15()" }
     };
     const runner: LlmRunner = {
-      runStructured: async () => ({
+      runStructured: async <T>(): Promise<T> => ({
         summary: "Found routing behavior changes.",
         composedFindings: [{
           findingIds: ["finding-correctness", "finding-logic"],
           finalBody: "The explicit preference behavior no longer falls back for either route.",
           publication: "inline"
         }]
-      })
+      }) as T
     };
 
     const result = await dedupeRankAndComposeReview(

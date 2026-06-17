@@ -98,7 +98,7 @@ Stage 8 is deliberately narrow. It is not a broad whole-repo review pass. It run
 
 The obvious way to build an AI reviewer in 2026 is one autonomous agent with repo tools and a good prompt. We deliberately didn't, and the reasoning is worth writing down.
 
-Despite the pipeline diagram, codeninja has only **four LLM decision points** — planner, packet reviewer, verifier, composer. Everything else is deterministic plumbing: parsing, bookkeeping, validation, serialization. A fully autonomous agent has *one* LLM decision point that internally makes hundreds of unauditable micro-decisions. We'd rather have four auditable ones.
+Despite the pipeline diagram, codeninja has only **four primary LLM decision points** — planner, packet reviewer, verifier, composer. The optional Stage 8 follow-up is a bounded fifth decision point only when repeated scoped hints justify it; most runs skip it. Everything else is deterministic plumbing: parsing, bookkeeping, validation, serialization. A fully autonomous agent has *one* LLM decision point that internally makes hundreds of unauditable micro-decisions. We'd rather have a few auditable ones.
 
 The deeper reason: a review tool's value isn't "finds bugs" — frontier models increasingly do that for free. The value is the **guarantees around the findings**, and each one is structurally impossible for an autonomous agent:
 
@@ -152,7 +152,7 @@ Several richer designs — a broad cross-file system review pass, hierarchical p
 
 ## Status
 
-codeninja is in the design phase. The full specifications live in [`specs/projects/codeninja/`](specs/projects/codeninja/):
+codeninja is implemented as a pre-1.0 CLI and being hardened through live evals. The full specifications live in [`specs/projects/codeninja/`](specs/projects/codeninja/):
 
 - [`project_overview.md`](specs/projects/codeninja/project_overview.md) — goals and shape
 - [`functional_spec.md`](specs/projects/codeninja/functional_spec.md) — behavior, stages, contracts

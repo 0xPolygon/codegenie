@@ -142,7 +142,6 @@ src/
     pi-runner.ts
     schemas.ts
   telemetry/
-    logger.ts
     telemetry-recorder.ts
     run-artifacts.ts
   evals/

@@ -580,7 +580,7 @@ function packetPriority(packet: ReviewPacket): ReviewPriority {
   return packet.reviewPriority;
 }
 
-function summarizeWorkerOutcomes<T>(outcomes: Array<{ outcome: string; attempts: number }>): {
+function summarizeWorkerOutcomes(outcomes: Array<{ outcome: string; attempts: number }>): {
   started: number;
   completed: number;
   failed: number;

@@ -481,13 +481,12 @@ src/llm/
   tool-definitions.ts      # buildRepositoryToolDefinitions, tool parameter schemas, result rendering
   model-call-cache.ts      # createModelCallCache, key helpers, eviction, tracked-dir refusal
 src/telemetry/
-  logger.ts                # createLogger sink, level filtering, stderr mirroring, buffering
   telemetry-recorder.ts    # TelemetryRecorder, eventId allocation, aggregates
-  run-artifacts.ts         # createRunTelemetry, run dir lifecycle, pruning, .gitignore, summaries
+  run-artifacts.ts         # createRunTelemetry, logger sink, run dir lifecycle, pruning, .gitignore, summaries
   redaction.ts             # registerSecret, stripCredentials (write-chokepoint invariant)
 ```
 
-`tool-definitions.ts`, `model-call-cache.ts`, and `redaction.ts` extend the architecture project layout within the directories this component owns; no architecture-listed file is renamed or moved.
+`tool-definitions.ts`, `model-call-cache.ts`, and `redaction.ts` extend the architecture project layout within the directories this component owns.
 
 ### Skill File Format
 

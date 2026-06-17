@@ -84,6 +84,8 @@ export type ToolDefinition = {
 };
 
 export type LlmStructuredRequest<T> = {
+  /** Type-only link between the request and the expected submit payload. */
+  readonly responseType?: T;
   stage: ReviewStage;
   prompt: string;
   schema: TSchema;

@@ -159,7 +159,7 @@ export async function runReview(
     });
     overrides.onInventory?.({ filesChanged: diff.files.length, keptFiles: kept.length });
     if (isZeroWork(diff.files, kept)) {
-      await validateExplicitCliLensesForZeroWork(config, repoRoot, run, overrides);
+      await validateExplicitCliLensesForZeroWork(config, repoRoot, run);
     }
     const zeroWork = await maybeZeroWork(diff.files, kept, decisions, resolved, config, run, overrides);
     if (zeroWork) {
@@ -688,8 +688,7 @@ async function createPipelineServices(
 async function validateExplicitCliLensesForZeroWork(
   config: CodeninjaConfig,
   repoRoot: string,
-  run: RunContext,
-  overrides: RunReviewOverrides
+  run: RunContext
 ): Promise<void> {
   if (config.lenses.restrictTo === undefined || config.lenses.restrictTo.length === 0) {
     return;

@@ -4,8 +4,7 @@ import type {
   FindingCategory,
   PacketReviewResult,
   ReviewPacket,
-  Severity,
-  StructuredUncertainty
+  Severity
 } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../util/hashing.js";

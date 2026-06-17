@@ -491,7 +491,7 @@ Assembly, on the side selected by Stage 4 rules (head for hunks with adds, base 
 
 Richer pre-attached context — `changedNodes` (`AstNodeSummary`), `importsUsedNearby`, `nearbySiblingFunctions` — is deferred to Future Considerations (see architecture.md); reviewers fetch that context on demand with the read-only tools.
 
-Handoff contract: the Stage 6 packet builder renders `buildPacketContext`'s outputs — the context (enclosing-symbol source), the file outline, and the likely-tests list — into `ReviewPacket.contextText` within `maxContextChars`, per `architecture.md`. The serialized context this component returns targets ≤ 4000 chars, keeping it under that budget; the builder may trim further (its sizing rules, not this component's). When no parse is available, the context degrades to `path` plus a regex-scanned fallback outline and a `degradation` note; the packet still ships.
+Handoff contract: the Stage 6 packet builder renders `buildPacketContext`'s outputs — the context metadata, the file outline, and the likely-tests list — plus its separately read enclosing-symbol source into `ReviewPacket.contextText` within `maxContextChars`, per `architecture.md`. The builder owns final sizing: ordinary symbol source starts compact, while important single-symbol packets can receive adaptive source context within the packet budget. When no parse is available, the context degrades to `path` plus a regex-scanned fallback outline and a `degradation` note; the packet still ships.
 
 ### Caching And Concurrency
 

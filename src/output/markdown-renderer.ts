@@ -103,10 +103,10 @@ function shouldRenderBudgetSummary(summary: BudgetSummary): boolean {
 function budgetCapParts(summary: BudgetSummary): string[] {
   const parts: string[] = [];
   if (summary.effective.maxModelCalls !== undefined) {
-    parts.push(`model calls ${summary.effective.maxModelCalls}${capSource(summary.configured.maxModelCalls, summary.effective.maxModelCalls, summary.multiplier)}`);
+    parts.push(`model calls ${summary.effective.maxModelCalls}${capSource(summary.configured.maxModelCalls, summary.multiplier)}`);
   }
   if (summary.effective.maxTotalTokens !== undefined) {
-    parts.push(`tokens ${summary.effective.maxTotalTokens}${capSource(summary.configured.maxTotalTokens, summary.effective.maxTotalTokens, summary.multiplier)}`);
+    parts.push(`tokens ${summary.effective.maxTotalTokens}${capSource(summary.configured.maxTotalTokens, summary.multiplier)}`);
   }
   if (summary.multiplier !== 1 && parts.length === 0) {
     parts.push(`budget multiplier ${summary.multiplier}`);
@@ -114,7 +114,7 @@ function budgetCapParts(summary: BudgetSummary): string[] {
   return parts;
 }
 
-function capSource(configured: number | undefined, effective: number, multiplier: number): string {
+function capSource(configured: number | undefined, multiplier: number): string {
   if (configured === undefined || multiplier === 1) {
     return "";
   }

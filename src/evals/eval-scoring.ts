@@ -53,13 +53,6 @@ const severityRank: Record<Severity, number> = {
   critical: 4
 };
 
-const lossLabels: EvalLossLabel[] = [
-  "missed-before-candidate-generation",
-  "lost-at-verification",
-  "lost-at-composition",
-  "partial-match"
-];
-
 type RankedLossInstance = {
   rank: number;
   order: number;
@@ -78,7 +71,7 @@ export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode:
     ...shouldNot.results
   ];
   metrics.stageLossCounts = countLosses(allExpectationResults);
-  const budgetResults = scoreBudgets(evalCase, artifacts, metrics, mode);
+  const budgetResults = scoreBudgets(evalCase, metrics, mode);
   const status = allExpectationResults.some((result) => result.status === "fail") ||
     shouldNot.violations.length > 0 ||
     budgetResults.some((result) => result.status === "fail")
@@ -448,7 +441,6 @@ function attributeCandidateLoss(expectation: EvalFindingExpectation, artifacts: 
 
 function scoreBudgets(
   evalCase: EvalCase,
-  artifacts: EvalArtifacts,
   metrics: EvalRunMetrics,
   mode: ScoreMode
 ): EvalBudgetResult[] {

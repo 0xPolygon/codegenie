@@ -1,4 +1,3 @@
-import path from "node:path";
 import type { ReviewStage } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { CodeninjaError, type CodeninjaErrorCode } from "../util/errors.js";

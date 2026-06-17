@@ -3994,7 +3994,7 @@ function scriptedAdapter(messages: PiAssistantMessage[]): PiAiAdapter & { contex
     complete: vi.fn(async (_model, context, options) => {
       contexts.push(JSON.stringify(context.messages));
       optionsSeen.push(options);
-      toolNames.push(context.tools.map((tool) => tool.name));
+      toolNames.push((context.tools as Array<{ name: string }>).map((tool) => tool.name));
       const next = messages.shift();
       if (!next) {
         throw new Error("no scripted message");

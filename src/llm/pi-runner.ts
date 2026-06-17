@@ -7,7 +7,6 @@ import {
   getProviders,
   validateToolCall,
   type Api,
-  type AssistantMessage,
   type Context,
   type KnownProvider,
   type Model,
@@ -667,14 +666,6 @@ function recordProviderPromptCacheStrategy(
 function submitCallHasFindings(toolCall: PiToolCall): boolean {
   const findings = toolCall.arguments.findings;
   return Array.isArray(findings) && findings.length > 0;
-}
-
-function safeStringify(input: unknown): string {
-  try {
-    return JSON.stringify(input) ?? "";
-  } catch {
-    return "";
-  }
 }
 
 function summarizeToolResult(toolCall: PiToolCall, outcome: ToolRunOutcome, resultText: string): LlmToolResultSummary {
