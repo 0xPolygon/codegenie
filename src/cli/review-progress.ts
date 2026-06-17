@@ -23,7 +23,7 @@ const STAGE_LABELS: Record<ReviewStage | 0, string> = {
   4: "indexing symbols",
   5: "planning review",
   6: "building review packets",
-  7: "reviewing packets",
+  7: "reviewing hunks",
   8: "checking follow-ups",
   9: "verifying findings",
   10: "composing review",

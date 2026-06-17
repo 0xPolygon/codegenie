@@ -19,10 +19,10 @@ describe("review progress", () => {
       stage: 7,
       level: "info",
       message: "stage_started",
-      data: { name: "packet_review" }
+      data: { packets: 12 }
     });
 
-    expect(stream.writes.at(-1)).toContain("stage 7: packet review");
+    expect(stream.writes.at(-1)).toContain("stage 7: reviewing hunks");
     progress?.stop();
     expect(stream.clearCount).toBeGreaterThan(0);
     expect(stream.cursorCount).toBeGreaterThan(0);
