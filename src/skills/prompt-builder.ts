@@ -77,6 +77,34 @@ export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
 const PER_SKILL_CAP = 4000;
 const TOTAL_SKILL_CAP = 12000;
 const MIN_FRAGMENT_CHARS = 600;
+const PLANNER_PR_BODY_CHARS = 1600;
+const PLANNER_COMMIT_BODY_CHARS = 500;
+const PLANNER_RICH_EXCERPT_CHARS = 360;
+const PLANNER_COMPACT_EXCERPT_CHARS = 120;
+const PLANNER_SYMBOL_SIGNATURE_CHARS = 220;
+const PLANNER_STATIC_SIGNAL_EXPLANATION_CHARS = 180;
+const PLANNER_STATIC_SIGNAL_SNIPPET_CHARS = 140;
+const PLANNER_CHANGED_LINES_CAP = 40;
+
+export type PlannerDossierProjectionStats = {
+  version: "planner-routing-v1";
+  files: number;
+  hunks: number;
+  directoryRollupHunks: number;
+  richHunks: number;
+  compactHunks: number;
+  hunkExcerptsIncluded: number;
+  hunkExcerptsCompacted: number;
+  hunkExcerptsOmitted: number;
+  staticSignalHunksPreserved: number;
+  staticSignalsIncluded: number;
+  staticSignalsOmitted: number;
+  symbolFactsIncluded: number;
+  highPriorityHunks: number;
+  testHunks: number;
+  labeledHunks: number;
+  pureDeletionHunks: number;
+};
 
 const STAGE_SECTION_MAP: Partial<Record<ReviewStage, SkillSectionName[]>> = {
   7: ["checks", "falsePositives", "examples"],
@@ -94,6 +122,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("planning"),
         injectionInstruction(),
         "Build a review plan. Select only enabled lenses that have concrete evidence in the diff. Emit coverage entries only for hunks that need non-default coverage, specific lenses or context hints, or an explicit skip. Omitted reviewable hunks are reviewed later at normal coverage with default core/language lenses.",
+        "The planner-dossier is a routing projection, not the full review packet. Compact hunks still have stable hunk IDs and line ranges; request deeper coverage when compact metadata suggests risk instead of trying to prove bugs in Stage 5.",
         renderLensList(lenses),
         "Available skill summaries:\n" + projection.text,
         dossierBlock,
@@ -190,9 +219,194 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
   };
 }
 
-function plannerDossierPromptProjection(dossier: PlannerDossier): Omit<PlannerDossier, "runId"> {
-  const { runId: _runId, ...projection } = dossier;
-  return projection;
+export function plannerDossierPromptProjection(dossier: PlannerDossier): Record<string, unknown> {
+  return projectPlannerDossier(dossier).projection;
+}
+
+export function plannerDossierProjectionStats(dossier: PlannerDossier): PlannerDossierProjectionStats {
+  return projectPlannerDossier(dossier).stats;
+}
+
+function projectPlannerDossier(dossier: PlannerDossier): { projection: Record<string, unknown>; stats: PlannerDossierProjectionStats } {
+  const fileHunks = dossier.files.reduce((sum, file) => sum + file.hunks.length, 0);
+  const directoryRollupHunks = dossier.directories.reduce((sum, directory) => sum + directory.hunkIds.length, 0);
+  const stats: PlannerDossierProjectionStats = {
+    version: "planner-routing-v1",
+    files: dossier.files.length,
+    hunks: fileHunks + directoryRollupHunks,
+    directoryRollupHunks,
+    richHunks: 0,
+    compactHunks: 0,
+    hunkExcerptsIncluded: 0,
+    hunkExcerptsCompacted: 0,
+    hunkExcerptsOmitted: 0,
+    staticSignalHunksPreserved: 0,
+    staticSignalsIncluded: 0,
+    staticSignalsOmitted: 0,
+    symbolFactsIncluded: 0,
+    highPriorityHunks: 0,
+    testHunks: 0,
+    labeledHunks: 0,
+    pureDeletionHunks: 0
+  };
+  const { runId: _runId, ...withoutRunId } = dossier;
+  const projection = {
+    ...withoutRunId,
+    ...(dossier.pr !== undefined
+      ? {
+          pr: {
+            ...dossier.pr,
+            body: truncateText(dossier.pr.body, PLANNER_PR_BODY_CHARS)
+          }
+        }
+      : {}),
+    commits: dossier.commits.map((commit) => ({
+      ...commit,
+      body: truncateText(commit.body, PLANNER_COMMIT_BODY_CHARS)
+    })),
+    files: dossier.files.map((file) => ({
+      path: file.path,
+      ...(file.oldPath !== undefined ? { oldPath: file.oldPath } : {}),
+      status: file.status,
+      language: file.language,
+      processingMode: file.processingMode,
+      testStatus: file.testStatus,
+      ...(file.packageRoot !== undefined ? { packageRoot: file.packageRoot } : {}),
+      labels: file.labels,
+      reviewPriority: file.reviewPriority,
+      changedLines: file.changedLines,
+      hunkCount: file.hunkCount,
+      ...(file.degraded !== undefined ? { degraded: file.degraded } : {}),
+      hunks: file.hunks.map((hunk) => projectPlannerHunk(file, hunk, stats))
+    })),
+    promptProjection: stats
+  };
+  return { projection, stats };
+}
+
+function projectPlannerHunk(
+  file: PlannerDossier["files"][number],
+  hunk: PlannerDossier["files"][number]["hunks"][number],
+  stats: PlannerDossierProjectionStats
+): Record<string, unknown> {
+  const rich = shouldKeepRichPlannerHunk(file, hunk);
+  if (rich) {
+    stats.richHunks += 1;
+  } else {
+    stats.compactHunks += 1;
+  }
+  if (isHighPriorityPlannerFile(file)) {
+    stats.highPriorityHunks += 1;
+  }
+  if (file.testStatus === "test") {
+    stats.testHunks += 1;
+  }
+  if (file.labels.length > 0) {
+    stats.labeledHunks += 1;
+  }
+  if (isPureDeletionHunk(hunk)) {
+    stats.pureDeletionHunks += 1;
+  }
+  if (hunk.symbolFacts !== undefined) {
+    stats.symbolFactsIncluded += 1;
+  }
+  const signals = hunk.staticSignals.map((signal) => ({
+    ruleId: signal.ruleId,
+    category: signal.category,
+    confidence: signal.confidence,
+    ...(signal.lensHint !== undefined ? { lensHint: signal.lensHint } : {}),
+    ...(signal.line !== undefined ? { line: signal.line } : {}),
+    ...(signal.side !== undefined ? { side: signal.side } : {}),
+    explanation: truncateText(signal.explanation, PLANNER_STATIC_SIGNAL_EXPLANATION_CHARS),
+    ...(signal.snippet !== undefined ? { snippet: truncateText(signal.snippet, PLANNER_STATIC_SIGNAL_SNIPPET_CHARS) } : {})
+  }));
+  if (signals.length > 0) {
+    stats.staticSignalHunksPreserved += 1;
+    stats.staticSignalsIncluded += signals.length;
+  }
+  stats.staticSignalsOmitted += hunk.omittedSignalCount;
+  const excerpt = hunk.excerpt;
+  const excerptCap = rich ? PLANNER_RICH_EXCERPT_CHARS : PLANNER_COMPACT_EXCERPT_CHARS;
+  const projectedExcerpt = excerpt === undefined ? undefined : truncateText(excerpt, excerptCap);
+  if (projectedExcerpt !== undefined) {
+    stats.hunkExcerptsIncluded += 1;
+    if (excerpt !== undefined && excerpt.length > projectedExcerpt.length) {
+      stats.hunkExcerptsCompacted += 1;
+    }
+  } else {
+    stats.hunkExcerptsOmitted += 1;
+  }
+
+  return {
+    detail: rich ? "rich" : "compact",
+    hunkId: hunk.hunkId,
+    header: truncateText(hunk.header, 160),
+    oldStart: hunk.oldStart,
+    oldLines: hunk.oldLines,
+    newStart: hunk.newStart,
+    newLines: hunk.newLines,
+    changedNewLineNumbers: capChangedLines(hunk.changedNewLineNumbers),
+    changedOldLineNumbers: capChangedLines(hunk.changedOldLineNumbers),
+    ...(hunk.symbolFacts !== undefined ? { symbolFacts: projectPlannerSymbolFacts(hunk.symbolFacts, rich) } : {}),
+    staticSignals: signals,
+    omittedSignalCount: hunk.omittedSignalCount,
+    ...(projectedExcerpt !== undefined ? { excerpt: projectedExcerpt } : {})
+  };
+}
+
+function shouldKeepRichPlannerHunk(
+  file: PlannerDossier["files"][number],
+  hunk: PlannerDossier["files"][number]["hunks"][number]
+): boolean {
+  return isHighPriorityPlannerFile(file) ||
+    file.testStatus === "test" ||
+    file.labels.length > 0 ||
+    file.status === "deleted" ||
+    isPureDeletionHunk(hunk) ||
+    hunk.staticSignals.length > 0;
+}
+
+function isHighPriorityPlannerFile(file: PlannerDossier["files"][number]): boolean {
+  return file.reviewPriority === "critical" || file.reviewPriority === "high";
+}
+
+function isPureDeletionHunk(hunk: PlannerDossier["files"][number]["hunks"][number]): boolean {
+  return hunk.changedOldLineNumbers.length > 0 && hunk.changedNewLineNumbers.length === 0;
+}
+
+function projectPlannerSymbolFacts(
+  facts: NonNullable<PlannerDossier["files"][number]["hunks"][number]["symbolFacts"]>,
+  rich: boolean
+): Record<string, unknown> {
+  return {
+    ...(rich ? { path: facts.path, hunkId: facts.hunkId } : {}),
+    ...(facts.enclosingSymbol !== undefined ? { enclosingSymbol: facts.enclosingSymbol } : {}),
+    ...(facts.symbolKind !== undefined ? { symbolKind: facts.symbolKind } : {}),
+    ...(facts.symbolNativeKind !== undefined ? { symbolNativeKind: facts.symbolNativeKind } : {}),
+    ...(facts.symbolRange !== undefined ? { symbolRange: facts.symbolRange } : {}),
+    changedLines: capChangedLines(facts.changedLines),
+    changedLinesSide: facts.changedLinesSide,
+    ...(facts.signature !== undefined ? { signature: truncateText(facts.signature, PLANNER_SYMBOL_SIGNATURE_CHARS) } : {}),
+    source: facts.source,
+    confidence: facts.confidence
+  };
+}
+
+function capChangedLines(lines: number[]): number[] {
+  return lines.length <= PLANNER_CHANGED_LINES_CAP ? lines : lines.slice(0, PLANNER_CHANGED_LINES_CAP);
+}
+
+function truncateText(input: string, maxChars: number): string {
+  if (input.length <= maxChars) {
+    return input;
+  }
+  if (maxChars <= 1) {
+    return input.slice(0, maxChars);
+  }
+  if (maxChars <= 3) {
+    return input.slice(0, maxChars);
+  }
+  return `${input.slice(0, maxChars - 3)}...`;
 }
 
 function depthCloseGuidance(packet: ReviewPacket): string {

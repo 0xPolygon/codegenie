@@ -16,7 +16,12 @@ import { verifyFindings } from "../src/pipeline/verifier.js";
 import { createWorkerRunner } from "../src/pipeline/worker-runner.js";
 import { renderMarkdownReview } from "../src/output/markdown-renderer.js";
 import { renderPostingSummaryForStdout } from "../src/output/stdout-renderer.js";
-import { createPromptBuilder } from "../src/skills/prompt-builder.js";
+import {
+  createPromptBuilder,
+  plannerDossierPromptProjection,
+  plannerDossierProjectionStats,
+  stableJson
+} from "../src/skills/prompt-builder.js";
 import type { Skill } from "../src/skills/skill-loader.js";
 import { createRunTelemetry } from "../src/telemetry/run-artifacts.js";
 import { buildTestCoverageDelta, testCoverageRewriteSignals } from "../src/repo/test-coverage-delta.js";
@@ -3059,6 +3064,156 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(dossier.runId).toBe("artifact-run-id");
     expect(artifacts.get("planner-dossier.json")).toMatchObject({ runId: "artifact-run-id" });
+  });
+
+  it("projects planner dossiers as compact routing input while preserving routeable hunks", () => {
+    const longExcerpt = `+${"changed ".repeat(80)}`;
+    const longSignature = `export function routePayment(${Array.from({ length: 30 }, (_, index) => `arg${index}: string`).join(", ")})`;
+    const dossier: PlannerDossier = {
+      ...fakeDossier(["src/routine.ts", "src/critical.ts", "src/example.test.ts"]),
+      pr: {
+        title: "Planner projection",
+        body: "body ".repeat(700),
+        url: "https://example.test/pr/1",
+        baseRefName: "main",
+        headRefName: "feature"
+      },
+      commits: [{ sha: "abc123", title: "Refactor routing", body: "commit body ".repeat(200) }],
+      files: fakeDossier(["src/routine.ts", "src/critical.ts", "src/example.test.ts"]).files.map((file, index) => {
+        const hunk = file.hunks[0]!;
+        const symbolFacts = {
+          path: file.path,
+          hunkId: hunk.hunkId,
+          enclosingSymbol: index === 0 ? "routine" : "routePayment",
+          symbolKind: "function" as const,
+          symbolRange: [1, 80] as [number, number],
+          changedLines: Array.from({ length: 80 }, (_, line) => line + 1),
+          changedLinesSide: "new" as const,
+          signature: longSignature,
+          source: "tree-sitter" as const,
+          confidence: "syntactic" as const
+        };
+        if (index === 1) {
+          return {
+            ...file,
+            reviewPriority: "high" as const,
+            labels: ["payments"],
+            hunks: [{
+              ...hunk,
+              symbolFacts,
+              staticSignals: [{
+                ruleId: "generic-risk",
+                path: file.path,
+                line: 10,
+                side: "RIGHT" as const,
+                category: "correctness",
+                confidence: "medium" as const,
+                explanation: "risk ".repeat(80),
+                snippet: "snippet ".repeat(80)
+              }],
+              omittedSignalCount: 2,
+              excerpt: longExcerpt
+            }]
+          };
+        }
+        if (index === 2) {
+          return {
+            ...file,
+            testStatus: "test" as const,
+            hunks: [{ ...hunk, symbolFacts, excerpt: longExcerpt }]
+          };
+        }
+        return {
+          ...file,
+          hunks: [{ ...hunk, symbolFacts, excerpt: longExcerpt }]
+        };
+      })
+    };
+
+    const projection = plannerDossierPromptProjection(dossier) as {
+      runId?: string;
+      pr?: { body: string };
+      commits: Array<{ body: string }>;
+      files: Array<{ path: string; hunks: Array<Record<string, unknown>> }>;
+      promptProjection: Record<string, number | string>;
+    };
+    const promptHunks = projection.files.flatMap((file) => file.hunks.map((hunk) => ({ path: file.path, hunk })));
+
+    expect(projection.runId).toBeUndefined();
+    expect(promptHunks.map((entry) => entry.hunk.hunkId)).toEqual(["h1", "h2", "h3"]);
+    expect(promptHunks[0]?.hunk.detail).toBe("compact");
+    expect(promptHunks[1]?.hunk.detail).toBe("rich");
+    expect(promptHunks[2]?.hunk.detail).toBe("rich");
+    expect(String(promptHunks[0]?.hunk.excerpt)).toHaveLength(120);
+    expect((promptHunks[0]?.hunk.symbolFacts as Record<string, unknown>).path).toBeUndefined();
+    expect((promptHunks[1]?.hunk.symbolFacts as Record<string, unknown>).path).toBe("src/critical.ts");
+    expect(String((promptHunks[1]?.hunk.symbolFacts as Record<string, unknown>).signature)).toHaveLength(220);
+    expect(((promptHunks[1]?.hunk.staticSignals as Array<Record<string, unknown>>)[0]?.explanation as string).length)
+      .toBeLessThanOrEqual(180);
+    expect(projection.pr?.body.length).toBeLessThanOrEqual(1600);
+    expect(projection.commits[0]?.body.length).toBeLessThanOrEqual(500);
+    expect(projection.promptProjection).toMatchObject({
+      version: "planner-routing-v1",
+      hunks: 3,
+      richHunks: 2,
+      compactHunks: 1,
+      staticSignalHunksPreserved: 1,
+      symbolFactsIncluded: 3,
+      highPriorityHunks: 1,
+      testHunks: 1,
+      labeledHunks: 1
+    });
+    expect(plannerDossierProjectionStats(dossier)).toMatchObject(projection.promptProjection);
+    expect(stableJson(projection).length).toBeLessThan(stableJson({ ...dossier, runId: undefined }).length);
+    expect(dossier.files[0]?.hunks[0]?.excerpt).toBe(longExcerpt);
+  });
+
+  it("emits planner projection telemetry before the Stage 5 model call", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const base = fakeDossier(["src/routine.ts", "src/example.test.ts"]);
+    const dossier: PlannerDossier = {
+      ...base,
+      files: base.files.map((file) =>
+        file.path.endsWith(".test.ts") ? { ...file, testStatus: "test" as const } : file
+      )
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          diffUnderstanding: { declaredIntent: "projection telemetry", inferredBehavior: "projection telemetry" },
+          riskAreas: [],
+          coverage: []
+        }) as T
+    };
+
+    await runPlanner(
+      dossier,
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event) => events.push(event)
+      },
+      {
+        runner,
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lenses: [],
+        skills: []
+      }
+    );
+
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 5,
+      level: "info",
+      message: "planner_prompt_projection",
+      data: expect.objectContaining({
+        rawDossierChars: expect.any(Number),
+        projectedDossierChars: expect.any(Number),
+        renderedPromptDossierChars: expect.any(Number),
+        hunks: 2,
+        compactHunks: 1,
+        richHunks: 1
+      })
+    }));
   });
 
   it("planner fallback covers full hunks after dossier compaction clears prompt hunks", async () => {

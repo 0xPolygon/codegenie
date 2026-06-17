@@ -1,7 +1,13 @@
 import type { LlmRunner, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import { SubmitPlanSchema, type SubmitPlan } from "../llm/schemas.js";
 import type { LensDescriptor } from "../skills/lens-registry.js";
-import { fenceUntrusted, stableJson, type PromptBuilder } from "../skills/prompt-builder.js";
+import {
+  fenceUntrusted,
+  plannerDossierPromptProjection,
+  plannerDossierProjectionStats,
+  stableJson,
+  type PromptBuilder
+} from "../skills/prompt-builder.js";
 import type { Skill } from "../skills/skill-loader.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { buildIntentSignals } from "./intent-signals.js";
@@ -190,7 +196,9 @@ export async function runPlanner(
 ): Promise<PlannerRunResult> {
   telemetry.event({ stage: 5, level: "info", message: "stage_started", data: { name: "planner" } });
   const plannerDossier = compactPlannerDossier(dossier, opts.promptBuilder.renderDossier);
-  if (opts.promptBuilder.renderDossier(plannerDossier).length > MAX_DOSSIER_PROMPT_CHARS) {
+  const renderedDossier = opts.promptBuilder.renderDossier(plannerDossier);
+  emitPlannerProjectionTelemetry(dossier, plannerDossier, renderedDossier.length, telemetry);
+  if (renderedDossier.length > MAX_DOSSIER_PROMPT_CHARS) {
     return runChunkedPlanner(dossier, config, telemetry, opts);
   }
 
@@ -218,6 +226,44 @@ export async function runPlanner(
     await telemetry.writeArtifact("review-plan.json", plan);
     return { plan, degradedPlanning: true, chunked: false };
   }
+}
+
+function emitPlannerProjectionTelemetry(
+  fullDossier: PlannerDossier,
+  promptDossier: PlannerDossier,
+  renderedPromptDossierChars: number,
+  telemetry: TelemetryRecorder
+): void {
+  const rawDossierChars = stableJson(fullDossier).length;
+  const projectedDossierChars = stableJson(plannerDossierPromptProjection(promptDossier)).length;
+  const stats = plannerDossierProjectionStats(promptDossier);
+  telemetry.event({
+    stage: 5,
+    level: "info",
+    message: "planner_prompt_projection",
+    data: {
+      rawDossierChars,
+      projectedDossierChars,
+      renderedPromptDossierChars,
+      compaction: promptDossier.compaction.level,
+      files: stats.files,
+      hunks: stats.hunks,
+      directoryRollupHunks: stats.directoryRollupHunks,
+      richHunks: stats.richHunks,
+      compactHunks: stats.compactHunks,
+      hunkExcerptsIncluded: stats.hunkExcerptsIncluded,
+      hunkExcerptsCompacted: stats.hunkExcerptsCompacted,
+      hunkExcerptsOmitted: stats.hunkExcerptsOmitted,
+      staticSignalHunksPreserved: stats.staticSignalHunksPreserved,
+      staticSignalsIncluded: stats.staticSignalsIncluded,
+      staticSignalsOmitted: stats.staticSignalsOmitted,
+      symbolFactsIncluded: stats.symbolFactsIncluded,
+      highPriorityHunks: stats.highPriorityHunks,
+      testHunks: stats.testHunks,
+      labeledHunks: stats.labeledHunks,
+      pureDeletionHunks: stats.pureDeletionHunks
+    }
+  });
 }
 
 async function runPlannerCall(
