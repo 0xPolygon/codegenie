@@ -158,6 +158,10 @@ export function renderCaseResult(result: EvalCaseResult): string {
   if (contextPressureParts.length > 0) {
     parts.push(`context pressure ${contextPressureParts.join(", ")}`);
   }
+  const schemaRecoverySummary = schemaRecoverySummaryPart(metrics);
+  if (schemaRecoverySummary !== undefined) {
+    parts.push(schemaRecoverySummary);
+  }
   const localCacheHits = metrics.localModelCallCacheHits ?? metrics.cacheHits;
   const localCacheMisses = metrics.localModelCallCacheMisses ?? metrics.cacheMisses;
   if (localCacheHits !== undefined) {
@@ -216,6 +220,19 @@ function contextPressureSummaryParts(metrics: EvalCaseResult["info"]["score"]["m
     parts.push(`${metrics.unresolvedNotesSuppressed} unresolved notes suppressed`);
   }
   return parts;
+}
+
+function schemaRecoverySummaryPart(metrics: EvalCaseResult["info"]["score"]["metrics"]): string | undefined {
+  const invalid = metrics.schemaInvalidCalls ?? 0;
+  if (invalid <= 0) {
+    return undefined;
+  }
+  const recovered = metrics.schemaInvalidRecovered ?? 0;
+  const unrecovered = metrics.schemaInvalidUnrecovered ?? Math.max(0, invalid - recovered);
+  if (unrecovered <= 0 && recovered > 0) {
+    return `schema recovered ${recovered}/${invalid}`;
+  }
+  return `schema invalid ${invalid}, recovered ${recovered}, unrecovered ${unrecovered}`;
 }
 
 function formatBudgetComparison(budget: EvalCaseResult["info"]["score"]["budgetResults"][number]): string {

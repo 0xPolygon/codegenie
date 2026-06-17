@@ -130,6 +130,20 @@ type ModelStageSummary = {
   finalize: ModelFinalizeSummary;
 };
 
+type SchemaRecoveryCounters = {
+  schemaInvalidCalls: number;
+  schemaInvalidRecovered: number;
+  schemaInvalidUnrecovered: number;
+  schemaRepairAttempts: number;
+  schemaRepairRecovered: number;
+  deterministicSchemaRecovered: number;
+  schemaRecoveryFailed: number;
+};
+
+type SchemaRecoverySummary = SchemaRecoveryCounters & {
+  byStage: Record<string, SchemaRecoveryCounters>;
+};
+
 type ModelFinalizeSummary = {
   compactCalls: number;
   fullCalls: number;
@@ -162,6 +176,7 @@ type TelemetryStageSummary = {
   startedAt?: string;
   completedAt?: string;
   runtimeMs: number;
+  schemaRecovery: SchemaRecoveryCounters;
 };
 
 type Stage7SchemaRepairSummary = {
@@ -381,6 +396,7 @@ class RunTelemetryImpl {
     cache: emptyCacheCounts(),
     byStage: {} as Record<string, TelemetryStageSummary>
   };
+  private schemaRecovery = emptySchemaRecoverySummary();
   private stage7SchemaRepairSummary = emptyStage7SchemaRepairSummary();
   private pipelineSummary = emptyPipelineTelemetrySummary();
 
@@ -502,6 +518,7 @@ class RunTelemetryImpl {
       dedup: this.pipelineSummary.dedup,
       finalSelection: this.pipelineSummary.finalSelection,
       posting: this.pipelineSummary.posting,
+      schemaRecovery: this.finalSchemaRecoverySummary(),
       schemaRepair: {
         stage7: this.stage7SchemaRepairSummary
       },
@@ -558,6 +575,7 @@ class RunTelemetryImpl {
     this.updateTelemetrySummary(capped);
     this.updatePipelineSummaryFromEvent(capped);
     this.updateContextPressureFromEvent(capped);
+    this.updateSchemaRecoveryFromEvent(capped);
     this.updateStage7SchemaRepairSummaryFromEvent(capped);
     this.mirrorTelemetryEventToRunLog(capped);
     if (this.runDirectory) {
@@ -733,6 +751,7 @@ class RunTelemetryImpl {
     this.modelSummary.retryAttempts += providerCallCount > 0 && record.attempt > 1 ? 1 : 0;
     this.modelSummary.repairCalls += record.kind === "repair" ? 1 : 0;
     this.modelSummary.schemaInvalidCalls += record.status === "schema_invalid" ? 1 : 0;
+    this.updateSchemaRecoveryFromModelCall(record);
     this.updateStage7SchemaRepairSummaryFromModelCall(record);
     if (providerCallCount === 0) {
       // Cache-hit records carry stored usage for visibility, but do not consume provider budgets.
@@ -869,18 +888,27 @@ class RunTelemetryImpl {
   }
 
   private finalModelSummary(): unknown {
+    const schemaRecovery = this.finalSchemaRecoverySummary();
     const byStage = Object.fromEntries(
       Object.entries(this.modelSummary.byStage).map(([stage, bucket]) => [
         stage,
-        withCacheAliases(bucket)
+        {
+          ...withCacheAliases(bucket),
+          schemaRecovery: schemaRecovery.byStage[stage] ?? finalSchemaRecoveryCounters(emptySchemaRecoveryCounters())
+        }
       ])
     );
     return {
       ...this.modelSummary,
       localModelCallCache: copyCacheCounts(this.modelSummary.cache),
       providerPromptCache: providerPromptCacheSummary(this.modelSummary),
+      schemaRecovery,
       byStage
     };
+  }
+
+  private finalSchemaRecoverySummary(): SchemaRecoverySummary {
+    return finalSchemaRecoverySummary(this.schemaRecovery);
   }
 
   private costProfile(): unknown {
@@ -974,10 +1002,59 @@ class RunTelemetryImpl {
       retryAttempts: this.modelSummary.retryAttempts,
       repairCalls: this.modelSummary.repairCalls,
       schemaInvalidCalls: this.modelSummary.schemaInvalidCalls,
+      schemaRecovery: this.finalSchemaRecoverySummary(),
       stage7SchemaRepair: this.stage7SchemaRepairSummary,
       logOverflow: this.logOverflow,
       ...this.pipelineTotals
     };
+  }
+
+  private updateSchemaRecoveryFromModelCall(record: LlmCallRecord): void {
+    if (record.status === "schema_invalid") {
+      addSchemaRecovery(this.schemaRecovery, record.stage, { schemaInvalidCalls: 1 });
+    }
+    if (record.kind !== "repair") {
+      return;
+    }
+    if (record.status === "ok") {
+      addSchemaRecovery(this.schemaRecovery, record.stage, {
+        schemaRepairAttempts: 1,
+        schemaRepairRecovered: 1,
+        schemaInvalidRecovered: 1
+      });
+      return;
+    }
+    addSchemaRecovery(this.schemaRecovery, record.stage, { schemaRepairAttempts: 1 });
+    if (record.status === "schema_invalid" && record.stage !== 7 && record.stage !== 9) {
+      addSchemaRecovery(this.schemaRecovery, record.stage, { schemaRecoveryFailed: 1 });
+    }
+  }
+
+  private updateSchemaRecoveryFromEvent(event: TelemetryEvent): void {
+    if (event.message === "schema_invalid_submit_recovered") {
+      const data = objectField(event.data);
+      const recoveredCalls = data?.schemaRepairUsed === true ? 2 : 1;
+      addSchemaRecovery(this.schemaRecovery, event.stage, {
+        deterministicSchemaRecovered: recoveredCalls,
+        schemaInvalidRecovered: recoveredCalls
+      });
+      return;
+    }
+    if (event.message === "stage7_schema_cleanup_recovered") {
+      addSchemaRecovery(this.schemaRecovery, event.stage, {
+        deterministicSchemaRecovered: 1,
+        schemaInvalidRecovered: 1
+      });
+      return;
+    }
+    if (
+      event.message === "schema_invalid_submit_recovery_invalid" ||
+      event.message === "stage7_schema_cleanup_rejected" ||
+      event.message === "stage7_schema_repair_failed" ||
+      event.message === "verification_schema_repair_failed"
+    ) {
+      addSchemaRecovery(this.schemaRecovery, event.stage, { schemaRecoveryFailed: 1 });
+    }
   }
 
   private updateStage7SchemaRepairSummaryFromEvent(event: TelemetryEvent): void {
@@ -1082,10 +1159,13 @@ class RunTelemetryImpl {
 
   private allStageSummaries(): Record<string, TelemetryStageSummary> {
     const stages: Record<string, TelemetryStageSummary> = {};
+    const schemaRecovery = this.finalSchemaRecoverySummary();
     for (const stage of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) {
+      const key = String(stage);
       stages[String(stage)] = {
         ...emptyTelemetryStageSummary(),
-        ...(this.telemetrySummary.byStage[String(stage)] ?? {})
+        ...(this.telemetrySummary.byStage[key] ?? {}),
+        schemaRecovery: schemaRecovery.byStage[key] ?? finalSchemaRecoveryCounters(emptySchemaRecoveryCounters())
       };
     }
     return stages;
@@ -1138,6 +1218,68 @@ function emptyCacheCounts(): CacheCounts {
     disabled: 0,
     write: 0
   };
+}
+
+function emptySchemaRecoveryCounters(): SchemaRecoveryCounters {
+  return {
+    schemaInvalidCalls: 0,
+    schemaInvalidRecovered: 0,
+    schemaInvalidUnrecovered: 0,
+    schemaRepairAttempts: 0,
+    schemaRepairRecovered: 0,
+    deterministicSchemaRecovered: 0,
+    schemaRecoveryFailed: 0
+  };
+}
+
+function emptySchemaRecoverySummary(): SchemaRecoverySummary {
+  return {
+    ...emptySchemaRecoveryCounters(),
+    byStage: {}
+  };
+}
+
+function finalSchemaRecoveryCounters(input: SchemaRecoveryCounters): SchemaRecoveryCounters {
+  const recovered = Math.min(input.schemaInvalidRecovered, input.schemaInvalidCalls);
+  return {
+    ...input,
+    schemaInvalidRecovered: recovered,
+    schemaInvalidUnrecovered: Math.max(0, input.schemaInvalidCalls - recovered)
+  };
+}
+
+function finalSchemaRecoverySummary(input: SchemaRecoverySummary): SchemaRecoverySummary {
+  return {
+    ...finalSchemaRecoveryCounters(input),
+    byStage: Object.fromEntries(
+      Object.entries(input.byStage).map(([stage, counters]) => [stage, finalSchemaRecoveryCounters(counters)])
+    )
+  };
+}
+
+function addSchemaRecovery(
+  summary: SchemaRecoverySummary,
+  stage: ReviewStage | 0,
+  delta: Partial<Omit<SchemaRecoveryCounters, "schemaInvalidUnrecovered">>
+): void {
+  addSchemaRecoveryCounters(summary, delta);
+  if (stage === 0) {
+    return;
+  }
+  const bucket = summary.byStage[String(stage)] ?? (summary.byStage[String(stage)] = emptySchemaRecoveryCounters());
+  addSchemaRecoveryCounters(bucket, delta);
+}
+
+function addSchemaRecoveryCounters(
+  target: SchemaRecoveryCounters,
+  delta: Partial<Omit<SchemaRecoveryCounters, "schemaInvalidUnrecovered">>
+): void {
+  target.schemaInvalidCalls += delta.schemaInvalidCalls ?? 0;
+  target.schemaInvalidRecovered += delta.schemaInvalidRecovered ?? 0;
+  target.schemaRepairAttempts += delta.schemaRepairAttempts ?? 0;
+  target.schemaRepairRecovered += delta.schemaRepairRecovered ?? 0;
+  target.deterministicSchemaRecovered += delta.deterministicSchemaRecovered ?? 0;
+  target.schemaRecoveryFailed += delta.schemaRecoveryFailed ?? 0;
 }
 
 function copyCacheCounts(cache: CacheCounts): CacheCounts {
@@ -1387,7 +1529,8 @@ function emptyTelemetryStageSummary(): TelemetryStageSummary {
     events: 0,
     levels: emptyLevelCounts(),
     cache: emptyCacheCounts(),
-    runtimeMs: 0
+    runtimeMs: 0,
+    schemaRecovery: finalSchemaRecoveryCounters(emptySchemaRecoveryCounters())
   };
 }
 

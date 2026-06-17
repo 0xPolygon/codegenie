@@ -987,6 +987,54 @@ describe("eval scoring", () => {
       cacheMisses: 2
     });
   });
+
+  it("scores and renders recovered schema-invalid telemetry distinctly from raw call status", () => {
+    const score = scoreEvalRun({
+      name: "schema-recovery-metrics",
+      artifacts: { path: "unused" }
+    }, {
+      candidates: [],
+      verification: [],
+      finalSelection: [],
+      finalFindings: [],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {
+        modelCallsSummary: {
+          totalCalls: 4,
+          schemaInvalidCalls: 2,
+          schemaRecovery: {
+            schemaInvalidCalls: 2,
+            schemaInvalidRecovered: 2,
+            schemaInvalidUnrecovered: 0,
+            schemaRepairAttempts: 1,
+            schemaRepairRecovered: 1,
+            deterministicSchemaRecovered: 1,
+            schemaRecoveryFailed: 0
+          }
+        }
+      }
+    }, "live");
+
+    expect(score.metrics).toMatchObject({
+      modelCalls: 4,
+      schemaInvalidCalls: 2,
+      schemaInvalidRecovered: 2,
+      schemaInvalidUnrecovered: 0,
+      schemaRepairAttempts: 1,
+      schemaRepairRecovered: 1,
+      deterministicSchemaRecovered: 1,
+      schemaRecoveryFailed: 0
+    });
+
+    const rendered = renderCaseResult({
+      caseName: "schema-recovery-metrics",
+      runDir: "unused",
+      status: score.status,
+      info: evalRunInfoWithMetrics(1, score.metrics)
+    });
+    expect(rendered).toContain("schema recovered 2/2");
+  });
 });
 
 describe("eval compare", () => {

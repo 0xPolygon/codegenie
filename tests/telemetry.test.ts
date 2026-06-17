@@ -442,6 +442,221 @@ describe("run telemetry", () => {
     });
   });
 
+  it("reports deterministic schema recovery beside raw schema-invalid model calls", async () => {
+    const repoRoot = tempDir();
+    const run = createRunTelemetry({
+      telemetryConfig: {
+        ...defaultConfig.telemetry,
+        logLevel: "debug"
+      },
+      idFactory: () => "20260617-100001-schema-recovered"
+    });
+    const attached = await run.attachRunDirectory(repoRoot);
+
+    run.recorder.recordModelCall({
+      callId: "mc-schema-invalid",
+      stage: 10,
+      role: "composer",
+      model: "model",
+      provider: "provider",
+      kind: "initial",
+      attempt: 1,
+      promptChars: 12,
+      promptHash: "prompt",
+      outputChars: 5,
+      outputHash: "output",
+      durationMs: 10,
+      cacheStatus: "miss",
+      schemaValid: false,
+      stopReason: "submit",
+      status: "schema_invalid",
+      errorCode: "llm_schema_invalid"
+    });
+    run.recorder.event({
+      stage: 10,
+      level: "info",
+      message: "schema_invalid_submit_recovered",
+      data: { submitTool: "submit_composition", invalidSubmitCallCount: 1 }
+    });
+    run.recorder.event({
+      stage: 10,
+      level: "info",
+      message: "stage_completed"
+    });
+    await run.finalize({ status: "completed_full", exitCode: 0 });
+
+    const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
+    expect(modelSummary).toMatchObject({
+      schemaInvalidCalls: 1,
+      schemaRecovery: {
+        schemaInvalidCalls: 1,
+        schemaInvalidRecovered: 1,
+        schemaInvalidUnrecovered: 0,
+        schemaRepairAttempts: 0,
+        schemaRepairRecovered: 0,
+        deterministicSchemaRecovered: 1,
+        schemaRecoveryFailed: 0
+      }
+    });
+    expect(modelSummary.byStage["10"]).toMatchObject({
+      schemaInvalidCalls: 1,
+      statuses: { schema_invalid: 1 },
+      schemaRecovery: {
+        schemaInvalidCalls: 1,
+        schemaInvalidRecovered: 1,
+        schemaInvalidUnrecovered: 0,
+        deterministicSchemaRecovered: 1
+      }
+    });
+
+    const telemetryJson = readJson(path.join(attached.runDir, "telemetry.json"));
+    expect(telemetryJson.schemaRecovery).toMatchObject({
+      schemaInvalidCalls: 1,
+      schemaInvalidRecovered: 1,
+      schemaInvalidUnrecovered: 0,
+      deterministicSchemaRecovered: 1
+    });
+    expect(telemetryJson.stages["10"].schemaRecovery).toMatchObject({
+      schemaInvalidCalls: 1,
+      schemaInvalidRecovered: 1,
+      schemaInvalidUnrecovered: 0,
+      deterministicSchemaRecovered: 1
+    });
+  });
+
+  it("keeps unrecovered schema-invalid repair failures visible", async () => {
+    const repoRoot = tempDir();
+    const run = createRunTelemetry({
+      telemetryConfig: {
+        ...defaultConfig.telemetry,
+        logLevel: "debug"
+      },
+      idFactory: () => "20260617-100002-schema-unrecovered"
+    });
+    const attached = await run.attachRunDirectory(repoRoot);
+
+    run.recorder.recordModelCall({
+      callId: "mc-planner-invalid",
+      stage: 5,
+      role: "planner",
+      model: "model",
+      provider: "provider",
+      kind: "initial",
+      attempt: 1,
+      promptChars: 12,
+      promptHash: "prompt-1",
+      outputChars: 5,
+      outputHash: "output-1",
+      durationMs: 10,
+      cacheStatus: "miss",
+      schemaValid: false,
+      stopReason: "submit",
+      status: "schema_invalid",
+      errorCode: "llm_schema_invalid"
+    });
+    run.recorder.recordModelCall({
+      callId: "mc-planner-repair-invalid",
+      stage: 5,
+      role: "planner",
+      model: "model",
+      provider: "provider",
+      kind: "repair",
+      attempt: 2,
+      promptChars: 18,
+      promptHash: "prompt-2",
+      outputChars: 5,
+      outputHash: "output-2",
+      durationMs: 11,
+      cacheStatus: "write",
+      schemaValid: false,
+      stopReason: "submit",
+      status: "schema_invalid",
+      errorCode: "llm_schema_invalid"
+    });
+    await run.finalize({ status: "failed", errorCode: "llm_schema_invalid", exitCode: 1 });
+
+    const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
+    expect(modelSummary.schemaRecovery).toMatchObject({
+      schemaInvalidCalls: 2,
+      schemaInvalidRecovered: 0,
+      schemaInvalidUnrecovered: 2,
+      schemaRepairAttempts: 1,
+      schemaRepairRecovered: 0,
+      deterministicSchemaRecovered: 0,
+      schemaRecoveryFailed: 1
+    });
+    expect(modelSummary.byStage["5"].schemaRecovery).toMatchObject({
+      schemaInvalidCalls: 2,
+      schemaInvalidUnrecovered: 2,
+      schemaRepairAttempts: 1,
+      schemaRecoveryFailed: 1
+    });
+  });
+
+  it("counts successful model schema repair as recovered without rewriting raw calls", async () => {
+    const repoRoot = tempDir();
+    const run = createRunTelemetry({
+      telemetryConfig: {
+        ...defaultConfig.telemetry,
+        logLevel: "debug"
+      },
+      idFactory: () => "20260617-100003-schema-model-repair"
+    });
+    const attached = await run.attachRunDirectory(repoRoot);
+
+    run.recorder.recordModelCall({
+      callId: "mc-verifier-invalid",
+      stage: 9,
+      role: "verifier",
+      model: "model",
+      provider: "provider",
+      kind: "initial",
+      attempt: 1,
+      promptChars: 12,
+      promptHash: "prompt-1",
+      outputChars: 5,
+      outputHash: "output-1",
+      durationMs: 10,
+      cacheStatus: "miss",
+      schemaValid: false,
+      stopReason: "submit",
+      status: "schema_invalid",
+      errorCode: "llm_schema_invalid"
+    });
+    run.recorder.recordModelCall({
+      callId: "mc-verifier-repair-ok",
+      stage: 9,
+      role: "verifier",
+      model: "model",
+      provider: "provider",
+      kind: "repair",
+      attempt: 2,
+      promptChars: 18,
+      promptHash: "prompt-2",
+      outputChars: 5,
+      outputHash: "output-2",
+      durationMs: 11,
+      cacheStatus: "write",
+      schemaValid: true,
+      stopReason: "submit",
+      status: "ok"
+    });
+    await run.finalize({ status: "completed_full", exitCode: 0 });
+
+    const modelCalls = readJsonl(path.join(attached.runDir, "model-calls.jsonl"));
+    expect(modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
+    const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
+    expect(modelSummary.schemaRecovery).toMatchObject({
+      schemaInvalidCalls: 1,
+      schemaInvalidRecovered: 1,
+      schemaInvalidUnrecovered: 0,
+      schemaRepairAttempts: 1,
+      schemaRepairRecovered: 1,
+      deterministicSchemaRecovered: 0,
+      schemaRecoveryFailed: 0
+    });
+  });
+
   it("aggregates tool-result cache telemetry in run artifacts", async () => {
     const repoRoot = tempDir();
     const run = createRunTelemetry({
@@ -938,4 +1153,11 @@ function readRunFiles(runDir: string): string {
 
 function readJson(filePath: string): any {
   return JSON.parse(readFileSync(filePath, "utf8"));
+}
+
+function readJsonl(filePath: string): any[] {
+  return readFileSync(filePath, "utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line));
 }

@@ -1,6 +1,6 @@
 # Issue 54: Recovered Schema Telemetry
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval runs 16 and 17, 2026-06-17
 Recommended priority: after Stage 7 schema repair cost and human-attention dedupe
 

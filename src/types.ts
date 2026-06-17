@@ -1031,6 +1031,13 @@ export type EvalRunMetrics = {
   providerPromptCacheWriteTokens?: number;
   providerPromptCacheReadCostUSD?: number;
   providerPromptCacheWriteCostUSD?: number;
+  schemaInvalidCalls?: number;
+  schemaInvalidRecovered?: number;
+  schemaInvalidUnrecovered?: number;
+  schemaRepairAttempts?: number;
+  schemaRepairRecovered?: number;
+  deterministicSchemaRecovered?: number;
+  schemaRecoveryFailed?: number;
   /** @deprecated Use localModelCallCacheHits. */
   cacheHits?: number;
   /** @deprecated Use localModelCallCacheMisses. */
@@ -1151,6 +1158,7 @@ export type EvalArtifacts = {
     toolCallsSummary?: unknown;
     budgetSummary?: BudgetSummary;
     runJson?: unknown;
+    telemetry?: unknown;
     modelCalls?: unknown[];
     toolCalls?: unknown[];
   };

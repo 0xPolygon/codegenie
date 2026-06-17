@@ -714,7 +714,68 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   if (providerPromptCacheWriteCostUSD !== undefined) {
     metrics.providerPromptCacheWriteCostUSD = providerPromptCacheWriteCostUSD;
   }
+  const schemaRecovery = schemaRecoveryMetrics(artifacts);
+  if (schemaRecovery.schemaInvalidCalls !== undefined) {
+    metrics.schemaInvalidCalls = schemaRecovery.schemaInvalidCalls;
+  }
+  if (schemaRecovery.schemaInvalidRecovered !== undefined) {
+    metrics.schemaInvalidRecovered = schemaRecovery.schemaInvalidRecovered;
+  }
+  if (schemaRecovery.schemaInvalidUnrecovered !== undefined) {
+    metrics.schemaInvalidUnrecovered = schemaRecovery.schemaInvalidUnrecovered;
+  }
+  if (schemaRecovery.schemaRepairAttempts !== undefined) {
+    metrics.schemaRepairAttempts = schemaRecovery.schemaRepairAttempts;
+  }
+  if (schemaRecovery.schemaRepairRecovered !== undefined) {
+    metrics.schemaRepairRecovered = schemaRecovery.schemaRepairRecovered;
+  }
+  if (schemaRecovery.deterministicSchemaRecovered !== undefined) {
+    metrics.deterministicSchemaRecovered = schemaRecovery.deterministicSchemaRecovered;
+  }
+  if (schemaRecovery.schemaRecoveryFailed !== undefined) {
+    metrics.schemaRecoveryFailed = schemaRecovery.schemaRecoveryFailed;
+  }
   return metrics;
+}
+
+function schemaRecoveryMetrics(artifacts: EvalArtifacts): Partial<Pick<
+  EvalRunMetrics,
+  | "schemaInvalidCalls"
+  | "schemaInvalidRecovered"
+  | "schemaInvalidUnrecovered"
+  | "schemaRepairAttempts"
+  | "schemaRepairRecovered"
+  | "deterministicSchemaRecovered"
+  | "schemaRecoveryFailed"
+>> {
+  const sources = [
+    fieldAtPath(artifacts.metricsSources.modelCallsSummary, ["schemaRecovery"]),
+    fieldAtPath(artifacts.metricsSources.telemetry, ["schemaRecovery"]),
+    fieldAtPath(artifacts.metricsSources.runJson, ["totals", "schemaRecovery"])
+  ];
+  const source = sources.find(isRecord);
+  const schemaInvalidCalls = firstNumberPath([
+    [source, ["schemaInvalidCalls"]],
+    [artifacts.metricsSources.modelCallsSummary, ["schemaInvalidCalls"]],
+    [artifacts.metricsSources.telemetry, ["modelCalls", "schemaInvalidCalls"]],
+    [artifacts.metricsSources.runJson, ["totals", "schemaInvalidCalls"]]
+  ]);
+  const schemaInvalidRecovered = firstNumberPath([[source, ["schemaInvalidRecovered"]]]);
+  const schemaInvalidUnrecovered = firstNumberPath([[source, ["schemaInvalidUnrecovered"]]]);
+  const schemaRepairAttempts = firstNumberPath([[source, ["schemaRepairAttempts"]]]);
+  const schemaRepairRecovered = firstNumberPath([[source, ["schemaRepairRecovered"]]]);
+  const deterministicSchemaRecovered = firstNumberPath([[source, ["deterministicSchemaRecovered"]]]);
+  const schemaRecoveryFailed = firstNumberPath([[source, ["schemaRecoveryFailed"]]]);
+  return {
+    ...(schemaInvalidCalls !== undefined ? { schemaInvalidCalls } : {}),
+    ...(schemaInvalidRecovered !== undefined ? { schemaInvalidRecovered } : {}),
+    ...(schemaInvalidUnrecovered !== undefined ? { schemaInvalidUnrecovered } : {}),
+    ...(schemaRepairAttempts !== undefined ? { schemaRepairAttempts } : {}),
+    ...(schemaRepairRecovered !== undefined ? { schemaRepairRecovered } : {}),
+    ...(deterministicSchemaRecovered !== undefined ? { deterministicSchemaRecovered } : {}),
+    ...(schemaRecoveryFailed !== undefined ? { schemaRecoveryFailed } : {})
+  };
 }
 
 function countRawToolBudgetRejections(toolCalls: unknown[]): number | undefined {
@@ -1449,6 +1510,11 @@ function normalizeGateReason(reason: string): string {
 }
 
 function numberPath(input: unknown, pathParts: string[]): number | undefined {
+  const value = fieldAtPath(input, pathParts);
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function fieldAtPath(input: unknown, pathParts: string[]): unknown {
   let cursor = input;
   for (const part of pathParts) {
     if (!isRecord(cursor)) {
@@ -1456,7 +1522,7 @@ function numberPath(input: unknown, pathParts: string[]): number | undefined {
     }
     cursor = cursor[part];
   }
-  return typeof cursor === "number" && Number.isFinite(cursor) ? cursor : undefined;
+  return cursor;
 }
 
 function firstNumberPath(paths: Array<[unknown, string[]]>): number | undefined {
