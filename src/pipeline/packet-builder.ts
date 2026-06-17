@@ -19,12 +19,15 @@ import type {
   ReviewPlan,
   ReviewProfile,
   ReviewPriority,
+  SearchResult,
   SourceSelector,
   StaticSignal,
   SurroundingContextHint,
+  SymbolRef,
   SymbolInfo,
   PacketContextQuality,
   ToolBudget,
+  ToolResultMeta,
   IntentSignals
 } from "../types.js";
 import { sha256Hex } from "../util/hashing.js";
@@ -69,6 +72,8 @@ const SYMBOL_EXCERPT_WINDOW = 8;
 const MAX_SYMBOL_EXCERPT_CHARS = 2_500;
 const MAX_HINT_CONTEXT_CHARS = 2_000;
 const MAX_HINT_CONTEXT_LINES = 80;
+const CALL_SITE_MENTION_LOOKUP_LIMIT = 50;
+const CALL_SITE_CONTEXT_SYMBOL_LIMIT = 4;
 const MAX_STATIC_SIGNALS_PER_PACKET_HUNK = 5;
 const NEARBY_GAP_LINES = 30;
 
@@ -1490,6 +1495,9 @@ async function resolvePacketContextHint(
   }
   const symbol = hint.symbol;
   if (symbol !== undefined) {
+    if (hint.kind === "call_site") {
+      return resolveCallSiteContextHint(repoIndex, hint, path, symbol, telemetry);
+    }
     const result = await withRepositoryToolCallContext(
       repoIndex.tools,
       { stage: 6, initiator: "harness" },
@@ -1501,6 +1509,163 @@ async function resolvePacketContextHint(
     return renderHintContextBlock(hint, path, symbol, result.text);
   }
   return undefined;
+}
+
+async function resolveCallSiteContextHint(
+  repoIndex: RepositoryIndex,
+  hint: SurroundingContextHint,
+  path: string,
+  symbol: string,
+  telemetry: TelemetryRecorder
+): Promise<string | undefined> {
+  const scopedMentions = await findCallSiteMentions(repoIndex, symbol, { pathGlob: path });
+  const scopedSelected = selectCallSiteCallerSymbols(scopedMentions.results, symbol, path);
+  const needsRepoWideFallback = scopedSelected.length === 0;
+  const mentions = needsRepoWideFallback ? await findCallSiteMentions(repoIndex, symbol) : scopedMentions;
+  const selected = needsRepoWideFallback ? selectCallSiteCallerSymbols(mentions.results, symbol, path) : scopedSelected;
+  if (selected.length === 0) {
+    telemetry.event({
+      stage: 6,
+      level: "debug",
+      message: "packet_context_call_site_hint_empty",
+      file: path,
+      data: {
+        path,
+        symbol,
+        resultCount: mentions.results.length,
+        includedCount: 0,
+        searchScope: needsRepoWideFallback ? "repo" : "same_file",
+        reason: "no distinct caller symbols found"
+      }
+    });
+    return undefined;
+  }
+
+  const blocks: string[] = [];
+  let failedReads = 0;
+  for (const caller of selected.slice(0, CALL_SITE_CONTEXT_SYMBOL_LIMIT)) {
+    const result = await withRepositoryToolCallContext(
+      repoIndex.tools,
+      { stage: 6, initiator: "harness" },
+      () => repoIndex.tools.readSymbol(caller.path, { line: caller.lineRange[0] }, { kind: "head" })
+    );
+    if (result.text === undefined || result.text.trim().length === 0) {
+      failedReads += 1;
+      continue;
+    }
+    blocks.push(renderHintContextBlock(
+      hint,
+      caller.path,
+      `${caller.name}:${caller.lineRange[0]}-${caller.lineRange[1]}`,
+      result.text
+    ));
+  }
+
+  if (blocks.length === 0) {
+    telemetry.event({
+      stage: 6,
+      level: "warn",
+      message: "packet_context_call_site_hint_degraded",
+      file: path,
+      data: {
+        path,
+        symbol,
+        resultCount: mentions.results.length,
+        includedCount: 0,
+        searchScope: needsRepoWideFallback ? "repo" : "same_file",
+        reason: "caller symbol mentions were found but caller bodies could not be read",
+        failedReads
+      }
+    });
+    return undefined;
+  }
+
+  telemetry.event({
+    stage: 6,
+    level: "debug",
+    message: "packet_context_call_site_hint_resolved",
+    file: path,
+    data: {
+      path,
+      symbol,
+      resultCount: mentions.results.length,
+      includedCount: blocks.length,
+      searchScope: needsRepoWideFallback ? "repo" : "same_file",
+      reason: hint.reason
+    }
+  });
+  if (mentions.meta.degraded || mentions.meta.truncated || selected.length > blocks.length || selected.length > CALL_SITE_CONTEXT_SYMBOL_LIMIT) {
+    telemetry.event({
+      stage: 6,
+      level: "warn",
+      message: "packet_context_call_site_hint_degraded",
+      file: path,
+      data: {
+        path,
+        symbol,
+        resultCount: mentions.results.length,
+        includedCount: blocks.length,
+        searchScope: needsRepoWideFallback ? "repo" : "same_file",
+        reason: mentions.meta.degradationReason ?? "call-site context was bounded",
+        truncated: mentions.meta.truncated === true || selected.length > CALL_SITE_CONTEXT_SYMBOL_LIMIT,
+        omittedCount: mentions.meta.omittedCount ?? Math.max(0, selected.length - CALL_SITE_CONTEXT_SYMBOL_LIMIT),
+        failedReads
+      }
+    });
+  }
+
+  return truncateTail(blocks.join("\n\n"), MAX_HINT_CONTEXT_CHARS);
+}
+
+function findCallSiteMentions(
+  repoIndex: RepositoryIndex,
+  symbol: string,
+  options: { pathGlob?: string } = {}
+): Promise<{ results: SearchResult[]; meta: ToolResultMeta }> {
+  return withRepositoryToolCallContext(
+    repoIndex.tools,
+    { stage: 6, initiator: "harness" },
+    () => repoIndex.tools.findSymbolMentions(symbol, {
+      source: { kind: "head" },
+      contextMode: "symbols",
+      maxResults: CALL_SITE_MENTION_LOOKUP_LIMIT,
+      ...(options.pathGlob !== undefined ? { pathGlob: options.pathGlob } : {})
+    })
+  );
+}
+
+function selectCallSiteCallerSymbols(results: SearchResult[], symbol: string, hintPath: string): SymbolRef[] {
+  const callers = results
+    .map((result) => result.enclosingSymbol)
+    .filter((caller): caller is SymbolRef => caller !== undefined)
+    .filter((caller) => !isSelfSymbol(caller, symbol, hintPath));
+  const deduped = new Map<string, SymbolRef>();
+  for (const caller of callers.sort((a, b) => callSiteCallerScore(a, hintPath) - callSiteCallerScore(b, hintPath) || a.path.localeCompare(b.path) || a.lineRange[0] - b.lineRange[0])) {
+    const key = `${caller.path}:${caller.name}:${caller.lineRange[0]}-${caller.lineRange[1]}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, caller);
+    }
+  }
+  return [...deduped.values()];
+}
+
+function callSiteCallerScore(caller: SymbolRef, hintPath: string): number {
+  if (caller.path === hintPath) {
+    return 0;
+  }
+  if (caller.path.split("/").slice(0, -1).join("/") === hintPath.split("/").slice(0, -1).join("/")) {
+    return 1;
+  }
+  return 2;
+}
+
+function isSelfSymbol(caller: SymbolRef, symbol: string, hintPath: string): boolean {
+  return caller.path === hintPath && bareSymbolName(caller.name) === bareSymbolName(symbol);
+}
+
+function bareSymbolName(symbol: string): string {
+  const match = /[A-Za-z_$][\w$]*$/u.exec(symbol.trim());
+  return match?.[0] ?? symbol.trim();
 }
 
 function normalizeStage6ReadRange(input: {

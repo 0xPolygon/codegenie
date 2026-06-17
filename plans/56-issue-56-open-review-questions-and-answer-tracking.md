@@ -151,6 +151,8 @@ Update packet-review instructions:
 - If the packet answers the question and no defect exists, include a concise answer in `noFindingReason` or a structured `answeredQuestions` field.
 - If the packet only partially answers the question, emit an uncertainty/follow-up that preserves the exact question framing.
 
+Require the answer to **show its work, not assert a verdict.** For a relationship/contract question, the reviewer must produce a concrete evidence trace before concluding: values should trace requested -> transformed -> reported/validated, permission questions should trace actor -> check -> protected operation, lifecycle questions should trace state/event -> side effect -> cleanup, and test questions should trace old coverage -> new coverage -> still-live behavior boundary. A glib "yes, the contract holds" is hard to produce when it is false once the reviewer must write the trace. Put the trace in `AnsweredReviewQuestion.evidence`; an `answered_no_issue` outcome without a trace should be treated as a non-answer.
+
 Add structured output if needed:
 
 ```ts
@@ -170,6 +172,8 @@ The answer schema may use small outcome labels, but the question itself remains 
 Use unanswered or partially answered questions to decide whether Stage 8 should run.
 
 Stage 8 is the second implementation slice. Do not make the first implementation depend on broad Stage 8 machinery. First validate that planner questions are emitted, attached, answered, and preserved in artifacts; then add focused follow-up for questions that remain partial across multiple relevant packets.
+
+Expect this slice to be useful for issues where the evidence path spans multiple packets: producer/helper behavior -> caller use -> downstream consumer or public contract. The motivating `49f4645b` case has that shape, but the implementation must stay generic and must not encode any target-repo names or symbols. Issue 57 improves the caller-context hop; Slice 1 keeps the question alive and well-traced; Slice 2 lets a focused follow-up read producer + caller + consumer together when no single packet has enough context. Treat "slice 1 alone closes the eval gap" as a hypothesis to test in steps 1-6, not the plan of record.
 
 Build a follow-up only when:
 
@@ -252,7 +256,7 @@ For debug/eval, add concise metrics:
 ## Implementation Order
 
 1. Add `ReviewQuestion` and `AnsweredReviewQuestion` types/schemas and planner prompt instructions.
-2. Seed review questions from the planner's existing free-form `riskAreas` reasoning where possible, so concerns already discovered by Stage 5 do not evaporate.
+2. Seed review questions from the planner's existing free-form `riskAreas` reasoning where possible, so concerns already discovered by Stage 5 do not evaporate. This is a prompt-level instruction, not a mechanical copy: `riskAreas` (`src/types.ts:672`) carries `{ area, reason, files[], suggestedLenses[] }` — it has `files[]` but no `symbols[]`, and `area` is a short label, not a question. So instruct the planner to emit a `reviewQuestion` for each material risk area, reformulating the label into an answerable question, carrying `files` across, and inferring `symbols` from the hunk symbol-facts and `coverage[].surroundingContextHints` it already produces. (Grounding note: in the `49f4645b` runs the planner already emitted the relevant risk area — "Quote amount denomination split (TransferAmount vs DestinationAmount)" — on every run; the concern was discovered and then lost, which is exactly what seeding prevents.)
 3. Attach questions to packets deterministically and boundedly.
 4. Update Stage 7 instructions and schema handling so packet reviewers answer attached questions, convert them to candidates, or mark them partial/not applicable.
 5. Write question lifecycle artifacts and metrics.
@@ -304,6 +308,8 @@ Expected trend:
 
 - Stage 7 or Stage 8 should preserve the concrete transformed-value vs downstream-contract question.
 - If there is no final finding, artifacts should show exactly where and why the question was answered or rejected.
+
+Because packet review is stochastic, judge this by **pass-rate across repeated runs, not a single run**. Use 3-5 runs for a quick signal, and N>=10 only when cost is acceptable and release-level confidence is needed. A single improved run is indistinguishable from luck. Residual single-call variance is out of scope for this issue; it is a separate lever (e.g. multi-sampling deep packets) to consider after 56/57 land.
 
 ## Stop Conditions
 

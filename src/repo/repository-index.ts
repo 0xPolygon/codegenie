@@ -18,6 +18,7 @@ import type {
   SearchOptions,
   SearchResult,
   SourceSelector,
+  SymbolMentionOptions,
   SymbolLookupSourceSelector,
   SymbolInfo,
   SymbolRef,
@@ -65,6 +66,7 @@ type ToolArgs = {
   glob?: string | undefined;
   source?: string | undefined;
   contextMode?: string | undefined;
+  maxResults?: number | undefined;
 };
 
 type RecordedToolArgs = {
@@ -77,6 +79,7 @@ type RecordedToolArgs = {
   glob?: string;
   source?: string;
   contextMode?: string;
+  maxResults?: number;
 };
 
 const READ_RANGE_MAX_LINES = 400;
@@ -572,7 +575,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
   async searchFiles(query: string, options: SearchOptions = {}): Promise<{ results: SearchResult[]; meta: ToolResultMeta }> {
     return this.measure(
       "search_files",
-      { query, glob: options.pathGlob, source: options.source?.kind, contextMode: options.contextMode },
+      { query, glob: options.pathGlob, source: options.source?.kind, contextMode: options.contextMode, maxResults: options.maxResults },
       7,
       async () => {
         const normalizedOptions = this.normalizeSearchOptions(options, "search_files");
@@ -585,7 +588,8 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
             query,
             glob: normalizedOptions.pathGlob,
             source: normalizedOptions.source?.kind,
-            contextMode: normalizedOptions.contextMode
+            contextMode: normalizedOptions.contextMode,
+            maxResults: normalizedOptions.maxResults
           },
           engine: execution.engine,
           resultCount: execution.results.length,
@@ -597,11 +601,17 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
 
   async findSymbolMentions(
     symbolName: string,
-    options: { pathGlob?: string; source?: SourceSelector } = {}
+    options: SymbolMentionOptions = {}
   ): Promise<{ results: SearchResult[]; meta: ToolResultMeta }> {
     return this.measure(
       "find_symbol_mentions",
-      { symbolName, glob: options.pathGlob, source: options.source?.kind },
+      {
+        symbolName,
+        glob: options.pathGlob,
+        source: options.source?.kind,
+        contextMode: options.contextMode,
+        maxResults: options.maxResults
+      },
       7,
       async () => {
         const normalizedOptions = this.normalizeSearchOptions(options, "find_symbol_mentions");
@@ -610,7 +620,13 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         return {
           value: { results: execution.results, meta },
           meta,
-          args: { symbolName, glob: normalizedOptions.pathGlob, source: normalizedOptions.source?.kind },
+          args: {
+            symbolName,
+            glob: normalizedOptions.pathGlob,
+            source: normalizedOptions.source?.kind,
+            contextMode: normalizedOptions.contextMode,
+            maxResults: normalizedOptions.maxResults
+          },
           engine: execution.engine,
           resultCount: execution.results.length,
           resultChars: JSON.stringify(execution.results).length

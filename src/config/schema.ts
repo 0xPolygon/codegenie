@@ -212,7 +212,7 @@ export const defaultConfig: CodeninjaConfig = {
     dir: ".codeninja/cache"
   },
   telemetry: {
-    enabled: true,
+    enabled: false,
     logLevel: "warn",
     debugTrace: false,
     runDir: ".codeninja/runs",

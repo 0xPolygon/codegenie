@@ -517,6 +517,10 @@ export { internal as Public }
 
     const search = await tools.searchFiles("SaveUser", { contextMode: "symbols" });
     expect(search.results.some((result) => result.path === "store/user.go" && result.enclosingSymbol?.name === "SaveUser")).toBe(true);
+    const symbolMentions = await tools.findSymbolMentions("SaveUser", { pathGlob: "./store//*.go", contextMode: "symbols" });
+    expect(symbolMentions.results.some((result) => result.path === "store/user_test.go" && result.enclosingSymbol?.name === "TestSaveUser")).toBe(true);
+    expect(symbolMentions.meta.backend).toBe("tree-sitter");
+    expect(symbolMentions.meta.precision).toBe("syntactic");
     const globbedSearch = await tools.searchFiles("SaveUser", { pathGlob: "./store//*.go" });
     expect(globbedSearch.results.some((result) => result.path === "store/user.go")).toBe(true);
     const cappedMentions = await tools.findSymbolMentions("MentionCap", { pathGlob: "./mentioncap//*.ts", source: { kind: "base" } });

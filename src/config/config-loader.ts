@@ -379,7 +379,17 @@ function filterRepoConfig(raw: RawCodeninjaConfig, warnings: ConfigWarning[]): R
   warnTopLevelRepoSection(warnings, raw.github, "github");
   warnTopLevelRepoSection(warnings, raw.llm, "llm");
   warnTopLevelRepoSection(warnings, raw.cache, "cache");
-  warnTopLevelRepoSection(warnings, raw.telemetry, "telemetry");
+  if (raw.telemetry) {
+    safe.telemetry = {};
+    if (raw.telemetry.enabled !== undefined) {
+      safe.telemetry.enabled = raw.telemetry.enabled;
+    }
+    for (const key of Object.keys(raw.telemetry)) {
+      if (key !== "enabled") {
+        warnIgnoredRepoKey(warnings, `telemetry.${key}`);
+      }
+    }
+  }
   warnTopLevelRepoSection(warnings, raw.eval, "eval");
 
   return safe;

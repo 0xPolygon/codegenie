@@ -754,7 +754,7 @@ Responsibilities:
 - Load `codeninja.toml`.
 - Merge review config from defaults, user-scoped config, repo config, the four provider/home environment variables, and CLI flags, while enforcing the trust partition.
 - Validate config with `zod`.
-- Start a run and create `.codeninja/runs/<run-id>/`.
+- Start a run and create `.codeninja/runs/<run-id>/` only when telemetry is enabled.
 - Render interactive progress on stderr only when enabled and attached to a TTY; never mix progress text into stdout Markdown/JSON output.
 
 Review behavior precedence for safe keys (project policy outranks personal defaults; per-run flags outrank both). The only codeninja environment variables in v1 are `CODENINJA_PROVIDER`, `CODENINJA_MODEL`, `CODENINJA_REASONING`, and `CODENINJA_HOME`, so safe review keys have no environment layer:
@@ -781,8 +781,9 @@ Per-key config sources (normative; Trust Boundaries defers to this table):
 
 | Keys | Allowed sources |
 | --- | --- |
-| `review.depth`, `review.maxFindings`, `review.softCommentCap`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codeninja.toml`, user-scoped config, or CLI |
-| `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.timeoutMs`, `review.perPassTimeoutMs`, `review.maxTotalTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.*`, `eval.*` | User-scoped config or CLI only |
+| `review.depth`, `review.maxFindings`, `review.softCommentCap`, `review.budgetMultiplier`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codeninja.toml`, user-scoped config, or CLI |
+| `telemetry.enabled` | Repo `codeninja.toml` or user-scoped config |
+| `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.timeoutMs`, `review.perPassTimeoutMs`, `review.maxTotalTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
 
 The loader enforces this via per-key source tracking; repo values for user-scope keys are ignored with a warning.
 
@@ -878,7 +879,7 @@ Chosen defaults:
 - `llm.provider`, `llm.model`, and `llm.reasoning` unset unless supplied by CLI, environment, or user-level config; unresolved reasoning falls back to the built-in `high` default at runner construction
 - `cache.enabled = false`
 - `cache.dir = ".codeninja/cache"`
-- `telemetry.enabled = true`
+- `telemetry.enabled = false`
 - `telemetry.logLevel = "warn"`
 - `telemetry.debugTrace = false`
 - `telemetry.runDir = ".codeninja/runs"`
@@ -1830,7 +1831,7 @@ Allowed by default:
 - Read files from the repository.
 - Run `git` read operations.
 - Run `gh` read operations for PR metadata.
-- Write local run artifacts under `.codeninja/runs/`.
+- Write local run artifacts under `.codeninja/runs/` only when telemetry is enabled.
 - Post GitHub comments only when `--post-github-comments` is explicitly set.
 
 Not allowed by default:

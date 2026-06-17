@@ -40,6 +40,7 @@ import type {
   ReviewPlan,
   RunCoverageStatus,
   StaticSignal,
+  SymbolMentionOptions,
   TelemetryEvent,
   UnifiedDiff
 } from "../src/types.js";
@@ -850,6 +851,304 @@ describe("phase 5 pipeline regressions", () => {
       expect.objectContaining({ reason: "worker can inspect test", expectedUse: "tool_lookup" }),
       expect.objectContaining({ reason: "out of packet scope", expectedUse: "tool_lookup" })
     ]);
+  });
+
+  it("resolves call-site symbol hints to enclosing caller bodies instead of the callee body", async () => {
+    const events: TelemetryEvent[] = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: TelemetryEvent) => {
+        events.push(event);
+      }
+    };
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const mentionCalls: Array<{ symbolName: string; pathGlob?: string; contextMode?: string; maxResults?: number }> = [];
+    const symbolReads: Array<{ path: string; selector: { symbolName?: string; line?: number } }> = [];
+    const tools = {
+      ...fakeTools(),
+      findSymbolMentions: async (symbolName: string, options: SymbolMentionOptions = {}) => {
+        mentionCalls.push({ symbolName, pathGlob: options.pathGlob, contextMode: options.contextMode, maxResults: options.maxResults });
+        return {
+          results: [
+            {
+              path: "quote.ts",
+              line: 2,
+              matchText: "function scaleAmount(value) { return value * 100n; }",
+              enclosingSymbol: { path: "quote.ts", name: "scaleAmount", kind: "function" as const, lineRange: [1, 3] as [number, number] }
+            },
+            {
+              path: "quote.ts",
+              line: 11,
+              matchText: "const min = scaleAmount(requested);",
+              enclosingSymbol: { path: "quote.ts", name: "quoteMinimum", kind: "function" as const, lineRange: [10, 20] as [number, number] }
+            },
+            {
+              path: "quote.ts",
+              line: 31,
+              matchText: "return scaleAmount(transfer.amount);",
+              enclosingSymbol: { path: "quote.ts", name: "buildTransfer", kind: "function" as const, lineRange: [30, 38] as [number, number] }
+            },
+            {
+              path: "quote.ts",
+              line: 12,
+              matchText: "audit(scaleAmount(requested));",
+              enclosingSymbol: { path: "quote.ts", name: "quoteMinimum", kind: "function" as const, lineRange: [10, 20] as [number, number] }
+            }
+          ],
+          meta
+        };
+      },
+      readSymbol: async (pathName: string, selector: { symbolName?: string; line?: number }) => {
+        symbolReads.push({ path: pathName, selector });
+        if (selector.line === 10) {
+          return { text: "function quoteMinimum(requested) {\n  const min = scaleAmount(requested);\n  return min;\n}", meta };
+        }
+        if (selector.line === 30) {
+          return { text: "function buildTransfer(transfer) {\n  return scaleAmount(transfer.amount);\n}", meta };
+        }
+        return { text: "function scaleAmount(value) {\n  return value * 100n;\n}", meta };
+      }
+    };
+    const plan: ReviewPlan = {
+      ...fakePlan("quote.ts"),
+      coverage: [
+        {
+          hunkId: "h1",
+          path: "quote.ts",
+          coverage: "normal",
+          lenses: ["core/code-review"],
+          surroundingContextHints: [
+            {
+              kind: "call_site",
+              path: "quote.ts",
+              symbol: "scaleAmount",
+              reason: "inspect callers of changed helper",
+              expectedUse: "packet_context"
+            }
+          ],
+          reason: "test"
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [fakeDiffFile("quote.ts")],
+      [fakeFacts("quote.ts", "per-hunk")],
+      fakeRepositoryIndex(tools),
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const contextText = packets[0]?.contextText ?? "";
+    expect(mentionCalls).toEqual([{ symbolName: "scaleAmount", pathGlob: "quote.ts", contextMode: "symbols", maxResults: 50 }]);
+    expect(symbolReads).toEqual([
+      { path: "quote.ts", selector: { line: 10 } },
+      { path: "quote.ts", selector: { line: 30 } }
+    ]);
+    expect(contextText).toContain("Planner packet context (call_site) for quote.ts:quoteMinimum:10-20");
+    expect(contextText).toContain("function quoteMinimum");
+    expect(contextText).toContain("function buildTransfer");
+    expect(contextText).not.toContain("function scaleAmount(value)");
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "debug",
+      message: "packet_context_call_site_hint_resolved",
+      file: "quote.ts",
+      data: expect.objectContaining({ symbol: "scaleAmount", resultCount: 4, includedCount: 2 })
+    }));
+  });
+
+  it("falls back to repo-wide call-site search when same-file mentions are self-only", async () => {
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const mentionCalls: Array<{ symbolName: string; pathGlob?: string; contextMode?: string; maxResults?: number }> = [];
+    const tools = {
+      ...fakeTools(),
+      findSymbolMentions: async (symbolName: string, options: SymbolMentionOptions = {}) => {
+        mentionCalls.push({ symbolName, pathGlob: options.pathGlob, contextMode: options.contextMode, maxResults: options.maxResults });
+        return {
+          results: options.pathGlob === "quote.ts"
+            ? [
+                {
+                  path: "quote.ts",
+                  line: 2,
+                  matchText: "function scaleAmount(value) { return value * 100n; }",
+                  enclosingSymbol: { path: "quote.ts", name: "scaleAmount", kind: "function" as const, lineRange: [1, 3] as [number, number] }
+                }
+              ]
+            : [
+                {
+                  path: "routes.ts",
+                  line: 14,
+                  matchText: "const displayed = scaleAmount(input);",
+                  enclosingSymbol: { path: "routes.ts", name: "renderRoute", kind: "function" as const, lineRange: [10, 22] as [number, number] }
+                }
+              ],
+          meta
+        };
+      },
+      readSymbol: async (pathName: string, selector: { symbolName?: string; line?: number }) => {
+        expect(pathName).toBe("routes.ts");
+        expect(selector).toEqual({ line: 10 });
+        return { text: "function renderRoute(input) {\n  const displayed = scaleAmount(input);\n  return displayed;\n}", meta };
+      }
+    };
+    const plan: ReviewPlan = {
+      ...fakePlan("quote.ts"),
+      coverage: [
+        {
+          hunkId: "h1",
+          path: "quote.ts",
+          coverage: "normal",
+          lenses: ["core/code-review"],
+          surroundingContextHints: [
+            {
+              kind: "call_site",
+              path: "quote.ts",
+              symbol: "scaleAmount",
+              reason: "inspect callers outside helper file",
+              expectedUse: "packet_context"
+            }
+          ],
+          reason: "test"
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [fakeDiffFile("quote.ts")],
+      [fakeFacts("quote.ts", "per-hunk")],
+      fakeRepositoryIndex(tools),
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(mentionCalls).toEqual([
+      { symbolName: "scaleAmount", pathGlob: "quote.ts", contextMode: "symbols", maxResults: 50 },
+      { symbolName: "scaleAmount", contextMode: "symbols", maxResults: 50 }
+    ]);
+    expect(packets[0]?.contextText).toContain("Planner packet context (call_site) for routes.ts:renderRoute:10-22");
+    expect(packets[0]?.contextText).toContain("function renderRoute");
+  });
+
+  it("keeps non-call-site symbol hints on the symbol definition path", async () => {
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const symbolReads: Array<{ path: string; selector: { symbolName?: string; line?: number } }> = [];
+    const tools = {
+      ...fakeTools(),
+      findSymbolMentions: async () => {
+        throw new Error("findSymbolMentions should only be used for call_site hints");
+      },
+      readSymbol: async (pathName: string, selector: { symbolName?: string; line?: number }) => {
+        symbolReads.push({ path: pathName, selector });
+        return { text: "function scaleAmount(value) {\n  return value * 100n;\n}", meta };
+      }
+    };
+    const plan: ReviewPlan = {
+      ...fakePlan("quote.ts"),
+      coverage: [
+        {
+          hunkId: "h1",
+          path: "quote.ts",
+          coverage: "normal",
+          lenses: ["core/code-review"],
+          surroundingContextHints: [
+            {
+              kind: "enclosing_symbol",
+              path: "quote.ts",
+              symbol: "scaleAmount",
+              reason: "include helper definition",
+              expectedUse: "packet_context"
+            }
+          ],
+          reason: "test"
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [fakeDiffFile("quote.ts")],
+      [fakeFacts("quote.ts", "per-hunk")],
+      fakeRepositoryIndex(tools),
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(symbolReads).toEqual([{ path: "quote.ts", selector: { symbolName: "scaleAmount" } }]);
+    expect(packets[0]?.contextText).toContain("Planner packet context (enclosing_symbol) for quote.ts:scaleAmount");
+    expect(packets[0]?.contextText).toContain("function scaleAmount");
+  });
+
+  it("does not resolve a call-site hint to the callee body when only self mentions are found", async () => {
+    const events: TelemetryEvent[] = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: TelemetryEvent) => {
+        events.push(event);
+      }
+    };
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const tools = {
+      ...fakeTools(),
+      findSymbolMentions: async () => ({
+        results: [
+          {
+            path: "quote.ts",
+            line: 2,
+            matchText: "function scaleAmount(value) { return value * 100n; }",
+            enclosingSymbol: { path: "quote.ts", name: "scaleAmount", kind: "function" as const, lineRange: [1, 3] as [number, number] }
+          }
+        ],
+        meta
+      }),
+      readSymbol: async () => {
+        throw new Error("readSymbol should not be called when call_site only has self mentions");
+      }
+    };
+    const plan: ReviewPlan = {
+      ...fakePlan("quote.ts"),
+      coverage: [
+        {
+          hunkId: "h1",
+          path: "quote.ts",
+          coverage: "normal",
+          lenses: ["core/code-review"],
+          surroundingContextHints: [
+            {
+              kind: "call_site",
+              path: "quote.ts",
+              symbol: "scaleAmount",
+              reason: "inspect callers of changed helper",
+              expectedUse: "packet_context"
+            }
+          ],
+          reason: "test"
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [fakeDiffFile("quote.ts")],
+      [fakeFacts("quote.ts", "per-hunk")],
+      fakeRepositoryIndex(tools),
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(packets[0]?.contextText).not.toContain("function scaleAmount");
+    expect(packets[0]?.surroundingContextHints).toEqual([
+      expect.objectContaining({ kind: "call_site", symbol: "scaleAmount", expectedUse: "tool_lookup" })
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "debug",
+      message: "packet_context_call_site_hint_empty",
+      file: "quote.ts",
+      data: expect.objectContaining({ symbol: "scaleAmount", resultCount: 1, includedCount: 0 })
+    }));
   });
 
   it("skips inverted planner packet-context ranges before readRange", async () => {

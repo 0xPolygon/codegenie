@@ -57,6 +57,7 @@ describe("run telemetry", () => {
     const run = createRunTelemetry({
       telemetryConfig: {
         ...defaultConfig.telemetry,
+        enabled: true,
         logLevel: "debug",
         retainRuns: 20
       },
@@ -413,6 +414,7 @@ describe("run telemetry", () => {
     const run = createRunTelemetry({
       telemetryConfig: {
         ...defaultConfig.telemetry,
+        enabled: true,
         logLevel: "debug"
       },
       idFactory: () => "20260617-100000-stage-failed",
@@ -447,6 +449,7 @@ describe("run telemetry", () => {
     const run = createRunTelemetry({
       telemetryConfig: {
         ...defaultConfig.telemetry,
+        enabled: true,
         logLevel: "debug"
       },
       idFactory: () => "20260617-100001-schema-recovered"
@@ -529,6 +532,7 @@ describe("run telemetry", () => {
     const run = createRunTelemetry({
       telemetryConfig: {
         ...defaultConfig.telemetry,
+        enabled: true,
         logLevel: "debug"
       },
       idFactory: () => "20260617-100002-schema-unrecovered"
@@ -598,6 +602,7 @@ describe("run telemetry", () => {
     const run = createRunTelemetry({
       telemetryConfig: {
         ...defaultConfig.telemetry,
+        enabled: true,
         logLevel: "debug"
       },
       idFactory: () => "20260617-100003-schema-model-repair"
@@ -662,6 +667,7 @@ describe("run telemetry", () => {
     const run = createRunTelemetry({
       telemetryConfig: {
         ...defaultConfig.telemetry,
+        enabled: true,
         logLevel: "debug"
       },
       idFactory: () => "20260611-120001-tool-result-cache-summary"
@@ -753,6 +759,7 @@ describe("run telemetry", () => {
     const run = createRunTelemetry({
       telemetryConfig: {
         ...defaultConfig.telemetry,
+        enabled: true,
         logLevel: "debug"
       },
       idFactory: () => "20260611-120002-cache-token-summary"
@@ -923,6 +930,7 @@ describe("run telemetry", () => {
     const run = createRunTelemetry({
       telemetryConfig: {
         ...defaultConfig.telemetry,
+        enabled: true,
         logLevel: "debug"
       },
       idFactory: () => "20260611-120001-cache-summary"
@@ -969,6 +977,7 @@ describe("run telemetry", () => {
     const run = createRunTelemetry({
       telemetryConfig: {
         ...defaultConfig.telemetry,
+        enabled: true,
         logLevel: "debug"
       },
       idFactory: () => "source-extension-pressure"
@@ -1004,6 +1013,7 @@ describe("run telemetry", () => {
     const run = createRunTelemetry({
       telemetryConfig: {
         ...defaultConfig.telemetry,
+        enabled: true,
         logLevel: "debug"
       },
       idFactory: () => "log-overflow"
@@ -1053,6 +1063,7 @@ describe("run telemetry", () => {
     const run = createRunTelemetry({
       telemetryConfig: {
         ...defaultConfig.telemetry,
+        enabled: true,
         retainRuns: 2
       },
       idFactory: () => "active-run"
@@ -1084,7 +1095,7 @@ describe("run telemetry", () => {
     writeFileSync(gitignorePath, "skills/\n");
 
     const run = createRunTelemetry({
-      telemetryConfig: defaultConfig.telemetry,
+      telemetryConfig: { ...defaultConfig.telemetry, enabled: true },
       idFactory: () => "existing-policy-dir"
     });
     await run.attachRunDirectory(repoRoot);
@@ -1112,6 +1123,7 @@ describe("run telemetry", () => {
       const run = createRunTelemetry({
         telemetryConfig: {
           ...defaultConfig.telemetry,
+          enabled: true,
           retainRuns: 1
         },
         idFactory: () => "active-with-prune-warning"

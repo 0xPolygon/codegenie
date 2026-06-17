@@ -3,7 +3,7 @@ import { realpathSync } from "node:fs";
 import path from "node:path";
 import { rgPath } from "@vscode/ripgrep";
 import picomatch from "picomatch";
-import type { SearchOptions, SearchResult, SourceSelector, ToolBackend, ToolPrecision } from "../types.js";
+import type { SearchOptions, SearchResult, SourceSelector, SymbolMentionOptions, ToolBackend, ToolPrecision } from "../types.js";
 import { CodeninjaError } from "../util/errors.js";
 import { containGlob, containPath } from "./path-guard.js";
 import type { SourceResolver } from "./source-resolver.js";
@@ -98,7 +98,7 @@ export class SearchService {
 
   async findSymbolMentions(
     symbolName: string,
-    options: { pathGlob?: string; source?: SourceSelector; maxResults?: number } = {}
+    options: SymbolMentionOptions = {}
   ): Promise<SearchExecution> {
     const execution = await this.search(symbolName, {
       ...options,

@@ -381,6 +381,8 @@ export type SearchOptions = {
   source?: SourceSelector;
 };
 
+export type SymbolMentionOptions = Pick<SearchOptions, "pathGlob" | "contextMode" | "maxResults" | "source">;
+
 export type ParseInput = {
   path: string;
   language: string;
@@ -561,7 +563,7 @@ export interface RepositoryTools {
   searchFiles(query: string, options?: SearchOptions): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>;
   findSymbolMentions(
     symbolName: string,
-    options?: { pathGlob?: string; source?: SourceSelector }
+    options?: SymbolMentionOptions
   ): Promise<{ results: SearchResult[]; meta: ToolResultMeta }>;
   findLikelyTests(
     input: { path?: string; symbol?: SymbolRef; source?: SourceSelector }

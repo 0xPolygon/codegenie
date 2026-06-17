@@ -20,7 +20,7 @@ describe("review command pipeline", () => {
       homeOverride: mkdtempSync(path.join(tmpdir(), "codeninja-home-")),
       env: { CODENINJA_PROVIDER: "fake", CODENINJA_MODEL: "fake-model" }
     });
-    const result = await executeReviewCommand(parsed, { writeOutput: (text) => (stdout += text) });
+    const result = await executeReviewCommand(enableTelemetry(parsed), { writeOutput: (text) => (stdout += text) });
 
     expect(result.hunks).toBe(1);
     for (const relPath of [
@@ -79,7 +79,7 @@ describe("review command pipeline", () => {
       key: "llm.provider"
     }));
 
-    const result = await executeReviewCommand(parsed);
+    const result = await executeReviewCommand(enableTelemetry(parsed));
     const warningMessage = "repo codeninja.toml cannot set user-scoped key llm.provider; value ignored";
     const logs = readJsonl(path.join(result.runDir, "run.log")) as Array<{ stage: number; event: string; message: string; data?: { key?: string } }>;
     const events = readJsonl(path.join(result.runDir, "events.jsonl")) as Array<{ stage: number; message: string; data?: { key?: string; message?: string } }>;
@@ -110,16 +110,8 @@ describe("review command pipeline", () => {
       homeOverride: mkdtempSync(path.join(tmpdir(), "codeninja-home-")),
       env: { CODENINJA_PROVIDER: "fake", CODENINJA_MODEL: "fake-model" }
     });
-    const result = await executeReviewCommand({
-      ...parsed,
-      config: {
-        ...parsed.config,
-        telemetry: {
-          ...parsed.config.telemetry,
-          enabled: false
-        }
-      }
-    });
+    expect(parsed.config.telemetry.enabled).toBe(false);
+    const result = await executeReviewCommand(parsed);
 
     expect(result.runDir).toBe("");
     expect(result.filesChanged).toBe(1);
@@ -139,7 +131,7 @@ describe("review command pipeline", () => {
       homeOverride: mkdtempSync(path.join(tmpdir(), "codeninja-home-")),
       env: { CODENINJA_PROVIDER: "fake", CODENINJA_MODEL: "fake-model" }
     });
-    const result = await executeReviewCommand(parsed);
+    const result = await executeReviewCommand(enableTelemetry(parsed));
 
     expect(result.review).toMatchObject({
       noFindings: true,
@@ -165,7 +157,7 @@ describe("review command pipeline", () => {
       env: { CODENINJA_PROVIDER: "fake", CODENINJA_MODEL: "fake-model" }
     });
 
-    await expect(executeReviewCommand(parsed)).rejects.toMatchObject({
+    await expect(executeReviewCommand(enableTelemetry(parsed))).rejects.toMatchObject({
       code: "invalid_args",
       context: expect.objectContaining({ unknown: ["typo/not-real"] })
     });
@@ -191,7 +183,7 @@ describe("review command pipeline", () => {
       env: { CODENINJA_PROVIDER: "fake", CODENINJA_MODEL: "fake-model" }
     });
 
-    await expect(executeReviewCommand(parsed)).rejects.toMatchObject({ code: "not_git_worktree" });
+    await expect(executeReviewCommand(enableTelemetry(parsed))).rejects.toMatchObject({ code: "not_git_worktree" });
 
     const runsRoot = path.join(repoRoot, ".codeninja", "runs");
     const runDirs = readdirSync(runsRoot);
@@ -211,4 +203,17 @@ function readJsonl(filePath: string): unknown[] {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line) as unknown);
+}
+
+function enableTelemetry(parsed: ReturnType<typeof parseReviewCommand>): ReturnType<typeof parseReviewCommand> {
+  return {
+    ...parsed,
+    config: {
+      ...parsed.config,
+      telemetry: {
+        ...parsed.config.telemetry,
+        enabled: true
+      }
+    }
+  };
 }

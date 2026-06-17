@@ -104,7 +104,7 @@ reason = "critical lib"
     expect(loaded.config.lenses.enabled).toEqual(["core/tests"]);
     expect(loaded.config.lenses.extraSkillPaths).toEqual(["/trusted/skills"]);
     expect(loaded.config.cache.enabled).toBe(true);
-    expect(loaded.config.telemetry.enabled).toBe(true);
+    expect(loaded.config.telemetry.enabled).toBe(false);
     expect(loaded.config.telemetry.retainRuns).toBe(5);
     expect(loaded.config.classification.pathRules).toEqual([
       {
@@ -119,7 +119,6 @@ reason = "critical lib"
       expect.arrayContaining([
         "review.verify",
         "llm.provider",
-        "telemetry.enabled",
         "lenses.extraSkillPaths"
       ])
     );
@@ -199,13 +198,14 @@ depth = "deep"
     expect(loaded.sources["llm.reasoning"]).toBe("provider-settings");
   });
 
-  it("ignores repo-scoped telemetry and cache directories with narrow warnings", () => {
+  it("allows repo telemetry opt-in but ignores repo-scoped telemetry and cache directories", () => {
     const repoRoot = tempDir();
     const home = tempDir();
     writeFileSync(
       path.join(repoRoot, "codeninja.toml"),
       `
 [telemetry]
+enabled = true
 runDir = "../outside-runs"
 
 [cache]
@@ -219,6 +219,8 @@ maxFindings = 3
 
     const loaded = loadConfig({ repoRoot, homeOverride: home });
 
+    expect(loaded.config.telemetry.enabled).toBe(true);
+    expect(loaded.sources["telemetry.enabled"]).toBe("repo-config");
     expect(loaded.config.telemetry.runDir).toBe(".codeninja/runs");
     expect(loaded.config.cache.dir).toBe(".codeninja/cache");
     expect(loaded.config.cache.enabled).toBe(false);

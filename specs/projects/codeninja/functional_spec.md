@@ -977,7 +977,7 @@ Repository tool path containment should be enforced at a single chokepoint in th
 
 Config trust partitioning:
 
-- Repo `codeninja.toml` may set safe keys only: lenses on/off, classification path rules, depth, base branch, labels, and caps.
+- Repo `codeninja.toml` may set safe keys only: lenses on/off, classification path rules, depth, base branch, labels, caps, and `telemetry.enabled`.
 - Out-of-repo or provider-routing settings — `lenses.extraSkillPaths` outside the repo, `telemetry.runDir` / `cache.dir` outside the repo, and LLM provider/model/reasoning defaults — take effect only with user-level opt-in: a CLI flag, `~/.codeninja/settings.json`, or the user-scoped config file `~/.codeninja/config.toml` (all under `CODENINJA_HOME`). Repo-config values for these are ignored with a warning.
 - Repo-config-relative paths are constrained to the repo root.
 

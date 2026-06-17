@@ -1,6 +1,6 @@
 # Issue 57: Resolve Call-Site Context Hints To Callers
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api `49f4645b` eval review, 2026-06-17
 Recommended priority: high, before Issue 56, because it is deterministic context retrieval that review-question answers will depend on
 
@@ -37,20 +37,35 @@ This should improve packet context for generic cross-symbol questions without ad
 Update `resolvePacketContextHint()`:
 
 1. If `hint.lineRange` is present, keep the existing `readRange` behavior.
-2. If `hint.symbol` is present and `hint.kind === "call_site"`, call `findSymbolMentions(hint.symbol, { pathGlob, source: { kind: "head" } })`.
-3. Render a compact mention/caller block instead of the symbol definition.
-4. Filter out self-only results when they point to the same primary symbol definition already attached to the packet.
+2. If `hint.symbol` is present and `hint.kind === "call_site"`, call `findSymbolMentions` with bounded result count and symbol enrichment. Prefer adding optional `contextMode?: "none" | "lines" | "symbols"` and `maxResults?: number` support to `RepositoryTools.findSymbolMentions()` and the `find_symbol_mentions` tool definition, matching the existing `search_files` option shape where practical. Keep the default behavior unchanged so ordinary model tool calls do not become more expensive unless they request symbol context. The Stage 6 call-site resolver should request `contextMode: "symbols"` and a bounded `maxResults`.
+3. For each useful mention, prefer rendering the **enclosing caller's body** over a few raw grep lines. With symbol enrichment enabled, `findSymbolMentions` results should carry a tree-sitter-derived `enclosingSymbol` (see below), so when a mention's `enclosingSymbol` differs from the hinted callee, read that enclosing symbol with `readSymbol(enclosingSymbol.path, { line: enclosingSymbol.lineRange[0] })` and render it. The line selector avoids ambiguity when duplicate method/helper names exist. Keep this bounded to the selected distinct caller symbols only. Fall back to a worker tool-lookup hint when no distinct enclosing caller symbol is available.
+4. Filter out self-only results: drop mentions whose `enclosingSymbol` is the hinted symbol itself (the callee's own definition is already attached to the packet as the primary symbol).
 5. If no useful mentions are found, fall back to a worker tool lookup hint rather than expanding the callee body as if it were a caller.
 
 The resolver should prefer precise, bounded context:
 
-- cap mention count, for example 3-5 results;
-- include file path, line, and short surrounding text;
-- prefer mentions outside the hinted symbol's own definition when detectable;
+- cap distinct caller symbols, for example 3-5;
+- cap the raw mention lookup as well, for example 25-50 results before selecting callers;
+- prefer mentions whose `enclosingSymbol` differs from the callee;
 - prefer mentions in changed files or same package when result count is high;
+- try the hinted file first and only fall back to repo-wide mention search when same-file results do not produce a distinct caller;
+- dedupe by enclosing symbol so one caller is not read repeatedly;
 - truncate the rendered block through the existing hint context cap.
 
-If `findSymbolMentions()` cannot distinguish reads/references/calls, that is acceptable. The fix is still useful because callers/mentions are closer to call-site context than always reading the callee body.
+Rendering the caller's *body* (not ±N grep lines) matters for the motivating case: the one eval run that found the issue succeeded specifically because the `scaleAmount` packet received the whole `GetQuote` caller body (the `EXACT_OUTPUT` branch). A few surrounding lines around the call site would likely not have been enough.
+
+### Why tree-sitter makes this cheap and precise
+
+This is not a new intelligence system; the pieces already exist:
+
+- `SearchResult` (`src/types.ts:1301`) already includes `contextBefore`, `contextAfter`, and `enclosingSymbol`.
+- `search.ts` `enrichSymbols()` can populate `enclosingSymbol` per mention via the language adapter's tree-sitter `getEnclosingSymbol(parsed, line)` (Go and TypeScript adapters exist under `src/repo/tree-sitter/`). This currently happens only for searches using `contextMode: "symbols"`, so the implementation must enable symbol enrichment for call-site hint resolution before relying on `enclosingSymbol`.
+- `search.ts` `verifyIdentifierMention()` already uses tree-sitter to confirm a hit is a real identifier rather than a comment/string, which mitigates the reads-vs-calls concern below.
+
+Caveats to keep in scope:
+
+- `enrichSymbols()` only enriches roughly the first 25 mentions; for very common helper names, cap/prioritize (changed files, same package) before relying on enclosing symbols, and emit the degraded telemetry below.
+- tree-sitter `enclosingSymbol` identifies the *caller function*, not strictly a *call expression*. That is sufficient here — the caller body is exactly the context Stage 7 needs. A precise call-expression filter (a tree-sitter query over `call_expression` nodes whose callee identifier matches) is a possible future tightening but is out of scope per the non-goals.
 
 ## Telemetry
 
@@ -77,6 +92,7 @@ Include:
 ## Acceptance Criteria
 
 - A `call_site` hint with a symbol uses `findSymbolMentions()` instead of `readSymbol()`.
+- Call-site hint lookup enables symbol enrichment, and tests fail if mention results lack `enclosingSymbol` when the language adapter can provide it.
 - Definition-style hints with symbols still use `readSymbol()`.
 - A call-site hint does not render the hinted symbol's own body as the only context when useful mention results are unavailable.
 - Rendered call-site context is bounded and readable.
@@ -88,7 +104,8 @@ Include:
 Add focused tests with a small fixture:
 
 - `scaleAmount()` helper is called by `quoteMinimum()` and `buildTransfer()`.
-- A `call_site` hint for `scaleAmount` renders caller/mention context.
+- A `call_site` hint for `scaleAmount` renders the **caller bodies** (`quoteMinimum`, `buildTransfer`), keyed off each mention's tree-sitter `enclosingSymbol`, not just the matched lines.
+- A `call_site` hint for `scaleAmount` does **not** render `scaleAmount`'s own body, even if a mention lands inside the definition (self-filter via `enclosingSymbol === hinted symbol`).
 - A non-`call_site` symbol hint for `scaleAmount` still renders `scaleAmount()` itself.
 - A `call_site` hint with no mentions leaves a worker lookup hint or records an empty/degraded event instead of rendering unrelated callee source.
 

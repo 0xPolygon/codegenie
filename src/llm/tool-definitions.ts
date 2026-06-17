@@ -164,18 +164,25 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "find_symbol_mentions",
-      description: "Find text/token mentions of an identifier, optionally constrained by pathGlob and source.",
+      description: "Find text/token mentions of an identifier, optionally constrained by pathGlob, contextMode, maxResults, and source.",
       parameters: Type.Object(
         {
           symbolName: Type.String({ minLength: 1, maxLength: 200 }),
           pathGlob: Type.Optional(Type.String({ minLength: 1 })),
+          contextMode: Type.Optional(Type.Union([Type.Literal("none"), Type.Literal("lines"), Type.Literal("symbols")])),
+          maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 300 })),
           source: SourceSelectorSchema
         },
         { additionalProperties: false }
       ),
       execute: (args, signal) => wrapTool(signal, async () => {
-        const input = args as { symbolName: string; pathGlob?: string; source?: SourceSelector };
-        const result = await runWithoutFacadeRecording(tools, () => tools.findSymbolMentions(input.symbolName, optionalOptions({ pathGlob: input.pathGlob, source: input.source })));
+        const input = args as Parameters<RepositoryTools["findSymbolMentions"]>[1] & { symbolName: string };
+        const result = await runWithoutFacadeRecording(tools, () => tools.findSymbolMentions(input.symbolName, optionalOptions({
+          pathGlob: input.pathGlob,
+          contextMode: input.contextMode,
+          maxResults: input.maxResults,
+          source: input.source
+        })));
         return { text: withMeta(JSON.stringify(result.results, null, 2), result.meta), meta: result.meta };
       })
     },

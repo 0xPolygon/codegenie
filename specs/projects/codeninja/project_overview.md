@@ -16,7 +16,7 @@ codeninja should focus on reviewing any git repository. It should also support r
 
 The first version should output clean, structured Markdown to stdout and also be able to post inline comments directly on a GitHub PR.
 
-Review quality should be measurable, not vibes: codeninja should record local telemetry and run artifacts for every review, and ship an eval system that can attribute every missed or lost finding to the pipeline stage that lost it. The eval suite, skills, and telemetry are the compounding assets; models are swappable underneath them.
+Review quality should be measurable, not vibes: codeninja should support local telemetry and run artifacts for reviews when enabled, and ship an eval system that always captures artifacts and can attribute every missed or lost finding to the pipeline stage that lost it. The eval suite, skills, and telemetry are the compounding assets; models are swappable underneath them.
 
 Because codeninja reviews attacker-influenced content and can post publicly, it must treat reviewed content as data rather than instructions, contain repository tools to the repository root, and never let repo-resident configuration enable command execution or posting on its own.
 
