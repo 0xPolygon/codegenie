@@ -3502,6 +3502,167 @@ describe("phase 5 pipeline regressions", () => {
     expect(repairPrompt).not.toContain("+changed");
   });
 
+  it("recovers repaired planner submits by stripping extra root keys", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const repairedPlan = {
+      ...fakePlan("app.ts"),
+      reviewQuestions: [{
+        id: "q1",
+        question: "Does the changed value still match the caller contract?",
+        whyItMatters: "Wrong value propagation can break callers.",
+        files: ["app.ts"],
+        symbols: ["value"],
+        evidenceHint: "Trace the changed value through the caller."
+      }],
+      reason: "extra repair note"
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        expect(request.stage).toBe(5);
+        const recovered = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 5,
+          submitTool: "submit_plan",
+          error: "root: must not have additional properties",
+          submitCalls: [{ id: "submit-plan-repair", arguments: repairedPlan }],
+          extraToolNames: [],
+          schemaRepairUsed: true
+        });
+        expect(recovered).toBeDefined();
+        expect(Object.prototype.hasOwnProperty.call(recovered ?? {}, "reason")).toBe(false);
+        expect(recovered).toMatchObject({
+          diffUnderstanding: repairedPlan.diffUnderstanding,
+          riskAreas: [],
+          coverage: repairedPlan.coverage,
+          reviewQuestions: repairedPlan.reviewQuestions
+        });
+        return recovered as T;
+      }
+    };
+
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), {
+      ...nullTelemetry(),
+      event: (event) => events.push(event)
+    }, {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{
+        id: "core/code-review",
+        title: "Core",
+        description: "core",
+        skillIds: [],
+        enabledByDefault: true,
+        enabled: true,
+        languages: []
+      }],
+      skills: []
+    });
+
+    expect(result.degradedPlanning).toBe(false);
+    expect(result.plan.reviewQuestions).toEqual([
+      expect.objectContaining({ id: "q1", files: ["app.ts"], symbols: ["value"] })
+    ]);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 5,
+        message: "planner_schema_recovery_stripped_root_keys",
+        data: expect.objectContaining({
+          strippedKeys: ["reason"],
+          invalidSubmitCallCount: 1,
+          schemaRepairUsed: true,
+          recoveredRootKeys: 4
+        })
+      })
+    ]));
+  });
+
+  it("does not recover planner submits that are missing required roots", async () => {
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        const recoveredEmpty = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 5,
+          submitTool: "submit_plan",
+          error: "diffUnderstanding, riskAreas, and coverage are required",
+          submitCalls: [{ id: "submit-empty", arguments: {} }],
+          extraToolNames: [],
+          schemaRepairUsed: false
+        });
+        const recoveredPartial = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 5,
+          submitTool: "submit_plan",
+          error: "coverage is required",
+          submitCalls: [{
+            id: "submit-partial",
+            arguments: {
+              diffUnderstanding: { declaredIntent: "partial", inferredBehavior: "partial" },
+              riskAreas: [],
+              reason: "extra note"
+            }
+          }],
+          extraToolNames: [],
+          schemaRepairUsed: true
+        });
+        expect(recoveredEmpty).toBeUndefined();
+        expect(recoveredPartial).toBeUndefined();
+        return fakePlan("app.ts") as T;
+      }
+    };
+
+    await expect(runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [],
+      skills: []
+    })).resolves.toMatchObject({ degradedPlanning: false });
+  });
+
+  it("does not strip nested planner fields during root-key recovery", async () => {
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        const recoveredNoRootDrift = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 5,
+          submitTool: "submit_plan",
+          error: "riskAreas.0: must not have additional properties",
+          submitCalls: [{ id: "submit-nested-only", arguments: fakePlan("app.ts") }],
+          extraToolNames: [],
+          schemaRepairUsed: true
+        });
+        const recoveredNestedDrift = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 5,
+          submitTool: "submit_plan",
+          error: "riskAreas.0: must not have additional properties",
+          submitCalls: [{
+            id: "submit-nested-extra",
+            arguments: {
+              ...fakePlan("app.ts"),
+              riskAreas: [{
+                area: "Value flow",
+                reason: "Review changed value flow.",
+                files: ["app.ts"],
+                suggestedLenses: ["core/code-review"],
+                extraNestedNote: "must remain for schema validation to reject"
+              }],
+              reason: "extra root note"
+            }
+          }],
+          extraToolNames: [],
+          schemaRepairUsed: true
+        }) as { riskAreas?: Array<Record<string, unknown>> } | undefined;
+
+        expect(recoveredNoRootDrift).toBeUndefined();
+        expect(Object.prototype.hasOwnProperty.call(recoveredNestedDrift ?? {}, "reason")).toBe(false);
+        expect(recoveredNestedDrift?.riskAreas?.[0]?.extraNestedNote).toBe("must remain for schema validation to reject");
+        return fakePlan("app.ts") as T;
+      }
+    };
+
+    await expect(runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [],
+      skills: []
+    })).resolves.toMatchObject({ degradedPlanning: false });
+  });
+
   it("runs simple Stage 7 packets as one no-tool model call", async () => {
     let callCount = 0;
     let toolCount: number | undefined;

@@ -1,4 +1,4 @@
-import type { LlmRunner, LlmSchemaRepairInput } from "../llm/llm-runner.js";
+import type { LlmRunner, LlmSchemaInvalidSubmitRecoveryInput, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import { SubmitPlanSchema, type SubmitPlan } from "../llm/schemas.js";
 import type { LensDescriptor } from "../skills/lens-registry.js";
 import {
@@ -59,6 +59,7 @@ export const MAX_DOSSIER_PROMPT_CHARS = 120_000;
 const MAX_REVIEW_QUESTIONS = 12;
 const MAX_REVIEW_QUESTION_FILES = 20;
 const MAX_REVIEW_QUESTION_SYMBOLS = 20;
+const SUBMIT_PLAN_ROOT_KEYS = new Set(["diffUnderstanding", "riskAreas", "reviewQuestions", "coverage", "partialReview"]);
 
 export async function buildPlannerDossier(
   resolved: { mode: PlannerDossier["mode"]; baseRef?: string; headRef?: string; headSha?: string; mergeBase?: string; pr?: PlannerDossier["pr"]; commits: Array<{ sha: string; title: string; body: string }> },
@@ -290,10 +291,77 @@ async function runPlannerCall(
     schemaRepair: {
       replaceConversation: true,
       failAfterRepair: true,
+      recoverInvalidSubmit: (input) => recoverPlannerInvalidSubmit(input, telemetry),
       buildPrompt: (input) => buildPlannerSchemaRepairPrompt(dossier, opts.lenses, input)
     }
   });
   return validatePlan(submitted as ReviewPlan, dossier, opts.lenses, telemetry);
+}
+
+function recoverPlannerInvalidSubmit(
+  input: LlmSchemaInvalidSubmitRecoveryInput,
+  telemetry: TelemetryRecorder
+): Record<string, unknown> | undefined {
+  const candidates = input.submitCalls.flatMap((call) => {
+    const args = call.arguments;
+    if (!isRecord(args) || !hasPlannerRequiredRoots(args)) {
+      return [];
+    }
+    const strippedKeys = Object.keys(args)
+      .filter((key) => !SUBMIT_PLAN_ROOT_KEYS.has(key))
+      .sort();
+    if (strippedKeys.length === 0) {
+      return [];
+    }
+    const recovered: Record<string, unknown> = {};
+    for (const key of SUBMIT_PLAN_ROOT_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(args, key)) {
+        recovered[key] = args[key];
+      }
+    }
+    return [{
+      recovered,
+      strippedKeys,
+      score: plannerRecoveryScore(args)
+    }];
+  });
+  const best = candidates.sort((a, b) => b.score - a.score || a.strippedKeys.length - b.strippedKeys.length)[0];
+  if (best === undefined) {
+    return undefined;
+  }
+
+  telemetry.event({
+    stage: 5,
+    level: "warn",
+    message: "planner_schema_recovery_stripped_root_keys",
+    data: {
+      strippedKeys: best.strippedKeys,
+      invalidSubmitCallCount: input.submitCalls.length,
+      schemaRepairUsed: input.schemaRepairUsed,
+      recoveredRootKeys: Object.keys(best.recovered).length
+    }
+  });
+  return best.recovered;
+}
+
+function hasPlannerRequiredRoots(args: Record<string, unknown>): boolean {
+  return Object.prototype.hasOwnProperty.call(args, "diffUnderstanding") &&
+    Object.prototype.hasOwnProperty.call(args, "riskAreas") &&
+    Object.prototype.hasOwnProperty.call(args, "coverage");
+}
+
+function plannerRecoveryScore(args: Record<string, unknown>): number {
+  return [
+    "diffUnderstanding",
+    "riskAreas",
+    "coverage",
+    "reviewQuestions",
+    "partialReview"
+  ].filter((key) => Object.prototype.hasOwnProperty.call(args, key)).length;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function buildPlannerSchemaRepairPrompt(
