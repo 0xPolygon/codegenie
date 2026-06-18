@@ -2507,7 +2507,14 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const coverageItem = coverage.items as Record<string, unknown>;
     const hints = (coverageItem.properties as Record<string, unknown>).surroundingContextHints as Record<string, unknown>;
     const hintItem = hints.items as Record<string, unknown>;
-    const lineRangeSchema = (hintItem.properties as Record<string, unknown>).lineRange as Record<string, unknown>;
+    const hintProperties = hintItem.properties as Record<string, unknown>;
+    expect(hintProperties.kind).toMatchObject({
+      description: expect.stringContaining("Mechanical context retrieval mode")
+    });
+    expect(hintProperties.symbol).toMatchObject({
+      description: expect.stringContaining("For call_site, the callee/helper")
+    });
+    const lineRangeSchema = hintProperties.lineRange as Record<string, unknown>;
     expect(lineRangeSchema).toMatchObject({
       prefixItems: [expect.objectContaining({ type: "integer" }), expect.objectContaining({ type: "integer" })],
       items: false

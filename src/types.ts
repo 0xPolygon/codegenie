@@ -456,17 +456,21 @@ export type ToolBudget = {
   };
 };
 
+export type SurroundingContextHintKind =
+  | "enclosing_symbol"
+  | "call_site"
+  | "test"
+  | "line_range"
+  | "other";
+
 export type SurroundingContextHint = {
-  kind:
-    | "enclosing_symbol"
-    | "sibling_pattern"
-    | "call_site"
-    | "test"
-    | "config"
-    | "lifecycle"
-    | "resource_management"
-    | "authorization"
-    | "other";
+  /**
+   * `enclosing_symbol` asks Stage 6 to read the named symbol body.
+   * `call_site` asks Stage 6 to find caller/usage bodies for the named callee/helper.
+   * `line_range` names an explicit line range.
+   * Use `other` only when a mechanical retrieval mode does not fit; put semantic intent in `reason`.
+   */
+  kind: SurroundingContextHintKind;
   path?: string;
   symbol?: string;
   lineRange?: [number, number];

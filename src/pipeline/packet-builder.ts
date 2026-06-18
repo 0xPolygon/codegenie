@@ -1524,6 +1524,25 @@ async function resolveCallSiteContextHint(
   const mentions = needsRepoWideFallback ? await findCallSiteMentions(repoIndex, symbol) : scopedMentions;
   const selected = needsRepoWideFallback ? selectCallSiteCallerSymbols(mentions.results, symbol, path) : scopedSelected;
   if (selected.length === 0) {
+    const warning = callSiteHintWarning(mentions.results, symbol, path, needsRepoWideFallback ? "repo" : "same_file") ??
+      (needsRepoWideFallback ? callSiteHintWarning(scopedMentions.results, symbol, path, "same_file") : undefined);
+    if (warning !== undefined) {
+      telemetry.event({
+        stage: 6,
+        level: "warn",
+        message: "planner_context_hint_warning",
+        file: path,
+        data: {
+          path,
+          symbol,
+          kind: hint.kind,
+          resultCount: warning.resultCount,
+          searchScope: warning.searchScope,
+          warning: warning.reason,
+          reason: hint.reason
+        }
+      });
+    }
     telemetry.event({
       stage: 6,
       level: "debug",
@@ -1661,6 +1680,24 @@ function callSiteCallerScore(caller: SymbolRef, hintPath: string): number {
 
 function isSelfSymbol(caller: SymbolRef, symbol: string, hintPath: string): boolean {
   return caller.path === hintPath && bareSymbolName(caller.name) === bareSymbolName(symbol);
+}
+
+function callSiteHintWarning(
+  results: SearchResult[],
+  symbol: string,
+  hintPath: string,
+  searchScope: "same_file" | "repo"
+): { reason: string; resultCount: number; searchScope: "same_file" | "repo" } | undefined {
+  const enclosingSymbols = results
+    .map((result) => result.enclosingSymbol)
+    .filter((caller): caller is SymbolRef => caller !== undefined);
+  if (enclosingSymbols.length === 0 && results.length > 0) {
+    return { reason: "call_site_hint_without_enclosing_symbols", resultCount: results.length, searchScope };
+  }
+  if (enclosingSymbols.length > 0 && enclosingSymbols.every((caller) => isSelfSymbol(caller, symbol, hintPath))) {
+    return { reason: "call_site_hint_self_only", resultCount: results.length, searchScope };
+  }
+  return undefined;
 }
 
 function bareSymbolName(symbol: string): string {

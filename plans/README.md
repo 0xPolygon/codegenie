@@ -58,10 +58,22 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 52 | COMPLETE | Issue 52: Stage 7 Candidate Schema Repair Cost |
 | 53 | COMPLETE | Issue 53: Human-Attention Note Deduplication |
 | 54 | COMPLETE | Issue 54: Recovered Schema Telemetry |
+| 55 | PENDING | Issue 55: Treat Documentation Hunks as Intent Context |
+| 56 | PENDING | Issue 56: Open Review Questions and Answer Tracking |
+| 57 | COMPLETE | Issue 57: Resolve Call-Site Context Hints To Callers |
+| 58 | COMPLETE | Issue 58: Planner Context Hint Contract |
 
-## Deferred (watching for evidence)
+## Current Queue
 
-Observations from the trails-api run-6 review (Opus 4.8 + GPT-5.5) that we intentionally did **not** plan yet — promote to a plan only if a later eval run shows the pattern recurring:
+Recommended implementation order for remaining work:
 
-- **Structured planner hints on every packet** — keep `surroundingContextHints` structured per packet for telemetry/debug, not only embedded in prompt text.
-- **Broad risk-note propagation** — 45/73 packets carried risk notes from shared route/helper migration themes; consider risk-area shared context vs. re-litigating the same helper assumptions per packet.
+- **Issue 56 slice 1** — add planner review questions, attach them to packets, and make Stage 7 answer them with evidence traces. Keep this free-form and avoid risk taxonomies.
+- **Issue 56 verifier evidence discipline** — require inspected evidence for question-derived testing/coverage claims, especially negative claims such as "missing coverage."
+- **Issue 56 focused Stage 8 follow-up** — implement only if eval artifacts show questions are preserved but still unresolved across related packets.
+- **Issue 55** — lower priority context/reporting cleanup for documentation hunks; useful but not blocking the review-question work.
+
+## Deferred / Watch List
+
+Promote these only if later evals show recurring evidence:
+
+- **Broad risk-note propagation** — if many packets repeatedly re-litigate the same cross-cutting helper or migration assumptions, consider a bounded shared context mechanism. Avoid fixed risk categories.

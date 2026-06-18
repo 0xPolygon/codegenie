@@ -55,20 +55,30 @@ const SurroundingContextHintSchema = Type.Object(
   {
     kind: Type.Union([
       Type.Literal("enclosing_symbol"),
-      Type.Literal("sibling_pattern"),
       Type.Literal("call_site"),
       Type.Literal("test"),
-      Type.Literal("config"),
-      Type.Literal("lifecycle"),
-      Type.Literal("resource_management"),
-      Type.Literal("authorization"),
+      Type.Literal("line_range"),
       Type.Literal("other")
-    ]),
-    path: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
-    symbol: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
-    lineRange: Type.Optional(Type.Tuple([Type.Integer({ minimum: 1 }), Type.Integer({ minimum: 1 })])),
+    ], {
+      description: "Mechanical context retrieval mode: `enclosing_symbol` reads the named body, `call_site` finds caller/usage bodies for the named callee/helper, `test` targets tests, `line_range` targets explicit lines. Put semantic intent in reason."
+    }),
+    path: Type.Optional(Type.String({
+      minLength: 1,
+      maxLength: 500,
+      description: "File to inspect or use as the initial scope for the hint."
+    })),
+    symbol: Type.Optional(Type.String({
+      minLength: 1,
+      maxLength: 200,
+      description: "For enclosing_symbol, the symbol body to read. For call_site, the callee/helper whose callers or usages should be inspected."
+    })),
+    lineRange: Type.Optional(Type.Tuple([Type.Integer({ minimum: 1 }), Type.Integer({ minimum: 1 })], {
+      description: "Explicit inclusive line range to include when line-based context is more precise than a symbol hint."
+    })),
     reason: Type.String({ minLength: 1, maxLength: 1000 }),
-    expectedUse: Type.Union([Type.Literal("packet_context"), Type.Literal("tool_lookup")])
+    expectedUse: Type.Union([Type.Literal("packet_context"), Type.Literal("tool_lookup")], {
+      description: "Use packet_context for context Stage 6 should attach now; use tool_lookup for guidance the reviewer can inspect later."
+    })
   },
   { additionalProperties: false }
 );

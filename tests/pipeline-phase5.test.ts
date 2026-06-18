@@ -826,7 +826,7 @@ describe("phase 5 pipeline regressions", () => {
                 expectedUse: "tool_lookup"
               },
               {
-                kind: "config",
+                kind: "line_range",
                 path: "other.ts",
                 lineRange: [1, 1],
                 reason: "out of packet scope",
@@ -1148,6 +1148,17 @@ describe("phase 5 pipeline regressions", () => {
       message: "packet_context_call_site_hint_empty",
       file: "quote.ts",
       data: expect.objectContaining({ symbol: "scaleAmount", resultCount: 1, includedCount: 0 })
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "warn",
+      message: "planner_context_hint_warning",
+      file: "quote.ts",
+      data: expect.objectContaining({
+        kind: "call_site",
+        symbol: "scaleAmount",
+        warning: "call_site_hint_self_only"
+      })
     }));
   });
 
@@ -3396,6 +3407,20 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(dossier.runId).toBe("artifact-run-id");
     expect(artifacts.get("planner-dossier.json")).toMatchObject({ runId: "artifact-run-id" });
+  });
+
+  it("includes the context hint contract in planner prompts", () => {
+    const promptBuilder = createPromptBuilder(fakeLensRegistry());
+    const prompt = promptBuilder.buildPlannerPrompt({ dossier: fakeDossier(["app.ts"]), lenses: [], skills: [] }).prompt;
+
+    expect(prompt).toContain("Context hint contract");
+    expect(prompt).toContain("mechanical retrieval mode");
+    expect(prompt).toContain("kind:\"enclosing_symbol\"");
+    expect(prompt).toContain("kind:\"call_site\"");
+    expect(prompt).toContain("kind:\"line_range\"");
+    expect(prompt).toContain("symbol names the callee/helper/API whose callers or usages should be inspected");
+    expect(prompt).toContain("do not use call_site when the desired context is that symbol's own body");
+    expect(prompt).toContain("put semantic intent in reason");
   });
 
   it("projects planner dossiers as compact routing input while preserving routeable hunks", () => {

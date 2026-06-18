@@ -19,6 +19,12 @@ This was not caused by missing lenses. Runs 2 and 3 used explicit `core/code-rev
 
 The deeper issue is that the planner can identify concrete concerns, but the pipeline does not preserve them as review obligations that must be answered. A concern can be partially noticed by several packet reviewers, then disappear because no single packet produces a strong direct finding.
 
+Follow-up runs after Issue 57 add a second lesson. Run 4 passed the eval budget by publishing a testing-coverage finding, but the finding's negative evidence was weak: the repository already contained several cross-decimal tests, so the claim that coverage was absent appears false or at least insufficiently verified. Run 5, with the same code version, used the new call-site context path for `scaleAmount` and produced a stronger exact-output truncation finding plus a narrower test-gap finding. That suggests Issue 57 is directionally useful, but review-question handling still needs evidence discipline:
+
+- a question cannot be answered with a bare assertion,
+- a "missing test" or "not covered" answer must cite inspected tests and the precise remaining gap,
+- conflicting packet answers should stay unresolved or go to a focused follow-up instead of becoming a final finding by accident.
+
 ## Goal
 
 Carry concrete planner questions through the review pipeline until they are answered, converted into a candidate finding, or explicitly left unresolved for a focused follow-up.
@@ -33,6 +39,8 @@ The desired behavior is:
 
 This should improve recall for cross-file and cross-symbol concerns without adding repo-specific rules or weakening the verifier.
 
+It should also reduce false positives for negative evidence claims. If a reviewer says "this behavior is untested" or "no coverage exists," codeninja should know which tests were inspected, what they cover, and what exact behavior remains untested.
+
 ## Non-Goals
 
 - Do not introduce a fixed `riskKind` / `riskThreadKind` enum.
@@ -40,6 +48,7 @@ This should improve recall for cross-file and cross-symbol concerns without addi
 - Do not make every planner question a finding.
 - Do not publish vague unresolved questions by default.
 - Do not loosen verification standards.
+- Do not keep "missing coverage" findings based only on a reviewer assertion.
 - Do not add broad whole-PR rereviews.
 - Do not make Stage 8 run for every PR.
 - Do not route planner questions through `FindingCategory`, `PromotionClass`, or keyword risk buckets before deciding whether the question still needs an answer.
@@ -153,6 +162,13 @@ Update packet-review instructions:
 
 Require the answer to **show its work, not assert a verdict.** For a relationship/contract question, the reviewer must produce a concrete evidence trace before concluding: values should trace requested -> transformed -> reported/validated, permission questions should trace actor -> check -> protected operation, lifecycle questions should trace state/event -> side effect -> cleanup, and test questions should trace old coverage -> new coverage -> still-live behavior boundary. A glib "yes, the contract holds" is hard to produce when it is false once the reviewer must write the trace. Put the trace in `AnsweredReviewQuestion.evidence`; an `answered_no_issue` outcome without a trace should be treated as a non-answer.
 
+For testing and coverage questions, require stricter negative-evidence handling:
+
+- If the answer claims coverage is missing, cite the inspected test file(s), test symbol(s), or search/read result that supports the absence.
+- Distinguish "no tests exist" from "tests exist but do not cover this specific branch/value/contract."
+- If related tests exist but the packet cannot inspect enough of them, mark the answer `partial` instead of producing a confident missing-test finding.
+- If a production packet and a test packet disagree about coverage, preserve the disagreement for Stage 8 or verification instead of resolving it locally.
+
 Add structured output if needed:
 
 ```ts
@@ -162,6 +178,7 @@ type AnsweredReviewQuestion = {
   confidence: "high" | "medium" | "low"
   outcome: "answered_no_issue" | "candidate_finding" | "partial" | "not_applicable"
   evidence: Array<{ path: string; lines?: string; whyRelevant: string }>
+  evidenceTrace?: string
 }
 ```
 
@@ -181,6 +198,8 @@ Build a follow-up only when:
 - Stage 7 produced partial or conflicting answers,
 - no direct candidate finding already covers the question,
 - the question points to concrete files/symbols and can be answered with a small packet.
+
+Testing/coverage questions should trigger follow-up when one packet claims missing coverage while another packet or likely-test metadata points at relevant tests. The follow-up should compare the claim against the actual test bodies and either narrow the finding to the uncovered behavior or answer no issue.
 
 Stage 8 input should be a focused bundle:
 
@@ -214,6 +233,13 @@ The verifier should not keep a finding because a question exists. It should keep
 
 Do not add verifier exceptions based on review-question type. If a question-derived candidate uses a normal finding category, that category should help presentation and routing only; the verifier decision should rest on evidence, anchor validity, concrete failure mode, and false-positive risk.
 
+For question-derived testing findings, add a specific evidence rule without changing the publication threshold:
+
+- A claim that tests are absent, incomplete, or no longer cover a behavior must cite inspected test evidence.
+- If relevant tests are discoverable in packet metadata, likely-test hints, or repository search but the candidate did not inspect them, the verifier should revise to a narrower unresolved note or reject.
+- If tests exist, the verifier must compare the asserted gap to those tests' actual assertions before keeping the finding.
+- The verifier should reject broad "missing test" claims when the only evidence is that the production reviewer did not see the test.
+
 ### Stage 10: Composition and Artifacts
 
 Record question lifecycle in artifacts:
@@ -236,6 +262,7 @@ For debug/eval, add concise metrics:
 - converted to candidates,
 - verified findings,
 - unresolved/suppressed.
+- test-coverage questions with insufficient evidence rejected or left unresolved.
 
 ## Likely Files
 
@@ -260,17 +287,20 @@ For debug/eval, add concise metrics:
 3. Attach questions to packets deterministically and boundedly.
 4. Update Stage 7 instructions and schema handling so packet reviewers answer attached questions, convert them to candidates, or mark them partial/not applicable.
 5. Write question lifecycle artifacts and metrics.
-6. Rerun evals and inspect whether the right questions survive even when no final finding is produced.
-7. Add Stage 8 follow-up only if partial/conflicting question answers remain a real recall gap after steps 1-6.
+6. Add verifier evidence discipline for question-derived testing/coverage findings so negative coverage claims require inspected test evidence.
+7. Rerun evals and inspect whether the right questions survive even when no final finding is produced.
+8. Add Stage 8 follow-up only if partial/conflicting question answers remain a real recall gap after steps 1-7.
 
 ## Acceptance Criteria
 
 - Planner can emit free-form review questions without a fixed risk taxonomy.
 - Relevant questions are attached to packets deterministically and boundedly.
 - Packet review output records whether attached questions were answered, partially answered, or converted to findings.
+- Packet question answers include an evidence trace when they assert no issue or missing coverage.
 - First implementation can preserve and answer review questions without Stage 8.
 - When implemented, Stage 8 runs for concrete unresolved multi-packet questions and stays idle for vague or already-answered questions.
 - Verification remains strict and does not publish speculative questions.
+- Question-derived testing findings are not kept without inspected test evidence.
 - Artifacts make it clear when a question was dropped, answered, promoted, or converted into a finding.
 - Question disposition is not gated by `FindingCategory`, `PromotionClass`, or regex risk-profile classification.
 - No target-repo names or domain-specific keyword rules are introduced.
@@ -283,7 +313,10 @@ Add focused tests:
 - Packet builder attaches a question by file/symbol overlap.
 - Packet builder does not attach unrelated questions to every packet.
 - Stage 7 no-finding output can answer an attached question.
+- Stage 7 cannot mark a testing/coverage question fully answered without citing inspected evidence.
 - Stage 7 partial answers are preserved in artifacts before any Stage 8 follow-up work is added.
+- A question-derived missing-test finding is rejected or left unresolved when related tests exist but were not inspected.
+- A question-derived missing-test finding can be kept when inspected tests exist but provably miss the specific behavior.
 - If Stage 8 follow-up is implemented, Stage 7 partial answer can trigger a Stage 8 follow-up.
 - A concrete open question with no matching built-in category can still remain tracked and trigger Stage 8 when evidence is partial/conflicting.
 - A review question is not converted into a promoted finding merely because it matches a category keyword.

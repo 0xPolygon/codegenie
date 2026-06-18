@@ -123,6 +123,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         injectionInstruction(),
         "Build a review plan. Select only enabled lenses that have concrete evidence in the diff. Emit coverage entries only for hunks that need non-default coverage, specific lenses or context hints, or an explicit skip. Omitted reviewable hunks are reviewed later at normal coverage with default core/language lenses.",
         "The planner-dossier is a routing projection, not the full review packet. Compact hunks still have stable hunk IDs and line ranges; request deeper coverage when compact metadata suggests risk instead of trying to prove bugs in Stage 5.",
+        "Context hint contract: choose a mechanical retrieval mode, not a risk category. Use kind:\"enclosing_symbol\" when you want Stage 6 to read a known function/method/type/test body. Use kind:\"call_site\" only when symbol names the callee/helper/API whose callers or usages should be inspected; do not use call_site when the desired context is that symbol's own body. Use kind:\"test\" for relevant test symbols, kind:\"line_range\" for explicit lines, and put semantic intent in reason.",
         renderLensList(lenses),
         "Available skill summaries:\n" + projection.text,
         dossierBlock,

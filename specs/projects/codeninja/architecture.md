@@ -440,13 +440,9 @@ type DiffUnderstanding = {
 type SurroundingContextHint = {
   kind:
     | "enclosing_symbol"
-    | "sibling_pattern"
     | "call_site"
     | "test"
-    | "config"
-    | "lifecycle"
-    | "resource_management"
-    | "authorization"
+    | "line_range"
     | "other"
   path?: string
   symbol?: string
