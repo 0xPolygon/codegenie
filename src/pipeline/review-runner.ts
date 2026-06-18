@@ -1303,6 +1303,7 @@ function buildReviewQuestionLifecycle(input: ReviewQuestionLifecycleInput): Reco
   );
 
   return {
+    riskAreaDispositions: plan.riskAreaDispositions ?? [],
     questions: (plan.reviewQuestions ?? []).map((question) => ({
       ...question,
       attachedPackets: packetsByQuestion.get(question.id) ?? [],
@@ -1319,6 +1320,13 @@ function buildReviewQuestionLifecycle(input: ReviewQuestionLifecycleInput): Reco
       resolvedHints: systemReview.resolvedHints.filter((hint) => hint.question === question.question)
     })),
     metrics: {
+      riskAreas: plan.riskAreas.length,
+      representedRiskAreas: (plan.riskAreaDispositions ?? []).filter((disposition) =>
+        disposition.disposition === "represented_by_question" || disposition.disposition === "synthesized_question"
+      ).length,
+      omittedRiskAreas: (plan.riskAreaDispositions ?? []).filter((disposition) =>
+        disposition.disposition !== "represented_by_question" && disposition.disposition !== "synthesized_question"
+      ).length,
       emitted: plan.reviewQuestions?.length ?? 0,
       attachedPackets: packets.filter((packet) => (packet.reviewQuestions ?? []).length > 0).length,
       attachments: packets.reduce((sum, packet) => sum + (packet.reviewQuestions?.length ?? 0), 0),

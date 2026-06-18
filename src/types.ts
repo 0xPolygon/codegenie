@@ -682,6 +682,21 @@ export type ReviewQuestion = {
   evidenceHint?: string;
 };
 
+export type RiskAreaDisposition = {
+  area: string;
+  files: string[];
+  disposition:
+    | "represented_by_question"
+    | "synthesized_question"
+    | "omitted_duplicate"
+    | "omitted_vague"
+    | "omitted_no_relevant_packet"
+    | "omitted_synthesis_failed"
+    | "omitted_question_cap";
+  reason: string;
+  questionIds: string[];
+};
+
 export type PacketReviewQuestion = ReviewQuestion & {
   relevanceReason: string;
 };
@@ -696,6 +711,7 @@ export type ReviewPlan = {
     suggestedLenses: string[];
   }>;
   reviewQuestions?: ReviewQuestion[];
+  riskAreaDispositions?: RiskAreaDisposition[];
   coverage: HunkCoverageDecision[];
   partialReview?: {
     isPartial: boolean;

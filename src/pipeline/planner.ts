@@ -27,6 +27,7 @@ import type {
   ReviewPriority,
   ReviewQuestion,
   ReviewPlan,
+  RiskAreaDisposition,
   StaticSignal
 } from "../types.js";
 import { isFatalLlmError } from "./pipeline-utils.js";
@@ -715,6 +716,7 @@ function mergeChunkPlans(
 
   const riskAreas = dedupeByJson(plans.flatMap((plan) => plan.riskAreas));
   const reviewQuestions = dedupeReviewQuestions(plans.flatMap((plan) => plan.reviewQuestions ?? [])).slice(0, MAX_REVIEW_QUESTIONS);
+  const riskAreaDispositions = dedupeByJson(plans.flatMap((plan) => plan.riskAreaDispositions ?? []));
   const behaviors = dedupe(
     plans.map((plan, index) => {
       const root = chunks[index]?.prompt.compaction.chunkRoot ?? `chunk-${String(index + 1)}`;
@@ -732,6 +734,7 @@ function mergeChunkPlans(
     ...(plans[0]?.intentSignals !== undefined ? { intentSignals: plans[0].intentSignals } : {}),
     riskAreas,
     ...(reviewQuestions.length > 0 ? { reviewQuestions } : {}),
+    ...(riskAreaDispositions.length > 0 ? { riskAreaDispositions } : {}),
     coverage,
     ...(partialPlans.length > 0
       ? {
@@ -1114,19 +1117,21 @@ function validatePlan(
     ...area,
     suggestedLenses: area.suggestedLenses.filter((lens) => enabledLensIds.has(lens))
   }));
-  const reviewQuestions = ensurePlannerReviewQuestions({
+  const questionResult = ensurePlannerReviewQuestions({
     submitted: submittedReviewQuestions,
     riskAreas,
     dossier,
     coverageByHunk,
     telemetry
   });
+  const reviewQuestions = questionResult.questions;
 
   return {
     diffUnderstanding: plan.diffUnderstanding,
     ...(dossier.intentSignals !== undefined ? { intentSignals: dossier.intentSignals } : {}),
     riskAreas,
     ...(reviewQuestions.length > 0 ? { reviewQuestions } : {}),
+    ...(questionResult.riskAreaDispositions.length > 0 ? { riskAreaDispositions: questionResult.riskAreaDispositions } : {}),
     coverage: coverageOrder.flatMap((hunkId) => {
       const decision = coverageByHunk.get(hunkId);
       return decision === undefined ? [] : [decision];
@@ -1236,127 +1241,277 @@ function ensurePlannerReviewQuestions(input: {
   dossier: PlannerDossier;
   coverageByHunk: Map<string, HunkCoverageDecision>;
   telemetry: TelemetryRecorder;
-}): ReviewQuestion[] {
-  if (input.submitted.length > 0) {
-    input.telemetry.event({
-      stage: 5,
-      level: "info",
-      message: "planner_review_question_synthesis_skipped",
-      data: {
-        reason: "planner_questions_present",
-        existingQuestions: input.submitted.length,
-        riskAreas: input.riskAreas.length
-      }
-    });
-    return input.submitted;
-  }
+}): { questions: ReviewQuestion[]; riskAreaDispositions: RiskAreaDisposition[] } {
   if (input.riskAreas.length === 0) {
     input.telemetry.event({
       stage: 5,
       level: "info",
       message: "planner_review_question_synthesis_skipped",
-      data: { reason: "no_risk_areas", existingQuestions: 0, riskAreas: 0 }
+      data: {
+        reason: "no_risk_areas",
+        existingQuestions: input.submitted.length,
+        riskAreas: 0
+      }
     });
-    return [];
+    return { questions: input.submitted, riskAreaDispositions: [] };
   }
-  if (input.dossier.totals.hunks < 2 && input.coverageByHunk.size < 2) {
+
+  const coverageEligible = input.dossier.totals.hunks >= 2 || input.coverageByHunk.size >= 2;
+  const accounted = accountRiskAreas({
+    submitted: input.submitted,
+    riskAreas: input.riskAreas,
+    dossier: input.dossier,
+    coverageByHunk: input.coverageByHunk
+  });
+  if (!coverageEligible) {
+    const riskAreaDispositions = [
+      ...accounted.dispositions,
+      ...accounted.synthesisCandidates.map((candidate) =>
+        riskAreaDisposition(candidate.area, "omitted_no_relevant_packet", "review too small for synthesized obligations", [])
+      )
+    ];
     input.telemetry.event({
       stage: 5,
       level: "info",
       message: "planner_review_question_synthesis_skipped",
       data: {
         reason: "too_small",
-        existingQuestions: 0,
+        existingQuestions: input.submitted.length,
         riskAreas: input.riskAreas.length,
         hunks: input.dossier.totals.hunks,
         coverageDecisions: input.coverageByHunk.size
       }
     });
-    return [];
+    return {
+      questions: input.submitted,
+      riskAreaDispositions
+    };
   }
 
-  const synthesized = synthesizeReviewQuestionsFromRiskAreas(input.riskAreas, input.dossier, input.coverageByHunk);
+  const remainingSlots = Math.max(0, Math.min(MAX_SYNTHESIZED_REVIEW_QUESTIONS, MAX_REVIEW_QUESTIONS - input.submitted.length));
+  const synthesized = accounted.synthesisCandidates
+    .slice(0, remainingSlots)
+    .map((candidate) => candidate.question);
   const normalized = normalizeReviewQuestions(synthesized, input.dossier, input.telemetry);
+  const normalizedByArea = new Map<string, ReviewQuestion>();
+  for (const question of normalized) {
+    const source = accounted.synthesisCandidates.find((candidate) => sameSynthesizedQuestion(candidate.question, question));
+    if (source !== undefined) {
+      normalizedByArea.set(riskAreaKey(source.area.area, source.area.files), question);
+    }
+  }
+  const selectedCandidateKeys = new Set(accounted.synthesisCandidates.slice(0, remainingSlots).map((candidate) => riskAreaKey(candidate.area.area, candidate.area.files)));
+  const dispositionByArea = new Map<string, RiskAreaDisposition>();
+  for (const disposition of accounted.dispositions) {
+    dispositionByArea.set(riskAreaKey(disposition.area, disposition.files), disposition);
+  }
+  for (const candidate of accounted.synthesisCandidates) {
+    const key = riskAreaKey(candidate.area.area, candidate.area.files);
+    const question = normalizedByArea.get(key);
+    if (question !== undefined) {
+      dispositionByArea.set(key, riskAreaDisposition(candidate.area, "synthesized_question", "synthesized from unrepresented material risk area", [question.id]));
+      continue;
+    }
+    if (!selectedCandidateKeys.has(key)) {
+      dispositionByArea.set(key, riskAreaDisposition(candidate.area, "omitted_question_cap", "review question cap reached", []));
+      continue;
+    }
+    dispositionByArea.set(key, riskAreaDisposition(candidate.area, "omitted_synthesis_failed", "synthesized question failed normalization", []));
+  }
+  const riskAreaDispositions = [...dispositionByArea.values()];
+  const questions = dedupeReviewQuestions([...input.submitted, ...normalized]).slice(0, MAX_REVIEW_QUESTIONS);
+
+  const represented = riskAreaDispositions.filter((disposition) =>
+    disposition.disposition === "represented_by_question" || disposition.disposition === "synthesized_question"
+  );
+  const omitted = riskAreaDispositions.filter((disposition) =>
+    disposition.disposition !== "represented_by_question" && disposition.disposition !== "synthesized_question"
+  );
+
   if (normalized.length === 0) {
     input.telemetry.event({
       stage: 5,
       level: "info",
       message: "planner_review_question_synthesis_skipped",
       data: {
-        reason: "no_material_file_scoped_risk_area",
-        existingQuestions: 0,
+        reason: input.submitted.length > 0 ? "no_unrepresented_material_risk_area" : "no_material_file_scoped_risk_area",
+        existingQuestions: input.submitted.length,
         riskAreas: input.riskAreas.length,
-        candidates: synthesized.length
+        candidates: accounted.synthesisCandidates.length,
+        representedRiskAreas: represented.map((area) => area.area),
+        omittedRiskAreas: omitted.map((area) => ({ area: area.area, disposition: area.disposition, reason: area.reason }))
       }
     });
-    return [];
+    return { questions, riskAreaDispositions };
   }
+
   input.telemetry.event({
     stage: 5,
     level: "info",
     message: "planner_review_questions_synthesized",
     data: {
-      existingQuestions: 0,
+      existingQuestions: input.submitted.length,
       riskAreas: input.riskAreas.length,
       synthesized: normalized.length,
       maxQuestions: MAX_SYNTHESIZED_REVIEW_QUESTIONS,
-      sourceRiskAreas: input.riskAreas
-        .map((area) => normalizeWhitespace(area.area))
-        .filter((area) => area.length > 0)
-        .slice(0, MAX_SYNTHESIZED_REVIEW_QUESTIONS)
+      sourceRiskAreas: normalized
+        .map((question) => riskAreaDispositions.find((disposition) => disposition.questionIds.includes(question.id))?.area)
+        .filter((area): area is string => area !== undefined),
+      representedRiskAreas: represented.map((area) => area.area),
+      omittedRiskAreas: omitted.map((area) => ({ area: area.area, disposition: area.disposition, reason: area.reason }))
     }
   });
-  return normalized;
+  return { questions, riskAreaDispositions };
 }
 
-function synthesizeReviewQuestionsFromRiskAreas(
-  riskAreas: ReviewPlan["riskAreas"],
-  dossier: PlannerDossier,
-  coverageByHunk: Map<string, HunkCoverageDecision>
-): ReviewQuestion[] {
-  const knownFiles = new Set(dossier.files.flatMap((file) => [file.path, ...(file.oldPath !== undefined ? [file.oldPath] : [])]));
-  const decisions = [...coverageByHunk.values()];
-  return riskAreas
-    .map((area, index) => {
-      const text = normalizeWhitespace(area.area);
-      const reason = normalizeWhitespace(area.reason);
-      const files = cleanStrings(area.files.map(stripLocationSuffix).filter((file) => knownFiles.has(file)));
-      if (text.length === 0 || reason.length === 0 || files.length === 0 || isVagueRiskArea(text, reason)) {
-        return undefined;
-      }
-      const overlappingDecisions = decisions.filter((decision) => files.includes(stripLocationSuffix(decision.path)));
-      const coverageScore = overlappingDecisions.reduce((sum, decision) => sum + (decision.coverage === "deep" ? 3 : decision.coverage === "normal" ? 2 : 1), 0);
-      const symbols = cleanStrings([
-        ...overlappingDecisions.flatMap((decision) =>
-          decision.surroundingContextHints.flatMap((hint) => hint.symbol === undefined ? [] : [hint.symbol])
-        ),
-        ...dossier.files
-          .filter((file) => files.includes(file.path) || (file.oldPath !== undefined && files.includes(file.oldPath)))
-          .flatMap((file) => file.hunks)
-          .flatMap((hunk) => [
-            hunk.symbolFacts?.enclosingSymbol,
-            hunk.symbolFacts?.signature
-          ])
-          .filter((value): value is string => value !== undefined && value.trim().length > 0)
-      ]).slice(0, MAX_REVIEW_QUESTION_SYMBOLS);
-      const questionText = `Does the changed code preserve the relationship or contract described by "${truncate(text, 140)}" across the relevant files? Trace the changed input/state, transformation/check, and downstream output/consumer before answering.`;
-      const question: ReviewQuestion = {
-        id: normalizeQuestionId(`q-risk-${index + 1}-${text}`, questionText, index + 1),
-        question: questionText,
-        whyItMatters: truncate(reason, 1000),
-        files: files.slice(0, MAX_REVIEW_QUESTION_FILES),
-        symbols,
-        evidenceHint: "Answer from changed hunks plus the nearest relevant surrounding context. Emit a candidate finding if the trace exposes a concrete changed-code failure mode."
-      };
-      return {
-        question,
-        coverageScore
-      };
-    })
-    .filter((entry): entry is { question: ReviewQuestion; coverageScore: number } => entry !== undefined)
+function accountRiskAreas(input: {
+  submitted: ReviewQuestion[];
+  riskAreas: ReviewPlan["riskAreas"];
+  dossier: PlannerDossier;
+  coverageByHunk: Map<string, HunkCoverageDecision>;
+}): { dispositions: RiskAreaDisposition[]; synthesisCandidates: Array<{ area: ReviewPlan["riskAreas"][number]; question: ReviewQuestion; coverageScore: number }> } {
+  const knownFiles = new Set(input.dossier.files.flatMap((file) => [file.path, ...(file.oldPath !== undefined ? [file.oldPath] : [])]));
+  const decisions = [...input.coverageByHunk.values()];
+  const dispositions: RiskAreaDisposition[] = [];
+  const candidates: Array<{ area: ReviewPlan["riskAreas"][number]; question: ReviewQuestion; coverageScore: number }> = [];
+  const representedQuestionByRisk = new Map<string, string>();
+
+  input.riskAreas.forEach((area, index) => {
+    const text = normalizeWhitespace(area.area);
+    const reason = normalizeWhitespace(area.reason);
+    const files = cleanStrings(area.files.map(stripLocationSuffix).filter((file) => knownFiles.has(file)));
+    const normalizedArea: ReviewPlan["riskAreas"][number] = {
+      area: text,
+      reason,
+      files,
+      suggestedLenses: area.suggestedLenses
+    };
+    const key = riskAreaKey(text, files);
+
+    if (text.length === 0 || reason.length === 0 || isVagueRiskArea(text, reason)) {
+      dispositions.push(riskAreaDisposition(normalizedArea, "omitted_vague", "risk area was empty or too vague to become an obligation", []));
+      return;
+    }
+    if (files.length === 0) {
+      dispositions.push(riskAreaDisposition(normalizedArea, "omitted_no_relevant_packet", "risk area had no changed file overlap", []));
+      return;
+    }
+
+    const representedBy = input.submitted.find((question) => questionRepresentsRiskArea(question, normalizedArea));
+    if (representedBy !== undefined) {
+      dispositions.push(riskAreaDisposition(normalizedArea, "represented_by_question", "covered by planner-authored review question", [representedBy.id]));
+      representedQuestionByRisk.set(key, representedBy.id);
+      return;
+    }
+
+    const duplicateOf = [...representedQuestionByRisk.entries()].find(([otherKey]) => riskAreaTextOverlap(otherKey, key) >= 0.72);
+    if (duplicateOf !== undefined) {
+      dispositions.push(riskAreaDisposition(normalizedArea, "omitted_duplicate", "covered by a similar represented risk area", [duplicateOf[1]]));
+      return;
+    }
+
+    const overlappingDecisions = decisions.filter((decision) => files.includes(stripLocationSuffix(decision.path)));
+    const coverageScore = overlappingDecisions.reduce((sum, decision) => sum + (decision.coverage === "deep" ? 3 : decision.coverage === "normal" ? 2 : decision.coverage === "light" ? 1 : 0), 0);
+    if (coverageScore <= 0) {
+      dispositions.push(riskAreaDisposition(normalizedArea, "omitted_no_relevant_packet", "risk area did not overlap a reviewable packet", []));
+      return;
+    }
+
+    const question = reviewQuestionFromRiskArea(normalizedArea, index, overlappingDecisions, input.dossier);
+    candidates.push({ area: normalizedArea, question, coverageScore });
+  });
+
+  return {
+    dispositions,
+    synthesisCandidates: candidates
     .sort((a, b) => b.coverageScore - a.coverageScore || a.question.id.localeCompare(b.question.id))
-    .slice(0, MAX_SYNTHESIZED_REVIEW_QUESTIONS)
-    .map((entry) => entry.question);
+  };
+}
+
+function reviewQuestionFromRiskArea(
+  area: ReviewPlan["riskAreas"][number],
+  index: number,
+  overlappingDecisions: HunkCoverageDecision[],
+  dossier: PlannerDossier
+): ReviewQuestion {
+  const symbols = cleanStrings([
+    ...overlappingDecisions.flatMap((decision) =>
+      decision.surroundingContextHints.flatMap((hint) => hint.symbol === undefined ? [] : [hint.symbol])
+    ),
+    ...dossier.files
+      .filter((file) => area.files.includes(file.path) || (file.oldPath !== undefined && area.files.includes(file.oldPath)))
+      .flatMap((file) => file.hunks)
+      .flatMap((hunk) => [
+        hunk.symbolFacts?.enclosingSymbol,
+        hunk.symbolFacts?.signature
+      ])
+      .filter((value): value is string => value !== undefined && value.trim().length > 0)
+  ]).slice(0, MAX_REVIEW_QUESTION_SYMBOLS);
+  const questionText = `Does the changed code preserve the relationship or contract described by "${truncate(area.area, 140)}" across the relevant files? Trace the changed input/state, transformation/check, and downstream output/consumer before answering.`;
+  return {
+    id: normalizeQuestionId(`q-risk-${index + 1}-${area.area}`, questionText, index + 1),
+    question: questionText,
+    whyItMatters: truncate(area.reason, 1000),
+    files: area.files.slice(0, MAX_REVIEW_QUESTION_FILES),
+    symbols,
+    evidenceHint: "Answer from changed hunks plus the nearest relevant surrounding context. Emit a candidate finding if the trace exposes a concrete changed-code failure mode."
+  };
+}
+
+function questionRepresentsRiskArea(question: ReviewQuestion, area: ReviewPlan["riskAreas"][number]): boolean {
+  const questionFiles = new Set(question.files.map(stripLocationSuffix));
+  const fileOverlap = area.files.some((file) => questionFiles.has(stripLocationSuffix(file)));
+  if (!fileOverlap) {
+    return false;
+  }
+  const riskText = normalizeQuestionForDedupe(`${area.area} ${area.reason}`);
+  const questionText = normalizeQuestionForDedupe(`${question.question} ${question.whyItMatters}`);
+  return riskAreaTextOverlap(riskText, questionText) >= 0.28;
+}
+
+function riskAreaDisposition(
+  area: Pick<ReviewPlan["riskAreas"][number], "area" | "files">,
+  disposition: RiskAreaDisposition["disposition"],
+  reason: string,
+  questionIds: string[]
+): RiskAreaDisposition {
+  return {
+    area: normalizeWhitespace(area.area),
+    files: cleanStrings(area.files.map(stripLocationSuffix)),
+    disposition,
+    reason,
+    questionIds: cleanStrings(questionIds)
+  };
+}
+
+function riskAreaKey(area: string, files: string[]): string {
+  return `${normalizeQuestionForDedupe(area)}|${cleanStrings(files.map(stripLocationSuffix)).sort().join(",")}`;
+}
+
+function sameSynthesizedQuestion(a: ReviewQuestion, b: ReviewQuestion): boolean {
+  return a.question === b.question &&
+    JSON.stringify(cleanStrings(a.files).sort()) === JSON.stringify(cleanStrings(b.files).sort()) &&
+    a.whyItMatters === b.whyItMatters;
+}
+
+function riskAreaTextOverlap(left: string, right: string): number {
+  const leftTokens = meaningfulTokens(left);
+  const rightTokens = meaningfulTokens(right);
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return 0;
+  }
+  let overlap = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+  return overlap / Math.min(leftTokens.size, rightTokens.size);
+}
+
+function meaningfulTokens(value: string): Set<string> {
+  const stop = new Set(["the", "and", "for", "with", "that", "this", "from", "into", "still", "does", "code", "changed", "change", "across", "relevant", "files", "file", "preserve", "relationship", "contract", "described", "before", "after", "review", "question", "trace"]);
+  return new Set(normalizeQuestionForDedupe(value).split(" ").filter((token) => token.length >= 4 && !stop.has(token)));
 }
 
 function isVagueRiskArea(area: string, reason: string): boolean {

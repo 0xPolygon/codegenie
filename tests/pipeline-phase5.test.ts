@@ -4419,6 +4419,94 @@ describe("phase 5 pipeline regressions", () => {
     ]));
   });
 
+  it("synthesizes an unrepresented material risk area even when planner questions exist", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+        events.push(event);
+      }
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          diffUnderstanding: { declaredIntent: "question fallback", inferredBehavior: "question fallback" },
+          riskAreas: [
+            {
+              area: "Authorization boundary consistency",
+              reason: "The changed handler computes a permission value before enforcing access.",
+              files: ["auth.ts"],
+              suggestedLenses: ["core/code-review"]
+            },
+            {
+              area: "Response amount consistency",
+              reason: "The changed response path transforms a stored value before reporting it to callers.",
+              files: ["response.ts"],
+              suggestedLenses: ["core/code-review"]
+            }
+          ],
+          reviewQuestions: [{
+            id: "q-auth",
+            question: "Does authorization boundary consistency still hold when the permission value is computed before enforcing access?",
+            whyItMatters: "The changed handler must preserve the permission enforcement relationship.",
+            files: ["auth.ts"],
+            symbols: []
+          }],
+          coverage: [
+            { hunkId: "h1", path: "auth.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review authorization" },
+            { hunkId: "h2", path: "response.ts", coverage: "deep", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review response output" }
+          ]
+        }) as T
+    };
+
+    const result = await runPlanner(fakeDossier(["auth.ts", "response.ts"]), config(), telemetry, {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{
+        id: "core/code-review",
+        title: "Core",
+        description: "core",
+        skillIds: [],
+        enabledByDefault: true,
+        enabled: true,
+        languages: []
+      }],
+      skills: []
+    });
+
+    expect(result.plan.reviewQuestions).toEqual([
+      expect.objectContaining({ id: "q-auth" }),
+      expect.objectContaining({
+        id: expect.stringMatching(/^q-risk-2-/u),
+        files: ["response.ts"],
+        question: expect.stringContaining("Response amount consistency")
+      })
+    ]);
+    expect(result.plan.riskAreaDispositions).toEqual([
+      expect.objectContaining({
+        area: "Authorization boundary consistency",
+        disposition: "represented_by_question",
+        questionIds: ["q-auth"]
+      }),
+      expect.objectContaining({
+        area: "Response amount consistency",
+        disposition: "synthesized_question",
+        questionIds: [expect.stringMatching(/^q-risk-2-/u)]
+      })
+    ]);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 5,
+        message: "planner_review_questions_synthesized",
+        data: expect.objectContaining({
+          existingQuestions: 1,
+          synthesized: 1,
+          representedRiskAreas: expect.arrayContaining(["Authorization boundary consistency", "Response amount consistency"])
+        })
+      })
+    ]));
+  });
+
   it("does not synthesize review questions for tiny or unscoped plans", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const telemetry = {
@@ -6964,7 +7052,12 @@ describe("phase 5 pipeline regressions", () => {
         if (request.stage === 5) {
           return {
             diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "handler changes value" },
-            riskAreas: [],
+            riskAreas: [{
+              area: "Handler return value contract",
+              reason: "The changed handler return value is caller-visible.",
+              files: ["app.ts"],
+              suggestedLenses: ["core/code-review"]
+            }],
             reviewQuestions: [{
               id: "q-contract",
               question: "Does handler still return the caller-visible value expected by callers?",
@@ -7031,8 +7124,16 @@ describe("phase 5 pipeline regressions", () => {
         generatedFindings: Array<{ verification?: { verdict: string }; finalDisposition: string }>;
         finalFindings: Array<{ publication: string }>;
       }>;
-      metrics: { verifiedQuestionFindings: number; finalQuestionFindings: number };
+      riskAreaDispositions: Array<{ area: string; disposition: string; questionIds: string[] }>;
+      metrics: { riskAreas: number; representedRiskAreas: number; omittedRiskAreas: number; verifiedQuestionFindings: number; finalQuestionFindings: number };
     };
+    expect(lifecycle.riskAreaDispositions).toEqual([
+      expect.objectContaining({
+        area: "Handler return value contract",
+        disposition: "represented_by_question",
+        questionIds: ["q-contract"]
+      })
+    ]);
     expect(lifecycle.questions[0]).toMatchObject({
       id: "q-contract",
       answers: [expect.objectContaining({ outcome: "candidate_finding" })],
@@ -7041,6 +7142,9 @@ describe("phase 5 pipeline regressions", () => {
     });
     expect(lifecycle.questions[0]?.generatedFindings[0]?.finalDisposition).toBe("summary-only");
     expect(lifecycle.metrics).toMatchObject({
+      riskAreas: 1,
+      representedRiskAreas: 1,
+      omittedRiskAreas: 0,
       verifiedQuestionFindings: 1,
       finalQuestionFindings: 1
     });
