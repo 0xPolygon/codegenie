@@ -511,6 +511,27 @@ function normalizeAnsweredQuestions(
       });
     }
 
+    if (
+      outcome === "answered_no_issue" &&
+      !noIssueAnswerCoversQuestionScope(answerText, attached, packet, evidence, evidenceTrace)
+    ) {
+      outcome = "partial";
+      confidence = confidence === "high" ? "medium" : confidence;
+      telemetry.event({
+        stage: 7,
+        level: "warn",
+        message: "review_question_answer_downgraded",
+        packetId: packet.id,
+        workerId,
+        data: {
+          questionId: attached.id,
+          reason: "answered_no_issue_incomplete_question_scope",
+          ownershipStatus: attached.ownershipStatus,
+          role: attached.role
+        }
+      });
+    }
+
     if (outcome === "candidate_finding" && !findingQuestionIds.has(attached.id)) {
       outcome = "partial";
       confidence = confidence === "high" ? "medium" : confidence;
@@ -555,6 +576,51 @@ function normalizeAnsweredQuestions(
   }
 
   return normalized;
+}
+
+function noIssueAnswerCoversQuestionScope(
+  answerText: string,
+  question: NonNullable<ReviewPacket["reviewQuestions"]>[number],
+  packet: ReviewPacket,
+  evidence: Array<{ path: string; lines?: string; whyRelevant: string }>,
+  evidenceTrace: string | undefined
+): boolean {
+  const candidatePacketIds = question.ownershipCandidatePacketIds ?? [];
+  const requiresCrossScope =
+    question.role === "supporting" ||
+    question.ownershipStatus === "ambiguous" ||
+    candidatePacketIds.length > 1;
+  const questionFiles = cleanStrings(question.files.map(stripLocationSuffix));
+  const questionSymbols = cleanStrings(question.symbols);
+  const hasMultiFileScope = questionFiles.length > 1;
+  const hasMultiSymbolScope = questionSymbols.length > 1;
+  if (!requiresCrossScope && !hasMultiFileScope && !hasMultiSymbolScope) {
+    return true;
+  }
+
+  const evidencePaths = cleanStrings(evidence.map((entry) => stripLocationSuffix(entry.path)));
+  const matchedQuestionFiles = questionFiles.filter((file) => evidencePaths.includes(file));
+  const referencesMultipleQuestionFiles = questionFiles.length > 1 && matchedQuestionFiles.length >= 2;
+  const referencesExternalQuestionEvidencePath = evidencePaths.some((path) =>
+    path !== packet.path &&
+    path !== packet.oldPath &&
+    (questionFiles.length === 0 || questionFiles.includes(path))
+  );
+  const evidenceText = [
+    answerText,
+    evidenceTrace ?? "",
+    ...evidence.flatMap((entry) => [entry.lines ?? "", entry.whyRelevant])
+  ].join(" ");
+  const mentionedQuestionSymbols = questionSymbols.filter((symbol) => symbolMatches(symbol, evidenceText));
+  const referencesMultipleQuestionSymbols = questionSymbols.length > 1 && mentionedQuestionSymbols.length >= 2;
+
+  if (hasMultiFileScope && referencesMultipleQuestionFiles) {
+    return true;
+  }
+  if (hasMultiSymbolScope && referencesMultipleQuestionSymbols) {
+    return true;
+  }
+  return requiresCrossScope && (referencesExternalQuestionEvidencePath || referencesMultipleQuestionFiles || referencesMultipleQuestionSymbols);
 }
 
 function followUpHintsFromPartialQuestions(

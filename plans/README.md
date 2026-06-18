@@ -67,6 +67,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 61 | COMPLETE | Issue 61: Stage 8 Task Deduplication and Question-Finding Title Hygiene |
 | 62 | COMPLETE | Issue 62: Stage 7 Schema Friction Reduction |
 | 63 | COMPLETE | Issue 63: Review Question Ownership and Risk-Area Coverage |
+| 64 | COMPLETE | Issue 64: Material Review Question Answer Quality and Ambiguous Ownership Follow-Up |
 
 ## Current Queue
 

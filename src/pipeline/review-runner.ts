@@ -1252,7 +1252,9 @@ function buildReviewQuestionLifecycle(input: ReviewQuestionLifecycleInput): Reco
     path: string;
     relevanceReason: string;
     role?: NonNullable<ReviewPacket["reviewQuestions"]>[number]["role"];
+    ownershipStatus?: NonNullable<ReviewPacket["reviewQuestions"]>[number]["ownershipStatus"];
     ownershipReason?: string;
+    ownershipCandidatePacketIds?: string[];
   }>>();
   for (const packet of packets) {
     for (const question of packet.reviewQuestions ?? []) {
@@ -1262,7 +1264,9 @@ function buildReviewQuestionLifecycle(input: ReviewQuestionLifecycleInput): Reco
         path: packet.path,
         relevanceReason: question.relevanceReason,
         ...(question.role !== undefined ? { role: question.role } : {}),
-        ...(question.ownershipReason !== undefined ? { ownershipReason: question.ownershipReason } : {})
+        ...(question.ownershipStatus !== undefined ? { ownershipStatus: question.ownershipStatus } : {}),
+        ...(question.ownershipReason !== undefined ? { ownershipReason: question.ownershipReason } : {}),
+        ...(question.ownershipCandidatePacketIds !== undefined ? { ownershipCandidatePacketIds: question.ownershipCandidatePacketIds } : {})
       });
       packetsByQuestion.set(question.id, attached);
     }
@@ -1350,6 +1354,9 @@ function buildReviewQuestionLifecycle(input: ReviewQuestionLifecycleInput): Reco
       0),
       supportingAttachments: packets.reduce((sum, packet) =>
         sum + (packet.reviewQuestions ?? []).filter((question) => question.role === "supporting").length,
+      0),
+      ambiguousAttachments: packets.reduce((sum, packet) =>
+        sum + (packet.reviewQuestions ?? []).filter((question) => question.ownershipStatus === "ambiguous").length,
       0),
       unownedAttachments: packets.reduce((sum, packet) =>
         sum + (packet.reviewQuestions ?? []).filter((question) => question.role === undefined).length,

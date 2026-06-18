@@ -485,7 +485,115 @@ function questionFollowUpGroups(packetResults: PacketReviewResult[], packets: Re
       }
     }
   }
-  return [...ownedGroups, ...groups.values()];
+  const groupedQuestionIds = new Set([
+    ...ownedGroups.flatMap((group) => group.sourceQuestionIds),
+    ...[...groups.values()].flatMap((group) => group.sourceQuestionIds)
+  ]);
+  const ambiguousGroups = ambiguousQuestionFollowUpGroups(
+    attachmentsByQuestion,
+    primaryByQuestion,
+    resultByPacketId,
+    globallyCoveredQuestionIds,
+    groupedQuestionIds
+  );
+  return [...ownedGroups, ...groups.values(), ...ambiguousGroups];
+}
+
+function ambiguousQuestionFollowUpGroups(
+  attachmentsByQuestion: Map<string, Array<{ packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>>,
+  primaryByQuestion: Map<string, { packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>,
+  resultByPacketId: Map<string, PacketReviewResult>,
+  globallyCoveredQuestionIds: Set<string>,
+  alreadyGroupedQuestionIds: Set<string>
+): QuestionFollowUpGroup[] {
+  const groups: QuestionFollowUpGroup[] = [];
+  for (const [questionId, attachments] of attachmentsByQuestion) {
+    if (
+      globallyCoveredQuestionIds.has(questionId) ||
+      primaryByQuestion.has(questionId) ||
+      alreadyGroupedQuestionIds.has(questionId)
+    ) {
+      continue;
+    }
+    const hasAmbiguousAttachment = attachments.some((attachment) => attachment.question.ownershipStatus === "ambiguous");
+    if (!hasAmbiguousAttachment && attachments.length < 2) {
+      continue;
+    }
+    const question = attachments[0]?.question;
+    if (question === undefined) {
+      continue;
+    }
+    const attachmentResults = attachments
+      .map((attachment) => ({
+        ...attachment,
+        result: resultByPacketId.get(attachment.packet.id)
+      }))
+      .filter((attachment) => attachment.result !== undefined);
+    if (attachmentResults.length === 0) {
+      continue;
+    }
+    const answers = attachmentResults
+      .map((attachment) => ({
+        ...attachment,
+        answer: answerForQuestion(attachment.result as PacketReviewResult, questionId),
+        unresolved: questionIsUnresolved(attachment.result as PacketReviewResult, questionId)
+      }))
+      .filter((attachment) => attachment.answer !== undefined || attachment.unresolved);
+    if (answers.length === 0 || answers.every((entry) => entry.answer?.confidence === "low")) {
+      continue;
+    }
+    const fullScopeNoIssue = answers.some((entry) =>
+      entry.answer?.outcome === "answered_no_issue" &&
+      entry.answer.confidence !== "low" &&
+      answerCoversQuestionScope(entry.answer, entry.question, entry.packet, attachments)
+    );
+    const hasUnresolvedOrPartialAnswer = answers.some((entry) =>
+      entry.unresolved ||
+      entry.answer?.outcome === "partial" ||
+      entry.answer?.outcome === "candidate_finding"
+    );
+    if (fullScopeNoIssue && !hasUnresolvedOrPartialAnswer) {
+      continue;
+    }
+
+    const packetsForTask = cleanPacketAttachments(attachments.map((attachment) => attachment.packet));
+    const files = cleanStrings(question.files.length > 0 ? question.files : packetsForTask.map((packet) => packet.path));
+    const symbols = cleanStrings([
+      ...question.symbols,
+      ...packetsForTask.flatMap((packet) => packet.symbolFacts)
+        .flatMap((fact) => [fact.enclosingSymbol, fact.signature])
+        .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
+    ]);
+    if (files.length === 0 && symbols.length === 0) {
+      continue;
+    }
+    const reasonParts = [
+      question.whyItMatters,
+      "Ownership was ambiguous, so local no-issue answers do not close the full review question.",
+      ...answers.flatMap((entry) => {
+        if (entry.answer === undefined) {
+          return entry.unresolved ? [`Packet ${entry.packet.id} left this attached review question unresolved.`] : [];
+        }
+        return [
+          `Packet ${entry.packet.id} (${entry.answer.outcome}): ${entry.answer.answer}`,
+          entry.answer.evidenceTrace
+        ].filter((part): part is string => part !== undefined && part.trim().length > 0);
+      })
+    ].filter((part): part is string => part !== undefined && part.trim().length > 0);
+    const hasHighConfidenceSignal = answers.some((entry) => entry.answer?.confidence === "high");
+    groups.push({
+      key: `review-question-ambiguous:${questionId}`,
+      question: question.question,
+      reason: reasonParts.join(" "),
+      confidence: hasHighConfidenceSignal ? "high" : "medium",
+      packetIds: cleanStrings(packetsForTask.map((packet) => packet.id)),
+      files,
+      symbols,
+      suggestedLenses: cleanStrings(packetsForTask.flatMap((packet) => packet.lenses)),
+      sourceQuestionIds: [questionId]
+    });
+  }
+  return groups;
 }
 
 function ownedQuestionFollowUpGroup(
@@ -500,9 +608,13 @@ function ownedQuestionFollowUpGroup(
   }
   const primaryAnswer = answerForQuestion(primaryResult, questionId);
   const primaryUnresolved = questionIsUnresolved(primaryResult, questionId);
+  const primaryNoIssueIncomplete =
+    primaryAnswer?.outcome === "answered_no_issue" &&
+    !answerCoversQuestionScope(primaryAnswer, primary.question, primary.packet, attachments);
   const primaryNeedsFollowUp =
     primaryUnresolved ||
     primaryAnswer?.outcome === "partial" ||
+    primaryNoIssueIncomplete ||
     (primaryAnswer === undefined && primaryResult.status === "completed");
   if (!primaryNeedsFollowUp || primaryAnswer?.confidence === "low") {
     return undefined;
@@ -570,6 +682,48 @@ function answerForQuestion(result: PacketReviewResult, questionId: string): NonN
 
 function questionIsUnresolved(result: PacketReviewResult, questionId: string): boolean {
   return (result.unresolvedQuestions ?? []).includes(questionId);
+}
+
+function answerCoversQuestionScope(
+  answer: NonNullable<PacketReviewResult["answeredQuestions"]>[number],
+  question: NonNullable<ReviewPacket["reviewQuestions"]>[number],
+  packet: ReviewPacket,
+  attachments: Array<{ packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>
+): boolean {
+  const questionFiles = cleanStrings(question.files.map(stripLocationSuffix));
+  const questionSymbols = cleanStrings(question.symbols);
+  const hasMultiFileScope = questionFiles.length > 1;
+  const hasMultiSymbolScope = questionSymbols.length > 1;
+  const hasMultiPacketScope = attachments.length > 1 || (question.ownershipCandidatePacketIds ?? []).length > 1;
+  if (!hasMultiFileScope && !hasMultiSymbolScope && !hasMultiPacketScope && question.ownershipStatus !== "ambiguous") {
+    return true;
+  }
+  const evidencePaths = cleanStrings(answer.evidence.map((entry) => stripLocationSuffix(entry.path)));
+  const attachmentPaths = cleanStrings(attachments.map((attachment) => attachment.packet.path));
+  const matchedQuestionFiles = questionFiles.filter((file) => evidencePaths.includes(file));
+  const referencedAttachmentPaths = attachmentPaths.filter((path) => evidencePaths.includes(path));
+  const text = [
+    answer.answer,
+    answer.evidenceTrace ?? "",
+    ...answer.evidence.flatMap((entry) => [entry.lines ?? "", entry.whyRelevant])
+  ].join(" ");
+  const mentionedQuestionSymbols = questionSymbols.filter((symbol) => textMentionsSymbol(text, symbol));
+  return (hasMultiFileScope && matchedQuestionFiles.length >= 2) ||
+    (hasMultiPacketScope && referencedAttachmentPaths.length >= 2) ||
+    (hasMultiSymbolScope && mentionedQuestionSymbols.length >= 2);
+}
+
+function cleanPacketAttachments(packets: ReviewPacket[]): ReviewPacket[] {
+  const seen = new Set<string>();
+  const result: ReviewPacket[] = [];
+  for (const packet of packets) {
+    if (seen.has(packet.id)) {
+      continue;
+    }
+    seen.add(packet.id);
+    result.push(packet);
+  }
+  return result;
 }
 
 function compareHintGroups(a: HintGroup, b: HintGroup): number {
@@ -731,6 +885,18 @@ function normalizeFollowUpQuestion(question: string): string {
     .replace(/[^a-z0-9_./:-]+/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
+}
+
+function textMentionsSymbol(text: string, symbol: string): boolean {
+  const normalizedText = normalizeFollowUpQuestion(text);
+  const normalizedSymbol = normalizeFollowUpQuestion(symbol);
+  return normalizedText.length > 0 &&
+    normalizedSymbol.length > 0 &&
+    (normalizedText === normalizedSymbol || normalizedText.includes(normalizedSymbol));
+}
+
+function stripLocationSuffix(value: string): string {
+  return value.trim().replace(/:\d+(?:-\d+)?$/u, "");
 }
 
 function normalizeScopeValue(input: string): string {

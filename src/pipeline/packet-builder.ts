@@ -77,6 +77,7 @@ const MAX_REVIEW_QUESTIONS_PER_PACKET = 3;
 const MAX_PRIMARY_REVIEW_QUESTIONS_PER_PACKET = 2;
 const MIN_OWNERSHIP_SCORE = 10;
 const MIN_CLEAR_OWNERSHIP_MARGIN = 12;
+const INTEGRATION_OWNERSHIP_BONUS = 14;
 const CALL_SITE_MENTION_LOOKUP_LIMIT = 50;
 const CALL_SITE_CONTEXT_SYMBOL_LIMIT = 4;
 const MAX_STATIC_SIGNALS_PER_PACKET_HUNK = 5;
@@ -465,6 +466,22 @@ function assignReviewQuestionOwnership(
         : best === undefined
           ? "all_candidate_packets_at_primary_limit"
           : "ambiguous_packet_match";
+      const status: NonNullable<PacketReviewQuestion["ownershipStatus"]> = reason === "ambiguous_packet_match"
+        ? "ambiguous"
+        : "unassigned";
+      const candidatePacketIds = attachments
+        .sort(compareOwnershipCandidates)
+        .slice(0, 3)
+        .map((attachment) => attachment.packet.id);
+      for (const attachment of attachments) {
+        setPacketQuestionOwnershipStatus(
+          attachment.packet,
+          questionId,
+          status,
+          reason === "ambiguous_packet_match" ? "ambiguous packet match" : reason,
+          candidatePacketIds
+        );
+      }
       telemetry.event({
         stage: 6,
         level: "info",
@@ -482,7 +499,11 @@ function assignReviewQuestionOwnership(
     const ownershipReason = best.reasons.length > 0
       ? `primary owner selected by ${best.reasons.join("; ")}`
       : "primary owner selected by strongest packet match";
-    setPacketQuestionOwnership(best.packet, questionId, "primary", ownershipReason);
+    const candidatePacketIds = attachments
+      .sort(compareOwnershipCandidates)
+      .slice(0, 3)
+      .map((attachment) => attachment.packet.id);
+    setPacketQuestionOwnership(best.packet, questionId, "primary", ownershipReason, candidatePacketIds);
     primaryCountByPacket.set(best.packet.id, (primaryCountByPacket.get(best.packet.id) ?? 0) + 1);
     assigned += 1;
 
@@ -493,7 +514,8 @@ function assignReviewQuestionOwnership(
         attachment.packet,
         questionId,
         "supporting",
-        `supporting slice for primary packet ${best.packet.id}`
+        `supporting slice for primary packet ${best.packet.id}`,
+        candidatePacketIds
       );
     }
 
@@ -532,11 +554,17 @@ function reviewQuestionOwnershipCandidate(
   const hintMatches = packet.surroundingContextHints.filter((hint) =>
     hint.symbol !== undefined && question.symbols.some((symbol) => matchesTextSymbol(symbol, hint.symbol ?? ""))
   );
+  const hintSymbolMentions = question.symbols.filter((symbol) =>
+    packet.surroundingContextHints.some((hint) => hint.symbol !== undefined && matchesTextSymbol(symbol, hint.symbol ?? ""))
+  );
+  const integratedSymbols = distinctNormalizedSymbols([...symbolMatches, ...hunkMentions, ...hintSymbolMentions]);
+  const integrationScore = integratedSymbols.length >= 2 && packet.coverage !== "light" ? INTEGRATION_OWNERSHIP_BONUS : 0;
   const staticSignals = packet.hunks.reduce((sum, hunk) => sum + (hunk.staticSignals?.length ?? 0), 0);
   const coverageScore = packet.coverage === "deep" ? 8 : packet.coverage === "normal" ? 4 : 1;
   const priorityScore = packet.reviewPriority === "critical" ? 6 : packet.reviewPriority === "high" ? 4 : 0;
   const directScore = fileMatches.length * 60 + symbolMatches.length * 50 + hunkMentions.length * 20;
   const score = directScore +
+    integrationScore +
     hintMatches.length * 8 +
     Math.min(staticSignals, 3) * 2 +
     coverageScore +
@@ -545,6 +573,7 @@ function reviewQuestionOwnershipCandidate(
     ...(fileMatches.length > 0 ? [`file overlap: ${fileMatches.join(", ")}`] : []),
     ...(symbolMatches.length > 0 ? [`symbol overlap: ${symbolMatches.join(", ")}`] : []),
     ...(hunkMentions.length > 0 ? [`changed hunk mentions: ${hunkMentions.join(", ")}`] : []),
+    integrationScore > 0 ? `integrates multiple question symbols: ${integratedSymbols.join(", ")}` : undefined,
     ...(hintMatches.length > 0 ? [`context hint overlap: ${hintMatches.length}`] : []),
     packet.coverage === "deep" ? "deep coverage" : undefined
   ].filter((reason): reason is string => reason !== undefined);
@@ -592,11 +621,37 @@ function setPacketQuestionOwnership(
   packet: ReviewPacket,
   questionId: string,
   role: NonNullable<PacketReviewQuestion["role"]>,
-  ownershipReason: string
+  ownershipReason: string,
+  ownershipCandidatePacketIds: string[]
 ): void {
   packet.reviewQuestions = (packet.reviewQuestions ?? []).map((question) =>
     question.id === questionId
-      ? { ...question, role, ownershipReason }
+      ? {
+          ...question,
+          role,
+          ownershipStatus: role,
+          ownershipReason,
+          ...(ownershipCandidatePacketIds.length > 0 ? { ownershipCandidatePacketIds } : {})
+        }
+      : question
+  );
+}
+
+function setPacketQuestionOwnershipStatus(
+  packet: ReviewPacket,
+  questionId: string,
+  ownershipStatus: NonNullable<PacketReviewQuestion["ownershipStatus"]>,
+  ownershipReason: string,
+  ownershipCandidatePacketIds: string[]
+): void {
+  packet.reviewQuestions = (packet.reviewQuestions ?? []).map((question) =>
+    question.id === questionId
+      ? {
+          ...question,
+          ownershipStatus,
+          ownershipReason,
+          ...(ownershipCandidatePacketIds.length > 0 ? { ownershipCandidatePacketIds } : {})
+        }
       : question
   );
 }
@@ -621,6 +676,20 @@ function matchesTextSymbol(left: string, right: string): boolean {
   return normalizedLeft.length > 0 &&
     normalizedRight.length > 0 &&
     (normalizedLeft === normalizedRight || normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft));
+}
+
+function distinctNormalizedSymbols(symbols: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const symbol of symbols) {
+    const normalized = symbol.toLowerCase().trim();
+    if (normalized.length === 0 || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(symbol);
+  }
+  return result;
 }
 
 function stripLocationSuffix(value: string): string {

@@ -703,6 +703,8 @@ export type PacketReviewQuestion = ReviewQuestion & {
   relevanceReason: string;
   role?: "primary" | "supporting";
   ownershipReason?: string;
+  ownershipStatus?: "primary" | "supporting" | "ambiguous" | "unassigned";
+  ownershipCandidatePacketIds?: string[];
 };
 
 export type ReviewPlan = {

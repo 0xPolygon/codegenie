@@ -276,6 +276,211 @@ describe("phase 5 pipeline regressions", () => {
     expect(result?.followUpHints).toEqual([]);
   });
 
+  it("downgrades local no-issue answers for ambiguous multi-packet review questions", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [],
+          uncertainties: [],
+          answeredQuestions: [
+            {
+              questionId: "q-flow",
+              answer: "The local helper still transforms the input.",
+              confidence: "high",
+              outcome: "answered_no_issue",
+              evidence: [{ path: "app.ts", lines: "return transformValue(input);", whyRelevant: "Only the local transform is visible." }],
+              evidenceTrace: "input -> transformValue"
+            }
+          ],
+          noFindingReason: "Question answered locally."
+        }) as T
+    };
+
+    const [result] = await runLensPackets(
+      fakePlan(),
+      [fakePacket({
+        reviewQuestions: [{
+          id: "q-flow",
+          question: "Does the transformed value still match the rendered response?",
+          whyItMatters: "The changed helper and response packet together define the caller-visible value.",
+          files: ["app.ts", "worker.ts"],
+          symbols: ["transformValue", "renderResponse"],
+          relevanceReason: "file overlap: app.ts",
+          ownershipStatus: "ambiguous",
+          ownershipReason: "ambiguous packet match",
+          ownershipCandidatePacketIds: ["packet-1", "packet-2"]
+        }]
+      })],
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result?.answeredQuestions?.[0]).toMatchObject({
+      questionId: "q-flow",
+      outcome: "partial",
+      confidence: "medium"
+    });
+    expect(result?.followUpHints).toEqual([
+      expect.objectContaining({
+        question: "Does the transformed value still match the rendered response?",
+        files: ["app.ts", "worker.ts"],
+        symbols: ["renderResponse", "transformValue"]
+      })
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 7,
+      message: "review_question_answer_downgraded",
+      data: expect.objectContaining({ reason: "answered_no_issue_incomplete_question_scope" })
+    }));
+  });
+
+  it("keeps full-scope no-issue answers for ambiguous review questions", async () => {
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [],
+          uncertainties: [],
+          answeredQuestions: [
+            {
+              questionId: "q-flow",
+              answer: "The helper output is the same value returned by renderResponse.",
+              confidence: "high",
+              outcome: "answered_no_issue",
+              evidence: [
+                { path: "app.ts", lines: "return transformValue(input);", whyRelevant: "The packet shows transformValue feeding the caller." },
+                { path: "worker.ts", lines: "return renderResponse(value);", whyRelevant: "The related packet shows renderResponse returning the transformed value." }
+              ],
+              evidenceTrace: "input -> transformValue -> renderResponse"
+            }
+          ],
+          noFindingReason: "Question answered across both packets."
+        }) as T
+    };
+
+    const [result] = await runLensPackets(
+      fakePlan(),
+      [fakePacket({
+        reviewQuestions: [{
+          id: "q-flow",
+          question: "Does the transformed value still match the rendered response?",
+          whyItMatters: "The changed helper and response packet together define the caller-visible value.",
+          files: ["app.ts", "worker.ts"],
+          symbols: ["transformValue", "renderResponse"],
+          relevanceReason: "file overlap: app.ts",
+          ownershipStatus: "ambiguous",
+          ownershipReason: "ambiguous packet match",
+          ownershipCandidatePacketIds: ["packet-1", "packet-2"]
+        }]
+      })],
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result?.answeredQuestions?.[0]).toMatchObject({
+      questionId: "q-flow",
+      outcome: "answered_no_issue",
+      confidence: "high"
+    });
+    expect(result?.followUpHints).toEqual([]);
+  });
+
+  it("downgrades primary no-issue answers when they do not cover multi-symbol scope", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [],
+          uncertainties: [],
+          answeredQuestions: [
+            {
+              questionId: "q-flow",
+              answer: "The local helper still transforms the input.",
+              confidence: "high",
+              outcome: "answered_no_issue",
+              evidence: [{ path: "app.ts", lines: "return transformValue(input);", whyRelevant: "Only the helper slice is visible." }],
+              evidenceTrace: "input -> transformValue"
+            }
+          ],
+          noFindingReason: "Question answered locally."
+        }) as T
+    };
+
+    const [result] = await runLensPackets(
+      fakePlan(),
+      [fakePacket({
+        reviewQuestions: [{
+          id: "q-flow",
+          question: "Does the transformed value still match the rendered response?",
+          whyItMatters: "The helper and response symbols together define the caller-visible value.",
+          files: ["app.ts"],
+          symbols: ["transformValue", "renderResponse"],
+          relevanceReason: "file overlap: app.ts; symbol overlap: transformValue",
+          role: "primary",
+          ownershipStatus: "primary",
+          ownershipReason: "primary owner selected by symbol overlap"
+        }]
+      })],
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result?.answeredQuestions?.[0]).toMatchObject({
+      questionId: "q-flow",
+      outcome: "partial",
+      confidence: "medium",
+      role: "primary"
+    });
+    expect(result?.followUpHints).toEqual([
+      expect.objectContaining({
+        question: "Does the transformed value still match the rendered response?",
+        symbols: ["renderResponse", "transformValue"]
+      })
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 7,
+      message: "review_question_answer_downgraded",
+      data: expect.objectContaining({ reason: "answered_no_issue_incomplete_question_scope", role: "primary" })
+    }));
+  });
+
   it("turns partial review-question answers into scoped follow-up hints", async () => {
     const runner: LlmRunner = {
       runStructured: async <T>() =>
@@ -1417,11 +1622,13 @@ describe("phase 5 pipeline regressions", () => {
     expect(appQuestion).toMatchObject({
       id: "q-contract",
       role: "primary",
+      ownershipStatus: "primary",
       ownershipReason: expect.stringContaining("symbol overlap")
     });
     expect(workerQuestion).toMatchObject({
       id: "q-contract",
       role: "supporting",
+      ownershipStatus: "supporting",
       ownershipReason: expect.stringContaining("primary packet")
     });
     expect(events).toEqual(expect.arrayContaining([
@@ -1431,6 +1638,74 @@ describe("phase 5 pipeline regressions", () => {
         data: expect.objectContaining({ questionId: "q-contract", supportingPacketCount: 1 })
       })
     ]));
+  });
+
+  it("prefers an integration packet when ownership ties on file and symbol scope", async () => {
+    const callerFile = fakeDiffFile("caller.ts", "export function renderResponse(input: number) { return transformValue(input); }");
+    const helperFile = fakeDiffFile("helper.ts", "export function transformValue(input: number) { return input; }");
+    helperFile.hunks[0] = { ...helperFile.hunks[0]!, id: "h2" };
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(),
+      symbolFacts: [
+        {
+          path: "caller.ts",
+          hunkId: "h1",
+          enclosingSymbol: "renderResponse",
+          symbolKind: "function",
+          symbolRange: [1, 4],
+          changedLines: [2],
+          changedLinesSide: "new",
+          signature: "function renderResponse(input: number)",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        },
+        {
+          path: "helper.ts",
+          hunkId: "h2",
+          enclosingSymbol: "transformValue",
+          symbolKind: "function",
+          symbolRange: [1, 4],
+          changedLines: [2],
+          changedLinesSide: "new",
+          signature: "function transformValue(input: number)",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        }
+      ]
+    };
+    const plan: ReviewPlan = {
+      ...fakePlanForHunks(["h1", "h2"]),
+      reviewQuestions: [{
+        id: "q-flow",
+        question: "Does the transformed value still match the rendered response?",
+        whyItMatters: "The changed helper and caller together define the caller-visible value.",
+        files: ["caller.ts", "helper.ts"],
+        symbols: ["renderResponse", "transformValue"]
+      }]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [callerFile, helperFile],
+      [fakeFacts("caller.ts", "per-hunk"), fakeFacts("helper.ts", "per-hunk")],
+      repoIndex,
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const callerQuestion = packets.find((packet) => packet.path === "caller.ts")?.reviewQuestions?.[0];
+    const helperQuestion = packets.find((packet) => packet.path === "helper.ts")?.reviewQuestions?.[0];
+    expect(callerQuestion).toMatchObject({
+      id: "q-flow",
+      role: "primary",
+      ownershipStatus: "primary",
+      ownershipReason: expect.stringContaining("integrates multiple question symbols")
+    });
+    expect(helperQuestion).toMatchObject({
+      id: "q-flow",
+      role: "supporting",
+      ownershipStatus: "supporting"
+    });
   });
 
   it("leaves review questions unowned when packet ownership is ambiguous", async () => {
@@ -1470,6 +1745,20 @@ describe("phase 5 pipeline regressions", () => {
       expect.objectContaining({ id: "q-file-contract" })
     ]);
     expect(attachedQuestions.every((question) => question.role === undefined)).toBe(true);
+    expect(attachedQuestions).toEqual([
+      expect.objectContaining({
+        id: "q-file-contract",
+        ownershipStatus: "ambiguous",
+        ownershipReason: "ambiguous packet match",
+        ownershipCandidatePacketIds: expect.arrayContaining(packets.map((packet) => packet.id))
+      }),
+      expect.objectContaining({
+        id: "q-file-contract",
+        ownershipStatus: "ambiguous",
+        ownershipReason: "ambiguous packet match",
+        ownershipCandidatePacketIds: expect.arrayContaining(packets.map((packet) => packet.id))
+      })
+    ]);
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         stage: 6,
