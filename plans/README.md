@@ -64,11 +64,17 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 58 | COMPLETE | Issue 58: Planner Context Hint Contract |
 | 59 | COMPLETE | Issue 59: Stage 5 Planner Schema Repair Salvage |
 | 60 | COMPLETE | Issue 60: Preserve Planner Concerns As Review Obligations |
+| 61 | PENDING | Issue 61: Stage 8 Task Deduplication and Question-Finding Title Hygiene |
+| 62 | PENDING | Issue 62: Stage 7 Schema Friction Reduction |
+| 63 | PENDING | Issue 63: Review Question Ownership |
 
 ## Current Queue
 
 Recommended implementation order for remaining work:
 
+- **Issue 61** — polish the review-question flow by deduping duplicate Stage 8 tasks and forcing final finding titles to be issue-shaped.
+- **Issue 62** — reduce avoidable Stage 7 schema-invalid calls with concise no-finding output, tighter schema guidance, and deterministic cleanup.
+- **Issue 63** — assign primary/supporting ownership for review questions so Stage 7 answers are less repetitive and Stage 8 has cleaner inputs.
 - **Issue 55** — lower priority context/reporting cleanup for documentation hunks; useful but not blocking the review-question work.
 
 ## Deferred / Watch List
