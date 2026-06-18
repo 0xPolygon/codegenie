@@ -134,6 +134,108 @@ describe("phase 8 targeted system review", () => {
     });
   });
 
+  it("merges unresolved Stage 8 tasks from the same review question", async () => {
+    const question = {
+      id: "q-response-contract",
+      question: "Does the changed value still match the returned response?",
+      whyItMatters: "Callers rely on the returned response matching the transformed value.",
+      files: ["app.ts", "worker.ts"],
+      symbols: ["divide"],
+      relevanceReason: "file overlap"
+    };
+    const firstPacket = { ...fakePacket("packet-1", "app.ts", "divide"), reviewQuestions: [question] };
+    const secondPacket = { ...fakePacket("packet-2", "worker.ts", "renderResponse"), reviewQuestions: [question] };
+    const firstResult: PacketReviewResult = {
+      ...packetResult("packet-1", []),
+      answeredQuestions: [{
+        questionId: "q-response-contract",
+        answer: "The local transform changed, but the response caller is outside this packet.",
+        confidence: "medium",
+        outcome: "partial",
+        evidence: [{ path: "app.ts", whyRelevant: "The local transform changed." }],
+        evidenceTrace: "input -> divide -> caller response unknown"
+      }]
+    };
+    const secondResult: PacketReviewResult = {
+      ...packetResult("packet-2", []),
+      answeredQuestions: [{
+        questionId: "q-response-contract",
+        answer: "The response caller is visible, but the local transform packet owns the input change.",
+        confidence: "medium",
+        outcome: "partial",
+        evidence: [{ path: "worker.ts", whyRelevant: "The caller returns the transformed value." }],
+        evidenceTrace: "caller response -> transformed value"
+      }]
+    };
+    const artifacts = new Map<string, unknown>();
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+
+    const result = await runTargetedSystemReviews(
+      { packetResults: [firstResult, secondResult], packets: [firstPacket, secondPacket] },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        },
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() => ({ findings: [], resolvedHints: [] }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.tasks).toHaveLength(1);
+    expect(result.tasks[0]).toMatchObject({
+      sourceQuestionIds: ["q-response-contract"],
+      packetIds: ["packet-1", "packet-2"],
+      files: ["app.ts", "worker.ts"],
+      mergedTaskIds: expect.arrayContaining([expect.stringMatching(/^system-/u)])
+    });
+    expect(artifacts.get("system-review-raw-tasks.json")).toEqual([
+      expect.objectContaining({ packetIds: ["packet-1"] }),
+      expect.objectContaining({ packetIds: ["packet-2"] })
+    ]);
+    expect(artifacts.get("system-review-tasks.json")).toEqual([
+      expect.objectContaining({ packetIds: ["packet-1", "packet-2"] })
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 8,
+      message: "stage8_tasks_deduplicated",
+      data: expect.objectContaining({ inputTasks: 2, outputTasks: 1, mergedGroups: 1, savedTasks: 1 })
+    }));
+  });
+
+  it("does not merge repeated Stage 8 tasks from different files and symbols", () => {
+    const packetResults = [
+      packetResult("auth-1", [hint("Check whether this request still validates access.", ["auth/session.ts"], ["refreshSession"])]),
+      packetResult("auth-2", [hint("Verify if this request still validates access.", ["auth/session.ts"], ["refreshSession"])]),
+      packetResult("billing-1", [hint("Check whether this request still validates access.", ["billing/charge.ts"], ["chargeTenant"])]),
+      packetResult("billing-2", [hint("Verify if this request still validates access.", ["billing/charge.ts"], ["chargeTenant"])])
+    ];
+
+    const tasks = buildSystemReviewTasks(packetResults, [
+      fakePacket("auth-1", "auth/session.ts", "refreshSession"),
+      fakePacket("auth-2", "auth/session.ts", "refreshSession"),
+      fakePacket("billing-1", "billing/charge.ts", "chargeTenant"),
+      fakePacket("billing-2", "billing/charge.ts", "chargeTenant")
+    ]);
+
+    expect(tasks).toHaveLength(2);
+    expect(tasks.map((task) => task.files)).toEqual([
+      ["auth/session.ts"],
+      ["billing/charge.ts"]
+    ]);
+  });
+
   it("does not build a question-driven Stage 8 task when a candidate already covers the question", () => {
     const packet = {
       ...fakePacket("packet-1", "app.ts"),

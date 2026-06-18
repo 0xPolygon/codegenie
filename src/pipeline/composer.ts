@@ -680,12 +680,14 @@ function toFinalFinding(
   const { anchor: _unvalidatedAnchor, ...findingWithoutAnchor } = finding;
   const anchor = validateAnchorForDiff(finding.anchor, diff);
   const normalizedFinalBody = normalizeFinalBodyForRendering(finalBody, finding) || templateBody(finding);
+  const normalizedTitle = normalizeFinalFindingTitle(finding, mergedFindings, normalizedFinalBody);
   const mergedCandidateIds = uniqueStrings(mergedFindings.map((item) => item.id));
   const mergedAnchors = dedupeAnchors(mergedFindings.flatMap((item) => item.anchor === undefined ? [] : [item.anchor]));
   const mergedCategories = uniqueStrings(mergedFindings.map((item) => item.category)) as Array<CandidateFinding["category"]>;
   const mergedSeverities = uniqueStrings(mergedFindings.map((item) => item.severity)) as Array<CandidateFinding["severity"]>;
   return {
     ...findingWithoutAnchor,
+    title: normalizedTitle,
     ...(anchor !== undefined ? { anchor } : {}),
     changedLine: anchor !== undefined,
     fingerprint,
@@ -698,6 +700,52 @@ function toFinalFinding(
     mergedTitles: uniqueStrings(mergedFindings.map((item) => item.title)),
     ...(mergedAnchors.length > 0 ? { mergedAnchors } : {})
   };
+}
+
+function normalizeFinalFindingTitle(finding: CandidateFinding, mergedFindings: CandidateFinding[], finalBody: string): string {
+  if (!isQuestionShapedFindingTitle(finding.title)) {
+    return finding.title;
+  }
+  const concreteCandidateTitle = mergedFindings
+    .map((candidate) => candidate.title.trim())
+    .find((title) => title.length > 0 && !isQuestionShapedFindingTitle(title));
+  if (concreteCandidateTitle !== undefined) {
+    return limitTitle(concreteCandidateTitle);
+  }
+  const fallback = [
+    finding.failureMode,
+    finding.verification,
+    finalBody,
+    finding.whyThisMatters
+  ].map(firstIssueSentence).find((title) => title !== undefined);
+  return fallback ?? finding.title;
+}
+
+function isQuestionShapedFindingTitle(title: string): boolean {
+  const normalized = title.trim();
+  return normalized.endsWith("?") ||
+    /^(?:verify|check|confirm|investigate|review|does|can|could|should|is|are|whether)\b/iu.test(normalized);
+}
+
+function firstIssueSentence(input: string): string | undefined {
+  const cleaned = input
+    .replace(/\r\n/g, "\n")
+    .split(/\n+/u)
+    .map((line) => line.trim().replace(/^[-*]\s+/u, ""))
+    .find((line) => line.length > 0);
+  if (cleaned === undefined || isQuestionShapedFindingTitle(cleaned)) {
+    return undefined;
+  }
+  const sentence = cleaned.match(/^(.{12,200}?)(?:[.!?](?:\s|$)|$)/u)?.[1]?.trim() ?? cleaned;
+  if (sentence.length < 12 || isQuestionShapedFindingTitle(sentence)) {
+    return undefined;
+  }
+  return limitTitle(sentence);
+}
+
+function limitTitle(title: string): string {
+  const cleaned = title.trim().replace(/\s+/gu, " ");
+  return cleaned.length <= 200 ? cleaned : `${cleaned.slice(0, 197).trimEnd()}...`;
 }
 
 function uniqueStrings(values: string[]): string[] {

@@ -812,6 +812,9 @@ export type SystemReviewTask = {
   symbols: string[];
   suggestedLenses: string[];
   representativeFindings: CandidateFinding[];
+  sourceQuestionIds?: string[];
+  sourceHintKeys?: string[];
+  mergedTaskIds?: string[];
 };
 
 export type ResolvedFollowUpHint = {

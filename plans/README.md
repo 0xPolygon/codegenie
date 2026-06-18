@@ -64,7 +64,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 58 | COMPLETE | Issue 58: Planner Context Hint Contract |
 | 59 | COMPLETE | Issue 59: Stage 5 Planner Schema Repair Salvage |
 | 60 | COMPLETE | Issue 60: Preserve Planner Concerns As Review Obligations |
-| 61 | PENDING | Issue 61: Stage 8 Task Deduplication and Question-Finding Title Hygiene |
+| 61 | COMPLETE | Issue 61: Stage 8 Task Deduplication and Question-Finding Title Hygiene |
 | 62 | PENDING | Issue 62: Stage 7 Schema Friction Reduction |
 | 63 | PENDING | Issue 63: Review Question Ownership and Risk-Area Coverage |
 
@@ -74,7 +74,6 @@ Recommended implementation order for remaining work:
 
 - **Issue 63** — preserve material planner risk areas as owned review obligations before assigning primary/supporting packet roles; this directly addresses the run-9 miss where the right risk area evaporated.
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
-- **Issue 61** — polish the review-question flow by deduping duplicate Stage 8 tasks and forcing final finding titles to be issue-shaped.
 - **Issue 62** — reduce avoidable Stage 7 schema-invalid calls with concise no-finding output, tighter schema guidance, and deterministic cleanup.
 
 ## Deferred / Watch List

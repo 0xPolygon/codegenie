@@ -217,6 +217,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
       return buildPrompt(10, [
         reviewerFrame("composition"),
         "Compose the final review from verified findings only. Do not invent new findings. Keep wording direct, specific, and actionable.",
+        "Final finding titles must be concrete issue statements. Do not preserve task-shaped titles that start with Verify, Check, Confirm, Investigate, Does, Can, Could, or Should, or titles phrased as questions; use the verified behavior delta or failure mode instead.",
         "For each finalBody, do not include a Markdown heading, repeated title, severity/confidence/category/file metadata, or generic report labels. Start with the concrete issue, impact, evidence, or fix.",
         "For behavior changes, match the wording to structured behaviorChange/intentEvidence. Do not say accidentally, silently, or contradicts intent unless a finding is marked accidental_regression or cites direct intent evidence for that claim. With mixed intent, say the contract changes and ask for caller/spec confirmation instead of assuming a bug.",
         ...blocks,

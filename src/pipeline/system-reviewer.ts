@@ -47,6 +47,7 @@ type HintGroup = {
   files: string[];
   symbols: string[];
   suggestedLenses: string[];
+  sourceHintKeys: string[];
   hints: HintWithPacket[];
 };
 
@@ -59,6 +60,19 @@ type QuestionFollowUpGroup = {
   files: string[];
   symbols: string[];
   suggestedLenses: string[];
+  sourceQuestionIds: string[];
+};
+
+type SystemReviewTaskMergeRecord = {
+  taskId: string;
+  mergedTaskIds: string[];
+  reason: string;
+};
+
+type SystemReviewTaskSet = {
+  rawTasks: SystemReviewTask[];
+  tasks: SystemReviewTask[];
+  mergeRecords: SystemReviewTaskMergeRecord[];
 };
 
 type SystemTaskReview = {
@@ -74,12 +88,13 @@ export async function runTargetedSystemReviews(
   telemetry: TelemetryRecorder,
   opts: SystemReviewOptions
 ): Promise<SystemReviewResult> {
-  const tasks = buildSystemReviewTasks(input.packetResults, input.packets);
+  const taskSet = buildSystemReviewTaskSet(input.packetResults, input.packets);
+  const { rawTasks, tasks, mergeRecords } = taskSet;
   telemetry.event({
     stage: 8,
     level: "info",
     message: "stage_started",
-    data: { tasks: tasks.length, maxTasks: MAX_SYSTEM_REVIEW_TASKS }
+    data: { rawTasks: rawTasks.length, tasks: tasks.length, maxTasks: MAX_SYSTEM_REVIEW_TASKS }
   });
 
   if (tasks.length === 0) {
@@ -99,7 +114,20 @@ export async function runTargetedSystemReviews(
     return { tasks: [], packetResults: [], resolvedHints: [] };
   }
 
+  await telemetry.writeArtifact("system-review-raw-tasks.json", rawTasks);
   await telemetry.writeArtifact("system-review-tasks.json", tasks);
+  telemetry.event({
+    stage: 8,
+    level: "info",
+    message: "stage8_tasks_deduplicated",
+    data: {
+      inputTasks: rawTasks.length,
+      outputTasks: tasks.length,
+      mergedGroups: mergeRecords.length,
+      mergedTaskIds: mergeRecords.flatMap((record) => record.mergedTaskIds),
+      savedTasks: Math.max(0, rawTasks.length - tasks.length)
+    }
+  });
   const workerRunner = createWorkerRunner({
     concurrency: Math.min(config.review.concurrency, MAX_SYSTEM_REVIEW_TASKS),
     signal: opts.signal,
@@ -144,7 +172,9 @@ export async function runTargetedSystemReviews(
     message: "pipeline_metrics",
     data: {
       tasks: {
-        built: tasks.length,
+        built: rawTasks.length,
+        dispatched: tasks.length,
+        merged: mergeRecords.length,
         completed: completed.length,
         failed: outcomes.filter((outcome) => outcome.outcome !== "completed").length
       },
@@ -158,6 +188,8 @@ export async function runTargetedSystemReviews(
     message: "stage_completed",
     data: {
       tasks: tasks.length,
+      rawTasks: rawTasks.length,
+      mergedTasks: mergeRecords.length,
       candidates: packetResults.reduce((sum, result) => sum + result.findings.length, 0),
       resolvedHints: resolvedHints.length
     }
@@ -180,21 +212,29 @@ export function suppressResolvedFollowUpHints(
 }
 
 export function buildSystemReviewTasks(packetResults: PacketReviewResult[], packets: ReviewPacket[]): SystemReviewTask[] {
+  return buildSystemReviewTaskSet(packetResults, packets).tasks;
+}
+
+function buildSystemReviewTaskSet(packetResults: PacketReviewResult[], packets: ReviewPacket[]): SystemReviewTaskSet {
   const findingsByPacket = new Map(packetResults.map((result) => [result.packetId, result.findings]));
   const packetById = new Map(packets.map((packet) => [packet.id, packet]));
   const hintTasks = repeatedHintGroups(packetResults)
     .sort(compareHintGroups)
-    .slice(0, MAX_SYSTEM_REVIEW_TASKS)
+    .slice(0, MAX_SYSTEM_REVIEW_TASKS * 2)
     .map((group) => {
       return taskFromGroup(group, findingsByPacket, packetById);
     });
   const questionTasks = questionFollowUpGroups(packetResults, packets)
     .sort(compareQuestionGroups)
-    .slice(0, 1)
+    .slice(0, MAX_SYSTEM_REVIEW_TASKS)
     .map((group) => taskFromGroup(group, findingsByPacket, packetById));
-  return dedupeSystemReviewTasks([...hintTasks, ...questionTasks])
-    .sort(compareSystemReviewTasks)
-    .slice(0, MAX_SYSTEM_REVIEW_TASKS);
+  const rawTasks = [...hintTasks, ...questionTasks].sort(compareSystemReviewTasks);
+  const deduped = dedupeSystemReviewTasks(rawTasks);
+  return {
+    rawTasks,
+    tasks: deduped.tasks.sort(compareSystemReviewTasks).slice(0, MAX_SYSTEM_REVIEW_TASKS),
+    mergeRecords: deduped.mergeRecords
+  };
 }
 
 function taskFromGroup(
@@ -218,7 +258,9 @@ function taskFromGroup(
     files: group.files,
     symbols: cleanStrings([...group.symbols, ...packetSymbols]).slice(0, 20),
     suggestedLenses: cleanStrings(["core/code-review", ...group.suggestedLenses]).slice(0, 10),
-    representativeFindings
+    representativeFindings,
+    ...("sourceQuestionIds" in group && group.sourceQuestionIds.length > 0 ? { sourceQuestionIds: group.sourceQuestionIds } : {}),
+    ...("sourceHintKeys" in group && group.sourceHintKeys.length > 0 ? { sourceHintKeys: group.sourceHintKeys } : {})
   };
 }
 
@@ -335,6 +377,7 @@ function repeatedHintGroups(packetResults: PacketReviewResult[]): HintGroup[] {
           files,
           symbols,
           suggestedLenses,
+          sourceHintKeys: [key],
           hints: [{ ...hint, question, packetId: result.packetId }]
         });
         continue;
@@ -343,6 +386,7 @@ function repeatedHintGroups(packetResults: PacketReviewResult[]): HintGroup[] {
       existing.files = cleanStrings([...existing.files, ...files]);
       existing.symbols = cleanStrings([...existing.symbols, ...symbols]);
       existing.suggestedLenses = cleanStrings([...existing.suggestedLenses, ...suggestedLenses]);
+      existing.sourceHintKeys = cleanStrings([...existing.sourceHintKeys, key]);
       existing.hints.push({ ...hint, question, packetId: result.packetId });
       if (confidenceRank(hint.confidence) < confidenceRank(existing.confidence)) {
         existing.confidence = hint.confidence;
@@ -401,7 +445,8 @@ function questionFollowUpGroups(packetResults: PacketReviewResult[], packets: Re
           packetIds: [result.packetId],
           files,
           symbols,
-          suggestedLenses: cleanStrings(packet.lenses)
+          suggestedLenses: cleanStrings(packet.lenses),
+          sourceQuestionIds: [question.id]
         });
         continue;
       }
@@ -409,6 +454,7 @@ function questionFollowUpGroups(packetResults: PacketReviewResult[], packets: Re
       existing.files = cleanStrings([...existing.files, ...files]);
       existing.symbols = cleanStrings([...existing.symbols, ...symbols]);
       existing.suggestedLenses = cleanStrings([...existing.suggestedLenses, ...packet.lenses]);
+      existing.sourceQuestionIds = cleanStrings([...existing.sourceQuestionIds, question.id]);
       if (confidenceRank(confidence) < confidenceRank(existing.confidence)) {
         existing.confidence = confidence;
       }
@@ -438,18 +484,112 @@ function compareSystemReviewTasks(a: SystemReviewTask, b: SystemReviewTask): num
     a.question.localeCompare(b.question);
 }
 
-function dedupeSystemReviewTasks(tasks: SystemReviewTask[]): SystemReviewTask[] {
-  const seen = new Set<string>();
+function dedupeSystemReviewTasks(tasks: SystemReviewTask[]): { tasks: SystemReviewTask[]; mergeRecords: SystemReviewTaskMergeRecord[] } {
   const deduped: SystemReviewTask[] = [];
   for (const task of tasks) {
-    const key = followUpHintKey({ question: task.question, files: task.files, symbols: task.symbols });
-    if (seen.has(key)) {
+    const existing = deduped.find((candidate) => systemReviewTasksMatch(candidate, task));
+    if (existing !== undefined) {
+      deduped[deduped.indexOf(existing)] = mergeSystemReviewTasks(existing, task);
       continue;
     }
-    seen.add(key);
-    deduped.push(task);
+    deduped.push({ ...task, mergedTaskIds: task.mergedTaskIds ?? [task.id] });
   }
-  return deduped;
+  const mergeRecords = deduped
+    .filter((task) => (task.mergedTaskIds ?? []).length > 1)
+    .map((task): SystemReviewTaskMergeRecord => ({
+      taskId: task.id,
+      mergedTaskIds: task.mergedTaskIds ?? [task.id],
+      reason: mergeReason(task)
+    }));
+  return { tasks: deduped, mergeRecords };
+}
+
+function systemReviewTasksMatch(a: SystemReviewTask, b: SystemReviewTask): boolean {
+  if (intersects(a.sourceQuestionIds ?? [], b.sourceQuestionIds ?? [])) {
+    return true;
+  }
+  if (!intersects(a.files, b.files)) {
+    return false;
+  }
+  const aQuestion = normalizeFollowUpQuestion(a.question);
+  const bQuestion = normalizeFollowUpQuestion(b.question);
+  if (aQuestion === bQuestion) {
+    return true;
+  }
+  if (!intersects(a.symbols, b.symbols)) {
+    return false;
+  }
+  return meaningfulTokenOverlap(aQuestion, bQuestion) >= 0.62;
+}
+
+function mergeSystemReviewTasks(a: SystemReviewTask, b: SystemReviewTask): SystemReviewTask {
+  const taskIds = cleanStrings([...(a.mergedTaskIds ?? [a.id]), ...(b.mergedTaskIds ?? [b.id])]);
+  const reasons = cleanStrings([a.reason, b.reason]);
+  return {
+    ...a,
+    confidence: confidenceRank(b.confidence) < confidenceRank(a.confidence) ? b.confidence : a.confidence,
+    packetIds: cleanStrings([...a.packetIds, ...b.packetIds]),
+    files: cleanStrings([...a.files, ...b.files]),
+    symbols: cleanStrings([...a.symbols, ...b.symbols]).slice(0, 20),
+    suggestedLenses: cleanStrings([...a.suggestedLenses, ...b.suggestedLenses]).slice(0, 10),
+    representativeFindings: dedupeFindings([...a.representativeFindings, ...b.representativeFindings]).slice(0, 5),
+    reason: reasons.join(" "),
+    ...(cleanStrings([...(a.sourceQuestionIds ?? []), ...(b.sourceQuestionIds ?? [])]).length > 0
+      ? { sourceQuestionIds: cleanStrings([...(a.sourceQuestionIds ?? []), ...(b.sourceQuestionIds ?? [])]) }
+      : {}),
+    ...(cleanStrings([...(a.sourceHintKeys ?? []), ...(b.sourceHintKeys ?? [])]).length > 0
+      ? { sourceHintKeys: cleanStrings([...(a.sourceHintKeys ?? []), ...(b.sourceHintKeys ?? [])]) }
+      : {}),
+    mergedTaskIds: taskIds
+  };
+}
+
+function mergeReason(task: SystemReviewTask): string {
+  if ((task.sourceQuestionIds ?? []).length > 0) {
+    return "same_review_question";
+  }
+  if ((task.sourceHintKeys ?? []).length > 1) {
+    return "same_or_overlapping_follow_up_hints";
+  }
+  return "symbol_file_and_question_overlap";
+}
+
+function dedupeFindings(findings: CandidateFinding[]): CandidateFinding[] {
+  const seen = new Set<string>();
+  const result: CandidateFinding[] = [];
+  for (const finding of findings) {
+    if (seen.has(finding.id)) {
+      continue;
+    }
+    seen.add(finding.id);
+    result.push(finding);
+  }
+  return result;
+}
+
+function intersects(left: string[], right: string[]): boolean {
+  const rightSet = new Set(right.map(normalizeScopeValue));
+  return left.some((value) => rightSet.has(normalizeScopeValue(value)));
+}
+
+function meaningfulTokenOverlap(left: string, right: string): number {
+  const leftTokens = meaningfulTokens(left);
+  const rightTokens = meaningfulTokens(right);
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return 0;
+  }
+  let overlap = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+  return overlap / Math.min(leftTokens.size, rightTokens.size);
+}
+
+function meaningfulTokens(input: string): Set<string> {
+  const stop = new Set(["after", "before", "check", "confirm", "verify", "whether", "review", "this", "that", "changed", "change", "behavior", "contract", "still", "with", "from", "into", "across", "same", "question"]);
+  return new Set(normalizeFollowUpQuestion(input).split(" ").filter((token) => token.length >= 4 && !stop.has(token)));
 }
 
 function confidenceRank(confidence: Confidence): number {

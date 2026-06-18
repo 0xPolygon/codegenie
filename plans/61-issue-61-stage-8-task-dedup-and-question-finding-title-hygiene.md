@@ -1,6 +1,6 @@
 # Issue 61: Stage 8 Task Deduplication and Question-Finding Title Hygiene
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run `0c4d5213/logs/25`, 2026-06-17
 Recommended priority: medium-high, because run 25 passed but spent extra work on duplicate Stage 8 tasks and published one question-shaped finding title
 

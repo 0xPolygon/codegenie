@@ -7910,6 +7910,115 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("replaces a question-shaped final title with a concrete merged candidate title", async () => {
+    const questionTitleFinding: CandidateFinding = {
+      ...fakeFinding(),
+      title: "Verify route fallback behavior after this change",
+      failureMode: "Explicit fallback requests now return an error instead of using the default route.",
+      whyThisMatters: "Callers that expected fallback routing now fail the request."
+    };
+    const concreteTitleFinding: CandidateFinding = {
+      ...questionTitleFinding,
+      id: "finding-2",
+      title: "Explicit fallback requests now error instead of falling back"
+    };
+    const result = await dedupeRankAndComposeReview(
+      { verified: [questionTitleFinding, concreteTitleFinding], verdicts: [] },
+      fakePlan(),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "composer summary",
+              composedFindings: [{
+                findingIds: [questionTitleFinding.id, concreteTitleFinding.id],
+                finalBody: "The explicit fallback request now returns an error instead of using the default route.",
+                publication: "inline"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.findings[0]?.title).toBe("Explicit fallback requests now error instead of falling back");
+    expect(result.findings[0]?.mergedTitles).toEqual(expect.arrayContaining([
+      "Verify route fallback behavior after this change",
+      "Explicit fallback requests now error instead of falling back"
+    ]));
+  });
+
+  it("synthesizes a conservative issue title when every merged candidate title is question-shaped", async () => {
+    const finding: CandidateFinding = {
+      ...fakeFinding(),
+      title: "Verify cleanup behavior after this change",
+      failureMode: "The changed branch skips cleanup before returning to callers.",
+      whyThisMatters: "Stale state can be reused by the next request."
+    };
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "composer summary",
+              composedFindings: [{
+                findingIds: [finding.id],
+                finalBody: "The changed branch skips cleanup before returning to callers.",
+                publication: "inline"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.findings[0]?.title).toBe("The changed branch skips cleanup before returning to callers");
+  });
+
   it("drops overlapping composed groups before publishing duplicate final findings", async () => {
     const artifacts = new Map<string, unknown>();
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
