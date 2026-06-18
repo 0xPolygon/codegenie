@@ -50,6 +50,17 @@ type HintGroup = {
   hints: HintWithPacket[];
 };
 
+type QuestionFollowUpGroup = {
+  key: string;
+  question: string;
+  reason: string;
+  confidence: Exclude<Confidence, "low">;
+  packetIds: string[];
+  files: string[];
+  symbols: string[];
+  suggestedLenses: string[];
+};
+
 type SystemTaskReview = {
   task: SystemReviewTask;
   packetResult: PacketReviewResult;
@@ -76,7 +87,7 @@ export async function runTargetedSystemReviews(
       stage: 8,
       level: "info",
       message: "system_review_skipped",
-      data: { reason: "no repeated follow-up hints" }
+      data: { reason: "no repeated follow-up hints or unresolved review questions" }
     });
     telemetry.event({
       stage: 8,
@@ -169,32 +180,46 @@ export function suppressResolvedFollowUpHints(
 }
 
 export function buildSystemReviewTasks(packetResults: PacketReviewResult[], packets: ReviewPacket[]): SystemReviewTask[] {
-  const groups = repeatedHintGroups(packetResults);
   const findingsByPacket = new Map(packetResults.map((result) => [result.packetId, result.findings]));
   const packetById = new Map(packets.map((packet) => [packet.id, packet]));
-  return groups
+  const hintTasks = repeatedHintGroups(packetResults)
     .sort(compareHintGroups)
     .slice(0, MAX_SYSTEM_REVIEW_TASKS)
     .map((group) => {
-      const representativeFindings = group.packetIds
-        .flatMap((packetId) => findingsByPacket.get(packetId) ?? [])
-        .slice(0, 5);
-      const packetSymbols = group.packetIds
-        .flatMap((packetId) => packetById.get(packetId)?.symbolFacts ?? [])
-        .flatMap((fact) => [fact.enclosingSymbol, fact.signature])
-        .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0);
-      return {
-        id: `system-${sha256Hex(group.key).slice(0, 12)}`,
-        question: group.question,
-        reason: group.reason,
-        confidence: group.confidence,
-        packetIds: group.packetIds,
-        files: group.files,
-        symbols: cleanStrings([...group.symbols, ...packetSymbols]).slice(0, 20),
-        suggestedLenses: cleanStrings(["core/code-review", ...group.suggestedLenses]).slice(0, 10),
-        representativeFindings
-      };
+      return taskFromGroup(group, findingsByPacket, packetById);
     });
+  const questionTasks = questionFollowUpGroups(packetResults, packets)
+    .sort(compareQuestionGroups)
+    .slice(0, 1)
+    .map((group) => taskFromGroup(group, findingsByPacket, packetById));
+  return dedupeSystemReviewTasks([...hintTasks, ...questionTasks])
+    .sort(compareSystemReviewTasks)
+    .slice(0, MAX_SYSTEM_REVIEW_TASKS);
+}
+
+function taskFromGroup(
+  group: HintGroup | QuestionFollowUpGroup,
+  findingsByPacket: Map<string, CandidateFinding[]>,
+  packetById: Map<string, ReviewPacket>
+): SystemReviewTask {
+  const representativeFindings = group.packetIds
+    .flatMap((packetId) => findingsByPacket.get(packetId) ?? [])
+    .slice(0, 5);
+  const packetSymbols = group.packetIds
+    .flatMap((packetId) => packetById.get(packetId)?.symbolFacts ?? [])
+    .flatMap((fact) => [fact.enclosingSymbol, fact.signature])
+    .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0);
+  return {
+    id: `system-${sha256Hex(group.key).slice(0, 12)}`,
+    question: group.question,
+    reason: group.reason,
+    confidence: group.confidence,
+    packetIds: group.packetIds,
+    files: group.files,
+    symbols: cleanStrings([...group.symbols, ...packetSymbols]).slice(0, 20),
+    suggestedLenses: cleanStrings(["core/code-review", ...group.suggestedLenses]).slice(0, 10),
+    representativeFindings
+  };
 }
 
 async function runSystemReviewTask(
@@ -329,11 +354,102 @@ function repeatedHintGroups(packetResults: PacketReviewResult[]): HintGroup[] {
   return [...groups.values()].filter((group) => group.packetIds.length > 1);
 }
 
+function questionFollowUpGroups(packetResults: PacketReviewResult[], packets: ReviewPacket[]): QuestionFollowUpGroup[] {
+  const packetById = new Map(packets.map((packet) => [packet.id, packet]));
+  const groups = new Map<string, QuestionFollowUpGroup>();
+  for (const result of packetResults) {
+    const packet = packetById.get(result.packetId);
+    if (!packet) {
+      continue;
+    }
+    const coveredQuestionIds = new Set(result.findings.flatMap((finding) => finding.reviewQuestionIds ?? []));
+    const answersByQuestion = new Map((result.answeredQuestions ?? []).map((answer) => [answer.questionId, answer]));
+    const unresolvedQuestionIds = new Set(result.unresolvedQuestions ?? []);
+    for (const question of packet.reviewQuestions ?? []) {
+      if (coveredQuestionIds.has(question.id)) {
+        continue;
+      }
+      const answer = answersByQuestion.get(question.id);
+      const needsFollowUp = unresolvedQuestionIds.has(question.id) || answer?.outcome === "partial";
+      if (!needsFollowUp || answer?.confidence === "low") {
+        continue;
+      }
+      const files = cleanStrings(question.files.length > 0 ? question.files : [packet.path]);
+      const symbols = cleanStrings([
+        ...question.symbols,
+        ...packet.symbolFacts.flatMap((fact) => [fact.enclosingSymbol, fact.signature])
+          .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
+      ]);
+      if (files.length === 0 && symbols.length === 0) {
+        continue;
+      }
+      const reasonParts = [
+        question.whyItMatters,
+        answer?.answer,
+        answer?.evidenceTrace,
+        answer === undefined && unresolvedQuestionIds.has(question.id) ? "The packet left this attached review question unresolved." : undefined
+      ].filter((part): part is string => part !== undefined && part.trim().length > 0);
+      const key = `review-question:${question.id}|${followUpHintKey({ question: question.question, files, symbols })}`;
+      const confidence = answer?.confidence === "high" ? "high" : "medium";
+      const existing = groups.get(key);
+      if (!existing) {
+        groups.set(key, {
+          key,
+          question: question.question,
+          reason: reasonParts.join(" "),
+          confidence,
+          packetIds: [result.packetId],
+          files,
+          symbols,
+          suggestedLenses: cleanStrings(packet.lenses)
+        });
+        continue;
+      }
+      existing.packetIds = cleanStrings([...existing.packetIds, result.packetId]);
+      existing.files = cleanStrings([...existing.files, ...files]);
+      existing.symbols = cleanStrings([...existing.symbols, ...symbols]);
+      existing.suggestedLenses = cleanStrings([...existing.suggestedLenses, ...packet.lenses]);
+      if (confidenceRank(confidence) < confidenceRank(existing.confidence)) {
+        existing.confidence = confidence;
+      }
+    }
+  }
+  return [...groups.values()];
+}
+
 function compareHintGroups(a: HintGroup, b: HintGroup): number {
   return confidenceRank(a.confidence) - confidenceRank(b.confidence) ||
     b.packetIds.length - a.packetIds.length ||
     b.files.length - a.files.length ||
     a.question.localeCompare(b.question);
+}
+
+function compareQuestionGroups(a: QuestionFollowUpGroup, b: QuestionFollowUpGroup): number {
+  return confidenceRank(a.confidence) - confidenceRank(b.confidence) ||
+    b.packetIds.length - a.packetIds.length ||
+    b.files.length - a.files.length ||
+    a.question.localeCompare(b.question);
+}
+
+function compareSystemReviewTasks(a: SystemReviewTask, b: SystemReviewTask): number {
+  return confidenceRank(a.confidence) - confidenceRank(b.confidence) ||
+    b.packetIds.length - a.packetIds.length ||
+    b.files.length - a.files.length ||
+    a.question.localeCompare(b.question);
+}
+
+function dedupeSystemReviewTasks(tasks: SystemReviewTask[]): SystemReviewTask[] {
+  const seen = new Set<string>();
+  const deduped: SystemReviewTask[] = [];
+  for (const task of tasks) {
+    const key = followUpHintKey({ question: task.question, files: task.files, symbols: task.symbols });
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(task);
+  }
+  return deduped;
 }
 
 function confidenceRank(confidence: Confidence): number {

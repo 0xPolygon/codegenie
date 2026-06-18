@@ -10,9 +10,10 @@ import {
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
-import { createRunTelemetry } from "../src/telemetry/run-artifacts.js";
+import { KNOWN_ARTIFACTS, createRunTelemetry } from "../src/telemetry/run-artifacts.js";
 import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
 
 describe("run telemetry", () => {
@@ -1143,6 +1144,46 @@ describe("run telemetry", () => {
       chmodSync(protectedRun, 0o700);
       stderr.mockRestore();
     }
+  });
+});
+
+describe("run artifact allowlist", () => {
+  // Guards against the class of bug where a pipeline stage adds a writeArtifact("foo.json")
+  // call but forgets to register "foo.json" in KNOWN_ARTIFACTS. assertAllowedArtifactPath only
+  // throws at runtime when that code path is hit (e.g. Stage 8 with tasks), so an unregistered
+  // artifact can ship undetected and abort a whole review. This scans source for the literal
+  // call sites and fails at test time instead.
+  const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
+
+  function collectTsFiles(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        out.push(...collectTsFiles(full));
+      } else if (entry.name.endsWith(".ts")) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  it("registers every writeArtifact() literal call site in KNOWN_ARTIFACTS", () => {
+    const callSiteRe = /writeArtifact\(\s*["'`]([^"'`]+)["'`]/g;
+    const unregistered: Array<{ file: string; artifact: string }> = [];
+    for (const file of collectTsFiles(srcDir)) {
+      const source = readFileSync(file, "utf8");
+      for (const match of source.matchAll(callSiteRe)) {
+        const artifact = match[1];
+        if (artifact === undefined) {
+          continue;
+        }
+        if (!KNOWN_ARTIFACTS.has(artifact) && !/^packets\/[^/]+\.json$/.test(artifact)) {
+          unregistered.push({ file: path.relative(srcDir, file), artifact });
+        }
+      }
+    }
+    expect(unregistered).toEqual([]);
   });
 });
 

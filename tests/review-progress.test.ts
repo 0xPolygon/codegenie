@@ -63,5 +63,5 @@ function fakeStream(isTTY: boolean): FakeProgressStream {
       return true;
     }
   };
-  return stream as FakeProgressStream;
+  return stream as unknown as FakeProgressStream;
 }

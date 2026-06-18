@@ -23,6 +23,7 @@ import { createToolResultCache } from "../src/llm/tool-result-cache.js";
 import {
   SCHEMA_VERSIONS,
   SubmitCompositionSchema,
+  type SubmitPacketReview,
   SubmitPacketReviewSchema,
   SubmitPlanSchema,
   SubmitVerificationVerdictSchema,
@@ -2150,6 +2151,196 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         })
       })
     ]));
+  });
+
+  it("truncates overlong Stage 7 no-finding reasons before model repair", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-long-no-findings",
+        name: "submit_review",
+        arguments: {
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [{
+            question: "Does any caller rely on the old edge behavior?",
+            files: ["app.ts"],
+            symbols: ["handler"],
+            suggestedLenses: ["core/code-review"],
+            reason: "The packet found a concrete predicate worth checking, but no local failure mode.",
+            confidence: "medium"
+          }],
+          uncertainties: [],
+          answeredQuestions: [{
+            questionId: "q-edge-behavior",
+            answer: "The packet did not prove a local bug, but the caller predicate remains worth checking.",
+            confidence: "medium",
+            outcome: "partial",
+            evidence: [{
+              path: "app.ts",
+              lines: "return handler(input)",
+              whyRelevant: "The changed hunk contains the local behavior boundary.",
+              extraEvidenceNote: "model-added field should be stripped"
+            }],
+            evidenceTrace: "input -> changed handler -> caller predicate unresolved",
+            extraQuestionNote: "model-added field should be stripped"
+          }],
+          noFindingReason: `No concrete issue found. ${"detail ".repeat(260)}`
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    const result = (await runner.runStructured({
+      ...submitReviewRequest("packet-long-no-findings"),
+      telemetryContext: { packetId: "packet-long-no-findings" }
+    })) as SubmitPacketReview;
+
+    expect(result).toMatchObject({ reviewStatus: "no_findings", findings: [] });
+    expect(result.followUpHints).toEqual([
+      expect.objectContaining({
+        question: "Does any caller rely on the old edge behavior?",
+        confidence: "medium"
+      })
+    ]);
+    expect(result.answeredQuestions).toEqual([
+      {
+        questionId: "q-edge-behavior",
+        answer: "The packet did not prove a local bug, but the caller predicate remains worth checking.",
+        confidence: "medium",
+        outcome: "partial",
+        evidence: [{
+          path: "app.ts",
+          lines: "return handler(input)",
+          whyRelevant: "The changed hunk contains the local behavior boundary."
+        }],
+        evidenceTrace: "input -> changed handler -> caller predicate unresolved"
+      }
+    ]);
+    expect(result.noFindingReason).toHaveLength(1000);
+    expect(result.noFindingReason).toContain("[truncated by codeninja]");
+    expect(adapter.contexts).toHaveLength(1);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_cleanup_recovered",
+        packetId: "packet-long-no-findings",
+        data: expect.objectContaining({ cleanupKind: "no_finding_reason_truncated" })
+      }),
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_no_finding_reason_truncated",
+        packetId: "packet-long-no-findings"
+      })
+    ]));
+  });
+
+  it("salvages a no-findings packet whose prose mentions candidate/title without misrouting to candidate repair", async () => {
+    // Regression guard for the run-24 misclassification: a no_findings payload whose prose
+    // happens to contain words like "candidate" or "title" must NOT be treated as a candidate
+    // submission. It should be salvaged deterministically as no_findings (no model re-prompt),
+    // with its follow-up hint preserved.
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-prose-no-findings",
+        name: "submit_review",
+        arguments: {
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [{
+            question: "Does any caller depend on the old fallback?",
+            files: ["app.ts"],
+            symbols: ["handler"],
+            suggestedLenses: ["core/code-review"],
+            reason: "Concrete predicate worth checking, but no local failure mode in this packet.",
+            confidence: "medium"
+          }],
+          uncertainties: [],
+          noFindingReason: `This could be a candidate for a future refactor, and the function title changed, but no concrete failure mode exists. ${"detail ".repeat(200)}`
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    const result = (await runner.runStructured({
+      ...submitReviewRequest("packet-prose-no-findings"),
+      telemetryContext: { packetId: "packet-prose-no-findings" }
+    })) as SubmitPacketReview;
+
+    expect(result).toMatchObject({ reviewStatus: "no_findings", findings: [] });
+    // Deterministic salvage: no second model call (would-be candidate repair re-prompts).
+    expect(adapter.contexts).toHaveLength(1);
+    expect(result.followUpHints).toEqual([
+      expect.objectContaining({ question: "Does any caller depend on the old fallback?", confidence: "medium" })
+    ]);
+    // Prose preserved as the no-finding reason rather than stripped as a candidate payload.
+    expect(result.noFindingReason).toContain("candidate");
+    expect(result.noFindingReason).toHaveLength(1000);
+  });
+
+  it("sends a no-findings packet that claims a candidate_finding answer to model repair instead of swallowing it", async () => {
+    // Regression guard: a payload that declares no_findings yet answers a review question with
+    // outcome "candidate_finding" is contradictory. It must NOT be deterministically salvaged
+    // into a clean no_findings (which silently drops the answer); it goes to model repair so the
+    // model emits the candidate as an actual finding.
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-contradictory-no-findings",
+        name: "submit_review",
+        arguments: {
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [],
+          uncertainties: [],
+          answeredQuestions: [{
+            questionId: "q-contract",
+            answer: "The changed code rejects a zero-decimal token the old path accepted.",
+            confidence: "high",
+            outcome: "candidate_finding",
+            evidence: [{ path: "fee.ts", whyRelevant: "Changed branch errors on a previously-accepted input." }]
+          }],
+          noFindingReason: `Documented above. ${"detail ".repeat(200)}`
+        }
+      }]),
+      assistant([validCandidateSubmitReviewCall("submit-repaired-finding")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    const result = (await runner.runStructured({
+      ...submitReviewRequest("packet-contradictory-no-findings"),
+      telemetryContext: { packetId: "packet-contradictory-no-findings" }
+    })) as SubmitPacketReview;
+
+    // Went to model repair (second turn used) rather than being swallowed as no_findings.
+    expect(adapter.contexts).toHaveLength(2);
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]).toMatchObject({ title: "Candidate finding" });
   });
 
   it("repairs candidate-shaped invalid submissions with compact replacement context", async () => {

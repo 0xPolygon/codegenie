@@ -57,6 +57,7 @@ export type PlannerRunResult = {
 const STATIC_SIGNALS_PER_HUNK = 5;
 export const MAX_DOSSIER_PROMPT_CHARS = 120_000;
 const MAX_REVIEW_QUESTIONS = 12;
+const MAX_SYNTHESIZED_REVIEW_QUESTIONS = 2;
 const MAX_REVIEW_QUESTION_FILES = 20;
 const MAX_REVIEW_QUESTION_SYMBOLS = 20;
 const SUBMIT_PLAN_ROOT_KEYS = new Set(["diffUnderstanding", "riskAreas", "reviewQuestions", "coverage", "partialReview"]);
@@ -1040,7 +1041,7 @@ function validatePlan(
   ]);
   const coverageByHunk = new Map<string, HunkCoverageDecision>();
   const coverageOrder: string[] = [];
-  const reviewQuestions = normalizeReviewQuestions(plan.reviewQuestions ?? [], dossier, telemetry);
+  const submittedReviewQuestions = normalizeReviewQuestions(plan.reviewQuestions ?? [], dossier, telemetry);
 
   for (const decision of plan.coverage ?? []) {
     if (!knownHunks.has(decision.hunkId)) {
@@ -1109,13 +1110,22 @@ function validatePlan(
     coverageOrder.push(decision.hunkId);
   }
 
+  const riskAreas = (plan.riskAreas ?? []).map((area) => ({
+    ...area,
+    suggestedLenses: area.suggestedLenses.filter((lens) => enabledLensIds.has(lens))
+  }));
+  const reviewQuestions = ensurePlannerReviewQuestions({
+    submitted: submittedReviewQuestions,
+    riskAreas,
+    dossier,
+    coverageByHunk,
+    telemetry
+  });
+
   return {
     diffUnderstanding: plan.diffUnderstanding,
     ...(dossier.intentSignals !== undefined ? { intentSignals: dossier.intentSignals } : {}),
-    riskAreas: (plan.riskAreas ?? []).map((area) => ({
-      ...area,
-      suggestedLenses: area.suggestedLenses.filter((lens) => enabledLensIds.has(lens))
-    })),
+    riskAreas,
     ...(reviewQuestions.length > 0 ? { reviewQuestions } : {}),
     coverage: coverageOrder.flatMap((hunkId) => {
       const decision = coverageByHunk.get(hunkId);
@@ -1218,6 +1228,142 @@ function normalizeReviewQuestions(
   }
 
   return normalized;
+}
+
+function ensurePlannerReviewQuestions(input: {
+  submitted: ReviewQuestion[];
+  riskAreas: ReviewPlan["riskAreas"];
+  dossier: PlannerDossier;
+  coverageByHunk: Map<string, HunkCoverageDecision>;
+  telemetry: TelemetryRecorder;
+}): ReviewQuestion[] {
+  if (input.submitted.length > 0) {
+    input.telemetry.event({
+      stage: 5,
+      level: "info",
+      message: "planner_review_question_synthesis_skipped",
+      data: {
+        reason: "planner_questions_present",
+        existingQuestions: input.submitted.length,
+        riskAreas: input.riskAreas.length
+      }
+    });
+    return input.submitted;
+  }
+  if (input.riskAreas.length === 0) {
+    input.telemetry.event({
+      stage: 5,
+      level: "info",
+      message: "planner_review_question_synthesis_skipped",
+      data: { reason: "no_risk_areas", existingQuestions: 0, riskAreas: 0 }
+    });
+    return [];
+  }
+  if (input.dossier.totals.hunks < 2 && input.coverageByHunk.size < 2) {
+    input.telemetry.event({
+      stage: 5,
+      level: "info",
+      message: "planner_review_question_synthesis_skipped",
+      data: {
+        reason: "too_small",
+        existingQuestions: 0,
+        riskAreas: input.riskAreas.length,
+        hunks: input.dossier.totals.hunks,
+        coverageDecisions: input.coverageByHunk.size
+      }
+    });
+    return [];
+  }
+
+  const synthesized = synthesizeReviewQuestionsFromRiskAreas(input.riskAreas, input.dossier, input.coverageByHunk);
+  const normalized = normalizeReviewQuestions(synthesized, input.dossier, input.telemetry);
+  if (normalized.length === 0) {
+    input.telemetry.event({
+      stage: 5,
+      level: "info",
+      message: "planner_review_question_synthesis_skipped",
+      data: {
+        reason: "no_material_file_scoped_risk_area",
+        existingQuestions: 0,
+        riskAreas: input.riskAreas.length,
+        candidates: synthesized.length
+      }
+    });
+    return [];
+  }
+  input.telemetry.event({
+    stage: 5,
+    level: "info",
+    message: "planner_review_questions_synthesized",
+    data: {
+      existingQuestions: 0,
+      riskAreas: input.riskAreas.length,
+      synthesized: normalized.length,
+      maxQuestions: MAX_SYNTHESIZED_REVIEW_QUESTIONS,
+      sourceRiskAreas: input.riskAreas
+        .map((area) => normalizeWhitespace(area.area))
+        .filter((area) => area.length > 0)
+        .slice(0, MAX_SYNTHESIZED_REVIEW_QUESTIONS)
+    }
+  });
+  return normalized;
+}
+
+function synthesizeReviewQuestionsFromRiskAreas(
+  riskAreas: ReviewPlan["riskAreas"],
+  dossier: PlannerDossier,
+  coverageByHunk: Map<string, HunkCoverageDecision>
+): ReviewQuestion[] {
+  const knownFiles = new Set(dossier.files.flatMap((file) => [file.path, ...(file.oldPath !== undefined ? [file.oldPath] : [])]));
+  const decisions = [...coverageByHunk.values()];
+  return riskAreas
+    .map((area, index) => {
+      const text = normalizeWhitespace(area.area);
+      const reason = normalizeWhitespace(area.reason);
+      const files = cleanStrings(area.files.map(stripLocationSuffix).filter((file) => knownFiles.has(file)));
+      if (text.length === 0 || reason.length === 0 || files.length === 0 || isVagueRiskArea(text, reason)) {
+        return undefined;
+      }
+      const overlappingDecisions = decisions.filter((decision) => files.includes(stripLocationSuffix(decision.path)));
+      const coverageScore = overlappingDecisions.reduce((sum, decision) => sum + (decision.coverage === "deep" ? 3 : decision.coverage === "normal" ? 2 : 1), 0);
+      const symbols = cleanStrings([
+        ...overlappingDecisions.flatMap((decision) =>
+          decision.surroundingContextHints.flatMap((hint) => hint.symbol === undefined ? [] : [hint.symbol])
+        ),
+        ...dossier.files
+          .filter((file) => files.includes(file.path) || (file.oldPath !== undefined && files.includes(file.oldPath)))
+          .flatMap((file) => file.hunks)
+          .flatMap((hunk) => [
+            hunk.symbolFacts?.enclosingSymbol,
+            hunk.symbolFacts?.signature
+          ])
+          .filter((value): value is string => value !== undefined && value.trim().length > 0)
+      ]).slice(0, MAX_REVIEW_QUESTION_SYMBOLS);
+      const questionText = `Does the changed code preserve the relationship or contract described by "${truncate(text, 140)}" across the relevant files? Trace the changed input/state, transformation/check, and downstream output/consumer before answering.`;
+      const question: ReviewQuestion = {
+        id: normalizeQuestionId(`q-risk-${index + 1}-${text}`, questionText, index + 1),
+        question: questionText,
+        whyItMatters: truncate(reason, 1000),
+        files: files.slice(0, MAX_REVIEW_QUESTION_FILES),
+        symbols,
+        evidenceHint: "Answer from changed hunks plus the nearest relevant surrounding context. Emit a candidate finding if the trace exposes a concrete changed-code failure mode."
+      };
+      return {
+        question,
+        coverageScore
+      };
+    })
+    .filter((entry): entry is { question: ReviewQuestion; coverageScore: number } => entry !== undefined)
+    .sort((a, b) => b.coverageScore - a.coverageScore || a.question.id.localeCompare(b.question.id))
+    .slice(0, MAX_SYNTHESIZED_REVIEW_QUESTIONS)
+    .map((entry) => entry.question);
+}
+
+function isVagueRiskArea(area: string, reason: string): boolean {
+  const normalized = normalizeQuestionForDedupe(`${area} ${reason}`);
+  return normalized.length < 20 ||
+    /^(general|misc|miscellaneous|review|check|inspect)\b/u.test(normalized) ||
+    /\b(review this|check this|inspect this|look at this)\b/u.test(normalized);
 }
 
 function dedupeReviewQuestions(questions: ReviewQuestion[]): ReviewQuestion[] {

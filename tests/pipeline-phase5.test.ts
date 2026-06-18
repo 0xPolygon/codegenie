@@ -1263,6 +1263,37 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets[0]?.reviewQuestions?.[0]?.relevanceReason).toContain("symbol overlap");
   });
 
+  it("attaches file-only planner review questions to matching packets", async () => {
+    const plan: ReviewPlan = {
+      ...fakePlan(),
+      reviewQuestions: [
+        {
+          id: "q-file-only",
+          question: "Does the changed value relationship still hold for this file?",
+          whyItMatters: "The planner identified a file-scoped behavior risk.",
+          files: ["app.ts"],
+          symbols: []
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [fakeDiffFile("app.ts", "export function handler() { return 1; }")],
+      [fakeFacts("app.ts", "per-hunk")],
+      fakeRepositoryIndex(),
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(packets[0]?.reviewQuestions).toEqual([
+      expect.objectContaining({
+        id: "q-file-only",
+        relevanceReason: "file overlap: app.ts"
+      })
+    ]);
+  });
+
   it("resolves call-site symbol hints to enclosing caller bodies instead of the callee body", async () => {
     const events: TelemetryEvent[] = [];
     const telemetry = {
@@ -1272,7 +1303,7 @@ describe("phase 5 pipeline regressions", () => {
       }
     };
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
-    const mentionCalls: Array<{ symbolName: string; pathGlob?: string; contextMode?: string; maxResults?: number }> = [];
+    const mentionCalls: Array<{ symbolName: string; pathGlob?: string | undefined; contextMode?: string | undefined; maxResults?: number | undefined }> = [];
     const symbolReads: Array<{ path: string; selector: { symbolName?: string; line?: number } }> = [];
     const tools = {
       ...fakeTools(),
@@ -1371,7 +1402,7 @@ describe("phase 5 pipeline regressions", () => {
 
   it("falls back to repo-wide call-site search when same-file mentions are self-only", async () => {
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
-    const mentionCalls: Array<{ symbolName: string; pathGlob?: string; contextMode?: string; maxResults?: number }> = [];
+    const mentionCalls: Array<{ symbolName: string; pathGlob?: string | undefined; contextMode?: string | undefined; maxResults?: number | undefined }> = [];
     const tools = {
       ...fakeTools(),
       findSymbolMentions: async (symbolName: string, options: SymbolMentionOptions = {}) => {
@@ -4327,6 +4358,111 @@ describe("phase 5 pipeline regressions", () => {
       expect.objectContaining({ stage: 5, message: "planner_review_question_dropped", data: expect.objectContaining({ reason: "no_known_files_or_symbols" }) }),
       expect.objectContaining({ stage: 5, message: "planner_review_question_dropped", data: expect.objectContaining({ reason: "vague_question" }) }),
       expect.objectContaining({ stage: 5, message: "planner_review_questions", data: expect.objectContaining({ submitted: 3, kept: 1 }) })
+    ]));
+  });
+
+  it("synthesizes bounded review questions from material risk areas when the planner emits none", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+        events.push(event);
+      }
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          diffUnderstanding: { declaredIntent: "question fallback", inferredBehavior: "question fallback" },
+          riskAreas: [{
+            area: "Downstream output consistency",
+            reason: "The changed helper transforms a value before returning it through a public response path.",
+            files: ["app.ts"],
+            suggestedLenses: ["core/code-review"]
+          }],
+          coverage: [
+            { hunkId: "h1", path: "app.ts", coverage: "deep", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review value trace" },
+            { hunkId: "h2", path: "worker.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review caller" }
+          ]
+        }) as T
+    };
+
+    const result = await runPlanner(fakeDossier(["app.ts", "worker.ts"]), config(), telemetry, {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{
+        id: "core/code-review",
+        title: "Core",
+        description: "core",
+        skillIds: [],
+        enabledByDefault: true,
+        enabled: true,
+        languages: []
+      }],
+      skills: []
+    });
+
+    expect(result.plan.reviewQuestions).toEqual([
+      expect.objectContaining({
+        id: expect.stringMatching(/^q-risk-1-/u),
+        files: ["app.ts"],
+        symbols: [],
+        question: expect.stringContaining("Downstream output consistency"),
+        whyItMatters: "The changed helper transforms a value before returning it through a public response path."
+      })
+    ]);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 5,
+        message: "planner_review_questions_synthesized",
+        data: expect.objectContaining({ synthesized: 1, riskAreas: 1 })
+      })
+    ]));
+  });
+
+  it("does not synthesize review questions for tiny or unscoped plans", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+        events.push(event);
+      }
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          diffUnderstanding: { declaredIntent: "tiny plan", inferredBehavior: "tiny plan" },
+          riskAreas: [{
+            area: "Review this file",
+            reason: "General review",
+            files: ["app.ts"],
+            suggestedLenses: ["core/code-review"]
+          }],
+          coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review" }]
+        }) as T
+    };
+
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), telemetry, {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{
+        id: "core/code-review",
+        title: "Core",
+        description: "core",
+        skillIds: [],
+        enabledByDefault: true,
+        enabled: true,
+        languages: []
+      }],
+      skills: []
+    });
+
+    expect(result.plan.reviewQuestions).toBeUndefined();
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 5,
+        message: "planner_review_question_synthesis_skipped",
+        data: expect.objectContaining({ reason: "too_small" })
+      })
     ]));
   });
 

@@ -4,10 +4,11 @@ import type { LlmSchemaRepairInput, LlmStructuredRequest, PiToolCall } from "./l
 export type Stage7SubmitRepairDecision = {
   classification: Stage7SchemaInvalidKind;
   compactRepair?: boolean;
-  cleanupKind?: "no_findings_shape" | "candidate_payload";
+  cleanupKind?: "no_findings_shape" | "candidate_payload" | "no_finding_reason_truncated";
   recovered?: Record<string, unknown>;
   strippedKeys?: string[];
   rejectReason?: string;
+  truncatedNoFindingReason?: boolean;
 };
 
 export type Stage7SchemaInvalidKind =
@@ -26,11 +27,16 @@ type Stage7CandidateCleanup =
   | { status: "recovered"; arguments: Record<string, unknown>; strippedKeys: string[] }
   | { status: "rejected"; reason: string; strippedKeys: string[] };
 
+type Stage7NoFindingsCleanup =
+  | { status: "not_applicable" }
+  | { status: "recovered"; arguments: Record<string, unknown>; cleanupKind: "no_findings_shape" | "no_finding_reason_truncated"; strippedKeys: string[]; truncatedNoFindingReason: boolean };
+
 const STAGE7_SUBMIT_ALLOWED_KEYS = new Set([
   "reviewStatus",
   "findings",
   "followUpHints",
   "uncertainties",
+  "answeredQuestions",
   "noFindingReason",
   "unresolvedQuestions"
 ]);
@@ -49,7 +55,8 @@ const STAGE7_FINDING_ALLOWED_KEYS = new Set([
   "suggestedTest",
   "verification",
   "behaviorChange",
-  "intentEvidence"
+  "intentEvidence",
+  "reviewQuestionIds"
 ]);
 
 const STAGE7_SEVERITY_VALUES = new Set(["critical", "high", "medium", "low"]);
@@ -63,6 +70,18 @@ const STAGE7_CATEGORY_VALUES = new Set([
   "testing",
   "maintainability"
 ]);
+const STAGE7_ANSWER_OUTCOME_VALUES = new Set(["answered_no_issue", "candidate_finding", "partial", "not_applicable"]);
+const STAGE7_CANDIDATE_FIELD_NAMES = new Set([
+  "title",
+  "failureMode",
+  "whyThisMatters",
+  "suggestedFix",
+  "suggestedTest",
+  "category",
+  "severity",
+  "evidence",
+  "anchor"
+]);
 
 export function stage7SubmitRepairDecision(
   request: LlmStructuredRequest<unknown>,
@@ -74,6 +93,18 @@ export function stage7SubmitRepairDecision(
     return undefined;
   }
   const classification = classifyStage7SchemaInvalid(cause instanceof Error ? cause.message : String(cause), [submitCall]);
+  if (!candidateDraftedBeforeSubmit) {
+    const noFindingsCleanup = cleanupStage7NoFindingsSubmit(submitCall.arguments);
+    if (noFindingsCleanup.status === "recovered") {
+      return {
+        classification,
+        cleanupKind: noFindingsCleanup.cleanupKind,
+        recovered: noFindingsCleanup.arguments,
+        strippedKeys: noFindingsCleanup.strippedKeys,
+        truncatedNoFindingReason: noFindingsCleanup.truncatedNoFindingReason
+      };
+    }
+  }
   if (stage7PayloadLooksCandidateLike(submitCall.arguments)) {
     const cleanup = cleanupStage7CandidateSubmit(submitCall.arguments);
     if (cleanup.status === "recovered") {
@@ -101,16 +132,18 @@ export function stage7SubmitRepairDecision(
   if (!isSafeStage7NoFindingsSalvage(submitCall.arguments)) {
     return { classification };
   }
+  const noFindingReason = cleanStage7NoFindingReason(submitCall.arguments.noFindingReason);
   return {
     classification,
-    cleanupKind: "no_findings_shape",
+    cleanupKind: noFindingReason.truncated ? "no_finding_reason_truncated" : "no_findings_shape",
     recovered: {
       reviewStatus: "no_findings",
       findings: [],
       followUpHints: [],
       uncertainties: [],
-      noFindingReason: cleanStage7NoFindingReason(submitCall.arguments.noFindingReason)
-    }
+      noFindingReason: noFindingReason.value
+    },
+    truncatedNoFindingReason: noFindingReason.truncated
   };
 }
 
@@ -239,6 +272,174 @@ function cleanupStage7CandidateSubmit(args: Record<string, unknown>): Stage7Cand
   return { status: "recovered", arguments: cleaned, strippedKeys };
 }
 
+function cleanupStage7NoFindingsSubmit(args: Record<string, unknown>): Stage7NoFindingsCleanup {
+  if (!isSafeStage7NoFindingsSalvage(args)) {
+    return { status: "not_applicable" };
+  }
+  const cleaned = cloneRecord(args);
+  const strippedKeys: string[] = [];
+  for (const key of extraStage7TopLevelKeys(cleaned)) {
+    const value = cleaned[key];
+    if (!isSafeUnknownStage7SubmitField(value)) {
+      return { status: "not_applicable" };
+    }
+    strippedKeys.push(key);
+    delete cleaned[key];
+  }
+  const reason = cleanStage7NoFindingReason(cleaned.noFindingReason);
+  const answeredQuestions = cleanStage7AnsweredQuestions(cleaned.answeredQuestions);
+  if (!answeredQuestions.valid || answeredQuestions.hasCandidateFindingOutcome) {
+    return { status: "not_applicable" };
+  }
+  const changedReason = cleaned.noFindingReason !== reason.value;
+  const findings = Array.isArray(cleaned.findings) ? cleaned.findings : [];
+  if (findings.length > 0) {
+    return { status: "not_applicable" };
+  }
+  const recovered: Record<string, unknown> = {
+    reviewStatus: "no_findings",
+    findings: [],
+    followUpHints: Array.isArray(cleaned.followUpHints) ? cleaned.followUpHints : [],
+    uncertainties: Array.isArray(cleaned.uncertainties) ? cleaned.uncertainties : [],
+    noFindingReason: reason.value
+  };
+  if (answeredQuestions.value !== undefined) {
+    recovered.answeredQuestions = answeredQuestions.value;
+  }
+  if (Array.isArray(cleaned.unresolvedQuestions)) {
+    recovered.unresolvedQuestions = cleaned.unresolvedQuestions;
+  }
+  const shapeChanged =
+    strippedKeys.length > 0 ||
+    answeredQuestions.changed ||
+    !Array.isArray(cleaned.findings) ||
+    !Array.isArray(cleaned.followUpHints) ||
+    !Array.isArray(cleaned.uncertainties);
+  if (!shapeChanged && !changedReason) {
+    return { status: "not_applicable" };
+  }
+  return {
+    status: "recovered",
+    arguments: recovered,
+    cleanupKind: reason.truncated ? "no_finding_reason_truncated" : "no_findings_shape",
+    strippedKeys,
+    truncatedNoFindingReason: reason.truncated
+  };
+}
+
+function cleanStage7AnsweredQuestions(value: unknown): { value?: unknown[]; changed: boolean; valid: boolean; hasCandidateFindingOutcome: boolean } {
+  if (value === undefined) {
+    return { changed: false, valid: true, hasCandidateFindingOutcome: false };
+  }
+  if (!Array.isArray(value)) {
+    return { changed: false, valid: false, hasCandidateFindingOutcome: false };
+  }
+  let changed = false;
+  let hasCandidateFindingOutcome = false;
+  const cleaned = value.flatMap((answer): unknown[] => {
+    if (!isRecord(answer)) {
+      changed = true;
+      return [];
+    }
+    const questionId = cleanBoundedString(answer.questionId, 120);
+    const answerText = cleanBoundedString(answer.answer, 1000);
+    const confidence = answer.confidence;
+    const outcome = answer.outcome;
+    if (outcome === "candidate_finding") {
+      hasCandidateFindingOutcome = true;
+    }
+    if (
+      questionId.value.length === 0 ||
+      answerText.value.length === 0 ||
+      typeof confidence !== "string" ||
+      !STAGE7_CONFIDENCE_VALUES.has(confidence) ||
+      typeof outcome !== "string" ||
+      !STAGE7_ANSWER_OUTCOME_VALUES.has(outcome)
+    ) {
+      changed = true;
+      return [];
+    }
+    const evidence = cleanStage7AnswerEvidence(answer.evidence);
+    if (!evidence.valid) {
+      changed = true;
+      return [];
+    }
+    const output: Record<string, unknown> = {
+      questionId: questionId.value,
+      answer: answerText.value,
+      confidence,
+      outcome,
+      evidence: evidence.value
+    };
+    if (typeof answer.evidenceTrace === "string") {
+      const evidenceTrace = cleanBoundedString(answer.evidenceTrace, 2000);
+      if (evidenceTrace.value.length > 0) {
+        output.evidenceTrace = evidenceTrace.value;
+      }
+      changed = changed || evidenceTrace.changed;
+    }
+    changed = changed ||
+      questionId.changed ||
+      answerText.changed ||
+      evidence.changed ||
+      Object.keys(answer).some((key) => !["questionId", "answer", "confidence", "outcome", "evidence", "evidenceTrace"].includes(key));
+    return [output];
+  });
+  return {
+    value: cleaned.slice(0, 10),
+    changed: changed || cleaned.length !== value.length || cleaned.length > 10,
+    valid: true,
+    hasCandidateFindingOutcome
+  };
+}
+
+function cleanStage7AnswerEvidence(value: unknown): { value: unknown[]; changed: boolean; valid: boolean } {
+  if (!Array.isArray(value)) {
+    return { value: [], changed: true, valid: true };
+  }
+  let changed = false;
+  const cleaned = value.flatMap((entry): unknown[] => {
+    if (!isRecord(entry)) {
+      changed = true;
+      return [];
+    }
+    const path = cleanBoundedString(entry.path, 500);
+    const whyRelevant = cleanBoundedString(entry.whyRelevant, 1000);
+    if (path.value.length === 0 || whyRelevant.value.length === 0) {
+      changed = true;
+      return [];
+    }
+    const output: Record<string, unknown> = {
+      path: path.value,
+      whyRelevant: whyRelevant.value
+    };
+    if (typeof entry.lines === "string") {
+      const lines = cleanBoundedString(entry.lines, 4000);
+      if (lines.value.length > 0) {
+        output.lines = lines.value;
+      }
+      changed = changed || lines.changed;
+    }
+    changed = changed ||
+      path.changed ||
+      whyRelevant.changed ||
+      Object.keys(entry).some((key) => !["path", "lines", "whyRelevant"].includes(key));
+    return [output];
+  });
+  return { value: cleaned.slice(0, 8), changed: changed || cleaned.length !== value.length || cleaned.length > 8, valid: true };
+}
+
+function cleanBoundedString(value: unknown, maxChars: number): { value: string; changed: boolean } {
+  if (typeof value !== "string") {
+    return { value: "", changed: true };
+  }
+  const cleaned = value.replace(/\s+/gu, " ").trim();
+  if (cleaned.length <= maxChars) {
+    return { value: cleaned, changed: cleaned !== value };
+  }
+  return { value: cleaned.slice(0, maxChars).trimEnd(), changed: true };
+}
+
 function cloneRecord(input: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(safeStringify(input) || "{}") as Record<string, unknown>;
 }
@@ -301,7 +502,18 @@ function isSafeStage7NoFindingsSalvage(args: Record<string, unknown>): boolean {
   if (findings !== undefined && (!Array.isArray(findings) || findings.length > 0)) {
     return false;
   }
+  // A payload that declares no_findings yet answers a review question with outcome
+  // "candidate_finding" is contradictory: the model claims it found a candidate but emitted
+  // none. Refuse deterministic no_findings salvage (which would silently drop the answer) and
+  // let it go to model repair so the candidate is emitted as an actual finding.
+  if (stage7AnswersClaimCandidateFinding(args.answeredQuestions)) {
+    return false;
+  }
   return true;
+}
+
+function stage7AnswersClaimCandidateFinding(value: unknown): boolean {
+  return Array.isArray(value) && value.some((answer) => isRecord(answer) && answer.outcome === "candidate_finding");
 }
 
 function stage7PayloadLooksCandidateLike(args: Record<string, unknown>): boolean {
@@ -309,13 +521,20 @@ function stage7PayloadLooksCandidateLike(args: Record<string, unknown>): boolean
   if (Array.isArray(findings) && findings.length > 0) {
     return true;
   }
+  if (Object.keys(args).some((key) => STAGE7_CANDIDATE_FIELD_NAMES.has(key))) {
+    return true;
+  }
+  const finding = args.finding;
+  if (isRecord(finding) && Object.keys(finding).some((key) => STAGE7_CANDIDATE_FIELD_NAMES.has(key))) {
+    return true;
+  }
   const text = safeStringify(args).toLowerCase();
-  return /"(?:title|failuremode|whythismatters|suggestedfix|suggestedtest|category|severity|confidence|evidence)"\s*:/u.test(text) ||
-    /<\s*parameter\b[^>]*name=["']?(?:title|failuremode|whythismatters|suggestedfix|suggestedtest|category|severity|confidence|evidence)["']?/iu.test(text) ||
-    /\bcandidate\b/u.test(text);
+  return /<\s*parameter\b[^>]*name=["']?(?:title|failuremode|whythismatters|suggestedfix|suggestedtest|category|severity|evidence|anchor)["']?/iu.test(text);
 }
 
-function cleanStage7NoFindingReason(value: unknown): string {
+function cleanStage7NoFindingReason(value: unknown): { value: string; truncated: boolean } {
+  const maxChars = 1000;
+  const suffix = " [truncated by codeninja]";
   const raw = typeof value === "string" ? value : "Reviewed the packet and found no concrete failure mode.";
   const cleaned = raw
     .replace(/<\s*\/?\s*parameter\b[^>]*>/giu, " ")
@@ -323,7 +542,14 @@ function cleanStage7NoFindingReason(value: unknown): string {
     .replace(/<[^>]{1,200}>/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
-  return cleaned.slice(0, 1000) || "Reviewed the packet and found no concrete failure mode.";
+  const fallback = "Reviewed the packet and found no concrete failure mode.";
+  if (cleaned.length <= maxChars) {
+    return { value: cleaned || fallback, truncated: false };
+  }
+  return {
+    value: `${cleaned.slice(0, maxChars - suffix.length).trimEnd()}${suffix}`,
+    truncated: true
+  };
 }
 
 function truncateStage7RepairPayload(input: string): string {

@@ -95,8 +95,73 @@ describe("phase 8 targeted system review", () => {
       stage: 8,
       level: "info",
       message: "system_review_skipped",
-      data: { reason: "no repeated follow-up hints" }
+      data: { reason: "no repeated follow-up hints or unresolved review questions" }
     }));
+  });
+
+  it("builds one focused Stage 8 task from a partial attached review question", () => {
+    const packet = {
+      ...fakePacket("packet-1", "app.ts"),
+      reviewQuestions: [{
+        id: "q-value-contract",
+        question: "Does the changed value still match the returned response?",
+        whyItMatters: "Callers rely on the returned response matching the transformed value.",
+        files: ["app.ts"],
+        symbols: ["divide"],
+        relevanceReason: "file overlap: app.ts"
+      }]
+    };
+    const result: PacketReviewResult = {
+      ...packetResult("packet-1", []),
+      answeredQuestions: [{
+        questionId: "q-value-contract",
+        answer: "The packet shows the divisor changed, but the caller-side response trace is outside this packet.",
+        confidence: "medium",
+        outcome: "partial",
+        evidence: [{ path: "app.ts", whyRelevant: "The changed hunk contains the local value transformation." }],
+        evidenceTrace: "requested count -> changed divide helper -> caller response remains to be checked"
+      }]
+    };
+
+    const tasks = buildSystemReviewTasks([result], [packet]);
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      question: "Does the changed value still match the returned response?",
+      packetIds: ["packet-1"],
+      files: ["app.ts"],
+      suggestedLenses: expect.arrayContaining(["core/code-review"])
+    });
+  });
+
+  it("does not build a question-driven Stage 8 task when a candidate already covers the question", () => {
+    const packet = {
+      ...fakePacket("packet-1", "app.ts"),
+      reviewQuestions: [{
+        id: "q-value-contract",
+        question: "Does the changed value still match the returned response?",
+        whyItMatters: "Callers rely on the returned response matching the transformed value.",
+        files: ["app.ts"],
+        symbols: ["divide"],
+        relevanceReason: "file overlap: app.ts"
+      }]
+    };
+    const result: PacketReviewResult = {
+      ...packetResult("packet-1", [], [{
+        ...fakeCandidate("packet-1"),
+        reviewQuestionIds: ["q-value-contract"]
+      }]),
+      answeredQuestions: [{
+        questionId: "q-value-contract",
+        answer: "The changed hunk exposes a concrete mismatch.",
+        confidence: "medium",
+        outcome: "candidate_finding",
+        evidence: [{ path: "app.ts", whyRelevant: "The candidate covers this review question." }],
+        evidenceTrace: "question answered by candidate finding"
+      }]
+    };
+
+    expect(buildSystemReviewTasks([result], [packet])).toEqual([]);
   });
 
   it("suppresses duplicate human-attention hints when Stage 8 resolves the question", () => {
@@ -232,6 +297,24 @@ function packetResult(packetId: string, followUpHints: PacketReviewResult["follo
     followUpHints,
     uncertainties: [],
     status: "completed"
+  };
+}
+
+function fakeCandidate(packetId: string): CandidateFinding {
+  return {
+    id: `${packetId}-f1`,
+    title: "Changed value can mismatch the returned response",
+    severity: "medium",
+    confidence: "medium",
+    path: "app.ts",
+    anchor: { path: "app.ts", line: 2, side: "RIGHT", hunkId: "h1" },
+    changedLine: true,
+    category: "correctness",
+    evidence: { changedCode: "return total / count;" },
+    failureMode: "A caller-visible value can diverge from the transformed value.",
+    whyThisMatters: "Callers rely on the response value.",
+    verification: "Packet review produced a candidate for this question.",
+    producedBy: { kind: "packet", stage: 7, packetId, lensId: "core/code-review", skillIds: [] }
   };
 }
 

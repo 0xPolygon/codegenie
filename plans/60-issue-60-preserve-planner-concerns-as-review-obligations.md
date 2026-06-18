@@ -1,6 +1,6 @@
 # Issue 60: Preserve Planner Concerns As Review Obligations
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval runs `49f4645b/logs/8` and `0c4d5213/logs/24`, 2026-06-17
 Recommended priority: high, because Stage 5 concerns must survive into review without reducing Stage 7 direct-candidate recall
 

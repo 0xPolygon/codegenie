@@ -63,13 +63,12 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 57 | COMPLETE | Issue 57: Resolve Call-Site Context Hints To Callers |
 | 58 | COMPLETE | Issue 58: Planner Context Hint Contract |
 | 59 | COMPLETE | Issue 59: Stage 5 Planner Schema Repair Salvage |
-| 60 | PENDING | Issue 60: Preserve Planner Concerns As Review Obligations |
+| 60 | COMPLETE | Issue 60: Preserve Planner Concerns As Review Obligations |
 
 ## Current Queue
 
 Recommended implementation order for remaining work:
 
-- **Issue 60** — high-priority recall hardening: preserve planner concerns as review obligations when the planner identifies risk areas but emits no explicit review questions.
 - **Issue 55** — lower priority context/reporting cleanup for documentation hunks; useful but not blocking the review-question work.
 
 ## Deferred / Watch List

@@ -48,7 +48,7 @@ const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
   error: 40
 };
 
-const KNOWN_ARTIFACTS = new Set([
+export const KNOWN_ARTIFACTS = new Set([
   "error.json",
   "intent-signals.json",
   "planner-dossier.json",
@@ -61,6 +61,8 @@ const KNOWN_ARTIFACTS = new Set([
   "review-questions.json",
   "coverage.json",
   "budget-summary.json",
+  "system-review-tasks.json",
+  "system-review-results.json",
   "candidate-findings.json",
   "uncertainty-promotion.json",
   "verification.json",

@@ -2105,6 +2105,21 @@ function recordStage7SchemaCleanupRecovered(
       candidateId: request.telemetryContext?.candidateId
     })
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+  if (decision.truncatedNoFindingReason) {
+    opts.telemetry.event(definedRecord({
+      stage: 7,
+      level: "info",
+      message: "stage7_no_finding_reason_truncated",
+      workerId: request.telemetryContext?.workerId,
+      packetId: request.telemetryContext?.packetId,
+      data: definedRecord({
+        cleanupKind: decision.cleanupKind,
+        classification: decision.classification,
+        recoveredCallId,
+        candidateId: request.telemetryContext?.candidateId
+      })
+    }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+  }
 }
 
 function recordStage7SchemaCleanupRejected(
