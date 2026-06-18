@@ -1,6 +1,6 @@
 # Issue 63: Review Question Ownership and Risk-Area Coverage
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval runs `0c4d5213/logs/25` and `49f4645b/logs/9`, 2026-06-17
 Recommended priority: high, because run 9 showed that a material planner risk can be identified but never become an owned review obligation
 

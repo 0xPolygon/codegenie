@@ -66,13 +66,12 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 60 | COMPLETE | Issue 60: Preserve Planner Concerns As Review Obligations |
 | 61 | COMPLETE | Issue 61: Stage 8 Task Deduplication and Question-Finding Title Hygiene |
 | 62 | COMPLETE | Issue 62: Stage 7 Schema Friction Reduction |
-| 63 | PENDING | Issue 63: Review Question Ownership and Risk-Area Coverage |
+| 63 | COMPLETE | Issue 63: Review Question Ownership and Risk-Area Coverage |
 
 ## Current Queue
 
 Recommended implementation order for remaining work:
 
-- **Issue 63** — preserve material planner risk areas as owned review obligations before assigning primary/supporting packet roles; this directly addresses the run-9 miss where the right risk area evaporated.
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
 
 ## Deferred / Watch List

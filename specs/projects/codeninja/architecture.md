@@ -562,6 +562,11 @@ type ReviewPacket = {
   contextText: string // rendered deterministic context (enclosing-symbol source, file outline, likely-tests list) assembled by the packet builder within maxContextChars
   relevantTests: SymbolInfo[]
   surroundingContextHints: SurroundingContextHint[]
+  reviewQuestions?: Array<ReviewQuestion & {
+    relevanceReason: string
+    role?: "primary" | "supporting" // primary owns the full answer; supporting answers only the local slice
+    ownershipReason?: string
+  }>
   labels: string[]
   riskNotes: string[]
   toolBudget: ToolBudget
@@ -584,6 +589,15 @@ type PacketReviewResult = {
   packetId: string
   lenses: string[]
   findings: CandidateFinding[]
+  answeredQuestions?: Array<{
+    questionId: string
+    answer: string
+    confidence: "high" | "medium" | "low"
+    outcome: "answered_no_issue" | "candidate_finding" | "partial" | "not_applicable"
+    evidence: Array<{ path: string; lines?: string; whyRelevant: string }>
+    evidenceTrace?: string
+    role?: "primary" | "supporting"
+  }>
   followUpHints: Array<{
     question: string
     files: string[]
@@ -605,7 +619,7 @@ type StructuredUncertainty = {
 
 `PacketReviewResult` does not duplicate worker tool usage: tool calls and files read live in `tool-calls.jsonl`, and readers join on `workerId`.
 
-Packet `followUpHints` and `uncertainties` are still emitted in v1: they flow to telemetry, to coverage/report notes, and, when multiple packet reviewers raise the same scoped question, into the narrow Stage 8 targeted system follow-up. Single unresolved hints remain human-attention notes rather than review tasks.
+Packet `followUpHints`, `answeredQuestions`, and `uncertainties` are still emitted in v1: they flow to telemetry, to coverage/report notes, and, when multiple packet reviewers raise the same scoped question or a primary planner question remains unresolved, into the narrow Stage 8 targeted system follow-up. Single unresolved hints remain human-attention notes rather than review tasks.
 
 Review packets are persisted to telemetry artifacts so evals can inspect what context the reviewer saw. Every packet contains one or more hunks. `ReviewPacket.kind` explains why those hunks are reviewed together, while `ReviewPacket.coverage` and `ReviewPacket.reviewProfile` control execution budget and prompting.
 
@@ -617,9 +631,10 @@ Packet construction algorithm:
 4. Group hunks conservatively: one packet per hunk by default; coalesce only same-file hunks that share an enclosing symbol or are very nearby and still fit strict size limits.
 5. Never coalesce across files in v1. Cross-file concerns are recorded as follow-up hints; repeated scoped hints may trigger the narrow Stage 8 follow-up, while isolated hints remain telemetry/report notes.
 6. Attach cheap deterministic surrounding context when available — enclosing symbol source, file outline, likely tests — rendered into `contextText` within `maxContextChars`, plus planner-provided `surroundingContextHints`.
-7. Enforce max hunks, patch chars, context chars, and skill/lens prompt caps. Split oversized packets back into smaller packets. When one hunk alone exceeds `maxPatchChars`, the packet carries a truncated patch window centered on changed lines, with `truncated: true`, omitted-line counts, and a coverage note; never split below hunk granularity, never synthesize sub-hunk ids. Quantified defaults: `maxPatchChars = 12000`, `maxContextChars = 8000`, `maxHunksPerPacket = 5`.
-8. Compute packet coverage as the max coverage of included hunks, ordered `deep > normal > light`.
-9. Compute packet lenses as the bounded union of included hunk lenses, keeping the primary language lens first, pruning low-value `core/tests` / `core/code-review` from routine source or mechanical packets when another lens remains, and capping the final list.
+7. Attach relevant planner review questions by file/symbol overlap. When one packet is clearly the best owner for a question, mark it `primary` and mark other attachments `supporting`; if ownership is ambiguous, leave the question unowned and preserve the previous full-answer behavior.
+8. Enforce max hunks, patch chars, context chars, and skill/lens prompt caps. Split oversized packets back into smaller packets. When one hunk alone exceeds `maxPatchChars`, the packet carries a truncated patch window centered on changed lines, with `truncated: true`, omitted-line counts, and a coverage note; never split below hunk granularity, never synthesize sub-hunk ids. Quantified defaults: `maxPatchChars = 12000`, `maxContextChars = 8000`, `maxHunksPerPacket = 5`.
+9. Compute packet coverage as the max coverage of included hunks, ordered `deep > normal > light`.
+10. Compute packet lenses as the bounded union of included hunk lenses, keeping the primary language lens first, pruning low-value `core/tests` / `core/code-review` from routine source or mechanical packets when another lens remains, and capping the final list.
 
 ### Findings And Anchors
 

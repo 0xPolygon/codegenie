@@ -451,6 +451,7 @@ Each packet should include:
 - Deterministic enclosing symbol metadata when available.
 - Rendered enclosing-symbol source, file outline, and likely tests when available.
 - Surrounding-context hints from the planner or deterministic repository intelligence.
+- Attached planner review questions when relevant. If a question maps to multiple packets, the packet builder may assign one clear primary owner and mark other attachments as supporting local-slice evidence. If ownership is ambiguous, the question stays unowned and follows the normal full-answer behavior.
 - Configured labels and planner risk notes.
 
 Review packets should be compact. They should not contain the whole repository or large unrelated file dumps.
@@ -506,7 +507,7 @@ After each packet review, codeninja should validate the structured result before
 
 ## Stage 8: Cross-File / System Follow-Up Review
 
-Stage 8 is a narrow targeted follow-up, not a broad whole-repo review pass. It promotes repeated, scoped Stage 7 follow-up hints into a small number of focused system review tasks. If no repeated scoped hints exist, Stage 8 records `system_review_skipped` and performs no model work.
+Stage 8 is a narrow targeted follow-up, not a broad whole-repo review pass. It promotes repeated, scoped Stage 7 follow-up hints and unresolved primary planner review questions into a small number of focused system review tasks. If no repeated scoped hints or unresolved primary questions exist, Stage 8 records `system_review_skipped` and performs no model work.
 
 Packet reviewers emit structured follow-up hints when they need cross-file evidence they cannot resolve locally:
 
@@ -534,6 +535,8 @@ Stage 8 should:
 - Ignore low-confidence hints.
 - Group hints by normalized question plus concrete file/symbol scope.
 - Require the same scoped question to appear from more than one packet before scheduling work.
+- Build one task for an unresolved primary planner review question when Stage 7 left the primary owner partial, unresolved, or unanswered and no candidate finding already covers that question.
+- Fold supporting packet answers under the primary question task instead of dispatching duplicate tasks for the same root question.
 - Cap work to a small number of tasks per run.
 - Give each task the same read-only repository tool suite as packet review, under a stricter task budget.
 - Produce either candidate findings, resolved hint notes, or no output.

@@ -74,6 +74,9 @@ const MAX_SYMBOL_EXCERPT_CHARS = 2_500;
 const MAX_HINT_CONTEXT_CHARS = 2_000;
 const MAX_HINT_CONTEXT_LINES = 80;
 const MAX_REVIEW_QUESTIONS_PER_PACKET = 3;
+const MAX_PRIMARY_REVIEW_QUESTIONS_PER_PACKET = 2;
+const MIN_OWNERSHIP_SCORE = 10;
+const MIN_CLEAR_OWNERSHIP_MARGIN = 12;
 const CALL_SITE_MENTION_LOOKUP_LIMIT = 50;
 const CALL_SITE_CONTEXT_SYMBOL_LIMIT = 4;
 const MAX_STATIC_SIGNALS_PER_PACKET_HUNK = 5;
@@ -120,10 +123,13 @@ export async function buildReviewPackets(
       const includedDecisions = groupDecisions.filter(isNonSkipDecision);
       const packet = await buildPacket(group.hunks, includedDecisions, group, plan, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics);
       packets.push(packet);
-      await telemetry.writeArtifact(`packets/${packet.id}.json`, packet);
     }
   }
 
+  const ownership = assignReviewQuestionOwnership(packets, plan.reviewQuestions ?? [], telemetry);
+  for (const packet of packets) {
+    await telemetry.writeArtifact(`packets/${packet.id}.json`, packet);
+  }
   telemetry.event({
     stage: 6,
     level: "info",
@@ -134,7 +140,10 @@ export async function buildReviewPackets(
       reviewQuestions: {
         emitted: plan.reviewQuestions?.length ?? 0,
         attachedPackets: packets.filter((packet) => (packet.reviewQuestions ?? []).length > 0).length,
-        attachments: packets.reduce((sum, packet) => sum + (packet.reviewQuestions?.length ?? 0), 0)
+        attachments: packets.reduce((sum, packet) => sum + (packet.reviewQuestions?.length ?? 0), 0),
+        primaryOwners: ownership.assigned,
+        unassignedOwners: ownership.unassigned,
+        supportingAttachments: ownership.supportingAttachments
       }
     }
   });
@@ -402,6 +411,196 @@ function attachReviewQuestions(
     .map((entry) => entry.attached);
 }
 
+type ReviewQuestionOwnershipMetrics = {
+  assigned: number;
+  unassigned: number;
+  supportingAttachments: number;
+};
+
+type ReviewQuestionOwnershipCandidate = {
+  packet: ReviewPacket;
+  question: PacketReviewQuestion;
+  score: number;
+  directScore: number;
+  reasons: string[];
+};
+
+function assignReviewQuestionOwnership(
+  packets: ReviewPacket[],
+  questions: ReviewPlan["reviewQuestions"],
+  telemetry: TelemetryRecorder
+): ReviewQuestionOwnershipMetrics {
+  const attachmentsByQuestion = new Map<string, ReviewQuestionOwnershipCandidate[]>();
+  for (const packet of packets) {
+    for (const question of packet.reviewQuestions ?? []) {
+      const candidate = reviewQuestionOwnershipCandidate(packet, question);
+      const attached = attachmentsByQuestion.get(question.id) ?? [];
+      attached.push(candidate);
+      attachmentsByQuestion.set(question.id, attached);
+    }
+  }
+
+  for (const question of questions ?? []) {
+    if (!attachmentsByQuestion.has(question.id)) {
+      attachmentsByQuestion.set(question.id, []);
+    }
+  }
+
+  const primaryCountByPacket = new Map<string, number>();
+  let assigned = 0;
+  let unassigned = 0;
+  let supportingAttachments = 0;
+
+  for (const [questionId, attachments] of [...attachmentsByQuestion.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const ranked = attachments
+      .filter((attachment) => (primaryCountByPacket.get(attachment.packet.id) ?? 0) < MAX_PRIMARY_REVIEW_QUESTIONS_PER_PACKET)
+      .sort(compareOwnershipCandidates);
+    const best = ranked[0];
+    const second = ranked[1];
+    const clear = best !== undefined && ownershipIsClear(best, second, attachments.length);
+    if (!clear || best === undefined) {
+      unassigned += 1;
+      const reason = attachments.length === 0
+        ? "no_attached_packets"
+        : best === undefined
+          ? "all_candidate_packets_at_primary_limit"
+          : "ambiguous_packet_match";
+      telemetry.event({
+        stage: 6,
+        level: "info",
+        message: "review_question_ownership_unassigned",
+        data: {
+          questionId,
+          reason,
+          attachments: attachments.length,
+          scores: attachments.sort(compareOwnershipCandidates).map(ownershipScoreSummary)
+        }
+      });
+      continue;
+    }
+
+    const ownershipReason = best.reasons.length > 0
+      ? `primary owner selected by ${best.reasons.join("; ")}`
+      : "primary owner selected by strongest packet match";
+    setPacketQuestionOwnership(best.packet, questionId, "primary", ownershipReason);
+    primaryCountByPacket.set(best.packet.id, (primaryCountByPacket.get(best.packet.id) ?? 0) + 1);
+    assigned += 1;
+
+    const supporting = attachments.filter((attachment) => attachment.packet.id !== best.packet.id);
+    supportingAttachments += supporting.length;
+    for (const attachment of supporting) {
+      setPacketQuestionOwnership(
+        attachment.packet,
+        questionId,
+        "supporting",
+        `supporting slice for primary packet ${best.packet.id}`
+      );
+    }
+
+    telemetry.event({
+      stage: 6,
+      level: "info",
+      message: "review_question_ownership_assigned",
+      packetId: best.packet.id,
+      file: best.packet.path,
+      data: {
+        questionId,
+        primaryPacketId: best.packet.id,
+        supportingPacketCount: supporting.length,
+        reason: ownershipReason,
+        scores: attachments.sort(compareOwnershipCandidates).map(ownershipScoreSummary)
+      }
+    });
+  }
+
+  return { assigned, unassigned, supportingAttachments };
+}
+
+function reviewQuestionOwnershipCandidate(
+  packet: ReviewPacket,
+  question: PacketReviewQuestion
+): ReviewQuestionOwnershipCandidate {
+  const packetPaths = new Set([packet.path, ...(packet.oldPath !== undefined ? [packet.oldPath] : [])]);
+  const questionFiles = cleanStrings(question.files.map(stripLocationSuffix));
+  const fileMatches = questionFiles.filter((file) => packetPaths.has(file));
+  const packetSymbols = new Set(packet.symbolFacts.flatMap((fact) =>
+    [fact.enclosingSymbol, fact.signature].filter((value): value is string => value !== undefined && value.trim().length > 0)
+  ));
+  const symbolMatches = question.symbols.filter((symbol) => matchesPacketSymbol(symbol, packetSymbols));
+  const hunkText = packet.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n").toLowerCase();
+  const hunkMentions = question.symbols.filter((symbol) => symbol.length > 0 && hunkText.includes(symbol.toLowerCase()));
+  const hintMatches = packet.surroundingContextHints.filter((hint) =>
+    hint.symbol !== undefined && question.symbols.some((symbol) => matchesTextSymbol(symbol, hint.symbol ?? ""))
+  );
+  const staticSignals = packet.hunks.reduce((sum, hunk) => sum + (hunk.staticSignals?.length ?? 0), 0);
+  const coverageScore = packet.coverage === "deep" ? 8 : packet.coverage === "normal" ? 4 : 1;
+  const priorityScore = packet.reviewPriority === "critical" ? 6 : packet.reviewPriority === "high" ? 4 : 0;
+  const directScore = fileMatches.length * 60 + symbolMatches.length * 50 + hunkMentions.length * 20;
+  const score = directScore +
+    hintMatches.length * 8 +
+    Math.min(staticSignals, 3) * 2 +
+    coverageScore +
+    priorityScore;
+  const reasons = [
+    ...(fileMatches.length > 0 ? [`file overlap: ${fileMatches.join(", ")}`] : []),
+    ...(symbolMatches.length > 0 ? [`symbol overlap: ${symbolMatches.join(", ")}`] : []),
+    ...(hunkMentions.length > 0 ? [`changed hunk mentions: ${hunkMentions.join(", ")}`] : []),
+    ...(hintMatches.length > 0 ? [`context hint overlap: ${hintMatches.length}`] : []),
+    packet.coverage === "deep" ? "deep coverage" : undefined
+  ].filter((reason): reason is string => reason !== undefined);
+  return { packet, question, score, directScore, reasons };
+}
+
+function ownershipIsClear(
+  best: ReviewQuestionOwnershipCandidate,
+  second: ReviewQuestionOwnershipCandidate | undefined,
+  attachmentCount: number
+): boolean {
+  if (best.score < MIN_OWNERSHIP_SCORE) {
+    return false;
+  }
+  if (attachmentCount === 1) {
+    return true;
+  }
+  if (second === undefined) {
+    return true;
+  }
+  if (best.score - second.score >= MIN_CLEAR_OWNERSHIP_MARGIN) {
+    return true;
+  }
+  return best.directScore > second.directScore && best.directScore >= MIN_OWNERSHIP_SCORE;
+}
+
+function compareOwnershipCandidates(a: ReviewQuestionOwnershipCandidate, b: ReviewQuestionOwnershipCandidate): number {
+  return b.score - a.score ||
+    b.directScore - a.directScore ||
+    a.packet.path.localeCompare(b.packet.path) ||
+    a.packet.id.localeCompare(b.packet.id);
+}
+
+function ownershipScoreSummary(candidate: ReviewQuestionOwnershipCandidate): Record<string, unknown> {
+  return {
+    packetId: candidate.packet.id,
+    path: candidate.packet.path,
+    score: candidate.score,
+    directScore: candidate.directScore,
+    reasons: candidate.reasons
+  };
+}
+
+function setPacketQuestionOwnership(
+  packet: ReviewPacket,
+  questionId: string,
+  role: NonNullable<PacketReviewQuestion["role"]>,
+  ownershipReason: string
+): void {
+  packet.reviewQuestions = (packet.reviewQuestions ?? []).map((question) =>
+    question.id === questionId
+      ? { ...question, role, ownershipReason }
+      : question
+  );
+}
+
 function matchesPacketSymbol(symbol: string, packetSymbols: Set<string>): boolean {
   const normalized = symbol.toLowerCase().trim();
   if (normalized.length === 0) {
@@ -416,8 +615,20 @@ function matchesPacketSymbol(symbol: string, packetSymbols: Set<string>): boolea
   return false;
 }
 
+function matchesTextSymbol(left: string, right: string): boolean {
+  const normalizedLeft = left.toLowerCase().trim();
+  const normalizedRight = right.toLowerCase().trim();
+  return normalizedLeft.length > 0 &&
+    normalizedRight.length > 0 &&
+    (normalizedLeft === normalizedRight || normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft));
+}
+
 function stripLocationSuffix(value: string): string {
   return value.trim().replace(/:\d+(?:-\d+)?$/u, "");
+}
+
+function cleanStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))].sort();
 }
 
 function hunkFirstGroups(planned: PlannedHunk[], degradationReason?: string): PacketGroup[] {

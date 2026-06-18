@@ -214,6 +214,107 @@ describe("phase 8 targeted system review", () => {
     }));
   });
 
+  it("builds one question task from the primary owner and folds supporting answers into it", () => {
+    const primaryQuestion = {
+      id: "q-response-contract",
+      question: "Does the changed value still match the returned response?",
+      whyItMatters: "Callers rely on the returned response matching the transformed value.",
+      files: ["app.ts", "worker.ts"],
+      symbols: ["divide"],
+      relevanceReason: "file overlap; symbol overlap",
+      role: "primary" as const,
+      ownershipReason: "primary owner selected by symbol overlap"
+    };
+    const supportingQuestion = {
+      ...primaryQuestion,
+      role: "supporting" as const,
+      ownershipReason: "supporting slice for primary packet packet-primary"
+    };
+    const primaryPacket = { ...fakePacket("packet-primary", "app.ts", "divide"), reviewQuestions: [primaryQuestion] };
+    const supportingPacket = { ...fakePacket("packet-supporting", "worker.ts", "renderResponse"), reviewQuestions: [supportingQuestion] };
+    const primaryResult: PacketReviewResult = {
+      ...packetResult("packet-primary", []),
+      answeredQuestions: [{
+        questionId: "q-response-contract",
+        answer: "The local transform changed, but the response caller must be checked.",
+        confidence: "medium",
+        outcome: "partial",
+        evidence: [{ path: "app.ts", whyRelevant: "The local transform changed." }],
+        evidenceTrace: "input -> divide -> caller response unknown",
+        role: "primary"
+      }]
+    };
+    const supportingResult: PacketReviewResult = {
+      ...packetResult("packet-supporting", []),
+      answeredQuestions: [{
+        questionId: "q-response-contract",
+        answer: "The supporting packet returns the transformed value to the caller.",
+        confidence: "medium",
+        outcome: "partial",
+        evidence: [{ path: "worker.ts", whyRelevant: "The caller returns the transformed value." }],
+        evidenceTrace: "transformed value -> response",
+        role: "supporting"
+      }]
+    };
+
+    const tasks = buildSystemReviewTasks([primaryResult, supportingResult], [primaryPacket, supportingPacket]);
+
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      question: "Does the changed value still match the returned response?",
+      packetIds: ["packet-primary", "packet-supporting"],
+      files: ["app.ts", "worker.ts"],
+      sourceQuestionIds: ["q-response-contract"],
+      reason: expect.stringContaining("Supporting packet packet-supporting")
+    });
+  });
+
+  it("does not build a supporting-question task after the primary owner resolves no issue", () => {
+    const primaryQuestion = {
+      id: "q-response-contract",
+      question: "Does the changed value still match the returned response?",
+      whyItMatters: "Callers rely on the returned response matching the transformed value.",
+      files: ["app.ts", "worker.ts"],
+      symbols: ["divide"],
+      relevanceReason: "file overlap; symbol overlap",
+      role: "primary" as const,
+      ownershipReason: "primary owner selected by symbol overlap"
+    };
+    const supportingQuestion = {
+      ...primaryQuestion,
+      role: "supporting" as const,
+      ownershipReason: "supporting slice for primary packet packet-primary"
+    };
+    const primaryPacket = { ...fakePacket("packet-primary", "app.ts", "divide"), reviewQuestions: [primaryQuestion] };
+    const supportingPacket = { ...fakePacket("packet-supporting", "worker.ts", "renderResponse"), reviewQuestions: [supportingQuestion] };
+    const primaryResult: PacketReviewResult = {
+      ...packetResult("packet-primary", []),
+      answeredQuestions: [{
+        questionId: "q-response-contract",
+        answer: "The changed transform still feeds the response unchanged.",
+        confidence: "high",
+        outcome: "answered_no_issue",
+        evidence: [{ path: "app.ts", whyRelevant: "The primary packet has the decisive local trace." }],
+        evidenceTrace: "input -> divide -> same response contract",
+        role: "primary"
+      }]
+    };
+    const supportingResult: PacketReviewResult = {
+      ...packetResult("packet-supporting", []),
+      answeredQuestions: [{
+        questionId: "q-response-contract",
+        answer: "This supporting packet has only local caller evidence.",
+        confidence: "medium",
+        outcome: "partial",
+        evidence: [{ path: "worker.ts", whyRelevant: "The caller returns the transformed value." }],
+        evidenceTrace: "transformed value -> response",
+        role: "supporting"
+      }]
+    };
+
+    expect(buildSystemReviewTasks([primaryResult, supportingResult], [primaryPacket, supportingPacket])).toEqual([]);
+  });
+
   it("does not merge repeated Stage 8 tasks from different files and symbols", () => {
     const packetResults = [
       packetResult("auth-1", [hint("Check whether this request still validates access.", ["auth/session.ts"], ["refreshSession"])]),

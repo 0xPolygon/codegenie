@@ -400,6 +400,31 @@ function repeatedHintGroups(packetResults: PacketReviewResult[]): HintGroup[] {
 
 function questionFollowUpGroups(packetResults: PacketReviewResult[], packets: ReviewPacket[]): QuestionFollowUpGroup[] {
   const packetById = new Map(packets.map((packet) => [packet.id, packet]));
+  const resultByPacketId = new Map(packetResults.map((result) => [result.packetId, result]));
+  const globallyCoveredQuestionIds = new Set(packetResults.flatMap((result) =>
+    result.findings.flatMap((finding) => finding.reviewQuestionIds ?? [])
+  ));
+  const attachmentsByQuestion = new Map<string, Array<{ packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>>();
+  const primaryByQuestion = new Map<string, { packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>();
+  for (const packet of packets) {
+    for (const question of packet.reviewQuestions ?? []) {
+      const attached = attachmentsByQuestion.get(question.id) ?? [];
+      attached.push({ packet, question });
+      attachmentsByQuestion.set(question.id, attached);
+      if (question.role === "primary") {
+        primaryByQuestion.set(question.id, { packet, question });
+      }
+    }
+  }
+
+  const ownedGroups = [...primaryByQuestion.entries()].flatMap(([questionId, primary]) => {
+    if (globallyCoveredQuestionIds.has(questionId)) {
+      return [];
+    }
+    const group = ownedQuestionFollowUpGroup(questionId, primary, attachmentsByQuestion.get(questionId) ?? [], resultByPacketId);
+    return group === undefined ? [] : [group];
+  });
+
   const groups = new Map<string, QuestionFollowUpGroup>();
   for (const result of packetResults) {
     const packet = packetById.get(result.packetId);
@@ -410,7 +435,7 @@ function questionFollowUpGroups(packetResults: PacketReviewResult[], packets: Re
     const answersByQuestion = new Map((result.answeredQuestions ?? []).map((answer) => [answer.questionId, answer]));
     const unresolvedQuestionIds = new Set(result.unresolvedQuestions ?? []);
     for (const question of packet.reviewQuestions ?? []) {
-      if (coveredQuestionIds.has(question.id)) {
+      if (coveredQuestionIds.has(question.id) || globallyCoveredQuestionIds.has(question.id) || primaryByQuestion.has(question.id)) {
         continue;
       }
       const answer = answersByQuestion.get(question.id);
@@ -460,7 +485,91 @@ function questionFollowUpGroups(packetResults: PacketReviewResult[], packets: Re
       }
     }
   }
-  return [...groups.values()];
+  return [...ownedGroups, ...groups.values()];
+}
+
+function ownedQuestionFollowUpGroup(
+  questionId: string,
+  primary: { packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] },
+  attachments: Array<{ packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>,
+  resultByPacketId: Map<string, PacketReviewResult>
+): QuestionFollowUpGroup | undefined {
+  const primaryResult = resultByPacketId.get(primary.packet.id);
+  if (primaryResult === undefined) {
+    return undefined;
+  }
+  const primaryAnswer = answerForQuestion(primaryResult, questionId);
+  const primaryUnresolved = questionIsUnresolved(primaryResult, questionId);
+  const primaryNeedsFollowUp =
+    primaryUnresolved ||
+    primaryAnswer?.outcome === "partial" ||
+    (primaryAnswer === undefined && primaryResult.status === "completed");
+  if (!primaryNeedsFollowUp || primaryAnswer?.confidence === "low") {
+    return undefined;
+  }
+
+  const supporting = attachments
+    .filter((attachment) => attachment.packet.id !== primary.packet.id)
+    .map((attachment) => ({
+      ...attachment,
+      result: resultByPacketId.get(attachment.packet.id)
+    }))
+    .filter((attachment) => attachment.result !== undefined);
+  const supportingWithSignals = supporting.filter((attachment) =>
+    answerForQuestion(attachment.result as PacketReviewResult, questionId) !== undefined ||
+    questionIsUnresolved(attachment.result as PacketReviewResult, questionId)
+  );
+  const supportingPackets = supportingWithSignals.length > 0 ? supportingWithSignals : supporting;
+  const packetsForTask = [primary.packet, ...supportingPackets.map((attachment) => attachment.packet)];
+  const files = cleanStrings(primary.question.files.length > 0 ? primary.question.files : packetsForTask.map((packet) => packet.path));
+  const symbols = cleanStrings([
+    ...primary.question.symbols,
+    ...packetsForTask.flatMap((packet) => packet.symbolFacts)
+      .flatMap((fact) => [fact.enclosingSymbol, fact.signature])
+      .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
+  ]);
+  if (files.length === 0 && symbols.length === 0) {
+    return undefined;
+  }
+
+  const reasonParts = [
+    primary.question.whyItMatters,
+    primaryAnswer !== undefined
+      ? `Primary packet ${primary.packet.id}: ${primaryAnswer.answer}`
+      : `Primary packet ${primary.packet.id} did not answer this attached review question.`,
+    primaryAnswer?.evidenceTrace,
+    ...supportingPackets.flatMap((attachment) => {
+      const answer = answerForQuestion(attachment.result as PacketReviewResult, questionId);
+      if (answer === undefined) {
+        return questionIsUnresolved(attachment.result as PacketReviewResult, questionId)
+          ? [`Supporting packet ${attachment.packet.id} left this question unresolved.`]
+          : [];
+      }
+      return [`Supporting packet ${attachment.packet.id}: ${answer.answer}`, answer.evidenceTrace].filter(
+        (part): part is string => part !== undefined && part.trim().length > 0
+      );
+    })
+  ].filter((part): part is string => part !== undefined && part.trim().length > 0);
+  const confidence = primaryAnswer?.confidence === "high" ? "high" : "medium";
+  return {
+    key: `review-question-primary:${questionId}`,
+    question: primary.question.question,
+    reason: reasonParts.join(" "),
+    confidence,
+    packetIds: cleanStrings(packetsForTask.map((packet) => packet.id)),
+    files,
+    symbols,
+    suggestedLenses: cleanStrings(packetsForTask.flatMap((packet) => packet.lenses)),
+    sourceQuestionIds: [questionId]
+  };
+}
+
+function answerForQuestion(result: PacketReviewResult, questionId: string): NonNullable<PacketReviewResult["answeredQuestions"]>[number] | undefined {
+  return result.answeredQuestions?.find((answer) => answer.questionId === questionId);
+}
+
+function questionIsUnresolved(result: PacketReviewResult, questionId: string): boolean {
+  return (result.unresolvedQuestions ?? []).includes(questionId);
 }
 
 function compareHintGroups(a: HintGroup, b: HintGroup): number {

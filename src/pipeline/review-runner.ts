@@ -1247,11 +1247,23 @@ function buildReviewQuestionLifecycle(input: ReviewQuestionLifecycleInput): Reco
     verifiedFindings,
     finalReview
   } = input;
-  const packetsByQuestion = new Map<string, Array<{ packetId: string; path: string; relevanceReason: string }>>();
+  const packetsByQuestion = new Map<string, Array<{
+    packetId: string;
+    path: string;
+    relevanceReason: string;
+    role?: NonNullable<ReviewPacket["reviewQuestions"]>[number]["role"];
+    ownershipReason?: string;
+  }>>();
   for (const packet of packets) {
     for (const question of packet.reviewQuestions ?? []) {
       const attached = packetsByQuestion.get(question.id) ?? [];
-      attached.push({ packetId: packet.id, path: packet.path, relevanceReason: question.relevanceReason });
+      attached.push({
+        packetId: packet.id,
+        path: packet.path,
+        relevanceReason: question.relevanceReason,
+        ...(question.role !== undefined ? { role: question.role } : {}),
+        ...(question.ownershipReason !== undefined ? { ownershipReason: question.ownershipReason } : {})
+      });
       packetsByQuestion.set(question.id, attached);
     }
   }
@@ -1322,14 +1334,26 @@ function buildReviewQuestionLifecycle(input: ReviewQuestionLifecycleInput): Reco
     metrics: {
       riskAreas: plan.riskAreas.length,
       representedRiskAreas: (plan.riskAreaDispositions ?? []).filter((disposition) =>
-        disposition.disposition === "represented_by_question" || disposition.disposition === "synthesized_question"
+        isRepresentedRiskAreaDisposition(disposition.disposition)
       ).length,
       omittedRiskAreas: (plan.riskAreaDispositions ?? []).filter((disposition) =>
-        disposition.disposition !== "represented_by_question" && disposition.disposition !== "synthesized_question"
+        !isRepresentedRiskAreaDisposition(disposition.disposition)
       ).length,
       emitted: plan.reviewQuestions?.length ?? 0,
       attachedPackets: packets.filter((packet) => (packet.reviewQuestions ?? []).length > 0).length,
       attachments: packets.reduce((sum, packet) => sum + (packet.reviewQuestions?.length ?? 0), 0),
+      questionsWithPrimary: (plan.reviewQuestions ?? []).filter((question) =>
+        (packetsByQuestion.get(question.id) ?? []).some((attachment) => attachment.role === "primary")
+      ).length,
+      primaryAttachments: packets.reduce((sum, packet) =>
+        sum + (packet.reviewQuestions ?? []).filter((question) => question.role === "primary").length,
+      0),
+      supportingAttachments: packets.reduce((sum, packet) =>
+        sum + (packet.reviewQuestions ?? []).filter((question) => question.role === "supporting").length,
+      0),
+      unownedAttachments: packets.reduce((sum, packet) =>
+        sum + (packet.reviewQuestions ?? []).filter((question) => question.role === undefined).length,
+      0),
       answered: answers.length,
       partial: answers.filter((answer) => answer.outcome === "partial").length,
       candidateFindings: generatedFindings.length,
@@ -1338,6 +1362,13 @@ function buildReviewQuestionLifecycle(input: ReviewQuestionLifecycleInput): Reco
       systemReviewTasks: systemReview.tasks.length
     }
   };
+}
+
+function isRepresentedRiskAreaDisposition(disposition: NonNullable<ReviewPlan["riskAreaDispositions"]>[number]["disposition"]): boolean {
+  return disposition === "represented_by_question" ||
+    disposition === "synthesized_question" ||
+    disposition === "represented_by_packet_obligation" ||
+    disposition === "covered_by_existing_question";
 }
 
 function verificationLifecycle(verdict: VerificationVerdict | undefined): Record<string, unknown> | undefined {

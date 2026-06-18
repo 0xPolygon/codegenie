@@ -533,7 +533,8 @@ function normalizeAnsweredQuestions(
       confidence,
       outcome,
       evidence,
-      ...(evidenceTrace !== undefined && evidenceTrace.length > 0 ? { evidenceTrace } : {})
+      ...(evidenceTrace !== undefined && evidenceTrace.length > 0 ? { evidenceTrace } : {}),
+      ...(attached.role !== undefined ? { role: attached.role } : {})
     };
     normalized.push(normalizedAnswer);
     telemetry.event({
@@ -544,6 +545,7 @@ function normalizeAnsweredQuestions(
       workerId,
       data: {
         questionId: attached.id,
+        role: attached.role,
         outcome,
         confidence,
         evidenceCount: evidence.length,
@@ -568,6 +570,9 @@ function followUpHintsFromPartialQuestions(
     .flatMap((answer): QuestionFollowUpHint[] => {
       const question = questionsById.get(answer.questionId);
       if (!question) {
+        return [];
+      }
+      if (question.role === "supporting") {
         return [];
       }
       return [{

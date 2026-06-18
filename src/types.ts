@@ -687,6 +687,8 @@ export type RiskAreaDisposition = {
   files: string[];
   disposition:
     | "represented_by_question"
+    | "represented_by_packet_obligation"
+    | "covered_by_existing_question"
     | "synthesized_question"
     | "omitted_duplicate"
     | "omitted_vague"
@@ -699,6 +701,8 @@ export type RiskAreaDisposition = {
 
 export type PacketReviewQuestion = ReviewQuestion & {
   relevanceReason: string;
+  role?: "primary" | "supporting";
+  ownershipReason?: string;
 };
 
 export type ReviewPlan = {
@@ -780,6 +784,7 @@ export type AnsweredReviewQuestion = {
   outcome: "answered_no_issue" | "candidate_finding" | "partial" | "not_applicable";
   evidence: Array<{ path: string; lines?: string; whyRelevant: string }>;
   evidenceTrace?: string;
+  role?: PacketReviewQuestion["role"];
 };
 
 export type PacketReviewResult = {

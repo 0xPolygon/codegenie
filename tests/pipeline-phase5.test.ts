@@ -335,6 +335,64 @@ describe("phase 5 pipeline regressions", () => {
     ]);
   });
 
+  it("keeps supporting review-question partial answers without generating duplicate follow-up hints", async () => {
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [],
+          uncertainties: [],
+          answeredQuestions: [
+            {
+              questionId: "q-contract",
+              answer: "This packet only shows the response consumer; the primary value transformation packet owns the full trace.",
+              confidence: "medium",
+              outcome: "partial",
+              evidence: [{ path: "worker.ts", whyRelevant: "This packet returns the transformed value." }],
+              evidenceTrace: "supporting local slice: transformed value -> response"
+            }
+          ],
+          noFindingReason: "No local finding from this supporting packet alone."
+        }) as T
+    };
+
+    const [result] = await runLensPackets(
+      fakePlan("worker.ts"),
+      [fakePacket({
+        path: "worker.ts",
+        reviewQuestions: [{
+          id: "q-contract",
+          question: "Does the transformed amount still match the response?",
+          whyItMatters: "Callers observe the response amount.",
+          files: ["app.ts", "worker.ts"],
+          symbols: ["handler"],
+          relevanceReason: "file overlap: worker.ts",
+          role: "supporting",
+          ownershipReason: "supporting slice for primary packet packet-primary"
+        }]
+      })],
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result?.answeredQuestions).toEqual([
+      expect.objectContaining({
+        questionId: "q-contract",
+        outcome: "partial",
+        role: "supporting"
+      })
+    ]);
+    expect(result?.followUpHints).toEqual([]);
+  });
+
   it("keeps planner-question partial follow-ups separately from generic hint caps", async () => {
     const runner: LlmRunner = {
       runStructured: async <T>() =>
@@ -1292,6 +1350,133 @@ describe("phase 5 pipeline regressions", () => {
         relevanceReason: "file overlap: app.ts"
       })
     ]);
+  });
+
+  it("assigns one primary review-question owner when one packet clearly matches best", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+        events.push(event);
+      }
+    };
+    const appFile = fakeDiffFile("app.ts", "export function handler(input: Request) { return input.amount; }");
+    const workerFile = fakeDiffFile("worker.ts", "export function renderResponse(value: number) { return value; }");
+    workerFile.hunks[0] = { ...workerFile.hunks[0]!, id: "h2" };
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(),
+      symbolFacts: [
+        {
+          path: "app.ts",
+          hunkId: "h1",
+          enclosingSymbol: "handler",
+          symbolKind: "function",
+          symbolRange: [1, 4],
+          changedLines: [2],
+          changedLinesSide: "new",
+          signature: "function handler(input: Request)",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        },
+        {
+          path: "worker.ts",
+          hunkId: "h2",
+          enclosingSymbol: "renderResponse",
+          symbolKind: "function",
+          symbolRange: [1, 4],
+          changedLines: [2],
+          changedLinesSide: "new",
+          signature: "function renderResponse(value: number)",
+          source: "tree-sitter",
+          confidence: "syntactic"
+        }
+      ]
+    };
+    const plan: ReviewPlan = {
+      ...fakePlanForHunks(["h1", "h2"]),
+      reviewQuestions: [{
+        id: "q-contract",
+        question: "Does the transformed value still match the downstream response?",
+        whyItMatters: "Callers observe the response value.",
+        files: ["app.ts", "worker.ts"],
+        symbols: ["handler"]
+      }]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [appFile, workerFile],
+      [fakeFacts("app.ts", "per-hunk"), fakeFacts("worker.ts", "per-hunk")],
+      repoIndex,
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const appQuestion = packets.find((packet) => packet.path === "app.ts")?.reviewQuestions?.[0];
+    const workerQuestion = packets.find((packet) => packet.path === "worker.ts")?.reviewQuestions?.[0];
+    expect(appQuestion).toMatchObject({
+      id: "q-contract",
+      role: "primary",
+      ownershipReason: expect.stringContaining("symbol overlap")
+    });
+    expect(workerQuestion).toMatchObject({
+      id: "q-contract",
+      role: "supporting",
+      ownershipReason: expect.stringContaining("primary packet")
+    });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 6,
+        message: "review_question_ownership_assigned",
+        data: expect.objectContaining({ questionId: "q-contract", supportingPacketCount: 1 })
+      })
+    ]));
+  });
+
+  it("leaves review questions unowned when packet ownership is ambiguous", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const telemetry = {
+      ...nullTelemetry(),
+      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+        events.push(event);
+      }
+    };
+    const firstFile = fakeDiffFile("first.ts", "export const first = value;");
+    const secondFile = fakeDiffFile("second.ts", "export const second = value;");
+    secondFile.hunks[0] = { ...secondFile.hunks[0]!, id: "h2" };
+    const plan: ReviewPlan = {
+      ...fakePlanForHunks(["h1", "h2"]),
+      reviewQuestions: [{
+        id: "q-file-contract",
+        question: "Does the changed file relationship still hold?",
+        whyItMatters: "Both changed files contribute to the relationship.",
+        files: ["first.ts", "second.ts"],
+        symbols: []
+      }]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [firstFile, secondFile],
+      [fakeFacts("first.ts", "per-hunk"), fakeFacts("second.ts", "per-hunk")],
+      fakeRepositoryIndex(),
+      telemetry,
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const attachedQuestions = packets.flatMap((packet) => packet.reviewQuestions ?? []);
+    expect(attachedQuestions).toEqual([
+      expect.objectContaining({ id: "q-file-contract" }),
+      expect.objectContaining({ id: "q-file-contract" })
+    ]);
+    expect(attachedQuestions.every((question) => question.role === undefined)).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 6,
+        message: "review_question_ownership_unassigned",
+        data: expect.objectContaining({ questionId: "q-file-contract", reason: "ambiguous_packet_match" })
+      })
+    ]));
   });
 
   it("resolves call-site symbol hints to enclosing caller bodies instead of the callee body", async () => {
