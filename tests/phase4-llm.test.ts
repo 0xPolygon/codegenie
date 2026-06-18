@@ -2243,6 +2243,137 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ]));
   });
 
+  it("truncates and cleans Stage 7 answered question text before model repair", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-long-answer-no-findings",
+        name: "submit_review",
+        arguments: {
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [],
+          uncertainties: [],
+          answeredQuestions: [{
+            questionId: "q-edge-behavior",
+            answer: `No local bug was proven.</answer><parameter name="followUpHints">[] ${"detail ".repeat(220)}`,
+            confidence: "medium",
+            outcome: "partial",
+            evidence: [{
+              path: "app.ts",
+              lines: "const value = parse<T>(input)",
+              whyRelevant: "The changed hunk contains the local behavior boundary."
+            }],
+            evidenceTrace: `input -> changed handler -> predicate unresolved</evidenceTrace><parameter name="findings">[] ${"trace ".repeat(420)}`
+          }],
+          noFindingReason: "No concrete issue found from the bounded packet review."
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    const result = (await runner.runStructured({
+      ...submitReviewRequest("packet-long-answer"),
+      telemetryContext: { packetId: "packet-long-answer" }
+    })) as SubmitPacketReview;
+
+    expect(result).toMatchObject({ reviewStatus: "no_findings", findings: [] });
+    expect(result.answeredQuestions?.[0]?.answer).toHaveLength(1000);
+    expect(result.answeredQuestions?.[0]?.answer).toContain("[truncated by codeninja]");
+    expect(result.answeredQuestions?.[0]?.answer).not.toContain("<parameter");
+    expect(result.answeredQuestions?.[0]?.evidence[0]?.lines).toBe("const value = parse<T>(input)");
+    expect(result.answeredQuestions?.[0]?.evidenceTrace).toHaveLength(2000);
+    expect(result.answeredQuestions?.[0]?.evidenceTrace).toContain("[truncated by codeninja]");
+    expect(result.answeredQuestions?.[0]?.evidenceTrace).not.toContain("<parameter");
+    expect(adapter.contexts).toHaveLength(1);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_cleanup_recovered",
+        packetId: "packet-long-answer",
+        data: expect.objectContaining({
+          cleanupKind: "no_findings_shape",
+          classification: "xml_parameter_bleed",
+          cleanedFields: expect.arrayContaining([
+            "answeredQuestions.0.answer",
+            "answeredQuestions.0.evidenceTrace"
+          ]),
+          truncatedFields: expect.arrayContaining([
+            "answeredQuestions.0.answer",
+            "answeredQuestions.0.evidenceTrace"
+          ])
+        })
+      })
+    ]));
+  });
+
+  it("strips redundant candidate anchor fields before model repair", async () => {
+    const telemetry = fakeTelemetry();
+    const anchor = { path: "src/a.ts", line: 12, side: "RIGHT", hunkId: "hunk-a" };
+    const candidate: Record<string, unknown> = { ...validCandidateReviewFinding(), anchor };
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-candidate-extra-anchor-fields",
+        name: "submit_review",
+        arguments: {
+          findings: [{
+            ...candidate,
+            line: anchor.line,
+            hunkId: anchor.hunkId,
+            changedLine: true,
+            filePath: "src/a.ts"
+          }],
+          followUpHints: [],
+          uncertainties: []
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-candidate-anchor-cleanup"),
+        telemetryContext: { packetId: "packet-candidate-anchor-cleanup" }
+      })
+    ).resolves.toMatchObject({
+      findings: [expect.objectContaining({ title: "Candidate finding" })]
+    });
+    expect(adapter.contexts).toHaveLength(1);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        message: "stage7_schema_cleanup_recovered",
+        packetId: "packet-candidate-anchor-cleanup",
+        data: expect.objectContaining({
+          cleanupKind: "candidate_payload",
+          classification: "extra_finding_properties",
+          strippedKeys: [
+            "findings.0.changedLine",
+            "findings.0.filePath",
+            "findings.0.hunkId",
+            "findings.0.line"
+          ]
+        })
+      })
+    ]));
+  });
+
   it("salvages a no-findings packet whose prose mentions candidate/title without misrouting to candidate repair", async () => {
     // Regression guard for the run-24 misclassification: a no_findings payload whose prose
     // happens to contain words like "candidate" or "title" must NOT be treated as a candidate

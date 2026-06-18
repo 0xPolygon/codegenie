@@ -190,7 +190,11 @@ const FollowUpHintSchema = Type.Object(
     files: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 20 }),
     symbols: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 20 }),
     suggestedLenses: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), { maxItems: 20 }),
-    reason: Type.String({ minLength: 1, maxLength: 1000 }),
+    reason: Type.String({
+      minLength: 1,
+      maxLength: 1000,
+      description: "Concrete unresolved predicate and why it matters. Keep concise; do not include XML, markdown wrappers, or extra JSON fields."
+    }),
     confidence: ConfidenceSchema
   },
   { additionalProperties: false }
@@ -208,7 +212,11 @@ const StructuredUncertaintySchema = Type.Object(
 const AnsweredReviewQuestionSchema = Type.Object(
   {
     questionId: Type.String({ minLength: 1, maxLength: 120 }),
-    answer: Type.String({ minLength: 1, maxLength: 1000 }),
+    answer: Type.String({
+      minLength: 1,
+      maxLength: 1000,
+      description: "Concise answer to the exact review question. Prefer 1-3 sentences; do not include XML, markdown wrappers, or extra JSON fields."
+    }),
     confidence: ConfidenceSchema,
     outcome: Type.Union([
       Type.Literal("answered_no_issue"),
@@ -227,7 +235,11 @@ const AnsweredReviewQuestionSchema = Type.Object(
       ),
       { maxItems: 8 }
     ),
-    evidenceTrace: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 }))
+    evidenceTrace: Type.Optional(Type.String({
+      minLength: 1,
+      maxLength: 2000,
+      description: "Decisive source trace only. Keep compact; no XML, markdown wrappers, or tool parameter tags."
+    }))
   },
   { additionalProperties: false }
 );
@@ -238,15 +250,27 @@ export const SubmitPacketReviewSchema = Type.Object(
       Type.Literal("findings"),
       Type.Literal("no_findings"),
       Type.Literal("incomplete")
-    ])),
+    ], {
+      description: "Use findings when findings are present, no_findings only after concrete local risk is resolved, and incomplete when bounded review could not finish."
+    })),
     findings: Type.Array(SubmittedFindingSchema, { maxItems: 20 }),
-    followUpHints: Type.Array(FollowUpHintSchema, { maxItems: 20 }),
+    followUpHints: Type.Array(FollowUpHintSchema, {
+      maxItems: 20,
+      description: "Concrete unresolved predicates only. Do not use broad reminders or essay-style notes."
+    }),
     uncertainties: Type.Array(StructuredUncertaintySchema, { maxItems: 20 }),
     answeredQuestions: Type.Optional(Type.Array(AnsweredReviewQuestionSchema, { maxItems: 10 })),
-    noFindingReason: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
+    noFindingReason: Type.Optional(Type.String({
+      minLength: 1,
+      maxLength: 1000,
+      description: "Short no-finding conclusion, preferably 2-4 sentences. Do not repeat inspected code. Do not include XML, markdown wrappers, or <parameter> tags."
+    })),
     unresolvedQuestions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 10 }))
   },
-  { additionalProperties: false }
+  {
+    additionalProperties: false,
+    description: "Call submit_review with JSON/tool arguments matching this schema exactly. Do not include additional properties, XML tags, <parameter> blocks, or markdown wrappers inside fields."
+  }
 );
 
 const ResolvedFollowUpHintSchema = Type.Object(

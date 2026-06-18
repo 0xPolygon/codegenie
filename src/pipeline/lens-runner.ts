@@ -722,14 +722,14 @@ function normalizedReviewStatus(submitted: SubmitPacketReview, findingCount: num
 }
 
 const STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION =
-  "If there are no findings, submit reviewStatus:\"no_findings\", findings: [], and a short noFindingReason. If concrete unresolved risk remains but evidence is insufficient for a finding, include pointer-rich followUpHints or uncertainties instead of burying it only in unresolvedQuestions.";
+  "If there are no findings, submit reviewStatus:\"no_findings\", findings: [], and a short noFindingReason. Keep answeredQuestions concise with only the decisive trace. If concrete unresolved risk remains but evidence is insufficient for a finding, include pointer-rich followUpHints or uncertainties instead of burying it only in unresolvedQuestions.";
 
 function buildPostToolCloseNudge(packet: ReviewPacket, depth: ReviewDepth, input: LlmPostToolNudgeInput): string | undefined {
   const threshold = closeNudgeThreshold(packet, depth);
   if (input.investigationRounds < threshold) {
     return undefined;
   }
-  return `Only continue if the next repository tool call is targeted to a concrete suspected failure mode in packet ${packet.id}. Otherwise call ${input.submitToolName} now. ${STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION}`;
+  return `Only continue if the next repository tool call resolves one named predicate for packet ${packet.id}; prefer exact source reads such as read_symbol, read_range, find_definition, or read_diff_blocks. Otherwise call ${input.submitToolName} now with either a candidate finding, a short no-finding answer, or an exact unresolved predicate. ${STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION}`;
 }
 
 function closeNudgeThreshold(packet: ReviewPacket, depth: ReviewDepth): number {

@@ -1,6 +1,6 @@
 # Issue 62: Stage 7 Schema Friction Reduction
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval run `0c4d5213/logs/25`, 2026-06-17
 Recommended priority: after Issue 61, because run 25 passed but Stage 7 spent avoidable work recovering schema-invalid submit payloads
 

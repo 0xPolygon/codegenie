@@ -2079,6 +2079,8 @@ function recordStage7SchemaCleanupAttempted(
       cleanupKind: decision.cleanupKind,
       classification: decision.classification,
       strippedKeys: decision.strippedKeys,
+      cleanedFields: decision.cleanedFields,
+      truncatedFields: decision.truncatedFields,
       rejectReason: decision.rejectReason,
       candidateId: request.telemetryContext?.candidateId
     })
@@ -2101,6 +2103,8 @@ function recordStage7SchemaCleanupRecovered(
       cleanupKind: decision.cleanupKind,
       classification: decision.classification,
       strippedKeys: decision.strippedKeys,
+      cleanedFields: decision.cleanedFields,
+      truncatedFields: decision.truncatedFields,
       recoveredCallId,
       candidateId: request.telemetryContext?.candidateId
     })
@@ -2115,6 +2119,8 @@ function recordStage7SchemaCleanupRecovered(
       data: definedRecord({
         cleanupKind: decision.cleanupKind,
         classification: decision.classification,
+        cleanedFields: decision.cleanedFields,
+        truncatedFields: decision.truncatedFields,
         recoveredCallId,
         candidateId: request.telemetryContext?.candidateId
       })
@@ -2140,6 +2146,8 @@ function recordStage7SchemaCleanupRejected(
       cleanupKind: decision.cleanupKind,
       classification: decision.classification,
       strippedKeys: decision.strippedKeys,
+      cleanedFields: decision.cleanedFields,
+      truncatedFields: decision.truncatedFields,
       rejectReason: decision.rejectReason,
       error: truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause)),
       candidateId: request.telemetryContext?.candidateId
