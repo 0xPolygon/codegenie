@@ -60,7 +60,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(submitToolNameForStage(7)).toBe("submit_review");
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
-    expect(SCHEMA_VERSIONS.submit_plan).toBe(2);
+    expect(SCHEMA_VERSIONS.submit_plan).toBe(3);
 
     const valid = {
       diffUnderstanding: { declaredIntent: "Small change", inferredBehavior: "The diff makes a small change." },

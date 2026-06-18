@@ -408,6 +408,131 @@ describe("phase 5 pipeline regressions", () => {
     expect(result?.followUpHints).toEqual([]);
   });
 
+  it("downgrades no-issue answers that do not prove an obligation end to end", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [],
+          uncertainties: [],
+          answeredQuestions: [
+            {
+              questionId: "q-obligation",
+              answer: "The local helper still transforms the input.",
+              confidence: "high",
+              outcome: "answered_no_issue",
+              evidence: [{ path: "app.ts", lines: "return transformValue(input);", whyRelevant: "Only the local transform is shown." }],
+              evidenceTrace: "input -> transformValue"
+            }
+          ],
+          noFindingReason: "Question answered locally."
+        }) as T
+    };
+
+    const [result] = await runLensPackets(
+      fakePlan(),
+      [fakePacket({
+        reviewQuestions: [{
+          id: "q-obligation",
+          question: "Does the transformed value still satisfy the returned response contract?",
+          whyItMatters: "Callers observe the returned response value.",
+          files: ["app.ts"],
+          symbols: ["handler"],
+          obligation: "Trace requested value -> transform helper -> returned response before closing this question.",
+          relevanceReason: "file overlap: app.ts"
+        }]
+      })],
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result?.answeredQuestions?.[0]).toMatchObject({
+      questionId: "q-obligation",
+      outcome: "partial",
+      confidence: "medium",
+      downgradeReasons: ["answered_no_issue_without_obligation_proof"]
+    });
+    expect(result?.followUpHints).toEqual([
+      expect.objectContaining({
+        question: "Does the transformed value still satisfy the returned response contract?",
+        reason: expect.stringContaining("Obligation: Trace requested value")
+      })
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 7,
+      message: "review_question_answer_downgraded",
+      data: expect.objectContaining({ reason: "answered_no_issue_without_obligation_proof" })
+    }));
+  });
+
+  it("keeps no-issue answers that prove an obligation with an end-to-end trace", async () => {
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          reviewStatus: "no_findings",
+          findings: [],
+          followUpHints: [],
+          uncertainties: [],
+          answeredQuestions: [
+            {
+              questionId: "q-obligation",
+              answer: "The changed helper output is the same value returned by the response.",
+              confidence: "high",
+              outcome: "answered_no_issue",
+              evidence: [{ path: "app.ts", lines: "return renderResponse(transformValue(input));", whyRelevant: "The same transformed value is returned." }],
+              evidenceTrace: "requested value -> transformValue -> renderResponse"
+            }
+          ],
+          noFindingReason: "Question answered end to end."
+        }) as T
+    };
+
+    const [result] = await runLensPackets(
+      fakePlan(),
+      [fakePacket({
+        reviewQuestions: [{
+          id: "q-obligation",
+          question: "Does the transformed value still satisfy the returned response contract?",
+          whyItMatters: "Callers observe the returned response value.",
+          files: ["app.ts"],
+          symbols: ["handler"],
+          obligation: "Trace requested value -> transform helper -> returned response before closing this question.",
+          relevanceReason: "file overlap: app.ts"
+        }]
+      })],
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result?.answeredQuestions?.[0]).toMatchObject({
+      questionId: "q-obligation",
+      outcome: "answered_no_issue",
+      confidence: "high"
+    });
+    expect(result?.followUpHints).toEqual([]);
+  });
+
   it("downgrades primary no-issue answers when they do not cover multi-symbol scope", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const runner: LlmRunner = {
@@ -1496,7 +1621,8 @@ describe("phase 5 pipeline regressions", () => {
           whyItMatters: "Callers can observe a mismatched value.",
           files: ["app.ts"],
           symbols: ["handler"],
-          evidenceHint: "Trace input through handler."
+          evidenceHint: "Trace input through handler.",
+          obligation: "Trace request amount -> helper transform -> response amount before closing this question."
         },
         {
           id: "q-other",
@@ -1520,6 +1646,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets[0]?.reviewQuestions).toEqual([
       expect.objectContaining({
         id: "q-amount",
+        obligation: "Trace request amount -> helper transform -> response amount before closing this question.",
         relevanceReason: expect.stringContaining("file overlap")
       })
     ]);
@@ -4783,7 +4910,8 @@ describe("phase 5 pipeline regressions", () => {
               whyItMatters: "A mismatch can break downstream callers.",
               files: ["app.ts"],
               symbols: ["handler"],
-              evidenceHint: "Trace input amount through the changed helper and return value."
+              evidenceHint: "Trace input amount through the changed helper and return value.",
+              obligation: "Trace request amount -> helper output -> returned amount before closing this question."
             },
             {
               id: "unknown",
@@ -4824,7 +4952,8 @@ describe("phase 5 pipeline regressions", () => {
         id: "amount-contract",
         question: "Does the transformed amount still match the amount reported to callers?",
         files: ["app.ts"],
-        symbols: ["handler"]
+        symbols: ["handler"],
+        obligation: "Trace request amount -> helper output -> returned amount before closing this question."
       })
     ]);
     expect(result.plan.coverage.map((decision) => decision.hunkId)).toEqual(["h1"]);
@@ -4881,7 +5010,8 @@ describe("phase 5 pipeline regressions", () => {
         files: ["app.ts"],
         symbols: [],
         question: expect.stringContaining("Downstream output consistency"),
-        whyItMatters: "The changed helper transforms a value before returning it through a public response path."
+        whyItMatters: "The changed helper transforms a value before returning it through a public response path.",
+        obligation: expect.stringContaining("Trace changed input/state")
       })
     ]);
     expect(events).toEqual(expect.arrayContaining([

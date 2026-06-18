@@ -54,6 +54,7 @@ type HintGroup = {
 type QuestionFollowUpGroup = {
   key: string;
   question: string;
+  obligation?: string;
   reason: string;
   confidence: Exclude<Confidence, "low">;
   packetIds: string[];
@@ -252,6 +253,7 @@ function taskFromGroup(
   return {
     id: `system-${sha256Hex(group.key).slice(0, 12)}`,
     question: group.question,
+    ...("obligation" in group && group.obligation !== undefined && group.obligation.trim().length > 0 ? { obligation: group.obligation } : {}),
     reason: group.reason,
     confidence: group.confidence,
     packetIds: group.packetIds,
@@ -287,13 +289,40 @@ async function runSystemReviewTask(
   const findings = submitted.findings
     .slice(0, MAX_FINDINGS_PER_TASK)
     .map((finding, index) => stampSystemFinding(task, finding, index, workerId, opts.diff));
-  const resolvedHints = submitted.resolvedHints.map((hint): ResolvedFollowUpHint => ({
-    taskId: task.id,
-    question: task.question,
-    files: cleanStrings(hint.files.length > 0 ? hint.files : task.files),
-    symbols: cleanStrings(hint.symbols.length > 0 ? hint.symbols : task.symbols),
-    resolution: hint.resolution.trim()
-  })).filter((hint) => hint.resolution.length > 0);
+  let rejectedObligationResolution = false;
+  const resolvedHints = submitted.resolvedHints.flatMap((hint): ResolvedFollowUpHint[] => {
+    const resolution = hint.resolution.trim();
+    if (resolution.length === 0) {
+      return [];
+    }
+    if (
+      task.obligation !== undefined &&
+      task.obligation.trim().length > 0 &&
+      !resolvedHintCoversObligation(task, hint)
+    ) {
+      rejectedObligationResolution = true;
+      telemetry.event({
+        stage: 8,
+        level: "warn",
+        message: "system_review_obligation_unresolved",
+        packetId: task.id,
+        workerId,
+        data: {
+          taskId: task.id,
+          reason: "resolved_hint_without_obligation_proof",
+          sourceQuestionIds: task.sourceQuestionIds ?? []
+        }
+      });
+      return [];
+    }
+    return [{
+      taskId: task.id,
+      question: task.question,
+      files: cleanStrings(hint.files.length > 0 ? hint.files : task.files),
+      symbols: cleanStrings(hint.symbols.length > 0 ? hint.symbols : task.symbols),
+      resolution
+    }];
+  });
   for (const resolved of resolvedHints) {
     telemetry.event({
       stage: 8,
@@ -302,6 +331,41 @@ async function runSystemReviewTask(
       packetId: task.id,
       workerId,
       data: resolved
+    });
+    if (task.obligation !== undefined && task.obligation.trim().length > 0) {
+      telemetry.event({
+        stage: 8,
+        level: "info",
+        message: "system_review_obligation_resolved",
+        packetId: task.id,
+        workerId,
+        data: {
+          taskId: task.id,
+          sourceQuestionIds: task.sourceQuestionIds ?? [],
+          files: resolved.files,
+          symbols: resolved.symbols
+        }
+      });
+    }
+  }
+  if (
+    task.obligation !== undefined &&
+    task.obligation.trim().length > 0 &&
+    findings.length === 0 &&
+    resolvedHints.length === 0 &&
+    !rejectedObligationResolution
+  ) {
+    telemetry.event({
+      stage: 8,
+      level: "warn",
+      message: "system_review_obligation_unresolved",
+      packetId: task.id,
+      workerId,
+      data: {
+        taskId: task.id,
+        reason: "no_finding_or_resolved_obligation",
+        sourceQuestionIds: task.sourceQuestionIds ?? []
+      }
     });
   }
   return {
@@ -454,6 +518,7 @@ function questionFollowUpGroups(packetResults: PacketReviewResult[], packets: Re
       }
       const reasonParts = [
         question.whyItMatters,
+        question.obligation !== undefined ? `Obligation: ${question.obligation}` : undefined,
         answer?.answer,
         answer?.evidenceTrace,
         answer === undefined && unresolvedQuestionIds.has(question.id) ? "The packet left this attached review question unresolved." : undefined
@@ -465,6 +530,7 @@ function questionFollowUpGroups(packetResults: PacketReviewResult[], packets: Re
         groups.set(key, {
           key,
           question: question.question,
+          ...(question.obligation !== undefined ? { obligation: question.obligation } : {}),
           reason: reasonParts.join(" "),
           confidence,
           packetIds: [result.packetId],
@@ -569,6 +635,7 @@ function ambiguousQuestionFollowUpGroups(
     }
     const reasonParts = [
       question.whyItMatters,
+      question.obligation !== undefined ? `Obligation: ${question.obligation}` : undefined,
       "Ownership was ambiguous, so local no-issue answers do not close the full review question.",
       ...answers.flatMap((entry) => {
         if (entry.answer === undefined) {
@@ -584,6 +651,7 @@ function ambiguousQuestionFollowUpGroups(
     groups.push({
       key: `review-question-ambiguous:${questionId}`,
       question: question.question,
+      ...(question.obligation !== undefined ? { obligation: question.obligation } : {}),
       reason: reasonParts.join(" "),
       confidence: hasHighConfidenceSignal ? "high" : "medium",
       packetIds: cleanStrings(packetsForTask.map((packet) => packet.id)),
@@ -646,6 +714,7 @@ function ownedQuestionFollowUpGroup(
 
   const reasonParts = [
     primary.question.whyItMatters,
+    primary.question.obligation !== undefined ? `Obligation: ${primary.question.obligation}` : undefined,
     primaryAnswer !== undefined
       ? `Primary packet ${primary.packet.id}: ${primaryAnswer.answer}`
       : `Primary packet ${primary.packet.id} did not answer this attached review question.`,
@@ -666,6 +735,7 @@ function ownedQuestionFollowUpGroup(
   return {
     key: `review-question-primary:${questionId}`,
     question: primary.question.question,
+    ...(primary.question.obligation !== undefined ? { obligation: primary.question.obligation } : {}),
     reason: reasonParts.join(" "),
     confidence,
     packetIds: cleanStrings(packetsForTask.map((packet) => packet.id)),
@@ -690,6 +760,13 @@ function answerCoversQuestionScope(
   packet: ReviewPacket,
   attachments: Array<{ packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>
 ): boolean {
+  if (
+    question.obligation !== undefined &&
+    question.obligation.trim().length > 0 &&
+    traceStepCount(answer.evidenceTrace ?? "") < 3
+  ) {
+    return false;
+  }
   const questionFiles = cleanStrings(question.files.map(stripLocationSuffix));
   const questionSymbols = cleanStrings(question.symbols);
   const hasMultiFileScope = questionFiles.length > 1;
@@ -711,6 +788,43 @@ function answerCoversQuestionScope(
   return (hasMultiFileScope && matchedQuestionFiles.length >= 2) ||
     (hasMultiPacketScope && referencedAttachmentPaths.length >= 2) ||
     (hasMultiSymbolScope && mentionedQuestionSymbols.length >= 2);
+}
+
+function resolvedHintCoversObligation(task: SystemReviewTask, hint: SubmitSystemReview["resolvedHints"][number]): boolean {
+  if (traceStepCount(hint.resolution) < 3) {
+    return false;
+  }
+  const taskFiles = cleanStrings(task.files.map(stripLocationSuffix));
+  const taskSymbols = cleanStrings(task.symbols);
+  const hintFiles = cleanStrings(hint.files.map(stripLocationSuffix));
+  const hintSymbols = cleanStrings(hint.symbols);
+  const resolutionText = [
+    hint.resolution,
+    ...hintFiles,
+    ...hintSymbols
+  ].join(" ");
+  const matchedFiles = taskFiles.filter((file) =>
+    hintFiles.includes(file) || normalizeFollowUpQuestion(resolutionText).includes(normalizeFollowUpQuestion(file))
+  );
+  const matchedSymbols = taskSymbols.filter((symbol) => textMentionsSymbol(resolutionText, symbol));
+  const coversFiles = taskFiles.length <= 1 || matchedFiles.length >= 2;
+  const coversSymbols = taskSymbols.length <= 1 || matchedSymbols.length >= 2;
+  return coversFiles && coversSymbols;
+}
+
+function traceStepCount(trace: string): number {
+  const arrowSteps = trace
+    .split(/\s*(?:->|=>)\s*/u)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (arrowSteps.length > 1) {
+    return arrowSteps.length;
+  }
+  return trace
+    .split(/\b(?:then|before|after|through|into|from|to)\b/iu)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 2)
+    .length;
 }
 
 function cleanPacketAttachments(packets: ReviewPacket[]): ReviewPacket[] {
@@ -788,6 +902,7 @@ function systemReviewTasksMatch(a: SystemReviewTask, b: SystemReviewTask): boole
 function mergeSystemReviewTasks(a: SystemReviewTask, b: SystemReviewTask): SystemReviewTask {
   const taskIds = cleanStrings([...(a.mergedTaskIds ?? [a.id]), ...(b.mergedTaskIds ?? [b.id])]);
   const reasons = cleanStrings([a.reason, b.reason]);
+  const obligations = cleanStrings([a.obligation ?? "", b.obligation ?? ""]);
   return {
     ...a,
     confidence: confidenceRank(b.confidence) < confidenceRank(a.confidence) ? b.confidence : a.confidence,
@@ -797,6 +912,7 @@ function mergeSystemReviewTasks(a: SystemReviewTask, b: SystemReviewTask): Syste
     suggestedLenses: cleanStrings([...a.suggestedLenses, ...b.suggestedLenses]).slice(0, 10),
     representativeFindings: dedupeFindings([...a.representativeFindings, ...b.representativeFindings]).slice(0, 5),
     reason: reasons.join(" "),
+    ...(obligations.length > 0 ? { obligation: obligations.join(" ") } : {}),
     ...(cleanStrings([...(a.sourceQuestionIds ?? []), ...(b.sourceQuestionIds ?? [])]).length > 0
       ? { sourceQuestionIds: cleanStrings([...(a.sourceQuestionIds ?? []), ...(b.sourceQuestionIds ?? [])]) }
       : {}),

@@ -68,12 +68,15 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 62 | COMPLETE | Issue 62: Stage 7 Schema Friction Reduction |
 | 63 | COMPLETE | Issue 63: Review Question Ownership and Risk-Area Coverage |
 | 64 | COMPLETE | Issue 64: Material Review Question Answer Quality and Ambiguous Ownership Follow-Up |
+| 65 | COMPLETE | Issue 65: End-to-End Obligation Proof For Review Questions |
+| 66 | PENDING | Issue 66: Simplify Stage 5-8 By Removing Planner Review Questions |
 
 ## Current Queue
 
 Recommended implementation order for remaining work:
 
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
+- **Issue 66** — simplify Stage 5-8 by removing planner-authored review questions, obligations, and question ownership from control flow. This supersedes the recent question/obligation hardening direction and should run before more Stage 5-8 tuning.
 
 ## Deferred / Watch List
 

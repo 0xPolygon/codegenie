@@ -61,6 +61,172 @@ describe("uncertainty promotion", () => {
     ]));
   });
 
+  it("promotes material concerns from partial review-question answers into verifier candidates", async () => {
+    const packet = fakePacket("packet-material", "tests/balance.test.ts", {
+      symbol: "TestVerifyBalanceIncrease",
+      line: "+ expect(verifyBalanceIncrease(balanceMap)).toBe(true)"
+    });
+    packet.reviewQuestions = [{
+      id: "q-balance-boundary",
+      question: "Do the rewritten balance tests still exercise the live ERC20 balance decode boundary?",
+      whyItMatters: "The production balance reader gates deposits.",
+      files: ["tests/balance.test.ts", "src/txn-wait.ts"],
+      symbols: ["erc20BalanceAt", "verifyBalanceIncrease"],
+      relevanceReason: "test packet owns the rewritten coverage",
+      role: "primary",
+      ownershipStatus: "primary"
+    }];
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/tests"],
+        findings: [],
+        followUpHints: [],
+        uncertainties: [],
+        answeredQuestions: [{
+          questionId: "q-balance-boundary",
+          answer: "The comparator remains covered, but the live ERC20 decode boundary appears unexercised.",
+          confidence: "medium",
+          outcome: "partial",
+          evidence: [{
+            path: "tests/balance.test.ts",
+            lines: "verifyBalanceIncrease(balanceMap)",
+            whyRelevant: "The rewritten test injects a fake balance function."
+          }],
+          evidenceTrace: "old transport test -> eth_call decode path; new helper test -> injected balanceMap only",
+          materialConcern: {
+            title: "ERC20 balance decode boundary may no longer be covered",
+            changedPath: "tests/balance.test.ts",
+            anchorLine: 2,
+            failureMode: "The changed tests exercise only the pure comparator and no longer drive erc20BalanceAt's production decode path.",
+            evidence: "The packet shows verifyBalanceIncrease called with balanceMap; the planner question points at erc20BalanceAt in src/txn-wait.ts.",
+            suggestedVerification: "Confirm whether any remaining test calls erc20BalanceAt or drives the production ERC20 balance decode path."
+          }
+        }],
+        status: "completed"
+      }]
+    }, captureTelemetry().recorder);
+
+    expect(result.summary).toMatchObject({
+      considered: 1,
+      promoted: 1,
+      notPromoted: {}
+    });
+    const promoted = result.packetResults[0]?.findings[0];
+    expect(promoted).toMatchObject({
+      title: "ERC20 balance decode boundary may no longer be covered",
+      category: "testing",
+      confidence: "medium",
+      path: "tests/balance.test.ts",
+      anchor: { path: "tests/balance.test.ts", line: 2, side: "RIGHT", hunkId: "h1" },
+      failureMode: "The changed tests exercise only the pure comparator and no longer drive erc20BalanceAt's production decode path.",
+      verification: "Confirm whether any remaining test calls erc20BalanceAt or drives the production ERC20 balance decode path.",
+      reviewQuestionIds: ["q-balance-boundary"],
+      provenance: {
+        sourceKind: "material_concern",
+        sourcePacketId: packet.id,
+        question: "ERC20 balance decode boundary may no longer be covered",
+        files: ["src/txn-wait.ts", "tests/balance.test.ts"],
+        symbols: ["erc20BalanceAt", "verifyBalanceIncrease"]
+      }
+    });
+    expect(promoted?.evidence.relatedCode).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: "tests/balance.test.ts",
+        whyRelevant: "Material concern evidence captured from the packet review answer."
+      })
+    ]));
+  });
+
+  it("does not promote partial review-question prose without a material concern", async () => {
+    const packet = fakePacket("packet-partial-only", "tests/balance.test.ts", {
+      symbol: "TestVerifyBalanceIncrease",
+      line: "+ expect(verifyBalanceIncrease(balanceMap)).toBe(true)"
+    });
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/tests"],
+        findings: [],
+        followUpHints: [],
+        uncertainties: [],
+        answeredQuestions: [{
+          questionId: "q-balance-boundary",
+          answer: "The local slice is only partially checked.",
+          confidence: "medium",
+          outcome: "partial",
+          evidence: [{ path: packet.path, whyRelevant: "The packet has local test changes." }]
+        }],
+        status: "completed"
+      }]
+    }, captureTelemetry().recorder);
+
+    expect(result.summary).toMatchObject({
+      considered: 0,
+      promoted: 0
+    });
+    expect(result.packetResults[0]?.findings).toEqual([]);
+  });
+
+  it("does not duplicate material concerns already linked to a direct finding", async () => {
+    const packet = fakePacket("packet-linked-material", "tests/balance.test.ts", {
+      symbol: "TestVerifyBalanceIncrease",
+      line: "+ expect(verifyBalanceIncrease(balanceMap)).toBe(true)"
+    });
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/tests"],
+        findings: [{
+          id: "existing",
+          title: "Existing linked testing finding",
+          severity: "low",
+          confidence: "medium",
+          path: packet.path,
+          anchor: { path: packet.path, line: 2, side: "RIGHT", hunkId: "h1" },
+          changedLine: true,
+          category: "testing",
+          evidence: { changedCode: "+ expect(verifyBalanceIncrease(balanceMap)).toBe(true)" },
+          failureMode: "The direct finding already covers the review question.",
+          whyThisMatters: "Coverage can be lost.",
+          verification: "Verifier should check the direct finding.",
+          reviewQuestionIds: ["q-balance-boundary"],
+          producedBy: { kind: "packet", stage: 7, packetId: packet.id, lensId: "core/tests", skillIds: [] }
+        }],
+        followUpHints: [],
+        uncertainties: [],
+        answeredQuestions: [{
+          questionId: "q-balance-boundary",
+          answer: "The same concrete issue is already a candidate finding.",
+          confidence: "medium",
+          outcome: "partial",
+          evidence: [{ path: packet.path, whyRelevant: "The packet has local test changes." }],
+          materialConcern: {
+            title: "Duplicate material concern",
+            changedPath: packet.path,
+            anchorLine: 2,
+            failureMode: "Duplicate failure mode.",
+            evidence: "Duplicate evidence.",
+            suggestedVerification: "Duplicate verification."
+          }
+        }],
+        status: "completed"
+      }]
+    }, captureTelemetry().recorder);
+
+    expect(result.summary).toMatchObject({
+      considered: 0,
+      promoted: 0
+    });
+    expect(result.packetResults[0]?.findings).toHaveLength(1);
+  });
+
   it("keeps promotion bounded and explains dropped sources", async () => {
     const packets = Array.from({ length: 6 }, (_value, index) =>
       fakePacket(`packet-${index}`, `src/case-${index}.ts`, {

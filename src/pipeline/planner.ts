@@ -1174,6 +1174,7 @@ function normalizeReviewQuestions(
       .filter((symbol) => knownSymbols.size === 0 || knownSymbols.has(symbol) || symbolMentionedInDossier(symbol, dossier))
       .slice(0, MAX_REVIEW_QUESTION_SYMBOLS);
     const evidenceHint = question.evidenceHint === undefined ? undefined : normalizeWhitespace(question.evidenceHint);
+    const obligation = question.obligation === undefined ? undefined : normalizeWhitespace(question.obligation);
     const id = normalizeQuestionId(question.id, text, normalized.length + 1);
     const dropReason =
       text.length === 0
@@ -1212,8 +1213,20 @@ function normalizeReviewQuestions(
       whyItMatters,
       files,
       symbols,
-      ...(evidenceHint !== undefined && evidenceHint.length > 0 ? { evidenceHint } : {})
+      ...(evidenceHint !== undefined && evidenceHint.length > 0 ? { evidenceHint } : {}),
+      ...(obligation !== undefined && obligation.length > 0 ? { obligation: truncate(obligation, 1200) } : {})
     });
+    if (obligation !== undefined && obligation.length > 0) {
+      telemetry.event({
+        stage: 5,
+        level: "info",
+        message: "review_question_obligation_attached",
+        data: {
+          questionId: id,
+          source: "planner"
+        }
+      });
+    }
     if (normalized.length >= MAX_REVIEW_QUESTIONS) {
       break;
     }
@@ -1454,7 +1467,8 @@ function reviewQuestionFromRiskArea(
     whyItMatters: truncate(area.reason, 1000),
     files: area.files.slice(0, MAX_REVIEW_QUESTION_FILES),
     symbols,
-    evidenceHint: "Answer from changed hunks plus the nearest relevant surrounding context. Emit a candidate finding if the trace exposes a concrete changed-code failure mode."
+    evidenceHint: "Answer from changed hunks plus the nearest relevant surrounding context. Emit a candidate finding if the trace exposes a concrete changed-code failure mode.",
+    obligation: "Trace changed input/state -> transform/check -> downstream output/consumer, then verify the downstream value or state still satisfies the changed-code contract."
   };
 }
 

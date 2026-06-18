@@ -128,6 +128,22 @@ export async function buildReviewPackets(
   }
 
   const ownership = assignReviewQuestionOwnership(packets, plan.reviewQuestions ?? [], telemetry);
+  const questionObligations = (plan.reviewQuestions ?? []).filter((question) => question.obligation !== undefined && question.obligation.trim().length > 0);
+  const obligationAttachments = packets.reduce(
+    (sum, packet) => sum + (packet.reviewQuestions ?? []).filter((question) => question.obligation !== undefined && question.obligation.trim().length > 0).length,
+    0
+  );
+  if (questionObligations.length > 0) {
+    telemetry.event({
+      stage: 6,
+      level: "info",
+      message: "review_question_obligation_attached",
+      data: {
+        questions: questionObligations.length,
+        attachments: obligationAttachments
+      }
+    });
+  }
   for (const packet of packets) {
     await telemetry.writeArtifact(`packets/${packet.id}.json`, packet);
   }
@@ -142,6 +158,8 @@ export async function buildReviewPackets(
         emitted: plan.reviewQuestions?.length ?? 0,
         attachedPackets: packets.filter((packet) => (packet.reviewQuestions ?? []).length > 0).length,
         attachments: packets.reduce((sum, packet) => sum + (packet.reviewQuestions?.length ?? 0), 0),
+        obligations: questionObligations.length,
+        obligationAttachments,
         primaryOwners: ownership.assigned,
         unassignedOwners: ownership.unassigned,
         supportingAttachments: ownership.supportingAttachments

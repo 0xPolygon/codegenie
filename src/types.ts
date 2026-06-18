@@ -680,6 +680,7 @@ export type ReviewQuestion = {
   files: string[];
   symbols: string[];
   evidenceHint?: string;
+  obligation?: string;
 };
 
 export type RiskAreaDisposition = {
@@ -738,7 +739,7 @@ export type FindingProducer = {
 
 export type CandidateFindingProvenance = {
   source: "uncertainty_promotion";
-  sourceKind: "uncertainty" | "follow_up_hint" | "unresolved_question";
+  sourceKind: "uncertainty" | "follow_up_hint" | "unresolved_question" | "material_concern";
   sourcePacketId: string;
   question: string;
   files: string[];
@@ -786,7 +787,16 @@ export type AnsweredReviewQuestion = {
   outcome: "answered_no_issue" | "candidate_finding" | "partial" | "not_applicable";
   evidence: Array<{ path: string; lines?: string; whyRelevant: string }>;
   evidenceTrace?: string;
+  materialConcern?: {
+    title: string;
+    changedPath: string;
+    anchorLine?: number;
+    failureMode: string;
+    evidence: string;
+    suggestedVerification: string;
+  };
   role?: PacketReviewQuestion["role"];
+  downgradeReasons?: string[];
 };
 
 export type PacketReviewResult = {
@@ -812,6 +822,7 @@ export type PacketReviewResult = {
 export type SystemReviewTask = {
   id: string;
   question: string;
+  obligation?: string;
   reason: string;
   confidence: Exclude<Confidence, "low">;
   packetIds: string[];

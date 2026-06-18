@@ -222,7 +222,12 @@ export async function runReview(
           generated: packets.length,
           degraded: packets.filter((packet) => packet.degraded !== undefined).length,
           reviewQuestionAttachments: packets.reduce((sum, packet) => sum + (packet.reviewQuestions?.length ?? 0), 0),
-          packetsWithReviewQuestions: packets.filter((packet) => (packet.reviewQuestions ?? []).length > 0).length
+          packetsWithReviewQuestions: packets.filter((packet) => (packet.reviewQuestions ?? []).length > 0).length,
+          reviewQuestionObligations: plannerResult.plan.reviewQuestions?.filter((question) => question.obligation !== undefined && question.obligation.trim().length > 0).length ?? 0,
+          reviewQuestionObligationAttachments: packets.reduce(
+            (sum, packet) => sum + (packet.reviewQuestions ?? []).filter((question) => question.obligation !== undefined && question.obligation.trim().length > 0).length,
+            0
+          )
         },
         lenses: {
           selected: new Set(packets.flatMap((packet) => packet.lenses)).size,
@@ -1329,6 +1334,7 @@ function buildReviewQuestionLifecycle(input: ReviewQuestionLifecycleInput): Reco
       systemReviewTasks: systemReview.tasks.filter((task) => task.question === question.question).map((task) => ({
         taskId: task.id,
         question: task.question,
+        ...(task.obligation !== undefined ? { obligation: task.obligation } : {}),
         packetIds: task.packetIds,
         files: task.files,
         symbols: task.symbols
@@ -1363,6 +1369,25 @@ function buildReviewQuestionLifecycle(input: ReviewQuestionLifecycleInput): Reco
       0),
       answered: answers.length,
       partial: answers.filter((answer) => answer.outcome === "partial").length,
+      materialConcerns: answers.filter((answer) => answer.materialConcern !== undefined).length,
+      obligations: (plan.reviewQuestions ?? []).filter((question) => question.obligation !== undefined && question.obligation.trim().length > 0).length,
+      obligationsAnswered: answers.filter((answer) => {
+        const question = (plan.reviewQuestions ?? []).find((entry) => entry.id === answer.questionId);
+        return question?.obligation !== undefined && answer.outcome === "answered_no_issue";
+      }).length,
+      obligationsPartial: answers.filter((answer) => {
+        const question = (plan.reviewQuestions ?? []).find((entry) => entry.id === answer.questionId);
+        return question?.obligation !== undefined && answer.outcome === "partial";
+      }).length,
+      obligationsWithCandidates: generatedFindings.filter((finding) => {
+        const question = (plan.reviewQuestions ?? []).find((entry) => entry.id === finding.questionId);
+        return question?.obligation !== undefined;
+      }).length,
+      obligationsDowngraded: answers.filter((answer) => {
+        const question = (plan.reviewQuestions ?? []).find((entry) => entry.id === answer.questionId);
+        return question?.obligation !== undefined &&
+          (answer.downgradeReasons ?? []).length > 0;
+      }).length,
       candidateFindings: generatedFindings.length,
       verifiedQuestionFindings: generatedFindings.filter((finding) => finding.verification?.verdict === "keep" || finding.verification?.verdict === "revise").length,
       finalQuestionFindings: finalFindingsByQuestion.length,

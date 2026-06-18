@@ -477,8 +477,10 @@ function normalizeAnsweredQuestions(
       .slice(0, 8);
     const evidenceTrace = answer.evidenceTrace?.trim();
     const answerText = answer.answer.trim();
+    const materialConcern = normalizeMaterialConcern(answer.materialConcern);
     let outcome = answer.outcome;
     let confidence = answer.confidence;
+    const downgradeReasons: string[] = [];
 
     if (answerText.length === 0) {
       telemetry.event({
@@ -498,6 +500,7 @@ function normalizeAnsweredQuestions(
     if (outcome === "answered_no_issue" && (evidence.length === 0 || evidenceTrace === undefined || evidenceTrace.length === 0)) {
       outcome = "partial";
       confidence = confidence === "high" ? "medium" : confidence;
+      downgradeReasons.push("answered_no_issue_without_evidence_trace");
       telemetry.event({
         stage: 7,
         level: "warn",
@@ -513,10 +516,34 @@ function normalizeAnsweredQuestions(
 
     if (
       outcome === "answered_no_issue" &&
+      attached.obligation !== undefined &&
+      !noIssueAnswerProvesObligation(answerText, attached, packet, evidence, evidenceTrace)
+    ) {
+      outcome = "partial";
+      confidence = confidence === "high" ? "medium" : confidence;
+      downgradeReasons.push("answered_no_issue_without_obligation_proof");
+      telemetry.event({
+        stage: 7,
+        level: "warn",
+        message: "review_question_answer_downgraded",
+        packetId: packet.id,
+        workerId,
+        data: {
+          questionId: attached.id,
+          reason: "answered_no_issue_without_obligation_proof",
+          ownershipStatus: attached.ownershipStatus,
+          role: attached.role
+        }
+      });
+    }
+
+    if (
+      outcome === "answered_no_issue" &&
       !noIssueAnswerCoversQuestionScope(answerText, attached, packet, evidence, evidenceTrace)
     ) {
       outcome = "partial";
       confidence = confidence === "high" ? "medium" : confidence;
+      downgradeReasons.push("answered_no_issue_incomplete_question_scope");
       telemetry.event({
         stage: 7,
         level: "warn",
@@ -535,6 +562,7 @@ function normalizeAnsweredQuestions(
     if (outcome === "candidate_finding" && !findingQuestionIds.has(attached.id)) {
       outcome = "partial";
       confidence = confidence === "high" ? "medium" : confidence;
+      downgradeReasons.push("candidate_finding_without_linked_finding");
       telemetry.event({
         stage: 7,
         level: "warn",
@@ -555,9 +583,26 @@ function normalizeAnsweredQuestions(
       outcome,
       evidence,
       ...(evidenceTrace !== undefined && evidenceTrace.length > 0 ? { evidenceTrace } : {}),
-      ...(attached.role !== undefined ? { role: attached.role } : {})
+      ...(outcome === "partial" && materialConcern !== undefined ? { materialConcern } : {}),
+      ...(attached.role !== undefined ? { role: attached.role } : {}),
+      ...(downgradeReasons.length > 0 ? { downgradeReasons } : {})
     };
     normalized.push(normalizedAnswer);
+    if (outcome === "partial" && materialConcern !== undefined) {
+      telemetry.event({
+        stage: 7,
+        level: "info",
+        message: "review_question_material_concern",
+        packetId: packet.id,
+        workerId,
+        data: {
+          questionId: attached.id,
+          title: materialConcern.title,
+          changedPath: materialConcern.changedPath,
+          hasAnchorLine: materialConcern.anchorLine !== undefined
+        }
+      });
+    }
     telemetry.event({
       stage: 7,
       level: "info",
@@ -576,6 +621,36 @@ function normalizeAnsweredQuestions(
   }
 
   return normalized;
+}
+
+function normalizeMaterialConcern(
+  concern: SubmittedAnsweredQuestion["materialConcern"] | undefined
+): NonNullable<PacketReviewResult["answeredQuestions"]>[number]["materialConcern"] | undefined {
+  if (concern === undefined) {
+    return undefined;
+  }
+  const title = concern.title.trim();
+  const changedPath = stripLocationSuffix(concern.changedPath);
+  const failureMode = concern.failureMode.trim();
+  const evidence = concern.evidence.trim();
+  const suggestedVerification = concern.suggestedVerification.trim();
+  if (
+    title.length === 0 ||
+    changedPath.length === 0 ||
+    failureMode.length === 0 ||
+    evidence.length === 0 ||
+    suggestedVerification.length === 0
+  ) {
+    return undefined;
+  }
+  return {
+    title,
+    changedPath,
+    ...(concern.anchorLine !== undefined ? { anchorLine: concern.anchorLine } : {}),
+    failureMode,
+    evidence,
+    suggestedVerification
+  };
 }
 
 function noIssueAnswerCoversQuestionScope(
@@ -623,6 +698,40 @@ function noIssueAnswerCoversQuestionScope(
   return requiresCrossScope && (referencesExternalQuestionEvidencePath || referencesMultipleQuestionFiles || referencesMultipleQuestionSymbols);
 }
 
+function noIssueAnswerProvesObligation(
+  answerText: string,
+  question: NonNullable<ReviewPacket["reviewQuestions"]>[number],
+  packet: ReviewPacket,
+  evidence: Array<{ path: string; lines?: string; whyRelevant: string }>,
+  evidenceTrace: string | undefined
+): boolean {
+  if (question.obligation === undefined || question.obligation.trim().length === 0) {
+    return true;
+  }
+  if (evidenceTrace === undefined || evidenceTrace.trim().length === 0) {
+    return false;
+  }
+  if (traceStepCount(evidenceTrace) < 3) {
+    return false;
+  }
+  return noIssueAnswerCoversQuestionScope(answerText, question, packet, evidence, evidenceTrace);
+}
+
+function traceStepCount(trace: string): number {
+  const arrowSteps = trace
+    .split(/\s*(?:->|=>)\s*/u)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (arrowSteps.length > 1) {
+    return arrowSteps.length;
+  }
+  return trace
+    .split(/\b(?:then|before|after|through|into|from|to)\b/iu)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 2)
+    .length;
+}
+
 function followUpHintsFromPartialQuestions(
   answers: NormalizedAnsweredQuestions,
   packet: ReviewPacket
@@ -646,7 +755,10 @@ function followUpHintsFromPartialQuestions(
         files: cleanStrings(question.files.length > 0 ? question.files : answer.evidence.map((entry) => entry.path)),
         symbols: cleanStrings(question.symbols),
         suggestedLenses: packet.lenses,
-        reason: `Partial answer to planner review question ${question.id}: ${answer.answer}`,
+        reason: [
+          `Partial answer to planner review question ${question.id}: ${answer.answer}`,
+          question.obligation !== undefined ? `Obligation: ${question.obligation}` : undefined
+        ].filter((part): part is string => part !== undefined).join(" "),
         confidence: answer.confidence,
         questionDerived: true
       }];

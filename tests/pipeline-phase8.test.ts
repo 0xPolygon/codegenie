@@ -108,6 +108,7 @@ describe("phase 8 targeted system review", () => {
         whyItMatters: "Callers rely on the returned response matching the transformed value.",
         files: ["app.ts"],
         symbols: ["divide"],
+        obligation: "Trace requested value -> divide helper -> returned response before closing this question.",
         relevanceReason: "file overlap: app.ts"
       }]
     };
@@ -130,8 +131,167 @@ describe("phase 8 targeted system review", () => {
       question: "Does the changed value still match the returned response?",
       packetIds: ["packet-1"],
       files: ["app.ts"],
+      obligation: "Trace requested value -> divide helper -> returned response before closing this question.",
       suggestedLenses: expect.arrayContaining(["core/code-review"])
     });
+  });
+
+  it("does not resolve an obligation task with a local-only resolved hint", async () => {
+    const question = {
+      id: "q-response-contract",
+      question: "Does the transformed value still match the returned response?",
+      whyItMatters: "The helper and caller packets together define the caller-visible value.",
+      files: ["app.ts", "worker.ts"],
+      symbols: ["transformValue", "renderResponse"],
+      obligation: "Trace requested value -> transform helper -> returned response before closing this question.",
+      relevanceReason: "file overlap",
+      ownershipStatus: "ambiguous" as const,
+      ownershipReason: "ambiguous packet match",
+      ownershipCandidatePacketIds: ["packet-1", "packet-2"]
+    };
+    const firstPacket = { ...fakePacket("packet-1", "app.ts", "transformValue"), reviewQuestions: [question] };
+    const secondPacket = { ...fakePacket("packet-2", "worker.ts", "renderResponse"), reviewQuestions: [question] };
+    const firstResult: PacketReviewResult = {
+      ...packetResult("packet-1", []),
+      answeredQuestions: [{
+        questionId: "q-response-contract",
+        answer: "The local transform is visible, but the response caller is outside this packet.",
+        confidence: "medium",
+        outcome: "partial",
+        evidence: [{ path: "app.ts", whyRelevant: "The helper packet owns the transform." }],
+        evidenceTrace: "requested value -> transformValue"
+      }]
+    };
+    const secondResult: PacketReviewResult = {
+      ...packetResult("packet-2", []),
+      answeredQuestions: [{
+        questionId: "q-response-contract",
+        answer: "The response caller is visible, but the transform packet owns the input.",
+        confidence: "medium",
+        outcome: "partial",
+        evidence: [{ path: "worker.ts", whyRelevant: "The caller returns the value." }],
+        evidenceTrace: "renderResponse -> returned response"
+      }]
+    };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+
+    const result = await runTargetedSystemReviews(
+      { packetResults: [firstResult, secondResult], packets: [firstPacket, secondPacket] },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            findings: [],
+            resolvedHints: [{
+              question: "Does the transformed value still match the returned response?",
+              files: ["app.ts"],
+              symbols: ["transformValue"],
+              resolution: "requested value -> transformValue"
+            }]
+          }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.tasks[0]).toMatchObject({
+      obligation: "Trace requested value -> transform helper -> returned response before closing this question."
+    });
+    expect(result.resolvedHints).toEqual([]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 8,
+      message: "system_review_obligation_unresolved",
+      data: expect.objectContaining({ reason: "resolved_hint_without_obligation_proof" })
+    }));
+  });
+
+  it("resolves an obligation task when the resolved hint covers the end-to-end scope", async () => {
+    const question = {
+      id: "q-response-contract",
+      question: "Does the transformed value still match the returned response?",
+      whyItMatters: "The helper and caller packets together define the caller-visible value.",
+      files: ["app.ts", "worker.ts"],
+      symbols: ["transformValue", "renderResponse"],
+      obligation: "Trace requested value -> transform helper -> returned response before closing this question.",
+      relevanceReason: "file overlap",
+      ownershipStatus: "ambiguous" as const,
+      ownershipReason: "ambiguous packet match",
+      ownershipCandidatePacketIds: ["packet-1", "packet-2"]
+    };
+    const firstPacket = { ...fakePacket("packet-1", "app.ts", "transformValue"), reviewQuestions: [question] };
+    const secondPacket = { ...fakePacket("packet-2", "worker.ts", "renderResponse"), reviewQuestions: [question] };
+    const firstResult: PacketReviewResult = {
+      ...packetResult("packet-1", []),
+      answeredQuestions: [{
+        questionId: "q-response-contract",
+        answer: "The transform side is visible here.",
+        confidence: "medium",
+        outcome: "partial",
+        evidence: [{ path: "app.ts", whyRelevant: "The helper packet owns the transform." }],
+        evidenceTrace: "requested value -> transformValue"
+      }]
+    };
+    const secondResult: PacketReviewResult = {
+      ...packetResult("packet-2", []),
+      answeredQuestions: [{
+        questionId: "q-response-contract",
+        answer: "The caller side is visible here.",
+        confidence: "medium",
+        outcome: "partial",
+        evidence: [{ path: "worker.ts", whyRelevant: "The caller returns the value." }],
+        evidenceTrace: "renderResponse -> returned response"
+      }]
+    };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+
+    const result = await runTargetedSystemReviews(
+      { packetResults: [firstResult, secondResult], packets: [firstPacket, secondPacket] },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            findings: [],
+            resolvedHints: [{
+              question: "Does the transformed value still match the returned response?",
+              files: ["app.ts", "worker.ts"],
+              symbols: ["transformValue", "renderResponse"],
+              resolution: "requested value -> transformValue -> renderResponse"
+            }]
+          }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.resolvedHints).toEqual([
+      expect.objectContaining({
+        files: ["app.ts", "worker.ts"],
+        symbols: ["renderResponse", "transformValue"],
+        resolution: "requested value -> transformValue -> renderResponse"
+      })
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 8,
+      message: "system_review_obligation_resolved"
+    }));
   });
 
   it("builds one Stage 8 task for an ambiguous review question closed only by local no-issue answers", () => {

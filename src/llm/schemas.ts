@@ -90,7 +90,12 @@ const ReviewQuestionSchema = Type.Object(
     whyItMatters: Type.String({ minLength: 1, maxLength: 1000 }),
     files: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 20 }),
     symbols: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 20 }),
-    evidenceHint: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 }))
+    evidenceHint: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
+    obligation: Type.Optional(Type.String({
+      minLength: 1,
+      maxLength: 1200,
+      description: "Plain-English assertion that must be proven or falsified before this question can be closed. Use only for cross-step concerns."
+    }))
   },
   { additionalProperties: false }
 );
@@ -209,6 +214,41 @@ const StructuredUncertaintySchema = Type.Object(
   { additionalProperties: false }
 );
 
+const MaterialConcernSchema = Type.Object(
+  {
+    title: Type.String({
+      minLength: 1,
+      maxLength: 200,
+      description: "Short concrete concern title. Use only when the partial answer identifies a verifier-resolvable failure mode."
+    }),
+    changedPath: Type.String({
+      minLength: 1,
+      maxLength: 500,
+      description: "Changed file that anchors the concern."
+    }),
+    anchorLine: Type.Optional(Type.Integer({
+      minimum: 1,
+      description: "Changed line number when known. Omit when the precise changed line is unknown."
+    })),
+    failureMode: Type.String({
+      minLength: 1,
+      maxLength: 2000,
+      description: "Specific failure mode to verify. Do not use broad 'check this behavior' wording."
+    }),
+    evidence: Type.String({
+      minLength: 1,
+      maxLength: 2000,
+      description: "Concrete source evidence from this packet or tool reads that supports the concern."
+    }),
+    suggestedVerification: Type.String({
+      minLength: 1,
+      maxLength: 2000,
+      description: "Exact predicate the verifier should confirm or reject."
+    })
+  },
+  { additionalProperties: false }
+);
+
 const AnsweredReviewQuestionSchema = Type.Object(
   {
     questionId: Type.String({ minLength: 1, maxLength: 120 }),
@@ -239,7 +279,8 @@ const AnsweredReviewQuestionSchema = Type.Object(
       minLength: 1,
       maxLength: 2000,
       description: "Decisive source trace only. Keep compact; no XML, markdown wrappers, or tool parameter tags."
-    }))
+    })),
+    materialConcern: Type.Optional(MaterialConcernSchema)
   },
   { additionalProperties: false }
 );
@@ -330,7 +371,7 @@ export type SubmitVerificationVerdict = Static<typeof SubmitVerificationVerdictS
 export type SubmitComposition = Static<typeof SubmitCompositionSchema>;
 
 export const SCHEMA_VERSIONS = {
-  submit_plan: 2,
+  submit_plan: 3,
   submit_review: 3,
   submit_system_review: 1,
   submit_verdict: 1,

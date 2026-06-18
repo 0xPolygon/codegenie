@@ -49,13 +49,15 @@ type PromotionSource = {
   packet: ReviewPacket;
   sourceKind: PromotionSourceKind;
   question: string;
+  questionId?: string;
   files: string[];
   symbols: string[];
   reason: string;
   confidence?: Confidence;
+  materialConcern?: NonNullable<NonNullable<PacketReviewResult["answeredQuestions"]>[number]["materialConcern"]>;
 };
 
-type PromotionSourceKind = "uncertainty" | "follow_up_hint" | "unresolved_question";
+type PromotionSourceKind = "uncertainty" | "follow_up_hint" | "unresolved_question" | "material_concern";
 type PromotionClass = "local_behavior_delta" | "broad_behavior_delta" | "test_boundary" | "security_boundary" | "other";
 type PromotionSelectionReason = "rank" | "local_behavior_delta_reserve";
 type RankedPromotionSource = {
@@ -150,7 +152,41 @@ function promotionSources(result: PacketReviewResult, packetsById: Map<string, R
   const unresolvedSymbols = packet.symbolFacts
     .map((fact) => fact.enclosingSymbol ?? fact.signature)
     .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0);
+  const questionsById = new Map((packet.reviewQuestions ?? []).map((question) => [question.id, question]));
+  const coveredQuestionIds = new Set(result.findings.flatMap((finding) => finding.reviewQuestionIds ?? []));
   return [
+    ...(result.answeredQuestions ?? [])
+      .filter((answer) =>
+        answer.outcome === "partial" &&
+        answer.materialConcern !== undefined &&
+        !coveredQuestionIds.has(answer.questionId)
+      )
+      .map((answer): PromotionSource => {
+        const concern = answer.materialConcern as NonNullable<typeof answer.materialConcern>;
+        const question = questionsById.get(answer.questionId);
+        return {
+          packetResult: result,
+          packet,
+          sourceKind: "material_concern",
+          question: concern.title,
+          questionId: answer.questionId,
+          files: cleanStrings([
+            concern.changedPath,
+            ...answer.evidence.map((entry) => entry.path),
+            ...(question?.files ?? [])
+          ]),
+          symbols: cleanStrings(question?.symbols ?? []),
+          reason: [
+            `Partial answer to review question ${answer.questionId}: ${answer.answer}`,
+            `Failure mode: ${concern.failureMode}`,
+            `Evidence: ${concern.evidence}`,
+            `Verifier predicate: ${concern.suggestedVerification}`,
+            ...(answer.evidenceTrace !== undefined ? [`Trace: ${answer.evidenceTrace}`] : [])
+          ].join("\n"),
+          confidence: answer.confidence,
+          materialConcern: concern
+        };
+      }),
     ...result.uncertainties.map((uncertainty): PromotionSource => ({
       packetResult: result,
       packet,
@@ -184,7 +220,7 @@ function promotionSources(result: PacketReviewResult, packetsById: Map<string, R
 
 function promotionDecision(source: PromotionSource): { eligible: boolean; reason: string } {
   if (source.packetResult.findings.length > 0) {
-    if (!pointsAtDistinctScope(source) || duplicateOfExistingFinding(source)) {
+    if (duplicateOfExistingFinding(source) || (source.sourceKind !== "material_concern" && !pointsAtDistinctScope(source))) {
       return { eligible: false, reason: "covered_by_existing_candidate" };
     }
   }
@@ -201,6 +237,12 @@ function promotionDecision(source: PromotionSource): { eligible: boolean; reason
   const testScoped = isTestScopedSource(source);
   if (!risk.promotable) {
     return { eligible: false, reason: "weak_or_non_actionable_risk" };
+  }
+  if (source.sourceKind === "material_concern") {
+    if (!hasChangedAnchorForPredicate(source)) {
+      return { eligible: false, reason: "no_changed_anchor_for_predicate" };
+    }
+    return { eligible: true, reason: "eligible" };
   }
   if (isBroadFollowUpOnly(source, risk.category)) {
     return { eligible: false, reason: "broad_follow_up_only" };
@@ -263,13 +305,15 @@ function pointsAtDistinctScope(source: PromotionSource): boolean {
 
 function promotedCandidate(source: PromotionSource, index: number): CandidateFinding {
   const risk = riskProfile(source);
-  const anchor = firstChangedAnchor(source.packet);
+  const anchor = source.materialConcern !== undefined
+    ? materialConcernAnchor(source.packet, source.materialConcern)
+    : firstChangedAnchor(source.packet);
   const confidence = promotedConfidence(source, risk.category);
   const changedCode = source.packet.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n");
   const relatedCode = relatedEvidence(source);
   return {
     id: promotedCandidateId(source, index),
-    title: promotedTitle(source, risk.category),
+    title: source.materialConcern?.title ?? promotedTitle(source, risk.category),
     severity: promotedSeverity(risk.category),
     confidence,
     path: anchor?.path ?? source.packet.path,
@@ -280,12 +324,16 @@ function promotedCandidate(source: PromotionSource, index: number): CandidateFin
       changedCode: truncate(changedCode, MAX_EVIDENCE_CHARS),
       ...(relatedCode.length > 0 ? { relatedCode } : {})
     },
-    failureMode: promotedFailureMode(source, risk.category),
-    whyThisMatters: promotedImpact(source, risk.category),
+    failureMode: source.materialConcern?.failureMode ?? promotedFailureMode(source, risk.category),
+    whyThisMatters: source.materialConcern !== undefined
+      ? materialConcernImpact(source, risk.category)
+      : promotedImpact(source, risk.category),
     suggestedTest: risk.category === "testing"
       ? "Verify the affected behavior through a production-path test or restore equivalent deleted coverage."
       : "Add or update a regression test that exercises the referenced changed path.",
-    verification: `Promoted from ${source.sourceKind}; normal verifier must confirm the concrete failure mode before publication.`,
+    verification: source.materialConcern?.suggestedVerification ??
+      `Promoted from ${source.sourceKind}; normal verifier must confirm the concrete failure mode before publication.`,
+    ...(source.questionId !== undefined ? { reviewQuestionIds: [source.questionId] } : {}),
     producedBy: {
       kind: "packet",
       stage: 9,
@@ -308,6 +356,7 @@ function promotedCandidate(source: PromotionSource, index: number): CandidateFin
 function promotedCandidateId(source: PromotionSource, index: number): string {
   return `${source.packet.id.slice(0, 8)}-u${index + 1}-${sha256Hex([
     source.sourceKind,
+    source.questionId ?? "",
     source.question,
     source.files.join(","),
     source.symbols.join(",")
@@ -343,11 +392,25 @@ function promotedImpact(source: PromotionSource, category: FindingCategory): str
   return `The affected scope (${scope}) is tied to changed code, so a confirmed predicate would be a real correctness regression.`;
 }
 
+function materialConcernImpact(source: PromotionSource, category: FindingCategory): string {
+  const scope = mainScopeLabel(source);
+  if (category === "testing") {
+    return `The reviewer identified a concrete unresolved coverage boundary for ${scope}; if verified, the changed tests no longer protect a live production path.`;
+  }
+  if (category === "security") {
+    return `The reviewer identified a concrete unresolved security boundary for ${scope}; if verified, the changed path can weaken a protected operation.`;
+  }
+  return `The reviewer identified a concrete unresolved behavior boundary for ${scope}; if verified, the changed path can produce incorrect caller-visible behavior.`;
+}
+
 function promotedSeverity(category: FindingCategory): Severity {
   return category === "security" ? "high" : "medium";
 }
 
 function promotedConfidence(source: PromotionSource, category: FindingCategory): Confidence {
+  if (source.sourceKind === "material_concern") {
+    return source.confidence === "low" ? "low" : "medium";
+  }
   if (category === "testing") {
     return "medium";
   }
@@ -364,6 +427,13 @@ function relatedEvidence(source: PromotionSource): NonNullable<CandidateFinding[
     .slice(0, 8)
     .join("\n");
   const entries: NonNullable<CandidateFinding["evidence"]["relatedCode"]> = [];
+  if (source.materialConcern !== undefined) {
+    entries.push({
+      path: source.materialConcern.changedPath,
+      lines: truncate(source.materialConcern.evidence, MAX_EVIDENCE_CHARS),
+      whyRelevant: "Material concern evidence captured from the packet review answer."
+    });
+  }
   if (symbolLines.trim().length > 0) {
     entries.push({
       path: source.packet.path,
@@ -379,6 +449,26 @@ function relatedEvidence(source: PromotionSource): NonNullable<CandidateFinding[
     });
   }
   return entries;
+}
+
+function materialConcernAnchor(
+  packet: ReviewPacket,
+  concern: NonNullable<PromotionSource["materialConcern"]>
+): CandidateFinding["anchor"] | undefined {
+  const changedPath = concern.changedPath.trim();
+  if (concern.anchorLine !== undefined) {
+    for (const hunk of packet.hunks) {
+      if (changedPath === packet.path && hunk.changedNewLineNumbers.includes(concern.anchorLine)) {
+        return { path: packet.path, line: concern.anchorLine, side: "RIGHT", hunkId: hunk.hunkId };
+      }
+      if ((changedPath === (packet.oldPath ?? packet.path)) && hunk.changedOldLineNumbers.includes(concern.anchorLine)) {
+        return { path: packet.oldPath ?? packet.path, line: concern.anchorLine, side: "LEFT", hunkId: hunk.hunkId };
+      }
+    }
+  }
+  return changedPath === packet.path || changedPath === (packet.oldPath ?? packet.path)
+    ? firstChangedAnchor(packet)
+    : undefined;
 }
 
 function firstChangedAnchor(packet: ReviewPacket): CandidateFinding["anchor"] | undefined {
@@ -419,7 +509,7 @@ function promotionDecisionMetadata(item: RankedPromotionSource | SelectedPromoti
 
 function promotionRank(source: PromotionSource): number {
   const risk = riskProfile(source);
-  return (source.sourceKind === "follow_up_hint" ? 8 : source.sourceKind === "unresolved_question" ? 3 : 4) +
+  return (source.sourceKind === "material_concern" ? 14 : source.sourceKind === "follow_up_hint" ? 8 : source.sourceKind === "unresolved_question" ? 3 : 4) +
     (source.confidence === "high" ? 8 : source.confidence === "medium" ? 4 : 0) +
     (risk.category === "security" ? 12 : risk.category === "correctness" || risk.category === "logic_bug" ? 8 : 6) +
     (source.packet.reviewPriority === "critical" ? 8 : source.packet.reviewPriority === "high" ? 4 : 0) +
@@ -523,7 +613,7 @@ function riskProfile(source: PromotionSource): { promotable: boolean; category: 
     return { promotable: true, category: "security" };
   }
   const testScoped = isTestScopedSource(source);
-  const testRisk = /\b(test|coverage|fixture|assert|expect|deleted test|missing test)\b/u.test(text);
+  const testRisk = /\b(tests?|coverage|fixture|assert|expect|deleted test|missing test)\b/u.test(text);
   const correctnessRisk = /\b(bug|incorrect|wrong|break|broken|fail|failure|regression|behavior|semantic|contract|caller|invariant|fallback|default|zero|nil|null|panic|overflow|round|precision|race|leak|retry|timeout|context|close|cleanup)\b/u.test(text);
   if (testScoped && testRisk) {
     return { promotable: true, category: "testing" };
