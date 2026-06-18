@@ -221,747 +221,6 @@ describe("phase 5 pipeline regressions", () => {
     expect(result?.uncertainties).toHaveLength(1);
   });
 
-  it("records answered review questions with evidence traces", async () => {
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          reviewStatus: "no_findings",
-          findings: [],
-          followUpHints: [],
-          uncertainties: [],
-          answeredQuestions: [
-            {
-              questionId: "q-contract",
-              answer: "The changed helper still returns the transformed value used by the response.",
-              confidence: "medium",
-              outcome: "answered_no_issue",
-              evidence: [{ path: "app.ts", lines: "return transformed;", whyRelevant: "The returned value is the transformed value." }],
-              evidenceTrace: "requested amount -> transformed helper output -> response amount"
-            }
-          ],
-          noFindingReason: "Question answered from packet context."
-        }) as T
-    };
-
-    const [result] = await runLensPackets(
-      fakePlan(),
-      [fakePacket({
-        reviewQuestions: [{
-          id: "q-contract",
-          question: "Does the transformed amount still match the response?",
-          whyItMatters: "Callers observe the response amount.",
-          files: ["app.ts"],
-          symbols: ["handler"],
-          relevanceReason: "file overlap: app.ts"
-        }]
-      })],
-      fakeTools(),
-      config(),
-      nullTelemetry(),
-      {
-        runner,
-        promptBuilder: fakePromptBuilder(),
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeDiff()
-      }
-    );
-
-    expect(result?.answeredQuestions).toEqual([
-      expect.objectContaining({
-        questionId: "q-contract",
-        outcome: "answered_no_issue",
-        evidenceTrace: "requested amount -> transformed helper output -> response amount"
-      })
-    ]);
-    expect(result?.followUpHints).toEqual([]);
-  });
-
-  it("downgrades local no-issue answers for ambiguous multi-packet review questions", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          reviewStatus: "no_findings",
-          findings: [],
-          followUpHints: [],
-          uncertainties: [],
-          answeredQuestions: [
-            {
-              questionId: "q-flow",
-              answer: "The local helper still transforms the input.",
-              confidence: "high",
-              outcome: "answered_no_issue",
-              evidence: [{ path: "app.ts", lines: "return transformValue(input);", whyRelevant: "Only the local transform is visible." }],
-              evidenceTrace: "input -> transformValue"
-            }
-          ],
-          noFindingReason: "Question answered locally."
-        }) as T
-    };
-
-    const [result] = await runLensPackets(
-      fakePlan(),
-      [fakePacket({
-        reviewQuestions: [{
-          id: "q-flow",
-          question: "Does the transformed value still match the rendered response?",
-          whyItMatters: "The changed helper and response packet together define the caller-visible value.",
-          files: ["app.ts", "worker.ts"],
-          symbols: ["transformValue", "renderResponse"],
-          relevanceReason: "file overlap: app.ts",
-          ownershipStatus: "ambiguous",
-          ownershipReason: "ambiguous packet match",
-          ownershipCandidatePacketIds: ["packet-1", "packet-2"]
-        }]
-      })],
-      fakeTools(),
-      config(),
-      {
-        ...nullTelemetry(),
-        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-          events.push(event);
-        }
-      },
-      {
-        runner,
-        promptBuilder: fakePromptBuilder(),
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeDiff()
-      }
-    );
-
-    expect(result?.answeredQuestions?.[0]).toMatchObject({
-      questionId: "q-flow",
-      outcome: "partial",
-      confidence: "medium"
-    });
-    expect(result?.followUpHints).toEqual([
-      expect.objectContaining({
-        question: "Does the transformed value still match the rendered response?",
-        files: ["app.ts", "worker.ts"],
-        symbols: ["renderResponse", "transformValue"]
-      })
-    ]);
-    expect(events).toContainEqual(expect.objectContaining({
-      stage: 7,
-      message: "review_question_answer_downgraded",
-      data: expect.objectContaining({ reason: "answered_no_issue_incomplete_question_scope" })
-    }));
-  });
-
-  it("keeps full-scope no-issue answers for ambiguous review questions", async () => {
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          reviewStatus: "no_findings",
-          findings: [],
-          followUpHints: [],
-          uncertainties: [],
-          answeredQuestions: [
-            {
-              questionId: "q-flow",
-              answer: "The helper output is the same value returned by renderResponse.",
-              confidence: "high",
-              outcome: "answered_no_issue",
-              evidence: [
-                { path: "app.ts", lines: "return transformValue(input);", whyRelevant: "The packet shows transformValue feeding the caller." },
-                { path: "worker.ts", lines: "return renderResponse(value);", whyRelevant: "The related packet shows renderResponse returning the transformed value." }
-              ],
-              evidenceTrace: "input -> transformValue -> renderResponse"
-            }
-          ],
-          noFindingReason: "Question answered across both packets."
-        }) as T
-    };
-
-    const [result] = await runLensPackets(
-      fakePlan(),
-      [fakePacket({
-        reviewQuestions: [{
-          id: "q-flow",
-          question: "Does the transformed value still match the rendered response?",
-          whyItMatters: "The changed helper and response packet together define the caller-visible value.",
-          files: ["app.ts", "worker.ts"],
-          symbols: ["transformValue", "renderResponse"],
-          relevanceReason: "file overlap: app.ts",
-          ownershipStatus: "ambiguous",
-          ownershipReason: "ambiguous packet match",
-          ownershipCandidatePacketIds: ["packet-1", "packet-2"]
-        }]
-      })],
-      fakeTools(),
-      config(),
-      nullTelemetry(),
-      {
-        runner,
-        promptBuilder: fakePromptBuilder(),
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeDiff()
-      }
-    );
-
-    expect(result?.answeredQuestions?.[0]).toMatchObject({
-      questionId: "q-flow",
-      outcome: "answered_no_issue",
-      confidence: "high"
-    });
-    expect(result?.followUpHints).toEqual([]);
-  });
-
-  it("downgrades no-issue answers that do not prove an obligation end to end", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          reviewStatus: "no_findings",
-          findings: [],
-          followUpHints: [],
-          uncertainties: [],
-          answeredQuestions: [
-            {
-              questionId: "q-obligation",
-              answer: "The local helper still transforms the input.",
-              confidence: "high",
-              outcome: "answered_no_issue",
-              evidence: [{ path: "app.ts", lines: "return transformValue(input);", whyRelevant: "Only the local transform is shown." }],
-              evidenceTrace: "input -> transformValue"
-            }
-          ],
-          noFindingReason: "Question answered locally."
-        }) as T
-    };
-
-    const [result] = await runLensPackets(
-      fakePlan(),
-      [fakePacket({
-        reviewQuestions: [{
-          id: "q-obligation",
-          question: "Does the transformed value still satisfy the returned response contract?",
-          whyItMatters: "Callers observe the returned response value.",
-          files: ["app.ts"],
-          symbols: ["handler"],
-          obligation: "Trace requested value -> transform helper -> returned response before closing this question.",
-          relevanceReason: "file overlap: app.ts"
-        }]
-      })],
-      fakeTools(),
-      config(),
-      {
-        ...nullTelemetry(),
-        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-          events.push(event);
-        }
-      },
-      {
-        runner,
-        promptBuilder: fakePromptBuilder(),
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeDiff()
-      }
-    );
-
-    expect(result?.answeredQuestions?.[0]).toMatchObject({
-      questionId: "q-obligation",
-      outcome: "partial",
-      confidence: "medium",
-      downgradeReasons: ["answered_no_issue_without_obligation_proof"]
-    });
-    expect(result?.followUpHints).toEqual([
-      expect.objectContaining({
-        question: "Does the transformed value still satisfy the returned response contract?",
-        reason: expect.stringContaining("Obligation: Trace requested value")
-      })
-    ]);
-    expect(events).toContainEqual(expect.objectContaining({
-      stage: 7,
-      message: "review_question_answer_downgraded",
-      data: expect.objectContaining({ reason: "answered_no_issue_without_obligation_proof" })
-    }));
-  });
-
-  it("keeps no-issue answers that prove an obligation with an end-to-end trace", async () => {
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          reviewStatus: "no_findings",
-          findings: [],
-          followUpHints: [],
-          uncertainties: [],
-          answeredQuestions: [
-            {
-              questionId: "q-obligation",
-              answer: "The changed helper output is the same value returned by the response.",
-              confidence: "high",
-              outcome: "answered_no_issue",
-              evidence: [{ path: "app.ts", lines: "return renderResponse(transformValue(input));", whyRelevant: "The same transformed value is returned." }],
-              evidenceTrace: "requested value -> transformValue -> renderResponse"
-            }
-          ],
-          noFindingReason: "Question answered end to end."
-        }) as T
-    };
-
-    const [result] = await runLensPackets(
-      fakePlan(),
-      [fakePacket({
-        reviewQuestions: [{
-          id: "q-obligation",
-          question: "Does the transformed value still satisfy the returned response contract?",
-          whyItMatters: "Callers observe the returned response value.",
-          files: ["app.ts"],
-          symbols: ["handler"],
-          obligation: "Trace requested value -> transform helper -> returned response before closing this question.",
-          relevanceReason: "file overlap: app.ts"
-        }]
-      })],
-      fakeTools(),
-      config(),
-      nullTelemetry(),
-      {
-        runner,
-        promptBuilder: fakePromptBuilder(),
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeDiff()
-      }
-    );
-
-    expect(result?.answeredQuestions?.[0]).toMatchObject({
-      questionId: "q-obligation",
-      outcome: "answered_no_issue",
-      confidence: "high"
-    });
-    expect(result?.followUpHints).toEqual([]);
-  });
-
-  it("downgrades primary no-issue answers when they do not cover multi-symbol scope", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          reviewStatus: "no_findings",
-          findings: [],
-          followUpHints: [],
-          uncertainties: [],
-          answeredQuestions: [
-            {
-              questionId: "q-flow",
-              answer: "The local helper still transforms the input.",
-              confidence: "high",
-              outcome: "answered_no_issue",
-              evidence: [{ path: "app.ts", lines: "return transformValue(input);", whyRelevant: "Only the helper slice is visible." }],
-              evidenceTrace: "input -> transformValue"
-            }
-          ],
-          noFindingReason: "Question answered locally."
-        }) as T
-    };
-
-    const [result] = await runLensPackets(
-      fakePlan(),
-      [fakePacket({
-        reviewQuestions: [{
-          id: "q-flow",
-          question: "Does the transformed value still match the rendered response?",
-          whyItMatters: "The helper and response symbols together define the caller-visible value.",
-          files: ["app.ts"],
-          symbols: ["transformValue", "renderResponse"],
-          relevanceReason: "file overlap: app.ts; symbol overlap: transformValue",
-          role: "primary",
-          ownershipStatus: "primary",
-          ownershipReason: "primary owner selected by symbol overlap"
-        }]
-      })],
-      fakeTools(),
-      config(),
-      {
-        ...nullTelemetry(),
-        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-          events.push(event);
-        }
-      },
-      {
-        runner,
-        promptBuilder: fakePromptBuilder(),
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeDiff()
-      }
-    );
-
-    expect(result?.answeredQuestions?.[0]).toMatchObject({
-      questionId: "q-flow",
-      outcome: "partial",
-      confidence: "medium",
-      role: "primary"
-    });
-    expect(result?.followUpHints).toEqual([
-      expect.objectContaining({
-        question: "Does the transformed value still match the rendered response?",
-        symbols: ["renderResponse", "transformValue"]
-      })
-    ]);
-    expect(events).toContainEqual(expect.objectContaining({
-      stage: 7,
-      message: "review_question_answer_downgraded",
-      data: expect.objectContaining({ reason: "answered_no_issue_incomplete_question_scope", role: "primary" })
-    }));
-  });
-
-  it("turns partial review-question answers into scoped follow-up hints", async () => {
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          reviewStatus: "no_findings",
-          findings: [],
-          followUpHints: [],
-          uncertainties: [],
-          answeredQuestions: [
-            {
-              questionId: "q-contract",
-              answer: "The packet shows the transformation but not the downstream response consumer.",
-              confidence: "medium",
-              outcome: "partial",
-              evidence: [{ path: "app.ts", whyRelevant: "Changed helper is visible in this packet." }],
-              evidenceTrace: "requested amount -> transformed helper output -> downstream response unknown"
-            }
-          ],
-          noFindingReason: "No local finding from this packet alone."
-        }) as T
-    };
-
-    const [result] = await runLensPackets(
-      fakePlan(),
-      [fakePacket({
-        reviewQuestions: [{
-          id: "q-contract",
-          question: "Does the transformed amount still match the response?",
-          whyItMatters: "Callers observe the response amount.",
-          files: ["app.ts"],
-          symbols: ["handler"],
-          relevanceReason: "file overlap: app.ts"
-        }]
-      })],
-      fakeTools(),
-      config(),
-      nullTelemetry(),
-      {
-        runner,
-        promptBuilder: fakePromptBuilder(),
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeDiff()
-      }
-    );
-
-    expect(result?.answeredQuestions?.[0]).toMatchObject({
-      questionId: "q-contract",
-      outcome: "partial"
-    });
-    expect(result?.followUpHints).toEqual([
-      expect.objectContaining({
-        question: "Does the transformed amount still match the response?",
-        files: ["app.ts"],
-        symbols: ["handler"],
-        reason: expect.stringContaining("Partial answer to planner review question q-contract")
-      })
-    ]);
-  });
-
-  it("keeps supporting review-question partial answers without generating duplicate follow-up hints", async () => {
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          reviewStatus: "no_findings",
-          findings: [],
-          followUpHints: [],
-          uncertainties: [],
-          answeredQuestions: [
-            {
-              questionId: "q-contract",
-              answer: "This packet only shows the response consumer; the primary value transformation packet owns the full trace.",
-              confidence: "medium",
-              outcome: "partial",
-              evidence: [{ path: "worker.ts", whyRelevant: "This packet returns the transformed value." }],
-              evidenceTrace: "supporting local slice: transformed value -> response"
-            }
-          ],
-          noFindingReason: "No local finding from this supporting packet alone."
-        }) as T
-    };
-
-    const [result] = await runLensPackets(
-      fakePlan("worker.ts"),
-      [fakePacket({
-        path: "worker.ts",
-        reviewQuestions: [{
-          id: "q-contract",
-          question: "Does the transformed amount still match the response?",
-          whyItMatters: "Callers observe the response amount.",
-          files: ["app.ts", "worker.ts"],
-          symbols: ["handler"],
-          relevanceReason: "file overlap: worker.ts",
-          role: "supporting",
-          ownershipReason: "supporting slice for primary packet packet-primary"
-        }]
-      })],
-      fakeTools(),
-      config(),
-      nullTelemetry(),
-      {
-        runner,
-        promptBuilder: fakePromptBuilder(),
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeDiff()
-      }
-    );
-
-    expect(result?.answeredQuestions).toEqual([
-      expect.objectContaining({
-        questionId: "q-contract",
-        outcome: "partial",
-        role: "supporting"
-      })
-    ]);
-    expect(result?.followUpHints).toEqual([]);
-  });
-
-  it("keeps planner-question partial follow-ups separately from generic hint caps", async () => {
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          reviewStatus: "no_findings",
-          findings: [],
-          followUpHints: [
-            {
-              question: "Check generic risk A.",
-              files: ["app.ts"],
-              symbols: ["handler"],
-              suggestedLenses: ["core/code-review"],
-              reason: "Generic but scoped.",
-              confidence: "medium"
-            },
-            {
-              question: "Check generic risk B.",
-              files: ["app.ts"],
-              symbols: ["handler"],
-              suggestedLenses: ["core/code-review"],
-              reason: "Another scoped generic hint.",
-              confidence: "medium"
-            },
-            {
-              question: "Check generic risk C.",
-              files: ["app.ts"],
-              symbols: ["handler"],
-              suggestedLenses: ["core/code-review"],
-              reason: "This generic hint should be capped.",
-              confidence: "low"
-            }
-          ],
-          uncertainties: [],
-          answeredQuestions: [
-            {
-              questionId: "q-one",
-              answer: "The packet does not include the first downstream consumer.",
-              confidence: "medium",
-              outcome: "partial",
-              evidence: [{ path: "app.ts", whyRelevant: "Changed helper is in this packet." }],
-              evidenceTrace: "input -> helper -> downstream unknown"
-            },
-            {
-              questionId: "q-two",
-              answer: "The packet does not include the second downstream consumer.",
-              confidence: "medium",
-              outcome: "partial",
-              evidence: [{ path: "app.ts", whyRelevant: "Changed helper is in this packet." }],
-              evidenceTrace: "input -> helper -> second downstream unknown"
-            },
-            {
-              questionId: "q-three",
-              answer: "The packet does not include the third downstream consumer.",
-              confidence: "medium",
-              outcome: "partial",
-              evidence: [{ path: "app.ts", whyRelevant: "Changed helper is in this packet." }],
-              evidenceTrace: "input -> helper -> third downstream unknown"
-            }
-          ],
-          noFindingReason: "Questions require follow-up context."
-        }) as T
-    };
-
-    const [result] = await runLensPackets(
-      fakePlan(),
-      [fakePacket({
-        reviewQuestions: [
-          {
-            id: "q-one",
-            question: "Does the first caller still receive the transformed value?",
-            whyItMatters: "Caller-visible values must remain consistent.",
-            files: ["app.ts"],
-            symbols: ["handler"],
-            relevanceReason: "file overlap: app.ts"
-          },
-          {
-            id: "q-two",
-            question: "Does the second caller still receive the transformed value?",
-            whyItMatters: "Caller-visible values must remain consistent.",
-            files: ["app.ts"],
-            symbols: ["handler"],
-            relevanceReason: "file overlap: app.ts"
-          },
-          {
-            id: "q-three",
-            question: "Does the third caller still receive the transformed value?",
-            whyItMatters: "Caller-visible values must remain consistent.",
-            files: ["app.ts"],
-            symbols: ["handler"],
-            relevanceReason: "file overlap: app.ts"
-          }
-        ]
-      })],
-      fakeTools(),
-      config(),
-      nullTelemetry(),
-      {
-        runner,
-        promptBuilder: fakePromptBuilder(),
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeDiff()
-      }
-    );
-
-    expect(result?.followUpHints.map((hint) => hint.question)).toEqual([
-      "Does the first caller still receive the transformed value?",
-      "Does the second caller still receive the transformed value?",
-      "Does the third caller still receive the transformed value?",
-      "Check generic risk A.",
-      "Check generic risk B."
-    ]);
-  });
-
-  it("downgrades no-issue review-question answers that lack evidence traces", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          reviewStatus: "no_findings",
-          findings: [],
-          followUpHints: [],
-          uncertainties: [],
-          answeredQuestions: [
-            {
-              questionId: "q-contract",
-              answer: "The contract is fine.",
-              confidence: "high",
-              outcome: "answered_no_issue",
-              evidence: []
-            }
-          ],
-          noFindingReason: "No local finding."
-        }) as T
-    };
-
-    const [result] = await runLensPackets(
-      fakePlan(),
-      [fakePacket({
-        reviewQuestions: [{
-          id: "q-contract",
-          question: "Does the transformed amount still match the response?",
-          whyItMatters: "Callers observe the response amount.",
-          files: ["app.ts"],
-          symbols: ["handler"],
-          relevanceReason: "file overlap: app.ts"
-        }]
-      })],
-      fakeTools(),
-      config(),
-      {
-        ...nullTelemetry(),
-        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-          events.push(event);
-        }
-      },
-      {
-        runner,
-        promptBuilder: fakePromptBuilder(),
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeDiff()
-      }
-    );
-
-    expect(result?.answeredQuestions?.[0]).toMatchObject({
-      questionId: "q-contract",
-      outcome: "partial",
-      confidence: "medium"
-    });
-    expect(events).toContainEqual(expect.objectContaining({
-      stage: 7,
-      message: "review_question_answer_downgraded",
-      data: expect.objectContaining({ reason: "answered_no_issue_without_evidence_trace" })
-    }));
-  });
-
-  it("drops finding review-question ids that were not attached to the packet", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          findings: [
-            {
-              title: "linked finding",
-              severity: "medium",
-              confidence: "medium",
-              path: "app.ts",
-              anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
-              category: "correctness",
-              evidence: { changedCode: "+bad" },
-              failureMode: "The changed branch can return the wrong value.",
-              whyThisMatters: "Callers can receive an incorrect value.",
-              verification: "Trace the changed value to the response.",
-              reviewQuestionIds: ["q-contract", "q-unattached"]
-            }
-          ],
-          followUpHints: [],
-          uncertainties: []
-        }) as T
-    };
-
-    const [result] = await runLensPackets(
-      fakePlan(),
-      [fakePacket({
-        reviewQuestions: [{
-          id: "q-contract",
-          question: "Does the changed branch preserve the response contract?",
-          whyItMatters: "Callers depend on the response contract.",
-          files: ["app.ts"],
-          symbols: ["handler"],
-          relevanceReason: "file overlap: app.ts"
-        }]
-      })],
-      fakeTools(),
-      config(),
-      {
-        ...nullTelemetry(),
-        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-          events.push(event);
-        }
-      },
-      {
-        runner,
-        promptBuilder: fakePromptBuilder(),
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeDiff()
-      }
-    );
-
-    expect(result?.findings[0]?.reviewQuestionIds).toEqual(["q-contract"]);
-    expect(events).toContainEqual(expect.objectContaining({
-      stage: 7,
-      message: "finding_review_question_ids_dropped",
-      data: expect.objectContaining({
-        candidateId: "packet-1-f1",
-        dropped: ["q-unattached"]
-      })
-    }));
-  });
-
   it("demotes anchors whose path does not match the packet and diff", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const runner: LlmRunner = {
@@ -1364,7 +623,6 @@ describe("phase 5 pipeline regressions", () => {
     const packets = await buildReviewPackets(
       {
         diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-        riskAreas: [],
         coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "test" }]
       },
       [file],
@@ -1544,7 +802,6 @@ describe("phase 5 pipeline regressions", () => {
     const packets = await buildReviewPackets(
       {
         diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-        riskAreas: [],
         coverage: [
           {
             hunkId: "h1",
@@ -1592,307 +849,6 @@ describe("phase 5 pipeline regressions", () => {
       expect.objectContaining({ reason: "worker can inspect test", expectedUse: "tool_lookup" }),
       expect.objectContaining({ reason: "out of packet scope", expectedUse: "tool_lookup" })
     ]);
-  });
-
-  it("attaches relevant planner review questions to packets by file and symbol scope", async () => {
-    const repoIndex: RepositoryIndex = {
-      ...fakeRepositoryIndex(),
-      symbolFacts: [
-        {
-          path: "app.ts",
-          hunkId: "h1",
-          enclosingSymbol: "handler",
-          symbolKind: "function",
-          symbolRange: [1, 4],
-          changedLines: [2],
-          changedLinesSide: "new",
-          signature: "function handler(input: Request)",
-          source: "tree-sitter",
-          confidence: "syntactic"
-        }
-      ]
-    };
-    const plan: ReviewPlan = {
-      ...fakePlan(),
-      reviewQuestions: [
-        {
-          id: "q-amount",
-          question: "Does the transformed value still match the downstream response?",
-          whyItMatters: "Callers can observe a mismatched value.",
-          files: ["app.ts"],
-          symbols: ["handler"],
-          evidenceHint: "Trace input through handler.",
-          obligation: "Trace request amount -> helper transform -> response amount before closing this question."
-        },
-        {
-          id: "q-other",
-          question: "Does another subsystem still enforce authorization?",
-          whyItMatters: "Authorization must not regress.",
-          files: ["auth.ts"],
-          symbols: ["authorize"]
-        }
-      ]
-    };
-
-    const packets = await buildReviewPackets(
-      plan,
-      [fakeDiffFile("app.ts", "export function handler(input: Request) { return input.amount; }")],
-      [fakeFacts("app.ts", "per-hunk")],
-      repoIndex,
-      nullTelemetry(),
-      { config: config(), enabledLenses: ["core/code-review"] }
-    );
-
-    expect(packets[0]?.reviewQuestions).toEqual([
-      expect.objectContaining({
-        id: "q-amount",
-        obligation: "Trace request amount -> helper transform -> response amount before closing this question.",
-        relevanceReason: expect.stringContaining("file overlap")
-      })
-    ]);
-    expect(packets[0]?.reviewQuestions?.[0]?.relevanceReason).toContain("symbol overlap");
-  });
-
-  it("attaches file-only planner review questions to matching packets", async () => {
-    const plan: ReviewPlan = {
-      ...fakePlan(),
-      reviewQuestions: [
-        {
-          id: "q-file-only",
-          question: "Does the changed value relationship still hold for this file?",
-          whyItMatters: "The planner identified a file-scoped behavior risk.",
-          files: ["app.ts"],
-          symbols: []
-        }
-      ]
-    };
-
-    const packets = await buildReviewPackets(
-      plan,
-      [fakeDiffFile("app.ts", "export function handler() { return 1; }")],
-      [fakeFacts("app.ts", "per-hunk")],
-      fakeRepositoryIndex(),
-      nullTelemetry(),
-      { config: config(), enabledLenses: ["core/code-review"] }
-    );
-
-    expect(packets[0]?.reviewQuestions).toEqual([
-      expect.objectContaining({
-        id: "q-file-only",
-        relevanceReason: "file overlap: app.ts"
-      })
-    ]);
-  });
-
-  it("assigns one primary review-question owner when one packet clearly matches best", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const telemetry = {
-      ...nullTelemetry(),
-      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-        events.push(event);
-      }
-    };
-    const appFile = fakeDiffFile("app.ts", "export function handler(input: Request) { return input.amount; }");
-    const workerFile = fakeDiffFile("worker.ts", "export function renderResponse(value: number) { return value; }");
-    workerFile.hunks[0] = { ...workerFile.hunks[0]!, id: "h2" };
-    const repoIndex: RepositoryIndex = {
-      ...fakeRepositoryIndex(),
-      symbolFacts: [
-        {
-          path: "app.ts",
-          hunkId: "h1",
-          enclosingSymbol: "handler",
-          symbolKind: "function",
-          symbolRange: [1, 4],
-          changedLines: [2],
-          changedLinesSide: "new",
-          signature: "function handler(input: Request)",
-          source: "tree-sitter",
-          confidence: "syntactic"
-        },
-        {
-          path: "worker.ts",
-          hunkId: "h2",
-          enclosingSymbol: "renderResponse",
-          symbolKind: "function",
-          symbolRange: [1, 4],
-          changedLines: [2],
-          changedLinesSide: "new",
-          signature: "function renderResponse(value: number)",
-          source: "tree-sitter",
-          confidence: "syntactic"
-        }
-      ]
-    };
-    const plan: ReviewPlan = {
-      ...fakePlanForHunks(["h1", "h2"]),
-      reviewQuestions: [{
-        id: "q-contract",
-        question: "Does the transformed value still match the downstream response?",
-        whyItMatters: "Callers observe the response value.",
-        files: ["app.ts", "worker.ts"],
-        symbols: ["handler"]
-      }]
-    };
-
-    const packets = await buildReviewPackets(
-      plan,
-      [appFile, workerFile],
-      [fakeFacts("app.ts", "per-hunk"), fakeFacts("worker.ts", "per-hunk")],
-      repoIndex,
-      telemetry,
-      { config: config(), enabledLenses: ["core/code-review"] }
-    );
-
-    const appQuestion = packets.find((packet) => packet.path === "app.ts")?.reviewQuestions?.[0];
-    const workerQuestion = packets.find((packet) => packet.path === "worker.ts")?.reviewQuestions?.[0];
-    expect(appQuestion).toMatchObject({
-      id: "q-contract",
-      role: "primary",
-      ownershipStatus: "primary",
-      ownershipReason: expect.stringContaining("symbol overlap")
-    });
-    expect(workerQuestion).toMatchObject({
-      id: "q-contract",
-      role: "supporting",
-      ownershipStatus: "supporting",
-      ownershipReason: expect.stringContaining("primary packet")
-    });
-    expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 6,
-        message: "review_question_ownership_assigned",
-        data: expect.objectContaining({ questionId: "q-contract", supportingPacketCount: 1 })
-      })
-    ]));
-  });
-
-  it("prefers an integration packet when ownership ties on file and symbol scope", async () => {
-    const callerFile = fakeDiffFile("caller.ts", "export function renderResponse(input: number) { return transformValue(input); }");
-    const helperFile = fakeDiffFile("helper.ts", "export function transformValue(input: number) { return input; }");
-    helperFile.hunks[0] = { ...helperFile.hunks[0]!, id: "h2" };
-    const repoIndex: RepositoryIndex = {
-      ...fakeRepositoryIndex(),
-      symbolFacts: [
-        {
-          path: "caller.ts",
-          hunkId: "h1",
-          enclosingSymbol: "renderResponse",
-          symbolKind: "function",
-          symbolRange: [1, 4],
-          changedLines: [2],
-          changedLinesSide: "new",
-          signature: "function renderResponse(input: number)",
-          source: "tree-sitter",
-          confidence: "syntactic"
-        },
-        {
-          path: "helper.ts",
-          hunkId: "h2",
-          enclosingSymbol: "transformValue",
-          symbolKind: "function",
-          symbolRange: [1, 4],
-          changedLines: [2],
-          changedLinesSide: "new",
-          signature: "function transformValue(input: number)",
-          source: "tree-sitter",
-          confidence: "syntactic"
-        }
-      ]
-    };
-    const plan: ReviewPlan = {
-      ...fakePlanForHunks(["h1", "h2"]),
-      reviewQuestions: [{
-        id: "q-flow",
-        question: "Does the transformed value still match the rendered response?",
-        whyItMatters: "The changed helper and caller together define the caller-visible value.",
-        files: ["caller.ts", "helper.ts"],
-        symbols: ["renderResponse", "transformValue"]
-      }]
-    };
-
-    const packets = await buildReviewPackets(
-      plan,
-      [callerFile, helperFile],
-      [fakeFacts("caller.ts", "per-hunk"), fakeFacts("helper.ts", "per-hunk")],
-      repoIndex,
-      nullTelemetry(),
-      { config: config(), enabledLenses: ["core/code-review"] }
-    );
-
-    const callerQuestion = packets.find((packet) => packet.path === "caller.ts")?.reviewQuestions?.[0];
-    const helperQuestion = packets.find((packet) => packet.path === "helper.ts")?.reviewQuestions?.[0];
-    expect(callerQuestion).toMatchObject({
-      id: "q-flow",
-      role: "primary",
-      ownershipStatus: "primary",
-      ownershipReason: expect.stringContaining("integrates multiple question symbols")
-    });
-    expect(helperQuestion).toMatchObject({
-      id: "q-flow",
-      role: "supporting",
-      ownershipStatus: "supporting"
-    });
-  });
-
-  it("leaves review questions unowned when packet ownership is ambiguous", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const telemetry = {
-      ...nullTelemetry(),
-      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-        events.push(event);
-      }
-    };
-    const firstFile = fakeDiffFile("first.ts", "export const first = value;");
-    const secondFile = fakeDiffFile("second.ts", "export const second = value;");
-    secondFile.hunks[0] = { ...secondFile.hunks[0]!, id: "h2" };
-    const plan: ReviewPlan = {
-      ...fakePlanForHunks(["h1", "h2"]),
-      reviewQuestions: [{
-        id: "q-file-contract",
-        question: "Does the changed file relationship still hold?",
-        whyItMatters: "Both changed files contribute to the relationship.",
-        files: ["first.ts", "second.ts"],
-        symbols: []
-      }]
-    };
-
-    const packets = await buildReviewPackets(
-      plan,
-      [firstFile, secondFile],
-      [fakeFacts("first.ts", "per-hunk"), fakeFacts("second.ts", "per-hunk")],
-      fakeRepositoryIndex(),
-      telemetry,
-      { config: config(), enabledLenses: ["core/code-review"] }
-    );
-
-    const attachedQuestions = packets.flatMap((packet) => packet.reviewQuestions ?? []);
-    expect(attachedQuestions).toEqual([
-      expect.objectContaining({ id: "q-file-contract" }),
-      expect.objectContaining({ id: "q-file-contract" })
-    ]);
-    expect(attachedQuestions.every((question) => question.role === undefined)).toBe(true);
-    expect(attachedQuestions).toEqual([
-      expect.objectContaining({
-        id: "q-file-contract",
-        ownershipStatus: "ambiguous",
-        ownershipReason: "ambiguous packet match",
-        ownershipCandidatePacketIds: expect.arrayContaining(packets.map((packet) => packet.id))
-      }),
-      expect.objectContaining({
-        id: "q-file-contract",
-        ownershipStatus: "ambiguous",
-        ownershipReason: "ambiguous packet match",
-        ownershipCandidatePacketIds: expect.arrayContaining(packets.map((packet) => packet.id))
-      })
-    ]);
-    expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 6,
-        message: "review_question_ownership_unassigned",
-        data: expect.objectContaining({ questionId: "q-file-contract", reason: "ambiguous_packet_match" })
-      })
-    ]));
   });
 
   it("resolves call-site symbol hints to enclosing caller bodies instead of the callee body", async () => {
@@ -2223,7 +1179,6 @@ describe("phase 5 pipeline regressions", () => {
     const packets = await buildReviewPackets(
       {
         diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-        riskAreas: [],
         coverage: [
           {
             hunkId: "h1",
@@ -2531,7 +1486,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("uses adaptive sliced context for high-pressure same-symbol packets with planner risk notes", async () => {
+  it("uses adaptive sliced context for high-pressure same-symbol packets with planner review emphasis notes", async () => {
     const events: TelemetryEvent[] = [];
     const telemetry = {
       ...nullTelemetry(),
@@ -2590,10 +1545,11 @@ describe("phase 5 pipeline regressions", () => {
     };
     const plan: ReviewPlan = {
       ...fakePlanForHunks(["h1", "h2", "h3", "h4"], "app.ts"),
-      riskAreas: [{
-        area: "changed behavior",
-        reason: "Planner marked this file as correctness-sensitive.",
+      reviewEmphasis: [{
+        summary: "changed behavior",
+        basis: ["Planner marked this file as correctness-sensitive."],
         files: ["app.ts"],
+        symbols: ["changed"],
         suggestedLenses: ["team/security"]
       }],
       coverage: ["h1", "h2", "h3", "h4"].map((hunkId) => ({
@@ -2602,7 +1558,7 @@ describe("phase 5 pipeline regressions", () => {
         coverage: "normal" as const,
         lenses: ["team/security"],
         surroundingContextHints: [],
-        reason: "planner selected normal review with risk note"
+        reason: "planner selected normal review with review emphasis note"
       }))
     };
 
@@ -2640,7 +1596,7 @@ describe("phase 5 pipeline regressions", () => {
         hunkCount: 4,
         hunkPressure: "high",
         hunkIds: ["h1", "h2", "h3", "h4"],
-        riskSignals: expect.arrayContaining(["planner_risk_notes", "risk_lens"]),
+        riskSignals: expect.arrayContaining(["planner_review_emphasis", "risk_lens"]),
         reason: "single_important_symbol_high_pressure_adaptive_slice"
       })
     }));
@@ -3222,7 +2178,6 @@ describe("phase 5 pipeline regressions", () => {
     const packets = await buildReviewPackets(
       {
         diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-        riskAreas: [],
         coverage: [
           { hunkId: "h1", path: "app.ts", coverage: "skip", lenses: [], surroundingContextHints: [], reason: "planner skip" },
           { hunkId: "h2", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review" }
@@ -3262,7 +2217,6 @@ describe("phase 5 pipeline regressions", () => {
           declaredIntent: "planner declared hallucination",
           inferredBehavior: "planner inferred hallucination"
         },
-        riskAreas: [],
         coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "test" }]
       },
       [fakeDiffFile("app.ts")],
@@ -3406,7 +2360,6 @@ describe("phase 5 pipeline regressions", () => {
     const packets = await buildReviewPackets(
       {
         diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-        riskAreas: [],
         coverage: [
           {
             hunkId: "h1",
@@ -3473,7 +2426,6 @@ describe("phase 5 pipeline regressions", () => {
     const testFile = fakeDiffFile("src/app.test.ts", "test('value', () => expect(value).toBe(2));");
     const plan: ReviewPlan = {
       diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-      riskAreas: [],
       coverage: [
         {
           hunkId: "h-source",
@@ -3516,7 +2468,6 @@ describe("phase 5 pipeline regressions", () => {
     const file = fakeDiffFile("src/imports.ts", "import { quote } from './quote';");
     const plan: ReviewPlan = {
       diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-      riskAreas: [],
       coverage: [{
         hunkId: "h1",
         path: "src/imports.ts",
@@ -3590,7 +2541,6 @@ describe("phase 5 pipeline regressions", () => {
     const files = Array.from({ length: 100 }, (_, index) => fakeDiffFile(`src/import-${index}.ts`, `import { value${index} } from './value-${index}';`));
     const plan: ReviewPlan = {
       diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-      riskAreas: [],
       coverage: files.map((file) => ({
         hunkId: file.hunks[0]!.id,
         path: file.path,
@@ -4099,7 +3049,6 @@ describe("phase 5 pipeline regressions", () => {
               id: "submit-a",
               arguments: {
                 diffUnderstanding: { declaredIntent: "partial", inferredBehavior: "partial" },
-                riskAreas: [],
                 coverage: []
               }
             },
@@ -4107,7 +3056,6 @@ describe("phase 5 pipeline regressions", () => {
               id: "submit-b",
               arguments: {
                 diffUnderstanding: { declaredIntent: "partial", inferredBehavior: "partial" },
-                riskAreas: [],
                 coverage: []
               }
             }
@@ -4138,13 +3086,12 @@ describe("phase 5 pipeline regressions", () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const repairedPlan = {
       ...fakePlan("app.ts"),
-      reviewQuestions: [{
-        id: "q1",
-        question: "Does the changed value still match the caller contract?",
-        whyItMatters: "Wrong value propagation can break callers.",
+      reviewEmphasis: [{
+        summary: "changed value feeds caller contract",
+        basis: ["app.ts changes value handling"],
         files: ["app.ts"],
         symbols: ["value"],
-        evidenceHint: "Trace the changed value through the caller."
+        suggestedLenses: ["core/code-review"]
       }],
       reason: "extra repair note"
     };
@@ -4163,9 +3110,8 @@ describe("phase 5 pipeline regressions", () => {
         expect(Object.prototype.hasOwnProperty.call(recovered ?? {}, "reason")).toBe(false);
         expect(recovered).toMatchObject({
           diffUnderstanding: repairedPlan.diffUnderstanding,
-          riskAreas: [],
           coverage: repairedPlan.coverage,
-          reviewQuestions: repairedPlan.reviewQuestions
+          reviewEmphasis: repairedPlan.reviewEmphasis
         });
         return recovered as T;
       }
@@ -4190,8 +3136,8 @@ describe("phase 5 pipeline regressions", () => {
     });
 
     expect(result.degradedPlanning).toBe(false);
-    expect(result.plan.reviewQuestions).toEqual([
-      expect.objectContaining({ id: "q1", files: ["app.ts"], symbols: ["value"] })
+    expect(result.plan.reviewEmphasis).toEqual([
+      expect.objectContaining({ summary: "changed value feeds caller contract", files: ["app.ts"], symbols: ["value"] })
     ]);
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -4201,7 +3147,7 @@ describe("phase 5 pipeline regressions", () => {
           strippedKeys: ["reason"],
           invalidSubmitCallCount: 1,
           schemaRepairUsed: true,
-          recoveredRootKeys: 4
+          recoveredRootKeys: 3
         })
       })
     ]));
@@ -4213,7 +3159,7 @@ describe("phase 5 pipeline regressions", () => {
         const recoveredEmpty = request.schemaRepair?.recoverInvalidSubmit?.({
           stage: 5,
           submitTool: "submit_plan",
-          error: "diffUnderstanding, riskAreas, and coverage are required",
+          error: "diffUnderstanding and coverage are required",
           submitCalls: [{ id: "submit-empty", arguments: {} }],
           extraToolNames: [],
           schemaRepairUsed: false
@@ -4226,7 +3172,6 @@ describe("phase 5 pipeline regressions", () => {
             id: "submit-partial",
             arguments: {
               diffUnderstanding: { declaredIntent: "partial", inferredBehavior: "partial" },
-              riskAreas: [],
               reason: "extra note"
             }
           }],
@@ -4253,7 +3198,7 @@ describe("phase 5 pipeline regressions", () => {
         const recoveredNoRootDrift = request.schemaRepair?.recoverInvalidSubmit?.({
           stage: 5,
           submitTool: "submit_plan",
-          error: "riskAreas.0: must not have additional properties",
+          error: "reviewEmphasis.0: must not have additional properties",
           submitCalls: [{ id: "submit-nested-only", arguments: fakePlan("app.ts") }],
           extraToolNames: [],
           schemaRepairUsed: true
@@ -4261,15 +3206,16 @@ describe("phase 5 pipeline regressions", () => {
         const recoveredNestedDrift = request.schemaRepair?.recoverInvalidSubmit?.({
           stage: 5,
           submitTool: "submit_plan",
-          error: "riskAreas.0: must not have additional properties",
+          error: "reviewEmphasis.0: must not have additional properties",
           submitCalls: [{
             id: "submit-nested-extra",
             arguments: {
               ...fakePlan("app.ts"),
-              riskAreas: [{
-                area: "Value flow",
-                reason: "Review changed value flow.",
+              reviewEmphasis: [{
+                summary: "Value flow",
+                basis: ["Review changed value flow."],
                 files: ["app.ts"],
+                symbols: ["value"],
                 suggestedLenses: ["core/code-review"],
                 extraNestedNote: "must remain for schema validation to reject"
               }],
@@ -4278,11 +3224,11 @@ describe("phase 5 pipeline regressions", () => {
           }],
           extraToolNames: [],
           schemaRepairUsed: true
-        }) as { riskAreas?: Array<Record<string, unknown>> } | undefined;
+        }) as { reviewEmphasis?: Array<Record<string, unknown>> } | undefined;
 
         expect(recoveredNoRootDrift).toBeUndefined();
         expect(Object.prototype.hasOwnProperty.call(recoveredNestedDrift ?? {}, "reason")).toBe(false);
-        expect(recoveredNestedDrift?.riskAreas?.[0]?.extraNestedNote).toBe("must remain for schema validation to reject");
+        expect(recoveredNestedDrift?.reviewEmphasis?.[0]?.extraNestedNote).toBe("must remain for schema validation to reject");
         return fakePlan("app.ts") as T;
       }
     };
@@ -4352,7 +3298,6 @@ describe("phase 5 pipeline regressions", () => {
           const dossier = extractPromptJson<PlannerDossier>(prompt, "planner-dossier");
           return assistantMessage([toolCall("submit-plan", "submit_plan", {
             diffUnderstanding: { declaredIntent: "budget test", inferredBehavior: "budget test" },
-            riskAreas: [],
             coverage: (dossier?.files ?? []).flatMap((file) =>
               file.hunks.map((hunk) => ({
                 hunkId: hunk.hunkId,
@@ -4409,7 +3354,6 @@ describe("phase 5 pipeline regressions", () => {
         if (prompt.includes("submit_plan")) {
           return assistantMessage([toolCall("submit-plan", "submit_plan", {
             diffUnderstanding: { declaredIntent: "context pressure test", inferredBehavior: "context pressure test" },
-            riskAreas: [],
             coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review" }]
           })]);
         }
@@ -4468,7 +3412,6 @@ describe("phase 5 pipeline regressions", () => {
         const dossier = JSON.parse(request.prompt) as PlannerDossier;
         return {
           diffUnderstanding: { declaredIntent: "chunk intent", inferredBehavior: dossier.compaction.chunkRoot ?? "single" },
-          riskAreas: [],
           coverage: dossier.files.flatMap((file) =>
             file.hunks.map((hunk) => ({
               hunkId: hunk.hunkId,
@@ -4522,7 +3465,6 @@ describe("phase 5 pipeline regressions", () => {
         omittedCounts.push(dossier.compaction.omitted.length);
         return {
           diffUnderstanding: { declaredIntent: "chunk intent", inferredBehavior: dossier.compaction.chunkRoot ?? "single" },
-          riskAreas: [],
           coverage: dossier.files.flatMap((file) =>
             file.hunks.map((hunk) => ({
               hunkId: hunk.hunkId,
@@ -4741,7 +3683,6 @@ describe("phase 5 pipeline regressions", () => {
       runStructured: async <T>() =>
         ({
           diffUnderstanding: { declaredIntent: "projection telemetry", inferredBehavior: "projection telemetry" },
-          riskAreas: [],
           coverage: []
         }) as T
     };
@@ -4848,7 +3789,6 @@ describe("phase 5 pipeline regressions", () => {
       runStructured: async <T>() =>
         ({
           diffUnderstanding: { declaredIntent: "duplicate hunk", inferredBehavior: "duplicate hunk" },
-          riskAreas: [],
           coverage: [
             { hunkId: "h1", path: "app.ts", coverage: "skip", lenses: [], surroundingContextHints: [], reason: "skip duplicate" },
             { hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review duplicate" }
@@ -4890,7 +3830,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(events.some((event) => event.message === "planner_conflicting_duplicate_hunk")).toBe(true);
   });
 
-  it("normalizes planner review questions without affecting hunk coverage", async () => {
+  it("normalizes planner review emphasis without affecting hunk coverage", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const telemetry = {
       ...nullTelemetry(),
@@ -4901,31 +3841,28 @@ describe("phase 5 pipeline regressions", () => {
     const runner: LlmRunner = {
       runStructured: async <T>() =>
         ({
-          diffUnderstanding: { declaredIntent: "question plan", inferredBehavior: "question plan" },
-          riskAreas: [],
-          reviewQuestions: [
+          diffUnderstanding: { declaredIntent: "emphasis plan", inferredBehavior: "emphasis plan" },
+          reviewEmphasis: [
             {
-              id: "amount-contract",
-              question: "Does the transformed amount still match the amount reported to callers?",
-              whyItMatters: "A mismatch can break downstream callers.",
+              summary: "Changed amount transformation feeds caller-visible output",
+              basis: ["app.ts changes handler, which returns a transformed amount"],
               files: ["app.ts"],
               symbols: ["handler"],
-              evidenceHint: "Trace input amount through the changed helper and return value.",
-              obligation: "Trace request amount -> helper output -> returned amount before closing this question."
+              suggestedLenses: ["core/code-review", "missing/lens"]
             },
             {
-              id: "unknown",
-              question: "Does the auth check still guard the operation?",
-              whyItMatters: "Authorization must remain intact.",
+              summary: "Unknown file should not survive",
+              basis: ["missing.ts is not in the dossier"],
               files: ["missing.ts"],
-              symbols: []
+              symbols: [],
+              suggestedLenses: ["core/code-review"]
             },
             {
-              id: "vague",
-              question: "Review this file.",
-              whyItMatters: "Too vague.",
+              summary: "Empty basis should not survive",
+              basis: [],
               files: ["app.ts"],
-              symbols: []
+              symbols: [],
+              suggestedLenses: ["core/code-review"]
             }
           ],
           coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review" }]
@@ -4947,214 +3884,18 @@ describe("phase 5 pipeline regressions", () => {
       skills: []
     });
 
-    expect(result.plan.reviewQuestions).toEqual([
+    expect(result.plan.reviewEmphasis).toEqual([
       expect.objectContaining({
-        id: "amount-contract",
-        question: "Does the transformed amount still match the amount reported to callers?",
+        summary: "Changed amount transformation feeds caller-visible output",
+        basis: ["app.ts changes handler, which returns a transformed amount"],
         files: ["app.ts"],
         symbols: ["handler"],
-        obligation: "Trace request amount -> helper output -> returned amount before closing this question."
+        suggestedLenses: ["core/code-review"]
       })
     ]);
     expect(result.plan.coverage.map((decision) => decision.hunkId)).toEqual(["h1"]);
     expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ stage: 5, message: "planner_review_question_dropped", data: expect.objectContaining({ reason: "no_known_files_or_symbols" }) }),
-      expect.objectContaining({ stage: 5, message: "planner_review_question_dropped", data: expect.objectContaining({ reason: "vague_question" }) }),
-      expect.objectContaining({ stage: 5, message: "planner_review_questions", data: expect.objectContaining({ submitted: 3, kept: 1 }) })
-    ]));
-  });
-
-  it("synthesizes bounded review questions from material risk areas when the planner emits none", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const telemetry = {
-      ...nullTelemetry(),
-      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-        events.push(event);
-      }
-    };
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          diffUnderstanding: { declaredIntent: "question fallback", inferredBehavior: "question fallback" },
-          riskAreas: [{
-            area: "Downstream output consistency",
-            reason: "The changed helper transforms a value before returning it through a public response path.",
-            files: ["app.ts"],
-            suggestedLenses: ["core/code-review"]
-          }],
-          coverage: [
-            { hunkId: "h1", path: "app.ts", coverage: "deep", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review value trace" },
-            { hunkId: "h2", path: "worker.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review caller" }
-          ]
-        }) as T
-    };
-
-    const result = await runPlanner(fakeDossier(["app.ts", "worker.ts"]), config(), telemetry, {
-      runner,
-      promptBuilder: fakePromptBuilder(),
-      lenses: [{
-        id: "core/code-review",
-        title: "Core",
-        description: "core",
-        skillIds: [],
-        enabledByDefault: true,
-        enabled: true,
-        languages: []
-      }],
-      skills: []
-    });
-
-    expect(result.plan.reviewQuestions).toEqual([
-      expect.objectContaining({
-        id: expect.stringMatching(/^q-risk-1-/u),
-        files: ["app.ts"],
-        symbols: [],
-        question: expect.stringContaining("Downstream output consistency"),
-        whyItMatters: "The changed helper transforms a value before returning it through a public response path.",
-        obligation: expect.stringContaining("Trace changed input/state")
-      })
-    ]);
-    expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 5,
-        message: "planner_review_questions_synthesized",
-        data: expect.objectContaining({ synthesized: 1, riskAreas: 1 })
-      })
-    ]));
-  });
-
-  it("synthesizes an unrepresented material risk area even when planner questions exist", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const telemetry = {
-      ...nullTelemetry(),
-      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-        events.push(event);
-      }
-    };
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          diffUnderstanding: { declaredIntent: "question fallback", inferredBehavior: "question fallback" },
-          riskAreas: [
-            {
-              area: "Authorization boundary consistency",
-              reason: "The changed handler computes a permission value before enforcing access.",
-              files: ["auth.ts"],
-              suggestedLenses: ["core/code-review"]
-            },
-            {
-              area: "Response amount consistency",
-              reason: "The changed response path transforms a stored value before reporting it to callers.",
-              files: ["response.ts"],
-              suggestedLenses: ["core/code-review"]
-            }
-          ],
-          reviewQuestions: [{
-            id: "q-auth",
-            question: "Does authorization boundary consistency still hold when the permission value is computed before enforcing access?",
-            whyItMatters: "The changed handler must preserve the permission enforcement relationship.",
-            files: ["auth.ts"],
-            symbols: []
-          }],
-          coverage: [
-            { hunkId: "h1", path: "auth.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review authorization" },
-            { hunkId: "h2", path: "response.ts", coverage: "deep", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review response output" }
-          ]
-        }) as T
-    };
-
-    const result = await runPlanner(fakeDossier(["auth.ts", "response.ts"]), config(), telemetry, {
-      runner,
-      promptBuilder: fakePromptBuilder(),
-      lenses: [{
-        id: "core/code-review",
-        title: "Core",
-        description: "core",
-        skillIds: [],
-        enabledByDefault: true,
-        enabled: true,
-        languages: []
-      }],
-      skills: []
-    });
-
-    expect(result.plan.reviewQuestions).toEqual([
-      expect.objectContaining({ id: "q-auth" }),
-      expect.objectContaining({
-        id: expect.stringMatching(/^q-risk-2-/u),
-        files: ["response.ts"],
-        question: expect.stringContaining("Response amount consistency")
-      })
-    ]);
-    expect(result.plan.riskAreaDispositions).toEqual([
-      expect.objectContaining({
-        area: "Authorization boundary consistency",
-        disposition: "represented_by_question",
-        questionIds: ["q-auth"]
-      }),
-      expect.objectContaining({
-        area: "Response amount consistency",
-        disposition: "synthesized_question",
-        questionIds: [expect.stringMatching(/^q-risk-2-/u)]
-      })
-    ]);
-    expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 5,
-        message: "planner_review_questions_synthesized",
-        data: expect.objectContaining({
-          existingQuestions: 1,
-          synthesized: 1,
-          representedRiskAreas: expect.arrayContaining(["Authorization boundary consistency", "Response amount consistency"])
-        })
-      })
-    ]));
-  });
-
-  it("does not synthesize review questions for tiny or unscoped plans", async () => {
-    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
-    const telemetry = {
-      ...nullTelemetry(),
-      event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
-        events.push(event);
-      }
-    };
-    const runner: LlmRunner = {
-      runStructured: async <T>() =>
-        ({
-          diffUnderstanding: { declaredIntent: "tiny plan", inferredBehavior: "tiny plan" },
-          riskAreas: [{
-            area: "Review this file",
-            reason: "General review",
-            files: ["app.ts"],
-            suggestedLenses: ["core/code-review"]
-          }],
-          coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review" }]
-        }) as T
-    };
-
-    const result = await runPlanner(fakeDossier(["app.ts"]), config(), telemetry, {
-      runner,
-      promptBuilder: fakePromptBuilder(),
-      lenses: [{
-        id: "core/code-review",
-        title: "Core",
-        description: "core",
-        skillIds: [],
-        enabledByDefault: true,
-        enabled: true,
-        languages: []
-      }],
-      skills: []
-    });
-
-    expect(result.plan.reviewQuestions).toBeUndefined();
-    expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 5,
-        message: "planner_review_question_synthesis_skipped",
-        data: expect.objectContaining({ reason: "too_small" })
-      })
+      expect.objectContaining({ stage: 5, message: "planner_review_emphasis", data: expect.objectContaining({ submitted: 3, kept: 1 }) })
     ]));
   });
 
@@ -5170,7 +3911,6 @@ describe("phase 5 pipeline regressions", () => {
       runStructured: async <T>() =>
         ({
           diffUnderstanding: { declaredIntent: "invalid skip", inferredBehavior: "invalid skip" },
-          riskAreas: [],
           coverage: [
             { hunkId: "h1", path: "app.ts", coverage: "skip", lenses: [], surroundingContextHints: [], reason: "   " }
           ]
@@ -5332,7 +4072,6 @@ describe("phase 5 pipeline regressions", () => {
       runStructured: async <T>() =>
         ({
           diffUnderstanding: { declaredIntent: "unknown hunk", inferredBehavior: "unknown hunk" },
-          riskAreas: [],
           coverage: [
             { hunkId: "h1-suffix", path: "app.ts", coverage: "skip", lenses: [], surroundingContextHints: [], reason: "bad model hunk id" },
             { hunkId: "h2", path: "app.ts", coverage: "deep", lenses: ["core/code-review"], surroundingContextHints: [], reason: "valid override" }
@@ -5405,7 +4144,6 @@ describe("phase 5 pipeline regressions", () => {
       runStructured: async <T>() =>
         ({
           diffUnderstanding: { declaredIntent: "invalid skip", inferredBehavior: "invalid skip" },
-          riskAreas: [],
           coverage: [
             { hunkId: "h1", path: "app.ts", coverage: "skip", lenses: [], surroundingContextHints: [], reason: " " }
           ]
@@ -7559,7 +6297,6 @@ describe("phase 5 pipeline regressions", () => {
         if (request.stage === 5) {
           return {
             diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-            riskAreas: [],
             coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "test" }]
           } as T;
         }
@@ -7643,117 +6380,6 @@ describe("phase 5 pipeline regressions", () => {
     expect(existsSync(path.join(runArtifactDir, "run.json"))).toBe(true);
   });
 
-  it("writes review-question lifecycle after verification and final selection", async () => {
-    const repo = initRepo();
-    writeRepoFile(repo, "app.ts", "export function handler() { return 1; }\n");
-    commitAll(repo, "base");
-    git(repo, ["checkout", "-b", "feature"]);
-    writeRepoFile(repo, "app.ts", "export function handler() { return 2; }\n");
-    commitAll(repo, "feature");
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-run-")), "run-review-questions");
-    const runner: LlmRunner = {
-      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
-        if (request.stage === 5) {
-          return {
-            diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "handler changes value" },
-            riskAreas: [{
-              area: "Handler return value contract",
-              reason: "The changed handler return value is caller-visible.",
-              files: ["app.ts"],
-              suggestedLenses: ["core/code-review"]
-            }],
-            reviewQuestions: [{
-              id: "q-contract",
-              question: "Does handler still return the caller-visible value expected by callers?",
-              whyItMatters: "Callers observe this return value.",
-              files: ["app.ts"],
-              symbols: ["handler"],
-              evidenceHint: "Trace the changed return value."
-            }],
-            coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "test" }]
-          } as T;
-        }
-        if (request.stage === 7) {
-          return {
-            reviewStatus: "findings",
-            findings: [{
-              title: "handler returns the wrong value",
-              severity: "medium",
-              confidence: "medium",
-              path: "app.ts",
-              category: "correctness",
-              evidence: { changedCode: "return 2;" },
-              failureMode: "handler now returns a value callers do not expect.",
-              whyThisMatters: "Callers can receive the wrong value.",
-              verification: "The changed return value differs from the expected value.",
-              reviewQuestionIds: ["q-contract"]
-            }],
-            followUpHints: [],
-            uncertainties: [],
-            answeredQuestions: [{
-              questionId: "q-contract",
-              answer: "The changed return value is a candidate finding.",
-              confidence: "medium",
-              outcome: "candidate_finding",
-              evidence: [{ path: "app.ts", lines: "return 2;", whyRelevant: "This is the changed return value." }],
-              evidenceTrace: "request -> handler -> changed return value"
-            }]
-          } as T;
-        }
-        if (request.stage === 9) {
-          return {
-            verdict: "keep",
-            reason: "The changed return value is substantiated.",
-            requiredEvidencePresent: true,
-            falsePositiveRisk: "low"
-          } as T;
-        }
-        if (request.stage === 10) {
-          throw composerTransientError();
-        }
-        throw new Error(`unexpected stage ${String(request.stage)}`);
-      }
-    };
-
-    await runReview(
-      { mode: "branch", branchName: "feature" },
-      { ...config(), telemetry: { ...defaultConfig.telemetry, enabled: true, runDir: path.dirname(runArtifactDir) } },
-      { repoRoot: repo, runArtifactDir, runner }
-    );
-
-    const lifecycle = JSON.parse(readFileSync(path.join(runArtifactDir, "review-questions.json"), "utf8")) as {
-      questions: Array<{
-        id: string;
-        answers: unknown[];
-        generatedFindings: Array<{ verification?: { verdict: string }; finalDisposition: string }>;
-        finalFindings: Array<{ publication: string }>;
-      }>;
-      riskAreaDispositions: Array<{ area: string; disposition: string; questionIds: string[] }>;
-      metrics: { riskAreas: number; representedRiskAreas: number; omittedRiskAreas: number; verifiedQuestionFindings: number; finalQuestionFindings: number };
-    };
-    expect(lifecycle.riskAreaDispositions).toEqual([
-      expect.objectContaining({
-        area: "Handler return value contract",
-        disposition: "represented_by_question",
-        questionIds: ["q-contract"]
-      })
-    ]);
-    expect(lifecycle.questions[0]).toMatchObject({
-      id: "q-contract",
-      answers: [expect.objectContaining({ outcome: "candidate_finding" })],
-      generatedFindings: [expect.objectContaining({ verification: expect.objectContaining({ verdict: "keep" }) })],
-      finalFindings: [expect.objectContaining({ publication: "summary-only" })]
-    });
-    expect(lifecycle.questions[0]?.generatedFindings[0]?.finalDisposition).toBe("summary-only");
-    expect(lifecycle.metrics).toMatchObject({
-      riskAreas: 1,
-      representedRiskAreas: 1,
-      omittedRiskAreas: 0,
-      verifiedQuestionFindings: 1,
-      finalQuestionFindings: 1
-    });
-  });
-
   it("discloses malformed skill loads in the final Markdown review", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
@@ -7787,7 +6413,6 @@ describe("phase 5 pipeline regressions", () => {
     const adapter = scriptedPiAdapter([
       assistantMessage([toolCall("submit-plan", "submit_plan", {
         diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-        riskAreas: [],
         coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "test" }]
       })]),
       assistantMessage([toolCall("submit-review", "submit_review", {
@@ -7862,7 +6487,6 @@ describe("phase 5 pipeline regressions", () => {
         if (request.stage === 5) {
           return {
             diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-            riskAreas: [],
             coverage: [
               {
                 hunkId: bHunk.id,
@@ -11102,7 +9726,6 @@ function config(): CodeninjaConfig {
 function fakePlan(path = "app.ts"): ReviewPlan {
   return {
     diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-    riskAreas: [],
     coverage: [{ hunkId: "h1", path, coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "test" }]
   };
 }
@@ -11110,7 +9733,6 @@ function fakePlan(path = "app.ts"): ReviewPlan {
 function fakePlanForHunks(hunkIds: string[], path = "app.ts"): ReviewPlan {
   return {
     diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
-    riskAreas: [],
     coverage: hunkIds.map((hunkId) => ({
       hunkId,
       path,
@@ -11131,8 +9753,7 @@ function fakePacket(opts: {
   relevantTests?: ReviewPacket["relevantTests"];
   testCoverageDelta?: ReviewPacket["testCoverageDelta"];
   labels?: string[];
-  riskNotes?: string[];
-  reviewQuestions?: ReviewPacket["reviewQuestions"];
+  reviewEmphasisNotes?: string[];
   hunkLines?: ReviewPacket["hunks"][number]["lines"];
   changedNewLineNumbers?: number[];
   changedOldLineNumbers?: number[];
@@ -11170,9 +9791,8 @@ function fakePacket(opts: {
     ...(opts.testCoverageDelta !== undefined ? { testCoverageDelta: opts.testCoverageDelta } : {}),
     relevantTests: opts.relevantTests ?? [],
     surroundingContextHints: [],
-    ...(opts.reviewQuestions !== undefined ? { reviewQuestions: opts.reviewQuestions } : {}),
     labels: opts.labels ?? [],
-    riskNotes: opts.riskNotes ?? [],
+    reviewEmphasisNotes: opts.reviewEmphasisNotes ?? [],
     toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 4000 }
   };
 }

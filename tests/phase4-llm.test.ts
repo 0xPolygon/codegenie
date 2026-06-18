@@ -60,11 +60,10 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(submitToolNameForStage(7)).toBe("submit_review");
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
-    expect(SCHEMA_VERSIONS.submit_plan).toBe(3);
+    expect(SCHEMA_VERSIONS.submit_plan).toBe(4);
 
     const valid = {
       diffUnderstanding: { declaredIntent: "Small change", inferredBehavior: "The diff makes a small change." },
-      riskAreas: [],
       coverage: []
     };
     const submitTool = { name: "submit_plan", description: "submit", parameters: SubmitPlanSchema };
@@ -468,7 +467,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         runnerMessageVersion: "pi-runner-loop-v3",
         promptTemplateVersion: "debug-template",
         schemaName: "submit_review",
-        schemaVersion: 3,
+        schemaVersion: 4,
         toolChoice: "auto",
         messageCount: 1
       },
@@ -1284,7 +1283,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       }
     })).resolves.toMatchObject({
       diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" },
-      riskAreas: [],
       coverage: []
     });
 
@@ -2172,20 +2170,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
             confidence: "medium"
           }],
           uncertainties: [],
-          answeredQuestions: [{
-            questionId: "q-edge-behavior",
-            answer: "The packet did not prove a local bug, but the caller predicate remains worth checking.",
-            confidence: "medium",
-            outcome: "partial",
-            evidence: [{
-              path: "app.ts",
-              lines: "return handler(input)",
-              whyRelevant: "The changed hunk contains the local behavior boundary.",
-              extraEvidenceNote: "model-added field should be stripped"
-            }],
-            evidenceTrace: "input -> changed handler -> caller predicate unresolved",
-            extraQuestionNote: "model-added field should be stripped"
-          }],
           noFindingReason: `No concrete issue found. ${"detail ".repeat(260)}`
         }
       }])
@@ -2211,20 +2195,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         confidence: "medium"
       })
     ]);
-    expect(result.answeredQuestions).toEqual([
-      {
-        questionId: "q-edge-behavior",
-        answer: "The packet did not prove a local bug, but the caller predicate remains worth checking.",
-        confidence: "medium",
-        outcome: "partial",
-        evidence: [{
-          path: "app.ts",
-          lines: "return handler(input)",
-          whyRelevant: "The changed hunk contains the local behavior boundary."
-        }],
-        evidenceTrace: "input -> changed handler -> caller predicate unresolved"
-      }
-    ]);
     expect(result.noFindingReason).toHaveLength(1000);
     expect(result.noFindingReason).toContain("[truncated by codeninja]");
     expect(adapter.contexts).toHaveLength(1);
@@ -2239,78 +2209,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         stage: 7,
         message: "stage7_no_finding_reason_truncated",
         packetId: "packet-long-no-findings"
-      })
-    ]));
-  });
-
-  it("truncates and cleans Stage 7 answered question text before model repair", async () => {
-    const telemetry = fakeTelemetry();
-    const adapter = scriptedAdapter([
-      assistant([{
-        type: "toolCall",
-        id: "submit-long-answer-no-findings",
-        name: "submit_review",
-        arguments: {
-          reviewStatus: "no_findings",
-          findings: [],
-          followUpHints: [],
-          uncertainties: [],
-          answeredQuestions: [{
-            questionId: "q-edge-behavior",
-            answer: `No local bug was proven.</answer><parameter name="followUpHints">[] ${"detail ".repeat(220)}`,
-            confidence: "medium",
-            outcome: "partial",
-            evidence: [{
-              path: "app.ts",
-              lines: "const value = parse<T>(input)",
-              whyRelevant: "The changed hunk contains the local behavior boundary."
-            }],
-            evidenceTrace: `input -> changed handler -> predicate unresolved</evidenceTrace><parameter name="findings">[] ${"trace ".repeat(420)}`
-          }],
-          noFindingReason: "No concrete issue found from the bounded packet review."
-        }
-      }])
-    ]);
-    const runner = createPiRunner({
-      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-      telemetry: telemetry.recorder,
-      logger: fakeLogger(),
-      runSignal: new AbortController().signal,
-      adapter,
-      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
-    });
-
-    const result = (await runner.runStructured({
-      ...submitReviewRequest("packet-long-answer"),
-      telemetryContext: { packetId: "packet-long-answer" }
-    })) as SubmitPacketReview;
-
-    expect(result).toMatchObject({ reviewStatus: "no_findings", findings: [] });
-    expect(result.answeredQuestions?.[0]?.answer).toHaveLength(1000);
-    expect(result.answeredQuestions?.[0]?.answer).toContain("[truncated by codeninja]");
-    expect(result.answeredQuestions?.[0]?.answer).not.toContain("<parameter");
-    expect(result.answeredQuestions?.[0]?.evidence[0]?.lines).toBe("const value = parse<T>(input)");
-    expect(result.answeredQuestions?.[0]?.evidenceTrace).toHaveLength(2000);
-    expect(result.answeredQuestions?.[0]?.evidenceTrace).toContain("[truncated by codeninja]");
-    expect(result.answeredQuestions?.[0]?.evidenceTrace).not.toContain("<parameter");
-    expect(adapter.contexts).toHaveLength(1);
-    expect(telemetry.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 7,
-        message: "stage7_schema_cleanup_recovered",
-        packetId: "packet-long-answer",
-        data: expect.objectContaining({
-          cleanupKind: "no_findings_shape",
-          classification: "xml_parameter_bleed",
-          cleanedFields: expect.arrayContaining([
-            "answeredQuestions.0.answer",
-            "answeredQuestions.0.evidenceTrace"
-          ]),
-          truncatedFields: expect.arrayContaining([
-            "answeredQuestions.0.answer",
-            "answeredQuestions.0.evidenceTrace"
-          ])
-        })
       })
     ]));
   });
@@ -2424,54 +2322,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     // Prose preserved as the no-finding reason rather than stripped as a candidate payload.
     expect(result.noFindingReason).toContain("candidate");
     expect(result.noFindingReason).toHaveLength(1000);
-  });
-
-  it("sends a no-findings packet that claims a candidate_finding answer to model repair instead of swallowing it", async () => {
-    // Regression guard: a payload that declares no_findings yet answers a review question with
-    // outcome "candidate_finding" is contradictory. It must NOT be deterministically salvaged
-    // into a clean no_findings (which silently drops the answer); it goes to model repair so the
-    // model emits the candidate as an actual finding.
-    const telemetry = fakeTelemetry();
-    const adapter = scriptedAdapter([
-      assistant([{
-        type: "toolCall",
-        id: "submit-contradictory-no-findings",
-        name: "submit_review",
-        arguments: {
-          reviewStatus: "no_findings",
-          findings: [],
-          followUpHints: [],
-          uncertainties: [],
-          answeredQuestions: [{
-            questionId: "q-contract",
-            answer: "The changed code rejects a zero-decimal token the old path accepted.",
-            confidence: "high",
-            outcome: "candidate_finding",
-            evidence: [{ path: "fee.ts", whyRelevant: "Changed branch errors on a previously-accepted input." }]
-          }],
-          noFindingReason: `Documented above. ${"detail ".repeat(200)}`
-        }
-      }]),
-      assistant([validCandidateSubmitReviewCall("submit-repaired-finding")])
-    ]);
-    const runner = createPiRunner({
-      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-      telemetry: telemetry.recorder,
-      logger: fakeLogger(),
-      runSignal: new AbortController().signal,
-      adapter,
-      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
-    });
-
-    const result = (await runner.runStructured({
-      ...submitReviewRequest("packet-contradictory-no-findings"),
-      telemetryContext: { packetId: "packet-contradictory-no-findings" }
-    })) as SubmitPacketReview;
-
-    // Went to model repair (second turn used) rather than being swallowed as no_findings.
-    expect(adapter.contexts).toHaveLength(2);
-    expect(result.findings).toHaveLength(1);
-    expect(result.findings[0]).toMatchObject({ title: "Candidate finding" });
   });
 
   it("repairs candidate-shaped invalid submissions with compact replacement context", async () => {
@@ -4435,7 +4285,6 @@ function validSubmitPlanCall(id: string): PiToolCall {
         declaredIntent: "test",
         inferredBehavior: "test"
       },
-      riskAreas: [],
       coverage: []
     }
   };

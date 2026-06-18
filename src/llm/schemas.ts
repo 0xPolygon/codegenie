@@ -83,23 +83,6 @@ const SurroundingContextHintSchema = Type.Object(
   { additionalProperties: false }
 );
 
-const ReviewQuestionSchema = Type.Object(
-  {
-    id: Type.String({ minLength: 1, maxLength: 120 }),
-    question: Type.String({ minLength: 1, maxLength: 1000 }),
-    whyItMatters: Type.String({ minLength: 1, maxLength: 1000 }),
-    files: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 20 }),
-    symbols: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 20 }),
-    evidenceHint: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
-    obligation: Type.Optional(Type.String({
-      minLength: 1,
-      maxLength: 1200,
-      description: "Plain-English assertion that must be proven or falsified before this question can be closed. Use only for cross-step concerns."
-    }))
-  },
-  { additionalProperties: false }
-);
-
 export const SubmitPlanSchema = Type.Object(
   {
     diffUnderstanding: Type.Object(
@@ -109,19 +92,22 @@ export const SubmitPlanSchema = Type.Object(
       },
       { additionalProperties: false }
     ),
-    riskAreas: Type.Array(
+    reviewEmphasis: Type.Optional(Type.Array(
       Type.Object(
         {
-          area: Type.String({ minLength: 1, maxLength: 200 }),
-          reason: Type.String({ minLength: 1, maxLength: 1000 }),
+          summary: Type.String({ minLength: 1, maxLength: 240 }),
+          basis: Type.Array(Type.String({ minLength: 1, maxLength: 400 }), {
+            maxItems: 6,
+            description: "Short observable facts from the planner dossier. Do not include bug claims."
+          }),
           files: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 50 }),
+          symbols: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 20 })),
           suggestedLenses: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), { maxItems: 20 })
         },
         { additionalProperties: false }
       ),
       { maxItems: 50 }
-    ),
-    reviewQuestions: Type.Optional(Type.Array(ReviewQuestionSchema, { maxItems: 12 })),
+    )),
     coverage: Type.Array(
       Type.Object(
         {
@@ -182,7 +168,6 @@ const SubmittedFindingSchema = Type.Object(
     suggestedFix: Type.Optional(Type.String({ maxLength: 4000 })),
     suggestedTest: Type.Optional(Type.String({ maxLength: 2000 })),
     verification: Type.String({ minLength: 1, maxLength: 2000 }),
-    reviewQuestionIds: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 120 }), { maxItems: 10 })),
     behaviorChange: Type.Optional(BehaviorChangeAssessmentSchema),
     intentEvidence: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 8 }))
   },
@@ -214,77 +199,6 @@ const StructuredUncertaintySchema = Type.Object(
   { additionalProperties: false }
 );
 
-const MaterialConcernSchema = Type.Object(
-  {
-    title: Type.String({
-      minLength: 1,
-      maxLength: 200,
-      description: "Short concrete concern title. Use only when the partial answer identifies a verifier-resolvable failure mode."
-    }),
-    changedPath: Type.String({
-      minLength: 1,
-      maxLength: 500,
-      description: "Changed file that anchors the concern."
-    }),
-    anchorLine: Type.Optional(Type.Integer({
-      minimum: 1,
-      description: "Changed line number when known. Omit when the precise changed line is unknown."
-    })),
-    failureMode: Type.String({
-      minLength: 1,
-      maxLength: 2000,
-      description: "Specific failure mode to verify. Do not use broad 'check this behavior' wording."
-    }),
-    evidence: Type.String({
-      minLength: 1,
-      maxLength: 2000,
-      description: "Concrete source evidence from this packet or tool reads that supports the concern."
-    }),
-    suggestedVerification: Type.String({
-      minLength: 1,
-      maxLength: 2000,
-      description: "Exact predicate the verifier should confirm or reject."
-    })
-  },
-  { additionalProperties: false }
-);
-
-const AnsweredReviewQuestionSchema = Type.Object(
-  {
-    questionId: Type.String({ minLength: 1, maxLength: 120 }),
-    answer: Type.String({
-      minLength: 1,
-      maxLength: 1000,
-      description: "Concise answer to the exact review question. Prefer 1-3 sentences; do not include XML, markdown wrappers, or extra JSON fields."
-    }),
-    confidence: ConfidenceSchema,
-    outcome: Type.Union([
-      Type.Literal("answered_no_issue"),
-      Type.Literal("candidate_finding"),
-      Type.Literal("partial"),
-      Type.Literal("not_applicable")
-    ]),
-    evidence: Type.Array(
-      Type.Object(
-        {
-          path: Type.String({ minLength: 1, maxLength: 500 }),
-          lines: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })),
-          whyRelevant: Type.String({ minLength: 1, maxLength: 1000 })
-        },
-        { additionalProperties: false }
-      ),
-      { maxItems: 8 }
-    ),
-    evidenceTrace: Type.Optional(Type.String({
-      minLength: 1,
-      maxLength: 2000,
-      description: "Decisive source trace only. Keep compact; no XML, markdown wrappers, or tool parameter tags."
-    })),
-    materialConcern: Type.Optional(MaterialConcernSchema)
-  },
-  { additionalProperties: false }
-);
-
 export const SubmitPacketReviewSchema = Type.Object(
   {
     reviewStatus: Type.Optional(Type.Union([
@@ -300,13 +214,11 @@ export const SubmitPacketReviewSchema = Type.Object(
       description: "Concrete unresolved predicates only. Do not use broad reminders or essay-style notes."
     }),
     uncertainties: Type.Array(StructuredUncertaintySchema, { maxItems: 20 }),
-    answeredQuestions: Type.Optional(Type.Array(AnsweredReviewQuestionSchema, { maxItems: 10 })),
     noFindingReason: Type.Optional(Type.String({
       minLength: 1,
       maxLength: 1000,
       description: "Short no-finding conclusion, preferably 2-4 sentences. Do not repeat inspected code. Do not include XML, markdown wrappers, or <parameter> tags."
-    })),
-    unresolvedQuestions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 10 }))
+    }))
   },
   {
     additionalProperties: false,
@@ -371,8 +283,8 @@ export type SubmitVerificationVerdict = Static<typeof SubmitVerificationVerdictS
 export type SubmitComposition = Static<typeof SubmitCompositionSchema>;
 
 export const SCHEMA_VERSIONS = {
-  submit_plan: 3,
-  submit_review: 3,
+  submit_plan: 4,
+  submit_review: 4,
   submit_system_review: 1,
   submit_verdict: 1,
   submit_composition: 1

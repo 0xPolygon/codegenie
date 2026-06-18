@@ -68,7 +68,6 @@ function fakePlan(prompt: string): unknown {
       declaredIntent: "Exercise the review pipeline without provider API calls.",
       inferredBehavior: "Deterministic fake planning pass."
     },
-    riskAreas: [],
     coverage
   };
 }

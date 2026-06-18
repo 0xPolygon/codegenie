@@ -4,9 +4,9 @@ status: complete
 
 # codeninja
 
-codeninja is a code-reviewing AI harness and agent with configurable reviewing skills.
+codeninja is a code-reviewing AI harness and agent with a multi-stage reviewing process and pluggable skills.
 
-The goal is to build a high-quality code-reviewing agent that can review pull requests and give sound advice to developers. It should review code at a top-tier staff engineer level, with a focus on finding bugs, logical errors, poor architectural patterns, performance issues, and other meaningful problems. The review output should avoid fluff and nitpicks.
+The goal is to build a deep code-reviewing agent that can review pull requests and give accurate and thorough advice to developers. It should review code at a top-tier staff engineer level, with a focus on finding bugs, logical errors, poor architectural patterns, performance issues, and other meaningful problems. The review output should avoid fluff and nitpicks.
 
 The system will include bundled skills and user-facing review lenses. A skill is the review knowledge unit: a Markdown file of concrete checks, false-positive rules, safe patterns, examples, and severity guidance tied to impact; the harness owns prompts, tools, and output schemas. A lens is the review perspective exposed to users, such as Go correctness, TypeScript correctness, security, API design, performance, architecture, database, concurrency, or tests. A lens may map to one or more skills. Skills should not be mostly persona; the best skills encode concrete checks rather than character description. Developers can add their own repo-local Markdown skills to give the reviewer additional expertise, with executable skill packages as a possible future extension.
 

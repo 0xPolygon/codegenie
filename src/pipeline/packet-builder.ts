@@ -26,7 +26,6 @@ import type {
   SymbolRef,
   SymbolInfo,
   PacketContextQuality,
-  PacketReviewQuestion,
   ToolBudget,
   ToolResultMeta,
   IntentSignals
@@ -73,11 +72,6 @@ const SYMBOL_EXCERPT_WINDOW = 8;
 const MAX_SYMBOL_EXCERPT_CHARS = 2_500;
 const MAX_HINT_CONTEXT_CHARS = 2_000;
 const MAX_HINT_CONTEXT_LINES = 80;
-const MAX_REVIEW_QUESTIONS_PER_PACKET = 3;
-const MAX_PRIMARY_REVIEW_QUESTIONS_PER_PACKET = 2;
-const MIN_OWNERSHIP_SCORE = 10;
-const MIN_CLEAR_OWNERSHIP_MARGIN = 12;
-const INTEGRATION_OWNERSHIP_BONUS = 14;
 const CALL_SITE_MENTION_LOOKUP_LIMIT = 50;
 const CALL_SITE_CONTEXT_SYMBOL_LIMIT = 4;
 const MAX_STATIC_SIGNALS_PER_PACKET_HUNK = 5;
@@ -127,23 +121,6 @@ export async function buildReviewPackets(
     }
   }
 
-  const ownership = assignReviewQuestionOwnership(packets, plan.reviewQuestions ?? [], telemetry);
-  const questionObligations = (plan.reviewQuestions ?? []).filter((question) => question.obligation !== undefined && question.obligation.trim().length > 0);
-  const obligationAttachments = packets.reduce(
-    (sum, packet) => sum + (packet.reviewQuestions ?? []).filter((question) => question.obligation !== undefined && question.obligation.trim().length > 0).length,
-    0
-  );
-  if (questionObligations.length > 0) {
-    telemetry.event({
-      stage: 6,
-      level: "info",
-      message: "review_question_obligation_attached",
-      data: {
-        questions: questionObligations.length,
-        attachments: obligationAttachments
-      }
-    });
-  }
   for (const packet of packets) {
     await telemetry.writeArtifact(`packets/${packet.id}.json`, packet);
   }
@@ -153,17 +130,7 @@ export async function buildReviewPackets(
     message: "stage_completed",
     data: {
       packets: packets.length,
-      symbolContext: symbolContextMetrics,
-      reviewQuestions: {
-        emitted: plan.reviewQuestions?.length ?? 0,
-        attachedPackets: packets.filter((packet) => (packet.reviewQuestions ?? []).length > 0).length,
-        attachments: packets.reduce((sum, packet) => sum + (packet.reviewQuestions?.length ?? 0), 0),
-        obligations: questionObligations.length,
-        obligationAttachments,
-        primaryOwners: ownership.assigned,
-        unassignedOwners: ownership.unassigned,
-        supportingAttachments: ownership.supportingAttachments
-      }
+      symbolContext: symbolContextMetrics
     }
   });
   return packets;
@@ -244,15 +211,14 @@ async function buildPacket(
   );
   const patchChars = packetHunks.reduce((sum, hunk) => sum + hunk.contentWithLineNumbers.length, 0);
   const testCoverageDelta = buildTestCoverageDelta(first.file, planned.map((entry) => entry.hunk), first.facts, symbolFacts);
-  const riskNotes = plan.riskAreas.filter((area) => area.files.includes(first.file.path)).slice(0, 3).map((area) => area.reason);
-  const reviewQuestions = attachReviewQuestions(plan.reviewQuestions ?? [], first.file.path, first.file.oldPath, symbolFacts, packetHunks);
+  const reviewEmphasisNotes = reviewEmphasisNotesForFile(plan, first.file.path, first.file.oldPath);
   const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry, {
     coverage,
     reviewPriority,
     hunkCount: planned.length,
     patchChars,
     lenses: decisions.flatMap((decision) => decision.lenses),
-    riskNotes,
+    reviewEmphasisNotes,
     labels: first.facts.labels
   }, symbolContextMetrics);
   const hintContext = await resolvePacketContextHints(repoIndex, first.file, decisions.flatMap((decision) => decision.surroundingContextHints), telemetry);
@@ -286,7 +252,7 @@ async function buildPacket(
     coverage,
     reviewPriority,
     planned,
-    riskNotes,
+    reviewEmphasisNotes,
     hintCount: decisions.reduce((sum, decision) => sum + decision.surroundingContextHints.length, 0)
   });
   const lenses = routedPacketLenses({
@@ -296,7 +262,7 @@ async function buildPacket(
     facts: first.facts,
     planned,
     relevantTests: context.relevantTests,
-    riskNotes,
+    reviewEmphasisNotes,
     coverage,
     reviewPriority,
     reviewProfile,
@@ -326,9 +292,8 @@ async function buildPacket(
     ...(context.packetSymbols.length > 0 ? { packetSymbols: context.packetSymbols } : {}),
     relevantTests: context.relevantTests,
     surroundingContextHints: hintContext.workerHints,
-    ...(reviewQuestions.length > 0 ? { reviewQuestions } : {}),
     labels: first.facts.labels,
-    riskNotes,
+    reviewEmphasisNotes,
     toolBudget: scaleToolBudget(toolBudget(coverage, config.review.depth, reviewProfile), config.review.budgetMultiplier),
     ...(reviewContext?.intentText !== undefined ? { intentText: reviewContext.intentText } : {}),
     ...(reviewContext?.intentSignals !== undefined ? { intentSignals: reviewContext.intentSignals } : {}),
@@ -341,19 +306,6 @@ async function buildPacket(
         ? { fileContext: { mode: "file-diff", reason: "grouped file hunks" } }
         : {})
   };
-  if (reviewQuestions.length > 0) {
-    telemetry.event({
-      stage: 6,
-      level: "info",
-      message: "packet_review_questions_attached",
-      file: packet.path,
-      packetId: packet.id,
-      data: {
-        questionIds: reviewQuestions.map((question) => question.id),
-        count: reviewQuestions.length
-      }
-    });
-  }
   return packet;
 }
 
@@ -373,6 +325,17 @@ export function packetReviewContextFromDossier(dossier: PlannerDossier): PacketR
   };
 }
 
+function reviewEmphasisNotesForFile(plan: ReviewPlan, path: string, oldPath: string | undefined): string[] {
+  const paths = new Set([path, ...(oldPath !== undefined ? [oldPath] : [])]);
+  return (plan.reviewEmphasis ?? [])
+    .filter((item) => item.files.some((file) => paths.has(stripLocationSuffix(file))))
+    .slice(0, 3)
+    .map((item) => {
+      const basis = item.basis.slice(0, 3).join("; ");
+      return basis.length > 0 ? `${item.summary}: ${basis}` : item.summary;
+    });
+}
+
 function deterministicDeclaredIntent(dossier: PlannerDossier): string {
   const prTitle = dossier.pr?.title?.trim();
   if (prTitle && prTitle.length > 0) {
@@ -383,331 +346,6 @@ function deterministicDeclaredIntent(dossier: PlannerDossier): string {
     return commitTitle;
   }
   return "Review local diff.";
-}
-
-function attachReviewQuestions(
-  questions: ReviewPlan["reviewQuestions"],
-  path: string,
-  oldPath: string | undefined,
-  symbolFacts: HunkSymbolFacts[],
-  hunks: PacketHunk[]
-): PacketReviewQuestion[] {
-  if (questions === undefined || questions.length === 0) {
-    return [];
-  }
-  const packetPaths = new Set([path, ...(oldPath !== undefined ? [oldPath] : [])]);
-  const packetSymbols = new Set(symbolFacts.flatMap((fact) =>
-    [fact.enclosingSymbol, fact.signature].filter((value): value is string => value !== undefined && value.trim().length > 0)
-  ));
-  const hunkText = hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n").toLowerCase();
-
-  return questions
-    .map((question) => {
-      const fileMatches = question.files.filter((file) => packetPaths.has(stripLocationSuffix(file)));
-      const symbolMatches = question.symbols.filter((symbol) => matchesPacketSymbol(symbol, packetSymbols));
-      const textMentions = question.symbols.filter((symbol) => symbol.length > 0 && hunkText.includes(symbol.toLowerCase()));
-      const score = fileMatches.length * 6 + symbolMatches.length * 5 + textMentions.length * 2;
-      if (score <= 0) {
-        return undefined;
-      }
-      const reasons = [
-        ...(fileMatches.length > 0 ? [`file overlap: ${fileMatches.join(", ")}`] : []),
-        ...(symbolMatches.length > 0 ? [`symbol overlap: ${symbolMatches.join(", ")}`] : []),
-        ...(textMentions.length > 0 ? [`changed hunk mentions: ${textMentions.join(", ")}`] : [])
-      ];
-      return {
-        question,
-        score,
-        attached: {
-          ...question,
-          relevanceReason: reasons.join("; ")
-        }
-      };
-    })
-    .filter((entry): entry is { question: NonNullable<ReviewPlan["reviewQuestions"]>[number]; score: number; attached: PacketReviewQuestion } => entry !== undefined)
-    .sort((a, b) => b.score - a.score || a.question.id.localeCompare(b.question.id))
-    .slice(0, MAX_REVIEW_QUESTIONS_PER_PACKET)
-    .map((entry) => entry.attached);
-}
-
-type ReviewQuestionOwnershipMetrics = {
-  assigned: number;
-  unassigned: number;
-  supportingAttachments: number;
-};
-
-type ReviewQuestionOwnershipCandidate = {
-  packet: ReviewPacket;
-  question: PacketReviewQuestion;
-  score: number;
-  directScore: number;
-  reasons: string[];
-};
-
-function assignReviewQuestionOwnership(
-  packets: ReviewPacket[],
-  questions: ReviewPlan["reviewQuestions"],
-  telemetry: TelemetryRecorder
-): ReviewQuestionOwnershipMetrics {
-  const attachmentsByQuestion = new Map<string, ReviewQuestionOwnershipCandidate[]>();
-  for (const packet of packets) {
-    for (const question of packet.reviewQuestions ?? []) {
-      const candidate = reviewQuestionOwnershipCandidate(packet, question);
-      const attached = attachmentsByQuestion.get(question.id) ?? [];
-      attached.push(candidate);
-      attachmentsByQuestion.set(question.id, attached);
-    }
-  }
-
-  for (const question of questions ?? []) {
-    if (!attachmentsByQuestion.has(question.id)) {
-      attachmentsByQuestion.set(question.id, []);
-    }
-  }
-
-  const primaryCountByPacket = new Map<string, number>();
-  let assigned = 0;
-  let unassigned = 0;
-  let supportingAttachments = 0;
-
-  for (const [questionId, attachments] of [...attachmentsByQuestion.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    const ranked = attachments
-      .filter((attachment) => (primaryCountByPacket.get(attachment.packet.id) ?? 0) < MAX_PRIMARY_REVIEW_QUESTIONS_PER_PACKET)
-      .sort(compareOwnershipCandidates);
-    const best = ranked[0];
-    const second = ranked[1];
-    const clear = best !== undefined && ownershipIsClear(best, second, attachments.length);
-    if (!clear || best === undefined) {
-      unassigned += 1;
-      const reason = attachments.length === 0
-        ? "no_attached_packets"
-        : best === undefined
-          ? "all_candidate_packets_at_primary_limit"
-          : "ambiguous_packet_match";
-      const status: NonNullable<PacketReviewQuestion["ownershipStatus"]> = reason === "ambiguous_packet_match"
-        ? "ambiguous"
-        : "unassigned";
-      const candidatePacketIds = attachments
-        .sort(compareOwnershipCandidates)
-        .slice(0, 3)
-        .map((attachment) => attachment.packet.id);
-      for (const attachment of attachments) {
-        setPacketQuestionOwnershipStatus(
-          attachment.packet,
-          questionId,
-          status,
-          reason === "ambiguous_packet_match" ? "ambiguous packet match" : reason,
-          candidatePacketIds
-        );
-      }
-      telemetry.event({
-        stage: 6,
-        level: "info",
-        message: "review_question_ownership_unassigned",
-        data: {
-          questionId,
-          reason,
-          attachments: attachments.length,
-          scores: attachments.sort(compareOwnershipCandidates).map(ownershipScoreSummary)
-        }
-      });
-      continue;
-    }
-
-    const ownershipReason = best.reasons.length > 0
-      ? `primary owner selected by ${best.reasons.join("; ")}`
-      : "primary owner selected by strongest packet match";
-    const candidatePacketIds = attachments
-      .sort(compareOwnershipCandidates)
-      .slice(0, 3)
-      .map((attachment) => attachment.packet.id);
-    setPacketQuestionOwnership(best.packet, questionId, "primary", ownershipReason, candidatePacketIds);
-    primaryCountByPacket.set(best.packet.id, (primaryCountByPacket.get(best.packet.id) ?? 0) + 1);
-    assigned += 1;
-
-    const supporting = attachments.filter((attachment) => attachment.packet.id !== best.packet.id);
-    supportingAttachments += supporting.length;
-    for (const attachment of supporting) {
-      setPacketQuestionOwnership(
-        attachment.packet,
-        questionId,
-        "supporting",
-        `supporting slice for primary packet ${best.packet.id}`,
-        candidatePacketIds
-      );
-    }
-
-    telemetry.event({
-      stage: 6,
-      level: "info",
-      message: "review_question_ownership_assigned",
-      packetId: best.packet.id,
-      file: best.packet.path,
-      data: {
-        questionId,
-        primaryPacketId: best.packet.id,
-        supportingPacketCount: supporting.length,
-        reason: ownershipReason,
-        scores: attachments.sort(compareOwnershipCandidates).map(ownershipScoreSummary)
-      }
-    });
-  }
-
-  return { assigned, unassigned, supportingAttachments };
-}
-
-function reviewQuestionOwnershipCandidate(
-  packet: ReviewPacket,
-  question: PacketReviewQuestion
-): ReviewQuestionOwnershipCandidate {
-  const packetPaths = new Set([packet.path, ...(packet.oldPath !== undefined ? [packet.oldPath] : [])]);
-  const questionFiles = cleanStrings(question.files.map(stripLocationSuffix));
-  const fileMatches = questionFiles.filter((file) => packetPaths.has(file));
-  const packetSymbols = new Set(packet.symbolFacts.flatMap((fact) =>
-    [fact.enclosingSymbol, fact.signature].filter((value): value is string => value !== undefined && value.trim().length > 0)
-  ));
-  const symbolMatches = question.symbols.filter((symbol) => matchesPacketSymbol(symbol, packetSymbols));
-  const hunkText = packet.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n").toLowerCase();
-  const hunkMentions = question.symbols.filter((symbol) => symbol.length > 0 && hunkText.includes(symbol.toLowerCase()));
-  const hintMatches = packet.surroundingContextHints.filter((hint) =>
-    hint.symbol !== undefined && question.symbols.some((symbol) => matchesTextSymbol(symbol, hint.symbol ?? ""))
-  );
-  const hintSymbolMentions = question.symbols.filter((symbol) =>
-    packet.surroundingContextHints.some((hint) => hint.symbol !== undefined && matchesTextSymbol(symbol, hint.symbol ?? ""))
-  );
-  const integratedSymbols = distinctNormalizedSymbols([...symbolMatches, ...hunkMentions, ...hintSymbolMentions]);
-  const integrationScore = integratedSymbols.length >= 2 && packet.coverage !== "light" ? INTEGRATION_OWNERSHIP_BONUS : 0;
-  const staticSignals = packet.hunks.reduce((sum, hunk) => sum + (hunk.staticSignals?.length ?? 0), 0);
-  const coverageScore = packet.coverage === "deep" ? 8 : packet.coverage === "normal" ? 4 : 1;
-  const priorityScore = packet.reviewPriority === "critical" ? 6 : packet.reviewPriority === "high" ? 4 : 0;
-  const directScore = fileMatches.length * 60 + symbolMatches.length * 50 + hunkMentions.length * 20;
-  const score = directScore +
-    integrationScore +
-    hintMatches.length * 8 +
-    Math.min(staticSignals, 3) * 2 +
-    coverageScore +
-    priorityScore;
-  const reasons = [
-    ...(fileMatches.length > 0 ? [`file overlap: ${fileMatches.join(", ")}`] : []),
-    ...(symbolMatches.length > 0 ? [`symbol overlap: ${symbolMatches.join(", ")}`] : []),
-    ...(hunkMentions.length > 0 ? [`changed hunk mentions: ${hunkMentions.join(", ")}`] : []),
-    integrationScore > 0 ? `integrates multiple question symbols: ${integratedSymbols.join(", ")}` : undefined,
-    ...(hintMatches.length > 0 ? [`context hint overlap: ${hintMatches.length}`] : []),
-    packet.coverage === "deep" ? "deep coverage" : undefined
-  ].filter((reason): reason is string => reason !== undefined);
-  return { packet, question, score, directScore, reasons };
-}
-
-function ownershipIsClear(
-  best: ReviewQuestionOwnershipCandidate,
-  second: ReviewQuestionOwnershipCandidate | undefined,
-  attachmentCount: number
-): boolean {
-  if (best.score < MIN_OWNERSHIP_SCORE) {
-    return false;
-  }
-  if (attachmentCount === 1) {
-    return true;
-  }
-  if (second === undefined) {
-    return true;
-  }
-  if (best.score - second.score >= MIN_CLEAR_OWNERSHIP_MARGIN) {
-    return true;
-  }
-  return best.directScore > second.directScore && best.directScore >= MIN_OWNERSHIP_SCORE;
-}
-
-function compareOwnershipCandidates(a: ReviewQuestionOwnershipCandidate, b: ReviewQuestionOwnershipCandidate): number {
-  return b.score - a.score ||
-    b.directScore - a.directScore ||
-    a.packet.path.localeCompare(b.packet.path) ||
-    a.packet.id.localeCompare(b.packet.id);
-}
-
-function ownershipScoreSummary(candidate: ReviewQuestionOwnershipCandidate): Record<string, unknown> {
-  return {
-    packetId: candidate.packet.id,
-    path: candidate.packet.path,
-    score: candidate.score,
-    directScore: candidate.directScore,
-    reasons: candidate.reasons
-  };
-}
-
-function setPacketQuestionOwnership(
-  packet: ReviewPacket,
-  questionId: string,
-  role: NonNullable<PacketReviewQuestion["role"]>,
-  ownershipReason: string,
-  ownershipCandidatePacketIds: string[]
-): void {
-  packet.reviewQuestions = (packet.reviewQuestions ?? []).map((question) =>
-    question.id === questionId
-      ? {
-          ...question,
-          role,
-          ownershipStatus: role,
-          ownershipReason,
-          ...(ownershipCandidatePacketIds.length > 0 ? { ownershipCandidatePacketIds } : {})
-        }
-      : question
-  );
-}
-
-function setPacketQuestionOwnershipStatus(
-  packet: ReviewPacket,
-  questionId: string,
-  ownershipStatus: NonNullable<PacketReviewQuestion["ownershipStatus"]>,
-  ownershipReason: string,
-  ownershipCandidatePacketIds: string[]
-): void {
-  packet.reviewQuestions = (packet.reviewQuestions ?? []).map((question) =>
-    question.id === questionId
-      ? {
-          ...question,
-          ownershipStatus,
-          ownershipReason,
-          ...(ownershipCandidatePacketIds.length > 0 ? { ownershipCandidatePacketIds } : {})
-        }
-      : question
-  );
-}
-
-function matchesPacketSymbol(symbol: string, packetSymbols: Set<string>): boolean {
-  const normalized = symbol.toLowerCase().trim();
-  if (normalized.length === 0) {
-    return false;
-  }
-  for (const packetSymbol of packetSymbols) {
-    const candidate = packetSymbol.toLowerCase();
-    if (candidate === normalized || candidate.includes(normalized) || normalized.includes(candidate)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function matchesTextSymbol(left: string, right: string): boolean {
-  const normalizedLeft = left.toLowerCase().trim();
-  const normalizedRight = right.toLowerCase().trim();
-  return normalizedLeft.length > 0 &&
-    normalizedRight.length > 0 &&
-    (normalizedLeft === normalizedRight || normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft));
-}
-
-function distinctNormalizedSymbols(symbols: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const symbol of symbols) {
-    const normalized = symbol.toLowerCase().trim();
-    if (normalized.length === 0 || seen.has(normalized)) {
-      continue;
-    }
-    seen.add(normalized);
-    result.push(symbol);
-  }
-  return result;
 }
 
 function stripLocationSuffix(value: string): string {
@@ -1128,7 +766,7 @@ type PacketSymbolContextInput = {
   hunkCount: number;
   patchChars: number;
   lenses: string[];
-  riskNotes: string[];
+  reviewEmphasisNotes: string[];
   labels: string[];
 };
 
@@ -1485,7 +1123,7 @@ function computeSymbolContextBudget(input: PacketSymbolContextInput & {
     hunkCount: input.hunkCount,
     patchChars: input.patchChars,
     lenses: input.lenses,
-    riskNotes: input.riskNotes,
+    reviewEmphasisNotes: input.reviewEmphasisNotes,
     labels: input.labels,
     maxChars: Math.min(maxChars, MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS, MAX_CONTEXT_CHARS),
     reason,
@@ -1512,8 +1150,8 @@ function symbolContextRiskSignals(
   if (highRisk) {
     signals.push("high_risk_coverage_or_priority");
   }
-  if (input.riskNotes.length > 0) {
-    signals.push("planner_risk_notes");
+  if (input.reviewEmphasisNotes.length > 0) {
+    signals.push("planner_review_emphasis");
   }
   if (input.lenses.some(isRiskLensForContext)) {
     signals.push("risk_lens");
@@ -2299,7 +1937,7 @@ function routedPacketLenses(input: {
   facts: FileFacts;
   planned: PlannedHunk[];
   relevantTests: SymbolInfo[];
-  riskNotes: string[];
+  reviewEmphasisNotes: string[];
   coverage: Exclude<CoverageLevel, "skip">;
   reviewPriority: ReviewPriority;
   reviewProfile: ReviewProfile;
@@ -2336,7 +1974,7 @@ function shouldKeepTestsLens(input: {
   facts: FileFacts;
   planned: PlannedHunk[];
   relevantTests: SymbolInfo[];
-  riskNotes: string[];
+  reviewEmphasisNotes: string[];
   coverage: Exclude<CoverageLevel, "skip">;
   reviewPriority: ReviewPriority;
 }): boolean {
@@ -2349,7 +1987,7 @@ function shouldKeepTestsLens(input: {
   if (input.planned.some((entry) => entry.decision?.surroundingContextHints.some((hint) => hint.kind === "test"))) {
     return true;
   }
-  if (input.riskNotes.some((note) => /\btests?|coverage|regression\b/iu.test(note))) {
+  if (input.reviewEmphasisNotes.some((note) => /\btests?|coverage|regression\b/iu.test(note))) {
     return true;
   }
   const importantUntestedBehavior = input.relevantTests.length === 0 &&
@@ -2362,7 +2000,7 @@ function shouldKeepCodeReviewLens(input: {
   file: DiffFile;
   facts: FileFacts;
   planned: PlannedHunk[];
-  riskNotes: string[];
+  reviewEmphasisNotes: string[];
   coverage: Exclude<CoverageLevel, "skip">;
   reviewPriority: ReviewPriority;
   reviewProfile: ReviewProfile;
@@ -2373,7 +2011,7 @@ function shouldKeepCodeReviewLens(input: {
   if (input.reviewPriority === "critical" || input.reviewPriority === "high" || input.coverage === "deep") {
     return true;
   }
-  if (input.riskNotes.length > 0) {
+  if (input.reviewEmphasisNotes.length > 0) {
     return true;
   }
   return !isMechanicalPacket(input.planned) && input.reviewProfile !== "simple";
@@ -2480,7 +2118,7 @@ function packetReviewProfile(input: {
   coverage: Exclude<CoverageLevel, "skip">;
   reviewPriority: ReviewPriority;
   planned: PlannedHunk[];
-  riskNotes: string[];
+  reviewEmphasisNotes: string[];
   hintCount: number;
 }): ReviewProfile {
   if (
@@ -2488,7 +2126,7 @@ function packetReviewProfile(input: {
     input.reviewPriority === "critical" ||
     input.reviewPriority === "high" ||
     input.hintCount > 0 ||
-    input.riskNotes.length > 0
+    input.reviewEmphasisNotes.length > 0
   ) {
     return "investigate";
   }

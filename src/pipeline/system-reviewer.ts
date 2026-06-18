@@ -51,19 +51,6 @@ type HintGroup = {
   hints: HintWithPacket[];
 };
 
-type QuestionFollowUpGroup = {
-  key: string;
-  question: string;
-  obligation?: string;
-  reason: string;
-  confidence: Exclude<Confidence, "low">;
-  packetIds: string[];
-  files: string[];
-  symbols: string[];
-  suggestedLenses: string[];
-  sourceQuestionIds: string[];
-};
-
 type SystemReviewTaskMergeRecord = {
   taskId: string;
   mergedTaskIds: string[];
@@ -103,7 +90,7 @@ export async function runTargetedSystemReviews(
       stage: 8,
       level: "info",
       message: "system_review_skipped",
-      data: { reason: "no repeated follow-up hints or unresolved review questions" }
+      data: { reason: "no repeated follow-up hints" }
     });
     telemetry.event({
       stage: 8,
@@ -225,11 +212,7 @@ function buildSystemReviewTaskSet(packetResults: PacketReviewResult[], packets: 
     .map((group) => {
       return taskFromGroup(group, findingsByPacket, packetById);
     });
-  const questionTasks = questionFollowUpGroups(packetResults, packets)
-    .sort(compareQuestionGroups)
-    .slice(0, MAX_SYSTEM_REVIEW_TASKS)
-    .map((group) => taskFromGroup(group, findingsByPacket, packetById));
-  const rawTasks = [...hintTasks, ...questionTasks].sort(compareSystemReviewTasks);
+  const rawTasks = hintTasks.sort(compareSystemReviewTasks);
   const deduped = dedupeSystemReviewTasks(rawTasks);
   return {
     rawTasks,
@@ -239,7 +222,7 @@ function buildSystemReviewTaskSet(packetResults: PacketReviewResult[], packets: 
 }
 
 function taskFromGroup(
-  group: HintGroup | QuestionFollowUpGroup,
+  group: HintGroup,
   findingsByPacket: Map<string, CandidateFinding[]>,
   packetById: Map<string, ReviewPacket>
 ): SystemReviewTask {
@@ -253,7 +236,6 @@ function taskFromGroup(
   return {
     id: `system-${sha256Hex(group.key).slice(0, 12)}`,
     question: group.question,
-    ...("obligation" in group && group.obligation !== undefined && group.obligation.trim().length > 0 ? { obligation: group.obligation } : {}),
     reason: group.reason,
     confidence: group.confidence,
     packetIds: group.packetIds,
@@ -261,7 +243,6 @@ function taskFromGroup(
     symbols: cleanStrings([...group.symbols, ...packetSymbols]).slice(0, 20),
     suggestedLenses: cleanStrings(["core/code-review", ...group.suggestedLenses]).slice(0, 10),
     representativeFindings,
-    ...("sourceQuestionIds" in group && group.sourceQuestionIds.length > 0 ? { sourceQuestionIds: group.sourceQuestionIds } : {}),
     ...("sourceHintKeys" in group && group.sourceHintKeys.length > 0 ? { sourceHintKeys: group.sourceHintKeys } : {})
   };
 }
@@ -289,30 +270,9 @@ async function runSystemReviewTask(
   const findings = submitted.findings
     .slice(0, MAX_FINDINGS_PER_TASK)
     .map((finding, index) => stampSystemFinding(task, finding, index, workerId, opts.diff));
-  let rejectedObligationResolution = false;
   const resolvedHints = submitted.resolvedHints.flatMap((hint): ResolvedFollowUpHint[] => {
     const resolution = hint.resolution.trim();
     if (resolution.length === 0) {
-      return [];
-    }
-    if (
-      task.obligation !== undefined &&
-      task.obligation.trim().length > 0 &&
-      !resolvedHintCoversObligation(task, hint)
-    ) {
-      rejectedObligationResolution = true;
-      telemetry.event({
-        stage: 8,
-        level: "warn",
-        message: "system_review_obligation_unresolved",
-        packetId: task.id,
-        workerId,
-        data: {
-          taskId: task.id,
-          reason: "resolved_hint_without_obligation_proof",
-          sourceQuestionIds: task.sourceQuestionIds ?? []
-        }
-      });
       return [];
     }
     return [{
@@ -331,41 +291,6 @@ async function runSystemReviewTask(
       packetId: task.id,
       workerId,
       data: resolved
-    });
-    if (task.obligation !== undefined && task.obligation.trim().length > 0) {
-      telemetry.event({
-        stage: 8,
-        level: "info",
-        message: "system_review_obligation_resolved",
-        packetId: task.id,
-        workerId,
-        data: {
-          taskId: task.id,
-          sourceQuestionIds: task.sourceQuestionIds ?? [],
-          files: resolved.files,
-          symbols: resolved.symbols
-        }
-      });
-    }
-  }
-  if (
-    task.obligation !== undefined &&
-    task.obligation.trim().length > 0 &&
-    findings.length === 0 &&
-    resolvedHints.length === 0 &&
-    !rejectedObligationResolution
-  ) {
-    telemetry.event({
-      stage: 8,
-      level: "warn",
-      message: "system_review_obligation_unresolved",
-      packetId: task.id,
-      workerId,
-      data: {
-        taskId: task.id,
-        reason: "no_finding_or_resolved_obligation",
-        sourceQuestionIds: task.sourceQuestionIds ?? []
-      }
     });
   }
   return {
@@ -462,392 +387,7 @@ function repeatedHintGroups(packetResults: PacketReviewResult[]): HintGroup[] {
   return [...groups.values()].filter((group) => group.packetIds.length > 1);
 }
 
-function questionFollowUpGroups(packetResults: PacketReviewResult[], packets: ReviewPacket[]): QuestionFollowUpGroup[] {
-  const packetById = new Map(packets.map((packet) => [packet.id, packet]));
-  const resultByPacketId = new Map(packetResults.map((result) => [result.packetId, result]));
-  const globallyCoveredQuestionIds = new Set(packetResults.flatMap((result) =>
-    result.findings.flatMap((finding) => finding.reviewQuestionIds ?? [])
-  ));
-  const attachmentsByQuestion = new Map<string, Array<{ packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>>();
-  const primaryByQuestion = new Map<string, { packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>();
-  for (const packet of packets) {
-    for (const question of packet.reviewQuestions ?? []) {
-      const attached = attachmentsByQuestion.get(question.id) ?? [];
-      attached.push({ packet, question });
-      attachmentsByQuestion.set(question.id, attached);
-      if (question.role === "primary") {
-        primaryByQuestion.set(question.id, { packet, question });
-      }
-    }
-  }
-
-  const ownedGroups = [...primaryByQuestion.entries()].flatMap(([questionId, primary]) => {
-    if (globallyCoveredQuestionIds.has(questionId)) {
-      return [];
-    }
-    const group = ownedQuestionFollowUpGroup(questionId, primary, attachmentsByQuestion.get(questionId) ?? [], resultByPacketId);
-    return group === undefined ? [] : [group];
-  });
-
-  const groups = new Map<string, QuestionFollowUpGroup>();
-  for (const result of packetResults) {
-    const packet = packetById.get(result.packetId);
-    if (!packet) {
-      continue;
-    }
-    const coveredQuestionIds = new Set(result.findings.flatMap((finding) => finding.reviewQuestionIds ?? []));
-    const answersByQuestion = new Map((result.answeredQuestions ?? []).map((answer) => [answer.questionId, answer]));
-    const unresolvedQuestionIds = new Set(result.unresolvedQuestions ?? []);
-    for (const question of packet.reviewQuestions ?? []) {
-      if (coveredQuestionIds.has(question.id) || globallyCoveredQuestionIds.has(question.id) || primaryByQuestion.has(question.id)) {
-        continue;
-      }
-      const answer = answersByQuestion.get(question.id);
-      const needsFollowUp = unresolvedQuestionIds.has(question.id) || answer?.outcome === "partial";
-      if (!needsFollowUp || answer?.confidence === "low") {
-        continue;
-      }
-      const files = cleanStrings(question.files.length > 0 ? question.files : [packet.path]);
-      const symbols = cleanStrings([
-        ...question.symbols,
-        ...packet.symbolFacts.flatMap((fact) => [fact.enclosingSymbol, fact.signature])
-          .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
-      ]);
-      if (files.length === 0 && symbols.length === 0) {
-        continue;
-      }
-      const reasonParts = [
-        question.whyItMatters,
-        question.obligation !== undefined ? `Obligation: ${question.obligation}` : undefined,
-        answer?.answer,
-        answer?.evidenceTrace,
-        answer === undefined && unresolvedQuestionIds.has(question.id) ? "The packet left this attached review question unresolved." : undefined
-      ].filter((part): part is string => part !== undefined && part.trim().length > 0);
-      const key = `review-question:${question.id}|${followUpHintKey({ question: question.question, files, symbols })}`;
-      const confidence = answer?.confidence === "high" ? "high" : "medium";
-      const existing = groups.get(key);
-      if (!existing) {
-        groups.set(key, {
-          key,
-          question: question.question,
-          ...(question.obligation !== undefined ? { obligation: question.obligation } : {}),
-          reason: reasonParts.join(" "),
-          confidence,
-          packetIds: [result.packetId],
-          files,
-          symbols,
-          suggestedLenses: cleanStrings(packet.lenses),
-          sourceQuestionIds: [question.id]
-        });
-        continue;
-      }
-      existing.packetIds = cleanStrings([...existing.packetIds, result.packetId]);
-      existing.files = cleanStrings([...existing.files, ...files]);
-      existing.symbols = cleanStrings([...existing.symbols, ...symbols]);
-      existing.suggestedLenses = cleanStrings([...existing.suggestedLenses, ...packet.lenses]);
-      existing.sourceQuestionIds = cleanStrings([...existing.sourceQuestionIds, question.id]);
-      if (confidenceRank(confidence) < confidenceRank(existing.confidence)) {
-        existing.confidence = confidence;
-      }
-    }
-  }
-  const groupedQuestionIds = new Set([
-    ...ownedGroups.flatMap((group) => group.sourceQuestionIds),
-    ...[...groups.values()].flatMap((group) => group.sourceQuestionIds)
-  ]);
-  const ambiguousGroups = ambiguousQuestionFollowUpGroups(
-    attachmentsByQuestion,
-    primaryByQuestion,
-    resultByPacketId,
-    globallyCoveredQuestionIds,
-    groupedQuestionIds
-  );
-  return [...ownedGroups, ...groups.values(), ...ambiguousGroups];
-}
-
-function ambiguousQuestionFollowUpGroups(
-  attachmentsByQuestion: Map<string, Array<{ packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>>,
-  primaryByQuestion: Map<string, { packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>,
-  resultByPacketId: Map<string, PacketReviewResult>,
-  globallyCoveredQuestionIds: Set<string>,
-  alreadyGroupedQuestionIds: Set<string>
-): QuestionFollowUpGroup[] {
-  const groups: QuestionFollowUpGroup[] = [];
-  for (const [questionId, attachments] of attachmentsByQuestion) {
-    if (
-      globallyCoveredQuestionIds.has(questionId) ||
-      primaryByQuestion.has(questionId) ||
-      alreadyGroupedQuestionIds.has(questionId)
-    ) {
-      continue;
-    }
-    const hasAmbiguousAttachment = attachments.some((attachment) => attachment.question.ownershipStatus === "ambiguous");
-    if (!hasAmbiguousAttachment && attachments.length < 2) {
-      continue;
-    }
-    const question = attachments[0]?.question;
-    if (question === undefined) {
-      continue;
-    }
-    const attachmentResults = attachments
-      .map((attachment) => ({
-        ...attachment,
-        result: resultByPacketId.get(attachment.packet.id)
-      }))
-      .filter((attachment) => attachment.result !== undefined);
-    if (attachmentResults.length === 0) {
-      continue;
-    }
-    const answers = attachmentResults
-      .map((attachment) => ({
-        ...attachment,
-        answer: answerForQuestion(attachment.result as PacketReviewResult, questionId),
-        unresolved: questionIsUnresolved(attachment.result as PacketReviewResult, questionId)
-      }))
-      .filter((attachment) => attachment.answer !== undefined || attachment.unresolved);
-    if (answers.length === 0 || answers.every((entry) => entry.answer?.confidence === "low")) {
-      continue;
-    }
-    const fullScopeNoIssue = answers.some((entry) =>
-      entry.answer?.outcome === "answered_no_issue" &&
-      entry.answer.confidence !== "low" &&
-      answerCoversQuestionScope(entry.answer, entry.question, entry.packet, attachments)
-    );
-    const hasUnresolvedOrPartialAnswer = answers.some((entry) =>
-      entry.unresolved ||
-      entry.answer?.outcome === "partial" ||
-      entry.answer?.outcome === "candidate_finding"
-    );
-    if (fullScopeNoIssue && !hasUnresolvedOrPartialAnswer) {
-      continue;
-    }
-
-    const packetsForTask = cleanPacketAttachments(attachments.map((attachment) => attachment.packet));
-    const files = cleanStrings(question.files.length > 0 ? question.files : packetsForTask.map((packet) => packet.path));
-    const symbols = cleanStrings([
-      ...question.symbols,
-      ...packetsForTask.flatMap((packet) => packet.symbolFacts)
-        .flatMap((fact) => [fact.enclosingSymbol, fact.signature])
-        .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
-    ]);
-    if (files.length === 0 && symbols.length === 0) {
-      continue;
-    }
-    const reasonParts = [
-      question.whyItMatters,
-      question.obligation !== undefined ? `Obligation: ${question.obligation}` : undefined,
-      "Ownership was ambiguous, so local no-issue answers do not close the full review question.",
-      ...answers.flatMap((entry) => {
-        if (entry.answer === undefined) {
-          return entry.unresolved ? [`Packet ${entry.packet.id} left this attached review question unresolved.`] : [];
-        }
-        return [
-          `Packet ${entry.packet.id} (${entry.answer.outcome}): ${entry.answer.answer}`,
-          entry.answer.evidenceTrace
-        ].filter((part): part is string => part !== undefined && part.trim().length > 0);
-      })
-    ].filter((part): part is string => part !== undefined && part.trim().length > 0);
-    const hasHighConfidenceSignal = answers.some((entry) => entry.answer?.confidence === "high");
-    groups.push({
-      key: `review-question-ambiguous:${questionId}`,
-      question: question.question,
-      ...(question.obligation !== undefined ? { obligation: question.obligation } : {}),
-      reason: reasonParts.join(" "),
-      confidence: hasHighConfidenceSignal ? "high" : "medium",
-      packetIds: cleanStrings(packetsForTask.map((packet) => packet.id)),
-      files,
-      symbols,
-      suggestedLenses: cleanStrings(packetsForTask.flatMap((packet) => packet.lenses)),
-      sourceQuestionIds: [questionId]
-    });
-  }
-  return groups;
-}
-
-function ownedQuestionFollowUpGroup(
-  questionId: string,
-  primary: { packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] },
-  attachments: Array<{ packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>,
-  resultByPacketId: Map<string, PacketReviewResult>
-): QuestionFollowUpGroup | undefined {
-  const primaryResult = resultByPacketId.get(primary.packet.id);
-  if (primaryResult === undefined) {
-    return undefined;
-  }
-  const primaryAnswer = answerForQuestion(primaryResult, questionId);
-  const primaryUnresolved = questionIsUnresolved(primaryResult, questionId);
-  const primaryNoIssueIncomplete =
-    primaryAnswer?.outcome === "answered_no_issue" &&
-    !answerCoversQuestionScope(primaryAnswer, primary.question, primary.packet, attachments);
-  const primaryNeedsFollowUp =
-    primaryUnresolved ||
-    primaryAnswer?.outcome === "partial" ||
-    primaryNoIssueIncomplete ||
-    (primaryAnswer === undefined && primaryResult.status === "completed");
-  if (!primaryNeedsFollowUp || primaryAnswer?.confidence === "low") {
-    return undefined;
-  }
-
-  const supporting = attachments
-    .filter((attachment) => attachment.packet.id !== primary.packet.id)
-    .map((attachment) => ({
-      ...attachment,
-      result: resultByPacketId.get(attachment.packet.id)
-    }))
-    .filter((attachment) => attachment.result !== undefined);
-  const supportingWithSignals = supporting.filter((attachment) =>
-    answerForQuestion(attachment.result as PacketReviewResult, questionId) !== undefined ||
-    questionIsUnresolved(attachment.result as PacketReviewResult, questionId)
-  );
-  const supportingPackets = supportingWithSignals.length > 0 ? supportingWithSignals : supporting;
-  const packetsForTask = [primary.packet, ...supportingPackets.map((attachment) => attachment.packet)];
-  const files = cleanStrings(primary.question.files.length > 0 ? primary.question.files : packetsForTask.map((packet) => packet.path));
-  const symbols = cleanStrings([
-    ...primary.question.symbols,
-    ...packetsForTask.flatMap((packet) => packet.symbolFacts)
-      .flatMap((fact) => [fact.enclosingSymbol, fact.signature])
-      .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
-  ]);
-  if (files.length === 0 && symbols.length === 0) {
-    return undefined;
-  }
-
-  const reasonParts = [
-    primary.question.whyItMatters,
-    primary.question.obligation !== undefined ? `Obligation: ${primary.question.obligation}` : undefined,
-    primaryAnswer !== undefined
-      ? `Primary packet ${primary.packet.id}: ${primaryAnswer.answer}`
-      : `Primary packet ${primary.packet.id} did not answer this attached review question.`,
-    primaryAnswer?.evidenceTrace,
-    ...supportingPackets.flatMap((attachment) => {
-      const answer = answerForQuestion(attachment.result as PacketReviewResult, questionId);
-      if (answer === undefined) {
-        return questionIsUnresolved(attachment.result as PacketReviewResult, questionId)
-          ? [`Supporting packet ${attachment.packet.id} left this question unresolved.`]
-          : [];
-      }
-      return [`Supporting packet ${attachment.packet.id}: ${answer.answer}`, answer.evidenceTrace].filter(
-        (part): part is string => part !== undefined && part.trim().length > 0
-      );
-    })
-  ].filter((part): part is string => part !== undefined && part.trim().length > 0);
-  const confidence = primaryAnswer?.confidence === "high" ? "high" : "medium";
-  return {
-    key: `review-question-primary:${questionId}`,
-    question: primary.question.question,
-    ...(primary.question.obligation !== undefined ? { obligation: primary.question.obligation } : {}),
-    reason: reasonParts.join(" "),
-    confidence,
-    packetIds: cleanStrings(packetsForTask.map((packet) => packet.id)),
-    files,
-    symbols,
-    suggestedLenses: cleanStrings(packetsForTask.flatMap((packet) => packet.lenses)),
-    sourceQuestionIds: [questionId]
-  };
-}
-
-function answerForQuestion(result: PacketReviewResult, questionId: string): NonNullable<PacketReviewResult["answeredQuestions"]>[number] | undefined {
-  return result.answeredQuestions?.find((answer) => answer.questionId === questionId);
-}
-
-function questionIsUnresolved(result: PacketReviewResult, questionId: string): boolean {
-  return (result.unresolvedQuestions ?? []).includes(questionId);
-}
-
-function answerCoversQuestionScope(
-  answer: NonNullable<PacketReviewResult["answeredQuestions"]>[number],
-  question: NonNullable<ReviewPacket["reviewQuestions"]>[number],
-  packet: ReviewPacket,
-  attachments: Array<{ packet: ReviewPacket; question: NonNullable<ReviewPacket["reviewQuestions"]>[number] }>
-): boolean {
-  if (
-    question.obligation !== undefined &&
-    question.obligation.trim().length > 0 &&
-    traceStepCount(answer.evidenceTrace ?? "") < 3
-  ) {
-    return false;
-  }
-  const questionFiles = cleanStrings(question.files.map(stripLocationSuffix));
-  const questionSymbols = cleanStrings(question.symbols);
-  const hasMultiFileScope = questionFiles.length > 1;
-  const hasMultiSymbolScope = questionSymbols.length > 1;
-  const hasMultiPacketScope = attachments.length > 1 || (question.ownershipCandidatePacketIds ?? []).length > 1;
-  if (!hasMultiFileScope && !hasMultiSymbolScope && !hasMultiPacketScope && question.ownershipStatus !== "ambiguous") {
-    return true;
-  }
-  const evidencePaths = cleanStrings(answer.evidence.map((entry) => stripLocationSuffix(entry.path)));
-  const attachmentPaths = cleanStrings(attachments.map((attachment) => attachment.packet.path));
-  const matchedQuestionFiles = questionFiles.filter((file) => evidencePaths.includes(file));
-  const referencedAttachmentPaths = attachmentPaths.filter((path) => evidencePaths.includes(path));
-  const text = [
-    answer.answer,
-    answer.evidenceTrace ?? "",
-    ...answer.evidence.flatMap((entry) => [entry.lines ?? "", entry.whyRelevant])
-  ].join(" ");
-  const mentionedQuestionSymbols = questionSymbols.filter((symbol) => textMentionsSymbol(text, symbol));
-  return (hasMultiFileScope && matchedQuestionFiles.length >= 2) ||
-    (hasMultiPacketScope && referencedAttachmentPaths.length >= 2) ||
-    (hasMultiSymbolScope && mentionedQuestionSymbols.length >= 2);
-}
-
-function resolvedHintCoversObligation(task: SystemReviewTask, hint: SubmitSystemReview["resolvedHints"][number]): boolean {
-  if (traceStepCount(hint.resolution) < 3) {
-    return false;
-  }
-  const taskFiles = cleanStrings(task.files.map(stripLocationSuffix));
-  const taskSymbols = cleanStrings(task.symbols);
-  const hintFiles = cleanStrings(hint.files.map(stripLocationSuffix));
-  const hintSymbols = cleanStrings(hint.symbols);
-  const resolutionText = [
-    hint.resolution,
-    ...hintFiles,
-    ...hintSymbols
-  ].join(" ");
-  const matchedFiles = taskFiles.filter((file) =>
-    hintFiles.includes(file) || normalizeFollowUpQuestion(resolutionText).includes(normalizeFollowUpQuestion(file))
-  );
-  const matchedSymbols = taskSymbols.filter((symbol) => textMentionsSymbol(resolutionText, symbol));
-  const coversFiles = taskFiles.length <= 1 || matchedFiles.length >= 2;
-  const coversSymbols = taskSymbols.length <= 1 || matchedSymbols.length >= 2;
-  return coversFiles && coversSymbols;
-}
-
-function traceStepCount(trace: string): number {
-  const arrowSteps = trace
-    .split(/\s*(?:->|=>)\s*/u)
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
-  if (arrowSteps.length > 1) {
-    return arrowSteps.length;
-  }
-  return trace
-    .split(/\b(?:then|before|after|through|into|from|to)\b/iu)
-    .map((part) => part.trim())
-    .filter((part) => part.length > 2)
-    .length;
-}
-
-function cleanPacketAttachments(packets: ReviewPacket[]): ReviewPacket[] {
-  const seen = new Set<string>();
-  const result: ReviewPacket[] = [];
-  for (const packet of packets) {
-    if (seen.has(packet.id)) {
-      continue;
-    }
-    seen.add(packet.id);
-    result.push(packet);
-  }
-  return result;
-}
-
 function compareHintGroups(a: HintGroup, b: HintGroup): number {
-  return confidenceRank(a.confidence) - confidenceRank(b.confidence) ||
-    b.packetIds.length - a.packetIds.length ||
-    b.files.length - a.files.length ||
-    a.question.localeCompare(b.question);
-}
-
-function compareQuestionGroups(a: QuestionFollowUpGroup, b: QuestionFollowUpGroup): number {
   return confidenceRank(a.confidence) - confidenceRank(b.confidence) ||
     b.packetIds.length - a.packetIds.length ||
     b.files.length - a.files.length ||
@@ -882,9 +422,6 @@ function dedupeSystemReviewTasks(tasks: SystemReviewTask[]): { tasks: SystemRevi
 }
 
 function systemReviewTasksMatch(a: SystemReviewTask, b: SystemReviewTask): boolean {
-  if (intersects(a.sourceQuestionIds ?? [], b.sourceQuestionIds ?? [])) {
-    return true;
-  }
   if (!intersects(a.files, b.files)) {
     return false;
   }
@@ -902,7 +439,6 @@ function systemReviewTasksMatch(a: SystemReviewTask, b: SystemReviewTask): boole
 function mergeSystemReviewTasks(a: SystemReviewTask, b: SystemReviewTask): SystemReviewTask {
   const taskIds = cleanStrings([...(a.mergedTaskIds ?? [a.id]), ...(b.mergedTaskIds ?? [b.id])]);
   const reasons = cleanStrings([a.reason, b.reason]);
-  const obligations = cleanStrings([a.obligation ?? "", b.obligation ?? ""]);
   return {
     ...a,
     confidence: confidenceRank(b.confidence) < confidenceRank(a.confidence) ? b.confidence : a.confidence,
@@ -912,10 +448,6 @@ function mergeSystemReviewTasks(a: SystemReviewTask, b: SystemReviewTask): Syste
     suggestedLenses: cleanStrings([...a.suggestedLenses, ...b.suggestedLenses]).slice(0, 10),
     representativeFindings: dedupeFindings([...a.representativeFindings, ...b.representativeFindings]).slice(0, 5),
     reason: reasons.join(" "),
-    ...(obligations.length > 0 ? { obligation: obligations.join(" ") } : {}),
-    ...(cleanStrings([...(a.sourceQuestionIds ?? []), ...(b.sourceQuestionIds ?? [])]).length > 0
-      ? { sourceQuestionIds: cleanStrings([...(a.sourceQuestionIds ?? []), ...(b.sourceQuestionIds ?? [])]) }
-      : {}),
     ...(cleanStrings([...(a.sourceHintKeys ?? []), ...(b.sourceHintKeys ?? [])]).length > 0
       ? { sourceHintKeys: cleanStrings([...(a.sourceHintKeys ?? []), ...(b.sourceHintKeys ?? [])]) }
       : {}),
@@ -924,9 +456,6 @@ function mergeSystemReviewTasks(a: SystemReviewTask, b: SystemReviewTask): Syste
 }
 
 function mergeReason(task: SystemReviewTask): string {
-  if ((task.sourceQuestionIds ?? []).length > 0) {
-    return "same_review_question";
-  }
   if ((task.sourceHintKeys ?? []).length > 1) {
     return "same_or_overlapping_follow_up_hints";
   }
@@ -1001,18 +530,6 @@ function normalizeFollowUpQuestion(question: string): string {
     .replace(/[^a-z0-9_./:-]+/gu, " ")
     .replace(/\s+/gu, " ")
     .trim();
-}
-
-function textMentionsSymbol(text: string, symbol: string): boolean {
-  const normalizedText = normalizeFollowUpQuestion(text);
-  const normalizedSymbol = normalizeFollowUpQuestion(symbol);
-  return normalizedText.length > 0 &&
-    normalizedSymbol.length > 0 &&
-    (normalizedText === normalizedSymbol || normalizedText.includes(normalizedSymbol));
-}
-
-function stripLocationSuffix(value: string): string {
-  return value.trim().replace(/:\d+(?:-\d+)?$/u, "");
 }
 
 function normalizeScopeValue(input: string): string {

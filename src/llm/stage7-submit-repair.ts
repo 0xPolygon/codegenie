@@ -46,9 +46,7 @@ const STAGE7_SUBMIT_ALLOWED_KEYS = new Set([
   "findings",
   "followUpHints",
   "uncertainties",
-  "answeredQuestions",
-  "noFindingReason",
-  "unresolvedQuestions"
+  "noFindingReason"
 ]);
 
 const STAGE7_FINDING_ALLOWED_KEYS = new Set([
@@ -65,8 +63,7 @@ const STAGE7_FINDING_ALLOWED_KEYS = new Set([
   "suggestedTest",
   "verification",
   "behaviorChange",
-  "intentEvidence",
-  "reviewQuestionIds"
+  "intentEvidence"
 ]);
 
 const STAGE7_SEVERITY_VALUES = new Set(["critical", "high", "medium", "low"]);
@@ -80,7 +77,6 @@ const STAGE7_CATEGORY_VALUES = new Set([
   "testing",
   "maintainability"
 ]);
-const STAGE7_ANSWER_OUTCOME_VALUES = new Set(["answered_no_issue", "candidate_finding", "partial", "not_applicable"]);
 const STAGE7_CANDIDATE_FIELD_NAMES = new Set([
   "title",
   "failureMode",
@@ -93,8 +89,6 @@ const STAGE7_CANDIDATE_FIELD_NAMES = new Set([
   "anchor"
 ]);
 const STAGE7_NO_FINDING_REASON_MAX_CHARS = 1000;
-const STAGE7_ANSWER_MAX_CHARS = 1000;
-const STAGE7_EVIDENCE_TRACE_MAX_CHARS = 2000;
 const STAGE7_FIELD_TRUNCATION_SUFFIX = " [truncated by codeninja]";
 
 export function stage7SubmitRepairDecision(
@@ -305,18 +299,12 @@ function cleanupStage7NoFindingsSubmit(args: Record<string, unknown>): Stage7NoF
     delete cleaned[key];
   }
   const reason = cleanStage7NoFindingReason(cleaned.noFindingReason);
-  const answeredQuestions = cleanStage7AnsweredQuestions(cleaned.answeredQuestions);
-  if (!answeredQuestions.valid || answeredQuestions.hasCandidateFindingOutcome) {
-    return { status: "not_applicable" };
-  }
   const changedReason = cleaned.noFindingReason !== reason.value;
   const cleanedFields = [
-    ...(reason.changed ? ["noFindingReason"] : []),
-    ...answeredQuestions.cleanedFields
+    ...(reason.changed ? ["noFindingReason"] : [])
   ];
   const truncatedFields = [
-    ...(reason.truncated ? ["noFindingReason"] : []),
-    ...answeredQuestions.truncatedFields
+    ...(reason.truncated ? ["noFindingReason"] : [])
   ];
   const findings = Array.isArray(cleaned.findings) ? cleaned.findings : [];
   if (findings.length > 0) {
@@ -329,15 +317,8 @@ function cleanupStage7NoFindingsSubmit(args: Record<string, unknown>): Stage7NoF
     uncertainties: Array.isArray(cleaned.uncertainties) ? cleaned.uncertainties : [],
     noFindingReason: reason.value
   };
-  if (answeredQuestions.value !== undefined) {
-    recovered.answeredQuestions = answeredQuestions.value;
-  }
-  if (Array.isArray(cleaned.unresolvedQuestions)) {
-    recovered.unresolvedQuestions = cleaned.unresolvedQuestions;
-  }
   const shapeChanged =
     strippedKeys.length > 0 ||
-    answeredQuestions.changed ||
     !Array.isArray(cleaned.findings) ||
     !Array.isArray(cleaned.followUpHints) ||
     !Array.isArray(cleaned.uncertainties);
@@ -352,159 +333,6 @@ function cleanupStage7NoFindingsSubmit(args: Record<string, unknown>): Stage7NoF
     cleanedFields,
     truncatedFields,
     truncatedNoFindingReason: reason.truncated
-  };
-}
-
-function cleanStage7AnsweredQuestions(value: unknown): {
-  value?: unknown[];
-  changed: boolean;
-  valid: boolean;
-  hasCandidateFindingOutcome: boolean;
-  cleanedFields: string[];
-  truncatedFields: string[];
-} {
-  if (value === undefined) {
-    return { changed: false, valid: true, hasCandidateFindingOutcome: false, cleanedFields: [], truncatedFields: [] };
-  }
-  if (!Array.isArray(value)) {
-    return { changed: false, valid: false, hasCandidateFindingOutcome: false, cleanedFields: [], truncatedFields: [] };
-  }
-  let changed = false;
-  let hasCandidateFindingOutcome = false;
-  const cleanedFields: string[] = [];
-  const truncatedFields: string[] = [];
-  const cleaned = value.flatMap((answer, index): unknown[] => {
-    if (!isRecord(answer)) {
-      changed = true;
-      return [];
-    }
-    const questionId = cleanBoundedString(answer.questionId, 120);
-    const answerText = cleanBoundedString(answer.answer, STAGE7_ANSWER_MAX_CHARS, true);
-    const confidence = answer.confidence;
-    const outcome = answer.outcome;
-    if (outcome === "candidate_finding") {
-      hasCandidateFindingOutcome = true;
-    }
-    if (
-      questionId.value.length === 0 ||
-      answerText.value.length === 0 ||
-      typeof confidence !== "string" ||
-      !STAGE7_CONFIDENCE_VALUES.has(confidence) ||
-      typeof outcome !== "string" ||
-      !STAGE7_ANSWER_OUTCOME_VALUES.has(outcome)
-    ) {
-      changed = true;
-      return [];
-    }
-    const evidence = cleanStage7AnswerEvidence(answer.evidence);
-    if (!evidence.valid) {
-      changed = true;
-      return [];
-    }
-    cleanedFields.push(...prefixedFields(`answeredQuestions.${index}.evidence`, evidence.cleanedFields));
-    truncatedFields.push(...prefixedFields(`answeredQuestions.${index}.evidence`, evidence.truncatedFields));
-    const output: Record<string, unknown> = {
-      questionId: questionId.value,
-      answer: answerText.value,
-      confidence,
-      outcome,
-      evidence: evidence.value
-    };
-    if (typeof answer.evidenceTrace === "string") {
-      const evidenceTrace = cleanBoundedString(answer.evidenceTrace, STAGE7_EVIDENCE_TRACE_MAX_CHARS, true);
-      if (evidenceTrace.value.length > 0) {
-        output.evidenceTrace = evidenceTrace.value;
-      }
-      if (evidenceTrace.changed) {
-        cleanedFields.push(`answeredQuestions.${index}.evidenceTrace`);
-      }
-      if (evidenceTrace.truncated) {
-        truncatedFields.push(`answeredQuestions.${index}.evidenceTrace`);
-      }
-      changed = changed || evidenceTrace.changed;
-    }
-    if (answerText.changed) {
-      cleanedFields.push(`answeredQuestions.${index}.answer`);
-    }
-    if (answerText.truncated) {
-      truncatedFields.push(`answeredQuestions.${index}.answer`);
-    }
-    changed = changed ||
-      questionId.changed ||
-      answerText.changed ||
-      evidence.changed ||
-      Object.keys(answer).some((key) => !["questionId", "answer", "confidence", "outcome", "evidence", "evidenceTrace"].includes(key));
-    return [output];
-  });
-  return {
-    value: cleaned.slice(0, 10),
-    changed: changed || cleaned.length !== value.length || cleaned.length > 10,
-    valid: true,
-    hasCandidateFindingOutcome,
-    cleanedFields: [...new Set(cleanedFields)].sort(),
-    truncatedFields: [...new Set(truncatedFields)].sort()
-  };
-}
-
-function cleanStage7AnswerEvidence(value: unknown): {
-  value: unknown[];
-  changed: boolean;
-  valid: boolean;
-  cleanedFields: string[];
-  truncatedFields: string[];
-} {
-  if (!Array.isArray(value)) {
-    return { value: [], changed: true, valid: true, cleanedFields: [], truncatedFields: [] };
-  }
-  let changed = false;
-  const cleanedFields: string[] = [];
-  const truncatedFields: string[] = [];
-  const cleaned = value.flatMap((entry, index): unknown[] => {
-    if (!isRecord(entry)) {
-      changed = true;
-      return [];
-    }
-    const path = cleanBoundedString(entry.path, 500);
-    const whyRelevant = cleanBoundedString(entry.whyRelevant, 1000, true);
-    if (path.value.length === 0 || whyRelevant.value.length === 0) {
-      changed = true;
-      return [];
-    }
-    const output: Record<string, unknown> = {
-      path: path.value,
-      whyRelevant: whyRelevant.value
-    };
-    if (typeof entry.lines === "string") {
-      const lines = cleanBoundedString(entry.lines, 4000);
-      if (lines.value.length > 0) {
-        output.lines = lines.value;
-      }
-      if (lines.changed) {
-        cleanedFields.push(`${index}.lines`);
-      }
-      if (lines.truncated) {
-        truncatedFields.push(`${index}.lines`);
-      }
-      changed = changed || lines.changed;
-    }
-    if (whyRelevant.changed) {
-      cleanedFields.push(`${index}.whyRelevant`);
-    }
-    if (whyRelevant.truncated) {
-      truncatedFields.push(`${index}.whyRelevant`);
-    }
-    changed = changed ||
-      path.changed ||
-      whyRelevant.changed ||
-      Object.keys(entry).some((key) => !["path", "lines", "whyRelevant"].includes(key));
-    return [output];
-  });
-  return {
-    value: cleaned.slice(0, 8),
-    changed: changed || cleaned.length !== value.length || cleaned.length > 8,
-    valid: true,
-    cleanedFields: [...new Set(cleanedFields)].sort(),
-    truncatedFields: [...new Set(truncatedFields)].sort()
   };
 }
 
@@ -607,18 +435,7 @@ function isSafeStage7NoFindingsSalvage(args: Record<string, unknown>): boolean {
   if (findings !== undefined && (!Array.isArray(findings) || findings.length > 0)) {
     return false;
   }
-  // A payload that declares no_findings yet answers a review question with outcome
-  // "candidate_finding" is contradictory: the model claims it found a candidate but emitted
-  // none. Refuse deterministic no_findings salvage (which would silently drop the answer) and
-  // let it go to model repair so the candidate is emitted as an actual finding.
-  if (stage7AnswersClaimCandidateFinding(args.answeredQuestions)) {
-    return false;
-  }
   return true;
-}
-
-function stage7AnswersClaimCandidateFinding(value: unknown): boolean {
-  return Array.isArray(value) && value.some((answer) => isRecord(answer) && answer.outcome === "candidate_finding");
 }
 
 function stage7PayloadLooksCandidateLike(args: Record<string, unknown>): boolean {
@@ -649,10 +466,6 @@ function stripStage7Markup(value: string): string {
     .replace(/<\s*\/?\s*parameter\b[^>]*>/giu, " ")
     .replace(/&lt;\s*\/?\s*parameter\b[^&]*(?:&gt;)?/giu, " ")
     .replace(/<\s*\/?\s*(?:answer|evidencetrace|nofindingreason|findings|followuphints|uncertainties|answeredquestions|unresolvedquestions)\b[^>]*>/giu, " ");
-}
-
-function prefixedFields(prefix: string, fields: string[]): string[] {
-  return fields.map((field) => `${prefix}.${field}`);
 }
 
 function normalizeStage7Path(value: string): string {

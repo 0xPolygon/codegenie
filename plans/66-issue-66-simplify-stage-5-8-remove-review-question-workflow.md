@@ -1,6 +1,6 @@
 # Issue 66: Simplify Stage 5-8 By Removing Planner Review Questions
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval `49f4645b/logs/12` compared with `49f4645b/logs/1`, 2026-06-18
 Planned at: commit `605a38e`
 Recommended priority: high, because the review-question workflow hid a real correctness finding by narrowing broad review emphasis into the wrong local proof
@@ -65,7 +65,7 @@ Stage 7: actual issue finding
   - produce candidate findings, uncertainties, and follow-up hints
 
 Stage 8: optional cross-file issue finding
-  - run only from repeated/high-signal Stage 7 hints or unresolved cross-packet evidence needs
+  - run only from repeated scoped Stage 7 hints
   - not from planner-authored questions
 
 Stage 9: verify candidates
@@ -315,9 +315,9 @@ This returns Codeninja to the intended architecture: generate liberally enough i
 
 Stage 8 should only run from Stage 7 output:
 
-- repeated scoped follow-up hints,
-- high-signal single follow-up hint when the hint carries concrete files/symbols and a changed-code failure predicate,
-- unresolved cross-packet evidence needs carried in Stage 7 hints.
+- repeated scoped follow-up hints.
+
+Single follow-up hints are handled by uncertainty promotion or human-attention notes. They should not schedule Stage 8 by themselves.
 
 Stage 8 should not run because a planner review question was unanswered, partial, or unresolved.
 
@@ -456,7 +456,7 @@ Update `src/pipeline/system-reviewer.ts`:
 
 - remove task creation from unresolved primary planner questions;
 - keep repeated scoped follow-up hint grouping;
-- allow a conservative high-signal single-hint path only if it already exists or is simple to add without taxonomy;
+- keep single follow-up hints on the uncertainty-promotion or human-attention-note path rather than scheduling Stage 8;
 - remove obligation resolution rules;
 - remove question ownership attachment logic;
 - keep bounded task caps, read-only tools, and candidate output.
@@ -464,7 +464,7 @@ Update `src/pipeline/system-reviewer.ts`:
 Stage 8 skip reason should become:
 
 ```text
-no repeated or high-signal scoped follow-up hints
+no repeated scoped follow-up hints
 ```
 
 **Verify**: `pnpm exec vitest run tests/pipeline-phase8.test.ts`
@@ -541,7 +541,7 @@ Keep and strengthen tests for the new boundaries:
 - Stage 5 emits coverage/lens overrides without review questions.
 - Stage 6 builds packets without review questions.
 - Stage 7 can emit findings and follow-up hints without answered questions.
-- Stage 8 schedules from repeated/high-signal Stage 7 hints.
+- Stage 8 schedules only from repeated scoped Stage 7 hints.
 - Final human attention is derived from unresolved Stage 7/8 hints.
 
 **Verify**: `pnpm test`
@@ -585,16 +585,16 @@ Stage 5 coverage/lenses -> Stage 6 packets -> Stage 7 candidates/hints -> Stage 
 
 ## Done Criteria
 
-- [ ] Stage 5 no longer emits or synthesizes planner review questions.
-- [ ] Stage 6 no longer attaches planner questions or assigns question ownership.
-- [ ] Stage 7 no longer accepts/returns `answeredQuestions`.
-- [ ] Stage 8 no longer schedules work from unresolved planner questions.
-- [ ] Human-attention notes come from unresolved Stage 7/8 follow-up hints, not planner questions.
-- [ ] Docs describe Stage 5 as lightweight scout/scheduler and Stage 7/8 as issue-finding stages.
-- [ ] `pnpm run typecheck` exits 0.
-- [ ] `pnpm test` exits 0.
-- [ ] `pnpm run build` exits 0.
-- [ ] `plans/README.md` marks this plan complete when implemented.
+- [x] Stage 5 no longer emits or synthesizes planner review questions.
+- [x] Stage 6 no longer attaches planner questions or assigns question ownership.
+- [x] Stage 7 no longer accepts/returns `answeredQuestions`.
+- [x] Stage 8 no longer schedules work from unresolved planner questions.
+- [x] Human-attention notes come from unresolved Stage 7/8 follow-up hints, not planner questions.
+- [x] Docs describe Stage 5 as lightweight scout/scheduler and Stage 7/8 as issue-finding stages.
+- [x] `pnpm run typecheck` exits 0.
+- [x] `pnpm test` exits 0.
+- [x] `pnpm run build` exits 0.
+- [x] `plans/README.md` marks this plan complete when implemented.
 
 ## STOP Conditions
 

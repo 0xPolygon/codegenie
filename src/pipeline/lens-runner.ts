@@ -31,19 +31,16 @@ type LensRunnerOptions = {
 
 type SubmittedFollowUpHint = SubmitPacketReview["followUpHints"][number];
 type SubmittedUncertainty = SubmitPacketReview["uncertainties"][number];
-type SubmittedAnsweredQuestion = NonNullable<SubmitPacketReview["answeredQuestions"]>[number];
 type NormalizedHints = {
   kept: PacketReviewResult["followUpHints"];
   submittedCount: number;
   droppedCount: number;
 };
-type QuestionFollowUpHint = SubmittedFollowUpHint & { questionDerived: true };
 type NormalizedUncertainties = {
   kept: PacketReviewResult["uncertainties"];
   submittedCount: number;
   droppedCount: number;
 };
-type NormalizedAnsweredQuestions = NonNullable<PacketReviewResult["answeredQuestions"]>;
 type Stage7PacketGeneration = {
   directCandidates: number;
   submittedFollowUpHints: number;
@@ -52,12 +49,9 @@ type Stage7PacketGeneration = {
   submittedUncertainties: number;
   keptUncertainties: number;
   droppedUncertainties: number;
-  answeredQuestions: number;
-  partialQuestions: number;
 };
 
 const MAX_FOLLOW_UP_HINTS_PER_PACKET = 2;
-const MAX_REVIEW_QUESTION_FOLLOW_UP_HINTS_PER_PACKET = 3;
 const MAX_UNCERTAINTIES_PER_PACKET = 1;
 const stage7Generation = new WeakMap<PacketReviewResult, Stage7PacketGeneration>();
 
@@ -188,14 +182,11 @@ async function runPacket(
       packetId: packet.id,
       workerId,
       data: {
-        unresolvedQuestions: submitted.unresolvedQuestions ?? [],
         reason: submitted.noFindingReason
       }
     });
   }
-  const answeredQuestions = normalizeAnsweredQuestions(submitted.answeredQuestions ?? [], packet, findings, telemetry, workerId);
-  const questionFollowUpHints = followUpHintsFromPartialQuestions(answeredQuestions, packet);
-  const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, telemetry, workerId, questionFollowUpHints);
+  const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, telemetry, workerId);
   const uncertainties = normalizeUncertainties(submitted.uncertainties, packet, telemetry, workerId);
   const result: PacketReviewResult = {
     packetId: packet.id,
@@ -203,8 +194,6 @@ async function runPacket(
     findings,
     reviewStatus,
     ...(submitted.noFindingReason !== undefined ? { noFindingReason: submitted.noFindingReason } : {}),
-    ...(answeredQuestions.length > 0 ? { answeredQuestions } : {}),
-    ...(submitted.unresolvedQuestions !== undefined ? { unresolvedQuestions: submitted.unresolvedQuestions } : {}),
     followUpHints: followUpHints.kept,
     uncertainties: uncertainties.kept,
     status: reviewStatus === "incomplete" ? "incomplete" : "completed"
@@ -216,9 +205,7 @@ async function runPacket(
     droppedFollowUpHints: followUpHints.droppedCount,
     submittedUncertainties: uncertainties.submittedCount,
     keptUncertainties: uncertainties.kept.length,
-    droppedUncertainties: uncertainties.droppedCount,
-    answeredQuestions: answeredQuestions.length,
-    partialQuestions: answeredQuestions.filter((question) => question.outcome === "partial").length
+    droppedUncertainties: uncertainties.droppedCount
   });
   return result;
 }
@@ -227,8 +214,7 @@ function normalizeFollowUpHints(
   hints: SubmittedFollowUpHint[],
   packet: ReviewPacket,
   telemetry: TelemetryRecorder,
-  workerId: string,
-  questionHints: QuestionFollowUpHint[] = []
+  workerId: string
 ): NormalizedHints {
   const valid: PacketReviewResult["followUpHints"] = [];
   for (const hint of hints) {
@@ -261,17 +247,10 @@ function normalizeFollowUpHints(
     valid.push(normalized);
   }
 
-  const validQuestionHints = normalizeQuestionFollowUpHints(questionHints, packet, telemetry, workerId);
   const ranked = [...valid].sort((a, b) => followUpHintRank(b, packet) - followUpHintRank(a, packet) ||
     a.question.localeCompare(b.question));
-  const rankedQuestionHints = [...validQuestionHints].sort((a, b) => followUpHintRank(b, packet) - followUpHintRank(a, packet) ||
-    a.question.localeCompare(b.question));
-  const keptQuestionHints = rankedQuestionHints.slice(0, MAX_REVIEW_QUESTION_FOLLOW_UP_HINTS_PER_PACKET);
-  const droppedQuestionHints = rankedQuestionHints.slice(MAX_REVIEW_QUESTION_FOLLOW_UP_HINTS_PER_PACKET);
-  const keptGenericHints = ranked.slice(0, MAX_FOLLOW_UP_HINTS_PER_PACKET);
-  const droppedGenericHints = ranked.slice(MAX_FOLLOW_UP_HINTS_PER_PACKET);
-  const questionHintKeys = new Set(keptQuestionHints.map(followUpHintKey));
-  const kept = [...keptQuestionHints, ...keptGenericHints];
+  const kept = ranked.slice(0, MAX_FOLLOW_UP_HINTS_PER_PACKET);
+  const dropped = ranked.slice(MAX_FOLLOW_UP_HINTS_PER_PACKET);
   for (const hint of kept) {
     telemetry.event({
       stage: 7,
@@ -284,32 +263,11 @@ function normalizeFollowUpHints(
         files: hint.files,
         symbols: hint.symbols,
         reason: hint.reason,
-        confidence: hint.confidence,
-        reviewQuestionFollowUp: questionHintKeys.has(followUpHintKey(hint))
+        confidence: hint.confidence
       }
     });
   }
-  if (droppedQuestionHints.length > 0) {
-    telemetry.event({
-      stage: 7,
-      level: "info",
-      message: "review_question_follow_up_capped",
-      packetId: packet.id,
-      workerId,
-      data: {
-        cap: MAX_REVIEW_QUESTION_FOLLOW_UP_HINTS_PER_PACKET,
-        keptCount: keptQuestionHints.length,
-        droppedCount: droppedQuestionHints.length,
-        dropped: droppedQuestionHints.slice(0, 5).map((hint) => ({
-          question: hint.question,
-          files: hint.files,
-          symbols: hint.symbols,
-          confidence: hint.confidence
-        }))
-      }
-    });
-  }
-  if (droppedGenericHints.length > 0) {
+  if (dropped.length > 0) {
     telemetry.event({
       stage: 7,
       level: "info",
@@ -318,9 +276,9 @@ function normalizeFollowUpHints(
       workerId,
       data: {
         cap: MAX_FOLLOW_UP_HINTS_PER_PACKET,
-        keptCount: keptGenericHints.length,
-        droppedCount: droppedGenericHints.length,
-        dropped: droppedGenericHints.slice(0, 5).map((hint) => ({
+        keptCount: kept.length,
+        droppedCount: dropped.length,
+        dropped: dropped.slice(0, 5).map((hint) => ({
           question: hint.question,
           files: hint.files,
           symbols: hint.symbols,
@@ -331,48 +289,9 @@ function normalizeFollowUpHints(
   }
   return {
     kept,
-    submittedCount: hints.length + questionHints.length,
-    droppedCount: hints.length + questionHints.length - kept.length
+    submittedCount: hints.length,
+    droppedCount: hints.length - kept.length
   };
-}
-
-function normalizeQuestionFollowUpHints(
-  hints: QuestionFollowUpHint[],
-  packet: ReviewPacket,
-  telemetry: TelemetryRecorder,
-  workerId: string
-): PacketReviewResult["followUpHints"] {
-  const valid: PacketReviewResult["followUpHints"] = [];
-  for (const hint of hints) {
-    const normalized = {
-      question: hint.question.trim(),
-      files: cleanStrings(hint.files),
-      symbols: cleanStrings(hint.symbols),
-      suggestedLenses: cleanStrings(hint.suggestedLenses),
-      reason: hint.reason.trim(),
-      confidence: hint.confidence
-    };
-    const pointerRich = normalized.files.length > 0 || normalized.symbols.length > 0;
-    if (normalized.question.length === 0 || !pointerRich) {
-      telemetry.event({
-        stage: 7,
-        level: "warn",
-        message: "review_question_follow_up_dropped",
-        packetId: packet.id,
-        workerId,
-        data: {
-          question: normalized.question,
-          files: normalized.files,
-          symbols: normalized.symbols,
-          reason: normalized.reason,
-          confidence: normalized.confidence
-        }
-      });
-      continue;
-    }
-    valid.push(normalized);
-  }
-  return valid;
 }
 
 function normalizeUncertainties(
@@ -440,331 +359,6 @@ function normalizeUncertainties(
   };
 }
 
-function normalizeAnsweredQuestions(
-  submittedAnswers: SubmittedAnsweredQuestion[],
-  packet: ReviewPacket,
-  findings: CandidateFinding[],
-  telemetry: TelemetryRecorder,
-  workerId: string
-): NormalizedAnsweredQuestions {
-  const attachedById = new Map((packet.reviewQuestions ?? []).map((question) => [question.id, question]));
-  const findingQuestionIds = new Set(findings.flatMap((finding) => finding.reviewQuestionIds ?? []));
-  const normalized: NormalizedAnsweredQuestions = [];
-
-  for (const answer of submittedAnswers) {
-    const attached = attachedById.get(answer.questionId.trim());
-    if (!attached) {
-      telemetry.event({
-        stage: 7,
-        level: "warn",
-        message: "review_question_answer_dropped",
-        packetId: packet.id,
-        workerId,
-        data: {
-          questionId: answer.questionId,
-          reason: "unknown_question_id"
-        }
-      });
-      continue;
-    }
-    const evidence = answer.evidence
-      .map((entry) => ({
-        path: stripLocationSuffix(entry.path),
-        ...(entry.lines !== undefined && entry.lines.trim().length > 0 ? { lines: entry.lines.trim() } : {}),
-        whyRelevant: entry.whyRelevant.trim()
-      }))
-      .filter((entry) => entry.path.length > 0 && entry.whyRelevant.length > 0)
-      .slice(0, 8);
-    const evidenceTrace = answer.evidenceTrace?.trim();
-    const answerText = answer.answer.trim();
-    const materialConcern = normalizeMaterialConcern(answer.materialConcern);
-    let outcome = answer.outcome;
-    let confidence = answer.confidence;
-    const downgradeReasons: string[] = [];
-
-    if (answerText.length === 0) {
-      telemetry.event({
-        stage: 7,
-        level: "warn",
-        message: "review_question_answer_dropped",
-        packetId: packet.id,
-        workerId,
-        data: {
-          questionId: attached.id,
-          reason: "empty_answer"
-        }
-      });
-      continue;
-    }
-
-    if (outcome === "answered_no_issue" && (evidence.length === 0 || evidenceTrace === undefined || evidenceTrace.length === 0)) {
-      outcome = "partial";
-      confidence = confidence === "high" ? "medium" : confidence;
-      downgradeReasons.push("answered_no_issue_without_evidence_trace");
-      telemetry.event({
-        stage: 7,
-        level: "warn",
-        message: "review_question_answer_downgraded",
-        packetId: packet.id,
-        workerId,
-        data: {
-          questionId: attached.id,
-          reason: "answered_no_issue_without_evidence_trace"
-        }
-      });
-    }
-
-    if (
-      outcome === "answered_no_issue" &&
-      attached.obligation !== undefined &&
-      !noIssueAnswerProvesObligation(answerText, attached, packet, evidence, evidenceTrace)
-    ) {
-      outcome = "partial";
-      confidence = confidence === "high" ? "medium" : confidence;
-      downgradeReasons.push("answered_no_issue_without_obligation_proof");
-      telemetry.event({
-        stage: 7,
-        level: "warn",
-        message: "review_question_answer_downgraded",
-        packetId: packet.id,
-        workerId,
-        data: {
-          questionId: attached.id,
-          reason: "answered_no_issue_without_obligation_proof",
-          ownershipStatus: attached.ownershipStatus,
-          role: attached.role
-        }
-      });
-    }
-
-    if (
-      outcome === "answered_no_issue" &&
-      !noIssueAnswerCoversQuestionScope(answerText, attached, packet, evidence, evidenceTrace)
-    ) {
-      outcome = "partial";
-      confidence = confidence === "high" ? "medium" : confidence;
-      downgradeReasons.push("answered_no_issue_incomplete_question_scope");
-      telemetry.event({
-        stage: 7,
-        level: "warn",
-        message: "review_question_answer_downgraded",
-        packetId: packet.id,
-        workerId,
-        data: {
-          questionId: attached.id,
-          reason: "answered_no_issue_incomplete_question_scope",
-          ownershipStatus: attached.ownershipStatus,
-          role: attached.role
-        }
-      });
-    }
-
-    if (outcome === "candidate_finding" && !findingQuestionIds.has(attached.id)) {
-      outcome = "partial";
-      confidence = confidence === "high" ? "medium" : confidence;
-      downgradeReasons.push("candidate_finding_without_linked_finding");
-      telemetry.event({
-        stage: 7,
-        level: "warn",
-        message: "review_question_answer_downgraded",
-        packetId: packet.id,
-        workerId,
-        data: {
-          questionId: attached.id,
-          reason: "candidate_finding_without_linked_finding"
-        }
-      });
-    }
-
-    const normalizedAnswer = {
-      questionId: attached.id,
-      answer: answerText,
-      confidence,
-      outcome,
-      evidence,
-      ...(evidenceTrace !== undefined && evidenceTrace.length > 0 ? { evidenceTrace } : {}),
-      ...(outcome === "partial" && materialConcern !== undefined ? { materialConcern } : {}),
-      ...(attached.role !== undefined ? { role: attached.role } : {}),
-      ...(downgradeReasons.length > 0 ? { downgradeReasons } : {})
-    };
-    normalized.push(normalizedAnswer);
-    if (outcome === "partial" && materialConcern !== undefined) {
-      telemetry.event({
-        stage: 7,
-        level: "info",
-        message: "review_question_material_concern",
-        packetId: packet.id,
-        workerId,
-        data: {
-          questionId: attached.id,
-          title: materialConcern.title,
-          changedPath: materialConcern.changedPath,
-          hasAnchorLine: materialConcern.anchorLine !== undefined
-        }
-      });
-    }
-    telemetry.event({
-      stage: 7,
-      level: "info",
-      message: "review_question_answered",
-      packetId: packet.id,
-      workerId,
-      data: {
-        questionId: attached.id,
-        role: attached.role,
-        outcome,
-        confidence,
-        evidenceCount: evidence.length,
-        hasEvidenceTrace: evidenceTrace !== undefined && evidenceTrace.length > 0
-      }
-    });
-  }
-
-  return normalized;
-}
-
-function normalizeMaterialConcern(
-  concern: SubmittedAnsweredQuestion["materialConcern"] | undefined
-): NonNullable<PacketReviewResult["answeredQuestions"]>[number]["materialConcern"] | undefined {
-  if (concern === undefined) {
-    return undefined;
-  }
-  const title = concern.title.trim();
-  const changedPath = stripLocationSuffix(concern.changedPath);
-  const failureMode = concern.failureMode.trim();
-  const evidence = concern.evidence.trim();
-  const suggestedVerification = concern.suggestedVerification.trim();
-  if (
-    title.length === 0 ||
-    changedPath.length === 0 ||
-    failureMode.length === 0 ||
-    evidence.length === 0 ||
-    suggestedVerification.length === 0
-  ) {
-    return undefined;
-  }
-  return {
-    title,
-    changedPath,
-    ...(concern.anchorLine !== undefined ? { anchorLine: concern.anchorLine } : {}),
-    failureMode,
-    evidence,
-    suggestedVerification
-  };
-}
-
-function noIssueAnswerCoversQuestionScope(
-  answerText: string,
-  question: NonNullable<ReviewPacket["reviewQuestions"]>[number],
-  packet: ReviewPacket,
-  evidence: Array<{ path: string; lines?: string; whyRelevant: string }>,
-  evidenceTrace: string | undefined
-): boolean {
-  const candidatePacketIds = question.ownershipCandidatePacketIds ?? [];
-  const requiresCrossScope =
-    question.role === "supporting" ||
-    question.ownershipStatus === "ambiguous" ||
-    candidatePacketIds.length > 1;
-  const questionFiles = cleanStrings(question.files.map(stripLocationSuffix));
-  const questionSymbols = cleanStrings(question.symbols);
-  const hasMultiFileScope = questionFiles.length > 1;
-  const hasMultiSymbolScope = questionSymbols.length > 1;
-  if (!requiresCrossScope && !hasMultiFileScope && !hasMultiSymbolScope) {
-    return true;
-  }
-
-  const evidencePaths = cleanStrings(evidence.map((entry) => stripLocationSuffix(entry.path)));
-  const matchedQuestionFiles = questionFiles.filter((file) => evidencePaths.includes(file));
-  const referencesMultipleQuestionFiles = questionFiles.length > 1 && matchedQuestionFiles.length >= 2;
-  const referencesExternalQuestionEvidencePath = evidencePaths.some((path) =>
-    path !== packet.path &&
-    path !== packet.oldPath &&
-    (questionFiles.length === 0 || questionFiles.includes(path))
-  );
-  const evidenceText = [
-    answerText,
-    evidenceTrace ?? "",
-    ...evidence.flatMap((entry) => [entry.lines ?? "", entry.whyRelevant])
-  ].join(" ");
-  const mentionedQuestionSymbols = questionSymbols.filter((symbol) => symbolMatches(symbol, evidenceText));
-  const referencesMultipleQuestionSymbols = questionSymbols.length > 1 && mentionedQuestionSymbols.length >= 2;
-
-  if (hasMultiFileScope && referencesMultipleQuestionFiles) {
-    return true;
-  }
-  if (hasMultiSymbolScope && referencesMultipleQuestionSymbols) {
-    return true;
-  }
-  return requiresCrossScope && (referencesExternalQuestionEvidencePath || referencesMultipleQuestionFiles || referencesMultipleQuestionSymbols);
-}
-
-function noIssueAnswerProvesObligation(
-  answerText: string,
-  question: NonNullable<ReviewPacket["reviewQuestions"]>[number],
-  packet: ReviewPacket,
-  evidence: Array<{ path: string; lines?: string; whyRelevant: string }>,
-  evidenceTrace: string | undefined
-): boolean {
-  if (question.obligation === undefined || question.obligation.trim().length === 0) {
-    return true;
-  }
-  if (evidenceTrace === undefined || evidenceTrace.trim().length === 0) {
-    return false;
-  }
-  if (traceStepCount(evidenceTrace) < 3) {
-    return false;
-  }
-  return noIssueAnswerCoversQuestionScope(answerText, question, packet, evidence, evidenceTrace);
-}
-
-function traceStepCount(trace: string): number {
-  const arrowSteps = trace
-    .split(/\s*(?:->|=>)\s*/u)
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0);
-  if (arrowSteps.length > 1) {
-    return arrowSteps.length;
-  }
-  return trace
-    .split(/\b(?:then|before|after|through|into|from|to)\b/iu)
-    .map((part) => part.trim())
-    .filter((part) => part.length > 2)
-    .length;
-}
-
-function followUpHintsFromPartialQuestions(
-  answers: NormalizedAnsweredQuestions,
-  packet: ReviewPacket
-): QuestionFollowUpHint[] {
-  if (answers.length === 0 || (packet.reviewQuestions ?? []).length === 0) {
-    return [];
-  }
-  const questionsById = new Map((packet.reviewQuestions ?? []).map((question) => [question.id, question]));
-  return answers
-    .filter((answer) => answer.outcome === "partial")
-    .flatMap((answer): QuestionFollowUpHint[] => {
-      const question = questionsById.get(answer.questionId);
-      if (!question) {
-        return [];
-      }
-      if (question.role === "supporting") {
-        return [];
-      }
-      return [{
-        question: question.question,
-        files: cleanStrings(question.files.length > 0 ? question.files : answer.evidence.map((entry) => entry.path)),
-        symbols: cleanStrings(question.symbols),
-        suggestedLenses: packet.lenses,
-        reason: [
-          `Partial answer to planner review question ${question.id}: ${answer.answer}`,
-          question.obligation !== undefined ? `Obligation: ${question.obligation}` : undefined
-        ].filter((part): part is string => part !== undefined).join(" "),
-        confidence: answer.confidence,
-        questionDerived: true
-      }];
-    });
-}
-
 function summarizeStage7Generation(results: PacketReviewResult[]): {
   directCandidates: number;
   packetsWithCandidates: number;
@@ -776,8 +370,6 @@ function summarizeStage7Generation(results: PacketReviewResult[]): {
   submittedUncertainties: number;
   keptUncertainties: number;
   droppedUncertainties: number;
-  answeredQuestions: number;
-  partialQuestions: number;
   submittedHintsAndUncertainties: number;
   keptHintsAndUncertainties: number;
 } {
@@ -788,9 +380,7 @@ function summarizeStage7Generation(results: PacketReviewResult[]): {
     droppedFollowUpHints: 0,
     submittedUncertainties: result.uncertainties.length,
     keptUncertainties: result.uncertainties.length,
-    droppedUncertainties: 0,
-    answeredQuestions: result.answeredQuestions?.length ?? 0,
-    partialQuestions: result.answeredQuestions?.filter((question) => question.outcome === "partial").length ?? 0
+    droppedUncertainties: 0
   });
   const submittedFollowUpHints = generations.reduce((sum, item) => sum + item.submittedFollowUpHints, 0);
   const keptFollowUpHints = generations.reduce((sum, item) => sum + item.keptFollowUpHints, 0);
@@ -809,8 +399,6 @@ function summarizeStage7Generation(results: PacketReviewResult[]): {
     submittedUncertainties,
     keptUncertainties,
     droppedUncertainties,
-    answeredQuestions: generations.reduce((sum, item) => sum + item.answeredQuestions, 0),
-    partialQuestions: generations.reduce((sum, item) => sum + item.partialQuestions, 0),
     submittedHintsAndUncertainties: submittedFollowUpHints + submittedUncertainties,
     keptHintsAndUncertainties: keptFollowUpHints + keptUncertainties
   };
@@ -819,8 +407,7 @@ function summarizeStage7Generation(results: PacketReviewResult[]): {
 function followUpHintRank(hint: PacketReviewResult["followUpHints"][number], packet: ReviewPacket): number {
   return confidenceScore(hint.confidence) * 30 +
     pointerScore(hint.files, hint.symbols, packet) * 10 +
-    concretenessScore(hint.question, hint.reason) +
-    (hint.reason.includes("Partial answer to planner review question") ? 10 : 0);
+    concretenessScore(hint.question, hint.reason);
 }
 
 function followUpHintKey(hint: PacketReviewResult["followUpHints"][number]): string {
@@ -860,7 +447,7 @@ function shouldExposeLikelyTestsForPacket(packet: ReviewPacket): boolean {
     packet.lenses.some(isTestingLens) ||
     packet.testCoverageDelta !== undefined ||
     packet.labels.some(isTestingSignal) ||
-    packet.riskNotes.some(isTestingSignal);
+    packet.reviewEmphasisNotes.some(isTestingSignal);
 }
 
 function isTestingLens(lens: string): boolean {
@@ -905,7 +492,7 @@ function normalizedReviewStatus(submitted: SubmitPacketReview, findingCount: num
 }
 
 const STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION =
-  "If there are no findings, submit reviewStatus:\"no_findings\", findings: [], and a short noFindingReason. Keep answeredQuestions concise with only the decisive trace. If concrete unresolved risk remains but evidence is insufficient for a finding, include pointer-rich followUpHints or uncertainties instead of burying it only in unresolvedQuestions.";
+  "If there are no findings, submit reviewStatus:\"no_findings\", findings: [], and a short noFindingReason. If concrete unresolved risk remains but evidence is insufficient for a finding, include pointer-rich followUpHints or uncertainties.";
 
 function buildPostToolCloseNudge(packet: ReviewPacket, depth: ReviewDepth, input: LlmPostToolNudgeInput): string | undefined {
   const threshold = closeNudgeThreshold(packet, depth);
@@ -938,7 +525,6 @@ function stampFinding(
   const changedLine = anchor !== undefined;
   const path = anchor?.path ?? packet.path;
   const candidateId = `${packet.id.slice(0, 8)}-f${index + 1}`;
-  const reviewQuestionIds = normalizeFindingReviewQuestionIds(packet, submitted.reviewQuestionIds ?? [], telemetry, candidateId, workerId);
   if (submitted.anchor !== undefined && anchor === undefined) {
     telemetry.event({
       stage: 7,
@@ -973,7 +559,6 @@ function stampFinding(
     verification: submitted.verification,
     ...(submitted.behaviorChange !== undefined ? { behaviorChange: submitted.behaviorChange } : {}),
     ...(submitted.intentEvidence !== undefined ? { intentEvidence: submitted.intentEvidence } : {}),
-    ...(reviewQuestionIds.length > 0 ? { reviewQuestionIds } : {}),
     producedBy: {
       kind: "packet",
       stage: 7,
@@ -983,34 +568,6 @@ function stampFinding(
       workerId
     }
   };
-}
-
-function normalizeFindingReviewQuestionIds(
-  packet: ReviewPacket,
-  submittedIds: string[],
-  telemetry: TelemetryRecorder,
-  candidateId: string,
-  workerId: string
-): string[] {
-  const attachedQuestionIds = new Set((packet.reviewQuestions ?? []).map((question) => question.id));
-  const normalizedIds = cleanStrings(submittedIds);
-  const kept = normalizedIds.filter((questionId) => attachedQuestionIds.has(questionId));
-  const dropped = normalizedIds.filter((questionId) => !attachedQuestionIds.has(questionId));
-  if (dropped.length > 0) {
-    telemetry.event({
-      stage: 7,
-      level: "warn",
-      message: "finding_review_question_ids_dropped",
-      packetId: packet.id,
-      workerId,
-      data: {
-        candidateId,
-        dropped,
-        attachedQuestionIds: [...attachedQuestionIds].sort()
-      }
-    });
-  }
-  return kept;
 }
 
 function normalizeAnchor(

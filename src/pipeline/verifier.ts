@@ -545,23 +545,7 @@ function verificationOriginContext(candidate: CandidateFinding, packet: ReviewPa
   if (!packet) {
     return "";
   }
-  const linkedQuestionIds = new Set(candidate.reviewQuestionIds ?? []);
-  const linkedQuestions = (packet.reviewQuestions ?? []).filter((question) => linkedQuestionIds.has(question.id));
-  if (linkedQuestions.length === 0) {
-    return packet.contextText;
-  }
-  const questionContext = stableJson(linkedQuestions.map((question) => ({
-    id: question.id,
-    question: question.question,
-    whyItMatters: question.whyItMatters,
-    files: question.files,
-    symbols: question.symbols,
-    evidenceHint: question.evidenceHint,
-    relevanceReason: question.relevanceReason
-  })));
-  return [packet.contextText, `Linked planner review questions:\n${questionContext}`]
-    .filter((part) => part.trim().length > 0)
-    .join("\n\n");
+  return packet.contextText;
 }
 
 function normalizeSubmittedVerdict(
@@ -830,7 +814,6 @@ function revisedFinding(
     ...(submitted.behaviorChange !== undefined ? { behaviorChange: submitted.behaviorChange } : {}),
     ...(submitted.intentEvidence !== undefined ? { intentEvidence: submitted.intentEvidence } : {}),
     producedBy: original.producedBy,
-    ...(original.reviewQuestionIds !== undefined ? { reviewQuestionIds: original.reviewQuestionIds } : {}),
     ...(original.clusterId !== undefined ? { clusterId: original.clusterId } : {}),
     ...(original.duplicateOf !== undefined ? { duplicateOf: original.duplicateOf } : {})
   };

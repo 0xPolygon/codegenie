@@ -827,7 +827,6 @@ describe("eval scoring", () => {
       finalFindings: [],
       reviewPlan: {
         diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" },
-        riskAreas: [],
         coverage: [{
           hunkId: "h-skip",
           path: "src/planner.ts",

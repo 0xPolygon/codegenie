@@ -536,9 +536,8 @@ export type ReviewPacket = {
   packetSymbols?: SymbolInfo[];
   relevantTests: SymbolInfo[];
   surroundingContextHints: SurroundingContextHint[];
-  reviewQuestions?: PacketReviewQuestion[];
   labels: string[];
-  riskNotes: string[];
+  reviewEmphasisNotes: string[];
   toolBudget: ToolBudget;
   degraded?: { reason: string };
   fileContext?: {
@@ -673,52 +672,18 @@ export type HunkCoverageDecision = {
   reason: string;
 };
 
-export type ReviewQuestion = {
-  id: string;
-  question: string;
-  whyItMatters: string;
+export type ReviewEmphasis = {
+  summary: string;
+  basis: string[];
   files: string[];
-  symbols: string[];
-  evidenceHint?: string;
-  obligation?: string;
-};
-
-export type RiskAreaDisposition = {
-  area: string;
-  files: string[];
-  disposition:
-    | "represented_by_question"
-    | "represented_by_packet_obligation"
-    | "covered_by_existing_question"
-    | "synthesized_question"
-    | "omitted_duplicate"
-    | "omitted_vague"
-    | "omitted_no_relevant_packet"
-    | "omitted_synthesis_failed"
-    | "omitted_question_cap";
-  reason: string;
-  questionIds: string[];
-};
-
-export type PacketReviewQuestion = ReviewQuestion & {
-  relevanceReason: string;
-  role?: "primary" | "supporting";
-  ownershipReason?: string;
-  ownershipStatus?: "primary" | "supporting" | "ambiguous" | "unassigned";
-  ownershipCandidatePacketIds?: string[];
+  symbols?: string[];
+  suggestedLenses: string[];
 };
 
 export type ReviewPlan = {
   diffUnderstanding: DiffUnderstanding;
   intentSignals?: IntentSignals;
-  riskAreas: Array<{
-    area: string;
-    reason: string;
-    files: string[];
-    suggestedLenses: string[];
-  }>;
-  reviewQuestions?: ReviewQuestion[];
-  riskAreaDispositions?: RiskAreaDisposition[];
+  reviewEmphasis?: ReviewEmphasis[];
   coverage: HunkCoverageDecision[];
   partialReview?: {
     isPartial: boolean;
@@ -739,7 +704,7 @@ export type FindingProducer = {
 
 export type CandidateFindingProvenance = {
   source: "uncertainty_promotion";
-  sourceKind: "uncertainty" | "follow_up_hint" | "unresolved_question" | "material_concern";
+  sourceKind: "uncertainty" | "follow_up_hint";
   sourcePacketId: string;
   question: string;
   files: string[];
@@ -769,7 +734,6 @@ export type CandidateFinding = {
   intentEvidence?: string[];
   producedBy: FindingProducer;
   provenance?: CandidateFindingProvenance;
-  reviewQuestionIds?: string[];
   clusterId?: string;
   duplicateOf?: string;
 };
@@ -780,33 +744,12 @@ export type StructuredUncertainty = {
   symbols: string[];
 };
 
-export type AnsweredReviewQuestion = {
-  questionId: string;
-  answer: string;
-  confidence: Confidence;
-  outcome: "answered_no_issue" | "candidate_finding" | "partial" | "not_applicable";
-  evidence: Array<{ path: string; lines?: string; whyRelevant: string }>;
-  evidenceTrace?: string;
-  materialConcern?: {
-    title: string;
-    changedPath: string;
-    anchorLine?: number;
-    failureMode: string;
-    evidence: string;
-    suggestedVerification: string;
-  };
-  role?: PacketReviewQuestion["role"];
-  downgradeReasons?: string[];
-};
-
 export type PacketReviewResult = {
   packetId: string;
   lenses: string[];
   findings: CandidateFinding[];
   reviewStatus?: "findings" | "no_findings" | "incomplete";
   noFindingReason?: string;
-  answeredQuestions?: AnsweredReviewQuestion[];
-  unresolvedQuestions?: string[];
   followUpHints: Array<{
     question: string;
     files: string[];
@@ -822,7 +765,6 @@ export type PacketReviewResult = {
 export type SystemReviewTask = {
   id: string;
   question: string;
-  obligation?: string;
   reason: string;
   confidence: Exclude<Confidence, "low">;
   packetIds: string[];
@@ -830,7 +772,6 @@ export type SystemReviewTask = {
   symbols: string[];
   suggestedLenses: string[];
   representativeFindings: CandidateFinding[];
-  sourceQuestionIds?: string[];
   sourceHintKeys?: string[];
   mergedTaskIds?: string[];
 };

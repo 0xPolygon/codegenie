@@ -448,7 +448,7 @@ function fakePacket(packetId: string, filePath: string, hunkId = "h1", symbol = 
     relevantTests: [],
     surroundingContextHints: [],
     labels: [],
-    riskNotes: [],
+    reviewEmphasisNotes: [],
     toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 4000 }
   };
 }

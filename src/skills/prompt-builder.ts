@@ -67,10 +67,10 @@ export type PromptBuilder = {
 };
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
-  5: "p5.3",
-  7: "p7.4",
-  8: "p8.1",
-  9: "p9.2",
+  5: "p5.4",
+  7: "p7.5",
+  8: "p8.2",
+  9: "p9.3",
   10: "p10.1"
 };
 
@@ -121,11 +121,11 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
       return buildPrompt(5, [
         reviewerFrame("planning"),
         injectionInstruction(),
-        "Build a review plan. Select only enabled lenses that have concrete evidence in the diff. Emit coverage entries only for hunks that need non-default coverage, specific lenses or context hints, or an explicit skip. Omitted reviewable hunks are reviewed later at normal coverage with default core/language lenses.",
-        "The planner-dossier is a routing projection, not the full review packet. Compact hunks still have stable hunk IDs and line ranges; request deeper coverage when compact metadata suggests risk instead of trying to prove bugs in Stage 5.",
-        "Emit 0-5 reviewQuestions for concrete cross-code obligations that must be answered during packet review. Seed them from material risk areas when useful, but rewrite labels into answerable natural-language questions. Do not use fixed risk categories. Each question should name relevant files/symbols and ask about a relationship, invariant, contract, test boundary, or downstream effect that changed code must preserve or intentionally change.",
-        "Use reviewQuestion.evidenceHint for where/how to inspect context. Use reviewQuestion.obligation only when the question spans more than one changed value, state, operation, or downstream use; obligation is the exact plain-English proof that must be established before the question can be closed.",
-        "Good reviewQuestions ask things like whether a transformed value still matches downstream output/validation, whether a permission check still protects the operation, whether lifecycle cleanup still happens, or whether changed tests still cover a live behavior boundary. Bad questions are generic prompts like \"review this file\".",
+        "Build a lightweight review plan. You are not reviewing the code and should not claim bugs exist. Your job is to help later stages spend attention well.",
+        "The planner-dossier is a routing projection, not the full review packet. Compact hunks still have stable hunk IDs and line ranges; request deeper coverage when compact metadata suggests centrality or uncertainty instead of trying to prove bugs in Stage 5.",
+        "Use reviewEmphasis only for broad changed areas that deserve extra reviewer attention because of concrete dossier facts. Each basis item must be an observable fact from the PR text, commit text, changed files, changed symbols, static signals, config/spec hints, or test inventory. Do not emit review questions, proof obligations, issue hypotheses, or fixed risk categories.",
+        "Good reviewEmphasis examples: \"Amount conversion changes affect quote construction\" with basis facts naming changed helpers, changed callers, or missing touched tests. Bad reviewEmphasis examples: \"Exact-output quotes may under-deliver\" or any statement that requires proving implementation behavior.",
+        "Coverage is the main scheduling output. Emit coverage entries only for hunks that need non-default coverage, specific lenses or context hints, or an explicit skip. Omitted reviewable hunks are reviewed later at normal coverage with default core/language lenses. If unsure, prefer deeper coverage for central changed hunks rather than inventing a concern.",
         "Context hint contract: choose a mechanical retrieval mode, not a risk category. Use kind:\"enclosing_symbol\" when you want Stage 6 to read a known function/method/type/test body. Use kind:\"call_site\" only when symbol names the callee/helper/API whose callers or usages should be inspected; do not use call_site when the desired context is that symbol's own body. Use kind:\"test\" for relevant test symbols, kind:\"line_range\" for explicit lines, and put semantic intent in reason.",
         renderLensList(lenses),
         "Available skill summaries:\n" + projection.text,
@@ -146,13 +146,10 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
         "Raise candidate findings for concrete changed-line failure modes. If the evidence shows a plausible changed-line correctness, security, performance, architecture, or testing risk but one narrow predicate still needs confirmation, surface it as a candidate finding or a pointer-rich followUpHint/uncertainty for the verifier instead of suppressing it.",
         "A later verification stage filters false positives. Do not publish speculation as a finding, but do not hide a plausible verifier-resolvable concern behind reviewStatus:\"no_findings\". No-findings is appropriate only after the changed-line risk has been checked and no concrete failure mode or pointer-rich unresolved predicate remains.",
-        "Keep Stage 7 output compact: candidate findings, short question answers, or exact unresolved predicates. noFindingReason is a short conclusion, not a mini review report. Do not put detailed proof or broad exploration notes into noFindingReason.",
+        "Keep Stage 7 output compact: candidate findings, exact unresolved predicates, or a short no-finding conclusion. noFindingReason is not a mini review report. Do not put detailed proof or broad exploration notes into noFindingReason.",
         "Emit followUpHints and uncertainties for concrete unresolved risks with file or symbol scope. Do not emit broad reminders like \"check if this is safe\". For behavior-preserving refactors or refactor-like changes, surface changed-line anchored changes to validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries as a candidate or verifier-bound hint when they may alter caller-visible behavior.",
-        "If the packet includes reviewQuestions, answer only those exact question IDs. If no questions are attached, omit answeredQuestions. When a question has obligation, answer that obligation directly; a local consistency check is not enough unless it proves the whole obligation. role:\"primary\" means this packet owns the full answer, candidate, or exact unresolved predicate. role:\"supporting\" means answer only the local slice visible here, cite local evidence, and mark partial when the full proof belongs to the primary packet or Stage 8. For ambiguous or unowned questions that span multiple files, symbols, or packets, answer no_issue only if you can trace the full relationship; if you checked only this packet's local slice, mark partial and preserve the exact predicate Stage 8 should verify.",
-        "For each relevant question, either emit a candidate finding, record an answeredQuestions entry with concrete evidence, or mark it partial/not_applicable. Do not answer a question with a bare assertion: show the decisive trace in evidenceTrace. For value/contract questions trace requested -> transformed -> reported/validated; for permission questions trace actor -> check -> protected operation; for lifecycle questions trace state/event -> side effect -> cleanup; for test questions trace old coverage -> new coverage -> still-live behavior boundary.",
-        "If a partial answeredQuestions entry identifies a concrete verifier-resolvable concern, include materialConcern with a short title, changedPath, anchorLine when known, failureMode, evidence, and suggestedVerification. Do not use materialConcern for broad uncertainty; use it only when the verifier should receive the exact concern instead of losing it as prose.",
-        "Review questions must not become an escape hatch from candidate findings. If answering a question shows changed-code evidence, an anchorable changed line, and a concrete failure mode such as old code accepted/skipped/fell back while new code errors/rejects/miscomputes, emit a candidate finding and link reviewQuestionIds. Use partial/followUpHints only when a decisive predicate is outside the packet or bounded tool budget; preserve the exact predicate, not a generic verify-behavior placeholder.",
-        "For test or coverage questions, missing-coverage claims require inspected test evidence. Distinguish no tests from tests that miss one specific branch, value, or contract. If relevant tests exist but you cannot inspect enough, mark the question partial and preserve the exact unresolved predicate.",
+        "Planner reviewEmphasis, when present in packet.reviewEmphasisNotes, is advisory context only. Do not answer it like a question. Use it to decide what to inspect, then independently report findings or no findings from the packet evidence.",
+        "Missing-coverage claims require inspected test evidence. Distinguish no tests from tests that miss one specific branch, value, or contract. If relevant tests exist but you cannot inspect enough, emit a pointer-rich followUpHint or uncertainty with the exact unresolved predicate.",
         "Confidence calibration: do not mark a changed-line correctness/security finding low confidence solely because one optional tool lookup or supporting range read was unavailable. Use medium confidence when the changed-code evidence and failure mode are concrete but a narrow verifier-resolvable predicate remains. Reserve low confidence for speculative reachability, ambiguous product intent, or weak path matching.",
         "Validate raw external/provider/API/config/database values before lossy conversion; validation after overflow, truncation, rounding, precision loss, or coercion may be too late. Treat packet staticSignals as hints to investigate, not automatic findings.",
         "Use declared intent signals to frame behavior changes precisely. Refactor-like intent without explicit behavior-change signals can support accidental-regression framing. Mixed refactor and behavior-change signals should usually be framed as a contract change needing caller/spec confirmation. If task, PR, or spec context explicitly requires the new behavior and caller impact is covered, do not report it as a bug.",
@@ -178,7 +175,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
       return buildPrompt(8, [
         reviewerFrame("targeted system follow-up review"),
         injectionInstruction(),
-        "Resolve only the targeted repeated question. Use repository tools if they can materially confirm or reject a concrete failure mode. If the task has an obligation, prove or falsify that exact obligation end to end before resolving it; a local consistency check is not enough. Produce findings only with direct evidence; otherwise return no findings. Include a resolved hint only when the question or obligation is actually resolved, with files/symbols showing the scope covered.",
+        "Resolve only the targeted repeated follow-up predicate from packet reviewers. Use repository tools if they can materially confirm or reject a concrete failure mode. Produce findings only with direct evidence; otherwise return no findings. Include a resolved hint only when the predicate is actually resolved, with files/symbols showing the scope covered.",
         "Skill guidance:\n" + projection.text,
         ...blocks,
         "Finish by calling submit_system_review with schema-valid arguments. Do not answer in plain text."
@@ -200,7 +197,6 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "If local tool budget is tight, use exact source reads for decisive evidence. Broad searches may be refused after local budget pressure; narrow read_symbol/read_range/find_definition/read_diff_blocks calls may receive a small extension.",
         "Be especially skeptical of removed-guard findings where the replacement helper may enforce the same condition. Keep only when complete source proves the guard is no longer enforced on the reachable path.",
         "For category:\"testing\" candidates, production code does not need to change. A test rewrite, deletion, or helper consolidation can be a real finding when concrete evidence shows the old/base tests covered a named behavior boundary, the new/head tests no longer cover that boundary or only cover a narrower helper, and the boundary remains live or contract-relevant. Prefer revise over reject when the candidate is directionally right but too broad; reject generic add-more-tests comments without a specific missing behavior boundary.",
-        "If candidate.reviewQuestionIds is present, use the linked planner question only as context for what to verify. The question itself is not evidence. For question-derived missing-test claims, keep only when inspected tests prove the specific remaining gap; otherwise revise to a narrower proven gap or reject.",
         "Same-PR tests that assert new behavior prove the behavior changed; they do not by themselves prove the behavior is safe or intended. If intent signals are refactor-like or behavior-preserving without explicit behavior-change intent, compare base versus head behavior and keep or revise material semantic regressions that can break callers. If intent signals are mixed, frame the issue as intentional_needs_confirmation unless evidence proves accidental regression. Reject accidental-regression framing when PR text/spec clearly requires the behavior change and caller impact is covered.",
         "Examples of refactor-like or behavior-preserving intent include refactor, cleanup, consolidation, behavior-preserving, no behavior change, and equivalent behavior.",
         "When revising or keeping a behavior-change finding, preserve or set behaviorChange and intentEvidence. Do not use accidental-regression framing without behavior-preserving/refactor evidence and a concrete caller-visible regression.",
@@ -574,7 +570,7 @@ function renderPacket(packet: ReviewPacket): string {
     isDeletedContent: packet.isDeletedContent,
     fileContext: packet.fileContext,
     labels: packet.labels,
-    riskNotes: packet.riskNotes,
+    reviewEmphasisNotes: packet.reviewEmphasisNotes,
     contextText: packet.contextText,
     testCoverageDelta: packet.testCoverageDelta,
     intentSignals: packet.intentSignals,
@@ -585,7 +581,6 @@ function renderPacket(packet: ReviewPacket): string {
     contextQuality: packet.contextQuality,
     contextDegradationReasons: packet.contextDegradationReasons,
     surroundingContextHints: packet.surroundingContextHints,
-    reviewQuestions: packet.reviewQuestions,
     degraded: packet.degraded
   });
 }

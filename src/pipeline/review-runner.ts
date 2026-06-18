@@ -42,9 +42,7 @@ import type {
   ReviewResult,
   ReviewStage,
   RunCoverageStatus,
-  SystemReviewResult,
-  TelemetryEvent,
-  VerificationVerdict
+  TelemetryEvent
 } from "../types.js";
 import { CodeninjaError, errorExitCode, isCodeninjaError } from "../util/errors.js";
 import { buildPlannerDossier, runPlanner } from "./planner.js";
@@ -220,14 +218,7 @@ export async function runReview(
         totals: { packets: packets.length },
         packets: {
           generated: packets.length,
-          degraded: packets.filter((packet) => packet.degraded !== undefined).length,
-          reviewQuestionAttachments: packets.reduce((sum, packet) => sum + (packet.reviewQuestions?.length ?? 0), 0),
-          packetsWithReviewQuestions: packets.filter((packet) => (packet.reviewQuestions ?? []).length > 0).length,
-          reviewQuestionObligations: plannerResult.plan.reviewQuestions?.filter((question) => question.obligation !== undefined && question.obligation.trim().length > 0).length ?? 0,
-          reviewQuestionObligationAttachments: packets.reduce(
-            (sum, packet) => sum + (packet.reviewQuestions ?? []).filter((question) => question.obligation !== undefined && question.obligation.trim().length > 0).length,
-            0
-          )
+          degraded: packets.filter((packet) => packet.degraded !== undefined).length
         },
         lenses: {
           selected: new Set(packets.flatMap((packet) => packet.lenses)).size,
@@ -317,16 +308,6 @@ export async function runReview(
     }
     emitBudgetStop(run, finalReview.coverage.budgetStop);
     finalReview.budgetSummary = run.budget.summary(finalReview.coverage, buildContextPressureSummary(run.telemetry, packets, finalReview));
-    await run.telemetry.writeArtifact("review-questions.json", buildReviewQuestionLifecycle({
-      plan: plannerResult.plan,
-      packets,
-      packetResults,
-      systemReview,
-      packetResultsForVerification,
-      verdicts: verified.verdicts,
-      verifiedFindings: verified.verified,
-      finalReview
-    }));
     throwIfHardAborted(run);
     await run.telemetry.writeArtifact("coverage.json", {
       status: finalReview.coverage,
@@ -903,7 +884,7 @@ async function maybeZeroWork(
   };
   await run.telemetry.writeArtifact("coverage.json", {
     status: coverage,
-    records: buildCoverageRecords(allFiles, decisions, { diffUnderstanding: { declaredIntent: "zero-work", inferredBehavior: "zero-work" }, riskAreas: [], coverage: [] }, [], [])
+    records: buildCoverageRecords(allFiles, decisions, { diffUnderstanding: { declaredIntent: "zero-work", inferredBehavior: "zero-work" }, coverage: [] }, [], [])
   });
   await run.telemetry.writeArtifact("candidate-findings.json", []);
   await run.telemetry.writeArtifact("verification.json", []);
@@ -1228,218 +1209,6 @@ function packetResultFailureReason(result: PacketReviewResult | undefined): stri
     return "budget_stopped before dispatch";
   }
   return result.status;
-}
-
-type ReviewQuestionLifecycleInput = {
-  plan: ReviewPlan;
-  packets: ReviewPacket[];
-  packetResults: PacketReviewResult[];
-  systemReview: SystemReviewResult;
-  packetResultsForVerification: PacketReviewResult[];
-  verdicts: VerificationVerdict[];
-  verifiedFindings: CandidateFinding[];
-  finalReview: ReviewResult;
-};
-
-function buildReviewQuestionLifecycle(input: ReviewQuestionLifecycleInput): Record<string, unknown> {
-  const {
-    plan,
-    packets,
-    packetResults,
-    systemReview,
-    packetResultsForVerification,
-    verdicts,
-    verifiedFindings,
-    finalReview
-  } = input;
-  const packetsByQuestion = new Map<string, Array<{
-    packetId: string;
-    path: string;
-    relevanceReason: string;
-    role?: NonNullable<ReviewPacket["reviewQuestions"]>[number]["role"];
-    ownershipStatus?: NonNullable<ReviewPacket["reviewQuestions"]>[number]["ownershipStatus"];
-    ownershipReason?: string;
-    ownershipCandidatePacketIds?: string[];
-  }>>();
-  for (const packet of packets) {
-    for (const question of packet.reviewQuestions ?? []) {
-      const attached = packetsByQuestion.get(question.id) ?? [];
-      attached.push({
-        packetId: packet.id,
-        path: packet.path,
-        relevanceReason: question.relevanceReason,
-        ...(question.role !== undefined ? { role: question.role } : {}),
-        ...(question.ownershipStatus !== undefined ? { ownershipStatus: question.ownershipStatus } : {}),
-        ...(question.ownershipReason !== undefined ? { ownershipReason: question.ownershipReason } : {}),
-        ...(question.ownershipCandidatePacketIds !== undefined ? { ownershipCandidatePacketIds: question.ownershipCandidatePacketIds } : {})
-      });
-      packetsByQuestion.set(question.id, attached);
-    }
-  }
-
-  const verdictByCandidateId = new Map(verdicts.map((verdict) => [verdict.candidateId, verdict]));
-  const verifiedByCandidateId = new Map(verifiedFindings.map((finding) => [finding.id, finding]));
-  const finalFindings = [...finalReview.findings, ...finalReview.summaryOnlyFindings];
-  const finalFindingsByCandidateId = new Map<string, typeof finalFindings[number]>();
-  for (const finding of finalFindings) {
-    finalFindingsByCandidateId.set(finding.id, finding);
-    for (const mergedCandidateId of finding.mergedCandidateIds ?? []) {
-      finalFindingsByCandidateId.set(mergedCandidateId, finding);
-    }
-  }
-
-  const answers = packetResults.flatMap((result) =>
-    (result.answeredQuestions ?? []).map((answer) => ({
-      packetId: result.packetId,
-      ...answer
-    }))
-  );
-  const generatedFindings = packetResultsForVerification.flatMap((result) =>
-    result.findings.flatMap((finding) =>
-      (finding.reviewQuestionIds ?? []).map((questionId) => ({
-        questionId,
-        packetId: result.packetId,
-        findingId: finding.id,
-        title: finding.title,
-        confidence: finding.confidence,
-        severity: finding.severity,
-        verification: verificationLifecycle(verdictByCandidateId.get(finding.id)),
-        finalDisposition: finalDisposition(finding.id, verdictByCandidateId, verifiedByCandidateId, finalFindingsByCandidateId)
-      }))
-    )
-  );
-  const finalFindingsByQuestion = finalFindings.flatMap((finding) =>
-    [...new Set([
-      ...(finding.reviewQuestionIds ?? []),
-      ...generatedFindings
-        .filter((generated) => (finding.mergedCandidateIds ?? []).includes(generated.findingId))
-        .map((generated) => generated.questionId)
-    ])].map((questionId) => ({
-      questionId,
-      findingId: finding.id,
-      title: finding.title,
-      publication: finding.publication,
-      mergedCandidateIds: finding.mergedCandidateIds ?? []
-    }))
-  );
-
-  return {
-    riskAreaDispositions: plan.riskAreaDispositions ?? [],
-    questions: (plan.reviewQuestions ?? []).map((question) => ({
-      ...question,
-      attachedPackets: packetsByQuestion.get(question.id) ?? [],
-      answers: answers.filter((answer) => answer.questionId === question.id),
-      generatedFindings: generatedFindings.filter((finding) => finding.questionId === question.id),
-      finalFindings: finalFindingsByQuestion.filter((finding) => finding.questionId === question.id),
-      systemReviewTasks: systemReview.tasks.filter((task) => task.question === question.question).map((task) => ({
-        taskId: task.id,
-        question: task.question,
-        ...(task.obligation !== undefined ? { obligation: task.obligation } : {}),
-        packetIds: task.packetIds,
-        files: task.files,
-        symbols: task.symbols
-      })),
-      resolvedHints: systemReview.resolvedHints.filter((hint) => hint.question === question.question)
-    })),
-    metrics: {
-      riskAreas: plan.riskAreas.length,
-      representedRiskAreas: (plan.riskAreaDispositions ?? []).filter((disposition) =>
-        isRepresentedRiskAreaDisposition(disposition.disposition)
-      ).length,
-      omittedRiskAreas: (plan.riskAreaDispositions ?? []).filter((disposition) =>
-        !isRepresentedRiskAreaDisposition(disposition.disposition)
-      ).length,
-      emitted: plan.reviewQuestions?.length ?? 0,
-      attachedPackets: packets.filter((packet) => (packet.reviewQuestions ?? []).length > 0).length,
-      attachments: packets.reduce((sum, packet) => sum + (packet.reviewQuestions?.length ?? 0), 0),
-      questionsWithPrimary: (plan.reviewQuestions ?? []).filter((question) =>
-        (packetsByQuestion.get(question.id) ?? []).some((attachment) => attachment.role === "primary")
-      ).length,
-      primaryAttachments: packets.reduce((sum, packet) =>
-        sum + (packet.reviewQuestions ?? []).filter((question) => question.role === "primary").length,
-      0),
-      supportingAttachments: packets.reduce((sum, packet) =>
-        sum + (packet.reviewQuestions ?? []).filter((question) => question.role === "supporting").length,
-      0),
-      ambiguousAttachments: packets.reduce((sum, packet) =>
-        sum + (packet.reviewQuestions ?? []).filter((question) => question.ownershipStatus === "ambiguous").length,
-      0),
-      unownedAttachments: packets.reduce((sum, packet) =>
-        sum + (packet.reviewQuestions ?? []).filter((question) => question.role === undefined).length,
-      0),
-      answered: answers.length,
-      partial: answers.filter((answer) => answer.outcome === "partial").length,
-      materialConcerns: answers.filter((answer) => answer.materialConcern !== undefined).length,
-      obligations: (plan.reviewQuestions ?? []).filter((question) => question.obligation !== undefined && question.obligation.trim().length > 0).length,
-      obligationsAnswered: answers.filter((answer) => {
-        const question = (plan.reviewQuestions ?? []).find((entry) => entry.id === answer.questionId);
-        return question?.obligation !== undefined && answer.outcome === "answered_no_issue";
-      }).length,
-      obligationsPartial: answers.filter((answer) => {
-        const question = (plan.reviewQuestions ?? []).find((entry) => entry.id === answer.questionId);
-        return question?.obligation !== undefined && answer.outcome === "partial";
-      }).length,
-      obligationsWithCandidates: generatedFindings.filter((finding) => {
-        const question = (plan.reviewQuestions ?? []).find((entry) => entry.id === finding.questionId);
-        return question?.obligation !== undefined;
-      }).length,
-      obligationsDowngraded: answers.filter((answer) => {
-        const question = (plan.reviewQuestions ?? []).find((entry) => entry.id === answer.questionId);
-        return question?.obligation !== undefined &&
-          (answer.downgradeReasons ?? []).length > 0;
-      }).length,
-      candidateFindings: generatedFindings.length,
-      verifiedQuestionFindings: generatedFindings.filter((finding) => finding.verification?.verdict === "keep" || finding.verification?.verdict === "revise").length,
-      finalQuestionFindings: finalFindingsByQuestion.length,
-      systemReviewTasks: systemReview.tasks.length
-    }
-  };
-}
-
-function isRepresentedRiskAreaDisposition(disposition: NonNullable<ReviewPlan["riskAreaDispositions"]>[number]["disposition"]): boolean {
-  return disposition === "represented_by_question" ||
-    disposition === "synthesized_question" ||
-    disposition === "represented_by_packet_obligation" ||
-    disposition === "covered_by_existing_question";
-}
-
-function verificationLifecycle(verdict: VerificationVerdict | undefined): Record<string, unknown> | undefined {
-  if (!verdict) {
-    return undefined;
-  }
-  return {
-    verdict: verdict.verdict,
-    reason: verdict.reason,
-    requiredEvidencePresent: verdict.requiredEvidencePresent,
-    falsePositiveRisk: verdict.falsePositiveRisk,
-    verificationIncomplete: verdict.verificationIncomplete ?? false
-  };
-}
-
-function finalDisposition(
-  candidateId: string,
-  verdictByCandidateId: Map<string, VerificationVerdict>,
-  verifiedByCandidateId: Map<string, CandidateFinding>,
-  finalFindingsByCandidateId: Map<string, ReviewResult["findings"][number]>
-): string {
-  const finalFinding = finalFindingsByCandidateId.get(candidateId);
-  if (finalFinding !== undefined) {
-    return finalFinding.publication;
-  }
-  const verdict = verdictByCandidateId.get(candidateId);
-  if (verdict?.verdict === "reject") {
-    return "rejected";
-  }
-  if (verdict?.verificationIncomplete) {
-    return "verification_incomplete";
-  }
-  if (verifiedByCandidateId.has(candidateId)) {
-    return "verified_not_published";
-  }
-  if (verdict !== undefined) {
-    return "not_kept";
-  }
-  return "not_verified";
 }
 
 async function renderOutputs(

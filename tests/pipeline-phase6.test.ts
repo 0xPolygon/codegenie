@@ -363,11 +363,12 @@ function planFromDossier(dossier: PlannerDossier): Record<string, unknown> {
       declaredIntent: "Remove divide guard.",
       inferredBehavior: "The divide helper now uses count directly."
     },
-    riskAreas: [
+    reviewEmphasis: [
       {
-        area: "numeric safety",
-        reason: "The changed code removes a guard around a divisor.",
+        summary: "numeric safety",
+        basis: ["The changed code removes a guard around a divisor."],
         files: ["app.ts"],
+        symbols: ["divide"],
         suggestedLenses: ["core/code-review"]
       }
     ],

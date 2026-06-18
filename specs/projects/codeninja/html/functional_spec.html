@@ -1,0 +1,1886 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang xml:lang>
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>functional_spec</title>
+  <style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+
+ul.task-list[class]{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+font-size: inherit;
+width: 0.8em;
+margin: 0 0.8em 0.2em -1.6em;
+vertical-align: middle;
+}
+.display.math{display: block; text-align: center; margin: 0.5rem auto;}
+
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+{ counter-reset: source-line 0; }
+pre.numberSource code > span
+{ position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+{ content: counter(source-line);
+position: relative; left: -1em; text-align: right; vertical-align: baseline;
+border: none; display: inline-block;
+-webkit-touch-callout: none; -webkit-user-select: none;
+-khtml-user-select: none; -moz-user-select: none;
+-ms-user-select: none; user-select: none;
+padding: 0 4px; width: 4em;
+color: #aaaaaa;
+}
+pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa; padding-left: 4px; }
+div.sourceCode
+{ }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+code span.al { color: #ff0000; font-weight: bold; } 
+code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.at { color: #7d9029; } 
+code span.bn { color: #40a070; } 
+code span.bu { color: #008000; } 
+code span.cf { color: #007020; font-weight: bold; } 
+code span.ch { color: #4070a0; } 
+code span.cn { color: #880000; } 
+code span.co { color: #60a0b0; font-style: italic; } 
+code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.do { color: #ba2121; font-style: italic; } 
+code span.dt { color: #902000; } 
+code span.dv { color: #40a070; } 
+code span.er { color: #ff0000; font-weight: bold; } 
+code span.ex { } 
+code span.fl { color: #40a070; } 
+code span.fu { color: #06287e; } 
+code span.im { color: #008000; font-weight: bold; } 
+code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } 
+code span.kw { color: #007020; font-weight: bold; } 
+code span.op { color: #666666; } 
+code span.ot { color: #007020; } 
+code span.pp { color: #bc7a00; } 
+code span.sc { color: #4070a0; } 
+code span.ss { color: #bb6688; } 
+code span.st { color: #4070a0; } 
+code span.va { color: #19177c; } 
+code span.vs { color: #4070a0; } 
+code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } 
+</style>
+  <style type="text/css">
+
+
+:root {
+
+--bg: #4c3c29; 
+--bg-soft: #553f28; 
+--gray: #c0ae90; 
+
+--rust: #dda06a; 
+--ochre: #dcc079; 
+--teal: #a8b56f; 
+--blue: #86aeb0; 
+--green: #a8b56f; 
+--purple: #cf99a6; 
+--red: #e08a76; 
+
+--text: #f6efda;
+--rule: rgba(192,174,144,.32); 
+--maxw: 44rem; 
+--read-font: Charter, "Bitstream Charter", "Iowan Old Style",
+"Source Serif 4", "Source Serif Pro", Georgia,
+"Times New Roman", serif;
+--mono-font: "SF Mono", "Cascadia Code", Menlo, Consolas, ui-monospace, monospace;
+}
+
+html { font-size: calc(17px * 1.1); }
+body {
+font-family: var(--read-font);
+color: var(--text);
+background: var(--bg);
+line-height: 1.7;
+max-width: var(--maxw);
+margin: 3rem auto;
+padding: 0 1.25rem;
+-webkit-font-smoothing: antialiased;
+text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4 { line-height: 1.25; font-weight: 700; }
+h1 {
+color: var(--rust);
+font-size: 2.05rem;
+margin: 0 0 1.2rem;
+padding-bottom: .3rem;
+border-bottom: 3px solid var(--rust);
+}
+h2 {
+color: var(--teal);
+font-size: 1.5rem;
+margin: 2.4rem 0 .8rem;
+padding-bottom: .25rem;
+border-bottom: 1px solid var(--rule);
+}
+h3 { color: var(--ochre); font-size: 1.2rem; margin: 1.8rem 0 .6rem; }
+h4 { color: var(--gray); font-size: 1.02rem; text-transform: uppercase;
+letter-spacing: .04em; margin: 1.5rem 0 .5rem; }
+
+a { color: var(--blue); text-decoration: none;
+border-bottom: 1px solid rgba(134,174,176,.4); }
+a:hover { border-bottom-color: var(--blue); }
+
+code {
+font-family: var(--mono-font);
+font-size: .88em;
+background: var(--bg-soft);
+padding: .12em .4em;
+border-radius: 4px;
+}
+
+pre, div.sourceCode {
+background: var(--bg-soft);
+border: 1px solid var(--rule);
+border-left: 4px solid var(--rust);
+border-radius: 6px;
+}
+pre {
+padding: 1rem 1.1rem;
+overflow-x: auto;
+line-height: 1.45;
+color: var(--text);
+}
+div.sourceCode { padding: 0; }
+div.sourceCode pre { border: none; border-radius: 0; background: none; }
+pre code, code.sourceCode { background: none; padding: 0; font-size: 1em; }
+
+blockquote {
+margin: 1.2rem 0;
+padding: .2rem 1.1rem;
+color: var(--gray);
+font-style: italic;
+border-left: 4px solid var(--teal);
+}
+
+table { border-collapse: collapse; width: 100%; margin: 1.4rem 0; }
+th, td { border: 1px solid var(--rule); padding: .5rem .75rem; text-align: left; }
+th { background: var(--bg-soft); color: var(--text); font-weight: 700; }
+tr:nth-child(even) td { background: rgba(214,196,161,.08); }
+
+hr { border: none; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
+img { max-width: 100%; }
+
+</style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">functional_spec</h1>
+</header>
+<h1 id="functional-spec-codeninja">Functional Spec: codeninja</h1>
+<h2 id="purpose">Purpose</h2>
+<p>codeninja is a TypeScript CLI for high-signal AI code review of
+pull-request-style changes. It reviews diffs in a local git repository,
+uses focused repository exploration tools instead of dumping the whole
+repo into context, and produces staff-engineer-quality findings with
+concrete evidence, impact, and actionable fixes.</p>
+<p>The default review stance is correctness-first. codeninja should find
+real bugs, logical errors, security issues, architectural risks,
+performance problems, missing tests, and maintainability concerns that
+matter. It should suppress style-only, naming, formatting, and
+subjective comments unless the user explicitly enables a lint/style
+lens.</p>
+<p>codeninja’s reviewer voice should be that of a detail-oriented senior
+individual contributor who will own the code long term. It should be
+direct and specific when there is a real problem, polite without
+softening correctness or design issues, and focused on advice that
+matters because the reviewer may need to maintain the code long after
+the original author has moved on.</p>
+<h2 id="users">Users</h2>
+<p>Primary users are developers and engineering teams who want an expert
+code-review assistant for local branches and GitHub pull requests.</p>
+<p>Secondary users are maintainers who want to define project-specific
+review lenses and Markdown skills that teach codeninja how to review
+their codebase, language, or domain more precisely.</p>
+<h2 id="v1-input-modes">V1 Input Modes</h2>
+<p>codeninja should expose a primary command:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review</span></code></pre></div>
+<p>The command supports these primary review target forms:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--pr</span> 123</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="op">&lt;</span>branch-name<span class="op">&gt;</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--branch</span> feature-branch [--base main]</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--head</span> <span class="op">&lt;</span>head-ref<span class="op">&gt;</span> --base <span class="op">&lt;</span>base-ref<span class="op">&gt;</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="op">&lt;</span>base-ref<span class="op">&gt;</span>...<span class="op">&lt;</span>head-ref<span class="op">&gt;</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="op">&lt;</span>commit<span class="op">&gt;</span> <span class="pp">[</span><span class="ss">end</span><span class="pp">-</span><span class="ss">commit</span><span class="pp">]</span></span></code></pre></div>
+<p>With no target arguments, <code>codeninja review</code> reviews the
+current branch against the resolved base branch, equivalent to
+<code>--branch &lt;current-branch&gt;</code> with the same
+base-resolution and merge-base semantics. If the current branch is the
+resolved base itself, or no base branch can be resolved, codeninja
+should fail with a clear error asking for an explicit review target.
+Reviewing uncommitted working-tree changes is out of scope for v1.</p>
+<p>Common review options:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--depth</span> light<span class="kw">|</span><span class="ex">normal</span><span class="kw">|</span><span class="ex">deep</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--lens</span> <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> [--lens <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> ...]</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--provider</span> <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--model</span> <span class="op">&lt;</span>model-or-provider/model<span class="op">&gt;</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--reasoning</span> low<span class="kw">|</span><span class="ex">medium</span><span class="kw">|</span><span class="ex">high</span><span class="kw">|</span><span class="ex">xhigh</span><span class="kw">|</span><span class="ex">auto</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--format</span> markdown<span class="kw">|</span><span class="ex">json</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--ci</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--no-progress</span></span></code></pre></div>
+<p><code>--depth</code> controls the global review budget and planner
+bias. The default is <code>normal</code>. <code>light</code> should
+favor cheaper packet review and smaller tool budgets. <code>deep</code>
+should allow more <code>deep</code> packet coverage and larger tool
+budgets. Per-hunk coverage may still vary inside the selected depth when
+the planner sees concrete risk evidence.</p>
+<p><code>--lens</code> restricts the run to the named lenses and may be
+repeated. It overrides the config-enabled lens set for the run, and it
+may explicitly enable a lens that is disabled by default, such as a
+lint/style lens. The planner still decides which of the selected lenses
+apply to each hunk.</p>
+<p><code>--format</code> selects the stdout output format. The default
+is <code>markdown</code>. <code>json</code> prints the final review
+object instead of the Markdown report.</p>
+<p>Interactive review runs should show a small ASCII progress spinner on
+stderr, including the active pipeline stage number when known. The
+progress line must clear before the final Markdown or JSON report is
+printed to stdout. Progress output is disabled automatically when stderr
+is not a TTY or <code>CI</code> is set, and it is disabled explicitly by
+<code>--ci</code> or <code>--no-progress</code>.</p>
+<p><code>--provider</code>, <code>--model</code>, and
+<code>--reasoning</code> override the user-level provider defaults for
+one review run. <code>--provider</code> scopes model resolution.
+<code>--model</code> may be a provider-specific model id when
+<code>--provider</code> is also passed, or a provider-qualified
+<code>&lt;provider&gt;/&lt;model&gt;</code> value when no provider flag
+is passed; a qualified value is split on the first <code>/</code> only
+when the prefix matches a Pi-known provider id, otherwise the whole
+value is the model id (model ids may themselves contain slashes).
+<code>--reasoning auto</code> clears the CLI layer only; resolution then
+continues <code>CODENINJA_REASONING</code> &gt;
+<code>~/.codeninja/settings.json</code> &gt;
+<code>~/.codeninja/config.toml</code> &gt; the built-in
+<code>high</code> default. Providers exposing different reasoning scales
+map them onto codeninja’s four levels
+(<code>low|medium|high|xhigh</code>).</p>
+<p>All v1 modes require running from inside a local git worktree. This
+means the repository must exist locally so codeninja can inspect files,
+map diff paths to source files, build context, and run read-only
+repository tools. The <code>--pr</code> mode uses GitHub metadata for PR
+context and posting, but the reviewed diff, changed files, and commit
+information should come from local git whenever possible.</p>
+<p>The checked-out worktree does not need to match the reviewed head.
+Reviewed source reads resolve against the reviewed revisions through
+git, so codeninja can review a PR or branch that is not checked out, and
+reviewed source content is unaffected by dirty worktree state. Review
+policy, config, and skills load separately from the trusted local
+checkout.</p>
+<h3 id="pr"><code>--pr</code></h3>
+<p><code>--pr &lt;number&gt;</code> reviews a GitHub pull request for
+the current repository.</p>
+<p>Behavior:</p>
+<ul>
+<li>Use the <code>gh</code> CLI as the GitHub integration layer for PR
+metadata, authentication, and comment posting.</li>
+<li>Fetch PR title, body, base/head refs or SHAs, and posting metadata
+through <code>gh</code>.</li>
+<li>List codeninja’s own prior review comments through <code>gh</code>
+for rerun duplicate avoidance (see Stage 11).</li>
+<li>Fetch the PR head and base commits into the local repository through
+<code>gh</code> or git when they are not already present locally, and
+fail clearly when they cannot be fetched.</li>
+<li>Compute changed files, commit metadata, commit
+messages/descriptions, and unified diff from local git whenever
+possible.</li>
+<li>Include commit titles and commit descriptions across the reviewed
+range as planner input.</li>
+<li>Use the local repository for source inspection, diff mapping, and
+repository tooling, with source reads resolved against the reviewed
+base/head revisions through git plumbing.</li>
+<li>Support posting inline GitHub comments only when
+<code>--post-github-comments</code> is passed.</li>
+<li>Do not support GitLab in v1.</li>
+</ul>
+<h3 id="branch---base"><code>--branch</code> / <code>--base</code></h3>
+<p><code>--branch &lt;branch-name&gt; [--base &lt;base-branch&gt;]</code>
+reviews the head of a branch against a base branch.
+<code>codeninja review &lt;branch-name&gt; [--base &lt;base-branch&gt;]</code>
+is shorthand for the same branch review when the single positional
+target resolves as a local or remote branch.</p>
+<p>Behavior:</p>
+<ul>
+<li>Compute the effective diff between the base branch and branch
+head.</li>
+<li>Resolve the base branch in this order:
+<ul>
+<li><code>--base &lt;base-branch&gt;</code> when passed on the CLI.</li>
+<li>The configured default base branch in
+<code>codeninja.toml</code>.</li>
+<li>A local or remote <code>master</code> branch, if it exists.</li>
+<li>A local or remote <code>main</code> branch, if it exists.</li>
+</ul></li>
+<li>If no base branch can be resolved, fail with a clear error asking
+the user to pass <code>--base</code> or configure the default base
+branch.</li>
+<li>Collect commit titles and commit descriptions across the reviewed
+range as planner input.</li>
+<li>Prefer merge-base semantics for branch review so the reviewed diff
+matches pull-request-style changes.</li>
+<li>Prefer branch interpretation for a single positional target that
+resolves as a branch. If the target does not resolve as a branch, fall
+back to single-commit review.</li>
+<li>Allow <code>--base</code> with the single positional shorthand only
+when the target resolves as a branch; otherwise fail clearly and ask for
+<code>&lt;base&gt;...&lt;head&gt;</code> when the user intended explicit
+head/base review.</li>
+<li>Do not attempt to post GitHub comments in v1 from branch-review
+mode.</li>
+</ul>
+<h3 id="head---base-and-base...head"><code>--head</code> /
+<code>--base</code> And <code>&lt;base&gt;...&lt;head&gt;</code></h3>
+<p><code>--head &lt;head-ref&gt; --base &lt;base-ref&gt;</code> reviews
+a pinned head ref or commit against an explicit base ref.</p>
+<p><code>codeninja review &lt;base-ref&gt;...&lt;head-ref&gt;</code> is
+shorthand for the same pinned PR-style review, following Git and GitHub
+compare ordering. For example,
+<code>codeninja review master...49f4645b40e3</code> is equivalent to
+<code>codeninja review --head 49f4645b40e3 --base master</code>.</p>
+<p>Behavior:</p>
+<ul>
+<li>Resolve both refs locally and fail clearly if either ref is
+missing.</li>
+<li>Compute the merge base between base and head.</li>
+<li>Diff <code>mergeBase..head</code> so the output matches
+pull-request-style changes from base to head.</li>
+<li>Collect commit titles and commit descriptions across
+<code>mergeBase..head</code> as planner input.</li>
+<li>Treat this as distinct from one-commit review:
+<code>codeninja review &lt;commit&gt;</code> reviews that single commit
+against its first parent, while <code>&lt;base&gt;...&lt;head&gt;</code>
+reviews the full merge-base comparison.</li>
+<li>Do not attempt to post GitHub comments in v1 from explicit head/base
+mode.</li>
+</ul>
+<h3 id="commit-or-commit-range">Commit Or Commit Range</h3>
+<p><code>codeninja review &lt;commit&gt; [end-commit]</code> reviews one
+commit or a commit range.</p>
+<p>Behavior:</p>
+<ul>
+<li>With one positional target that does not resolve as a branch, review
+the changes introduced by that commit.</li>
+<li>With two commits, review the range from the first commit to the
+second commit.</li>
+<li>Collect commit titles and commit descriptions across the reviewed
+commit or range as planner input.</li>
+<li>Do not attempt to post GitHub comments in v1 from commit or
+commit-range mode.</li>
+</ul>
+<h2 id="provider-and-model-cli">Provider And Model CLI</h2>
+<p>codeninja should expose a provider command namespace for LLM provider
+setup, backed by Pi’s provider/model registry and auth storage:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider list</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider login <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider logout <span class="pp">[</span><span class="ss">provider</span><span class="pp">]</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider auth-status <span class="pp">[</span><span class="ss">provider</span><span class="pp">]</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider models <span class="pp">[</span><span class="ss">provider</span><span class="pp">-</span><span class="ss">or</span><span class="pp">-</span><span class="ss">search</span><span class="pp">]</span> <span class="pp">[--</span><span class="ss">all</span><span class="pp">]</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider config</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider config set-provider <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider config set-model <span class="op">&lt;</span>provider<span class="op">&gt;</span> <span class="op">&lt;</span>model<span class="op">&gt;</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider config set-depth <span class="op">&lt;</span>light<span class="kw">|</span><span class="ex">normal</span><span class="kw">|</span><span class="ex">deep</span><span class="op">&gt;</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider config set-reasoning <span class="op">&lt;</span>low<span class="kw">|</span><span class="ex">medium</span><span class="kw">|</span><span class="ex">high</span><span class="kw">|</span><span class="ex">xhigh</span><span class="kw">|</span><span class="ex">auto</span><span class="op">&gt;</span></span></code></pre></div>
+<p>Behavior:</p>
+<ul>
+<li><code>provider list</code> prints providers known to Pi’s model
+registry, including whether auth appears configured.</li>
+<li><code>provider login &lt;provider&gt;</code> uses Pi
+OAuth/device-code flow when available; otherwise it prompts for an API
+key for API-key providers. Credentials are stored in user-scoped
+codeninja auth state.</li>
+<li><code>provider logout [provider]</code> removes stored credentials
+for one provider, or all providers after confirmation.</li>
+<li><code>provider auth-status [provider]</code> reports whether auth is
+available and where it came from, such as stored credentials,
+environment variables, runtime override, or model-registry
+configuration. It must not print secret values.</li>
+<li><code>provider models [provider-or-search] [--all]</code> lists
+models from Pi’s registry. By default it lists authenticated/available
+models; <code>--all</code> lists every known model. Output should
+include provider, model id, context window, max output tokens when
+known, reasoning support, and vision/input capability when known.</li>
+<li><code>provider config</code> prints user-level effective defaults as
+JSON, including the codeninja home directory, auth path, models path,
+settings path, default provider/model, default depth, default reasoning
+override, and effective depth/reasoning.</li>
+<li><code>provider config set-provider</code> sets the user-level
+default provider after validating that the provider exists.</li>
+<li><code>provider config set-model</code> validates the model exists
+for the provider and stores both the default provider and default
+model.</li>
+<li><code>provider config set-depth</code> stores the user-level default
+review depth using codeninja’s <code>light|normal|deep</code> depth
+vocabulary.</li>
+<li><code>provider config set-reasoning</code> stores a user-level
+reasoning override; <code>auto</code> clears the stored override,
+letting resolution fall through to <code>~/.codeninja/config.toml</code>
+and then the built-in <code>high</code> default. Providers with
+different reasoning scales map onto codeninja’s four levels.</li>
+</ul>
+<p>User provider state should live under <code>~/.codeninja/</code> by
+default, overridable with <code>CODENINJA_HOME</code>:</p>
+<pre class="text"><code>~/.codeninja/
+  auth.json       # provider credentials, chmod 0600
+  models.json     # Pi model registry custom providers/models when supported
+  settings.json   # default provider/model/depth/reasoning, chmod 0600
+  config.toml     # optional user-level config overrides and trust opt-ins
+  sessions/       # provider/session state when Pi needs it</code></pre>
+<p>The home directory should be created with mode <code>0700</code>
+where supported. Auth material must be registered with the redaction
+layer before any logging, telemetry, cache, debug trace, or error
+context can include it.</p>
+<p>Model selection precedence for <code>review</code> and
+<code>eval</code> runs (repo <code>codeninja.toml</code> never
+participates for these keys; <code>CODENINJA_PROVIDER</code>,
+<code>CODENINJA_MODEL</code>, <code>CODENINJA_REASONING</code>, and
+<code>CODENINJA_HOME</code> are the only codeninja environment variables
+in v1):</p>
+<pre class="text"><code>CLI flags &gt; environment variables &gt; ~/.codeninja/settings.json &gt; ~/.codeninja/config.toml &gt; Pi/provider defaults</code></pre>
+<p>Within user scope, <code>settings.json</code> outranks
+<code>config.toml</code> because the dedicated
+<code>provider config set-*</code> commands write
+<code>settings.json</code>.</p>
+<p>Stored <code>defaultDepth</code> participates in review-depth
+resolution; repo project policy outranks the personal default, and depth
+has no environment layer:</p>
+<pre class="text"><code>--depth &gt; repo codeninja.toml &gt; settings.json defaultDepth &gt; config.toml &gt; built-in normal</code></pre>
+<p>If no authenticated model can be resolved, codeninja should fail
+before Stage 5 with a clear <code>config_error</code>, for example:
+<code>no authenticated provider model is available; run: codeninja provider login &lt;provider&gt;</code>.</p>
+<h2 id="review-pipeline">Review Pipeline</h2>
+<p>codeninja should use a staged review pipeline:</p>
+<ol type="1">
+<li>Parse the diff and changed file list.</li>
+<li>Filter ignored, generated, vendored, binary, and lock files.</li>
+<li>Classify files into simple processing facts: language, processing
+mode, package root, test/generated/vendor/lock/binary status, configured
+labels, and configured priority.</li>
+<li>Build syntax-aware changed-symbol information where supported.</li>
+<li>Run the planning pass.</li>
+<li>Build compact review packets per hunk or file.</li>
+<li>Run selected lenses on relevant packets, with bounded parallelism
+where packets can be reviewed independently.</li>
+<li>Run optional cross-file/system follow-up review only for repeated
+scoped follow-up hints from Stage 7; skip otherwise.</li>
+<li>Verify candidate findings, with only minimal duplicate suppression
+needed to avoid repeated verifier calls.</li>
+<li>Deduplicate, rank, and compose final output.</li>
+<li>Optionally post verified inline comments and a PR summary through
+GitHub.</li>
+</ol>
+<p>Stage ids are stable for telemetry and evals. Mentally, the pipeline
+is six phases: Inventory (stages 1-4), Plan (5), Review (6-7 plus the
+optional Stage 8 follow-up), Verify (9), Compose (10), Publish (11).
+Stage 8 is intentionally narrow and often skips itself.</p>
+<p>The unit of candidate review is the changed hunk or file. The unit of
+understanding is the affected system.</p>
+<p>The planner should choose coverage and lenses based on language,
+changed symbols, touched subsystems, tests touched or missing,
+configured labels/priorities, and the actual diff content. It should not
+run every lens on every hunk by default.</p>
+<p>The v1 pipeline should remain useful even when syntax intelligence is
+incomplete. Basic diff parsing, file filtering, file classification,
+seed context, selected lenses, structured findings, verification,
+deduplication, and telemetry are required. Tree-sitter changed-symbol
+extraction for Go and TypeScript/JavaScript should improve packet
+quality, but parser gaps should degrade gracefully rather than block
+review.</p>
+<h2 id="stage-1-diff-parsing-and-change-inventory">Stage 1: Diff Parsing
+And Change Inventory</h2>
+<p>Stage 1 resolves the requested review target into a deterministic
+local change inventory.</p>
+<p>Inputs can come from <code>--pr</code>, <code>--branch</code>, or
+commit/range mode, but the output should be normalized into the same
+internal shape: changed files, hunks, absolute old/new line mappings,
+file statuses, and commit or PR metadata when available.</p>
+<p>Stage 1 should:</p>
+<ul>
+<li>Resolve the base and head revisions for the selected input
+mode.</li>
+<li>Collect commit titles and descriptions across the reviewed
+range.</li>
+<li>Parse the unified diff into files and hunks.</li>
+<li>Preserve old/new line numbers for every hunk line.</li>
+<li>Identify file status such as added, modified, renamed, copied,
+deleted, binary, or mode-only.</li>
+<li>Preserve diff side information for each changed line so added lines,
+removed lines, and context lines can be reviewed and anchored
+correctly.</li>
+<li>Record GitHub PR metadata when <code>--pr</code> is used.</li>
+<li>Fail clearly when the target cannot be resolved or the diff cannot
+be parsed.</li>
+</ul>
+<p>This stage must not call the LLM. Its output is the source of truth
+for later anchor validation, hunk ids, changed-line detection, and
+GitHub inline-comment mapping.</p>
+<p>Deleted files and deletion-only hunks are part of the review
+inventory. codeninja should not silently drop them merely because the
+file no longer exists in the head worktree. Stage 1 should retain their
+old-side line numbers and old path so later stages can review removed
+behavior, removed tests, removed exports, removed cleanup, and broken
+references caused by deletion.</p>
+<h2 id="stage-2-filtering-ignored-and-non-reviewable-files">Stage 2:
+Filtering Ignored And Non-Reviewable Files</h2>
+<p>Stage 2 removes files that should not enter the review pipeline and
+records why they were filtered.</p>
+<p>Filtering should be deterministic and explainable. Stage 2 runs the
+shared deterministic detectors the skip policy needs — built-in
+generated/vendor/binary/lockfile detection, repository ignore rules
+where appropriate, and explicit <code>codeninja.toml</code> skip rules —
+and applies policy over their results. Detection results are recorded
+with provenance on each filter decision and reused by Stage 3
+classification for kept files: nothing is detected twice, and filtered
+files receive no further classification, parsing, or review work.</p>
+<p>Stage 2 should filter or mark:</p>
+<ul>
+<li>Generated files.</li>
+<li>Vendored or dependency files.</li>
+<li>Binary files.</li>
+<li>Lockfiles.</li>
+<li>Ignored paths.</li>
+<li>Files explicitly skipped by configuration.</li>
+<li>Mode-only files when v1 cannot review them usefully.</li>
+<li>Deleted generated/vendor/lock/binary files when they match ordinary
+skip rules.</li>
+</ul>
+<p>Filtering decisions must be recorded in telemetry and surfaced in
+coverage summaries when they affect review completeness. Filtered files
+should not produce candidate findings, but their counts and paths may
+still be visible to the planner as review-scope facts.</p>
+<p>Deleted reviewable source, test, config, migration, or documentation
+files should remain in scope by default. If deleted-file context cannot
+be reconstructed from local git or the diff, codeninja should mark the
+file as degraded or partially reviewed rather than pretending it was
+reviewed normally.</p>
+<h2 id="stage-3-file-classification">Stage 3: File Classification</h2>
+<p>File classification should be deterministic, narrow, and auditable by
+default. It should not require an LLM. The classifier runs on kept files
+only — skip decisions already happened in Stage 2 — and produces
+processing facts for the planner; it does not produce findings and
+should not try to infer business risk from a built-in keyword
+taxonomy.</p>
+<p>Each kept file should receive a processing mode:</p>
+<ul>
+<li><code>per-hunk</code>: default for ordinary reviewable source
+files.</li>
+<li><code>whole-file</code>: for files that are better reviewed as a
+unit, such as small added files or files explicitly configured this
+way.</li>
+</ul>
+<p>(<code>skip</code> is not a kept-file processing mode: configured
+<code>processingMode = &quot;skip&quot;</code> path rules are consumed by the
+Stage 2 filter, and skipped files are represented by their filter
+decisions rather than full classification facts.)</p>
+<p>Each kept file should also receive reliable facts when available:</p>
+<ul>
+<li>Language, primarily from extension and known filenames.</li>
+<li>Package root when a nearby package marker is found.</li>
+<li>Test status from established test filename/path conventions.</li>
+<li>Generated, vendor, lockfile, and binary status, copied from the
+Stage 2 detection results rather than re-detected.</li>
+<li>Changed-line and hunk counts.</li>
+<li>Configured labels and review priority from
+<code>codeninja.toml</code>.</li>
+<li>Reasons and provenance for every processing-mode decision and
+configured label.</li>
+</ul>
+<p>The core classifier should not ship with hardcoded domain/risk
+keyword lists such as payments, auth, routes, or database. Those
+concerns belong in the planner’s model reasoning, language/static
+signals, bundled or repo-owned skills, and explicit project
+configuration.</p>
+<p><code>codeninja.toml</code> should allow teams to define path-based
+handling rules. For example, a team can mark
+<code>lib/payments/**</code> as <code>critical</code>, attach labels
+such as <code>payments</code> and <code>critical-path</code>, force
+whole-file or per-hunk review, or skip generated folders. Configured
+rules should be recorded in telemetry and used by the planner, but the
+labels are user-provided facts rather than codeninja-inferred risk
+truth.</p>
+<h2 id="stage-4-syntax-aware-changed-symbol-extraction">Stage 4:
+Syntax-Aware Changed-Symbol Extraction</h2>
+<p>Changed-symbol extraction must be deterministic in v1. It should not
+call the LLM. It parses changed files locally, maps changed hunk lines
+to enclosing symbols, and emits compact per-hunk metadata for the
+planner and packet builder. The goal is to reduce token waste and
+improve review targeting, not to perform semantic proof.</p>
+<p>Stage 4 should use tree-sitter where a grammar is available and fall
+back to simple line or regex-based detection when parsing is
+unavailable. Parser gaps should degrade the quality of packet context,
+not block the review.</p>
+<p><code>HunkSymbolFacts</code> is the compact per-hunk metadata
+produced by changed-symbol extraction. It includes the hunk id, path,
+changed lines, enclosing symbol name/kind/range, signature when
+available, and whether the facts came from tree-sitter or fallback
+detection. The full TypeScript schema is defined in
+<code>architecture.md</code>.</p>
+<p>Example per-hunk symbol metadata:</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>{</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="st">&quot;store/user.go&quot;</span><span class="op">,</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>  hunkId<span class="op">:</span> <span class="st">&quot;...&quot;</span><span class="op">,</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>  enclosingSymbol<span class="op">:</span> <span class="st">&quot;(*Store).SaveUser&quot;</span><span class="op">,</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>  symbolKind<span class="op">:</span> <span class="st">&quot;method&quot;</span><span class="op">,</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>  symbolRange<span class="op">:</span> [<span class="dv">42</span><span class="op">,</span> <span class="dv">91</span>]<span class="op">,</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>  changedLines<span class="op">:</span> [<span class="dv">55</span><span class="op">,</span> <span class="dv">56</span>]<span class="op">,</span></span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>  signature<span class="op">:</span> <span class="st">&quot;func (s *Store) SaveUser(ctx context.Context, user User) error&quot;</span></span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<h2 id="static-signals">Static Signals</h2>
+<p>Static signals are deterministic hints produced by syntax, diff, or
+language-specific checks. They are not findings and must not be
+published directly.</p>
+<p>Static signals should help the planner and reviewers notice patterns
+worth investigating, such as deleted tests, exported API changes,
+context/lifecycle-sensitive code, concurrency primitives, migration
+files, ignored errors, resource cleanup patterns, or configured critical
+paths. They should be conservative, traceable, and cheap to compute.</p>
+<p>V1 ships exactly two cross-language rules:
+<code>core/deleted-test-file</code> and
+<code>core/exported-api-change</code>. Per-language signal packs are a
+Future Consideration.</p>
+<p>Each static signal should include:</p>
+<ul>
+<li>Rule id.</li>
+<li>File path.</li>
+<li>Line number and diff side when applicable.</li>
+<li>Category or lens hint.</li>
+<li>Confidence.</li>
+<li>Short explanation.</li>
+<li>Source snippet or changed-line reference when useful.</li>
+</ul>
+<p>The LLM decides whether a signal matters in the context of the PR. A
+static signal without reviewer and verifier evidence is not a candidate
+finding.</p>
+<h2 id="stage-5-pr-scout-planning-pass">Stage 5: PR Scout / Planning
+Pass</h2>
+<p>The planning pass is the first LLM reasoning stage, but it is not a
+review pass and must not produce publishable findings.</p>
+<p>V1 planner input should be a compact deterministic dossier: PR
+metadata, commit messages, changed file inventory, file processing
+facts, configured review depth, configured labels/priorities, hunk
+ranges, <code>HunkSymbolFacts</code>, changed symbol summaries, touched
+tests, static signals, and available lenses.</p>
+<p>The planner should explicitly build a diff understanding before
+assigning coverage and lenses. It should distinguish declared intent
+from inferred behavior:</p>
+<div class="sourceCode" id="cb9"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> DiffUnderstanding <span class="op">=</span> {</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>  declaredIntent<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>  inferredBehavior<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<p>Declared intent comes from PR title/body, commit titles/descriptions,
+and branch names when useful. Inferred behavior comes from the changed
+files, changed symbols, tests, static signals, and diff summary.</p>
+<p>The v1 planner should not receive repository exploration tools by
+default. If it cannot decide from the dossier, it should mark
+uncertainty and schedule deeper hunk/file review rather than opening
+files itself.</p>
+<p>Planner output should include the diff understanding, risk areas,
+targeted per-hunk coverage overrides, selected lenses, and
+partial-review disclosure when needed. The planner is not required to
+emit one coverage decision for every hunk; omitted reviewable hunks
+receive deterministic <code>normal</code> coverage with default
+core/language lenses in Stage 6.</p>
+<p>Findings claiming the implementation contradicts its declared intent
+must cite both the intent evidence and the changed-code behavior.</p>
+<p>The planner should also identify where surrounding-code inspection
+matters. It should not broadly read files itself by default; instead it
+should name the hunks, symbols, files, tests, or existing patterns that
+later stages should inspect. Examples include sibling methods that
+establish a consistency pattern, call sites affected by a changed API,
+tests for the changed behavior, or nearby lifecycle/resource-management
+code.</p>
+<p>The planner must not skip a reviewable changed hunk without a
+reason.</p>
+<p>The planner owns coverage and lens overrides. It should emit
+<code>light</code>, <code>normal</code>, <code>deep</code>, or
+<code>skip</code> decisions only for hunks where concrete evidence
+justifies non-default coverage, specific lenses, context hints, or a
+skip. Later stages may validate malformed planner output or apply
+deterministic default coverage to omitted hunks, but they should not
+become independent risk classifiers.</p>
+<p>Configured review depth should influence budgets and defaults, not
+replace judgment. A <code>light</code> run may still review a concrete
+critical-risk hunk at <code>normal</code>; a <code>deep</code> run may
+still skip generated files or keep mechanical hunks at
+<code>light</code>.</p>
+<h2 id="large-review-handling">Large Review Handling</h2>
+<p>codeninja must handle large PRs and large commit ranges without
+trying to fit the entire diff into one model context.</p>
+<p>V1 large-review handling is deliberately simple:</p>
+<ol type="1">
+<li>Build a complete deterministic inventory of changed files, hunks,
+languages, file processing facts, tests, generated files, configured
+labels/priorities, and any available changed symbols or static signals.
+The inventory is always complete even when model context is
+limited.</li>
+<li>Compact the planner dossier deterministically when it exceeds the
+planner budget: summarize per directory/package instead of per hunk, and
+record omitted detail with counts and reasons.</li>
+<li>If even the compacted dossier does not fit, split the inventory
+deterministically by package/directory and run the same planner prompt
+once per chunk, mechanically concatenating the per-hunk decisions. There
+is no meta-planner and no model-driven grouping in v1.</li>
+</ol>
+<p>Hierarchical planning — compact group summaries, per-group
+sub-planners, and a meta-planner that merges group plans — is deferred
+(see Future Considerations) until telemetry shows chunked planning
+degrading plan quality on real reviews.</p>
+<p>Every changed hunk should receive an explicit coverage decision:</p>
+<ul>
+<li><code>deep</code> for changes with strong risk evidence, such as
+configured critical paths, exported API/interface changes, migrations,
+lifecycle/concurrency-sensitive code identified by symbols or skills, or
+planner-inferred risks backed by concrete diff evidence.</li>
+<li><code>normal</code> for ordinary application logic.</li>
+<li><code>light</code> for low-risk or mostly mechanical changes.</li>
+<li><code>skip</code> for generated, vendored, or irrelevant changes,
+with a reason.</li>
+</ul>
+<p>If codeninja cannot review the full change set within the configured
+time or token budget, it should produce a partial-review result rather
+than pretending the review is complete. The stdout report and GitHub
+summary, when posted, must disclose reviewed hunk counts, skipped hunk
+counts, coverage levels, and the reason for partial coverage.</p>
+<h2 id="failure-and-budget-semantics">Failure And Budget Semantics</h2>
+<p>codeninja should degrade predictably when model calls fail or budgets
+run out. Completed review work must never be lost silently, and failures
+must surface in coverage disclosure rather than disappear.</p>
+<p>Per-stage LLM failure policy:</p>
+<ul>
+<li>Every structured LLM call gets one schema-repair retry.</li>
+<li>Stage 5 planner: if the planner call fails terminally, codeninja
+must fall back to a deterministic default plan — all reviewable hunks at
+<code>normal</code> coverage, core lenses plus the file’s language lens
+— and mark the run as degraded-planning in coverage disclosure. Later
+stages run normally.</li>
+<li>Stage 7 packet workers: transient or schema failures get one retry.
+Terminal failure marks the packet’s hunks as <code>review_failed</code>
+in coverage accounting, counts toward partial-review disclosure, and
+never silently drops hunks.</li>
+<li>Stage 9: verification failure rules are unchanged from the Stage 9
+section.</li>
+<li>Stage 10 composer: one repair retry. Terminal failure triggers a
+deterministic fallback composition — verified findings rendered with
+template wording, fingerprint-level grouping only, ranked by severity
+and confidence — with a disclosure note that semantic composition was
+skipped.</li>
+<li>Authentication or provider-wide failures at any stage fail the
+run.</li>
+</ul>
+<p>Budget exhaustion ladder, applying to <code>timeoutMs</code>,
+<code>maxTotalTokens</code>, and <code>maxModelCalls</code>:</p>
+<ul>
+<li>Budgets are checked before each new model call or worker
+dispatch.</li>
+<li>On exhaustion: stop scheduling new packet reviews, then verify
+already-produced candidates using the reserved budget slice, and always
+run composition and emit a partial-review disclosure.</li>
+<li>codeninja should reserve approximately 15% of the configured token
+and model-call budgets, and a fixed tail of the runtime budget, for
+Stages 9-10 so completed review work is never lost to exhaustion.</li>
+<li>A hard kill at 2x the configured runtime budget is fatal; even then
+codeninja should attempt to write telemetry artifacts before
+exiting.</li>
+<li>The run-level coverage status is owned by the orchestrator. It
+aggregates plan-time coverage, runtime failures, budget stops, and
+verification incompleteness into the final coverage summary, not only
+the planner’s partial-review flag.</li>
+<li>Successful runs should finalize as either
+<code>completed_full</code> or <code>completed_partial</code> in
+<code>run.json</code>. A partial run still exits <code>0</code> by
+default, but <code>run.json</code>, <code>telemetry.json</code>,
+<code>coverage.json</code>, and the Markdown report must include the
+budget stop reason and grouped unreviewed hunk paths when budget
+exhaustion caused the partial review.</li>
+</ul>
+<p>Provider rate limiting: 429 and transient 5xx responses should get up
+to 3 retries with exponential backoff, and retries count against
+budgets.</p>
+<p>Zero-work path: if the resolved diff is empty, or every changed file
+is filtered at Stage 2, codeninja should short-circuit after Stage 2,
+before Stage 3 (hence zero LLM calls and no classification work), print
+a “nothing to review” report including the filter summary, write
+telemetry, and exit <code>0</code>.</p>
+<h2 id="parallel-review-execution">Parallel Review Execution</h2>
+<p>codeninja should parallelize review work when doing so does not
+reduce review quality.</p>
+<p>V1 should support bounded concurrency for independent hunk/file
+review packets. Packets are independent by construction in v1 — workers
+have isolated context and packets never span files — so all packets may
+run concurrently up to the configured limit. Scheduling order is
+per-packet priority derived from coverage level and configured priority;
+under budget pressure, higher-priority packets are dispatched first. The
+planner does not emit scheduling groups in v1 (see Future
+Considerations).</p>
+<p>Parallel execution rules:</p>
+<ul>
+<li>Hunk/file candidate-generation passes may run concurrently.</li>
+<li>The planning pass must run before parallel packet review.</li>
+<li>Verification may run concurrently per candidate finding.</li>
+<li>Deduplication and final composition must run after
+verification.</li>
+<li>Concurrency must be configurable and have a safe default.</li>
+</ul>
+<p>The system should track which sub-agent or worker reviewed each
+packet so findings can be traced back to the exact stage, lens, packet,
+and source evidence that produced them.</p>
+<h2 id="stage-6-review-packet-construction">Stage 6: Review Packet
+Construction</h2>
+<p>For each relevant hunk or file, codeninja should construct a
+deterministic review packet before invoking reviewer lenses.</p>
+<p>A <code>ReviewPacket</code> is the unit of model review. Every packet
+contains one or more changed hunks. The packet kind explains why those
+hunks are reviewed together, such as a single hunk, nearby coalesced
+hunks, a small file diff, or a whole-file review.</p>
+<p>Review packet construction is deterministic in v1. It must not call
+the LLM and should not perform broad repository searches. It assembles
+planned hunk/file work orders from the diff, file facts,
+<code>HunkSymbolFacts</code>, compact local context, configured labels,
+planner notes, selected lenses, and tool budgets.</p>
+<p>Default packet construction should be hunk-first. Coalesce only
+nearby hunks in the same file or same enclosing symbol. Use
+file/whole-file packets for single-hunk files, small added files, small
+configured files, or explicit <code>processingMode = &quot;whole-file&quot;</code>
+rules.</p>
+<p>The packet builder validates and assembles planner decisions; it does
+not make primary risk decisions. If a reviewable hunk has no planner
+coverage, the packet builder quietly applies deterministic
+<code>normal</code> coverage with default core/language lenses. If the
+planner skips a reviewable hunk without a valid reason, the packet
+builder falls back to <code>normal</code> and records the malformed
+skip.</p>
+<p>Packet grouping should stay conservative in v1:</p>
+<ul>
+<li>Default to one packet per hunk.</li>
+<li>Coalesce only within the same file.</li>
+<li>Prefer coalescing hunks with the same enclosing symbol.</li>
+<li>Allow very nearby same-file hunks to coalesce when the combined
+packet stays below strict size limits.</li>
+<li>Do not create cross-file review packets in v1.</li>
+<li>Cross-file concerns are recorded as follow-up hints (see Stage
+8).</li>
+<li>Split packets back into smaller packets when patch or context size
+limits would be exceeded.</li>
+</ul>
+<p>Each packet should include:</p>
+<ul>
+<li>PR or diff summary.</li>
+<li>The declared intent of the change, fenced as data.</li>
+<li>File path and language.</li>
+<li>Packet kind: <code>hunk</code>, <code>coalesced-hunks</code>,
+<code>file-diff</code>, or <code>whole-file</code>.</li>
+<li>Coverage: <code>light</code>, <code>normal</code>, or
+<code>deep</code>.</li>
+<li>Selected lenses.</li>
+<li>One or more hunks with unified diff content.</li>
+<li>Absolute new-file line numbers for changed lines.</li>
+<li>Absolute old-file line numbers for removed lines.</li>
+<li>Diff side metadata for added, removed, and context lines.</li>
+<li>Changed line numbers.</li>
+<li>Deterministic enclosing symbol metadata when available.</li>
+<li>Rendered enclosing-symbol source, file outline, and likely tests
+when available.</li>
+<li>Surrounding-context hints from the planner or deterministic
+repository intelligence.</li>
+<li>Configured labels and advisory review-emphasis notes from Stage
+5.</li>
+</ul>
+<p>Review packets should be compact. They should not contain the whole
+repository or large unrelated file dumps.</p>
+<p>Stage 6 should include cheap deterministic surrounding context when
+it improves reviewer accuracy without blowing the context budget: the
+enclosing symbol source, a file outline, and likely tests. Richer
+pre-attached context — sibling symbols, AST summaries, nearby imports —
+is a Future Consideration; reviewers fetch that context on demand with
+read-only tools. Stage 6 should not perform broad repo exploration or
+try to prove findings.</p>
+<p>Deleted files and deletion-only hunks should produce review packets
+when they are reviewable. These packets should clearly mark that the
+changed content is old-side/deleted content, include removed-line
+numbers, and include base-revision context when available. Reviewers
+should focus on risks caused by removal: removed required behavior,
+removed tests, removed security checks, removed cleanup, removed
+exports, broken callers, stale references, and migration/config
+consequences.</p>
+<h2 id="stage-7-lens-review-execution">Stage 7: Lens Review
+Execution</h2>
+<p>Lens review execution is the candidate-generation stage. It runs
+selected lenses against planned review packets and produces structured
+candidate findings, follow-up hints, and uncertainties. It must not
+publish comments directly.</p>
+<p>V1 should run one composite review task per packet. If a packet has
+multiple selected lenses, those lenses should be included in one model
+task rather than running one model call per lens. This keeps cost and
+latency bounded while still letting language, core correctness, tests,
+and project-specific guidance work together.</p>
+<p>Packet reviews should run in a parallelizable sub-agent-like worker
+system owned by codeninja. The orchestration ideas can be informed by Pi
+subagent patterns such as focused child tasks, fresh or forked context,
+parallel workers, bounded background execution, progress/status
+tracking, artifacts, and compact result handoff, but codeninja should
+not depend on the <code>pi-subagents</code> package directly in v1. The
+parent orchestrator owns scheduling, concurrency, cancellation,
+telemetry, tool permissions, and result validation.</p>
+<p>Each packet worker should have:</p>
+<ul>
+<li>A stable worker id.</li>
+<li>One review packet.</li>
+<li>Selected lenses and projected skill guidance.</li>
+<li>A bounded read-only tool budget.</li>
+<li>A structured output schema.</li>
+<li>Isolated prompt context so workers do not share mutable conversation
+state.</li>
+<li>Telemetry and logs tied to the worker id, packet id, stage, and run
+id.</li>
+</ul>
+<p>Execution should be coverage-aware:</p>
+<ul>
+<li><code>simple</code>: one structured call with no repository tools,
+used for light packets or obvious mechanical changes.</li>
+<li><code>standard</code>: real read-only tool access with focused
+review instructions and a reduced normal-mode tool budget.</li>
+<li><code>investigate</code>: real read-only tool access, larger budget,
+and more focused investigation rounds for deep/high-risk packets.</li>
+</ul>
+<p>Standard and investigate packet reviewers may use the same read-only
+tool suite. The difference is budget, investigation depth, and
+prompting, not capability. Simple packets receive no repository tools
+and should return no findings unless the issue is clear from packet
+text.</p>
+<p>Stage 6 should deterministically prune low-value lenses before Stage
+7. The language lens remains the broad default for supported languages.
+<code>core/tests</code> should be kept for test files, deleted tests,
+static test signals, planner test risk, or important untested behavior;
+it should not be attached to every routine source packet.
+<code>core/code-review</code> should be kept for real source
+behavior/design risk, but mechanical import-only packets should usually
+be language-only/simple unless a configured priority, deep coverage, or
+planner review emphasis note promotes them.</p>
+<p>Reviewer workers should submit an empty finding list when the packet
+evidence is insufficient. They should use tools only to support, narrow,
+or reject a concrete changed-code concern, not for broad repository
+exploration.</p>
+<p>Packet reviewers should not review a hunk in isolation. They should
+use packet context first, then use read-only repository tools when
+needed to inspect the surrounding code that determines correctness:</p>
+<ul>
+<li>Enclosing symbols and relevant surrounding lines.</li>
+<li>Sibling functions, methods, classes, or modules that show local
+patterns.</li>
+<li>Call sites or references affected by the change.</li>
+<li>Tests for the changed behavior.</li>
+<li>Nearby setup, cleanup, lifecycle, authorization, configuration, or
+resource-management code.</li>
+<li>Existing patterns in the same file, package, or component.</li>
+</ul>
+<p>Tool use should remain bounded by the packet coverage and tool
+budget. Reviewers should inspect surrounding code to prove, narrow, or
+reject a concrete concern, not to conduct a broad exploratory audit.</p>
+<p>Skill and lens prompt content should be projected and capped for the
+review stage. codeninja should include only the guidance relevant to
+candidate generation rather than pasting entire large skill files into
+every packet prompt.</p>
+<p>After each packet review, codeninja should validate the structured
+result before sending candidates to verification. It should record
+schema failures, out-of-hunk anchors, missing evidence, low-confidence
+findings, tool calls, prompt size, token usage, runtime, and task status
+in telemetry. Findings outside the changed hunk should not be treated as
+inline candidates unless they can be re-anchored to a changed line with
+concrete evidence.</p>
+<h2 id="stage-8-cross-file-system-follow-up-review">Stage 8: Cross-File
+/ System Follow-Up Review</h2>
+<p>Stage 8 is a narrow targeted follow-up, not a broad whole-repo review
+pass. It promotes repeated, scoped Stage 7 follow-up hints into a small
+number of focused system review tasks. If no repeated scoped hints
+exist, Stage 8 records <code>system_review_skipped</code> and performs
+no model work.</p>
+<p>Packet reviewers emit structured follow-up hints when they need
+cross-file evidence they cannot resolve locally:</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> FollowUpHint <span class="op">=</span> {</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Specific cross-file question the packet reviewer could not resolve locally.</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>  question<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Files the reviewer believes are needed to answer the question.</span></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>  files<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Symbols, functions, types, methods, interfaces, or constants involved.</span></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Lenses that should be active if this hint becomes a system follow-up task.</span></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a>  suggestedLenses<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Why this follow-up is needed and what evidence triggered it.</span></span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a>  <span class="co">// Reviewer confidence that the follow-up is worth scheduling.</span></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a>  confidence<span class="op">:</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;low&quot;</span></span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<p>Hints must be pointer-rich. Vague hints such as “check architecture”
+should be rejected or ignored unless they include a specific question
+with named files or symbols.</p>
+<p>Stage 8 should:</p>
+<ul>
+<li>Ignore low-confidence hints.</li>
+<li>Group hints by normalized question plus concrete file/symbol
+scope.</li>
+<li>Require the same scoped question to appear from more than one packet
+before scheduling work.</li>
+<li>Cap work to a small number of tasks per run.</li>
+<li>Give each task the same read-only repository tool suite as packet
+review, under a stricter task budget.</li>
+<li>Produce either candidate findings, resolved hint notes, or no
+output.</li>
+<li>Send every Stage 8 candidate finding through Stage 9 verification
+before it can reach composition or publishing.</li>
+<li>Suppress duplicate human-attention notes only when Stage 8
+explicitly resolves the same scoped question.</li>
+</ul>
+<p>Hints that are not promoted, or that remain unresolved, are still
+recorded in telemetry. Medium- and high-confidence unresolved hints are
+surfaced in the final report as “needs human attention” notes so the
+cross-file question reaches a human reviewer instead of disappearing
+silently.</p>
+<h2 id="stage-9-candidate-verification">Stage 9: Candidate
+Verification</h2>
+<p>Candidate verification is the false-positive control stage. Candidate
+findings from packet reviewers are not publishable until they pass
+verification.</p>
+<p>Before spending LLM verifier calls, codeninja should run
+deterministic pre-verification gates:</p>
+<ul>
+<li>Validate candidate schema.</li>
+<li>Validate changed-line anchor when inline publication is
+requested.</li>
+<li>Reject or suppress candidates with no changed-code evidence.</li>
+<li>Reject or suppress candidates with no concrete failure mode.</li>
+<li>Suppress low-confidence candidates by default, except critical/high
+severity, which go to verification (the verifier is the right place to
+resolve uncertain-but-critical claims).</li>
+<li>Pre-cluster exact or obvious duplicate candidates so the verifier
+does not check the same issue repeatedly.</li>
+</ul>
+<p>Pre-clustering in this stage is a verifier scheduling optimization,
+not final deduplication. It may choose a representative candidate for
+identical or near-identical copies and preserve the losing candidates as
+lineage, but it must not perform semantic grouping, ranking, comment-cap
+enforcement, or final wording decisions. Those belong to final
+composition.</p>
+<p>Every surviving candidate should be verified by an independent LLM
+verifier by default. Verification may be disabled only through explicit
+configuration for faster local experimentation, not as the default v1
+behavior.</p>
+<p>The verifier receives one candidate at a time, its originating packet
+context, the relevant changed hunk(s), cited evidence, active lens
+criteria, and the read-only semantic tool suite. The verifier should use
+tools only to prove, narrow, or reject the candidate. It must not search
+for new issues.</p>
+<p>The verifier may inspect surrounding code, but only to validate the
+candidate’s specific claim. It should not expand into a new review pass
+or introduce unrelated findings.</p>
+<p>Verifier output should be structured:</p>
+<div class="sourceCode" id="cb11"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> VerificationVerdict <span class="op">=</span> {</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a>  candidateId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a>  verdict<span class="op">:</span> <span class="st">&quot;keep&quot;</span> <span class="op">|</span> <span class="st">&quot;reject&quot;</span> <span class="op">|</span> <span class="st">&quot;revise&quot;</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>  requiredEvidencePresent<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a>  falsePositiveRisk<span class="op">:</span> <span class="st">&quot;low&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;high&quot;</span></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>  finalFinding<span class="op">?:</span> CandidateFinding</span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>  revisedAnchor<span class="op">?:</span> DiffAnchor</span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>  verificationIncomplete<span class="op">?:</span> <span class="dt">boolean</span></span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<p>Verifier rules:</p>
+<ul>
+<li><code>keep</code> only when the issue is real, tied to changed
+behavior, sufficiently evidenced, and not style-only.</li>
+<li><code>reject</code> when evidence is missing, the issue is
+speculative, surrounding code mitigates it, it is outside the active
+lens scope, or it cannot be tied to changed behavior.</li>
+<li><code>revise</code> when the issue is real but severity, confidence,
+wording, evidence, suggested fix, suggested test, or publication mode
+should be narrowed.</li>
+<li>Preserve candidate lineage when revising so telemetry can trace the
+final finding back to the original packet, lens, and candidate.</li>
+<li>Preserve the original validated anchor unless the verifier proposes
+a new anchor that also validates against a changed diff line.</li>
+<li>If a real issue cannot be anchored to a changed line, convert it to
+a summary-only finding rather than an inline comment.</li>
+</ul>
+<p>Verification failure should be conservative:</p>
+<ul>
+<li>Authentication or provider-wide failures should fail the run or mark
+the review incomplete.</li>
+<li>Individual verifier schema/parse failures should get one repair
+attempt.</li>
+<li>Candidates that remain unverified after retry should be marked
+<code>verificationIncomplete</code> and suppressed from publication by
+default.</li>
+<li>The final report should disclose verification incompleteness when it
+affects review coverage or suppressed high-severity candidates.</li>
+</ul>
+<p>Verification should run with bounded concurrency and record telemetry
+for every candidate: pre-gate decision, verifier prompt size, tool
+calls, token usage, runtime, verdict, revision details, rejection
+reason, and incomplete-verification reason.</p>
+<p>The output of this stage is a set of verified, rejected, revised, or
+incomplete findings with traceable lineage. Stage 9 does not decide the
+final review shape.</p>
+<h2 id="repository-tools">Repository Tools</h2>
+<p>Reviewer and verifier passes should receive tools for targeted
+repository exploration instead of raw full-repo context.</p>
+<p>V1 tools should be read-only by default. They should feel like
+familiar read/list/search tools, but each tool should have a stable
+semantic contract independent of the backend used to answer it.</p>
+<p>The repository tool layer should support pluggable backends:</p>
+<ul>
+<li>Tree-sitter backend: preferred when a grammar is available for the
+file language. It should provide symbols, enclosing blocks, imports,
+syntax-aware snippets, and structured source ranges.</li>
+<li>Text backend: required fallback for every repository. It should use
+git plumbing reads and <code>git grep</code> at the reviewed revisions,
+bundled ripgrep as a fast path when the checkout matches the reviewed
+head, file listing, line windows, and simple filename/test conventions
+when tree-sitter is unavailable or parsing fails.</li>
+<li>Language analyzer backend: optional future enrichment for languages
+where deeper semantic analysis is available.</li>
+</ul>
+<p>Callers should not need to know which backend answered a tool call.
+Tool results should include backend provenance such as
+<code>tree-sitter</code>, <code>text</code>, or
+<code>language-analyzer</code>, precision such as <code>exact</code>,
+<code>semantic</code>, <code>syntactic</code>, <code>heuristic</code>,
+or <code>text</code>, and degraded-result metadata when a semantic
+request falls back to an approximate implementation.</p>
+<p>Minimum required v1 tools:</p>
+<ul>
+<li><code>read_range(path, startLine, endLine, source?)</code>.</li>
+<li><code>read_file_outline(path, source?)</code>.</li>
+<li><code>read_symbol(path, symbolName | line, source?)</code>.</li>
+<li><code>find_definition(symbolName, pathGlob?, source?)</code>.</li>
+<li><code>read_diff_blocks(packetId | path)</code>.</li>
+<li><code>search_files(query, pathGlob?, contextMode)</code>, where
+<code>contextMode</code> can return no context, line windows, or
+enclosing symbols.</li>
+<li><code>find_symbol_mentions(symbolName, pathGlob?, source?)</code>.</li>
+<li><code>find_likely_tests(path | symbol, source?)</code>.</li>
+<li><code>list_files(glob)</code>.</li>
+</ul>
+<p>Expected backend behavior:</p>
+<ul>
+<li><code>read_range</code> uses file/git reads and does not require
+tree-sitter.</li>
+<li><code>read_file_outline</code> uses tree-sitter when available to
+return package/module name, imports, top-level symbols, classes/types,
+functions/methods, and test markers; it falls back to extension/name
+heuristics and a compact text outline.</li>
+<li><code>read_symbol</code> uses tree-sitter when available; given a
+line selector it returns the enclosing symbol; falls back to exact-name
+text search plus bounded line windows.</li>
+<li><code>find_definition</code> uses <code>git grep</code> to find
+candidate files at the reviewed revision, then tree-sitter parsing to
+return only definition sites; it falls back to text matches marked
+degraded when parsing is unavailable. Import questions are answered by
+<code>read_file_outline</code>, which includes the file’s imports.</li>
+<li><code>read_diff_blocks</code> uses parsed diff data and does not
+require tree-sitter.</li>
+<li><code>search_files</code> uses <code>git grep</code> at the reviewed
+revision (or bundled ripgrep when the checkout matches the reviewed
+head) for discovery, then may enrich matches with tree-sitter enclosing
+symbols when <code>contextMode</code> asks for semantic context.</li>
+<li><code>find_symbol_mentions</code> uses syntax-aware identifier
+matching when available and <code>git grep</code> at the reviewed
+revision otherwise (ripgrep only as the checkout-matching fast path). It
+does not claim compiler-grade reference resolution unless a language
+analyzer backend explicitly marks the result as semantic or exact.</li>
+<li><code>find_likely_tests</code> combines test filename conventions
+with symbol extraction when available and filename/path heuristics
+otherwise.</li>
+<li><code>list_files</code> uses filesystem/git listing and does not
+require tree-sitter.</li>
+</ul>
+<p>Source-reading tools should read from the resolved head revision
+through git by default, and support base-revision reads when the review
+target has a base revision. The checked-out worktree must not be trusted
+as review content unless it matches the reviewed head revision; reading
+the worktree directly is an optional fast path only when HEAD equals the
+reviewed head and the relevant files are unmodified. Base reads are
+required for reviewing deleted files and removed-line context when local
+git can provide the content.</p>
+<p>Tool outputs must be capped by count and characters. They should
+include file paths, line numbers, backend provenance, and degradation
+notes. They should prefer semantic source blocks over whole files, and
+record truncation or omitted-result counts in telemetry.</p>
+<p>Tree-sitter should be the default cross-language syntax layer. It
+should enrich packets, changed-symbol extraction, and static signals
+where language grammars are available.</p>
+<p>Language-specific analyzers may enrich the common tool interface
+later, but v1 should remain useful with tree-sitter-backed support.</p>
+<p>Tree-sitter-backed tools provide syntax-aware evidence, not full
+semantic truth. Reviewers and verifiers may use
+<code>find_symbol_mentions</code> to discover likely call sites or
+affected code, but publishable findings still need changed-code evidence
+and surrounding-code confirmation.</p>
+<h2 id="telemetry-and-debug-traces">Telemetry And Debug Traces</h2>
+<p>codeninja needs first-class local telemetry so review quality, cost,
+latency, and failure modes can be analyzed during development and
+evaluation.</p>
+<p>Telemetry should be local by default. codeninja must not send source
+code, prompts, findings, or usage data to an external telemetry service
+unless the user explicitly configures such behavior in the future.</p>
+<p>codeninja should also have structured application logging. Logs are
+not a replacement for typed telemetry artifacts, but they should provide
+a readable chronological trace that humans or later LLM analysis can
+inspect.</p>
+<p>The logger should support <code>debug</code>, <code>info</code>,
+<code>warn</code>, and <code>error</code> levels, ISO timestamps, and
+structured metadata. Every log event emitted by the review pipeline must
+include:</p>
+<ul>
+<li><code>runId</code>.</li>
+<li><code>stage</code>, using the numeric stage from this spec, such as
+<code>1</code> for diff parsing or <code>7</code> for lens review
+execution.</li>
+<li><code>event</code>, a stable event name.</li>
+<li><code>message</code>, a concise human-readable summary.</li>
+<li>Relevant ids when available, such as <code>workerId</code>,
+<code>packetId</code>, <code>hunkId</code>, <code>path</code>,
+<code>candidateId</code>, <code>findingId</code>, <code>toolName</code>,
+or <code>lensId</code>.</li>
+</ul>
+<p>Normal stdout should stay focused on the final report or concise run
+summary. Debug/info logs should be written to local run files when
+enabled; warnings and errors may also be shown on stderr when
+useful.</p>
+<p>V1 telemetry should capture:</p>
+<ul>
+<li>Total runtime.</li>
+<li>Runtime per stage.</li>
+<li>Runtime per worker or sub-agent.</li>
+<li>Number of LLM provider calls.</li>
+<li>Token usage per LLM call when available.</li>
+<li>Aggregate prompt, completion, and total token usage.</li>
+<li>Model/provider used per call.</li>
+<li>Review packets generated.</li>
+<li>Lenses selected and skipped, including why.</li>
+<li>Coverage decisions for each hunk or file.</li>
+<li>Reviewed, skipped, and partially reviewed hunk counts.</li>
+<li>Every repository tool call, always on rather than debug-gated: tool
+name, normalized arguments (path, symbol, line range, query, glob,
+source revision), initiator (model-issued inside an LLM tool loop, or
+harness-issued by a deterministic stage), duration, status, result size
+and count, and the worker, packet, task, candidate, and model call that
+issued it.</li>
+<li>Tool backend provenance, precision, and degradation/truncation
+reasons for every tool call.</li>
+<li>Worker lifecycle events: scheduled, started, completed, failed,
+cancelled, retried, or timed out.</li>
+<li>Candidate findings produced.</li>
+<li>Verification verdicts.</li>
+<li>Findings rejected and rejection reasons.</li>
+<li>Deduplication/grouping decisions.</li>
+<li>GitHub posting attempts and results.</li>
+<li>Final-selection decisions and reasons for omitted verified
+findings.</li>
+<li>Local cache hits/misses when caching is enabled.</li>
+</ul>
+<p>Debug traces should make the review process inspectable. When
+enabled, codeninja should record step-by-step events describing:</p>
+<ul>
+<li>Current stage.</li>
+<li>File, hunk, symbol, or candidate finding being processed.</li>
+<li>Lens or skill being applied.</li>
+<li>Relevant line ranges.</li>
+<li>Tool calls made.</li>
+<li>What the reviewer found or rejected.</li>
+<li>Why a candidate finding was kept, revised, or suppressed.</li>
+</ul>
+<p>Debug traces may include source snippets, prompts, and model outputs,
+so they should be opt-in and written to local files rather than mixed
+into normal stdout output.</p>
+<p>Telemetry artifacts should support the eval workflow. An evaluator
+should be able to run codeninja against a real remote repository or
+branch, define expected findings externally, and inspect telemetry to
+understand whether misses came from packet construction, lens selection,
+tool behavior, model output, verification, deduplication, or final
+composition.</p>
+<p>Suggested local artifacts include:</p>
+<ul>
+<li><code>run.log</code> for structured application logs.</li>
+<li><code>events.jsonl</code> for structured stage events.</li>
+<li><code>model-calls.jsonl</code> and
+<code>model-calls-summary.json</code>.</li>
+<li><code>tool-calls.jsonl</code> (one structured record per tool call)
+and <code>tool-calls-summary.json</code> (per-tool and per-stage
+aggregates: counts, error/degradation rates, durations, result
+sizes).</li>
+<li><code>review-plan.json</code>.</li>
+<li><code>packets/&lt;packet-id&gt;.json</code> (one file per
+packet).</li>
+<li><code>candidate-findings.json</code>.</li>
+<li><code>verification.json</code>.</li>
+<li><code>final-selection.json</code>.</li>
+<li><code>final-findings.json</code>.</li>
+<li><code>cost-profile.json</code>.</li>
+<li>Debug prompt and model-result files when explicitly enabled.</li>
+</ul>
+<h2 id="eval-system">Eval System</h2>
+<p>codeninja should include an eval command for end-to-end quality
+testing against real repositories, fixture repositories, and previously
+captured artifacts.</p>
+<p>The v1 eval command should support:</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> eval <span class="at">--eval-dir</span> /path/to/evals</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--cache</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--no-cache</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> eval <span class="at">--from-artifacts</span> /path/to/eval/logs/42</span></code></pre></div>
+<p><code>--from-artifacts</code> re-scores a previously captured run
+directory against the case expectations without re-running the review;
+it is the only artifact-replay mode in v1.</p>
+<p>Eval cases should be YAML files stored outside the codeninja
+repository when they reference private or real customer-like
+repositories. A case may point at:</p>
+<ul>
+<li>An external local repository path.</li>
+<li>A fixture repository.</li>
+<li>A branch, commit, commit range, or PR target.</li>
+<li>Review settings such as depth, lenses, max findings, concurrency,
+cache on/off, verification on/off, provider/model/reasoning overrides,
+and telemetry/debug options.</li>
+<li>Expected final findings.</li>
+<li>Expected candidate findings.</li>
+<li>Findings that must not appear.</li>
+<li>Cost, runtime, model-call, prompt-size, and tool-call budgets.</li>
+</ul>
+<p>The eval runner should write incrementing run directories under the
+eval suite, such as <code>logs/1</code>, <code>logs/2</code>, and so on.
+Each run directory should include the rendered review output, structured
+application log, run info, telemetry artifacts, debug prompts/results
+when enabled, and comparison artifacts against the previous run when
+available.</p>
+<p>Eval scoring should not only report pass/fail. It should attribute
+every lost expected finding to one of four coarse loss labels:</p>
+<ul>
+<li>Missed before candidate generation.</li>
+<li>Lost at verification (pre-gate or verifier).</li>
+<li>Lost at composition (deduped, merged, or capped).</li>
+<li>Partial match (right file, wrong root cause).</li>
+</ul>
+<p>When an expected finding appears only as a follow-up hint, the scorer
+records the hint’s presence as supporting detail on the loss label
+rather than as a separate label.</p>
+<p>This eval system should reuse normal review artifacts rather than
+running a separate review engine. It should be suitable for private eval
+suites like real-repo regression cases, and for public fixture-based
+evals that can run in CI.</p>
+<h2 id="local-review-cache">Local Review Cache</h2>
+<p>The local review cache is a model-call cache. When enabled, LLM
+responses are cached locally, keyed by model, provider, and the
+normalized request: prompt content, tool definitions, and
+structured-output schema. Re-running an identical review, most commonly
+during development and eval iteration, replays identical calls from
+cache instead of spending provider tokens.</p>
+<p>The normalized request is the cache contract. The architecture
+enumerates the inputs that must flow into it (stage id, prompt template
+version, reasoning settings, skill content hashes, conversation prefix
+including tool results, tool budget, repository identity, review target
+revisions, and cache schema version) so that identical requests hit and
+anything prompt-affecting misses.</p>
+<p>The cache stores model interactions only. Deterministic stages are
+cheap to recompute and are not cached in v1. Cache hits and misses must
+be recorded in telemetry, and <code>codeninja eval --cache</code> /
+<code>--no-cache</code> toggle this cache per eval run.</p>
+<p>The cache is disabled by default and must be explicitly enabled in
+configuration or per run.</p>
+<h2 id="skills-and-lenses">Skills And Lenses</h2>
+<p>V1 skills and user-provided extensions should be Markdown files
+only.</p>
+<p>A skill defines review guidance, concrete checks, examples,
+false-positive rules, safe patterns, and output constraints. Skills
+should not be mostly persona text.</p>
+<p>A lens is the user-facing review perspective. A lens may map to one
+or more skills.</p>
+<p>Bundled v1 lenses should include:</p>
+<ul>
+<li>Core code review, which absorbs logic/correctness and
+architecture/design guidance as sections of one strong core skill.</li>
+<li>Tests.</li>
+<li>Go.</li>
+<li>TypeScript/JavaScript.</li>
+</ul>
+<p>Logic-bugs and architecture exist as sections of the
+<code>core</code> skill, not separate lenses, because v1 runs one
+composite review task per packet; separate lenses would not change what
+runs.</p>
+<p><code>core/code-review</code> explicitly includes
+security-correctness checks — injection, authorization gaps, secret
+handling, unsafe deserialization — in v1; dedicated security/domain
+lenses remain post-v1.</p>
+<p>Additional language and domain lenses, such as security, database,
+performance, and concurrency, may be added as bundled skills after
+v1.</p>
+<p>Style, formatting, naming, and lint-like lenses are disabled by
+default.</p>
+<h2 id="candidate-findings">Candidate Findings</h2>
+<p>Reviewer passes must produce structured candidate findings, not
+free-form comments.</p>
+<p>Each candidate finding must include:</p>
+<ul>
+<li>Title.</li>
+<li>Severity: critical, high, medium, or low.</li>
+<li>Confidence: high, medium, or low.</li>
+<li>Category.</li>
+<li>File path.</li>
+<li>GitHub/diff anchor metadata when available.</li>
+<li>Diff side: <code>RIGHT</code> for new/head lines or
+<code>LEFT</code> for removed/base lines.</li>
+<li>Whether the anchor is on a changed line.</li>
+<li>Evidence from changed code.</li>
+<li>Related code evidence when used.</li>
+<li>Concrete failure mode.</li>
+<li>Why the issue matters.</li>
+<li>Suggested fix when useful.</li>
+<li>Suggested test when useful.</li>
+<li>Verification notes.</li>
+</ul>
+<p>Rules:</p>
+<ul>
+<li>No evidence means no finding.</li>
+<li>No concrete failure mode means no finding.</li>
+<li>Low-confidence findings are suppressed by default.</li>
+<li>Medium-confidence findings may appear in stdout and GitHub
+comments.</li>
+<li>Style-only findings are suppressed unless explicitly enabled.</li>
+<li>Findings without a valid changed-line anchor or valid deleted-line
+old-side anchor must not be posted as inline GitHub comments.</li>
+</ul>
+<h2 id="stage-10-final-deduplication-ranking-and-composition">Stage 10:
+Final Deduplication, Ranking, And Composition</h2>
+<p>Stage 10 takes verified findings and turns them into the final
+review. This is the first stage that performs semantic deduplication,
+same-root-cause grouping, final ranking, comment-cap handling, and final
+wording.</p>
+<p>Stage 10 should:</p>
+<ul>
+<li>Deduplicate related findings.</li>
+<li>Group same-root-cause issues.</li>
+<li>Prefer the clearest changed-line anchor when multiple verified
+findings describe the same issue.</li>
+<li>Rank findings by severity, confidence, impact, evidence strength,
+and actionability.</li>
+<li>Apply the soft comment cap without hiding verified critical or
+high-severity findings only to satisfy the default limit.</li>
+<li>Rewrite comments into concise, staff-engineer-quality Markdown.</li>
+<li>Decide whether each final finding should be inline, summary-only, or
+suppressed from publication.</li>
+<li>Preserve lineage back to verified candidates, packets, lenses, and
+source evidence.</li>
+</ul>
+<p>The final composer should prefer no comments over weak comments. The
+default target is roughly 3-7 high-signal comments per PR, but this is a
+soft cap: verified critical and high-severity findings should not be
+hidden only to satisfy the default limit.</p>
+<p>The composer should produce a final review object containing:</p>
+<ul>
+<li>Review summary.</li>
+<li>Coverage summary, including partial-review disclosure when
+applicable.</li>
+<li>Final findings grouped by severity.</li>
+<li>File and line references.</li>
+<li>Evidence and failure mode for each finding.</li>
+<li>Suggested fix or suggested test when useful.</li>
+<li>Summary-only findings that cannot be anchored inline.</li>
+<li>“Needs human attention” notes for unresolved medium- and
+high-confidence follow-up hints (see Stage 8).</li>
+<li>A clear “no findings” result when no credible findings are
+found.</li>
+<li>Posting plan for GitHub mode.</li>
+</ul>
+<h3 id="stdout-output">Stdout Output</h3>
+<p>When <code>--post-github-comments</code> is not used, codeninja
+should print the final review as clean, structured Markdown to
+stdout.</p>
+<p>The Markdown report should include:</p>
+<ul>
+<li>Review summary.</li>
+<li>Coverage summary, including partial-review disclosure when
+applicable.</li>
+<li>Findings grouped by severity.</li>
+<li>File and line references.</li>
+<li>Evidence and failure mode for each finding.</li>
+<li>Suggested fix or suggested test when useful.</li>
+<li>“Needs human attention” notes for unresolved medium- and
+high-confidence follow-up hints.</li>
+<li>A clear “no findings” result when no credible findings are
+found.</li>
+</ul>
+<p>When <code>--format json</code> is used, codeninja should print the
+final review object as JSON to stdout instead of the Markdown report.
+The JSON output should carry the same content as the Markdown report:
+summary, coverage, final findings with anchors, evidence, failure modes,
+suggested fixes and tests, summary-only findings, and
+needs-human-attention notes. Suppressed findings are not part of the
+report in either format; they are recorded only in run artifacts.</p>
+<p>When <code>--post-github-comments</code> is used, stdout should not
+print the full report by default. It should print a concise run summary
+with counts, posting status, and any fatal or skipped-posting errors.
+When combined with <code>--format json</code>, that run summary should
+be emitted as JSON; its shape is the publisher’s posting record
+(<code>components/repository_and_github.md</code> owns it).</p>
+<h2 id="stage-11-github-publishing">Stage 11: GitHub Publishing</h2>
+<p>Stage 11 is optional and runs only when GitHub posting is
+requested.</p>
+<p>GitHub posting is opt-in with:</p>
+<div class="sourceCode" id="cb13"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--pr</span> 123 <span class="at">--post-github-comments</span></span></code></pre></div>
+<p>GitHub posting cannot be enabled from configuration in v1; it
+requires the explicit <code>--post-github-comments</code> flag on each
+run.</p>
+<p>When enabled, codeninja should:</p>
+<ul>
+<li>Post inline comments and the summary as a single GitHub review with
+event type <code>COMMENT</code>. codeninja must not approve or request
+changes in v1.</li>
+<li>Post inline comments for verified findings with valid changed-line
+anchors.</li>
+<li>Use <code>RIGHT</code> anchors for new/head-side lines and
+<code>LEFT</code> anchors for removed/base-side lines when GitHub
+accepts old-side review comments.</li>
+<li>Avoid posting low-confidence findings.</li>
+<li>Include medium-confidence and high-confidence findings.</li>
+<li>Include a short PR review body with the total finding count and any
+broad findings that cannot be anchored inline.</li>
+<li>Disclose partial coverage in the PR-level summary when the review
+did not cover the full change set.</li>
+<li>Avoid duplicate comments from previous codeninja runs when
+possible.</li>
+</ul>
+<p>Duplicate avoidance should use a stable fingerprint derived from
+durable finding identity (path, enclosing symbol or hunk identity,
+category, and lens), excluding model-authored wording. On rerun,
+codeninja should skip or update prior codeninja-authored comments when
+it can identify them safely.</p>
+<p>If a deleted-line or other inline anchor fails validation or GitHub
+rejects it, codeninja should move that finding to the PR review body
+rather than dropping it silently. This is especially important for
+deleted files, because valuable findings may be about removed behavior
+even when an inline anchor is unavailable.</p>
+<p>Posting requires the <code>gh</code> auth identity to have
+pull-request write access only; a fine-grained token or machine account
+is recommended for shared or CI use.</p>
+<p>V1 GitHub publishing should use <code>gh</code> and should be
+supported only for <code>--pr</code> mode. Branch, commit, and
+commit-range modes should not post GitHub comments in v1 unless a future
+option explicitly supplies PR posting context.</p>
+<h2 id="configuration">Configuration</h2>
+<p>The repository config file should be named:</p>
+<pre class="text"><code>codeninja.toml</code></pre>
+<p>This section covers the resolved configuration surface. Repo
+<code>codeninja.toml</code> may set only the safe subset described under
+Trust Boundaries; provider credentials, default provider/model, and
+reasoning effort come from CLI flags, environment variables, or
+user-scoped provider state.</p>
+<p>V1 configuration should support:</p>
+<ul>
+<li>Default base branch for branch review.</li>
+<li>Default review depth: <code>light</code>, <code>normal</code>, or
+<code>deep</code>.</li>
+<li>Independent verification on or off. Verification is enabled by
+default and may be disabled only through this explicit configuration,
+per Stage 9.</li>
+<li>Path-based file handling rules, including processing mode, review
+priority, labels, and reasons.</li>
+<li>Enabling and disabling lenses.</li>
+<li>Extra Markdown skill paths.</li>
+<li>Severity and confidence thresholds, including a minimum severity
+threshold for reported findings.</li>
+<li>Maximum findings (the report cap) and soft comment cap (the
+inline-comment target). Neither cap suppresses verified critical or
+high-severity findings.</li>
+<li>LLM runtime options for <code>@earendil-works/pi-ai</code>,
+including provider-call concurrency; one provider/model/reasoning
+configuration applies to the whole run. Repo <code>codeninja.toml</code>
+must not set provider credentials, default provider, default model, or
+reasoning effort.</li>
+<li>Runtime and per-pass timeouts.</li>
+<li>Maximum total token budget for a run.</li>
+<li>Maximum model calls per run.</li>
+<li>Review concurrency.</li>
+<li>Local review cache settings, with <code>--cache</code> /
+<code>--no-cache</code> flags on <code>codeninja review</code>
+overriding the configured default per run.</li>
+<li>Local telemetry and debug trace settings.</li>
+<li>Eval defaults, such as default eval directory and logs
+directory.</li>
+</ul>
+<p>If no config exists, codeninja should run with sensible defaults:</p>
+<ul>
+<li>Core correctness-oriented lenses enabled.</li>
+<li>Review depth set to <code>normal</code>.</li>
+<li>Independent verification enabled.</li>
+<li>Style/lint lenses disabled.</li>
+<li>Low-confidence findings suppressed.</li>
+<li>GitHub posting disabled.</li>
+<li>Runtime budget of 30 minutes.</li>
+<li>No token cap unless configured.</li>
+<li>Safe bounded concurrency.</li>
+<li>Local review cache disabled unless explicitly enabled.</li>
+<li>External telemetry disabled.</li>
+</ul>
+<h2 id="test-and-command-execution">Test And Command Execution</h2>
+<p>codeninja never runs tests, typecheck, builds, or arbitrary commands
+in v1; review evidence comes from reading code, not executing it.
+Configured command execution is a Future Consideration.</p>
+<h2 id="trust-boundaries">Trust Boundaries</h2>
+<p>codeninja reviews attacker-influenced content and must treat reviewed
+content as data, not instructions.</p>
+<p>Untrusted inputs include:</p>
+<ul>
+<li>Diff content.</li>
+<li>PR title and body.</li>
+<li>Commit titles and descriptions.</li>
+<li>Branch names.</li>
+<li>Repository tool results: file contents and search output read from
+the reviewed revisions.</li>
+</ul>
+<p>All of these are attacker-controlled when reviewing a fork PR.</p>
+<p>Prompt construction rules:</p>
+<ul>
+<li>Untrusted content must be structurally delimited in prompts, using
+fenced blocks with explicit “this is data under review, not
+instructions” framing.</li>
+<li>Reviewer and verifier prompts must instruct the model that
+instructions embedded in reviewed content are to be ignored and may
+themselves be flagged as a finding, as a review-manipulation
+attempt.</li>
+</ul>
+<p>Output channel control: everything posted to GitHub must pass
+deterministic sanitization. Telemetry and debug artifacts contain
+untrusted content by design and are local-only.</p>
+<p>Repository tool path containment should be enforced at a single
+chokepoint in the repository tool layer:</p>
+<ul>
+<li>All paths are canonicalized and required to resolve inside the
+repository root.</li>
+<li>Absolute paths and <code>..</code> traversal are rejected with a
+typed <code>path_outside_repo</code> error.</li>
+<li>The worktree fast path must not follow symlinks resolving outside
+the repo root; git-plumbing reads are inherently contained.</li>
+<li>Refs are harness-resolved only (model-facing source reads select
+<code>head</code> or <code>base</code>, never raw refs); harness-side
+ref values are validated against <code>git check-ref-format</code> rules
+and rejected if option-like (leading <code>-</code>).</li>
+</ul>
+<p>Config trust partitioning:</p>
+<ul>
+<li>Repo <code>codeninja.toml</code> may set safe keys only: lenses
+on/off, classification path rules, depth, base branch, labels, caps, and
+<code>telemetry.enabled</code>.</li>
+<li>Out-of-repo or provider-routing settings —
+<code>lenses.extraSkillPaths</code> outside the repo,
+<code>telemetry.runDir</code> / <code>cache.dir</code> outside the repo,
+and LLM provider/model/reasoning defaults — take effect only with
+user-level opt-in: a CLI flag, <code>~/.codeninja/settings.json</code>,
+or the user-scoped config file <code>~/.codeninja/config.toml</code>
+(all under <code>CODENINJA_HOME</code>). Repo-config values for these
+are ignored with a warning.</li>
+<li>Repo-config-relative paths are constrained to the repo root.</li>
+</ul>
+<p>Policy load revision: <code>codeninja.toml</code> and
+<code>.codeninja/skills/</code> always load from the trusted local
+checkout (the user’s working copy), never from the PR head revision. If
+the PR under review modifies policy files (config or skills), that
+should be surfaced to the planner as a risk signal and noted in the
+report.</p>
+<p>Subprocess hygiene for git, GitHub, and tool subprocess
+invocations:</p>
+<ul>
+<li>Never invoke through a shell.</li>
+<li>Always pass <code>--</code> before untrusted positional path or ref
+arguments.</li>
+<li>Reject argument values matching <code>^-</code>.</li>
+<li>Prefer SHAs over ref names when both are available; GitHub-supplied
+ref names are display-only.</li>
+</ul>
+<p>Credentials: provider API keys and OAuth/device-flow tokens come from
+environment variables or user-scoped provider auth state only
+(<code>~/.codeninja/auth.json</code>, overridable through
+<code>CODENINJA_HOME</code>), and repo <code>codeninja.toml</code> must
+reject credential-bearing fields at parse time. Auth material such as
+API keys, <code>gh</code> tokens, Authorization headers, OAuth tokens,
+and device-flow tokens must be stripped before anything is written to
+logs, telemetry, run artifacts, cache entries, debug traces, or error
+context.</p>
+<h2 id="error-handling">Error Handling</h2>
+<p>codeninja should fail clearly for:</p>
+<ul>
+<li>Not running inside a git worktree.</li>
+<li>Invalid or missing input mode.</li>
+<li>Missing <code>gh</code> CLI for GitHub PR mode.</li>
+<li><code>gh</code> authentication or permission failures.</li>
+<li>PR not found.</li>
+<li>PR head or base commits that cannot be resolved or fetched
+locally.</li>
+<li>Diff parsing failures.</li>
+<li>Unsupported or unavailable parser for a file language when no
+graceful fallback is possible.</li>
+<li>Config parse errors.</li>
+<li>No authenticated provider model available for the run, with a
+<code>codeninja provider login &lt;provider&gt;</code> hint.</li>
+</ul>
+<p>Parser or language-support failures for individual files should
+degrade gracefully when possible. codeninja may still review with raw
+diff context and basic file tools, but it should report degraded context
+in the run summary.</p>
+<h2 id="exit-codes">Exit Codes</h2>
+<p>V1 should not fail the process merely because review findings were
+found.</p>
+<p>Exit behavior:</p>
+<ul>
+<li>Exit <code>0</code> when review completes successfully, including
+when findings are present.</li>
+<li>Exit nonzero for runtime, configuration, authentication, parsing, or
+posting failures that prevent the requested operation from
+completing.</li>
+<li>Disclosed partial reviews and reviews with
+<code>verificationIncomplete</code> suppressions are successful
+completions and exit <code>0</code>. The disclosure lives in the report
+and artifacts (<code>completed_partial</code>), not the exit code.</li>
+</ul>
+<p>CI failure thresholds such as <code>--fail-on high</code> are out of
+scope for v1 unless explicitly added later.</p>
+<h2 id="future-considerations">Future Considerations</h2>
+<p>These designs are deliberately deferred from v1. They are recorded as
+target shapes to build only when telemetry or evals show the simple v1
+behavior falling short — never speculatively.</p>
+<ul>
+<li>Hierarchical planning. Compact group summaries, per-group
+sub-planners, and a meta-planner that merges group plans into one
+prioritized review plan. V1 uses a single planner call with
+deterministic dossier compaction and, when necessary, deterministic
+chunked planning with mechanical concatenation. Build when chunked
+planning measurably degrades plan quality on large reviews.</li>
+<li>Cross-packet review-signal index. Normalizing planner tasks, packet
+hints, candidate findings, and uncertainties into typed
+<code>ReviewSignal</code> records indexed by symbol, file, category, and
+configured labels, with graded promotion rules. This is the richer
+follow-on shape for the narrow Stage 8 repeated-hint rule. Build when
+the simple promotion rule misses real cross-file findings or produces
+noisy/duplicate system tasks.</li>
+<li>Broad cross-file/system review. The shipped Stage 8 only promotes
+repeated scoped packet hints into a few focused tasks. The broader
+target shape remains deferred: the planner may emit
+<code>systemFollowUpTasks</code>; packet hints, candidate findings, and
+uncertainties may be promoted through a typed signal index; each task
+carries a stable topic, sources, related packet ids, bounded file/symbol
+sets, lenses, priority, and a tool budget; system workers may inspect
+wider subsystem relationships under explicit constraints. Build when
+telemetry shows recurring medium/high-confidence hints left unresolved,
+or evals attribute missed findings to the narrow repeated-hint
+rule.</li>
+<li>Planner scheduling groups. Planner-emitted hunk groups carrying
+parallelism and ordering intent. V1 packets are independent by
+construction and scheduling is priority-only; groups become meaningful
+only if cross-packet context sharing or dependent review ordering is
+introduced.</li>
+<li>Changed-symbol graph edges. Caller, implements, imports, and test
+relationships between changed symbols (<code>SymbolEdge</code>,
+<code>ChangedSymbolGraph</code>). V1 ships <code>HunkSymbolFacts</code>
+and file outlines only; reviewers answer relationship questions on
+demand with <code>find_symbol_mentions</code> and
+<code>find_likely_tests</code>. Build when evals show reviewer or
+verifier misses attributable to missing precomputed relationship
+data.</li>
+<li>Language analyzer backends. Optional semantic enrichment (gopls,
+TypeScript compiler API, Rust Analyzer) behind the same repository tool
+contract, already anticipated by the tool layer’s backend and precision
+metadata.</li>
+<li>Diff-file review mode (<code>--diff &lt;path&gt;</code>). Reviewing
+a loose unified diff file with the worktree treated as head for source
+reads, per-hunk staleness validation of context lines against the
+worktree, and degraded-coverage disclosure for non-matching files. Build
+when a real consumer needs loose-patch review that
+<code>git apply</code> to a branch cannot serve.</li>
+<li>Spec/doc discovery and spec alignment. Deterministic discovery of
+repo-resident specs through configured <code>specs.paths</code> globs
+(path proximity to changed package roots, then filename/title keyword
+overlap; top 5 docs as capped snippets), plus <code>relevantSpecs</code>
+and <code>specAlignmentQuestions</code> on the planner’s diff
+understanding, with spec-alignment findings citing both the spec
+evidence and the changed-code behavior. V1 compares declared intent
+against inferred behavior only. Build when evals show intent-only
+alignment missing real spec violations.</li>
+<li>Human-thread awareness. Fetching existing PR review comments and
+threads, passing deterministically extracted and truncated summaries to
+the planner as hints (never findings), and composer acknowledgment of
+overlap with existing threads — without dropping verified findings or
+adopting an existing comment without codeninja’s own evidence and
+verification. V1 lists only codeninja’s own prior comments, for rerun
+duplicate avoidance. Build when codeninja is observed re-raising points
+humans already made on the thread.</li>
+<li>Configured command execution. Opt-in <code>tools.testCommands</code>
+for test/typecheck/build commands run with timeouts, results treated as
+evidence rather than automatic findings, enabled only through user-level
+trust. V1 never executes repository commands. Build when evals show
+findings that only execution evidence could confirm or reject.</li>
+<li>Per-role model/reasoning tiering. Optional per-role model and
+reasoning overrides (planner, packet reviewer, verifier, composer)
+supplied from user-level config or CLI. V1 runs one
+provider/model/reasoning configuration for the whole run. Build when
+evals identify roles where cheaper models or lower reasoning hold review
+quality.</li>
+<li>Rich pre-attached packet context. Sibling symbol names, AST
+summaries, nearby imports, and small examples of nearby established
+patterns assembled into packets at construction time. V1 packets carry
+enclosing-symbol source, a file outline, and likely tests; reviewers
+fetch the rest on demand with read-only tools. Build when tool-call
+telemetry shows reviewers repeatedly refetching the same local
+context.</li>
+<li>Per-language static-signal packs. Language-specific deterministic
+signal rules — ignored errors, concurrency primitives, migration files,
+resource cleanup, lifecycle-sensitive code — beyond the two v1
+cross-language rules. Build when evals show planner risk-targeting
+misses attributable to absent signals.</li>
+<li>Cost-based run budgets. A maximum-cost budget alongside tokens and
+model calls; in v1, unknown-cost calls counting zero made it a loophole,
+and the token budget covers the need. Build when Pi-reported pricing is
+reliable.</li>
+<li>Fine-grained eval attribution. The five-label loss taxonomy
+(candidate-only loss, verifier rejection, dedup/merge loss,
+selection-cap loss, and hint-only presence as first-class labels),
+verifier and deduplication/merge expectations in eval cases, and
+additional replay modes such as candidate-recall and merge-only replay.
+V1 scores four coarse loss labels and supports
+<code>--from-artifacts</code> re-scoring only. Build when coarse labels
+are insufficient to localize a regression.</li>
+</ul>
+<h2 id="out-of-scope-for-v1">Out Of Scope For V1</h2>
+<ul>
+<li>GitLab support.</li>
+<li>Reviewing uncommitted working-tree changes.</li>
+<li>Approving or requesting changes through GitHub reviews.</li>
+<li>Auto-fixing or editing code.</li>
+<li>Executable TypeScript skill packages from users.</li>
+<li>Full-repository prompt dumping.</li>
+<li>Running every lens on every hunk.</li>
+<li>Style, naming, formatting, or lint review by default.</li>
+<li>CI failure thresholds based on finding severity.</li>
+</ul>
+</body>
+</html>

@@ -398,7 +398,7 @@ If the dossier still exceeds the budget after step 4, planning chunks determinis
 Mechanical concatenation of per-chunk `ReviewPlan`s, in chunk-index order:
 
 - `coverage`: concatenated. Each hunk belongs to exactly one chunk, so no conflicts arise; a duplicate `hunkId` across chunks keeps the first decision and drops the rest with telemetry.
-- `riskAreas`: concatenated with exact-string deduplication (first occurrence wins).
+- `reviewEmphasis`: concatenated with exact-string deduplication on summary plus files (first occurrence wins).
 - `diffUnderstanding`: `declaredIntent` from chunk 1 (all chunks saw identical metadata); `inferredBehavior` joins distinct chunk values labeled by chunk root.
 - `partialReview`: `isPartial` is the OR; `reviewedHunks`/`totalHunks` summed; reasons joined.
 
@@ -424,7 +424,6 @@ On terminal planner failure (schema-invalid after repair, transient failure afte
 
 - `coverage`: every reviewable hunk of every kept file at `normal`, `reason: "degraded planning: deterministic default"`, `surroundingContextHints: []`.
 - Per-hunk `lenses`: the default lens set — enabled lenses whose ids begin with `core/`, plus the enabled language lens matching `FileFacts.language` for that file (`lang/go` for `go`, `lang/typescript` for TypeScript/JavaScript), in registry order.
-- `riskAreas: []`.
 - `diffUnderstanding`: `declaredIntent` is the PR title or first commit title (truncated, template-framed); `inferredBehavior: "unavailable (degraded planning)"`.
 - `partialReview` unset — the default plan covers all hunks; degradation is disclosed through `RunCoverageStatus.degradedPlanning` and a `reasons` entry, not through partial coverage.
 
@@ -472,7 +471,7 @@ Step 7 — size enforcement and truncation:
 
 Step 8 — packet coverage. `coverage` = the maximum coverage of included hunks, ordered `deep > normal > light`. (`skip` hunks never enter packets.)
 
-Step 9 — packet lenses and review profile. `lenses` = the deduplicated union of included hunks' lens lists. If the union exceeds `maxLensesPerPacket`, keep in priority order: the file's language lens, then `core/*` lenses in registry order, then remaining lenses by member frequency descending, then lexicographic; dropped lenses are recorded in telemetry. After that cap, deterministically prune low-value `core/tests` and `core/code-review` when another lens remains: keep `core/tests` for test files, deleted tests, static test signals, planner test hints/risk, or important untested behavior; keep `core/code-review` for real source behavior/design risk, not obvious mechanical import-only packets. Compute `reviewProfile` as `simple`, `standard`, or `investigate` from effective coverage, configured priority, planner hints, risk notes, and mechanical-change signals.
+Step 9 — packet lenses and review profile. `lenses` = the deduplicated union of included hunks' lens lists. If the union exceeds `maxLensesPerPacket`, keep in priority order: the file's language lens, then `core/*` lenses in registry order, then remaining lenses by member frequency descending, then lexicographic; dropped lenses are recorded in telemetry. After that cap, deterministically prune low-value `core/tests` and `core/code-review` when another lens remains: keep `core/tests` for test files, deleted tests, static test signals, planner test hints/risk, or important untested behavior; keep `core/code-review` for real source behavior/design risk, not obvious mechanical import-only packets. Compute `reviewProfile` as `simple`, `standard`, or `investigate` from effective coverage, configured priority, planner hints, review emphasis notes, and mechanical-change signals.
 
 Packet assembly details:
 
@@ -480,7 +479,7 @@ Packet assembly details:
 - `prSummary`: deterministic one-paragraph projection of dossier metadata (PR title or first commit title plus totals), capped 500 chars; it is data framing, not model output.
 - `PacketHunk` line data is copied from the parsed diff with absolute old/new numbers preserved exactly; `changedNewLineNumbers` (add lines) and `changedOldLineNumbers` (delete lines) are derived from `DiffLine` kinds.
 - `toolBudget` is assigned from the review-profile/coverage/depth table below.
-- `labels`, `riskNotes`: configured labels from `FileFacts`; risk notes from matching planner `riskAreas` entries (areas whose `files` include the packet path), truncated to 3 entries.
+- `labels`, `reviewEmphasisNotes`: configured labels from `FileFacts`; review emphasis notes from matching planner `reviewEmphasis` entries whose `files` include the packet path, truncated to 3 entries.
 - Every packet is persisted to `packets/<packet-id>.json` before Stage 7 dispatch.
 
 Tool budget table (implementation defaults; base budget by packet profile and coverage, then scaled by configured run depth — `light` depth halves values rounding down with a floor of 1 call / 1 round / 4000 chars for tool-capable profiles, `deep` depth multiplies by 1.5 rounding up):
