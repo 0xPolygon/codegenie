@@ -58,6 +58,7 @@ const KNOWN_ARTIFACTS = new Set([
   "file-filter-decisions.json",
   "file-facts.json",
   "review-plan.json",
+  "review-questions.json",
   "coverage.json",
   "budget-summary.json",
   "candidate-findings.json",

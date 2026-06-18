@@ -26,6 +26,7 @@ import type {
   SymbolRef,
   SymbolInfo,
   PacketContextQuality,
+  PacketReviewQuestion,
   ToolBudget,
   ToolResultMeta,
   IntentSignals
@@ -72,6 +73,7 @@ const SYMBOL_EXCERPT_WINDOW = 8;
 const MAX_SYMBOL_EXCERPT_CHARS = 2_500;
 const MAX_HINT_CONTEXT_CHARS = 2_000;
 const MAX_HINT_CONTEXT_LINES = 80;
+const MAX_REVIEW_QUESTIONS_PER_PACKET = 3;
 const CALL_SITE_MENTION_LOOKUP_LIMIT = 50;
 const CALL_SITE_CONTEXT_SYMBOL_LIMIT = 4;
 const MAX_STATIC_SIGNALS_PER_PACKET_HUNK = 5;
@@ -122,7 +124,20 @@ export async function buildReviewPackets(
     }
   }
 
-  telemetry.event({ stage: 6, level: "info", message: "stage_completed", data: { packets: packets.length, symbolContext: symbolContextMetrics } });
+  telemetry.event({
+    stage: 6,
+    level: "info",
+    message: "stage_completed",
+    data: {
+      packets: packets.length,
+      symbolContext: symbolContextMetrics,
+      reviewQuestions: {
+        emitted: plan.reviewQuestions?.length ?? 0,
+        attachedPackets: packets.filter((packet) => (packet.reviewQuestions ?? []).length > 0).length,
+        attachments: packets.reduce((sum, packet) => sum + (packet.reviewQuestions?.length ?? 0), 0)
+      }
+    }
+  });
   return packets;
 }
 
@@ -202,6 +217,7 @@ async function buildPacket(
   const patchChars = packetHunks.reduce((sum, hunk) => sum + hunk.contentWithLineNumbers.length, 0);
   const testCoverageDelta = buildTestCoverageDelta(first.file, planned.map((entry) => entry.hunk), first.facts, symbolFacts);
   const riskNotes = plan.riskAreas.filter((area) => area.files.includes(first.file.path)).slice(0, 3).map((area) => area.reason);
+  const reviewQuestions = attachReviewQuestions(plan.reviewQuestions ?? [], first.file.path, first.file.oldPath, symbolFacts, packetHunks);
   const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry, {
     coverage,
     reviewPriority,
@@ -282,6 +298,7 @@ async function buildPacket(
     ...(context.packetSymbols.length > 0 ? { packetSymbols: context.packetSymbols } : {}),
     relevantTests: context.relevantTests,
     surroundingContextHints: hintContext.workerHints,
+    ...(reviewQuestions.length > 0 ? { reviewQuestions } : {}),
     labels: first.facts.labels,
     riskNotes,
     toolBudget: scaleToolBudget(toolBudget(coverage, config.review.depth, reviewProfile), config.review.budgetMultiplier),
@@ -296,6 +313,19 @@ async function buildPacket(
         ? { fileContext: { mode: "file-diff", reason: "grouped file hunks" } }
         : {})
   };
+  if (reviewQuestions.length > 0) {
+    telemetry.event({
+      stage: 6,
+      level: "info",
+      message: "packet_review_questions_attached",
+      file: packet.path,
+      packetId: packet.id,
+      data: {
+        questionIds: reviewQuestions.map((question) => question.id),
+        count: reviewQuestions.length
+      }
+    });
+  }
   return packet;
 }
 
@@ -325,6 +355,69 @@ function deterministicDeclaredIntent(dossier: PlannerDossier): string {
     return commitTitle;
   }
   return "Review local diff.";
+}
+
+function attachReviewQuestions(
+  questions: ReviewPlan["reviewQuestions"],
+  path: string,
+  oldPath: string | undefined,
+  symbolFacts: HunkSymbolFacts[],
+  hunks: PacketHunk[]
+): PacketReviewQuestion[] {
+  if (questions === undefined || questions.length === 0) {
+    return [];
+  }
+  const packetPaths = new Set([path, ...(oldPath !== undefined ? [oldPath] : [])]);
+  const packetSymbols = new Set(symbolFacts.flatMap((fact) =>
+    [fact.enclosingSymbol, fact.signature].filter((value): value is string => value !== undefined && value.trim().length > 0)
+  ));
+  const hunkText = hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n").toLowerCase();
+
+  return questions
+    .map((question) => {
+      const fileMatches = question.files.filter((file) => packetPaths.has(stripLocationSuffix(file)));
+      const symbolMatches = question.symbols.filter((symbol) => matchesPacketSymbol(symbol, packetSymbols));
+      const textMentions = question.symbols.filter((symbol) => symbol.length > 0 && hunkText.includes(symbol.toLowerCase()));
+      const score = fileMatches.length * 6 + symbolMatches.length * 5 + textMentions.length * 2;
+      if (score <= 0) {
+        return undefined;
+      }
+      const reasons = [
+        ...(fileMatches.length > 0 ? [`file overlap: ${fileMatches.join(", ")}`] : []),
+        ...(symbolMatches.length > 0 ? [`symbol overlap: ${symbolMatches.join(", ")}`] : []),
+        ...(textMentions.length > 0 ? [`changed hunk mentions: ${textMentions.join(", ")}`] : [])
+      ];
+      return {
+        question,
+        score,
+        attached: {
+          ...question,
+          relevanceReason: reasons.join("; ")
+        }
+      };
+    })
+    .filter((entry): entry is { question: NonNullable<ReviewPlan["reviewQuestions"]>[number]; score: number; attached: PacketReviewQuestion } => entry !== undefined)
+    .sort((a, b) => b.score - a.score || a.question.id.localeCompare(b.question.id))
+    .slice(0, MAX_REVIEW_QUESTIONS_PER_PACKET)
+    .map((entry) => entry.attached);
+}
+
+function matchesPacketSymbol(symbol: string, packetSymbols: Set<string>): boolean {
+  const normalized = symbol.toLowerCase().trim();
+  if (normalized.length === 0) {
+    return false;
+  }
+  for (const packetSymbol of packetSymbols) {
+    const candidate = packetSymbol.toLowerCase();
+    if (candidate === normalized || candidate.includes(normalized) || normalized.includes(candidate)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function stripLocationSuffix(value: string): string {
+  return value.trim().replace(/:\d+(?:-\d+)?$/u, "");
 }
 
 function hunkFirstGroups(planned: PlannedHunk[], degradationReason?: string): PacketGroup[] {

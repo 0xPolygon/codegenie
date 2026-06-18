@@ -59,7 +59,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(submitToolNameForStage(7)).toBe("submit_review");
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
-    expect(SCHEMA_VERSIONS.submit_plan).toBe(1);
+    expect(SCHEMA_VERSIONS.submit_plan).toBe(2);
 
     const valid = {
       diffUnderstanding: { declaredIntent: "Small change", inferredBehavior: "The diff makes a small change." },
@@ -467,7 +467,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         runnerMessageVersion: "pi-runner-loop-v3",
         promptTemplateVersion: "debug-template",
         schemaName: "submit_review",
-        schemaVersion: 2,
+        schemaVersion: 3,
         toolChoice: "auto",
         messageCount: 1
       },

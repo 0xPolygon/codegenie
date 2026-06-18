@@ -83,6 +83,18 @@ const SurroundingContextHintSchema = Type.Object(
   { additionalProperties: false }
 );
 
+const ReviewQuestionSchema = Type.Object(
+  {
+    id: Type.String({ minLength: 1, maxLength: 120 }),
+    question: Type.String({ minLength: 1, maxLength: 1000 }),
+    whyItMatters: Type.String({ minLength: 1, maxLength: 1000 }),
+    files: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 20 }),
+    symbols: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 20 }),
+    evidenceHint: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 }))
+  },
+  { additionalProperties: false }
+);
+
 export const SubmitPlanSchema = Type.Object(
   {
     diffUnderstanding: Type.Object(
@@ -104,6 +116,7 @@ export const SubmitPlanSchema = Type.Object(
       ),
       { maxItems: 50 }
     ),
+    reviewQuestions: Type.Optional(Type.Array(ReviewQuestionSchema, { maxItems: 12 })),
     coverage: Type.Array(
       Type.Object(
         {
@@ -164,6 +177,7 @@ const SubmittedFindingSchema = Type.Object(
     suggestedFix: Type.Optional(Type.String({ maxLength: 4000 })),
     suggestedTest: Type.Optional(Type.String({ maxLength: 2000 })),
     verification: Type.String({ minLength: 1, maxLength: 2000 }),
+    reviewQuestionIds: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 120 }), { maxItems: 10 })),
     behaviorChange: Type.Optional(BehaviorChangeAssessmentSchema),
     intentEvidence: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 8 }))
   },
@@ -191,6 +205,33 @@ const StructuredUncertaintySchema = Type.Object(
   { additionalProperties: false }
 );
 
+const AnsweredReviewQuestionSchema = Type.Object(
+  {
+    questionId: Type.String({ minLength: 1, maxLength: 120 }),
+    answer: Type.String({ minLength: 1, maxLength: 1000 }),
+    confidence: ConfidenceSchema,
+    outcome: Type.Union([
+      Type.Literal("answered_no_issue"),
+      Type.Literal("candidate_finding"),
+      Type.Literal("partial"),
+      Type.Literal("not_applicable")
+    ]),
+    evidence: Type.Array(
+      Type.Object(
+        {
+          path: Type.String({ minLength: 1, maxLength: 500 }),
+          lines: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })),
+          whyRelevant: Type.String({ minLength: 1, maxLength: 1000 })
+        },
+        { additionalProperties: false }
+      ),
+      { maxItems: 8 }
+    ),
+    evidenceTrace: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 }))
+  },
+  { additionalProperties: false }
+);
+
 export const SubmitPacketReviewSchema = Type.Object(
   {
     reviewStatus: Type.Optional(Type.Union([
@@ -201,6 +242,7 @@ export const SubmitPacketReviewSchema = Type.Object(
     findings: Type.Array(SubmittedFindingSchema, { maxItems: 20 }),
     followUpHints: Type.Array(FollowUpHintSchema, { maxItems: 20 }),
     uncertainties: Type.Array(StructuredUncertaintySchema, { maxItems: 20 }),
+    answeredQuestions: Type.Optional(Type.Array(AnsweredReviewQuestionSchema, { maxItems: 10 })),
     noFindingReason: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
     unresolvedQuestions: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 10 }))
   },
@@ -264,8 +306,8 @@ export type SubmitVerificationVerdict = Static<typeof SubmitVerificationVerdictS
 export type SubmitComposition = Static<typeof SubmitCompositionSchema>;
 
 export const SCHEMA_VERSIONS = {
-  submit_plan: 1,
-  submit_review: 2,
+  submit_plan: 2,
+  submit_review: 3,
   submit_system_review: 1,
   submit_verdict: 1,
   submit_composition: 1

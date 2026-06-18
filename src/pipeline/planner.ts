@@ -25,6 +25,7 @@ import type {
   PlannerDossier,
   RepositoryIndex,
   ReviewPriority,
+  ReviewQuestion,
   ReviewPlan,
   StaticSignal
 } from "../types.js";
@@ -55,6 +56,9 @@ export type PlannerRunResult = {
 
 const STATIC_SIGNALS_PER_HUNK = 5;
 export const MAX_DOSSIER_PROMPT_CHARS = 120_000;
+const MAX_REVIEW_QUESTIONS = 12;
+const MAX_REVIEW_QUESTION_FILES = 20;
+const MAX_REVIEW_QUESTION_SYMBOLS = 20;
 
 export async function buildPlannerDossier(
   resolved: { mode: PlannerDossier["mode"]; baseRef?: string; headRef?: string; headSha?: string; mergeBase?: string; pr?: PlannerDossier["pr"]; commits: Array<{ sha: string; title: string; body: string }> },
@@ -308,7 +312,7 @@ function buildPlannerSchemaRepairPrompt(
     `Validation error: ${input.error}`,
     "You must call submit_plan exactly once with one complete schema-valid ReviewPlan.",
     "Do not split the plan across multiple submit_plan calls. Do not answer in plain text.",
-    "If the invalid submit_plan calls contain useful risk areas or coverage entries, merge them into the single corrected plan.",
+    "If the invalid submit_plan calls contain useful risk areas, reviewQuestions, or coverage entries, merge them into the single corrected plan.",
     input.extraToolNames.length > 0
       ? `The invalid response also called non-submit tools, which are ignored in Stage 5 repair: ${input.extraToolNames.join(", ")}.`
       : "No repository tools are available in Stage 5 repair.",
@@ -641,6 +645,7 @@ function mergeChunkPlans(
   }
 
   const riskAreas = dedupeByJson(plans.flatMap((plan) => plan.riskAreas));
+  const reviewQuestions = dedupeReviewQuestions(plans.flatMap((plan) => plan.reviewQuestions ?? [])).slice(0, MAX_REVIEW_QUESTIONS);
   const behaviors = dedupe(
     plans.map((plan, index) => {
       const root = chunks[index]?.prompt.compaction.chunkRoot ?? `chunk-${String(index + 1)}`;
@@ -657,6 +662,7 @@ function mergeChunkPlans(
     },
     ...(plans[0]?.intentSignals !== undefined ? { intentSignals: plans[0].intentSignals } : {}),
     riskAreas,
+    ...(reviewQuestions.length > 0 ? { reviewQuestions } : {}),
     coverage,
     ...(partialPlans.length > 0
       ? {
@@ -966,6 +972,7 @@ function validatePlan(
   ]);
   const coverageByHunk = new Map<string, HunkCoverageDecision>();
   const coverageOrder: string[] = [];
+  const reviewQuestions = normalizeReviewQuestions(plan.reviewQuestions ?? [], dossier, telemetry);
 
   for (const decision of plan.coverage ?? []) {
     if (!knownHunks.has(decision.hunkId)) {
@@ -1041,6 +1048,7 @@ function validatePlan(
       ...area,
       suggestedLenses: area.suggestedLenses.filter((lens) => enabledLensIds.has(lens))
     })),
+    ...(reviewQuestions.length > 0 ? { reviewQuestions } : {}),
     coverage: coverageOrder.flatMap((hunkId) => {
       const decision = coverageByHunk.get(hunkId);
       return decision === undefined ? [] : [decision];
@@ -1055,6 +1063,163 @@ function sameCoverageDecision(a: HunkCoverageDecision, b: HunkCoverageDecision):
     JSON.stringify([...a.lenses].sort()) === JSON.stringify([...b.lenses].sort()) &&
     JSON.stringify(dedupeByJson(a.surroundingContextHints)) === JSON.stringify(dedupeByJson(b.surroundingContextHints)) &&
     a.reason === b.reason;
+}
+
+function normalizeReviewQuestions(
+  questions: ReviewQuestion[],
+  dossier: PlannerDossier,
+  telemetry: TelemetryRecorder
+): ReviewQuestion[] {
+  const knownFiles = new Set(dossier.files.flatMap((file) => [file.path, ...(file.oldPath !== undefined ? [file.oldPath] : [])]));
+  const knownSymbols = new Set(dossier.files.flatMap((file) =>
+    file.hunks.flatMap((hunk) => [
+      hunk.symbolFacts?.enclosingSymbol,
+      hunk.symbolFacts?.signature
+    ]).filter((value): value is string => value !== undefined && value.trim().length > 0)
+  ));
+  const normalized: ReviewQuestion[] = [];
+  const seen = new Set<string>();
+
+  for (const question of questions.slice(0, MAX_REVIEW_QUESTIONS * 2)) {
+    const text = normalizeWhitespace(question.question);
+    const whyItMatters = normalizeWhitespace(question.whyItMatters);
+    const files = cleanStrings(question.files)
+      .map(stripLocationSuffix)
+      .filter((file) => knownFiles.has(file))
+      .slice(0, MAX_REVIEW_QUESTION_FILES);
+    const symbols = cleanStrings(question.symbols)
+      .filter((symbol) => knownSymbols.size === 0 || knownSymbols.has(symbol) || symbolMentionedInDossier(symbol, dossier))
+      .slice(0, MAX_REVIEW_QUESTION_SYMBOLS);
+    const evidenceHint = question.evidenceHint === undefined ? undefined : normalizeWhitespace(question.evidenceHint);
+    const id = normalizeQuestionId(question.id, text, normalized.length + 1);
+    const dropReason =
+      text.length === 0
+        ? "empty_question"
+        : whyItMatters.length === 0
+          ? "empty_why_it_matters"
+          : files.length === 0 && symbols.length === 0
+            ? "no_known_files_or_symbols"
+            : isVagueReviewQuestion(text)
+              ? "vague_question"
+              : undefined;
+    if (dropReason !== undefined) {
+      telemetry.event({
+        stage: 5,
+        level: "warn",
+        message: "planner_review_question_dropped",
+        data: {
+          reason: dropReason,
+          id: question.id,
+          question: text,
+          files: question.files,
+          symbols: question.symbols
+        }
+      });
+      continue;
+    }
+
+    const key = `${normalizeQuestionForDedupe(text)}|${files.join(",")}|${symbols.join(",")}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    normalized.push({
+      id,
+      question: text,
+      whyItMatters,
+      files,
+      symbols,
+      ...(evidenceHint !== undefined && evidenceHint.length > 0 ? { evidenceHint } : {})
+    });
+    if (normalized.length >= MAX_REVIEW_QUESTIONS) {
+      break;
+    }
+  }
+
+  if (questions.length > 0) {
+    telemetry.event({
+      stage: 5,
+      level: "info",
+      message: "planner_review_questions",
+      data: {
+        submitted: questions.length,
+        kept: normalized.length,
+        maxQuestions: MAX_REVIEW_QUESTIONS
+      }
+    });
+  }
+
+  return normalized;
+}
+
+function dedupeReviewQuestions(questions: ReviewQuestion[]): ReviewQuestion[] {
+  const seen = new Set<string>();
+  const result: ReviewQuestion[] = [];
+  for (const question of questions) {
+    const key = `${normalizeQuestionForDedupe(question.question)}|${cleanStrings(question.files).join(",")}|${cleanStrings(question.symbols).join(",")}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(question);
+  }
+  return result;
+}
+
+function normalizeQuestionId(id: string, question: string, index: number): string {
+  const normalized = id.trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.:-]+/gu, "-")
+    .replace(/^-+|-+$/gu, "")
+    .slice(0, 80);
+  if (normalized.length > 0) {
+    return normalized;
+  }
+  const words = question.toLowerCase()
+    .replace(/[^a-z0-9]+/gu, " ")
+    .trim()
+    .split(/\s+/u)
+    .slice(0, 8)
+    .join("-");
+  return words.length > 0 ? `q${String(index)}-${words}`.slice(0, 80) : `q${String(index)}`;
+}
+
+function normalizeQuestionForDedupe(question: string): string {
+  return normalizeWhitespace(question)
+    .toLowerCase()
+    .replace(/[`"'’]/gu, "")
+    .replace(/[^a-z0-9_./:-]+/gu, " ")
+    .trim();
+}
+
+function normalizeWhitespace(input: string): string {
+  return input.trim().replace(/\s+/gu, " ");
+}
+
+function cleanStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))].sort();
+}
+
+function stripLocationSuffix(value: string): string {
+  return value.trim().replace(/:\d+(?:-\d+)?$/u, "");
+}
+
+function symbolMentionedInDossier(symbol: string, dossier: PlannerDossier): boolean {
+  const needle = symbol.toLowerCase();
+  return dossier.files.some((file) =>
+    file.hunks.some((hunk) =>
+      hunk.header.toLowerCase().includes(needle) ||
+      (hunk.excerpt ?? "").toLowerCase().includes(needle) ||
+      (hunk.symbolFacts?.enclosingSymbol ?? "").toLowerCase().includes(needle) ||
+      (hunk.symbolFacts?.signature ?? "").toLowerCase().includes(needle)
+    )
+  );
+}
+
+function isVagueReviewQuestion(question: string): boolean {
+  const normalized = normalizeQuestionForDedupe(question).replace(/[?.!]+$/u, "");
+  return /^(review|check|verify|inspect)\s+(this|the)\s+(file|change|diff|code|hunk)s?$/u.test(normalized) ||
+    /^(is|are)\s+(this|these)\s+(safe|ok|correct)$/u.test(normalized);
 }
 
 function mergeDuplicateDecision(

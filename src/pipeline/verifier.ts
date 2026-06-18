@@ -516,7 +516,7 @@ async function verifyCandidate(
   const skills = opts.lensRegistry.skillsForLens(candidate.producedBy.lensId);
   const prompt = opts.promptBuilder.buildVerifierPrompt({
     candidate,
-    originContext: packet?.contextText ?? "",
+    originContext: verificationOriginContext(candidate, packet),
     hunksText: packet?.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n") ?? "",
     ...(packet?.intentSignals !== undefined ? { intentSignals: packet.intentSignals } : {}),
     skills
@@ -539,6 +539,29 @@ async function verifyCandidate(
     ...(normalized.behaviorChange !== undefined ? { behaviorChange: normalized.behaviorChange } : {}),
     ...(normalized.intentEvidence !== undefined ? { intentEvidence: normalized.intentEvidence } : {})
   };
+}
+
+function verificationOriginContext(candidate: CandidateFinding, packet: ReviewPacket | undefined): string {
+  if (!packet) {
+    return "";
+  }
+  const linkedQuestionIds = new Set(candidate.reviewQuestionIds ?? []);
+  const linkedQuestions = (packet.reviewQuestions ?? []).filter((question) => linkedQuestionIds.has(question.id));
+  if (linkedQuestions.length === 0) {
+    return packet.contextText;
+  }
+  const questionContext = stableJson(linkedQuestions.map((question) => ({
+    id: question.id,
+    question: question.question,
+    whyItMatters: question.whyItMatters,
+    files: question.files,
+    symbols: question.symbols,
+    evidenceHint: question.evidenceHint,
+    relevanceReason: question.relevanceReason
+  })));
+  return [packet.contextText, `Linked planner review questions:\n${questionContext}`]
+    .filter((part) => part.trim().length > 0)
+    .join("\n\n");
 }
 
 function normalizeSubmittedVerdict(
@@ -807,6 +830,7 @@ function revisedFinding(
     ...(submitted.behaviorChange !== undefined ? { behaviorChange: submitted.behaviorChange } : {}),
     ...(submitted.intentEvidence !== undefined ? { intentEvidence: submitted.intentEvidence } : {}),
     producedBy: original.producedBy,
+    ...(original.reviewQuestionIds !== undefined ? { reviewQuestionIds: original.reviewQuestionIds } : {}),
     ...(original.clusterId !== undefined ? { clusterId: original.clusterId } : {}),
     ...(original.duplicateOf !== undefined ? { duplicateOf: original.duplicateOf } : {})
   };
