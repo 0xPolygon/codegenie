@@ -1,7 +1,7 @@
 # Issue 60: Preserve Planner Concerns As Review Obligations
 
 Status: COMPLETE
-Planned from: trails-api eval runs `49f4645b/logs/8` and `0c4d5213/logs/24`, 2026-06-17
+Planned from: trails-api eval runs `49f4645b/logs/8`, `49f4645b/logs/9`, and `0c4d5213/logs/24`, 2026-06-17
 Recommended priority: high, because Stage 5 concerns must survive into review without reducing Stage 7 direct-candidate recall
 
 ## Problem
@@ -30,6 +30,16 @@ A later larger eval, `0c4d5213/logs/24`, showed the opposite side of the same pr
 
 This means review questions are mechanically useful, but they must not become a softer alternative to candidate findings. If answering a review obligation reveals a concrete changed-code failure mode, Stage 7 should emit a candidate and let Stage 9 verify it. Stage 8 is a backstop for unresolved cross-packet evidence, not a replacement for Stage 7 recall.
 
+After the first implementation, eval run `49f4645b/logs/9` showed the remaining edge clearly:
+
+- Stage 5 identified the material risk area `Quote output amount scaling (ToAmount/ToAmountMin/USD)`.
+- The synthesized review questions only covered collateral scaling and `scaleAmount` aliasing.
+- Stage 6 attached those narrower questions to the relevant Hyperlane packets and also to the postmortem documentation packet.
+- Stage 7 noticed exact-output truncation, but answered the narrower collateral question as no issue and produced zero candidates.
+- Stage 8 resolved only the collateral question and never inspected the separate advertised-output / `ToAmountMin` contract.
+
+So the completed Issue 60 implementation made concerns more durable, but it still needs a follow-up guard: every material planner risk area should either become a review question / packet obligation, be represented by another already-attached question, or be explicitly recorded as omitted with a reason. That follow-up belongs with Issue 63's ownership work rather than reopening this completed implementation plan.
+
 ## Goal
 
 Make concrete planner concerns durable across the review pipeline.
@@ -42,6 +52,7 @@ The desired behavior is:
 - Stage 7 should not convert concrete defects into follow-up-only output merely because the defect was discovered while answering a question.
 - Stage 8 should be able to run a narrow follow-up for unresolved material obligations even when no repeated follow-up hint exists.
 - Stage 9 should remain strict and decide only from evidence.
+- Material risk areas that are not converted into review obligations should be visible in artifacts with an omission reason.
 
 This must stay generic. The implementation should not encode a risk taxonomy, target repo, target language, or eval-specific symbols.
 
@@ -85,6 +96,7 @@ After normal planner schema validation and `validatePlan` normalization:
 1. Keep any planner-authored `reviewQuestions` that survive normalization.
 2. If the plan has zero review questions, synthesize a small number from material risk areas.
 3. If the plan has some review questions, optionally synthesize only for high-value risk areas that are clearly unrepresented.
+4. Record unrepresented material risk areas and why they were not synthesized or attached.
 
 Start conservatively:
 
@@ -127,6 +139,8 @@ Useful fields:
 - existing question count,
 - synthesized count,
 - source risk area names,
+- represented risk area names,
+- omitted material risk area names and reasons,
 - skipped reasons,
 - max question cap.
 
@@ -247,6 +261,7 @@ Do not keep a finding merely because a planner question existed.
 - planner-authored questions,
 - synthesized questions,
 - skipped synthesis reasons,
+- represented and omitted material risk areas,
 - packet attachments,
 - Stage 7 answers,
 - Stage 8 tasks and results,

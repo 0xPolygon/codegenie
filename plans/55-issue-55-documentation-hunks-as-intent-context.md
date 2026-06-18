@@ -1,8 +1,8 @@
 # Issue 55: Treat Documentation Hunks as Intent Context
 
 Status: PENDING
-Planned from: trails-api eval run 49f4645b/logs/1, 2026-06-17
-Recommended priority: small reporting/context correctness improvement after the current eval stabilization work
+Planned from: trails-api eval runs `49f4645b/logs/1` and `49f4645b/logs/9`, 2026-06-17
+Recommended priority: medium-high, because documentation packets are now creating noisy unresolved notes and should be converted into bounded intent context
 
 ## Problem
 
@@ -63,7 +63,14 @@ Run `49f4645b/logs/1` shows the issue clearly:
 - The final finding was exactly the kind of issue where postmortem/spec intent matters: the code may not fully satisfy the documented cross-decimal/exact-output behavior.
 - The final report marked the documentation skip as `Incomplete work`, even though the review was complete for executable code.
 
-This is not a core review-quality failure, but it is a product and telemetry clarity gap.
+Run `49f4645b/logs/9` shows the opposite failure mode:
+
+- The same postmortem became a standalone light Stage 7 review packet.
+- Code review questions were attached to that documentation packet even though the packet had no source tools and no executable code.
+- The packet produced partial answers and human-attention notes saying the Go implementation was not visible from the doc packet.
+- Stage 8 later resolved the related code question as no issue, but the final report still emitted a stale human-attention note from the documentation packet.
+
+So this is no longer just coverage wording. Documentation/spec/postmortem changes should be useful intent context for code packets, not standalone Stage 7 work by default.
 
 ## Design
 
@@ -155,6 +162,8 @@ type ReviewPacketIntentContext = {
 ```
 
 The excerpt should be small. Prefer headings, nearby changed lines, and lines mentioning changed symbols/files. Avoid dumping full documents unless they are tiny.
+
+Do not attach review questions directly to context-only documentation packets in normal operation. Instead, attach the documentation excerpt to the code packet that can answer the question. If a docs-only packet is created for an exceptional reason, it should not produce human-attention notes that survive after a code packet or Stage 8 task has resolved the same question.
 
 ### Stage 7: Packet Review
 
@@ -281,6 +290,8 @@ For the first pass, prefer built-in conservative defaults plus existing ignore p
    - Context-only doc excerpt attaches to same-subsystem code packet.
    - A doc/code contradiction can become a candidate when anchored to changed code.
    - Pure unrelated docs do not force Stage 7 packets.
+   - Review questions are not attached to context-only documentation packets when relevant code packets exist.
+   - Human-attention notes from context-only/docs-only packets are suppressed when a code packet or Stage 8 task resolves the same question.
    - Lock/generated files still skip as before.
 
 8. Validate on the Hyperlane eval.
