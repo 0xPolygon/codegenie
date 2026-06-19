@@ -13,6 +13,8 @@ import { scaleBudgetValue } from "../util/budget.js";
 const MAX_PROMOTIONS = 4;
 const MIN_PROMOTIONS_WHEN_AVAILABLE = 2;
 const MAX_EVIDENCE_CHARS = 2400;
+const MAX_RELATED_CONTEXT_EVIDENCE = 3;
+const MAX_RELATED_CONTEXT_EVIDENCE_CHARS = 1200;
 
 type PromotionInput = {
   packetResults: PacketReviewResult[];
@@ -42,6 +44,7 @@ export type PromotionDecision = {
   localityScore?: number;
   selectedBy?: PromotionSelectionReason;
   candidateId?: string;
+  relatedContextEvidenceCount?: number;
 };
 
 type PromotionSource = {
@@ -100,9 +103,11 @@ export async function promoteUncertaintiesForVerification(
     const existing = promotedByPacket.get(source.packet.id) ?? [];
     existing.push(candidate);
     promotedByPacket.set(source.packet.id, existing);
+    const relatedContextEvidenceCount = relatedContextEvidence(source).length;
     decisions.push({
       ...baseDecision(source, true, "promoted_for_verification", promotionDecisionMetadata(selectedItem)),
-      candidateId: candidate.id
+      candidateId: candidate.id,
+      ...(relatedContextEvidenceCount > 0 ? { relatedContextEvidenceCount } : {})
     });
   });
 
@@ -375,7 +380,89 @@ function relatedEvidence(source: PromotionSource): NonNullable<CandidateFinding[
       whyRelevant: "The reviewer pointed at this related file as part of the unresolved predicate."
     });
   }
+  const seen = new Set(entries.map((entry) => `${normalize(entry.path)}\0${normalize(entry.lines)}`));
+  for (const entry of relatedContextEvidence(source)) {
+    const key = `${normalize(entry.path)}\0${normalize(entry.lines)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    entries.push(entry);
+  }
   return entries;
+}
+
+// Carry bounded related changed context already attached to the source packet into the
+// promoted candidate's evidence when the hint's files/symbols/predicate text reference it.
+// Structural match only (no semantic keywords), and no new repository tool calls.
+function relatedContextEvidence(source: PromotionSource): NonNullable<CandidateFinding["evidence"]["relatedCode"]> {
+  const referencedFiles = new Set(source.files.map((file) => normalize(file)));
+  const referencedSymbols = new Set(source.symbols.map((symbol) => normalize(symbol)).filter((symbol) => symbol.length > 0));
+  const predicateText = normalize([source.question, source.reason].join(" "));
+  const entries: NonNullable<CandidateFinding["evidence"]["relatedCode"]> = [];
+  const seen = new Set<string>();
+  for (const context of source.packet.relatedChangedContext) {
+    if (!relatedContextMatches(context, referencedFiles, referencedSymbols, predicateText)) {
+      continue;
+    }
+    const lines = relatedContextEvidenceLines(context);
+    if (lines.length === 0) {
+      continue;
+    }
+    const key = `${normalize(context.path)}\0${normalize(lines)}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    entries.push({
+      path: context.path,
+      lines,
+      whyRelevant: "Attached related changed context matched the unresolved predicate by referenced symbol/path."
+    });
+    if (entries.length >= MAX_RELATED_CONTEXT_EVIDENCE) {
+      break;
+    }
+  }
+  return entries;
+}
+
+function relatedContextMatches(
+  context: ReviewPacket["relatedChangedContext"][number],
+  referencedFiles: Set<string>,
+  referencedSymbols: Set<string>,
+  predicateText: string
+): boolean {
+  if (referencedFiles.has(normalize(context.path))) {
+    return true;
+  }
+  if (context.symbol !== undefined) {
+    const symbol = normalize(context.symbol);
+    if (symbol.length > 0 && (referencedSymbols.has(symbol) || predicateMentionsSymbol(predicateText, symbol))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function predicateMentionsSymbol(predicateText: string, normalizedSymbol: string): boolean {
+  const parts = normalizedSymbol
+    .split(/[^a-z0-9_]+/u)
+    .filter((part) => part.length >= 3);
+  return parts.some((part) => normalizedTermIncludes(predicateText, part));
+}
+
+function normalizedTermIncludes(text: string, term: string): boolean {
+  const escaped = escapeRegExp(term);
+  return new RegExp(`(^|[^a-z0-9_])${escaped}($|[^a-z0-9_])`, "u").test(text);
+}
+
+function escapeRegExp(input: string): string {
+  return input.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function relatedContextEvidenceLines(context: ReviewPacket["relatedChangedContext"][number]): string {
+  const body = context.sourceSnippet ?? context.patchExcerpt ?? context.reason;
+  return truncate(body ?? "", MAX_RELATED_CONTEXT_EVIDENCE_CHARS);
 }
 
 function firstChangedAnchor(packet: ReviewPacket): CandidateFinding["anchor"] | undefined {

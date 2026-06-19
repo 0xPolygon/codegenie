@@ -374,6 +374,14 @@ describe("stage 9 eval diagnostics and prompts", () => {
     expect(verifierPrompt).toContain("reject generic add-more-tests comments");
     expect(verifierPrompt).toContain("verify the concrete predicate preserved in provenance");
     expect(verifierPrompt).toContain("Commit titles, PR text, and intent signals are context, not proof");
+    // Issue 73: caller-visible guarantee / deliverability nudges
+    expect(packetPrompt).toContain("caller-visible");
+    expect(packetPrompt).toContain("deliverable/satisfiable");
+    expect(packetPrompt).toContain("internally consistent");
+    expect(verifierPrompt).toContain("promoted lossy-transform");
+    expect(verifierPrompt).toContain("caller-visible");
+    expect(verifierPrompt).toContain("transformed value");
+    expect(verifierPrompt).toContain("original source value");
   });
 });
 

@@ -540,6 +540,188 @@ describe("uncertainty promotion", () => {
       provenance: { sourceKind: "uncertainty" }
     });
   });
+
+  it("carries directly attached related changed context into a promoted candidate's evidence", async () => {
+    const packet: ReviewPacket = {
+      ...fakePacket("packet-producer", "src/producer.ts", { symbol: "transformValue", line: "+ return Math.floor(value / 10);" }),
+      relatedChangedContext: [{
+        path: "src/consumer.ts",
+        hunkId: "h-consumer",
+        symbol: "publishResult",
+        reason: "Changed symbol transformValue is referenced by changed symbol publishResult.",
+        relationshipSource: "symbol_mention",
+        relationshipStrength: "strong",
+        sourceKind: "source",
+        sourceSnippet: "export function publishResult(value) { return { guaranteedMin: requestedValue }; }"
+      }]
+    };
+    const telemetry = captureTelemetry();
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/code-review"],
+        findings: [],
+        followUpHints: [{
+          question: "transformValue truncates the request before publishResult reports the original value to the caller.",
+          files: ["src/producer.ts"],
+          symbols: ["transformValue", "publishResult"],
+          suggestedLenses: ["core/code-review"],
+          reason: "The changed transform truncates toward zero and could under-report the value promised to callers.",
+          confidence: "medium"
+        }],
+        uncertainties: [],
+        status: "completed"
+      }]
+    }, telemetry.recorder);
+
+    const relatedCode = result.packetResults[0]?.findings[0]?.evidence.relatedCode ?? [];
+    expect(relatedCode).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: "src/consumer.ts",
+        lines: expect.stringContaining("guaranteedMin"),
+        whyRelevant: expect.stringContaining("Attached related changed context matched")
+      })
+    ]));
+    expect(result.summary.decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ promoted: true, relatedContextEvidenceCount: 1 })
+    ]));
+  });
+
+  it("does not pull unrelated related context the promoted hint never referenced", async () => {
+    const packet: ReviewPacket = {
+      ...fakePacket("packet-producer-only", "src/producer.ts", { symbol: "transformValue", line: "+ return Math.floor(value / 10);" }),
+      relatedChangedContext: [{
+        path: "src/logging.ts",
+        hunkId: "h-logging",
+        symbol: "loggingHelper",
+        reason: "Changed symbol loggingHelper is referenced elsewhere.",
+        relationshipSource: "symbol_mention",
+        relationshipStrength: "strong",
+        sourceKind: "source",
+        sourceSnippet: "export function loggingHelper() {}"
+      }]
+    };
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/code-review"],
+        findings: [],
+        followUpHints: [{
+          question: "transformValue truncates the request and could under-report the value promised to the caller.",
+          files: ["src/producer.ts"],
+          symbols: ["transformValue"],
+          suggestedLenses: ["core/code-review"],
+          reason: "The changed transform truncates toward zero and could under-report the delivered value.",
+          confidence: "medium"
+        }],
+        uncertainties: [],
+        status: "completed"
+      }]
+    }, captureTelemetry().recorder);
+
+    const relatedCode = result.packetResults[0]?.findings[0]?.evidence.relatedCode ?? [];
+    expect(relatedCode.some((entry) => entry.path === "src/logging.ts")).toBe(false);
+    expect(result.summary.decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ promoted: true })
+    ]));
+    expect(result.summary.decisions.find((decision) => decision.promoted)).not.toHaveProperty("relatedContextEvidenceCount");
+  });
+
+  it("does not attach related context from short symbol substring matches", async () => {
+    const packet: ReviewPacket = {
+      ...fakePacket("packet-short-symbol", "src/producer.ts", { symbol: "render", line: "+ return render(value);" }),
+      relatedChangedContext: [{
+        path: "src/id.ts",
+        hunkId: "h-id",
+        symbol: "id",
+        reason: "Changed short symbol id is referenced elsewhere.",
+        relationshipSource: "symbol_mention",
+        relationshipStrength: "strong",
+        sourceKind: "source",
+        sourceSnippet: "export function id() {}"
+      }]
+    };
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/code-review"],
+        findings: [],
+        followUpHints: [{
+          question: "render now publishes a caller-visible value and should preserve the contract.",
+          files: ["src/producer.ts"],
+          symbols: ["render"],
+          suggestedLenses: ["core/code-review"],
+          reason: "The changed rendering path could under-report the value.",
+          confidence: "medium"
+        }],
+        uncertainties: [],
+        status: "completed"
+      }]
+    }, captureTelemetry().recorder);
+
+    const relatedCode = result.packetResults[0]?.findings[0]?.evidence.relatedCode ?? [];
+    expect(relatedCode.some((entry) => entry.path === "src/id.ts")).toBe(false);
+  });
+
+  it("caps and dedupes carried related-context evidence", async () => {
+    const relatedSymbols = ["alpha", "beta", "gamma", "delta"];
+    const packet: ReviewPacket = {
+      ...fakePacket("packet-many-related", "src/producer.ts", { symbol: "transformValue", line: "+ return Math.floor(value / 10);" }),
+      relatedChangedContext: [
+        ...relatedSymbols.map((symbol) => ({
+          path: `src/${symbol}.ts`,
+          hunkId: `h-${symbol}`,
+          symbol,
+          reason: `Changed symbol transformValue references ${symbol}.`,
+          relationshipSource: "symbol_mention" as const,
+          relationshipStrength: "strong" as const,
+          sourceKind: "source" as const,
+          sourceSnippet: `export function ${symbol}() {}`
+        })),
+        // duplicate of alpha (same path + body) should dedupe away
+        {
+          path: "src/alpha.ts",
+          hunkId: "h-alpha-2",
+          symbol: "alpha",
+          reason: "duplicate",
+          relationshipSource: "symbol_mention" as const,
+          relationshipStrength: "strong" as const,
+          sourceKind: "source" as const,
+          sourceSnippet: "export function alpha() {}"
+        }
+      ]
+    };
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/code-review"],
+        findings: [],
+        followUpHints: [{
+          question: "transformValue truncates the request across alpha, beta, gamma, delta and could under-report the value promised to the caller.",
+          files: ["src/producer.ts"],
+          symbols: ["transformValue", ...relatedSymbols],
+          suggestedLenses: ["core/code-review"],
+          reason: "The changed transform truncates toward zero and could under-report the delivered value.",
+          confidence: "medium"
+        }],
+        uncertainties: [],
+        status: "completed"
+      }]
+    }, captureTelemetry().recorder);
+
+    const relatedCode = result.packetResults[0]?.findings[0]?.evidence.relatedCode ?? [];
+    const carried = relatedCode.filter((entry) => entry.whyRelevant.startsWith("Attached related changed context matched"));
+    expect(carried.length).toBeLessThanOrEqual(3);
+    expect(new Set(carried.map((entry) => entry.path)).size).toBe(carried.length);
+  });
 });
 
 function fakePacket(
