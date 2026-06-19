@@ -4469,6 +4469,9 @@ describe("phase 5 pipeline regressions", () => {
     expect(prompt).toContain("calling submit_plan exactly once with object arguments");
     expect(prompt).toContain("Do not pass a JSON string");
     expect(prompt).toContain("do not wrap the object in a plan field");
+    expect(prompt).toContain("Omit empty optional arrays");
+    expect(prompt).toContain("if there are no surroundingContextHints, omit that field or send an empty array");
+    expect(prompt).not.toContain("Omit empty arrays.");
     expect(prompt).not.toContain("Do not return review questions");
     expect(prompt).not.toContain("proof obligations");
     expect(prompt).not.toContain("standalone reviewEmphasis");
@@ -4790,6 +4793,44 @@ describe("phase 5 pipeline regressions", () => {
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({ stage: 5, message: "planner_unknown_lens", lensId: "missing/lens" })
     ]));
+  });
+
+  it("defaults omitted planner surrounding context hints to an empty list", async () => {
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          diffUnderstanding: { declaredIntent: "optional hints", inferredBehavior: "optional hints" },
+          coverage: [{
+            hunkId: "h1",
+            path: "app.ts",
+            coverage: "normal",
+            lenses: ["core/code-review"],
+            reason: "review changed handler"
+          }]
+        }) as T
+    };
+
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{
+        id: "core/code-review",
+        title: "Core",
+        description: "core",
+        skillIds: [],
+        enabledByDefault: true,
+        enabled: true,
+        languages: []
+      }],
+      skills: []
+    });
+
+    expect(result.plan.coverage).toEqual([
+      expect.objectContaining({
+        hunkId: "h1",
+        surroundingContextHints: []
+      })
+    ]);
   });
 
   it("preserves invalid planner skip as packet fallback and run coverage reason", async () => {

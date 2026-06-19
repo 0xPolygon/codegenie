@@ -75,11 +75,13 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 69 | COMPLETE | Issue 69: Planner Recovery Safety and Context-Budget Coupling |
 | 70 | COMPLETE | Issue 70: Merged-Anchor Inline Recovery |
 | 71 | COMPLETE | Issue 71: Stage 5 First-Submit Regression Audit and Repair |
+| 72 | PENDING | Issue 72: Relationship Attention Note Preservation |
 
 ## Current Queue
 
 Recommended implementation order for remaining work:
 
+- **Issue 72** — preserve deterministic changed-symbol relationship notes under the packet attention-note cap so planner focus notes cannot crowd out the caller/callee context Stage 7 needs.
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
 
 ## Deferred / Watch List

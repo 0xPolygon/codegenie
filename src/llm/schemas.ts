@@ -99,7 +99,11 @@ export const SubmitPlanSchema = Type.Object(
           path: Type.String({ minLength: 1, maxLength: 500 }),
           coverage: CoverageSchema,
           lenses: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), { maxItems: 20 }),
-          surroundingContextHints: Type.Array(SurroundingContextHintSchema, { maxItems: 20 }),
+          surroundingContextHints: Type.Optional(Type.Array(SurroundingContextHintSchema, {
+            maxItems: 20,
+            default: [],
+            description: "Optional mechanical context hints. Omit this field when there are no hints."
+          })),
           reason: Type.String({ minLength: 1, maxLength: 1000 }),
           focusNotes: Type.Optional(Type.Array(Type.String({
             minLength: 1,
@@ -282,7 +286,7 @@ export type SubmitVerificationVerdict = Static<typeof SubmitVerificationVerdictS
 export type SubmitComposition = Static<typeof SubmitCompositionSchema>;
 
 export const SCHEMA_VERSIONS = {
-  submit_plan: 4,
+  submit_plan: 5,
   submit_review: 4,
   submit_system_review: 1,
   submit_verdict: 1,

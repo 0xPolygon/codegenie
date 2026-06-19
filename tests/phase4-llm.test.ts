@@ -60,7 +60,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(submitToolNameForStage(7)).toBe("submit_review");
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
-    expect(SCHEMA_VERSIONS.submit_plan).toBe(4);
+    expect(SCHEMA_VERSIONS.submit_plan).toBe(5);
 
     const valid = {
       diffUnderstanding: { declaredIntent: "Small change", inferredBehavior: "The diff makes a small change." },
@@ -2677,6 +2677,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const submitPlan = providerToolsSeen[0]?.find((tool) => tool.name === "submit_plan");
     const coverage = (submitPlan?.parameters.properties as Record<string, unknown>).coverage as Record<string, unknown>;
     const coverageItem = coverage.items as Record<string, unknown>;
+    const coverageItemRequired = coverageItem.required as string[] | undefined;
+    expect(coverageItemRequired ?? []).not.toContain("surroundingContextHints");
     const hints = (coverageItem.properties as Record<string, unknown>).surroundingContextHints as Record<string, unknown>;
     const hintItem = hints.items as Record<string, unknown>;
     const hintProperties = hintItem.properties as Record<string, unknown>;
