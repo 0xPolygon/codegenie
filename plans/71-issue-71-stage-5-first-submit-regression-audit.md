@@ -1,8 +1,8 @@
 # Issue 71: Stage 5 First-Submit Regression Audit and Repair
 
 Status: PENDING
-Planned from: trails-api eval `49f4645b` runs 1-16, with emphasis on the run 6 to run 7 first-submit reliability change and the current submit-plan prompt/schema/tool shape, 2026-06-19
-Recommended priority: high, because Stage 5 first-submit invalidity became persistent after a specific eval window and now makes pass/fail depend on repair quality.
+Planned from: trails-api eval `49f4645b` runs 1-16 and cross-checked against `0c4d5213` run 31, with emphasis on the `49f4645b` run 6 to run 7 first-submit reliability change and the current submit-plan prompt/schema/tool shape, 2026-06-19
+Recommended priority: medium-high. This is still worth fixing before release because it targets a reproducible first-submit failure mode, but `0c4d5213` run 31 shows Stage 5 can first-submit cleanly on a large realistic PR with the current code. Treat this as sensitive-dossier hardening, not a universal Stage 5 outage.
 
 ## Problem
 
@@ -27,6 +27,8 @@ Runs 13, 14, and 15 make the failure mode clear:
 Plan 69 added safety coverage for sparse recovered plans. That is useful insurance, but run 15 shows the underlying Stage 5 first-submit problem remains.
 Run 16 shows the insurance works: the planner produced `{}`, repair recovered only sparse coverage, and deterministic safety coverage upgraded source hunks to deep. That kept the review healthy, but it also confirms the first-submit problem is still present.
 
+Cross-eval evidence from `0c4d5213` run 31 changes the scope: the same current pipeline first-submitted cleanly on a much larger 131-hunk refactor PR and produced the best recent result on that eval. The first-submit failure is therefore dossier-sensitive rather than universal. The likely class is a planning dossier whose context contains docs/postmortems/spec text that explicitly names a bug while the Stage 5 prompt strongly says the planner is not reviewing code and must not claim bugs exist.
+
 This should be treated as a regression, not inherent LLM randomness:
 
 - The sampled runs use the same planner model (`claude-opus-4-8`), so the regression should be attributed to Codeninja prompt/schema/tool changes unless the audit proves otherwise.
@@ -34,6 +36,7 @@ This should be treated as a regression, not inherent LLM randomness:
 - The same eval became invalid-first-submit consistently after a narrow run window.
 - Earlier runs prove clean first-submit behavior is achievable.
 - Runs 13-16 show several invalid shapes under newer Codeninja versions: `{}`, `{ plan: "<json>" }`, root-level planner metadata, and sparse recovered coverage.
+- `0c4d5213` run 31 proves the current planner is not globally broken; the fix should target the sensitive class without making Stage 5 heavier.
 
 The likely persistence mechanism is not schema field count alone. The provider-facing schema did grow again after Issue 67 (`focusNotes`, `relatedSymbols`, `relatedFiles`, and nested context hints), but at least one invalid `{}` run happened with a near-baseline schema. That points to the Stage 5 prompt and tool-call framing as first-class suspects too.
 
@@ -151,6 +154,7 @@ This audit is a gate, but it should be a confirmation gate. Do not start with a 
 - the `{}` shape correlates with the Issue 66 prompt rewrite and its scout-negation/prohibition wording;
 - the `{ plan: "<json>" }` shape is not blocked by the current finish instruction;
 - Issue 67's added coverage subfields are secondary weight, not the first `{}` trigger.
+- `49f4645b` contains dossier text that explicitly names a bug or postmortem-like concern, while `0c4d5213` does not show the same first-submit failure under the current code.
 
 If the local artifacts do not support these conclusions, narrow this plan to deterministic wrapper recovery plus telemetry and do not remove planner fields.
 
@@ -165,6 +169,7 @@ This should answer:
 - Can planner-hint edges be derived from deterministic symbol mentions and normalized internal data instead of requiring nested planner fields?
 - Did schema repair/prompt changes make the model wrap the whole plan in a string?
 - Did any provider/tool-schema conversion change around this point?
+- Do dossiers containing bug-describing docs/specs/postmortems raise the `{}` rate because the prompt over-emphasizes "do not claim bugs"?
 
 ### 2. Add Deterministic Wrapper Recovery
 

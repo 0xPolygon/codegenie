@@ -80,7 +80,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 
 Recommended implementation order for remaining work:
 
-- **Issue 71** — audit and fix the Stage 5 first-submit regression before relying on repair luck.
+- **Issue 71** — harden Stage 5 first-submit behavior for sensitive dossiers that can trigger `{}` or `{ plan: ... }` submits.
 - **Issue 70** — recover inline publication from valid merged anchors when the selected cross-packet finding is unanchored.
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
 
