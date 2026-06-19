@@ -3805,8 +3805,121 @@ describe("phase 5 pipeline regressions", () => {
       message: "planner_recovery_summary",
       data: expect.objectContaining({
         usedDeterministicRecovery: true,
+        firstSubmitValid: false,
         sparseRecoveredPlan: false
       })
+    }));
+  });
+
+  it("recovers a root plan string wrapper before planner schema repair", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const wrappedPlan = fakePlan("app.ts");
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        expect(request.stage).toBe(5);
+        const recovered = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 5,
+          submitTool: "submit_plan",
+          error: "root: required property diffUnderstanding is missing",
+          submitCalls: [{ id: "submit-plan-wrapped-string", arguments: { plan: JSON.stringify(wrappedPlan) } }],
+          extraToolNames: [],
+          schemaRepairUsed: false
+        });
+        expect(recovered).toMatchObject(wrappedPlan);
+        return recovered as T;
+      }
+    };
+
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), {
+      ...nullTelemetry(),
+      event: (event) => events.push(event)
+    }, {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{
+        id: "core/code-review",
+        title: "Core",
+        description: "core",
+        skillIds: [],
+        enabledByDefault: true,
+        enabled: true,
+        languages: []
+      }],
+      skills: []
+    });
+
+    expect(result.degradedPlanning).toBe(false);
+    expect(result.plan.coverage).toEqual(wrappedPlan.coverage);
+    expect(result.plan.plannerRecovery).toMatchObject({
+      usedSchemaRepair: false,
+      usedDeterministicRecovery: true,
+      firstSubmitValid: false,
+      unwrappedPlanStringCount: 1,
+      unwrappedPlanObjectCount: 0,
+      invalidSubmitCallCount: 1,
+      recoveredRootKeys: 2,
+      sparseRecoveredPlan: false,
+      degraded: false
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 5,
+      message: "planner_schema_unwrapped_plan_string",
+      data: expect.objectContaining({
+        submitCallId: "submit-plan-wrapped-string",
+        schemaRepairUsed: false,
+        recoveredRootKeys: 2
+      })
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 5,
+      message: "planner_recovery_summary",
+      data: expect.objectContaining({
+        unwrappedPlanStringCount: 1,
+        firstSubmitValid: false
+      })
+    }));
+  });
+
+  it("recovers a root plan object wrapper before planner schema repair", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const wrappedPlan = fakePlan("app.ts");
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        const recovered = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 5,
+          submitTool: "submit_plan",
+          error: "root: must not have additional properties",
+          submitCalls: [{ id: "submit-plan-wrapped-object", arguments: { plan: wrappedPlan } }],
+          extraToolNames: [],
+          schemaRepairUsed: false
+        });
+        expect(recovered).toMatchObject(wrappedPlan);
+        return recovered as T;
+      }
+    };
+
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), {
+      ...nullTelemetry(),
+      event: (event) => events.push(event)
+    }, {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [],
+      skills: []
+    });
+
+    expect(result.degradedPlanning).toBe(false);
+    expect(result.plan.plannerRecovery).toMatchObject({
+      usedDeterministicRecovery: true,
+      firstSubmitValid: false,
+      unwrappedPlanStringCount: 0,
+      unwrappedPlanObjectCount: 1,
+      invalidSubmitCallCount: 1
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 5,
+      message: "planner_schema_unwrapped_plan_object",
+      data: expect.objectContaining({ submitCallId: "submit-plan-wrapped-object" })
     }));
   });
 
@@ -3919,6 +4032,25 @@ describe("phase 5 pipeline regressions", () => {
   it("does not recover planner submits that are missing required roots", async () => {
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        const recoveredMissingSubmit = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 5,
+          submitTool: "submit_plan",
+          error: "Stage 5 planner responses must call submit_plan exactly once; received 0 submit_plan calls.",
+          submitCalls: [],
+          extraToolNames: [],
+          schemaRepairUsed: false
+        });
+        const recoveredMultipleSubmit = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 5,
+          submitTool: "submit_plan",
+          error: "Stage 5 planner responses must call submit_plan exactly once; received 2 submit_plan calls.",
+          submitCalls: [
+            { id: "submit-a", arguments: fakePlan("app.ts") },
+            { id: "submit-b", arguments: fakePlan("app.ts") }
+          ],
+          extraToolNames: [],
+          schemaRepairUsed: false
+        });
         const recoveredEmpty = request.schemaRepair?.recoverInvalidSubmit?.({
           stage: 5,
           submitTool: "submit_plan",
@@ -3941,6 +4073,8 @@ describe("phase 5 pipeline regressions", () => {
           extraToolNames: [],
           schemaRepairUsed: true
         });
+        expect(recoveredMissingSubmit).toBeUndefined();
+        expect(recoveredMultipleSubmit).toBeUndefined();
         expect(recoveredEmpty).toBeUndefined();
         expect(recoveredPartial).toBeUndefined();
         return fakePlan("app.ts") as T;
@@ -4325,6 +4459,20 @@ describe("phase 5 pipeline regressions", () => {
     expect(prompt).toContain("symbol names the callee/helper/API whose callers or usages should be inspected");
     expect(prompt).toContain("do not use call_site when the desired context is that symbol's own body");
     expect(prompt).toContain("put semantic intent in reason");
+  });
+
+  it("keeps the Stage 5 prompt focused on object-argument scheduling", () => {
+    const promptBuilder = createPromptBuilder(fakeLensRegistry());
+    const prompt = promptBuilder.buildPlannerPrompt({ dossier: fakeDossier(["app.ts"]), lenses: [], skills: [] }).prompt;
+
+    expect(prompt).toContain("Build a lightweight coverage plan");
+    expect(prompt).toContain("calling submit_plan exactly once with object arguments");
+    expect(prompt).toContain("Do not pass a JSON string");
+    expect(prompt).toContain("do not wrap the object in a plan field");
+    expect(prompt).not.toContain("Do not return review questions");
+    expect(prompt).not.toContain("proof obligations");
+    expect(prompt).not.toContain("standalone reviewEmphasis");
+    expect(prompt).not.toContain("should not claim bugs exist");
   });
 
   it("projects planner dossiers as compact routing input while preserving routeable hunks", () => {
@@ -8181,6 +8329,492 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.findings[0]?.finalBody).toContain("Also reported in app.ts");
   });
 
+  it("publishes an unanchored composed finding inline using a valid merged anchor", async () => {
+    const { anchor: _selectedAnchor, ...selectedBase } = fakeFinding();
+    const selected: CandidateFinding = {
+      ...selectedBase,
+      id: "finding-selected",
+      title: "Cross-file synthesized finding",
+      severity: "high",
+      confidence: "high",
+      path: "helper.ts",
+      changedLine: false,
+      evidence: { changedCode: "helper changed behavior" },
+      producedBy: { ...selectedBase.producedBy, packetId: "packet-helper" }
+    };
+    const anchored: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-anchor",
+      title: "Call site finding",
+      severity: "medium",
+      confidence: "medium",
+      path: "app.ts",
+      anchor: { path: "app.ts", line: 12, side: "RIGHT", hunkId: "h1" },
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-app" }
+    };
+    const artifacts = new Map<string, unknown>();
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [selected, anchored], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        },
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "one issue",
+              composedFindings: [{
+                findingIds: [selected.id, anchored.id],
+                finalBody: "The helper-side behavior and call-site guarantee describe the same root cause.",
+                publication: "inline"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([{ path: "app.ts", hunkId: "h1", line: 12, content: "callHelper()" }])
+      }
+    );
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.summaryOnlyFindings).toHaveLength(0);
+    expect(result.findings[0]).toMatchObject({
+      id: selected.id,
+      publication: "inline",
+      changedLine: true,
+      anchor: { path: "app.ts", line: 12, side: "RIGHT", hunkId: "h1" },
+      mergedCandidateIds: expect.arrayContaining([selected.id, anchored.id])
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 10,
+      level: "info",
+      message: "merged_anchor_inline_recovered",
+      file: "app.ts",
+      data: expect.objectContaining({
+        findingId: selected.id,
+        sourceFindingId: anchored.id,
+        path: "app.ts",
+        line: 12
+      })
+    }));
+    expect(artifacts.get("final-selection.json")).toMatchObject({
+      publicationAnchors: [
+        expect.objectContaining({
+          findingId: selected.id,
+          source: "merged",
+          sourceFindingId: anchored.id,
+          anchor: expect.objectContaining({ path: "app.ts", line: 12 })
+        })
+      ]
+    });
+  });
+
+  it("keeps the selected finding anchor when it is already valid", async () => {
+    const selected: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-selected",
+      severity: "high",
+      confidence: "high",
+      path: "helper.ts",
+      anchor: { path: "helper.ts", line: 20, side: "RIGHT", hunkId: "h2" }
+    };
+    const merged: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-merged",
+      severity: "medium",
+      confidence: "medium",
+      anchor: { path: "app.ts", line: 12, side: "RIGHT", hunkId: "h1" }
+    };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [selected, merged], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "one issue",
+              composedFindings: [{
+                findingIds: [selected.id, merged.id],
+                finalBody: "Merged finding body.",
+                publication: "inline"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([
+          { path: "app.ts", hunkId: "h1", line: 12, content: "callHelper()" },
+          { path: "helper.ts", hunkId: "h2", line: 20, content: "return helper()" }
+        ])
+      }
+    );
+
+    expect(result.findings[0]?.anchor).toEqual({ path: "helper.ts", line: 20, side: "RIGHT", hunkId: "h2" });
+    expect(events.some((event) => event.message === "merged_anchor_inline_recovered")).toBe(false);
+  });
+
+  it("does not force an explicitly summary-only merged-anchor finding inline", async () => {
+    const { anchor: _selectedAnchor, ...selectedBase } = fakeFinding();
+    const selected: CandidateFinding = {
+      ...selectedBase,
+      id: "finding-selected",
+      severity: "high",
+      confidence: "high",
+      changedLine: false
+    };
+    const anchored: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-anchor",
+      anchor: { path: "app.ts", line: 12, side: "RIGHT", hunkId: "h1" }
+    };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [selected, anchored], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "one issue",
+              composedFindings: [{
+                findingIds: [selected.id, anchored.id],
+                finalBody: "This finding is intentionally published in the body only.",
+                publication: "summary-only"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([{ path: "app.ts", hunkId: "h1", line: 12, content: "callHelper()" }])
+      }
+    );
+
+    expect(result.findings).toHaveLength(0);
+    expect(result.summaryOnlyFindings).toHaveLength(1);
+    expect(result.summaryOnlyFindings[0]).toMatchObject({
+      id: selected.id,
+      publication: "summary-only",
+      changedLine: true,
+      anchor: { path: "app.ts", line: 12, side: "RIGHT", hunkId: "h1" }
+    });
+    expect(events.some((event) => event.message === "merged_anchor_inline_recovered")).toBe(false);
+  });
+
+  it("does not force an explicitly summary-only selected-anchor finding inline", async () => {
+    const selected: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-selected",
+      anchor: { path: "app.ts", line: 12, side: "RIGHT", hunkId: "h1" }
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [selected], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "one issue",
+              composedFindings: [{
+                findingIds: [selected.id],
+                finalBody: "This finding is intentionally published in the body only.",
+                publication: "summary-only"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([{ path: "app.ts", hunkId: "h1", line: 12, content: "callHelper()" }])
+      }
+    );
+
+    expect(result.findings).toHaveLength(0);
+    expect(result.summaryOnlyFindings).toHaveLength(1);
+    expect(result.summaryOnlyFindings[0]).toMatchObject({
+      id: selected.id,
+      publication: "summary-only",
+      anchor: { path: "app.ts", line: 12, side: "RIGHT", hunkId: "h1" }
+    });
+  });
+
+  it("keeps an unanchored final finding summary-only when merged anchors are invalid", async () => {
+    const { anchor: _selectedAnchor, ...selectedBase } = fakeFinding();
+    const selected: CandidateFinding = {
+      ...selectedBase,
+      id: "finding-selected",
+      severity: "high",
+      confidence: "high",
+      changedLine: false
+    };
+    const invalidAnchor: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-invalid-anchor",
+      anchor: { path: "app.ts", line: 99, side: "RIGHT", hunkId: "h1" }
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [selected, invalidAnchor], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "one issue",
+              composedFindings: [{
+                findingIds: [selected.id, invalidAnchor.id],
+                finalBody: "Merged finding body.",
+                publication: "inline"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([{ path: "app.ts", hunkId: "h1", line: 12, content: "callHelper()" }])
+      }
+    );
+
+    expect(result.findings).toHaveLength(0);
+    expect(result.summaryOnlyFindings).toHaveLength(1);
+    expect(result.summaryOnlyFindings[0]).toMatchObject({
+      id: selected.id,
+      publication: "summary-only",
+      changedLine: false
+    });
+    expect(result.summaryOnlyFindings[0]?.anchor).toBeUndefined();
+  });
+
+  it("does not use anchors from rejected candidates that are absent from verified findings", async () => {
+    const { anchor: _selectedAnchor, ...selectedBase } = fakeFinding();
+    const selected: CandidateFinding = {
+      ...selectedBase,
+      id: "finding-selected",
+      severity: "high",
+      confidence: "high",
+      changedLine: false
+    };
+    const rejected: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-rejected",
+      anchor: { path: "app.ts", line: 12, side: "RIGHT", hunkId: "h1" }
+    };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+
+    const result = await dedupeRankAndComposeReview(
+      {
+        verified: [selected],
+        verdicts: [{
+          candidateId: rejected.id,
+          verdict: "reject",
+          reason: "Rejected candidates are not eligible for publication anchoring.",
+          requiredEvidencePresent: false,
+          falsePositiveRisk: "high"
+        }]
+      },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "one issue",
+              composedFindings: [{
+                findingIds: [selected.id, rejected.id],
+                finalBody: "Composer tried to reference a rejected candidate.",
+                publication: "inline"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([{ path: "app.ts", hunkId: "h1", line: 12, content: "callHelper()" }])
+      }
+    );
+
+    expect(result.findings).toHaveLength(0);
+    expect(result.summaryOnlyFindings).toHaveLength(1);
+    expect(result.summaryOnlyFindings[0]?.anchor).toBeUndefined();
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 10,
+      message: "composer_invented_finding",
+      data: expect.objectContaining({ unknownIds: [rejected.id] })
+    }));
+  });
+
+  it("does not use anchors from pretrim-suppressed candidates", async () => {
+    const { anchor: _selectedAnchor, ...selectedBase } = fakeFinding();
+    const selected: CandidateFinding = {
+      ...selectedBase,
+      id: "finding-selected",
+      severity: "high",
+      confidence: "high",
+      changedLine: false
+    };
+    const fillers = Array.from({ length: 39 }, (_, index): CandidateFinding => ({
+      ...fakeFinding(),
+      id: `finding-filler-${String(index + 1).padStart(2, "0")}`,
+      severity: "medium",
+      confidence: "medium",
+      anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" }
+    }));
+    const pretrimSuppressed: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-pretrim-suppressed",
+      severity: "low",
+      confidence: "low",
+      anchor: { path: "app.ts", line: 12, side: "RIGHT", hunkId: "h2" }
+    };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [selected, ...fillers, pretrimSuppressed], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      {
+        ...fakeCoverage(),
+        totalHunks: 41,
+        reviewedHunks: 41,
+        coverageByLevel: { deep: 0, normal: 41, light: 0, skip: 0 }
+      },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "one issue",
+              composedFindings: [{
+                findingIds: [selected.id, pretrimSuppressed.id],
+                finalBody: "Composer tried to reference a pretrim-suppressed candidate.",
+                publication: "inline"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([
+          { path: "app.ts", hunkId: "h1", line: 1, content: "filler()" },
+          { path: "app.ts", hunkId: "h2", line: 12, content: "suppressedAnchor()" }
+        ])
+      }
+    );
+
+    const finalSelected = [...result.findings, ...result.summaryOnlyFindings].find((finding) => finding.id === selected.id);
+    expect(finalSelected?.anchor).toBeUndefined();
+    expect(finalSelected?.publication).toBe("summary-only");
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 10,
+      message: "composer_pretrim_suppressed_findings",
+      data: expect.objectContaining({ suppressedFindings: 1, maxComposerFindings: 40 })
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 10,
+      message: "composer_invented_finding",
+      data: expect.objectContaining({ unknownIds: [pretrimSuppressed.id] })
+    }));
+  });
+
+  it("prefers a test-file merged anchor for testing findings", async () => {
+    const { anchor: _selectedAnchor, ...selectedBase } = fakeFinding();
+    const selected: CandidateFinding = {
+      ...selectedBase,
+      id: "finding-selected",
+      category: "testing",
+      severity: "high",
+      confidence: "high",
+      path: "summary.ts",
+      changedLine: false
+    };
+    const sourceAnchor: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-source-anchor",
+      category: "testing",
+      anchor: { path: "app.ts", line: 12, side: "RIGHT", hunkId: "h1" }
+    };
+    const testAnchor: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-test-anchor",
+      category: "testing",
+      path: "app.test.ts",
+      anchor: { path: "app.test.ts", line: 30, side: "RIGHT", hunkId: "h2" }
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [selected, sourceAnchor, testAnchor], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "one issue",
+              composedFindings: [{
+                findingIds: [selected.id, sourceAnchor.id, testAnchor.id],
+                finalBody: "Merged testing finding body.",
+                publication: "inline"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([
+          { path: "app.ts", hunkId: "h1", line: 12, content: "callHelper()" },
+          { path: "app.test.ts", hunkId: "h2", line: 30, content: "expect(callHelper()).toBeOk()" }
+        ])
+      }
+    );
+
+    expect(result.findings[0]?.anchor).toEqual({ path: "app.test.ts", line: 30, side: "RIGHT", hunkId: "h2" });
+  });
+
   it("renders deterministic fallback findings without repeated field blocks", async () => {
     const finding = {
       ...fakeFinding(),
@@ -10729,6 +11363,28 @@ function fakeDiff(): UnifiedDiff {
         ]
       }
     ]
+  };
+}
+
+function fakeChangedLineDiff(lines: Array<{ path: string; hunkId: string; line: number; content: string }>): UnifiedDiff {
+  return {
+    files: lines.map((item) => ({
+      path: item.path,
+      status: "modified",
+      language: item.path.endsWith(".go") ? "go" : "typescript",
+      hunks: [
+        {
+          id: item.hunkId,
+          path: item.path,
+          oldStart: item.line,
+          oldLines: 1,
+          newStart: item.line,
+          newLines: 1,
+          header: `@@ -${item.line} +${item.line} @@`,
+          lines: [{ kind: "add", content: item.content, newLineNumber: item.line }]
+        }
+      ]
+    }))
   };
 }
 

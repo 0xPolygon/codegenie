@@ -67,7 +67,7 @@ export type PromptBuilder = {
 };
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
-  5: "p5.5",
+  5: "p5.6",
   7: "p7.7",
   8: "p8.2",
   9: "p9.4",
@@ -121,16 +121,15 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
       return buildPrompt(5, [
         reviewerFrame("planning"),
         injectionInstruction(),
-        "Build a lightweight review plan. You are not reviewing the code and should not claim bugs exist. Your job is to help later stages spend attention well.",
-        "The planner-dossier is a routing projection, not the full review packet. Compact hunks still have stable hunk IDs and line ranges; request deeper coverage when compact metadata suggests centrality or uncertainty instead of trying to prove bugs in Stage 5.",
-        "Coverage is the main scheduling output. Emit coverage entries only for hunks that need non-default coverage, specific lenses, focusNotes, relatedSymbols, relatedFiles, context hints, or an explicit skip. Omitted reviewable hunks are reviewed later at normal coverage with default core/language lenses. If unsure, prefer deeper coverage for central changed hunks rather than inventing a concern.",
-        "Do not return review questions, proof obligations, global risk lists, or standalone reviewEmphasis. If you notice a changed-code interaction that deserves attention, attach it to the relevant hunk coverage decision as reason, focusNotes, relatedSymbols, relatedFiles, or surroundingContextHints.",
-        "focusNotes must be short advisory hunk-scoped notes grounded in the dossier. relatedSymbols and relatedFiles must name concrete changed symbols/files Stage 6 can use for deterministic context assembly. If you cannot link an observation to a changed hunk, leave it in diffUnderstanding only.",
+        "Build a lightweight coverage plan that schedules later reviewer attention. Summarize the declared intent and likely changed behavior from the planner-dossier, then choose coverage, lenses, and short hunk-scoped reasons.",
+        "The planner-dossier is a routing projection, not the full review packet. Compact hunks still have stable hunk IDs and line ranges; request deeper coverage when compact metadata suggests centrality or uncertainty.",
+        "Coverage is the main scheduling output. Emit coverage entries only for hunks that need non-default coverage, specific lenses, optional hunk-scoped focus notes, related changed symbols/files, context hints, or an explicit skip. Omitted reviewable hunks are reviewed later at normal coverage with default core/language lenses. If unsure, prefer deeper coverage for central changed hunks.",
+        "Use focusNotes, relatedSymbols, and relatedFiles sparingly and only when they are grounded in a specific changed hunk. Omit empty arrays. If an observation cannot be tied to a changed hunk, keep it in diffUnderstanding.",
         "Context hint contract: choose a mechanical retrieval mode, not a risk category. Use kind:\"enclosing_symbol\" when you want Stage 6 to read a known function/method/type/test body. Use kind:\"call_site\" only when symbol names the callee/helper/API whose callers or usages should be inspected; do not use call_site when the desired context is that symbol's own body. Use kind:\"test\" for relevant test symbols, kind:\"line_range\" for explicit lines, and put semantic intent in reason.",
         renderLensList(lenses),
         "Available skill summaries:\n" + projection.text,
         dossierBlock,
-        "Finish by calling submit_plan exactly once with the complete schema-valid plan. Do not split the plan across multiple submit_plan calls. Do not answer in plain text."
+        "Finish by calling submit_plan exactly once with object arguments matching the schema, for example {\"diffUnderstanding\": {...}, \"coverage\": [...]}. Do not pass a JSON string, do not wrap the object in a plan field, do not split the plan across multiple submit_plan calls, and do not answer in plain text."
       ], projection, 1);
     },
     buildPacketReviewPrompt: ({ packet, skills }) => {

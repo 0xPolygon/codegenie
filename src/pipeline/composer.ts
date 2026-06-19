@@ -7,6 +7,7 @@ import type {
   CandidateFinding,
   Confidence,
   CodeninjaConfig,
+  DiffAnchor,
   FinalFinding,
   NeedsHumanAttentionNote,
   PacketReviewResult,
@@ -56,6 +57,16 @@ type SelectionRecord = {
 };
 
 type CompositionMode = "llm" | "llm_degraded" | "deterministic_fallback" | "schema_repair_fallback";
+type PublicationAnchorDecision = {
+  anchor?: DiffAnchor;
+  source: "selected" | "merged" | "none";
+  reason: string;
+  sourceFindingId?: string;
+};
+type PublicationAnchorCandidate = {
+  finding: CandidateFinding;
+  anchor: DiffAnchor;
+};
 
 const MAX_COMPOSER_FINDINGS = 40;
 const MAX_COMPOSER_SUMMARY_CHARS = 4000;
@@ -124,9 +135,10 @@ export async function dedupeRankAndComposeReview(
 
   const known = new Map(pretrim.kept.map((finding) => [finding.id, finding]));
   const anchorDowngradeReasons = new Map<string, string>();
+  const publicationAnchorDecisions = new Map<string, PublicationAnchorDecision>();
   const finalFindings: FinalFinding[] = pretrim.suppressed.map((finding) => {
     const requestedPublication = "suppressed" as const;
-    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding), requestedPublication, [finding], opts.diff);
+    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding), requestedPublication, [finding], opts.diff, publicationAnchorDecisions);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     return final;
   });
@@ -157,7 +169,7 @@ export async function dedupeRankAndComposeReview(
     const representative = strongest(ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined));
     const fingerprint = fingerprintFinding(representative, packetsById);
     const mergedFindings = ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined);
-    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, mergedFindings, opts.diff);
+    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions);
     recordAnchorDowngrade(final, composed.publication, anchorDowngradeReasons);
     finalFindings.push(final);
     used.add(representative.id);
@@ -174,7 +186,7 @@ export async function dedupeRankAndComposeReview(
     }
     const fingerprint = fingerprintFinding(finding, packetsById);
     const requestedPublication = finding.anchor ? "inline" : "summary-only";
-    const final = toFinalFinding(finding, fingerprint, templateBody(finding), requestedPublication, [finding], opts.diff);
+    const final = toFinalFinding(finding, fingerprint, templateBody(finding), requestedPublication, [finding], opts.diff, publicationAnchorDecisions);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     finalFindings.push(final);
     baseSelection.set(finding.id, { findingId: finding.id, decision: "published", reason: "composer_omitted_finding" });
@@ -187,6 +199,7 @@ export async function dedupeRankAndComposeReview(
     telemetry
   });
   const compositionMode: CompositionMode = fallbackMode ?? (fallbackUsed ? "deterministic_fallback" : compositionDegraded ? "llm_degraded" : "llm");
+  recordMergedAnchorRecoveries(capped.findings, publicationAnchorDecisions, telemetry);
   for (const [id, reason] of anchorDowngradeReasons) {
     if (!capped.downgradeReasons.has(id)) {
       capped.downgradeReasons.set(id, reason);
@@ -233,6 +246,7 @@ export async function dedupeRankAndComposeReview(
       ...(fallbackReason !== undefined ? { fallbackReason } : {})
     },
     records: selection,
+    publicationAnchors: publicationAnchorSelectionRecords(capped.findings, publicationAnchorDecisions),
     groups: groups.map((group) => ({
       fingerprint: group.fingerprint,
       findingIds: group.findings.map((finding) => finding.id)
@@ -675,24 +689,25 @@ function toFinalFinding(
   finalBody: string,
   publication: FinalFinding["publication"],
   mergedFindings: CandidateFinding[],
-  diff: UnifiedDiff | undefined
+  diff: UnifiedDiff | undefined,
+  publicationAnchorDecisions?: Map<string, PublicationAnchorDecision>
 ): FinalFinding {
   const { anchor: _unvalidatedAnchor, ...findingWithoutAnchor } = finding;
-  const anchor = validateAnchorForDiff(finding.anchor, diff);
+  const publicationAnchor = selectPublicationAnchor(finding, mergedFindings, diff);
   const normalizedFinalBody = normalizeFinalBodyForRendering(finalBody, finding) || templateBody(finding);
   const normalizedTitle = normalizeFinalFindingTitle(finding, mergedFindings, normalizedFinalBody);
   const mergedCandidateIds = uniqueStrings(mergedFindings.map((item) => item.id));
   const mergedAnchors = dedupeAnchors(mergedFindings.flatMap((item) => item.anchor === undefined ? [] : [item.anchor]));
   const mergedCategories = uniqueStrings(mergedFindings.map((item) => item.category)) as Array<CandidateFinding["category"]>;
   const mergedSeverities = uniqueStrings(mergedFindings.map((item) => item.severity)) as Array<CandidateFinding["severity"]>;
-  return {
+  const final: FinalFinding = {
     ...findingWithoutAnchor,
     title: normalizedTitle,
-    ...(anchor !== undefined ? { anchor } : {}),
-    changedLine: anchor !== undefined,
+    ...(publicationAnchor.anchor !== undefined ? { anchor: publicationAnchor.anchor } : {}),
+    changedLine: publicationAnchor.anchor !== undefined,
     fingerprint,
     finalBody: normalizedFinalBody,
-    publication: publication === "suppressed" ? "suppressed" : anchor ? publication : "summary-only",
+    publication: finalPublicationFromAnchor(publication, publicationAnchor),
     mergedCandidateIds,
     mergedCategories,
     mergedSeverities,
@@ -700,6 +715,162 @@ function toFinalFinding(
     mergedTitles: uniqueStrings(mergedFindings.map((item) => item.title)),
     ...(mergedAnchors.length > 0 ? { mergedAnchors } : {})
   };
+  publicationAnchorDecisions?.set(final.id, publicationAnchor);
+  return final;
+}
+
+function finalPublicationFromAnchor(
+  requestedPublication: FinalFinding["publication"],
+  publicationAnchor: PublicationAnchorDecision
+): FinalFinding["publication"] {
+  if (requestedPublication === "suppressed") {
+    return "suppressed";
+  }
+  if (publicationAnchor.anchor === undefined) {
+    return "summary-only";
+  }
+  if (requestedPublication === "inline") {
+    return "inline";
+  }
+  return "summary-only";
+}
+
+function selectPublicationAnchor(
+  finding: CandidateFinding,
+  mergedFindings: CandidateFinding[],
+  diff: UnifiedDiff | undefined
+): PublicationAnchorDecision {
+  const selectedAnchor = validateAnchorForDiff(finding.anchor, diff);
+  if (selectedAnchor !== undefined) {
+    return {
+      anchor: selectedAnchor,
+      source: "selected",
+      sourceFindingId: finding.id,
+      reason: "selected finding has a valid changed-line anchor"
+    };
+  }
+
+  const candidates = mergedFindings
+    .filter((candidate) => candidate.id !== finding.id)
+    .flatMap((candidate): PublicationAnchorCandidate[] => {
+      const anchor = validateAnchorForDiff(candidate.anchor, diff);
+      return anchor === undefined ? [] : [{ finding: candidate, anchor }];
+    })
+    .sort((left, right) => comparePublicationAnchorCandidates(left, right, finding));
+  const best = candidates[0];
+  if (best !== undefined) {
+    return {
+      anchor: best.anchor,
+      source: "merged",
+      sourceFindingId: best.finding.id,
+      reason: "selected finding was unanchored; using a valid anchor from a merged verified finding"
+    };
+  }
+
+  return {
+    source: "none",
+    reason: finding.anchor === undefined
+      ? "selected finding and merged findings have no anchor"
+      : "selected finding anchor was invalid and no merged finding had a valid changed-line anchor"
+  };
+}
+
+function comparePublicationAnchorCandidates(
+  left: PublicationAnchorCandidate,
+  right: PublicationAnchorCandidate,
+  selected: CandidateFinding
+): number {
+  return samePathAnchorRank(left.anchor, selected.path) - samePathAnchorRank(right.anchor, selected.path) ||
+    categoryPathRoleRank(selected.category, left.anchor.path) - categoryPathRoleRank(selected.category, right.anchor.path) ||
+    severityRank(left.finding.severity) - severityRank(right.finding.severity) ||
+    confidenceRank(left.finding.confidence) - confidenceRank(right.finding.confidence) ||
+    left.anchor.path.localeCompare(right.anchor.path) ||
+    left.anchor.line - right.anchor.line ||
+    (left.anchor.startLine ?? left.anchor.line) - (right.anchor.startLine ?? right.anchor.line) ||
+    left.anchor.hunkId.localeCompare(right.anchor.hunkId) ||
+    left.finding.id.localeCompare(right.finding.id);
+}
+
+function samePathAnchorRank(anchor: DiffAnchor, selectedPath: string): number {
+  return anchor.path === selectedPath ? 0 : 1;
+}
+
+function categoryPathRoleRank(category: CandidateFinding["category"], filePath: string): number {
+  if (isDocsPath(filePath)) {
+    return 2;
+  }
+  const testPath = isTestPath(filePath);
+  if (category === "testing") {
+    return testPath ? 0 : 1;
+  }
+  return testPath ? 1 : 0;
+}
+
+function isTestPath(filePath: string): boolean {
+  return /(?:^|\/)(?:__tests__|tests?|spec)(?:\/|$)|(?:\.test|\.spec)\.[^/]+$/iu.test(filePath);
+}
+
+function isDocsPath(filePath: string): boolean {
+  return /(?:^|\/)(?:docs?|documentation|postmortems?)(?:\/|$)|\.(?:md|mdx|rst|txt)$/iu.test(filePath);
+}
+
+function recordMergedAnchorRecoveries(
+  findings: FinalFinding[],
+  decisions: Map<string, PublicationAnchorDecision>,
+  telemetry: TelemetryRecorder
+): void {
+  for (const finding of findings) {
+    const decision = decisions.get(finding.id);
+    if (finding.publication !== "inline" || decision?.source !== "merged" || decision.anchor === undefined) {
+      continue;
+    }
+    telemetry.event({
+      stage: 10,
+      level: "info",
+      message: "merged_anchor_inline_recovered",
+      file: decision.anchor.path,
+      data: {
+        findingId: finding.id,
+        fingerprint: finding.fingerprint,
+        sourceFindingId: decision.sourceFindingId,
+        path: decision.anchor.path,
+        line: decision.anchor.line,
+        side: decision.anchor.side,
+        hunkId: decision.anchor.hunkId,
+        reason: decision.reason
+      }
+    });
+  }
+}
+
+function publicationAnchorSelectionRecords(
+  findings: FinalFinding[],
+  decisions: Map<string, PublicationAnchorDecision>
+): Array<{
+  findingId: string;
+  fingerprint: string;
+  publication: FinalFinding["publication"];
+  source: PublicationAnchorDecision["source"];
+  reason: string;
+  sourceFindingId?: string;
+  anchor?: DiffAnchor;
+}> {
+  return findings.map((finding) => {
+    const decision = decisions.get(finding.id) ?? {
+      source: finding.anchor === undefined ? "none" as const : "selected" as const,
+      reason: finding.anchor === undefined ? "no publication anchor" : "selected finding has a publication anchor",
+      ...(finding.anchor !== undefined ? { anchor: finding.anchor } : {})
+    };
+    return {
+      findingId: finding.id,
+      fingerprint: finding.fingerprint,
+      publication: finding.publication,
+      source: decision.source,
+      reason: decision.reason,
+      ...(decision.sourceFindingId !== undefined ? { sourceFindingId: decision.sourceFindingId } : {}),
+      ...(decision.anchor !== undefined ? { anchor: decision.anchor } : {})
+    };
+  }).sort((left, right) => left.findingId.localeCompare(right.findingId));
 }
 
 function normalizeFinalFindingTitle(finding: CandidateFinding, mergedFindings: CandidateFinding[], finalBody: string): string {

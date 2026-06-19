@@ -564,6 +564,9 @@ export type ReviewPacket = {
 export type PlannerRecoveryTelemetry = {
   usedSchemaRepair: boolean;
   usedDeterministicRecovery: boolean;
+  firstSubmitValid: boolean;
+  unwrappedPlanStringCount: number;
+  unwrappedPlanObjectCount: number;
   emptySubmitCount: number;
   invalidSubmitCallCount: number;
   strippedRootKeys: string[];

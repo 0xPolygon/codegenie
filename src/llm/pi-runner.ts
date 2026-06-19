@@ -278,6 +278,16 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           candidateDrafted = candidateDrafted || submitCalls.some(submitCallHasFindings);
           const submitDisciplineError = submitResponseDisciplineError(request, submitTool.name, submitCalls);
           if (submitDisciplineError !== undefined) {
+            if (request.stage === 5) {
+              request.schemaRepair?.recoverInvalidSubmit?.(schemaRepairInput({
+                request,
+                submitToolName: submitTool.name,
+                error: submitDisciplineError,
+                submitCalls,
+                extraToolNames: toolCalls.map((toolCall) => toolCall.name),
+                schemaRepairUsed
+              }));
+            }
             queueSchemaRepair({
               opts,
               request,

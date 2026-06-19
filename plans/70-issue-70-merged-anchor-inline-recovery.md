@@ -1,6 +1,6 @@
 # Issue 70: Merged-Anchor Inline Recovery
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval `49f4645b/logs/15` compared with `49f4645b/logs/1`, `49f4645b/logs/13`, and `49f4645b/logs/14`, 2026-06-19
 Recommended priority: medium-high, after Issue 71. This is valuable publication polish: run 15 recovered the right finding but published it summary-only even though a valid changed-line anchor existed in a merged candidate. It does not affect recall or verifier quality.
 

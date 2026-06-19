@@ -1,6 +1,6 @@
 # Issue 71: Stage 5 First-Submit Regression Audit and Repair
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval `49f4645b` runs 1-16 and cross-checked against `0c4d5213` run 31, with emphasis on the `49f4645b` run 6 to run 7 first-submit reliability change and the current submit-plan prompt/schema/tool shape, 2026-06-19
 Recommended priority: medium-high. This is still worth fixing before release because it targets a reproducible first-submit failure mode, but `0c4d5213` run 31 shows Stage 5 can first-submit cleanly on a large realistic PR with the current code. Treat this as sensitive-dossier hardening, not a universal Stage 5 outage.
 
@@ -68,6 +68,36 @@ Stage 5 first submit is malformed or sparse:
 
 The goal is not to make Stage 5 smarter. It is to make Stage 5 easier to call correctly.
 The highest-value prevention target is the empty `{}` first submit. A `{ plan: "<json>" }` wrapper can be recovered deterministically; `{}` cannot. Empty submits should be treated as strong evidence that the prompt/tool-call framing is too heavy, contradictory, or unclear. Schema simplification may help, but prompt simplification is likely the primary lever.
+
+## Implementation Audit Result
+
+Implemented on 2026-06-19.
+
+Local telemetry confirmed the plan's core diagnosis:
+
+```text
+49f4645b runs 1-6:
+  Stage 5 schema-invalid calls: 0,1,0,1,0,0
+
+49f4645b runs 7-16:
+  Stage 5 schema-invalid calls: 2,1,1,1,1,1,1,2,1,2
+
+0c4d5213 run 31:
+  Stage 5 schema-invalid calls: 0
+```
+
+The failure is therefore not universal planner breakage. It is sensitive-dossier first-submit hardening: `49f4645b` repeatedly triggers invalid first submits while the larger `0c4d5213` run first-submitted cleanly with the same current pipeline.
+
+The implemented changes are deliberately narrow:
+
+- Stage 5 prompt text was trimmed back to a short positive coverage-planning contract.
+- The redundant prohibition line about review questions, proof obligations, global risk lists, and standalone review emphasis was removed from the prompt; those fields are already excluded by schema.
+- The final submit instruction now explicitly requires object arguments, not a JSON string and not a `{ plan: ... }` wrapper.
+- Planner schema repair now deterministically unwraps root-only `{ plan: "<json>" }` and `{ plan: {...} }` shapes before scheduling an LLM repair call.
+- Recovery telemetry now records `firstSubmitValid`, `unwrappedPlanStringCount`, and `unwrappedPlanObjectCount`.
+- `focusNotes`, `relatedSymbols`, and `relatedFiles` were kept in the provider-facing schema for now because they are actively consumed by Stage 6 context assembly and have direct regression coverage. Removing them would be a larger contract change than this issue requires.
+
+The implementation keeps Plan 69 sparse safety coverage unchanged.
 
 ## Non-Goals
 

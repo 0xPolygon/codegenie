@@ -66,6 +66,8 @@ const MISPLACED_PLANNER_ROOT_KEYS = new Set(["focusNotes", "relatedSymbols", "re
 type PlannerRecoveryDraft = {
   usedSchemaRepair: boolean;
   usedDeterministicRecovery: boolean;
+  unwrappedPlanStringCount: number;
+  unwrappedPlanObjectCount: number;
   emptySubmitCount: number;
   invalidSubmitCallCount: number;
   strippedRootKeys: Set<string>;
@@ -323,6 +325,32 @@ function recoverPlannerInvalidSubmit(
     isRecord(call.arguments) && Object.keys(call.arguments).length === 0
   ).length;
   recovery.usedSchemaRepair ||= input.schemaRepairUsed;
+  if (input.submitCalls.length !== 1) {
+    recovery.usedSchemaRepair = true;
+    return undefined;
+  }
+  const wrappedPlan = recoverWrappedPlannerSubmit(input.submitCalls);
+  if (wrappedPlan !== undefined) {
+    recovery.usedDeterministicRecovery = true;
+    recovery.recoveredRootKeys = Math.max(recovery.recoveredRootKeys, Object.keys(wrappedPlan.recovered).length);
+    if (wrappedPlan.kind === "string") {
+      recovery.unwrappedPlanStringCount += 1;
+    } else {
+      recovery.unwrappedPlanObjectCount += 1;
+    }
+    telemetry.event({
+      stage: 5,
+      level: "info",
+      message: wrappedPlan.kind === "string" ? "planner_schema_unwrapped_plan_string" : "planner_schema_unwrapped_plan_object",
+      data: {
+        submitCallId: wrappedPlan.submitCallId,
+        invalidSubmitCallCount: input.submitCalls.length,
+        schemaRepairUsed: input.schemaRepairUsed,
+        recoveredRootKeys: Object.keys(wrappedPlan.recovered).length
+      }
+    });
+    return wrappedPlan.recovered;
+  }
   const candidates = input.submitCalls.flatMap((call) => {
     const args = call.arguments;
     if (!isRecord(args) || !hasPlannerRequiredRoots(args)) {
@@ -378,12 +406,51 @@ function emptyPlannerRecoveryDraft(): PlannerRecoveryDraft {
   return {
     usedSchemaRepair: false,
     usedDeterministicRecovery: false,
+    unwrappedPlanStringCount: 0,
+    unwrappedPlanObjectCount: 0,
     emptySubmitCount: 0,
     invalidSubmitCallCount: 0,
     strippedRootKeys: new Set(),
     misplacedRootKeys: new Set(),
     recoveredRootKeys: 0
   };
+}
+
+function recoverWrappedPlannerSubmit(
+  submitCalls: LlmSchemaInvalidSubmitRecoveryInput["submitCalls"]
+): { kind: "string" | "object"; recovered: Record<string, unknown>; submitCallId: string } | undefined {
+  for (const call of submitCalls) {
+    const args = call.arguments;
+    if (!isRootOnlyPlanWrapper(args)) {
+      continue;
+    }
+    const wrapped = args.plan;
+    if (typeof wrapped === "string") {
+      const parsed = parsePlannerWrapperString(wrapped);
+      if (parsed !== undefined && hasPlannerRequiredRoots(parsed)) {
+        return { kind: "string", recovered: parsed, submitCallId: call.id };
+      }
+      continue;
+    }
+    if (isRecord(wrapped) && hasPlannerRequiredRoots(wrapped)) {
+      return { kind: "object", recovered: wrapped, submitCallId: call.id };
+    }
+  }
+  return undefined;
+}
+
+function isRootOnlyPlanWrapper(args: Record<string, unknown>): args is { plan: unknown } {
+  const keys = Object.keys(args);
+  return keys.length === 1 && keys[0] === "plan";
+}
+
+function parsePlannerWrapperString(input: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(input);
+    return isRecord(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function finalizePlannerRecovery(
@@ -439,6 +506,9 @@ function buildPlannerRecoveryTelemetry(
   return {
     usedSchemaRepair: draft.usedSchemaRepair,
     usedDeterministicRecovery: draft.usedDeterministicRecovery,
+    firstSubmitValid: draft.invalidSubmitCallCount === 0 && !draft.usedSchemaRepair && !draft.usedDeterministicRecovery,
+    unwrappedPlanStringCount: draft.unwrappedPlanStringCount,
+    unwrappedPlanObjectCount: draft.unwrappedPlanObjectCount,
     emptySubmitCount: draft.emptySubmitCount,
     invalidSubmitCallCount: draft.invalidSubmitCallCount,
     strippedRootKeys: [...draft.strippedRootKeys].sort(),
@@ -578,9 +648,9 @@ function buildPlannerSchemaRepairPrompt(
   return [
     "Repair the Stage 5 review plan output.",
     `Validation error: ${input.error}`,
-    "You must call submit_plan exactly once with one complete schema-valid ReviewPlan.",
-    "Do not split the plan across multiple submit_plan calls. Do not answer in plain text.",
-    "If the invalid submit_plan calls contain useful coverage entries, merge them into the single corrected plan. Put review-driving attention only inside coverage decisions as reason, focusNotes, relatedSymbols, relatedFiles, or surroundingContextHints.",
+    "You must call submit_plan exactly once with object arguments matching the ReviewPlan schema.",
+    "Do not pass a JSON string, do not wrap the object in a plan field, do not split the plan across multiple submit_plan calls, and do not answer in plain text.",
+    "If the invalid submit_plan calls contain useful coverage entries, merge them into the single corrected plan. Keep review-driving attention inside hunk coverage decisions as reason, focusNotes, relatedSymbols, relatedFiles, or surroundingContextHints.",
     input.extraToolNames.length > 0
       ? `The invalid response also called non-submit tools, which are ignored in Stage 5 repair: ${input.extraToolNames.join(", ")}.`
       : "No repository tools are available in Stage 5 repair.",
