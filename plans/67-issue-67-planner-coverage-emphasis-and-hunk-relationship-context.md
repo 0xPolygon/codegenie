@@ -31,6 +31,8 @@ Run `logs/1` found the issue because the older planner output produced packet `r
 
 The issue is not that Stage 5 needs deeper reasoning. The issue is that review-driving planner output is split across fields, and Stage 6 does not build enough deterministic relationships between changed hunks/symbols for Stage 7 to reason about interactions.
 
+Run 13 also exposed a downstream Stage 9 routing problem: a concrete correctness concern was promoted and verified under a testing frame because the hint was phrased as a test-coverage question. That is intentionally tracked separately in Issue 68. Issue 67 fixes the upstream context contract so Stage 7 has a better chance to produce direct, well-framed candidates; it does not loosen verification or rely on the verifier accepting weaker findings.
+
 ## Goal
 
 Make Stage 5 and Stage 6 contracts explicit and lossless:
@@ -67,6 +69,7 @@ The main principle: if Stage 5 wants later stages to spend attention somewhere, 
 - Do not make Stage 8 run from planner output.
 - Do not build cross-file packets in v1.
 - Do not loosen Stage 9 verification.
+- Do not rely on fixed domain patterns such as rounding, denomination, guarantee, collateral, or token arithmetic. The implementation must remain structural and language/project neutral.
 
 ## Design Decisions
 
@@ -102,7 +105,7 @@ Stage 5 planner
 
 Stage 6 packet builder
   -> planned hunk records
-  -> HunkRelationshipGraph
+  -> lean HunkRelationshipGraph
   -> conservative packet grouping
   -> related changed context attachment
   -> ReviewPacket.attentionNotes + ReviewPacket.relatedChangedContext
@@ -134,6 +137,7 @@ Implementation flexibility:
 - The graph can be an internal data structure first. It does not need to be a public API.
 - Coalescing helper/caller hunks is optional. Attaching related changed context is the required behavior.
 - If a deterministic relationship cannot be proven cheaply, prefer no edge over speculative edges.
+- In v1, keep the graph lean. The necessary behavior is to attach changed caller/callee/sibling context among changed symbols when the relationship is mechanically supported. Broader edges can wait for evidence from later evals.
 
 ### No Default Multi-Pass Planner
 
@@ -145,7 +149,7 @@ Keep the existing large-PR chunking and schema repair paths. If later evals show
 
 ### Remove Standalone `reviewEmphasis`
 
-`ReviewPlan.reviewEmphasis` should be removed or treated only as a deprecated compatibility alias during migration.
+`ReviewPlan.reviewEmphasis` should be removed from the primary schema.
 
 Review-driving guidance should live in `HunkCoverageDecision` because coverage decisions are already hunk-scoped, validated, and consumed by Stage 6.
 
@@ -185,8 +189,7 @@ Rules:
 - `focusNotes` are optional, short, hunk-scoped attention notes grounded in the dossier.
 - `relatedSymbols` and `relatedFiles` are optional hints for Stage 6 context assembly. They are not proof obligations.
 - Omitted hunks still receive deterministic `normal` default coverage in Stage 6.
-
-During migration, if an older planner response includes `reviewEmphasis`, normalize it into coverage-linked focus notes only when file/symbol overlap is clear. Otherwise keep it only in artifacts and telemetry, not packet prompts.
+- If an LLM response includes legacy `reviewEmphasis`, ignore it in new runs rather than treating it as hidden review guidance. Keeping the planner contract single-channel is more important than preserving a short-lived internal field.
 
 ### Stage 5 Prompt Contract
 
@@ -226,15 +229,12 @@ Nodes:
 - changed hunks
 - changed enclosing symbols
 - changed files
-- test symbols when known
 
-Edges should be deterministic and evidence-backed:
+V1 edges should be deterministic, evidence-backed, and intentionally narrow:
 
 - same file and same enclosing symbol
-- same file and nearby hunks
 - hunk changes a symbol that is mentioned/called by another changed symbol
 - hunk changes a helper that is mentioned by changed callers
-- hunk changes tests that mention changed production symbols
 - planner `surroundingContextHints` or `relatedSymbols`/`relatedFiles` name a concrete relationship
 
 Avoid domain categories. Edge reasons should describe concrete structure:
@@ -248,9 +248,7 @@ type HunkRelationshipEdge = {
   reason: string;
   source:
     | "same_symbol"
-    | "nearby_hunk"
     | "symbol_mention"
-    | "test_reference"
     | "planner_hint";
 };
 ```
@@ -259,11 +257,13 @@ The `source` values are provenance for debugging and deterministic behavior, not
 
 Relationship confidence should be mechanical, not semantic:
 
-- strong: same enclosing symbol, same file nearby, explicit planner context hint to a changed symbol, or verified identifier mention inside an enclosing caller symbol;
-- medium: test symbol references a changed production symbol, or a related file is explicitly named by coverage metadata;
+- strong: same enclosing symbol, explicit planner context hint to a changed symbol, or verified identifier mention inside an enclosing caller/callee symbol;
+- medium: a related file is explicitly named by coverage metadata and resolves to a changed hunk or changed symbol;
 - weak: raw text overlap only.
 
 Only strong and selected medium edges should attach context automatically. Weak edges may be kept in graph telemetry for debugging but should not enter packet prompts by default.
+
+Defer `nearby_hunk` and `test_reference` edges until later evals show that they are needed. They are plausible, but they are not necessary for the current failure mode and would widen the first implementation.
 
 ### Packet Grouping and Context
 
@@ -298,11 +298,20 @@ type RelatedChangedContext = {
 Attach at most a small bounded number of related contexts per packet, prioritized by:
 
 1. planner hints/context hints for this hunk,
-2. caller/callee relationships among changed symbols,
-3. same-file related changed hunks,
-4. relevant tests for the changed symbol.
+2. caller/callee/sibling relationships among changed symbols,
+3. same-symbol changed hunks.
 
 This solves the run-13 failure mode without asking Stage 5 to know the final bug. The `scaleAmount` packet should not need a domain-specific prompt; it should receive the changed caller context that makes observable behavior reviewable.
+
+Attachment must be bidirectional where the evidence supports it:
+
+- a changed helper packet may receive changed caller context;
+- a changed caller packet may receive changed helper context;
+- related same-file changed symbols may receive each other's changed-hunk excerpts when they share a mechanically proven identifier relationship.
+
+This avoids the one-sided failure where the helper sees callers but the caller still cannot see the changed helper or upstream derivation.
+
+Track prompt-size effects explicitly. Adding related context must not silently crowd out the primary hunk, enclosing symbol, or changed-line context. If related context is omitted due to caps, record that in the packet artifact and Stage 6 telemetry.
 
 ### Packet Notes
 
@@ -347,10 +356,12 @@ This is not a taxonomy. It is a general instruction to use the context Stage 6 p
    - Remove standalone `reviewEmphasis` instructions.
    - Tell the planner to put review-driving attention in coverage decisions.
    - Normalize and cap `focusNotes`, `relatedSymbols`, and `relatedFiles`.
-   - For migration only, map legacy `reviewEmphasis` into hunk-linked focus notes when overlap is clear.
+   - Ignore legacy `reviewEmphasis` if it appears in repaired model output; do not map it into packet prompts.
 
 3. Build the Stage 6 relationship graph.
    - Use `RepositoryIndex.symbolFacts`, changed symbols, hunk metadata, `findSymbolMentions`, and planner hints.
+   - Start with `same_symbol`, `symbol_mention`, and `planner_hint` edges only.
+   - Walk changed-symbol relationships in both directions when attaching context.
    - Keep graph construction deterministic and capped.
    - Record graph summary telemetry: nodes, edges, attached contexts, omitted contexts.
 
@@ -379,8 +390,9 @@ This is not a taxonomy. It is a general instruction to use the context Stage 6 p
 8. Update tests.
    - Planner schema rejects or ignores standalone review emphasis in new outputs.
    - Coverage focus notes are attached to packets.
-   - Legacy review emphasis is either ignored or mapped only with clear hunk overlap.
+   - Legacy review emphasis is ignored by packet prompts.
    - Changed helper packet receives a changed caller context when a caller relationship exists.
+   - Changed caller packet can receive changed helper context when a changed helper relationship exists.
    - Related context is capped and does not create cross-file packets.
    - Stage 7 prompt includes related changed context and packet notes.
 
@@ -411,6 +423,8 @@ Expected diagnostic improvements:
 - Stage 7 no-finding decisions for helper packets are based on helper plus related changed context, not helper-local context only.
 - Stage 8 remains narrow and is not triggered by planner output alone.
 - Stage 9 verifier standards remain unchanged.
+
+Issue 67 alone is not expected to fix every run-13 miss. It should make the context path correct and observable. Issue 68 handles the separate downstream case where a concrete correctness predicate is promoted or suppressed under the wrong frame.
 
 ## Stop Conditions
 
