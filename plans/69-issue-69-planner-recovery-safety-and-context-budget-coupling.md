@@ -8,8 +8,9 @@ Implementation priority:
 
 1. Budget-couple packets that receive strong related changed context.
 2. Dedupe related changed context before prompt assembly.
-3. Add sparse recovered-plan detection and bounded safety coverage as a recovery net.
-4. Keep misplaced root planner fields as diagnostics unless relocation is trivial.
+3. Emit unconditional Stage 5 recovery/stability telemetry.
+4. Add sparse recovered-plan detection and bounded safety coverage as a recovery net.
+5. Keep misplaced root planner fields as diagnostics unless relocation is trivial.
 
 ## Problem
 
@@ -51,7 +52,7 @@ There is also a symptom-vs-cause distinction:
 
 - This plan should make degraded planner output safe.
 - It should not hide the fact that Stage 5 produced an empty submit and then misplaced fields during repair.
-- Telemetry must make empty submits, schema repairs, stripped root keys, sparse recovered plans, and safety coverage visible so we can decide later whether the Stage 5 prompt/schema contract itself should be simplified.
+- Telemetry must make empty submits, schema repairs, stripped root keys, sparse recovered plans, and safety coverage visible even when safety coverage does not fire, so we can decide later whether the Stage 5 prompt/schema contract itself should be simplified.
 
 ## Goal
 
@@ -114,6 +115,14 @@ Add a generic budget/profile nudge:
 if relatedChangedContext contains strong code-symbol context:
   reviewProfile is at least investigate
   tool budget uses investigate-level limits even if nominal coverage is normal
+```
+
+Before implementing the nudge, confirm the existing `toolBudget` calculation actually follows `reviewProfile` independently of coverage. If it does not, fix that plumbing directly rather than changing the coverage label. The desired behavior is:
+
+```text
+coverage: normal
+reviewProfile: investigate
+toolBudget: investigate-level local exploration budget
 ```
 
 If the packet is already deep, do not change it. If the packet is light or skipped, do not promote it unless existing skip rules already allow review.
@@ -191,7 +200,23 @@ When this guard trips:
 - mark planning as degraded for coverage reporting;
 - apply deterministic safety coverage to reviewable source-code hunks.
 
-### 4. Misplaced Root Planner Fields
+### 4. Stage 5 Recovery/Stability Telemetry
+
+Emit Stage 5 recovery/stability counters unconditionally. Do not emit these only as part of `planner_degraded_safety_coverage_applied`, because a planner repair can succeed into a non-sparse plan while still indicating prompt/schema instability.
+
+Record:
+
+- empty submit count;
+- schema-invalid submit count;
+- schema-repair attempt count;
+- schema-repair success/failure count;
+- deterministic recovery used count;
+- stripped or misplaced root keys;
+- whether sparse-plan detection fired.
+
+This telemetry should appear in the run artifacts and stage summaries even when the final plan is not considered degraded. The point is to measure whether plan 67's heavier Stage 5 contract is recurring as a stability issue rather than masking it with later safety coverage.
+
+### 5. Misplaced Root Planner Fields
 
 If repaired planner output contains root-level fields intended for coverage decisions, such as:
 
@@ -210,7 +235,7 @@ Keep v1 simple:
 
 Do not build a complex relocation system in this plan. The recall driver in run 14 was sparse coverage, not the lost root `focusNotes` content.
 
-### 5. Deterministic Safety Coverage
+### 6. Deterministic Safety Coverage
 
 When planner recovery is degraded, Stage 6 should not let all omitted source-code hunks fall back to ordinary `normal`.
 
@@ -248,11 +273,10 @@ Telemetry should make the fallback obvious:
 - reason
 - recovered coverage entry count
 - reviewable source hunk count
-- empty-submit and schema-repair frequency for Stage 5
 
 The final report should continue to say review completeness is complete if all hunks were reviewed. The planner degradation is a debug/telemetry signal, not necessarily a user-facing partial-review state.
 
-### 6. Stage 7 Prompt Guardrail
+### 7. Stage 7 Prompt Guardrail
 
 Keep this small. Do not add a domain-specific invariant list.
 
@@ -268,6 +292,7 @@ This reinforces the architecture without creating a new taxonomy.
 
 1. Implement context-rich packet budget coupling.
    - Detect strong related changed context structurally.
+   - Confirm or fix that `reviewProfile: investigate` raises tool budget independently of nominal coverage.
    - Ensure affected normal packets get investigate-level budget/profile.
    - Emit budget-nudge telemetry with counts and ratio.
    - Add tests for context-rich normal packets receiving the nudge without promoting unrelated nearby/test/doc context.
@@ -276,35 +301,41 @@ This reinforces the architecture without creating a new taxonomy.
    - Dedupe before packet assembly.
    - Add tests where multiple hunk edges point to the same symbol body and only one related context entry is attached.
 
-3. Inspect planner recovery code.
+3. Add unconditional Stage 5 recovery/stability telemetry.
+   - Count empty submits, schema-invalid submits, repair attempts, repair successes/failures, deterministic recovery, and stripped/misplaced root keys.
+   - Emit these counters even when sparse-plan safety coverage does not fire.
+   - Add tests that a repaired-but-not-sparse plan still records recovery telemetry.
+
+4. Inspect planner recovery code.
    - Find where schema repair results are recovered.
    - Find where invalid root keys are stripped.
    - Add recovery metadata for repaired/recovered planner output using the existing degraded-planning mechanism where possible.
 
-4. Add sparse-plan detection.
+5. Add sparse-plan detection.
    - Count reviewable source-code hunks from the planner dossier or filtered diff.
    - Count explicit source-code coverage decisions after repair/recovery.
    - Emit telemetry when a recovered plan is suspiciously sparse.
 
-5. Handle misplaced root planner fields as diagnostics.
+6. Handle misplaced root planner fields as diagnostics.
    - Record misplaced root `focusNotes`, `relatedSymbols`, `relatedFiles`, and optionally `surroundingContextHints`.
    - Relocate only if there is exactly one unambiguous coverage target.
    - Otherwise preserve diagnostics and trigger degraded planning when sparse.
    - Add tests for no-unsafe-global propagation.
 
-6. Implement deterministic safety coverage.
+7. Implement deterministic safety coverage.
    - Apply only when planner recovery is degraded.
    - Use existing file facts and changed symbols.
    - Keep docs/test/default behavior bounded.
    - Add tests where a multi-hunk source diff with recovered sparse plan gets source-code hunks upgraded.
 
-7. Update Stage 7 prompt text minimally.
+8. Update Stage 7 prompt text minimally.
    - Reinforce related context inspection.
    - Do not add domain examples or fixed risk categories.
    - Bump the Stage 7 prompt version.
 
-8. Update telemetry/docs.
+9. Update telemetry/docs.
    - Record sparse-plan fallback metrics in run artifacts.
+   - Record standalone Stage 5 recovery/stability metrics in run artifacts.
    - Mention planner degraded safety coverage in functional spec/architecture if behavior is externally relevant.
 
 ## Validation
@@ -334,13 +365,15 @@ pnpm run dev eval --eval-dir /home/peter/Dev/0xPolygon/codegenie-private-evals/t
 Suggested sequencing for eval validation:
 
 1. After implementing sections 1 and 2, run `49f4645b` at least once to see whether budget coupling and dedupe are sufficient.
-2. After implementing sections 3-5, run `49f4645b` again and confirm any sparse planner recovery is visible in telemetry.
-3. If Stage 5 empty-submit or sparse-recovery frequency is non-trivial across repeated runs, open a separate follow-up to simplify the Stage 5 prompt/schema contract instead of only relying on safety coverage.
+2. After implementing section 4 telemetry, confirm Stage 5 empty-submit/schema-repair counts are visible even if sparse-plan safety coverage does not fire.
+3. After implementing sections 5-7, run `49f4645b` again and confirm any sparse planner recovery is visible in telemetry.
+4. If Stage 5 empty-submit or sparse-recovery frequency is non-trivial across repeated runs, open a separate follow-up to simplify the Stage 5 prompt/schema contract instead of only relying on safety coverage.
 
 Expected diagnostic improvements for `49f4645b`:
 
 - Normal packets with strong related changed context should receive investigate-level budget.
 - `hunk-relationships.json` should show fewer duplicate attached contexts for the same symbol body.
+- Stage 5 empty-submit/schema-repair telemetry should be visible independently of safety coverage.
 - Stage 5 should not produce `deep 0` after planner schema repair on this multi-hunk source-code diff once the safety net triggers.
 - If planner repair is sparse, telemetry should show `planner_recovered_sparse_plan` and `planner_degraded_safety_coverage_applied`.
 - Code packets with related changed context should retain enough budget to inspect related symbols.

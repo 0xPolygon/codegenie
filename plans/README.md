@@ -78,7 +78,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 
 Recommended implementation order for remaining work:
 
-- **Issue 69** — first couple strong related changed context to review budget and dedupe repeated related snippets; then add bounded sparse-planner recovery so repaired Stage 5 output cannot silently collapse source-code coverage to normal.
+- **Issue 69** — first couple strong related changed context to review budget and dedupe repeated related snippets; record standalone Stage 5 recovery telemetry; then add bounded sparse-planner recovery so repaired Stage 5 output cannot silently collapse source-code coverage to normal.
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
 
 ## Deferred / Watch List
