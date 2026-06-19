@@ -425,7 +425,7 @@ Default packet construction should be hunk-first. Coalesce only nearby hunks in 
 
 The packet builder validates and assembles planner decisions; it does not make primary risk decisions. If a reviewable hunk has no planner coverage, the packet builder quietly applies deterministic `normal` coverage with default core/language lenses. If the planner skips a reviewable hunk without a valid reason, the packet builder falls back to `normal` and records the malformed skip.
 
-Planner notes must be hunk-scoped. Stage 5 may include short `focusNotes`, concrete `relatedSymbols`, concrete `relatedFiles`, and `surroundingContextHints` on a coverage decision. Stage 6 carries those notes into the packet only as advisory `attentionNotes`; it must not turn broad planner prose into review obligations.
+Planner notes must be hunk-scoped. Stage 5 may include short `focusNotes`, concrete `relatedSymbols`, concrete `relatedFiles`, and `surroundingContextHints` on a coverage decision. Stage 6 carries those notes into the packet only as advisory `attentionNotes`; it must not turn broad planner prose into review obligations. When deterministic related changed context is attached, the strongest relationship notes should be preserved ahead of planner notes under the attention-note cap so caller/callee/output topology remains visible to Stage 7.
 
 Packet grouping should stay conservative in v1:
 
@@ -492,7 +492,7 @@ Standard and investigate packet reviewers may use the same read-only tool suite.
 
 Stage 6 should deterministically prune low-value lenses before Stage 7. The language lens remains the broad default for supported languages. `core/tests` should be kept for test files, deleted tests, static test signals, planner test hints, hunk-scoped attention notes, or important untested behavior; it should not be attached to every routine source packet. `core/code-review` should be kept for real source behavior/design risk, but mechanical import-only packets should usually be language-only/simple unless a configured priority, deep coverage, planner hint, or hunk-scoped attention note promotes them.
 
-Reviewer workers should submit an empty finding list when the packet evidence is insufficient. They should use tools only to support, narrow, or reject a concrete changed-code concern, not for broad repository exploration.
+Reviewer workers should submit an empty finding list when the packet evidence is insufficient. They should use tools only to support, narrow, or reject a concrete changed-code concern, not for broad repository exploration. If Stage 6 attached related changed context, a no-findings result should account for why that related caller/callee/output context does not change the packet's observable behavior.
 
 Packet reviewers should not review a hunk in isolation. They should use packet context first, then use read-only repository tools when needed to inspect the surrounding code that determines correctness:
 

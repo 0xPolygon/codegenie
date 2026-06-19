@@ -1165,6 +1165,179 @@ describe("phase 5 pipeline regressions", () => {
     ]);
   });
 
+  it("keeps relationship attention notes ahead of planner notes when the cap is tight", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const callerFile: DiffFile = {
+      path: "caller.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [{
+        id: "h-caller",
+        path: "caller.ts",
+        oldStart: 10,
+        oldLines: 5,
+        newStart: 10,
+        newLines: 5,
+        header: "@@ -10,5 +10,5 @@",
+        lines: [
+          { kind: "context", content: "export function buildResponse(input) {", oldLineNumber: 10, newLineNumber: 10 },
+          { kind: "add", content: "  const value = transformValue(input);", newLineNumber: 11 },
+          { kind: "add", content: "  return publishResult(value);", newLineNumber: 12 },
+          { kind: "context", content: "}", oldLineNumber: 13, newLineNumber: 13 }
+        ]
+      }]
+    };
+    const helperFile: DiffFile = {
+      path: "scale.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [{
+        id: "h-scale",
+        path: "scale.ts",
+        oldStart: 1,
+        oldLines: 3,
+        newStart: 1,
+        newLines: 3,
+        header: "@@ -1,3 +1,3 @@",
+        lines: [
+          { kind: "context", content: "export function transformValue(value) {", oldLineNumber: 1, newLineNumber: 1 },
+          { kind: "add", content: "  return value / 10;", newLineNumber: 2 },
+          { kind: "context", content: "}", oldLineNumber: 3, newLineNumber: 3 }
+        ]
+      }]
+    };
+    const outputFile: DiffFile = {
+      path: "process.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [{
+        id: "h-process",
+        path: "process.ts",
+        oldStart: 1,
+        oldLines: 3,
+        newStart: 1,
+        newLines: 3,
+        header: "@@ -1,3 +1,3 @@",
+        lines: [
+          { kind: "context", content: "export function publishResult(value) {", oldLineNumber: 1, newLineNumber: 1 },
+          { kind: "add", content: "  return { value };", newLineNumber: 2 },
+          { kind: "context", content: "}", oldLineNumber: 3, newLineNumber: 3 }
+        ]
+      }]
+    };
+    const symbolFacts: HunkSymbolFacts[] = [
+      {
+        path: "caller.ts",
+        hunkId: "h-caller",
+        enclosingSymbol: "buildResponse",
+        symbolKind: "function",
+        symbolRange: [10, 13],
+        changedLines: [11, 12],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      },
+      {
+        path: "scale.ts",
+        hunkId: "h-scale",
+        enclosingSymbol: "transformValue",
+        symbolKind: "function",
+        symbolRange: [1, 3],
+        changedLines: [2],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      },
+      {
+        path: "process.ts",
+        hunkId: "h-process",
+        enclosingSymbol: "publishResult",
+        symbolKind: "function",
+        symbolRange: [1, 3],
+        changedLines: [2],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      }
+    ];
+    const tools = {
+      ...fakeTools(),
+      findSymbolMentions: async (symbolName: string, options: SymbolMentionOptions = {}) => ({
+        results: (symbolName === "transformValue" || symbolName === "publishResult") && options.contextMode === "symbols"
+          ? [{
+              path: "caller.ts",
+              line: symbolName === "transformValue" ? 11 : 12,
+              matchText: symbolName === "transformValue" ? "const value = transformValue(input);" : "return publishResult(value);",
+              enclosingSymbol: { path: "caller.ts", name: "buildResponse", kind: "function" as const, lineRange: [10, 13] as [number, number] }
+            }]
+          : [],
+        meta
+      }),
+      readSymbol: async (pathName: string, selector: { symbolName?: string }) => {
+        const symbolName = selector.symbolName ?? (pathName === "caller.ts" ? "buildResponse" : pathName === "scale.ts" ? "transformValue" : "publishResult");
+        const source = {
+          buildResponse: "export function buildResponse(input) {\n  const value = transformValue(input);\n  return publishResult(value);\n}",
+          transformValue: "export function transformValue(value) {\n  return value / 10;\n}",
+          publishResult: "export function publishResult(value) {\n  return { value };\n}"
+        }[symbolName] ?? "";
+        const lineRange: [number, number] = symbolName === "GetQuote" ? [10, 13] : [1, 3];
+        return {
+          text: source,
+          symbol: { path: pathName, name: symbolName, kind: "function" as const, lineRange },
+          meta
+        };
+      }
+    };
+    const plan: ReviewPlan = {
+      diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" },
+      coverage: [
+        {
+          hunkId: "h-caller",
+          path: "caller.ts",
+          coverage: "normal",
+          lenses: ["core/code-review"],
+          surroundingContextHints: [],
+          reason: "Planner says this hunk is primarily about the local wrapper.",
+          focusNotes: [
+            "Check the wrapper-level behavior.",
+            "Confirm the local return shape."
+          ]
+        },
+        { hunkId: "h-scale", path: "scale.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review helper" },
+        { hunkId: "h-process", path: "process.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review output" }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [callerFile, helperFile, outputFile],
+      [fakeFacts("caller.ts", "per-hunk"), fakeFacts("scale.ts", "per-hunk"), fakeFacts("process.ts", "per-hunk")],
+      {
+        ...fakeRepositoryIndex(tools),
+        symbolFacts
+      },
+      {
+        ...nullTelemetry(),
+        event: (event) => events.push(event)
+      },
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const callerPacket = packets.find((packet) => packet.hunks.some((hunk) => hunk.hunkId === "h-caller"));
+    expect(callerPacket?.attentionNotes).toHaveLength(3);
+    expect(callerPacket?.attentionNotes.slice(0, 2)).toEqual(expect.arrayContaining([
+      "Changed symbol buildResponse mentions changed symbol transformValue.",
+      "Changed symbol buildResponse mentions changed symbol publishResult."
+    ]));
+    expect(callerPacket?.attentionNotes[2]).toBe("Planner says this hunk is primarily about the local wrapper.");
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      message: "relationship_attention_notes_preserved",
+      file: "caller.ts"
+    }));
+  });
+
   it("gives normal packets investigate budget for strong related changed source context", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
@@ -5361,6 +5534,8 @@ describe("phase 5 pipeline regressions", () => {
     expect(prompt).toContain("verifier-bound hint");
     expect(prompt).toContain("behavior-preserving refactors");
     expect(prompt).toContain("validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries");
+    expect(prompt).toContain("When returning no_findings with related context attached");
+    expect(prompt).toContain("why that related context does not change the observable behavior");
     expect(prompt).toContain("do not mark a changed-line correctness/security finding low confidence solely");
   });
 

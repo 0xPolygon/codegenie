@@ -1,6 +1,6 @@
 # Issue 72: Relationship Attention Note Preservation
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval `49f4645b/logs/17` compared with `49f4645b/logs/16`, with code confirmation in `src/pipeline/packet-builder.ts`, 2026-06-19
 Recommended priority: high. Run 17 shows Plan 71 fixed Stage 5 first-submit reliability, but a healthy planner's focus notes crowded out deterministic changed-symbol relationship notes that were decisive in run 16.
 

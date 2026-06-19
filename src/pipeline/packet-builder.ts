@@ -102,6 +102,22 @@ type PacketBuildMetrics = {
   relatedContextBudgetNudgeSources: Set<string>;
 };
 
+type RelationshipAttentionCandidate = {
+  note: string;
+  sourceKind?: RelatedChangedContext["sourceKind"];
+  relationshipStrength?: RelatedChangedContext["relationshipStrength"];
+  relationshipSource?: RelatedChangedContext["relationshipSource"];
+  index: number;
+};
+
+type AttentionNoteSelection = {
+  notes: string[];
+  plannerNoteCount: number;
+  relationshipNoteCount: number;
+  keptRelationshipNotes: RelationshipAttentionCandidate[];
+  omittedRelationshipNotes: RelationshipAttentionCandidate[];
+};
+
 const MAX_HUNKS_PER_PACKET = 5;
 const MAX_LENSES_PER_PACKET = 6;
 const MAX_PATCH_CHARS = 12_000;
@@ -283,7 +299,9 @@ async function buildPacket(
   const testCoverageDelta = buildTestCoverageDelta(first.file, planned.map((entry) => entry.hunk), first.facts, symbolFacts);
   const relatedChangedContext = await buildRelatedChangedContext(planned, relationshipGraph, repoIndex, telemetry);
   const plannerAttentionNotes = attentionNotesForDecisions(decisions);
-  const attentionNotes = mergeAttentionNotes(plannerAttentionNotes, relatedChangedContext);
+  const attentionNoteSelection = mergeAttentionNotes(plannerAttentionNotes, relatedChangedContext);
+  const attentionNotes = attentionNoteSelection.notes;
+  emitRelationshipAttentionTelemetry(telemetry, first.file.path, attentionNoteSelection);
   const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry, {
     coverage,
     reviewPriority,
@@ -452,16 +470,135 @@ function attentionNotesForDecisions(decisions: NonSkipDecision[]): string[] {
 function mergeAttentionNotes(
   plannerAttentionNotes: string[],
   relatedChangedContext: RelatedChangedContext[]
-): string[] {
-  const notes = [
-    ...plannerAttentionNotes,
-    ...relatedChangedContext.map((context) => context.reason)
-  ];
-  return normalizeAttentionNotes(notes);
+): AttentionNoteSelection {
+  const plannerNotes = normalizeAttentionNotes(plannerAttentionNotes);
+  const relationshipNotes = relationshipAttentionCandidates(relatedChangedContext);
+  if (relationshipNotes.length === 0) {
+    return {
+      notes: plannerNotes,
+      plannerNoteCount: plannerNotes.length,
+      relationshipNoteCount: 0,
+      keptRelationshipNotes: [],
+      omittedRelationshipNotes: []
+    };
+  }
+  if (plannerNotes.length === 0) {
+    const keptRelationshipNotes = relationshipNotes.slice(0, MAX_ATTENTION_NOTES);
+    return {
+      notes: keptRelationshipNotes.map((candidate) => candidate.note),
+      plannerNoteCount: 0,
+      relationshipNoteCount: relationshipNotes.length,
+      keptRelationshipNotes,
+      omittedRelationshipNotes: relationshipNotes.slice(keptRelationshipNotes.length)
+    };
+  }
+
+  const selectedRelationshipNotes = relationshipNotes.slice(0, Math.min(2, MAX_ATTENTION_NOTES));
+  const selectedRelationshipSet = new Set(selectedRelationshipNotes.map((candidate) => candidate.note));
+  const selectedPlannerNotes = plannerNotes
+    .filter((note) => !selectedRelationshipSet.has(note))
+    .slice(0, MAX_ATTENTION_NOTES - selectedRelationshipNotes.length);
+  const selectedPlannerSet = new Set(selectedPlannerNotes);
+  const extraRelationshipNotes = relationshipNotes
+    .slice(selectedRelationshipNotes.length)
+    .filter((candidate) => !selectedRelationshipSet.has(candidate.note) && !selectedPlannerSet.has(candidate.note))
+    .slice(0, MAX_ATTENTION_NOTES - selectedRelationshipNotes.length - selectedPlannerNotes.length);
+  const keptRelationshipNotes = [...selectedRelationshipNotes, ...extraRelationshipNotes];
+  const keptRelationshipSet = new Set(keptRelationshipNotes.map((candidate) => candidate.note));
+  return {
+    notes: [...keptRelationshipNotes.map((candidate) => candidate.note), ...selectedPlannerNotes].slice(0, MAX_ATTENTION_NOTES),
+    plannerNoteCount: plannerNotes.length,
+    relationshipNoteCount: relationshipNotes.length,
+    keptRelationshipNotes,
+    omittedRelationshipNotes: relationshipNotes.filter((candidate) => !keptRelationshipSet.has(candidate.note))
+  };
 }
 
 function normalizeAttentionNotes(notes: string[]): string[] {
   return dedupe(notes.map(normalizeNote).filter((note) => note.length > 0)).slice(0, MAX_ATTENTION_NOTES);
+}
+
+function relationshipAttentionCandidates(relatedChangedContext: RelatedChangedContext[]): RelationshipAttentionCandidate[] {
+  const candidates = relatedChangedContext
+    .map((context, index): RelationshipAttentionCandidate => ({
+      note: normalizeNote(context.reason),
+      sourceKind: context.sourceKind,
+      relationshipStrength: context.relationshipStrength,
+      relationshipSource: context.relationshipSource,
+      index
+    }))
+    .filter((candidate) => candidate.note.length > 0)
+    .sort(compareRelationshipAttentionCandidates);
+  const seen = new Set<string>();
+  const result: RelationshipAttentionCandidate[] = [];
+  for (const candidate of candidates) {
+    if (seen.has(candidate.note)) {
+      continue;
+    }
+    seen.add(candidate.note);
+    result.push(candidate);
+  }
+  return result;
+}
+
+function compareRelationshipAttentionCandidates(
+  a: RelationshipAttentionCandidate,
+  b: RelationshipAttentionCandidate
+): number {
+  return (
+    relationshipAttentionSourceKindRank(a.sourceKind) - relationshipAttentionSourceKindRank(b.sourceKind) ||
+    relationshipAttentionStrengthRank(a.relationshipStrength) - relationshipAttentionStrengthRank(b.relationshipStrength) ||
+    relationshipAttentionSourceRank(a.relationshipSource) - relationshipAttentionSourceRank(b.relationshipSource) ||
+    a.index - b.index
+  );
+}
+
+function relationshipAttentionSourceKindRank(kind: RelatedChangedContext["sourceKind"] | undefined): number {
+  return { source: 0, test: 1, docs: 2, unknown: 3 }[kind ?? "unknown"];
+}
+
+function relationshipAttentionStrengthRank(strength: RelatedChangedContext["relationshipStrength"] | undefined): number {
+  return { strong: 0, medium: 1, weak: 2 }[strength ?? "weak"];
+}
+
+function relationshipAttentionSourceRank(source: RelatedChangedContext["relationshipSource"] | undefined): number {
+  return { symbol_mention: 0, same_symbol: 1, planner_hint: 2 }[source ?? "planner_hint"];
+}
+
+function emitRelationshipAttentionTelemetry(
+  telemetry: TelemetryRecorder,
+  file: string,
+  selection: AttentionNoteSelection
+): void {
+  if (
+    selection.relationshipNoteCount === 0 ||
+    selection.keptRelationshipNotes.length === 0 ||
+    selection.plannerNoteCount + selection.relationshipNoteCount <= MAX_ATTENTION_NOTES
+  ) {
+    return;
+  }
+  telemetry.event({
+    stage: 6,
+    level: "debug",
+    message: "relationship_attention_notes_preserved",
+    file,
+    data: {
+      plannerNoteCount: selection.plannerNoteCount,
+      relationshipNoteCount: selection.relationshipNoteCount,
+      finalNoteCount: selection.notes.length,
+      relationshipNotesKept: selection.keptRelationshipNotes.map(relationshipAttentionTelemetryEntry),
+      relationshipNotesOmitted: selection.omittedRelationshipNotes.map(relationshipAttentionTelemetryEntry)
+    }
+  });
+}
+
+function relationshipAttentionTelemetryEntry(candidate: RelationshipAttentionCandidate): Record<string, unknown> {
+  return {
+    note: candidate.note,
+    ...(candidate.sourceKind !== undefined ? { sourceKind: candidate.sourceKind } : {}),
+    ...(candidate.relationshipStrength !== undefined ? { relationshipStrength: candidate.relationshipStrength } : {}),
+    ...(candidate.relationshipSource !== undefined ? { relationshipSource: candidate.relationshipSource } : {})
+  };
 }
 
 function hasStrongRelatedChangedContext(

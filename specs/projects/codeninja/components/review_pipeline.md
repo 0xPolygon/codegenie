@@ -487,7 +487,7 @@ Packet assembly details:
 - `prSummary`: deterministic one-paragraph projection of dossier metadata (PR title or first commit title plus totals), capped 500 chars; it is data framing, not model output.
 - `PacketHunk` line data is copied from the parsed diff with absolute old/new numbers preserved exactly; `changedNewLineNumbers` (add lines) and `changedOldLineNumbers` (delete lines) are derived from `DiffLine` kinds.
 - `toolBudget` is assigned from the review-profile/coverage/depth table below.
-- `labels`, `attentionNotes`: configured labels from `FileFacts`; hunk-scoped planner focus notes, selected coverage reasons, context-hint reasons, and attached relationship reasons, capped to 3 short advisory entries.
+- `labels`, `attentionNotes`: configured labels from `FileFacts`; hunk-scoped planner focus notes, selected coverage reasons, context-hint reasons, and attached relationship reasons, capped to 3 short advisory entries. When related changed context is present, Stage 6 keeps the strongest relationship notes first so planner focus notes cannot crowd out the mechanical changed-symbol topology.
 - `relatedChangedContext`: bounded snippets/patch excerpts from mechanically related changed hunks and changed symbols, never a cross-file packet.
 - Every packet is persisted to `packets/<packet-id>.json` before Stage 7 dispatch.
 
