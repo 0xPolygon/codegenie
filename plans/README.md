@@ -72,11 +72,13 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 66 | COMPLETE | Issue 66: Simplify Stage 5-8 By Removing Planner Review Questions |
 | 67 | COMPLETE | Issue 67: Planner Coverage Emphasis and Hunk Relationship Context |
 | 68 | COMPLETE | Issue 68: Predicate-Preserving Promotion and Note Suppression |
+| 69 | PENDING | Issue 69: Planner Recovery Safety and Context-Budget Coupling |
 
 ## Current Queue
 
 Recommended implementation order for remaining work:
 
+- **Issue 69** — first couple strong related changed context to review budget and dedupe repeated related snippets; then add bounded sparse-planner recovery so repaired Stage 5 output cannot silently collapse source-code coverage to normal.
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
 
 ## Deferred / Watch List
