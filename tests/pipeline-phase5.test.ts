@@ -1165,6 +1165,404 @@ describe("phase 5 pipeline regressions", () => {
     ]);
   });
 
+  it("gives normal packets investigate budget for strong related changed source context", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const helperFile: DiffFile = {
+      path: "helper.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [{
+        id: "h-helper",
+        path: "helper.ts",
+        oldStart: 1,
+        oldLines: 3,
+        newStart: 1,
+        newLines: 3,
+        header: "@@ -1,3 +1,3 @@",
+        lines: [
+          { kind: "context", content: "export function scaleAmount(value) {", oldLineNumber: 1, newLineNumber: 1 },
+          { kind: "add", content: "  return value / 100n;", newLineNumber: 2 },
+          { kind: "context", content: "}", oldLineNumber: 3, newLineNumber: 3 }
+        ]
+      }]
+    };
+    const callerFile: DiffFile = {
+      path: "caller.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [{
+        id: "h-caller",
+        path: "caller.ts",
+        oldStart: 10,
+        oldLines: 3,
+        newStart: 10,
+        newLines: 3,
+        header: "@@ -10,3 +10,3 @@",
+        lines: [
+          { kind: "context", content: "export function buildQuote(input) {", oldLineNumber: 10, newLineNumber: 10 },
+          { kind: "add", content: "  return scaleAmount(input);", newLineNumber: 11 },
+          { kind: "context", content: "}", oldLineNumber: 12, newLineNumber: 12 }
+        ]
+      }]
+    };
+    const symbolFacts: HunkSymbolFacts[] = [
+      {
+        path: "helper.ts",
+        hunkId: "h-helper",
+        enclosingSymbol: "scaleAmount",
+        symbolKind: "function",
+        symbolRange: [1, 3],
+        changedLines: [2],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      },
+      {
+        path: "caller.ts",
+        hunkId: "h-caller",
+        enclosingSymbol: "buildQuote",
+        symbolKind: "function",
+        symbolRange: [10, 12],
+        changedLines: [11],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      }
+    ];
+    const tools = {
+      ...fakeTools(),
+      findSymbolMentions: async (symbolName: string, options: SymbolMentionOptions = {}) => ({
+        results: symbolName === "scaleAmount" && options.contextMode === "symbols"
+          ? [{
+              path: "caller.ts",
+              line: 11,
+              matchText: "return scaleAmount(input);",
+              enclosingSymbol: { path: "caller.ts", name: "buildQuote", kind: "function" as const, lineRange: [10, 12] as [number, number] }
+            }]
+          : [],
+        meta
+      }),
+      readSymbol: async (pathName: string) => ({
+        text: pathName === "helper.ts"
+          ? "export function scaleAmount(value) {\n  return value / 100n;\n}"
+          : "export function buildQuote(input) {\n  return scaleAmount(input);\n}",
+        symbol: {
+          path: pathName,
+          name: pathName === "helper.ts" ? "scaleAmount" : "buildQuote",
+          kind: "function" as const,
+          lineRange: pathName === "helper.ts" ? [1, 3] as [number, number] : [10, 12] as [number, number]
+        },
+        meta
+      })
+    };
+    const plan: ReviewPlan = {
+      diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" },
+      coverage: [
+        { hunkId: "h-helper", path: "helper.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "normal helper" },
+        { hunkId: "h-caller", path: "caller.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "normal caller" }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [helperFile, callerFile],
+      [fakeFacts("helper.ts", "per-hunk"), fakeFacts("caller.ts", "per-hunk")],
+      {
+        ...fakeRepositoryIndex(tools),
+        symbolFacts
+      },
+      {
+        ...nullTelemetry(),
+        event: (event) => events.push(event)
+      },
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const helperPacket = packets.find((packet) => packet.hunks.some((hunk) => hunk.hunkId === "h-helper"));
+    expect(helperPacket?.coverage).toBe("normal");
+    expect(helperPacket?.reviewProfile).toBe("investigate");
+    expect(helperPacket?.toolBudget.maxToolCalls).toBe(6);
+    expect(helperPacket?.relatedChangedContext).toEqual([
+      expect.objectContaining({
+        hunkId: "h-caller",
+        relationshipSource: "symbol_mention",
+        relationshipStrength: "strong",
+        sourceKind: "source"
+      })
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      message: "related_context_budget_nudged",
+      file: "helper.ts"
+    }));
+  });
+
+  it("keeps weaker related changed source context above simple review profile", async () => {
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const helperFile: DiffFile = {
+      path: "helper.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [{
+        id: "h-helper",
+        path: "helper.ts",
+        oldStart: 1,
+        oldLines: 3,
+        newStart: 1,
+        newLines: 3,
+        header: "@@ -1,3 +1,3 @@",
+        lines: [
+          { kind: "context", content: "export function scaleAmount(value) {", oldLineNumber: 1, newLineNumber: 1 },
+          { kind: "add", content: "  return value / 100n;", newLineNumber: 2 },
+          { kind: "context", content: "}", oldLineNumber: 3, newLineNumber: 3 }
+        ]
+      }]
+    };
+    const callerFile: DiffFile = {
+      path: "caller.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [{
+        id: "h-caller",
+        path: "caller.ts",
+        oldStart: 10,
+        oldLines: 3,
+        newStart: 10,
+        newLines: 3,
+        header: "@@ -10,3 +10,3 @@",
+        lines: [
+          { kind: "context", content: "export function buildQuote(input) {", oldLineNumber: 10, newLineNumber: 10 },
+          { kind: "add", content: "  return scaleAmount(input);", newLineNumber: 11 },
+          { kind: "context", content: "}", oldLineNumber: 12, newLineNumber: 12 }
+        ]
+      }]
+    };
+    const symbolFacts: HunkSymbolFacts[] = [
+      {
+        path: "helper.ts",
+        hunkId: "h-helper",
+        enclosingSymbol: "scaleAmount",
+        symbolKind: "function",
+        symbolRange: [1, 3],
+        changedLines: [2],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      },
+      {
+        path: "caller.ts",
+        hunkId: "h-caller",
+        enclosingSymbol: "buildQuote",
+        symbolKind: "function",
+        symbolRange: [10, 12],
+        changedLines: [11],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      }
+    ];
+    const tools = {
+      ...fakeTools(),
+      findSymbolMentions: async (symbolName: string, options: SymbolMentionOptions = {}) => ({
+        results: symbolName === "scaleAmount" && options.contextMode === "symbols"
+          ? [{
+              path: "caller.ts",
+              line: 11,
+              matchText: "return scaleAmount(input);"
+            }]
+          : [],
+        meta
+      }),
+      readSymbol: async (pathName: string) => ({
+        text: pathName === "helper.ts"
+          ? "export function scaleAmount(value) {\n  return value / 100n;\n}"
+          : "export function buildQuote(input) {\n  return scaleAmount(input);\n}",
+        symbol: {
+          path: pathName,
+          name: pathName === "helper.ts" ? "scaleAmount" : "buildQuote",
+          kind: "function" as const,
+          lineRange: pathName === "helper.ts" ? [1, 3] as [number, number] : [10, 12] as [number, number]
+        },
+        meta
+      })
+    };
+    const plan: ReviewPlan = {
+      diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" },
+      coverage: [
+        { hunkId: "h-helper", path: "helper.ts", coverage: "light", lenses: ["core/code-review"], surroundingContextHints: [], reason: "light helper" },
+        { hunkId: "h-caller", path: "caller.ts", coverage: "light", lenses: ["core/code-review"], surroundingContextHints: [], reason: "light caller" }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [helperFile, callerFile],
+      [fakeFacts("helper.ts", "per-hunk"), fakeFacts("caller.ts", "per-hunk")],
+      {
+        ...fakeRepositoryIndex(tools),
+        symbolFacts
+      },
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const helperPacket = packets.find((packet) => packet.hunks.some((hunk) => hunk.hunkId === "h-helper"));
+    expect(helperPacket?.coverage).toBe("light");
+    expect(helperPacket?.reviewProfile).toBe("standard");
+    expect(helperPacket?.toolBudget.maxToolCalls).toBe(1);
+    expect(helperPacket?.relatedChangedContext).toEqual([
+      expect.objectContaining({
+        hunkId: "h-caller",
+        relationshipSource: "symbol_mention",
+        relationshipStrength: "medium",
+        sourceKind: "source"
+      })
+    ]);
+  });
+
+  it("dedupes related changed context that resolves to the same symbol body", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const helperFile: DiffFile = {
+      path: "helper.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [
+        {
+          id: "h-helper-1",
+          path: "helper.ts",
+          oldStart: 1,
+          oldLines: 3,
+          newStart: 1,
+          newLines: 3,
+          header: "@@ -1,3 +1,3 @@",
+          lines: [
+            { kind: "context", content: "export function scaleAmount(value) {", oldLineNumber: 1, newLineNumber: 1 },
+            { kind: "add", content: "  const scaled = value / 100n;", newLineNumber: 2 },
+            { kind: "context", content: "}", oldLineNumber: 3, newLineNumber: 3 }
+          ]
+        },
+        {
+          id: "h-helper-2",
+          path: "helper.ts",
+          oldStart: 8,
+          oldLines: 3,
+          newStart: 8,
+          newLines: 3,
+          header: "@@ -8,3 +8,3 @@",
+          lines: [
+            { kind: "context", content: "export function scaleAmount(value) {", oldLineNumber: 8, newLineNumber: 8 },
+            { kind: "add", content: "  return scaled;", newLineNumber: 9 },
+            { kind: "context", content: "}", oldLineNumber: 10, newLineNumber: 10 }
+          ]
+        }
+      ]
+    };
+    const callerFile: DiffFile = {
+      path: "caller.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [{
+        id: "h-caller",
+        path: "caller.ts",
+        oldStart: 20,
+        oldLines: 3,
+        newStart: 20,
+        newLines: 3,
+        header: "@@ -20,3 +20,3 @@",
+        lines: [
+          { kind: "context", content: "export function buildQuote(input) {", oldLineNumber: 20, newLineNumber: 20 },
+          { kind: "add", content: "  return scaleAmount(input);", newLineNumber: 21 },
+          { kind: "context", content: "}", oldLineNumber: 22, newLineNumber: 22 }
+        ]
+      }]
+    };
+    const symbolFacts: HunkSymbolFacts[] = [
+      ...["h-helper-1", "h-helper-2"].map((hunkId) => ({
+        path: "helper.ts",
+        hunkId,
+        enclosingSymbol: "scaleAmount",
+        symbolKind: "function" as const,
+        symbolRange: [1, 12] as [number, number],
+        changedLines: hunkId === "h-helper-1" ? [2] : [9],
+        changedLinesSide: "new" as const,
+        source: "tree-sitter" as const,
+        confidence: "syntactic" as const
+      })),
+      {
+        path: "caller.ts",
+        hunkId: "h-caller",
+        enclosingSymbol: "buildQuote",
+        symbolKind: "function",
+        symbolRange: [20, 22],
+        changedLines: [21],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      }
+    ];
+    const tools = {
+      ...fakeTools(),
+      findSymbolMentions: async (symbolName: string, options: SymbolMentionOptions = {}) => ({
+        results: symbolName === "scaleAmount" && options.contextMode === "symbols"
+          ? [{
+              path: "caller.ts",
+              line: 21,
+              matchText: "return scaleAmount(input);",
+              enclosingSymbol: { path: "caller.ts", name: "buildQuote", kind: "function" as const, lineRange: [20, 22] as [number, number] }
+            }]
+          : [],
+        meta
+      }),
+      readSymbol: async (pathName: string) => {
+        return {
+          text: pathName === "helper.ts"
+            ? "export function scaleAmount(value) {\n  const scaled = value / 100n;\n  return scaled;\n}"
+            : "export function buildQuote(input) {\n  return scaleAmount(input);\n}",
+          symbol: {
+            path: pathName,
+            name: pathName === "helper.ts" ? "scaleAmount" : "buildQuote",
+            kind: "function" as const,
+            lineRange: pathName === "helper.ts" ? [1, 12] as [number, number] : [20, 22] as [number, number]
+          },
+          meta
+        };
+      }
+    };
+    const plan: ReviewPlan = {
+      diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" },
+      coverage: [
+        { hunkId: "h-helper-1", path: "helper.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "helper 1" },
+        { hunkId: "h-helper-2", path: "helper.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "helper 2" },
+        { hunkId: "h-caller", path: "caller.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "caller" }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [helperFile, callerFile],
+      [{ ...fakeFacts("helper.ts", "per-hunk"), hunkCount: 2 }, fakeFacts("caller.ts", "per-hunk")],
+      {
+        ...fakeRepositoryIndex(tools),
+        symbolFacts
+      },
+      {
+        ...nullTelemetry(),
+        event: (event) => events.push(event)
+      },
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const callerPacket = packets.find((packet) => packet.hunks.some((hunk) => hunk.hunkId === "h-caller"));
+    expect(callerPacket?.relatedChangedContext.filter((context) => context.symbol === "scaleAmount")).toHaveLength(1);
+    expect(callerPacket?.relatedChangedContext[0]?.relatedHunkIds).toEqual(["h-helper-1", "h-helper-2"]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      message: "related_context_deduped"
+    }));
+  });
+
   it("does not relate unrelated changed symbols that only share a bare name", async () => {
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
     const fileA: DiffFile = {
@@ -3394,6 +3792,128 @@ describe("phase 5 pipeline regressions", () => {
         })
       })
     ]));
+    expect(result.plan.plannerRecovery).toMatchObject({
+      usedDeterministicRecovery: true,
+      usedSchemaRepair: true,
+      invalidSubmitCallCount: 1,
+      strippedRootKeys: ["reason", "reviewEmphasis"],
+      sparseRecoveredPlan: false,
+      degraded: false
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 5,
+      message: "planner_recovery_summary",
+      data: expect.objectContaining({
+        usedDeterministicRecovery: true,
+        sparseRecoveredPlan: false
+      })
+    }));
+  });
+
+  it("applies bounded safety coverage when recovered planner output omits source hunks", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const baseDossier = fakeDossier(["a.ts", "b.ts", "c.ts", "README.md"]);
+    const dossier: PlannerDossier = {
+      ...baseDossier,
+      files: baseDossier.files.map((file, index) => {
+        if (file.path === "README.md") {
+          return { ...file, language: "markdown", testStatus: "unknown" as const };
+        }
+        return {
+          ...file,
+          hunks: file.hunks.map((hunk) => ({
+            ...hunk,
+            symbolFacts: {
+              path: file.path,
+              hunkId: hunk.hunkId,
+              enclosingSymbol: `changed${String(index + 1)}`,
+              symbolKind: "function" as const,
+              symbolRange: [1, 3] as [number, number],
+              changedLines: [1],
+              changedLinesSide: "new" as const,
+              source: "tree-sitter" as const,
+              confidence: "syntactic" as const
+            }
+          }))
+        };
+      })
+    };
+    const repairedPlan: ReviewPlan & { focusNotes?: string[] } = {
+      diffUnderstanding: { declaredIntent: "repair", inferredBehavior: "repair" },
+      coverage: [{
+        hunkId: "h4",
+        path: "README.md",
+        coverage: "light",
+        lenses: ["core/code-review"],
+        surroundingContextHints: [],
+        reason: "docs note"
+      }],
+      focusNotes: ["misplaced global note"]
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        const recovered = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 5,
+          submitTool: "submit_plan",
+          error: "root: must not have additional properties",
+          submitCalls: [{ id: "submit-plan-repair", arguments: repairedPlan }],
+          extraToolNames: [],
+          schemaRepairUsed: true
+        });
+        expect(recovered).toBeDefined();
+        return recovered as T;
+      }
+    };
+
+    const result = await runPlanner(dossier, config(), {
+      ...nullTelemetry(),
+      event: (event) => events.push(event)
+    }, {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{
+        id: "core/code-review",
+        title: "Core",
+        description: "core",
+        skillIds: [],
+        enabledByDefault: true,
+        enabled: true,
+        languages: []
+      }],
+      skills: []
+    });
+
+    expect(result.degradedPlanning).toBe(true);
+    expect(result.plan.coverage.map((decision) => [decision.hunkId, decision.coverage])).toEqual([
+      ["h4", "light"],
+      ["h1", "deep"],
+      ["h2", "deep"],
+      ["h3", "deep"]
+    ]);
+    expect(result.plan.plannerRecovery).toMatchObject({
+      usedDeterministicRecovery: true,
+      usedSchemaRepair: true,
+      emptySubmitCount: 0,
+      invalidSubmitCallCount: 1,
+      misplacedRootKeys: ["focusNotes"],
+      sparseRecoveredPlan: true,
+      degraded: true,
+      reviewableSourceHunks: 3,
+      explicitSourceCoverageEntries: 0,
+      safetyCoverageApplied: {
+        upgradedHunks: 3,
+        upgradedPackets: 3
+      }
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 5,
+      message: "planner_recovered_sparse_plan"
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 5,
+      message: "planner_degraded_safety_coverage_applied",
+      data: expect.objectContaining({ upgradedHunks: 3, reviewableSourceHunks: 3 })
+    }));
   });
 
   it("does not recover planner submits that are missing required roots", async () => {

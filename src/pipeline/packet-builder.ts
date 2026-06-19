@@ -92,6 +92,16 @@ type HunkRelationshipGraph = {
   relatedContextOmitted: RelatedContextOmission[];
 };
 
+type RelatedContextTarget = {
+  edge: HunkRelationshipEdge;
+  targetHunkIds: Set<string>;
+};
+
+type PacketBuildMetrics = {
+  relatedContextBudgetNudges: number;
+  relatedContextBudgetNudgeSources: Set<string>;
+};
+
 const MAX_HUNKS_PER_PACKET = 5;
 const MAX_LENSES_PER_PACKET = 6;
 const MAX_PATCH_CHARS = 12_000;
@@ -128,6 +138,10 @@ export async function buildReviewPackets(
   const decisions = new Map(plan.coverage.map((decision) => [decision.hunkId, decision]));
   const packets: ReviewPacket[] = [];
   const symbolContextMetrics = emptySymbolContextMetrics();
+  const packetBuildMetrics: PacketBuildMetrics = {
+    relatedContextBudgetNudges: 0,
+    relatedContextBudgetNudgeSources: new Set()
+  };
   const plannedByFile = new Map<string, PlannedHunk[]>();
   const effectiveByHunk = new Map<string, EffectiveDecision>();
   const allPlanned: PlannedHunk[] = [];
@@ -167,7 +181,7 @@ export async function buildReviewPackets(
       }
       const groupDecisions = group.hunks.map((entry) => effectiveByHunk.get(entry.hunk.id)).filter((decision): decision is EffectiveDecision => decision !== undefined);
       const includedDecisions = groupDecisions.filter(isNonSkipDecision);
-      const packet = await buildPacket(group.hunks, includedDecisions, group, relationshipGraph, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics);
+      const packet = await buildPacket(group.hunks, includedDecisions, group, relationshipGraph, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics, packetBuildMetrics);
       packets.push(packet);
     }
   }
@@ -182,7 +196,10 @@ export async function buildReviewPackets(
     message: "stage_completed",
     data: {
       packets: packets.length,
-      symbolContext: symbolContextMetrics
+      symbolContext: symbolContextMetrics,
+      relatedContextBudgetNudges: packetBuildMetrics.relatedContextBudgetNudges,
+      relatedContextBudgetNudgeRatio: packets.length === 0 ? 0 : packetBuildMetrics.relatedContextBudgetNudges / packets.length,
+      relatedContextBudgetNudgeSources: [...packetBuildMetrics.relatedContextBudgetNudgeSources].sort()
     }
   });
   return packets;
@@ -247,7 +264,8 @@ async function buildPacket(
   config: CodeninjaConfig,
   telemetry: TelemetryRecorder,
   reviewContext: PacketReviewContext | undefined,
-  symbolContextMetrics: SymbolContextMetrics
+  symbolContextMetrics: SymbolContextMetrics,
+  packetBuildMetrics: PacketBuildMetrics
 ): Promise<ReviewPacket> {
   const first = planned[0];
   if (!first) {
@@ -264,7 +282,8 @@ async function buildPacket(
   const patchChars = packetHunks.reduce((sum, hunk) => sum + hunk.contentWithLineNumbers.length, 0);
   const testCoverageDelta = buildTestCoverageDelta(first.file, planned.map((entry) => entry.hunk), first.facts, symbolFacts);
   const relatedChangedContext = await buildRelatedChangedContext(planned, relationshipGraph, repoIndex, telemetry);
-  const attentionNotes = attentionNotesForPacket(decisions, relatedChangedContext);
+  const plannerAttentionNotes = attentionNotesForDecisions(decisions);
+  const attentionNotes = mergeAttentionNotes(plannerAttentionNotes, relatedChangedContext);
   const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry, {
     coverage,
     reviewPriority,
@@ -301,13 +320,46 @@ async function buildPacket(
       data: { maxContextChars: MAX_CONTEXT_CHARS }
     });
   }
+  const strongRelatedContext = hasStrongRelatedChangedContext(planned, relatedChangedContext);
+  const hasRelatedChangedContext = relatedChangedContext.length > 0;
+  const baseReviewProfile = packetReviewProfile({
+    coverage,
+    reviewPriority,
+    planned,
+    attentionNotes: plannerAttentionNotes,
+    hintCount: decisions.reduce((sum, decision) => sum + decision.surroundingContextHints.length, 0),
+    hasRelatedChangedContext,
+    strongRelatedContext: false
+  });
   const reviewProfile = packetReviewProfile({
     coverage,
     reviewPriority,
     planned,
-    attentionNotes,
-    hintCount: decisions.reduce((sum, decision) => sum + decision.surroundingContextHints.length, 0)
+    attentionNotes: plannerAttentionNotes,
+    hintCount: decisions.reduce((sum, decision) => sum + decision.surroundingContextHints.length, 0),
+    hasRelatedChangedContext,
+    strongRelatedContext
   });
+  if (strongRelatedContext && baseReviewProfile !== "investigate" && reviewProfile === "investigate") {
+    const relationshipSources = cleanStrings(relatedChangedContext.flatMap((context) => context.relationshipSource ?? []));
+    packetBuildMetrics.relatedContextBudgetNudges += 1;
+    for (const source of relationshipSources) {
+      packetBuildMetrics.relatedContextBudgetNudgeSources.add(source);
+    }
+    telemetry.event({
+      stage: 6,
+      level: "info",
+      message: "related_context_budget_nudged",
+      file: first.file.path,
+      data: {
+        coverage,
+        baseReviewProfile,
+        reviewProfile,
+        relatedContextCount: relatedChangedContext.length,
+        relationshipSources
+      }
+    });
+  }
   const lenses = routedPacketLenses({
     lenses: decisions.flatMap((decision) => decision.lenses),
     language: first.facts.language,
@@ -379,10 +431,7 @@ export function packetReviewContextFromDossier(dossier: PlannerDossier): PacketR
   };
 }
 
-function attentionNotesForPacket(
-  decisions: NonSkipDecision[],
-  relatedChangedContext: RelatedChangedContext[]
-): string[] {
+function attentionNotesForDecisions(decisions: NonSkipDecision[]): string[] {
   const notes = [
     ...decisions.flatMap((decision) => {
       const hunkScopedAttention =
@@ -395,10 +444,46 @@ function attentionNotesForPacket(
         ...(decision.focusNotes ?? []),
         ...decision.surroundingContextHints.map((hint) => hint.reason)
       ];
-    }),
+    })
+  ];
+  return normalizeAttentionNotes(notes);
+}
+
+function mergeAttentionNotes(
+  plannerAttentionNotes: string[],
+  relatedChangedContext: RelatedChangedContext[]
+): string[] {
+  const notes = [
+    ...plannerAttentionNotes,
     ...relatedChangedContext.map((context) => context.reason)
   ];
+  return normalizeAttentionNotes(notes);
+}
+
+function normalizeAttentionNotes(notes: string[]): string[] {
   return dedupe(notes.map(normalizeNote).filter((note) => note.length > 0)).slice(0, MAX_ATTENTION_NOTES);
+}
+
+function hasStrongRelatedChangedContext(
+  planned: PlannedHunk[],
+  relatedChangedContext: RelatedChangedContext[]
+): boolean {
+  if (relatedChangedContext.length === 0) {
+    return false;
+  }
+  const primarySymbols = new Set(cleanStrings(planned.flatMap((entry) => primarySymbolName(entry) ?? [])));
+  return relatedChangedContext.some((context) => {
+    if (context.sourceKind !== "source" || context.relationshipStrength !== "strong") {
+      return false;
+    }
+    if (context.relationshipSource !== "symbol_mention" && context.relationshipSource !== "planner_hint") {
+      return false;
+    }
+    if (context.hunkId === undefined || planned.some((entry) => entry.hunk.id === context.hunkId)) {
+      return false;
+    }
+    return context.symbol !== undefined && !primarySymbols.has(context.symbol);
+  });
 }
 
 function deterministicDeclaredIntent(dossier: PlannerDossier): string {
@@ -632,7 +717,7 @@ async function buildRelatedChangedContext(
 ): Promise<RelatedChangedContext[]> {
   const currentHunks = new Set(planned.map((entry) => entry.hunk.id));
   const currentFiles = new Set(planned.map((entry) => entry.file.path));
-  const targets = new Map<string, HunkRelationshipEdge>();
+  const targets = new Map<string, RelatedContextTarget>();
   for (const hunkId of currentHunks) {
     for (const edge of graph.edgesByHunk.get(hunkId) ?? []) {
       if (edge.toHunkId === undefined || currentHunks.has(edge.toHunkId)) {
@@ -641,12 +726,29 @@ async function buildRelatedChangedContext(
       if (edge.strength === "weak") {
         continue;
       }
-      targets.set(edge.toHunkId, edge);
+      const related = graph.plannedByHunk.get(edge.toHunkId);
+      if (related === undefined) {
+        graph.relatedContextOmitted.push({ hunkId: [...currentHunks].join(","), targetHunkId: edge.toHunkId, reason: "target hunk unavailable" });
+        continue;
+      }
+      const key = relatedContextTargetKey(related);
+      const existing = targets.get(key);
+      if (existing === undefined) {
+        targets.set(key, { edge, targetHunkIds: new Set([edge.toHunkId]) });
+        continue;
+      }
+      existing.targetHunkIds.add(edge.toHunkId);
+      if (compareRelationshipEdges(edge, existing.edge) < 0) {
+        existing.edge = edge;
+      }
     }
   }
 
   const contexts: RelatedChangedContext[] = [];
-  for (const edge of [...targets.values()].sort(compareRelationshipEdges)) {
+  let duplicateTargets = 0;
+  for (const target of [...targets.values()].sort((a, b) => compareRelationshipEdges(a.edge, b.edge))) {
+    const edge = target.edge;
+    duplicateTargets += Math.max(0, target.targetHunkIds.size - 1);
     if (contexts.length >= MAX_RELATED_CONTEXTS_PER_PACKET) {
       graph.relatedContextOmitted.push({ hunkId: [...currentHunks].join(","), targetHunkId: edge.toHunkId, reason: "related context cap exceeded" });
       continue;
@@ -659,7 +761,7 @@ async function buildRelatedChangedContext(
     if (currentFiles.has(related.file.path) && currentHunks.has(related.hunk.id)) {
       continue;
     }
-    const context = await relatedContextForTarget(related, edge, repoIndex, telemetry);
+    const context = await relatedContextForTarget(related, edge, [...target.targetHunkIds].sort(), repoIndex, telemetry);
     if (context === undefined) {
       graph.relatedContextOmitted.push({ hunkId: [...currentHunks].join(","), targetHunkId: edge.toHunkId, reason: "source unavailable" });
       continue;
@@ -680,6 +782,14 @@ async function buildRelatedChangedContext(
       data: { fromHunks: [...currentHunks], targetHunkId: edge.toHunkId, source: edge.source, strength: edge.strength }
     });
   }
+  if (duplicateTargets > 0) {
+    telemetry.event({
+      stage: 6,
+      level: "debug",
+      message: "related_context_deduped",
+      data: { fromHunks: [...currentHunks], duplicateTargets }
+    });
+  }
   if (graph.relatedContextOmitted.length > 0) {
     telemetry.event({
       stage: 6,
@@ -694,6 +804,7 @@ async function buildRelatedChangedContext(
 async function relatedContextForTarget(
   target: PlannedHunk,
   edge: HunkRelationshipEdge,
+  targetHunkIds: string[],
   repoIndex: RepositoryIndex,
   telemetry: TelemetryRecorder
 ): Promise<RelatedChangedContext | undefined> {
@@ -702,9 +813,13 @@ async function relatedContextForTarget(
   const base: RelatedChangedContext = {
     path: target.file.path,
     hunkId: target.hunk.id,
+    relatedHunkIds: targetHunkIds,
     ...(primarySymbolName(target) !== undefined ? { symbol: primarySymbolName(target) } : {}),
     ...(fact?.symbolRange !== undefined ? { lineRange: fact.symbolRange } : {}),
     reason: edge.reason,
+    relationshipSource: edge.source,
+    relationshipStrength: edge.strength,
+    sourceKind: relatedContextSourceKind(target),
     patchExcerpt
   };
   if (fact === undefined) {
@@ -742,6 +857,32 @@ async function relatedContextForTarget(
     });
     return base;
   }
+}
+
+function relatedContextTargetKey(target: PlannedHunk): string {
+  const fact = primarySymbolFactWithMergedChanges(target.symbolFacts);
+  if (fact === undefined) {
+    return `${target.file.path}\0${target.hunk.id}`;
+  }
+  return [
+    fact.changedLinesSide === "old" ? target.file.oldPath ?? target.file.path : target.file.path,
+    fact.enclosingSymbol ?? "",
+    fact.symbolRange?.join(":") ?? "",
+    fact.changedLinesSide
+  ].join("\0");
+}
+
+function relatedContextSourceKind(target: PlannedHunk): RelatedChangedContext["sourceKind"] {
+  if (target.facts.testStatus === "test") {
+    return "test";
+  }
+  if (target.facts.testStatus === "source") {
+    return "source";
+  }
+  if (/\b(markdown|md|mdx|text|rst|asciidoc)\b/iu.test(target.facts.language) || /\.(?:md|mdx|txt|rst|adoc)$/iu.test(target.file.path)) {
+    return "docs";
+  }
+  return "unknown";
 }
 
 function relationshipGraphArtifact(graph: HunkRelationshipGraph): Record<string, unknown> {
@@ -2640,13 +2781,16 @@ function packetReviewProfile(input: {
   planned: PlannedHunk[];
   attentionNotes: string[];
   hintCount: number;
+  hasRelatedChangedContext: boolean;
+  strongRelatedContext: boolean;
 }): ReviewProfile {
   if (
     input.coverage === "deep" ||
     input.reviewPriority === "critical" ||
     input.reviewPriority === "high" ||
     input.hintCount > 0 ||
-    input.attentionNotes.length > 0
+    input.attentionNotes.length > 0 ||
+    input.strongRelatedContext
   ) {
     return "investigate";
   }
@@ -2654,7 +2798,7 @@ function packetReviewProfile(input: {
     input.coverage === "light" ||
     isMechanicalPacket(input.planned)
   ) {
-    return "simple";
+    return input.hasRelatedChangedContext ? "standard" : "simple";
   }
   return "standard";
 }

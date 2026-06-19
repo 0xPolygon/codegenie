@@ -23,6 +23,7 @@ import type {
   HunkCoverageDecision,
   HunkSymbolFacts,
   PlannerDossier,
+  PlannerRecoveryTelemetry,
   RepositoryIndex,
   ReviewPriority,
   ReviewPlan,
@@ -58,7 +59,19 @@ export const MAX_DOSSIER_PROMPT_CHARS = 120_000;
 const MAX_COVERAGE_FOCUS_NOTES = 5;
 const MAX_COVERAGE_RELATED_SYMBOLS = 12;
 const MAX_COVERAGE_RELATED_FILES = 12;
+const MAX_SAFETY_DEEP_SOURCE_HUNKS = 20;
 const SUBMIT_PLAN_ROOT_KEYS = new Set(["diffUnderstanding", "coverage", "partialReview"]);
+const MISPLACED_PLANNER_ROOT_KEYS = new Set(["focusNotes", "relatedSymbols", "relatedFiles", "surroundingContextHints"]);
+
+type PlannerRecoveryDraft = {
+  usedSchemaRepair: boolean;
+  usedDeterministicRecovery: boolean;
+  emptySubmitCount: number;
+  invalidSubmitCallCount: number;
+  strippedRootKeys: Set<string>;
+  misplacedRootKeys: Set<string>;
+  recoveredRootKeys: number;
+};
 
 export async function buildPlannerDossier(
   resolved: { mode: PlannerDossier["mode"]; baseRef?: string; headRef?: string; headSha?: string; mergeBase?: string; pr?: PlannerDossier["pr"]; commits: Array<{ sha: string; title: string; body: string }> },
@@ -208,14 +221,15 @@ export async function runPlanner(
 
   try {
     const plan = await runPlannerCall(plannerDossier, config, telemetry, opts);
+    const degradedPlanning = plan.plannerRecovery?.degraded === true;
     await telemetry.writeArtifact("review-plan.json", plan);
     telemetry.event({
       stage: 5,
       level: "info",
       message: "stage_completed",
-      data: { degraded: false, compaction: plannerDossier.compaction.level }
+      data: { degraded: degradedPlanning, compaction: plannerDossier.compaction.level }
     });
-    return { plan, degradedPlanning: false, chunked: false };
+    return { plan, degradedPlanning, chunked: false };
   } catch (error) {
     if (isFatalLlmError(error)) {
       throw error;
@@ -276,6 +290,7 @@ async function runPlannerCall(
   telemetry: TelemetryRecorder,
   opts: RunPlannerOptions
 ): Promise<ReviewPlan> {
+  const recovery = emptyPlannerRecoveryDraft();
   const prompt = opts.promptBuilder.buildPlannerPrompt({
     dossier,
     lenses: opts.lenses,
@@ -290,17 +305,24 @@ async function runPlannerCall(
     schemaRepair: {
       replaceConversation: true,
       failAfterRepair: true,
-      recoverInvalidSubmit: (input) => recoverPlannerInvalidSubmit(input, telemetry),
+      recoverInvalidSubmit: (input) => recoverPlannerInvalidSubmit(input, telemetry, recovery),
       buildPrompt: (input) => buildPlannerSchemaRepairPrompt(dossier, opts.lenses, input)
     }
   });
-  return validatePlan(submitted as ReviewPlan, dossier, opts.lenses, telemetry);
+  const plan = validatePlan(submitted as ReviewPlan, dossier, opts.lenses, telemetry);
+  return finalizePlannerRecovery(plan, dossier, opts.lenses, telemetry, recovery);
 }
 
 function recoverPlannerInvalidSubmit(
   input: LlmSchemaInvalidSubmitRecoveryInput,
-  telemetry: TelemetryRecorder
+  telemetry: TelemetryRecorder,
+  recovery: PlannerRecoveryDraft
 ): Record<string, unknown> | undefined {
+  recovery.invalidSubmitCallCount += input.submitCalls.length;
+  recovery.emptySubmitCount += input.submitCalls.filter((call) =>
+    isRecord(call.arguments) && Object.keys(call.arguments).length === 0
+  ).length;
+  recovery.usedSchemaRepair ||= input.schemaRepairUsed;
   const candidates = input.submitCalls.flatMap((call) => {
     const args = call.arguments;
     if (!isRecord(args) || !hasPlannerRequiredRoots(args)) {
@@ -326,7 +348,16 @@ function recoverPlannerInvalidSubmit(
   });
   const best = candidates.sort((a, b) => b.score - a.score || a.strippedKeys.length - b.strippedKeys.length)[0];
   if (best === undefined) {
+    recovery.usedSchemaRepair = true;
     return undefined;
+  }
+  recovery.usedDeterministicRecovery = true;
+  recovery.recoveredRootKeys = Math.max(recovery.recoveredRootKeys, Object.keys(best.recovered).length);
+  for (const key of best.strippedKeys) {
+    recovery.strippedRootKeys.add(key);
+    if (MISPLACED_PLANNER_ROOT_KEYS.has(key)) {
+      recovery.misplacedRootKeys.add(key);
+    }
   }
 
   telemetry.event({
@@ -341,6 +372,179 @@ function recoverPlannerInvalidSubmit(
     }
   });
   return best.recovered;
+}
+
+function emptyPlannerRecoveryDraft(): PlannerRecoveryDraft {
+  return {
+    usedSchemaRepair: false,
+    usedDeterministicRecovery: false,
+    emptySubmitCount: 0,
+    invalidSubmitCallCount: 0,
+    strippedRootKeys: new Set(),
+    misplacedRootKeys: new Set(),
+    recoveredRootKeys: 0
+  };
+}
+
+function finalizePlannerRecovery(
+  plan: ReviewPlan,
+  dossier: PlannerDossier,
+  lenses: LensDescriptor[],
+  telemetry: TelemetryRecorder,
+  draft: PlannerRecoveryDraft
+): ReviewPlan {
+  const recovery = buildPlannerRecoveryTelemetry(plan, dossier, draft);
+  const sparse = plannerRecoveryIsSparse(recovery);
+  const plannerRecovery: PlannerRecoveryTelemetry = {
+    ...recovery,
+    sparseRecoveredPlan: sparse,
+    degraded: sparse,
+    ...(sparse ? { reason: "recovered planner coverage omitted source-code hunks" } : {})
+  };
+  const attachRecovery = plannerRecovery.invalidSubmitCallCount > 0 ||
+    plannerRecovery.usedSchemaRepair ||
+    plannerRecovery.usedDeterministicRecovery ||
+    plannerRecovery.strippedRootKeys.length > 0 ||
+    plannerRecovery.misplacedRootKeys.length > 0 ||
+    sparse;
+  const planWithRecovery: ReviewPlan = {
+    ...plan,
+    ...(attachRecovery ? { plannerRecovery } : {})
+  };
+  telemetry.event({
+    stage: 5,
+    level: sparse ? "warn" : "info",
+    message: "planner_recovery_summary",
+    data: plannerRecovery
+  });
+  if (!sparse) {
+    return planWithRecovery;
+  }
+  telemetry.event({
+    stage: 5,
+    level: "warn",
+    message: "planner_recovered_sparse_plan",
+    data: plannerRecovery
+  });
+  return applyPlannerSafetyCoverage(planWithRecovery, dossier, lenses, telemetry);
+}
+
+function buildPlannerRecoveryTelemetry(
+  plan: ReviewPlan,
+  dossier: PlannerDossier,
+  draft: PlannerRecoveryDraft
+): PlannerRecoveryTelemetry {
+  const sourceHunkIds = reviewableSourceHunkIds(dossier);
+  const explicitSourceCoverageEntries = plan.coverage.filter((decision) => sourceHunkIds.has(decision.hunkId)).length;
+  return {
+    usedSchemaRepair: draft.usedSchemaRepair,
+    usedDeterministicRecovery: draft.usedDeterministicRecovery,
+    emptySubmitCount: draft.emptySubmitCount,
+    invalidSubmitCallCount: draft.invalidSubmitCallCount,
+    strippedRootKeys: [...draft.strippedRootKeys].sort(),
+    misplacedRootKeys: [...draft.misplacedRootKeys].sort(),
+    recoveredRootKeys: draft.recoveredRootKeys,
+    sparseRecoveredPlan: false,
+    degraded: false,
+    reviewableSourceHunks: sourceHunkIds.size,
+    explicitSourceCoverageEntries
+  };
+}
+
+function plannerRecoveryIsSparse(recovery: PlannerRecoveryTelemetry): boolean {
+  if (!recovery.usedSchemaRepair && !recovery.usedDeterministicRecovery && recovery.invalidSubmitCallCount === 0) {
+    return false;
+  }
+  if (recovery.reviewableSourceHunks >= 3 && recovery.explicitSourceCoverageEntries === 0) {
+    return true;
+  }
+  return recovery.reviewableSourceHunks >= 5 &&
+    recovery.explicitSourceCoverageEntries / recovery.reviewableSourceHunks < 0.25;
+}
+
+function applyPlannerSafetyCoverage(
+  plan: ReviewPlan,
+  dossier: PlannerDossier,
+  lenses: LensDescriptor[],
+  telemetry: TelemetryRecorder
+): ReviewPlan {
+  const existing = new Set(plan.coverage.map((decision) => decision.hunkId));
+  const candidates = sourceHunkSafetyCandidates(dossier)
+    .filter((entry) => !existing.has(entry.hunk.hunkId))
+    .sort(compareSafetyCoverageCandidates);
+  const selected = candidates.slice(0, MAX_SAFETY_DEEP_SOURCE_HUNKS);
+  const safetyCoverage: HunkCoverageDecision[] = selected.map((entry) => ({
+    hunkId: entry.hunk.hunkId,
+    path: entry.file.path,
+    coverage: "deep",
+    lenses: defaultLensesForFile(entry.file.language, lenses),
+    surroundingContextHints: [],
+    reason: "planner recovery safety coverage: sparse recovered plan omitted source-code hunk"
+  }));
+  const upgradedHunks = safetyCoverage.length;
+  const upgradedPackets = upgradedHunks;
+  const plannerRecovery: PlannerRecoveryTelemetry | undefined = plan.plannerRecovery === undefined
+    ? undefined
+    : {
+        ...plan.plannerRecovery,
+        degraded: true,
+        reason: plan.plannerRecovery.reason ?? "recovered planner coverage omitted source-code hunks",
+        safetyCoverageApplied: {
+          upgradedHunks,
+          upgradedPackets,
+          reason: "sparse recovered planner coverage"
+        }
+      };
+  telemetry.event({
+    stage: 5,
+    level: "warn",
+    message: "planner_degraded_safety_coverage_applied",
+    data: {
+      upgradedHunks,
+      upgradedPackets,
+      reviewableSourceHunks: plan.plannerRecovery?.reviewableSourceHunks ?? reviewableSourceHunkIds(dossier).size,
+      explicitSourceCoverageEntries: plan.plannerRecovery?.explicitSourceCoverageEntries ?? 0,
+      maxSafetyDeepSourceHunks: MAX_SAFETY_DEEP_SOURCE_HUNKS
+    }
+  });
+  return {
+    ...plan,
+    ...(plannerRecovery !== undefined ? { plannerRecovery } : {}),
+    coverage: [...plan.coverage, ...safetyCoverage]
+  };
+}
+
+function reviewableSourceHunkIds(dossier: PlannerDossier): Set<string> {
+  return new Set(
+    dossier.files
+      .filter((file) => file.testStatus === "source" && file.processingMode !== "skip")
+      .flatMap((file) => file.hunks.map((hunk) => hunk.hunkId))
+  );
+}
+
+function sourceHunkSafetyCandidates(dossier: PlannerDossier): Array<{ file: DossierFileEntry; hunk: DossierFileEntry["hunks"][number] }> {
+  return dossier.files
+    .filter((file) => file.testStatus === "source" && file.processingMode !== "skip")
+    .flatMap((file) => file.hunks.map((hunk) => ({ file, hunk })));
+}
+
+function compareSafetyCoverageCandidates(
+  a: { file: DossierFileEntry; hunk: DossierFileEntry["hunks"][number] },
+  b: { file: DossierFileEntry; hunk: DossierFileEntry["hunks"][number] }
+): number {
+  const priority = priorityCompactionRank(b.file.reviewPriority) - priorityCompactionRank(a.file.reviewPriority);
+  if (priority !== 0) {
+    return priority;
+  }
+  const symbolFacts = Number(b.hunk.symbolFacts?.enclosingSymbol !== undefined) - Number(a.hunk.symbolFacts?.enclosingSymbol !== undefined);
+  if (symbolFacts !== 0) {
+    return symbolFacts;
+  }
+  const staticSignals = b.hunk.staticSignals.length - a.hunk.staticSignals.length;
+  if (staticSignals !== 0) {
+    return staticSignals;
+  }
+  return a.file.path.localeCompare(b.file.path) || a.hunk.hunkId.localeCompare(b.hunk.hunkId);
 }
 
 function hasPlannerRequiredRoots(args: Record<string, unknown>): boolean {

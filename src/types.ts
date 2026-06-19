@@ -491,9 +491,13 @@ export type PacketContextQuality = "full" | "sliced" | "outline_only" | "path_on
 export type RelatedChangedContext = {
   path: string;
   hunkId?: string | undefined;
+  relatedHunkIds?: string[] | undefined;
   symbol?: string | undefined;
   lineRange?: [number, number] | undefined;
   reason: string;
+  relationshipSource?: "same_symbol" | "symbol_mention" | "planner_hint" | undefined;
+  relationshipStrength?: "strong" | "medium" | "weak" | undefined;
+  sourceKind?: "source" | "test" | "docs" | "unknown" | undefined;
   sourceSnippet?: string | undefined;
   patchExcerpt?: string | undefined;
 };
@@ -553,6 +557,26 @@ export type ReviewPacket = {
   degraded?: { reason: string };
   fileContext?: {
     mode: "file-diff" | "whole-file";
+    reason: string;
+  };
+};
+
+export type PlannerRecoveryTelemetry = {
+  usedSchemaRepair: boolean;
+  usedDeterministicRecovery: boolean;
+  emptySubmitCount: number;
+  invalidSubmitCallCount: number;
+  strippedRootKeys: string[];
+  misplacedRootKeys: string[];
+  recoveredRootKeys: number;
+  sparseRecoveredPlan: boolean;
+  degraded: boolean;
+  reason?: string;
+  reviewableSourceHunks: number;
+  explicitSourceCoverageEntries: number;
+  safetyCoverageApplied?: {
+    upgradedHunks: number;
+    upgradedPackets: number;
     reason: string;
   };
 };
@@ -690,6 +714,7 @@ export type ReviewPlan = {
   diffUnderstanding: DiffUnderstanding;
   intentSignals?: IntentSignals;
   coverage: HunkCoverageDecision[];
+  plannerRecovery?: PlannerRecoveryTelemetry;
   partialReview?: {
     isPartial: boolean;
     reason: string;

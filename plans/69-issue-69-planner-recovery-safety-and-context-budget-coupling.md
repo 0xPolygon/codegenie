@@ -1,6 +1,6 @@
 # Issue 69: Planner Recovery Safety and Context-Budget Coupling
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval `49f4645b/logs/14` compared with `49f4645b/logs/1` and `49f4645b/logs/13`, 2026-06-19
 Recommended priority: high, because run 14 showed two related failure modes: context-rich packets did not receive enough local review capacity, and a degraded Stage 5 recovery path silently collapsed production coverage to normal.
 
@@ -99,7 +99,7 @@ The fix should preserve the current architecture:
 
 This is the first implementation slice and the broadest win. It helps clean planner runs and recovered planner runs.
 
-When Stage 6 attaches strong related changed context, the packet has more evidence to inspect. The local budget should reflect that.
+When Stage 6 attaches related changed context, the packet has more evidence to inspect. The local budget should reflect that without making every relationship expensive.
 
 Define strong related changed context structurally:
 
@@ -112,6 +112,10 @@ Define strong related changed context structurally:
 Add a generic budget/profile nudge:
 
 ```text
+if relatedChangedContext is present:
+  reviewProfile is at least standard
+  tool budget is non-zero even if nominal coverage is light or the hunk looks mechanical
+
 if relatedChangedContext contains strong code-symbol context:
   reviewProfile is at least investigate
   tool budget uses investigate-level limits even if nominal coverage is normal
@@ -243,14 +247,15 @@ Apply deterministic safety coverage using existing facts:
 
 - docs, markdown, generated files, lockfiles, and skipped files remain light/skip according to existing rules;
 - test-only packets can remain normal unless they are the only changed executable surface;
-- source-code hunks with changed symbols become at least `deep` for small/medium PRs;
+- source-code hunks with changed symbols are prioritized for `deep` coverage in small/medium PRs;
+- if parser symbol facts are unavailable, use a bounded source-hunk fallback instead of letting sparse recovered coverage become a no-op;
 - for larger PRs, choose bounded deep coverage for central code packets and normal/investigate for the rest.
 
 The v1 rule can be intentionally simple:
 
 ```text
 If degraded planner recovery and reviewable source-code hunk count <= 20:
-  set source-code packets with changed symbols to deep
+  set source-code packets to deep, prioritizing hunks with changed symbols
   keep tests normal
   keep docs light
 ```
@@ -292,10 +297,11 @@ This reinforces the architecture without creating a new taxonomy.
 
 1. Implement context-rich packet budget coupling.
    - Detect strong related changed context structurally.
+   - Ensure any attached related changed context prevents a packet from dropping to the zero-tool `simple` profile.
    - Confirm or fix that `reviewProfile: investigate` raises tool budget independently of nominal coverage.
    - Ensure affected normal packets get investigate-level budget/profile.
    - Emit budget-nudge telemetry with counts and ratio.
-   - Add tests for context-rich normal packets receiving the nudge without promoting unrelated nearby/test/doc context.
+   - Add tests for context-rich normal packets receiving the nudge and weaker context-bearing packets retaining non-zero tool budget without promoting unrelated nearby/test/doc context.
 
 2. Dedupe related changed context.
    - Dedupe before packet assembly.
@@ -372,6 +378,7 @@ Suggested sequencing for eval validation:
 Expected diagnostic improvements for `49f4645b`:
 
 - Normal packets with strong related changed context should receive investigate-level budget.
+- Light/mechanical packets with weaker related changed context should retain standard, non-zero tool budget rather than dropping to `simple`.
 - `hunk-relationships.json` should show fewer duplicate attached contexts for the same symbol body.
 - Stage 5 empty-submit/schema-repair telemetry should be visible independently of safety coverage.
 - Stage 5 should not produce `deep 0` after planner schema repair on this multi-hunk source-code diff once the safety net triggers.

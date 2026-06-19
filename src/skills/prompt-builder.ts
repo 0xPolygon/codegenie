@@ -68,7 +68,7 @@ export type PromptBuilder = {
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
   5: "p5.5",
-  7: "p7.6",
+  7: "p7.7",
   8: "p8.2",
   9: "p9.4",
   10: "p10.1"
@@ -149,7 +149,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Keep Stage 7 output compact: candidate findings, exact unresolved predicates, or a short no-finding conclusion. noFindingReason is not a mini review report. Do not put detailed proof or broad exploration notes into noFindingReason.",
         "Emit followUpHints and uncertainties for concrete unresolved risks with file or symbol scope. Do not emit broad reminders like \"check if this is safe\". For behavior-preserving refactors or refactor-like changes, surface changed-line anchored changes to validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries as a candidate or verifier-bound hint when they may alter caller-visible behavior.",
         "Packet attentionNotes and relatedChangedContext are advisory context from the harness. They are not questions, findings, or proof obligations. Use them to decide what to inspect, then independently report findings or no findings from the packet evidence.",
-        "Review the changed packet and the related changed context attached by the harness. Consider the observable behavior of the changed symbols in their shown callers, callees, tests, and output paths. If the local change looks correct in isolation, still check whether attached related context changes its effect before concluding no findings.",
+        "Review the changed packet and the related changed context attached by the harness. Consider the observable behavior of the changed symbols in their shown callers, callees, tests, and output paths. If the local change looks correct in isolation, inspect attached related context as part of the changed behavior path before concluding no findings.",
         "Missing-coverage claims require inspected test evidence. Distinguish no tests from tests that miss one specific branch, value, or contract. If relevant tests exist but you cannot inspect enough, emit a pointer-rich followUpHint or uncertainty with the exact unresolved predicate.",
         "Confidence calibration: do not mark a changed-line correctness/security finding low confidence solely because one optional tool lookup or supporting range read was unavailable. Use medium confidence when the changed-code evidence and failure mode are concrete but a narrow verifier-resolvable predicate remains. Reserve low confidence for speculative reachability, ambiguous product intent, or weak path matching.",
         "Validate raw external/provider/API/config/database values before lossy conversion; validation after overflow, truncation, rounding, precision loss, or coercion may be too late. Treat packet staticSignals as hints to investigate, not automatic findings.",
