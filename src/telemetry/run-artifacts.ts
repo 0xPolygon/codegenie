@@ -59,6 +59,7 @@ export const KNOWN_ARTIFACTS = new Set([
   "file-facts.json",
   "review-plan.json",
   "review-questions.json",
+  "hunk-relationships.json",
   "coverage.json",
   "budget-summary.json",
   "system-review-raw-tasks.json",

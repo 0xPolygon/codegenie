@@ -363,15 +363,6 @@ function planFromDossier(dossier: PlannerDossier): Record<string, unknown> {
       declaredIntent: "Remove divide guard.",
       inferredBehavior: "The divide helper now uses count directly."
     },
-    reviewEmphasis: [
-      {
-        summary: "numeric safety",
-        basis: ["The changed code removes a guard around a divisor."],
-        files: ["app.ts"],
-        symbols: ["divide"],
-        suggestedLenses: ["core/code-review"]
-      }
-    ],
     coverage: dossier.files.flatMap((file) =>
       file.hunks.map((hunk) => ({
         hunkId: hunk.hunkId,
@@ -379,7 +370,9 @@ function planFromDossier(dossier: PlannerDossier): Record<string, unknown> {
         coverage: "normal",
         lenses: ["core/code-review"],
         surroundingContextHints: [],
-        reason: "The hunk changes divisor behavior."
+        reason: "The hunk changes divisor behavior.",
+        focusNotes: ["The changed code removes a guard around a divisor."],
+        relatedSymbols: ["divide"]
       }))
     )
   };

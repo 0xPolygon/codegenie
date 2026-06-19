@@ -92,22 +92,6 @@ export const SubmitPlanSchema = Type.Object(
       },
       { additionalProperties: false }
     ),
-    reviewEmphasis: Type.Optional(Type.Array(
-      Type.Object(
-        {
-          summary: Type.String({ minLength: 1, maxLength: 240 }),
-          basis: Type.Array(Type.String({ minLength: 1, maxLength: 400 }), {
-            maxItems: 6,
-            description: "Short observable facts from the planner dossier. Do not include bug claims."
-          }),
-          files: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 50 }),
-          symbols: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 20 })),
-          suggestedLenses: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), { maxItems: 20 })
-        },
-        { additionalProperties: false }
-      ),
-      { maxItems: 50 }
-    )),
     coverage: Type.Array(
       Type.Object(
         {
@@ -116,7 +100,22 @@ export const SubmitPlanSchema = Type.Object(
           coverage: CoverageSchema,
           lenses: Type.Array(Type.String({ minLength: 1, maxLength: 100 }), { maxItems: 20 }),
           surroundingContextHints: Type.Array(SurroundingContextHintSchema, { maxItems: 20 }),
-          reason: Type.String({ minLength: 1, maxLength: 1000 })
+          reason: Type.String({ minLength: 1, maxLength: 1000 }),
+          focusNotes: Type.Optional(Type.Array(Type.String({
+            minLength: 1,
+            maxLength: 300,
+            description: "Short hunk-scoped advisory notes grounded in the planner dossier. Do not include bug claims or questions."
+          }), { maxItems: 5 })),
+          relatedSymbols: Type.Optional(Type.Array(Type.String({
+            minLength: 1,
+            maxLength: 200,
+            description: "Concrete symbol names Stage 6 may use to attach deterministic related changed context."
+          }), { maxItems: 12 })),
+          relatedFiles: Type.Optional(Type.Array(Type.String({
+            minLength: 1,
+            maxLength: 500,
+            description: "Concrete file paths Stage 6 may use to attach deterministic related changed context."
+          }), { maxItems: 12 }))
         },
         { additionalProperties: false }
       )

@@ -858,10 +858,12 @@ contains one or more changed hunks. The packet kind explains why those
 hunks are reviewed together, such as a single hunk, nearby coalesced
 hunks, a small file diff, or a whole-file review.</p>
 <p>Review packet construction is deterministic in v1. It must not call
-the LLM and should not perform broad repository searches. It assembles
-planned hunk/file work orders from the diff, file facts,
+the LLM and should not perform broad repository exploration. It
+assembles planned hunk/file work orders from the diff, file facts,
 <code>HunkSymbolFacts</code>, compact local context, configured labels,
-planner notes, selected lenses, and tool budgets.</p>
+hunk-scoped planner notes, selected lenses, and tool budgets. It may use
+bounded repository tools to resolve exact symbol bodies, explicit
+planner context hints, and a lean changed-hunk relationship graph.</p>
 <p>Default packet construction should be hunk-first. Coalesce only
 nearby hunks in the same file or same enclosing symbol. Use
 file/whole-file packets for single-hunk files, small added files, small
@@ -874,6 +876,12 @@ coverage, the packet builder quietly applies deterministic
 planner skips a reviewable hunk without a valid reason, the packet
 builder falls back to <code>normal</code> and records the malformed
 skip.</p>
+<p>Planner notes must be hunk-scoped. Stage 5 may include short
+<code>focusNotes</code>, concrete <code>relatedSymbols</code>, concrete
+<code>relatedFiles</code>, and <code>surroundingContextHints</code> on a
+coverage decision. Stage 6 carries those notes into the packet only as
+advisory <code>attentionNotes</code>; it must not turn broad planner
+prose into review obligations.</p>
 <p>Packet grouping should stay conservative in v1:</p>
 <ul>
 <li>Default to one packet per hunk.</li>
@@ -887,6 +895,13 @@ packet stays below strict size limits.</li>
 <li>Split packets back into smaller packets when patch or context size
 limits would be exceeded.</li>
 </ul>
+<p>Stage 6 also builds a small deterministic relationship graph among
+changed hunks and changed symbols. V1 edges are limited to same
+enclosing symbol, changed-symbol mention, and explicit planner
+symbol/file hints. The graph is not a semantic risk classifier. It is
+used only to attach bounded <code>relatedChangedContext</code> snippets
+to packets when another changed hunk/symbol is mechanically related.
+Cross-file packets are still forbidden.</p>
 <p>Each packet should include:</p>
 <ul>
 <li>PR or diff summary.</li>
@@ -907,8 +922,10 @@ limits would be exceeded.</li>
 when available.</li>
 <li>Surrounding-context hints from the planner or deterministic
 repository intelligence.</li>
-<li>Configured labels and advisory review-emphasis notes from Stage
-5.</li>
+<li>Configured labels and advisory hunk-scoped attention notes from
+Stage 5.</li>
+<li>Bounded related changed context when the changed-symbol graph
+mechanically links another changed hunk/symbol.</li>
 </ul>
 <p>Review packets should be compact. They should not contain the whole
 repository or large unrelated file dumps.</p>
@@ -975,12 +992,12 @@ text.</p>
 <p>Stage 6 should deterministically prune low-value lenses before Stage
 7. The language lens remains the broad default for supported languages.
 <code>core/tests</code> should be kept for test files, deleted tests,
-static test signals, planner test risk, or important untested behavior;
+static test signals, planner test hints, hunk-scoped attention notes, or important untested behavior;
 it should not be attached to every routine source packet.
 <code>core/code-review</code> should be kept for real source
 behavior/design risk, but mechanical import-only packets should usually
-be language-only/simple unless a configured priority, deep coverage, or
-planner review emphasis note promotes them.</p>
+be language-only/simple unless a configured priority, deep coverage,
+planner hint, or hunk-scoped attention note promotes them.</p>
 <p>Reviewer workers should submit an empty finding list when the packet
 evidence is insufficient. They should use tools only to support, narrow,
 or reject a concrete changed-code concern, not for broad repository

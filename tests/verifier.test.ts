@@ -372,6 +372,8 @@ describe("stage 9 eval diagnostics and prompts", () => {
     expect(verifierPrompt).toContain("For category:\"testing\" candidates, production code does not need to change");
     expect(verifierPrompt).toContain("old/base tests covered a named behavior boundary");
     expect(verifierPrompt).toContain("reject generic add-more-tests comments");
+    expect(verifierPrompt).toContain("verify the concrete predicate preserved in provenance");
+    expect(verifierPrompt).toContain("Commit titles, PR text, and intent signals are context, not proof");
   });
 });
 
@@ -448,7 +450,8 @@ function fakePacket(packetId: string, filePath: string, hunkId = "h1", symbol = 
     relevantTests: [],
     surroundingContextHints: [],
     labels: [],
-    reviewEmphasisNotes: [],
+    attentionNotes: [],
+    relatedChangedContext: [],
     toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 4000 }
   };
 }

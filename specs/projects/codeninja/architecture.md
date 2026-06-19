@@ -453,13 +453,6 @@ type SurroundingContextHint = {
 
 type ReviewPlan = {
   diffUnderstanding: DiffUnderstanding
-  reviewEmphasis?: Array<{
-    summary: string
-    basis: string[]
-    files: string[]
-    symbols?: string[]
-    suggestedLenses: string[]
-  }>
   coverage: HunkCoverageDecision[]
   partialReview?: {
     isPartial: boolean
@@ -479,12 +472,15 @@ type HunkCoverageDecision = {
   lenses: string[]
   surroundingContextHints: SurroundingContextHint[]
   reason: string
+  focusNotes?: string[]
+  relatedSymbols?: string[]
+  relatedFiles?: string[]
 }
 ```
 
 The packet builder is the sole owner of packet identity and physical grouping. The planner emits targeted per-hunk coverage/lens overrides only; it does not emit scheduling groups in v1 (see Future Considerations). Packet scheduling order is derived from effective coverage level and configured priority, and all packets may run concurrently because v1 packets never span files and workers are context-isolated.
 
-The planner is the only stage allowed to raise or lower coverage, select non-default lenses, or skip a hunk. It must not select every lens for every packet by default. Omitted changed hunks are not planner failures; Stage 6 reviews them with deterministic `normal` coverage and default core/language lenses. Any explicit `skip` still requires a reason.
+The planner is the only stage allowed to raise or lower coverage, select non-default lenses, or skip a hunk. It must not select every lens for every packet by default. Omitted changed hunks are not planner failures; Stage 6 reviews them with deterministic `normal` coverage and default core/language lenses. Any explicit `skip` still requires a reason. Any planner output intended to affect reviewer attention must be hunk-scoped through a coverage decision (`reason`, `focusNotes`, `relatedSymbols`, `relatedFiles`, or `surroundingContextHints`); global prose in `diffUnderstanding` is for artifacts and final framing only.
 
 The planner may request surrounding-code inspection by emitting `SurroundingContextHint` records. It should not broadly inspect files itself by default. Hints are instructions for packet construction or packet reviewers to inspect concrete symbols, files, tests, local patterns, or integration points.
 
@@ -564,13 +560,24 @@ type ReviewPacket = {
   relevantTests: SymbolInfo[]
   surroundingContextHints: SurroundingContextHint[]
   labels: string[]
-  reviewEmphasisNotes: string[] // advisory review-emphasis notes from Stage 5; not proof obligations
+  attentionNotes: string[] // advisory hunk-scoped Stage 5 notes; not proof obligations
+  relatedChangedContext: RelatedChangedContext[] // bounded snippets from mechanically related changed hunks/symbols
   toolBudget: ToolBudget
   degraded?: { reason: string } // disclosed in the coverage summary
   fileContext?: {
     mode: "file-diff" | "whole-file"
     reason: string
   }
+}
+
+type RelatedChangedContext = {
+  path: string
+  hunkId?: string
+  symbol?: string
+  lineRange?: [number, number]
+  reason: string
+  sourceSnippet?: string
+  patchExcerpt?: string
 }
 
 type PacketContext = {
@@ -614,14 +621,15 @@ Packet construction algorithm:
 
 1. Build one planned hunk record per changed hunk from diff data, file facts, `HunkSymbolFacts`, planner coverage, selected lenses, processing mode, labels, and estimated size.
 2. Validate planner output and apply deterministic fallbacks for missing coverage, invalid skip reasons, or empty lens sets.
-3. Apply file processing mode: the skip branch is defensive only — configured-skip files never reach Stage 6 under filter-first — and produces coverage records only; whole-file files produce one file packet when size limits allow; all other files default to hunk-first packets.
-4. Group hunks conservatively: one packet per hunk by default; coalesce only same-file hunks that share an enclosing symbol or are very nearby and still fit strict size limits.
-5. Never coalesce across files in v1. Cross-file concerns are recorded as follow-up hints; repeated scoped hints may trigger the narrow Stage 8 follow-up, while isolated hints remain telemetry/report notes.
-6. Attach cheap deterministic surrounding context when available — enclosing symbol source, file outline, likely tests — rendered into `contextText` within `maxContextChars`, plus planner-provided `surroundingContextHints`.
-7. Attach advisory review-emphasis notes whose files match the packet. These notes may influence reviewer attention, but they are not findings, questions, obligations, or Stage 8 triggers.
-8. Enforce max hunks, patch chars, context chars, and skill/lens prompt caps. Split oversized packets back into smaller packets. When one hunk alone exceeds `maxPatchChars`, the packet carries a truncated patch window centered on changed lines, with `truncated: true`, omitted-line counts, and a coverage note; never split below hunk granularity, never synthesize sub-hunk ids. Quantified defaults: `maxPatchChars = 12000`, `maxContextChars = 8000`, `maxHunksPerPacket = 5`.
-9. Compute packet coverage as the max coverage of included hunks, ordered `deep > normal > light`.
-10. Compute packet lenses as the bounded union of included hunk lenses, keeping the primary language lens first, pruning low-value `core/tests` / `core/code-review` from routine source or mechanical packets when another lens remains, and capping the final list.
+3. Build a lean deterministic relationship graph over changed hunks/symbols using only same-symbol, changed-symbol mention, and explicit planner symbol/file hints. Persist `hunk-relationships.json`.
+4. Apply file processing mode: the skip branch is defensive only — configured-skip files never reach Stage 6 under filter-first — and produces coverage records only; whole-file files produce one file packet when size limits allow; all other files default to hunk-first packets.
+5. Group hunks conservatively: one packet per hunk by default; coalesce only same-file hunks that share an enclosing symbol or are very nearby and still fit strict size limits.
+6. Never coalesce across files in v1. Cross-file concerns are recorded as follow-up hints; repeated scoped hints may trigger the narrow Stage 8 follow-up, while isolated hints remain telemetry/report notes.
+7. Attach cheap deterministic surrounding context when available — enclosing symbol source, file outline, likely tests — rendered into `contextText` within `maxContextChars`, plus planner-provided `surroundingContextHints`.
+8. Attach advisory hunk-scoped `attentionNotes` and bounded `relatedChangedContext` from mechanically related changed hunks/symbols. These may influence reviewer attention, but they are not findings, questions, obligations, or Stage 8 triggers.
+9. Enforce max hunks, patch chars, context chars, and skill/lens prompt caps. Split oversized packets back into smaller packets. When one hunk alone exceeds `maxPatchChars`, the packet carries a truncated patch window centered on changed lines, with `truncated: true`, omitted-line counts, and a coverage note; never split below hunk granularity, never synthesize sub-hunk ids. Quantified defaults: `maxPatchChars = 12000`, `maxContextChars = 8000`, `maxHunksPerPacket = 5`.
+10. Compute packet coverage as the max coverage of included hunks, ordered `deep > normal > light`.
+11. Compute packet lenses as the bounded union of included hunk lenses, keeping the primary language lens first, pruning low-value `core/tests` / `core/code-review` from routine source or mechanical packets when another lens remains, and capping the final list.
 
 ### Findings And Anchors
 
@@ -1311,7 +1319,7 @@ Lens execution rules:
 - Use coverage-aware execution profiles:
   - `simple`: one structured call with no repository tools; used for light or obvious mechanical packets.
   - `standard`: one structured/tool-capable task with focused review instructions and a reduced normal-mode tool budget.
-  - `investigate`: one structured/tool-capable task with a larger budget for deep coverage, high/critical priority, planner hints, or review emphasis notes.
+  - `investigate`: one structured/tool-capable task with a larger budget for deep coverage, high/critical priority, planner hints, or hunk-scoped attention notes.
 - Standard and investigate packet reviewers may use the same read-only tool suite. The difference is budget, investigation depth, and prompting, not capability. Simple packets receive no repository tools.
 - The reviewer should submit immediately when packet context is sufficient. Tool calls are for concrete missing evidence, not broad exploration.
 - Packet reviewers should not review hunks in isolation. They should use packet context first, then bounded read-only tools to inspect relevant surrounding code: enclosing symbols, sibling patterns, call sites, tests, setup/cleanup, lifecycle, authorization, configuration, resource-management code, and existing patterns in the same file/package/component.

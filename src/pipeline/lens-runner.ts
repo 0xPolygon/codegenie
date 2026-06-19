@@ -447,7 +447,7 @@ function shouldExposeLikelyTestsForPacket(packet: ReviewPacket): boolean {
     packet.lenses.some(isTestingLens) ||
     packet.testCoverageDelta !== undefined ||
     packet.labels.some(isTestingSignal) ||
-    packet.reviewEmphasisNotes.some(isTestingSignal);
+    packet.attentionNotes.some(isTestingSignal);
 }
 
 function isTestingLens(lens: string): boolean {

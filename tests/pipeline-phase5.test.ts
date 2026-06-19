@@ -31,6 +31,7 @@ import type {
   CoverageLevel,
   DiffFile,
   FileFacts,
+  HunkSymbolFacts,
   PacketReviewResult,
   PlannerDossier,
   RepositoryIndex,
@@ -1030,6 +1031,255 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets[0]?.contextText).toContain("function renderRoute");
   });
 
+  it("attaches related changed context between changed helpers and changed callers", async () => {
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const file: DiffFile = {
+      path: "quote.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [
+        {
+          id: "h-helper",
+          path: "quote.ts",
+          oldStart: 1,
+          oldLines: 3,
+          newStart: 1,
+          newLines: 3,
+          header: "@@ -1,3 +1,3 @@",
+          lines: [
+            { kind: "context", content: "export function scaleAmount(value: bigint) {", oldLineNumber: 1, newLineNumber: 1 },
+            { kind: "add", content: "  return value / 10n;", newLineNumber: 2 },
+            { kind: "context", content: "}", oldLineNumber: 3, newLineNumber: 3 }
+          ]
+        },
+        {
+          id: "h-caller",
+          path: "quote.ts",
+          oldStart: 100,
+          oldLines: 4,
+          newStart: 100,
+          newLines: 4,
+          header: "@@ -100,4 +100,4 @@",
+          lines: [
+            { kind: "context", content: "export function buildQuote(requested: bigint) {", oldLineNumber: 100, newLineNumber: 100 },
+            { kind: "add", content: "  const transfer = scaleAmount(requested);", newLineNumber: 101 },
+            { kind: "context", content: "  return transfer;", oldLineNumber: 102, newLineNumber: 102 },
+            { kind: "context", content: "}", oldLineNumber: 103, newLineNumber: 103 }
+          ]
+        }
+      ]
+    };
+    const symbolFacts: HunkSymbolFacts[] = [
+      {
+        path: "quote.ts",
+        hunkId: "h-helper",
+        enclosingSymbol: "scaleAmount",
+        symbolKind: "function",
+        symbolRange: [1, 3],
+        changedLines: [2],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      },
+      {
+        path: "quote.ts",
+        hunkId: "h-caller",
+        enclosingSymbol: "buildQuote",
+        symbolKind: "function",
+        symbolRange: [100, 103],
+        changedLines: [101],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      }
+    ];
+    const tools = {
+      ...fakeTools(),
+      findSymbolMentions: async (symbolName: string, options: SymbolMentionOptions = {}) => ({
+        results: symbolName === "scaleAmount" && options.contextMode === "symbols"
+          ? [{
+              path: "quote.ts",
+              line: 101,
+              matchText: "const transfer = scaleAmount(requested);",
+              enclosingSymbol: { path: "quote.ts", name: "buildQuote", kind: "function" as const, lineRange: [100, 103] as [number, number] }
+            }]
+          : [],
+        meta
+      }),
+      readSymbol: async (_pathName: string, selector: { symbolName?: string; line?: number }) => {
+        if (selector.symbolName === "scaleAmount") {
+          return { text: "export function scaleAmount(value: bigint) {\n  return value / 10n;\n}", symbol: { path: "quote.ts", name: "scaleAmount", kind: "function" as const, lineRange: [1, 3] as [number, number] }, meta };
+        }
+        if (selector.symbolName === "buildQuote") {
+          return { text: "export function buildQuote(requested: bigint) {\n  const transfer = scaleAmount(requested);\n  return transfer;\n}", symbol: { path: "quote.ts", name: "buildQuote", kind: "function" as const, lineRange: [100, 103] as [number, number] }, meta };
+        }
+        return { meta };
+      }
+    };
+    const plan: ReviewPlan = {
+      diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" },
+      coverage: [
+        {
+          hunkId: "h-helper",
+          path: "quote.ts",
+          coverage: "normal",
+          lenses: ["core/code-review"],
+          surroundingContextHints: [],
+          reason: "review changed helper with changed callers",
+          focusNotes: ["Check changed helper through changed callers."],
+          relatedSymbols: ["buildQuote"]
+        },
+        {
+          hunkId: "h-caller",
+          path: "quote.ts",
+          coverage: "normal",
+          lenses: ["core/code-review"],
+          surroundingContextHints: [],
+          reason: "review changed caller with changed helper",
+          relatedSymbols: ["scaleAmount"]
+        }
+      ]
+    };
+
+    const packets = await buildReviewPackets(
+      plan,
+      [file],
+      [{ ...fakeFacts("quote.ts", "per-hunk"), hunkCount: 2 }],
+      {
+        ...fakeRepositoryIndex(tools),
+        symbolFacts
+      },
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(packets).toHaveLength(2);
+    const helperPacket = packets.find((packet) => packet.hunks.some((hunk) => hunk.hunkId === "h-helper"));
+    const callerPacket = packets.find((packet) => packet.hunks.some((hunk) => hunk.hunkId === "h-caller"));
+    expect(helperPacket?.attentionNotes).toEqual(expect.arrayContaining(["Check changed helper through changed callers."]));
+    expect(helperPacket?.relatedChangedContext).toEqual([
+      expect.objectContaining({ hunkId: "h-caller", symbol: "buildQuote", sourceSnippet: expect.stringContaining("buildQuote") })
+    ]);
+    expect(callerPacket?.relatedChangedContext).toEqual([
+      expect.objectContaining({ hunkId: "h-helper", symbol: "scaleAmount", sourceSnippet: expect.stringContaining("scaleAmount") })
+    ]);
+  });
+
+  it("does not relate unrelated changed symbols that only share a bare name", async () => {
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const fileA: DiffFile = {
+      path: "a.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [{
+        id: "h-a",
+        path: "a.ts",
+        oldStart: 1,
+        oldLines: 3,
+        newStart: 1,
+        newLines: 3,
+        header: "@@ -1,3 +1,3 @@",
+        lines: [
+          { kind: "context", content: "export function init() {", oldLineNumber: 1, newLineNumber: 1 },
+          { kind: "add", content: "  return \"a\";", newLineNumber: 2 },
+          { kind: "context", content: "}", oldLineNumber: 3, newLineNumber: 3 }
+        ]
+      }]
+    };
+    const fileB: DiffFile = {
+      path: "b.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [{
+        id: "h-b",
+        path: "b.ts",
+        oldStart: 1,
+        oldLines: 3,
+        newStart: 1,
+        newLines: 3,
+        header: "@@ -1,3 +1,3 @@",
+        lines: [
+          { kind: "context", content: "export function init() {", oldLineNumber: 1, newLineNumber: 1 },
+          { kind: "add", content: "  return \"b\";", newLineNumber: 2 },
+          { kind: "context", content: "}", oldLineNumber: 3, newLineNumber: 3 }
+        ]
+      }]
+    };
+    const symbolFacts: HunkSymbolFacts[] = [
+      {
+        path: "a.ts",
+        hunkId: "h-a",
+        enclosingSymbol: "init",
+        symbolKind: "function",
+        symbolRange: [1, 3],
+        changedLines: [2],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      },
+      {
+        path: "b.ts",
+        hunkId: "h-b",
+        enclosingSymbol: "init",
+        symbolKind: "function",
+        symbolRange: [1, 3],
+        changedLines: [2],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      }
+    ];
+    const plan: ReviewPlan = {
+      diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" },
+      coverage: [
+        {
+          hunkId: "h-a",
+          path: "a.ts",
+          coverage: "normal",
+          lenses: ["core/code-review"],
+          surroundingContextHints: [],
+          reason: "review a init"
+        },
+        {
+          hunkId: "h-b",
+          path: "b.ts",
+          coverage: "normal",
+          lenses: ["core/code-review"],
+          surroundingContextHints: [],
+          reason: "review b init"
+        }
+      ]
+    };
+    const packets = await buildReviewPackets(
+      plan,
+      [fileA, fileB],
+      [{ ...fakeFacts("a.ts", "per-hunk"), hunkCount: 1 }, { ...fakeFacts("b.ts", "per-hunk"), hunkCount: 1 }],
+      {
+        ...fakeRepositoryIndex({
+          ...fakeTools(),
+          findSymbolMentions: async (symbolName: string, options: SymbolMentionOptions = {}) => ({
+            results: symbolName === "init" && options.contextMode === "symbols"
+              ? [{
+                  path: "a.ts",
+                  line: 2,
+                  matchText: "return \"a\";",
+                  enclosingSymbol: { path: "a.ts", name: "init", kind: "function" as const, lineRange: [1, 3] as [number, number] }
+                }]
+              : [],
+            meta
+          }),
+          readSymbol: async (pathName: string) => ({ text: `function init() {\n  return ${JSON.stringify(pathName)};\n}`, meta })
+        }),
+        symbolFacts
+      },
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(packets).toHaveLength(2);
+    expect(packets.every((packet) => packet.relatedChangedContext.length === 0)).toBe(true);
+  });
+
   it("keeps non-call-site symbol hints on the symbol definition path", async () => {
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
     const symbolReads: Array<{ path: string; selector: { symbolName?: string; line?: number } }> = [];
@@ -1486,7 +1736,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("uses adaptive sliced context for high-pressure same-symbol packets with planner review emphasis notes", async () => {
+  it("uses adaptive sliced context for high-pressure same-symbol packets with planner attention notes", async () => {
     const events: TelemetryEvent[] = [];
     const telemetry = {
       ...nullTelemetry(),
@@ -1545,20 +1795,15 @@ describe("phase 5 pipeline regressions", () => {
     };
     const plan: ReviewPlan = {
       ...fakePlanForHunks(["h1", "h2", "h3", "h4"], "app.ts"),
-      reviewEmphasis: [{
-        summary: "changed behavior",
-        basis: ["Planner marked this file as correctness-sensitive."],
-        files: ["app.ts"],
-        symbols: ["changed"],
-        suggestedLenses: ["team/security"]
-      }],
       coverage: ["h1", "h2", "h3", "h4"].map((hunkId) => ({
         hunkId,
         path: "app.ts",
         coverage: "normal" as const,
         lenses: ["team/security"],
         surroundingContextHints: [],
-        reason: "planner selected normal review with review emphasis note"
+        reason: "planner selected normal review with hunk-scoped attention note",
+        focusNotes: ["Planner marked this hunk as correctness-sensitive."],
+        relatedSymbols: ["changed"]
       }))
     };
 
@@ -1596,7 +1841,7 @@ describe("phase 5 pipeline regressions", () => {
         hunkCount: 4,
         hunkPressure: "high",
         hunkIds: ["h1", "h2", "h3", "h4"],
-        riskSignals: expect.arrayContaining(["planner_review_emphasis", "risk_lens"]),
+        riskSignals: expect.arrayContaining(["hunk_scoped_attention", "risk_lens"]),
         reason: "single_important_symbol_high_pressure_adaptive_slice"
       })
     }));
@@ -3108,10 +3353,10 @@ describe("phase 5 pipeline regressions", () => {
         });
         expect(recovered).toBeDefined();
         expect(Object.prototype.hasOwnProperty.call(recovered ?? {}, "reason")).toBe(false);
+        expect(Object.prototype.hasOwnProperty.call(recovered ?? {}, "reviewEmphasis")).toBe(false);
         expect(recovered).toMatchObject({
           diffUnderstanding: repairedPlan.diffUnderstanding,
-          coverage: repairedPlan.coverage,
-          reviewEmphasis: repairedPlan.reviewEmphasis
+          coverage: repairedPlan.coverage
         });
         return recovered as T;
       }
@@ -3136,18 +3381,16 @@ describe("phase 5 pipeline regressions", () => {
     });
 
     expect(result.degradedPlanning).toBe(false);
-    expect(result.plan.reviewEmphasis).toEqual([
-      expect.objectContaining({ summary: "changed value feeds caller contract", files: ["app.ts"], symbols: ["value"] })
-    ]);
+    expect(result.plan.coverage).toEqual(repairedPlan.coverage);
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         stage: 5,
         message: "planner_schema_recovery_stripped_root_keys",
         data: expect.objectContaining({
-          strippedKeys: ["reason"],
+          strippedKeys: ["reason", "reviewEmphasis"],
           invalidSubmitCallCount: 1,
           schemaRepairUsed: true,
-          recoveredRootKeys: 3
+          recoveredRootKeys: 2
         })
       })
     ]));
@@ -3192,13 +3435,13 @@ describe("phase 5 pipeline regressions", () => {
     })).resolves.toMatchObject({ degradedPlanning: false });
   });
 
-  it("does not strip nested planner fields during root-key recovery", async () => {
+  it("does not strip nested coverage fields during root-key recovery", async () => {
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         const recoveredNoRootDrift = request.schemaRepair?.recoverInvalidSubmit?.({
           stage: 5,
           submitTool: "submit_plan",
-          error: "reviewEmphasis.0: must not have additional properties",
+          error: "coverage.0: must not have additional properties",
           submitCalls: [{ id: "submit-nested-only", arguments: fakePlan("app.ts") }],
           extraToolNames: [],
           schemaRepairUsed: true
@@ -3206,17 +3449,13 @@ describe("phase 5 pipeline regressions", () => {
         const recoveredNestedDrift = request.schemaRepair?.recoverInvalidSubmit?.({
           stage: 5,
           submitTool: "submit_plan",
-          error: "reviewEmphasis.0: must not have additional properties",
+          error: "coverage.0: must not have additional properties",
           submitCalls: [{
             id: "submit-nested-extra",
             arguments: {
               ...fakePlan("app.ts"),
-              reviewEmphasis: [{
-                summary: "Value flow",
-                basis: ["Review changed value flow."],
-                files: ["app.ts"],
-                symbols: ["value"],
-                suggestedLenses: ["core/code-review"],
+              coverage: [{
+                ...(fakePlan("app.ts").coverage[0] as NonNullable<ReviewPlan["coverage"][number]>),
                 extraNestedNote: "must remain for schema validation to reject"
               }],
               reason: "extra root note"
@@ -3224,11 +3463,11 @@ describe("phase 5 pipeline regressions", () => {
           }],
           extraToolNames: [],
           schemaRepairUsed: true
-        }) as { reviewEmphasis?: Array<Record<string, unknown>> } | undefined;
+        }) as { coverage?: Array<Record<string, unknown>> } | undefined;
 
         expect(recoveredNoRootDrift).toBeUndefined();
         expect(Object.prototype.hasOwnProperty.call(recoveredNestedDrift ?? {}, "reason")).toBe(false);
-        expect(recoveredNestedDrift?.reviewEmphasis?.[0]?.extraNestedNote).toBe("must remain for schema validation to reject");
+        expect(recoveredNestedDrift?.coverage?.[0]?.extraNestedNote).toBe("must remain for schema validation to reject");
         return fakePlan("app.ts") as T;
       }
     };
@@ -3830,7 +4069,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(events.some((event) => event.message === "planner_conflicting_duplicate_hunk")).toBe(true);
   });
 
-  it("normalizes planner review emphasis without affecting hunk coverage", async () => {
+  it("normalizes hunk-scoped planner attention without global legacy emphasis", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const telemetry = {
       ...nullTelemetry(),
@@ -3841,31 +4080,18 @@ describe("phase 5 pipeline regressions", () => {
     const runner: LlmRunner = {
       runStructured: async <T>() =>
         ({
-          diffUnderstanding: { declaredIntent: "emphasis plan", inferredBehavior: "emphasis plan" },
-          reviewEmphasis: [
-            {
-              summary: "Changed amount transformation feeds caller-visible output",
-              basis: ["app.ts changes handler, which returns a transformed amount"],
-              files: ["app.ts"],
-              symbols: ["handler"],
-              suggestedLenses: ["core/code-review", "missing/lens"]
-            },
-            {
-              summary: "Unknown file should not survive",
-              basis: ["missing.ts is not in the dossier"],
-              files: ["missing.ts"],
-              symbols: [],
-              suggestedLenses: ["core/code-review"]
-            },
-            {
-              summary: "Empty basis should not survive",
-              basis: [],
-              files: ["app.ts"],
-              symbols: [],
-              suggestedLenses: ["core/code-review"]
-            }
-          ],
-          coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review" }]
+          diffUnderstanding: { declaredIntent: "attention plan", inferredBehavior: "attention plan" },
+          coverage: [{
+            hunkId: "h1",
+            path: "app.ts",
+            coverage: "normal",
+            lenses: ["core/code-review", "missing/lens"],
+            surroundingContextHints: [],
+            reason: "review changed handler",
+            focusNotes: ["  app.ts changes handler, which returns a transformed amount  ", ""],
+            relatedSymbols: ["handler", "handler"],
+            relatedFiles: ["app.ts", "missing.ts"]
+          }]
         }) as T
     };
 
@@ -3884,18 +4110,17 @@ describe("phase 5 pipeline regressions", () => {
       skills: []
     });
 
-    expect(result.plan.reviewEmphasis).toEqual([
+    expect(result.plan.coverage).toEqual([
       expect.objectContaining({
-        summary: "Changed amount transformation feeds caller-visible output",
-        basis: ["app.ts changes handler, which returns a transformed amount"],
-        files: ["app.ts"],
-        symbols: ["handler"],
-        suggestedLenses: ["core/code-review"]
+        hunkId: "h1",
+        lenses: ["core/code-review"],
+        focusNotes: ["app.ts changes handler, which returns a transformed amount"],
+        relatedSymbols: ["handler"],
+        relatedFiles: ["app.ts"]
       })
     ]);
-    expect(result.plan.coverage.map((decision) => decision.hunkId)).toEqual(["h1"]);
     expect(events).toEqual(expect.arrayContaining([
-      expect.objectContaining({ stage: 5, message: "planner_review_emphasis", data: expect.objectContaining({ submitted: 3, kept: 1 }) })
+      expect.objectContaining({ stage: 5, message: "planner_unknown_lens", lensId: "missing/lens" })
     ]));
   });
 
@@ -9284,7 +9509,8 @@ describe("phase 5 pipeline regressions", () => {
           noteIds: [expect.stringMatching(/^note-/u)],
           match: expect.objectContaining({
             sharedFiles: ["billing/fee.ts"],
-            questionMatched: true
+            questionMatched: true,
+            provenanceMatched: true
           })
         })
       ],
@@ -9295,6 +9521,62 @@ describe("phase 5 pipeline regressions", () => {
       message: "human_attention_hints_suppressed_by_verification",
       data: expect.objectContaining({ suppressed: 1, remainingGroups: 0 })
     }));
+  });
+
+  it("does not suppress unrelated human-attention notes through weak same-file verifier overlap", async () => {
+    const candidate = verifierResolutionCandidate();
+    const result = await dedupeRankAndComposeReview(
+      {
+        verified: [],
+        verdicts: [{
+          candidateId: candidate.id,
+          verdict: "reject",
+          reason: "normalizeAmount already returns an error when the price is zero, so the suspected missing guard is not real.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        }]
+      },
+      fakePlan("billing/fee.ts"),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packets: [verifierResolutionPacket()],
+        packetResults: [{
+          packetId: "packet-helper",
+          lenses: ["core/code-review"],
+          findings: [candidate],
+          followUpHints: [{
+            question: "Check whether retryWorkers still stop on cancellation.",
+            files: ["billing/fee.ts"],
+            symbols: ["retryWorkers"],
+            suggestedLenses: [],
+            reason: "The retry worker lifecycle concern is independent from fee normalization.",
+            confidence: "medium"
+          }],
+          uncertainties: [],
+          status: "completed"
+        }]
+      }
+    );
+
+    expect(result.needsHumanAttention).toEqual([
+      expect.objectContaining({
+        question: "Check whether retryWorkers still stop on cancellation.",
+        files: ["billing/fee.ts"],
+        symbols: ["retryWorkers"]
+      })
+    ]);
   });
 
   it("keeps human-attention notes when verifier evidence is incomplete", async () => {
@@ -9753,7 +10035,7 @@ function fakePacket(opts: {
   relevantTests?: ReviewPacket["relevantTests"];
   testCoverageDelta?: ReviewPacket["testCoverageDelta"];
   labels?: string[];
-  reviewEmphasisNotes?: string[];
+  attentionNotes?: string[];
   hunkLines?: ReviewPacket["hunks"][number]["lines"];
   changedNewLineNumbers?: number[];
   changedOldLineNumbers?: number[];
@@ -9792,7 +10074,8 @@ function fakePacket(opts: {
     relevantTests: opts.relevantTests ?? [],
     surroundingContextHints: [],
     labels: opts.labels ?? [],
-    reviewEmphasisNotes: opts.reviewEmphasisNotes ?? [],
+    attentionNotes: opts.attentionNotes ?? [],
+    relatedChangedContext: [],
     toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 4000 }
   };
 }

@@ -313,11 +313,11 @@ function promotedTitle(source: PromotionSource, category: FindingCategory): stri
 }
 
 function promotedFailureMode(source: PromotionSource, category: FindingCategory): string {
-  const question = source.question.trim().replace(/\s+/gu, " ");
+  const predicate = promotedPredicateText(source);
   if (category === "testing") {
-    return `The review raised a concrete coverage question: ${question}. If the changed or deleted test coverage no longer exercises the production path, a regression in that path can ship undetected.`;
+    return `The review raised a concrete coverage question: ${predicate}. If the changed or deleted test coverage no longer exercises the production path, a regression in that path can ship undetected.`;
   }
-  return `The review raised a concrete unresolved behavior question: ${question}. If this predicate is true, the changed path can produce incorrect caller-visible behavior.`;
+  return `The review raised a concrete unresolved behavior predicate: ${predicate}. If this predicate is true, the changed path can produce incorrect caller-visible behavior.`;
 }
 
 function promotedImpact(source: PromotionSource, category: FindingCategory): string {
@@ -329,6 +329,15 @@ function promotedImpact(source: PromotionSource, category: FindingCategory): str
     return `The affected scope (${scope}) may weaken a security-relevant path if the verifier confirms the predicate.`;
   }
   return `The affected scope (${scope}) is tied to changed code, so a confirmed predicate would be a real correctness regression.`;
+}
+
+function promotedPredicateText(source: PromotionSource): string {
+  const question = source.question.trim().replace(/\s+/gu, " ");
+  const reason = source.reason.trim().replace(/\s+/gu, " ");
+  if (reason.length === 0 || normalize(question).includes(normalize(reason)) || normalize(reason).includes(normalize(question))) {
+    return question;
+  }
+  return `${question} Reason: ${reason}`;
 }
 
 function promotedSeverity(category: FindingCategory): Severity {
@@ -512,12 +521,12 @@ function riskProfile(source: PromotionSource): { promotable: boolean; category: 
   }
   const testScoped = isTestScopedSource(source);
   const testRisk = /\b(tests?|coverage|fixture|assert|expect|deleted test|missing test)\b/u.test(text);
-  const correctnessRisk = /\b(bug|incorrect|wrong|break|broken|fail|failure|regression|behavior|semantic|contract|caller|invariant|fallback|default|zero|nil|null|panic|overflow|round|precision|race|leak|retry|timeout|context|close|cleanup)\b/u.test(text);
-  if (testScoped && testRisk) {
-    return { promotable: true, category: "testing" };
-  }
+  const correctnessRisk = /\b(bug|incorrect|wrong|break|broken|fail|failure|regression|behavior|semantic|contract|caller|invariant|fallback|default|zero|nil|null|panic|overflow|round|rounding|precision|truncat(?:e|es|ed|ion|ing)?|lossy|coercion|under-?report|under-?deliver|race|leak|retry|timeout|context|close|cleanup)\b/u.test(text);
   if (correctnessRisk) {
     return { promotable: true, category: text.includes("logic") ? "logic_bug" : "correctness" };
+  }
+  if (testScoped && testRisk) {
+    return { promotable: true, category: "testing" };
   }
   if (testRisk) {
     return { promotable: true, category: "testing" };
@@ -544,7 +553,7 @@ function hasConcreteFailurePredicate(source: PromotionSource, category: FindingC
     return /\b(deleted|removed|missing|lost|coverage|regression|production path|behavior|symbol|caller|contract)\b/u.test(text) &&
       mentionsNamedProductionScope(source);
   }
-  return /\b(if|whether|when|without|allows?|fails?|breaks?|regression|contract|invariant|auth|permission|zero|nil|null|panic|overflow|precision|fallback|default|timeout|leak|race|incorrect|wrong|lost|removed|missing|no longer)\b/u.test(text);
+  return /\b(if|whether|when|without|allows?|fails?|breaks?|regression|contract|invariant|auth|permission|zero|nil|null|panic|overflow|precision|round(?:ing)?|truncat(?:e|es|ed|ion|ing)?|lossy|coercion|under-?report|under-?deliver|fallback|default|timeout|leak|race|incorrect|wrong|lost|removed|missing|no longer)\b/u.test(text);
 }
 
 function hasChangedAnchorForPredicate(source: PromotionSource): boolean {

@@ -61,6 +61,46 @@ describe("uncertainty promotion", () => {
     ]));
   });
 
+  it("routes a test-scoped hint with a runtime predicate as correctness", async () => {
+    const packet = fakePacket("packet-runtime-predicate", "src/quote.ts", {
+      symbol: "buildQuote",
+      line: "+ return buildQuoteWithScaledTransfer(request)"
+    });
+
+    const result = await promoteUncertaintiesForVerification({
+      packets: [packet],
+      packetResults: [{
+        packetId: packet.id,
+        lenses: ["core/code-review"],
+        findings: [],
+        followUpHints: [{
+          question: "Do the added tests cover whether buildQuote still preserves the caller contract?",
+          files: ["src/quote.ts", "tests/quote.test.ts"],
+          symbols: ["buildQuote", "scaleAmount"],
+          suggestedLenses: ["core/tests"],
+          reason: "The changed transfer calculation truncates toward zero and could under-report the value promised to callers.",
+          confidence: "medium"
+        }],
+        uncertainties: [],
+        status: "completed"
+      }]
+    }, captureTelemetry().recorder);
+
+    const promoted = result.packetResults[0]?.findings[0];
+    expect(result.summary).toMatchObject({ considered: 1, promoted: 1 });
+    expect(promoted).toMatchObject({
+      category: "correctness",
+      confidence: "low",
+      provenance: {
+        sourceKind: "follow_up_hint",
+        question: "Do the added tests cover whether buildQuote still preserves the caller contract?",
+        reason: "The changed transfer calculation truncates toward zero and could under-report the value promised to callers."
+      }
+    });
+    expect(promoted?.failureMode).toContain("truncates toward zero");
+    expect(promoted?.failureMode).toContain("under-report");
+  });
+
   it("keeps promotion bounded and explains dropped sources", async () => {
     const packets = Array.from({ length: 6 }, (_value, index) =>
       fakePacket(`packet-${index}`, `src/case-${index}.ts`, {
@@ -551,7 +591,8 @@ function fakePacket(
     relevantTests: [],
     surroundingContextHints: [],
     labels: [],
-    reviewEmphasisNotes: [],
+    attentionNotes: [],
+    relatedChangedContext: [],
     toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 4000 }
   };
 }

@@ -488,6 +488,16 @@ export type PacketContext = {
 
 export type PacketContextQuality = "full" | "sliced" | "outline_only" | "path_only";
 
+export type RelatedChangedContext = {
+  path: string;
+  hunkId?: string | undefined;
+  symbol?: string | undefined;
+  lineRange?: [number, number] | undefined;
+  reason: string;
+  sourceSnippet?: string | undefined;
+  patchExcerpt?: string | undefined;
+};
+
 export type TestCoverageDeltaSymbol = {
   name: string;
   side: "LEFT" | "RIGHT";
@@ -537,7 +547,8 @@ export type ReviewPacket = {
   relevantTests: SymbolInfo[];
   surroundingContextHints: SurroundingContextHint[];
   labels: string[];
-  reviewEmphasisNotes: string[];
+  attentionNotes: string[];
+  relatedChangedContext: RelatedChangedContext[];
   toolBudget: ToolBudget;
   degraded?: { reason: string };
   fileContext?: {
@@ -670,20 +681,14 @@ export type HunkCoverageDecision = {
   lenses: string[];
   surroundingContextHints: SurroundingContextHint[];
   reason: string;
-};
-
-export type ReviewEmphasis = {
-  summary: string;
-  basis: string[];
-  files: string[];
-  symbols?: string[];
-  suggestedLenses: string[];
+  focusNotes?: string[];
+  relatedSymbols?: string[];
+  relatedFiles?: string[];
 };
 
 export type ReviewPlan = {
   diffUnderstanding: DiffUnderstanding;
   intentSignals?: IntentSignals;
-  reviewEmphasis?: ReviewEmphasis[];
   coverage: HunkCoverageDecision[];
   partialReview?: {
     isPartial: boolean;

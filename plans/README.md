@@ -70,15 +70,13 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 64 | COMPLETE | Issue 64: Material Review Question Answer Quality and Ambiguous Ownership Follow-Up |
 | 65 | COMPLETE | Issue 65: End-to-End Obligation Proof For Review Questions |
 | 66 | COMPLETE | Issue 66: Simplify Stage 5-8 By Removing Planner Review Questions |
-| 67 | PENDING | Issue 67: Planner Coverage Emphasis and Hunk Relationship Context |
-| 68 | PENDING | Issue 68: Predicate-Preserving Promotion and Note Suppression |
+| 67 | COMPLETE | Issue 67: Planner Coverage Emphasis and Hunk Relationship Context |
+| 68 | COMPLETE | Issue 68: Predicate-Preserving Promotion and Note Suppression |
 
 ## Current Queue
 
 Recommended implementation order for remaining work:
 
-- **Issue 67** — make Stage 5 review-driving emphasis hunk-scoped through coverage decisions, and let Stage 6 attach deterministic related changed context so Stage 7 sees helper/caller interactions.
-- **Issue 68** — preserve Stage 7's concrete failure predicate through promotion and verification, treat refactor-like intent as neutral context, and prevent weak rejected-candidate overlap from suppressing unresolved notes.
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
 
 ## Deferred / Watch List

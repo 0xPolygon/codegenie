@@ -1,5 +1,6 @@
 import type {
   CandidateFinding,
+  CandidateFindingProvenance,
   Confidence,
   FinalFinding,
   NeedsHumanAttentionNote,
@@ -67,6 +68,7 @@ export type VerificationResolution = {
   symbols: string[];
   terms: Set<string>;
   questionKeys: Set<string>;
+  provenance?: CandidateFindingProvenance | undefined;
 };
 
 type VerificationSuppressionRecord = {
@@ -83,6 +85,7 @@ type VerificationSuppressionRecord = {
     sharedTerms: number;
     similarity: number;
     questionMatched: boolean;
+    provenanceMatched: boolean;
   };
 };
 
@@ -293,7 +296,8 @@ export function suppressAttentionGroupsResolvedByVerification(
         sharedSymbols: match.sharedSymbols,
         sharedTerms: match.sharedTerms,
         similarity: match.similarity,
-        questionMatched: match.questionMatched
+        questionMatched: match.questionMatched,
+        provenanceMatched: match.provenanceMatched
       }
     });
   }
@@ -345,7 +349,8 @@ export function buildVerificationResolutionIndex(
       files,
       symbols,
       terms,
-      questionKeys: normalizedQuestionKeys
+      questionKeys: normalizedQuestionKeys,
+      ...((resolved?.provenance ?? original?.provenance) !== undefined ? { provenance: resolved?.provenance ?? original?.provenance } : {})
     }];
   });
 }
@@ -690,12 +695,27 @@ type VerificationResolutionMatch = {
   sharedTerms: number;
   similarity: number;
   questionMatched: boolean;
+  provenanceMatched: boolean;
 };
 
 function attentionGroupResolvedByVerification(
   group: AttentionHintGroup,
   resolution: VerificationResolution
 ): VerificationResolutionMatch | undefined {
+  if (resolution.provenance !== undefined && attentionGroupMatchesProvenance(group, resolution.provenance)) {
+    const groupTerms = attentionGroupTerms(group);
+    const sharedTerms = intersectionCount(groupTerms, resolution.terms);
+    const similarity = tokenJaccard(groupTerms, resolution.terms);
+    return {
+      sharedFiles: sortedIntersection(normalizedSet(group.files), normalizedSet(resolution.files)),
+      sharedSymbols: sortedIntersection(normalizedSet(group.symbols), normalizedSet(resolution.symbols)),
+      sharedTerms,
+      similarity,
+      questionMatched: true,
+      provenanceMatched: true
+    };
+  }
+
   const groupFiles = normalizedSet(group.files);
   const resolutionFiles = normalizedSet(resolution.files);
   const sharedFiles = sortedIntersection(groupFiles, resolutionFiles);
@@ -713,7 +733,7 @@ function attentionGroupResolvedByVerification(
       const similarity = tokenJaccard(groupTerms, resolution.terms);
       const questionMatched = questionKeys(group.representative.question).some((key) => resolution.questionKeys.has(key));
       return questionMatched || sharedTerms >= 7 || similarity >= 0.55
-        ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched }
+        ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched, provenanceMatched: false }
         : undefined;
     }
     return undefined;
@@ -726,17 +746,34 @@ function attentionGroupResolvedByVerification(
 
   if (sharedFiles.length > 0 && sharedSymbols.length > 0) {
     return questionMatched || sharedTerms >= 3 || similarity >= 0.3
-      ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched }
+      ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched, provenanceMatched: false }
       : undefined;
   }
   if (sharedSymbols.length > 0) {
     return questionMatched || sharedTerms >= 4 || similarity >= 0.35
-      ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched }
+      ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched, provenanceMatched: false }
       : undefined;
   }
   return questionMatched || sharedTerms >= 5 || similarity >= 0.45
-    ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched }
+    ? { sharedFiles, sharedSymbols, sharedTerms, similarity, questionMatched, provenanceMatched: false }
     : undefined;
+}
+
+function attentionGroupMatchesProvenance(group: AttentionHintGroup, provenance: CandidateFindingProvenance): boolean {
+  if (provenance.source !== "uncertainty_promotion") {
+    return false;
+  }
+  if (!group.packetIds.has(provenance.sourcePacketId) || !group.sources.has(provenance.sourceKind)) {
+    return false;
+  }
+  const questionMatched = questionKeys(group.representative.question).some((key) =>
+    questionKeys(provenance.question).includes(key)
+  );
+  if (!questionMatched) {
+    return false;
+  }
+  const sharedFiles = sortedIntersection(normalizedSet(group.files), normalizedSet(provenance.files));
+  return sharedFiles.length > 0 || group.invalidPathCount > 0;
 }
 
 function attentionGroupCoveredByFinding(

@@ -67,10 +67,10 @@ export type PromptBuilder = {
 };
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
-  5: "p5.4",
-  7: "p7.5",
+  5: "p5.5",
+  7: "p7.6",
   8: "p8.2",
-  9: "p9.3",
+  9: "p9.4",
   10: "p10.1"
 };
 
@@ -123,9 +123,9 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         injectionInstruction(),
         "Build a lightweight review plan. You are not reviewing the code and should not claim bugs exist. Your job is to help later stages spend attention well.",
         "The planner-dossier is a routing projection, not the full review packet. Compact hunks still have stable hunk IDs and line ranges; request deeper coverage when compact metadata suggests centrality or uncertainty instead of trying to prove bugs in Stage 5.",
-        "Use reviewEmphasis only for broad changed areas that deserve extra reviewer attention because of concrete dossier facts. Each basis item must be an observable fact from the PR text, commit text, changed files, changed symbols, static signals, config/spec hints, or test inventory. Do not emit review questions, proof obligations, issue hypotheses, or fixed risk categories.",
-        "Good reviewEmphasis examples: \"Amount conversion changes affect quote construction\" with basis facts naming changed helpers, changed callers, or missing touched tests. Bad reviewEmphasis examples: \"Exact-output quotes may under-deliver\" or any statement that requires proving implementation behavior.",
-        "Coverage is the main scheduling output. Emit coverage entries only for hunks that need non-default coverage, specific lenses or context hints, or an explicit skip. Omitted reviewable hunks are reviewed later at normal coverage with default core/language lenses. If unsure, prefer deeper coverage for central changed hunks rather than inventing a concern.",
+        "Coverage is the main scheduling output. Emit coverage entries only for hunks that need non-default coverage, specific lenses, focusNotes, relatedSymbols, relatedFiles, context hints, or an explicit skip. Omitted reviewable hunks are reviewed later at normal coverage with default core/language lenses. If unsure, prefer deeper coverage for central changed hunks rather than inventing a concern.",
+        "Do not return review questions, proof obligations, global risk lists, or standalone reviewEmphasis. If you notice a changed-code interaction that deserves attention, attach it to the relevant hunk coverage decision as reason, focusNotes, relatedSymbols, relatedFiles, or surroundingContextHints.",
+        "focusNotes must be short advisory hunk-scoped notes grounded in the dossier. relatedSymbols and relatedFiles must name concrete changed symbols/files Stage 6 can use for deterministic context assembly. If you cannot link an observation to a changed hunk, leave it in diffUnderstanding only.",
         "Context hint contract: choose a mechanical retrieval mode, not a risk category. Use kind:\"enclosing_symbol\" when you want Stage 6 to read a known function/method/type/test body. Use kind:\"call_site\" only when symbol names the callee/helper/API whose callers or usages should be inspected; do not use call_site when the desired context is that symbol's own body. Use kind:\"test\" for relevant test symbols, kind:\"line_range\" for explicit lines, and put semantic intent in reason.",
         renderLensList(lenses),
         "Available skill summaries:\n" + projection.text,
@@ -148,7 +148,8 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "A later verification stage filters false positives. Do not publish speculation as a finding, but do not hide a plausible verifier-resolvable concern behind reviewStatus:\"no_findings\". No-findings is appropriate only after the changed-line risk has been checked and no concrete failure mode or pointer-rich unresolved predicate remains.",
         "Keep Stage 7 output compact: candidate findings, exact unresolved predicates, or a short no-finding conclusion. noFindingReason is not a mini review report. Do not put detailed proof or broad exploration notes into noFindingReason.",
         "Emit followUpHints and uncertainties for concrete unresolved risks with file or symbol scope. Do not emit broad reminders like \"check if this is safe\". For behavior-preserving refactors or refactor-like changes, surface changed-line anchored changes to validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries as a candidate or verifier-bound hint when they may alter caller-visible behavior.",
-        "Planner reviewEmphasis, when present in packet.reviewEmphasisNotes, is advisory context only. Do not answer it like a question. Use it to decide what to inspect, then independently report findings or no findings from the packet evidence.",
+        "Packet attentionNotes and relatedChangedContext are advisory context from the harness. They are not questions, findings, or proof obligations. Use them to decide what to inspect, then independently report findings or no findings from the packet evidence.",
+        "Review the changed packet and the related changed context attached by the harness. Consider the observable behavior of the changed symbols in their shown callers, callees, tests, and output paths. If the local change looks correct in isolation, still check whether attached related context changes its effect before concluding no findings.",
         "Missing-coverage claims require inspected test evidence. Distinguish no tests from tests that miss one specific branch, value, or contract. If relevant tests exist but you cannot inspect enough, emit a pointer-rich followUpHint or uncertainty with the exact unresolved predicate.",
         "Confidence calibration: do not mark a changed-line correctness/security finding low confidence solely because one optional tool lookup or supporting range read was unavailable. Use medium confidence when the changed-code evidence and failure mode are concrete but a narrow verifier-resolvable predicate remains. Reserve low confidence for speculative reachability, ambiguous product intent, or weak path matching.",
         "Validate raw external/provider/API/config/database values before lossy conversion; validation after overflow, truncation, rounding, precision loss, or coercion may be too late. Treat packet staticSignals as hints to investigate, not automatic findings.",
@@ -193,6 +194,8 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("verification"),
         injectionInstruction(),
         "Verify whether the candidate is a real, actionable finding. Reject false positives. Revise only when the same issue is real but the evidence or anchor needs correction.",
+        "For candidates promoted from a follow-up hint or uncertainty, verify the concrete predicate preserved in provenance, failureMode, and verification text. Do not reject a runtime/design/correctness predicate solely because the original question also mentioned tests or coverage.",
+        "Commit titles, PR text, and intent signals are context, not proof. Refactor-like or behavior-preserving intent can guide framing, but it is not evidence against a behavior-bearing correctness, security, design, or testing candidate. Source behavior and changed diff evidence control the verdict.",
         "For helper/callee-dependent claims, inspect the complete decisive helper branch before keeping the finding. When keeping such a finding, cite the exact helper/callee branch that proves the failure mode in the reason or final verification text. If a read_symbol/find_definition result says delivery is truncated, includes a recovery hint, or contains '[tool result truncated by codeninja tool budget]', use the recovery read_range when possible. If the decisive helper behavior remains unavailable, reject or mark requiredEvidencePresent=false instead of inferring from partial source.",
         "If local tool budget is tight, use exact source reads for decisive evidence. Broad searches may be refused after local budget pressure; narrow read_symbol/read_range/find_definition/read_diff_blocks calls may receive a small extension.",
         "Be especially skeptical of removed-guard findings where the replacement helper may enforce the same condition. Keep only when complete source proves the guard is no longer enforced on the reachable path.",
@@ -570,8 +573,9 @@ function renderPacket(packet: ReviewPacket): string {
     isDeletedContent: packet.isDeletedContent,
     fileContext: packet.fileContext,
     labels: packet.labels,
-    reviewEmphasisNotes: packet.reviewEmphasisNotes,
+    attentionNotes: packet.attentionNotes,
     contextText: packet.contextText,
+    relatedChangedContext: packet.relatedChangedContext,
     testCoverageDelta: packet.testCoverageDelta,
     intentSignals: packet.intentSignals,
     relevantTests: packet.relevantTests,

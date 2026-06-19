@@ -699,33 +699,29 @@ the diff, symbols, static signals, and configured labels.</p>
 <span id="cb9-19"><a href="#cb9-19" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb9-20"><a href="#cb9-20" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReviewPlan <span class="op">=</span> {</span>
 <span id="cb9-21"><a href="#cb9-21" aria-hidden="true" tabindex="-1"></a>  diffUnderstanding<span class="op">:</span> DiffUnderstanding</span>
-<span id="cb9-22"><a href="#cb9-22" aria-hidden="true" tabindex="-1"></a>  reviewEmphasis<span class="op">?:</span> <span class="bu">Array</span><span class="op">&lt;</span>{</span>
-<span id="cb9-23"><a href="#cb9-23" aria-hidden="true" tabindex="-1"></a>    summary<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a>    basis<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb9-25"><a href="#cb9-25" aria-hidden="true" tabindex="-1"></a>    files<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb9-26"><a href="#cb9-26" aria-hidden="true" tabindex="-1"></a>    symbols<span class="op">?:</span> <span class="dt">string</span>[]</span>
-<span id="cb9-27"><a href="#cb9-27" aria-hidden="true" tabindex="-1"></a>    suggestedLenses<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb9-28"><a href="#cb9-28" aria-hidden="true" tabindex="-1"></a>  }<span class="op">&gt;</span></span>
-<span id="cb9-29"><a href="#cb9-29" aria-hidden="true" tabindex="-1"></a>  coverage<span class="op">:</span> HunkCoverageDecision[]</span>
-<span id="cb9-30"><a href="#cb9-30" aria-hidden="true" tabindex="-1"></a>  partialReview<span class="op">?:</span> {</span>
-<span id="cb9-31"><a href="#cb9-31" aria-hidden="true" tabindex="-1"></a>    isPartial<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb9-32"><a href="#cb9-32" aria-hidden="true" tabindex="-1"></a>    reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb9-33"><a href="#cb9-33" aria-hidden="true" tabindex="-1"></a>    reviewedHunks<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb9-34"><a href="#cb9-34" aria-hidden="true" tabindex="-1"></a>    totalHunks<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb9-35"><a href="#cb9-35" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb9-36"><a href="#cb9-36" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb9-37"><a href="#cb9-37" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb9-38"><a href="#cb9-38" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> CoverageLevel <span class="op">=</span> <span class="st">&quot;deep&quot;</span> <span class="op">|</span> <span class="st">&quot;normal&quot;</span> <span class="op">|</span> <span class="st">&quot;light&quot;</span> <span class="op">|</span> <span class="st">&quot;skip&quot;</span></span>
-<span id="cb9-39"><a href="#cb9-39" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketKind <span class="op">=</span> <span class="st">&quot;hunk&quot;</span> <span class="op">|</span> <span class="st">&quot;coalesced-hunks&quot;</span> <span class="op">|</span> <span class="st">&quot;file-diff&quot;</span> <span class="op">|</span> <span class="st">&quot;whole-file&quot;</span></span>
-<span id="cb9-40"><a href="#cb9-40" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb9-41"><a href="#cb9-41" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> HunkCoverageDecision <span class="op">=</span> {</span>
-<span id="cb9-42"><a href="#cb9-42" aria-hidden="true" tabindex="-1"></a>  hunkId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb9-43"><a href="#cb9-43" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb9-44"><a href="#cb9-44" aria-hidden="true" tabindex="-1"></a>  coverage<span class="op">:</span> CoverageLevel</span>
-<span id="cb9-45"><a href="#cb9-45" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb9-46"><a href="#cb9-46" aria-hidden="true" tabindex="-1"></a>  surroundingContextHints<span class="op">:</span> SurroundingContextHint[]</span>
-<span id="cb9-47"><a href="#cb9-47" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb9-48"><a href="#cb9-48" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<span id="cb9-22"><a href="#cb9-22" aria-hidden="true" tabindex="-1"></a>  coverage<span class="op">:</span> HunkCoverageDecision[]</span>
+<span id="cb9-23"><a href="#cb9-23" aria-hidden="true" tabindex="-1"></a>  partialReview<span class="op">?:</span> {</span>
+<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a>    isPartial<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb9-25"><a href="#cb9-25" aria-hidden="true" tabindex="-1"></a>    reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb9-26"><a href="#cb9-26" aria-hidden="true" tabindex="-1"></a>    reviewedHunks<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb9-27"><a href="#cb9-27" aria-hidden="true" tabindex="-1"></a>    totalHunks<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb9-28"><a href="#cb9-28" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb9-29"><a href="#cb9-29" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb9-30"><a href="#cb9-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-31"><a href="#cb9-31" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> CoverageLevel <span class="op">=</span> <span class="st">&quot;deep&quot;</span> <span class="op">|</span> <span class="st">&quot;normal&quot;</span> <span class="op">|</span> <span class="st">&quot;light&quot;</span> <span class="op">|</span> <span class="st">&quot;skip&quot;</span></span>
+<span id="cb9-32"><a href="#cb9-32" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketKind <span class="op">=</span> <span class="st">&quot;hunk&quot;</span> <span class="op">|</span> <span class="st">&quot;coalesced-hunks&quot;</span> <span class="op">|</span> <span class="st">&quot;file-diff&quot;</span> <span class="op">|</span> <span class="st">&quot;whole-file&quot;</span></span>
+<span id="cb9-33"><a href="#cb9-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-34"><a href="#cb9-34" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> HunkCoverageDecision <span class="op">=</span> {</span>
+<span id="cb9-35"><a href="#cb9-35" aria-hidden="true" tabindex="-1"></a>  hunkId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb9-36"><a href="#cb9-36" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb9-37"><a href="#cb9-37" aria-hidden="true" tabindex="-1"></a>  coverage<span class="op">:</span> CoverageLevel</span>
+<span id="cb9-38"><a href="#cb9-38" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb9-39"><a href="#cb9-39" aria-hidden="true" tabindex="-1"></a>  surroundingContextHints<span class="op">:</span> SurroundingContextHint[]</span>
+<span id="cb9-40"><a href="#cb9-40" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb9-41"><a href="#cb9-41" aria-hidden="true" tabindex="-1"></a>  focusNotes<span class="op">?:</span> <span class="dt">string</span>[]</span>
+<span id="cb9-42"><a href="#cb9-42" aria-hidden="true" tabindex="-1"></a>  relatedSymbols<span class="op">?:</span> <span class="dt">string</span>[]</span>
+<span id="cb9-43"><a href="#cb9-43" aria-hidden="true" tabindex="-1"></a>  relatedFiles<span class="op">?:</span> <span class="dt">string</span>[]</span>
+<span id="cb9-44"><a href="#cb9-44" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>The packet builder is the sole owner of packet identity and physical
 grouping. The planner emits targeted per-hunk coverage/lens overrides
 only; it does not emit scheduling groups in v1 (see Future
@@ -738,7 +734,13 @@ select non-default lenses, or skip a hunk. It must not select every lens
 for every packet by default. Omitted changed hunks are not planner
 failures; Stage 6 reviews them with deterministic <code>normal</code>
 coverage and default core/language lenses. Any explicit
-<code>skip</code> still requires a reason.</p>
+<code>skip</code> still requires a reason. Any planner output intended
+to affect reviewer attention must be hunk-scoped through a coverage
+decision (<code>reason</code>, <code>focusNotes</code>,
+<code>relatedSymbols</code>, <code>relatedFiles</code>, or
+<code>surroundingContextHints</code>); global prose in
+<code>diffUnderstanding</code> is for artifacts and final framing
+only.</p>
 <p>The planner may request surrounding-code inspection by emitting
 <code>SurroundingContextHint</code> records. It should not broadly
 inspect files itself by default. Hints are instructions for packet
@@ -830,44 +832,55 @@ must report coverage counts.</p>
 <span id="cb11-47"><a href="#cb11-47" aria-hidden="true" tabindex="-1"></a>  relevantTests<span class="op">:</span> SymbolInfo[]</span>
 <span id="cb11-48"><a href="#cb11-48" aria-hidden="true" tabindex="-1"></a>  surroundingContextHints<span class="op">:</span> SurroundingContextHint[]</span>
 <span id="cb11-49"><a href="#cb11-49" aria-hidden="true" tabindex="-1"></a>  labels<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-50"><a href="#cb11-50" aria-hidden="true" tabindex="-1"></a>  reviewEmphasisNotes<span class="op">:</span> <span class="dt">string</span>[] <span class="co">// advisory review-emphasis notes from Stage 5; not proof obligations</span></span>
-<span id="cb11-51"><a href="#cb11-51" aria-hidden="true" tabindex="-1"></a>  toolBudget<span class="op">:</span> ToolBudget</span>
-<span id="cb11-52"><a href="#cb11-52" aria-hidden="true" tabindex="-1"></a>  degraded<span class="op">?:</span> { reason<span class="op">:</span> <span class="dt">string</span> } <span class="co">// disclosed in the coverage summary</span></span>
-<span id="cb11-53"><a href="#cb11-53" aria-hidden="true" tabindex="-1"></a>  fileContext<span class="op">?:</span> {</span>
-<span id="cb11-54"><a href="#cb11-54" aria-hidden="true" tabindex="-1"></a>    mode<span class="op">:</span> <span class="st">&quot;file-diff&quot;</span> <span class="op">|</span> <span class="st">&quot;whole-file&quot;</span></span>
-<span id="cb11-55"><a href="#cb11-55" aria-hidden="true" tabindex="-1"></a>    reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-56"><a href="#cb11-56" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb11-57"><a href="#cb11-57" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb11-58"><a href="#cb11-58" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-59"><a href="#cb11-59" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketContext <span class="op">=</span> {</span>
-<span id="cb11-60"><a href="#cb11-60" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-61"><a href="#cb11-61" aria-hidden="true" tabindex="-1"></a>  packageName<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb11-62"><a href="#cb11-62" aria-hidden="true" tabindex="-1"></a>  enclosingFunction<span class="op">?:</span> SymbolInfo</span>
-<span id="cb11-63"><a href="#cb11-63" aria-hidden="true" tabindex="-1"></a>  enclosingType<span class="op">?:</span> SymbolInfo</span>
-<span id="cb11-64"><a href="#cb11-64" aria-hidden="true" tabindex="-1"></a>  enclosingMethod<span class="op">?:</span> SymbolInfo</span>
-<span id="cb11-65"><a href="#cb11-65" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb11-66"><a href="#cb11-66" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-67"><a href="#cb11-67" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketReviewResult <span class="op">=</span> {</span>
-<span id="cb11-68"><a href="#cb11-68" aria-hidden="true" tabindex="-1"></a>  packetId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-69"><a href="#cb11-69" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-70"><a href="#cb11-70" aria-hidden="true" tabindex="-1"></a>  findings<span class="op">:</span> CandidateFinding[]</span>
-<span id="cb11-71"><a href="#cb11-71" aria-hidden="true" tabindex="-1"></a>  followUpHints<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{</span>
-<span id="cb11-72"><a href="#cb11-72" aria-hidden="true" tabindex="-1"></a>    question<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-73"><a href="#cb11-73" aria-hidden="true" tabindex="-1"></a>    files<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-74"><a href="#cb11-74" aria-hidden="true" tabindex="-1"></a>    symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-75"><a href="#cb11-75" aria-hidden="true" tabindex="-1"></a>    suggestedLenses<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-76"><a href="#cb11-76" aria-hidden="true" tabindex="-1"></a>    reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-77"><a href="#cb11-77" aria-hidden="true" tabindex="-1"></a>    confidence<span class="op">:</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;low&quot;</span></span>
-<span id="cb11-78"><a href="#cb11-78" aria-hidden="true" tabindex="-1"></a>  }<span class="op">&gt;</span></span>
-<span id="cb11-79"><a href="#cb11-79" aria-hidden="true" tabindex="-1"></a>  uncertainties<span class="op">:</span> StructuredUncertainty[]</span>
-<span id="cb11-80"><a href="#cb11-80" aria-hidden="true" tabindex="-1"></a>  status<span class="op">:</span> <span class="st">&quot;completed&quot;</span> <span class="op">|</span> <span class="st">&quot;incomplete&quot;</span> <span class="op">|</span> <span class="st">&quot;failed&quot;</span> <span class="op">|</span> <span class="st">&quot;skipped&quot;</span></span>
-<span id="cb11-81"><a href="#cb11-81" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb11-82"><a href="#cb11-82" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-83"><a href="#cb11-83" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> StructuredUncertainty <span class="op">=</span> {</span>
-<span id="cb11-84"><a href="#cb11-84" aria-hidden="true" tabindex="-1"></a>  question<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-85"><a href="#cb11-85" aria-hidden="true" tabindex="-1"></a>  files<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-86"><a href="#cb11-86" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-87"><a href="#cb11-87" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<span id="cb11-50"><a href="#cb11-50" aria-hidden="true" tabindex="-1"></a>  attentionNotes<span class="op">:</span> <span class="dt">string</span>[] <span class="co">// advisory hunk-scoped Stage 5 notes; not proof obligations</span></span>
+<span id="cb11-51"><a href="#cb11-51" aria-hidden="true" tabindex="-1"></a>  relatedChangedContext<span class="op">:</span> RelatedChangedContext[] <span class="co">// bounded snippets from mechanically related changed hunks/symbols</span></span>
+<span id="cb11-52"><a href="#cb11-52" aria-hidden="true" tabindex="-1"></a>  toolBudget<span class="op">:</span> ToolBudget</span>
+<span id="cb11-53"><a href="#cb11-53" aria-hidden="true" tabindex="-1"></a>  degraded<span class="op">?:</span> { reason<span class="op">:</span> <span class="dt">string</span> } <span class="co">// disclosed in the coverage summary</span></span>
+<span id="cb11-54"><a href="#cb11-54" aria-hidden="true" tabindex="-1"></a>  fileContext<span class="op">?:</span> {</span>
+<span id="cb11-55"><a href="#cb11-55" aria-hidden="true" tabindex="-1"></a>    mode<span class="op">:</span> <span class="st">&quot;file-diff&quot;</span> <span class="op">|</span> <span class="st">&quot;whole-file&quot;</span></span>
+<span id="cb11-56"><a href="#cb11-56" aria-hidden="true" tabindex="-1"></a>    reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-57"><a href="#cb11-57" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb11-58"><a href="#cb11-58" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb11-59"><a href="#cb11-59" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-60"><a href="#cb11-60" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> RelatedChangedContext <span class="op">=</span> {</span>
+<span id="cb11-61"><a href="#cb11-61" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-62"><a href="#cb11-62" aria-hidden="true" tabindex="-1"></a>  hunkId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb11-63"><a href="#cb11-63" aria-hidden="true" tabindex="-1"></a>  symbol<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb11-64"><a href="#cb11-64" aria-hidden="true" tabindex="-1"></a>  lineRange<span class="op">?:</span> [<span class="dt">number</span><span class="op">,</span> <span class="dt">number</span>]</span>
+<span id="cb11-65"><a href="#cb11-65" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-66"><a href="#cb11-66" aria-hidden="true" tabindex="-1"></a>  sourceSnippet<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb11-67"><a href="#cb11-67" aria-hidden="true" tabindex="-1"></a>  patchExcerpt<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb11-68"><a href="#cb11-68" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb11-69"><a href="#cb11-69" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-70"><a href="#cb11-70" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketContext <span class="op">=</span> {</span>
+<span id="cb11-71"><a href="#cb11-71" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-72"><a href="#cb11-72" aria-hidden="true" tabindex="-1"></a>  packageName<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb11-73"><a href="#cb11-73" aria-hidden="true" tabindex="-1"></a>  enclosingFunction<span class="op">?:</span> SymbolInfo</span>
+<span id="cb11-74"><a href="#cb11-74" aria-hidden="true" tabindex="-1"></a>  enclosingType<span class="op">?:</span> SymbolInfo</span>
+<span id="cb11-75"><a href="#cb11-75" aria-hidden="true" tabindex="-1"></a>  enclosingMethod<span class="op">?:</span> SymbolInfo</span>
+<span id="cb11-76"><a href="#cb11-76" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb11-77"><a href="#cb11-77" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-78"><a href="#cb11-78" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketReviewResult <span class="op">=</span> {</span>
+<span id="cb11-79"><a href="#cb11-79" aria-hidden="true" tabindex="-1"></a>  packetId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-80"><a href="#cb11-80" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-81"><a href="#cb11-81" aria-hidden="true" tabindex="-1"></a>  findings<span class="op">:</span> CandidateFinding[]</span>
+<span id="cb11-82"><a href="#cb11-82" aria-hidden="true" tabindex="-1"></a>  followUpHints<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{</span>
+<span id="cb11-83"><a href="#cb11-83" aria-hidden="true" tabindex="-1"></a>    question<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-84"><a href="#cb11-84" aria-hidden="true" tabindex="-1"></a>    files<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-85"><a href="#cb11-85" aria-hidden="true" tabindex="-1"></a>    symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-86"><a href="#cb11-86" aria-hidden="true" tabindex="-1"></a>    suggestedLenses<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-87"><a href="#cb11-87" aria-hidden="true" tabindex="-1"></a>    reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-88"><a href="#cb11-88" aria-hidden="true" tabindex="-1"></a>    confidence<span class="op">:</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;low&quot;</span></span>
+<span id="cb11-89"><a href="#cb11-89" aria-hidden="true" tabindex="-1"></a>  }<span class="op">&gt;</span></span>
+<span id="cb11-90"><a href="#cb11-90" aria-hidden="true" tabindex="-1"></a>  uncertainties<span class="op">:</span> StructuredUncertainty[]</span>
+<span id="cb11-91"><a href="#cb11-91" aria-hidden="true" tabindex="-1"></a>  status<span class="op">:</span> <span class="st">&quot;completed&quot;</span> <span class="op">|</span> <span class="st">&quot;incomplete&quot;</span> <span class="op">|</span> <span class="st">&quot;failed&quot;</span> <span class="op">|</span> <span class="st">&quot;skipped&quot;</span></span>
+<span id="cb11-92"><a href="#cb11-92" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb11-93"><a href="#cb11-93" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-94"><a href="#cb11-94" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> StructuredUncertainty <span class="op">=</span> {</span>
+<span id="cb11-95"><a href="#cb11-95" aria-hidden="true" tabindex="-1"></a>  question<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-96"><a href="#cb11-96" aria-hidden="true" tabindex="-1"></a>  files<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-97"><a href="#cb11-97" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-98"><a href="#cb11-98" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p><code>PacketReviewResult</code> does not duplicate worker tool usage:
 tool calls and files read live in <code>tool-calls.jsonl</code>, and
 readers join on <code>workerId</code>.</p>
@@ -906,9 +919,10 @@ follow-up, while isolated hints remain telemetry/report notes.</li>
 enclosing symbol source, file outline, likely tests — rendered into
 <code>contextText</code> within <code>maxContextChars</code>, plus
 planner-provided <code>surroundingContextHints</code>.</li>
-<li>Attach advisory review-emphasis notes whose files match the packet.
-These notes may influence reviewer attention, but they are not findings,
-questions, obligations, or Stage 8 triggers.</li>
+<li>Attach advisory hunk-scoped <code>attentionNotes</code> and bounded
+<code>relatedChangedContext</code> from mechanically related changed
+hunks/symbols. These may influence reviewer attention, but they are not
+findings, questions, obligations, or Stage 8 triggers.</li>
 <li>Enforce max hunks, patch chars, context chars, and skill/lens prompt
 caps. Split oversized packets back into smaller packets. When one hunk
 alone exceeds <code>maxPatchChars</code>, the packet carries a truncated
@@ -1833,7 +1847,7 @@ used for light or obvious mechanical packets.</li>
 review instructions and a reduced normal-mode tool budget.</li>
 <li><code>investigate</code>: one structured/tool-capable task with a
 larger budget for deep coverage, high/critical priority, planner hints,
-or review emphasis notes.</li>
+or hunk-scoped attention notes.</li>
 </ul></li>
 <li>Standard and investigate packet reviewers may use the same read-only
 tool suite. The difference is budget, investigation depth, and

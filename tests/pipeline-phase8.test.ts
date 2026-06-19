@@ -323,7 +323,8 @@ function fakePacket(id: string, path: string, symbol = "divide"): ReviewPacket {
     relevantTests: [],
     surroundingContextHints: [],
     labels: [],
-    reviewEmphasisNotes: [],
+    attentionNotes: [],
+    relatedChangedContext: [],
     toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 4000 }
   };
 }

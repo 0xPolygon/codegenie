@@ -13,6 +13,7 @@ import type {
   PacketHunk,
   PacketLine,
   PlannerDossier,
+  RelatedChangedContext,
   RepositoryIndex,
   RepositoryToolsHost,
   ReviewPacket,
@@ -32,6 +33,7 @@ import type {
 } from "../types.js";
 import { sha256Hex } from "../util/hashing.js";
 import { scaleToolBudget } from "../util/budget.js";
+import { isDisclosableCoverageReason } from "../util/coverage-reasons.js";
 
 type PacketBuildOptions = {
   config: CodeninjaConfig;
@@ -62,6 +64,34 @@ type PacketGroup = {
   degradationReason?: string;
 };
 
+type HunkRelationshipSource = "same_symbol" | "symbol_mention" | "planner_hint";
+type HunkRelationshipStrength = "strong" | "medium" | "weak";
+
+type HunkRelationshipEdge = {
+  fromHunkId: string;
+  toHunkId?: string | undefined;
+  toPath?: string | undefined;
+  toSymbol?: string | undefined;
+  reason: string;
+  source: HunkRelationshipSource;
+  strength: HunkRelationshipStrength;
+};
+
+type RelatedContextOmission = {
+  hunkId: string;
+  targetHunkId?: string | undefined;
+  reason: string;
+};
+
+type HunkRelationshipGraph = {
+  edgesByHunk: Map<string, HunkRelationshipEdge[]>;
+  edges: HunkRelationshipEdge[];
+  plannedByHunk: Map<string, PlannedHunk>;
+  omittedEdges: number;
+  relatedContextAttached: Array<{ hunkId: string; targetHunkId?: string | undefined; path: string; symbol?: string | undefined; reason: string }>;
+  relatedContextOmitted: RelatedContextOmission[];
+};
+
 const MAX_HUNKS_PER_PACKET = 5;
 const MAX_LENSES_PER_PACKET = 6;
 const MAX_PATCH_CHARS = 12_000;
@@ -76,6 +106,14 @@ const CALL_SITE_MENTION_LOOKUP_LIMIT = 50;
 const CALL_SITE_CONTEXT_SYMBOL_LIMIT = 4;
 const MAX_STATIC_SIGNALS_PER_PACKET_HUNK = 5;
 const NEARBY_GAP_LINES = 30;
+const MAX_ATTENTION_NOTES = 3;
+const MAX_ATTENTION_NOTE_CHARS = 300;
+const MAX_RELATED_CONTEXTS_PER_PACKET = 3;
+const MAX_RELATED_CONTEXT_SNIPPET_CHARS = 2_500;
+const MAX_RELATED_CONTEXT_PATCH_CHARS = 1_500;
+const MAX_RELATIONSHIP_EDGES_PER_HUNK = 8;
+const MAX_RELATIONSHIP_SYMBOL_LOOKUPS = 20;
+const MAX_RELATIONSHIP_MENTION_RESULTS = 40;
 
 export async function buildReviewPackets(
   plan: ReviewPlan,
@@ -90,6 +128,9 @@ export async function buildReviewPackets(
   const decisions = new Map(plan.coverage.map((decision) => [decision.hunkId, decision]));
   const packets: ReviewPacket[] = [];
   const symbolContextMetrics = emptySymbolContextMetrics();
+  const plannedByFile = new Map<string, PlannedHunk[]>();
+  const effectiveByHunk = new Map<string, EffectiveDecision>();
+  const allPlanned: PlannedHunk[] = [];
 
   for (const file of filtered) {
     const facts = factsByPath.get(file.path) ?? fallbackFacts(file);
@@ -102,7 +143,17 @@ export async function buildReviewPackets(
       staticSignals: staticSignalsForHunk(file, hunk, fileSignals),
       ...(decisions.get(hunk.id) !== undefined ? { decision: decisions.get(hunk.id) as HunkCoverageDecision } : {})
     }));
-    const effectiveByHunk = new Map(planned.map((entry) => [entry.hunk.id, effectiveDecision(entry, opts.enabledLenses, telemetry)]));
+    plannedByFile.set(file.path, planned);
+    allPlanned.push(...planned);
+    for (const entry of planned) {
+      effectiveByHunk.set(entry.hunk.id, effectiveDecision(entry, opts.enabledLenses, telemetry));
+    }
+  }
+
+  const relationshipGraph = await buildHunkRelationshipGraph(allPlanned, effectiveByHunk, repoIndex, telemetry);
+
+  for (const file of filtered) {
+    const planned = plannedByFile.get(file.path) ?? [];
     const includedPlanned = planned.filter((entry) => effectiveByHunk.get(entry.hunk.id)?.coverage !== "skip");
     if (includedPlanned.length === 0) {
       continue;
@@ -116,7 +167,7 @@ export async function buildReviewPackets(
       }
       const groupDecisions = group.hunks.map((entry) => effectiveByHunk.get(entry.hunk.id)).filter((decision): decision is EffectiveDecision => decision !== undefined);
       const includedDecisions = groupDecisions.filter(isNonSkipDecision);
-      const packet = await buildPacket(group.hunks, includedDecisions, group, plan, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics);
+      const packet = await buildPacket(group.hunks, includedDecisions, group, relationshipGraph, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics);
       packets.push(packet);
     }
   }
@@ -124,6 +175,7 @@ export async function buildReviewPackets(
   for (const packet of packets) {
     await telemetry.writeArtifact(`packets/${packet.id}.json`, packet);
   }
+  await telemetry.writeArtifact("hunk-relationships.json", relationshipGraphArtifact(relationshipGraph));
   telemetry.event({
     stage: 6,
     level: "info",
@@ -190,7 +242,7 @@ async function buildPacket(
   planned: PlannedHunk[],
   decisions: NonSkipDecision[],
   group: PacketGroup,
-  plan: ReviewPlan,
+  relationshipGraph: HunkRelationshipGraph,
   repoIndex: RepositoryIndex,
   config: CodeninjaConfig,
   telemetry: TelemetryRecorder,
@@ -211,14 +263,15 @@ async function buildPacket(
   );
   const patchChars = packetHunks.reduce((sum, hunk) => sum + hunk.contentWithLineNumbers.length, 0);
   const testCoverageDelta = buildTestCoverageDelta(first.file, planned.map((entry) => entry.hunk), first.facts, symbolFacts);
-  const reviewEmphasisNotes = reviewEmphasisNotesForFile(plan, first.file.path, first.file.oldPath);
+  const relatedChangedContext = await buildRelatedChangedContext(planned, relationshipGraph, repoIndex, telemetry);
+  const attentionNotes = attentionNotesForPacket(decisions, relatedChangedContext);
   const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry, {
     coverage,
     reviewPriority,
     hunkCount: planned.length,
     patchChars,
     lenses: decisions.flatMap((decision) => decision.lenses),
-    reviewEmphasisNotes,
+    attentionNotes,
     labels: first.facts.labels
   }, symbolContextMetrics);
   const hintContext = await resolvePacketContextHints(repoIndex, first.file, decisions.flatMap((decision) => decision.surroundingContextHints), telemetry);
@@ -252,7 +305,7 @@ async function buildPacket(
     coverage,
     reviewPriority,
     planned,
-    reviewEmphasisNotes,
+    attentionNotes,
     hintCount: decisions.reduce((sum, decision) => sum + decision.surroundingContextHints.length, 0)
   });
   const lenses = routedPacketLenses({
@@ -262,7 +315,7 @@ async function buildPacket(
     facts: first.facts,
     planned,
     relevantTests: context.relevantTests,
-    reviewEmphasisNotes,
+    attentionNotes,
     coverage,
     reviewPriority,
     reviewProfile,
@@ -293,7 +346,8 @@ async function buildPacket(
     relevantTests: context.relevantTests,
     surroundingContextHints: hintContext.workerHints,
     labels: first.facts.labels,
-    reviewEmphasisNotes,
+    attentionNotes,
+    relatedChangedContext,
     toolBudget: scaleToolBudget(toolBudget(coverage, config.review.depth, reviewProfile), config.review.budgetMultiplier),
     ...(reviewContext?.intentText !== undefined ? { intentText: reviewContext.intentText } : {}),
     ...(reviewContext?.intentSignals !== undefined ? { intentSignals: reviewContext.intentSignals } : {}),
@@ -325,15 +379,26 @@ export function packetReviewContextFromDossier(dossier: PlannerDossier): PacketR
   };
 }
 
-function reviewEmphasisNotesForFile(plan: ReviewPlan, path: string, oldPath: string | undefined): string[] {
-  const paths = new Set([path, ...(oldPath !== undefined ? [oldPath] : [])]);
-  return (plan.reviewEmphasis ?? [])
-    .filter((item) => item.files.some((file) => paths.has(stripLocationSuffix(file))))
-    .slice(0, 3)
-    .map((item) => {
-      const basis = item.basis.slice(0, 3).join("; ");
-      return basis.length > 0 ? `${item.summary}: ${basis}` : item.summary;
-    });
+function attentionNotesForPacket(
+  decisions: NonSkipDecision[],
+  relatedChangedContext: RelatedChangedContext[]
+): string[] {
+  const notes = [
+    ...decisions.flatMap((decision) => {
+      const hunkScopedAttention =
+        (decision.focusNotes ?? []).length > 0 ||
+        (decision.relatedSymbols ?? []).length > 0 ||
+        (decision.relatedFiles ?? []).length > 0 ||
+        decision.surroundingContextHints.length > 0;
+      return [
+        hunkScopedAttention && isDisclosableCoverageReason(decision.reason) ? decision.reason : "",
+        ...(decision.focusNotes ?? []),
+        ...decision.surroundingContextHints.map((hint) => hint.reason)
+      ];
+    }),
+    ...relatedChangedContext.map((context) => context.reason)
+  ];
+  return dedupe(notes.map(normalizeNote).filter((note) => note.length > 0)).slice(0, MAX_ATTENTION_NOTES);
 }
 
 function deterministicDeclaredIntent(dossier: PlannerDossier): string {
@@ -348,12 +413,464 @@ function deterministicDeclaredIntent(dossier: PlannerDossier): string {
   return "Review local diff.";
 }
 
+async function buildHunkRelationshipGraph(
+  planned: PlannedHunk[],
+  effectiveByHunk: Map<string, EffectiveDecision>,
+  repoIndex: RepositoryIndex,
+  telemetry: TelemetryRecorder
+): Promise<HunkRelationshipGraph> {
+  const included = planned.filter((entry) => effectiveByHunk.get(entry.hunk.id)?.coverage !== "skip");
+  const graph: HunkRelationshipGraph = {
+    edgesByHunk: new Map(),
+    edges: [],
+    plannedByHunk: new Map(included.map((entry) => [entry.hunk.id, entry])),
+    omittedEdges: 0,
+    relatedContextAttached: [],
+    relatedContextOmitted: []
+  };
+  addSameSymbolEdges(graph, included);
+  addPlannerHintEdges(graph, included, effectiveByHunk);
+  await addSymbolMentionEdges(graph, included, repoIndex, telemetry);
+  telemetry.event({
+    stage: 6,
+    level: "info",
+    message: "relationship_graph_built",
+    data: {
+      nodes: included.length,
+      edges: graph.edges.length,
+      omittedEdges: graph.omittedEdges
+    }
+  });
+  return graph;
+}
+
+function addSameSymbolEdges(graph: HunkRelationshipGraph, planned: PlannedHunk[]): void {
+  const bySymbol = new Map<string, PlannedHunk[]>();
+  for (const entry of planned) {
+    for (const key of changedLocalSymbolKeys(entry)) {
+      bySymbol.set(key, [...(bySymbol.get(key) ?? []), entry]);
+    }
+  }
+  for (const group of bySymbol.values()) {
+    if (group.length < 2) {
+      continue;
+    }
+    for (const from of group) {
+      for (const to of group) {
+        if (from.hunk.id === to.hunk.id) {
+          continue;
+        }
+        addRelationshipEdge(graph, {
+          fromHunkId: from.hunk.id,
+          toHunkId: to.hunk.id,
+          toPath: to.file.path,
+          toSymbol: primarySymbolName(to),
+          source: "same_symbol",
+          strength: "strong",
+          reason: `Related changed hunk in the same enclosing symbol ${primarySymbolName(to) ?? "unknown"}.`
+        });
+      }
+    }
+  }
+}
+
+function addPlannerHintEdges(
+  graph: HunkRelationshipGraph,
+  planned: PlannedHunk[],
+  effectiveByHunk: Map<string, EffectiveDecision>
+): void {
+  const changedBySymbol = changedHunksBySymbol(planned);
+  const changedByPath = changedHunksByPath(planned);
+  for (const entry of planned) {
+    const decision = effectiveByHunk.get(entry.hunk.id);
+    if (decision === undefined) {
+      continue;
+    }
+    const symbolHints = cleanStrings([
+      ...(decision.relatedSymbols ?? []),
+      ...decision.surroundingContextHints.flatMap((hint) => hint.symbol ?? [])
+    ]);
+    for (const symbol of symbolHints) {
+      for (const target of changedBySymbol.get(normalizedSymbolKey(symbol)) ?? []) {
+        if (target.hunk.id === entry.hunk.id) {
+          continue;
+        }
+        addRelationshipEdge(graph, {
+          fromHunkId: entry.hunk.id,
+          toHunkId: target.hunk.id,
+          toPath: target.file.path,
+          toSymbol: primarySymbolName(target),
+          source: "planner_hint",
+          strength: "strong",
+          reason: `Planner context hint links this hunk to changed symbol ${primarySymbolName(target) ?? symbol}.`
+        });
+      }
+    }
+
+    const fileHints = cleanStrings([
+      ...(decision.relatedFiles ?? []),
+      ...decision.surroundingContextHints.flatMap((hint) => hint.path ?? [])
+    ]).map(stripLocationSuffix);
+    for (const filePath of fileHints) {
+      for (const target of changedByPath.get(filePath) ?? []) {
+        if (target.hunk.id === entry.hunk.id) {
+          continue;
+        }
+        addRelationshipEdge(graph, {
+          fromHunkId: entry.hunk.id,
+          toHunkId: target.hunk.id,
+          toPath: target.file.path,
+          toSymbol: primarySymbolName(target),
+          source: "planner_hint",
+          strength: "medium",
+          reason: `Planner context hint names changed file ${target.file.path}.`
+        });
+      }
+    }
+  }
+}
+
+async function addSymbolMentionEdges(
+  graph: HunkRelationshipGraph,
+  planned: PlannedHunk[],
+  repoIndex: RepositoryIndex,
+  telemetry: TelemetryRecorder
+): Promise<void> {
+  const changedBySymbol = changedHunksBySymbol(planned);
+  const changedFiles = new Set(planned.map((entry) => entry.file.path));
+  const symbols = dedupe(planned.flatMap((entry) => primarySymbolName(entry) ?? []))
+    .filter((symbol) => bareIdentifier(symbol).length > 0)
+    .slice(0, MAX_RELATIONSHIP_SYMBOL_LOOKUPS);
+  for (const symbol of symbols) {
+    let results: SearchResult[] = [];
+    try {
+      const lookup = await withRepositoryToolCallContext(
+        repoIndex.tools,
+        { stage: 6, initiator: "harness" },
+        () => repoIndex.tools.findSymbolMentions(bareIdentifier(symbol), {
+          source: { kind: "head" },
+          contextMode: "symbols",
+          maxResults: MAX_RELATIONSHIP_MENTION_RESULTS
+        })
+      );
+      results = lookup.results.filter((result) => changedFiles.has(result.path));
+    } catch (error) {
+      telemetry.event({
+        stage: 6,
+        level: "warn",
+        message: "relationship_symbol_mentions_unavailable",
+        data: { symbol, error: error instanceof Error ? error.message : String(error) }
+      });
+      continue;
+    }
+
+    const sourceHunks = changedBySymbol.get(normalizedSymbolKey(symbol)) ?? [];
+    const sourceIdentities = new Set(sourceHunks.flatMap(changedLocalSymbolKeys));
+    if (sourceIdentities.size > 1) {
+      telemetry.event({
+        stage: 6,
+        level: "debug",
+        message: "relationship_symbol_mentions_ambiguous",
+        data: { symbol, changedSymbolIdentities: sourceIdentities.size }
+      });
+      continue;
+    }
+    for (const result of results) {
+      const mentionTargets = planned.filter((entry) => mentionBelongsToChangedSymbol(entry, result));
+      for (const source of sourceHunks) {
+        for (const target of mentionTargets) {
+          if (source.hunk.id === target.hunk.id || samePrimarySymbol(source, target)) {
+            continue;
+          }
+          addRelationshipEdge(graph, {
+            fromHunkId: source.hunk.id,
+            toHunkId: target.hunk.id,
+            toPath: target.file.path,
+            toSymbol: primarySymbolName(target),
+            source: "symbol_mention",
+            strength: result.enclosingSymbol !== undefined ? "strong" : "medium",
+            reason: `Changed symbol ${primarySymbolName(source) ?? symbol} is mentioned inside changed symbol ${primarySymbolName(target) ?? result.enclosingSymbol?.name ?? target.file.path}.`
+          });
+          addRelationshipEdge(graph, {
+            fromHunkId: target.hunk.id,
+            toHunkId: source.hunk.id,
+            toPath: source.file.path,
+            toSymbol: primarySymbolName(source),
+            source: "symbol_mention",
+            strength: result.enclosingSymbol !== undefined ? "strong" : "medium",
+            reason: `Changed symbol ${primarySymbolName(target) ?? target.file.path} mentions changed symbol ${primarySymbolName(source) ?? symbol}.`
+          });
+        }
+      }
+    }
+  }
+}
+
+function addRelationshipEdge(graph: HunkRelationshipGraph, edge: HunkRelationshipEdge): void {
+  const key = relationshipEdgeKey(edge);
+  if (graph.edges.some((candidate) => relationshipEdgeKey(candidate) === key)) {
+    return;
+  }
+  const existingForHunk = graph.edgesByHunk.get(edge.fromHunkId) ?? [];
+  if (existingForHunk.length >= MAX_RELATIONSHIP_EDGES_PER_HUNK) {
+    graph.omittedEdges += 1;
+    return;
+  }
+  graph.edges.push(edge);
+  graph.edgesByHunk.set(edge.fromHunkId, [...existingForHunk, edge]);
+}
+
+function relationshipEdgeKey(edge: HunkRelationshipEdge): string {
+  return `${edge.fromHunkId}\0${edge.toHunkId ?? ""}\0${edge.toPath ?? ""}\0${edge.toSymbol ?? ""}\0${edge.source}`;
+}
+
+async function buildRelatedChangedContext(
+  planned: PlannedHunk[],
+  graph: HunkRelationshipGraph,
+  repoIndex: RepositoryIndex,
+  telemetry: TelemetryRecorder
+): Promise<RelatedChangedContext[]> {
+  const currentHunks = new Set(planned.map((entry) => entry.hunk.id));
+  const currentFiles = new Set(planned.map((entry) => entry.file.path));
+  const targets = new Map<string, HunkRelationshipEdge>();
+  for (const hunkId of currentHunks) {
+    for (const edge of graph.edgesByHunk.get(hunkId) ?? []) {
+      if (edge.toHunkId === undefined || currentHunks.has(edge.toHunkId)) {
+        continue;
+      }
+      if (edge.strength === "weak") {
+        continue;
+      }
+      targets.set(edge.toHunkId, edge);
+    }
+  }
+
+  const contexts: RelatedChangedContext[] = [];
+  for (const edge of [...targets.values()].sort(compareRelationshipEdges)) {
+    if (contexts.length >= MAX_RELATED_CONTEXTS_PER_PACKET) {
+      graph.relatedContextOmitted.push({ hunkId: [...currentHunks].join(","), targetHunkId: edge.toHunkId, reason: "related context cap exceeded" });
+      continue;
+    }
+    const related = edge.toHunkId === undefined ? undefined : graph.plannedByHunk.get(edge.toHunkId);
+    if (related === undefined) {
+      graph.relatedContextOmitted.push({ hunkId: [...currentHunks].join(","), targetHunkId: edge.toHunkId, reason: "target hunk unavailable" });
+      continue;
+    }
+    if (currentFiles.has(related.file.path) && currentHunks.has(related.hunk.id)) {
+      continue;
+    }
+    const context = await relatedContextForTarget(related, edge, repoIndex, telemetry);
+    if (context === undefined) {
+      graph.relatedContextOmitted.push({ hunkId: [...currentHunks].join(","), targetHunkId: edge.toHunkId, reason: "source unavailable" });
+      continue;
+    }
+    contexts.push(context);
+    graph.relatedContextAttached.push({
+      hunkId: [...currentHunks].join(","),
+      targetHunkId: edge.toHunkId,
+      path: context.path,
+      ...(context.symbol !== undefined ? { symbol: context.symbol } : {}),
+      reason: edge.reason
+    });
+    telemetry.event({
+      stage: 6,
+      level: "info",
+      message: "related_context_attached",
+      file: context.path,
+      data: { fromHunks: [...currentHunks], targetHunkId: edge.toHunkId, source: edge.source, strength: edge.strength }
+    });
+  }
+  if (graph.relatedContextOmitted.length > 0) {
+    telemetry.event({
+      stage: 6,
+      level: "debug",
+      message: "related_context_omitted",
+      data: { count: graph.relatedContextOmitted.length }
+    });
+  }
+  return contexts;
+}
+
+async function relatedContextForTarget(
+  target: PlannedHunk,
+  edge: HunkRelationshipEdge,
+  repoIndex: RepositoryIndex,
+  telemetry: TelemetryRecorder
+): Promise<RelatedChangedContext | undefined> {
+  const fact = primarySymbolFactWithMergedChanges(target.symbolFacts);
+  const patchExcerpt = truncateTail(renderLines(target.hunk.lines.map(packetLine)), MAX_RELATED_CONTEXT_PATCH_CHARS);
+  const base: RelatedChangedContext = {
+    path: target.file.path,
+    hunkId: target.hunk.id,
+    ...(primarySymbolName(target) !== undefined ? { symbol: primarySymbolName(target) } : {}),
+    ...(fact?.symbolRange !== undefined ? { lineRange: fact.symbolRange } : {}),
+    reason: edge.reason,
+    patchExcerpt
+  };
+  if (fact === undefined) {
+    return base;
+  }
+  const selector = symbolSourceSelector(fact);
+  if (selector === undefined) {
+    return base;
+  }
+  const source = fact.changedLinesSide === "old" ? { kind: "base" as const } : { kind: "head" as const };
+  const readPath = fact.changedLinesSide === "old" ? target.file.oldPath ?? target.file.path : target.file.path;
+  try {
+    const result = await withRepositoryToolCallContext(
+      repoIndex.tools,
+      { stage: 6, initiator: "harness" },
+      () => repoIndex.tools.readSymbol(readPath, selector, source)
+    );
+    if (result.text === undefined || result.text.trim().length === 0) {
+      return base;
+    }
+    return {
+      ...base,
+      path: readPath,
+      ...(result.symbol?.name !== undefined ? { symbol: result.symbol.name } : {}),
+      ...(result.symbol?.lineRange !== undefined ? { lineRange: result.symbol.lineRange } : {}),
+      sourceSnippet: truncateTail(result.text, MAX_RELATED_CONTEXT_SNIPPET_CHARS)
+    };
+  } catch (error) {
+    telemetry.event({
+      stage: 6,
+      level: "warn",
+      message: "related_context_source_unavailable",
+      file: target.file.path,
+      data: { hunkId: target.hunk.id, symbol: fact.enclosingSymbol, error: error instanceof Error ? error.message : String(error) }
+    });
+    return base;
+  }
+}
+
+function relationshipGraphArtifact(graph: HunkRelationshipGraph): Record<string, unknown> {
+  return {
+    nodes: [...graph.plannedByHunk.values()].map((entry) => ({
+      hunkId: entry.hunk.id,
+      path: entry.file.path,
+      symbol: primarySymbolName(entry),
+      symbolRange: primarySymbolFact(entry.symbolFacts)?.symbolRange
+    })),
+    edges: graph.edges.map((edge) => ({
+      fromHunkId: edge.fromHunkId,
+      toHunkId: edge.toHunkId,
+      toPath: edge.toPath,
+      toSymbol: edge.toSymbol,
+      source: edge.source,
+      strength: edge.strength,
+      reason: edge.reason
+    })),
+    omittedEdges: graph.omittedEdges,
+    relatedContextAttached: graph.relatedContextAttached,
+    relatedContextOmitted: graph.relatedContextOmitted
+  };
+}
+
+function changedHunksBySymbol(planned: PlannedHunk[]): Map<string, PlannedHunk[]> {
+  const bySymbol = new Map<string, PlannedHunk[]>();
+  for (const entry of planned) {
+    for (const key of changedSymbolKeys(entry)) {
+      bySymbol.set(key, [...(bySymbol.get(key) ?? []), entry]);
+    }
+  }
+  return bySymbol;
+}
+
+function changedHunksByPath(planned: PlannedHunk[]): Map<string, PlannedHunk[]> {
+  const byPath = new Map<string, PlannedHunk[]>();
+  for (const entry of planned) {
+    byPath.set(entry.file.path, [...(byPath.get(entry.file.path) ?? []), entry]);
+    if (entry.file.oldPath !== undefined) {
+      byPath.set(entry.file.oldPath, [...(byPath.get(entry.file.oldPath) ?? []), entry]);
+    }
+  }
+  return byPath;
+}
+
+function changedSymbolKeys(entry: PlannedHunk): string[] {
+  return cleanStrings(entry.symbolFacts.flatMap((fact) => fact.enclosingSymbol ?? []))
+    .map(normalizedSymbolKey)
+    .filter((key) => key.length > 0);
+}
+
+function changedLocalSymbolKeys(entry: PlannedHunk): string[] {
+  return cleanStrings(
+    entry.symbolFacts
+      .filter(isRealSymbolFact)
+      .map(symbolFactIdentity)
+  );
+}
+
+function primarySymbolName(entry: PlannedHunk): string | undefined {
+  return primarySymbolFact(entry.symbolFacts)?.enclosingSymbol;
+}
+
+function samePrimarySymbol(a: PlannedHunk, b: PlannedHunk): boolean {
+  const aSymbol = primarySymbolName(a);
+  const bSymbol = primarySymbolName(b);
+  return a.file.path === b.file.path && aSymbol !== undefined && aSymbol === bSymbol;
+}
+
+function mentionBelongsToChangedSymbol(entry: PlannedHunk, result: SearchResult): boolean {
+  if (entry.file.path !== result.path) {
+    return false;
+  }
+  const resultSymbol = result.enclosingSymbol?.name;
+  if (resultSymbol !== undefined && changedSymbolKeys(entry).includes(normalizedSymbolKey(resultSymbol))) {
+    return true;
+  }
+  return entry.symbolFacts.some((fact) =>
+    fact.symbolRange !== undefined &&
+    result.line >= fact.symbolRange[0] &&
+    result.line <= fact.symbolRange[1]
+  );
+}
+
+function compareRelationshipEdges(a: HunkRelationshipEdge, b: HunkRelationshipEdge): number {
+  const strength = relationshipStrengthRank(a.strength) - relationshipStrengthRank(b.strength);
+  if (strength !== 0) {
+    return strength;
+  }
+  const source = relationshipSourceRank(a.source) - relationshipSourceRank(b.source);
+  if (source !== 0) {
+    return source;
+  }
+  return (a.toPath ?? "").localeCompare(b.toPath ?? "") || (a.toSymbol ?? "").localeCompare(b.toSymbol ?? "") || (a.toHunkId ?? "").localeCompare(b.toHunkId ?? "");
+}
+
+function relationshipStrengthRank(strength: HunkRelationshipStrength): number {
+  return { strong: 0, medium: 1, weak: 2 }[strength];
+}
+
+function relationshipSourceRank(source: HunkRelationshipSource): number {
+  return { planner_hint: 0, symbol_mention: 1, same_symbol: 2 }[source];
+}
+
+function normalizedSymbolKey(value: string): string {
+  return bareIdentifier(value).toLowerCase();
+}
+
+function bareIdentifier(value: string): string {
+  const normalized = value.trim().replace(/\s+/gu, " ");
+  const match = /[A-Za-z_$][\w$]*$/u.exec(normalized);
+  return match?.[0] ?? normalized;
+}
+
+function normalizeNote(value: string): string {
+  return truncateTail(value.trim().replace(/\s+/gu, " "), MAX_ATTENTION_NOTE_CHARS);
+}
+
 function stripLocationSuffix(value: string): string {
   return value.trim().replace(/:\d+(?:-\d+)?$/u, "");
 }
 
 function cleanStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))].sort();
+}
+
+function dedupe<T>(values: T[]): T[] {
+  return [...new Set(values)];
 }
 
 function hunkFirstGroups(planned: PlannedHunk[], degradationReason?: string): PacketGroup[] {
@@ -466,6 +983,9 @@ type EffectiveDecision = {
   lenses: string[];
   surroundingContextHints: HunkCoverageDecision["surroundingContextHints"];
   reason: string;
+  focusNotes?: string[];
+  relatedSymbols?: string[];
+  relatedFiles?: string[];
 };
 
 type NonSkipDecision = EffectiveDecision & { coverage: Exclude<CoverageLevel, "skip"> };
@@ -766,7 +1286,7 @@ type PacketSymbolContextInput = {
   hunkCount: number;
   patchChars: number;
   lenses: string[];
-  reviewEmphasisNotes: string[];
+  attentionNotes: string[];
   labels: string[];
 };
 
@@ -1123,7 +1643,7 @@ function computeSymbolContextBudget(input: PacketSymbolContextInput & {
     hunkCount: input.hunkCount,
     patchChars: input.patchChars,
     lenses: input.lenses,
-    reviewEmphasisNotes: input.reviewEmphasisNotes,
+    attentionNotes: input.attentionNotes,
     labels: input.labels,
     maxChars: Math.min(maxChars, MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS, MAX_CONTEXT_CHARS),
     reason,
@@ -1150,8 +1670,8 @@ function symbolContextRiskSignals(
   if (highRisk) {
     signals.push("high_risk_coverage_or_priority");
   }
-  if (input.reviewEmphasisNotes.length > 0) {
-    signals.push("planner_review_emphasis");
+  if (input.attentionNotes.length > 0) {
+    signals.push("hunk_scoped_attention");
   }
   if (input.lenses.some(isRiskLensForContext)) {
     signals.push("risk_lens");
@@ -1937,7 +2457,7 @@ function routedPacketLenses(input: {
   facts: FileFacts;
   planned: PlannedHunk[];
   relevantTests: SymbolInfo[];
-  reviewEmphasisNotes: string[];
+  attentionNotes: string[];
   coverage: Exclude<CoverageLevel, "skip">;
   reviewPriority: ReviewPriority;
   reviewProfile: ReviewProfile;
@@ -1974,7 +2494,7 @@ function shouldKeepTestsLens(input: {
   facts: FileFacts;
   planned: PlannedHunk[];
   relevantTests: SymbolInfo[];
-  reviewEmphasisNotes: string[];
+  attentionNotes: string[];
   coverage: Exclude<CoverageLevel, "skip">;
   reviewPriority: ReviewPriority;
 }): boolean {
@@ -1987,7 +2507,7 @@ function shouldKeepTestsLens(input: {
   if (input.planned.some((entry) => entry.decision?.surroundingContextHints.some((hint) => hint.kind === "test"))) {
     return true;
   }
-  if (input.reviewEmphasisNotes.some((note) => /\btests?|coverage|regression\b/iu.test(note))) {
+  if (input.attentionNotes.some((note) => /\btests?|coverage|regression\b/iu.test(note))) {
     return true;
   }
   const importantUntestedBehavior = input.relevantTests.length === 0 &&
@@ -2000,7 +2520,7 @@ function shouldKeepCodeReviewLens(input: {
   file: DiffFile;
   facts: FileFacts;
   planned: PlannedHunk[];
-  reviewEmphasisNotes: string[];
+  attentionNotes: string[];
   coverage: Exclude<CoverageLevel, "skip">;
   reviewPriority: ReviewPriority;
   reviewProfile: ReviewProfile;
@@ -2011,7 +2531,7 @@ function shouldKeepCodeReviewLens(input: {
   if (input.reviewPriority === "critical" || input.reviewPriority === "high" || input.coverage === "deep") {
     return true;
   }
-  if (input.reviewEmphasisNotes.length > 0) {
+  if (input.attentionNotes.length > 0) {
     return true;
   }
   return !isMechanicalPacket(input.planned) && input.reviewProfile !== "simple";
@@ -2118,7 +2638,7 @@ function packetReviewProfile(input: {
   coverage: Exclude<CoverageLevel, "skip">;
   reviewPriority: ReviewPriority;
   planned: PlannedHunk[];
-  reviewEmphasisNotes: string[];
+  attentionNotes: string[];
   hintCount: number;
 }): ReviewProfile {
   if (
@@ -2126,7 +2646,7 @@ function packetReviewProfile(input: {
     input.reviewPriority === "critical" ||
     input.reviewPriority === "high" ||
     input.hintCount > 0 ||
-    input.reviewEmphasisNotes.length > 0
+    input.attentionNotes.length > 0
   ) {
     return "investigate";
   }

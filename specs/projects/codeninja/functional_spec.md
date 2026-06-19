@@ -419,11 +419,13 @@ For each relevant hunk or file, codeninja should construct a deterministic revie
 
 A `ReviewPacket` is the unit of model review. Every packet contains one or more changed hunks. The packet kind explains why those hunks are reviewed together, such as a single hunk, nearby coalesced hunks, a small file diff, or a whole-file review.
 
-Review packet construction is deterministic in v1. It must not call the LLM and should not perform broad repository searches. It assembles planned hunk/file work orders from the diff, file facts, `HunkSymbolFacts`, compact local context, configured labels, planner notes, selected lenses, and tool budgets.
+Review packet construction is deterministic in v1. It must not call the LLM and should not perform broad repository exploration. It assembles planned hunk/file work orders from the diff, file facts, `HunkSymbolFacts`, compact local context, configured labels, hunk-scoped planner notes, selected lenses, and tool budgets. It may use bounded repository tools to resolve exact symbol bodies, explicit planner context hints, and a lean changed-hunk relationship graph.
 
 Default packet construction should be hunk-first. Coalesce only nearby hunks in the same file or same enclosing symbol. Use file/whole-file packets for single-hunk files, small added files, small configured files, or explicit `processingMode = "whole-file"` rules.
 
 The packet builder validates and assembles planner decisions; it does not make primary risk decisions. If a reviewable hunk has no planner coverage, the packet builder quietly applies deterministic `normal` coverage with default core/language lenses. If the planner skips a reviewable hunk without a valid reason, the packet builder falls back to `normal` and records the malformed skip.
+
+Planner notes must be hunk-scoped. Stage 5 may include short `focusNotes`, concrete `relatedSymbols`, concrete `relatedFiles`, and `surroundingContextHints` on a coverage decision. Stage 6 carries those notes into the packet only as advisory `attentionNotes`; it must not turn broad planner prose into review obligations.
 
 Packet grouping should stay conservative in v1:
 
@@ -434,6 +436,8 @@ Packet grouping should stay conservative in v1:
 - Do not create cross-file review packets in v1.
 - Cross-file concerns are recorded as follow-up hints (see Stage 8).
 - Split packets back into smaller packets when patch or context size limits would be exceeded.
+
+Stage 6 also builds a small deterministic relationship graph among changed hunks and changed symbols. V1 edges are limited to same enclosing symbol, changed-symbol mention, and explicit planner symbol/file hints. The graph is not a semantic risk classifier. It is used only to attach bounded `relatedChangedContext` snippets to packets when another changed hunk/symbol is mechanically related. Cross-file packets are still forbidden.
 
 Each packet should include:
 
@@ -451,7 +455,8 @@ Each packet should include:
 - Deterministic enclosing symbol metadata when available.
 - Rendered enclosing-symbol source, file outline, and likely tests when available.
 - Surrounding-context hints from the planner or deterministic repository intelligence.
-- Configured labels and advisory review-emphasis notes from Stage 5.
+- Configured labels and advisory hunk-scoped attention notes from Stage 5.
+- Bounded related changed context when the changed-symbol graph mechanically links another changed hunk/symbol.
 
 Review packets should be compact. They should not contain the whole repository or large unrelated file dumps.
 
@@ -485,7 +490,7 @@ Execution should be coverage-aware:
 
 Standard and investigate packet reviewers may use the same read-only tool suite. The difference is budget, investigation depth, and prompting, not capability. Simple packets receive no repository tools and should return no findings unless the issue is clear from packet text.
 
-Stage 6 should deterministically prune low-value lenses before Stage 7. The language lens remains the broad default for supported languages. `core/tests` should be kept for test files, deleted tests, static test signals, planner test risk, or important untested behavior; it should not be attached to every routine source packet. `core/code-review` should be kept for real source behavior/design risk, but mechanical import-only packets should usually be language-only/simple unless a configured priority, deep coverage, or planner review emphasis note promotes them.
+Stage 6 should deterministically prune low-value lenses before Stage 7. The language lens remains the broad default for supported languages. `core/tests` should be kept for test files, deleted tests, static test signals, planner test hints, hunk-scoped attention notes, or important untested behavior; it should not be attached to every routine source packet. `core/code-review` should be kept for real source behavior/design risk, but mechanical import-only packets should usually be language-only/simple unless a configured priority, deep coverage, planner hint, or hunk-scoped attention note promotes them.
 
 Reviewer workers should submit an empty finding list when the packet evidence is insufficient. They should use tools only to support, narrow, or reject a concrete changed-code concern, not for broad repository exploration.
 

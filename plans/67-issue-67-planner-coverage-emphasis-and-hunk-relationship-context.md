@@ -1,6 +1,6 @@
 # Issue 67: Planner Coverage Emphasis and Hunk Relationship Context
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api eval `49f4645b/logs/13` compared with `49f4645b/logs/1`, 2026-06-18
 Recommended priority: high, because Plan 66 cleaned up planner obligations but also exposed a dropped-signal contract between Stage 5 and Stage 6/7
 

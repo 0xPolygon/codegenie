@@ -55,10 +55,10 @@ export type PlannerRunResult = {
 
 const STATIC_SIGNALS_PER_HUNK = 5;
 export const MAX_DOSSIER_PROMPT_CHARS = 120_000;
-const MAX_REVIEW_EMPHASIS = 8;
-const MAX_REVIEW_EMPHASIS_FILES = 20;
-const MAX_REVIEW_EMPHASIS_SYMBOLS = 20;
-const SUBMIT_PLAN_ROOT_KEYS = new Set(["diffUnderstanding", "reviewEmphasis", "coverage", "partialReview"]);
+const MAX_COVERAGE_FOCUS_NOTES = 5;
+const MAX_COVERAGE_RELATED_SYMBOLS = 12;
+const MAX_COVERAGE_RELATED_FILES = 12;
+const SUBMIT_PLAN_ROOT_KEYS = new Set(["diffUnderstanding", "coverage", "partialReview"]);
 
 export async function buildPlannerDossier(
   resolved: { mode: PlannerDossier["mode"]; baseRef?: string; headRef?: string; headSha?: string; mergeBase?: string; pr?: PlannerDossier["pr"]; commits: Array<{ sha: string; title: string; body: string }> },
@@ -351,7 +351,6 @@ function hasPlannerRequiredRoots(args: Record<string, unknown>): boolean {
 function plannerRecoveryScore(args: Record<string, unknown>): number {
   return [
     "diffUnderstanding",
-    "reviewEmphasis",
     "coverage",
     "partialReview"
   ].filter((key) => Object.prototype.hasOwnProperty.call(args, key)).length;
@@ -377,7 +376,7 @@ function buildPlannerSchemaRepairPrompt(
     `Validation error: ${input.error}`,
     "You must call submit_plan exactly once with one complete schema-valid ReviewPlan.",
     "Do not split the plan across multiple submit_plan calls. Do not answer in plain text.",
-    "If the invalid submit_plan calls contain useful reviewEmphasis or coverage entries, merge them into the single corrected plan.",
+    "If the invalid submit_plan calls contain useful coverage entries, merge them into the single corrected plan. Put review-driving attention only inside coverage decisions as reason, focusNotes, relatedSymbols, relatedFiles, or surroundingContextHints.",
     input.extraToolNames.length > 0
       ? `The invalid response also called non-submit tools, which are ignored in Stage 5 repair: ${input.extraToolNames.join(", ")}.`
       : "No repository tools are available in Stage 5 repair.",
@@ -709,7 +708,6 @@ function mergeChunkPlans(
     }
   }
 
-  const reviewEmphasis = dedupeByJson(plans.flatMap((plan) => plan.reviewEmphasis ?? [])).slice(0, MAX_REVIEW_EMPHASIS);
   const behaviors = dedupe(
     plans.map((plan, index) => {
       const root = chunks[index]?.prompt.compaction.chunkRoot ?? `chunk-${String(index + 1)}`;
@@ -725,7 +723,6 @@ function mergeChunkPlans(
       inferredBehavior: behaviors.join("\n")
     },
     ...(plans[0]?.intentSignals !== undefined ? { intentSignals: plans[0].intentSignals } : {}),
-    ...(reviewEmphasis.length > 0 ? { reviewEmphasis } : {}),
     coverage,
     ...(partialPlans.length > 0
       ? {
@@ -1055,13 +1052,13 @@ function validatePlan(
         file: decision.path,
         data: { hunkId: decision.hunkId }
       });
-      const normalizedDecision: HunkCoverageDecision = {
+      const normalizedDecision: HunkCoverageDecision = normalizeCoverageDecision({
         ...decision,
         coverage: "normal",
         lenses: defaultLensesForFile(hunkLanguageById.get(decision.hunkId) ?? "", lenses),
         surroundingContextHints: decision.surroundingContextHints ?? [],
         reason: "planner_invalid_skip"
-      };
+      }, knownFiles);
       const existing = coverageByHunk.get(decision.hunkId);
       if (existing) {
         coverageByHunk.set(decision.hunkId, mergeDuplicateDecision(existing, normalizedDecision, true));
@@ -1085,7 +1082,7 @@ function validatePlan(
       }
       return known;
     });
-    const normalizedDecision = { ...decision, lenses: survivingLenses };
+    const normalizedDecision = normalizeCoverageDecision({ ...decision, lenses: survivingLenses }, knownFiles);
     const existing = coverageByHunk.get(decision.hunkId);
     if (existing) {
       const conflict = !sameCoverageDecision(existing, normalizedDecision);
@@ -1103,12 +1100,9 @@ function validatePlan(
     coverageOrder.push(decision.hunkId);
   }
 
-  const reviewEmphasis = normalizeReviewEmphasis(plan.reviewEmphasis ?? [], knownFiles, enabledLensIds, telemetry);
-
   return {
     diffUnderstanding: plan.diffUnderstanding,
     ...(dossier.intentSignals !== undefined ? { intentSignals: dossier.intentSignals } : {}),
-    ...(reviewEmphasis.length > 0 ? { reviewEmphasis } : {}),
     coverage: coverageOrder.flatMap((hunkId) => {
       const decision = coverageByHunk.get(hunkId);
       return decision === undefined ? [] : [decision];
@@ -1117,67 +1111,26 @@ function validatePlan(
   };
 }
 
-function normalizeReviewEmphasis(
-  emphasis: NonNullable<ReviewPlan["reviewEmphasis"]>,
-  knownFiles: Set<string>,
-  enabledLensIds: Set<string>,
-  telemetry: TelemetryRecorder
-): NonNullable<ReviewPlan["reviewEmphasis"]> {
-  const seen = new Set<string>();
-  const normalized: NonNullable<ReviewPlan["reviewEmphasis"]> = [];
-
-  for (const item of emphasis.slice(0, MAX_REVIEW_EMPHASIS * 2)) {
-    const summary = normalizeWhitespace(item.summary);
-    const basis = dedupe(item.basis.map(normalizeWhitespace).filter((entry) => entry.length > 0)).slice(0, 6);
-    const files = cleanStrings(item.files)
-      .map(stripLocationSuffix)
-      .filter((file) => knownFiles.has(file))
-      .slice(0, MAX_REVIEW_EMPHASIS_FILES);
-    const symbols = cleanStrings(item.symbols ?? []).slice(0, MAX_REVIEW_EMPHASIS_SYMBOLS);
-    const suggestedLenses = cleanStrings(item.suggestedLenses).filter((lens) => enabledLensIds.has(lens));
-    if (summary.length === 0 || basis.length === 0 || files.length === 0) {
-      telemetry.event({
-        stage: 5,
-        level: "warn",
-        message: "planner_review_emphasis_dropped",
-        data: {
-          reason: summary.length === 0 ? "empty_summary" : basis.length === 0 ? "empty_basis" : "no_known_files",
-          summary,
-          files: item.files
-        }
-      });
-      continue;
-    }
-    const key = `${summary.toLowerCase()}\0${files.join(",")}\0${symbols.join(",")}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    normalized.push({
-      summary: truncate(summary, 240),
-      basis,
-      files,
-      ...(symbols.length > 0 ? { symbols } : {}),
-      suggestedLenses
-    });
-    if (normalized.length >= MAX_REVIEW_EMPHASIS) {
-      break;
-    }
-  }
-
-  if (emphasis.length > 0) {
-    telemetry.event({
-      stage: 5,
-      level: "info",
-      message: "planner_review_emphasis",
-      data: {
-        submitted: emphasis.length,
-        kept: normalized.length,
-        maxItems: MAX_REVIEW_EMPHASIS
-      }
-    });
-  }
-  return normalized;
+function normalizeCoverageDecision(decision: HunkCoverageDecision, knownFiles: Set<string>): HunkCoverageDecision {
+  const focusNotes = dedupe((decision.focusNotes ?? []).map(normalizeWhitespace).filter((entry) => entry.length > 0))
+    .map((entry) => truncate(entry, 300))
+    .slice(0, MAX_COVERAGE_FOCUS_NOTES);
+  const relatedSymbols = cleanStrings(decision.relatedSymbols ?? [])
+    .map((entry) => truncate(stripLocationSuffix(entry), 200))
+    .filter((entry) => entry.length > 0)
+    .slice(0, MAX_COVERAGE_RELATED_SYMBOLS);
+  const relatedFiles = cleanStrings(decision.relatedFiles ?? [])
+    .map(stripLocationSuffix)
+    .filter((file) => knownFiles.has(file))
+    .slice(0, MAX_COVERAGE_RELATED_FILES);
+  return {
+    ...decision,
+    surroundingContextHints: dedupeByJson(decision.surroundingContextHints ?? []),
+    reason: normalizeWhitespace(decision.reason),
+    ...(focusNotes.length > 0 ? { focusNotes } : {}),
+    ...(relatedSymbols.length > 0 ? { relatedSymbols } : {}),
+    ...(relatedFiles.length > 0 ? { relatedFiles } : {})
+  };
 }
 
 function sameCoverageDecision(a: HunkCoverageDecision, b: HunkCoverageDecision): boolean {
@@ -1185,6 +1138,9 @@ function sameCoverageDecision(a: HunkCoverageDecision, b: HunkCoverageDecision):
     a.coverage === b.coverage &&
     JSON.stringify([...a.lenses].sort()) === JSON.stringify([...b.lenses].sort()) &&
     JSON.stringify(dedupeByJson(a.surroundingContextHints)) === JSON.stringify(dedupeByJson(b.surroundingContextHints)) &&
+    JSON.stringify(a.focusNotes ?? []) === JSON.stringify(b.focusNotes ?? []) &&
+    JSON.stringify(a.relatedSymbols ?? []) === JSON.stringify(b.relatedSymbols ?? []) &&
+    JSON.stringify(a.relatedFiles ?? []) === JSON.stringify(b.relatedFiles ?? []) &&
     a.reason === b.reason;
 }
 
@@ -1212,7 +1168,10 @@ function mergeDuplicateDecision(
     coverage,
     lenses: dedupe([...a.lenses, ...b.lenses]),
     surroundingContextHints: dedupeByJson([...a.surroundingContextHints, ...b.surroundingContextHints]),
-    reason: conflict ? `planner duplicate coverage decisions merged: ${dedupe([a.reason, b.reason]).join("; ")}` : selected.reason
+    reason: conflict ? `planner duplicate coverage decisions merged: ${dedupe([a.reason, b.reason]).join("; ")}` : selected.reason,
+    focusNotes: dedupe([...(a.focusNotes ?? []), ...(b.focusNotes ?? [])]).slice(0, MAX_COVERAGE_FOCUS_NOTES),
+    relatedSymbols: dedupe([...(a.relatedSymbols ?? []), ...(b.relatedSymbols ?? [])]).slice(0, MAX_COVERAGE_RELATED_SYMBOLS),
+    relatedFiles: dedupe([...(a.relatedFiles ?? []), ...(b.relatedFiles ?? [])]).slice(0, MAX_COVERAGE_RELATED_FILES)
   };
 }
 

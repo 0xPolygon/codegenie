@@ -398,7 +398,6 @@ If the dossier still exceeds the budget after step 4, planning chunks determinis
 Mechanical concatenation of per-chunk `ReviewPlan`s, in chunk-index order:
 
 - `coverage`: concatenated. Each hunk belongs to exactly one chunk, so no conflicts arise; a duplicate `hunkId` across chunks keeps the first decision and drops the rest with telemetry.
-- `reviewEmphasis`: concatenated with exact-string deduplication on summary plus files (first occurrence wins).
 - `diffUnderstanding`: `declaredIntent` from chunk 1 (all chunks saw identical metadata); `inferredBehavior` joins distinct chunk values labeled by chunk root.
 - `partialReview`: `isPartial` is the OR; `reviewedHunks`/`totalHunks` summed; reasons joined.
 
@@ -413,6 +412,7 @@ Semantic validation runs in pipeline code on every schema-valid plan, before the
 - Coverage decisions referencing unknown or filtered `hunkId`s are dropped with telemetry (`planner_unknown_hunk`).
 - A `skip` decision with an empty (after trimming) `reason` is invalid; it is recorded (`planner_invalid_skip`) and the hunk is treated as having no decision. The packet builder applies the `normal` fallback.
 - Lens names not in the run's enabled lens set are dropped from each decision (`planner_unknown_lens`); a decision left with zero lenses is treated as having an empty lens set, which the packet builder fills with the default lens set.
+- Coverage `focusNotes`, `relatedSymbols`, and `relatedFiles` are normalized and capped per hunk. They are advisory context only.
 - `surroundingContextHints` with paths outside the kept change set and no symbol are kept but marked tool-lookup-only; path containment itself is enforced at the repository tool chokepoint (`components/context_and_tools.md`).
 - Hunks with no surviving decision are left undecided; the packet builder owns the `normal` fallback so that later stages do not become independent risk classifiers.
 
@@ -431,7 +431,7 @@ Later stages run normally on the default plan.
 
 ### Stage 6: Packet Builder
 
-The packet builder is deterministic, never calls the LLM, performs no broad repository searches, and is the sole owner of packet identity and physical grouping. It elaborates the nine-step algorithm from `architecture.md`. Size constants (from `architecture.md`): `maxPatchChars = 12000`, `maxContextChars = 8000`, `maxHunksPerPacket = 5`. Additional implementation constants defined here: `nearbyGapLines = 30` (maximum new-side line gap for proximity coalescing), `maxLensesPerPacket = 6`.
+The packet builder is deterministic, never calls the LLM, performs no broad repository searches, and is the sole owner of packet identity and physical grouping. It elaborates the packet construction algorithm from `architecture.md`. Size constants (from `architecture.md`): `maxPatchChars = 12000`, `maxContextChars = 8000`, `maxHunksPerPacket = 5`. Additional implementation constants defined here: `nearbyGapLines = 30` (maximum new-side line gap for proximity coalescing), `maxLensesPerPacket = 6`.
 
 Step 1 — planned hunk records. For each hunk of each kept file, assemble an in-memory record: the `DiffHunk`, its `FileFacts`, its `HunkSymbolFacts` (when present in `repoIndex.symbolFacts`), the validated `HunkCoverageDecision` (when present), processing mode, labels, configured priority, and estimated patch size in characters.
 
@@ -444,14 +444,22 @@ Step 2 — planner validation defaults/fallbacks. Applied per hunk:
 
 The packet builder validates and assembles; it never makes primary coverage decisions beyond these mechanical defaults/fallbacks.
 
-Step 3 — processing mode application, per file:
+Step 3 — changed-hunk relationship graph. Before per-file grouping, Stage 6 builds a lean deterministic graph over non-skipped changed hunks and changed enclosing symbols. V1 edge sources are only:
+
+- `same_symbol`: two changed hunks share the same enclosing symbol.
+- `symbol_mention`: a changed symbol is syntax-verified as mentioned inside another changed symbol.
+- `planner_hint`: a hunk-scoped coverage decision names a concrete related symbol or changed file.
+
+Only strong and selected medium mechanical edges may attach prompt context. Weak text overlap is not a prompt input in v1. The graph is persisted as `hunk-relationships.json` and summarized in Stage 6 telemetry.
+
+Step 4 — processing mode application, per file:
 
 - `processingMode === "skip"`: defensive only — such files should already be filtered at Stage 2; if one reaches Stage 6, record skip coverage for its hunks and exclude it, with a telemetry warning.
 - `processingMode === "whole-file"`: produce one packet of kind `whole-file` containing all non-skipped hunks when limits allow: head-revision file content ≤ `maxContextChars`, combined hunk patch ≤ `maxPatchChars`, hunk count ≤ `maxHunksPerPacket`. If content exceeds the context cap but the combined patch fits, downgrade to one `file-diff` packet with `fileContext.reason` recording the downgrade. If the combined patch does not fit, fall through to the hunk-first path (step 4) with the downgrade reason recorded.
 - `processingMode === "per-hunk"` with `status === "added"` and head content ≤ `maxContextChars` and combined patch ≤ `maxPatchChars` and hunk count ≤ `maxHunksPerPacket`: one `whole-file` packet (small added files are better reviewed as a unit), `fileContext.reason: "small added file"`.
 - All other files: hunk-first (step 4).
 
-Step 4 — conservative grouping (hunk-first files). Default is one packet per hunk, kind `hunk`. Iterate the file's non-skipped hunks in diff order with a greedy single-pass grouping; a hunk joins the current group when all hold:
+Step 5 — conservative grouping (hunk-first files). Default is one packet per hunk, kind `hunk`. Iterate the file's non-skipped hunks in diff order with a greedy single-pass grouping; a hunk joins the current group when all hold:
 
 - Same file (cross-file coalescing never happens; step 5).
 - Same enclosing symbol (`HunkSymbolFacts.enclosingSymbol` non-empty and equal, same `symbolRange`), or new-side gap to the previous group member ≤ `nearbyGapLines`.
@@ -459,19 +467,19 @@ Step 4 — conservative grouping (hunk-first files). Default is one packet per h
 
 Otherwise the current group closes and a new group starts. Groups of one produce kind `hunk`; groups of more than one produce kind `coalesced-hunks`, except a group containing every hunk of the file, which produces kind `file-diff`. Grouping is stable: same diff and facts produce identical groups.
 
-Step 5 — no cross-file packets. Cross-file concerns are recorded as packet follow-up hints; repeated scoped hints may later trigger the narrow Stage 8 targeted system follow-up, while isolated or unresolved hints remain telemetry plus report notes. The builder itself never creates cross-file packets.
+Step 6 — no cross-file packets. Cross-file concerns are recorded as packet follow-up hints; repeated scoped hints may later trigger the narrow Stage 8 targeted system follow-up, while isolated or unresolved hints remain telemetry plus report notes. The builder itself never creates cross-file packets.
 
-Step 6 — context attachment. For each packet, the builder calls the tools host's `buildPacketContext(file, hunks, symbolFacts)` (`RepositoryToolsHost`, `components/context_and_tools.md` owns retrieval; the builder owns the budget and assembly order). The call returns the `PacketContext` (path, package name, enclosing function/type/method), the file outline, the likely-tests list the builder assigns to `relevantTests` (`ReviewPacket.relevantTests` is the single carrier of likely tests; `PacketContext` has no tests field), and an optional degradation note that sets `ReviewPacket.degraded`. Richer pre-attached context — changed-node summaries, nearby imports, sibling symbols — is deferred (see architecture.md Future Considerations); reviewers fetch it on demand with read-only tools. The planner's `surroundingContextHints` are attached alongside. Hints with `expectedUse: "packet_context"` are resolved into context content now; hints with `expectedUse: "tool_lookup"` are passed through on the packet for the worker. The builder renders the retrieved deterministic context into `ReviewPacket.contextText`, filling `maxContextChars` in priority order — enclosing symbol source, file outline, likely tests, resolved hint extracts — truncating in reverse priority order and recording truncation in telemetry. The builder also fills `ReviewPacket.intentText` with the dossier's declared-intent projection (PR title/body extract, already fenced as untrusted data, capped at ~1000 chars). Deletion-only packets set `isDeletedContent: true` and attach base-revision context when available; when base content is unavailable the packet carries `degraded: { reason }` for coverage disclosure.
+Step 7 — context attachment. For each packet, the builder calls the tools host's `buildPacketContext(file, hunks, symbolFacts)` (`RepositoryToolsHost`, `components/context_and_tools.md` owns retrieval; the builder owns the budget and assembly order). The call returns the `PacketContext` (path, package name, enclosing function/type/method), the file outline, the likely-tests list the builder assigns to `relevantTests` (`ReviewPacket.relevantTests` is the single carrier of likely tests; `PacketContext` has no tests field), and an optional degradation note that sets `ReviewPacket.degraded`. Richer pre-attached context — changed-node summaries, nearby imports, sibling symbols — is deferred (see architecture.md Future Considerations); reviewers fetch it on demand with read-only tools. The planner's `surroundingContextHints` are attached alongside. Hints with `expectedUse: "packet_context"` are resolved into context content now; hints with `expectedUse: "tool_lookup"` are passed through on the packet for the worker. The relationship graph may attach bounded `relatedChangedContext` snippets for mechanically related changed hunks/symbols. The builder renders the retrieved deterministic context into `ReviewPacket.contextText`, filling `maxContextChars` in priority order — enclosing symbol source, file outline, likely tests, resolved hint extracts — truncating in reverse priority order and recording truncation in telemetry. The builder also fills `ReviewPacket.intentText` with the dossier's declared-intent projection (PR title/body extract, already fenced as untrusted data, capped at ~1000 chars). Deletion-only packets set `isDeletedContent: true` and attach base-revision context when available; when base content is unavailable the packet carries `degraded: { reason }` for coverage disclosure.
 
-Step 7 — size enforcement and truncation:
+Step 8 — size enforcement and truncation:
 
 - A multi-hunk packet exceeding `maxPatchChars` or `maxHunksPerPacket` after assembly splits back into per-hunk packets (deterministically, in hunk order).
 - A single hunk whose patch alone exceeds `maxPatchChars` is never split below hunk granularity and never receives synthesized sub-hunk ids. Instead the packet carries a truncated patch window of at most `maxPatchChars` rendered characters; the window selection must be deterministic and centered on changed lines, and the truncation must be disclosed — the exact window heuristic is an implementation detail within that contract. `PacketHunk.lines` contains only the window's lines, with `truncated: true` and `omittedLineCount` set to the count of dropped lines; `contentWithLineNumbers` renders deterministic boundary markers (`[... N lines omitted above ...]`, `[... M lines omitted below ...]`) as the prompt rendering of those fields; the per-hunk coverage record carries `reason: "patch truncated: K of L lines included"`; telemetry records the omitted counts. `changedNewLineNumbers`/`changedOldLineNumbers` still list all changed lines of the hunk so anchor validation remains complete.
 - Whole-file content participating in `maxContextChars` is truncated tail-first with the same marker convention.
 
-Step 8 — packet coverage. `coverage` = the maximum coverage of included hunks, ordered `deep > normal > light`. (`skip` hunks never enter packets.)
+Step 9 — packet coverage. `coverage` = the maximum coverage of included hunks, ordered `deep > normal > light`. (`skip` hunks never enter packets.)
 
-Step 9 — packet lenses and review profile. `lenses` = the deduplicated union of included hunks' lens lists. If the union exceeds `maxLensesPerPacket`, keep in priority order: the file's language lens, then `core/*` lenses in registry order, then remaining lenses by member frequency descending, then lexicographic; dropped lenses are recorded in telemetry. After that cap, deterministically prune low-value `core/tests` and `core/code-review` when another lens remains: keep `core/tests` for test files, deleted tests, static test signals, planner test hints/risk, or important untested behavior; keep `core/code-review` for real source behavior/design risk, not obvious mechanical import-only packets. Compute `reviewProfile` as `simple`, `standard`, or `investigate` from effective coverage, configured priority, planner hints, review emphasis notes, and mechanical-change signals.
+Step 10 — packet lenses and review profile. `lenses` = the deduplicated union of included hunks' lens lists. If the union exceeds `maxLensesPerPacket`, keep in priority order: the file's language lens, then `core/*` lenses in registry order, then remaining lenses by member frequency descending, then lexicographic; dropped lenses are recorded in telemetry. After that cap, deterministically prune low-value `core/tests` and `core/code-review` when another lens remains: keep `core/tests` for test files, deleted tests, static test signals, planner test hints, hunk-scoped attention notes, or important untested behavior; keep `core/code-review` for real source behavior/design risk, not obvious mechanical import-only packets. Compute `reviewProfile` as `simple`, `standard`, or `investigate` from effective coverage, configured priority, planner hints, hunk-scoped attention notes, and mechanical-change signals.
 
 Packet assembly details:
 
@@ -479,7 +487,8 @@ Packet assembly details:
 - `prSummary`: deterministic one-paragraph projection of dossier metadata (PR title or first commit title plus totals), capped 500 chars; it is data framing, not model output.
 - `PacketHunk` line data is copied from the parsed diff with absolute old/new numbers preserved exactly; `changedNewLineNumbers` (add lines) and `changedOldLineNumbers` (delete lines) are derived from `DiffLine` kinds.
 - `toolBudget` is assigned from the review-profile/coverage/depth table below.
-- `labels`, `reviewEmphasisNotes`: configured labels from `FileFacts`; review emphasis notes from matching planner `reviewEmphasis` entries whose `files` include the packet path, truncated to 3 entries.
+- `labels`, `attentionNotes`: configured labels from `FileFacts`; hunk-scoped planner focus notes, selected coverage reasons, context-hint reasons, and attached relationship reasons, capped to 3 short advisory entries.
+- `relatedChangedContext`: bounded snippets/patch excerpts from mechanically related changed hunks and changed symbols, never a cross-file packet.
 - Every packet is persisted to `packets/<packet-id>.json` before Stage 7 dispatch.
 
 Tool budget table (implementation defaults; base budget by packet profile and coverage, then scaled by configured run depth — `light` depth halves values rounding down with a floor of 1 call / 1 round / 4000 chars for tool-capable profiles, `deep` depth multiplies by 1.5 rounding up):
