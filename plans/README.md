@@ -73,11 +73,15 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 67 | COMPLETE | Issue 67: Planner Coverage Emphasis and Hunk Relationship Context |
 | 68 | COMPLETE | Issue 68: Predicate-Preserving Promotion and Note Suppression |
 | 69 | COMPLETE | Issue 69: Planner Recovery Safety and Context-Budget Coupling |
+| 70 | PENDING | Issue 70: Merged-Anchor Inline Recovery |
+| 71 | PENDING | Issue 71: Stage 5 First-Submit Regression Audit and Repair |
 
 ## Current Queue
 
 Recommended implementation order for remaining work:
 
+- **Issue 71** — audit and fix the Stage 5 first-submit regression before relying on repair luck.
+- **Issue 70** — recover inline publication from valid merged anchors when the selected cross-packet finding is unanchored.
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
 
 ## Deferred / Watch List
