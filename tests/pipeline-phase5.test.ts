@@ -5678,7 +5678,7 @@ describe("phase 5 pipeline regressions", () => {
         findings: [
           {
             title: "fallback contract now rejects explicit preferences",
-            severity: "medium",
+            severity: "high",
             confidence: "medium",
             path: "app.ts",
             anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
@@ -5706,6 +5706,7 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(result?.findings[0]).toMatchObject({
+      severity: "medium",
       behaviorChange: "intentional_needs_confirmation",
       intentEvidence: ["refactor: enhance preference handling", "strict handling for explicit route preferences"]
     });
@@ -6322,6 +6323,48 @@ describe("phase 5 pipeline regressions", () => {
     expect(verifierCalls).toBe(1);
     expect(verified.gateRejections).toBe(0);
     expect(verified.verified[0]).toMatchObject({ id: "finding-1", severity: "high", title: "verified high severity finding" });
+  });
+
+  it("caps verifier high severity revisions when behavior needs author confirmation", async () => {
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        verdict: "keep",
+        reason: "real behavior change, but reachability and intended contract need confirmation",
+        requiredEvidencePresent: true,
+        falsePositiveRisk: "low",
+        finalFinding: {
+          title: "verified confirmation-dependent finding",
+          severity: "high",
+          confidence: "medium",
+          path: "app.ts",
+          anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+          category: "correctness",
+          evidence: { changedCode: "bad" },
+          failureMode: "A caller-visible guarantee may no longer be satisfiable.",
+          whyThisMatters: "Existing callers may observe a contract change.",
+          verification: "verified with remaining spec confirmation"
+        },
+        behaviorChange: "intentional_needs_confirmation"
+      }) as T
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [{ ...fakeFinding(), severity: "medium" }], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(verified.verified[0]).toMatchObject({
+      id: "finding-1",
+      severity: "medium",
+      behaviorChange: "intentional_needs_confirmation",
+      title: "verified confirmation-dependent finding"
+    });
   });
 
   it("uses configured minConfidence for verifier pre-gates", async () => {

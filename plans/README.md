@@ -77,13 +77,14 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 71 | COMPLETE | Issue 71: Stage 5 First-Submit Regression Audit and Repair |
 | 72 | COMPLETE | Issue 72: Relationship Attention Note Preservation |
 | 73 | COMPLETE | Issue 73: Caller-Visible Guarantee Invariant and Verifier Framing |
+| 74 | PENDING | Issue 74: Merged Finding Confidence Calibration |
 
 ## Current Queue
 
 Recommended implementation order for remaining work:
 
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
-- **Issue 73** — add a generic caller-visible guarantee invariant, verifier materiality framing, and secondary directly-attached related-context evidence carry-through.
+- **Issue 74** — calibrate final confidence from compatible verified merged candidates, so Stage 10 does not publish a low-confidence final report when the merged group contains stronger confidence evidence.
 
 ## Deferred / Watch List
 

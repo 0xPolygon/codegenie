@@ -30,6 +30,7 @@ Find correctness, security, lifecycle, and design problems that would matter to 
 - Do not treat every theoretical exception as a bug; require a concrete path where the change makes behavior worse.
 - Do not prefer a different architecture unless the current change creates a specific maintenance, correctness, or security failure mode.
 - Do not report unavoidable precision dust when the caller-visible output is derived from the same rounded value, or when the rounding/narrowing behavior is explicitly part of the contract and does not overstate what can be delivered. Before applying this guard, trace whether the visible output is derived from the rounded/transformed value or from the original unrounded value.
+- Calibrate severity for guarantee or contract violations by reachability and magnitude. Sub-unit, dust-sized, pathological-input-only, or author-confirmation-dependent violations are usually low or medium, not high.
 
 # Safe Patterns
 
