@@ -6,7 +6,7 @@ import { buildSystemReviewTasks, runTargetedSystemReviews, suppressResolvedFollo
 import { verifyFindings } from "../src/pipeline/verifier.js";
 import type {
   CandidateFinding,
-  CodeninjaConfig,
+  CodegenieConfig,
   PacketReviewResult,
   RepositoryTools,
   RepositoryToolsHost,
@@ -382,7 +382,7 @@ function fakeLensRegistry() {
   };
 }
 
-function config(): CodeninjaConfig {
+function config(): CodegenieConfig {
   return {
     ...defaultConfig,
     lenses: { enabled: ["core/code-review"], disabled: [], extraSkillPaths: [] },

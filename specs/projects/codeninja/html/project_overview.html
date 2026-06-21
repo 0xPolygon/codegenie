@@ -129,8 +129,8 @@ img { max-width: 100%; }
 <header id="title-block-header">
 <h1 class="title">project_overview</h1>
 </header>
-<h1 id="codeninja">codeninja</h1>
-<p>codeninja is a code-reviewing AI harness and agent with a multi-stage
+<h1 id="codegenie">codegenie</h1>
+<p>codegenie is a code-reviewing AI harness and agent with a multi-stage
 reviewing process and pluggable skills.</p>
 <p>The goal is to build a deep code-reviewing agent that can review pull
 requests and give accurate and thorough advice to developers. It should
@@ -150,46 +150,46 @@ concrete checks rather than character description. Developers can add
 their own repo-local Markdown skills to give the reviewer additional
 expertise, with executable skill packages as a possible future
 extension.</p>
-<p>codeninja should be built in TypeScript and run as a CLI.</p>
-<p>codeninja should focus on reviewing any git repository. It should
+<p>codegenie should be built in TypeScript and run as a CLI.</p>
+<p>codegenie should focus on reviewing any git repository. It should
 also support referencing a GitHub pull request by PR number, but GitLab
 support is not an initial goal. Reviewed source should target the actual
-base/head revisions through git, so codeninja can review a PR or branch
+base/head revisions through git, so codegenie can review a PR or branch
 that is not checked out and source reads are unaffected by local
 working-tree state. Review policy, config, and skills should still load
 from the trusted local checkout.</p>
 <p>The first version should output clean, structured Markdown to stdout
 and also be able to post inline comments directly on a GitHub PR.</p>
-<p>Review quality should be measurable, not vibes: codeninja should
+<p>Review quality should be measurable, not vibes: codegenie should
 support local telemetry and run artifacts for reviews when enabled, and
 ship an eval system that always captures artifacts and can attribute
 every missed or lost finding to the pipeline stage that lost it. The
 eval suite, skills, and telemetry are the compounding assets; models are
 swappable underneath them.</p>
-<p>Because codeninja reviews attacker-influenced content and can post
+<p>Because codegenie reviews attacker-influenced content and can post
 publicly, it must treat reviewed content as data rather than
 instructions, contain repository tools to the repository root, and never
 let repo-resident configuration enable command execution or posting on
 its own.</p>
 <p>A successful review finds real correctness, security, and design
 issues; explains the impact; cites the relevant code; and avoids style
-nits unless they hide meaningful risk. By default, codeninja should
+nits unless they hide meaningful risk. By default, codegenie should
 avoid comments about formatting, naming, or subjective style. Style and
 lint-oriented review should only run when explicitly configured,
-potentially through a <code>codeninja.toml</code> file, a lint mode, or
+potentially through a <code>codegenie.toml</code> file, a lint mode, or
 language-specific lint skills such as a Go lint skill.</p>
-<p>codeninja will use <code>pnpm</code> for package management and
+<p>codegenie will use <code>pnpm</code> for package management and
 <code>@earendil-works/pi-ai</code> as the LLM/agent library. It may also
 use tools such as <code>web-tree-sitter</code> and custom
 repository-inspection tools to query source structure, symbols,
 references, and relationships between changed code and surrounding
 code.</p>
-<p>codeninja should include a <code>codeninja provider</code> CLI
+<p>codegenie should include a <code>codegenie provider</code> CLI
 namespace for model-provider setup: listing Pi-known providers and
 models, logging in or out of a provider, checking auth status, and
 setting user-level default provider/model/depth/reasoning preferences.
-Credentials and model defaults should live in user-scoped codeninja
-state, such as <code>~/.codeninja/</code>, not in repo
+Credentials and model defaults should live in user-scoped codegenie
+state, such as <code>~/.codegenie/</code>, not in repo
 configuration.</p>
 <p>The implementation should use deterministic preprocessing wherever
 practical. The diff parser, syntax parser, changed-symbol extraction,
@@ -201,7 +201,7 @@ declarations, and syntax-specific signals across languages such as Go,
 TypeScript, Rust, Solidity, and others. It should not be treated as
 perfect semantic truth. When a language has a stronger optional
 analyzer, such as <code>gopls</code>, <code>go/packages</code>,
-TypeScript compiler APIs, or Rust Analyzer, codeninja may use it to
+TypeScript compiler APIs, or Rust Analyzer, codegenie may use it to
 enrich the same common symbol/tool interface, but the product should
 remain useful with tree-sitter-only support.</p>
 <p>The preferred review design is a staged pipeline:</p>
@@ -210,7 +210,7 @@ remain useful with tree-sitter-only support.</p>
 symbols, risk areas, architecture boundaries, and tests touched or
 missing. This pass chooses the review order and selects relevant lenses
 based on risk tags, language, changed symbols, and touched subsystems;
-codeninja should not run every lens on every hunk by default.</li>
+codegenie should not run every lens on every hunk by default.</li>
 <li>Parallel hunk/file review passes: generate precise inline candidate
 findings anchored to changed lines.</li>
 <li>Optional cross-file/system follow-up: resolve repeated scoped
@@ -235,7 +235,7 @@ like:</p>
   -&gt; optional repeated-hint system follow-up
   -&gt; independent verifier
   -&gt; deduped staff-level review</code></pre>
-<p>codeninja should not dump the whole repository into model context.
+<p>codegenie should not dump the whole repository into model context.
 Instead, it should provide focused diff packets plus tools to inspect
 the repository as needed. This avoids attention dilution and keeps the
 reviewer focused on relevant code while still allowing deeper system

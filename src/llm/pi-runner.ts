@@ -17,13 +17,13 @@ import {
 import { getOAuthApiKey, getOAuthProvider, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import pLimit from "p-limit";
 import { createFileAuthStorage } from "../provider/provider-services.js";
-import { getCodeninjaPaths } from "../config/paths.js";
+import { getCodegeniePaths } from "../config/paths.js";
 import { registerSecret, stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import type { ReviewStage, ToolBudget, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../provider/provider-services.js";
 import { sha256Hex } from "../util/hashing.js";
-import { CodeninjaError, type CodeninjaErrorCode } from "../util/errors.js";
+import { CodegenieError, type CodegenieErrorCode } from "../util/errors.js";
 import {
   roleForStage,
   type CreateRunnerOptions,
@@ -89,7 +89,7 @@ type ModelCallCacheDiagnostics = {
 type ToolRunOutcome = {
   result: ToolExecutionResult;
   status: ToolCallRecord["status"];
-  errorCode?: CodeninjaErrorCode;
+  errorCode?: CodegenieErrorCode;
   rejectionReason?: ToolRejectionReason;
   budgetState?: ToolBudgetState;
   args: Record<string, unknown>;
@@ -186,11 +186,11 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
     model?: string;
   });
   if (!model) {
-    throw new CodeninjaError("config_error", "no usable LLM model could be resolved; run `codeninja provider login <provider>` or configure --provider/--model", {
+    throw new CodegenieError("config_error", "no usable LLM model could be resolved; run `codegenie provider login <provider>` or configure --provider/--model", {
       context: {
         provider: opts.llmConfig.provider ?? null,
         model: opts.llmConfig.model ?? null,
-        hint: "run `codeninja provider login <provider>` and `codeninja provider models --all` to inspect available authenticated models"
+        hint: "run `codegenie provider login <provider>` and `codegenie provider models --all` to inspect available authenticated models"
       }
     });
   }
@@ -308,9 +308,9 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               const validated = adapter.validateToolCall([toolSpec(submitTool)], submitCall);
               if (request.stage === 7 && schemaRepairUsed) {
                 if (candidateDrafted && !submitCallHasFindings(submitCall)) {
-                  const error = "Stage 7 candidate schema repair returned no findings; codeninja will not silently downgrade malformed findings to no-findings.";
+                  const error = "Stage 7 candidate schema repair returned no findings; codegenie will not silently downgrade malformed findings to no-findings.";
                   recordStage7SchemaRepairFailed(opts, request, submitTool.name, "unsafe_candidate_like_payload", error);
-                  throw new CodeninjaError("llm_schema_invalid", error, {
+                  throw new CodegenieError("llm_schema_invalid", error, {
                     recoverable: true,
                     context: { submitTool: submitTool.name, error }
                   });
@@ -397,7 +397,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               });
               continue;
             }
-            throw new CodeninjaError("llm_schema_invalid", `model did not call ${submitTool.name} during ${kind}`, {
+            throw new CodegenieError("llm_schema_invalid", `model did not call ${submitTool.name} during ${kind}`, {
               recoverable: true,
               context: { submitTool: submitTool.name, kind, unexpectedTools: toolCalls.map((toolCall) => toolCall.name) }
             });
@@ -630,7 +630,7 @@ type ForcedFinalizeReason = "budget_exhausted" | "tool_budget_exhausted" | "plai
 function providerPromptCacheOptions(runId: string, stage: ReviewStage): ProviderPromptCacheOptions {
   return {
     strategy: "pi-session",
-    sessionId: `codeninja-${safePromptCacheSessionPart(runId)}-stage-${stage}`,
+    sessionId: `codegenie-${safePromptCacheSessionPart(runId)}-stage-${stage}`,
     cacheRetention: "short"
   };
 }
@@ -668,7 +668,7 @@ function recordProviderPromptCacheStrategy(
     data: definedRecord({
       ...providerPromptCacheDebug(options),
       sessionIdHash: sha256Hex(options.sessionId),
-      note: "Pi session-based prompt cache hint; codeninja does not emit provider-specific explicit cache-control blocks"
+      note: "Pi session-based prompt cache hint; codegenie does not emit provider-specific explicit cache-control blocks"
     })
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
@@ -1021,7 +1021,7 @@ async function completeWithCache(input: {
         ...modelCallMeta,
         status: callStatus,
         errorCode: callErrorCode
-      }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodeninjaErrorCode });
+      }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodegenieErrorCode });
       return { source: "provider", message, callId };
     } catch (cause) {
       if (isRecordedProviderFailure(cause)) {
@@ -1082,7 +1082,7 @@ function buildSubmitTool<T>(request: LlmStructuredRequest<T>): ToolDefinition {
     name,
     description: `Submit the final structured result for stage ${request.stage}.`,
     parameters: request.schema,
-    execute: async () => ({ text: "submit tool is handled by codeninja" })
+    execute: async () => ({ text: "submit tool is handled by codegenie" })
   };
 }
 
@@ -1176,21 +1176,21 @@ function estimateProviderCallTokens(promptText: string): number {
   return Math.max(1, Math.ceil(promptText.length / 4));
 }
 
-function budgetExhaustedError(stage: ReviewStage): CodeninjaError {
-  return new CodeninjaError("llm_call_failed", "LLM provider call budget exhausted", {
+function budgetExhaustedError(stage: ReviewStage): CodegenieError {
+  return new CodegenieError("llm_call_failed", "LLM provider call budget exhausted", {
     recoverable: true,
     context: { reason: "budget_exhausted", stage }
   });
 }
 
 function isBudgetExhaustedError(cause: unknown): boolean {
-  return cause instanceof CodeninjaError &&
+  return cause instanceof CodegenieError &&
     cause.code === "llm_call_failed" &&
     cause.context?.reason === "budget_exhausted";
 }
 
-function markRecordedProviderFailure(error: CodeninjaError): CodeninjaError {
-  (error as CodeninjaError & { [RECORDED_PROVIDER_FAILURE]?: true })[RECORDED_PROVIDER_FAILURE] = true;
+function markRecordedProviderFailure(error: CodegenieError): CodegenieError {
+  (error as CodegenieError & { [RECORDED_PROVIDER_FAILURE]?: true })[RECORDED_PROVIDER_FAILURE] = true;
   return error;
 }
 
@@ -1203,7 +1203,7 @@ function truncatePromptDiagnostic(input: string): string {
   if (input.length <= maxChars) {
     return input;
   }
-  return `${input.slice(0, maxChars).trimEnd()}\n[validation error truncated by codeninja]`;
+  return `${input.slice(0, maxChars).trimEnd()}\n[validation error truncated by codegenie]`;
 }
 
 function safeFenceLabelPart(input: string): string {
@@ -1367,7 +1367,7 @@ async function executeToolCall(
         return toolExecutionErrorOutcome(cause, args, Date.now() - startedAt, true, "miss");
       }
     } catch (cause) {
-      if (taskSignal.aborted && cause instanceof CodeninjaError && cause.code === "llm_call_failed") {
+      if (taskSignal.aborted && cause instanceof CodegenieError && cause.code === "llm_call_failed") {
         throw cause;
       }
       if (taskSignal.aborted && isAbortError(cause)) {
@@ -1376,7 +1376,7 @@ async function executeToolCall(
       return toolExecutionErrorOutcome(cause, toolCall.arguments, Date.now() - startedAt, false, "disabled");
     }
   } catch (cause) {
-    if (taskSignal.aborted && cause instanceof CodeninjaError && cause.code === "llm_call_failed") {
+    if (taskSignal.aborted && cause instanceof CodegenieError && cause.code === "llm_call_failed") {
       throw cause;
     }
     return toolExecutionErrorOutcome(cause, toolCall.arguments, Date.now() - startedAt, false, "disabled");
@@ -1390,7 +1390,7 @@ function toolExecutionErrorOutcome(
   backendExecuted: boolean,
   cacheStatus: ToolResultCacheStatus
 ): ToolRunOutcome {
-  if (cause instanceof CodeninjaError) {
+  if (cause instanceof CodegenieError) {
     return {
       result: {
         text: `tool error: ${cause.code}: ${cause.message}`,
@@ -1644,7 +1644,7 @@ function fitToolResultText(text: string, remainingChars: number): string {
   if (remainingChars <= 0) {
     return "";
   }
-  const marker = "\n[tool result truncated by codeninja tool budget]";
+  const marker = "\n[tool result truncated by codegenie tool budget]";
   if (remainingChars <= marker.length) {
     return marker.slice(0, remainingChars);
   }
@@ -1954,7 +1954,7 @@ function queueSchemaRepair(input: {
         error
       );
     }
-    throw new CodeninjaError("llm_schema_invalid", "model submit payload failed schema validation after repair", {
+    throw new CodegenieError("llm_schema_invalid", "model submit payload failed schema validation after repair", {
       recoverable: input.request.schemaRepair?.failAfterRepair === true ? false : true,
       context: { submitTool: input.submitToolName, error },
       cause: input.cause
@@ -2027,7 +2027,7 @@ function defaultSchemaRepairPrompt(
 ): string {
   if (request.stage === 7) {
     return [
-      "Repair the Stage 7 packet-review response for codeninja.",
+      "Repair the Stage 7 packet-review response for codegenie.",
       "",
       `Validation problem: ${error}`,
       "",
@@ -2535,7 +2535,7 @@ function recordModelCall(
     usage?: StoredProviderResponse["usage"];
     schemaValid?: boolean;
     status?: "ok" | "schema_invalid" | "transient_error" | "auth_error" | "timeout" | "aborted";
-    errorCode?: CodeninjaErrorCode;
+    errorCode?: CodegenieErrorCode;
     errorMessage?: string;
     retryable?: boolean;
     retryReason?: string;
@@ -2606,7 +2606,7 @@ function recordErroredModelCall(
     promptText: string;
     durationMs: number;
     status: "transient_error" | "auth_error" | "timeout" | "aborted";
-    errorCode: CodeninjaErrorCode;
+    errorCode: CodegenieErrorCode;
     errorMessage?: string;
     retryable?: boolean;
     retryReason?: string;
@@ -2919,9 +2919,9 @@ function toLlmError(
   cause: unknown,
   status: "transient_error" | "auth_error" | "timeout" | "aborted",
   timedOut: boolean
-): CodeninjaError {
+): CodegenieError {
   if (status === "auth_error") {
-    return new CodeninjaError("llm_call_failed", "LLM provider authentication failed", {
+    return new CodegenieError("llm_call_failed", "LLM provider authentication failed", {
       recoverable: false,
       context: { reason: "auth" },
       cause
@@ -2929,7 +2929,7 @@ function toLlmError(
   }
   const reason = timedOut ? "timeout" : requestErrorReason(cause, status);
   const retry = status === "transient_error" ? classifyProviderRetry(cause, MAX_PROVIDER_ATTEMPTS) : undefined;
-  return new CodeninjaError("llm_call_failed", timedOut ? "LLM provider call timed out" : "LLM provider call failed", {
+  return new CodegenieError("llm_call_failed", timedOut ? "LLM provider call timed out" : "LLM provider call failed", {
     recoverable: true,
     context: definedRecord({ reason, retryReason: retry?.reason }) as Record<string, unknown>,
     cause
@@ -3134,8 +3134,8 @@ function throwIfTaskAborted(signal: AbortSignal, timedOut: () => boolean): void 
   }
 }
 
-function taskAbortError(timedOut: boolean): CodeninjaError {
-  return new CodeninjaError("llm_call_failed", timedOut ? "LLM model task timed out" : "LLM model task aborted", {
+function taskAbortError(timedOut: boolean): CodegenieError {
+  return new CodegenieError("llm_call_failed", timedOut ? "LLM model task timed out" : "LLM model task aborted", {
     recoverable: true,
     context: { reason: timedOut ? "timeout" : "aborted" }
   });
@@ -3270,7 +3270,7 @@ function splitProviderQualifiedModel(model: string): { provider: string; model: 
   return { provider, model: model.slice(slash + 1) };
 }
 
-function resolveProviderAuth(provider: string, authStorage = createFileAuthStorage(getCodeninjaPaths())): Pick<PiModelRef, "apiKey" | "oauthProvider"> | undefined {
+function resolveProviderAuth(provider: string, authStorage = createFileAuthStorage(getCodegeniePaths())): Pick<PiModelRef, "apiKey" | "oauthProvider"> | undefined {
   const envApiKey = getEnvApiKey(provider);
   if (envApiKey) {
     registerSecret(envApiKey);
@@ -3294,7 +3294,7 @@ async function resolveModelApiKey(model: PiModelRef, deps: RealPiAiAdapterDeps):
     return undefined;
   }
 
-  const authStorage = deps.authStorage ?? createFileAuthStorage(getCodeninjaPaths());
+  const authStorage = deps.authStorage ?? createFileAuthStorage(getCodegeniePaths());
   const stored = authStorage.get(model.oauthProvider);
   if (!stored || stored.type !== "oauth") {
     return undefined;

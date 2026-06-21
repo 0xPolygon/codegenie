@@ -1,6 +1,6 @@
 import type { TSchema } from "@earendil-works/pi-ai";
-import type { CodeninjaConfig, RepositoryTools, ReviewStage, ToolBudget, ToolResultMeta } from "../types.js";
-import type { CodeninjaErrorCode } from "../util/errors.js";
+import type { CodegenieConfig, RepositoryTools, ReviewStage, ToolBudget, ToolResultMeta } from "../types.js";
+import type { CodegenieErrorCode } from "../util/errors.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type { Logger } from "../types.js";
 
@@ -26,7 +26,7 @@ export type LlmCallUsage = {
 export type ToolExecutionResult = {
   text: string;
   isError?: boolean;
-  errorCode?: CodeninjaErrorCode;
+  errorCode?: CodegenieErrorCode;
   meta?: ToolResultMeta;
 };
 
@@ -58,7 +58,7 @@ export type LlmToolResultSummary = {
   status: "ok" | "error" | "rejected" | "skipped";
   resultChars: number;
   preview?: string;
-  errorCode?: CodeninjaErrorCode;
+  errorCode?: CodegenieErrorCode;
   rejectionReason?: string;
   degraded?: boolean;
   degradationReason?: string;
@@ -134,7 +134,7 @@ export type CreateRunnerHooks = {
 };
 
 export type CreateRunnerOptions = {
-  llmConfig: CodeninjaConfig["llm"];
+  llmConfig: CodegenieConfig["llm"];
   telemetry: TelemetryRecorder;
   logger: Logger;
   cache?: ModelCallCache;

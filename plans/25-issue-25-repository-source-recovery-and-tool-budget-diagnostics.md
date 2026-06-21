@@ -7,7 +7,7 @@ Planned from: trails-api eval run 4, 2026-06-15
 
 Eval run 4 exposed a source-delivery failure in the repository tools, not a simple tree-sitter parse failure.
 
-The relay fee-price false positive depended on `CalculateAmountUSD` behavior. The verifier asked for that helper and tree-sitter found it in `lib/quotes/fees.go` at lines 96-121, but codeninja returned only a truncated symbol header because the global tool-result character budget had already been mostly consumed by larger reads. The verifier then kept the finding without seeing the decisive branch.
+The relay fee-price false positive depended on `CalculateAmountUSD` behavior. The verifier asked for that helper and tree-sitter found it in `lib/quotes/fees.go` at lines 96-121, but codegenie returned only a truncated symbol header because the global tool-result character budget had already been mostly consumed by larger reads. The verifier then kept the finding without seeing the decisive branch.
 
 Run 4 telemetry shows:
 
@@ -18,7 +18,7 @@ Run 4 telemetry shows:
 - Every rejected call was recorded as `budget_or_tool_rejected`, so telemetry does not currently distinguish result-character exhaustion, tool-call exhaustion, investigation-round exhaustion, invalid arguments, lookup miss, or real tool failure.
 - For the false positive packet, `read_symbol(CalculateAmountUSD)` was `ok` but truncated, while later reads of `CalculatePriceUSD` and `ResolveTokenPriceUSD` were rejected by budget before source lookup could happen.
 
-This is a general correctness issue. If a model asks for a symbol that exists, codeninja should make a strong best effort to deliver the decisive source, or make the verifier fail closed when the decisive source cannot be delivered.
+This is a general correctness issue. If a model asks for a symbol that exists, codegenie should make a strong best effort to deliver the decisive source, or make the verifier fail closed when the decisive source cannot be delivered.
 
 ## Failed Tool Calls Observed
 
@@ -76,7 +76,7 @@ The most important failure shape is:
 6. Make verifier source incompleteness fail closed.
    - If a candidate depends on a helper/callee and the decisive helper source is truncated, budget-rejected, or unavailable, the verifier should reject or mark verification incomplete.
    - The verifier may keep the candidate only when it can cite the decisive branch or invariant from complete source.
-   - Treat `[tool result truncated by codeninja tool budget]` as insufficient evidence for helper-dependent claims.
+   - Treat `[tool result truncated by codegenie tool budget]` as insufficient evidence for helper-dependent claims.
 
 7. Add regression tests with fixtures.
    - A large caller read must not prevent a later small helper read from being delivered in full during verification.

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { executeProviderCommand } from "../src/cli/provider-command.js";
-import { getCodeninjaPaths } from "../src/config/paths.js";
+import { getCodegeniePaths } from "../src/config/paths.js";
 import { defaultConfig } from "../src/config/schema.js";
 import {
   createFileAuthStorage,
@@ -20,7 +20,7 @@ import { fenceUntrusted, projectSkills } from "../src/skills/prompt-builder.js";
 import { loadSkills, type Skill } from "../src/skills/skill-loader.js";
 import type { Logger, LogEvent, TelemetryEvent } from "../src/types.js";
 import type { TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
-import { CodeninjaError } from "../src/util/errors.js";
+import { CodegenieError } from "../src/util/errors.js";
 
 describe("Phase 4 skills, lenses, and prompts", () => {
   it("loads the bundled skill inventory with deterministic ids and guidance", async () => {
@@ -51,7 +51,7 @@ describe("Phase 4 skills, lenses, and prompts", () => {
 
   it("reports malformed and duplicate skills without blocking valid siblings", async () => {
     const repoRoot = tempDir();
-    const skillsRoot = path.join(repoRoot, ".codeninja", "skills");
+    const skillsRoot = path.join(repoRoot, ".codegenie", "skills");
     mkdirSync(skillsRoot, { recursive: true });
     writeFileSync(path.join(skillsRoot, "bad.md"), "not frontmatter\n# Checks\n- no metadata\n");
     writeFileSync(
@@ -93,7 +93,7 @@ describe("Phase 4 skills, lenses, and prompts", () => {
 
   it("accepts block-list YAML frontmatter in repo skills", async () => {
     const repoRoot = tempDir();
-    const skillsRoot = path.join(repoRoot, ".codeninja", "skills");
+    const skillsRoot = path.join(repoRoot, ".codegenie", "skills");
     mkdirSync(skillsRoot, { recursive: true });
     writeFileSync(
       path.join(skillsRoot, "block-list.md"),
@@ -173,7 +173,7 @@ Exercise normal YAML list frontmatter.
         harness.logger,
         harness.telemetry
       )
-    ).toThrow(CodeninjaError);
+    ).toThrow(CodegenieError);
   });
 
   it("discloses a lens disabled because all skills declaring it failed to load", async () => {
@@ -185,9 +185,9 @@ Exercise normal YAML list frontmatter.
       telemetry: harness.telemetry
     });
     const failures = [
-      { filePath: "/repo/.codeninja/skills/custom.md", reason: "no guidance sections", lenses: ["team/custom"] },
+      { filePath: "/repo/.codegenie/skills/custom.md", reason: "no guidance sections", lenses: ["team/custom"] },
       // A lens that a surviving bundled skill still provides must NOT be disclosed as dropped.
-      { filePath: "/repo/.codeninja/skills/dup-go.md", reason: "duplicate id", lenses: ["lang/go"] }
+      { filePath: "/repo/.codegenie/skills/dup-go.md", reason: "duplicate id", lenses: ["lang/go"] }
     ];
 
     expect(droppedLensesFromFailures(skills, failures)).toEqual(["team/custom"]);
@@ -393,9 +393,9 @@ reasoning = "medium"
     await runProviderCommand(["provider", "config"], {
       services,
       env: {
-        CODENINJA_PROVIDER: "other",
-        CODENINJA_MODEL: "other-large",
-        CODENINJA_REASONING: "xhigh"
+        CODEGENIE_PROVIDER: "other",
+        CODEGENIE_MODEL: "other-large",
+        CODEGENIE_REASONING: "xhigh"
       },
       writeOut: (text) => output.push(text)
     });
@@ -413,11 +413,11 @@ reasoning = "medium"
   });
 
   it("rejects malformed provider auth files as config errors", () => {
-    const paths = getCodeninjaPaths(tempDir(), {});
+    const paths = getCodegeniePaths(tempDir(), {});
     writeFileSync(paths.authPath, "{\"fake\":{\"type\":\"oauth\",\"credentials\":{\"access\":\"token\"},\"createdAt\":\"now\"}}\n");
     const storage = createFileAuthStorage(paths);
 
-    expect(() => storage.loadAll()).toThrow(CodeninjaError);
+    expect(() => storage.loadAll()).toThrow(CodegenieError);
     expect(() => storage.loadAll()).toThrow(/invalid provider auth file/);
   });
 
@@ -527,7 +527,7 @@ function testSkill(input: { id: string; checks: string; falsePositives?: string;
 }
 
 function fakeProviderServices(home: string): ProviderServices {
-  const paths = getCodeninjaPaths(home, {});
+  const paths = getCodegeniePaths(home, {});
   const auth = new Map<string, ProviderAuthEntry>();
   const authStorage: PiAuthStorage = {
     loadAll: () => Object.fromEntries(auth.entries()),
@@ -568,5 +568,5 @@ function fakeProviderServices(home: string): ProviderServices {
 }
 
 function tempDir(): string {
-  return mkdtempSync(path.join(tmpdir(), "codeninja-phase4-"));
+  return mkdtempSync(path.join(tmpdir(), "codegenie-phase4-"));
 }

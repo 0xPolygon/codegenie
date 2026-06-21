@@ -6,7 +6,7 @@ describe("package build scaffold", () => {
     const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
     const buildConfig = JSON.parse(readFileSync("tsconfig.build.json", "utf8"));
 
-    expect(packageJson.bin.codeninja).toBe("./dist/cli/main.js");
+    expect(packageJson.bin.codegenie).toBe("./dist/cli/main.js");
     expect(packageJson.scripts.build).toBe("tsc -p tsconfig.build.json");
     expect(buildConfig.compilerOptions.rootDir).toBe("src");
     expect(buildConfig.compilerOptions.outDir).toBe("dist");

@@ -8,7 +8,7 @@ Planned at: commit `506fa43`
 
 Run 6 passed and produced good findings, but Stage 7 remains the dominant cost and latency center.
 
-Observed in `/home/peter/Dev/0xPolygon/codeninja-private-evals/trails-api/logs/6`:
+Observed in `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/logs/6`:
 
 - Stage 7 made 194 model calls.
 - Stage 7 cost about `$17.57` out of `$22.78`.
@@ -19,7 +19,7 @@ Observed in `/home/peter/Dev/0xPolygon/codeninja-private-evals/trails-api/logs/6
 
 This does not mean no-finding packets are waste. A good reviewer must inspect code and decide there is no material issue. The inefficiency is that many packets reach a forced finalization call after investigation, and that close-out call resends a large packet/tool transcript just to submit an empty result.
 
-Codeninja should make "no findings" a first-class, cheap, auditable outcome while preserving the ability to investigate deeply when the packet has concrete risk.
+Codegenie should make "no findings" a first-class, cheap, auditable outcome while preserving the ability to investigate deeply when the packet has concrete risk.
 
 ## Sequencing Note
 

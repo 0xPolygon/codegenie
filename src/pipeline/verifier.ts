@@ -6,7 +6,7 @@ import { fenceUntrusted, stableJson, type PromptBuilder } from "../skills/prompt
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
   CandidateFinding,
-  CodeninjaConfig,
+  CodegenieConfig,
   PacketReviewResult,
   RepositoryTools,
   ReviewPacket,
@@ -22,7 +22,7 @@ import {
   validateAnchorForPacket
 } from "./pipeline-utils.js";
 import { capSeverityForBehaviorChange } from "./severity-policy.js";
-import { isCodeninjaError } from "../util/errors.js";
+import { isCodegenieError } from "../util/errors.js";
 import { scaleBudgetValue, scaleToolBudget } from "../util/budget.js";
 
 const VERIFIER_TOOL_BUDGET = {
@@ -136,7 +136,7 @@ type CandidateGateDecision =
 export async function verifyFindings(
   input: { packetResults: PacketReviewResult[]; packets: ReviewPacket[] },
   tools: RepositoryTools,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: VerifyOptions
 ): Promise<{ verified: CandidateFinding[]; verdicts: VerificationVerdict[]; incompleteCount: number; gateRejections: number; verificationSkipped: boolean }> {
@@ -510,7 +510,7 @@ async function verifyCandidate(
   candidate: CandidateFinding,
   packet: ReviewPacket | undefined,
   tools: RepositoryTools,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   opts: VerifyOptions,
   workerId: string,
   telemetry: TelemetryRecorder,
@@ -582,7 +582,7 @@ async function runVerifierStructured(
   candidate: CandidateFinding,
   prompt: { prompt: string; templateVersion: string },
   tools: RepositoryTools,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   opts: VerifyOptions,
   workerId: string,
   telemetry: TelemetryRecorder,
@@ -716,7 +716,7 @@ function buildVerifierSchemaRepairPrompt(
     anchor
   }), "verifier-repair-candidate-summary");
   return [
-    "Repair the Stage 9 verifier response for codeninja.",
+    "Repair the Stage 9 verifier response for codegenie.",
     "",
     candidateSummary,
     "",
@@ -848,7 +848,7 @@ function normalizeAnchor(
   return validateAnchorForDiff(packetValid, diff);
 }
 
-function gateCandidate(candidate: CandidateFinding, config: CodeninjaConfig): CandidateGateDecision {
+function gateCandidate(candidate: CandidateFinding, config: CodegenieConfig): CandidateGateDecision {
   const facts = candidateGateFacts(candidate);
   if (!facts.hasChangedCode) {
     return { outcome: "suppress", reason: "missing_evidence", facts };
@@ -1251,19 +1251,19 @@ function incompleteReasonLabel(reason: string): string {
 }
 
 function isSchemaInvalidError(error: unknown): boolean {
-  return isCodeninjaError(error) && error.code === "llm_schema_invalid";
+  return isCodegenieError(error) && error.code === "llm_schema_invalid";
 }
 
 function isBudgetExhaustedWorkerError(error: unknown): boolean {
-  return isCodeninjaError(error) && (error.code === "budget_exhausted" || error.context?.reason === "budget_exhausted");
+  return isCodegenieError(error) && (error.code === "budget_exhausted" || error.context?.reason === "budget_exhausted");
 }
 
 function errorCode(error: unknown): string | undefined {
-  return isCodeninjaError(error) ? error.code : undefined;
+  return isCodegenieError(error) ? error.code : undefined;
 }
 
 function verifierErrorSummary(error: unknown): string {
-  if (isCodeninjaError(error)) {
+  if (isCodegenieError(error)) {
     return error.context?.error !== undefined ? String(error.context.error) : error.message;
   }
   return error instanceof Error ? error.message : String(error);

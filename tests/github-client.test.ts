@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createGitHubClient } from "../src/github/github-client.js";
 import type { runGh } from "../src/git/subprocess.js";
-import { CodeninjaError } from "../src/util/errors.js";
+import { CodegenieError } from "../src/util/errors.js";
 
 type RunGh = typeof runGh;
 
@@ -14,19 +14,19 @@ describe("GitHub client", () => {
         return "";
       }
       if (args.join(" ") === "repo view --json owner,name") {
-        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codeninja" });
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codegenie" });
       }
       if (args[0] === "pr") {
         return JSON.stringify({
           number: 7,
           title: "PR title",
           body: "PR body",
-          url: "https://github.com/0xPolygon/codeninja/pull/7",
+          url: "https://github.com/0xPolygon/codegenie/pull/7",
           baseRefName: "main",
           headRefName: "feature"
         });
       }
-      if (args[0] === "api" && args[1] === "repos/0xPolygon/codeninja/pulls/7") {
+      if (args[0] === "api" && args[1] === "repos/0xPolygon/codegenie/pulls/7") {
         return JSON.stringify({ base: { sha: "b".repeat(40) }, head: { sha: "h".repeat(40) } });
       }
       throw new Error(`unexpected gh args: ${args.join(" ")}`);
@@ -36,23 +36,23 @@ describe("GitHub client", () => {
 
     await expect(client.viewPr(7)).resolves.toMatchObject({
       owner: "0xPolygon",
-      repo: "codeninja",
+      repo: "codegenie",
       number: 7,
       baseSha: "b".repeat(40),
       headSha: "h".repeat(40)
     });
     expect(calls).toContainEqual(["pr", "view", "7", "--json", expect.stringContaining("baseRefOid")]);
-    expect(calls).toContainEqual(["api", "repos/0xPolygon/codeninja/pulls/7"]);
+    expect(calls).toContainEqual(["api", "repos/0xPolygon/codegenie/pulls/7"]);
   });
 
-  it("lists only viewer-authored codeninja comments with pagination and outdated-line fallback", async () => {
+  it("lists only viewer-authored codegenie comments with pagination and outdated-line fallback", async () => {
     const fingerprint = "a".repeat(64);
     const gh: RunGh = async (_repoRoot, args) => {
       if (args[0] === "--version" || args.join(" ") === "auth status") {
         return "";
       }
       if (args.join(" ") === "repo view --json owner,name") {
-        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codeninja" });
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codegenie" });
       }
       if (args.join(" ") === "api user --jq .login") {
         return "codebot\n";
@@ -65,7 +65,7 @@ describe("GitHub client", () => {
             side: "RIGHT",
             line: null,
             original_line: 42,
-            body: `<!-- codeninja:fingerprint=${fingerprint};run=run-1 -->`,
+            body: `<!-- codegenie:fingerprint=${fingerprint};run=run-1 -->`,
             user: { login: "codebot" }
           },
           {
@@ -73,7 +73,7 @@ describe("GitHub client", () => {
             path: "src/app.ts",
             side: "RIGHT",
             line: 50,
-            body: `<!-- codeninja:fingerprint=${"b".repeat(64)};run=run-2 -->`,
+            body: `<!-- codegenie:fingerprint=${"b".repeat(64)};run=run-2 -->`,
             user: { login: "other" }
           }
         ]);
@@ -90,7 +90,7 @@ describe("GitHub client", () => {
         line: 42,
         side: "RIGHT",
         author: "codebot",
-        isCodeninja: true,
+        isCodegenie: true,
         fingerprint
       }
     ]);
@@ -103,7 +103,7 @@ describe("GitHub client", () => {
         return "";
       }
       if (args.join(" ") === "repo view --json owner,name") {
-        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codeninja" });
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codegenie" });
       }
       if (args[0] === "pr") {
         return JSON.stringify({
@@ -117,7 +117,7 @@ describe("GitHub client", () => {
           headRefOid: "h".repeat(40)
         });
       }
-      if (args[0] === "api" && args[1] === "repos/0xPolygon/codeninja/pulls/9/reviews") {
+      if (args[0] === "api" && args[1] === "repos/0xPolygon/codegenie/pulls/9/reviews") {
         payload = JSON.parse(String(opts.input));
         return "{}";
       }
@@ -146,7 +146,7 @@ describe("GitHub client", () => {
         return "";
       }
       if (args.join(" ") === "repo view --json owner,name") {
-        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codeninja" });
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codegenie" });
       }
       if (args[0] === "pr") {
         return JSON.stringify({
@@ -160,8 +160,8 @@ describe("GitHub client", () => {
           headRefOid: "h".repeat(40)
         });
       }
-      if (args[0] === "api" && args[1] === "repos/0xPolygon/codeninja/pulls/9/reviews") {
-        throw new CodeninjaError("github_post_failed", "gh: Validation Failed (HTTP 422)", {
+      if (args[0] === "api" && args[1] === "repos/0xPolygon/codegenie/pulls/9/reviews") {
+        throw new CodegenieError("github_post_failed", "gh: Validation Failed (HTTP 422)", {
           context: {
             stderr: 'gh: Validation Failed (HTTP 422)\n{"message":"Validation Failed","errors":[{"index":0}]}'
           }

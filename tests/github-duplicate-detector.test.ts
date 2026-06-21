@@ -1,21 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   detectDuplicateFindings,
-  formatCodeninjaMarker,
-  parseCodeninjaMarker
+  formatCodegenieMarker,
+  parseCodegenieMarker
 } from "../src/github/duplicate-detector.js";
 import type { ExistingReviewThread, FinalFinding } from "../src/types.js";
 
 describe("GitHub duplicate detector", () => {
-  it("parses and formats codeninja fingerprint markers", () => {
+  it("parses and formats codegenie fingerprint markers", () => {
     const fingerprint = "a".repeat(64);
-    const marker = formatCodeninjaMarker(fingerprint, "run-123");
+    const marker = formatCodegenieMarker(fingerprint, "run-123");
 
-    expect(parseCodeninjaMarker(`body\n${marker}`)).toEqual({ fingerprint, runId: "run-123" });
-    expect(parseCodeninjaMarker("body only")).toBeUndefined();
+    expect(parseCodegenieMarker(`body\n${marker}`)).toEqual({ fingerprint, runId: "run-123" });
+    expect(parseCodegenieMarker("body only")).toBeUndefined();
   });
 
-  it("skips exact fingerprint and fuzzy nearby codeninja comments only", () => {
+  it("skips exact fingerprint and fuzzy nearby codegenie comments only", () => {
     const exact = finding({ id: "exact", fingerprint: "b".repeat(64), line: 10 });
     const nearby = finding({ id: "nearby", fingerprint: "c".repeat(64), line: 105 });
     const outside = finding({ id: "outside", fingerprint: "d".repeat(64), line: 106 });
@@ -27,7 +27,7 @@ describe("GitHub duplicate detector", () => {
         line: 1,
         side: "RIGHT",
         author: "bot",
-        isCodeninja: true,
+        isCodegenie: true,
         fingerprint: exact.fingerprint
       },
       {
@@ -36,7 +36,7 @@ describe("GitHub duplicate detector", () => {
         line: 100,
         side: "RIGHT",
         author: "bot",
-        isCodeninja: true
+        isCodegenie: true
       },
       {
         id: "3",
@@ -44,7 +44,7 @@ describe("GitHub duplicate detector", () => {
         line: 30,
         side: "RIGHT",
         author: "someone-else",
-        isCodeninja: false,
+        isCodegenie: false,
         fingerprint: foreign.fingerprint
       }
     ];

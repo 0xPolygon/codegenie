@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
-import { CodeninjaError } from "../src/util/errors.js";
+import { CodegenieError } from "../src/util/errors.js";
 
-describe("CodeninjaError", () => {
+describe("CodegenieError", () => {
   it("strips credential material from context", () => {
     clearRegisteredSecretsForTests();
     registerSecret("private-token-value");
 
-    const error = new CodeninjaError("config_error", "bad config", {
+    const error = new CodegenieError("config_error", "bad config", {
       context: {
         token: "private-token-value",
         stderr: "Authorization: Bearer private-token-value",

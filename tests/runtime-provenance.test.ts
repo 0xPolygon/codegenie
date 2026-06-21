@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { resolveCodeninjaRuntimeProvenance } from "../src/util/runtime-provenance.js";
+import { resolveCodegenieRuntimeProvenance } from "../src/util/runtime-provenance.js";
 
 describe("runtime provenance", () => {
   it("prefers build environment metadata over runtime git metadata", () => {
     const commit = "0123456789abcdef0123456789abcdef01234567";
-    const provenance = resolveCodeninjaRuntimeProvenance({
+    const provenance = resolveCodegenieRuntimeProvenance({
       env: {
-        CODENINJA_BUILD_VERSION: "2.3.4",
-        CODENINJA_BUILD_COMMIT: commit,
-        CODENINJA_BUILD_BRANCH: "release",
-        CODENINJA_BUILD_DIRTY: "true"
+        CODEGENIE_BUILD_VERSION: "2.3.4",
+        CODEGENIE_BUILD_COMMIT: commit,
+        CODEGENIE_BUILD_BRANCH: "release",
+        CODEGENIE_BUILD_DIRTY: "true"
       },
       projectRoot: "/repo",
       packageVersion: "0.1.0",
@@ -31,7 +31,7 @@ describe("runtime provenance", () => {
   it("falls back to runtime git metadata when build metadata is absent", () => {
     const commit = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
     const calls: string[] = [];
-    const provenance = resolveCodeninjaRuntimeProvenance({
+    const provenance = resolveCodegenieRuntimeProvenance({
       env: {},
       projectRoot: "/repo",
       packageVersion: "0.1.0",
@@ -62,7 +62,7 @@ describe("runtime provenance", () => {
   });
 
   it("returns package-only metadata when git metadata is unavailable", () => {
-    const provenance = resolveCodeninjaRuntimeProvenance({
+    const provenance = resolveCodegenieRuntimeProvenance({
       env: {},
       projectRoot: "/repo",
       packageVersion: "0.1.0",
@@ -79,7 +79,7 @@ describe("runtime provenance", () => {
 
   it("keeps commit metadata when optional git metadata is unavailable", () => {
     const commit = "1234567890abcdef1234567890abcdef12345678";
-    const provenance = resolveCodeninjaRuntimeProvenance({
+    const provenance = resolveCodegenieRuntimeProvenance({
       env: {},
       projectRoot: "/repo",
       packageVersion: "0.1.0",
@@ -100,7 +100,7 @@ describe("runtime provenance", () => {
   });
 
   it("returns unknown metadata without throwing when no source is available", () => {
-    const provenance = resolveCodeninjaRuntimeProvenance({
+    const provenance = resolveCodegenieRuntimeProvenance({
       env: {},
       projectRoot: "/repo",
       runGit: () => {

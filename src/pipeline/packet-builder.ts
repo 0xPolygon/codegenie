@@ -2,7 +2,7 @@ import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { buildTestCoverageDelta } from "../repo/test-coverage-delta.js";
 import type {
-  CodeninjaConfig,
+  CodegenieConfig,
   CoverageLevel,
   DiffFile,
   DiffHunk,
@@ -36,7 +36,7 @@ import { scaleToolBudget } from "../util/budget.js";
 import { isDisclosableCoverageReason } from "../util/coverage-reasons.js";
 
 type PacketBuildOptions = {
-  config: CodeninjaConfig;
+  config: CodegenieConfig;
   enabledLenses: string[];
   reviewContext?: PacketReviewContext;
 };
@@ -277,7 +277,7 @@ async function buildPacket(
   group: PacketGroup,
   relationshipGraph: HunkRelationshipGraph,
   repoIndex: RepositoryIndex,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   reviewContext: PacketReviewContext | undefined,
   symbolContextMetrics: SymbolContextMetrics,
@@ -2879,7 +2879,7 @@ function maxReviewPriority(priorities: ReviewPriority[]): ReviewPriority {
   return [...priorities].sort((a, b) => order[a] - order[b])[0] ?? "normal";
 }
 
-function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: CodeninjaConfig["review"]["depth"], profile: ReviewProfile): ToolBudget {
+function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], profile: ReviewProfile): ToolBudget {
   if (profile === "simple") {
     return { maxToolCalls: 0, maxInvestigationRounds: 0, maxResultChars: 0 };
   }

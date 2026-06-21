@@ -1,6 +1,6 @@
 import type { ReviewStage } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
-import { CodeninjaError, type CodeninjaErrorCode } from "../util/errors.js";
+import { CodegenieError, type CodegenieErrorCode } from "../util/errors.js";
 
 type GuardTelemetry = {
   telemetry?: TelemetryRecorder;
@@ -18,32 +18,32 @@ export function containGlob(repoRoot: string, input: string, opts: GuardTelemetr
 
 export function containRef(ref: string): string {
   if (typeof ref !== "string" || ref.length === 0) {
-    throw new CodeninjaError("invalid_args", "ref must be non-empty");
+    throw new CodegenieError("invalid_args", "ref must be non-empty");
   }
   if (ref.startsWith("-")) {
-    throw new CodeninjaError("invalid_args", "ref must not start with '-'");
+    throw new CodegenieError("invalid_args", "ref must not start with '-'");
   }
   if (/^[0-9a-fA-F]{4,64}$/u.test(ref)) {
     return ref;
   }
   if (ref === "@" || ref.startsWith("/") || ref.endsWith("/") || ref.includes("//")) {
-    throw new CodeninjaError("invalid_args", "ref is not a valid git ref");
+    throw new CodegenieError("invalid_args", "ref is not a valid git ref");
   }
   if (/[\u0000-\u001f\u007f\s]/u.test(ref)) {
-    throw new CodeninjaError("invalid_args", "ref contains invalid whitespace or control characters");
+    throw new CodegenieError("invalid_args", "ref contains invalid whitespace or control characters");
   }
   if (ref.includes("..") || ref.includes("@{")) {
-    throw new CodeninjaError("invalid_args", "ref is not a valid git ref");
+    throw new CodegenieError("invalid_args", "ref is not a valid git ref");
   }
   if (/[~^:?*[\\]/u.test(ref)) {
-    throw new CodeninjaError("invalid_args", "ref contains invalid git ref characters");
+    throw new CodegenieError("invalid_args", "ref contains invalid git ref characters");
   }
   if (ref.endsWith(".") || ref.endsWith(".lock")) {
-    throw new CodeninjaError("invalid_args", "ref is not a valid git ref");
+    throw new CodegenieError("invalid_args", "ref is not a valid git ref");
   }
   for (const part of ref.split("/")) {
     if (part.length === 0 || part.startsWith(".") || part.endsWith(".lock")) {
-      throw new CodeninjaError("invalid_args", "ref is not a valid git ref");
+      throw new CodegenieError("invalid_args", "ref is not a valid git ref");
     }
   }
   return ref;
@@ -79,7 +79,7 @@ function guardPathLike(repoRoot: string, input: string, label: "path" | "glob", 
 }
 
 function throwViolation(
-  code: CodeninjaErrorCode,
+  code: CodegenieErrorCode,
   message: string,
   input: string,
   opts: GuardTelemetry
@@ -94,7 +94,7 @@ function throwViolation(
       input: truncateForTelemetry(input)
     }
   });
-  throw new CodeninjaError(code, message, {
+  throw new CodegenieError(code, message, {
     context: {
       input: truncateForTelemetry(input)
     }

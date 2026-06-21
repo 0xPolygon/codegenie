@@ -2,11 +2,11 @@
 status: complete
 ---
 
-# Architecture: codeninja
+# Architecture: codegenie
 
 ## Architecture Scope
 
-codeninja is a TypeScript CLI that reviews pull-request-style diffs using a staged, telemetry-rich AI review pipeline. The architecture is intentionally split into:
+codegenie is a TypeScript CLI that reviews pull-request-style diffs using a staged, telemetry-rich AI review pipeline. The architecture is intentionally split into:
 
 - `architecture.md`: system-level components, data contracts, and cross-component flow.
 - `components/*.md`: detailed designs for the complex internals after this architecture is approved.
@@ -15,7 +15,7 @@ Component docs are required because the review pipeline, repository intelligence
 
 ## Implementation Philosophy
 
-codeninja should be a specialized review workflow harness, not a generic agent asked to remember the workflow from a skill file. The harness owns the stage order, data contracts, concurrency, validation, GitHub anchoring, and telemetry. Pi agents and Markdown skills provide reasoning inside those stages.
+codegenie should be a specialized review workflow harness, not a generic agent asked to remember the workflow from a skill file. The harness owns the stage order, data contracts, concurrency, validation, GitHub anchoring, and telemetry. Pi agents and Markdown skills provide reasoning inside those stages.
 
 The v1 flow:
 
@@ -48,7 +48,7 @@ Core dependencies:
 - `commander` for CLI parsing.
 - `zod` for config validation; TypeBox (via pi-ai) for LLM I/O schemas.
 - `p-limit` for bounded concurrency.
-- A TOML parser for `codeninja.toml` and a YAML parser for eval case files.
+- A TOML parser for `codegenie.toml` and a YAML parser for eval case files.
 - `picomatch` for path-rule and tool globs.
 - `execa` or Node subprocess APIs for `git` and `gh`.
 - `@vscode/ripgrep` for bundled text search, used as a fast path only when the checkout matches the reviewed head. Pinned to >=1.18.0, which ships per-platform binaries in the tarball with no postinstall download.
@@ -57,7 +57,7 @@ Core dependencies:
   - `tree-sitter-typescript` for Typescript: `.ts`/`.mts`/`.cts`/`.d.ts` route to the typescript grammar; `.tsx` routes to the tsx grammar
   - `tree-sitter-javascript` for Javascript: `.js`/`.jsx`/`.mjs`/`.cjs`
   - Tree-sitter runs entirely via WASM: the `web-tree-sitter` runtime (`tree-sitter.wasm`) plus one `.wasm` grammar per language, all shipped inside their npm tarballs.
-  - Grammar files are referenced directly from `node_modules` at runtime (e.g. `require.resolve("tree-sitter-go/tree-sitter-go.wasm")` via `createRequire` under ESM); no copy step into an `assets/` folder is needed because codeninja is distributed as a normal npm package. An asset-copy step becomes necessary only if single-file bundling is introduced, which is out of scope for v1.
+  - Grammar files are referenced directly from `node_modules` at runtime (e.g. `require.resolve("tree-sitter-go/tree-sitter-go.wasm")` via `createRequire` under ESM); no copy step into an `assets/` folder is needed because codegenie is distributed as a normal npm package. An asset-copy step becomes necessary only if single-file bundling is introduced, which is out of scope for v1.
   - `web-tree-sitter` and the three grammar packages are pinned together; ABI compatibility is enforced at `Language.load`.
 
 Exact dependency versions are pinned via the pnpm lockfile; `@vscode/ripgrep` and tree-sitter grammar wasm artifacts ship inside their npm tarballs (no postinstall downloads permitted).
@@ -158,7 +158,7 @@ src/
     errors.ts
     result.ts
     hashing.ts
-bundled-skills/   # Markdown review skills shipped with codeninja
+bundled-skills/   # Markdown review skills shipped with codegenie
   core/
   lang/
   domain/
@@ -167,29 +167,29 @@ bundled-skills/   # Markdown review skills shipped with codeninja
 Repo-local user data:
 
 ```text
-.codeninja/
+.codegenie/
   skills/              # user-provided Markdown skills, trackable by git
   runs/<run-id>/       # local telemetry/debug artifacts, ignored by git
   cache/               # local model-call cache, ignored by git
-codeninja.toml
+codegenie.toml
 ```
 
-`.codeninja/runs/` and `.codeninja/cache/` are git-ignored. `.codeninja/skills/` should remain trackable so teams can version project review policy.
+`.codegenie/runs/` and `.codegenie/cache/` are git-ignored. `.codegenie/skills/` should remain trackable so teams can version project review policy.
 
 User-local provider/auth state:
 
 ```text
-~/.codeninja/             # overridable with CODENINJA_HOME
+~/.codegenie/             # overridable with CODEGENIE_HOME
   auth.json               # Pi provider credentials, chmod 0600
   models.json             # Pi custom provider/model registry data when supported
   settings.json           # default provider/model/depth/reasoning, chmod 0600
-  config.toml             # optional user-level CodeninjaConfig overrides and trust opt-ins
+  config.toml             # optional user-level CodegenieConfig overrides and trust opt-ins
   sessions/               # provider/session state when Pi needs it
 ```
 
-This state is user-scoped, never repo-tracked, and is the only place codeninja itself stores provider credentials.
+This state is user-scoped, never repo-tracked, and is the only place codegenie itself stores provider credentials.
 
-codeninja is distributed as a normal npm package; wasm grammars and the ripgrep binary resolve from `node_modules` at runtime. Single-file bundling is out of scope for v1.
+codegenie is distributed as a normal npm package; wasm grammars and the ripgrep binary resolve from `node_modules` at runtime. Single-file bundling is out of scope for v1.
 
 ## Core Data Model
 
@@ -255,7 +255,7 @@ type PullRequestMetadata = {
   headSha: string
 }
 
-// Shape returned by GitHubClient.listOwnComments: codeninja's own prior
+// Shape returned by GitHubClient.listOwnComments: codegenie's own prior
 // review comments, summarized for rerun duplicate detection.
 type ExistingReviewThread = {
   id: string
@@ -263,7 +263,7 @@ type ExistingReviewThread = {
   line?: number
   side?: "RIGHT" | "LEFT"
   author: string
-  isCodeninja: boolean
+  isCodegenie: boolean
   fingerprint?: string
 }
 
@@ -425,7 +425,7 @@ Tree-sitter-backed symbol facts are syntactic or heuristic unless a richer langu
 
 Changed-symbol extraction is a local indexing step, not an LLM stage. It parses changed files, maps hunk line ranges to enclosing symbols, and emits compact `HunkSymbolFacts` for planner and packet construction. If parsing fails, the pipeline falls back to hunk/file metadata without blocking review.
 
-File classification is deterministic, narrow, and auditable by default. It uses path rules, filenames, extensions, package-root detection, generated/vendor/lockfile/binary detectors, diff metadata, and `codeninja.toml` rules. The LLM is not part of the default classifier.
+File classification is deterministic, narrow, and auditable by default. It uses path rules, filenames, extensions, package-root detection, generated/vendor/lockfile/binary detectors, diff metadata, and `codegenie.toml` rules. The LLM is not part of the default classifier.
 
 The core classifier must not ship with hardcoded business/domain risk keyword lists. Labels and criticality come from explicit project configuration, while the planner and skills may reason about risk from the diff, symbols, static signals, and configured labels.
 
@@ -754,25 +754,25 @@ type RepositoryIndex = {
 
 Responsibilities:
 
-- Parse `codeninja review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, `--depth`, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, `--ci`, `--no-progress`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
-- Parse `codeninja provider ...` arguments and dispatch to the provider command layer.
+- Parse `codegenie review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, `--depth`, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, `--ci`, `--no-progress`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
+- Parse `codegenie provider ...` arguments and dispatch to the provider command layer.
 - Enforce flag rules: `--pr`, `--branch`, `--head`, and positional commits are mutually exclusive — passing more than one is `invalid_args`. `--head` requires `--base`; `--base` is allowed for branch, explicit head/base, and default-branch review only. `--post-github-comments` outside `--pr` mode is `invalid_args`.
-- Load `codeninja.toml`.
+- Load `codegenie.toml`.
 - Merge review config from defaults, user-scoped config, repo config, the four provider/home environment variables, and CLI flags, while enforcing the trust partition.
 - Validate config with `zod`.
-- Start a run and create `.codeninja/runs/<run-id>/` only when telemetry is enabled.
+- Start a run and create `.codegenie/runs/<run-id>/` only when telemetry is enabled.
 - Render interactive progress on stderr only when enabled and attached to a TTY; never mix progress text into stdout Markdown/JSON output.
 
-Review behavior precedence for safe keys (project policy outranks personal defaults; per-run flags outrank both). The only codeninja environment variables in v1 are `CODENINJA_PROVIDER`, `CODENINJA_MODEL`, `CODENINJA_REASONING`, and `CODENINJA_HOME`, so safe review keys have no environment layer:
+Review behavior precedence for safe keys (project policy outranks personal defaults; per-run flags outrank both). The only codegenie environment variables in v1 are `CODEGENIE_PROVIDER`, `CODEGENIE_MODEL`, `CODEGENIE_REASONING`, and `CODEGENIE_HOME`, so safe review keys have no environment layer:
 
 ```text
-CLI flags > codeninja.toml > user-scoped config > defaults
+CLI flags > codegenie.toml > user-scoped config > defaults
 ```
 
-Provider/model selection precedence (trust-partitioned: repo `codeninja.toml` is ignored entirely for these keys):
+Provider/model selection precedence (trust-partitioned: repo `codegenie.toml` is ignored entirely for these keys):
 
 ```text
-CLI flags > environment variables > ~/.codeninja/settings.json > ~/.codeninja/config.toml > Pi/provider defaults
+CLI flags > environment variables > ~/.codegenie/settings.json > ~/.codegenie/config.toml > Pi/provider defaults
 ```
 
 Within user scope, `settings.json` outranks `config.toml` because the dedicated `provider config set-*` commands write `settings.json`.
@@ -780,30 +780,30 @@ Within user scope, `settings.json` outranks `config.toml` because the dedicated 
 Review depth also has no environment layer; stored `defaultDepth` in `settings.json` participates as user-scoped config:
 
 ```text
---depth > repo codeninja.toml > settings.json defaultDepth > config.toml > built-in normal
+--depth > repo codegenie.toml > settings.json defaultDepth > config.toml > built-in normal
 ```
 
 Per-key config sources (normative; Trust Boundaries defers to this table):
 
 | Keys | Allowed sources |
 | --- | --- |
-| `review.depth`, `review.maxFindings`, `review.softCommentCap`, `review.budgetMultiplier`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codeninja.toml`, user-scoped config, or CLI |
-| `telemetry.enabled` | Repo `codeninja.toml` or user-scoped config |
+| `review.depth`, `review.maxFindings`, `review.softCommentCap`, `review.budgetMultiplier`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codegenie.toml`, user-scoped config, or CLI |
+| `telemetry.enabled` | Repo `codegenie.toml` or user-scoped config |
 | `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.timeoutMs`, `review.perPassTimeoutMs`, `review.maxTotalTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
 
 The loader enforces this via per-key source tracking; repo values for user-scope keys are ignored with a warning.
 
-All merging happens once, in the config loader, which tracks per-key sources to enforce the trust partition and produces the single resolved `CodeninjaConfig`. Downstream components — including the LLM runner — consume the resolved config only and never read user state directly.
+All merging happens once, in the config loader, which tracks per-key sources to enforce the trust partition and produces the single resolved `CodegenieConfig`. Downstream components — including the LLM runner — consume the resolved config only and never read user state directly.
 
 Default config:
 
 ```ts
 // Providers exposing different reasoning scales map onto these four levels.
 // "auto" is CLI-only and clears the CLI layer; resolution then continues
-// CODENINJA_REASONING > settings.json > config.toml > the built-in "high" default.
+// CODEGENIE_REASONING > settings.json > config.toml > the built-in "high" default.
 type ReasoningLevel = "low" | "medium" | "high" | "xhigh"
 
-type CodeninjaConfig = {
+type CodegenieConfig = {
   lenses: {
     enabled: string[]
     disabled: string[]
@@ -864,7 +864,7 @@ type CodeninjaConfig = {
 
 GitHub posting is enabled only by the `--post-github-comments` flag in v1; it cannot be enabled from configuration. `summaryWhenNoFindings` is a flag-scoped behavior option.
 
-Provider/model defaults are user-level state, not repo policy. Repo `codeninja.toml` must reject credential-bearing fields and ignore provider-routing fields (`llm.provider`, `llm.model`, `llm.reasoning`) unless they came from CLI, environment, `~/.codeninja/settings.json`, or another user-scoped config source.
+Provider/model defaults are user-level state, not repo policy. Repo `codegenie.toml` must reject credential-bearing fields and ignore provider-routing fields (`llm.provider`, `llm.model`, `llm.reasoning`) unless they came from CLI, environment, `~/.codegenie/settings.json`, or another user-scoped config source.
 
 Chosen defaults:
 
@@ -884,11 +884,11 @@ Chosen defaults:
 - `classification.pathRules = []`
 - `llm.provider`, `llm.model`, and `llm.reasoning` unset unless supplied by CLI, environment, or user-level config; unresolved reasoning falls back to the built-in `high` default at runner construction
 - `cache.enabled = false`
-- `cache.dir = ".codeninja/cache"`
+- `cache.dir = ".codegenie/cache"`
 - `telemetry.enabled = false`
 - `telemetry.logLevel = "warn"`
 - `telemetry.debugTrace = false`
-- `telemetry.runDir = ".codeninja/runs"`
+- `telemetry.runDir = ".codegenie/runs"`
 - `telemetry.retainRuns = 20`
 - `eval.logsDir = "logs"`
 - Default-enabled lens set = all four bundled lenses.
@@ -919,25 +919,25 @@ reason = "Generated files are not reviewed directly."
 
 Responsibilities:
 
-- Implement `codeninja provider list`, `login`, `logout`, `auth-status`, `models`, and `config` subcommands.
-- Use Pi's provider/model registry and auth storage through a codeninja wrapper; pipeline code must not import Pi provider/auth classes directly.
-- Store credentials and provider defaults under `~/.codeninja/` by default, with `CODENINJA_HOME` as an override.
+- Implement `codegenie provider list`, `login`, `logout`, `auth-status`, `models`, and `config` subcommands.
+- Use Pi's provider/model registry and auth storage through a codegenie wrapper; pipeline code must not import Pi provider/auth classes directly.
+- Store credentials and provider defaults under `~/.codegenie/` by default, with `CODEGENIE_HOME` as an override.
 - Create the user home directory with mode `0700` where supported; write `auth.json` and `settings.json` with mode `0600`.
 - Register every concrete credential value with the redaction layer before any logger, telemetry, artifact, cache, debug trace, or error context can observe it.
 
 Commands:
 
 ```text
-codeninja provider list
-codeninja provider login <provider>
-codeninja provider logout [provider]
-codeninja provider auth-status [provider]
-codeninja provider models [provider-or-search] [--all]
-codeninja provider config
-codeninja provider config set-provider <provider>
-codeninja provider config set-model <provider> <model>
-codeninja provider config set-depth <light|normal|deep>
-codeninja provider config set-reasoning <low|medium|high|xhigh|auto>
+codegenie provider list
+codegenie provider login <provider>
+codegenie provider logout [provider]
+codegenie provider auth-status [provider]
+codegenie provider models [provider-or-search] [--all]
+codegenie provider config
+codegenie provider config set-provider <provider>
+codegenie provider config set-model <provider> <model>
+codegenie provider config set-depth <light|normal|deep>
+codegenie provider config set-reasoning <low|medium|high|xhigh|auto>
 ```
 
 `provider login` uses Pi OAuth/device-code flow when available, otherwise prompts for an API key. `provider models` lists authenticated models by default and all Pi-known models with `--all`, including context window, max output tokens, reasoning support, and input/vision capability when known. `provider config` emits credential-free JSON containing paths and effective defaults.
@@ -955,21 +955,21 @@ Responsibilities:
 `--pr` flow:
 
 1. Run `gh pr view <number>` to fetch title, body, URL, base/head refs, and the `baseRefOid`/`headRefOid` SHAs. The reviewed diff revisions come from `baseRefOid`/`headRefOid`, so the reviewed diff matches GitHub's PR diff; the merge base is computed between those SHAs, and the diff is computed with fixed rename-detection flags.
-2. List codeninja's own prior review comments (`listOwnComments`) for duplicate avoidance; human review threads are not fetched in v1.
+2. List codegenie's own prior review comments (`listOwnComments`) for duplicate avoidance; human review threads are not fetched in v1.
 3. Check whether base and head commits exist locally with `git cat-file -e`.
-4. If missing, fetch into internal refs: head via `git fetch <base-remote> refs/pull/<n>/head:refs/codeninja/pr/<n>/head` (covers fork PRs); base via fetching the base branch or the `baseRefOid` SHA directly. Failures are `git_fetch_failed`.
+4. If missing, fetch into internal refs: head via `git fetch <base-remote> refs/pull/<n>/head:refs/codegenie/pr/<n>/head` (covers fork PRs); base via fetching the base branch or the `baseRefOid` SHA directly. Failures are `git_fetch_failed`.
 5. Do not checkout, reset, stash, or mutate the working tree.
 6. Compute merge base and diff locally.
 7. Collect commit metadata with `git log <mergeBase>..<head>`.
 
-Ref lifecycle: `refs/codeninja/pr/<n>/*` are force-updated on each run and deleted at run end (best-effort); stale refs from crashed runs are cleaned at the start of the next run for the same PR.
+Ref lifecycle: `refs/codegenie/pr/<n>/*` are force-updated on each run and deleted at run end (best-effort); stale refs from crashed runs are cleaned at the start of the next run for the same PR.
 
-Shallow and partial clones are detected via `git rev-parse --is-shallow-repository`. codeninja attempts a bounded deepen (`git fetch --deepen`) covering the review range; if the range is still unresolvable, it fails with a `git_ref_missing`-class error naming the fix (`git fetch --unshallow`).
+Shallow and partial clones are detected via `git rev-parse --is-shallow-repository`. codegenie attempts a bounded deepen (`git fetch --deepen`) covering the review range; if the range is still unresolvable, it fails with a `git_ref_missing`-class error naming the fix (`git fetch --unshallow`).
 
 `--branch --base` flow:
 
 1. Resolve the review branch locally.
-2. Resolve the base branch in precedence order: CLI `--base`, `codeninja.toml` `git.baseBranch`, existing `master`, existing `main`.
+2. Resolve the base branch in precedence order: CLI `--base`, `codegenie.toml` `git.baseBranch`, existing `master`, existing `main`.
 3. If no base branch resolves, fail with a clear error asking the user to pass `--base` or configure `git.baseBranch`.
 4. Compute merge base between the base branch and branch head.
 5. Diff `mergeBase..branchHead`.
@@ -977,7 +977,7 @@ Shallow and partial clones are detected via `git rev-parse --is-shallow-reposito
 
 Single positional branch shorthand:
 
-1. For `codeninja review <target>`, first try to resolve `<target>` as a local or remote branch.
+1. For `codegenie review <target>`, first try to resolve `<target>` as a local or remote branch.
 2. If branch resolution succeeds, use the branch review flow above.
 3. If branch resolution fails, use the single-commit flow below.
 4. `--base` is allowed with this shorthand only when branch resolution succeeds; if branch resolution fails, the resolver rejects `--base` and tells the user to use `<base>...<head>` for explicit head/base review.
@@ -1130,7 +1130,7 @@ Tool results must be capped by count and characters, include line numbers, prefe
 Responsibilities:
 
 - Load bundled Markdown skills from the package's `bundled-skills/` directory.
-- Load repo-local Markdown skills from `.codeninja/skills/`.
+- Load repo-local Markdown skills from `.codegenie/skills/`.
 - Validate skill frontmatter and content.
 - Register user-facing lenses.
 - Map lenses to one or more skills.
@@ -1232,9 +1232,9 @@ Cache keys are computed over the normalized request (the contract defined in the
 
 Caching is per provider call, not per task. In tool-using stages each model→tool→model step is cached individually, keyed on the normalized request including the full conversation prefix (system prompt, packet content, prior tool calls and their results). A changed tool result therefore invalidates only the steps after it. Whole-task results are never cached.
 
-Cache entries should record the pipeline stage (1-10) they came from. Cache data should live under the local repository's `.codeninja/cache` directory by default and must not be shared across repositories unless the key includes repository identity and source/diff hashes.
+Cache entries should record the pipeline stage (1-10) they came from. Cache data should live under the local repository's `.codegenie/cache` directory by default and must not be shared across repositories unless the key includes repository identity and source/diff hashes.
 
-Cache entries are validated against the cache schema version on read; codeninja refuses a cache directory whose contents are tracked in the repository (prevents committed, attacker-crafted replay entries).
+Cache entries are validated against the cache schema version on read; codegenie refuses a cache directory whose contents are tracked in the repository (prevents committed, attacker-crafted replay entries).
 
 Eviction: at run start, entries older than 14 days or beyond a 500MB cap (oldest first) are removed.
 
@@ -1253,7 +1253,7 @@ Responsibilities:
 Main algorithm:
 
 ```ts
-async function runReview(input: ReviewInput, config: CodeninjaConfig): Promise<ReviewResult> {
+async function runReview(input: ReviewInput, config: CodegenieConfig): Promise<ReviewResult> {
   const run = await startRun(config)
   const resolved = await resolveReviewInput(input, config, run.telemetry)
   const diff = await parseDiff(resolved.rawDiff, run.telemetry)
@@ -1335,7 +1335,7 @@ Failure and budget handling:
   - Stage 10 composer → one repair retry; terminal failure triggers a deterministic fallback composition (verified findings rendered with template wording, fingerprint-level grouping only, ranked by severity/confidence) with a disclosure note that semantic composition was skipped.
   - Authentication or provider-wide failures at any stage fail the run.
 - Budgets (`timeoutMs`, `maxTotalTokens`, `maxModelCalls`) are checked before each new model call or worker dispatch. On exhaustion: stop scheduling new packet reviews → verify already-produced candidates using a reserved budget slice → always run composition and emit a partial-review disclosure.
-- Approximately 15% of the configured token and model-call budgets (and a fixed tail of the runtime budget) is reserved for Stages 9-10 so completed review work is never lost to exhaustion. A hard kill at 2x the configured runtime budget is fatal; even then codeninja attempts to write telemetry artifacts before exiting.
+- Approximately 15% of the configured token and model-call budgets (and a fixed tail of the runtime budget) is reserved for Stages 9-10 so completed review work is never lost to exhaustion. A hard kill at 2x the configured runtime budget is fatal; even then codegenie attempts to write telemetry artifacts before exiting.
 - Provider 429 and transient 5xx responses get up to 3 retries with exponential backoff; retries count against budgets.
 - The run-level coverage status is owned by the orchestrator, which aggregates plan-time coverage, runtime failures, budget stops, and verification incompleteness into the final coverage summary (run-level, not only `ReviewPlan.partialReview`):
 
@@ -1454,12 +1454,12 @@ sha256(path + enclosingSymbolOrHunkIdentity + category + lensId)
 
 `enclosingSymbolOrHunkIdentity` is the enclosing symbol name when available, else the hunk id. Inputs are normalized (lowercase, whitespace-collapsed). Model-authored wording (failure mode, evidence, message) is excluded from identity so fingerprints stay stable across runs.
 
-A secondary fuzzy duplicate check runs before posting: same path within ±5 lines of an existing codeninja-authored comment counts as a duplicate. Category is not part of the fuzzy rule; it is hashed inside the fingerprint and not recoverable from posted markers.
+A secondary fuzzy duplicate check runs before posting: same path within ±5 lines of an existing codegenie-authored comment counts as a duplicate. Category is not part of the fuzzy rule; it is hashed inside the fingerprint and not recoverable from posted markers.
 
 Comment marker:
 
 ```html
-<!-- codeninja:fingerprint=<fingerprint>;run=<run-id> -->
+<!-- codegenie:fingerprint=<fingerprint>;run=<run-id> -->
 ```
 
 The marker must be appended to GitHub comment bodies and hidden from normal Markdown output where possible.
@@ -1472,12 +1472,12 @@ Responsibilities:
 - Render the final review object as JSON when `--format json` is used, including a JSON run summary for posting runs.
 - Render concise stdout summary for `--post-github-comments` runs.
 - Create inline GitHub comments and summary review body when requested.
-- Avoid duplicate comments from previous codeninja runs.
+- Avoid duplicate comments from previous codegenie runs.
 
 GitHub publishing approach:
 
 - Use `gh api` for REST calls.
-- Create one pull request review with event type `COMMENT` containing a summary body and inline comments. codeninja never approves or requests changes in v1.
+- Create one pull request review with event type `COMMENT` containing a summary body and inline comments. codegenie never approves or requests changes in v1.
 - Inline comments use GitHub review comment fields such as `path`, `line`, `side`, `start_line`, `start_side`, and `commit_id` where applicable.
 - Do not use deprecated diff positions as comment anchors.
 - Use the PR head SHA as `commit_id`.
@@ -1490,12 +1490,12 @@ Comment sanitization (deterministic, in code, post-composition): neutralize `@`-
 Duplicate handling:
 
 1. List existing PR review comments.
-2. Parse codeninja fingerprint markers.
+2. Parse codegenie fingerprint markers.
 3. Skip findings with already-posted matching fingerprints.
 4. Do not delete stale comments in v1.
 5. If safe update is not possible, prefer posting no duplicate over trying to mutate existing comments.
 
-A fingerprint marker counts as codeninja-authored only when the comment's author matches the authenticated `gh` identity codeninja runs as. Markers in other users' comments are ignored for duplicate suppression.
+A fingerprint marker counts as codegenie-authored only when the comment's author matches the authenticated `gh` identity codegenie runs as. Markers in other users' comments are ignored for duplicate suppression.
 
 Publishing rules:
 
@@ -1519,7 +1519,7 @@ Responsibilities:
 Run directory:
 
 ```text
-.codeninja/runs/<yyyyMMdd-HHmmss>-<shortid>/
+.codegenie/runs/<yyyyMMdd-HHmmss>-<shortid>/
   run.json
   run.log
   telemetry.json
@@ -1641,7 +1641,7 @@ type ToolCallRecord = {
   resultChars: number
   durationMs: number
   status: "ok" | "error" | "rejected" | "skipped" // rejected = budget or containment denial
-  errorCode?: CodeninjaErrorCode
+  errorCode?: CodegenieErrorCode
 }
 ```
 
@@ -1653,24 +1653,24 @@ The telemetry recorder must support redaction before any future external export.
 
 Run lifecycle:
 
-- Run pruning: at run start, the telemetry recorder prunes `.codeninja/runs/` to the newest `retainRuns` directories (by mtime), never touching the active run.
-- First-run provisioning: codeninja writes `.codeninja/.gitignore` (containing `runs/` and `cache/`) when creating `.codeninja/`.
-- Concurrent runs: run directories are unique per run id; cache writes use write-temp-then-rename; an advisory lock file under `.codeninja/` guards ref cleanup. Concurrent runs are otherwise supported.
+- Run pruning: at run start, the telemetry recorder prunes `.codegenie/runs/` to the newest `retainRuns` directories (by mtime), never touching the active run.
+- First-run provisioning: codegenie writes `.codegenie/.gitignore` (containing `runs/` and `cache/`) when creating `.codegenie/`.
+- Concurrent runs: run directories are unique per run id; cache writes use write-temp-then-rename; an advisory lock file under `.codegenie/` guards ref cleanup. Concurrent runs are otherwise supported.
 
 ### Eval Support
 
-V1 should include a `codeninja eval` command for repeatable quality testing against real repositories, fixtures, and captured artifacts. Eval support reuses the normal review engine and run artifacts; it must not fork a separate review implementation.
+V1 should include a `codegenie eval` command for repeatable quality testing against real repositories, fixtures, and captured artifacts. Eval support reuses the normal review engine and run artifacts; it must not fork a separate review implementation.
 
 Eval command examples:
 
 ```bash
-codeninja eval --eval-dir /path/to/evals
-codeninja eval --eval-dir /path/to/evals --cache
-codeninja eval --eval-dir /path/to/evals --no-cache
-codeninja eval --from-artifacts /path/to/eval/logs/42
+codegenie eval --eval-dir /path/to/evals
+codegenie eval --eval-dir /path/to/evals --cache
+codegenie eval --eval-dir /path/to/evals --no-cache
+codegenie eval --from-artifacts /path/to/eval/logs/42
 ```
 
-Eval cases are YAML files. Private eval cases should live outside the codeninja repository and may point to external local repositories. Public eval cases may use fixtures.
+Eval cases are YAML files. Private eval cases should live outside the codegenie repository and may point to external local repositories. Public eval cases may use fixtures.
 
 ```ts
 type EvalCase = {
@@ -1744,7 +1744,7 @@ Eval run directories:
 <eval-suite>/logs/<n>/
   info.json
   out.log
-  codeninja-review.out.md
+  codegenie-review.out.md
   telemetry/           # the engine's full standard run-directory artifact set
     run.json
     run.log
@@ -1779,7 +1779,7 @@ Eval metrics should include finding counts, duplicate groups, cost, runtime, mod
 Use typed errors with stable codes:
 
 ```ts
-type CodeninjaErrorCode =
+type CodegenieErrorCode =
   | "not_git_worktree"
   | "invalid_args"
   | "config_error"
@@ -1799,8 +1799,8 @@ type CodeninjaErrorCode =
   | "budget_exhausted" // recoverable; drives the budget degradation ladder
   | "timeout" // fatal; the hard kill at 2x the runtime budget
 
-class CodeninjaError extends Error {
-  code: CodeninjaErrorCode
+class CodegenieError extends Error {
+  code: CodegenieErrorCode
   recoverable: boolean
   context?: Record<string, unknown>
 }
@@ -1837,7 +1837,7 @@ Allowed by default:
 - Read files from the repository.
 - Run `git` read operations.
 - Run `gh` read operations for PR metadata.
-- Write local run artifacts under `.codeninja/runs/` only when telemetry is enabled.
+- Write local run artifacts under `.codegenie/runs/` only when telemetry is enabled.
 - Post GitHub comments only when `--post-github-comments` is explicitly set.
 
 Not allowed by default:
@@ -1857,13 +1857,13 @@ Output channel control: everything posted to GitHub passes deterministic sanitiz
 
 Repository tools path containment (single chokepoint in the RepositoryTools layer): all paths are canonicalized and required to resolve inside `repoRoot`; absolute paths and `..` traversal are rejected with a typed error (`path_outside_repo`); the worktree fast path must not follow symlinks resolving outside the repo root (git-plumbing reads are inherently contained); refs are harness-resolved only (model-facing source selectors expose `head`/`base`), and harness-side ref values are validated against `git check-ref-format` rules and rejected if option-like (leading `-`).
 
-Config trust partitioning: the per-key config-source table in CLI And Config is normative. Repo `codeninja.toml` may set only the repo-settable safe keys listed there; every other key takes effect only with user-level opt-in — a CLI flag, `~/.codeninja/settings.json`, or the user-scoped config file `~/.codeninja/config.toml` (all under `CODENINJA_HOME`) — and repo-config values for user-scope keys are ignored with a warning. Repo-config-relative paths are constrained to the repo root.
+Config trust partitioning: the per-key config-source table in CLI And Config is normative. Repo `codegenie.toml` may set only the repo-settable safe keys listed there; every other key takes effect only with user-level opt-in — a CLI flag, `~/.codegenie/settings.json`, or the user-scoped config file `~/.codegenie/config.toml` (all under `CODEGENIE_HOME`) — and repo-config values for user-scope keys are ignored with a warning. Repo-config-relative paths are constrained to the repo root.
 
-Policy load revision: `codeninja.toml` and `.codeninja/skills/` always load from the trusted local checkout (the user's working copy), never from the PR head revision. If the PR under review modifies policy files (config or skills), that is surfaced to the planner as a risk signal and noted in the report.
+Policy load revision: `codegenie.toml` and `.codegenie/skills/` always load from the trusted local checkout (the user's working copy), never from the PR head revision. If the PR under review modifies policy files (config or skills), that is surfaced to the planner as a risk signal and noted in the report.
 
 Subprocess hygiene (GitClient/GitHubClient/tools contract): never invoke through a shell; always pass `--` before untrusted positional path/ref arguments; reject argument values matching `^-`; prefer SHAs over ref names when both are available (GitHub-supplied ref names are display-only).
 
-Credentials: provider API keys come from environment variables or user-scoped provider auth state only (`~/.codeninja/auth.json`, overridable through `CODENINJA_HOME`); repo `codeninja.toml` must reject credential-bearing fields at parse time. Auth material (API keys, gh tokens, Authorization headers, OAuth tokens, device-flow tokens) must be stripped before anything is written to logs, telemetry, run artifacts, cache entries, debug traces, or error context.
+Credentials: provider API keys come from environment variables or user-scoped provider auth state only (`~/.codegenie/auth.json`, overridable through `CODEGENIE_HOME`); repo `codegenie.toml` must reject credential-bearing fields at parse time. Auth material (API keys, gh tokens, Authorization headers, OAuth tokens, device-flow tokens) must be stripped before anything is written to logs, telemetry, run artifacts, cache entries, debug traces, or error context.
 
 ## Testing Strategy
 
@@ -2002,7 +2002,7 @@ Semantic enrichment (gopls / go-packages, TypeScript compiler API, Rust Analyzer
 
 ### Existing-PR-thread planner hints and overlap recording
 
-V1 fetches only codeninja's own prior comments (`listOwnComments`) for rerun duplicate suppression; human threads are never fetched. Deferred: `GitHubClient.fetchReviewThreads(number, cap)` via `gh api graphql` over `pullRequest.reviewThreads` (`isResolved`, `isOutdated`, `path`, `line`, `comments`) with cursor pagination capped at 100 threads; `PullRequestMetadata.existingThreads: ExistingReviewThread[]` plus `omittedThreadCount` disclosure; thread summaries entering the planner dossier as hints only (deterministically extracted and truncated, never passed verbatim, never findings); and `FinalFinding.overlappingThreadIds` with the composer overlap rules (may acknowledge overlap in wording, must not drop a verified finding because a human raised a similar point, must never adopt an existing comment as a finding). Trigger: observed re-raising of points humans already made on the PR.
+V1 fetches only codegenie's own prior comments (`listOwnComments`) for rerun duplicate suppression; human threads are never fetched. Deferred: `GitHubClient.fetchReviewThreads(number, cap)` via `gh api graphql` over `pullRequest.reviewThreads` (`isResolved`, `isOutdated`, `path`, `line`, `comments`) with cursor pagination capped at 100 threads; `PullRequestMetadata.existingThreads: ExistingReviewThread[]` plus `omittedThreadCount` disclosure; thread summaries entering the planner dossier as hints only (deterministically extracted and truncated, never passed verbatim, never findings); and `FinalFinding.overlappingThreadIds` with the composer overlap rules (may acknowledge overlap in wording, must not drop a verified finding because a human raised a similar point, must never adopt an existing comment as a finding). Trigger: observed re-raising of points humans already made on the PR.
 
 ### Configured command execution
 

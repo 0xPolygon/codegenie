@@ -12,7 +12,7 @@ import type { Skill } from "../skills/skill-loader.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { buildIntentSignals } from "./intent-signals.js";
 import type {
-  CodeninjaConfig,
+  CodegenieConfig,
   CoverageLevel,
   DossierDirectoryRollup,
   DossierFileEntry,
@@ -81,7 +81,7 @@ export async function buildPlannerDossier(
   fileFacts: FileFacts[],
   decisions: FileFilterDecision[],
   repoIndex: RepositoryIndex,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: PlannerOptions = {}
 ): Promise<PlannerDossier> {
@@ -209,7 +209,7 @@ export async function buildPlannerDossier(
 
 export async function runPlanner(
   dossier: PlannerDossier,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: RunPlannerOptions
 ): Promise<PlannerRunResult> {
@@ -288,7 +288,7 @@ function emitPlannerProjectionTelemetry(
 
 async function runPlannerCall(
   dossier: PlannerDossier,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: RunPlannerOptions
 ): Promise<ReviewPlan> {
@@ -728,7 +728,7 @@ function plannerRepairDossierSummary(dossier: PlannerDossier, lenses: LensDescri
 
 async function runChunkedPlanner(
   dossier: PlannerDossier,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: RunPlannerOptions
 ): Promise<PlannerRunResult> {
@@ -1564,7 +1564,7 @@ function changedExcerpt(lines: DiffLine[]): string {
 }
 
 function isPolicyPath(filePath: string): boolean {
-  return filePath === "codeninja.toml" || filePath.startsWith(".codeninja/skills/");
+  return filePath === "codegenie.toml" || filePath.startsWith(".codegenie/skills/");
 }
 
 function truncate(input: string, maxChars: number): string {

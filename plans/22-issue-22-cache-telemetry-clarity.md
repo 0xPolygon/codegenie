@@ -5,7 +5,7 @@ Planned at: a47a23b, 2026-06-14
 
 ## Problem
 
-Run and eval telemetry currently make it too easy to confuse local Codeninja model-call caching with provider-side prompt caching. This is especially confusing during evals where `--cache` controls local reuse, while provider metrics may still report cache reads/writes and affect cost.
+Run and eval telemetry currently make it too easy to confuse local Codegenie model-call caching with provider-side prompt caching. This is especially confusing during evals where `--cache` controls local reuse, while provider metrics may still report cache reads/writes and affect cost.
 
 This complements Issue 15 by applying the terminology consistently across run summaries, eval summaries, and comparison output.
 

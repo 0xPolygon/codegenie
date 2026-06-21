@@ -1,10 +1,10 @@
 {
-  "name": "codeninja",
+  "name": "codegenie",
   "version": "0.1.0",
-  "description": "High-signal AI code review for pull requests.",
+  "description": "High-signal AI code review agent",
   "type": "module",
   "bin": {
-    "codeninja": "./dist/cli/main.js"
+    "codegenie": "./dist/cli/main.js"
   },
   "files": [
     "dist",

@@ -7,7 +7,7 @@ Recommended priority: high, because the review-question workflow hid a real corr
 
 ## Problem
 
-codeninja's current Stage 5-8 design lets the planner emit `reviewQuestions`, `obligation`s, and `riskAreaDispositions`. Stage 6 attaches those questions to packets, Stage 7 answers them, and Stage 8 may resolve unresolved primary questions.
+codegenie's current Stage 5-8 design lets the planner emit `reviewQuestions`, `obligation`s, and `riskAreaDispositions`. Stage 6 attaches those questions to packets, Stage 7 answers them, and Stage 8 may resolve unresolved primary questions.
 
 This has become too much control flow for the planner.
 
@@ -98,7 +98,7 @@ Relevant source files:
 - `src/pipeline/lens-runner.ts` normalizes `answeredQuestions`, downgrades obligation answers, and turns partial question answers into follow-up hints.
 - `src/pipeline/system-reviewer.ts` builds Stage 8 tasks from repeated follow-up hints and unresolved primary review questions.
 - `src/pipeline/review-runner.ts` records review-question lifecycle artifacts and metrics.
-- `README.md` and `specs/projects/codeninja/functional_spec.md` still describe planner questions as part of the main pipeline.
+- `README.md` and `specs/projects/codegenie/functional_spec.md` still describe planner questions as part of the main pipeline.
 
 Representative current code facts:
 
@@ -168,8 +168,8 @@ In scope:
 - `tests/phase4-llm.test.ts`
 - `tests/uncertainty-promotion.test.ts`
 - `README.md`
-- `specs/projects/codeninja/functional_spec.md`
-- `specs/projects/codeninja/architecture.md` if it describes planner questions as control flow
+- `specs/projects/codegenie/functional_spec.md`
+- `specs/projects/codegenie/architecture.md` if it describes planner questions as control flow
 
 Out of scope:
 
@@ -216,7 +216,7 @@ Notes:
 Prompt shape:
 
 ```text
-You are Stage 5, the lightweight review scout for codeninja.
+You are Stage 5, the lightweight review scout for codegenie.
 
 Your job is not to review the code and not to find bugs. Your job is to read the deterministic PR inventory and produce a compact review plan that helps later stages spend attention well.
 
@@ -309,7 +309,7 @@ Packet prompt guidance should say:
 - If a concern is concrete enough, emit a candidate finding and let Stage 9 verify it.
 - Do not suppress a concrete changed-code concern just because a broad planner emphasis appears locally consistent.
 
-This returns Codeninja to the intended architecture: generate liberally enough in Stage 7, verify strictly in Stage 9.
+This returns Codegenie to the intended architecture: generate liberally enough in Stage 7, verify strictly in Stage 9.
 
 ### Stage 8: Narrow Cross-File Follow-Up
 
@@ -496,8 +496,8 @@ Update `src/pipeline/human-attention.ts` and `src/pipeline/composer.ts` only if 
 Update:
 
 - `README.md`
-- `specs/projects/codeninja/functional_spec.md`
-- `specs/projects/codeninja/architecture.md` if it mentions planner review questions
+- `specs/projects/codegenie/functional_spec.md`
+- `specs/projects/codegenie/architecture.md` if it mentions planner review questions
 
 Docs should say:
 

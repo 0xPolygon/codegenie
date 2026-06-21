@@ -1,5 +1,5 @@
 package main
 
 func main() {
-	_ = "CODENINJA_FAKE_FINDING"
+	_ = "CODEGENIE_FAKE_FINDING"
 }

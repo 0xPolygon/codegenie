@@ -1,6 +1,6 @@
 import { Type } from "@earendil-works/pi-ai";
 import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector, ToolResultMeta } from "../types.js";
-import { CodeninjaError, isCodeninjaError } from "../util/errors.js";
+import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 
@@ -77,7 +77,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { path: string; symbolName?: string; line?: number; source?: SymbolLookupSourceSelector };
         if ((input.symbolName === undefined) === (input.line === undefined)) {
-          throw new CodeninjaError("invalid_args", "read_symbol requires exactly one of symbolName or line");
+          throw new CodegenieError("invalid_args", "read_symbol requires exactly one of symbolName or line");
         }
         const selector: { symbolName?: string; line?: number } = {};
         if (input.symbolName !== undefined) {
@@ -130,7 +130,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { packetId?: string; path?: string };
         if ((input.packetId === undefined) === (input.path === undefined)) {
-          throw new CodeninjaError("invalid_args", "read_diff_blocks requires exactly one of packetId or path");
+          throw new CodegenieError("invalid_args", "read_diff_blocks requires exactly one of packetId or path");
         }
         const result = await runWithoutFacadeRecording(tools, () => tools.readDiffBlocks(input));
         return { text: withMeta(result.blocks.join("\n\n"), result.meta), meta: result.meta };
@@ -242,7 +242,7 @@ async function wrapTool(signal: AbortSignal, run: () => Promise<ToolExecutionRes
     if (isCancellationError(error)) {
       throw error;
     }
-    if (isCodeninjaError(error)) {
+    if (isCodegenieError(error)) {
       return {
         text: `tool error: ${error.code}: ${error.message}`,
         isError: true,
@@ -267,10 +267,10 @@ function throwIfAborted(signal: AbortSignal): void {
   }
 }
 
-function abortError(signal: AbortSignal): CodeninjaError {
+function abortError(signal: AbortSignal): CodegenieError {
   const reason = signal.reason;
   const timedOut = reason instanceof Error && reason.message.toLowerCase().includes("timeout");
-  return new CodeninjaError("llm_call_failed", timedOut ? "repository tool timed out" : "repository tool aborted", {
+  return new CodegenieError("llm_call_failed", timedOut ? "repository tool timed out" : "repository tool aborted", {
     recoverable: true,
     context: { reason: timedOut ? "timeout" : "aborted" },
     cause: reason
@@ -278,7 +278,7 @@ function abortError(signal: AbortSignal): CodeninjaError {
 }
 
 function isCancellationError(error: unknown): boolean {
-  return isCodeninjaError(error) && error.code === "llm_call_failed";
+  return isCodegenieError(error) && error.code === "llm_call_failed";
 }
 
 async function runWithoutFacadeRecording<T>(tools: RepositoryTools, run: () => Promise<T>): Promise<T> {

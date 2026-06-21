@@ -1,7 +1,7 @@
 import picomatch from "picomatch";
 import type {
   ClassificationPathRule,
-  CodeninjaConfig,
+  CodegenieConfig,
   DiffFile,
   FileFacts,
   FileFilterDecision,
@@ -33,7 +33,7 @@ const detectionMemoByDecisions = new WeakMap<FileFilterDecision[], Map<string, F
 export async function filterDiffFiles(
   resolved: ResolvedReviewInput,
   diff: UnifiedDiff,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: ClassifierOptions = {}
 ): Promise<{ kept: DiffFile[]; decisions: FileFilterDecision[] }> {
@@ -87,7 +87,7 @@ export async function classifyChangedFiles(
   resolved: ResolvedReviewInput,
   kept: DiffFile[],
   decisions: FileFilterDecision[],
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: ClassifierOptions = {}
 ): Promise<FileFacts[]> {
@@ -192,7 +192,7 @@ export async function classifyChangedFiles(
 function filterDecision(
   file: DiffFile,
   detections: FileDetectionResult,
-  config: CodeninjaConfig
+  config: CodegenieConfig
 ): FileFilterDecision {
   if (detections.binary.value) {
     return skip(file, "binary file", detections.binary.provenance);
@@ -346,5 +346,5 @@ function addUnique(values: string[], value: string): void {
 }
 
 function isPolicyChange(filePath: string): boolean {
-  return filePath === "codeninja.toml" || filePath.startsWith(".codeninja/skills/");
+  return filePath === "codegenie.toml" || filePath.startsWith(".codegenie/skills/");
 }

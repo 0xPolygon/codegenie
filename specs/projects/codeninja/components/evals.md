@@ -6,14 +6,14 @@ status: complete
 
 ## Purpose And Scope
 
-The evals component implements `codeninja eval`: repeatable, end-to-end quality testing of the review pipeline against real repositories, fixture repositories, and previously captured run artifacts. It loads YAML eval cases, executes each case through the normal review engine (or re-scores captured artifacts), scores the results against the case's expectations with deterministic matching, attributes every missed expectation to the pipeline stage that lost it, writes incrementing run directories under the eval suite, and diffs each run against the previous run of the same case.
+The evals component implements `codegenie eval`: repeatable, end-to-end quality testing of the review pipeline against real repositories, fixture repositories, and previously captured run artifacts. It loads YAML eval cases, executes each case through the normal review engine (or re-scores captured artifacts), scores the results against the case's expectations with deterministic matching, attributes every missed expectation to the pipeline stage that lost it, writes incrementing run directories under the eval suite, and diffs each run against the previous run of the same case.
 
 This component owns:
 
-- The `codeninja eval` command surface: `--eval-dir`, `--cache` / `--no-cache`, and `--from-artifacts`.
+- The `codegenie eval` command surface: `--eval-dir`, `--cache` / `--no-cache`, and `--from-artifacts`.
 - Eval suite discovery, `EvalCase` YAML loading, and case validation, including the full matching semantics for `EvalFindingExpectation` (the type is defined in `architecture.md`; this doc elaborates its behavior and must not reshape it).
 - Per-case execution: repo resolution for external and fixture repositories, per-case review-setting overlays on top of config, cache toggling per run, and telemetry wiring into the eval run directory.
-- Incrementing `logs/<n>` run directories and their layout, including `info.json`, `out.log`, `codeninja-review.out.md`, the embedded `telemetry/` artifact set (the engine's full standard run directory, including `debug/` when debug traces are enabled), and comparison artifacts.
+- Incrementing `logs/<n>` run directories and their layout, including `info.json`, `out.log`, `codegenie-review.out.md`, the embedded `telemetry/` artifact set (the engine's full standard run directory, including `debug/` when debug traces are enabled), and comparison artifacts.
 - Scoring: the expectation-matching algorithm (field rules, glob and line-range-overlap and severity-ordering and regex semantics, deterministic assignment when findings and expectations match many-to-many, and `should_not_find` violations).
 - Stage-loss attribution: labeling each missed expectation with one of the four coarse loss labels — `missed-before-candidate-generation`, `lost-at-verification` (pre-gate or verifier), `lost-at-composition` (deduped, merged, or capped), or `partial-match` — by walking `candidate-findings.json`, `verification.json`, `final-selection.json`, and `final-findings.json`, with follow-up-hint presence recorded as supporting detail on the label.
 - Artifact replay for `--from-artifacts` and artifact-backed cases: re-scoring saved final findings and candidate findings against (possibly edited) expectations; no stages re-run, no repository required.
@@ -27,7 +27,7 @@ Explicitly not this component's responsibility:
 - Git, GitHub, and repository-tool mechanics; evals consume them through the engine (`components/repository_and_github.md`, `components/context_and_tools.md`).
 - GitHub posting. Eval runs must never post; the case schema offers no posting surface and the engine is always invoked without a posting plan.
 - LLM-judged scoring. V1 scoring is deterministic field matching only, per `architecture.md`. Semantic or LLM-assisted matching is deferred.
-- Fixture materialization tooling (cloning bundles, unpacking archives). V1 requires fixture paths to already be git worktrees; how they got there (CI clone, setup script) is outside codeninja.
+- Fixture materialization tooling (cloning bundles, unpacking archives). V1 requires fixture paths to already be git worktrees; how they got there (CI clone, setup script) is outside codegenie.
 - Stage-level replay (candidate-recall, merge-only), verifier/merge expectations (`VerifierExpectation`, `MergeExpectation`), and the fine-grained loss-label taxonomy — all deferred to Future Considerations (see architecture.md).
 
 ## Public Interface
@@ -35,10 +35,10 @@ Explicitly not this component's responsibility:
 ### CLI Surface
 
 ```bash
-codeninja eval --eval-dir /path/to/evals
-codeninja eval --eval-dir /path/to/evals --cache
-codeninja eval --eval-dir /path/to/evals --no-cache
-codeninja eval --from-artifacts /path/to/eval/logs/42
+codegenie eval --eval-dir /path/to/evals
+codegenie eval --eval-dir /path/to/evals --cache
+codegenie eval --eval-dir /path/to/evals --no-cache
+codegenie eval --from-artifacts /path/to/eval/logs/42
 ```
 
 Flag rules:
@@ -47,7 +47,7 @@ Flag rules:
 - `--from-artifacts <path>` replays a single previously captured eval run directory (`<suite>/logs/<n>`). `--eval-dir` and `--from-artifacts` are mutually exclusive; passing both is `invalid_args`.
 - `--cache` / `--no-cache` force the model-call cache on or off for every case in the invocation, overriding per-case `EvalCase.review.cache` and `config.cache.enabled`. Passing both is `invalid_args`.
 
-Exit codes (the functional spec's exit-code section covers `codeninja review`; eval semantics are defined here):
+Exit codes (the functional spec's exit-code section covers `codegenie review`; eval semantics are defined here):
 
 - `0`: every case ran and every expectation passed.
 - `1`: at least one case failed an expectation, recorded a `should_not_find` violation, failed a budget check, or errored during execution; scoring output was still produced for the cases that ran.
@@ -66,12 +66,12 @@ type EvalCommandOptions = {
   cache?: boolean
 }
 
-// Returns the process exit code (0 | 1 | 2). Throws CodeninjaError only for
+// Returns the process exit code (0 | 1 | 2). Throws CodegenieError only for
 // pre-run fatal conditions (invalid_args, config_error); per-case operational
 // failures are captured as case results with status "error".
 export async function runEvalCommand(
   options: EvalCommandOptions,
-  config: CodeninjaConfig
+  config: CodegenieConfig
 ): Promise<number>
 ```
 
@@ -82,13 +82,13 @@ type EvalSuite = {
   cases: Array<{ file: string; evalCase: EvalCase; caseHash: string }>
 }
 
-// Discovers and validates every case file. Throws CodeninjaError("config_error")
+// Discovers and validates every case file. Throws CodegenieError("config_error")
 // carrying ALL validation errors across all files (fail fast before any run).
 export async function loadEvalSuite(evalDir: string): Promise<EvalSuite>
 
 type EvalRunOptions = {
   cacheOverride?: boolean // from --cache/--no-cache
-  config: CodeninjaConfig
+  config: CodegenieConfig
 }
 
 // Executes one case (live review or artifact replay per the case), scores it,
@@ -292,7 +292,7 @@ type EvalScore = {
   // a should_not_find expectation but were correctly kept out of the report.
   nearViolations: Array<{ expectationId: string; findingId: string; artifact: string }>
   metrics: EvalRunMetrics
-  error?: { code: CodeninjaErrorCode; message: string }
+  error?: { code: CodegenieErrorCode; message: string }
 }
 
 type EvalRunInfo = {
@@ -371,7 +371,7 @@ type EvalArtifacts = {
 
 ### Error Conditions
 
-There are no eval-specific `CodeninjaErrorCode` members; evals maps onto existing codes:
+There are no eval-specific `CodegenieErrorCode` members; evals maps onto existing codes:
 
 - `invalid_args`: conflicting/missing flags; `--from-artifacts` path missing or lacking `info.json`; an artifact replay missing a file its mode requires.
 - `config_error`: eval case YAML parse or validation failures (cases are user-authored configuration); unresolvable `eval.defaultEvalDir`.
@@ -383,7 +383,7 @@ There are no eval-specific `CodeninjaErrorCode` members; evals maps onto existin
 ### Execution Overview
 
 ```text
-codeninja eval
+codegenie eval
   -> parse flags, load config (eval does not require cwd to be a git worktree)
   -> --from-artifacts? ── replay single run ──┐
   -> --eval-dir:                              │
@@ -397,7 +397,7 @@ codeninja eval
            artifacts case -> load source artifacts; re-score (no stages re-run)
          load artifacts from logs/<n>/telemetry/
          score (matching + attribution + budgets)  [pure, artifact-only]
-         write info.json, out.log, codeninja-review.out.md, debug views
+         write info.json, out.log, codegenie-review.out.md, debug views
          compare-to-previous (same case name) -> compare-to-previous.{json,txt}
          print per-case summary line + failures to stdout
   -> print suite totals; exit 0/1/2
@@ -426,7 +426,7 @@ Validation rules (all violations are collected across all case files and reporte
 - `titlePattern` / `failureModePattern` must compile as ECMAScript regular expressions; compilation failures are load-time errors.
 - `verifier` and `merge` blocks do not exist in the v1 `EvalCase`; their presence is an unknown-key validation error (verifier/merge expectations are deferred — see architecture.md Future Considerations).
 - `expect.maxPromptCharsByStage` keys must parse as numeric stage ids `1`–`11` (YAML keys are strings, e.g. `"7"`); values must be positive integers. All other `expect.*` values must be positive numbers (`minFindings` may be `0`).
-- `review.*` values must satisfy the same constraints the config schema applies to the corresponding `CodeninjaConfig` fields.
+- `review.*` values must satisfy the same constraints the config schema applies to the corresponding `CodegenieConfig` fields.
 
 A complete case, illustrating literal key mapping:
 
@@ -463,13 +463,13 @@ should_not_find:
 
 ### Per-Case Review Settings Overlay And Repo Resolution
 
-A live case invokes the review engine in-process — never via a forked implementation, and not as a subprocess. This requires two seams on the engine entrypoint, owned by `components/review_pipeline.md`: it must accept an explicit repository root (the eval command's cwd is the suite, not the reviewed repo) and an explicit run-artifact directory (so the engine writes its standard run directory at `logs/<n>/telemetry/` instead of `.codeninja/runs/<run-id>/`). The engine's artifact set, stage behavior, telemetry, and failure semantics are otherwise completely unchanged.
+A live case invokes the review engine in-process — never via a forked implementation, and not as a subprocess. This requires two seams on the engine entrypoint, owned by `components/review_pipeline.md`: it must accept an explicit repository root (the eval command's cwd is the suite, not the reviewed repo) and an explicit run-artifact directory (so the engine writes its standard run directory at `logs/<n>/telemetry/` instead of `.codegenie/runs/<run-id>/`). The engine's artifact set, stage behavior, telemetry, and failure semantics are otherwise completely unchanged.
 
-Config layering for a case run, reusing the existing precedence chain (CLI flags > environment > `codeninja.toml` > user-scoped config > defaults, with provider/model/reasoning keys trust-partitioned so repo `codeninja.toml` never supplies them):
+Config layering for a case run, reusing the existing precedence chain (CLI flags > environment > `codegenie.toml` > user-scoped config > defaults, with provider/model/reasoning keys trust-partitioned so repo `codegenie.toml` never supplies them):
 
 1. Built-in defaults.
 2. User-scoped config.
-3. The reviewed repository's `codeninja.toml`, loaded from the case repo root with normal trust partitioning (safe keys only).
+3. The reviewed repository's `codegenie.toml`, loaded from the case repo root with normal trust partitioning (safe keys only).
 4. The eval case's `review.*` fields, applied at CLI-flag strength — the case file is user-authored and user-invoked, which satisfies the user-level opt-in rule for out-of-repo `cacheDir`, run-dir placement, and provider/model/reasoning overrides.
 
 `EvalCase.review` field mapping:
@@ -482,7 +482,7 @@ Config layering for a case run, reusing the existing precedence chain (CLI flags
 | `concurrency` | `review.concurrency` | |
 | `verify` | `review.verify` | |
 | `cache` | `cache.enabled` | Overridden by the eval CLI flag; see Cache Wiring. |
-| `cacheDir` | `cache.dir` | Default: engine default (`.codeninja/cache` inside the reviewed repo). |
+| `cacheDir` | `cache.dir` | Default: engine default (`.codegenie/cache` inside the reviewed repo). |
 | `debug` | `telemetry.debugTrace` | Produces the engine's `telemetry/debug/` traces in the run dir. |
 | `provider` | `llm.provider` | Applied at CLI-flag strength (user-authored case file satisfies the trust partition). |
 | `model` | `llm.model` | Same. |
@@ -500,7 +500,7 @@ Run directories follow the architecture's layout exactly:
 <eval-suite>/logs/<n>/
   info.json                  # EvalRunInfo, including the full EvalScore
   out.log                    # eval runner's structured log for this case run
-  codeninja-review.out.md    # rendered Markdown review output
+  codegenie-review.out.md    # rendered Markdown review output
   telemetry/                 # the engine's full standard run-directory artifact set
     run.json
     run.log
@@ -529,7 +529,7 @@ Rules:
 
 - Run numbers are unpadded positive integers (`logs/1`, `logs/2`, …), ordered numerically, never lexicographically. Allocation scans existing numeric children, takes `max + 1` (starting at `1`), and claims the directory with `mkdir` — on `EEXIST` (a concurrent invocation), it retries with the next number. Non-numeric children of the logs dir are ignored.
 - `telemetry/` is the engine's full standard run directory written in place, per `architecture.md`'s eval layout — evals never suppresses or reshapes it. Attribution uses `coverage.json` and `review-plan.json` as enrichment when present.
-- `codeninja-review.out.md` is the Markdown rendering of the final `ReviewResult`, written by the eval runner (cases carry no output-format setting). In artifact replay it is copied from the source run when present.
+- `codegenie-review.out.md` is the Markdown rendering of the final `ReviewResult`, written by the eval runner (cases carry no output-format setting). In artifact replay it is copied from the source run when present.
 - `out.log` is the eval runner's own structured log (case resolution, settings overlay, stage execution, scoring summary, compare results), using the standard `Logger` with stage `0`; the engine's chronological log remains `telemetry/run.log`.
 - `info.json` is the single run-info document: it embeds the resolved case snapshot, the case hash, repo identity and reviewed SHAs, the run mode (`live` / `replay`), cache resolution, timing, and the full `EvalScore`. It is written last (temp-file-then-rename) so a complete `info.json` marks a complete run.
 - Debug traces live in `telemetry/debug/` with the engine run directory's own layout (`llm-calls/<call-id>.json`, `tool-calls/<tool-call-id>.json`), present when `review.debug` enables `telemetry.debugTrace`. Evals derives no separate prompt/result views; the engine's debug artifacts are consumed as-is.
@@ -700,7 +700,7 @@ Behavior:
 
 - `--from-artifacts <suite>/logs/<n>` allocates the next run number **in the same logs directory**, so replay runs sit beside their source and compare-to-previous naturally diffs against it. The case definition is re-read from the recorded `caseFile` when it still exists (supporting the expectation-iteration workflow: edit YAML, re-score captured artifacts), falling back to the `info.json` embedded snapshot; `info.json.replay.caseSource` records which was used.
 - An artifact-backed suite case (`artifacts.path`) re-scores the referenced run directory's `telemetry/` artifact set the same way. Both entry points are kept deliberately: suite-pinned artifact cases serve CI regression against frozen artifacts; `--from-artifacts` serves ad-hoc re-scoring.
-- Consumed artifacts are copied from the source into the new run's `telemetry/` so every run directory is self-contained for scoring, future replays, and comparison; `codeninja-review.out.md` is copied when present.
+- Consumed artifacts are copied from the source into the new run's `telemetry/` so every run directory is self-contained for scoring, future replays, and comparison; `codegenie-review.out.md` is copied when present.
 - `info.json.mode` records `"replay"`; expectation results are flagged `fromReplayedArtifacts: true`.
 - Required artifacts: `final-findings.json` and `candidate-findings.json` — missing either fails the case with `invalid_args` naming the file. `verification.json` and `final-selection.json` are strongly expected for attribution and degrade to `subReason: "unrecorded"` notes when absent; the enrichment artifacts degrade per the reader contract.
 - The model-call cache is irrelevant to artifact replay (no model calls); cache flags affect live cases only.
@@ -758,7 +758,7 @@ This component depends on:
 
 Depends on this component:
 
-- Nothing in the review path — the dependency is strictly one-way; `codeninja review` must build and run without `src/evals/*`.
+- Nothing in the review path — the dependency is strictly one-way; `codegenie review` must build and run without `src/evals/*`.
 - Development and CI workflows: private real-repo regression suites, public fixture suites in CI (exit codes 0/1/2), and skill/lens/prompt iteration driven by stage-loss counts and compare-to-previous reports. The eval suite is a compounding asset: models swap underneath it.
 
 ## Test Plan

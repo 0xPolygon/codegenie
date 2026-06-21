@@ -17,16 +17,16 @@ Telemetry currently uses the word `cache` for more than one concept. For example
 "cacheWriteTokens": 2060697
 ```
 
-The `cache.disabled` count refers to Codeninja's local response cache, while `cacheReadTokens` and `cacheWriteTokens` refer to provider prompt-cache accounting. Seeing local cache disabled next to provider cache usage makes it look contradictory.
+The `cache.disabled` count refers to Codegenie's local response cache, while `cacheReadTokens` and `cacheWriteTokens` refer to provider prompt-cache accounting. Seeing local cache disabled next to provider cache usage makes it look contradictory.
 
 This is not a review-quality bug, but it makes cost telemetry harder to reason about during evals and production tuning. The fix should be naming/schema cleanup only; it must not change cost calculations.
 
 ## Plan
 
-Implementation note: codeninja uses `localModelCallCache` as the canonical field name instead of the earlier `localResponseCache` wording. This matches the actual cache contract: complete model-call responses keyed by normalized model request. The legacy `cache` field remains as a deprecated alias for compatibility.
+Implementation note: codegenie uses `localModelCallCache` as the canonical field name instead of the earlier `localResponseCache` wording. This matches the actual cache contract: complete model-call responses keyed by normalized model request. The legacy `cache` field remains as a deprecated alias for compatibility.
 
 1. Split cache concepts in telemetry:
-   - Add `localModelCallCache` for Codeninja's own cached model-call responses.
+   - Add `localModelCallCache` for Codegenie's own cached model-call responses.
    - Add `providerPromptCache` for provider-reported prompt-cache read/write tokens and costs.
    - Keep both in `run.json`, `telemetry.json`, `model-calls-summary.json`, and `cost-profile.json`.
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CliDisplayExit, parseReviewCommand } from "../src/cli/review-command.js";
-import { CodeninjaError } from "../src/util/errors.js";
+import { CodegenieError } from "../src/util/errors.js";
 
 describe("review command", () => {
   it("treats top-level help as a successful display exit", () => {
@@ -32,7 +32,7 @@ describe("review command", () => {
 
     expect(() =>
       parseReviewCommand(["review", "--pr", "123", "--branch", "feature"], ctx)
-    ).toThrow(CodeninjaError);
+    ).toThrow(CodegenieError);
     expect(() =>
       parseReviewCommand(["review", "--pr", "123", "--branch", "feature"], ctx)
     ).toThrow(/mutually exclusive/);
@@ -149,7 +149,7 @@ describe("review command", () => {
   it("loads repo config from the git worktree root when invoked inside a subdirectory", () => {
     const ctx = testContext();
     execFileSync("git", ["init"], { cwd: ctx.repoRoot, stdio: "ignore" });
-    writeFileSync(path.join(ctx.repoRoot, "codeninja.toml"), "[review]\ndepth = \"deep\"\n");
+    writeFileSync(path.join(ctx.repoRoot, "codegenie.toml"), "[review]\ndepth = \"deep\"\n");
     mkdirSync(path.join(ctx.repoRoot, "src", "nested"), { recursive: true });
 
     const parsed = parseReviewCommand(["review", "--branch", "feature"], {
@@ -185,8 +185,8 @@ describe("review command", () => {
 
 function testContext(): { repoRoot: string; homeOverride: string; env: NodeJS.ProcessEnv } {
   return {
-    repoRoot: mkdtempSync(path.join(tmpdir(), "codeninja-repo-")),
-    homeOverride: mkdtempSync(path.join(tmpdir(), "codeninja-home-")),
+    repoRoot: mkdtempSync(path.join(tmpdir(), "codegenie-repo-")),
+    homeOverride: mkdtempSync(path.join(tmpdir(), "codegenie-home-")),
     env: {}
   };
 }

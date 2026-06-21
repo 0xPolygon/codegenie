@@ -1,5 +1,5 @@
 import type {
-  CodeninjaConfig,
+  CodegenieConfig,
   GitHubClient,
   PullRequestMetadata,
   ResolvedReviewInput,
@@ -7,7 +7,7 @@ import type {
   ReviewInput
 } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 import { createGitClient, type InternalGitClient } from "./git-client.js";
 import { createGitHubClient } from "../github/github-client.js";
 
@@ -32,7 +32,7 @@ const DEEPEN_STEPS = [100, 1000] as const;
 
 export async function resolveReviewCommandTarget(
   target: ReviewCommandTarget,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: ResolveOptions = {}
 ): Promise<ResolvedReviewInput> {
@@ -42,7 +42,7 @@ export async function resolveReviewCommandTarget(
     await ensureWorktree(git);
     const currentBranch = await git.currentBranch();
     if (!currentBranch) {
-      throw new CodeninjaError(
+      throw new CodegenieError(
         "invalid_args",
         "HEAD is detached; pass an explicit review target (`--pr`, `--branch`, or a commit)."
       );
@@ -69,7 +69,7 @@ export async function resolveReviewCommandTarget(
       );
     }
     if (target.baseBranch !== undefined) {
-      throw new CodeninjaError(
+      throw new CodegenieError(
         "invalid_args",
         `--base can only be used when '${target.ref}' resolves as a branch; use <base>...<head> for explicit head/base review.`
       );
@@ -82,7 +82,7 @@ export async function resolveReviewCommandTarget(
 
 export async function resolveReviewInput(
   input: ReviewInput,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: ResolveOptions = {}
 ): Promise<ResolvedReviewInput> {
@@ -103,7 +103,7 @@ export async function resolveReviewInput(
 
 async function ensureWorktree(git: InternalGitClient): Promise<void> {
   if (!(await git.isInsideWorktree())) {
-    throw new CodeninjaError("not_git_worktree", "codeninja review must run inside a git worktree");
+    throw new CodegenieError("not_git_worktree", "codegenie review must run inside a git worktree");
   }
 }
 
@@ -181,7 +181,7 @@ async function ensurePrCommitsAvailable(
 
     remote = await selectPrRemote(git, pr);
     if (!remote) {
-      throw new CodeninjaError("git_fetch_failed", "no git remote available to fetch PR commits");
+      throw new CodegenieError("git_fetch_failed", "no git remote available to fetch PR commits");
     }
 
     if (!headExists) {
@@ -212,7 +212,7 @@ async function ensurePrCommitsAvailable(
       }
     }
 
-    throw new CodeninjaError(
+    throw new CodegenieError(
       "git_fetch_failed",
       `failed to fetch PR #${pr.number} commits (${pr.baseSha}..${pr.headSha})`
     );
@@ -225,7 +225,7 @@ async function fetchPrHead(
   remote: string,
   telemetry: TelemetryRecorder
 ): Promise<void> {
-  const refspec = `+refs/pull/${pr.number}/head:refs/codeninja/pr/${pr.number}/head`;
+  const refspec = `+refs/pull/${pr.number}/head:refs/codegenie/pr/${pr.number}/head`;
   await git.fetchFrom(remote, refspec);
   telemetry.event({
     stage: 1,
@@ -241,7 +241,7 @@ async function fetchPrBase(
   remote: string,
   telemetry: TelemetryRecorder
 ): Promise<void> {
-  const directRefspec = `+${pr.baseSha}:refs/codeninja/pr/${pr.number}/base`;
+  const directRefspec = `+${pr.baseSha}:refs/codegenie/pr/${pr.number}/base`;
   try {
     await git.fetchFrom(remote, directRefspec);
     telemetry.event({
@@ -263,9 +263,9 @@ async function fetchPrBase(
   }
 
   if (pr.baseRefName.trim().length === 0) {
-    throw new CodeninjaError("git_fetch_failed", `failed to fetch PR #${pr.number} base commit ${pr.baseSha}`);
+    throw new CodegenieError("git_fetch_failed", `failed to fetch PR #${pr.number} base commit ${pr.baseSha}`);
   }
-  const branchRefspec = `+refs/heads/${pr.baseRefName}:refs/codeninja/pr/${pr.number}/base`;
+  const branchRefspec = `+refs/heads/${pr.baseRefName}:refs/codegenie/pr/${pr.number}/base`;
   await git.fetchFrom(remote, branchRefspec);
   telemetry.event({
     stage: 1,
@@ -323,7 +323,7 @@ export async function cleanupPullRequestRefs(
   timing: "start" | "end"
 ): Promise<void> {
   try {
-    const refs = await git.listRefs(`refs/codeninja/pr/${prNumber}`);
+    const refs = await git.listRefs(`refs/codegenie/pr/${prNumber}`);
     for (const ref of refs) {
       await git.deleteRef(ref);
     }
@@ -347,7 +347,7 @@ export async function cleanupPullRequestRefs(
 
 async function resolveBranchReview(
   input: Extract<ReviewInput, { mode: "branch" }>,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   git: InternalGitClient,
   opts: { defaultBranchName?: string; preResolvedBranch?: ResolvedBranch } = {}
@@ -355,12 +355,12 @@ async function resolveBranchReview(
   const repoRoot = await git.repoRoot();
   const branch = opts.preResolvedBranch ?? await resolveBranchWithShallowRecovery(input.branchName, git, telemetry);
   if (!branch) {
-    throw new CodeninjaError("git_ref_missing", `review branch '${input.branchName}' could not be resolved`);
+    throw new CodegenieError("git_ref_missing", `review branch '${input.branchName}' could not be resolved`);
   }
 
   const base = await resolveBaseBranch(input, config, git, telemetry);
   if (opts.defaultBranchName !== undefined && opts.defaultBranchName === base.shortName) {
-    throw new CodeninjaError(
+    throw new CodegenieError(
       "invalid_args",
       `current branch ${opts.defaultBranchName} is the base branch; pass an explicit review target.`
     );
@@ -410,7 +410,7 @@ async function resolveBranchReview(
 
 async function resolveBaseBranch(
   input: Extract<ReviewInput, { mode: "branch" }>,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   git: InternalGitClient,
   telemetry: TelemetryRecorder
 ): Promise<ResolvedBranch> {
@@ -428,7 +428,7 @@ async function resolveBaseBranch(
     }
   }
 
-  throw new CodeninjaError(
+  throw new CodegenieError(
     "git_base_branch_unresolved",
     "no base branch could be resolved; pass --base or configure git.baseBranch"
   );
@@ -442,7 +442,7 @@ async function resolveRequiredBase(
 ): Promise<ResolvedBranch> {
   const resolved = await resolveBranchWithShallowRecovery(branchName, git, telemetry);
   if (!resolved) {
-    throw new CodeninjaError(
+    throw new CodegenieError(
       "git_base_branch_unresolved",
       `${source} '${branchName}' could not be resolved`
     );
@@ -642,7 +642,7 @@ async function firstParentWithShallowRecovery(
     return undefined;
   }
   if (!(await git.isShallow())) {
-    throw new CodeninjaError("git_ref_missing", `parent commit ${recordedParents[0]} is not available`);
+    throw new CodegenieError("git_ref_missing", `parent commit ${recordedParents[0]} is not available`);
   }
 
   let fetched = false;
@@ -741,11 +741,11 @@ async function primaryRemote(git: InternalGitClient): Promise<string | undefined
 }
 
 function isShallowRetryable(error: unknown): boolean {
-  return error instanceof CodeninjaError && error.code === "git_ref_missing";
+  return error instanceof CodegenieError && error.code === "git_ref_missing";
 }
 
-function shallowUnresolved(cause: unknown): CodeninjaError {
-  return new CodeninjaError(
+function shallowUnresolved(cause: unknown): CodegenieError {
+  return new CodegenieError(
     "git_ref_missing",
     "repository is shallow; run `git fetch --unshallow` (or fetch more history) and retry",
     { cause }

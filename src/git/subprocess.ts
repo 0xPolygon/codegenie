@@ -3,14 +3,14 @@ import type { Readable } from "node:stream";
 import { execa } from "execa";
 import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import { stripCredentials } from "../telemetry/redaction.js";
-import { CodeninjaError, type CodeninjaErrorCode } from "../util/errors.js";
+import { CodegenieError, type CodegenieErrorCode } from "../util/errors.js";
 
 export type GitCommandOptions = {
   stripFinalNewline?: boolean;
   timeoutMs?: number;
   network?: boolean;
   allowedExitCodes?: number[];
-  errorCode?: CodeninjaErrorCode;
+  errorCode?: CodegenieErrorCode;
   input?: string | Uint8Array | Readable;
   maxBuffer?: number;
 };
@@ -19,7 +19,7 @@ export type GitCappedCommandOptions = {
   maxBytes: number;
   maxLines: number;
   timeoutMs?: number;
-  errorCode?: CodeninjaErrorCode;
+  errorCode?: CodegenieErrorCode;
   allowedExitCodes?: number[];
 };
 
@@ -105,7 +105,7 @@ export async function runGitCapped(
       clearTimeout(timeout);
       settled = true;
       reject(
-        new CodeninjaError(errorCode, commandFailureMessage("git", args, error.message), {
+        new CodegenieError(errorCode, commandFailureMessage("git", args, error.message), {
           context: scrubSubprocessValue("git", { command: "git", args, error: error.message }),
           cause: error
         })
@@ -125,7 +125,7 @@ export async function runGitCapped(
       }
       const detail = Buffer.concat(stderrChunks).toString("utf8").trim() || `exit ${code ?? signal ?? "unknown"}`;
       reject(
-        new CodeninjaError(errorCode, commandFailureMessage("git", args, detail), {
+        new CodegenieError(errorCode, commandFailureMessage("git", args, detail), {
           context: scrubSubprocessValue("git", { command: "git", args, exitCode: code, signal, stderr: detail })
         })
       );
@@ -163,7 +163,7 @@ async function runCommand(
     }
 
     const detail = subprocessFailureDetail(result);
-    throw new CodeninjaError(errorCode, commandFailureMessage(command, args, detail), {
+    throw new CodegenieError(errorCode, commandFailureMessage(command, args, detail), {
       context: scrubSubprocessValue(command, {
         command,
         args,
@@ -177,10 +177,10 @@ async function runCommand(
       })
     });
   } catch (error) {
-    if (error instanceof CodeninjaError) {
+    if (error instanceof CodegenieError) {
       throw error;
     }
-    throw new CodeninjaError(errorCode, commandFailureMessage(command, args, errorMessage(error)), {
+    throw new CodegenieError(errorCode, commandFailureMessage(command, args, errorMessage(error)), {
       context: scrubSubprocessValue(command, {
         command,
         args,
@@ -234,83 +234,83 @@ function subprocessFailureDetail(result: {
 
 export function assertSafeRef(ref: string, label = "ref"): void {
   if (typeof ref !== "string" || ref.length === 0) {
-    throw new CodeninjaError("invalid_args", `${label} must be non-empty`);
+    throw new CodegenieError("invalid_args", `${label} must be non-empty`);
   }
   if (ref.startsWith("-")) {
-    throw new CodeninjaError("invalid_args", `${label} must not start with '-'`);
+    throw new CodegenieError("invalid_args", `${label} must not start with '-'`);
   }
   if (ref === "@") {
-    throw new CodeninjaError("invalid_args", `${label} is not a valid git ref`);
+    throw new CodegenieError("invalid_args", `${label} is not a valid git ref`);
   }
   if (/[\u0000-\u001f\u007f\s]/u.test(ref)) {
-    throw new CodeninjaError("invalid_args", `${label} contains invalid whitespace or control characters`);
+    throw new CodegenieError("invalid_args", `${label} contains invalid whitespace or control characters`);
   }
   if (ref.includes("..") || ref.includes("@{")) {
-    throw new CodeninjaError("invalid_args", `${label} is not a valid git ref`);
+    throw new CodegenieError("invalid_args", `${label} is not a valid git ref`);
   }
   if (/[~^:?*[\\]/u.test(ref)) {
-    throw new CodeninjaError("invalid_args", `${label} contains invalid git ref characters`);
+    throw new CodegenieError("invalid_args", `${label} contains invalid git ref characters`);
   }
   if (ref.startsWith("/") || ref.endsWith("/") || ref.includes("//")) {
-    throw new CodeninjaError("invalid_args", `${label} is not a valid git ref`);
+    throw new CodegenieError("invalid_args", `${label} is not a valid git ref`);
   }
   if (ref.endsWith(".") || ref.endsWith(".lock")) {
-    throw new CodeninjaError("invalid_args", `${label} is not a valid git ref`);
+    throw new CodegenieError("invalid_args", `${label} is not a valid git ref`);
   }
   for (const part of ref.split("/")) {
     if (part.length === 0 || part.startsWith(".") || part.endsWith(".lock")) {
-      throw new CodeninjaError("invalid_args", `${label} is not a valid git ref`);
+      throw new CodegenieError("invalid_args", `${label} is not a valid git ref`);
     }
   }
 }
 
 export function assertSafePath(path: string, label = "path"): void {
   if (typeof path !== "string" || path.length === 0) {
-    throw new CodeninjaError("invalid_args", `${label} must be non-empty`);
+    throw new CodegenieError("invalid_args", `${label} must be non-empty`);
   }
   if (path.startsWith("-")) {
-    throw new CodeninjaError("invalid_args", `${label} must not start with '-'`);
+    throw new CodegenieError("invalid_args", `${label} must not start with '-'`);
   }
   if (path.includes("\0")) {
-    throw new CodeninjaError("invalid_args", `${label} contains a NUL byte`);
+    throw new CodegenieError("invalid_args", `${label} contains a NUL byte`);
   }
 }
 
 export function assertSafePathspec(pathspec: string, label = "pathspec"): void {
   if (typeof pathspec !== "string" || pathspec.length === 0) {
-    throw new CodeninjaError("invalid_args", `${label} must be non-empty`);
+    throw new CodegenieError("invalid_args", `${label} must be non-empty`);
   }
   if (pathspec.includes("\0")) {
-    throw new CodeninjaError("invalid_args", `${label} contains a NUL byte`);
+    throw new CodegenieError("invalid_args", `${label} contains a NUL byte`);
   }
 }
 
 export function assertSafeGlob(glob: string, label = "glob"): void {
   if (typeof glob !== "string" || glob.length === 0) {
-    throw new CodeninjaError("invalid_args", `${label} must be non-empty`);
+    throw new CodegenieError("invalid_args", `${label} must be non-empty`);
   }
   if (glob.includes("\0")) {
-    throw new CodeninjaError("invalid_args", `${label} contains a NUL byte`);
+    throw new CodegenieError("invalid_args", `${label} contains a NUL byte`);
   }
 }
 
 export function assertSafeRefspec(refspec: string, label = "refspec"): void {
   if (typeof refspec !== "string" || refspec.length === 0) {
-    throw new CodeninjaError("invalid_args", `${label} must be non-empty`);
+    throw new CodegenieError("invalid_args", `${label} must be non-empty`);
   }
   if (refspec.startsWith("-")) {
-    throw new CodeninjaError("invalid_args", `${label} must not start with '-'`);
+    throw new CodegenieError("invalid_args", `${label} must not start with '-'`);
   }
   const withoutForce = refspec.startsWith("+") ? refspec.slice(1) : refspec;
   if (withoutForce.length === 0) {
-    throw new CodeninjaError("invalid_args", `${label} must include a ref`);
+    throw new CodegenieError("invalid_args", `${label} must include a ref`);
   }
   const parts = withoutForce.split(":");
   if (parts.length > 2) {
-    throw new CodeninjaError("invalid_args", `${label} must be a bare ref or <src>:<dst>`);
+    throw new CodegenieError("invalid_args", `${label} must be a bare ref or <src>:<dst>`);
   }
   if (parts.some((part) => part.length === 0)) {
-    throw new CodeninjaError("invalid_args", `${label} must not contain empty ref components`);
+    throw new CodegenieError("invalid_args", `${label} must not contain empty ref components`);
   }
   for (const part of parts) {
     assertSafeRef(part, label);

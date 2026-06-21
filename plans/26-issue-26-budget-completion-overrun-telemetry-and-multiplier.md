@@ -5,7 +5,7 @@ Planned from: budget/completeness review after plan 25, 2026-06-15
 
 ## Problem
 
-codeninja already tracks token usage, model calls, coverage, budget stops, and partial review status. It also already avoids silent coverage gaps: unreviewed hunks, failed packet reviews, incomplete verification, and budget stops are disclosed.
+codegenie already tracks token usage, model calls, coverage, budget stops, and partial review status. It also already avoids silent coverage gaps: unreviewed hunks, failed packet reviews, incomplete verification, and budget stops are disclosed.
 
 However, the budget model is still too coarse for high-quality large reviews:
 

@@ -17,12 +17,12 @@ import type {
   EvalScore,
   FinalFinding
 } from "../src/types.js";
-import { CodeninjaError } from "../src/util/errors.js";
+import { CodegenieError } from "../src/util/errors.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("eval suite validation", () => {
   it("rejects unknown keys, duplicate expectation ids, and invalid source shapes", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-suite-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-suite-"));
     writeFileSync(path.join(suiteDir, "bad.yml"), [
       "name: bad",
       "repo:",
@@ -44,7 +44,7 @@ describe("eval suite validation", () => {
   });
 
   it("rejects command fields on artifact-backed cases", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-artifact-command-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-artifact-command-"));
     writeFileSync(path.join(suiteDir, "bad.yml"), [
       "name: artifact-command",
       "artifacts:",
@@ -67,7 +67,7 @@ describe("eval suite validation", () => {
   });
 
   it("rejects relative repo.external paths", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-relative-external-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-relative-external-"));
     writeFileSync(path.join(suiteDir, "bad.yml"), [
       "name: relative-external",
       "repo:",
@@ -88,7 +88,7 @@ describe("eval suite validation", () => {
   });
 
   it("accepts budget multiplier and budget/completeness expectations", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-budget-fields-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-budget-fields-"));
     writeFileSync(path.join(suiteDir, "budget.yml"), [
       "name: budget-fields",
       "artifacts:",
@@ -119,7 +119,7 @@ describe("eval suite validation", () => {
   });
 
   it("accepts pinned head/base eval commands", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-head-base-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-head-base-"));
     writeFileSync(path.join(suiteDir, "head.yml"), [
       "name: head-base",
       "repo:",
@@ -140,7 +140,7 @@ describe("eval suite validation", () => {
   });
 
   it("rejects head eval commands without a base ref", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-head-missing-base-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-head-missing-base-"));
     writeFileSync(path.join(suiteDir, "head.yml"), [
       "name: head-missing-base",
       "repo:",
@@ -162,7 +162,7 @@ describe("eval suite validation", () => {
   });
 
   it("accepts optional positive expectations without failing the suite when unmatched", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-optional-expectation-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-optional-expectation-"));
     writeFileSync(path.join(suiteDir, "optional.yml"), [
       "name: optional-expectation",
       "artifacts:",
@@ -247,7 +247,7 @@ describe("eval suite validation", () => {
   });
 
   it("accepts eval llm overrides and preserves legacy review llm fields", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-llm-fields-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-llm-fields-"));
     writeFileSync(path.join(suiteDir, "llm.yml"), [
       "name: llm-fields",
       "artifacts:",
@@ -284,7 +284,7 @@ describe("eval suite validation", () => {
   });
 
   it("rejects non-positive eval llm maxConcurrentCalls", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-llm-invalid-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-llm-invalid-"));
     writeFileSync(path.join(suiteDir, "bad.yml"), [
       "name: invalid-llm-concurrency",
       "artifacts:",
@@ -1114,7 +1114,7 @@ describe("eval compare", () => {
 
 describe("eval artifacts", () => {
   it("loads packet ids from top-level hint telemetry events", async () => {
-    const telemetry = mkdtempSync(path.join(tmpdir(), "codeninja-hints-"));
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-hints-"));
     writeArtifactSet(telemetry, [], []);
     writeFileSync(path.join(telemetry, "events.jsonl"), `${JSON.stringify({
       runId: "run",
@@ -1140,7 +1140,7 @@ describe("eval artifacts", () => {
 
 describe("artifact replay", () => {
   it("re-scores saved artifacts, writes a new run, and compares to the previous run", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-replay-suite-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-replay-suite-"));
     const logsDir = path.join(suiteDir, "logs");
     const sourceRun = path.join(logsDir, "1");
     const telemetry = path.join(sourceRun, "telemetry");
@@ -1167,7 +1167,7 @@ describe("artifact replay", () => {
       caseHash: "old",
       caseSnapshot: evalCase,
       mode: "replay",
-      cache: { enabled: false, source: "config", dir: ".codeninja/cache" },
+      cache: { enabled: false, source: "config", dir: ".codegenie/cache" },
       startedAt: "2026-01-01T00:00:00.000Z",
       finishedAt: "2026-01-01T00:00:01.000Z",
       score: passingScore()
@@ -1185,7 +1185,7 @@ describe("artifact replay", () => {
   });
 
   it("writes compare artifacts for errored case regressions", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-error-compare-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-error-compare-"));
     const logsDir = path.join(suiteDir, "logs");
     const sourceRun = path.join(logsDir, "1");
     const telemetry = path.join(sourceRun, "telemetry");
@@ -1203,7 +1203,7 @@ describe("artifact replay", () => {
       caseHash: "old",
       caseSnapshot: evalCase,
       mode: "live",
-      cache: { enabled: false, source: "config", dir: ".codeninja/cache" },
+      cache: { enabled: false, source: "config", dir: ".codegenie/cache" },
       startedAt: "2026-01-01T00:00:00.000Z",
       finishedAt: "2026-01-01T00:00:01.000Z",
       score: passingScore()
@@ -1229,7 +1229,7 @@ describe("artifact replay", () => {
   });
 
   it("persists errored --from-artifacts replay runs when required artifacts are missing", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-replay-error-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-replay-error-"));
     const logsDir = path.join(suiteDir, "logs");
     const sourceRun = path.join(logsDir, "1");
     const telemetry = path.join(sourceRun, "telemetry");
@@ -1246,7 +1246,7 @@ describe("artifact replay", () => {
       caseHash: "old",
       caseSnapshot: evalCase,
       mode: "replay",
-      cache: { enabled: false, source: "config", dir: ".codeninja/cache" },
+      cache: { enabled: false, source: "config", dir: ".codegenie/cache" },
       startedAt: "2026-01-01T00:00:00.000Z",
       finishedAt: "2026-01-01T00:00:01.000Z",
       score: passingScore()
@@ -1266,7 +1266,7 @@ describe("artifact replay", () => {
   });
 
   it("records replay source metadata for errored artifact-backed suite cases", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-artifact-error-source-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-artifact-error-source-"));
     const artifactRun = path.join(suiteDir, "artifacts", "broken");
     mkdirSync(path.join(artifactRun, "telemetry"), { recursive: true });
     writeFileSync(path.join(artifactRun, "telemetry", "candidate-findings.json"), "[]\n");
@@ -1307,7 +1307,7 @@ describe("eval command fixture suite", () => {
 
   it("materializes public fixture source dirs into live fake-runner repos", async () => {
     const sourceDir = path.join(process.cwd(), "evals", "fixtures");
-    const suiteDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-public-fixtures-")), "fixtures");
+    const suiteDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-public-fixtures-")), "fixtures");
     cpSync(sourceDir, suiteDir, {
       recursive: true,
       filter: (source) =>
@@ -1330,11 +1330,11 @@ describe("eval command fixture suite", () => {
   }, 60_000);
 
   it("does not leak the invocation directory repo config into live cases", async () => {
-    const invocationDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-invocation-"));
-    const home = mkdtempSync(path.join(tmpdir(), "codeninja-eval-home-"));
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-leak-suite-"));
+    const invocationDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-invocation-"));
+    const home = mkdtempSync(path.join(tmpdir(), "codegenie-eval-home-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-leak-suite-"));
     const repo = initRepo();
-    writeFileSync(path.join(invocationDir, "codeninja.toml"), [
+    writeFileSync(path.join(invocationDir, "codegenie.toml"), [
       "[[classification.pathRules]]",
       "pattern = \"src/app.js\"",
       "processingMode = \"skip\"",
@@ -1343,7 +1343,7 @@ describe("eval command fixture suite", () => {
     writeRepoFile(repo, "src/app.js", "export const base = true;\n");
     commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
-    writeRepoFile(repo, "src/app.js", "export const value = 'CODENINJA_FAKE_FINDING';\n");
+    writeRepoFile(repo, "src/app.js", "export const value = 'CODEGENIE_FAKE_FINDING';\n");
     commitAll(repo, "feature");
     writeFileSync(path.join(suiteDir, "case.yml"), [
       "name: no-cwd-config-leak",
@@ -1378,12 +1378,12 @@ describe("eval command fixture suite", () => {
   }, 60_000);
 
   it("uses the supplied config as the base layer for live cases", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-config-live-suite-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-config-live-suite-"));
     const repo = initRepo();
     writeRepoFile(repo, "src/app.js", "export const base = true;\n");
     commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
-    writeRepoFile(repo, "src/app.js", "export const value = 'CODENINJA_FAKE_FINDING';\n");
+    writeRepoFile(repo, "src/app.js", "export const value = 'CODEGENIE_FAKE_FINDING';\n");
     commitAll(repo, "feature");
     writeFileSync(path.join(suiteDir, "config-live.yml"), [
       "name: config-live",
@@ -1414,12 +1414,12 @@ describe("eval command fixture suite", () => {
   });
 
   it("applies eval llm overrides over legacy review llm fields and records effective concurrency", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-llm-override-suite-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-llm-override-suite-"));
     const repo = initRepo();
     writeRepoFile(repo, "src/app.js", "export const base = true;\n");
     commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
-    writeRepoFile(repo, "src/app.js", "export const value = 'CODENINJA_FAKE_FINDING';\n");
+    writeRepoFile(repo, "src/app.js", "export const value = 'CODEGENIE_FAKE_FINDING';\n");
     commitAll(repo, "feature");
     writeFileSync(path.join(suiteDir, "llm-override.yml"), [
       "name: llm-override",
@@ -1459,16 +1459,16 @@ describe("eval command fixture suite", () => {
       review: { concurrency: 3 },
       llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 2 }
     });
-    expect(result.info.codeninjaRuntime).toMatchObject({
+    expect(result.info.codegenieRuntime).toMatchObject({
       packageVersion: expect.any(String),
       source: expect.stringMatching(/^(build_env|git|package|unknown)$/)
     });
     const runJson = JSON.parse(readFileSync(path.join(result.runDir, "telemetry", "run.json"), "utf8")) as {
-      codeninjaRuntime: { packageVersion: string };
-      codeninjaVersion: string;
+      codegenieRuntime: { packageVersion: string };
+      codegenieVersion: string;
       review: { concurrency: number; llmMaxConcurrentCalls: number };
     };
-    expect(runJson.codeninjaRuntime.packageVersion).toBe(runJson.codeninjaVersion);
+    expect(runJson.codegenieRuntime.packageVersion).toBe(runJson.codegenieVersion);
     expect(runJson.review).toMatchObject({ concurrency: 3, llmMaxConcurrentCalls: 2 });
     const events = readJsonl(path.join(result.runDir, "telemetry", "events.jsonl"));
     expect(events).toEqual(expect.arrayContaining([
@@ -1484,12 +1484,12 @@ describe("eval command fixture suite", () => {
   }, 60_000);
 
   it("does not emit concurrency mismatch telemetry when provider slots match workers", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-concurrency-match-suite-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-concurrency-match-suite-"));
     const repo = initRepo();
     writeRepoFile(repo, "src/app.js", "export const base = true;\n");
     commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
-    writeRepoFile(repo, "src/app.js", "export const value = 'CODENINJA_FAKE_FINDING';\n");
+    writeRepoFile(repo, "src/app.js", "export const value = 'CODEGENIE_FAKE_FINDING';\n");
     commitAll(repo, "feature");
     writeFileSync(path.join(suiteDir, "concurrency-match.yml"), [
       "name: concurrency-match",
@@ -1522,7 +1522,7 @@ describe("eval command fixture suite", () => {
   }, 60_000);
 
   it("records eval llm overrides on live eval errors after case config is applied", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-eval-llm-error-suite-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-llm-error-suite-"));
     const repo = initRepo();
     writeRepoFile(repo, "src/app.js", "export const base = true;\n");
     commitAll(repo, "base");
@@ -1564,11 +1564,11 @@ describe("eval command fixture suite", () => {
     expect(result.info.cache).toMatchObject({ enabled: false, source: "case" });
   });
 
-  it("applies the reviewed repository codeninja.toml layer before eval YAML overrides", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-repo-config-suite-"));
+  it("applies the reviewed repository codegenie.toml layer before eval YAML overrides", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-repo-config-suite-"));
     const repo = initRepo();
     writeRepoFile(repo, "src/app.js", "export const base = true;\n");
-    writeRepoFile(repo, "codeninja.toml", [
+    writeRepoFile(repo, "codegenie.toml", [
       "[[classification.pathRules]]",
       "pattern = \"src/app.js\"",
       "processingMode = \"skip\"",
@@ -1576,7 +1576,7 @@ describe("eval command fixture suite", () => {
     ].join("\n"));
     commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
-    writeRepoFile(repo, "src/app.js", "export const value = 'CODENINJA_FAKE_FINDING';\n");
+    writeRepoFile(repo, "src/app.js", "export const value = 'CODEGENIE_FAKE_FINDING';\n");
     commitAll(repo, "feature");
     writeFileSync(path.join(suiteDir, "repo-config.yml"), [
       "name: repo-config",
@@ -1601,12 +1601,12 @@ describe("eval command fixture suite", () => {
   });
 
   it("runs fixture-backed fake-provider cases for core, tests, Go, and TypeScript lenses", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codeninja-fixture-suite-"));
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-fixture-suite-"));
     const cases = [
-      { name: "core-lens", file: "src/app.js", lens: "core/code-review", body: "export const value = 'CODENINJA_FAKE_FINDING';\n" },
-      { name: "tests-lens", file: "src/app.test.ts", lens: "core/tests", body: "test('x', () => { const value = 'CODENINJA_FAKE_FINDING'; });\n" },
-      { name: "go-lens", file: "service/main.go", lens: "lang/go", body: "package main\n\nfunc main() { _ = \"CODENINJA_FAKE_FINDING\" }\n" },
-      { name: "typescript-lens", file: "src/app.ts", lens: "lang/typescript", body: "export const value: string = 'CODENINJA_FAKE_FINDING';\n" }
+      { name: "core-lens", file: "src/app.js", lens: "core/code-review", body: "export const value = 'CODEGENIE_FAKE_FINDING';\n" },
+      { name: "tests-lens", file: "src/app.test.ts", lens: "core/tests", body: "test('x', () => { const value = 'CODEGENIE_FAKE_FINDING'; });\n" },
+      { name: "go-lens", file: "service/main.go", lens: "lang/go", body: "package main\n\nfunc main() { _ = \"CODEGENIE_FAKE_FINDING\" }\n" },
+      { name: "typescript-lens", file: "src/app.ts", lens: "lang/typescript", body: "export const value: string = 'CODEGENIE_FAKE_FINDING';\n" }
     ];
 
     for (const evalCase of cases) {
@@ -1678,7 +1678,7 @@ function candidate(id: string, filePath: string, line: number, overrides: Partia
     anchor: { path: filePath, line, side: "RIGHT", hunkId: "h1" },
     changedLine: true,
     category: "correctness",
-    evidence: { changedCode: "+ CODENINJA_FAKE_FINDING" },
+    evidence: { changedCode: "+ CODEGENIE_FAKE_FINDING" },
     failureMode: "The fake runner was asked to produce a deterministic finding for this changed line.",
     whyThisMatters: "It verifies eval scoring.",
     verification: "The trigger text appears in a changed line.",
@@ -1733,7 +1733,7 @@ function evalRunInfoWithMetrics(runNumber: number, metrics: Partial<EvalRunMetri
       artifacts: { path: "unused" }
     },
     mode: "replay",
-    cache: { enabled: false, source: "config", dir: ".codeninja/cache" },
+    cache: { enabled: false, source: "config", dir: ".codegenie/cache" },
     startedAt: "2026-01-01T00:00:00.000Z",
     finishedAt: "2026-01-01T00:00:01.000Z",
     score: {

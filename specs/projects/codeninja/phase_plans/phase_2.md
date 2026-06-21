@@ -30,4 +30,4 @@ This phase implements the deterministic local git/change-inventory layer used by
 - `diff-parser.status_lines_and_hunk_ids`: verifies status detection, absolute line mapping, no-newline markers, and stable hunk ids.
 - `anchor.validation`: verifies RIGHT/LEFT changed-line validation, rename old-path semantics, unknown hunks, and context-line rejection.
 - `filter-and-classify.detectors_and_path_rules`: verifies generated/vendor/lock/binary skip decisions, configured skip/labels/priority/mode precedence, language/test/package-root facts, policy-change labeling, and small added files.
-- `review-command.phase2_inventory_artifacts`: verifies `codeninja review --branch` writes Phase 2 inventory artifacts and leaves later stages marked not implemented.
+- `review-command.phase2_inventory_artifacts`: verifies `codegenie review --branch` writes Phase 2 inventory artifacts and leaves later stages marked not implemented.

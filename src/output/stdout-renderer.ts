@@ -16,7 +16,7 @@ export function renderPostingSummaryForStdout(
       return `${JSON.stringify(result.posting, null, 2)}\n`;
     }
     return [
-      "codeninja GitHub posting summary",
+      "codegenie GitHub posting summary",
       `Status: ${result.posting.status}`,
       `Inline comments posted: ${result.posting.inlinePosted}`,
       `Demoted to review body: ${result.posting.demotedToBody}`,
@@ -37,7 +37,7 @@ export function renderPostingSummaryForStdout(
     return `${JSON.stringify(summary, null, 2)}\n`;
   }
   return [
-    "codeninja GitHub posting summary",
+    "codegenie GitHub posting summary",
     `Findings ready to post: ${result.findings.length}`,
     `Summary-only findings: ${result.summaryOnlyFindings.length}`,
     result.postingPlan

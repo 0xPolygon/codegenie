@@ -6,7 +6,7 @@ import type { PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
   CandidateFinding,
-  CodeninjaConfig,
+  CodegenieConfig,
   Confidence,
   DiffAnchor,
   PacketReviewResult,
@@ -73,7 +73,7 @@ type SystemTaskReview = {
 export async function runTargetedSystemReviews(
   input: { packetResults: PacketReviewResult[]; packets: ReviewPacket[] },
   tools: RepositoryTools,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: SystemReviewOptions
 ): Promise<SystemReviewResult> {
@@ -251,7 +251,7 @@ function taskFromGroup(
 async function runSystemReviewTask(
   task: SystemReviewTask,
   tools: RepositoryTools,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: SystemReviewOptions,
   workerId: string

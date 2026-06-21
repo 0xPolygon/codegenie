@@ -12,7 +12,7 @@ Run 5 correctly found the routing explicit-preference behavior change, but the f
 
 and body text indicating strict handling of explicit route preferences.
 
-Codeninja should still flag risky behavior changes inside refactors, especially when callers may break. But it should distinguish:
+Codegenie should still flag risky behavior changes inside refactors, especially when callers may break. But it should distinguish:
 
 - accidental semantic regression in a claimed refactor
 - intentional behavior change that needs documentation/caller confirmation
@@ -79,7 +79,7 @@ This is a general code-review quality issue, not a trails-api-specific rule.
 
 ## Acceptance Criteria
 
-- Codeninja distinguishes accidental regressions from intentional-but-risky behavior changes.
+- Codegenie distinguishes accidental regressions from intentional-but-risky behavior changes.
 - Mixed intent signals produce cautious, precise final wording instead of overclaiming.
 - Same-PR tests still do not automatically suppress material behavior changes.
 - Structured artifacts expose the intent signals used for framing.

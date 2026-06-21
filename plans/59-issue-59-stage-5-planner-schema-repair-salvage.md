@@ -23,7 +23,7 @@ Stage 5 failed in the planner:
 
 - `mc-000001` called `submit_plan` with `{}` and also emitted many bogus numbered tool calls such as `"1"`, `"2"`, etc.
 - Those numbered tool calls contained useful fragments: risk areas, review questions, and coverage decisions.
-- Codeninja scheduled the planner schema repair.
+- Codegenie scheduled the planner schema repair.
 - `mc-000002` repaired the response into one coherent `submit_plan`.
 - The repaired payload still had one extra top-level key, `reason`.
 - `SubmitPlanSchema` has `additionalProperties: false`, so validation rejected the otherwise useful repaired plan.

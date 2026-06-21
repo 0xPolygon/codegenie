@@ -1,13 +1,13 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import type { CodeninjaPaths } from "../types.js";
+import type { CodegeniePaths } from "../types.js";
 
-export function getCodeninjaPaths(
+export function getCodegeniePaths(
   homeOverride?: string,
   env: NodeJS.ProcessEnv = process.env
-): CodeninjaPaths {
-  const home = resolveHomePath(homeOverride ?? env.CODENINJA_HOME ?? "~/.codeninja");
+): CodegeniePaths {
+  const home = resolveHomePath(homeOverride ?? env.CODEGENIE_HOME ?? "~/.codegenie");
   return {
     home,
     authPath: path.join(home, "auth.json"),
@@ -18,7 +18,7 @@ export function getCodeninjaPaths(
   };
 }
 
-export function ensureCodeninjaHome(paths: CodeninjaPaths = getCodeninjaPaths()): CodeninjaPaths {
+export function ensureCodegenieHome(paths: CodegeniePaths = getCodegeniePaths()): CodegeniePaths {
   mkdirSync(paths.home, { recursive: true, mode: 0o700 });
   mkdirSync(paths.sessionsDir, { recursive: true, mode: 0o700 });
   return paths;

@@ -1,5 +1,5 @@
 import type { ContextPressureSummary, ReviewStage, TelemetryEvent, ToolCallRecord } from "../types.js";
-import type { CodeninjaErrorCode } from "../util/errors.js";
+import type { CodegenieErrorCode } from "../util/errors.js";
 
 export type LlmRole = "planner" | "packetReview" | "systemReview" | "verifier" | "composer";
 
@@ -38,7 +38,7 @@ export type LlmCallRecord = {
   schemaValid?: boolean;
   stopReason: "submit" | "tool_calls" | "text" | "error";
   status: "ok" | "schema_invalid" | "transient_error" | "auth_error" | "timeout" | "aborted";
-  errorCode?: CodeninjaErrorCode;
+  errorCode?: CodegenieErrorCode;
   errorMessage?: string;
   retryable?: boolean;
   retryReason?: string;

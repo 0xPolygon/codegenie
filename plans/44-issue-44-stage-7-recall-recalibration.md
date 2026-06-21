@@ -33,7 +33,7 @@ Crucially, **Stage 6 context is better than ever in run 9** (Issue 42 working: `
 
 ## Diagnosis
 
-codeninja is designed to **generate candidates liberally at Stage 7 and filter strictly at Stage 9 (verifier)**. Run 6 did exactly that: 17 candidates -> verifier -> 7 good findings. The verifier is demonstrably good at filtering (in run 8 it correctly rejected speculative promoted uncertainties with rigorous reasoning).
+codegenie is designed to **generate candidates liberally at Stage 7 and filter strictly at Stage 9 (verifier)**. Run 6 did exactly that: 17 candidates -> verifier -> 7 good findings. The verifier is demonstrably good at filtering (in run 8 it correctly rejected speculative promoted uncertainties with rigorous reasoning).
 
 Several precision/cost hardening changes moved too much filtering **upstream into generation** with conservative prompt guidance, so reviewers now self-censor candidates before the verifier can adjudicate them. This is not a request to broadly roll back plans 33 or 36; it is a surgical correction to the live Stage 7 packet-review prompt and the uncertainty-promotion gates.
 

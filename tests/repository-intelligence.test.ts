@@ -87,7 +87,7 @@ describe("repository intelligence", () => {
 
   it("builds index facts, tools, packet context, and telemetry over git revisions", async () => {
     const repo = initRepo();
-    const outsideDir = mkdtempSync(path.join(tmpdir(), "codeninja-outside-"));
+    const outsideDir = mkdtempSync(path.join(tmpdir(), "codegenie-outside-"));
     writeFileSync(path.join(outsideDir, "secret.txt"), "OutsideSecretLeak\n");
     symlinkSync(outsideDir, path.join(repo, "linked-outside"), "dir");
     writeRepoFile(repo, ".ignore", "ignored*.txt\nignored-dir/\n");
@@ -744,7 +744,7 @@ func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64
 
   it("falls back to git grep when ignored or untracked paths would make ripgrep walk extra tree content", async () => {
     const repo = initRepo();
-    const outsideDir = mkdtempSync(path.join(tmpdir(), "codeninja-outside-"));
+    const outsideDir = mkdtempSync(path.join(tmpdir(), "codegenie-outside-"));
     writeFileSync(path.join(outsideDir, "secret.txt"), "OutsideSecretLeak\n");
     writeFileSync(path.join(outsideDir, "secret-file.txt"), "OutsideFileSecretLeak\n");
     symlinkSync(outsideDir, path.join(repo, "linked-outside"), "dir");

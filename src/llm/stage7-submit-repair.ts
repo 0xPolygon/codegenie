@@ -89,7 +89,7 @@ const STAGE7_CANDIDATE_FIELD_NAMES = new Set([
   "anchor"
 ]);
 const STAGE7_NO_FINDING_REASON_MAX_CHARS = 1000;
-const STAGE7_FIELD_TRUNCATION_SUFFIX = " [truncated by codeninja]";
+const STAGE7_FIELD_TRUNCATION_SUFFIX = " [truncated by codegenie]";
 
 export function stage7SubmitRepairDecision(
   request: LlmStructuredRequest<unknown>,
@@ -205,7 +205,7 @@ export function stage7CompactSchemaRepairPrompt(
     arguments: call.arguments
   }));
   return [
-    "Repair only the structured Stage 7 packet-review submit payload for codeninja.",
+    "Repair only the structured Stage 7 packet-review submit payload for codegenie.",
     "",
     `Validation problem: ${error}`,
     `Classification: ${classification}`,
@@ -477,7 +477,7 @@ function truncateStage7RepairPayload(input: string): string {
   if (input.length <= maxChars) {
     return input;
   }
-  return `${input.slice(0, maxChars).trimEnd()}\n[invalid submit arguments truncated by codeninja]`;
+  return `${input.slice(0, maxChars).trimEnd()}\n[invalid submit arguments truncated by codegenie]`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

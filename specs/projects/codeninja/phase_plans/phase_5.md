@@ -30,4 +30,4 @@ This phase turns the Phase 1-4 inventory, repository intelligence, prompt, telem
 - `workers_respect_concurrency_and_priority`: verifies bounded scheduling order and non-throwing worker outcomes.
 - `verify_disabled_by_config`: verifies Stage 9 gates still run and gate survivors pass through without verifier LLM calls.
 - `compose_terminal_failure_fallback`: verifies fallback composition preserves verified findings and emits final artifacts.
-- `review_command_prints_fake_markdown`: verifies `codeninja review` reaches the pipeline and prints a deterministic fake review through stdout.
+- `review_command_prints_fake_markdown`: verifies `codegenie review` reaches the pipeline and prints a deterministic fake review through stdout.

@@ -2,7 +2,7 @@ import picomatch from "picomatch";
 import type { SearchResult, SourceSelector, ResolvedReviewInput } from "../types.js";
 import { createGitClient, type InternalGitClient } from "../git/git-client.js";
 import { runGit } from "../git/subprocess.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 import { sha256Hex } from "../util/hashing.js";
 import { containGlob, containPath, containRef } from "./path-guard.js";
 
@@ -119,7 +119,7 @@ export class SourceResolver {
         ...(blobSha !== undefined ? { blobSha } : {})
       };
     } catch (error) {
-      if (error instanceof CodeninjaError && error.code === "git_ref_missing") {
+      if (error instanceof CodegenieError && error.code === "git_ref_missing") {
         return undefined;
       }
       throw error;

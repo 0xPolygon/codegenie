@@ -1,4 +1,4 @@
 test("fixture", () => {
-  const value = "CODENINJA_FAKE_FINDING";
+  const value = "CODEGENIE_FAKE_FINDING";
   expect(value).toBeTruthy();
 });

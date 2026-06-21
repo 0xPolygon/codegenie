@@ -8,7 +8,7 @@ status: draft
 
 Phase 4 adds the model-facing startup layer required before the review pipeline can call an LLM: bundled Markdown skills, repo/extra skill loading, lens resolution, deterministic prompt assembly, Pi-backed provider settings and CLI commands, structured LLM schemas, a Pi adapter/runner with tool-loop budget enforcement, repository tool definitions, model-call cache scaffolding, and fake seams for tests.
 
-The phase-start Pi verification found `@earendil-works/pi-ai@0.74.2` as the Node-20-compatible dist tag. Its public API exposes `complete`, `getModel`, `getProviders`, `getModels`, `getEnvApiKey`, `validateToolCall`, TypeBox exports, cost data on `usage.cost`, and OAuth login helpers through `@earendil-works/pi-ai/oauth`. It does not export literal `PiAuthStorage` or `PiModelRegistry` classes, so codeninja wraps the real exports in internal `PiAuthStorage` and `PiModelRegistry` interfaces with injectable fake implementations for tests.
+The phase-start Pi verification found `@earendil-works/pi-ai@0.74.2` as the Node-20-compatible dist tag. Its public API exposes `complete`, `getModel`, `getProviders`, `getModels`, `getEnvApiKey`, `validateToolCall`, TypeBox exports, cost data on `usage.cost`, and OAuth login helpers through `@earendil-works/pi-ai/oauth`. It does not export literal `PiAuthStorage` or `PiModelRegistry` classes, so codegenie wraps the real exports in internal `PiAuthStorage` and `PiModelRegistry` interfaces with injectable fake implementations for tests.
 
 ## Steps
 
@@ -17,8 +17,8 @@ The phase-start Pi verification found `@earendil-works/pi-ai@0.74.2` as the Node
 3. Implement `src/skills/skill-loader.ts` with frontmatter parsing, section extraction, bundled/repo/extra discovery, SHA hashing, validation failures, recoverable `skill_invalid` warnings, and trusted-checkout-only filesystem reads.
 4. Implement `src/skills/lens-registry.ts` with lens registration, config/CLI enablement resolution, strict CLI validation, config conflict handling, disclosure telemetry, and stable `registryHash()`.
 5. Implement `src/skills/prompt-builder.ts` with deterministic stage templates for stages 5/7/9/10, projection maps and caps, untrusted-content fencing, and prompt template version exports.
-6. Extend provider support in `src/provider/provider-services.ts` with codeninja auth storage, Pi model registry wrappers, provider command handlers, settings commands, credential redaction registration, and fake registry injection for tests.
-7. Wire `codeninja provider ...` into `src/cli/main.ts` while preserving existing `review` behavior and help semantics.
+6. Extend provider support in `src/provider/provider-services.ts` with codegenie auth storage, Pi model registry wrappers, provider command handlers, settings commands, credential redaction registration, and fake registry injection for tests.
+7. Wire `codegenie provider ...` into `src/cli/main.ts` while preserving existing `review` behavior and help semantics.
 8. Add `src/llm/llm-runner.ts`, `src/llm/schemas.ts`, `src/llm/tool-definitions.ts`, `src/llm/pi-runner.ts`, and `src/llm/model-call-cache.ts` for TypeBox submit schemas, tool definitions, structured request types, fakeable Pi adapter loop, budgets, timeout/abort handling, model resolution, retry classification, model-call telemetry, and cache scaffolding.
 9. Update shared types and telemetry artifact allow-lists as needed for new Phase 4 contracts.
 10. Add focused Vitest coverage for bundled skill loading, lens resolution, prompt fencing/projection, provider command/settings behavior, submit schemas, repository tool definitions, and the Pi runner tool loop/fake adapter path.

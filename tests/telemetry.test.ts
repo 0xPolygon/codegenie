@@ -63,7 +63,7 @@ describe("run telemetry", () => {
         retainRuns: 20
       },
       runMetadata: {
-        argv: ["codeninja", "review", "--branch", "feature"],
+        argv: ["codegenie", "review", "--branch", "feature"],
         repoRoot,
         review: {
           mode: "branch",
@@ -229,10 +229,10 @@ describe("run telemetry", () => {
     await run.finalize({ status: "completed_full", exitCode: 0 });
 
     expect(toolCallId).toBe("tc-000001");
-    expect(existsSync(path.join(repoRoot, ".codeninja", ".gitignore"))).toBe(true);
-    expect(readFileSync(path.join(repoRoot, ".codeninja", ".gitignore"), "utf8")).toContain("runs/");
-    expect(readFileSync(path.join(repoRoot, ".codeninja", ".gitignore"), "utf8")).toContain("cache/");
-    expect(readFileSync(path.join(repoRoot, ".codeninja", ".gitignore"), "utf8")).toContain("locks/");
+    expect(existsSync(path.join(repoRoot, ".codegenie", ".gitignore"))).toBe(true);
+    expect(readFileSync(path.join(repoRoot, ".codegenie", ".gitignore"), "utf8")).toContain("runs/");
+    expect(readFileSync(path.join(repoRoot, ".codegenie", ".gitignore"), "utf8")).toContain("cache/");
+    expect(readFileSync(path.join(repoRoot, ".codegenie", ".gitignore"), "utf8")).toContain("locks/");
 
     for (const relPath of [
       "run.log",
@@ -256,13 +256,13 @@ describe("run telemetry", () => {
     const runJson = readJson(path.join(attached.runDir, "run.json"));
     expect(runJson).toMatchObject({
       schemaVersion: 1,
-      codeninjaVersion: expect.any(String),
-      codeninjaRuntime: {
+      codegenieVersion: expect.any(String),
+      codegenieRuntime: {
         packageVersion: expect.any(String),
         source: expect.stringMatching(/^(build_env|git|package|unknown)$/)
       },
       nodeVersion: process.version,
-      argv: ["codeninja", "review", "--branch", "feature"],
+      argv: ["codegenie", "review", "--branch", "feature"],
       repoRoot,
       review: {
         mode: "branch",
@@ -282,7 +282,7 @@ describe("run telemetry", () => {
       }
     });
     expect(runJson.finishedAt).toEqual(expect.any(String));
-    expect(runJson.codeninjaRuntime.packageVersion).toBe(runJson.codeninjaVersion);
+    expect(runJson.codegenieRuntime.packageVersion).toBe(runJson.codegenieVersion);
     expect(runJson.durationMs).toEqual(expect.any(Number));
     expect(runJson.totals).toMatchObject({
       events: 4,
@@ -1051,7 +1051,7 @@ describe("run telemetry", () => {
 
   it("prunes old runs while keeping the active run", async () => {
     const repoRoot = tempDir();
-    const runsRoot = path.join(repoRoot, ".codeninja", "runs");
+    const runsRoot = path.join(repoRoot, ".codegenie", "runs");
     mkdirSync(runsRoot, { recursive: true });
     for (const [index, name] of ["old-1", "old-2", "old-3"].entries()) {
       const dir = path.join(runsRoot, name);
@@ -1088,11 +1088,11 @@ describe("run telemetry", () => {
     ]);
   });
 
-  it("preserves existing .codeninja gitignore entries while adding required runtime paths", async () => {
+  it("preserves existing .codegenie gitignore entries while adding required runtime paths", async () => {
     const repoRoot = tempDir();
-    const codeninjaDir = path.join(repoRoot, ".codeninja");
-    mkdirSync(codeninjaDir, { recursive: true });
-    const gitignorePath = path.join(codeninjaDir, ".gitignore");
+    const codegenieDir = path.join(repoRoot, ".codegenie");
+    mkdirSync(codegenieDir, { recursive: true });
+    const gitignorePath = path.join(codegenieDir, ".gitignore");
     writeFileSync(gitignorePath, "skills/\n");
 
     const run = createRunTelemetry({
@@ -1107,7 +1107,7 @@ describe("run telemetry", () => {
   it("records pruning failures as warnings without aborting startup", async () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const repoRoot = tempDir();
-    const runsRoot = path.join(repoRoot, ".codeninja", "runs");
+    const runsRoot = path.join(repoRoot, ".codegenie", "runs");
     mkdirSync(runsRoot, { recursive: true });
     const protectedRun = path.join(runsRoot, "old-protected");
     mkdirSync(protectedRun);
@@ -1188,7 +1188,7 @@ describe("run artifact allowlist", () => {
 });
 
 function tempDir(): string {
-  return mkdtempSync(path.join(tmpdir(), "codeninja-"));
+  return mkdtempSync(path.join(tmpdir(), "codegenie-"));
 }
 
 function readRunFiles(runDir: string): string {

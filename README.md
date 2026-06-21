@@ -1,6 +1,6 @@
-# codeninja 🧞
+# codegenie 🧞
 
-**High-signal AI code review for pull requests.** codeninja is a TypeScript CLI that reviews PR-style diffs at a staff-engineer level — real bugs, logic errors, security issues, architectural risks, and missing tests — and refuses to waste your attention on nitpicks. It prefers no comments over weak comments.
+**High-signal AI code review for pull requests.** codegenie is a TypeScript CLI that reviews PR-style diffs at a staff-engineer level — real bugs, logic errors, security issues, architectural risks, and missing tests — and refuses to waste your attention on nitpicks. It prefers no comments over weak comments.
 
 It is not a chatbot pointed at a diff. It is a **review harness**: a staged pipeline where deterministic code owns the workflow's guarantees (coverage, anchoring, verification, dedup, budgets, telemetry) and LLM agents do the judgment work inside each stage.
 
@@ -8,57 +8,57 @@ It is not a chatbot pointed at a diff. It is a **review harness**: a staged pipe
 
 - **Findings that survive scrutiny.** Every candidate finding must cite changed-code evidence and a concrete failure mode, then pass an independent LLM verifier before it can be published. No evidence → no finding.
 - **A handful of comments, not fifty.** The default target is ~3–7 high-signal comments per PR (a soft cap — verified critical/high findings are never hidden by it). Style, naming, and formatting commentary is off unless you explicitly enable a lint lens.
-- **Honest coverage.** Every changed hunk is accounted for: planner overrides, deterministic default review, explicit skips, failures, and budget stops are tracked separately. If a review is partial, the report says so. codeninja never pretends it reviewed something it didn't.
+- **Honest coverage.** Every changed hunk is accounted for: planner overrides, deterministic default review, explicit skips, failures, and budget stops are tracked separately. If a review is partial, the report says so. codegenie never pretends it reviewed something it didn't.
 - **Reviews of the actual revision.** Reviewed source reads resolve through git plumbing against the PR's base/head revisions — not whatever happens to be checked out. Review policy, config, and skills still load from your trusted local checkout.
 
 ## Usage
 
 ```bash
-codeninja review                          # current branch vs its base (merge-base semantics)
-codeninja review --pr 123                 # a GitHub PR — no checkout needed, fork PRs included
-codeninja review feat                     # branch vs resolved base, if feat is a branch
-codeninja review --branch feat --base main
-codeninja review --head 49f4645b --base master # pinned PR-style review
-codeninja review master...49f4645b        # shorthand for --base master --head 49f4645b
-codeninja review abc1234                  # one commit
-codeninja review abc1234 def5678          # a commit range
+codegenie review                          # current branch vs its base (merge-base semantics)
+codegenie review --pr 123                 # a GitHub PR — no checkout needed, fork PRs included
+codegenie review feat                     # branch vs resolved base, if feat is a branch
+codegenie review --branch feat --base main
+codegenie review --head 49f4645b --base master # pinned PR-style review
+codegenie review master...49f4645b        # shorthand for --base master --head 49f4645b
+codegenie review abc1234                  # one commit
+codegenie review abc1234 def5678          # a commit range
 ```
 
 Common options:
 
 ```bash
-codeninja review --depth light|normal|deep        # global budget & planner bias
-codeninja review --lens lang/go --lens core/tests # restrict/enable lenses for this run
-codeninja review --provider openai --model gpt-5  # override the user-level model default
-codeninja review --reasoning high                 # override model reasoning effort
-codeninja review --format json                    # machine-readable final review object
-codeninja review --ci                             # disable interactive progress output
-codeninja review --no-progress                    # disable the local spinner explicitly
-codeninja review --pr 123 --post-github-comments  # publish inline comments (explicit flag, never config)
-codeninja eval --eval-dir ./evals                 # run the eval suite
+codegenie review --depth light|normal|deep        # global budget & planner bias
+codegenie review --lens lang/go --lens core/tests # restrict/enable lenses for this run
+codegenie review --provider openai --model gpt-5  # override the user-level model default
+codegenie review --reasoning high                 # override model reasoning effort
+codegenie review --format json                    # machine-readable final review object
+codegenie review --ci                             # disable interactive progress output
+codegenie review --no-progress                    # disable the local spinner explicitly
+codegenie review --pr 123 --post-github-comments  # publish inline comments (explicit flag, never config)
+codegenie eval --eval-dir ./evals                 # run the eval suite
 ```
 
-By default codeninja prints a structured Markdown report to stdout and exits `0` whether or not it found issues (a review with findings is a *successful* review). Posting to GitHub is a single `COMMENT`-type review with inline comments anchored to changed lines — it never approves or requests changes, and it only ever happens when you pass the flag.
+By default codegenie prints a structured Markdown report to stdout and exits `0` whether or not it found issues (a review with findings is a *successful* review). Posting to GitHub is a single `COMMENT`-type review with inline comments anchored to changed lines — it never approves or requests changes, and it only ever happens when you pass the flag.
 
-A single positional target is branch-first: if it resolves as a local or remote branch, codeninja reviews that branch against its base. If it does not resolve as a branch, codeninja treats it as a single commit. `--base` can be used with this shorthand only when the target resolves as a branch.
+A single positional target is branch-first: if it resolves as a local or remote branch, codegenie reviews that branch against its base. If it does not resolve as a branch, codegenie treats it as a single commit. `--base` can be used with this shorthand only when the target resolves as a branch.
 
 Interactive reviews show a small stderr progress spinner with the active pipeline stage. It is automatically disabled when stderr is not a TTY or `CI` is set, and it can be disabled explicitly with `--ci` or `--no-progress`. The final Markdown/JSON report is still written only to stdout.
 
 Model provider auth is configured through Pi-backed user state:
 
 ```bash
-codeninja provider list
-codeninja provider login <provider>
-codeninja provider models [provider-or-search] [--all]
-codeninja provider config set-provider <provider>
-codeninja provider config set-model <provider> <model>
+codegenie provider list
+codegenie provider login <provider>
+codegenie provider models [provider-or-search] [--all]
+codegenie provider config set-provider <provider>
+codegenie provider config set-model <provider> <model>
 ```
 
-Credentials and provider defaults live under `~/.codeninja/` by default, not in the repository.
+Credentials and provider defaults live under `~/.codegenie/` by default, not in the repository.
 
 ### Configuration
 
-Drop a `codeninja.toml` in your repo root. Everything has sensible defaults; a typical config is small:
+Drop a `codegenie.toml` in your repo root. Everything has sensible defaults; a typical config is small:
 
 ```toml
 [git]
@@ -69,7 +69,7 @@ depth = "normal"
 budgetMultiplier = 1.0 # scales review/tool/token-call budgets; does not change finding caps
 
 [telemetry]
-enabled = true # opt into local run artifacts under .codeninja/runs
+enabled = true # opt into local run artifacts under .codegenie/runs
 
 [[classification.pathRules]]
 pattern = "lib/payments/**"
@@ -83,11 +83,11 @@ processingMode = "skip"
 reason = "Generated files are not reviewed."
 ```
 
-Telemetry is off by default. Enable it in repo `codeninja.toml` or user-level `~/.codeninja/config.toml` to write local run artifacts; repo config may only set `telemetry.enabled`, while user config can also set the run directory, log level, debug traces, and retention.
+Telemetry is off by default. Enable it in repo `codegenie.toml` or user-level `~/.codegenie/config.toml` to write local run artifacts; repo config may only set `telemetry.enabled`, while user config can also set the run directory, log level, debug traces, and retention.
 
-Teams can also version project-specific review expertise as Markdown skills in `.codeninja/skills/` — concrete checks, false-positive rules, and safe patterns that travel with the repo.
+Teams can also version project-specific review expertise as Markdown skills in `.codegenie/skills/` — concrete checks, false-positive rules, and safe patterns that travel with the repo.
 
-Budget caps are dispatch controls, not mid-call interrupts. If a model call is already running and crosses a soft token/model-call cap, codeninja records the overrun, lets that call finish, and stops dispatching later non-essential work. Raise or lower `review.budgetMultiplier` to scale review effort/cost for a repo or eval run; high values can be expensive and are recorded in telemetry when telemetry is enabled.
+Budget caps are dispatch controls, not mid-call interrupts. If a model call is already running and crosses a soft token/model-call cap, codegenie records the overrun, lets that call finish, and stops dispatching later non-essential work. Raise or lower `review.budgetMultiplier` to scale review effort/cost for a repo or eval run; high values can be expensive and are recorded in telemetry when telemetry is enabled.
 
 ## How a review runs
 
@@ -115,7 +115,7 @@ Stage 8 is deliberately narrow. It is not a broad whole-repo review pass. It run
 
 The obvious way to build an AI reviewer in 2026 is one autonomous agent with repo tools and a good prompt. We deliberately didn't, and the reasoning is worth writing down.
 
-Despite the pipeline diagram, codeninja has only **four primary LLM decision points** — planner, packet reviewer, verifier, composer. The optional Stage 8 follow-up is a bounded fifth decision point only when repeated scoped hints justify it; most runs skip it. Everything else is deterministic plumbing: parsing, bookkeeping, validation, serialization. A fully autonomous agent has *one* LLM decision point that internally makes hundreds of unauditable micro-decisions. We'd rather have a few auditable ones.
+Despite the pipeline diagram, codegenie has only **four primary LLM decision points** — planner, packet reviewer, verifier, composer. The optional Stage 8 follow-up is a bounded fifth decision point only when repeated scoped hints justify it; most runs skip it. Everything else is deterministic plumbing: parsing, bookkeeping, validation, serialization. A fully autonomous agent has *one* LLM decision point that internally makes hundreds of unauditable micro-decisions. We'd rather have a few auditable ones.
 
 The deeper reason: a review tool's value isn't "finds bugs" — frontier models increasingly do that for free. The value is the **guarantees around the findings**, and each one is structurally impossible for an autonomous agent:
 
@@ -134,7 +134,7 @@ Tree-sitter is the cross-language syntax substrate — used for enclosing symbol
 
 ### Focused context beats big context
 
-Long-context attention dilution is real: a model handed a 100k-token diff dump reviews everything a little and nothing well. codeninja inverts this — small, dense packets plus tools to pull exactly the context a concern needs. The packet says *here are changed lines 55–56 inside `(*Store).SaveUser`, here's the enclosing function, here are its likely tests* — and the reviewer escalates from there only with cause.
+Long-context attention dilution is real: a model handed a 100k-token diff dump reviews everything a little and nothing well. codegenie inverts this — small, dense packets plus tools to pull exactly the context a concern needs. The packet says *here are changed lines 55–56 inside `(*Store).SaveUser`, here's the enclosing function, here are its likely tests* — and the reviewer escalates from there only with cause.
 
 ### Skills are checks, not personas
 
@@ -142,7 +142,7 @@ A skill is a Markdown file of concrete checks, false-positive rules, safe patter
 
 ### Built to be evaluated
 
-When telemetry is enabled, every run writes typed local artifacts — the plan, every packet, every candidate, every verdict, every selection decision, budget summary, and per-call token/cost telemetry. The `codeninja eval` command always captures these artifacts, replays real repos and fixtures against expected findings, and scores them *by loss stage*. Eval YAML can set `review.budgetMultiplier`, require `expect.reviewCompleteness: complete`, and bound budget crossings with `expect.maxBudgetOverruns: 0`. High-cost evals can tune workflow and provider concurrency separately:
+When telemetry is enabled, every run writes typed local artifacts — the plan, every packet, every candidate, every verdict, every selection decision, budget summary, and per-call token/cost telemetry. The `codegenie eval` command always captures these artifacts, replays real repos and fixtures against expected findings, and scores them *by loss stage*. Eval YAML can set `review.budgetMultiplier`, require `expect.reviewCompleteness: complete`, and bound budget crossings with `expect.maxBudgetOverruns: 0`. High-cost evals can tune workflow and provider concurrency separately:
 
 ```yaml
 review:
@@ -151,15 +151,15 @@ llm:
   maxConcurrentCalls: 6 # simultaneous provider calls
 ```
 
-For PR-style evals pinned to an immutable revision, prefer `command.head: <sha>` with `command.base: <branch>`; codeninja computes the merge-base diff just like GitHub rather than doing an endpoint `base..head` diff.
+For PR-style evals pinned to an immutable revision, prefer `command.head: <sha>` with `command.base: <branch>`; codegenie computes the merge-base diff just like GitHub rather than doing an endpoint `base..head` diff.
 
-Increasing both can finish large evals faster, but it can also hit provider rate limits or increase burst spend. The `--cache` flag controls codeninja's local model-call cache, which reuses prior LLM responses during iteration; provider-side prompt cache reads/writes are reported separately because they are billing/runtime metadata from the LLM provider. codeninja passes Pi a short, stage-scoped prompt-cache session hint so providers that support session caching can reuse repeated reviewer/verifier prefixes without changing prompt text. In telemetry artifacts, prefer `localModelCallCache` and `providerPromptCache`; the older `cache` field is only a compatibility alias for local model-call cache counts. The eval suite, the skills, and the telemetry are the compounding assets — models swap underneath them.
+Increasing both can finish large evals faster, but it can also hit provider rate limits or increase burst spend. The `--cache` flag controls codegenie's local model-call cache, which reuses prior LLM responses during iteration; provider-side prompt cache reads/writes are reported separately because they are billing/runtime metadata from the LLM provider. codegenie passes Pi a short, stage-scoped prompt-cache session hint so providers that support session caching can reuse repeated reviewer/verifier prefixes without changing prompt text. In telemetry artifacts, prefer `localModelCallCache` and `providerPromptCache`; the older `cache` field is only a compatibility alias for local model-call cache counts. The eval suite, the skills, and the telemetry are the compounding assets — models swap underneath them.
 
-For high-throughput evals, set `review.concurrency` and `llm.maxConcurrentCalls` to the same value unless you are intentionally throttling provider calls. A value of `6` is a reasonable first step; try `8` only when the provider account tolerates the burst rate. Higher concurrency reduces elapsed time, not token use or model cost, and codeninja records a `concurrency_mismatch` telemetry event when workers outnumber provider slots.
+For high-throughput evals, set `review.concurrency` and `llm.maxConcurrentCalls` to the same value unless you are intentionally throttling provider calls. A value of `6` is a reasonable first step; try `8` only when the provider account tolerates the burst rate. Higher concurrency reduces elapsed time, not token use or model cost, and codegenie records a `concurrency_mismatch` telemetry event when workers outnumber provider slots.
 
 ### Reviewing untrusted code is a security problem
 
-A PR is attacker-controlled input that flows into tool-equipped LLMs whose output gets posted publicly. codeninja draws explicit trust boundaries: untrusted content is structurally delimited in prompts as data-not-instructions; repository tools enforce repo-root path containment (no traversal, no symlink escapes); repo-resident config can never enable command execution or posting — those need user-level opt-in; review policy loads from *your* checkout, never the PR's; model-composed comments pass deterministic sanitization (mention-neutralizing, marker stripping, secret scrubbing) before posting.
+A PR is attacker-controlled input that flows into tool-equipped LLMs whose output gets posted publicly. codegenie draws explicit trust boundaries: untrusted content is structurally delimited in prompts as data-not-instructions; repository tools enforce repo-root path containment (no traversal, no symlink escapes); repo-resident config can never enable command execution or posting — those need user-level opt-in; review policy loads from *your* checkout, never the PR's; model-composed comments pass deterministic sanitization (mention-neutralizing, marker stripping, secret scrubbing) before posting.
 
 ### Fail honestly, degrade predictably
 
@@ -171,10 +171,10 @@ Several richer designs — a broad cross-file system review pass, hierarchical p
 
 ## Status
 
-codeninja is implemented as a pre-1.0 CLI and being hardened through live evals. The full specifications live in [`specs/projects/codeninja/`](specs/projects/codeninja/):
+codegenie is implemented as a pre-1.0 CLI and being hardened through live evals. The full specifications live in [`specs/projects/codegenie/`](specs/projects/codegenie/):
 
-- [`project_overview.md`](specs/projects/codeninja/project_overview.md) — goals and shape
-- [`functional_spec.md`](specs/projects/codeninja/functional_spec.md) — behavior, stages, contracts
-- [`architecture.md`](specs/projects/codeninja/architecture.md) — components, data model, technology choices
+- [`project_overview.md`](specs/projects/codegenie/project_overview.md) — goals and shape
+- [`functional_spec.md`](specs/projects/codegenie/functional_spec.md) — behavior, stages, contracts
+- [`architecture.md`](specs/projects/codegenie/architecture.md) — components, data model, technology choices
 
 Built with TypeScript, [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai), web-tree-sitter, and `git`/`gh` as the only external CLI dependencies.

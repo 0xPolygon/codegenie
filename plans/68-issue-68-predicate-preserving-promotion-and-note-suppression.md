@@ -187,9 +187,9 @@ Issue 68 owns the downstream handoff: Stage 7 hint/uncertainty promotion, Stage 
    - Published findings still suppress duplicate human-attention notes.
 
 7. Update docs if public terminology changes.
-   - `specs/projects/codeninja/functional_spec.md`
-   - `specs/projects/codeninja/architecture.md`
-   - `specs/projects/codeninja/components/review_pipeline.md`
+   - `specs/projects/codegenie/functional_spec.md`
+   - `specs/projects/codegenie/architecture.md`
+   - `specs/projects/codegenie/components/review_pipeline.md`
 
 ## Validation
 

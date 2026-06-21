@@ -4,9 +4,9 @@ import type {
   InlineCommentInput,
   PullRequestMetadata
 } from "../types.js";
-import { CodeninjaError, isCodeninjaError, type CodeninjaErrorCode } from "../util/errors.js";
+import { CodegenieError, isCodegenieError, type CodegenieErrorCode } from "../util/errors.js";
 import { runGh } from "../git/subprocess.js";
-import { parseCodeninjaMarker } from "./duplicate-detector.js";
+import { parseCodegenieMarker } from "./duplicate-detector.js";
 
 type RunGh = typeof runGh;
 
@@ -71,7 +71,7 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
     const owner = ownerLogin(parsed.owner);
     const name = stringField(parsed.name);
     if (!owner || !name) {
-      throw new CodeninjaError("gh_auth_failed", "gh repo view did not return owner/name metadata");
+      throw new CodegenieError("gh_auth_failed", "gh repo view did not return owner/name metadata");
     }
     repo = { owner, repo: name };
     return repo;
@@ -85,7 +85,7 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
     const stdout = await gh(repoRoot, ["api", "user", "--jq", ".login"], { errorCode: "gh_auth_failed" });
     const login = stdout.trim();
     if (login.length === 0) {
-      throw new CodeninjaError("gh_auth_failed", "gh api user did not return the authenticated login");
+      throw new CodegenieError("gh_auth_failed", "gh api user did not return the authenticated login");
     }
     viewerLogin = login;
     return viewerLogin;
@@ -179,14 +179,14 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
           if (author.toLowerCase() !== viewer.toLowerCase()) {
             continue;
           }
-          const marker = parseCodeninjaMarker(comment.body ?? "");
+          const marker = parseCodegenieMarker(comment.body ?? "");
           const line = typeof comment.line === "number" ? comment.line :
             typeof comment.original_line === "number" ? comment.original_line :
               undefined;
           const thread: ExistingReviewThread = {
             id: String(comment.id ?? ""),
             author,
-            isCodeninja: marker !== undefined
+            isCodegenie: marker !== undefined
           };
           if (comment.path !== undefined) {
             thread.path = comment.path;
@@ -211,21 +211,21 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
   };
 }
 
-function parseJson<T>(stdout: string, message: string, code: CodeninjaErrorCode): T {
+function parseJson<T>(stdout: string, message: string, code: CodegenieErrorCode): T {
   try {
     return JSON.parse(stdout) as T;
   } catch (error) {
-    throw new CodeninjaError(code, message, { cause: error });
+    throw new CodegenieError(code, message, { cause: error });
   }
 }
 
 function normalizeCreateReviewError(error: unknown): unknown {
-  if (!isCodeninjaError(error) || error.code !== "github_post_failed") {
+  if (!isCodegenieError(error) || error.code !== "github_post_failed") {
     return error;
   }
   const status = extractHttpStatus(error);
   const responseBody = extractResponseBody(error);
-  return new CodeninjaError(
+  return new CodegenieError(
     "github_post_failed",
     status === undefined ? error.message : `GitHub review creation failed with HTTP ${status}`,
     {
@@ -239,7 +239,7 @@ function normalizeCreateReviewError(error: unknown): unknown {
   );
 }
 
-function extractHttpStatus(error: CodeninjaError): number | undefined {
+function extractHttpStatus(error: CodegenieError): number | undefined {
   const existing = error.context?.httpStatus;
   if (typeof existing === "number" && Number.isInteger(existing)) {
     return existing;
@@ -251,7 +251,7 @@ function extractHttpStatus(error: CodeninjaError): number | undefined {
   return match?.[1] !== undefined ? Number(match[1]) : undefined;
 }
 
-function extractResponseBody(error: CodeninjaError): unknown | undefined {
+function extractResponseBody(error: CodegenieError): unknown | undefined {
   const existing = error.context?.responseBody;
   if (existing !== undefined) {
     return existing;
@@ -296,5 +296,5 @@ function stringField(value: unknown): string | undefined {
 }
 
 function missingPrSha(kind: "base" | "head", number: number): never {
-  throw new CodeninjaError("pr_not_found", `PR #${number} did not include a ${kind} commit SHA`);
+  throw new CodegenieError("pr_not_found", `PR #${number} did not include a ${kind} commit SHA`);
 }

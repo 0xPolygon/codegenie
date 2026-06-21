@@ -89,11 +89,11 @@ Functional guarantees:
 
 - Planner notes are advisory. They help Stage 7 spend attention, but they never prove a bug and never bypass verification.
 - Coverage remains honest. Every changed hunk is reviewed, skipped, failed, or budget-stopped exactly once in the coverage ledger.
-- Related context is bounded. codeninja should prefer showing the most relevant related changed symbol/hunk over broad file dumps.
+- Related context is bounded. codegenie should prefer showing the most relevant related changed symbol/hunk over broad file dumps.
 - Cross-file relationships are context, not packet grouping, in v1. A packet may include related cross-file snippets, but its own changed hunks remain from one file.
 - Stage 8 remains narrow. It should be triggered by concrete Stage 7 follow-up hints, not planner prose.
 
-This keeps the product promise simple: codeninja reviews the affected system without dumping the whole repo or asking the planner to find bugs.
+This keeps the product promise simple: codegenie reviews the affected system without dumping the whole repo or asking the planner to find bugs.
 
 ### Architecture Sketch
 
@@ -382,10 +382,10 @@ This is not a taxonomy. It is a general instruction to use the context Stage 6 p
 
 7. Update docs.
    - `README.md`
-   - `specs/projects/codeninja/functional_spec.md`
-   - `specs/projects/codeninja/architecture.md`
-   - `specs/projects/codeninja/components/review_pipeline.md`
-   - `specs/projects/codeninja/components/context_and_tools.md` if the relationship graph lives near tool/index code.
+   - `specs/projects/codegenie/functional_spec.md`
+   - `specs/projects/codegenie/architecture.md`
+   - `specs/projects/codegenie/components/review_pipeline.md`
+   - `specs/projects/codegenie/components/context_and_tools.md` if the relationship graph lives near tool/index code.
 
 8. Update tests.
    - Planner schema rejects or ignores standalone review emphasis in new outputs.

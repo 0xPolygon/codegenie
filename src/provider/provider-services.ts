@@ -13,14 +13,14 @@ import {
 } from "@earendil-works/pi-ai";
 import { getOAuthProvider, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import { loadConfig, type LoadedConfig } from "../config/config-loader.js";
-import { ensureCodeninjaHome, getCodeninjaPaths } from "../config/paths.js";
+import { ensureCodegenieHome, getCodegeniePaths } from "../config/paths.js";
 import { registerSecret } from "../telemetry/redaction.js";
-import type { CodeninjaPaths, ProviderSettings, ReasoningLevel, ReviewDepth } from "../types.js";
-import { CodeninjaError } from "../util/errors.js";
+import type { CodegeniePaths, ProviderSettings, ReasoningLevel, ReviewDepth } from "../types.js";
+import { CodegenieError } from "../util/errors.js";
 import { loadProviderSettings, saveProviderSettings } from "./provider-settings.js";
 
-export { ensureCodeninjaHome, getCodeninjaPaths, loadProviderSettings, saveProviderSettings };
-export type { CodeninjaPaths, ProviderSettings };
+export { ensureCodegenieHome, getCodegeniePaths, loadProviderSettings, saveProviderSettings };
+export type { CodegeniePaths, ProviderSettings };
 
 export type ProviderAuthEntry =
   | { type: "api_key"; apiKey: string; createdAt: string }
@@ -61,7 +61,7 @@ export interface PiModelRegistry {
 }
 
 export type ProviderServices = {
-  paths: CodeninjaPaths;
+  paths: CodegeniePaths;
   authStorage: PiAuthStorage;
   modelRegistry: PiModelRegistry;
 };
@@ -83,7 +83,7 @@ export type RunProviderCommandOptions = {
 };
 
 export function createProviderServices(homeOverride?: string): ProviderServices {
-  const paths = getCodeninjaPaths(homeOverride);
+  const paths = getCodegeniePaths(homeOverride);
   const authStorage = createFileAuthStorage(paths);
   return {
     paths,
@@ -92,12 +92,12 @@ export function createProviderServices(homeOverride?: string): ProviderServices 
   };
 }
 
-export function createFileAuthStorage(paths: CodeninjaPaths): PiAuthStorage {
+export function createFileAuthStorage(paths: CodegeniePaths): PiAuthStorage {
   return {
     loadAll: () => loadAuthFile(paths),
     get: (provider) => loadAuthFile(paths)[provider],
     set: (provider, entry) => {
-      ensureCodeninjaHome(paths);
+      ensureCodegenieHome(paths);
       const auth = loadAuthFile(paths);
       auth[provider] = entry;
       writeAuthFile(paths, auth);
@@ -174,7 +174,7 @@ export async function runProviderCommand(args: string[], opts: RunProviderComman
       await commandConfig(rest, services, writeOut, opts.env);
       return;
     default:
-      throw new CodeninjaError("invalid_args", "expected provider command: list, login, logout, auth-status, models, or config");
+      throw new CodegenieError("invalid_args", "expected provider command: list, login, logout, auth-status, models, or config");
   }
 }
 
@@ -237,7 +237,7 @@ async function commandLogin(
 function commandLogout(args: string[], services: ProviderServices, opts: RunProviderCommandOptions): void {
   if (!args[0]) {
     if (!opts.yes) {
-      throw new CodeninjaError("invalid_args", "provider logout without a provider requires --yes confirmation");
+      throw new CodegenieError("invalid_args", "provider logout without a provider requires --yes confirmation");
     }
     services.authStorage.clear();
     return;
@@ -276,7 +276,7 @@ async function commandConfig(
       const model = requireArg(rest[1], "provider config set-model <provider> <model>");
       assertProviderExists(provider, services);
       if (!services.modelRegistry.modelExists(provider, model)) {
-        throw new CodeninjaError("invalid_args", `unknown model ${provider}/${model}`);
+        throw new CodegenieError("invalid_args", `unknown model ${provider}/${model}`);
       }
       saveProviderSettings({ ...settings, defaultProvider: provider, defaultModel: model }, services.paths);
       writeOut(`default model set to ${provider}/${model}\n`);
@@ -303,7 +303,7 @@ async function commandConfig(
       return;
     }
     default:
-      throw new CodeninjaError("invalid_args", `unknown provider config command ${subcommand}`);
+      throw new CodegenieError("invalid_args", `unknown provider config command ${subcommand}`);
   }
 }
 
@@ -378,7 +378,7 @@ function configuredDefault<T>(settingsValue: T | undefined, resolvedValue: T | u
   return source === "defaults" ? null : resolvedValue ?? null;
 }
 
-function loadResolvedUserConfig(paths: CodeninjaPaths, env?: NodeJS.ProcessEnv): ProviderConfigLayers {
+function loadResolvedUserConfig(paths: CodegeniePaths, env?: NodeJS.ProcessEnv): ProviderConfigLayers {
   const base = {
     repoRoot: process.cwd(),
     homeOverride: paths.home,
@@ -419,13 +419,13 @@ function providerKnown(provider: string): boolean {
 
 function assertProviderExists(provider: string, services: ProviderServices): void {
   if (!services.modelRegistry.providerExists(provider)) {
-    throw new CodeninjaError("invalid_args", `unknown provider ${provider}`, {
+    throw new CodegenieError("invalid_args", `unknown provider ${provider}`, {
       context: { available: services.modelRegistry.listProviders() }
     });
   }
 }
 
-function loadAuthFile(paths: CodeninjaPaths): Record<string, ProviderAuthEntry> {
+function loadAuthFile(paths: CodegeniePaths): Record<string, ProviderAuthEntry> {
   if (!existsSync(paths.authPath)) {
     return {};
   }
@@ -433,7 +433,7 @@ function loadAuthFile(paths: CodeninjaPaths): Record<string, ProviderAuthEntry> 
   try {
     parsed = JSON.parse(readFileSync(paths.authPath, "utf8"));
   } catch (cause) {
-    throw new CodeninjaError("config_error", `failed to parse provider auth file at ${paths.authPath}`, {
+    throw new CodegenieError("config_error", `failed to parse provider auth file at ${paths.authPath}`, {
       context: { path: paths.authPath },
       cause
     });
@@ -485,8 +485,8 @@ function validateAuthFile(input: unknown, filePath: string): Record<string, Prov
   return output;
 }
 
-function invalidAuthFile(filePath: string, reason: string): CodeninjaError {
-  return new CodeninjaError("config_error", `invalid provider auth file at ${filePath}`, {
+function invalidAuthFile(filePath: string, reason: string): CodegenieError {
+  return new CodegenieError("config_error", `invalid provider auth file at ${filePath}`, {
     context: { path: filePath, reason }
   });
 }
@@ -495,8 +495,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function writeAuthFile(paths: CodeninjaPaths, auth: Record<string, ProviderAuthEntry>): void {
-  ensureCodeninjaHome(paths);
+function writeAuthFile(paths: CodegeniePaths, auth: Record<string, ProviderAuthEntry>): void {
+  ensureCodegenieHome(paths);
   const tmpPath = path.join(paths.home, `.auth-${process.pid}-${Date.now()}.tmp`);
   writeFileSync(tmpPath, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
   renameSync(tmpPath, paths.authPath);
@@ -516,7 +516,7 @@ async function promptForSecret(message: string): Promise<string> {
   try {
     const value = await rl.question(message);
     if (!value.trim()) {
-      throw new CodeninjaError("invalid_args", "credential value cannot be empty");
+      throw new CodegenieError("invalid_args", "credential value cannot be empty");
     }
     return value.trim();
   } finally {
@@ -526,7 +526,7 @@ async function promptForSecret(message: string): Promise<string> {
 
 function requireArg(value: string | undefined, usage: string): string {
   if (!value) {
-    throw new CodeninjaError("invalid_args", `usage: codeninja ${usage}`);
+    throw new CodegenieError("invalid_args", `usage: codegenie ${usage}`);
   }
   return value;
 }
@@ -535,12 +535,12 @@ function parseDepth(value: string): ReviewDepth {
   if (value === "light" || value === "normal" || value === "deep") {
     return value;
   }
-  throw new CodeninjaError("invalid_args", "depth must be one of: light, normal, deep");
+  throw new CodegenieError("invalid_args", "depth must be one of: light, normal, deep");
 }
 
 function parseReasoning(value: string): ReasoningLevel {
   if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
     return value;
   }
-  throw new CodeninjaError("invalid_args", "reasoning must be one of: low, medium, high, xhigh, auto");
+  throw new CodegenieError("invalid_args", "reasoning must be one of: low, medium, high, xhigh, auto");
 }

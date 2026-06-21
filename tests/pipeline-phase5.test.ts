@@ -27,7 +27,7 @@ import { createRunTelemetry } from "../src/telemetry/run-artifacts.js";
 import { buildTestCoverageDelta, testCoverageRewriteSignals } from "../src/repo/test-coverage-delta.js";
 import type {
   CandidateFinding,
-  CodeninjaConfig,
+  CodegenieConfig,
   CoverageLevel,
   DiffFile,
   FileFacts,
@@ -45,7 +45,7 @@ import type {
   TelemetryEvent,
   UnifiedDiff
 } from "../src/types.js";
-import { CodeninjaError } from "../src/util/errors.js";
+import { CodegenieError } from "../src/util/errors.js";
 import { sha256Hex } from "../src/util/hashing.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 
@@ -54,7 +54,7 @@ describe("phase 5 pipeline regressions", () => {
     const packet = fakePacket();
     const runner: LlmRunner = {
       runStructured: async () => {
-        throw new CodeninjaError("llm_call_failed", "auth unavailable", { recoverable: false });
+        throw new CodegenieError("llm_call_failed", "auth unavailable", { recoverable: false });
       }
     };
 
@@ -73,7 +73,7 @@ describe("phase 5 pipeline regressions", () => {
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         if (request.telemetryContext?.packetId === "bad-packet") {
-          throw new CodeninjaError("llm_schema_invalid", "model did not call submit_review", { recoverable: true });
+          throw new CodegenieError("llm_schema_invalid", "model did not call submit_review", { recoverable: true });
         }
         return { findings: [], followUpHints: [], uncertainties: [] } as T;
       }
@@ -3311,7 +3311,7 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it("scales packet tool budgets with light-depth floors, deep-depth ceilings, and budget multipliers", async () => {
-    const budgetFor = async (coverage: Exclude<CoverageLevel, "skip">, depth: CodeninjaConfig["review"]["depth"], budgetMultiplier = 1) => {
+    const budgetFor = async (coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], budgetMultiplier = 1) => {
       const plan = {
         ...fakePlan(),
         coverage: [{ ...fakePlan().coverage[0]!, coverage }]
@@ -4355,7 +4355,7 @@ describe("phase 5 pipeline regressions", () => {
     writeRepoFile(repo, "a.ts", "export const a = 2;\n");
     writeRepoFile(repo, "b.ts", "export const b = 2;\n");
     commitAll(repo, "feature");
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-runs-")), "run-budget-coverage");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-runs-")), "run-budget-coverage");
     const adapter: PiAiAdapter = {
       resolveModel: () => ({ provider: "scripted", id: "scripted-model", raw: { id: "scripted-model", api: "faux" } }),
       complete: async (_model, context) => {
@@ -4411,7 +4411,7 @@ describe("phase 5 pipeline regressions", () => {
     git(repo, ["checkout", "-b", "feature"]);
     writeRepoFile(repo, "app.ts", "export function value() {\n  return 2;\n}\n");
     commitAll(repo, "feature");
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-runs-")), "run-context-pressure");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-runs-")), "run-context-pressure");
     let packetReviewCalls = 0;
     const adapter: PiAiAdapter = {
       resolveModel: () => ({ provider: "scripted", id: "scripted-model", raw: { id: "scripted-model", api: "faux" } }),
@@ -4576,9 +4576,9 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it("allows planner chunk artifacts when telemetry is enabled", async () => {
-    const repoRoot = mkdtempSync(path.join(tmpdir(), "codeninja-runs-"));
+    const repoRoot = mkdtempSync(path.join(tmpdir(), "codegenie-runs-"));
     const telemetry = createRunTelemetry({
-      telemetryConfig: { ...defaultConfig.telemetry, enabled: true, runDir: ".codeninja/runs" },
+      telemetryConfig: { ...defaultConfig.telemetry, enabled: true, runDir: ".codegenie/runs" },
       idFactory: () => "chunk-artifact-test"
     });
     const attached = await telemetry.attachRunDirectory(repoRoot);
@@ -5804,7 +5804,7 @@ describe("phase 5 pipeline regressions", () => {
   it("records policy-file changes from old paths on renames", async () => {
     const file: DiffFile = {
       path: "src/review-note.md",
-      oldPath: ".codeninja/skills/review-note.md",
+      oldPath: ".codegenie/skills/review-note.md",
       status: "renamed",
       language: "markdown",
       hunks: [
@@ -5833,13 +5833,13 @@ describe("phase 5 pipeline regressions", () => {
       nullTelemetry()
     );
 
-    expect(dossier.policyFilesChanged).toEqual([".codeninja/skills/review-note.md"]);
+    expect(dossier.policyFilesChanged).toEqual([".codegenie/skills/review-note.md"]);
   });
 
   it("records policy-file old paths for filtered renamed files", async () => {
     const file: DiffFile = {
       path: "docs/review-note.md",
-      oldPath: ".codeninja/skills/review-note.md",
+      oldPath: ".codegenie/skills/review-note.md",
       status: "renamed",
       language: "markdown",
       hunks: [
@@ -5869,7 +5869,7 @@ describe("phase 5 pipeline regressions", () => {
       { allFiles: [file] }
     );
 
-    expect(dossier.policyFilesChanged).toEqual([".codeninja/skills/review-note.md"]);
+    expect(dossier.policyFilesChanged).toEqual([".codegenie/skills/review-note.md"]);
   });
 
   it("verifies only duplicate cluster representatives and preserves duplicate lineage", async () => {
@@ -6562,7 +6562,7 @@ describe("phase 5 pipeline regressions", () => {
       }
     ]);
 
-    controller.abort(new CodeninjaError("timeout", "review run exceeded hard timeout"));
+    controller.abort(new CodegenieError("timeout", "review run exceeded hard timeout"));
     const [outcome] = await scheduled;
 
     expect(outcome).toMatchObject({
@@ -6932,7 +6932,7 @@ describe("phase 5 pipeline regressions", () => {
           submitCalls: [{ id: "submit-verdict-bad", arguments: { parameter: "<parameter>BAD_PRIOR_XML_BODY</parameter>" } }],
           extraToolNames: []
         });
-        throw new CodeninjaError("llm_schema_invalid", "bad verifier schema after repair", {
+        throw new CodegenieError("llm_schema_invalid", "bad verifier schema after repair", {
           recoverable: true,
           context: { error: "missing required property verdict after repair" }
         });
@@ -7012,7 +7012,7 @@ describe("phase 5 pipeline regressions", () => {
           submitCalls: [{ id: "submit-verdict-bad", arguments: { reason: "missing verdict" } }],
           extraToolNames: []
         });
-        throw new CodeninjaError("budget_exhausted", "budget exhausted before repair dispatch", {
+        throw new CodegenieError("budget_exhausted", "budget exhausted before repair dispatch", {
           recoverable: true,
           context: { reason: "budget_exhausted" }
         });
@@ -7060,7 +7060,7 @@ describe("phase 5 pipeline regressions", () => {
   it("rethrows fatal provider errors from composition instead of falling back", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {
-        throw new CodeninjaError("llm_call_failed", "provider down", { recoverable: false });
+        throw new CodegenieError("llm_call_failed", "provider down", { recoverable: false });
       }
     };
     await expect(
@@ -7095,7 +7095,7 @@ describe("phase 5 pipeline regressions", () => {
   it("rethrows non-transient composition failures instead of falling back", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {
-        throw new CodeninjaError("llm_call_failed", "bad request", {
+        throw new CodegenieError("llm_call_failed", "bad request", {
           recoverable: true,
           context: { reason: "request_error" }
         });
@@ -7130,7 +7130,7 @@ describe("phase 5 pipeline regressions", () => {
   it("uses deterministic fallback for schema-invalid composition failures with verified findings", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {
-        throw new CodeninjaError("llm_schema_invalid", "model did not call submit_composition", {
+        throw new CodegenieError("llm_schema_invalid", "model did not call submit_composition", {
           recoverable: true
         });
       }
@@ -7165,7 +7165,7 @@ describe("phase 5 pipeline regressions", () => {
   it("rethrows schema-invalid composition failures when no verified findings can be formatted", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {
-        throw new CodeninjaError("llm_schema_invalid", "model did not call submit_composition", {
+        throw new CodegenieError("llm_schema_invalid", "model did not call submit_composition", {
           recoverable: true
         });
       }
@@ -7385,7 +7385,7 @@ describe("phase 5 pipeline regressions", () => {
     git(repo, ["checkout", "-b", "feature"]);
     writeRepoFile(repo, "app.ts", "export const value = 2;\n");
     commitAll(repo, "feature");
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-run-")), "run-provider-failed");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "run-provider-failed");
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     let providerCalls = 0;
     const adapter: PiAiAdapter = {
@@ -7443,7 +7443,7 @@ describe("phase 5 pipeline regressions", () => {
     writeRepoFile(repo, "app.ts", "export const value = 'changed';\n");
     commitAll(repo, "feature");
 
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-run-")), "run");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "run");
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         if (request.stage === 5) {
@@ -7519,7 +7519,7 @@ describe("phase 5 pipeline regressions", () => {
     git(repo, ["checkout", "-b", "feature"]);
     writeRepoFile(repo, "app.ts", "export const value = 2;\n");
     commitAll(repo, "feature");
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-run-")), "forced-artifacts");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "forced-artifacts");
 
     await runReview(
       { mode: "branch", branchName: "feature" },
@@ -7539,8 +7539,8 @@ describe("phase 5 pipeline regressions", () => {
     git(repo, ["checkout", "-b", "feature"]);
     writeRepoFile(repo, "app.ts", "export const value = 2;\n");
     commitAll(repo, "feature");
-    writeRepoFile(repo, ".codeninja/skills/bad.md", "not frontmatter\n# Checks\n- invalid skill\n");
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-run-")), "run-skill-disclosure");
+    writeRepoFile(repo, ".codegenie/skills/bad.md", "not frontmatter\n# Checks\n- invalid skill\n");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "run-skill-disclosure");
 
     await runReview(
       { mode: "branch", branchName: "feature" },
@@ -7550,7 +7550,7 @@ describe("phase 5 pipeline regressions", () => {
 
     const review = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
     expect(review).toContain("skill guidance skipped:");
-    expect(review).toContain(".codeninja/skills/bad.md");
+    expect(review).toContain(".codegenie/skills/bad.md");
     expect(review).toContain("missing YAML frontmatter");
   });
 
@@ -7561,7 +7561,7 @@ describe("phase 5 pipeline regressions", () => {
     git(repo, ["checkout", "-b", "feature"]);
     writeRepoFile(repo, "app.ts", "export const value = 2;\n");
     commitAll(repo, "feature");
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-runs-")), "run-budget-cache");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-runs-")), "run-budget-cache");
     const adapter = scriptedPiAdapter([
       assistantMessage([toolCall("submit-plan", "submit_plan", {
         diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
@@ -7633,7 +7633,7 @@ describe("phase 5 pipeline regressions", () => {
     if (!aHunk || !bHunk) {
       throw new Error("expected test hunks");
     }
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-run-")), "run-planner-fallback-records");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "run-planner-fallback-records");
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         if (request.stage === 5) {
@@ -7699,7 +7699,7 @@ describe("phase 5 pipeline regressions", () => {
     if (!hunk) {
       throw new Error("expected test hunk");
     }
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-run-")), "run-degraded-planner-default-records");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "run-degraded-planner-default-records");
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         if (request.stage === 5) {
@@ -11409,7 +11409,7 @@ function fakeCoverage(): RunCoverageStatus {
   };
 }
 
-function config(): CodeninjaConfig {
+function config(): CodegenieConfig {
   return {
     ...defaultConfig,
     lenses: { enabled: ["core/code-review"], disabled: [], extraSkillPaths: [] },
@@ -11699,8 +11699,8 @@ function fakeTwoLineDiff(): UnifiedDiff {
   };
 }
 
-function composerTransientError(): CodeninjaError {
-  return new CodeninjaError("llm_call_failed", "composer transient failure", {
+function composerTransientError(): CodegenieError {
+  return new CodegenieError("llm_call_failed", "composer transient failure", {
     recoverable: true,
     context: { reason: "transient_error", retryReason: "provider_overloaded" }
   });

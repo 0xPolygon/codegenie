@@ -9,7 +9,7 @@ Recommended priority: before Issue 43 if the next goal is review-quality stabili
 
 Issue 32 added adaptive Stage 6 symbol context, but eval run 8 shows the adaptive path is barely activating.
 
-Observed in `/home/peter/Dev/0xPolygon/codeninja-private-evals/trails-api/logs/8`:
+Observed in `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/logs/8`:
 
 - `adaptiveFull: 3`
 - `adaptiveSliced: 0`

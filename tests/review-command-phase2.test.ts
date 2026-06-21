@@ -11,14 +11,14 @@ describe("review command pipeline", () => {
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
     commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
-    writeRepoFile(repo, "app.ts", "export const value = 'CODENINJA_FAKE_FINDING';\n");
+    writeRepoFile(repo, "app.ts", "export const value = 'CODEGENIE_FAKE_FINDING';\n");
     commitAll(repo, "feature");
 
     let stdout = "";
     const parsed = parseReviewCommand(["review", "--branch", "feature"], {
       repoRoot: repo,
-      homeOverride: mkdtempSync(path.join(tmpdir(), "codeninja-home-")),
-      env: { CODENINJA_PROVIDER: "fake", CODENINJA_MODEL: "fake-model" }
+      homeOverride: mkdtempSync(path.join(tmpdir(), "codegenie-home-")),
+      env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
     });
     const result = await executeReviewCommand(enableTelemetry(parsed), { writeOutput: (text) => (stdout += text) });
 
@@ -61,7 +61,7 @@ describe("review command pipeline", () => {
 
   it("forwards repo config trust warnings into stage-0 logger and telemetry records", async () => {
     const repo = initRepo();
-    writeRepoFile(repo, "codeninja.toml", "[llm]\nprovider = \"ignored\"\n");
+    writeRepoFile(repo, "codegenie.toml", "[llm]\nprovider = \"ignored\"\n");
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
     commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
@@ -70,8 +70,8 @@ describe("review command pipeline", () => {
 
     const parsed = parseReviewCommand(["review", "--branch", "feature"], {
       repoRoot: repo,
-      homeOverride: mkdtempSync(path.join(tmpdir(), "codeninja-home-")),
-      env: { CODENINJA_PROVIDER: "fake", CODENINJA_MODEL: "fake-model" }
+      homeOverride: mkdtempSync(path.join(tmpdir(), "codegenie-home-")),
+      env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
     });
 
     expect(parsed.warnings).toContainEqual(expect.objectContaining({
@@ -80,7 +80,7 @@ describe("review command pipeline", () => {
     }));
 
     const result = await executeReviewCommand(enableTelemetry(parsed));
-    const warningMessage = "repo codeninja.toml cannot set user-scoped key llm.provider; value ignored";
+    const warningMessage = "repo codegenie.toml cannot set user-scoped key llm.provider; value ignored";
     const logs = readJsonl(path.join(result.runDir, "run.log")) as Array<{ stage: number; event: string; message: string; data?: { key?: string } }>;
     const events = readJsonl(path.join(result.runDir, "events.jsonl")) as Array<{ stage: number; message: string; data?: { key?: string; message?: string } }>;
 
@@ -107,8 +107,8 @@ describe("review command pipeline", () => {
 
     const parsed = parseReviewCommand(["review", "--branch", "feature"], {
       repoRoot: repo,
-      homeOverride: mkdtempSync(path.join(tmpdir(), "codeninja-home-")),
-      env: { CODENINJA_PROVIDER: "fake", CODENINJA_MODEL: "fake-model" }
+      homeOverride: mkdtempSync(path.join(tmpdir(), "codegenie-home-")),
+      env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
     });
     expect(parsed.config.telemetry.enabled).toBe(false);
     const result = await executeReviewCommand(parsed);
@@ -128,8 +128,8 @@ describe("review command pipeline", () => {
 
     const parsed = parseReviewCommand(["review", "--branch", "feature"], {
       repoRoot: repo,
-      homeOverride: mkdtempSync(path.join(tmpdir(), "codeninja-home-")),
-      env: { CODENINJA_PROVIDER: "fake", CODENINJA_MODEL: "fake-model" }
+      homeOverride: mkdtempSync(path.join(tmpdir(), "codegenie-home-")),
+      env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
     });
     const result = await executeReviewCommand(enableTelemetry(parsed));
 
@@ -153,8 +153,8 @@ describe("review command pipeline", () => {
 
     const parsed = parseReviewCommand(["review", "--branch", "feature", "--lens", "typo/not-real"], {
       repoRoot: repo,
-      homeOverride: mkdtempSync(path.join(tmpdir(), "codeninja-home-")),
-      env: { CODENINJA_PROVIDER: "fake", CODENINJA_MODEL: "fake-model" }
+      homeOverride: mkdtempSync(path.join(tmpdir(), "codegenie-home-")),
+      env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
     });
 
     await expect(executeReviewCommand(enableTelemetry(parsed))).rejects.toMatchObject({
@@ -162,7 +162,7 @@ describe("review command pipeline", () => {
       context: expect.objectContaining({ unknown: ["typo/not-real"] })
     });
 
-    const runsRoot = path.join(repo, ".codeninja", "runs");
+    const runsRoot = path.join(repo, ".codegenie", "runs");
     const runDirs = readdirSync(runsRoot);
     expect(runDirs).toHaveLength(1);
     const runDir = path.join(runsRoot, runDirs[0] ?? "");
@@ -176,16 +176,16 @@ describe("review command pipeline", () => {
   });
 
   it("finalizes failed runs after run directory creation", async () => {
-    const repoRoot = mkdtempSync(path.join(tmpdir(), "codeninja-not-git-"));
+    const repoRoot = mkdtempSync(path.join(tmpdir(), "codegenie-not-git-"));
     const parsed = parseReviewCommand(["review", "--branch", "feature"], {
       repoRoot,
-      homeOverride: mkdtempSync(path.join(tmpdir(), "codeninja-home-")),
-      env: { CODENINJA_PROVIDER: "fake", CODENINJA_MODEL: "fake-model" }
+      homeOverride: mkdtempSync(path.join(tmpdir(), "codegenie-home-")),
+      env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
     });
 
     await expect(executeReviewCommand(enableTelemetry(parsed))).rejects.toMatchObject({ code: "not_git_worktree" });
 
-    const runsRoot = path.join(repoRoot, ".codeninja", "runs");
+    const runsRoot = path.join(repoRoot, ".codegenie", "runs");
     const runDirs = readdirSync(runsRoot);
     expect(runDirs).toHaveLength(1);
     const runJson = JSON.parse(readFileSync(path.join(runsRoot, runDirs[0] ?? "", "run.json"), "utf8"));

@@ -17,7 +17,7 @@ That does not mean the capability is useless. It means the current exposure may 
 - test-related review quality still benefits from knowing nearby or likely tests,
 - the best use of this capability is probably deterministic packet enrichment or targeted verifier support, not broad LLM tool discovery.
 
-The tool should remain available as an internal capability, but codeninja should avoid exposing unused tools to every packet review when there is no concrete testing reason. This is not correctness-critical, but it is a low-risk cleanup because run 17 shows the direct LLM tool had zero executions while Stage 6 still supplied likely-test context.
+The tool should remain available as an internal capability, but codegenie should avoid exposing unused tools to every packet review when there is no concrete testing reason. This is not correctness-critical, but it is a low-risk cleanup because run 17 shows the direct LLM tool had zero executions while Stage 6 still supplied likely-test context.
 
 ## Goal
 
@@ -46,7 +46,7 @@ Recent eval tool-use review showed:
 - tree-sitter-backed tools are generally healthy,
 - tool failures are budget/pressure issues, not backend failures,
 - `find_likely_tests` is exposed but not used in runs 14, 15, and 17,
-- codeninja still found the ERC20/native balance test-coverage issue in run 15 without the model calling this tool directly.
+- codegenie still found the ERC20/native balance test-coverage issue in run 15 without the model calling this tool directly.
 - run 17 found the ERC20 boundary-coverage issue using packet context/static test signals and verifier reasoning, not a direct `find_likely_tests` tool call.
 
 That suggests the current Stage 6 packet context is doing the useful part. The extra Stage 7/Stage 9 tool schema is worth narrowing, but this plan should stay focused on exposure policy rather than deleting the capability or adding new enrichment.

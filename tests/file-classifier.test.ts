@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { CodeninjaConfig } from "../src/types.js";
+import type { CodegenieConfig } from "../src/types.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { parseDiff } from "../src/git/diff-parser.js";
 import { classifyChangedFiles, filterDiffFiles } from "../src/git/file-classifier.js";
@@ -23,10 +23,10 @@ describe("file filtering and classification", () => {
     writeRepoFile(repo, "skip/me.ts", "export const skipped = true;\n");
     writeRepoFile(repo, "src/foo_test.go", "package src\nfunc TestFoo() {}\n");
     writeRepoFile(repo, "lib/payments/a.ts", "export const amount = 1;\n");
-    writeRepoFile(repo, "codeninja.toml", "[review]\ndepth = \"normal\"\n");
+    writeRepoFile(repo, "codegenie.toml", "[review]\ndepth = \"normal\"\n");
     commitAll(repo, "feature inventory");
 
-    const config: CodeninjaConfig = {
+    const config: CodegenieConfig = {
       ...defaultConfig,
       classification: {
         pathRules: [
@@ -75,7 +75,7 @@ describe("file filtering and classification", () => {
       ])
     );
     expect(kept.map((file) => file.path).sort()).toEqual([
-      "codeninja.toml",
+      "codegenie.toml",
       "lib/payments/a.ts",
       "src/foo_test.go"
     ]);
@@ -97,7 +97,7 @@ describe("file filtering and classification", () => {
       testStatus: "test"
     });
 
-    const policy = facts.find((fact) => fact.path === "codeninja.toml");
+    const policy = facts.find((fact) => fact.path === "codegenie.toml");
     expect(policy?.labels).toContain("policy-change");
     expect(facts.every((fact) => fact.processingMode !== "skip")).toBe(true);
   });
@@ -281,7 +281,7 @@ describe("file filtering and classification", () => {
   });
 
   it("treats the first matching configured processing mode as decisive for skips", async () => {
-    const config: CodeninjaConfig = {
+    const config: CodegenieConfig = {
       ...defaultConfig,
       classification: {
         pathRules: [

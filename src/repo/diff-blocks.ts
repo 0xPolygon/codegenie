@@ -1,5 +1,5 @@
 import type { DiffHunk, ReviewPacket, ToolResultMeta, UnifiedDiff } from "../types.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 
 const MAX_BLOCKS = 20;
 const MAX_CHARS = 16_000;
@@ -18,7 +18,7 @@ export class DiffBlockRenderer {
 
   read(input: { packetId?: string; path?: string }): { blocks: string[]; meta: ToolResultMeta } {
     if ((input.packetId === undefined) === (input.path === undefined)) {
-      throw new CodeninjaError("invalid_args", "readDiffBlocks requires exactly one selector");
+      throw new CodegenieError("invalid_args", "readDiffBlocks requires exactly one selector");
     }
 
     const hunks = input.path !== undefined ? this.hunksForPath(input.path) : this.hunksForPacket(input.packetId ?? "");

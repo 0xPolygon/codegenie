@@ -1,6 +1,6 @@
 import path from "node:path";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { createRunTelemetry, provisionCodeninjaGitignore } from "../telemetry/run-artifacts.js";
+import { createRunTelemetry, provisionCodegenieGitignore } from "../telemetry/run-artifacts.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { parseDiff } from "../git/diff-parser.js";
 import { classifyChangedFiles, filterDiffFiles } from "../git/file-classifier.js";
@@ -25,7 +25,7 @@ import type {
   BudgetUsageByStage,
   CandidateFinding,
   ContextPressureSummary,
-  CodeninjaConfig,
+  CodegenieConfig,
   ConfigWarning,
   CoverageLevel,
   DiffFile,
@@ -44,7 +44,7 @@ import type {
   RunCoverageStatus,
   TelemetryEvent
 } from "../types.js";
-import { CodeninjaError, errorExitCode, isCodeninjaError } from "../util/errors.js";
+import { CodegenieError, errorExitCode, isCodegenieError } from "../util/errors.js";
 import { buildPlannerDossier, runPlanner } from "./planner.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
 import { runLensPackets } from "./lens-runner.js";
@@ -80,7 +80,7 @@ type RunContext = {
   budget: BudgetLedger;
   abort: AbortController;
   addCleanupTask(task: () => Promise<void>): void;
-  finalize(outcome: { status: "completed_full" | "completed_partial" | "failed"; errorCode?: import("../util/errors.js").CodeninjaErrorCode; exitCode: number; budgetStop?: BudgetStop }): Promise<void>;
+  finalize(outcome: { status: "completed_full" | "completed_partial" | "failed"; errorCode?: import("../util/errors.js").CodegenieErrorCode; exitCode: number; budgetStop?: BudgetStop }): Promise<void>;
 };
 
 type CoverageOptions = {
@@ -102,7 +102,7 @@ const MISSING_LOCK_OWNER_STALE_MS = 5_000;
 
 export async function runReview(
   input: ReviewInput | ReviewCommandTarget,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   overrides: RunReviewOverrides = {}
 ): Promise<ReviewResult> {
   const repoRoot = await resolveRunRepoRoot(overrides.repoRoot);
@@ -366,7 +366,7 @@ export async function runReview(
     await run.telemetry.flush();
     await run.finalize({
       status: "failed",
-      ...(isCodeninjaError(error) ? { errorCode: error.code } : {}),
+      ...(isCodegenieError(error) ? { errorCode: error.code } : {}),
       exitCode: errorExitCode(error),
       ...(budgetStop !== undefined ? { budgetStop } : {})
     });
@@ -375,7 +375,7 @@ export async function runReview(
 }
 
 async function startRun(
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   input: ReviewInput | ReviewCommandTarget,
   repoRoot: string,
   overrides: RunReviewOverrides
@@ -416,7 +416,7 @@ async function startRun(
   const abort = new AbortController();
   const hardTimeoutMs = config.review.timeoutMs * 2;
   const hardKillTimer = setTimeout(
-    () => abort.abort(new CodeninjaError("timeout", "review run exceeded hard timeout")),
+    () => abort.abort(new CodegenieError("timeout", "review run exceeded hard timeout")),
     hardTimeoutMs
   );
   hardKillTimer.unref?.();
@@ -476,7 +476,7 @@ function observeTelemetry(
   return observed;
 }
 
-function emitConcurrencyTuningEvent(config: CodeninjaConfig, telemetry: TelemetryRecorder): void {
+function emitConcurrencyTuningEvent(config: CodegenieConfig, telemetry: TelemetryRecorder): void {
   const reviewConcurrency = config.review.concurrency;
   const providerConcurrency = config.llm.maxConcurrentCalls;
   if (reviewConcurrency <= providerConcurrency) {
@@ -548,8 +548,8 @@ async function acquirePullRequestRefLock(
   prNumber: number,
   telemetry: TelemetryRecorder
 ): Promise<{ release: () => Promise<void> }> {
-  provisionCodeninjaGitignore(repoRoot);
-  const lockDir = path.join(repoRoot, ".codeninja", "locks", `pr-${prNumber}.refs.lock`);
+  provisionCodegenieGitignore(repoRoot);
+  const lockDir = path.join(repoRoot, ".codegenie", "locks", `pr-${prNumber}.refs.lock`);
   await mkdir(path.dirname(lockDir), { recursive: true });
   const deadline = Date.now() + 300_000;
   for (;;) {
@@ -578,7 +578,7 @@ async function acquirePullRequestRefLock(
       };
     } catch (error) {
       if (!isNodeErrorCode(error, "EEXIST") || Date.now() >= deadline) {
-        throw new CodeninjaError("git_fetch_failed", `timed out waiting for PR #${prNumber} ref lock`, { cause: error });
+        throw new CodegenieError("git_fetch_failed", `timed out waiting for PR #${prNumber} ref lock`, { cause: error });
       }
       if (await removeStalePullRequestRefLock(lockDir, prNumber, telemetry)) {
         continue;
@@ -668,7 +668,7 @@ async function sleep(ms: number): Promise<void> {
 }
 
 function reviewFailureRecord(error: unknown): Record<string, unknown> {
-  if (isCodeninjaError(error)) {
+  if (isCodegenieError(error)) {
     return {
       errorCode: error.code,
       error: error.message,
@@ -688,7 +688,7 @@ function reviewFailureRecord(error: unknown): Record<string, unknown> {
 }
 
 async function createPipelineServices(
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   repoRoot: string,
   resolved: ResolvedReviewInput,
   run: RunContext,
@@ -724,7 +724,7 @@ async function createPipelineServices(
 }
 
 async function validateExplicitCliLensesForZeroWork(
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   repoRoot: string,
   run: RunContext
 ): Promise<void> {
@@ -754,7 +754,7 @@ async function resolveRunRepoRoot(input: string | undefined): Promise<string> {
 }
 
 async function createReviewCache(
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   repoRoot: string,
   resolved: ResolvedReviewInput,
   lensState: string,
@@ -773,7 +773,7 @@ async function createReviewCache(
 }
 
 export function reviewCacheFingerprint(
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   repoRoot: string,
   resolved: ResolvedReviewInput,
   registryHash: string
@@ -799,7 +799,7 @@ export function reviewCacheFingerprint(
   });
 }
 
-function createRunner(config: CodeninjaConfig, run: RunContext, cache?: ModelCallCache, adapter?: PiAiAdapter): LlmRunner {
+function createRunner(config: CodegenieConfig, run: RunContext, cache?: ModelCallCache, adapter?: PiAiAdapter): LlmRunner {
   if (shouldUseFakeRunner(config.llm)) {
     return createFakeRunner();
   }
@@ -828,15 +828,15 @@ function throwIfHardAborted(run: RunContext): void {
     return;
   }
   const reason = run.abort.signal.reason;
-  if (isCodeninjaError(reason)) {
+  if (isCodegenieError(reason)) {
     throw reason;
   }
-  throw new CodeninjaError("timeout", "review run exceeded hard timeout");
+  throw new CodegenieError("timeout", "review run exceeded hard timeout");
 }
 
 async function resolveInput(
   input: ReviewInput | ReviewCommandTarget,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   repoRoot: string,
   overrides: RunReviewOverrides
@@ -849,7 +849,7 @@ async function maybeZeroWork(
   kept: DiffFile[],
   decisions: FileFilterDecision[],
   resolved: ResolvedReviewInput,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   run: RunContext,
   overrides: RunReviewOverrides
 ): Promise<ReviewResult | undefined> {
@@ -1311,7 +1311,7 @@ export class BudgetLedger {
   stopped = false;
 
   constructor(
-    private readonly config: CodeninjaConfig,
+    private readonly config: CodegenieConfig,
     private readonly telemetry?: TelemetryRecorder
   ) {
     this.effectiveMaxModelCalls = scaleOptionalBudgetValue(config.review.maxModelCalls, config.review.budgetMultiplier);
@@ -1322,7 +1322,7 @@ export class BudgetLedger {
     const elapsed = Date.now() - this.startedAt;
     if (elapsed >= this.config.review.timeoutMs * 2) {
       this.markDispatchBlocked("hard_timeout", stage, elapsed);
-      throw new CodeninjaError("timeout", "review run exceeded hard timeout");
+      throw new CodegenieError("timeout", "review run exceeded hard timeout");
     }
 
     const reserveStage = stage >= 9;
@@ -1349,7 +1349,7 @@ export class BudgetLedger {
     const reservedCalls = Math.max(0, Math.ceil(estimatedModelCalls));
     if (elapsed >= this.config.review.timeoutMs * 2) {
       this.markDispatchBlocked("hard_timeout", stage, elapsed, estimatedTokens, reservedCalls);
-      throw new CodeninjaError("timeout", "review run exceeded hard timeout");
+      throw new CodegenieError("timeout", "review run exceeded hard timeout");
     }
 
     const reserveStage = stage >= 9;

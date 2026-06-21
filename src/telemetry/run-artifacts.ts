@@ -12,7 +12,7 @@ import {
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import type {
-  CodeninjaConfig,
+  CodegenieConfig,
   ContextPressureSummary,
   LogEvent,
   Logger,
@@ -25,10 +25,10 @@ import type {
 import type { LlmCallRecord, TelemetryRecorder } from "./telemetry-recorder.js";
 import { stripCredentials } from "./redaction.js";
 import { isLocalToolBudgetRejectionReason } from "../util/context-pressure.js";
-import { resolveCodeninjaRuntimeProvenance } from "../util/runtime-provenance.js";
+import { resolveCodegenieRuntimeProvenance } from "../util/runtime-provenance.js";
 
 type CreateRunTelemetryOptions = {
-  telemetryConfig: CodeninjaConfig["telemetry"];
+  telemetryConfig: CodegenieConfig["telemetry"];
   runMetadata?: RunArtifactMetadata;
   clock?: () => Date;
   idFactory?: () => string;
@@ -339,7 +339,7 @@ class RunTelemetryImpl {
   readonly runId: string;
   private readonly startedAt: string;
   private readonly clock: () => Date;
-  private readonly config: CodeninjaConfig["telemetry"];
+  private readonly config: CodegenieConfig["telemetry"];
   private readonly metadata: RunArtifactMetadata;
   private repoRoot: string | undefined;
   private runDirectory: string | undefined;
@@ -478,12 +478,12 @@ class RunTelemetryImpl {
     const durationMs = durationBetween(this.startedAt, finishedAt);
     const totals = this.runTotals();
     const normalizedOutcome = normalizeOutcome(outcome);
-    const codeninjaRuntime = resolveCodeninjaRuntimeProvenance();
+    const codegenieRuntime = resolveCodegenieRuntimeProvenance();
     this.writeJson("run.json", {
       schemaVersion: 1,
       runId: this.runId,
-      codeninjaVersion: codeninjaRuntime.packageVersion,
-      codeninjaRuntime,
+      codegenieVersion: codegenieRuntime.packageVersion,
+      codegenieRuntime,
       nodeVersion: process.version,
       argv: this.metadata.argv ?? process.argv,
       repoRoot: this.metadata.repoRoot ?? this.repoRoot ?? null,
@@ -500,7 +500,7 @@ class RunTelemetryImpl {
     this.writeJson("telemetry.json", {
       schemaVersion: 1,
       runId: this.runId,
-      codeninjaRuntime,
+      codegenieRuntime,
       startedAt: this.startedAt,
       finishedAt,
       completedAt: finishedAt,
@@ -1810,21 +1810,21 @@ function resolveRunRoot(repoRoot: string, runDir: string): string {
 }
 
 function provisionProjectGitignore(repoRoot: string, runsRoot: string): void {
-  const codeninjaDir = path.resolve(repoRoot, ".codeninja");
-  if (!isPathInside(codeninjaDir, runsRoot) && path.resolve(runsRoot) !== path.join(codeninjaDir, "runs")) {
+  const codegenieDir = path.resolve(repoRoot, ".codegenie");
+  if (!isPathInside(codegenieDir, runsRoot) && path.resolve(runsRoot) !== path.join(codegenieDir, "runs")) {
     return;
   }
 
-  provisionCodeninjaGitignore(repoRoot);
+  provisionCodegenieGitignore(repoRoot);
 }
 
-export function provisionCodeninjaGitignore(repoRoot: string): void {
-  const codeninjaDir = path.resolve(repoRoot, ".codeninja");
-  const codeninjaDirExisted = existsSync(codeninjaDir);
-  mkdirSync(codeninjaDir, { recursive: true });
-  const gitignorePath = path.join(codeninjaDir, ".gitignore");
+export function provisionCodegenieGitignore(repoRoot: string): void {
+  const codegenieDir = path.resolve(repoRoot, ".codegenie");
+  const codegenieDirExisted = existsSync(codegenieDir);
+  mkdirSync(codegenieDir, { recursive: true });
+  const gitignorePath = path.join(codegenieDir, ".gitignore");
   const required = ["runs/", "cache/", "locks/"];
-  const existing = codeninjaDirExisted && existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : "";
+  const existing = codegenieDirExisted && existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : "";
   const lines = new Set(existing.split(/\r?\n/u).map((line) => line.trim()).filter((line) => line.length > 0));
   let changed = !existsSync(gitignorePath);
   for (const requiredLine of required) {

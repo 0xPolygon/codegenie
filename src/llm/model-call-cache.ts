@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { sha256Hex } from "../util/hashing.js";
-import { CodeninjaError } from "../util/errors.js";
-import { provisionCodeninjaGitignore } from "../telemetry/run-artifacts.js";
+import { CodegenieError } from "../util/errors.js";
+import { provisionCodegenieGitignore } from "../telemetry/run-artifacts.js";
 import { stripCredentials } from "../telemetry/redaction.js";
 import type { Logger, ReviewStage } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
@@ -36,8 +36,8 @@ const MAX_CACHE_BYTES = 500 * 1024 * 1024;
 export async function createModelCallCache(opts: CreateModelCallCacheOptions): Promise<ModelCallCache> {
   const dir = path.resolve(opts.repoRoot, opts.dir);
   refuseTrackedCacheDirectory(opts.repoRoot, dir);
-  if (path.relative(path.resolve(opts.repoRoot, ".codeninja"), dir).split(path.sep)[0] !== "..") {
-    provisionCodeninjaGitignore(opts.repoRoot);
+  if (path.relative(path.resolve(opts.repoRoot, ".codegenie"), dir).split(path.sep)[0] !== "..") {
+    provisionCodegenieGitignore(opts.repoRoot);
   }
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const eviction = evictCacheEntries(dir);
@@ -142,7 +142,7 @@ function refuseTrackedCacheDirectory(repoRoot: string, dir: string): void {
     return;
   }
   if (relative === "") {
-    throw new CodeninjaError("config_error", "model-call cache directory cannot be the repository root", {
+    throw new CodegenieError("config_error", "model-call cache directory cannot be the repository root", {
       context: { dir }
     });
   }
@@ -151,12 +151,12 @@ function refuseTrackedCacheDirectory(repoRoot: string, dir: string): void {
     encoding: "utf8"
   });
   if (result.status !== 0) {
-    throw new CodeninjaError("config_error", "failed to inspect model-call cache directory tracking status", {
+    throw new CodegenieError("config_error", "failed to inspect model-call cache directory tracking status", {
       context: { dir, status: result.status, stderr: result.stderr.trim() }
     });
   }
   if (result.status === 0 && result.stdout.trim().length > 0) {
-    throw new CodeninjaError("config_error", "model-call cache directory contains git-tracked files", {
+    throw new CodegenieError("config_error", "model-call cache directory contains git-tracked files", {
       context: { dir, tracked: result.stdout.trim().split(/\r?\n/).slice(0, 5) }
     });
   }

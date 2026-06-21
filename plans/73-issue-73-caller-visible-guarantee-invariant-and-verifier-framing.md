@@ -230,8 +230,8 @@ Do not add a new model call or a large artifact.
 
 Update only if terminology changes:
 
-- `specs/projects/codeninja/functional_spec.md`
-- `specs/projects/codeninja/components/review_pipeline.md`
+- `specs/projects/codegenie/functional_spec.md`
+- `specs/projects/codegenie/components/review_pipeline.md`
 
 The docs should say that promoted hints may carry bounded packet related-context evidence into verification. Do not document this as a new review category.
 
@@ -248,7 +248,7 @@ This plan keeps current stage ownership intact:
 
 The skill/prompt change helps Stage 7 choose the right semantic property to inspect and helps Stage 9 apply the right materiality frame. The promotion change is secondary hardening: it helps Stage 9 reuse directly attached packet context when available, but it must not expand into a new multi-hop context system.
 
-This is not a deterministic finding rule. codeninja should not auto-report all lossy conversions, all minimums, or all transformed outputs. The model still decides whether a concrete failure mode exists, and the verifier still rejects unproven or immaterial claims.
+This is not a deterministic finding rule. codegenie should not auto-report all lossy conversions, all minimums, or all transformed outputs. The model still decides whether a concrete failure mode exists, and the verifier still rejects unproven or immaterial claims.
 
 ## Non-Goals
 
@@ -274,8 +274,8 @@ This is not a deterministic finding rule. codeninja should not auto-report all l
   - `tests/pipeline-phase7.test.ts` if prompt text is asserted there
   - `tests/verifier.test.ts` if verifier prompt text is asserted there
 - specs only if public behavior text changes:
-  - `specs/projects/codeninja/functional_spec.md`
-  - `specs/projects/codeninja/components/review_pipeline.md`
+  - `specs/projects/codegenie/functional_spec.md`
+  - `specs/projects/codegenie/components/review_pipeline.md`
 
 ## Out of Scope
 

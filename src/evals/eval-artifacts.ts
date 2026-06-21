@@ -13,7 +13,7 @@ import type {
   ReviewPlan,
   RunCoverageStatus
 } from "../types.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 
 export async function allocateRunDir(logsDir: string): Promise<{ runNumber: number; dir: string }> {
   await mkdir(logsDir, { recursive: true });
@@ -145,13 +145,13 @@ export async function copyReviewOutput(sourceRunOrTelemetryDir: string, destinat
     ? path.dirname(path.resolve(sourceRunOrTelemetryDir))
     : path.resolve(sourceRunOrTelemetryDir);
   try {
-    await cp(path.join(sourceRunDir, "codeninja-review.out.md"), path.join(destinationRunDir, "codeninja-review.out.md"));
+    await cp(path.join(sourceRunDir, "codegenie-review.out.md"), path.join(destinationRunDir, "codegenie-review.out.md"));
     return;
   } catch {
     // Older or raw telemetry artifact sets may only have final-review.md.
   }
   try {
-    await cp(path.join(resolveTelemetryDir(sourceRunOrTelemetryDir), "final-review.md"), path.join(destinationRunDir, "codeninja-review.out.md"));
+    await cp(path.join(resolveTelemetryDir(sourceRunOrTelemetryDir), "final-review.md"), path.join(destinationRunDir, "codegenie-review.out.md"));
   } catch {
     // Review output is helpful but not required for deterministic re-scoring.
   }
@@ -171,11 +171,11 @@ async function readRequiredJson<T>(dir: string, fileName: string): Promise<T> {
     return JSON.parse(await readFile(filePath, "utf8")) as T;
   } catch (error) {
     if (isNodeErrorCode(error, "ENOENT")) {
-      throw new CodeninjaError("invalid_args", `required eval artifact is missing: ${filePath}`, {
+      throw new CodegenieError("invalid_args", `required eval artifact is missing: ${filePath}`, {
         context: { path: filePath }
       });
     }
-    throw new CodeninjaError("invalid_args", `failed to read eval artifact: ${filePath}`, {
+    throw new CodegenieError("invalid_args", `failed to read eval artifact: ${filePath}`, {
       context: { path: filePath },
       cause: error
     });
@@ -190,7 +190,7 @@ async function readOptionalJson<T>(dir: string, fileName: string): Promise<T | u
     if (isNodeErrorCode(error, "ENOENT")) {
       return undefined;
     }
-    throw new CodeninjaError("invalid_args", `failed to read eval artifact: ${filePath}`, {
+    throw new CodegenieError("invalid_args", `failed to read eval artifact: ${filePath}`, {
       context: { path: filePath },
       cause: error
     });
@@ -291,9 +291,9 @@ async function assertDirectory(dir: string, message: string): Promise<void> {
       return;
     }
   } catch {
-    // Fall through to consistent CodeninjaError.
+    // Fall through to consistent CodegenieError.
   }
-  throw new CodeninjaError("invalid_args", message, { context: { path: dir } });
+  throw new CodegenieError("invalid_args", message, { context: { path: dir } });
 }
 
 function arrayOfStrings(input: unknown): string[] {

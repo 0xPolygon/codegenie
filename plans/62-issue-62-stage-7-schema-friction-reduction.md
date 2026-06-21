@@ -22,7 +22,7 @@ The recovery path worked, but it still costs latency, tokens, and complexity. It
 
 Reduce avoidable Stage 7 schema-invalid calls while preserving review recall.
 
-Important re-read note: codeninja already has a Stage 7 cleanup/repair path in `src/llm/stage7-submit-repair.ts`, with telemetry such as `stage7_schema_cleanup_attempted`, `stage7_schema_cleanup_recovered`, and `stage7_no_finding_reason_truncated`. This plan should refine that existing path, not introduce a parallel subsystem.
+Important re-read note: codegenie already has a Stage 7 cleanup/repair path in `src/llm/stage7-submit-repair.ts`, with telemetry such as `stage7_schema_cleanup_attempted`, `stage7_schema_cleanup_recovered`, and `stage7_no_finding_reason_truncated`. This plan should refine that existing path, not introduce a parallel subsystem.
 
 Desired behavior:
 

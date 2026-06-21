@@ -1,4 +1,4 @@
-# codeninja fixture evals
+# codegenie fixture evals
 
 This starter suite runs live review cases through the deterministic fake runner:
 

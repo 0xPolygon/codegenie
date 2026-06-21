@@ -10,7 +10,7 @@ import type {
   PullRequestMetadata,
   ReviewResult
 } from "../src/types.js";
-import { CodeninjaError } from "../src/util/errors.js";
+import { CodegenieError } from "../src/util/errors.js";
 import { nullTelemetry } from "./helpers/git.js";
 
 const RAW_DIFF = [
@@ -20,7 +20,7 @@ const RAW_DIFF = [
   "+++ b/src/app.ts",
   "@@ -1,1 +1,1 @@",
   "-export const value = 1;",
-  "+export const value = 2; // CODENINJA_FAKE_FINDING",
+  "+export const value = 2; // CODEGENIE_FAKE_FINDING",
   ""
 ].join("\n");
 
@@ -90,7 +90,7 @@ describe("GitHub publisher", () => {
     expect(created[0]?.body).toBe("Found issues.");
     expect(created[0]?.comments[0]?.body).toContain("`@team`");
     expect(created[0]?.comments[0]?.body).not.toContain("<!--bad-->");
-    expect(created[0]?.comments[0]?.body).toContain("<!-- codeninja:fingerprint=");
+    expect(created[0]?.comments[0]?.body).toContain("<!-- codegenie:fingerprint=");
   });
 
   it("fails before posting when the PR head changed after resolution", async () => {
@@ -235,7 +235,7 @@ describe("GitHub publisher", () => {
           line: 1,
           side: "RIGHT",
           author: "codebot",
-          isCodeninja: true,
+          isCodegenie: true,
           fingerprint: finding.fingerprint
         }
       ],
@@ -628,11 +628,11 @@ function resolved() {
 function pr(): PullRequestMetadata {
   return {
     owner: "0xPolygon",
-    repo: "codeninja",
+    repo: "codegenie",
     number: 1,
     title: "PR",
     body: "",
-    url: "https://github.com/0xPolygon/codeninja/pull/1",
+    url: "https://github.com/0xPolygon/codegenie/pull/1",
     baseRefName: "main",
     baseSha: "b".repeat(40),
     headRefName: "feature",
@@ -712,8 +712,8 @@ function finalFinding(
   };
 }
 
-function github422(responseBody: unknown): CodeninjaError {
-  return new CodeninjaError("github_post_failed", "GitHub review creation failed", {
+function github422(responseBody: unknown): CodegenieError {
+  return new CodegenieError("github_post_failed", "GitHub review creation failed", {
     context: { httpStatus: 422, responseBody }
   });
 }

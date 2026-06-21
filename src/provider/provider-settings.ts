@@ -1,9 +1,9 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { ensureCodeninjaHome, getCodeninjaPaths } from "../config/paths.js";
-import type { CodeninjaPaths, ProviderSettings } from "../types.js";
-import { CodeninjaError } from "../util/errors.js";
+import { ensureCodegenieHome, getCodegeniePaths } from "../config/paths.js";
+import type { CodegeniePaths, ProviderSettings } from "../types.js";
+import { CodegenieError } from "../util/errors.js";
 
 const providerSettingsSchema = z
   .object({
@@ -14,7 +14,7 @@ const providerSettingsSchema = z
   })
   .strict();
 
-export function loadProviderSettings(paths: CodeninjaPaths = getCodeninjaPaths()): ProviderSettings {
+export function loadProviderSettings(paths: CodegeniePaths = getCodegeniePaths()): ProviderSettings {
   if (!existsSync(paths.settingsPath)) {
     return {};
   }
@@ -23,7 +23,7 @@ export function loadProviderSettings(paths: CodeninjaPaths = getCodeninjaPaths()
   try {
     parsed = JSON.parse(readFileSync(paths.settingsPath, "utf8"));
   } catch (cause) {
-    throw new CodeninjaError("config_error", `failed to read provider settings at ${paths.settingsPath}`, {
+    throw new CodegenieError("config_error", `failed to read provider settings at ${paths.settingsPath}`, {
       context: { path: paths.settingsPath },
       cause
     });
@@ -31,7 +31,7 @@ export function loadProviderSettings(paths: CodeninjaPaths = getCodeninjaPaths()
 
   const result = providerSettingsSchema.safeParse(parsed);
   if (!result.success) {
-    throw new CodeninjaError("config_error", `invalid provider settings at ${paths.settingsPath}`, {
+    throw new CodegenieError("config_error", `invalid provider settings at ${paths.settingsPath}`, {
       context: { path: paths.settingsPath, issues: result.error.issues }
     });
   }
@@ -53,12 +53,12 @@ export function loadProviderSettings(paths: CodeninjaPaths = getCodeninjaPaths()
 
 export function saveProviderSettings(
   settings: ProviderSettings,
-  paths: CodeninjaPaths = getCodeninjaPaths()
+  paths: CodegeniePaths = getCodegeniePaths()
 ): void {
-  ensureCodeninjaHome(paths);
+  ensureCodegenieHome(paths);
   const result = providerSettingsSchema.safeParse(settings);
   if (!result.success) {
-    throw new CodeninjaError("config_error", "invalid provider settings", {
+    throw new CodegenieError("config_error", "invalid provider settings", {
       context: { issues: result.error.issues }
     });
   }

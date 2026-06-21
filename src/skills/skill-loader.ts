@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sha256Hex } from "../util/hashing.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 import type { Logger } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 
@@ -50,7 +50,7 @@ export async function loadSkills(opts: {
 }): Promise<SkillLoadResult> {
   const repoRoot = path.resolve(opts.repoRoot);
   const bundledRoot = bundledSkillsRoot();
-  const repoSkillsRoot = path.join(repoRoot, ".codeninja", "skills");
+  const repoSkillsRoot = path.join(repoRoot, ".codegenie", "skills");
   const failures: SkillLoadFailure[] = [];
   const skills: Skill[] = [];
   const seenIds = new Set<string>();
@@ -106,7 +106,7 @@ function bundledSkillsRoot(): string {
       return candidate;
     }
   }
-  throw new CodeninjaError("config_error", "bundled skills directory is missing", {
+  throw new CodegenieError("config_error", "bundled skills directory is missing", {
     context: { candidates }
   });
 }

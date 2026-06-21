@@ -4,7 +4,7 @@ import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { createGitClient } from "../src/git/git-client.js";
 import { assertSafeRefspec, runGit, runGitCapped, scrubSubprocessValue } from "../src/git/subprocess.js";
-import { CodeninjaError } from "../src/util/errors.js";
+import { CodegenieError } from "../src/util/errors.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("git client", () => {
@@ -16,10 +16,10 @@ describe("git client", () => {
 
     await expect(client.revParse("--upload-pack=x")).rejects.toMatchObject({
       code: "invalid_args"
-    } satisfies Partial<CodeninjaError>);
+    } satisfies Partial<CodegenieError>);
     await expect(client.catFile("HEAD", "--evil")).rejects.toMatchObject({
       code: "invalid_args"
-    } satisfies Partial<CodeninjaError>);
+    } satisfies Partial<CodegenieError>);
   });
 
   it("redacts argv values in subprocess error messages", async () => {

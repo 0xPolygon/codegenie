@@ -4,7 +4,7 @@ import path from "node:path";
 import { rgPath } from "@vscode/ripgrep";
 import picomatch from "picomatch";
 import type { SearchOptions, SearchResult, SourceSelector, SymbolMentionOptions, ToolBackend, ToolPrecision } from "../types.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 import { containGlob, containPath } from "./path-guard.js";
 import type { SourceResolver } from "./source-resolver.js";
 import type { LanguageAdapterRegistry } from "./language-adapter.js";
@@ -153,8 +153,8 @@ export class SearchService {
         ...(options.word !== undefined ? { word: options.word } : {})
       }));
     } catch (error) {
-      if (error instanceof CodeninjaError && error.code === "git_ref_missing") {
-        throw new CodeninjaError("invalid_args", "search pattern or revision could not be searched", { cause: error });
+      if (error instanceof CodegenieError && error.code === "git_ref_missing") {
+        throw new CodegenieError("invalid_args", "search pattern or revision could not be searched", { cause: error });
       }
       throw error;
     }
@@ -373,10 +373,10 @@ export class SearchService {
 
 function validateQuery(query: string): void {
   if (query.length === 0) {
-    throw new CodeninjaError("invalid_args", "query must be non-empty");
+    throw new CodegenieError("invalid_args", "query must be non-empty");
   }
   if (query.length > MAX_QUERY_CHARS) {
-    throw new CodeninjaError("invalid_args", "query exceeds 500 characters");
+    throw new CodegenieError("invalid_args", "query exceeds 500 characters");
   }
 }
 

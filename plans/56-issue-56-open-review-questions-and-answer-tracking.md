@@ -39,7 +39,7 @@ The desired behavior is:
 
 This should improve recall for cross-file and cross-symbol concerns without adding repo-specific rules or weakening the verifier.
 
-It should also reduce false positives for negative evidence claims. If a reviewer says "this behavior is untested" or "no coverage exists," codeninja should know which tests were inspected, what they cover, and what exact behavior remains untested.
+It should also reduce false positives for negative evidence claims. If a reviewer says "this behavior is untested" or "no coverage exists," codegenie should know which tests were inspected, what they cover, and what exact behavior remains untested.
 
 ## Non-Goals
 

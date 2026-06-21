@@ -1,8 +1,8 @@
 import path from "node:path";
 import { Command, CommanderError } from "commander";
 import { loadConfig } from "../config/config-loader.js";
-import type { CodeninjaConfig, EvalCaseResult, EvalLossLabel } from "../types.js";
-import { CodeninjaError } from "../util/errors.js";
+import type { CodegenieConfig, EvalCaseResult, EvalLossLabel } from "../types.js";
+import { CodegenieError } from "../util/errors.js";
 import { CliDisplayExit } from "../cli/review-command.js";
 import { loadEvalSuite, replayFromArtifacts, runEvalCase } from "./eval-runner.js";
 
@@ -39,7 +39,7 @@ export async function executeEvalCommand(argv: string[], opts: ExecuteEvalComman
 
 export async function runEvalCommand(
   options: EvalCommandOptions,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   runtime: { writeOutput?: (text: string) => void } = {}
 ): Promise<0 | 1 | 2> {
   validateEvalOptions(options, config);
@@ -56,7 +56,7 @@ export async function runEvalCommand(
 
   const evalDir = options.evalDir ?? config.eval.defaultEvalDir;
   if (evalDir === undefined) {
-    throw new CodeninjaError("invalid_args", "--eval-dir is required when eval.defaultEvalDir is not configured");
+    throw new CodegenieError("invalid_args", "--eval-dir is required when eval.defaultEvalDir is not configured");
   }
   const suite = await loadEvalSuite(evalDir);
   const results: EvalCaseResult[] = [];
@@ -78,7 +78,7 @@ export function parseEvalCommand(
 ): EvalCommandOptions {
   let parsed: EvalCommandOptions | undefined;
   const program = new Command();
-  program.name("codeninja").exitOverride();
+  program.name("codegenie").exitOverride();
 
   if (!opts.allowOutput) {
     program.configureOutput({
@@ -89,7 +89,7 @@ export function parseEvalCommand(
 
   program
     .command("eval")
-    .description("run codeninja eval suites")
+    .description("run codegenie eval suites")
     .option("--eval-dir <path>", "eval suite directory")
     .option("--from-artifacts <path>", "re-score a previous eval run directory")
     .option("--cache", "enable local model-call cache for live cases; provider prompt caching is reported separately")
@@ -108,24 +108,24 @@ export function parseEvalCommand(
     if (isCommanderDisplayExit(error)) {
       throw new CliDisplayExit(error.exitCode);
     }
-    throw commanderToCodeninjaError(error);
+    throw commanderToCodegenieError(error);
   }
 
   if (!parsed) {
-    throw new CodeninjaError("invalid_args", "expected eval command");
+    throw new CodegenieError("invalid_args", "expected eval command");
   }
   if (argv.includes("--cache") && argv.includes("--no-cache")) {
-    throw new CodeninjaError("invalid_args", "--cache and --no-cache are mutually exclusive");
+    throw new CodegenieError("invalid_args", "--cache and --no-cache are mutually exclusive");
   }
   return parsed;
 }
 
-function validateEvalOptions(options: EvalCommandOptions, config: CodeninjaConfig): void {
+function validateEvalOptions(options: EvalCommandOptions, config: CodegenieConfig): void {
   if (options.evalDir !== undefined && options.fromArtifacts !== undefined) {
-    throw new CodeninjaError("invalid_args", "--eval-dir and --from-artifacts are mutually exclusive");
+    throw new CodegenieError("invalid_args", "--eval-dir and --from-artifacts are mutually exclusive");
   }
   if (options.evalDir === undefined && options.fromArtifacts === undefined && config.eval.defaultEvalDir === undefined) {
-    throw new CodeninjaError("invalid_args", "--eval-dir is required when eval.defaultEvalDir is not configured");
+    throw new CodegenieError("invalid_args", "--eval-dir is required when eval.defaultEvalDir is not configured");
   }
 }
 
@@ -274,14 +274,14 @@ function isCommanderDisplayExit(error: unknown): error is CommanderError {
   return error instanceof CommanderError && error.exitCode === 0;
 }
 
-function commanderToCodeninjaError(error: unknown): CodeninjaError {
+function commanderToCodegenieError(error: unknown): CodegenieError {
   if (error instanceof CommanderError) {
-    return new CodeninjaError("invalid_args", error.message, {
+    return new CodegenieError("invalid_args", error.message, {
       context: { code: error.code, exitCode: error.exitCode }
     });
   }
-  if (error instanceof CodeninjaError) {
+  if (error instanceof CodegenieError) {
     return error;
   }
-  return new CodeninjaError("invalid_args", "failed to parse eval command line", { cause: error });
+  return new CodegenieError("invalid_args", "failed to parse eval command line", { cause: error });
 }

@@ -4,7 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import { runReview } from "../src/pipeline/review-runner.js";
-import type { CodeninjaConfig, GitHubClient, PullRequestMetadata } from "../src/types.js";
+import type { CodegenieConfig, GitHubClient, PullRequestMetadata } from "../src/types.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("phase 7 GitHub pipeline integration", () => {
@@ -13,10 +13,10 @@ describe("phase 7 GitHub pipeline integration", () => {
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
     const base = commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
-    writeRepoFile(repo, "app.ts", "export const value = 2; // CODENINJA_FAKE_FINDING HIGH_CONFIDENCE\n");
+    writeRepoFile(repo, "app.ts", "export const value = 2; // CODEGENIE_FAKE_FINDING HIGH_CONFIDENCE\n");
     const head = commitAll(repo, "feature");
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-phase7-")), "pr-review");
-    const lockDir = path.join(repo, ".codeninja", "locks", "pr-44.refs.lock");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-phase7-")), "pr-review");
+    const lockDir = path.join(repo, ".codegenie", "locks", "pr-44.refs.lock");
     mkdirSync(lockDir, { recursive: true });
     writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({ runId: "stale", prNumber: 44, pid: 99_999_999 })}\n`);
     const output: string[] = [];
@@ -49,7 +49,7 @@ describe("phase 7 GitHub pipeline integration", () => {
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
     const base = commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-phase7-zero-")), "pr-review");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-phase7-zero-")), "pr-review");
     const output: string[] = [];
     const posted: Array<{ comments: unknown[]; body: string }> = [];
 
@@ -77,9 +77,9 @@ describe("phase 7 GitHub pipeline integration", () => {
     writeRepoFile(repo, "app.ts", "console.log(\"safe\");\n");
     const base = commitAll(repo, "base");
     git(repo, ["checkout", "-b", "feature"]);
-    writeRepoFile(repo, "app.ts", "console.log(\"xoxb-abcdefghijklmnop\"); // CODENINJA_FAKE_FINDING HIGH_CONFIDENCE\n");
+    writeRepoFile(repo, "app.ts", "console.log(\"xoxb-abcdefghijklmnop\"); // CODEGENIE_FAKE_FINDING HIGH_CONFIDENCE\n");
     const head = commitAll(repo, "feature");
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-phase7-scrub-")), "branch-review");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-phase7-scrub-")), "branch-review");
 
     await runReview(
       { mode: "commit_range", startCommit: base, endCommit: head },
@@ -96,7 +96,7 @@ describe("phase 7 GitHub pipeline integration", () => {
   });
 });
 
-function phase7Config(runArtifactDir: string): CodeninjaConfig {
+function phase7Config(runArtifactDir: string): CodegenieConfig {
   return {
     ...defaultConfig,
     lenses: { enabled: ["core/code-review"], disabled: [], extraSkillPaths: [] },
@@ -109,11 +109,11 @@ function phase7Config(runArtifactDir: string): CodeninjaConfig {
 function fakeGithub(baseSha: string, headSha: string, posted: Array<{ comments: unknown[]; body: string }>): GitHubClient {
   const metadata: PullRequestMetadata = {
     owner: "0xPolygon",
-    repo: "codeninja",
+    repo: "codegenie",
     number: 44,
     title: "Phase 7 PR",
     body: "",
-    url: "https://github.com/0xPolygon/codeninja/pull/44",
+    url: "https://github.com/0xPolygon/codegenie/pull/44",
     baseRefName: "main",
     baseSha,
     headRefName: "feature",

@@ -8,7 +8,7 @@ Planned at: commit `db41ed7`
 
 Run 5 produced useful final findings, but the final `Needs Human Attention` section still included stale unresolved questions. Several notes asked about helper behavior that Stage 9 had already verified or rejected, such as whether `CalculateAmountUSD` preserved decimal/price guards.
 
-Human-attention notes are valuable when codeninja genuinely cannot resolve a question. They become noise when they survive after verification has already resolved the predicate. This weakens trust in the final report and makes large reviews feel less precise.
+Human-attention notes are valuable when codegenie genuinely cannot resolve a question. They become noise when they survive after verification has already resolved the predicate. This weakens trust in the final report and makes large reviews feel less precise.
 
 ## Current State
 

@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import type { PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
 import { reviewCacheFingerprint, runReview } from "../src/pipeline/review-runner.js";
-import type { CodeninjaConfig, PlannerDossier, ResolvedReviewInput, ReviewPacket } from "../src/types.js";
+import type { CodegenieConfig, PlannerDossier, ResolvedReviewInput, ReviewPacket } from "../src/types.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("phase 6 live review path", () => {
@@ -22,15 +22,15 @@ describe("phase 6 live review path", () => {
     };
     const baseConfig = {
       ...defaultConfig,
-      telemetry: { ...defaultConfig.telemetry, runDir: ".codeninja/runs-a", debugTrace: false },
+      telemetry: { ...defaultConfig.telemetry, runDir: ".codegenie/runs-a", debugTrace: false },
       eval: { ...defaultConfig.eval, logsDir: "logs-a" },
-      cache: { ...defaultConfig.cache, dir: ".codeninja/cache-a" }
+      cache: { ...defaultConfig.cache, dir: ".codegenie/cache-a" }
     };
     const changedOutputDirs = {
       ...baseConfig,
-      telemetry: { ...baseConfig.telemetry, runDir: ".codeninja/runs-b", debugTrace: true },
+      telemetry: { ...baseConfig.telemetry, runDir: ".codegenie/runs-b", debugTrace: true },
       eval: { ...baseConfig.eval, logsDir: "logs-b" },
-      cache: { ...baseConfig.cache, dir: ".codeninja/cache-b" }
+      cache: { ...baseConfig.cache, dir: ".codegenie/cache-b" }
     };
 
     expect(reviewCacheFingerprint(baseConfig, "/repo", resolved, "registry")).toBe(
@@ -55,7 +55,7 @@ describe("phase 6 live review path", () => {
     writeRepoFile(repo, "app.ts", "export function divide(total: number, count: number) {\n  return total / count;\n}\n");
     commitAll(repo, "remove zero guard", "Drops the fallback denominator for zero counts.");
 
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-phase6-")), "live-review");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-phase6-")), "live-review");
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     const adapter = liveReviewAdapter();
     const output: string[] = [];
@@ -161,7 +161,7 @@ describe("phase 6 live review path", () => {
       writeRepoFile(repo, `${name}.ts`, `export const ${name} = 2;\n`);
     }
     const head = commitAll(repo, "feature");
-    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codeninja-partial-budget-")), "live-review");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-partial-budget-")), "live-review");
     const adapter = partialBudgetAdapter();
 
     const result = await runReview(
@@ -222,7 +222,7 @@ describe("phase 6 live review path", () => {
   });
 });
 
-function liveConfig(runArtifactDir: string): CodeninjaConfig {
+function liveConfig(runArtifactDir: string): CodegenieConfig {
   return {
     ...defaultConfig,
     lenses: { enabled: ["core/code-review"], disabled: [], extraSkillPaths: [] },

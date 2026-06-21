@@ -1,7 +1,7 @@
-import type { CodeninjaConfig, Logger } from "../types.js";
+import type { CodegenieConfig, Logger } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../util/hashing.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 import type { Skill, SkillLoadFailure } from "./skill-loader.js";
 
 export type LensDescriptor = {
@@ -40,14 +40,14 @@ export function droppedLensesFromFailures(skills: Skill[], failures: SkillLoadFa
 
 export function buildLensRegistry(
   skills: Skill[],
-  lensConfig: CodeninjaConfig["lenses"],
+  lensConfig: CodegenieConfig["lenses"],
   logger: Logger,
   telemetry: TelemetryRecorder,
   failures: SkillLoadFailure[] = []
 ): LensRegistry {
   const duplicateConfigIds = lensConfig.enabled.filter((id) => lensConfig.disabled.includes(id));
   if (duplicateConfigIds.length > 0) {
-    throw new CodeninjaError("config_error", "lens ids cannot be both enabled and disabled", {
+    throw new CodegenieError("config_error", "lens ids cannot be both enabled and disabled", {
       context: { lenses: duplicateConfigIds }
     });
   }
@@ -78,7 +78,7 @@ export function buildLensRegistry(
   if (lensConfig.restrictTo !== undefined) {
     const unknown = lensConfig.restrictTo.filter((id) => !byLens.has(id));
     if (unknown.length > 0) {
-      throw new CodeninjaError("invalid_args", `unknown lens ${unknown.join(", ")}; available lenses: ${available.join(", ")}`, {
+      throw new CodegenieError("invalid_args", `unknown lens ${unknown.join(", ")}; available lenses: ${available.join(", ")}`, {
         context: { unknown, available }
       });
     }

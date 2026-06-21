@@ -4,7 +4,7 @@ import { parseDiff } from "../src/git/diff-parser.js";
 import { createGitClient, type InternalGitClient } from "../src/git/git-client.js";
 import { resolveReviewCommandTarget, resolveReviewInput } from "../src/git/review-input-resolver.js";
 import type { GitHubClient, PullRequestMetadata } from "../src/types.js";
-import { CodeninjaError } from "../src/util/errors.js";
+import { CodegenieError } from "../src/util/errors.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 
 describe("review input resolver", () => {
@@ -251,14 +251,14 @@ describe("review input resolver", () => {
       mergeBase: async () => {
         mergeAttempts += 1;
         if (mergeAttempts === 1) {
-          throw new CodeninjaError("git_ref_missing", "history missing");
+          throw new CodegenieError("git_ref_missing", "history missing");
         }
         return "m".repeat(40);
       },
       log: async () => {
         logAttempts += 1;
         if (logAttempts === 1) {
-          throw new CodeninjaError("git_ref_missing", "range missing");
+          throw new CodegenieError("git_ref_missing", "range missing");
         }
         return [];
       },
@@ -349,9 +349,9 @@ describe("review input resolver", () => {
       isShallow: async () => false,
       remotes: async () => [
         { name: "origin", url: "https://github.com/someone/else.git" },
-        { name: "upstream", url: "git@github.com:0xPolygon/codeninja.git" }
+        { name: "upstream", url: "git@github.com:0xPolygon/codegenie.git" }
       ],
-      listRefs: async () => ["refs/codeninja/pr/12/head"],
+      listRefs: async () => ["refs/codegenie/pr/12/head"],
       deleteRef: async (ref) => {
         deletedRefs.push(ref);
       },
@@ -398,10 +398,10 @@ describe("review input resolver", () => {
       pr
     });
     expect(fetches).toEqual([
-      { remote: "upstream", refspec: "+refs/pull/12/head:refs/codeninja/pr/12/head" },
-      { remote: "upstream", refspec: `+${pr.baseSha}:refs/codeninja/pr/12/base` }
+      { remote: "upstream", refspec: "+refs/pull/12/head:refs/codegenie/pr/12/head" },
+      { remote: "upstream", refspec: `+${pr.baseSha}:refs/codegenie/pr/12/base` }
     ]);
-    expect(deletedRefs).toEqual(["refs/codeninja/pr/12/head"]);
+    expect(deletedRefs).toEqual(["refs/codegenie/pr/12/head"]);
   });
 
   it("refreshes PR metadata once when the head moves during fetch", async () => {
@@ -410,7 +410,7 @@ describe("review input resolver", () => {
     const available = new Set<string>([second.baseSha]);
     const gitClient = fakeGitClient({
       isShallow: async () => false,
-      remotes: async () => [{ name: "origin", url: "https://github.com/0xPolygon/codeninja.git" }],
+      remotes: async () => [{ name: "origin", url: "https://github.com/0xPolygon/codegenie.git" }],
       commitExists: async (sha) => available.has(sha),
       fetchFrom: async (_remote, refspec) => {
         if (refspec.includes("/head") && refspec.includes("refs/pull/12")) {
@@ -443,7 +443,7 @@ describe("review input resolver", () => {
       isShallow: async () => true,
       remotes: async () => [
         { name: "origin", url: "https://github.com/user/fork.git" },
-        { name: "upstream", url: "https://github.com/0xPolygon/codeninja.git" }
+        { name: "upstream", url: "https://github.com/0xPolygon/codegenie.git" }
       ],
       commitExists: async () => true,
       fetchFrom: async (remote, refspec, opts) => {
@@ -452,7 +452,7 @@ describe("review input resolver", () => {
       mergeBase: async () => {
         mergeAttempts += 1;
         if (mergeAttempts === 1) {
-          throw new CodeninjaError("git_ref_missing", "history missing");
+          throw new CodegenieError("git_ref_missing", "history missing");
         }
         return "m".repeat(40);
       },
@@ -527,11 +527,11 @@ function fakeGithub(prs: PullRequestMetadata[]): GitHubClient {
 function prMetadata(overrides: Partial<PullRequestMetadata> = {}): PullRequestMetadata {
   return {
     owner: "0xPolygon",
-    repo: "codeninja",
+    repo: "codegenie",
     number: 12,
     title: "PR",
     body: "",
-    url: "https://github.com/0xPolygon/codeninja/pull/12",
+    url: "https://github.com/0xPolygon/codegenie/pull/12",
     baseRefName: "main",
     baseSha: "b".repeat(40),
     headRefName: "feature",

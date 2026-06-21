@@ -1,6 +1,6 @@
 import { Command, CommanderError } from "commander";
 import { runProviderCommand, type RunProviderCommandOptions } from "../provider/provider-services.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 import { CliDisplayExit } from "./review-command.js";
 
 type ParseProviderCommandOptions = {
@@ -26,7 +26,7 @@ export function parseProviderCommand(
 ): ParsedProviderCommand {
   let parsed: ParsedProviderCommand | undefined;
   const program = new Command();
-  program.name("codeninja").exitOverride();
+  program.name("codegenie").exitOverride();
 
   if (!opts.allowOutput) {
     program.configureOutput({
@@ -118,11 +118,11 @@ export function parseProviderCommand(
     if (isCommanderDisplayExit(error)) {
       throw new CliDisplayExit(error.exitCode);
     }
-    throw commanderToCodeninjaError(error);
+    throw commanderToCodegenieError(error);
   }
 
   if (!parsed) {
-    throw new CodeninjaError("invalid_args", "expected provider command: list, login, logout, auth-status, models, or config");
+    throw new CodegenieError("invalid_args", "expected provider command: list, login, logout, auth-status, models, or config");
   }
   return parsed;
 }
@@ -131,14 +131,14 @@ function isCommanderDisplayExit(error: unknown): error is CommanderError {
   return error instanceof CommanderError && error.exitCode === 0;
 }
 
-function commanderToCodeninjaError(error: unknown): CodeninjaError {
+function commanderToCodegenieError(error: unknown): CodegenieError {
   if (error instanceof CommanderError) {
-    return new CodeninjaError("invalid_args", error.message, {
+    return new CodegenieError("invalid_args", error.message, {
       context: { code: error.code, exitCode: error.exitCode }
     });
   }
-  if (error instanceof CodeninjaError) {
+  if (error instanceof CodegenieError) {
     return error;
   }
-  return new CodeninjaError("invalid_args", "failed to parse provider command line", { cause: error });
+  return new CodegenieError("invalid_args", "failed to parse provider command line", { cause: error });
 }

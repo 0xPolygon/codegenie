@@ -12,7 +12,7 @@ import {
 import { createGitClient } from "../git/git-client.js";
 import { runReview } from "../pipeline/review-runner.js";
 import type {
-  CodeninjaConfig,
+  CodegenieConfig,
   EvalCase,
   EvalCaseResult,
   EvalFindingExpectation,
@@ -22,9 +22,9 @@ import type {
   ReviewCommandTarget
 } from "../types.js";
 import { runGit } from "../git/subprocess.js";
-import { CodeninjaError, isCodeninjaError } from "../util/errors.js";
+import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { sha256Hex } from "../util/hashing.js";
-import { resolveCodeninjaRuntimeProvenance } from "../util/runtime-provenance.js";
+import { resolveCodegenieRuntimeProvenance } from "../util/runtime-provenance.js";
 import {
   allocateRunDir,
   copyReviewOutput,
@@ -44,7 +44,7 @@ export type EvalSuite = {
 
 export type EvalRunOptions = {
   cacheOverride?: boolean;
-  config: CodeninjaConfig;
+  config: CodegenieConfig;
 };
 
 const positiveNumberSchema = z.number().positive();
@@ -237,7 +237,7 @@ const caseSchema = z
 export async function loadEvalSuite(evalDir: string): Promise<EvalSuite> {
   const dir = path.resolve(expandHome(evalDir));
   const entries = await readdir(dir).catch((cause) => {
-    throw new CodeninjaError("config_error", `failed to read eval directory: ${dir}`, {
+    throw new CodegenieError("config_error", `failed to read eval directory: ${dir}`, {
       context: { path: dir },
       cause
     });
@@ -262,7 +262,7 @@ export async function loadEvalSuite(evalDir: string): Promise<EvalSuite> {
     errors.push(`no eval case YAML files found in ${dir}`);
   }
   if (errors.length > 0) {
-    throw new CodeninjaError("config_error", "invalid eval suite", {
+    throw new CodegenieError("config_error", "invalid eval suite", {
       context: { path: dir, errors }
     });
   }
@@ -385,7 +385,7 @@ async function runLiveCase(
     const repoRoot = await resolveRepoRoot(suite.dir, entry.evalCase, allocated.dir);
     const git = createGitClient(repoRoot);
     if (!(await git.isInsideWorktree())) {
-      throw new CodeninjaError("not_git_worktree", `eval case repository is not a git worktree: ${repoRoot}`, {
+      throw new CodegenieError("not_git_worktree", `eval case repository is not a git worktree: ${repoRoot}`, {
         context: { repoRoot }
       });
     }
@@ -410,7 +410,7 @@ async function runLiveCase(
       }
     });
     if (reviewOutput.trim().length > 0) {
-      await writeFile(path.join(allocated.dir, "codeninja-review.out.md"), reviewOutput);
+      await writeFile(path.join(allocated.dir, "codegenie-review.out.md"), reviewOutput);
     }
     const telemetryDir = path.join(allocated.dir, "telemetry");
     const artifacts = await loadEvalArtifacts(telemetryDir);
@@ -440,7 +440,7 @@ async function runLiveCase(
 async function writeErroredCase(
   allocated: { runNumber: number; dir: string },
   entry: { evalCase: EvalCase; caseHash: string; file?: string },
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   startedAt: string,
   error: unknown,
   mode: "live" | "replay",
@@ -517,14 +517,14 @@ async function loadCaseFile(filePath: string, suiteDir: string): Promise<EvalSui
   try {
     parsed = parseYaml(raw);
   } catch (cause) {
-    throw new CodeninjaError("config_error", `failed to parse eval case YAML at ${filePath}`, {
+    throw new CodegenieError("config_error", `failed to parse eval case YAML at ${filePath}`, {
       context: { path: filePath },
       cause
     });
   }
   const result = caseSchema.safeParse(parsed);
   if (!result.success) {
-    throw new CodeninjaError("config_error", `invalid eval case at ${filePath}`, {
+    throw new CodegenieError("config_error", `invalid eval case at ${filePath}`, {
       context: { path: filePath, issues: result.error.issues }
     });
   }
@@ -554,7 +554,7 @@ async function readRunInfo(runDir: string): Promise<EvalRunInfo> {
   try {
     return JSON.parse(await readFile(filePath, "utf8")) as EvalRunInfo;
   } catch (cause) {
-    throw new CodeninjaError("invalid_args", `failed to read eval run info: ${filePath}`, {
+    throw new CodegenieError("invalid_args", `failed to read eval run info: ${filePath}`, {
       context: { path: filePath },
       cause
     });
@@ -573,7 +573,7 @@ function buildRunInfo(input: {
   startedAt: string;
   finishedAt: string;
   score: EvalScore;
-  config: CodeninjaConfig;
+  config: CodegenieConfig;
   cache?: EvalRunInfo["cache"];
 }): EvalRunInfo {
   return {
@@ -586,7 +586,7 @@ function buildRunInfo(input: {
     ...(input.replay !== undefined ? { replay: input.replay } : {}),
     ...(input.repo !== undefined ? { repo: input.repo } : {}),
     ...(input.reviewRunId !== undefined ? { reviewRunId: input.reviewRunId } : {}),
-    codeninjaRuntime: resolveCodeninjaRuntimeProvenance(),
+    codegenieRuntime: resolveCodegenieRuntimeProvenance(),
     cache: input.cache ?? { enabled: input.config.cache.enabled, source: "config", dir: input.config.cache.dir },
     effectiveConfig: evalEffectiveConfig(input.config),
     startedAt: input.startedAt,
@@ -596,7 +596,7 @@ function buildRunInfo(input: {
 }
 
 function errorScore(error: unknown): EvalScore {
-  const code = isCodeninjaError(error) ? error.code : "invalid_args";
+  const code = isCodegenieError(error) ? error.code : "invalid_args";
   const message = error instanceof Error ? error.message : String(error);
   return {
     status: "error",
@@ -623,7 +623,7 @@ function errorScore(error: unknown): EvalScore {
 }
 
 function formatCaseLoadErrors(error: unknown): string[] {
-  if (isCodeninjaError(error) && Array.isArray(error.context?.issues)) {
+  if (isCodegenieError(error) && Array.isArray(error.context?.issues)) {
     return error.context.issues.map((issue) => {
       if (!isRecord(issue)) {
         return error.message;
@@ -637,11 +637,11 @@ function formatCaseLoadErrors(error: unknown): string[] {
 }
 
 function applyCaseReviewConfig(
-  loaded: CodeninjaConfig,
+  loaded: CodegenieConfig,
   evalCase: EvalCase,
   cacheOverride: boolean | undefined
-): { config: CodeninjaConfig; cache: EvalRunInfo["cache"] } {
-  const config = structuredClone(loaded) as CodeninjaConfig;
+): { config: CodegenieConfig; cache: EvalRunInfo["cache"] } {
+  const config = structuredClone(loaded) as CodegenieConfig;
   const review = evalCase.review;
   const llm = evalCase.llm;
   if (review?.depth !== undefined) {
@@ -692,7 +692,7 @@ function applyCaseReviewConfig(
   };
 }
 
-function evalEffectiveConfig(config: CodeninjaConfig): NonNullable<EvalRunInfo["effectiveConfig"]> {
+function evalEffectiveConfig(config: CodegenieConfig): NonNullable<EvalRunInfo["effectiveConfig"]> {
   return {
     review: {
       concurrency: config.review.concurrency
@@ -746,7 +746,7 @@ async function resolveRepoRoot(suiteDir: string, evalCase: EvalCase, runDir: str
   return materializeFixtureRepo(fixturePath, runDir);
 }
 
-function resolveLogsDir(suiteDir: string, evalCase: EvalCase, config: CodeninjaConfig): string {
+function resolveLogsDir(suiteDir: string, evalCase: EvalCase, config: CodegenieConfig): string {
   const configured = evalCase.logs?.dir ?? config.eval.logsDir;
   return path.isAbsolute(configured) ? configured : path.join(suiteDir, configured);
 }
@@ -767,7 +767,7 @@ async function isGitWorktreeRoot(repoPath: string): Promise<boolean> {
 async function materializeFixtureRepo(fixturePath: string, runDir: string): Promise<string> {
   const featureDir = path.join(fixturePath, "feature");
   if (!existsSync(featureDir)) {
-    throw new CodeninjaError("not_git_worktree", `eval fixture is not a git worktree or materializable fixture: ${fixturePath}`, {
+    throw new CodegenieError("not_git_worktree", `eval fixture is not a git worktree or materializable fixture: ${fixturePath}`, {
       context: { repoRoot: fixturePath }
     });
   }
@@ -775,7 +775,7 @@ async function materializeFixtureRepo(fixturePath: string, runDir: string): Prom
   const repoRoot = path.join(runDir, "fixture-repo");
   await mkdir(repoRoot, { recursive: true });
   await runGit(repoRoot, ["init", "-b", "main"], { errorCode: "invalid_args" });
-  await runGit(repoRoot, ["config", "user.name", "Codeninja Fixture"], { errorCode: "invalid_args" });
+  await runGit(repoRoot, ["config", "user.name", "Codegenie Fixture"], { errorCode: "invalid_args" });
   await runGit(repoRoot, ["config", "user.email", "fixture@example.com"], { errorCode: "invalid_args" });
 
   const baseDir = path.join(fixturePath, "base");
@@ -793,7 +793,7 @@ async function materializeFixtureRepo(fixturePath: string, runDir: string): Prom
 
 async function copyFixtureTree(sourceDir: string, destinationDir: string): Promise<void> {
   const entries = await readdir(sourceDir, { withFileTypes: true }).catch((cause) => {
-    throw new CodeninjaError("config_error", `failed to read fixture source directory: ${sourceDir}`, {
+    throw new CodegenieError("config_error", `failed to read fixture source directory: ${sourceDir}`, {
       context: { path: sourceDir },
       cause
     });
@@ -811,7 +811,7 @@ async function copyFixtureTree(sourceDir: string, destinationDir: string): Promi
       await mkdir(path.dirname(destination), { recursive: true });
       await copyFile(source, destination);
     } else {
-      throw new CodeninjaError("config_error", `fixture source contains unsupported entry: ${source}`, {
+      throw new CodegenieError("config_error", `fixture source contains unsupported entry: ${source}`, {
         context: { path: source }
       });
     }

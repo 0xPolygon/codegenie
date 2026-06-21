@@ -35,7 +35,7 @@ import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetr
 import { clearRegisteredSecretsForTests, registerSecret, stripCredentials } from "../src/telemetry/redaction.js";
 import type { ToolDefinition } from "../src/llm/llm-runner.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../src/provider/provider-services.js";
-import { CodeninjaError } from "../src/util/errors.js";
+import { CodegenieError } from "../src/util/errors.js";
 import { scaleToolBudget } from "../src/util/budget.js";
 
 describe("Phase 4 schemas and repository tool definitions", () => {
@@ -273,7 +273,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
         if (!suppressFacadeRecord) {
           facadeRecords.push("read_range");
         }
-        throw new CodeninjaError("path_outside_repo", "outside repo");
+        throw new CodegenieError("path_outside_repo", "outside repo");
       }
     } satisfies RepositoryTools & {
       withToolCallContext<T>(context: { record?: boolean }, run: () => Promise<T>): Promise<T>;
@@ -651,7 +651,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ]);
     const tools = fakeRepositoryTools();
     tools.readRange = async () => {
-      throw new CodeninjaError("path_outside_repo", "outside repo");
+      throw new CodegenieError("path_outside_repo", "outside repo");
     };
     const runner = createPiRunner({
       llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
@@ -890,11 +890,11 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     expect(adapter.options).toEqual([
       expect.objectContaining({
-        sessionId: "codeninja-phase4-llm-stage-7",
+        sessionId: "codegenie-phase4-llm-stage-7",
         cacheRetention: "short"
       }),
       expect.objectContaining({
-        sessionId: "codeninja-phase4-llm-stage-9",
+        sessionId: "codegenie-phase4-llm-stage-9",
         cacheRetention: "short"
       })
     ]);
@@ -905,7 +905,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         stage: 7,
         data: expect.objectContaining({
           strategy: "pi-session",
-          sessionId: "codeninja-phase4-llm-stage-7",
+          sessionId: "codegenie-phase4-llm-stage-7",
           cacheRetention: "short",
           scope: "run-stage",
           explicitCacheBlocks: false,
@@ -916,7 +916,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         stage: 9,
         data: expect.objectContaining({
           strategy: "pi-session",
-          sessionId: "codeninja-phase4-llm-stage-9",
+          sessionId: "codegenie-phase4-llm-stage-9",
           cacheRetention: "short",
           scope: "run-stage",
           explicitCacheBlocks: false,
@@ -928,7 +928,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       request: {
         providerPromptCache: {
           strategy: "pi-session",
-          sessionId: "codeninja-phase4-llm-stage-7",
+          sessionId: "codegenie-phase4-llm-stage-7",
           cacheRetention: "short",
           scope: "run-stage",
           explicitCacheBlocks: false
@@ -2196,7 +2196,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       })
     ]);
     expect(result.noFindingReason).toHaveLength(1000);
-    expect(result.noFindingReason).toContain("[truncated by codeninja]");
+    expect(result.noFindingReason).toContain("[truncated by codegenie]");
     expect(adapter.contexts).toHaveLength(1);
     expect(telemetry.events).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -3294,7 +3294,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ).resolves.toMatchObject({ verdict: "reject" });
 
     expect(execute).toHaveBeenCalledTimes(2);
-    expect(adapter.contexts[1]).toContain("[tool result truncated by codeninja tool budget]");
+    expect(adapter.contexts[1]).toContain("[tool result truncated by codegenie tool budget]");
     expect(adapter.contexts[2]).toContain("SmallHelper");
     expect(adapter.contexts[2]).toContain("decisiveBranch");
     expect(telemetry.toolCalls[0]).toMatchObject({
@@ -3834,7 +3834,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       expect(() =>
         createPiRunner({
           llmConfig: {
-            model: "openai/not-a-real-codeninja-test-model",
+            model: "openai/not-a-real-codegenie-test-model",
             maxConcurrentCalls: 1
           },
           telemetry: fakeTelemetry().recorder,
@@ -3842,7 +3842,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           runSignal: new AbortController().signal,
           hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
         })
-      ).toThrow(CodeninjaError);
+      ).toThrow(CodegenieError);
     } finally {
       if (previous === undefined) {
         delete process.env.OPENAI_API_KEY;
@@ -3989,7 +3989,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const repoRoot = tempGitRepo();
     const telemetry = fakeTelemetry();
     const cache = await createModelCallCache({
-      dir: path.join(repoRoot, ".codeninja", "cache"),
+      dir: path.join(repoRoot, ".codegenie", "cache"),
       repoRoot,
       runFingerprint: "run-a",
       logger: fakeLogger(),
@@ -4003,9 +4003,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     entry.message.content.push({ type: "text", text: "cache contains super-secret-cache-token" });
     registerSecret("super-secret-cache-token");
     await cache.put(keyA, entry);
-    expect(existsSync(modelCallCacheEntryPath(path.join(repoRoot, ".codeninja", "cache"), keyA))).toBe(true);
-    expect(readCacheText(path.join(repoRoot, ".codeninja", "cache"))).not.toContain("super-secret-cache-token");
-    expect(readCacheText(path.join(repoRoot, ".codeninja", "cache"))).toContain("[redacted:secret]");
+    expect(existsSync(modelCallCacheEntryPath(path.join(repoRoot, ".codegenie", "cache"), keyA))).toBe(true);
+    expect(readCacheText(path.join(repoRoot, ".codegenie", "cache"))).not.toContain("super-secret-cache-token");
+    expect(readCacheText(path.join(repoRoot, ".codegenie", "cache"))).toContain("[redacted:secret]");
     const hit = await cache.get(keyA, 7);
     expect(hit).toMatchObject({ status: "hit" });
     expect(JSON.stringify(hit)).not.toContain("super-secret-cache-token");
@@ -4048,7 +4048,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await cache.put("old-schema", { ...entry, cacheSchemaVersion: 0 });
     await expect(cache.get("old-schema", 7)).resolves.toEqual({ status: "miss", reason: "schema_mismatch" });
     const malformedKey = "malformed-current-schema";
-    const malformedPath = modelCallCacheEntryPath(path.join(repoRoot, ".codeninja", "cache"), malformedKey);
+    const malformedPath = modelCallCacheEntryPath(path.join(repoRoot, ".codegenie", "cache"), malformedKey);
     mkdirSync(path.dirname(malformedPath), { recursive: true });
     writeFileSync(
       malformedPath,
@@ -4064,7 +4064,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await expect(cache.get(malformedKey, 7)).resolves.toEqual({ status: "miss", reason: "invalid_entry" });
     expect(existsSync(malformedPath)).toBe(false);
     const malformedContentKey = "malformed-current-schema-content";
-    const malformedContentPath = modelCallCacheEntryPath(path.join(repoRoot, ".codeninja", "cache"), malformedContentKey);
+    const malformedContentPath = modelCallCacheEntryPath(path.join(repoRoot, ".codegenie", "cache"), malformedContentKey);
     mkdirSync(path.dirname(malformedContentPath), { recursive: true });
     writeFileSync(
       malformedContentPath,
@@ -4087,15 +4087,15 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         })
       ])
     );
-    expect(existsSync(path.join(repoRoot, ".codeninja", "cache"))).toBe(true);
-    expect(readFileSync(path.join(repoRoot, ".codeninja", ".gitignore"), "utf8")).toContain("cache/");
-    expect(readFileSync(path.join(repoRoot, ".codeninja", ".gitignore"), "utf8")).toContain("locks/");
+    expect(existsSync(path.join(repoRoot, ".codegenie", "cache"))).toBe(true);
+    expect(readFileSync(path.join(repoRoot, ".codegenie", ".gitignore"), "utf8")).toContain("cache/");
+    expect(readFileSync(path.join(repoRoot, ".codegenie", ".gitignore"), "utf8")).toContain("locks/");
     clearRegisteredSecretsForTests();
   });
 
   it("evicts stale cache entries at construction and records telemetry", async () => {
     const repoRoot = tempGitRepo();
-    const cacheDir = path.join(repoRoot, ".codeninja", "cache");
+    const cacheDir = path.join(repoRoot, ".codegenie", "cache");
     const staleKey = buildModelCallCacheKey({ runFingerprint: "old", prompt: "old" });
     const freshKey = buildModelCallCacheKey({ runFingerprint: "new", prompt: "new" });
     const stalePath = modelCallCacheEntryPath(cacheDir, staleKey);
@@ -4151,7 +4151,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const nonGitRoot = tempDir();
     await expect(
       createModelCallCache({
-        dir: path.join(nonGitRoot, ".codeninja", "cache"),
+        dir: path.join(nonGitRoot, ".codegenie", "cache"),
         repoRoot: nonGitRoot,
         runFingerprint: "run-non-git",
         logger: fakeLogger(),
@@ -4411,7 +4411,7 @@ function cacheEntry(stage: 7): StoredProviderResponse {
 }
 
 function tempDir(): string {
-  const dir = mkdtempSync(path.join(tmpdir(), "codeninja-phase4-"));
+  const dir = mkdtempSync(path.join(tmpdir(), "codegenie-phase4-"));
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, ".keep"), "");
   return dir;

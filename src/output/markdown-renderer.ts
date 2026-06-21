@@ -3,7 +3,7 @@ import { renderCoverageSummaryLines } from "../util/coverage-summary.js";
 
 export function renderMarkdownReview(result: ReviewResult): string {
   const sections = [
-    "# codeninja review",
+    "# codegenie review",
     "",
     result.summary.trim() || "Review completed.",
     "",

@@ -1,1 +1,1 @@
-export const value = "CODENINJA_FAKE_FINDING";
+export const value = "CODEGENIE_FAKE_FINDING";

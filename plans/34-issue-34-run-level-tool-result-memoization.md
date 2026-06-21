@@ -59,7 +59,7 @@ Because `buildRepositoryToolDefinitions(tools)` is called for each packet, any m
 
 ## Desired Behavior
 
-For deterministic read-only repository tools, codeninja should reuse identical tool results within a single review run:
+For deterministic read-only repository tools, codegenie should reuse identical tool results within a single review run:
 
 - same tool name
 - same normalized validated arguments

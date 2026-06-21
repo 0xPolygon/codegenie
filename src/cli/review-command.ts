@@ -11,7 +11,7 @@ import type {
   ReviewResult,
   TelemetryEvent
 } from "../types.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 import { runReview } from "../pipeline/review-runner.js";
 
 type ParseReviewCommandOptions = {
@@ -61,7 +61,7 @@ export function parseReviewCommand(
 
   const program = new Command();
   program
-    .name("codeninja")
+    .name("codegenie")
     .exitOverride();
 
   if (!opts.allowOutput) {
@@ -105,7 +105,7 @@ export function parseReviewCommand(
   providerConfig.command("set-model").argument("<provider>").argument("<model>");
   providerConfig.command("set-depth").argument("<light|normal|deep>");
   providerConfig.command("set-reasoning").argument("<low|medium|high|xhigh|auto>");
-  program.command("eval").description("run codeninja eval suites");
+  program.command("eval").description("run codegenie eval suites");
 
   try {
     program.parse(argv, { from: "user" });
@@ -113,11 +113,11 @@ export function parseReviewCommand(
     if (isCommanderDisplayExit(error)) {
       throw new CliDisplayExit(error.exitCode);
     }
-    throw commanderToCodeninjaError(error);
+    throw commanderToCodegenieError(error);
   }
 
   if (!commandOptions) {
-    throw new CodeninjaError("invalid_args", "expected command: codeninja review");
+    throw new CodegenieError("invalid_args", "expected command: codegenie review");
   }
 
   const repoRoot = resolveInitialRepoRoot(opts.repoRoot);
@@ -186,22 +186,22 @@ function resolveTarget(options: CommanderReviewOptions, commits: string[]): Revi
   const targetModeCount = [hasPr, hasBranch, hasHead, hasCommits].filter(Boolean).length;
 
   if (targetModeCount > 1) {
-    throw new CodeninjaError(
+    throw new CodegenieError(
       "invalid_args",
       "--pr, --branch, --head, and positional commits are mutually exclusive"
     );
   }
 
   if (commits.length > 2) {
-    throw new CodeninjaError("invalid_args", "review accepts at most two positional targets");
+    throw new CodegenieError("invalid_args", "review accepts at most two positional targets");
   }
 
   if (options.postGithubComments && !hasPr) {
-    throw new CodeninjaError("invalid_args", "--post-github-comments requires --pr");
+    throw new CodegenieError("invalid_args", "--post-github-comments requires --pr");
   }
 
   if (options.base !== undefined && (hasPr || (hasCommits && !isSingleRef(commits)))) {
-    throw new CodeninjaError("invalid_args", "--base is only valid for branch, head, or default review");
+    throw new CodegenieError("invalid_args", "--base is only valid for branch, head, or default review");
   }
 
   if (hasPr) {
@@ -226,7 +226,7 @@ function resolveTarget(options: CommanderReviewOptions, commits: string[]): Revi
     }
     const [startRef, endCommit] = commits;
     if (!startRef) {
-      throw new CodeninjaError("invalid_args", "review target requires a branch, commit, or range");
+      throw new CodegenieError("invalid_args", "review target requires a branch, commit, or range");
     }
     return endCommit === undefined
       ? withOptionalBase({ mode: "single_ref", ref: startRef }, options.base)
@@ -251,14 +251,14 @@ function parseBaseHeadShorthand(commits: string[]): ReviewCommandTarget | undefi
   const raw = commits[0] ?? "";
   const parts = raw.split("...");
   if (parts.length !== 2) {
-    throw new CodeninjaError(
+    throw new CodegenieError(
       "invalid_args",
       "base/head shorthand must be exactly <base>...<head>"
     );
   }
   const [baseRef, headRef] = parts.map((part) => part.trim());
   if (!baseRef || !headRef) {
-    throw new CodeninjaError(
+    throw new CodegenieError(
       "invalid_args",
       "base/head shorthand must be exactly <base>...<head>"
     );
@@ -323,7 +323,7 @@ function resolveInitialRepoRoot(input: string | undefined): string {
 function parsePrNumber(value: string | undefined): number {
   const raw = requireNonEmpty(value, "--pr");
   if (!/^[1-9]\d*$/.test(raw)) {
-    throw new CodeninjaError("invalid_args", "--pr must be a positive integer");
+    throw new CodegenieError("invalid_args", "--pr must be a positive integer");
   }
   return Number(raw);
 }
@@ -332,14 +332,14 @@ function parseDepth(value: string): ReviewDepth {
   if (value === "light" || value === "normal" || value === "deep") {
     return value;
   }
-  throw new CodeninjaError("invalid_args", "--depth must be one of: light, normal, deep");
+  throw new CodegenieError("invalid_args", "--depth must be one of: light, normal, deep");
 }
 
 function parseReasoning(value: string): ReasoningLevel | "auto" {
   if (value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "auto") {
     return value;
   }
-  throw new CodeninjaError(
+  throw new CodegenieError(
     "invalid_args",
     "--reasoning must be one of: low, medium, high, xhigh, auto"
   );
@@ -349,12 +349,12 @@ function parseFormat(value: string): OutputFormat {
   if (value === "markdown" || value === "json") {
     return value;
   }
-  throw new CodeninjaError("invalid_args", "--format must be one of: markdown, json");
+  throw new CodegenieError("invalid_args", "--format must be one of: markdown, json");
 }
 
 function requireNonEmpty(value: string | undefined, flag: string): string {
   if (value === undefined || value.trim() === "") {
-    throw new CodeninjaError("invalid_args", `${flag} requires a value`);
+    throw new CodegenieError("invalid_args", `${flag} requires a value`);
   }
   return value;
 }
@@ -391,14 +391,14 @@ function isCommanderDisplayExit(error: unknown): error is CommanderError {
   return error instanceof CommanderError && error.exitCode === 0;
 }
 
-function commanderToCodeninjaError(error: unknown): CodeninjaError {
+function commanderToCodegenieError(error: unknown): CodegenieError {
   if (error instanceof CommanderError) {
-    return new CodeninjaError("invalid_args", error.message, {
+    return new CodegenieError("invalid_args", error.message, {
       context: { code: error.code, exitCode: error.exitCode }
     });
   }
-  if (error instanceof CodeninjaError) {
+  if (error instanceof CodegenieError) {
     return error;
   }
-  return new CodeninjaError("invalid_args", "failed to parse command line", { cause: error });
+  return new CodegenieError("invalid_args", "failed to parse command line", { cause: error });
 }

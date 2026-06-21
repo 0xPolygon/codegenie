@@ -6,7 +6,7 @@ import type { PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
   CandidateFinding,
-  CodeninjaConfig,
+  CodegenieConfig,
   DiffAnchor,
   PacketReviewResult,
   RepositoryTools,
@@ -60,7 +60,7 @@ export async function runLensPackets(
   _plan: ReviewPlan,
   packets: ReviewPacket[],
   tools: RepositoryTools,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: LensRunnerOptions
 ): Promise<PacketReviewResult[]> {
@@ -134,7 +134,7 @@ export async function runLensPackets(
 async function runPacket(
   packet: ReviewPacket,
   tools: RepositoryTools,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   opts: LensRunnerOptions,
   telemetry: TelemetryRecorder,
   workerId: string,

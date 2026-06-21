@@ -129,12 +129,12 @@ img { max-width: 100%; }
 <header id="title-block-header">
 <h1 class="title">implementation_plan</h1>
 </header>
-<h1 id="implementation-plan-codeninja">Implementation Plan:
-codeninja</h1>
+<h1 id="implementation-plan-codegenie">Implementation Plan:
+codegenie</h1>
 <p>Build order follows the architecture’s tracer-bullet directive: stand
 up the minimal end-to-end review path before any optional machinery.
 Phase 5 runs the whole pipeline against the fake runner (zero API
-spend); Phase 6 is the milestone where <code>codeninja review</code>
+spend); Phase 6 is the milestone where <code>codegenie review</code>
 produces a real review on stdout. Details live in
 <code>architecture.md</code> and <code>components/*.md</code> — this
 file is the ordered checklist.</p>
@@ -143,10 +143,10 @@ file is the ordered checklist.</p>
 <li><label><input type="checkbox" checked></input>Phase 1: Scaffold and
 foundation — pnpm/TS/ESM project, <code>commander</code> CLI with
 <code>review</code> command flags and mutual-exclusion rules,
-<code>~/.codeninja/</code> path resolution
-(<code>CODENINJA_HOME</code>), config loader (TOML, zod, full precedence
+<code>~/.codegenie/</code> path resolution
+(<code>CODEGENIE_HOME</code>), config loader (TOML, zod, full precedence
 chain including the user-level <code>config.toml</code> layer, trust
-partitioning), typed <code>CodeninjaError</code>s, logger + telemetry
+partitioning), typed <code>CodegenieError</code>s, logger + telemetry
 recorder + run-artifact writers (run dir, <code>run.log</code>,
 <code>events.jsonl</code>,
 <code>model-calls.jsonl</code>/<code>tool-calls.jsonl</code> +
@@ -172,7 +172,7 @@ version exposes a parse-timeout mechanism and that grammar wasm ships in
 the pinned tarballs (crit-verified once; re-verify at pin time). →
 <code>components/context_and_tools.md</code></label></li>
 <li><label><input type="checkbox" checked></input>Phase 4: Skills, provider
-auth, and LLM runner — <code>codeninja provider</code> command
+auth, and LLM runner — <code>codegenie provider</code> command
 namespace, Pi provider/model registry integration,
 login/logout/auth-status/models/config commands, user-level
 provider/model/depth/reasoning defaults (<code>settings.json</code>
@@ -200,7 +200,7 @@ spend; every stage artifact written. →
 real planner, packet-review, verifier, and composer calls through the
 pi-runner; schema-repair and backoff behavior against real providers;
 prompt tuning; follow-up hints surfaced as needs-human-attention notes.
-Milestone: <code>codeninja review --branch X</code> produces a real
+Milestone: <code>codegenie review --branch X</code> produces a real
 review end to end. The broad Stage 8 system pass stayed deferred at this
 phase; a later plan added the narrow repeated-hint Stage 8 follow-up. →
 <code>components/review_pipeline.md</code> +
@@ -217,7 +217,7 @@ comment sanitization), <code>--post-github-comments</code>. →
 eviction, <code>--cache</code>/<code>--no-cache</code>. →
 <code>components/skills_llm_telemetry.md</code></label></li>
 <li><label><input type="checkbox" checked></input>Phase 9: Evals —
-<code>codeninja eval</code> command, YAML case loading, expectation
+<code>codegenie eval</code> command, YAML case loading, expectation
 matching with coarse loss attribution, <code>--from-artifacts</code>
 re-scoring, compare-to-previous, plus a starter fixture-based eval suite
 that runs in CI; the seed eval suite must cover each bundled lens (core,

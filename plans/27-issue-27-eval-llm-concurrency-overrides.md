@@ -11,7 +11,7 @@ Eval run 5 used the default concurrency settings:
 - `review.concurrency = 4`
 - `llm.maxConcurrentCalls = 4`
 
-Stage 7 and Stage 9 already schedule packet/verifier workers with `config.review.concurrency`, so packet review is parallelized. However, an eval YAML case can currently set `review.concurrency` but cannot directly set `llm.maxConcurrentCalls`. If an eval case sets only `review.concurrency: 6`, codeninja can queue six workers, but provider calls can still be capped at the default four concurrent calls.
+Stage 7 and Stage 9 already schedule packet/verifier workers with `config.review.concurrency`, so packet review is parallelized. However, an eval YAML case can currently set `review.concurrency` but cannot directly set `llm.maxConcurrentCalls`. If an eval case sets only `review.concurrency: 6`, codegenie can queue six workers, but provider calls can still be capped at the default four concurrent calls.
 
 This makes eval tuning confusing. Operators should be able to make a high-cost eval faster by setting both workflow concurrency and provider-call concurrency in the eval case, while keeping defaults conservative for normal users.
 
@@ -54,7 +54,7 @@ This makes eval tuning confusing. Operators should be able to make a high-cost e
      llm:
        maxConcurrentCalls: 6
      ```
-   - Explain that `review.concurrency` controls codeninja workers and `llm.maxConcurrentCalls` controls simultaneous provider calls.
+   - Explain that `review.concurrency` controls codegenie workers and `llm.maxConcurrentCalls` controls simultaneous provider calls.
    - Note that increasing both can be faster but may hit provider rate limits or increase burst cost.
 
 5. Add tests.

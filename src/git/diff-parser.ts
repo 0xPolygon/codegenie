@@ -8,7 +8,7 @@ import type {
   DiffLine,
   UnifiedDiff
 } from "../types.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 import { sha256Hex } from "../util/hashing.js";
 
 type MutableFile = {
@@ -540,7 +540,7 @@ function parseQuoted(input: string, startIndex: number): { value: string; nextIn
     bytes.push(...Buffer.from(char, "utf8"));
     index += 1;
   }
-  throw new CodeninjaError("diff_parse_failed", "unterminated quoted path in diff header");
+  throw new CodegenieError("diff_parse_failed", "unterminated quoted path in diff header");
 }
 
 function decodeSimpleEscape(char: string): string {
@@ -628,6 +628,6 @@ function splitDiffLines(rawDiff: string): string[] {
   return lines;
 }
 
-function parseError(lineNumber: number, message: string): CodeninjaError {
-  return new CodeninjaError("diff_parse_failed", `failed to parse diff at line ${lineNumber}: ${message}`);
+function parseError(lineNumber: number, message: string): CodegenieError {
+  return new CodegenieError("diff_parse_failed", `failed to parse diff at line ${lineNumber}: ${message}`);
 }

@@ -1,7 +1,7 @@
 TODO
 ====
 
-- [ ] rename all to codegenie
+- [x] rename all to codegenie
 - [ ] check against trails-api repo directly, lets make sure we don't have .codegenie/ standard
 - [ ] check global config works
 - [ ] make sure --version returns a version, from package.json and elsewhere

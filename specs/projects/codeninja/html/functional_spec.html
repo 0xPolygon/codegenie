@@ -194,20 +194,20 @@ img { max-width: 100%; }
 <header id="title-block-header">
 <h1 class="title">functional_spec</h1>
 </header>
-<h1 id="functional-spec-codeninja">Functional Spec: codeninja</h1>
+<h1 id="functional-spec-codegenie">Functional Spec: codegenie</h1>
 <h2 id="purpose">Purpose</h2>
-<p>codeninja is a TypeScript CLI for high-signal AI code review of
+<p>codegenie is a TypeScript CLI for high-signal AI code review of
 pull-request-style changes. It reviews diffs in a local git repository,
 uses focused repository exploration tools instead of dumping the whole
 repo into context, and produces staff-engineer-quality findings with
 concrete evidence, impact, and actionable fixes.</p>
-<p>The default review stance is correctness-first. codeninja should find
+<p>The default review stance is correctness-first. codegenie should find
 real bugs, logical errors, security issues, architectural risks,
 performance problems, missing tests, and maintainability concerns that
 matter. It should suppress style-only, naming, formatting, and
 subjective comments unless the user explicitly enables a lint/style
 lens.</p>
-<p>codeninja’s reviewer voice should be that of a detail-oriented senior
+<p>codegenie’s reviewer voice should be that of a detail-oriented senior
 individual contributor who will own the code long term. It should be
 direct and specific when there is a real problem, polite without
 softening correctness or design issues, and focused on advice that
@@ -217,34 +217,34 @@ the original author has moved on.</p>
 <p>Primary users are developers and engineering teams who want an expert
 code-review assistant for local branches and GitHub pull requests.</p>
 <p>Secondary users are maintainers who want to define project-specific
-review lenses and Markdown skills that teach codeninja how to review
+review lenses and Markdown skills that teach codegenie how to review
 their codebase, language, or domain more precisely.</p>
 <h2 id="v1-input-modes">V1 Input Modes</h2>
-<p>codeninja should expose a primary command:</p>
-<div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review</span></code></pre></div>
+<p>codegenie should expose a primary command:</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review</span></code></pre></div>
 <p>The command supports these primary review target forms:</p>
-<div class="sourceCode" id="cb2"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--pr</span> 123</span>
-<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="op">&lt;</span>branch-name<span class="op">&gt;</span></span>
-<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--branch</span> feature-branch [--base main]</span>
-<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--head</span> <span class="op">&lt;</span>head-ref<span class="op">&gt;</span> --base <span class="op">&lt;</span>base-ref<span class="op">&gt;</span></span>
-<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="op">&lt;</span>base-ref<span class="op">&gt;</span>...<span class="op">&lt;</span>head-ref<span class="op">&gt;</span></span>
-<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="op">&lt;</span>commit<span class="op">&gt;</span> <span class="pp">[</span><span class="ss">end</span><span class="pp">-</span><span class="ss">commit</span><span class="pp">]</span></span></code></pre></div>
-<p>With no target arguments, <code>codeninja review</code> reviews the
+<div class="sourceCode" id="cb2"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--pr</span> 123</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="op">&lt;</span>branch-name<span class="op">&gt;</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--branch</span> feature-branch [--base main]</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--head</span> <span class="op">&lt;</span>head-ref<span class="op">&gt;</span> --base <span class="op">&lt;</span>base-ref<span class="op">&gt;</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="op">&lt;</span>base-ref<span class="op">&gt;</span>...<span class="op">&lt;</span>head-ref<span class="op">&gt;</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="op">&lt;</span>commit<span class="op">&gt;</span> <span class="pp">[</span><span class="ss">end</span><span class="pp">-</span><span class="ss">commit</span><span class="pp">]</span></span></code></pre></div>
+<p>With no target arguments, <code>codegenie review</code> reviews the
 current branch against the resolved base branch, equivalent to
 <code>--branch &lt;current-branch&gt;</code> with the same
 base-resolution and merge-base semantics. If the current branch is the
-resolved base itself, or no base branch can be resolved, codeninja
+resolved base itself, or no base branch can be resolved, codegenie
 should fail with a clear error asking for an explicit review target.
 Reviewing uncommitted working-tree changes is out of scope for v1.</p>
 <p>Common review options:</p>
-<div class="sourceCode" id="cb3"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--depth</span> light<span class="kw">|</span><span class="ex">normal</span><span class="kw">|</span><span class="ex">deep</span></span>
-<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--lens</span> <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> [--lens <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> ...]</span>
-<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--provider</span> <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
-<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--model</span> <span class="op">&lt;</span>model-or-provider/model<span class="op">&gt;</span></span>
-<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--reasoning</span> low<span class="kw">|</span><span class="ex">medium</span><span class="kw">|</span><span class="ex">high</span><span class="kw">|</span><span class="ex">xhigh</span><span class="kw">|</span><span class="ex">auto</span></span>
-<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--format</span> markdown<span class="kw">|</span><span class="ex">json</span></span>
-<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--ci</span></span>
-<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--no-progress</span></span></code></pre></div>
+<div class="sourceCode" id="cb3"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--depth</span> light<span class="kw">|</span><span class="ex">normal</span><span class="kw">|</span><span class="ex">deep</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--lens</span> <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> [--lens <span class="op">&lt;</span>lens-name<span class="op">&gt;</span> ...]</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--provider</span> <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--model</span> <span class="op">&lt;</span>model-or-provider/model<span class="op">&gt;</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--reasoning</span> low<span class="kw">|</span><span class="ex">medium</span><span class="kw">|</span><span class="ex">high</span><span class="kw">|</span><span class="ex">xhigh</span><span class="kw">|</span><span class="ex">auto</span></span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--format</span> markdown<span class="kw">|</span><span class="ex">json</span></span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--ci</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--no-progress</span></span></code></pre></div>
 <p><code>--depth</code> controls the global review budget and planner
 bias. The default is <code>normal</code>. <code>light</code> should
 favor cheaper packet review and smaller tool budgets. <code>deep</code>
@@ -275,21 +275,21 @@ is passed; a qualified value is split on the first <code>/</code> only
 when the prefix matches a Pi-known provider id, otherwise the whole
 value is the model id (model ids may themselves contain slashes).
 <code>--reasoning auto</code> clears the CLI layer only; resolution then
-continues <code>CODENINJA_REASONING</code> &gt;
-<code>~/.codeninja/settings.json</code> &gt;
-<code>~/.codeninja/config.toml</code> &gt; the built-in
+continues <code>CODEGENIE_REASONING</code> &gt;
+<code>~/.codegenie/settings.json</code> &gt;
+<code>~/.codegenie/config.toml</code> &gt; the built-in
 <code>high</code> default. Providers exposing different reasoning scales
-map them onto codeninja’s four levels
+map them onto codegenie’s four levels
 (<code>low|medium|high|xhigh</code>).</p>
 <p>All v1 modes require running from inside a local git worktree. This
-means the repository must exist locally so codeninja can inspect files,
+means the repository must exist locally so codegenie can inspect files,
 map diff paths to source files, build context, and run read-only
 repository tools. The <code>--pr</code> mode uses GitHub metadata for PR
 context and posting, but the reviewed diff, changed files, and commit
 information should come from local git whenever possible.</p>
 <p>The checked-out worktree does not need to match the reviewed head.
 Reviewed source reads resolve against the reviewed revisions through
-git, so codeninja can review a PR or branch that is not checked out, and
+git, so codegenie can review a PR or branch that is not checked out, and
 reviewed source content is unaffected by dirty worktree state. Review
 policy, config, and skills load separately from the trusted local
 checkout.</p>
@@ -302,7 +302,7 @@ the current repository.</p>
 metadata, authentication, and comment posting.</li>
 <li>Fetch PR title, body, base/head refs or SHAs, and posting metadata
 through <code>gh</code>.</li>
-<li>List codeninja’s own prior review comments through <code>gh</code>
+<li>List codegenie’s own prior review comments through <code>gh</code>
 for rerun duplicate avoidance (see Stage 11).</li>
 <li>Fetch the PR head and base commits into the local repository through
 <code>gh</code> or git when they are not already present locally, and
@@ -322,7 +322,7 @@ base/head revisions through git plumbing.</li>
 <h3 id="branch---base"><code>--branch</code> / <code>--base</code></h3>
 <p><code>--branch &lt;branch-name&gt; [--base &lt;base-branch&gt;]</code>
 reviews the head of a branch against a base branch.
-<code>codeninja review &lt;branch-name&gt; [--base &lt;base-branch&gt;]</code>
+<code>codegenie review &lt;branch-name&gt; [--base &lt;base-branch&gt;]</code>
 is shorthand for the same branch review when the single positional
 target resolves as a local or remote branch.</p>
 <p>Behavior:</p>
@@ -333,7 +333,7 @@ head.</li>
 <ul>
 <li><code>--base &lt;base-branch&gt;</code> when passed on the CLI.</li>
 <li>The configured default base branch in
-<code>codeninja.toml</code>.</li>
+<code>codegenie.toml</code>.</li>
 <li>A local or remote <code>master</code> branch, if it exists.</li>
 <li>A local or remote <code>main</code> branch, if it exists.</li>
 </ul></li>
@@ -358,11 +358,11 @@ mode.</li>
 <code>--base</code> And <code>&lt;base&gt;...&lt;head&gt;</code></h3>
 <p><code>--head &lt;head-ref&gt; --base &lt;base-ref&gt;</code> reviews
 a pinned head ref or commit against an explicit base ref.</p>
-<p><code>codeninja review &lt;base-ref&gt;...&lt;head-ref&gt;</code> is
+<p><code>codegenie review &lt;base-ref&gt;...&lt;head-ref&gt;</code> is
 shorthand for the same pinned PR-style review, following Git and GitHub
 compare ordering. For example,
-<code>codeninja review master...49f4645b40e3</code> is equivalent to
-<code>codeninja review --head 49f4645b40e3 --base master</code>.</p>
+<code>codegenie review master...49f4645b40e3</code> is equivalent to
+<code>codegenie review --head 49f4645b40e3 --base master</code>.</p>
 <p>Behavior:</p>
 <ul>
 <li>Resolve both refs locally and fail clearly if either ref is
@@ -373,14 +373,14 @@ pull-request-style changes from base to head.</li>
 <li>Collect commit titles and commit descriptions across
 <code>mergeBase..head</code> as planner input.</li>
 <li>Treat this as distinct from one-commit review:
-<code>codeninja review &lt;commit&gt;</code> reviews that single commit
+<code>codegenie review &lt;commit&gt;</code> reviews that single commit
 against its first parent, while <code>&lt;base&gt;...&lt;head&gt;</code>
 reviews the full merge-base comparison.</li>
 <li>Do not attempt to post GitHub comments in v1 from explicit head/base
 mode.</li>
 </ul>
 <h3 id="commit-or-commit-range">Commit Or Commit Range</h3>
-<p><code>codeninja review &lt;commit&gt; [end-commit]</code> reviews one
+<p><code>codegenie review &lt;commit&gt; [end-commit]</code> reviews one
 commit or a commit range.</p>
 <p>Behavior:</p>
 <ul>
@@ -394,18 +394,18 @@ commit or range as planner input.</li>
 commit-range mode.</li>
 </ul>
 <h2 id="provider-and-model-cli">Provider And Model CLI</h2>
-<p>codeninja should expose a provider command namespace for LLM provider
+<p>codegenie should expose a provider command namespace for LLM provider
 setup, backed by Pi’s provider/model registry and auth storage:</p>
-<div class="sourceCode" id="cb4"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider list</span>
-<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider login <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
-<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider logout <span class="pp">[</span><span class="ss">provider</span><span class="pp">]</span></span>
-<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider auth-status <span class="pp">[</span><span class="ss">provider</span><span class="pp">]</span></span>
-<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider models <span class="pp">[</span><span class="ss">provider</span><span class="pp">-</span><span class="ss">or</span><span class="pp">-</span><span class="ss">search</span><span class="pp">]</span> <span class="pp">[--</span><span class="ss">all</span><span class="pp">]</span></span>
-<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider config</span>
-<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider config set-provider <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
-<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider config set-model <span class="op">&lt;</span>provider<span class="op">&gt;</span> <span class="op">&lt;</span>model<span class="op">&gt;</span></span>
-<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider config set-depth <span class="op">&lt;</span>light<span class="kw">|</span><span class="ex">normal</span><span class="kw">|</span><span class="ex">deep</span><span class="op">&gt;</span></span>
-<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> provider config set-reasoning <span class="op">&lt;</span>low<span class="kw">|</span><span class="ex">medium</span><span class="kw">|</span><span class="ex">high</span><span class="kw">|</span><span class="ex">xhigh</span><span class="kw">|</span><span class="ex">auto</span><span class="op">&gt;</span></span></code></pre></div>
+<div class="sourceCode" id="cb4"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider list</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider login <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider logout <span class="pp">[</span><span class="ss">provider</span><span class="pp">]</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider auth-status <span class="pp">[</span><span class="ss">provider</span><span class="pp">]</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider models <span class="pp">[</span><span class="ss">provider</span><span class="pp">-</span><span class="ss">or</span><span class="pp">-</span><span class="ss">search</span><span class="pp">]</span> <span class="pp">[--</span><span class="ss">all</span><span class="pp">]</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-provider <span class="op">&lt;</span>provider<span class="op">&gt;</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-model <span class="op">&lt;</span>provider<span class="op">&gt;</span> <span class="op">&lt;</span>model<span class="op">&gt;</span></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-depth <span class="op">&lt;</span>light<span class="kw">|</span><span class="ex">normal</span><span class="kw">|</span><span class="ex">deep</span><span class="op">&gt;</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> provider config set-reasoning <span class="op">&lt;</span>low<span class="kw">|</span><span class="ex">medium</span><span class="kw">|</span><span class="ex">high</span><span class="kw">|</span><span class="ex">xhigh</span><span class="kw">|</span><span class="ex">auto</span><span class="op">&gt;</span></span></code></pre></div>
 <p>Behavior:</p>
 <ul>
 <li><code>provider list</code> prints providers known to Pi’s model
@@ -413,7 +413,7 @@ registry, including whether auth appears configured.</li>
 <li><code>provider login &lt;provider&gt;</code> uses Pi
 OAuth/device-code flow when available; otherwise it prompts for an API
 key for API-key providers. Credentials are stored in user-scoped
-codeninja auth state.</li>
+codegenie auth state.</li>
 <li><code>provider logout [provider]</code> removes stored credentials
 for one provider, or all providers after confirmation.</li>
 <li><code>provider auth-status [provider]</code> reports whether auth is
@@ -426,7 +426,7 @@ models; <code>--all</code> lists every known model. Output should
 include provider, model id, context window, max output tokens when
 known, reasoning support, and vision/input capability when known.</li>
 <li><code>provider config</code> prints user-level effective defaults as
-JSON, including the codeninja home directory, auth path, models path,
+JSON, including the codegenie home directory, auth path, models path,
 settings path, default provider/model, default depth, default reasoning
 override, and effective depth/reasoning.</li>
 <li><code>provider config set-provider</code> sets the user-level
@@ -435,17 +435,17 @@ default provider after validating that the provider exists.</li>
 for the provider and stores both the default provider and default
 model.</li>
 <li><code>provider config set-depth</code> stores the user-level default
-review depth using codeninja’s <code>light|normal|deep</code> depth
+review depth using codegenie’s <code>light|normal|deep</code> depth
 vocabulary.</li>
 <li><code>provider config set-reasoning</code> stores a user-level
 reasoning override; <code>auto</code> clears the stored override,
-letting resolution fall through to <code>~/.codeninja/config.toml</code>
+letting resolution fall through to <code>~/.codegenie/config.toml</code>
 and then the built-in <code>high</code> default. Providers with
-different reasoning scales map onto codeninja’s four levels.</li>
+different reasoning scales map onto codegenie’s four levels.</li>
 </ul>
-<p>User provider state should live under <code>~/.codeninja/</code> by
-default, overridable with <code>CODENINJA_HOME</code>:</p>
-<pre class="text"><code>~/.codeninja/
+<p>User provider state should live under <code>~/.codegenie/</code> by
+default, overridable with <code>CODEGENIE_HOME</code>:</p>
+<pre class="text"><code>~/.codegenie/
   auth.json       # provider credentials, chmod 0600
   models.json     # Pi model registry custom providers/models when supported
   settings.json   # default provider/model/depth/reasoning, chmod 0600
@@ -456,12 +456,12 @@ where supported. Auth material must be registered with the redaction
 layer before any logging, telemetry, cache, debug trace, or error
 context can include it.</p>
 <p>Model selection precedence for <code>review</code> and
-<code>eval</code> runs (repo <code>codeninja.toml</code> never
-participates for these keys; <code>CODENINJA_PROVIDER</code>,
-<code>CODENINJA_MODEL</code>, <code>CODENINJA_REASONING</code>, and
-<code>CODENINJA_HOME</code> are the only codeninja environment variables
+<code>eval</code> runs (repo <code>codegenie.toml</code> never
+participates for these keys; <code>CODEGENIE_PROVIDER</code>,
+<code>CODEGENIE_MODEL</code>, <code>CODEGENIE_REASONING</code>, and
+<code>CODEGENIE_HOME</code> are the only codegenie environment variables
 in v1):</p>
-<pre class="text"><code>CLI flags &gt; environment variables &gt; ~/.codeninja/settings.json &gt; ~/.codeninja/config.toml &gt; Pi/provider defaults</code></pre>
+<pre class="text"><code>CLI flags &gt; environment variables &gt; ~/.codegenie/settings.json &gt; ~/.codegenie/config.toml &gt; Pi/provider defaults</code></pre>
 <p>Within user scope, <code>settings.json</code> outranks
 <code>config.toml</code> because the dedicated
 <code>provider config set-*</code> commands write
@@ -469,12 +469,12 @@ in v1):</p>
 <p>Stored <code>defaultDepth</code> participates in review-depth
 resolution; repo project policy outranks the personal default, and depth
 has no environment layer:</p>
-<pre class="text"><code>--depth &gt; repo codeninja.toml &gt; settings.json defaultDepth &gt; config.toml &gt; built-in normal</code></pre>
-<p>If no authenticated model can be resolved, codeninja should fail
+<pre class="text"><code>--depth &gt; repo codegenie.toml &gt; settings.json defaultDepth &gt; config.toml &gt; built-in normal</code></pre>
+<p>If no authenticated model can be resolved, codegenie should fail
 before Stage 5 with a clear <code>config_error</code>, for example:
-<code>no authenticated provider model is available; run: codeninja provider login &lt;provider&gt;</code>.</p>
+<code>no authenticated provider model is available; run: codegenie provider login &lt;provider&gt;</code>.</p>
 <h2 id="review-pipeline">Review Pipeline</h2>
-<p>codeninja should use a staged review pipeline:</p>
+<p>codegenie should use a staged review pipeline:</p>
 <ol type="1">
 <li>Parse the diff and changed file list.</li>
 <li>Filter ignored, generated, vendored, binary, and lock files.</li>
@@ -540,7 +540,7 @@ be parsed.</li>
 for later anchor validation, hunk ids, changed-line detection, and
 GitHub inline-comment mapping.</p>
 <p>Deleted files and deletion-only hunks are part of the review
-inventory. codeninja should not silently drop them merely because the
+inventory. codegenie should not silently drop them merely because the
 file no longer exists in the head worktree. Stage 1 should retain their
 old-side line numbers and old path so later stages can review removed
 behavior, removed tests, removed exports, removed cleanup, and broken
@@ -552,7 +552,7 @@ records why they were filtered.</p>
 <p>Filtering should be deterministic and explainable. Stage 2 runs the
 shared deterministic detectors the skip policy needs — built-in
 generated/vendor/binary/lockfile detection, repository ignore rules
-where appropriate, and explicit <code>codeninja.toml</code> skip rules —
+where appropriate, and explicit <code>codegenie.toml</code> skip rules —
 and applies policy over their results. Detection results are recorded
 with provenance on each filter decision and reused by Stage 3
 classification for kept files: nothing is detected twice, and filtered
@@ -575,7 +575,7 @@ should not produce candidate findings, but their counts and paths may
 still be visible to the planner as review-scope facts.</p>
 <p>Deleted reviewable source, test, config, migration, or documentation
 files should remain in scope by default. If deleted-file context cannot
-be reconstructed from local git or the diff, codeninja should mark the
+be reconstructed from local git or the diff, codegenie should mark the
 file as degraded or partially reviewed rather than pretending it was
 reviewed normally.</p>
 <h2 id="stage-3-file-classification">Stage 3: File Classification</h2>
@@ -606,7 +606,7 @@ decisions rather than full classification facts.)</p>
 Stage 2 detection results rather than re-detected.</li>
 <li>Changed-line and hunk counts.</li>
 <li>Configured labels and review priority from
-<code>codeninja.toml</code>.</li>
+<code>codegenie.toml</code>.</li>
 <li>Reasons and provenance for every processing-mode decision and
 configured label.</li>
 </ul>
@@ -615,13 +615,13 @@ keyword lists such as payments, auth, routes, or database. Those
 concerns belong in the planner’s model reasoning, language/static
 signals, bundled or repo-owned skills, and explicit project
 configuration.</p>
-<p><code>codeninja.toml</code> should allow teams to define path-based
+<p><code>codegenie.toml</code> should allow teams to define path-based
 handling rules. For example, a team can mark
 <code>lib/payments/**</code> as <code>critical</code>, attach labels
 such as <code>payments</code> and <code>critical-path</code>, force
 whole-file or per-hunk review, or skip generated folders. Configured
 rules should be recorded in telemetry and used by the planner, but the
-labels are user-provided facts rather than codeninja-inferred risk
+labels are user-provided facts rather than codegenie-inferred risk
 truth.</p>
 <h2 id="stage-4-syntax-aware-changed-symbol-extraction">Stage 4:
 Syntax-Aware Changed-Symbol Extraction</h2>
@@ -729,7 +729,7 @@ critical-risk hunk at <code>normal</code>; a <code>deep</code> run may
 still skip generated files or keep mechanical hunks at
 <code>light</code>.</p>
 <h2 id="large-review-handling">Large Review Handling</h2>
-<p>codeninja must handle large PRs and large commit ranges without
+<p>codegenie must handle large PRs and large commit ranges without
 trying to fit the entire diff into one model context.</p>
 <p>V1 large-review handling is deliberately simple:</p>
 <ol type="1">
@@ -761,19 +761,19 @@ planner-inferred risks backed by concrete diff evidence.</li>
 <li><code>skip</code> for generated, vendored, or irrelevant changes,
 with a reason.</li>
 </ul>
-<p>If codeninja cannot review the full change set within the configured
+<p>If codegenie cannot review the full change set within the configured
 time or token budget, it should produce a partial-review result rather
 than pretending the review is complete. The stdout report and GitHub
 summary, when posted, must disclose reviewed hunk counts, skipped hunk
 counts, coverage levels, and the reason for partial coverage.</p>
 <h2 id="failure-and-budget-semantics">Failure And Budget Semantics</h2>
-<p>codeninja should degrade predictably when model calls fail or budgets
+<p>codegenie should degrade predictably when model calls fail or budgets
 run out. Completed review work must never be lost silently, and failures
 must surface in coverage disclosure rather than disappear.</p>
 <p>Per-stage LLM failure policy:</p>
 <ul>
 <li>Every structured LLM call gets one schema-repair retry.</li>
-<li>Stage 5 planner: if the planner call fails terminally, codeninja
+<li>Stage 5 planner: if the planner call fails terminally, codegenie
 must fall back to a deterministic default plan — all reviewable hunks at
 <code>normal</code> coverage, core lenses plus the file’s language lens
 — and mark the run as degraded-planning in coverage disclosure. Later
@@ -800,11 +800,11 @@ dispatch.</li>
 <li>On exhaustion: stop scheduling new packet reviews, then verify
 already-produced candidates using the reserved budget slice, and always
 run composition and emit a partial-review disclosure.</li>
-<li>codeninja should reserve approximately 15% of the configured token
+<li>codegenie should reserve approximately 15% of the configured token
 and model-call budgets, and a fixed tail of the runtime budget, for
 Stages 9-10 so completed review work is never lost to exhaustion.</li>
 <li>A hard kill at 2x the configured runtime budget is fatal; even then
-codeninja should attempt to write telemetry artifacts before
+codegenie should attempt to write telemetry artifacts before
 exiting.</li>
 <li>The run-level coverage status is owned by the orchestrator. It
 aggregates plan-time coverage, runtime failures, budget stops, and
@@ -822,12 +822,12 @@ exhaustion caused the partial review.</li>
 to 3 retries with exponential backoff, and retries count against
 budgets.</p>
 <p>Zero-work path: if the resolved diff is empty, or every changed file
-is filtered at Stage 2, codeninja should short-circuit after Stage 2,
+is filtered at Stage 2, codegenie should short-circuit after Stage 2,
 before Stage 3 (hence zero LLM calls and no classification work), print
 a “nothing to review” report including the filter summary, write
 telemetry, and exit <code>0</code>.</p>
 <h2 id="parallel-review-execution">Parallel Review Execution</h2>
-<p>codeninja should parallelize review work when doing so does not
+<p>codegenie should parallelize review work when doing so does not
 reduce review quality.</p>
 <p>V1 should support bounded concurrency for independent hunk/file
 review packets. Packets are independent by construction in v1 — workers
@@ -851,7 +851,7 @@ packet so findings can be traced back to the exact stage, lens, packet,
 and source evidence that produced them.</p>
 <h2 id="stage-6-review-packet-construction">Stage 6: Review Packet
 Construction</h2>
-<p>For each relevant hunk or file, codeninja should construct a
+<p>For each relevant hunk or file, codegenie should construct a
 deterministic review packet before invoking reviewer lenses.</p>
 <p>A <code>ReviewPacket</code> is the unit of model review. Every packet
 contains one or more changed hunks. The packet kind explains why those
@@ -956,10 +956,10 @@ task rather than running one model call per lens. This keeps cost and
 latency bounded while still letting language, core correctness, tests,
 and project-specific guidance work together.</p>
 <p>Packet reviews should run in a parallelizable sub-agent-like worker
-system owned by codeninja. The orchestration ideas can be informed by Pi
+system owned by codegenie. The orchestration ideas can be informed by Pi
 subagent patterns such as focused child tasks, fresh or forked context,
 parallel workers, bounded background execution, progress/status
-tracking, artifacts, and compact result handoff, but codeninja should
+tracking, artifacts, and compact result handoff, but codegenie should
 not depend on the <code>pi-subagents</code> package directly in v1. The
 parent orchestrator owns scheduling, concurrency, cancellation,
 telemetry, tool permissions, and result validation.</p>
@@ -1019,10 +1019,10 @@ resource-management code.</li>
 budget. Reviewers should inspect surrounding code to prove, narrow, or
 reject a concrete concern, not to conduct a broad exploratory audit.</p>
 <p>Skill and lens prompt content should be projected and capped for the
-review stage. codeninja should include only the guidance relevant to
+review stage. codegenie should include only the guidance relevant to
 candidate generation rather than pasting entire large skill files into
 every packet prompt.</p>
-<p>After each packet review, codeninja should validate the structured
+<p>After each packet review, codegenie should validate the structured
 result before sending candidates to verification. It should record
 schema failures, out-of-hunk anchors, missing evidence, low-confidence
 findings, tool calls, prompt size, token usage, runtime, and task status
@@ -1082,7 +1082,7 @@ Verification</h2>
 <p>Candidate verification is the false-positive control stage. Candidate
 findings from packet reviewers are not publishable until they pass
 verification.</p>
-<p>Before spending LLM verifier calls, codeninja should run
+<p>Before spending LLM verifier calls, codegenie should run
 deterministic pre-verification gates:</p>
 <ul>
 <li>Validate candidate schema.</li>
@@ -1257,13 +1257,13 @@ semantic truth. Reviewers and verifiers may use
 affected code, but publishable findings still need changed-code evidence
 and surrounding-code confirmation.</p>
 <h2 id="telemetry-and-debug-traces">Telemetry And Debug Traces</h2>
-<p>codeninja needs first-class local telemetry so review quality, cost,
+<p>codegenie needs first-class local telemetry so review quality, cost,
 latency, and failure modes can be analyzed during development and
 evaluation.</p>
-<p>Telemetry should be local by default. codeninja must not send source
+<p>Telemetry should be local by default. codegenie must not send source
 code, prompts, findings, or usage data to an external telemetry service
 unless the user explicitly configures such behavior in the future.</p>
-<p>codeninja should also have structured application logging. Logs are
+<p>codegenie should also have structured application logging. Logs are
 not a replacement for typed telemetry artifacts, but they should provide
 a readable chronological trace that humans or later LLM analysis can
 inspect.</p>
@@ -1320,7 +1320,7 @@ findings.</li>
 <li>Local cache hits/misses when caching is enabled.</li>
 </ul>
 <p>Debug traces should make the review process inspectable. When
-enabled, codeninja should record step-by-step events describing:</p>
+enabled, codegenie should record step-by-step events describing:</p>
 <ul>
 <li>Current stage.</li>
 <li>File, hunk, symbol, or candidate finding being processed.</li>
@@ -1334,7 +1334,7 @@ enabled, codeninja should record step-by-step events describing:</p>
 so they should be opt-in and written to local files rather than mixed
 into normal stdout output.</p>
 <p>Telemetry artifacts should support the eval workflow. An evaluator
-should be able to run codeninja against a real remote repository or
+should be able to run codegenie against a real remote repository or
 branch, define expected findings externally, and inspect telemetry to
 understand whether misses came from packet construction, lens selection,
 tool behavior, model output, verification, deduplication, or final
@@ -1360,18 +1360,18 @@ packet).</li>
 <li>Debug prompt and model-result files when explicitly enabled.</li>
 </ul>
 <h2 id="eval-system">Eval System</h2>
-<p>codeninja should include an eval command for end-to-end quality
+<p>codegenie should include an eval command for end-to-end quality
 testing against real repositories, fixture repositories, and previously
 captured artifacts.</p>
 <p>The v1 eval command should support:</p>
-<div class="sourceCode" id="cb12"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> eval <span class="at">--eval-dir</span> /path/to/evals</span>
-<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--cache</span></span>
-<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--no-cache</span></span>
-<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> eval <span class="at">--from-artifacts</span> /path/to/eval/logs/42</span></code></pre></div>
+<div class="sourceCode" id="cb12"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--cache</span></span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--eval-dir</span> /path/to/evals <span class="at">--no-cache</span></span>
+<span id="cb12-4"><a href="#cb12-4" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> eval <span class="at">--from-artifacts</span> /path/to/eval/logs/42</span></code></pre></div>
 <p><code>--from-artifacts</code> re-scores a previously captured run
 directory against the case expectations without re-running the review;
 it is the only artifact-replay mode in v1.</p>
-<p>Eval cases should be YAML files stored outside the codeninja
+<p>Eval cases should be YAML files stored outside the codegenie
 repository when they reference private or real customer-like
 repositories. A case may point at:</p>
 <ul>
@@ -1422,7 +1422,7 @@ revisions, and cache schema version) so that identical requests hit and
 anything prompt-affecting misses.</p>
 <p>The cache stores model interactions only. Deterministic stages are
 cheap to recompute and are not cached in v1. Cache hits and misses must
-be recorded in telemetry, and <code>codeninja eval --cache</code> /
+be recorded in telemetry, and <code>codegenie eval --cache</code> /
 <code>--no-cache</code> toggle this cache per eval run.</p>
 <p>The cache is disabled by default and must be explicitly enabled in
 configuration or per run.</p>
@@ -1531,7 +1531,7 @@ found.</li>
 <li>Posting plan for GitHub mode.</li>
 </ul>
 <h3 id="stdout-output">Stdout Output</h3>
-<p>When <code>--post-github-comments</code> is not used, codeninja
+<p>When <code>--post-github-comments</code> is not used, codegenie
 should print the final review as clean, structured Markdown to
 stdout.</p>
 <p>The Markdown report should include:</p>
@@ -1548,7 +1548,7 @@ high-confidence follow-up hints.</li>
 <li>A clear “no findings” result when no credible findings are
 found.</li>
 </ul>
-<p>When <code>--format json</code> is used, codeninja should print the
+<p>When <code>--format json</code> is used, codegenie should print the
 final review object as JSON to stdout instead of the Markdown report.
 The JSON output should carry the same content as the Markdown report:
 summary, coverage, final findings with anchors, evidence, failure modes,
@@ -1565,14 +1565,14 @@ be emitted as JSON; its shape is the publisher’s posting record
 <p>Stage 11 is optional and runs only when GitHub posting is
 requested.</p>
 <p>GitHub posting is opt-in with:</p>
-<div class="sourceCode" id="cb13"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codeninja</span> review <span class="at">--pr</span> 123 <span class="at">--post-github-comments</span></span></code></pre></div>
+<div class="sourceCode" id="cb13"><pre class="sourceCode bash"><code class="sourceCode bash"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="ex">codegenie</span> review <span class="at">--pr</span> 123 <span class="at">--post-github-comments</span></span></code></pre></div>
 <p>GitHub posting cannot be enabled from configuration in v1; it
 requires the explicit <code>--post-github-comments</code> flag on each
 run.</p>
-<p>When enabled, codeninja should:</p>
+<p>When enabled, codegenie should:</p>
 <ul>
 <li>Post inline comments and the summary as a single GitHub review with
-event type <code>COMMENT</code>. codeninja must not approve or request
+event type <code>COMMENT</code>. codegenie must not approve or request
 changes in v1.</li>
 <li>Post inline comments for verified findings with valid changed-line
 anchors.</li>
@@ -1585,16 +1585,16 @@ accepts old-side review comments.</li>
 broad findings that cannot be anchored inline.</li>
 <li>Disclose partial coverage in the PR-level summary when the review
 did not cover the full change set.</li>
-<li>Avoid duplicate comments from previous codeninja runs when
+<li>Avoid duplicate comments from previous codegenie runs when
 possible.</li>
 </ul>
 <p>Duplicate avoidance should use a stable fingerprint derived from
 durable finding identity (path, enclosing symbol or hunk identity,
 category, and lens), excluding model-authored wording. On rerun,
-codeninja should skip or update prior codeninja-authored comments when
+codegenie should skip or update prior codegenie-authored comments when
 it can identify them safely.</p>
 <p>If a deleted-line or other inline anchor fails validation or GitHub
-rejects it, codeninja should move that finding to the PR review body
+rejects it, codegenie should move that finding to the PR review body
 rather than dropping it silently. This is especially important for
 deleted files, because valuable findings may be about removed behavior
 even when an inline anchor is unavailable.</p>
@@ -1607,9 +1607,9 @@ commit-range modes should not post GitHub comments in v1 unless a future
 option explicitly supplies PR posting context.</p>
 <h2 id="configuration">Configuration</h2>
 <p>The repository config file should be named:</p>
-<pre class="text"><code>codeninja.toml</code></pre>
+<pre class="text"><code>codegenie.toml</code></pre>
 <p>This section covers the resolved configuration surface. Repo
-<code>codeninja.toml</code> may set only the safe subset described under
+<code>codegenie.toml</code> may set only the safe subset described under
 Trust Boundaries; provider credentials, default provider/model, and
 reasoning effort come from CLI flags, environment variables, or
 user-scoped provider state.</p>
@@ -1632,7 +1632,7 @@ inline-comment target). Neither cap suppresses verified critical or
 high-severity findings.</li>
 <li>LLM runtime options for <code>@earendil-works/pi-ai</code>,
 including provider-call concurrency; one provider/model/reasoning
-configuration applies to the whole run. Repo <code>codeninja.toml</code>
+configuration applies to the whole run. Repo <code>codegenie.toml</code>
 must not set provider credentials, default provider, default model, or
 reasoning effort.</li>
 <li>Runtime and per-pass timeouts.</li>
@@ -1640,13 +1640,13 @@ reasoning effort.</li>
 <li>Maximum model calls per run.</li>
 <li>Review concurrency.</li>
 <li>Local review cache settings, with <code>--cache</code> /
-<code>--no-cache</code> flags on <code>codeninja review</code>
+<code>--no-cache</code> flags on <code>codegenie review</code>
 overriding the configured default per run.</li>
 <li>Local telemetry and debug trace settings.</li>
 <li>Eval defaults, such as default eval directory and logs
 directory.</li>
 </ul>
-<p>If no config exists, codeninja should run with sensible defaults:</p>
+<p>If no config exists, codegenie should run with sensible defaults:</p>
 <ul>
 <li>Core correctness-oriented lenses enabled.</li>
 <li>Review depth set to <code>normal</code>.</li>
@@ -1661,11 +1661,11 @@ directory.</li>
 <li>External telemetry disabled.</li>
 </ul>
 <h2 id="test-and-command-execution">Test And Command Execution</h2>
-<p>codeninja never runs tests, typecheck, builds, or arbitrary commands
+<p>codegenie never runs tests, typecheck, builds, or arbitrary commands
 in v1; review evidence comes from reading code, not executing it.
 Configured command execution is a Future Consideration.</p>
 <h2 id="trust-boundaries">Trust Boundaries</h2>
-<p>codeninja reviews attacker-influenced content and must treat reviewed
+<p>codegenie reviews attacker-influenced content and must treat reviewed
 content as data, not instructions.</p>
 <p>Untrusted inputs include:</p>
 <ul>
@@ -1706,21 +1706,21 @@ and rejected if option-like (leading <code>-</code>).</li>
 </ul>
 <p>Config trust partitioning:</p>
 <ul>
-<li>Repo <code>codeninja.toml</code> may set safe keys only: lenses
+<li>Repo <code>codegenie.toml</code> may set safe keys only: lenses
 on/off, classification path rules, depth, base branch, labels, caps, and
 <code>telemetry.enabled</code>.</li>
 <li>Out-of-repo or provider-routing settings —
 <code>lenses.extraSkillPaths</code> outside the repo,
 <code>telemetry.runDir</code> / <code>cache.dir</code> outside the repo,
 and LLM provider/model/reasoning defaults — take effect only with
-user-level opt-in: a CLI flag, <code>~/.codeninja/settings.json</code>,
-or the user-scoped config file <code>~/.codeninja/config.toml</code>
-(all under <code>CODENINJA_HOME</code>). Repo-config values for these
+user-level opt-in: a CLI flag, <code>~/.codegenie/settings.json</code>,
+or the user-scoped config file <code>~/.codegenie/config.toml</code>
+(all under <code>CODEGENIE_HOME</code>). Repo-config values for these
 are ignored with a warning.</li>
 <li>Repo-config-relative paths are constrained to the repo root.</li>
 </ul>
-<p>Policy load revision: <code>codeninja.toml</code> and
-<code>.codeninja/skills/</code> always load from the trusted local
+<p>Policy load revision: <code>codegenie.toml</code> and
+<code>.codegenie/skills/</code> always load from the trusted local
 checkout (the user’s working copy), never from the PR head revision. If
 the PR under review modifies policy files (config or skills), that
 should be surfaced to the planner as a risk signal and noted in the
@@ -1737,15 +1737,15 @@ ref names are display-only.</li>
 </ul>
 <p>Credentials: provider API keys and OAuth/device-flow tokens come from
 environment variables or user-scoped provider auth state only
-(<code>~/.codeninja/auth.json</code>, overridable through
-<code>CODENINJA_HOME</code>), and repo <code>codeninja.toml</code> must
+(<code>~/.codegenie/auth.json</code>, overridable through
+<code>CODEGENIE_HOME</code>), and repo <code>codegenie.toml</code> must
 reject credential-bearing fields at parse time. Auth material such as
 API keys, <code>gh</code> tokens, Authorization headers, OAuth tokens,
 and device-flow tokens must be stripped before anything is written to
 logs, telemetry, run artifacts, cache entries, debug traces, or error
 context.</p>
 <h2 id="error-handling">Error Handling</h2>
-<p>codeninja should fail clearly for:</p>
+<p>codegenie should fail clearly for:</p>
 <ul>
 <li>Not running inside a git worktree.</li>
 <li>Invalid or missing input mode.</li>
@@ -1759,10 +1759,10 @@ locally.</li>
 graceful fallback is possible.</li>
 <li>Config parse errors.</li>
 <li>No authenticated provider model available for the run, with a
-<code>codeninja provider login &lt;provider&gt;</code> hint.</li>
+<code>codegenie provider login &lt;provider&gt;</code> hint.</li>
 </ul>
 <p>Parser or language-support failures for individual files should
-degrade gracefully when possible. codeninja may still review with raw
+degrade gracefully when possible. codegenie may still review with raw
 diff context and basic file tools, but it should report degraded context
 in the run summary.</p>
 <h2 id="exit-codes">Exit Codes</h2>
@@ -1847,9 +1847,9 @@ alignment missing real spec violations.</li>
 threads, passing deterministically extracted and truncated summaries to
 the planner as hints (never findings), and composer acknowledgment of
 overlap with existing threads — without dropping verified findings or
-adopting an existing comment without codeninja’s own evidence and
-verification. V1 lists only codeninja’s own prior comments, for rerun
-duplicate avoidance. Build when codeninja is observed re-raising points
+adopting an existing comment without codegenie’s own evidence and
+verification. V1 lists only codegenie’s own prior comments, for rerun
+duplicate avoidance. Build when codegenie is observed re-raising points
 humans already made on the thread.</li>
 <li>Configured command execution. Opt-in <code>tools.testCommands</code>
 for test/typecheck/build commands run with timeouts, results treated as

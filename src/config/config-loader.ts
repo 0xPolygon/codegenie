@@ -2,26 +2,26 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import {
-  codeninjaConfigSchema,
+  codegenieConfigSchema,
   defaultConfig,
   rawConfigSchema,
   reasoningLevelSchema,
-  type RawCodeninjaConfig
+  type RawCodegenieConfig
 } from "./schema.js";
-import { getCodeninjaPaths } from "./paths.js";
+import { getCodegeniePaths } from "./paths.js";
 import { loadProviderSettings } from "../provider/provider-settings.js";
 import type {
   ClassificationPathRule,
-  CodeninjaConfig,
-  CodeninjaPaths,
+  CodegenieConfig,
+  CodegeniePaths,
   ConfigSource,
   ConfigWarning,
   ReasoningLevel,
   ReviewDepth
 } from "../types.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 
-type RawPathRule = NonNullable<NonNullable<RawCodeninjaConfig["classification"]>["pathRules"]>[number];
+type RawPathRule = NonNullable<NonNullable<RawCodegenieConfig["classification"]>["pathRules"]>[number];
 
 export type CliConfigOverrides = {
   depth?: ReviewDepth;
@@ -41,8 +41,8 @@ export type LoadConfigOptions = {
 };
 
 export type LoadedConfig = {
-  config: CodeninjaConfig;
-  paths: CodeninjaPaths;
+  config: CodegenieConfig;
+  paths: CodegeniePaths;
   warnings: ConfigWarning[];
   sources: Record<string, ConfigSource>;
 };
@@ -81,10 +81,10 @@ const CREDENTIAL_KEY_PATTERN = /(?:api[_-]?key|apikey|secret|token|password|pass
 export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
   const env = opts.env ?? process.env;
   const repoRoot = path.resolve(opts.repoRoot);
-  const paths = getCodeninjaPaths(opts.homeOverride, env);
+  const paths = getCodegeniePaths(opts.homeOverride, env);
   const warnings: ConfigWarning[] = [];
   const sources = defaultSources();
-  const config = structuredClone(defaultConfig) as CodeninjaConfig;
+  const config = structuredClone(defaultConfig) as CodegenieConfig;
 
   const userConfig = readConfigIfPresent(paths.configTomlPath, "user-config");
   if (userConfig) {
@@ -110,7 +110,7 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
   }
 
   if (opts.loadRepoConfig !== false) {
-    const repoConfigPath = path.join(repoRoot, "codeninja.toml");
+    const repoConfigPath = path.join(repoRoot, "codegenie.toml");
     const repoConfig = readConfigIfPresent(repoConfigPath, "repo-config");
     if (repoConfig) {
       const safeRepoConfig = filterRepoConfig(repoConfig, warnings);
@@ -121,15 +121,15 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
   applyEnvironment(config, env, sources);
   applyCliOverrides(config, opts.cli ?? {}, sources);
 
-  const validated = codeninjaConfigSchema.safeParse(config);
+  const validated = codegenieConfigSchema.safeParse(config);
   if (!validated.success) {
-    throw new CodeninjaError("config_error", "resolved configuration is invalid", {
+    throw new CodegenieError("config_error", "resolved configuration is invalid", {
       context: { issues: validated.error.issues }
     });
   }
 
   return {
-    config: validated.data as CodeninjaConfig,
+    config: validated.data as CodegenieConfig,
     paths,
     warnings,
     sources
@@ -137,29 +137,29 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
 }
 
 export function applyRepoConfigLayer(
-  baseConfig: CodeninjaConfig,
+  baseConfig: CodegenieConfig,
   repoRoot: string
-): { config: CodeninjaConfig; warnings: ConfigWarning[] } {
-  const config = structuredClone(baseConfig) as CodeninjaConfig;
+): { config: CodegenieConfig; warnings: ConfigWarning[] } {
+  const config = structuredClone(baseConfig) as CodegenieConfig;
   const warnings: ConfigWarning[] = [];
   const sources = defaultSources();
-  const repoConfig = readConfigIfPresent(path.join(path.resolve(repoRoot), "codeninja.toml"), "repo-config");
+  const repoConfig = readConfigIfPresent(path.join(path.resolve(repoRoot), "codegenie.toml"), "repo-config");
   if (repoConfig) {
     const safeRepoConfig = filterRepoConfig(repoConfig, warnings);
     applyRawConfig(config, safeRepoConfig, "repo-config", sources);
   }
 
-  const validated = codeninjaConfigSchema.safeParse(config);
+  const validated = codegenieConfigSchema.safeParse(config);
   if (!validated.success) {
-    throw new CodeninjaError("config_error", "resolved configuration is invalid after repo config", {
+    throw new CodegenieError("config_error", "resolved configuration is invalid after repo config", {
       context: { issues: validated.error.issues }
     });
   }
 
-  return { config: validated.data as CodeninjaConfig, warnings };
+  return { config: validated.data as CodegenieConfig, warnings };
 }
 
-function readConfigIfPresent(filePath: string, source: ConfigSource): RawCodeninjaConfig | undefined {
+function readConfigIfPresent(filePath: string, source: ConfigSource): RawCodegenieConfig | undefined {
   if (!existsSync(filePath)) {
     return undefined;
   }
@@ -168,7 +168,7 @@ function readConfigIfPresent(filePath: string, source: ConfigSource): RawCodenin
   try {
     parsed = parseToml(readFileSync(filePath, "utf8"));
   } catch (cause) {
-    throw new CodeninjaError("config_error", `failed to parse config file at ${filePath}`, {
+    throw new CodegenieError("config_error", `failed to parse config file at ${filePath}`, {
       context: { path: filePath },
       cause
     });
@@ -180,7 +180,7 @@ function readConfigIfPresent(filePath: string, source: ConfigSource): RawCodenin
 
   const result = rawConfigSchema.safeParse(parsed);
   if (!result.success) {
-    throw new CodeninjaError("config_error", `invalid config file at ${filePath}`, {
+    throw new CodegenieError("config_error", `invalid config file at ${filePath}`, {
       context: { path: filePath, issues: result.error.issues }
     });
   }
@@ -188,8 +188,8 @@ function readConfigIfPresent(filePath: string, source: ConfigSource): RawCodenin
 }
 
 function applyRawConfig(
-  config: CodeninjaConfig,
-  raw: RawCodeninjaConfig,
+  config: CodegenieConfig,
+  raw: RawCodegenieConfig,
   source: ConfigSource,
   sources: Record<string, ConfigSource>
 ): void {
@@ -331,8 +331,8 @@ function applyRawConfig(
   }
 }
 
-function filterRepoConfig(raw: RawCodeninjaConfig, warnings: ConfigWarning[]): RawCodeninjaConfig {
-  const safe: RawCodeninjaConfig = {};
+function filterRepoConfig(raw: RawCodegenieConfig, warnings: ConfigWarning[]): RawCodegenieConfig {
+  const safe: RawCodegenieConfig = {};
 
   if (raw.review) {
     for (const key of Object.keys(raw.review)) {
@@ -412,30 +412,30 @@ function warnIgnoredRepoKey(warnings: ConfigWarning[], key: string): void {
   warnings.push({
     source: "repo-config",
     key,
-    message: `repo codeninja.toml cannot set user-scoped key ${key}; value ignored`
+    message: `repo codegenie.toml cannot set user-scoped key ${key}; value ignored`
   });
 }
 
 function applyEnvironment(
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   env: NodeJS.ProcessEnv,
   sources: Record<string, ConfigSource>
 ): void {
-  if (env.CODENINJA_PROVIDER) {
-    config.llm.provider = env.CODENINJA_PROVIDER;
+  if (env.CODEGENIE_PROVIDER) {
+    config.llm.provider = env.CODEGENIE_PROVIDER;
     sources["llm.provider"] = "environment";
   }
-  if (env.CODENINJA_MODEL) {
-    config.llm.model = env.CODENINJA_MODEL;
+  if (env.CODEGENIE_MODEL) {
+    config.llm.model = env.CODEGENIE_MODEL;
     sources["llm.model"] = "environment";
   }
-  if (env.CODENINJA_REASONING) {
-    const parsed = reasoningLevelSchema.safeParse(env.CODENINJA_REASONING);
+  if (env.CODEGENIE_REASONING) {
+    const parsed = reasoningLevelSchema.safeParse(env.CODEGENIE_REASONING);
     if (!parsed.success) {
-      throw new CodeninjaError("config_error", "invalid CODENINJA_REASONING value", {
+      throw new CodegenieError("config_error", "invalid CODEGENIE_REASONING value", {
         context: {
-          key: "CODENINJA_REASONING",
-          value: env.CODENINJA_REASONING,
+          key: "CODEGENIE_REASONING",
+          value: env.CODEGENIE_REASONING,
           allowed: ["low", "medium", "high", "xhigh"]
         }
       });
@@ -446,7 +446,7 @@ function applyEnvironment(
 }
 
 function applyCliOverrides(
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   cli: CliConfigOverrides,
   sources: Record<string, ConfigSource>
 ): void {
@@ -506,7 +506,7 @@ function assertNoCredentialKeys(input: unknown, filePath: string, trail: string[
   for (const [key, value] of Object.entries(input)) {
     const nextTrail = [...trail, key];
     if (CREDENTIAL_KEY_PATTERN.test(key)) {
-      throw new CodeninjaError("config_error", "repo codeninja.toml cannot contain credential-bearing fields", {
+      throw new CodegenieError("config_error", "repo codegenie.toml cannot contain credential-bearing fields", {
         context: { path: filePath, key: nextTrail.join(".") }
       });
     }

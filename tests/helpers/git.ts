@@ -5,7 +5,7 @@ import path from "node:path";
 import type { TelemetryRecorder } from "../../src/telemetry/telemetry-recorder.js";
 
 export function initRepo(): string {
-  const repo = mkdtempSync(path.join(tmpdir(), "codeninja-git-"));
+  const repo = mkdtempSync(path.join(tmpdir(), "codegenie-git-"));
   git(repo, ["init", "-b", "main"]);
   git(repo, ["config", "user.name", "Test User"]);
   git(repo, ["config", "user.email", "test@example.com"]);

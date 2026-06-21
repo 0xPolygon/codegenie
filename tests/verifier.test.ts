@@ -6,7 +6,7 @@ import { verifyFindings } from "../src/pipeline/verifier.js";
 import { createPromptBuilder } from "../src/skills/prompt-builder.js";
 import type {
   CandidateFinding,
-  CodeninjaConfig,
+  CodegenieConfig,
   EvalVerificationRecord,
   PacketReviewResult,
   RepositoryTools,
@@ -534,7 +534,7 @@ function fakeLensRegistry() {
   };
 }
 
-function config(): CodeninjaConfig {
+function config(): CodegenieConfig {
   return {
     ...defaultConfig,
     lenses: { enabled: ["core/code-review"], disabled: [], extraSkillPaths: [] },

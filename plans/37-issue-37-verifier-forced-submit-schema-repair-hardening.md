@@ -6,7 +6,7 @@ Planned at: commit `506fa43`
 
 ## Problem
 
-Verifier schema-invalid failures are expensive and brittle. Opus called out a precise failure mode: XML-like `<parameter>` bleed in verifier forced-submit/schema-repair output. That is actionable because codeninja should force a clean `submit_verdict` tool call, not let explanatory XML or parameter wrapper text leak into the structured tool arguments.
+Verifier schema-invalid failures are expensive and brittle. Opus called out a precise failure mode: XML-like `<parameter>` bleed in verifier forced-submit/schema-repair output. That is actionable because codegenie should force a clean `submit_verdict` tool call, not let explanatory XML or parameter wrapper text leak into the structured tool arguments.
 
 This plan should harden Stage 9 repair without disabling provider reasoning/thinking. The root fix is stricter repair context and regression coverage.
 

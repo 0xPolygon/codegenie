@@ -8,7 +8,7 @@ Planned at: commit `506fa43`
 
 Opus 4.8 observed that provider prompt-cache write cost was a large part of run 6 cost and that many Stage 7 calls share a large identical prefix: reviewer frame, tool/schema instructions, and skill projection text. If that prefix could be expressed as provider-cacheable shared context, prompt-cache read/write efficiency might improve.
 
-This is promising but provider/Pi-dependent. Codeninja currently builds each prompt as one large string and sends it as a single user message, so it is not obvious that we can mark a shared prefix as a separate cacheable block without changing the Pi adapter interface or provider-specific options.
+This is promising but provider/Pi-dependent. Codegenie currently builds each prompt as one large string and sends it as a single user message, so it is not obvious that we can mark a shared prefix as a separate cacheable block without changing the Pi adapter interface or provider-specific options.
 
 Treat this as an investigation/spike first, not an assumed easy win.
 
@@ -61,7 +61,7 @@ buildPacketReviewPrompt: ({ packet, skills }) => {
 Implemented a safe first step at the Pi runner boundary:
 
 - Pi documents session-based prompt caching through `sessionId` and `cacheRetention`.
-- Codeninja now passes `sessionId: "codeninja-<runId>-stage-<stage>"` and `cacheRetention: "short"` on provider calls.
+- Codegenie now passes `sessionId: "codegenie-<runId>-stage-<stage>"` and `cacheRetention: "short"` on provider calls.
 - The session is stage-scoped, not packet-scoped, so Stage 7 packet reviewers in one run share one provider cache namespace while verifier/composer calls stay isolated by stage.
 - Debug artifacts include the effective provider prompt-cache strategy for each model call.
 - Telemetry records one `provider_prompt_cache_strategy` event per stage.
@@ -69,7 +69,7 @@ Implemented a safe first step at the Pi runner boundary:
 
 Not implemented:
 
-- Explicit shared-prefix prompt blocks or provider-specific `cache_control` metadata. The installed Pi package documents provider compatibility flags such as Anthropic-style cache control, but Codeninja's current adapter does not expose a generic portable message-part cache-control API. Adding one would need a separate measured provider-specific design.
+- Explicit shared-prefix prompt blocks or provider-specific `cache_control` metadata. The installed Pi package documents provider compatibility flags such as Anthropic-style cache control, but Codegenie's current adapter does not expose a generic portable message-part cache-control API. Adding one would need a separate measured provider-specific design.
 - Prompt splitting into `sharedPrefix`/`dynamicBody`. The current shipped change avoids changing model-visible prompt shape until there is evidence that Pi can express cacheable structured blocks safely.
 
 ## Investigation Questions
@@ -77,15 +77,15 @@ Not implemented:
 Before implementing, answer these with code or provider documentation:
 
 1. Does `@earendil-works/pi-ai` expose provider-specific prompt cache controls, cache-control blocks, or message-part metadata?
-   - Answer: it documents `cacheRetention`/`sessionId` as generic options and provider/model compatibility options for cache control, but not a prompt-builder-level portable cache-control block API in Codeninja's current adapter.
+   - Answer: it documents `cacheRetention`/`sessionId` as generic options and provider/model compatibility options for cache control, but not a prompt-builder-level portable cache-control block API in Codegenie's current adapter.
 2. Can Pi accept a structured message list with a stable system/developer prefix and a per-call user payload?
-   - Answer: Pi supports `systemPrompt` and message lists, but Codeninja currently sends a single user message. Splitting prompts would alter prompt shape and should be measured separately.
+   - Answer: Pi supports `systemPrompt` and message lists, but Codegenie currently sends a single user message. Splitting prompts would alter prompt shape and should be measured separately.
 3. Do the target providers bill lower write tokens when a stable prefix is isolated into a cacheable block?
    - Answer: unknown from local tests. The implementation enables Pi's supported session cache hints so future evals can measure provider prompt-cache read/write token deltas.
 4. Would changing prompt shape affect local model-call cache keys, schema validation, or tool-call behavior?
    - Answer: likely yes if prompt splitting changes message shape. The shipped change preserves prompt text/message shape and therefore avoids this risk.
 5. Can this be implemented generically without provider-specific branches leaking through the whole prompt builder?
-   - Answer: session-based Pi cache hints can be implemented generically in the runner. Explicit shared cache blocks cannot be implemented generically yet from the current Codeninja adapter surface.
+   - Answer: session-based Pi cache hints can be implemented generically in the runner. Explicit shared cache blocks cannot be implemented generically yet from the current Codegenie adapter surface.
 
 ## Plan
 

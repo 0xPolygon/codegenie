@@ -283,4 +283,4 @@ Stop and report back instead of improvising if:
 
 ## Maintenance Notes
 
-This plan keeps codeninja's intended architecture: Stage 7 can be nondeterministic, Stage 9 stays strict, and the harness recovers high-value missed candidates through bounded promotion. The important distinction is between a local, changed-symbol behavior predicate and a broad cross-system hypothesis. Future promotion changes should preserve that distinction and should be judged with funnel metrics: direct candidates, promoted candidates, verifier keep/reject, and false-positive expectations.
+This plan keeps codegenie's intended architecture: Stage 7 can be nondeterministic, Stage 9 stays strict, and the harness recovers high-value missed candidates through bounded promotion. The important distinction is between a local, changed-symbol behavior predicate and a broad cross-system hypothesis. Future promotion changes should preserve that distinction and should be judged with funnel metrics: direct candidates, promoted candidates, verifier keep/reject, and false-positive expectations.

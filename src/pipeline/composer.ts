@@ -6,7 +6,7 @@ import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import type {
   CandidateFinding,
   Confidence,
-  CodeninjaConfig,
+  CodegenieConfig,
   DiffAnchor,
   FinalFinding,
   NeedsHumanAttentionNote,
@@ -76,7 +76,7 @@ export async function dedupeRankAndComposeReview(
   plan: ReviewPlan,
   _resolved: ResolvedReviewInput,
   coverage: RunCoverageStatus,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: ComposeOptions
 ): Promise<ReviewResult> {
@@ -286,7 +286,7 @@ async function runComposer(
   groups: FindingGroup[],
   plan: ReviewPlan,
   coverage: RunCoverageStatus,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: ComposeOptions,
   notes: NeedsHumanAttentionNote[]
@@ -532,7 +532,7 @@ function unknownComposedFindingIds(input: unknown, knownIds: Set<string>): strin
 
 function buildComposerSchemaRepairPrompt(input: LlmSchemaRepairInput, groups: FindingGroup[]): string {
   return [
-    "Repair the Stage 10 review-composition response for codeninja.",
+    "Repair the Stage 10 review-composition response for codegenie.",
     "",
     `Validation problem: ${input.error}`,
     "",
@@ -1274,7 +1274,7 @@ type ApplyCapsOptions = {
 
 function applyCaps(
   findings: FinalFinding[],
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   opts: ApplyCapsOptions
 ): { findings: FinalFinding[]; suppressedReasons: Map<string, string>; downgradeReasons: Map<string, string> } {
   const suppressedReasons = new Map<string, string>();
@@ -1436,7 +1436,7 @@ function renderReviewBody(
   coverage: RunCoverageStatus,
   omittedNoteCount = 0
 ): string {
-  const lines = [summary || "codeninja review completed.", "", ...renderCoverageSummaryLines(coverage).slice(0, 2)];
+  const lines = [summary || "codegenie review completed.", "", ...renderCoverageSummaryLines(coverage).slice(0, 2)];
   const coverageDisclosures = coverageDisclosureLines(coverage);
   if (coverageDisclosures.length > 0) {
     lines.push("", "Coverage disclosure:", ...coverageDisclosures);

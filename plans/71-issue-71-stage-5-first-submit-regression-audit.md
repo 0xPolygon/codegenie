@@ -31,11 +31,11 @@ Cross-eval evidence from `0c4d5213` run 31 changes the scope: the same current p
 
 This should be treated as a regression, not inherent LLM randomness:
 
-- The sampled runs use the same planner model (`claude-opus-4-8`), so the regression should be attributed to Codeninja prompt/schema/tool changes unless the audit proves otherwise.
+- The sampled runs use the same planner model (`claude-opus-4-8`), so the regression should be attributed to Codegenie prompt/schema/tool changes unless the audit proves otherwise.
 - Stages 1-4 are deterministic and stable for this eval.
 - The same eval became invalid-first-submit consistently after a narrow run window.
 - Earlier runs prove clean first-submit behavior is achievable.
-- Runs 13-16 show several invalid shapes under newer Codeninja versions: `{}`, `{ plan: "<json>" }`, root-level planner metadata, and sparse recovered coverage.
+- Runs 13-16 show several invalid shapes under newer Codegenie versions: `{}`, `{ plan: "<json>" }`, root-level planner metadata, and sparse recovered coverage.
 - `0c4d5213` run 31 proves the current planner is not globally broken; the fix should target the sensitive class without making Stage 5 heavier.
 
 The likely persistence mechanism is not schema field count alone. The provider-facing schema did grow again after Issue 67 (`focusNotes`, `relatedSymbols`, `relatedFiles`, and nested context hints), but at least one invalid `{}` run happened with a near-baseline schema. That points to the Stage 5 prompt and tool-call framing as first-class suspects too.
@@ -147,7 +147,7 @@ Build a small table from eval artifacts:
 
 ```text
 run
-codeninja commit
+codegenie commit
 dirty flag
 planner_schema_repair_scheduled count
 invalid submit shape
@@ -178,7 +178,7 @@ current internal ReviewPlan type
 
 The target is not to restore old behavior blindly. The target is to recover the simpler provider-facing contract that earlier runs handled more reliably while keeping useful internal normalization.
 
-This audit is a gate, but it should be a confirmation gate. Do not start with a broad prompt/schema rewrite. First confirm the run history from local artifacts, identify the codeninja commits involved, and record whether the known diagnosis holds:
+This audit is a gate, but it should be a confirmation gate. Do not start with a broad prompt/schema rewrite. First confirm the run history from local artifacts, identify the codegenie commits involved, and record whether the known diagnosis holds:
 
 - the planner model stayed constant across the sampled runs;
 - the `{}` shape correlates with the Issue 66 prompt rewrite and its scout-negation/prohibition wording;
@@ -325,11 +325,11 @@ Validation should compare invalid-first-submit rate across enough repeated runs 
 
 1. Build the run-history table.
    - Parse `49f4645b/logs/1..16`.
-   - Record codeninja commit and Stage 5 first-submit status.
+   - Record codegenie commit and Stage 5 first-submit status.
    - Identify the first run where invalid first submits became persistent.
    - Save the audit result in the plan or a short adjacent note before changing Stage 5 behavior.
 
-2. Inspect the relevant codeninja diffs.
+2. Inspect the relevant codegenie diffs.
    - Compare commits around the run 6 -> run 7 transition.
    - Compare the run-6-era `submit_plan` schema against the current schema.
    - Compare the run-6-era Stage 5 prompt/tool description against the current prompt/tool description.

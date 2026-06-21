@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import pLimit from "p-limit";
 import type {
-  CodeninjaConfig,
+  CodegenieConfig,
   DiffFile,
   DiffHunk,
   FileFacts,
@@ -31,7 +31,7 @@ import { parseDiff } from "../git/diff-parser.js";
 import type { InternalGitClient } from "../git/git-client.js";
 import { createGitClient } from "../git/git-client.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 import { containGlob, containPath } from "./path-guard.js";
 import { DiffBlockRenderer } from "./diff-blocks.js";
 import { LanguageAdapterRegistry } from "./language-adapter.js";
@@ -96,7 +96,7 @@ export async function buildRepositoryIndex(
   resolved: ResolvedReviewInput,
   kept: DiffFile[],
   facts: FileFacts[],
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: BuildRepositoryIndexOptions = {}
 ): Promise<RepositoryIndex> {
@@ -188,7 +188,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       7,
       async () => {
         if (startLine < 1 || startLine > endLine) {
-          throw new CodeninjaError("invalid_args", "readRange requires 1 <= startLine <= endLine");
+          throw new CodegenieError("invalid_args", "readRange requires 1 <= startLine <= endLine");
         }
         const path = containPath(this.opts.resolver.repoRoot, filePath, this.guardTelemetry("read_range"));
         const content = await this.limit(() => this.opts.resolver.readFile(path, source));
@@ -274,7 +274,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       7,
       async () => {
         if ((selector.symbolName === undefined) === (selector.line === undefined)) {
-          throw new CodeninjaError("invalid_args", "readSymbol requires exactly one selector");
+          throw new CodegenieError("invalid_args", "readSymbol requires exactly one selector");
         }
         const path = containPath(this.opts.resolver.repoRoot, filePath, this.guardTelemetry("read_symbol"));
         if (source.kind !== "auto") {
@@ -379,7 +379,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       7,
       async () => {
         if ((input.path === undefined) === (input.packetId === undefined)) {
-          throw new CodeninjaError("invalid_args", "readDiffBlocks requires exactly one selector");
+          throw new CodegenieError("invalid_args", "readDiffBlocks requires exactly one selector");
         }
         const normalizedInput =
           input.path !== undefined
@@ -407,7 +407,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       7,
       async () => {
         if (symbolName.length === 0) {
-          throw new CodeninjaError("invalid_args", "symbolName must be non-empty");
+          throw new CodegenieError("invalid_args", "symbolName must be non-empty");
         }
         const pathGlob =
           options.pathGlob === undefined
@@ -644,7 +644,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       7,
       async () => {
         if (input.path === undefined && input.symbol === undefined) {
-          throw new CodeninjaError("invalid_args", "findLikelyTests requires a path or symbol");
+          throw new CodegenieError("invalid_args", "findLikelyTests requires a path or symbol");
         }
         const normalizedInput = this.normalizeLikelyTestsInput(input);
         const result = await findLikelyTestsForInput(this.opts.resolver, this.opts.registry, normalizedInput);
@@ -729,7 +729,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       }
       return measurement.value;
     } catch (error) {
-      const isRejected = error instanceof CodeninjaError && error.code === "path_outside_repo";
+      const isRejected = error instanceof CodegenieError && error.code === "path_outside_repo";
       if (context?.record !== false) {
         this.opts.telemetry.recordToolCall({
           ...toolCallContextRecordFields(context, stage),
@@ -742,7 +742,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           resultChars: 0,
           durationMs: Date.now() - started,
           status: isRejected ? "rejected" : "error",
-          ...(error instanceof CodeninjaError ? { errorCode: error.code } : {})
+          ...(error instanceof CodegenieError ? { errorCode: error.code } : {})
         });
       }
       throw error;

@@ -1,6 +1,6 @@
 import { stripCredentials } from "../telemetry/redaction.js";
 
-export type CodeninjaErrorCode =
+export type CodegenieErrorCode =
   | "not_git_worktree"
   | "invalid_args"
   | "config_error"
@@ -20,18 +20,18 @@ export type CodeninjaErrorCode =
   | "budget_exhausted"
   | "timeout";
 
-export class CodeninjaError extends Error {
-  readonly code: CodeninjaErrorCode;
+export class CodegenieError extends Error {
+  readonly code: CodegenieErrorCode;
   readonly recoverable: boolean;
   readonly context?: Record<string, unknown>;
 
   constructor(
-    code: CodeninjaErrorCode,
+    code: CodegenieErrorCode,
     message: string,
     opts: { recoverable?: boolean; context?: Record<string, unknown>; cause?: unknown } = {}
   ) {
     super(message, { cause: opts.cause });
-    this.name = "CodeninjaError";
+    this.name = "CodegenieError";
     this.code = code;
     this.recoverable = opts.recoverable ?? false;
     if (opts.context) {
@@ -41,7 +41,7 @@ export class CodeninjaError extends Error {
 
   toJSON(): {
     name: string;
-    code: CodeninjaErrorCode;
+    code: CodegenieErrorCode;
     message: string;
     recoverable: boolean;
     context?: Record<string, unknown>;
@@ -56,12 +56,12 @@ export class CodeninjaError extends Error {
   }
 }
 
-export function isCodeninjaError(error: unknown): error is CodeninjaError {
-  return error instanceof CodeninjaError;
+export function isCodegenieError(error: unknown): error is CodegenieError {
+  return error instanceof CodegenieError;
 }
 
 export function errorExitCode(error: unknown): number {
-  if (!isCodeninjaError(error)) {
+  if (!isCodegenieError(error)) {
     return 1;
   }
 

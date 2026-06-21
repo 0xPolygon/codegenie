@@ -110,7 +110,7 @@ The opportunity is therefore input compaction, not planner redesign.
      - tests rewritten or removed,
      - exported/public surface changes,
      - migrations/config/security/auth/database-related file facts from deterministic classification or project config,
-     - high-risk paths configured in `codeninja.toml`,
+     - high-risk paths configured in `codegenie.toml`,
      - large behavior-preserving refactors touching shared helpers.
    - This should not become a keyword-based risk classifier for review findings. It is only a prompt-size allocation policy.
 

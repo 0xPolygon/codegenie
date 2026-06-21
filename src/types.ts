@@ -25,7 +25,7 @@ export type ClassificationPathRule = {
   reason: string;
 };
 
-export type CodeninjaConfig = {
+export type CodegenieConfig = {
   lenses: {
     enabled: string[];
     disabled: string[];
@@ -79,7 +79,7 @@ export type CodeninjaConfig = {
   };
 };
 
-export type CodeninjaPaths = {
+export type CodegeniePaths = {
   home: string;
   authPath: string;
   modelsPath: string;
@@ -112,7 +112,7 @@ export type ReviewCommandOptions = {
 
 export type ParsedReviewCommand = {
   target: ReviewCommandTarget;
-  config: CodeninjaConfig;
+  config: CodegenieConfig;
   options: ReviewCommandOptions;
   repoRoot: string;
   warnings: ConfigWarning[];
@@ -155,7 +155,7 @@ export type ExistingReviewThread = {
   line?: number;
   side?: "RIGHT" | "LEFT";
   author: string;
-  isCodeninja: boolean;
+  isCodegenie: boolean;
   fingerprint?: string;
 };
 
@@ -1100,10 +1100,10 @@ export type EvalScore = {
   violations: EvalViolation[];
   nearViolations: Array<{ expectationId: string; findingId: string; artifact: string }>;
   metrics: EvalRunMetrics;
-  error?: { code: import("./util/errors.js").CodeninjaErrorCode; message: string };
+  error?: { code: import("./util/errors.js").CodegenieErrorCode; message: string };
 };
 
-export type CodeninjaRuntimeProvenance = {
+export type CodegenieRuntimeProvenance = {
   packageVersion: string;
   commit?: string;
   shortCommit?: string;
@@ -1125,7 +1125,7 @@ export type EvalRunInfo = {
   };
   repo?: { root: string; baseSha?: string; headSha?: string; mergeBase?: string };
   reviewRunId?: string;
-  codeninjaRuntime?: CodeninjaRuntimeProvenance;
+  codegenieRuntime?: CodegenieRuntimeProvenance;
   cache: { enabled: boolean; source: "cli" | "case" | "config"; dir?: string };
   effectiveConfig?: {
     review: {
@@ -1441,7 +1441,7 @@ export type ToolCallRecord = {
   resultChars: number;
   durationMs: number;
   status: "ok" | "error" | "rejected" | "skipped";
-  errorCode?: import("./util/errors.js").CodeninjaErrorCode;
+  errorCode?: import("./util/errors.js").CodegenieErrorCode;
 };
 
 export type RepositoryToolCallContext = {
@@ -1550,7 +1550,7 @@ export type BudgetSummary = {
 
 export type RunOutcome = {
   status: RunOutcomeStatus;
-  errorCode?: import("./util/errors.js").CodeninjaErrorCode;
+  errorCode?: import("./util/errors.js").CodegenieErrorCode;
   exitCode: number;
   budgetStop?: BudgetStop;
 };

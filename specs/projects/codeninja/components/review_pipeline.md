@@ -32,7 +32,7 @@ Explicitly not this component's responsibility (one-line pointers only):
 - Eval scoring and replay: `components/evals.md`.
 - Output rendering (Markdown/JSON/stdout): consumed downstream of `ReviewResult`; this document only defines when `renderOutputs` is invoked.
 
-All data contracts referenced here (`ReviewInput`, `ResolvedReviewInput`, `UnifiedDiff`, `DiffFile`, `DiffHunk`, `FileFacts`, `FileFilterDecision`, `HunkSymbolFacts`, `StaticSignal`, `ReviewPlan`, `HunkCoverageDecision`, `SurroundingContextHint`, `ReviewPacket`, `PacketHunk`, `PacketLine`, `PacketContext`, `ToolBudget`, `PacketReviewResult`, `FollowUpHint`, `CandidateFinding`, `DiffAnchor`, `FindingProducer`, `VerificationVerdict`, `FinalFinding`, `RunCoverageStatus`, `ReviewResult`, `CodeninjaConfig`, `RepositoryIndex`, `LlmRunner`) are defined in `architecture.md` and the functional spec and are not redefined here. The only type this document defines is the planner dossier (`PlannerDossier` and its `Dossier*` member records), which `architecture.md` explicitly delegates to this document.
+All data contracts referenced here (`ReviewInput`, `ResolvedReviewInput`, `UnifiedDiff`, `DiffFile`, `DiffHunk`, `FileFacts`, `FileFilterDecision`, `HunkSymbolFacts`, `StaticSignal`, `ReviewPlan`, `HunkCoverageDecision`, `SurroundingContextHint`, `ReviewPacket`, `PacketHunk`, `PacketLine`, `PacketContext`, `ToolBudget`, `PacketReviewResult`, `FollowUpHint`, `CandidateFinding`, `DiffAnchor`, `FindingProducer`, `VerificationVerdict`, `FinalFinding`, `RunCoverageStatus`, `ReviewResult`, `CodegenieConfig`, `RepositoryIndex`, `LlmRunner`) are defined in `architecture.md` and the functional spec and are not redefined here. The only type this document defines is the planner dossier (`PlannerDossier` and its `Dossier*` member records), which `architecture.md` explicitly delegates to this document.
 
 Anything listed under Future Considerations in the parent specs — hierarchical planning and the meta-planner, the broad cross-file system review beyond the narrow Stage 8 repeated-hint rule, the cross-packet `ReviewSignal` index, planner scheduling groups, the changed-symbol graph, diff-file input mode, spec-doc discovery, existing-PR-thread hints, per-role model/reasoning tiering, and rich pre-attached packet context — is deferred and not designed here.
 
@@ -46,14 +46,14 @@ The pipeline's only externally consumed entry point is `runReview`. The per-stag
 // src/pipeline/review-runner.ts
 async function runReview(
   input: ReviewInput,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   overrides?: { repoRoot?: string; runArtifactDir?: string }
 ): Promise<ReviewResult>
 ```
 
 - Returns the final `ReviewResult` for every completed run, including degraded, partial, budget-stopped, and zero-work runs. Partial reviews are successful completions; disclosure lives in `ReviewResult.coverage`, not in errors or exit codes.
-- `overrides` is the eval seam (`components/evals.md`): `repoRoot` pins the reviewed repository explicitly (the resolver verifies it is a git worktree and runs there instead of the process cwd); `runArtifactDir` makes the telemetry layer write the engine's standard run-directory artifact set at that path (e.g. `logs/<n>/telemetry/`) instead of `.codeninja/runs/<run-id>/`. Stage behavior, artifact contents, and failure semantics are unchanged by either override.
-- Throws `CodeninjaError` only for fatal conditions: propagated resolution/parsing failures (`not_git_worktree`, `invalid_args`, `git_ref_missing`, `git_base_branch_unresolved`, `git_fetch_failed`, `pr_not_found`, `gh_missing`, `gh_auth_failed`, `diff_parse_failed`, `config_error`), authentication or provider-wide LLM failures at any stage (`llm_call_failed` with `recoverable: false`), the hard kill at 2x the runtime budget (`timeout`), and `github_post_failed` when `--post-github-comments` was requested.
+- `overrides` is the eval seam (`components/evals.md`): `repoRoot` pins the reviewed repository explicitly (the resolver verifies it is a git worktree and runs there instead of the process cwd); `runArtifactDir` makes the telemetry layer write the engine's standard run-directory artifact set at that path (e.g. `logs/<n>/telemetry/`) instead of `.codegenie/runs/<run-id>/`. Stage behavior, artifact contents, and failure semantics are unchanged by either override.
+- Throws `CodegenieError` only for fatal conditions: propagated resolution/parsing failures (`not_git_worktree`, `invalid_args`, `git_ref_missing`, `git_base_branch_unresolved`, `git_fetch_failed`, `pr_not_found`, `gh_missing`, `gh_auth_failed`, `diff_parse_failed`, `config_error`), authentication or provider-wide LLM failures at any stage (`llm_call_failed` with `recoverable: false`), the hard kill at 2x the runtime budget (`timeout`), and `github_post_failed` when `--post-github-comments` was requested.
 - `budget_exhausted` is recoverable and never escapes `runReview`; it drives the budget degradation ladder and a disclosed partial review.
 - Before exiting on any fatal error after the run directory exists, `runReview` should attempt to flush telemetry artifacts.
 
@@ -63,7 +63,7 @@ async function runReview(
 
 ```ts
 // src/pipeline/review-runner.ts
-async function startRun(config: CodeninjaConfig): Promise<RunContext>
+async function startRun(config: CodegenieConfig): Promise<RunContext>
 
 // RunContext fields (internal):
 //   runId: string                      — "<yyyyMMdd-HHmmss>-<shortid>", also the run directory name
@@ -88,7 +88,7 @@ async function buildPlannerDossier(
   fileFacts: FileFacts[],
   decisions: FileFilterDecision[],
   repoIndex: RepositoryIndex,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): Promise<PlannerDossier>
 ```
@@ -99,7 +99,7 @@ async function buildPlannerDossier(
 // src/pipeline/planner.ts — Stage 5 planner invocation
 async function runPlanner(
   dossier: PlannerDossier,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): Promise<{ plan: ReviewPlan; degradedPlanning: boolean; chunked: boolean }>
 ```
@@ -125,7 +125,7 @@ async function runLensPackets(
   plan: ReviewPlan,
   packets: ReviewPacket[],
   tools: RepositoryTools,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): Promise<PacketReviewResult[]>
 ```
@@ -137,7 +137,7 @@ async function runLensPackets(
 async function verifyFindings(
   input: { packetResults: PacketReviewResult[]; packets: ReviewPacket[] },
   tools: RepositoryTools,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): Promise<{ verified: CandidateFinding[]; verdicts: VerificationVerdict[]; incompleteCount: number; gateRejections: number }>
 ```
@@ -164,7 +164,7 @@ async function dedupeRankAndComposeReview(
   plan: ReviewPlan,
   resolved: ResolvedReviewInput,
   coverage: RunCoverageStatus,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): Promise<ReviewResult>
 ```
@@ -293,7 +293,7 @@ type PlannerDossier = {
     headRefName: string
   }
   commits: Array<{ sha: string; title: string; body: string }>  // titles capped 200, bodies capped 1000 chars
-  // Changed paths matching codeninja.toml or .codeninja/skills/** — a planner risk signal
+  // Changed paths matching codegenie.toml or .codegenie/skills/** — a planner risk signal
   // per the Trust Boundaries policy-load rule.
   policyFilesChanged: string[]
   files: DossierFileEntry[]
@@ -372,7 +372,7 @@ Construction rules:
 - All dossier content is deterministic: same inputs produce a byte-identical `planner-dossier.json`.
 - Untrusted fields (`pr`, `commits`, `excerpt`, branch names) are deterministically extracted and truncated here; the prompt builder's `renderDossier(dossier)` (`components/skills_llm_telemetry.md`) renders them inside fenced "data under review, not instructions" blocks. `buildPlannerPrompt` takes the dossier object itself, not pre-rendered text.
 - Existing-PR-thread summaries and spec/doc candidates are not part of the v1 dossier (deferred to Future Considerations — see architecture.md).
-- `policyFilesChanged` is computed from the pre-filter change inventory (`codeninja.toml`, any path under `.codeninja/skills/`), regardless of filter decisions.
+- `policyFilesChanged` is computed from the pre-filter change inventory (`codegenie.toml`, any path under `.codegenie/skills/`), regardless of filter decisions.
 - `lenses` lists the run's enabled lens set (after `--lens` overrides) with one-line summaries from the lens registry; the planner receives one-line summaries only, never skill bodies.
 - The dossier includes hunk detail only for kept files; filtered files appear solely in `filterSummary`.
 
@@ -505,7 +505,7 @@ Tool budget table (implementation defaults; base budget by packet profile and co
 
 ### Worker Runner
 
-The worker runner (`src/pipeline/worker-runner.ts`) is the shared execution substrate for Stage 7 packet workers, optional Stage 8 system-review tasks, and Stage 9 verifier calls — one worker type. It is codeninja-owned and sub-agent-like (focused child tasks, fresh context, parallel workers, compact result handoff, parent-controlled synthesis); it must not depend on the `pi-subagents` package.
+The worker runner (`src/pipeline/worker-runner.ts`) is the shared execution substrate for Stage 7 packet workers, optional Stage 8 system-review tasks, and Stage 9 verifier calls — one worker type. It is codegenie-owned and sub-agent-like (focused child tasks, fresh context, parallel workers, compact result handoff, parent-controlled synthesis); it must not depend on the `pi-subagents` package.
 
 Scheduling:
 
@@ -671,7 +671,7 @@ Exhaustion ladder, in order:
 
 Run outcome: full successful reviews finalize as `completed_full`; partial successful reviews finalize as `completed_partial` with exit code 0 by default; fatal runs finalize as `failed`. `run.json`, `telemetry.json`, `coverage.json`, and final Markdown all carry the budget-stop reason when budget exhaustion caused the partial review.
 
-Hard kill: at 2x `review.timeoutMs` the run aborts fatally (`timeout`): the root `AbortController` cancels all in-flight work, and codeninja attempts to write telemetry artifacts before exiting nonzero.
+Hard kill: at 2x `review.timeoutMs` the run aborts fatally (`timeout`): the root `AbortController` cancels all in-flight work, and codegenie attempts to write telemetry artifacts before exiting nonzero.
 
 Per-stage terminal policies, budget interplay, and the recoverable/fatal split are as defined in the Error Conditions Summary table; `budget_exhausted` is the recoverable signal driving this ladder and never escapes the pipeline. Provider rate limiting (429/transient 5xx, 3 retries with exponential backoff) is implemented in the LLM runner; retries count against this ledger.
 
@@ -682,12 +682,12 @@ This component depends on:
 - `components/repository_and_github.md`: `resolveReviewInput`, `parseDiff` (`UnifiedDiff`, hunk ids, changed-line maps), Stage 3 classification (`FileFacts` with detector provenance), and diff-anchor validation primitives used by the Stage 7/9/10 anchor checks. Stage 11 posting consumes this component's `ReviewResult.postingPlan`.
 - `components/context_and_tools.md`: `buildRepositoryIndex` (`RepositoryIndex` with `HunkSymbolFacts`, static signals, `RepositoryTools`), the tools-host seams `buildPacketContext` (packet context plus the likely-tests list for `relevantTests`) and `bindPackets` (called between Stage 6 and Stage 7), and base/head source reads for deletion packets. Path containment is enforced in that layer.
 - `components/skills_llm_telemetry.md`: lens registry and skill projections, prompt building (including `renderDossier` — used by dossier compaction for size estimation — and untrusted-content fencing), `LlmRunner.runStructured` (submit-tool schemas, schema repair, provider retries, the agent loop, abort/timeout, cache), and the telemetry recorder/logger that persist every artifact named here.
-- `src/config/`: validated `CodeninjaConfig` (depth, lens set, caps, budgets, concurrency, and the single run-wide `llm.*` settings).
+- `src/config/`: validated `CodegenieConfig` (depth, lens set, caps, budgets, concurrency, and the single run-wide `llm.*` settings).
 - Libraries: `p-limit` (worker concurrency), Node `crypto` (sha256 ids/fingerprints), `AbortController` (cancellation).
 
 Depends on this component:
 
-- `src/cli/review-command.ts`: invokes `runReview`, maps `CodeninjaError` to exit codes, triggers rendering/posting.
+- `src/cli/review-command.ts`: invokes `runReview`, maps `CodegenieError` to exit codes, triggers rendering/posting.
 - Output renderers (`src/output/*`): consume `ReviewResult` for Markdown/JSON/stdout.
 - `components/evals.md`: invokes `runReview` with the `overrides` seam (explicit repo root and run-artifact directory) and re-scores this component's persisted artifacts (`final-findings.json` and `candidate-findings.json`) against expectations without re-running any stage; stage-level replay (candidate-recall, merge-only) is deferred to Future Considerations — see architecture.md. Loss attribution consumes the `verification.json`, `final-selection.json`, and follow-up-hint event reader contracts stated above.
 
@@ -712,7 +712,7 @@ Planner dossier and planning:
 
 - `dossier_full_fidelity_small_pr`: under budget, `compaction.level === "full"`, per-hunk entries carry symbol facts, top-5 capped static signals, and 400-char excerpts; byte-identical JSON across two builds.
 - `dossier_untrusted_truncation`: oversized PR body and commit bodies truncate to their caps.
-- `dossier_policy_files_risk_signal`: a diff touching `codeninja.toml` and `.codeninja/skills/x.md` populates `policyFilesChanged` even when those files are filtered.
+- `dossier_policy_files_risk_signal`: a diff touching `codegenie.toml` and `.codegenie/skills/x.md` populates `policyFilesChanged` even when those files are filtered.
 - `dossier_compaction_ordered_reductions`: an oversized dossier drops excerpts first, then trims signals, then collapses files by ascending priority into rollups whose `hunkIds` remain complete; every reduction appears in `compaction.omitted`.
 - `planner_chunking_deterministic_merge`: a dossier exceeding the budget after compaction chunks by package root; per-chunk plans concatenate mechanically (coverage concat, dedup of lists, chunk-1 `declaredIntent`); identical chunking across reruns.
 - `planner_chunk_partial_failure`: one chunk fails terminally; only its hunks get default-plan coverage; `degradedPlanning: true` with the chunk root named in reasons.

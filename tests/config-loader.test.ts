@@ -3,10 +3,10 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { ensureCodeninjaHome, getCodeninjaPaths } from "../src/config/paths.js";
+import { ensureCodegenieHome, getCodegeniePaths } from "../src/config/paths.js";
 import { loadConfig } from "../src/config/config-loader.js";
 import { loadProviderSettings, saveProviderSettings } from "../src/provider/provider-settings.js";
-import { CodeninjaError } from "../src/util/errors.js";
+import { CodegenieError } from "../src/util/errors.js";
 
 describe("config loader", () => {
   it("merges safe and user-scoped layers with the required precedence", () => {
@@ -45,7 +45,7 @@ extraSkillPaths = ["/trusted/skills"]
       })
     );
     writeFileSync(
-      path.join(repoRoot, "codeninja.toml"),
+      path.join(repoRoot, "codegenie.toml"),
       `
 [review]
 depth = "deep"
@@ -77,9 +77,9 @@ reason = "critical lib"
     const loaded = loadConfig({
       repoRoot,
       env: {
-        CODENINJA_HOME: home,
-        CODENINJA_PROVIDER: "env-provider",
-        CODENINJA_REASONING: "xhigh"
+        CODEGENIE_HOME: home,
+        CODEGENIE_PROVIDER: "env-provider",
+        CODEGENIE_REASONING: "xhigh"
       },
       cli: {
         depth: "light",
@@ -128,14 +128,14 @@ reason = "critical lib"
     const repoRoot = tempDir();
     const home = tempDir();
     writeFileSync(
-      path.join(repoRoot, "codeninja.toml"),
+      path.join(repoRoot, "codegenie.toml"),
       `
 [llm]
 apiKey = "sk-this-should-not-be-in-repo-config"
 `
     );
 
-    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(CodeninjaError);
+    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(CodegenieError);
     expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(/credential-bearing/);
   });
 
@@ -150,7 +150,7 @@ budgetMultiplier = 0
 `
     );
 
-    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(CodeninjaError);
+    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(CodegenieError);
   });
 
   it("keeps adjacent precedence rules isolated for settings, repo review config, and reasoning auto", () => {
@@ -175,7 +175,7 @@ reasoning = "low"
       })
     );
     writeFileSync(
-      path.join(repoRoot, "codeninja.toml"),
+      path.join(repoRoot, "codegenie.toml"),
       `
 [review]
 depth = "deep"
@@ -202,7 +202,7 @@ depth = "deep"
     const repoRoot = tempDir();
     const home = tempDir();
     writeFileSync(
-      path.join(repoRoot, "codeninja.toml"),
+      path.join(repoRoot, "codegenie.toml"),
       `
 [telemetry]
 enabled = true
@@ -221,8 +221,8 @@ maxFindings = 3
 
     expect(loaded.config.telemetry.enabled).toBe(true);
     expect(loaded.sources["telemetry.enabled"]).toBe("repo-config");
-    expect(loaded.config.telemetry.runDir).toBe(".codeninja/runs");
-    expect(loaded.config.cache.dir).toBe(".codeninja/cache");
+    expect(loaded.config.telemetry.runDir).toBe(".codegenie/runs");
+    expect(loaded.config.cache.dir).toBe(".codegenie/cache");
     expect(loaded.config.cache.enabled).toBe(false);
     expect(loaded.config.review.maxFindings).toBe(3);
     expect(loaded.warnings.map((warning) => warning.key).sort()).toEqual([
@@ -233,14 +233,14 @@ maxFindings = 3
   });
 });
 
-describe("codeninja paths and provider settings", () => {
-  it("resolves CODENINJA_HOME and writes settings with private permissions", () => {
+describe("codegenie paths and provider settings", () => {
+  it("resolves CODEGENIE_HOME and writes settings with private permissions", () => {
     const home = tempDir();
-    const paths = getCodeninjaPaths(undefined, { CODENINJA_HOME: home });
+    const paths = getCodegeniePaths(undefined, { CODEGENIE_HOME: home });
     expect(paths.home).toBe(path.resolve(home));
     expect(paths.settingsPath).toBe(path.join(path.resolve(home), "settings.json"));
 
-    ensureCodeninjaHome(paths);
+    ensureCodegenieHome(paths);
     saveProviderSettings(
       {
         defaultProvider: "openai",
@@ -263,5 +263,5 @@ describe("codeninja paths and provider settings", () => {
 });
 
 function tempDir(): string {
-  return mkdtempSync(path.join(tmpdir(), "codeninja-"));
+  return mkdtempSync(path.join(tmpdir(), "codegenie-"));
 }

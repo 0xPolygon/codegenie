@@ -8,7 +8,7 @@ Planned at: commit `506fa43`
 
 Run 6 passed and produced a strong final review, but Stage 6 is still sending too many packets with degraded enclosing-symbol context. That likely pushes Stage 7 workers into extra repository tool loops to recover source that Stage 6 already knew how to find.
 
-Observed in `/home/peter/Dev/0xPolygon/codeninja-private-evals/trails-api/logs/6`:
+Observed in `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/logs/6`:
 
 - Stage 6 built 73 packets for 131 hunks.
 - Packet context quality was 38 `full`, 28 `sliced`, and 7 `outline_only`.
@@ -26,7 +26,7 @@ const MAX_SYMBOL_CONTEXT_CHARS = 3_000;
 
 The total packet context budget is 8,000 characters, but every enclosing symbol source is capped at 3,000 characters before the final packet context is assembled. For large but central changed symbols, that flat cap can truncate the exact function or method the packet reviewer needs, even when the packet still has room to carry more useful symbol context.
 
-Codeninja should adapt symbol context to packet risk and available space. It should not blindly dump larger snippets into every packet.
+Codegenie should adapt symbol context to packet risk and available space. It should not blindly dump larger snippets into every packet.
 
 ## Current State
 
@@ -180,4 +180,4 @@ The better fix is to spend context where it has review value:
 - enough remaining packet budget
 - changed-line-centered slices when the full symbol still cannot fit
 
-That matches Codeninja's core design: focused packets plus targeted tools, not full-repo or full-file context dumps.
+That matches Codegenie's core design: focused packets plus targeted tools, not full-repo or full-file context dumps.

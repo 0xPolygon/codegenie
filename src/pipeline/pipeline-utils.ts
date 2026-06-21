@@ -1,9 +1,9 @@
 import { buildDiffAnchorIndex, validateDiffAnchor } from "../git/diff-parser.js";
 import type { DiffAnchor, ReviewPacket, UnifiedDiff } from "../types.js";
-import { isCodeninjaError } from "../util/errors.js";
+import { isCodegenieError } from "../util/errors.js";
 
 export function isFatalLlmError(error: unknown): boolean {
-  return isCodeninjaError(error) &&
+  return isCodegenieError(error) &&
     (error.code === "llm_call_failed" || error.code === "llm_schema_invalid") &&
     !isBudgetExhaustedError(error);
 }
@@ -13,7 +13,7 @@ export function isBudgetExhaustedError(error: unknown): boolean {
 }
 
 export function isSchemaInvalidError(error: unknown): boolean {
-  return isCodeninjaError(error) && error.code === "llm_schema_invalid";
+  return isCodegenieError(error) && error.code === "llm_schema_invalid";
 }
 
 export function isRecoverableTransientLlmError(error: unknown): boolean {

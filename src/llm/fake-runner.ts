@@ -108,7 +108,7 @@ function fakePacketReview(prompt: string): unknown {
       ]
     : [];
 
-  const hasHint = packet.hunks.some((hunk) => hunk.contentWithLineNumbers.includes("CODENINJA_FAKE_HINT"));
+  const hasHint = packet.hunks.some((hunk) => hunk.contentWithLineNumbers.includes("CODEGENIE_FAKE_HINT"));
   return {
     findings,
     followUpHints: hasHint
@@ -118,7 +118,7 @@ function fakePacketReview(prompt: string): unknown {
             files: [packet.path],
             symbols: [],
             suggestedLenses: packet.lenses,
-            reason: "The packet contains CODENINJA_FAKE_HINT.",
+            reason: "The packet contains CODEGENIE_FAKE_HINT.",
             confidence: "medium"
           }
         ]
@@ -183,7 +183,7 @@ function firstTriggeredLine(packet: ReviewPacket):
   | undefined {
   for (const hunk of packet.hunks) {
     for (const line of hunk.lines) {
-      if (line.kind === "add" && /CODENINJA_FAKE_FINDING|codeninja-fake-finding/u.test(line.content)) {
+      if (line.kind === "add" && /CODEGENIE_FAKE_FINDING|codegenie-fake-finding/u.test(line.content)) {
         return {
           hunk,
           content: line.content,

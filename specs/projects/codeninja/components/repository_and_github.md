@@ -6,7 +6,7 @@ status: complete
 
 This component owns `src/git/*` and `src/github/*`: the `GitClient` and `GitHubClient` subprocess layers, the review input resolver, the diff parser, deterministic file classification and filtering, GitHub anchor validation, duplicate detection, and GitHub publishing. It implements Stages 1-3 of the pipeline plus Stage 11 posting, and supplies the git plumbing primitives that the repository tool layer builds on. For Stages 2-3 it owns the detector, classifier, and filter pure functions; `components/review_pipeline.md` owns when they run, the coverage-ledger writes, and the zero-work short-circuit.
 
-All data contracts referenced here — `ReviewInput`, `ResolvedReviewInput`, `PullRequestMetadata`, `ExistingReviewThread`, `CommitInfo`, `UnifiedDiff`, `DiffFile`, `DiffHunk`, `DiffLine`, `FileFacts`, `FileFilterDecision`, `FactProvenance`, `DiffAnchor`, `FinalFinding`, `ReviewResult`, `CodeninjaConfig`, `CodeninjaError` — are defined in `architecture.md` and are used here unchanged.
+All data contracts referenced here — `ReviewInput`, `ResolvedReviewInput`, `PullRequestMetadata`, `ExistingReviewThread`, `CommitInfo`, `UnifiedDiff`, `DiffFile`, `DiffHunk`, `DiffLine`, `FileFacts`, `FileFilterDecision`, `FactProvenance`, `DiffAnchor`, `FinalFinding`, `ReviewResult`, `CodegenieConfig`, `CodegenieError` — are defined in `architecture.md` and are used here unchanged.
 
 ## Purpose And Scope
 
@@ -14,13 +14,13 @@ This component is responsible for:
 
 - The `GitClient` and `GitHubClient` implementations behind the interface seams defined in `architecture.md`, including subprocess invocation via `execa` with the Trust Boundaries subprocess-hygiene rules (no shell, `--` separators, option-injection rejection, SHA preference, credential scrubbing).
 - The review input resolver: turning a `ReviewInput` for the resolved modes (`github_pr`, `branch`, `head`, `commit_range`), plus CLI-only default and single-ref targets, into a `ResolvedReviewInput` with pinned SHAs, merge base, commit metadata, and raw unified diff.
-- PR ref fetching: the `refs/codeninja/pr/<n>/*` lifecycle, fork-PR head fetching via `refs/pull/<n>/head`, `baseRefOid`/`headRefOid`-anchored diffs, and the fixed diff flags shared by all modes.
+- PR ref fetching: the `refs/codegenie/pr/<n>/*` lifecycle, fork-PR head fetching via `refs/pull/<n>/head`, `baseRefOid`/`headRefOid`-anchored diffs, and the fixed diff flags shared by all modes.
 - Shallow/partial clone detection and bounded deepening.
-- Prior codeninja comment listing (`listOwnComments`): REST pagination, deterministic `ExistingReviewThread` mapping, and codeninja-author fingerprint detection for rerun duplicate avoidance. (Human review-thread fetching is deferred to Future Considerations — see architecture.md.)
+- Prior codegenie comment listing (`listOwnComments`): REST pagination, deterministic `ExistingReviewThread` mapping, and codegenie-author fingerprint detection for rerun duplicate avoidance. (Human review-thread fetching is deferred to Future Considerations — see architecture.md.)
 - The diff parser: `UnifiedDiff`/`DiffFile`/`DiffHunk`/`DiffLine` construction, absolute old/new line mapping, stable hunk-id hashing, file status detection including `copied`, binary, and mode-only, and rename/deleted path semantics.
-- Detection, filtering, and classification: the shared deterministic detector library (generated/vendor/lockfile/binary detectors, package-root detection, test-status conventions, `codeninja.toml` path rules, `FactProvenance`), consumed first by the Stage 2 detect/filter pass and then by Stage 3 `FileFacts` enrichment of kept files.
+- Detection, filtering, and classification: the shared deterministic detector library (generated/vendor/lockfile/binary detectors, package-root detection, test-status conventions, `codegenie.toml` path rules, `FactProvenance`), consumed first by the Stage 2 detect/filter pass and then by Stage 3 `FileFacts` enrichment of kept files.
 - GitHub anchor validation: the changed-line LEFT/RIGHT validation used by packet output validation, pre-verification gates, and pre-posting checks.
-- Duplicate detection against prior codeninja comments: the stable finding fingerprint, author-verified marker parsing, and the ±5-line fuzzy match.
+- Duplicate detection against prior codegenie comments: the stable finding fingerprint, author-verified marker parsing, and the ±5-line fuzzy match.
 - GitHub publishing: the single `COMMENT` review, 422 recovery with suspect-class dropping and the summary-only fallback, and deterministic comment sanitization (mention neutralization, HTML-comment stripping, body caps, secret scrubbing).
 - Commit-mode boundary cases: root-commit empty-tree diffs, submodule pointer bumps, and symlink entries.
 
@@ -45,13 +45,13 @@ function createGitClient(repoRoot: string, opts?: { defaultRemote?: string }): G
 // src/git/review-input-resolver.ts
 function resolveReviewCommandTarget(
   target: ReviewCommandTarget,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): Promise<ResolvedReviewInput>
 
 function resolveReviewInput(
   input: ReviewInput,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): Promise<ResolvedReviewInput>
 // Errors: not_git_worktree, invalid_args, gh_missing, gh_auth_failed, pr_not_found,
@@ -69,7 +69,7 @@ function validateDiffAnchor(anchor: DiffAnchor, index: DiffAnchorIndex): DiffAnc
 function filterDiffFiles(
   resolved: ResolvedReviewInput,
   diff: UnifiedDiff,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): Promise<{ kept: DiffFile[]; decisions: FileFilterDecision[] }>
 // Stage 2: runs the skip-relevant detectors and applies keep/skip policy;
@@ -79,7 +79,7 @@ function classifyChangedFiles(
   resolved: ResolvedReviewInput,
   kept: DiffFile[],
   decisions: FileFilterDecision[],
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): Promise<FileFacts[]>
 // Stage 3: enrichment facts for kept files only; reuses the filter's memoized
@@ -92,7 +92,7 @@ function createGitHubClient(repoRoot: string): GitHubClient
 function maybePublishToGitHub(
   finalReview: ReviewResult,
   resolved: ResolvedReviewInput,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): Promise<RunPostingRecord | undefined>
 // No-op (returns undefined) when finalReview.postingPlan is absent; a posting plan
@@ -204,7 +204,7 @@ interface GitHubClient {
 
   // GET /repos/<owner>/<repo>/pulls/<n>/comments with manual per_page=100 pagination.
   // Filters to comments authored by the authenticated `gh` login (viewerLogin, cached per run,
-  // compared case-insensitively) and maps them to ExistingReviewThread records: isCodeninja is
+  // compared case-insensitively) and maps them to ExistingReviewThread records: isCodegenie is
   // true only when a fingerprint marker parses AND the author matches viewerLogin; line falls
   // back to original_line for outdated comments.
   listOwnComments(number: number): Promise<ExistingReviewThread[]>
@@ -262,7 +262,7 @@ type RunPostingRecord = {
 
 ### Error Conditions Summary
 
-All errors are `CodeninjaError` values with codes from `architecture.md`. Mappings used by this component:
+All errors are `CodegenieError` values with codes from `architecture.md`. Mappings used by this component:
 
 - `not_git_worktree`: any mode invoked outside a git worktree.
 - `invalid_args`: option-like (`^-`) or check-ref-format-invalid argument values reaching `GitClient`/`GitHubClient`; detached HEAD or current-branch-equals-base in the bare default (the message asks for an explicit review target); posting plan outside `github_pr` mode.
@@ -297,7 +297,7 @@ Argument validation, applied before spawning:
 - Search patterns are passed via `-e <pattern>` (never positionally), so patterns beginning with `-` are legal without violating the option-injection rule.
 - SHAs are preferred over ref names everywhere both exist; GitHub-supplied ref names (`baseRefName`, `headRefName`) are display-only and never become git arguments.
 
-Error scrubbing: before any subprocess error is logged, attached to a `CodeninjaError` context, or written to telemetry, the layer scrubs credential material: URL userinfo (`://[^@/\s]+@` → `://[redacted]@`), `Authorization:`/`token`-style header values, and anything matching the secret-scrubber patterns (see Comment Sanitization). Raw `gh` responses stored in error context pass through the same scrubber.
+Error scrubbing: before any subprocess error is logged, attached to a `CodegenieError` context, or written to telemetry, the layer scrubs credential material: URL userinfo (`://[^@/\s]+@` → `://[redacted]@`), `Authorization:`/`token`-style header values, and anything matching the secret-scrubber patterns (see Comment Sanitization). Raw `gh` responses stored in error context pass through the same scrubber.
 
 ### GitClient Internals
 
@@ -352,12 +352,12 @@ An empty resulting diff (branch fully merged) is not an error: the resolver retu
 
 #### Branch Mode And Base Resolution
 
-For a single positional CLI target (`codeninja review <target>`), the command resolver first tries branch resolution. If `<target>` resolves as a local or remote branch, it uses this branch-mode flow. If it does not resolve as a branch, the resolver falls back to single-commit mode. `--base` is accepted with the shorthand only when the target resolves as a branch; otherwise the resolver fails clearly and asks for `<base>...<head>` when the user intended explicit head/base review. The single-ref shape is CLI/resolver-only; later stages see either `branch` or `commit_range`.
+For a single positional CLI target (`codegenie review <target>`), the command resolver first tries branch resolution. If `<target>` resolves as a local or remote branch, it uses this branch-mode flow. If it does not resolve as a branch, the resolver falls back to single-commit mode. `--base` is accepted with the shorthand only when the target resolves as a branch; otherwise the resolver fails clearly and asks for `<base>...<head>` when the user intended explicit head/base review. The single-ref shape is CLI/resolver-only; later stages see either `branch` or `commit_range`.
 
 1. Resolve the review branch: `refs/heads/<name>` first, then `refs/remotes/<remote>/<name>` (remote order: `origin` first, remaining remotes sorted by name). Unresolvable → `git_ref_missing`.
 2. Resolve the base branch in precedence order, stopping at the first level that yields a resolvable branch:
    1. CLI `--base <name>`.
-   2. `codeninja.toml` `git.baseBranch`.
+   2. `codegenie.toml` `git.baseBranch`.
    3. An existing `master` branch (local or remote, same lookup order as step 1).
    4. An existing `main` branch (local or remote).
    Each candidate name uses the same local-then-remote lookup. An explicitly passed or configured base that does not resolve fails immediately with `git_base_branch_unresolved` naming the candidate; exhausting the chain fails with `git_base_branch_unresolved` asking the user to pass `--base` or configure `git.baseBranch`.
@@ -386,7 +386,7 @@ The `--diff <path>` loose-diff input mode and its resolver flow are deferred to 
 
 1. Preflight `gh`: locate the binary (`gh_missing`) and check `gh auth status` (`gh_auth_failed`). Resolve `viewerLogin` once (`gh api user`, `.login`) and cache for the run.
 2. `viewPr(n)`: collect title, body, url, `baseRefName`/`headRefName` (display-only), and `baseRefOid`/`headRefOid`. The reviewed revisions are exactly these OIDs so the reviewed diff matches GitHub's PR diff; the merge base is computed between them and the diff uses the fixed flag set. REST fallback when the JSON fields are unavailable. `owner`/`repo` come from `gh repo view --json owner,name`.
-3. List codeninja's own prior review comments (`listOwnComments(n)`) for rerun duplicate avoidance, consumed by the publisher's duplicate detection. Human review threads are never fetched in v1; existing-PR-thread planner hints are deferred to Future Considerations — see architecture.md.
+3. List codegenie's own prior review comments (`listOwnComments(n)`) for rerun duplicate avoidance, consumed by the publisher's duplicate detection. Human review threads are never fetched in v1; existing-PR-thread planner hints are deferred to Future Considerations — see architecture.md.
 4. Locality check: `commitExists(baseRefOid)` and `commitExists(headRefOid)`.
 5. Fetch what is missing (see PR Ref Fetching), failing `git_fetch_failed` with the attempted refspec when fetch fails.
 6. `mergeBase = mergeBase(baseRefOid, headRefOid)`; `rawDiff = diff(mergeBase, headRefOid)`; `commits = log(mergeBase..headRefOid)`.
@@ -398,15 +398,15 @@ Base remote selection: parse `remotes()`, normalize each URL (https/ssh/`git@` f
 
 Fetch plan when commits are missing locally:
 
-- Head: `fetchFrom(baseRemote, "+refs/pull/<n>/head:refs/codeninja/pr/<n>/head")`. `refs/pull/<n>/head` lives on the base repository's remote, so this covers fork PRs without adding the fork as a remote. After fetching, verify `commitExists(headRefOid)`; if the PR branch advanced between `viewPr` and the fetch, re-run `viewPr` once and re-anchor to the fresh OIDs (single retry, then `git_fetch_failed`).
-- Base: first attempt `fetchFrom(baseRemote, "+<baseRefOid>:refs/codeninja/pr/<n>/base")` (GitHub permits reachable-SHA fetches); on rejection, fetch the base branch (`+refs/heads/<baseRefName>:refs/codeninja/pr/<n>/base`) and verify `commitExists(baseRefOid)`.
+- Head: `fetchFrom(baseRemote, "+refs/pull/<n>/head:refs/codegenie/pr/<n>/head")`. `refs/pull/<n>/head` lives on the base repository's remote, so this covers fork PRs without adding the fork as a remote. After fetching, verify `commitExists(headRefOid)`; if the PR branch advanced between `viewPr` and the fetch, re-run `viewPr` once and re-anchor to the fresh OIDs (single retry, then `git_fetch_failed`).
+- Base: first attempt `fetchFrom(baseRemote, "+<baseRefOid>:refs/codegenie/pr/<n>/base")` (GitHub permits reachable-SHA fetches); on rejection, fetch the base branch (`+refs/heads/<baseRefName>:refs/codegenie/pr/<n>/base`) and verify `commitExists(baseRefOid)`.
 
 Ref lifecycle:
 
-- All codeninja-created refs live under `refs/codeninja/pr/<n>/*` and are force-updated (`+` refspec prefix) on each run.
-- At run start for PR `<n>`, stale `refs/codeninja/pr/<n>/*` from crashed runs are deleted before fetching.
+- All codegenie-created refs live under `refs/codegenie/pr/<n>/*` and are force-updated (`+` refspec prefix) on each run.
+- At run start for PR `<n>`, stale `refs/codegenie/pr/<n>/*` from crashed runs are deleted before fetching.
 - At run end, the run's refs are deleted best-effort; failures log a warning only.
-- Ref deletion is guarded by the advisory lock file under `.codeninja/` (run lifecycle, `architecture.md`) so concurrent runs against the same PR do not delete each other's refs mid-run.
+- Ref deletion is guarded by the advisory lock file under `.codegenie/` (run lifecycle, `architecture.md`) so concurrent runs against the same PR do not delete each other's refs mid-run.
 - Non-PR modes never create refs.
 
 #### Shallow And Partial Clones
@@ -415,7 +415,7 @@ Ref lifecycle:
 - When shallow and any required resolution fails (ref resolution, `mergeBase`, `log`), attempt a bounded deepen against the relevant remote: `fetchFrom(remote, <ref>, { deepen: 100 })`, re-check, then one more attempt with `deepen: 1000`. If the range still cannot be resolved, fail `git_ref_missing` with a message naming the fix: "repository is shallow; run `git fetch --unshallow` (or fetch more history) and retry".
 - Partial (promisor/filtered) clones need no special handling: git lazily fetches missing blobs during `cat-file`/`diff`; the only observable effect is latency, noted in telemetry when operations are slow.
 
-### Prior codeninja Comment Listing
+### Prior codegenie Comment Listing
 
 `listOwnComments` is the only PR-comment read in v1. Fetching human review threads (`fetchReviewThreads` via `gh api graphql` over `pullRequest.reviewThreads`, with cursor pagination, the 100-thread cap, and `omittedThreadCount` disclosure) is deferred to Future Considerations — see architecture.md.
 
@@ -424,15 +424,15 @@ Behavior (REST `GET /repos/<owner>/<repo>/pulls/<n>/comments`, manual `per_page=
 - Filter to comments authored by the authenticated `gh` login (`viewerLogin`, cached per run, compared case-insensitively); other users' comments are never collected.
 - Mapping to `ExistingReviewThread`:
   - `id` = comment id; `path`/`side` = the comment's anchor fields; `line` = `line`, falling back to `original_line` for outdated comments; `author` = the comment author login.
-  - `isCodeninja` = fingerprint marker parses from the comment body AND `author` equals `viewerLogin`. Markers in other users' comments never set `isCodeninja` and never suppress.
-  - `fingerprint` = the parsed marker fingerprint when `isCodeninja`.
+  - `isCodegenie` = fingerprint marker parses from the comment body AND `author` equals `viewerLogin`. Markers in other users' comments never set `isCodegenie` and never suppress.
+  - `fingerprint` = the parsed marker fingerprint when `isCodegenie`.
   - Thread resolution state and comment-body summarization are not handled in v1: duplicate detection consumes only the author-verified marker fingerprint and the anchor fields, and nothing model-facing consumes comment bodies. (Resolution state belongs to the deferred human-thread fetching — see architecture.md Future Considerations.)
 
 Marker grammar (shared with duplicate detection):
 
 ```text
-<!-- codeninja:fingerprint=<64-hex>;run=<run-id> -->
-regex: /<!--\s*codeninja:fingerprint=([0-9a-f]{64});run=([A-Za-z0-9._-]+)\s*-->/
+<!-- codegenie:fingerprint=<64-hex>;run=<run-id> -->
+regex: /<!--\s*codegenie:fingerprint=([0-9a-f]{64});run=([A-Za-z0-9._-]+)\s*-->/
 ```
 
 ### Diff Parser
@@ -555,7 +555,7 @@ It returns the kept `DiffFile[]` and exactly one `FileFilterDecision` per change
 
 Deleted-file rule: deleted reviewable source/test/config/migration/docs files keep their ordinary processing mode (review of removed behavior happens old-side); deleted generated/vendor/lock/binary files match ordinary skip rules. When deleted-file content cannot be read at base, facts degrade: `degraded = { reason: "base content unavailable for deleted file" }` rather than pretending normal classification.
 
-Policy-file change signal: when the diff touches `codeninja.toml` or `.codeninja/skills/**`, the classifier attaches the label `policy-change` with config-source provenance. Policy itself always loads from the trusted local checkout (Trust Boundaries; loading is the config component's job) — this label is how the modification is surfaced to the planner as a risk signal and noted in the report.
+Policy-file change signal: when the diff touches `codegenie.toml` or `.codegenie/skills/**`, the classifier attaches the label `policy-change` with config-source provenance. Policy itself always loads from the trusted local checkout (Trust Boundaries; loading is the config component's job) — this label is how the modification is surfaced to the planner as a risk signal and noted in the report.
 
 #### Configured Path Rules
 
@@ -566,7 +566,7 @@ Policy-file change signal: when the diff touches `codeninja.toml` or `.codeninja
 - `labels`: union across matching rules, de-duplicated, original order preserved.
 - Each applied rule appends provenance `{ fact, source: "config", confidence: "high", reason: rule.reason }`.
 
-Configured labels are user-provided facts, never codeninja-inferred risk truth.
+Configured labels are user-provided facts, never codegenie-inferred risk truth.
 
 #### Diff-File Worktree Validation (Deferred)
 
@@ -585,7 +585,7 @@ A finding that fails validation is never posted inline; the publisher demotes it
 
 ### Duplicate Detection
 
-`src/github/duplicate-detector.ts` prevents reposting findings from previous codeninja runs.
+`src/github/duplicate-detector.ts` prevents reposting findings from previous codegenie runs.
 
 Fingerprint: this component owns the canonical implementation of the architecture's formula, called by Stage 10 when setting `FinalFinding.fingerprint` and by this detector:
 
@@ -603,9 +603,9 @@ Model-authored wording (title, failure mode, evidence) is excluded so fingerprin
 
 Detection flow, run by the publisher before posting:
 
-1. `listOwnComments(n)` → prior comments authored by the authenticated identity. A fingerprint marker counts as codeninja-authored only when the comment author matches `viewerLogin`; markers in other users' comments are ignored for suppression.
-2. Exact pass: a finding whose fingerprint equals any prior codeninja fingerprint → `skip_exact_fingerprint`.
-3. Fuzzy pass: a finding whose side-appropriate path matches a prior codeninja-authored comment's path and whose anchor line is within ±5 lines of that comment's line (falling back to `original_line` for outdated comments) → `skip_fuzzy_proximity`. Per `architecture.md`, the fuzzy rule is path + proximity over codeninja-authored comments only; category is not part of it — it is hashed inside the fingerprint and not recoverable from posted markers.
+1. `listOwnComments(n)` → prior comments authored by the authenticated identity. A fingerprint marker counts as codegenie-authored only when the comment author matches `viewerLogin`; markers in other users' comments are ignored for suppression.
+2. Exact pass: a finding whose fingerprint equals any prior codegenie fingerprint → `skip_exact_fingerprint`.
+3. Fuzzy pass: a finding whose side-appropriate path matches a prior codegenie-authored comment's path and whose anchor line is within ±5 lines of that comment's line (falling back to `original_line` for outdated comments) → `skip_fuzzy_proximity`. Per `architecture.md`, the fuzzy rule is path + proximity over codegenie-authored comments only; category is not part of it — it is hashed inside the fingerprint and not recoverable from posted markers.
 4. Everything else → `post`.
 
 Skipped findings are not demoted to the body (skip means "already said"); each decision is recorded as a `FindingDuplicateDecision` in telemetry and `github-posting.json`. v1 never updates or deletes stale comments: when a safe update is not possible, prefer posting no duplicate over mutating existing comments. Duplicate suppression covers inline comments only; review bodies are per-run artifacts and are not fingerprint-tracked in v1.
@@ -624,11 +624,11 @@ Skipped findings are not demoted to the body (skip means "already said"); each d
 6. Sanitize every inline body and the review body (below), then append the marker to each inline comment body:
 
 ```text
-\n\n<!-- codeninja:fingerprint=<fingerprint>;run=<run-id> -->
+\n\n<!-- codegenie:fingerprint=<fingerprint>;run=<run-id> -->
 ```
 
    The marker is appended after sanitization so HTML-comment stripping cannot remove it, and the stdout renderer hides markers from normal Markdown output where possible (`src/output/`, one-line reference).
-7. `createReview(n, { body, event: "COMMENT", comments })` — exactly one review per run; codeninja never approves or requests changes in v1. `commit_id` is the PR head SHA.
+7. `createReview(n, { body, event: "COMMENT", comments })` — exactly one review per run; codegenie never approves or requests changes in v1. `commit_id` is the PR head SHA.
 8. Write the `RunPostingRecord` through telemetry (`github-posting.json`) and return it. The publisher writes nothing to stdout itself: `renderOutputs` runs after `maybePublishToGitHub` and renders the concise posting summary — Markdown counts/status, or the record itself as the pinned `--format json` run-summary schema — from the returned record.
 
 #### Comment Sanitization
@@ -666,8 +666,8 @@ This component depends on:
 - External CLIs: `git` (all modes); `gh` (only `--pr` mode and posting; absence elsewhere is not an error).
 - `node:crypto` (sha256 via `src/util/hashing.ts`) for hunk ids and fingerprints.
 - `picomatch` for `classification.pathRules` globs, per `architecture.md`'s dependency choices.
-- `src/util/paths.ts` (`assertContainedRepoPath`) shared with the tools-layer containment chokepoint, and `src/util/errors.ts` (`CodeninjaError`).
-- `CodeninjaConfig` from the config loader and `TelemetryRecorder`/`Logger` from `components/skills_llm_telemetry.md`.
+- `src/util/paths.ts` (`assertContainedRepoPath`) shared with the tools-layer containment chokepoint, and `src/util/errors.ts` (`CodegenieError`).
+- `CodegenieConfig` from the config loader and `TelemetryRecorder`/`Logger` from `components/skills_llm_telemetry.md`.
 - `components/context_and_tools.md`: type-only `SearchResult` (returned by `GitClient.grep`).
 
 Depended on by:
@@ -677,7 +677,7 @@ Depended on by:
 - `components/skills_llm_telemetry.md`: reuses the secret scrubber before persisting final findings, and consumes `GitClient.lsFiles` for the cache's repo-tracked-cache-dir refusal.
 - `components/evals.md`: consumes this component's artifacts (`coverage.json` inputs, `github-posting.json`) through normal run artifacts; no direct API dependency.
 
-This component never calls the LLM, never mutates the repository or working tree (its only writes are git refs under `refs/codeninja/pr/<n>/*` and GitHub reviews when explicitly requested), and treats all reviewed content as data per Trust Boundaries.
+This component never calls the LLM, never mutates the repository or working tree (its only writes are git refs under `refs/codegenie/pr/<n>/*` and GitHub reviews when explicitly requested), and treats all reviewed content as data per Trust Boundaries.
 
 ## Test Plan
 
@@ -729,17 +729,17 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `pr.view-field-mapping` — `gh pr view` JSON maps to `PullRequestMetadata`; `baseRefName`/`headRefName` never appear in any git argv (display-only).
 - `pr.view-rest-fallback` — missing `baseRefOid`/`headRefOid` triggers the `gh api repos/.../pulls/<n>` fallback using `base.sha`/`head.sha`.
 - `pr.not-found`, `pr.gh-missing`, `pr.gh-unauthenticated` — typed errors `pr_not_found`, `gh_missing`, `gh_auth_failed`.
-- `pr.fetch-head-into-codeninja-ref` — missing head fetches `+refs/pull/<n>/head:refs/codeninja/pr/<n>/head` from the base remote (fork-PR case: head repo never added as a remote).
+- `pr.fetch-head-into-codegenie-ref` — missing head fetches `+refs/pull/<n>/head:refs/codegenie/pr/<n>/head` from the base remote (fork-PR case: head repo never added as a remote).
 - `pr.base-sha-fetch-with-branch-fallback` — direct OID fetch attempted first; on rejection the base branch is fetched and `baseRefOid` verified present.
 - `pr.base-remote-selection` — with `origin` pointing elsewhere and `upstream` matching owner/repo, fetches target `upstream`.
 - `pr.head-moved-retry-once` — head OID missing after fetch → one `viewPr` re-anchor retry, then `git_fetch_failed`.
-- `pr.refs-lifecycle` — stale `refs/codeninja/pr/<n>/*` deleted at start; refs force-updated; deleted at run end; simulated crash leaves refs that the next run cleans.
+- `pr.refs-lifecycle` — stale `refs/codegenie/pr/<n>/*` deleted at start; refs force-updated; deleted at run end; simulated crash leaves refs that the next run cleans.
 - `pr.merge-base-anchored-diff` — diff computed `merge-base(baseRefOid, headRefOid)..headRefOid`, matching GitHub's PR diff revisions.
 
 ### Prior-Comment Listing
 
 - `comments.pagination` — multiple REST pages walked via `per_page=100` until exhausted; only viewer-authored comments are collected.
-- `comments.codeninja-author-detection` — marker + author == viewer → `isCodeninja: true` with parsed fingerprint; marker with different author → `isCodeninja: false`, no fingerprint suppression.
+- `comments.codegenie-author-detection` — marker + author == viewer → `isCodegenie: true` with parsed fingerprint; marker with different author → `isCodegenie: false`, no fingerprint suppression.
 - `comments.outdated-line-fallback` — outdated comment with null `line` uses `original_line`.
 
 ### Diff Parser
@@ -777,7 +777,7 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `classify.test-conventions` — `_test.go`, `*.spec.ts`, `__tests__/`, `test_*.py` → `"test"`; non-test source with known language → `"source"`; unknown language → `"unknown"`.
 - `classify.small-added-whole-file` — added file with ≤ 100 lines → `whole-file`; 101 lines → `per-hunk`.
 - `classify.path-rules-precedence` — overlapping rules: last-match scalar wins, labels union, per-rule provenance recorded.
-- `classify.policy-change-label` — diff touching `codeninja.toml` / `.codeninja/skills/x.md` → label `policy-change`.
+- `classify.policy-change-label` — diff touching `codegenie.toml` / `.codegenie/skills/x.md` → label `policy-change`.
 - `filter.submodule-and-symlink-skip` — gitlink bump (parser-set `isSubmodule`) → skip "submodule pointer change"; symlink (parser-set `isSymlink`, with `lsTreeEntry` mode-120000 backfill when headers are absent) → skip "symlink change".
 - `filter.mode-only-skip` — `modeOnly` file → skip with reason.
 - `filter.kept-files-skip-nothing` — kept-file `FileFacts` never carry `processingMode: "skip"`; configured skip rules are consumed by the filter.
@@ -793,7 +793,7 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `dup.fingerprint-wording-independent` — different titles/failure modes/evidence, same identity → same fingerprint.
 - `dup.symbol-preferred-over-hunk` — with symbol facts, fingerprint survives a hunk shift; without, it changes (motivating the fuzzy pass).
 - `dup.exact-skip` — matching prior fingerprint → `skip_exact_fingerprint`.
-- `dup.fuzzy-five-line-boundary` — prior codeninja comment at line 100: finding at 105 skips, at 106 posts.
+- `dup.fuzzy-five-line-boundary` — prior codegenie comment at line 100: finding at 105 skips, at 106 posts.
 - `dup.foreign-marker-not-suppressing` — marker authored by another login does not suppress.
 - `dup.decisions-recorded` — every inline finding yields one recorded `FindingDuplicateDecision`.
 

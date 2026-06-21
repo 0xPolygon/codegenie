@@ -4,16 +4,16 @@ import type {
   FindingDuplicateDecision
 } from "../types.js";
 
-export const CODENINJA_MARKER_PATTERN =
-  /<!--\s*codeninja:fingerprint=([0-9a-f]{64});run=([A-Za-z0-9._-]+)\s*-->/u;
+export const CODEGENIE_MARKER_PATTERN =
+  /<!--\s*codegenie:fingerprint=([0-9a-f]{64});run=([A-Za-z0-9._-]+)\s*-->/u;
 
-export type CodeninjaMarker = {
+export type CodegenieMarker = {
   fingerprint: string;
   runId: string;
 };
 
-export function parseCodeninjaMarker(body: string): CodeninjaMarker | undefined {
-  const match = CODENINJA_MARKER_PATTERN.exec(body);
+export function parseCodegenieMarker(body: string): CodegenieMarker | undefined {
+  const match = CODEGENIE_MARKER_PATTERN.exec(body);
   if (!match) {
     return undefined;
   }
@@ -23,17 +23,17 @@ export function parseCodeninjaMarker(body: string): CodeninjaMarker | undefined 
   };
 }
 
-export function formatCodeninjaMarker(fingerprint: string, runId: string): string {
-  return `<!-- codeninja:fingerprint=${fingerprint};run=${runId} -->`;
+export function formatCodegenieMarker(fingerprint: string, runId: string): string {
+  return `<!-- codegenie:fingerprint=${fingerprint};run=${runId} -->`;
 }
 
 export function detectDuplicateFindings(
   findings: FinalFinding[],
   comments: ExistingReviewThread[]
 ): FindingDuplicateDecision[] {
-  const codeninjaComments = comments.filter((comment) => comment.isCodeninja);
+  const codegenieComments = comments.filter((comment) => comment.isCodegenie);
   const fingerprints = new Map(
-    codeninjaComments
+    codegenieComments
       .filter((comment) => comment.fingerprint !== undefined)
       .map((comment) => [comment.fingerprint as string, comment])
   );
@@ -44,11 +44,11 @@ export function detectDuplicateFindings(
         findingId: finding.id,
         action: "skip_exact_fingerprint",
         matchedCommentId: exact.id,
-        reason: "matching codeninja fingerprint already exists on the PR"
+        reason: "matching codegenie fingerprint already exists on the PR"
       };
     }
 
-    const fuzzy = codeninjaComments.find((comment) =>
+    const fuzzy = codegenieComments.find((comment) =>
       finding.anchor !== undefined &&
       comment.path === finding.anchor.path &&
       comment.side === finding.anchor.side &&
@@ -60,14 +60,14 @@ export function detectDuplicateFindings(
         findingId: finding.id,
         action: "skip_fuzzy_proximity",
         matchedCommentId: fuzzy.id,
-        reason: "nearby codeninja comment already exists on the PR"
+        reason: "nearby codegenie comment already exists on the PR"
       };
     }
 
     return {
       findingId: finding.id,
       action: "post",
-      reason: "no prior codeninja duplicate detected"
+      reason: "no prior codegenie duplicate detected"
     };
   });
 }

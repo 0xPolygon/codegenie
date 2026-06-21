@@ -26,7 +26,7 @@ That made the submitted arguments invalid:
 - `summary` exceeded the 4000-character schema limit,
 - the schema repair call resent a large composer context and failed again.
 
-As a result, codeninja discarded an otherwise useful verified review and wrote no final findings artifacts:
+As a result, codegenie discarded an otherwise useful verified review and wrote no final findings artifacts:
 
 - no `final-findings.json`,
 - no `final-review.md`,
@@ -229,4 +229,4 @@ The clean boundary is:
 - Stage 9 verifies them.
 - Stage 10 ranks, dedupes, rewrites, and formats verified findings.
 
-If Stage 10 formatting fails after verification succeeded, codeninja should degrade formatting before it discards verified findings. Strict schema validation should remain in place, but recoverable provider formatting mistakes should not erase a completed review.
+If Stage 10 formatting fails after verification succeeded, codegenie should degrade formatting before it discards verified findings. Strict schema validation should remain in place, but recoverable provider formatting mistakes should not erase a completed review.

@@ -6,7 +6,7 @@ status: complete
 
 ## Purpose And Scope
 
-This component is codeninja's repository intelligence layer: the implementation behind `RepositoryIndex.tools`, Stage 4 changed-symbol extraction, static signal extraction, and deterministic packet context assembly. It is implemented under `src/repo/` and is the single place where reviewed source content is read, parsed, searched, and shaped into compact evidence for the planner, packet builders, packet reviewers, and verifiers.
+This component is codegenie's repository intelligence layer: the implementation behind `RepositoryIndex.tools`, Stage 4 changed-symbol extraction, static signal extraction, and deterministic packet context assembly. It is implemented under `src/repo/` and is the single place where reviewed source content is read, parsed, searched, and shaped into compact evidence for the planner, packet builders, packet reviewers, and verifiers.
 
 This component owns:
 
@@ -42,7 +42,7 @@ async function buildRepositoryIndex(
   resolved: ResolvedReviewInput,
   kept: DiffFile[],
   facts: FileFacts[],
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): Promise<RepositoryIndex>
 ```
@@ -181,7 +181,7 @@ type ParsedFile = {
 
 ### Error Conditions
 
-Tool methods reject with `CodeninjaError` using existing stable codes only:
+Tool methods reject with `CodegenieError` using existing stable codes only:
 
 - `path_outside_repo` — any path or glob that fails containment: absolute paths, `..` segments, NUL bytes, paths whose first segment is `.git`, or worktree paths whose resolved real path escapes the repository root.
 - `invalid_args` — malformed tool arguments: empty or oversized query (over 500 chars), a pattern rejected by both search engines, `startLine < 1` or `startLine > endLine`, both or neither of `symbolName`/`line` in `readSymbol`, or both or neither of `packetId`/`path` in `readDiffBlocks`.

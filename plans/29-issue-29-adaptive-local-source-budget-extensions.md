@@ -13,7 +13,7 @@ The worst shape is:
 1. A packet reviewer or verifier reads broad context.
 2. The worker hits `maxResultChars` or `maxToolCalls`.
 3. The model asks for a targeted source read, exact symbol, or narrow range that would resolve a candidate.
-4. Codeninja rejects the tool call due to local budget.
+4. Codegenie rejects the tool call due to local budget.
 
 Run 5 had 23 local tool-call rejections while global budget overruns were zero. Increasing total token caps alone will not fix this. The fix should allow a small, auditable local extension for high-value exact source reads, without opening unbounded exploration.
 

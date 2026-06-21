@@ -33,7 +33,7 @@ The current model needs a clearer distinction:
 
 ## Goal
 
-Make codeninja handle changed documentation as review context instead of simple skipped work.
+Make codegenie handle changed documentation as review context instead of simple skipped work.
 
 The desired output shape is:
 
@@ -43,7 +43,7 @@ Used 1 documentation hunk as intent context.
 Coverage levels: deep 8, normal 1, context-only 1.
 ```
 
-For documentation/spec mismatches, codeninja should still be able to publish a real finding, usually anchored to the changed code line that fails to implement the documented intent, or summary-only if no changed code anchor is appropriate.
+For documentation/spec mismatches, codegenie should still be able to publish a real finding, usually anchored to the changed code line that fails to implement the documented intent, or summary-only if no changed code anchor is appropriate.
 
 ## Non-Goals
 

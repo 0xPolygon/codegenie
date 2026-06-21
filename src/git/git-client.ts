@@ -1,5 +1,5 @@
 import type { CommitInfo, SearchResult } from "../types.js";
-import { CodeninjaError } from "../util/errors.js";
+import { CodegenieError } from "../util/errors.js";
 import {
   assertSafeGlob,
   assertSafeLogRange,
@@ -197,8 +197,8 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
           errorCode: "git_ref_missing"
         });
       } catch (error) {
-        if (error instanceof CodeninjaError && error.context?.isMaxBuffer === true) {
-          throw new CodeninjaError("diff_parse_failed", error.message, {
+        if (error instanceof CodegenieError && error.context?.isMaxBuffer === true) {
+          throw new CodegenieError("diff_parse_failed", error.message, {
             context: error.context,
             cause: error
           });
@@ -256,7 +256,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
         });
         return true;
       } catch (error) {
-        if (error instanceof CodeninjaError && error.code === "git_ref_missing") {
+        if (error instanceof CodegenieError && error.code === "git_ref_missing") {
           return false;
         }
         throw error;
@@ -360,7 +360,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
           })
         );
       } catch (error) {
-        if (error instanceof CodeninjaError && error.code === "git_ref_missing") {
+        if (error instanceof CodegenieError && error.code === "git_ref_missing") {
           return undefined;
         }
         throw error;
@@ -416,7 +416,7 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     try {
       return await (createGitClient(repoRoot, opts).revParse(ref));
     } catch (error) {
-      if (error instanceof CodeninjaError && error.code === "git_ref_missing") {
+      if (error instanceof CodegenieError && error.code === "git_ref_missing") {
         return undefined;
       }
       throw error;
@@ -439,7 +439,7 @@ function parseLog(stdout: string): CommitInfo[] {
       const fields = record.split("\x1f");
       const [sha, authorName, authoredAt, title, body = ""] = fields;
       if (!sha || !title) {
-        throw new CodeninjaError("git_ref_missing", "failed to parse git log output");
+        throw new CodegenieError("git_ref_missing", "failed to parse git log output");
       }
       return {
         sha,

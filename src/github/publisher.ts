@@ -1,7 +1,7 @@
 import { buildDiffAnchorIndex, parseDiff, validateDiffAnchor } from "../git/diff-parser.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
-  CodeninjaConfig,
+  CodegenieConfig,
   DiffAnchor,
   FinalFinding,
   GitHubClient,
@@ -11,10 +11,10 @@ import type {
   RunPostingRecord,
   UnifiedDiff
 } from "../types.js";
-import { CodeninjaError, isCodeninjaError } from "../util/errors.js";
+import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { sanitizeGitHubCommentBody } from "./comment-sanitizer.js";
 import { createGitHubClient } from "./github-client.js";
-import { detectDuplicateFindings, formatCodeninjaMarker } from "./duplicate-detector.js";
+import { detectDuplicateFindings, formatCodegenieMarker } from "./duplicate-detector.js";
 
 type PublishOptions = {
   github?: GitHubClient;
@@ -40,7 +40,7 @@ const REVIEW_BODY_CAP = 60_000;
 export async function maybePublishToGitHub(
   finalReview: ReviewResult,
   resolved: ResolvedReviewInput,
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: PublishOptions = {}
 ): Promise<RunPostingRecord | undefined> {
@@ -48,15 +48,15 @@ export async function maybePublishToGitHub(
     return undefined;
   }
   if (resolved.mode !== "github_pr" || resolved.pr === undefined) {
-    throw new CodeninjaError("invalid_args", "GitHub posting requires github_pr review mode");
+    throw new CodegenieError("invalid_args", "GitHub posting requires github_pr review mode");
   }
 
   const github = opts.github ?? createGitHubClient(resolved.repoRoot);
   const currentPr = await github.viewPr(resolved.pr.number, { refresh: true });
   if (currentPr.headSha !== resolved.pr.headSha || currentPr.baseSha !== resolved.pr.baseSha) {
-    throw new CodeninjaError(
+    throw new CodegenieError(
       "github_post_failed",
-      `PR #${resolved.pr.number} changed while review was running; re-run codeninja before posting comments`,
+      `PR #${resolved.pr.number} changed while review was running; re-run codegenie before posting comments`,
       {
         context: {
           resolvedBaseSha: resolved.pr.baseSha,
@@ -155,10 +155,10 @@ export async function maybePublishToGitHub(
       message: "github_posting_failed",
       data: { error: record.error }
     });
-    if (isCodeninjaError(error)) {
+    if (isCodegenieError(error)) {
       throw error;
     }
-    throw new CodeninjaError("github_post_failed", record.error, { cause: error });
+    throw new CodegenieError("github_post_failed", record.error, { cause: error });
   }
 }
 
@@ -252,7 +252,7 @@ function prepareInlineComment(
     path: anchor.path,
     line: anchor.line,
     side: anchor.side,
-    body: `${capBody(sanitizeGitHubCommentBody(finding.finalBody), INLINE_BODY_CAP)}\n\n${formatCodeninjaMarker(finding.fingerprint, runId)}`
+    body: `${capBody(sanitizeGitHubCommentBody(finding.finalBody), INLINE_BODY_CAP)}\n\n${formatCodegenieMarker(finding.fingerprint, runId)}`
   };
   if (anchor.startLine !== undefined && anchor.startLine !== anchor.line) {
     input.start_line = anchor.startLine;
@@ -280,7 +280,7 @@ function demoteCommentsIntoBody(
 function buildPostingBody(
   finalReview: ReviewResult,
   demoted: FinalFinding[],
-  config: CodeninjaConfig,
+  config: CodegenieConfig,
   opts: { includeInlineSummary: boolean }
 ): string {
   const hasBodyFindings = finalReview.summaryOnlyFindings.length > 0 || demoted.length > 0;
@@ -319,7 +319,7 @@ function collapseSingleLineAnchor(anchor: DiffAnchor): DiffAnchor {
   return anchor;
 }
 
-function belowInlineConfidence(confidence: FinalFinding["confidence"], min: CodeninjaConfig["review"]["minInlineConfidence"]): boolean {
+function belowInlineConfidence(confidence: FinalFinding["confidence"], min: CodegenieConfig["review"]["minInlineConfidence"]): boolean {
   return confidenceRank(confidence) > confidenceRank(min);
 }
 
@@ -343,7 +343,7 @@ function isGithub422(error: unknown): boolean {
 }
 
 function githubHttpStatus(error: unknown): number | undefined {
-  if (!(error instanceof CodeninjaError) || error.code !== "github_post_failed") {
+  if (!(error instanceof CodegenieError) || error.code !== "github_post_failed") {
     return undefined;
   }
   const status = error.context?.httpStatus;
@@ -351,7 +351,7 @@ function githubHttpStatus(error: unknown): number | undefined {
 }
 
 function extractRejectedCommentIndexes(error: unknown, comments: PreparedInlineComment[]): number[] {
-  if (!(error instanceof CodeninjaError)) {
+  if (!(error instanceof CodegenieError)) {
     return [];
   }
   const payload = parseGitHubErrorPayload(error);
@@ -364,7 +364,7 @@ function extractRejectedCommentIndexes(error: unknown, comments: PreparedInlineC
   return [...new Set([...explicit, ...byDescriptor])].sort((a, b) => a - b);
 }
 
-function parseGitHubErrorPayload(error: CodeninjaError): unknown | undefined {
+function parseGitHubErrorPayload(error: CodegenieError): unknown | undefined {
   const responseBody = error.context?.responseBody;
   if (responseBody !== undefined) {
     if (typeof responseBody === "string") {

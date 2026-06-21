@@ -4,7 +4,7 @@ import { createReviewProgress, type ReviewProgress } from "./review-progress.js"
 import { executeProviderCommand } from "./provider-command.js";
 import { executeEvalCommand } from "../evals/eval-command.js";
 import { stripCredentials } from "../telemetry/redaction.js";
-import { errorExitCode, isCodeninjaError } from "../util/errors.js";
+import { errorExitCode, isCodegenieError } from "../util/errors.js";
 
 async function main(): Promise<void> {
   let progress: ReviewProgress | undefined;
@@ -42,7 +42,7 @@ async function main(): Promise<void> {
       process.exitCode = error.exitCode;
       return;
     }
-    if (isCodeninjaError(error)) {
+    if (isCodegenieError(error)) {
       process.stderr.write(stripCredentials(`${error.code}: ${error.message}\n`));
     } else if (error instanceof Error) {
       process.stderr.write(stripCredentials(`${error.name}: ${error.message}\n`));

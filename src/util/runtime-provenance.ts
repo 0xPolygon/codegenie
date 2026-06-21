@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CodeninjaRuntimeProvenance } from "../types.js";
+import type { CodegenieRuntimeProvenance } from "../types.js";
 
 type RuntimeProvenanceOptions = {
   env?: NodeJS.ProcessEnv;
@@ -12,27 +12,27 @@ type RuntimeProvenanceOptions = {
 };
 
 const BUILD_ENV_KEYS = [
-  "CODENINJA_BUILD_VERSION",
-  "CODENINJA_BUILD_COMMIT",
-  "CODENINJA_BUILD_BRANCH",
-  "CODENINJA_BUILD_DIRTY"
+  "CODEGENIE_BUILD_VERSION",
+  "CODEGENIE_BUILD_COMMIT",
+  "CODEGENIE_BUILD_BRANCH",
+  "CODEGENIE_BUILD_DIRTY"
 ] as const;
 
-export function resolveCodeninjaRuntimeProvenance(
+export function resolveCodegenieRuntimeProvenance(
   opts: RuntimeProvenanceOptions = {}
-): CodeninjaRuntimeProvenance {
+): CodegenieRuntimeProvenance {
   const env = opts.env ?? process.env;
   const packageRoot = opts.projectRoot ?? findPackageRoot();
   const packageVersion =
-    nonEmpty(env.CODENINJA_BUILD_VERSION) ??
+    nonEmpty(env.CODEGENIE_BUILD_VERSION) ??
     nonEmpty(opts.packageVersion) ??
     (packageRoot !== undefined ? readPackageVersion(packageRoot) : undefined) ??
     nonEmpty(env.npm_package_version) ??
     "unknown";
 
-  const buildCommit = nonEmpty(env.CODENINJA_BUILD_COMMIT);
-  const buildBranch = nonEmpty(env.CODENINJA_BUILD_BRANCH);
-  const buildDirty = parseDirtyFlag(env.CODENINJA_BUILD_DIRTY);
+  const buildCommit = nonEmpty(env.CODEGENIE_BUILD_COMMIT);
+  const buildBranch = nonEmpty(env.CODEGENIE_BUILD_BRANCH);
+  const buildDirty = parseDirtyFlag(env.CODEGENIE_BUILD_DIRTY);
   if (BUILD_ENV_KEYS.some((key) => nonEmpty(env[key]) !== undefined)) {
     return withOptionalGitFields({
       packageVersion,
@@ -63,7 +63,7 @@ export function resolveCodeninjaRuntimeProvenance(
 function readGitProvenance(
   cwd: string,
   runGit: (cwd: string, args: string[]) => string
-): Pick<CodeninjaRuntimeProvenance, "commit" | "branch" | "dirty"> | undefined {
+): Pick<CodegenieRuntimeProvenance, "commit" | "branch" | "dirty"> | undefined {
   let commit: string | undefined;
   try {
     commit = nonEmpty(runGit(cwd, ["rev-parse", "HEAD"]));
@@ -125,9 +125,9 @@ function withOptionalGitFields(
     commit?: string;
     branch?: string;
     dirty?: boolean;
-    source: CodeninjaRuntimeProvenance["source"];
+    source: CodegenieRuntimeProvenance["source"];
   }
-): CodeninjaRuntimeProvenance {
+): CodegenieRuntimeProvenance {
   return {
     packageVersion: input.packageVersion,
     ...(input.commit !== undefined ? { commit: input.commit, shortCommit: input.commit.slice(0, 12) } : {}),
@@ -144,7 +144,7 @@ function findPackageRoot(): string | undefined {
     if (existsSync(packageJsonPath)) {
       try {
         const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { name?: unknown };
-        if (parsed.name === "codeninja") {
+        if (parsed.name === "codegenie") {
           return currentDir;
         }
       } catch {

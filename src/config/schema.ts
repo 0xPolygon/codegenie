@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { CodeninjaConfig } from "../types.js";
+import type { CodegenieConfig } from "../types.js";
 
 export const reviewDepthSchema = z.enum(["light", "normal", "deep"]);
 export const reasoningLevelSchema = z.enum(["low", "medium", "high", "xhigh"]);
@@ -103,9 +103,9 @@ export const rawConfigSchema = z
   })
   .strict();
 
-export type RawCodeninjaConfig = z.infer<typeof rawConfigSchema>;
+export type RawCodegenieConfig = z.infer<typeof rawConfigSchema>;
 
-export const codeninjaConfigSchema = z
+export const codegenieConfigSchema = z
   .object({
     lenses: z
       .object({
@@ -179,7 +179,7 @@ export const codeninjaConfigSchema = z
   })
   .strict();
 
-export const defaultConfig: CodeninjaConfig = {
+export const defaultConfig: CodegenieConfig = {
   lenses: {
     enabled: [],
     disabled: [],
@@ -209,13 +209,13 @@ export const defaultConfig: CodeninjaConfig = {
   },
   cache: {
     enabled: false,
-    dir: ".codeninja/cache"
+    dir: ".codegenie/cache"
   },
   telemetry: {
     enabled: false,
     logLevel: "warn",
     debugTrace: false,
-    runDir: ".codeninja/runs",
+    runDir: ".codegenie/runs",
     retainRuns: 20
   },
   eval: {
