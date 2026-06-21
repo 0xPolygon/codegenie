@@ -78,6 +78,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 72 | COMPLETE | Issue 72: Relationship Attention Note Preservation |
 | 73 | COMPLETE | Issue 73: Caller-Visible Guarantee Invariant and Verifier Framing |
 | 74 | PENDING | Issue 74: Merged Finding Confidence Calibration |
+| 75 | PENDING | Issue 75: Human-Attention Output Discipline |
 
 ## Current Queue
 
@@ -85,6 +86,7 @@ Recommended implementation order for remaining work:
 
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
 - **Issue 74** — calibrate final confidence from compatible verified merged candidates, so Stage 10 does not publish a low-confidence final report when the merged group contains stronger confidence evidence.
+- **Issue 75** — suppress stale `Needs Human Attention` notes when Stage 9 already adjudicated the exact promoted source note or a stronger packet no-finding review already resolved the same helper predicate.
 
 ## Deferred / Watch List
 
