@@ -70,6 +70,8 @@ budgetMultiplier = 1.0 # scales review/tool/token-call budgets; does not change 
 
 [telemetry]
 enabled = true # opt into local run artifacts under .codegenie/runs
+logLevel = "debug"
+debugTrace = true
 
 [[classification.pathRules]]
 pattern = "lib/payments/**"
