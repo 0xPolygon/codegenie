@@ -19,4 +19,10 @@ in their own skills too.. lets figure out how to do that
 
 - [ ] github integration
 
+- [ ] eval 49.. run 22 has "Incomplete work: skipped 1." .. but this is expected, so lets label this differently as just skipped ..
+also need to ask to review it in detail, but it looks good from the md output
 
+
+- [ ] allow codegenie.toml to specify "lenDir = "tools/review-skills" and it will have various .md files in there for each lens/skill
+      - [ ] control different skills for different folders etc.
+      
