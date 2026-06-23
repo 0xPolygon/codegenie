@@ -25,4 +25,10 @@ also need to ask to review it in detail, but it looks good from the md output
 
 - [ ] allow codegenie.toml to specify "lenDir = "tools/review-skills" and it will have various .md files in there for each lens/skill
       - [ ] control different skills for different folders etc.
-      
+
+- [ ] final-review, list the 
+      - [ ] provider + model
+      - [ ] review command, that is, which branch or base:master and head:<blah-branch> abcdef123 
+            * where abcdef123 is the commit hash (shortened)
+      - [ ] ...what else?
+
