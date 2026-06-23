@@ -219,7 +219,7 @@ type RunArtifactMetadata = {
     headSha?: string;
     depth?: string;
     concurrency?: number;
-    budgetMultiplier?: number;
+    budgetBoost?: number;
     llmMaxConcurrentCalls?: number;
     lenses?: string[];
     format?: string;
@@ -237,7 +237,7 @@ type RunReviewArtifactMetadata = {
   headSha: string | null;
   depth: string | null;
   concurrency: number | null;
-  budgetMultiplier: number | null;
+  budgetBoost: number | null;
   llmMaxConcurrentCalls: number | null;
   lenses: string[];
   format: string | null;
@@ -1154,7 +1154,7 @@ class RunTelemetryImpl {
       headSha: review.headSha ?? null,
       depth: review.depth ?? null,
       concurrency: review.concurrency ?? null,
-      budgetMultiplier: review.budgetMultiplier ?? null,
+      budgetBoost: review.budgetBoost ?? null,
       llmMaxConcurrentCalls: review.llmMaxConcurrentCalls ?? null,
       lenses: review.lenses ?? [],
       format: review.format ?? null,

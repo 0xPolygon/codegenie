@@ -264,7 +264,7 @@ async function runSystemReviewTask(
     schema: SubmitSystemReviewSchema,
     templateVersion: prompt.templateVersion,
     tools: buildRepositoryToolDefinitions(tools),
-    toolBudget: scaleToolBudget(SYSTEM_REVIEW_TOOL_BUDGET, config.review.budgetMultiplier),
+    toolBudget: scaleToolBudget(SYSTEM_REVIEW_TOOL_BUDGET, config.review.budgetBoost),
     timeoutMs: config.review.perPassTimeoutMs,
     telemetryContext: { workerId, packetId: task.id }
   });

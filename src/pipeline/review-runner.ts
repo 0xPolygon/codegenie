@@ -251,7 +251,7 @@ export async function runReview(
     const allPacketResults = [...packetResults, ...systemReview.packetResults];
     const packetResultsForFinal = suppressResolvedFollowUpHints(allPacketResults, systemReview.resolvedHints);
     const promoted = await promoteUncertaintiesForVerification(
-      { packetResults: packetResultsForFinal, packets, budgetMultiplier: config.review.budgetMultiplier },
+      { packetResults: packetResultsForFinal, packets, budgetBoost: config.review.budgetBoost },
       run.telemetry
     );
     const packetResultsForVerification = promoted.packetResults;
@@ -399,7 +399,7 @@ async function startRun(
         target: input,
         depth: config.review.depth,
         concurrency: config.review.concurrency,
-        budgetMultiplier: config.review.budgetMultiplier,
+        budgetBoost: config.review.budgetBoost,
         llmMaxConcurrentCalls: config.llm.maxConcurrentCalls,
         lenses: config.lenses.restrictTo ?? config.lenses.enabled,
         format: overrides.format ?? "markdown",
@@ -1314,8 +1314,8 @@ export class BudgetLedger {
     private readonly config: CodegenieConfig,
     private readonly telemetry?: TelemetryRecorder
   ) {
-    this.effectiveMaxModelCalls = scaleOptionalBudgetValue(config.review.maxModelCalls, config.review.budgetMultiplier);
-    this.effectiveMaxTotalTokens = scaleOptionalBudgetValue(config.review.maxTotalTokens, config.review.budgetMultiplier);
+    this.effectiveMaxModelCalls = scaleOptionalBudgetValue(config.review.maxModelCalls, config.review.budgetBoost);
+    this.effectiveMaxTotalTokens = scaleOptionalBudgetValue(config.review.maxTotalTokens, config.review.budgetBoost);
   }
 
   checkpoint(stage: number): "ok" | "exhausted" {
@@ -1381,7 +1381,7 @@ export class BudgetLedger {
     return {
       completeness: coverage?.partial === true ? "partial" : "complete",
       partialReasons: coverage?.partial === true ? [...coverage.reasons] : [],
-      multiplier: this.config.review.budgetMultiplier,
+      multiplier: this.config.review.budgetBoost,
       configured: {
         timeoutMs: this.config.review.timeoutMs,
         ...(this.config.review.maxModelCalls !== undefined ? { maxModelCalls: this.config.review.maxModelCalls } : {}),

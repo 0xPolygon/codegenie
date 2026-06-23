@@ -81,7 +81,7 @@ baseBranch = "main"
 
 [review]
 depth = "normal"
-budgetMultiplier = 1.0 # scales review/tool/token-call budgets; does not change finding caps
+budgetBoost = 1.0 # scales review/tool/token-call budgets; does not change finding caps
 
 [telemetry]
 enabled = true # opt into local run artifacts under .codegenie/runs
@@ -104,7 +104,7 @@ Telemetry is off by default. Enable it in repo `codegenie.toml` or user-level `~
 
 Teams can also version project-specific review expertise as Markdown skills in `.codegenie/skills/` — concrete checks, false-positive rules, and safe patterns that travel with the repo.
 
-Budget caps are dispatch controls, not mid-call interrupts. If a model call is already running and crosses a soft token/model-call cap, codegenie records the overrun, lets that call finish, and stops dispatching later non-essential work. Raise or lower `review.budgetMultiplier` to scale review effort/cost for a repo or eval run; high values can be expensive and are recorded in telemetry when telemetry is enabled.
+Budget caps are dispatch controls, not mid-call interrupts. If a model call is already running and crosses a soft token/model-call cap, codegenie records the overrun, lets that call finish, and stops dispatching later non-essential work. Raise or lower `review.budgetBoost` to scale review effort/cost for a repo or eval run; high values can be expensive and are recorded in telemetry when telemetry is enabled.
 
 ## How a review runs
 
@@ -159,7 +159,7 @@ A skill is a Markdown file of concrete checks, false-positive rules, safe patter
 
 ### Built to be evaluated
 
-When telemetry is enabled, every run writes typed local artifacts — the plan, every packet, every candidate, every verdict, every selection decision, budget summary, and per-call token/cost telemetry. The `codegenie eval` command always captures these artifacts, replays real repos and fixtures against expected findings, and scores them *by loss stage*. Eval YAML can set `review.budgetMultiplier`, require `expect.reviewCompleteness: complete`, and bound budget crossings with `expect.maxBudgetOverruns: 0`. High-cost evals can tune workflow and provider concurrency separately:
+When telemetry is enabled, every run writes typed local artifacts — the plan, every packet, every candidate, every verdict, every selection decision, budget summary, and per-call token/cost telemetry. The `codegenie eval` command always captures these artifacts, replays real repos and fixtures against expected findings, and scores them *by loss stage*. Eval YAML can set `review.budgetBoost`, require `expect.reviewCompleteness: complete`, and bound budget crossings with `expect.maxBudgetOverruns: 0`. High-cost evals can tune workflow and provider concurrency separately:
 
 ```yaml
 review:

@@ -126,7 +126,7 @@ const caseSchema = z
         lenses: z.array(z.string().min(1)).optional(),
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
-        budgetMultiplier: positiveNumberSchema.optional(),
+        budgetBoost: positiveNumberSchema.optional(),
         verify: z.boolean().optional(),
         cache: z.boolean().optional(),
         cacheDir: z.string().min(1).optional(),
@@ -653,8 +653,8 @@ function applyCaseReviewConfig(
   if (review?.concurrency !== undefined) {
     config.review.concurrency = review.concurrency;
   }
-  if (review?.budgetMultiplier !== undefined) {
-    config.review.budgetMultiplier = review.budgetMultiplier;
+  if (review?.budgetBoost !== undefined) {
+    config.review.budgetBoost = review.budgetBoost;
   }
   if (review?.verify !== undefined) {
     config.review.verify = review.verify;

@@ -3528,7 +3528,7 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it("scales packet tool budgets with light-depth floors, deep-depth ceilings, and budget multipliers", async () => {
-    const budgetFor = async (coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], budgetMultiplier = 1) => {
+    const budgetFor = async (coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], budgetBoost = 1) => {
       const plan = {
         ...fakePlan(),
         coverage: [{ ...fakePlan().coverage[0]!, coverage }]
@@ -3539,7 +3539,7 @@ describe("phase 5 pipeline regressions", () => {
         [fakeFacts("app.ts", "per-hunk")],
         fakeRepositoryIndex(),
         nullTelemetry(),
-        { config: { ...config(), review: { ...config().review, depth, budgetMultiplier } }, enabledLenses: ["core/code-review"] }
+        { config: { ...config(), review: { ...config().review, depth, budgetBoost } }, enabledLenses: ["core/code-review"] }
       );
       return packets[0]?.toolBudget;
     };
@@ -4010,10 +4010,10 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
-  it("scales effective model-call and token caps with budgetMultiplier", () => {
+  it("scales effective model-call and token caps with budgetBoost", () => {
     const budget = new BudgetLedger({
       ...config(),
-      review: { ...config().review, maxModelCalls: 4, maxTotalTokens: 100, budgetMultiplier: 1.5 }
+      review: { ...config().review, maxModelCalls: 4, maxTotalTokens: 100, budgetBoost: 1.5 }
     });
 
     budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 50 });

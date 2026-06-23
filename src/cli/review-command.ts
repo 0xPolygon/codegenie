@@ -41,6 +41,7 @@ type CommanderReviewOptions = {
   head?: string;
   base?: string;
   depth?: string;
+  budgetBoost?: string;
   lens?: string[];
   provider?: string;
   model?: string;
@@ -81,6 +82,7 @@ export function parseReviewCommand(
     .option("--head <ref>", "head ref or commit to review with --base")
     .option("--base <branch>", "base branch/ref for branch/head/default review")
     .option("--depth <depth>", "review depth: light, normal, or deep")
+    .option("--budget-boost <factor>", "scale per-packet tool/result/call budgets by this factor (e.g. 2 doubles them)")
     .option("--lens <lens>", "review lens to enable for this run", collect, [])
     .option("--provider <provider>", "provider override")
     .option("--model <model>", "model override")
@@ -278,6 +280,9 @@ function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides 
   if (options.depth !== undefined) {
     cli.depth = parseDepth(options.depth);
   }
+  if (options.budgetBoost !== undefined) {
+    cli.budgetBoost = parseBudgetBoost(options.budgetBoost);
+  }
   if (options.lens && options.lens.length > 0) {
     cli.lenses = options.lens;
   }
@@ -340,6 +345,14 @@ function parseDepth(value: string): ReviewDepth {
     return value;
   }
   throw new CodegenieError("invalid_args", "--depth must be one of: light, normal, deep");
+}
+
+function parseBudgetBoost(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new CodegenieError("invalid_args", "--budget-boost must be a positive number");
+  }
+  return parsed;
 }
 
 function parseReasoning(value: string): ReasoningLevel | "auto" {

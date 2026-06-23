@@ -74,6 +74,21 @@ describe("review command", () => {
     expect(parsed.config.cache.enabled).toBe(true);
   });
 
+  it("applies --budget-boost as a review budget override", () => {
+    const parsed = parseReviewCommand(["review", "feature", "--budget-boost", "2"], testContext());
+    expect(parsed.config.review.budgetBoost).toBe(2);
+    expect(parsed.configSources["review.budgetBoost"]).toBe("cli");
+  });
+
+  it("rejects a non-positive or non-numeric --budget-boost", () => {
+    expect(() => parseReviewCommand(["review", "feature", "--budget-boost", "0"], testContext())).toThrow(
+      /--budget-boost must be a positive number/
+    );
+    expect(() => parseReviewCommand(["review", "feature", "--budget-boost", "abc"], testContext())).toThrow(
+      /--budget-boost must be a positive number/
+    );
+  });
+
   it("enables progress by default and disables it for CI-friendly output", () => {
     expect(parseReviewCommand(["review", "feature"], testContext()).options.progress).toBe(true);
     expect(parseReviewCommand(["review", "feature", "--ci"], testContext()).options.progress).toBe(false);

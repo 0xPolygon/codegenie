@@ -51,7 +51,7 @@ extraSkillPaths = ["/trusted/skills"]
 depth = "deep"
 verify = true
 maxFindings = 10
-budgetMultiplier = 1.5
+budgetBoost = 1.5
 
 [llm]
 provider = "repo-ignored"
@@ -94,8 +94,8 @@ reason = "critical lib"
     expect(loaded.sources["review.verify"]).toBe("user-config");
     expect(loaded.config.review.maxFindings).toBe(10);
     expect(loaded.sources["review.maxFindings"]).toBe("repo-config");
-    expect(loaded.config.review.budgetMultiplier).toBe(1.5);
-    expect(loaded.sources["review.budgetMultiplier"]).toBe("repo-config");
+    expect(loaded.config.review.budgetBoost).toBe(1.5);
+    expect(loaded.sources["review.budgetBoost"]).toBe("repo-config");
     expect(loaded.config.llm.provider).toBe("env-provider");
     expect(loaded.config.llm.model).toBe("cli-model");
     expect(loaded.config.llm.reasoning).toBe("xhigh");
@@ -146,7 +146,7 @@ apiKey = "sk-this-should-not-be-in-repo-config"
       path.join(home, "config.toml"),
       `
 [review]
-budgetMultiplier = 0
+budgetBoost = 0
 `
     );
 

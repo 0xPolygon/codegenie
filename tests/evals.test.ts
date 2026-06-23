@@ -94,7 +94,7 @@ describe("eval suite validation", () => {
       "artifacts:",
       "  path: logs/1",
       "review:",
-      "  budgetMultiplier: 1.5",
+      "  budgetBoost: 1.5",
       "expect:",
       "  reviewCompleteness: complete",
       "  maxBudgetOverruns: 0",
@@ -108,7 +108,7 @@ describe("eval suite validation", () => {
 
     const suite = await loadEvalSuite(suiteDir);
 
-    expect(suite.cases[0]?.evalCase.review?.budgetMultiplier).toBe(1.5);
+    expect(suite.cases[0]?.evalCase.review?.budgetBoost).toBe(1.5);
     expect(suite.cases[0]?.evalCase.expect).toMatchObject({
       reviewCompleteness: "complete",
       maxBudgetOverruns: 0,

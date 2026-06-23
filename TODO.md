@@ -32,3 +32,13 @@ also need to ask to review it in detail, but it looks good from the md output
             * where abcdef123 is the commit hash (shortened)
       - [ ] ...what else?
 
+- [ ] simple "codegenie provider" would be nice to see if we're configured, or if we need to login, and also tell us what provider+model we're currently using
+- [ ] "Reviewing ... (stage 7).. would be nice for it to show hunks 10/120 and update this.. so we can see progress of hunks reviewed at this stage, since its the longest one
+
+--
+
+## Review
+
+- [ ] bundled-skills
+- [ ] code base for each stage
+- [ ] telemetry -- get the codegenie version + commit hash

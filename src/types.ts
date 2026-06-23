@@ -43,7 +43,7 @@ export type CodegenieConfig = {
     concurrency: number;
     timeoutMs: number;
     perPassTimeoutMs: number;
-    budgetMultiplier: number;
+    budgetBoost: number;
     maxTotalTokens?: number;
     maxModelCalls?: number;
   };
@@ -920,7 +920,7 @@ export type EvalCase = {
     lenses?: string[];
     maxFindings?: number;
     concurrency?: number;
-    budgetMultiplier?: number;
+    budgetBoost?: number;
     verify?: boolean;
     cache?: boolean;
     cacheDir?: string;

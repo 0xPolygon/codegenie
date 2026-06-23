@@ -43,7 +43,7 @@ export const rawConfigSchema = z
         concurrency: positiveIntSchema.optional(),
         timeoutMs: positiveIntSchema.optional(),
         perPassTimeoutMs: positiveIntSchema.optional(),
-        budgetMultiplier: positiveFiniteNumberSchema.optional(),
+        budgetBoost: positiveFiniteNumberSchema.optional(),
         maxTotalTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional()
       })
@@ -127,7 +127,7 @@ export const codegenieConfigSchema = z
         concurrency: positiveIntSchema,
         timeoutMs: positiveIntSchema,
         perPassTimeoutMs: positiveIntSchema,
-        budgetMultiplier: positiveFiniteNumberSchema,
+        budgetBoost: positiveFiniteNumberSchema,
         maxTotalTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional()
       })
@@ -195,7 +195,7 @@ export const defaultConfig: CodegenieConfig = {
     concurrency: 4,
     timeoutMs: 30 * 60 * 1000,
     perPassTimeoutMs: 5 * 60 * 1000,
-    budgetMultiplier: 1
+    budgetBoost: 1
   },
   github: {
     summaryWhenNoFindings: false

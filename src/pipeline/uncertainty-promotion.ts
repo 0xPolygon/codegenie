@@ -19,7 +19,7 @@ const MAX_RELATED_CONTEXT_EVIDENCE_CHARS = 1200;
 type PromotionInput = {
   packetResults: PacketReviewResult[];
   packets: ReviewPacket[];
-  budgetMultiplier?: number;
+  budgetBoost?: number;
 };
 
 export type UncertaintyPromotionSummary = {
@@ -75,7 +75,7 @@ export async function promoteUncertaintiesForVerification(
 ): Promise<{ packetResults: PacketReviewResult[]; summary: UncertaintyPromotionSummary }> {
   const packetsById = new Map(input.packets.map((packet) => [packet.id, packet]));
   const sources = input.packetResults.flatMap((result) => promotionSources(result, packetsById));
-  const maxPromotions = promotionLimit(input.packetResults.length, input.budgetMultiplier ?? 1);
+  const maxPromotions = promotionLimit(input.packetResults.length, input.budgetBoost ?? 1);
   const decisions: PromotionDecision[] = [];
   const promotedByPacket = new Map<string, CandidateFinding[]>();
   const notPromoted: Record<string, number> = {};
@@ -805,9 +805,9 @@ function baseDecision(
   return metadata === undefined ? decision : { ...decision, ...metadata };
 }
 
-function promotionLimit(packetResultCount: number, budgetMultiplier: number): number {
+function promotionLimit(packetResultCount: number, budgetBoost: number): number {
   const base = Math.min(MAX_PROMOTIONS, Math.max(MIN_PROMOTIONS_WHEN_AVAILABLE, Math.ceil(packetResultCount * 0.03)));
-  return scaleBudgetValue(base, budgetMultiplier);
+  return scaleBudgetValue(base, budgetBoost);
 }
 
 function mainScopeLabel(source: PromotionSource): string {

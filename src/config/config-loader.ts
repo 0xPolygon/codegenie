@@ -25,6 +25,7 @@ type RawPathRule = NonNullable<NonNullable<RawCodegenieConfig["classification"]>
 
 export type CliConfigOverrides = {
   depth?: ReviewDepth;
+  budgetBoost?: number;
   lenses?: string[];
   provider?: string;
   model?: string;
@@ -61,7 +62,7 @@ const DEFAULT_SOURCE_PATHS = [
   "review.concurrency",
   "review.timeoutMs",
   "review.perPassTimeoutMs",
-  "review.budgetMultiplier",
+  "review.budgetBoost",
   "github.summaryWhenNoFindings",
   "classification.pathRules",
   "llm.maxConcurrentCalls",
@@ -75,7 +76,7 @@ const DEFAULT_SOURCE_PATHS = [
   "eval.logsDir"
 ];
 
-const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap", "budgetMultiplier"]);
+const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap", "budgetBoost"]);
 const CREDENTIAL_KEY_PATTERN = /(?:api[_-]?key|apikey|secret|token|password|passwd|authorization|credentials|auth)/i;
 
 export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
@@ -246,9 +247,9 @@ function applyRawConfig(
     config.review.perPassTimeoutMs = raw.review.perPassTimeoutMs;
     sources["review.perPassTimeoutMs"] = source;
   }
-  if (raw.review?.budgetMultiplier !== undefined) {
-    config.review.budgetMultiplier = raw.review.budgetMultiplier;
-    sources["review.budgetMultiplier"] = source;
+  if (raw.review?.budgetBoost !== undefined) {
+    config.review.budgetBoost = raw.review.budgetBoost;
+    sources["review.budgetBoost"] = source;
   }
   if (raw.review?.maxTotalTokens !== undefined) {
     config.review.maxTotalTokens = raw.review.maxTotalTokens;
@@ -350,8 +351,8 @@ function filterRepoConfig(raw: RawCodegenieConfig, warnings: ConfigWarning[]): R
     if (raw.review.softCommentCap !== undefined) {
       safe.review.softCommentCap = raw.review.softCommentCap;
     }
-    if (raw.review.budgetMultiplier !== undefined) {
-      safe.review.budgetMultiplier = raw.review.budgetMultiplier;
+    if (raw.review.budgetBoost !== undefined) {
+      safe.review.budgetBoost = raw.review.budgetBoost;
     }
   }
 
@@ -453,6 +454,10 @@ function applyCliOverrides(
   if (cli.depth !== undefined) {
     config.review.depth = cli.depth;
     sources["review.depth"] = "cli";
+  }
+  if (cli.budgetBoost !== undefined) {
+    config.review.budgetBoost = cli.budgetBoost;
+    sources["review.budgetBoost"] = "cli";
   }
   if (cli.lenses !== undefined) {
     config.lenses.restrictTo = [...cli.lenses];

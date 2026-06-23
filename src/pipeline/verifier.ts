@@ -264,7 +264,7 @@ export async function verifyFindings(
   }
 
   const orderedRepresentatives = orderVerifierRepresentatives(clustered.representatives);
-  const scheduling = scheduleVerifierRepresentatives(orderedRepresentatives, packetsById, opts, telemetry, verificationLaneByCandidateId, config.review.budgetMultiplier);
+  const scheduling = scheduleVerifierRepresentatives(orderedRepresentatives, packetsById, opts, telemetry, verificationLaneByCandidateId, config.review.budgetBoost);
   const runtimeStats: VerificationRuntimeStats = {
     schemaInvalid: 0,
     repairAttempted: 0,
@@ -596,7 +596,7 @@ async function runVerifierStructured(
       schema: SubmitVerificationVerdictSchema,
       templateVersion: prompt.templateVersion,
       tools: buildRepositoryToolDefinitions(tools, { includeLikelyTests: candidate.category === "testing" }),
-      toolBudget: scaleToolBudget(VERIFIER_TOOL_BUDGET, config.review.budgetMultiplier),
+      toolBudget: scaleToolBudget(VERIFIER_TOOL_BUDGET, config.review.budgetBoost),
       timeoutMs: config.review.perPassTimeoutMs,
       telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId },
       schemaRepair: {
@@ -942,7 +942,7 @@ function scheduleVerifierRepresentatives(
   opts: VerifyOptions,
   telemetry: TelemetryRecorder,
   verificationLaneByCandidateId: Map<string, VerificationLane>,
-  budgetMultiplier: number
+  budgetBoost: number
 ): {
   scheduled: CandidateFinding[];
   budgetLimited: CandidateFinding[];
@@ -958,7 +958,7 @@ function scheduleVerifierRepresentatives(
   const canHoldReservations = opts.reserve !== undefined && opts.releaseReservation !== undefined;
   const standardCandidates = candidates.filter((candidate) => verificationLaneByCandidateId.get(candidate.id) !== "evidence_resolution");
   const evidenceResolutionCandidates = candidates.filter((candidate) => verificationLaneByCandidateId.get(candidate.id) === "evidence_resolution");
-  const evidenceResolutionLaneMax = scaleBudgetValue(EVIDENCE_RESOLUTION_LANE_MAX, budgetMultiplier);
+  const evidenceResolutionLaneMax = scaleBudgetValue(EVIDENCE_RESOLUTION_LANE_MAX, budgetBoost);
   const evidenceResolutionScheduledCandidates = evidenceResolutionCandidates.slice(0, evidenceResolutionLaneMax);
   laneLimited.push(...evidenceResolutionCandidates.slice(evidenceResolutionLaneMax));
 
