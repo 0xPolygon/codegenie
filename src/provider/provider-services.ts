@@ -365,18 +365,34 @@ function renderProviderList(services: ProviderServices): string {
   });
   const providerWidth = Math.max(22, ...rows.map((row) => row.provider.length));
   const statusWidth = Math.max("not authenticated".length + 2, ...rows.map((row) => row.status.length));
-  const lines = [
-    "Available providers:",
-    "",
-    ...rows.map((row) =>
-      `  ${row.provider.padEnd(providerWidth)}  ${row.status.padEnd(statusWidth)}  ${row.description}`
-    ),
+  const byProvider = new Map(rows.map((row) => [row.provider, row]));
+  const popularRows = POPULAR_PROVIDER_IDS
+    .map((provider) => byProvider.get(provider))
+    .filter((row): row is (typeof rows)[number] => row !== undefined);
+  const renderRow = (row: (typeof rows)[number]): string =>
+    `  ${row.provider.padEnd(providerWidth)}  ${row.status.padEnd(statusWidth)}  ${row.description}`;
+  const lines = [];
+  if (popularRows.length > 0) {
+    lines.push("Popular providers:", ...popularRows.map(renderRow), "");
+  }
+  lines.push(
+    "All available providers:",
+    ...rows.map(renderRow),
     "",
     "Run `codegenie provider login <provider>` to authenticate.",
     ""
-  ];
+  );
   return lines.join("\n");
 }
+
+const POPULAR_PROVIDER_IDS = [
+  "anthropic",
+  "openai",
+  "openai-codex",
+  "opencode",
+  "opencode-go",
+  "openrouter"
+] as const;
 
 function renderProviderAuthStatus(status: AuthStatus): string {
   if (!status.configured) {

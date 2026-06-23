@@ -316,10 +316,35 @@ describe("Phase 4 provider commands", () => {
     });
 
     const printed = output.join("");
-    expect(printed).toContain("Available providers:\n\n");
+    expect(printed).not.toContain("Popular providers:");
+    expect(printed).toContain("All available providers:\n");
     expect(printed).toMatch(/  fake\s+✗ not authenticated\s+Fake/u);
     expect(printed).toMatch(/  other\s+✗ not authenticated\s+Other/u);
     expect(printed).toContain("\nRun `codegenie provider login <provider>` to authenticate.\n");
+  });
+
+  it("prints popular providers before the complete provider inventory", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: ["anthropic", "openai", "openai-codex", "opencode", "opencode-go", "openrouter", "fake"]
+    });
+    services.authStorage.set("anthropic", {
+      type: "oauth",
+      credentials: { access: "access", refresh: "refresh", expires: Date.now() + 60_000 },
+      createdAt: new Date(0).toISOString()
+    });
+    const output: string[] = [];
+
+    await runProviderCommand(["provider", "list"], {
+      services,
+      writeOut: (text) => output.push(text)
+    });
+
+    const printed = output.join("");
+    expect(printed).toMatch(
+      /Popular providers:\n\s+anthropic\s+✓ logged in\s+Anthropic \(Claude Pro\/Max\)\n\s+openai\s+✗ not authenticated\s+OpenAI\n\s+openai-codex\s+✗ not authenticated\s+ChatGPT Plus\/Pro \(Codex Subscription\)\n\s+opencode\s+✗ not authenticated\s+OpenCode\n\s+opencode-go\s+✗ not authenticated\s+OpenCode Go\n\s+openrouter\s+✗ not authenticated\s+OpenRouter/u
+    );
+    expect(printed).toContain("\nAll available providers:\n");
+    expect(printed).toMatch(/All available providers:[\s\S]*fake\s+✗ not authenticated\s+Fake/u);
   });
 
   it("shows stored and environment provider auth distinctly in the provider list", async () => {
@@ -723,9 +748,10 @@ function testSkill(input: { id: string; checks: string; falsePositives?: string;
 
 function fakeProviderServices(
   home: string,
-  opts: { envConfiguredProviders?: string[]; modelsByProvider?: Record<string, ProviderModelInfo[]> } = {}
+  opts: { envConfiguredProviders?: string[]; modelsByProvider?: Record<string, ProviderModelInfo[]>; providerIds?: string[] } = {}
 ): ProviderServices {
   const paths = getCodegeniePaths(home, {});
+  const providerIds = opts.providerIds ?? ["fake", "other"];
   const auth = new Map<string, ProviderAuthEntry>();
   const envConfiguredProviders = new Set(opts.envConfiguredProviders ?? []);
   const authStorage: PiAuthStorage = {
@@ -740,10 +766,10 @@ function fakeProviderServices(
     }
   };
   const modelRegistry: PiModelRegistry = {
-    listProviders: () => ["fake", "other"],
-    providerExists: (provider) => provider === "fake" || provider === "other",
+    listProviders: () => providerIds,
+    providerExists: (provider) => providerIds.includes(provider),
     listModels: (provider) =>
-      (provider ? [provider] : ["fake", "other"]).flatMap((id) =>
+      (provider ? [provider] : providerIds).flatMap((id) =>
         opts.modelsByProvider?.[id] ?? [fakeModel(id, `${id}-large`, `${id} large`)]
       ),
     modelExists: (provider, model) => model === `${provider}-large`,
