@@ -5,11 +5,16 @@ import { executeProviderCommand } from "./provider-command.js";
 import { executeEvalCommand } from "../evals/eval-command.js";
 import { stripCredentials } from "../telemetry/redaction.js";
 import { errorExitCode, isCodegenieError } from "../util/errors.js";
+import { renderVersion } from "./version.js";
 
 async function main(): Promise<void> {
   let progress: ReviewProgress | undefined;
   try {
     const argv = process.argv.slice(2);
+    if (argv.length === 1 && (argv[0] === "--version" || argv[0] === "-V" || argv[0] === "version")) {
+      process.stdout.write(renderVersion());
+      return;
+    }
     if (argv[0] === "provider" || (argv[0] === "help" && argv[1] === "provider")) {
       await executeProviderCommand(argv, { allowOutput: true });
       return;

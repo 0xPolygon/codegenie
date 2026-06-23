@@ -62,6 +62,7 @@ export function parseReviewCommand(
   const program = new Command();
   program
     .name("codegenie")
+    .option("-V, --version", "show codegenie version")
     .exitOverride();
 
   if (!opts.allowOutput) {
@@ -96,15 +97,21 @@ export function parseReviewCommand(
     });
   const provider = program.command("provider").description("manage model providers and defaults");
   provider.command("list").description("list known providers and auth status");
-  provider.command("login").description("store credentials for a provider").argument("<provider>");
+  provider
+    .command("login")
+    .description("store credentials for a provider")
+    .argument("<provider>")
+    .option("--api-key", "store an API key instead of using OAuth");
   provider.command("logout").description("remove stored provider credentials").argument("[provider]").option("--yes", "confirm removing all credentials");
   provider.command("auth-status").description("show stored or environment auth status").argument("[provider]");
   provider.command("models").description("list available models").argument("[query]").option("--all", "include unauthenticated providers");
+  provider.command("use").description("set the default provider/model by fuzzy model id").argument("<model>");
   const providerConfig = provider.command("config").description("show or update provider defaults");
   providerConfig.command("set-provider").argument("<provider>");
   providerConfig.command("set-model").argument("<provider>").argument("<model>");
   providerConfig.command("set-depth").argument("<light|normal|deep>");
   providerConfig.command("set-reasoning").argument("<low|medium|high|xhigh|auto>");
+  program.command("version").description("show codegenie version");
   program.command("eval").description("run codegenie eval suites");
 
   try {

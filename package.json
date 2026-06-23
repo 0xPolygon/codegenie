@@ -1,6 +1,6 @@
 {
   "name": "@0xsequence/codegenie",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "High-signal AI code review agent",
   "type": "module",
   "bin": {
@@ -11,7 +11,7 @@
     "bundled-skills"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/write-version.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

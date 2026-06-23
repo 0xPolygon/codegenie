@@ -9,7 +9,7 @@ type ParseProviderCommandOptions = {
 
 type ParsedProviderCommand = {
   args: string[];
-  options: Pick<RunProviderCommandOptions, "yes" | "all">;
+  options: Pick<RunProviderCommandOptions, "yes" | "all" | "apiKeyLogin">;
 };
 
 export async function executeProviderCommand(
@@ -46,8 +46,12 @@ export function parseProviderCommand(
     .command("login")
     .description("store credentials for a provider")
     .argument("<provider>")
-    .action((providerId: string) => {
-      parsed = { args: ["provider", "login", providerId], options: {} };
+    .option("--api-key", "store an API key instead of using OAuth")
+    .action((providerId: string, options: { apiKey?: boolean }) => {
+      parsed = {
+        args: ["provider", "login", providerId],
+        options: { apiKeyLogin: options.apiKey === true }
+      };
     });
   provider
     .command("logout")
@@ -80,6 +84,13 @@ export function parseProviderCommand(
         args: query ? ["provider", "models", query] : ["provider", "models"],
         options: { all: options.all === true }
       };
+    });
+  provider
+    .command("use")
+    .description("set the default provider/model by fuzzy model id")
+    .argument("<model>")
+    .action((modelQuery: string) => {
+      parsed = { args: ["provider", "use", modelQuery], options: {} };
     });
 
   const config = provider.command("config").description("show or update provider defaults");
@@ -122,7 +133,7 @@ export function parseProviderCommand(
   }
 
   if (!parsed) {
-    throw new CodegenieError("invalid_args", "expected provider command: list, login, logout, auth-status, models, or config");
+    throw new CodegenieError("invalid_args", "expected provider command: list, login, logout, auth-status, models, use, or config");
   }
   return parsed;
 }

@@ -74,6 +74,7 @@ type ProviderConfigLayers = {
 export type RunProviderCommandOptions = {
   yes?: boolean;
   all?: boolean;
+  apiKeyLogin?: boolean;
   apiKey?: string;
   homeOverride?: string;
   services?: ProviderServices;
@@ -167,14 +168,17 @@ export async function runProviderCommand(args: string[], opts: RunProviderComman
     case "models": {
       const all = opts.all || rest.includes("--all");
       const query = rest.find((item) => item !== "--all");
-      writeOut(renderModels(query, all, services));
+      writeOut(renderModels(query, all, services, opts.env));
       return;
     }
+    case "use":
+      commandUse(rest, services, writeOut);
+      return;
     case "config":
       await commandConfig(rest, services, writeOut, opts.env);
       return;
     default:
-      throw new CodegenieError("invalid_args", "expected provider command: list, login, logout, auth-status, models, or config");
+      throw new CodegenieError("invalid_args", "expected provider command: list, login, logout, auth-status, models, use, or config");
   }
 }
 
@@ -185,15 +189,23 @@ function parseLogoutArgs(args: string[], opts: RunProviderCommandOptions): { arg
   };
 }
 
+function parseLoginArgs(args: string[], opts: RunProviderCommandOptions): { provider: string; apiKeyLogin: boolean } {
+  const provider = args.find((arg) => arg !== "--api-key");
+  return {
+    provider: requireArg(provider, "provider login <provider>"),
+    apiKeyLogin: opts.apiKeyLogin === true || opts.apiKey !== undefined || args.includes("--api-key")
+  };
+}
+
 async function commandLogin(
   args: string[],
   services: ProviderServices,
   opts: RunProviderCommandOptions
 ): Promise<void> {
-  const provider = requireArg(args[0], "provider login <provider>");
+  const { provider, apiKeyLogin } = parseLoginArgs(args, opts);
   assertProviderExists(provider, services);
   const oauthProvider = getOAuthProvider(provider);
-  if (oauthProvider && !opts.apiKey) {
+  if (oauthProvider && !apiKeyLogin) {
     const credentials = await oauthProvider.login({
       onAuth: (info) => {
         (opts.writeOut ?? ((text: string) => output.write(text)))(`${info.url}\n${info.instructions ?? ""}\n`);
@@ -245,6 +257,50 @@ function commandLogout(args: string[], services: ProviderServices, opts: RunProv
   services.authStorage.delete(args[0]);
 }
 
+function commandUse(args: string[], services: ProviderServices, writeOut: (text: string) => void): void {
+  const query = requireArg(args[0], "provider use <model>");
+  const match = findUsableModel(query, services);
+  if (!match) {
+    throw new CodegenieError(
+      "invalid_args",
+      `sorry cannot find model ${query}. please check codegenie provider models for complete list`
+    );
+  }
+  const settings = loadProviderSettings(services.paths);
+  saveProviderSettings({ ...settings, defaultProvider: match.provider, defaultModel: match.id, defaultReasoning: "high" }, services.paths);
+  writeOut(`default model set to ${match.provider}/${match.id} (${match.name}); reasoning set to high\n`);
+}
+
+function findUsableModel(query: string, services: ProviderServices): ProviderModelInfo | undefined {
+  const normalizedQuery = normalizeModelSearch(query);
+  if (normalizedQuery.length === 0) {
+    return undefined;
+  }
+  const candidates = services.modelRegistry.listProviders()
+    .filter((provider) => services.modelRegistry.authStatus(provider).configured)
+    .flatMap((provider) => services.modelRegistry.listModels(provider));
+  const ranked = candidates
+    .map((model, index) => ({ model, index, rank: modelMatchRank(normalizedQuery, model.id) }))
+    .filter((item): item is { model: ProviderModelInfo; index: number; rank: number } => item.rank !== undefined)
+    .sort((a, b) => a.rank - b.rank || b.index - a.index);
+  return ranked[0]?.model;
+}
+
+function modelMatchRank(normalizedQuery: string, modelId: string): number | undefined {
+  const normalizedModelId = normalizeModelSearch(modelId);
+  if (normalizedModelId === normalizedQuery) {
+    return 0;
+  }
+  if (normalizedModelId.startsWith(normalizedQuery)) {
+    return 1;
+  }
+  return normalizedModelId.includes(normalizedQuery) ? 2 : undefined;
+}
+
+function normalizeModelSearch(value: string): string {
+  return value.toLowerCase().replace(/[-.]/gu, "");
+}
+
 async function commandConfig(
   args: string[],
   services: ProviderServices,
@@ -254,7 +310,7 @@ async function commandConfig(
   const [subcommand, ...rest] = args;
   if (!subcommand) {
     const settings = loadProviderSettings(services.paths);
-    writeOut(`${JSON.stringify(providerConfigJson(services, settings, loadResolvedUserConfig(services.paths, env)), null, 2)}\n`);
+    writeOut(renderProviderConfig(services, settings, loadResolvedUserConfig(services.paths, env)));
     return;
   }
 
@@ -278,8 +334,8 @@ async function commandConfig(
       if (!services.modelRegistry.modelExists(provider, model)) {
         throw new CodegenieError("invalid_args", `unknown model ${provider}/${model}`);
       }
-      saveProviderSettings({ ...settings, defaultProvider: provider, defaultModel: model }, services.paths);
-      writeOut(`default model set to ${provider}/${model}\n`);
+      saveProviderSettings({ ...settings, defaultProvider: provider, defaultModel: model, defaultReasoning: "high" }, services.paths);
+      writeOut(`default model set to ${provider}/${model}; reasoning set to high\n`);
       return;
     }
     case "set-depth": {
@@ -312,11 +368,106 @@ function renderProviderList(services: ProviderServices): string {
     const status = services.modelRegistry.authStatus(provider);
     return {
       provider,
-      auth: status.configured ? status.source : "missing"
+      status: renderProviderAuthStatus(status),
+      description: providerDescription(provider)
     };
   });
-  return `${JSON.stringify(rows, null, 2)}\n`;
+  const providerWidth = Math.max(22, ...rows.map((row) => row.provider.length));
+  const statusWidth = Math.max("not authenticated".length + 2, ...rows.map((row) => row.status.length));
+  const byProvider = new Map(rows.map((row) => [row.provider, row]));
+  const popularRows = POPULAR_PROVIDER_IDS
+    .map((provider) => byProvider.get(provider))
+    .filter((row): row is (typeof rows)[number] => row !== undefined);
+  const renderRow = (row: (typeof rows)[number]): string =>
+    `  ${row.provider.padEnd(providerWidth)}  ${row.status.padEnd(statusWidth)}  ${row.description}`;
+  const lines = [];
+  if (popularRows.length > 0) {
+    lines.push("Popular providers:", ...popularRows.map(renderRow), "");
+  }
+  lines.push(
+    "All available providers:",
+    ...rows.map(renderRow),
+    "",
+    "Run `codegenie provider login <provider>` to authenticate.",
+    "Use `codegenie provider login <provider> --api-key` to store an API key instead of OAuth.",
+    ""
+  );
+  return lines.join("\n");
 }
+
+const POPULAR_PROVIDER_IDS = [
+  "anthropic",
+  "openai",
+  "openai-codex",
+  "opencode",
+  "opencode-go",
+  "openrouter"
+] as const;
+
+function renderProviderAuthStatus(status: AuthStatus): string {
+  if (!status.configured) {
+    return "✗ not authenticated";
+  }
+  return status.source === "environment" ? "✓ env configured" : "✓ logged in";
+}
+
+function providerDescription(provider: string): string {
+  return KNOWN_PROVIDER_DESCRIPTIONS[provider] ?? titleCaseProvider(provider);
+}
+
+function titleCaseProvider(provider: string): string {
+  return provider
+    .split(/[-_]/u)
+    .filter(Boolean)
+    .map((part) => part.length <= 3 ? part.toUpperCase() : `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+}
+
+const KNOWN_PROVIDER_DESCRIPTIONS: Record<string, string> = {
+  "amazon-bedrock": "Amazon Bedrock",
+  "ant-ling": "Ant Ling",
+  "anthropic": "Anthropic (Claude Pro/Max OAuth or API key)",
+  "antling": "Ant Ling",
+  "azure-openai-responses": "Azure OpenAI (Responses)",
+  "cerebras": "Cerebras",
+  "cloudflare-ai-gateway": "Cloudflare AI Gateway",
+  "cloudflare-workers-ai": "Cloudflare Workers AI",
+  "deepseek": "DeepSeek",
+  "fireworks": "Fireworks",
+  "github-copilot": "GitHub Copilot",
+  "google": "Google Gemini",
+  "google-antigravity": "Antigravity (Gemini, Claude, GPT-OSS)",
+  "google-gemini-cli": "Google Cloud Code Assist (Gemini CLI)",
+  "google-vertex": "Vertex AI (Gemini via Google Cloud)",
+  "groq": "Groq",
+  "huggingface": "Hugging Face",
+  "kimi-coding": "Kimi For Coding",
+  "kimi-for-coding": "Kimi For Coding",
+  "mistral": "Mistral",
+  "minimax": "MiniMax",
+  "minimax-cn": "MiniMax China",
+  "mimo": "Xiaomi MiMo",
+  "moonshotai": "Moonshot AI",
+  "moonshotai-cn": "Moonshot AI China",
+  "nvidia": "NVIDIA NIM",
+  "nvidia-nim": "NVIDIA NIM",
+  "opencode": "OpenCode",
+  "opencode-go": "OpenCode Go",
+  "opencode-zen": "OpenCode Zen",
+  "openai": "OpenAI (API key)",
+  "openai-codex": "OpenAI Codex (ChatGPT Plus/Pro OAuth)",
+  "openrouter": "OpenRouter",
+  "together": "Together AI",
+  "together-ai": "Together AI",
+  "vercel-ai-gateway": "Vercel AI Gateway",
+  "xai": "xAI",
+  "xiaomi": "Xiaomi MiMo",
+  "xiaomi-token-plan-ams": "Xiaomi MiMo Token Plan (Amsterdam)",
+  "xiaomi-token-plan-cn": "Xiaomi MiMo Token Plan (China)",
+  "xiaomi-token-plan-sgp": "Xiaomi MiMo Token Plan (Singapore)",
+  "zai": "ZAI",
+  "zai-coding-cn": "ZAI Coding China"
+};
 
 function renderAuthStatus(provider: string | undefined, services: ProviderServices): string {
   const providers = provider ? [provider] : services.modelRegistry.listProviders();
@@ -327,8 +478,9 @@ function renderAuthStatus(provider: string | undefined, services: ProviderServic
   return `${JSON.stringify(provider ? statuses[0] : statuses, null, 2)}\n`;
 }
 
-function renderModels(query: string | undefined, all: boolean, services: ProviderServices): string {
+function renderModels(query: string | undefined, all: boolean, services: ProviderServices, env?: NodeJS.ProcessEnv): string {
   const providers = services.modelRegistry.listProviders();
+  const current = currentModelSelection(services, env);
   const providerQuery = query && services.modelRegistry.providerExists(query) ? query : undefined;
   const needle = providerQuery ? undefined : query?.toLowerCase();
   const rows = services.modelRegistry
@@ -340,10 +492,174 @@ function renderModels(query: string | undefined, all: boolean, services: Provide
       return available && matches;
     });
 
-  if (query && !providerQuery && rows.length === 0 && providers.includes(query)) {
-    return "[]\n";
+  if (rows.length === 0) {
+    if (providerQuery) {
+      return `No models available for ${providerQuery}${all ? "" : " with current authentication"}.\n`;
+    }
+    if (query) {
+      return `No models matched ${query}${all ? "" : " among authenticated providers"}.\n`;
+    }
+    return [
+      "No models available for authenticated providers.",
+      "Run `codegenie provider login <provider>` to authenticate, or `codegenie provider models --all` to include unauthenticated providers.",
+      ""
+    ].join("\n");
   }
-  return `${JSON.stringify(rows, null, 2)}\n`;
+
+  const renderedRows = rows.map((model) => ({
+    model,
+    name: model.name,
+    id: model.id,
+    context: formatContextWindow(model.contextWindow),
+    thinking: formatThinkingLevels(model),
+    current: isCurrentModel(model, current)
+  }));
+  const nameWidth = Math.max(...renderedRows.map((row) => row.name.length));
+  const idWidth = Math.max(...renderedRows.map((row) => row.id.length));
+  const contextWidth = Math.max(...renderedRows.map((row) => row.context.length));
+  const thinkingWidth = Math.max(...renderedRows.map((row) => row.thinking.length));
+
+  const grouped = new Map<string, typeof renderedRows>();
+  for (const provider of providers) {
+    const providerRows = renderedRows.filter((row) => row.model.provider === provider);
+    if (providerRows.length > 0) {
+      grouped.set(provider, providerRows);
+    }
+  }
+  const lines: string[] = [];
+  for (const [provider, models] of grouped) {
+    if (lines.length > 0) {
+      lines.push("");
+    }
+    lines.push(provider);
+    for (const row of models) {
+      const base = `* ${row.name.padEnd(nameWidth)}  ${row.id.padEnd(idWidth)}  ${row.context.padEnd(contextWidth)}  ${row.thinking.padEnd(thinkingWidth)}`;
+      lines.push(row.current ? `${base}  [✓ currently in use]` : base.trimEnd());
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+function renderProviderConfig(
+  services: ProviderServices,
+  settings: ProviderSettings,
+  layers: ProviderConfigLayers
+): string {
+  const effectiveProvider = layers.effective.config.llm.provider;
+  const effectiveModel = layers.effective.config.llm.model;
+  const effectiveReasoning = layers.effective.config.llm.reasoning ?? "high";
+  const effectiveReasoningSource = layers.effective.sources["llm.reasoning"] ?? "built-in";
+  const auth = effectiveProvider !== undefined ? services.modelRegistry.authStatus(effectiveProvider) : undefined;
+  const lines = [
+    "Provider configuration:",
+    "",
+    "Paths:",
+    `  home       ${services.paths.home}`,
+    `  settings   ${services.paths.settingsPath}`,
+    `  auth       ${services.paths.authPath}`,
+    "",
+    "Stored defaults:",
+    `  provider   ${settings.defaultProvider ?? "unset"}`,
+    `  model      ${settings.defaultModel ?? "unset"}`,
+    `  reasoning  ${settings.defaultReasoning ?? "unset"}`,
+    `  depth      ${settings.defaultDepth ?? "unset"}`,
+    "",
+    "Effective for reviews:",
+    `  provider   ${formatConfigValue(effectiveProvider, layers.effective.sources["llm.provider"])}`,
+    `  model      ${formatConfigValue(effectiveModel, layers.effective.sources["llm.model"])}`,
+    `  reasoning  ${formatConfigValue(effectiveReasoning, effectiveReasoningSource)}`,
+    `  depth      ${formatConfigValue(layers.effective.config.review.depth, layers.effective.sources["review.depth"])}`,
+    `  auth       ${auth ? formatProviderAuth(auth) : "not checked; no provider selected"}`,
+    "",
+    "Commands:",
+    "  codegenie provider use <model>",
+    "  codegenie provider config set-provider <provider>",
+    "  codegenie provider config set-model <provider> <model>",
+    "  codegenie provider config set-reasoning <low|medium|high|xhigh|auto>",
+    "  codegenie provider config set-depth <light|normal|deep>",
+    "",
+    "Depth controls review budget and investigation intensity. Reasoning controls model thinking effort.",
+    ""
+  ];
+  return lines.join("\n");
+}
+
+function formatConfigValue(value: string | undefined, source: string | undefined): string {
+  if (value === undefined) {
+    return "unset";
+  }
+  return source === undefined ? value : `${value} (${sourceLabel(source)})`;
+}
+
+function sourceLabel(source: string): string {
+  switch (source) {
+    case "provider-settings":
+      return "settings";
+    case "user-config":
+      return "user config";
+    case "repo-config":
+      return "repo config";
+    case "environment":
+      return "environment";
+    case "cli":
+      return "cli";
+    case "defaults":
+      return "default";
+    case "built-in":
+      return "built in";
+    default:
+      return source;
+  }
+}
+
+function formatProviderAuth(status: AuthStatus): string {
+  if (!status.configured) {
+    return `not authenticated (${status.provider})`;
+  }
+  return status.source === "environment"
+    ? `environment api key (${status.provider})`
+    : `logged in (${status.provider})`;
+}
+
+function currentModelSelection(
+  services: ProviderServices,
+  env?: NodeJS.ProcessEnv
+): { provider?: string; model?: string } {
+  const effective = loadResolvedUserConfig(services.paths, env).effective.config.llm;
+  return {
+    ...(effective.provider !== undefined ? { provider: effective.provider } : {}),
+    ...(effective.model !== undefined ? { model: effective.model } : {})
+  };
+}
+
+function isCurrentModel(model: ProviderModelInfo, current: { provider?: string; model?: string }): boolean {
+  return current.provider === model.provider && current.model === model.id;
+}
+
+function formatContextWindow(contextWindow: number | undefined): string {
+  return `${contextWindow === undefined ? "unknown" : formatTokenCount(contextWindow)} context`;
+}
+
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${formatCompactNumber(value / 1_000_000)}M`;
+  }
+  if (value >= 1_000) {
+    return `${formatCompactNumber(value / 1_000)}k`;
+  }
+  return value.toLocaleString("en-US");
+}
+
+function formatCompactNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/u, "");
+}
+
+function formatThinkingLevels(model: ProviderModelInfo): string {
+  if (model.thinkingLevels.length > 0) {
+    return model.thinkingLevels.join(", ");
+  }
+  return model.reasoning ? "reasoning supported" : "no reasoning";
 }
 
 function providerConfigJson(
