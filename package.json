@@ -1,5 +1,5 @@
 {
-  "name": "codegenie",
+  "name": "@0xsequence/codegenie",
   "version": "0.1.0",
   "description": "High-signal AI code review agent",
   "type": "module",
@@ -22,7 +22,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@earendil-works/pi-ai": "0.79.6",
+    "@earendil-works/pi-ai": "0.79.8",
     "@vscode/ripgrep": "1.18.0",
     "commander": "15.0.0",
     "execa": "9.6.1",
@@ -37,10 +37,10 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/node": "25.9.3",
+    "@types/node": "26.0.0",
     "@types/picomatch": "4.0.3",
     "tsx": "4.22.4",
     "typescript": "6.0.3",
-    "vitest": "4.1.8"
+    "vitest": "4.1.9"
   }
 }
