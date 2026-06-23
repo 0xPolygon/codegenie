@@ -83,7 +83,7 @@ const lookup = await withRepositoryToolCallContext(
 results = lookup.results.filter((result) => changedFiles.has(result.path));
 ```
 
-Call-site context hint resolution already has a scoped lookup helper and passes `pathGlob` when appropriate. The relationship graph pass should apply the same idea, but with one extra invariant: the scoped lookup must cover every changed file that could receive a relationship edge. Stage 6 relationship edges are only built from changed-file hits, so a scope that covers all changed files is behavior-preserving while avoiding repo-wide verification for broad symbols.
+Call-site context hint resolution already has a scoped lookup helper and passes `pathGlob` when appropriate. The relationship graph pass should apply the same idea, but with one extra invariant: the scoped lookup must cover the same changed-file set that Stage 6 filters results against. That keeps the change small and behavior-preserving.
 
 ## Goal
 
@@ -91,7 +91,7 @@ Reduce avoidable Stage 6 degraded tool results caused by broad changed-symbol na
 
 - Keep same-file and same-package changed-code relationships.
 - Keep `pathGlob` as a strict hard filter.
-- Use scoped search only when the scope covers every included changed file.
+- Use scoped search only when the scope covers every included changed file path.
 - Keep current repo-wide behavior when no safe coverage-preserving scope can be derived.
 - Do not change model-facing tool semantics.
 
@@ -106,11 +106,20 @@ Reduce avoidable Stage 6 degraded tool results caused by broad changed-symbol na
 
 ### 1. Add coverage-preserving scoped lookup for Stage 6 relationship edges
 
-In `addSymbolMentionEdges()`, derive a changed-code search scope before the repo-wide search. The derived scope must match every included changed file path, because relationship edges are only built from changed-file mention results.
+In `addSymbolMentionEdges()`, derive a changed-code search scope before the repo-wide search. The correctness invariant is:
+
+```text
+For every path in the existing changedFiles filter set, the generated pathGlob
+must match that path under the same normalization and matching semantics used
+by repository search.
+```
+
+Relationship edges are still built from `lookup.results.filter((result) => changedFiles.has(result.path))`. A scope that covers all of `changedFiles` can produce the same changed-file edge candidates as the current repo-wide lookup. A scope that fails to cover any changed file is unsafe and must be rejected.
 
 ```text
 preferred scope:
-  common changed directory + language extension, e.g. lib/edge/*.go or lib/edge/**/*.go
+  common non-root changed directory at depth >= 1 + shared extension,
+  e.g. lib/edge/**/*.go
 
 single-file scope:
   exact changed file path, e.g. lib/edge/service.go
@@ -118,6 +127,8 @@ single-file scope:
 no scope:
   if no single safe glob can cover every included changed file without becoming too broad
 ```
+
+Use one deterministic rule for v1: exact safe file path for a single changed path; otherwise a single common non-root directory at depth >= 1 plus a single shared extension, emitted as `<dir>/**/*<ext>`. Return no scope for root-level common directories, mixed extensions, mixed unrelated roots, empty changed sets, or paths containing glob metacharacters such as `*`, `?`, `[`, `]`, `{`, or `}`. Do not add escaping in this first pass.
 
 Then run:
 
@@ -132,13 +143,15 @@ else:
 
 Important: do not perform a repo-wide fallback after a successful coverage-preserving scoped lookup just because no relationship edge was produced. Since the scope already covers all changed files, the repo-wide result cannot add a changed-file relationship edge except by relying on a bug or a deliberately incomplete scope. If tests expose such a bug, fix scope derivation or glob matching instead of adding broad fallback.
 
+This intentionally diverges from the packet-context call-site hint path. Call-site callers may live outside the hinted file, so the call-site helper uses repo-wide fallback when the same-file search is empty. Relationship symbol edges only attach to changed files, so a coverage-preserving scoped lookup must not fall back repo-wide on empty scoped results.
+
 ### 2. Keep repo-wide lookup as the fallback for unscopable diffs
 
 Repo-wide lookup is still appropriate when no safe coverage-preserving scope can be derived. Examples:
 
 - changed files span unrelated top-level directories;
 - changed files have mixed extensions and a common directory glob would be root-level or otherwise too broad;
-- scope construction cannot prove that every included changed file is covered.
+- scope construction cannot prove that every changed path is covered.
 
 Do not add broad-symbol skipping in the first implementation. Skipping repo-wide lookup for `New`, `Run`, or `Start` in unscopable diffs could silently lose relationship edges. If broad symbols continue to create noisy Stage 6 pressure in unscopable diffs, add a second plan with run evidence and regression fixtures.
 
@@ -172,9 +185,6 @@ relationship_symbol_mentions_repo_wide
   edgeCount
   degraded
   degradationReason?
-
-relationship_symbol_mentions_scope_unavailable
-  reason: mixed_roots | mixed_extensions | root_scope | unsafe_glob
 ```
 
 Do not add these as warn-level events. They are normal context-shaping decisions.
@@ -194,13 +204,17 @@ Do not add these as warn-level events. They are normal context-shaping decisions
 
 ## Implementation Steps
 
-1. Extract a helper in `packet-builder.ts`:
+1. Extract a small helper in `packet-builder.ts`:
 
    ```ts
-   function relationshipMentionScope(planned: PlannedHunk[]): string | undefined
+   type RelationshipMentionScope =
+     | { pathGlob: string; changedPaths: string[] }
+     | { reason: "no_changed_files" | "mixed_roots" | "mixed_extensions" | "root_scope" | "unsafe_glob"; changedPaths: string[] };
+
+   function relationshipMentionScope(planned: PlannedHunk[]): RelationshipMentionScope
    ```
 
-   It should derive a safe glob from changed file paths. For a single changed file, return that exact file path. For a common non-root directory and shared extension, return the narrowest glob that covers every included changed file. If deriving a safe coverage-preserving scope is unclear, return `undefined` and keep current behavior.
+   It should derive a safe glob from `dedupe(planned.map((entry) => entry.file.path))`. For a single safe changed file, return that exact file path. For a common non-root directory and shared extension, return `<dir>/**/*<ext>`. If deriving a safe coverage-preserving scope is unclear, return a reason and keep current repo-wide behavior.
 
 2. Add a small verification helper or test assertion for scope derivation:
 
@@ -208,13 +222,14 @@ Do not add these as warn-level events. They are normal context-shaping decisions
    function relationshipMentionScopeCoversFiles(pathGlob: string, paths: string[]): boolean
    ```
 
-   Use the same matching semantics as repository search where practical. At minimum, tests must cover direct children and nested children for the generated glob style.
+   Reuse the same matching semantics as repository search: normalize with `containGlob(...)`, then match with `picomatch(normalizedGlob, { dot: true })`. Do not hand-roll glob coverage checks. At minimum, tests must cover direct children and nested children for the generated glob style.
 
 3. Modify `addSymbolMentionEdges()`:
    - compute scope once from planned hunks;
    - call `findSymbolMentions(..., { pathGlob: scope })` when scope exists;
    - build relationship edges from scoped results filtered to changed files;
-   - keep existing behavior when no scope can be derived.
+   - keep existing repo-wide behavior when no scope can be derived;
+   - do not add repo-wide fallback after scoped lookup returns zero results or zero edges.
 
 4. Keep relationship edge semantics unchanged:
    - same edge source (`symbol_mention`);
@@ -232,7 +247,7 @@ Add focused coverage for:
 
 - A broad changed symbol named `New` in `lib/edge/service.go` with unrelated `New` mentions elsewhere:
   - Stage 6 uses scoped `pathGlob`.
-  - It does not perform a repo-wide lookup when the scoped glob covers every changed file.
+  - It does not perform a repo-wide lookup when the scoped glob covers every changed path.
   - Relationship edges among changed `lib/edge` files are still built.
 
 - A multi-root or mixed-extension diff where no safe single scope exists:
@@ -242,7 +257,8 @@ Add focused coverage for:
 - Scope derivation:
   - exact single-file scopes cover the changed file;
   - common-directory/shared-extension scopes cover direct-child changed files and nested changed files;
-  - root-level or unclear scopes return `undefined`.
+  - root-level or unclear scopes return the appropriate reason.
+  - paths with glob metacharacters return reason `unsafe_glob`.
 
 - `pathGlob` remains hard-filtered for repository tools:
   - `findSymbolMentions("New", { pathGlob: "lib/edge/**/*.go" })` returns only matching paths under the glob.
@@ -250,7 +266,7 @@ Add focused coverage for:
 
 - Telemetry:
   - `relationship_symbol_mentions_scoped` is emitted for scoped lookups.
-  - `relationship_symbol_mentions_scope_unavailable` is emitted when Stage 6 keeps repo-wide behavior because no safe scope exists.
+  - `relationship_symbol_mentions_repo_wide` is emitted with a reason when Stage 6 keeps repo-wide behavior because no safe scope exists.
   - No warn/error telemetry is emitted for normal scoped/fallback decisions.
 
 ## Validation
@@ -259,7 +275,8 @@ Add focused coverage for:
 - Focused tests for packet-builder / repository intelligence.
 - `pnpm run build`
 - Re-run a review on the trails-api branch from run `20260623-131851-e65f8991` and confirm:
-  - Stage 6 no longer records a degraded `find_symbol_mentions(New)` from relationship building.
+  - Stage 6 no longer records a repo-wide relationship-building `find_symbol_mentions(New)` when a safe scope exists.
+  - If the scoped changed-file candidates are syntax-verifiable, the prior degraded `find_symbol_mentions(New)` pressure disappears.
   - Packets still show full context quality.
   - Relationship graph still attaches the `New`/`edgeRail`/test relationships needed by the review.
   - Final review still reports no credible findings.
@@ -268,9 +285,10 @@ Add focused coverage for:
 
 - Stage 6 relationship lookups are scoped-first for changed-symbol mentions.
 - `pathGlob` remains a hard filter in the public tool.
-- Broad symbols no longer trigger repo-wide relationship lookup when the changed-file set has a safe coverage-preserving scope.
+- Broad symbols no longer trigger repo-wide relationship lookup when the changed paths have a safe coverage-preserving scope.
+- Scope coverage is proven with the same `containGlob` + `picomatch(..., { dot: true })` semantics used by repository search.
 - Relationship edges are not lost for the common changed-file/same-package case.
-- The trails-api run pattern no longer reports avoidable Stage 6 degraded tool pressure for `New`.
+- The trails-api run pattern no longer performs the avoidable repo-wide Stage 6 relationship lookup for `New`; degraded pressure should disappear when the scoped candidates are syntax-verifiable.
 
 ## Stop Conditions
 
