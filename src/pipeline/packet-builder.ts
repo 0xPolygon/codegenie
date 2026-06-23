@@ -1,5 +1,8 @@
+import path from "node:path";
+import picomatch from "picomatch";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
+import { containGlob } from "../repo/path-guard.js";
 import { buildTestCoverageDelta } from "../repo/test-coverage-delta.js";
 import type {
   CodegenieConfig,
@@ -66,6 +69,10 @@ type PacketGroup = {
 
 type HunkRelationshipSource = "same_symbol" | "symbol_mention" | "planner_hint";
 type HunkRelationshipStrength = "strong" | "medium" | "weak";
+
+type RelationshipMentionScope =
+  | { pathGlob: string; changedPaths: string[] }
+  | { reason: "no_changed_files" | "mixed_roots" | "mixed_extensions" | "root_scope" | "unsafe_glob"; changedPaths: string[] };
 
 type HunkRelationshipEdge = {
   fromHunkId: string;
@@ -760,11 +767,14 @@ async function addSymbolMentionEdges(
 ): Promise<void> {
   const changedBySymbol = changedHunksBySymbol(planned);
   const changedFiles = new Set(planned.map((entry) => entry.file.path));
+  const mentionScope = relationshipMentionScope(planned);
   const symbols = dedupe(planned.flatMap((entry) => primarySymbolName(entry) ?? []))
     .filter((symbol) => bareIdentifier(symbol).length > 0)
     .slice(0, MAX_RELATIONSHIP_SYMBOL_LOOKUPS);
   for (const symbol of symbols) {
     let results: SearchResult[] = [];
+    let lookupMeta: ToolResultMeta | undefined;
+    let lookupResultCount = 0;
     try {
       const lookup = await withRepositoryToolCallContext(
         repoIndex.tools,
@@ -772,9 +782,12 @@ async function addSymbolMentionEdges(
         () => repoIndex.tools.findSymbolMentions(bareIdentifier(symbol), {
           source: { kind: "head" },
           contextMode: "symbols",
-          maxResults: MAX_RELATIONSHIP_MENTION_RESULTS
+          maxResults: MAX_RELATIONSHIP_MENTION_RESULTS,
+          ...("pathGlob" in mentionScope ? { pathGlob: mentionScope.pathGlob } : {})
         })
       );
+      lookupMeta = lookup.meta;
+      lookupResultCount = lookup.results.length;
       results = lookup.results.filter((result) => changedFiles.has(result.path));
     } catch (error) {
       telemetry.event({
@@ -786,6 +799,7 @@ async function addSymbolMentionEdges(
       continue;
     }
 
+    const edgeCountBeforeLookup = graph.edges.length;
     const sourceHunks = changedBySymbol.get(normalizedSymbolKey(symbol)) ?? [];
     const sourceIdentities = new Set(sourceHunks.flatMap(changedLocalSymbolKeys));
     if (sourceIdentities.size > 1) {
@@ -795,6 +809,7 @@ async function addSymbolMentionEdges(
         message: "relationship_symbol_mentions_ambiguous",
         data: { symbol, changedSymbolIdentities: sourceIdentities.size }
       });
+      emitRelationshipSymbolLookupTelemetry(telemetry, mentionScope, symbol, lookupResultCount, results.length, lookupMeta, graph.edges.length - edgeCountBeforeLookup);
       continue;
     }
     for (const result of results) {
@@ -825,7 +840,106 @@ async function addSymbolMentionEdges(
         }
       }
     }
+    emitRelationshipSymbolLookupTelemetry(telemetry, mentionScope, symbol, lookupResultCount, results.length, lookupMeta, graph.edges.length - edgeCountBeforeLookup);
   }
+}
+
+function relationshipMentionScope(planned: PlannedHunk[]): RelationshipMentionScope {
+  const changedPaths = cleanStrings(planned.map((entry) => entry.file.path));
+  if (changedPaths.length === 0) {
+    return { reason: "no_changed_files", changedPaths };
+  }
+  if (changedPaths.some(hasGlobMetacharacter)) {
+    return { reason: "unsafe_glob", changedPaths };
+  }
+  if (changedPaths.length === 1) {
+    const pathGlob = changedPaths[0] as string;
+    return relationshipMentionScopeCoversFiles(pathGlob, changedPaths)
+      ? { pathGlob, changedPaths }
+      : { reason: "unsafe_glob", changedPaths };
+  }
+
+  if (changedPaths.every((changedPath) => !changedPath.includes("/"))) {
+    return { reason: "root_scope", changedPaths };
+  }
+  const roots = new Set(changedPaths.map((changedPath) => changedPath.split("/")[0] ?? ""));
+  if (roots.size > 1) {
+    return { reason: "mixed_roots", changedPaths };
+  }
+  const extensions = new Set(changedPaths.map((changedPath) => path.posix.extname(changedPath)));
+  if (extensions.size !== 1 || extensions.has("")) {
+    return { reason: "mixed_extensions", changedPaths };
+  }
+  const commonDir = commonDirectory(changedPaths);
+  if (commonDir === undefined || commonDir.length === 0 || commonDir === ".") {
+    return { reason: "root_scope", changedPaths };
+  }
+  const extension = [...extensions][0];
+  if (extension === undefined) {
+    return { reason: "mixed_extensions", changedPaths };
+  }
+  const pathGlob = `${commonDir}/**/*${extension}`;
+  return relationshipMentionScopeCoversFiles(pathGlob, changedPaths)
+    ? { pathGlob, changedPaths }
+    : { reason: "unsafe_glob", changedPaths };
+}
+
+function relationshipMentionScopeCoversFiles(pathGlob: string, paths: string[]): boolean {
+  // Keep this proof aligned with SearchService pathGlob normalization and its
+  // tracked-blob post-filter. containGlob currently ignores repoRoot here.
+  const normalizedGlob = containGlob("", pathGlob);
+  const isMatch = picomatch(normalizedGlob, { dot: true });
+  return paths.every((changedPath) => isMatch(changedPath));
+}
+
+function commonDirectory(paths: string[]): string | undefined {
+  const dirs = paths.map((changedPath) => path.posix.dirname(changedPath));
+  const first = dirs[0];
+  if (first === undefined) {
+    return undefined;
+  }
+  const commonParts = first.split("/");
+  for (const dir of dirs.slice(1)) {
+    const parts = dir.split("/");
+    let index = 0;
+    while (index < commonParts.length && index < parts.length && commonParts[index] === parts[index]) {
+      index += 1;
+    }
+    commonParts.length = index;
+  }
+  return commonParts.join("/");
+}
+
+function hasGlobMetacharacter(value: string): boolean {
+  return /[*?[\]{}]/u.test(value);
+}
+
+function emitRelationshipSymbolLookupTelemetry(
+  telemetry: TelemetryRecorder,
+  scope: RelationshipMentionScope,
+  symbol: string,
+  resultCount: number,
+  changedResultCount: number,
+  meta: ToolResultMeta | undefined,
+  edgeCount: number
+): void {
+  telemetry.event({
+    stage: 6,
+    level: "debug",
+    message: "pathGlob" in scope ? "relationship_symbol_mentions_scoped" : "relationship_symbol_mentions_repo_wide",
+    data: {
+      symbol,
+      ...("pathGlob" in scope ? { pathGlob: scope.pathGlob } : { reason: scope.reason }),
+      changedPathCount: scope.changedPaths.length,
+      resultCount,
+      changedResultCount,
+      edgeCount,
+      degraded: meta?.degraded === true,
+      ...(meta?.degradationReason !== undefined ? { degradationReason: meta.degradationReason } : {}),
+      ...(meta?.truncated !== undefined ? { truncated: meta.truncated } : {}),
+      ...(meta?.omittedCount !== undefined ? { omittedCount: meta.omittedCount } : {})
+    }
+  });
 }
 
 function addRelationshipEdge(graph: HunkRelationshipGraph, edge: HunkRelationshipEdge): void {

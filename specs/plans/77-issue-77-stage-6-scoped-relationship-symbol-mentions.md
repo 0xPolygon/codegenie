@@ -1,6 +1,6 @@
 # Issue 77: Stage 6 Scoped Relationship Symbol Mention Lookups
 
-Status: PENDING
+Status: COMPLETE
 Planned from: trails-api run `/home/peter/Dev/0xsequence/trails-api/.codegenie/runs/20260623-131851-e65f8991`, 2026-06-23
 Planned at: commit `2bf82a1` (branch `next`)
 Recommended priority: medium. This is a low-risk Stage 6 context-quality improvement: reduce noisy degraded tool results from broad deterministic symbol mention searches without weakening repo-wide model tools or hiding real cross-file relationships.

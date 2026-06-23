@@ -1165,6 +1165,223 @@ describe("phase 5 pipeline regressions", () => {
     ]);
   });
 
+  it("scopes Stage 6 relationship symbol mention lookups when changed files share a safe glob", async () => {
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const mentionCalls: Array<{ symbolName: string; pathGlob?: string }> = [];
+    const serviceFile = relationshipDiffFile("lib/edge/service.go", "h-new", "New", 10);
+    const railFile = relationshipDiffFile("lib/edge/nested/rail.go", "h-rail", "edgeRail", 20);
+    const symbolFacts = [
+      relationshipSymbolFact("lib/edge/service.go", "h-new", "New", [10, 13]),
+      relationshipSymbolFact("lib/edge/nested/rail.go", "h-rail", "edgeRail", [20, 22])
+    ];
+    const tools = {
+      ...fakeTools(),
+      findSymbolMentions: async (symbolName: string, options: SymbolMentionOptions = {}) => {
+        mentionCalls.push({ symbolName, ...(options.pathGlob !== undefined ? { pathGlob: options.pathGlob } : {}) });
+        return {
+          results: symbolName === "New"
+            ? [{
+                path: "lib/edge/nested/rail.go",
+                line: 21,
+                matchText: "return New().Rail()",
+                enclosingSymbol: { path: "lib/edge/nested/rail.go", name: "edgeRail", kind: "function" as const, lineRange: [20, 22] as [number, number] }
+              }]
+            : symbolName === "edgeRail"
+              ? [{
+                  path: "lib/edge/service.go",
+                  line: 12,
+                  matchText: "return edgeRail()",
+                  enclosingSymbol: { path: "lib/edge/service.go", name: "New", kind: "function" as const, lineRange: [10, 13] as [number, number] }
+                }]
+              : [],
+          meta
+        };
+      },
+      readSymbol: async (pathName: string, selector: { symbolName?: string; line?: number }) => {
+        const symbolName = selector.symbolName ?? (pathName.includes("rail") ? "edgeRail" : "New");
+        return {
+          text: `func ${symbolName}() {\n  return nil\n}`,
+          symbol: {
+            path: pathName,
+            name: symbolName,
+            kind: "function" as const,
+            lineRange: symbolName === "New" ? [10, 13] as [number, number] : [20, 22] as [number, number]
+          },
+          meta
+        };
+      }
+    };
+
+    const packets = await buildReviewPackets(
+      relationshipPlan([
+        ["h-new", "lib/edge/service.go"],
+        ["h-rail", "lib/edge/nested/rail.go"]
+      ]),
+      [serviceFile, railFile],
+      [relationshipFacts(serviceFile), relationshipFacts(railFile)],
+      {
+        ...fakeRepositoryIndex(tools),
+        symbolFacts
+      },
+      {
+        ...nullTelemetry(),
+        event: (event) => events.push(event)
+      },
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(mentionCalls).toHaveLength(2);
+    expect(mentionCalls.every((call) => call.pathGlob === "lib/edge/**/*.go")).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 6,
+        level: "debug",
+        message: "relationship_symbol_mentions_scoped",
+        data: expect.objectContaining({ symbol: "New", pathGlob: "lib/edge/**/*.go", edgeCount: 2 })
+      })
+    ]));
+    expect(events.some((event) => event.message === "relationship_symbol_mentions_repo_wide")).toBe(false);
+    const servicePacket = packets.find((packet) => packet.hunks.some((hunk) => hunk.hunkId === "h-new"));
+    expect(servicePacket?.relatedChangedContext).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        hunkId: "h-rail",
+        path: "lib/edge/nested/rail.go",
+        symbol: "edgeRail",
+        relationshipSource: "symbol_mention"
+      })
+    ]));
+  });
+
+  it("keeps repo-wide Stage 6 relationship lookups for mixed-root changed files", async () => {
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const mentionCalls: Array<{ symbolName: string; pathGlob?: string }> = [];
+    const serviceFile = relationshipDiffFile("lib/edge/service.go", "h-new", "New", 10);
+    const mainFile = relationshipDiffFile("cmd/app/main.go", "h-main", "main", 40);
+    const symbolFacts = [
+      relationshipSymbolFact("lib/edge/service.go", "h-new", "New", [10, 13]),
+      relationshipSymbolFact("cmd/app/main.go", "h-main", "main", [40, 43])
+    ];
+    const tools = {
+      ...fakeTools(),
+      findSymbolMentions: async (symbolName: string, options: SymbolMentionOptions = {}) => {
+        mentionCalls.push({ symbolName, ...(options.pathGlob !== undefined ? { pathGlob: options.pathGlob } : {}) });
+        return {
+          results: symbolName === "New"
+            ? [{
+                path: "cmd/app/main.go",
+                line: 41,
+                matchText: "svc := New()",
+                enclosingSymbol: { path: "cmd/app/main.go", name: "main", kind: "function" as const, lineRange: [40, 43] as [number, number] }
+              }]
+            : [],
+          meta
+        };
+      },
+      readSymbol: async (pathName: string, selector: { symbolName?: string; line?: number }) => {
+        const symbolName = selector.symbolName ?? (pathName.includes("main") ? "main" : "New");
+        return {
+          text: `func ${symbolName}() {\n  return\n}`,
+          symbol: {
+            path: pathName,
+            name: symbolName,
+            kind: "function" as const,
+            lineRange: symbolName === "New" ? [10, 13] as [number, number] : [40, 43] as [number, number]
+          },
+          meta
+        };
+      }
+    };
+
+    const packets = await buildReviewPackets(
+      relationshipPlan([
+        ["h-new", "lib/edge/service.go"],
+        ["h-main", "cmd/app/main.go"]
+      ]),
+      [serviceFile, mainFile],
+      [relationshipFacts(serviceFile), relationshipFacts(mainFile)],
+      {
+        ...fakeRepositoryIndex(tools),
+        symbolFacts
+      },
+      {
+        ...nullTelemetry(),
+        event: (event) => events.push(event)
+      },
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    expect(mentionCalls).toHaveLength(2);
+    expect(mentionCalls.every((call) => call.pathGlob === undefined)).toBe(true);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 6,
+        level: "debug",
+        message: "relationship_symbol_mentions_repo_wide",
+        data: expect.objectContaining({ symbol: "New", reason: "mixed_roots", edgeCount: 2 })
+      })
+    ]));
+    const servicePacket = packets.find((packet) => packet.hunks.some((hunk) => hunk.hunkId === "h-new"));
+    expect(servicePacket?.relatedChangedContext).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        hunkId: "h-main",
+        path: "cmd/app/main.go",
+        symbol: "main",
+        relationshipSource: "symbol_mention"
+      })
+    ]));
+  });
+
+  it("reports precise repo-wide Stage 6 relationship lookup reasons for root and mixed-extension scopes", async () => {
+    async function runCase(files: DiffFile[], expectedReason: string): Promise<Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">>> {
+      const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+      const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+      const symbolFacts = files.map((file, index) =>
+        relationshipSymbolFact(file.path, file.hunks[0]?.id ?? `h-${String(index)}`, index === 0 ? "New" : "UseNew", [10 + index * 10, 13 + index * 10])
+      );
+      const tools = {
+        ...fakeTools(),
+        findSymbolMentions: async () => ({ results: [], meta })
+      };
+
+      await buildReviewPackets(
+        relationshipPlan(files.map((file) => [file.hunks[0]?.id ?? "h", file.path])),
+        files,
+        files.map(relationshipFacts),
+        {
+          ...fakeRepositoryIndex(tools),
+          symbolFacts
+        },
+        {
+          ...nullTelemetry(),
+          event: (event) => events.push(event)
+        },
+        { config: config(), enabledLenses: ["core/code-review"] }
+      );
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          stage: 6,
+          level: "debug",
+          message: "relationship_symbol_mentions_repo_wide",
+          data: expect.objectContaining({ reason: expectedReason })
+        })
+      ]));
+      return events;
+    }
+
+    await runCase([
+      relationshipDiffFile("a.go", "h-a", "New", 10),
+      relationshipDiffFile("b.go", "h-b", "UseNew", 20)
+    ], "root_scope");
+
+    await runCase([
+      relationshipDiffFile("lib/edge/service.go", "h-service", "New", 10),
+      relationshipDiffFile("lib/edge/README", "h-readme", "UseNew", 20)
+    ], "mixed_extensions");
+  });
+
   it("keeps relationship attention notes ahead of planner notes when the cap is tight", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
@@ -11528,6 +11745,66 @@ function fakeDiffFile(path: string, content = "export const value = 1;"): DiffFi
         lines: [{ kind: "add", content, newLineNumber: 1 }]
       }
     ]
+  };
+}
+
+function relationshipDiffFile(filePath: string, hunkId: string, symbol: string, startLine: number): DiffFile {
+  return {
+    path: filePath,
+    status: "modified",
+    language: "go",
+    hunks: [
+      {
+        id: hunkId,
+        path: filePath,
+        oldStart: startLine,
+        oldLines: 3,
+        newStart: startLine,
+        newLines: 3,
+        header: `@@ -${String(startLine)},3 +${String(startLine)},3 @@`,
+        lines: [
+          { kind: "context", content: `func ${symbol}() {`, oldLineNumber: startLine, newLineNumber: startLine },
+          { kind: "add", content: "  return nil", newLineNumber: startLine + 1 },
+          { kind: "context", content: "}", oldLineNumber: startLine + 2, newLineNumber: startLine + 2 }
+        ]
+      }
+    ]
+  };
+}
+
+function relationshipSymbolFact(filePath: string, hunkId: string, symbol: string, symbolRange: [number, number]): HunkSymbolFacts {
+  return {
+    path: filePath,
+    hunkId,
+    enclosingSymbol: symbol,
+    symbolKind: "function",
+    symbolRange,
+    changedLines: [symbolRange[0] + 1],
+    changedLinesSide: "new",
+    source: "tree-sitter",
+    confidence: "syntactic"
+  };
+}
+
+function relationshipFacts(file: DiffFile): FileFacts {
+  return {
+    ...fakeFacts(file.path, "per-hunk"),
+    language: file.language,
+    hunkCount: file.hunks.length
+  };
+}
+
+function relationshipPlan(entries: Array<[string, string]>): ReviewPlan {
+  return {
+    diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" },
+    coverage: entries.map(([hunkId, filePath]) => ({
+      hunkId,
+      path: filePath,
+      coverage: "normal",
+      lenses: ["core/code-review"],
+      surroundingContextHints: [],
+      reason: "review changed relationship"
+    }))
   };
 }
 
