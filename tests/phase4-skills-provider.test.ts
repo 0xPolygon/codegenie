@@ -10,11 +10,12 @@ import {
   createFileAuthStorage,
   type PiAuthStorage,
   type PiModelRegistry,
+  type ProviderModelInfo,
   type ProviderAuthEntry,
   type ProviderServices,
   runProviderCommand
 } from "../src/provider/provider-services.js";
-import { loadProviderSettings } from "../src/provider/provider-settings.js";
+import { loadProviderSettings, saveProviderSettings } from "../src/provider/provider-settings.js";
 import { buildLensRegistry, droppedLensesFromFailures } from "../src/skills/lens-registry.js";
 import { fenceUntrusted, projectSkills } from "../src/skills/prompt-builder.js";
 import { loadSkills, type Skill } from "../src/skills/skill-loader.js";
@@ -340,6 +341,167 @@ describe("Phase 4 provider commands", () => {
     expect(printed).toMatch(/  other\s+✓ env configured\s+Other/u);
   });
 
+  it("prints provider models grouped by authenticated provider by default", async () => {
+    const services = fakeProviderServices(tempDir());
+    services.authStorage.set("fake", {
+      type: "api_key",
+      apiKey: "fake-secret",
+      createdAt: new Date(0).toISOString()
+    });
+    const output: string[] = [];
+
+    await runProviderCommand(["provider", "models"], {
+      services,
+      writeOut: (text) => output.push(text)
+    });
+
+    expect(output.join("")).toBe(
+      [
+        "fake",
+        "* fake large  fake-large  100k context  low, medium, high",
+        ""
+      ].join("\n")
+    );
+  });
+
+  it("prints provider models for all providers when requested", async () => {
+    const services = fakeProviderServices(tempDir());
+    const output: string[] = [];
+
+    await runProviderCommand(["provider", "models", "--all"], {
+      services,
+      writeOut: (text) => output.push(text)
+    });
+
+    const printed = output.join("");
+    expect(printed).toMatch(/fake\n\* fake large\s+fake-large\s+100k context\s+low, medium, high/u);
+    expect(printed).toMatch(/other\n\* other large\s+other-large\s+100k context\s+low, medium, high/u);
+  });
+
+  it("marks the effective configured provider model as currently in use", async () => {
+    const services = fakeProviderServices(tempDir());
+    services.authStorage.set("fake", {
+      type: "api_key",
+      apiKey: "fake-secret",
+      createdAt: new Date(0).toISOString()
+    });
+    saveProviderSettings({ defaultProvider: "fake", defaultModel: "fake-large" }, services.paths);
+    const output: string[] = [];
+
+    await runProviderCommand(["provider", "models"], {
+      services,
+      writeOut: (text) => output.push(text)
+    });
+
+    expect(output.join("")).toMatch(/\* fake large\s+fake-large\s+100k context\s+low, medium, high\s+\[✓ currently in use\]/u);
+  });
+
+  it("sets provider defaults with provider use by exact authenticated model id", async () => {
+    const services = fakeProviderServices(tempDir());
+    services.authStorage.set("fake", {
+      type: "api_key",
+      apiKey: "fake-secret",
+      createdAt: new Date(0).toISOString()
+    });
+    const output: string[] = [];
+
+    await runProviderCommand(["provider", "use", "fake-large"], {
+      services,
+      writeOut: (text) => output.push(text)
+    });
+
+    expect(output.join("")).toBe("default model set to fake/fake-large (fake large); reasoning set to high\n");
+    expect(loadProviderSettings(services.paths)).toEqual({
+      defaultProvider: "fake",
+      defaultModel: "fake-large",
+      defaultReasoning: "high"
+    });
+  });
+
+  it("matches provider use queries after removing dashes and dots", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      modelsByProvider: {
+        fake: [
+          fakeModel("fake", "claude-opus-4-8", "Claude Opus 4.8"),
+          fakeModel("fake", "claude-sonnet-4-5", "Claude Sonnet 4.5")
+        ]
+      }
+    });
+    services.authStorage.set("fake", {
+      type: "api_key",
+      apiKey: "fake-secret",
+      createdAt: new Date(0).toISOString()
+    });
+    const output: string[] = [];
+
+    await runProviderCommand(["provider", "use", "opus-4.8"], {
+      services,
+      writeOut: (text) => output.push(text)
+    });
+
+    expect(output.join("")).toBe("default model set to fake/claude-opus-4-8 (Claude Opus 4.8); reasoning set to high\n");
+    expect(loadProviderSettings(services.paths)).toMatchObject({
+      defaultProvider: "fake",
+      defaultModel: "claude-opus-4-8",
+      defaultReasoning: "high"
+    });
+  });
+
+  it("uses the last matching model when provider use is ambiguous", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      modelsByProvider: {
+        fake: [
+          fakeModel("fake", "claude-opus-4-0", "Claude Opus 4"),
+          fakeModel("fake", "claude-opus-4-5", "Claude Opus 4.5"),
+          fakeModel("fake", "claude-opus-4-8", "Claude Opus 4.8")
+        ]
+      }
+    });
+    services.authStorage.set("fake", {
+      type: "api_key",
+      apiKey: "fake-secret",
+      createdAt: new Date(0).toISOString()
+    });
+    const output: string[] = [];
+
+    await runProviderCommand(["provider", "use", "opus"], {
+      services,
+      writeOut: (text) => output.push(text)
+    });
+
+    expect(output.join("")).toBe("default model set to fake/claude-opus-4-8 (Claude Opus 4.8); reasoning set to high\n");
+    expect(loadProviderSettings(services.paths)).toMatchObject({
+      defaultProvider: "fake",
+      defaultModel: "claude-opus-4-8",
+      defaultReasoning: "high"
+    });
+  });
+
+  it("does not select unauthenticated models with provider use", async () => {
+    const services = fakeProviderServices(tempDir());
+
+    await expect(runProviderCommand(["provider", "use", "fake-large"], { services })).rejects.toThrow(
+      "sorry cannot find model fake-large. please check codegenie provider models for complete list"
+    );
+  });
+
+  it("parses provider use through the CLI command tree", async () => {
+    const services = fakeProviderServices(tempDir());
+    services.authStorage.set("fake", {
+      type: "api_key",
+      apiKey: "fake-secret",
+      createdAt: new Date(0).toISOString()
+    });
+    const output: string[] = [];
+
+    await executeProviderCommand(["provider", "use", "fake.large"], {
+      services,
+      writeOut: (text) => output.push(text)
+    });
+
+    expect(output.join("")).toBe("default model set to fake/fake-large (fake large); reasoning set to high\n");
+  });
+
   it("supports provider smoke commands and settings without printing credentials", async () => {
     const home = tempDir();
     const services = fakeProviderServices(home);
@@ -365,7 +527,7 @@ describe("Phase 4 provider commands", () => {
     const printed = output.join("");
     expect(printed).toContain("stored credentials for fake");
     expect(printed).toContain('"provider": "fake"');
-    expect(printed).toContain('"id": "fake-large"');
+    expect(printed).toMatch(/\* fake large\s+fake-large\s+100k context\s+low, medium, high/u);
     expect(printed).not.toContain("super-secret-provider-key");
     expect(loadProviderSettings(services.paths)).toEqual({
       defaultProvider: "fake",
@@ -467,7 +629,8 @@ reasoning = "medium"
     await runProviderCommand(["provider", "config", "set-provider", "other"], { services, writeOut });
 
     expect(loadProviderSettings(services.paths)).toEqual({
-      defaultProvider: "other"
+      defaultProvider: "other",
+      defaultReasoning: "high"
     });
   });
 
@@ -563,7 +726,7 @@ function testSkill(input: { id: string; checks: string; falsePositives?: string;
 
 function fakeProviderServices(
   home: string,
-  opts: { envConfiguredProviders?: string[] } = {}
+  opts: { envConfiguredProviders?: string[]; modelsByProvider?: Record<string, ProviderModelInfo[]> } = {}
 ): ProviderServices {
   const paths = getCodegeniePaths(home, {});
   const auth = new Map<string, ProviderAuthEntry>();
@@ -583,18 +746,9 @@ function fakeProviderServices(
     listProviders: () => ["fake", "other"],
     providerExists: (provider) => provider === "fake" || provider === "other",
     listModels: (provider) =>
-      (provider ? [provider] : ["fake", "other"]).flatMap((id) => [
-        {
-          provider: id,
-          id: `${id}-large`,
-          name: `${id} large`,
-          contextWindow: 100000,
-          maxOutputTokens: 8000,
-          reasoning: true,
-          thinkingLevels: ["low", "medium", "high"],
-          input: ["text"]
-        }
-      ]),
+      (provider ? [provider] : ["fake", "other"]).flatMap((id) =>
+        opts.modelsByProvider?.[id] ?? [fakeModel(id, `${id}-large`, `${id} large`)]
+      ),
     modelExists: (provider, model) => model === `${provider}-large`,
     authStatus: (provider) => {
       const entry = auth.get(provider);
@@ -608,6 +762,19 @@ function fakeProviderServices(
     }
   };
   return { paths, authStorage, modelRegistry };
+}
+
+function fakeModel(provider: string, id: string, name: string): ProviderModelInfo {
+  return {
+    provider,
+    id,
+    name,
+    contextWindow: 100000,
+    maxOutputTokens: 8000,
+    reasoning: true,
+    thinkingLevels: ["low", "medium", "high"],
+    input: ["text"]
+  };
 }
 
 function tempDir(): string {

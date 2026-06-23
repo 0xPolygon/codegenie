@@ -81,6 +81,13 @@ export function parseProviderCommand(
         options: { all: options.all === true }
       };
     });
+  provider
+    .command("use")
+    .description("set the default provider/model by fuzzy model id")
+    .argument("<model>")
+    .action((modelQuery: string) => {
+      parsed = { args: ["provider", "use", modelQuery], options: {} };
+    });
 
   const config = provider.command("config").description("show or update provider defaults");
   config.action(() => {
@@ -122,7 +129,7 @@ export function parseProviderCommand(
   }
 
   if (!parsed) {
-    throw new CodegenieError("invalid_args", "expected provider command: list, login, logout, auth-status, models, or config");
+    throw new CodegenieError("invalid_args", "expected provider command: list, login, logout, auth-status, models, use, or config");
   }
   return parsed;
 }

@@ -167,14 +167,17 @@ export async function runProviderCommand(args: string[], opts: RunProviderComman
     case "models": {
       const all = opts.all || rest.includes("--all");
       const query = rest.find((item) => item !== "--all");
-      writeOut(renderModels(query, all, services));
+      writeOut(renderModels(query, all, services, opts.env));
       return;
     }
+    case "use":
+      commandUse(rest, services, writeOut);
+      return;
     case "config":
       await commandConfig(rest, services, writeOut, opts.env);
       return;
     default:
-      throw new CodegenieError("invalid_args", "expected provider command: list, login, logout, auth-status, models, or config");
+      throw new CodegenieError("invalid_args", "expected provider command: list, login, logout, auth-status, models, use, or config");
   }
 }
 
@@ -245,6 +248,50 @@ function commandLogout(args: string[], services: ProviderServices, opts: RunProv
   services.authStorage.delete(args[0]);
 }
 
+function commandUse(args: string[], services: ProviderServices, writeOut: (text: string) => void): void {
+  const query = requireArg(args[0], "provider use <model>");
+  const match = findUsableModel(query, services);
+  if (!match) {
+    throw new CodegenieError(
+      "invalid_args",
+      `sorry cannot find model ${query}. please check codegenie provider models for complete list`
+    );
+  }
+  const settings = loadProviderSettings(services.paths);
+  saveProviderSettings({ ...settings, defaultProvider: match.provider, defaultModel: match.id, defaultReasoning: "high" }, services.paths);
+  writeOut(`default model set to ${match.provider}/${match.id} (${match.name}); reasoning set to high\n`);
+}
+
+function findUsableModel(query: string, services: ProviderServices): ProviderModelInfo | undefined {
+  const normalizedQuery = normalizeModelSearch(query);
+  if (normalizedQuery.length === 0) {
+    return undefined;
+  }
+  const candidates = services.modelRegistry.listProviders()
+    .filter((provider) => services.modelRegistry.authStatus(provider).configured)
+    .flatMap((provider) => services.modelRegistry.listModels(provider));
+  const ranked = candidates
+    .map((model, index) => ({ model, index, rank: modelMatchRank(normalizedQuery, model.id) }))
+    .filter((item): item is { model: ProviderModelInfo; index: number; rank: number } => item.rank !== undefined)
+    .sort((a, b) => a.rank - b.rank || b.index - a.index);
+  return ranked[0]?.model;
+}
+
+function modelMatchRank(normalizedQuery: string, modelId: string): number | undefined {
+  const normalizedModelId = normalizeModelSearch(modelId);
+  if (normalizedModelId === normalizedQuery) {
+    return 0;
+  }
+  if (normalizedModelId.startsWith(normalizedQuery)) {
+    return 1;
+  }
+  return normalizedModelId.includes(normalizedQuery) ? 2 : undefined;
+}
+
+function normalizeModelSearch(value: string): string {
+  return value.toLowerCase().replace(/[-.]/gu, "");
+}
+
 async function commandConfig(
   args: string[],
   services: ProviderServices,
@@ -278,8 +325,8 @@ async function commandConfig(
       if (!services.modelRegistry.modelExists(provider, model)) {
         throw new CodegenieError("invalid_args", `unknown model ${provider}/${model}`);
       }
-      saveProviderSettings({ ...settings, defaultProvider: provider, defaultModel: model }, services.paths);
-      writeOut(`default model set to ${provider}/${model}\n`);
+      saveProviderSettings({ ...settings, defaultProvider: provider, defaultModel: model, defaultReasoning: "high" }, services.paths);
+      writeOut(`default model set to ${provider}/${model}; reasoning set to high\n`);
       return;
     }
     case "set-depth": {
@@ -405,8 +452,9 @@ function renderAuthStatus(provider: string | undefined, services: ProviderServic
   return `${JSON.stringify(provider ? statuses[0] : statuses, null, 2)}\n`;
 }
 
-function renderModels(query: string | undefined, all: boolean, services: ProviderServices): string {
+function renderModels(query: string | undefined, all: boolean, services: ProviderServices, env?: NodeJS.ProcessEnv): string {
   const providers = services.modelRegistry.listProviders();
+  const current = currentModelSelection(services, env);
   const providerQuery = query && services.modelRegistry.providerExists(query) ? query : undefined;
   const needle = providerQuery ? undefined : query?.toLowerCase();
   const rows = services.modelRegistry
@@ -418,10 +466,93 @@ function renderModels(query: string | undefined, all: boolean, services: Provide
       return available && matches;
     });
 
-  if (query && !providerQuery && rows.length === 0 && providers.includes(query)) {
-    return "[]\n";
+  if (rows.length === 0) {
+    if (providerQuery) {
+      return `No models available for ${providerQuery}${all ? "" : " with current authentication"}.\n`;
+    }
+    if (query) {
+      return `No models matched ${query}${all ? "" : " among authenticated providers"}.\n`;
+    }
+    return [
+      "No models available for authenticated providers.",
+      "Run `codegenie provider login <provider>` to authenticate, or `codegenie provider models --all` to include unauthenticated providers.",
+      ""
+    ].join("\n");
   }
-  return `${JSON.stringify(rows, null, 2)}\n`;
+
+  const renderedRows = rows.map((model) => ({
+    model,
+    name: model.name,
+    id: model.id,
+    context: formatContextWindow(model.contextWindow),
+    thinking: formatThinkingLevels(model),
+    current: isCurrentModel(model, current)
+  }));
+  const nameWidth = Math.max(...renderedRows.map((row) => row.name.length));
+  const idWidth = Math.max(...renderedRows.map((row) => row.id.length));
+  const contextWidth = Math.max(...renderedRows.map((row) => row.context.length));
+  const thinkingWidth = Math.max(...renderedRows.map((row) => row.thinking.length));
+
+  const grouped = new Map<string, typeof renderedRows>();
+  for (const provider of providers) {
+    const providerRows = renderedRows.filter((row) => row.model.provider === provider);
+    if (providerRows.length > 0) {
+      grouped.set(provider, providerRows);
+    }
+  }
+  const lines: string[] = [];
+  for (const [provider, models] of grouped) {
+    if (lines.length > 0) {
+      lines.push("");
+    }
+    lines.push(provider);
+    for (const row of models) {
+      const base = `* ${row.name.padEnd(nameWidth)}  ${row.id.padEnd(idWidth)}  ${row.context.padEnd(contextWidth)}  ${row.thinking.padEnd(thinkingWidth)}`;
+      lines.push(row.current ? `${base}  [✓ currently in use]` : base.trimEnd());
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+function currentModelSelection(
+  services: ProviderServices,
+  env?: NodeJS.ProcessEnv
+): { provider?: string; model?: string } {
+  const effective = loadResolvedUserConfig(services.paths, env).effective.config.llm;
+  return {
+    ...(effective.provider !== undefined ? { provider: effective.provider } : {}),
+    ...(effective.model !== undefined ? { model: effective.model } : {})
+  };
+}
+
+function isCurrentModel(model: ProviderModelInfo, current: { provider?: string; model?: string }): boolean {
+  return current.provider === model.provider && current.model === model.id;
+}
+
+function formatContextWindow(contextWindow: number | undefined): string {
+  return `${contextWindow === undefined ? "unknown" : formatTokenCount(contextWindow)} context`;
+}
+
+function formatTokenCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${formatCompactNumber(value / 1_000_000)}M`;
+  }
+  if (value >= 1_000) {
+    return `${formatCompactNumber(value / 1_000)}k`;
+  }
+  return value.toLocaleString("en-US");
+}
+
+function formatCompactNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/u, "");
+}
+
+function formatThinkingLevels(model: ProviderModelInfo): string {
+  if (model.thinkingLevels.length > 0) {
+    return model.thinkingLevels.join(", ");
+  }
+  return model.reasoning ? "reasoning supported" : "no reasoning";
 }
 
 function providerConfigJson(
