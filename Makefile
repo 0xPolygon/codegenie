@@ -22,7 +22,7 @@ ARGS ?=
 init:
 	pnpm install
 
-build:
+build: clean
 	pnpm run build
 	@chmod +x dist/cli/main.js
 	@echo ""
