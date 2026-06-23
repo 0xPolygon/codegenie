@@ -22,7 +22,7 @@ export function resolveCodegenieRuntimeProvenance(
   opts: RuntimeProvenanceOptions = {}
 ): CodegenieRuntimeProvenance {
   const env = opts.env ?? process.env;
-  const packageRoot = opts.projectRoot ?? findPackageRoot();
+  const packageRoot = opts.projectRoot ?? findCodegeniePackageRoot();
   const packageVersion =
     nonEmpty(env.CODEGENIE_BUILD_VERSION) ??
     nonEmpty(opts.packageVersion) ??
@@ -137,14 +137,14 @@ function withOptionalGitFields(
   };
 }
 
-function findPackageRoot(): string | undefined {
+export function findCodegeniePackageRoot(): string | undefined {
   let currentDir = path.dirname(fileURLToPath(import.meta.url));
   for (let depth = 0; depth < 10; depth += 1) {
     const packageJsonPath = path.join(currentDir, "package.json");
     if (existsSync(packageJsonPath)) {
       try {
         const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { name?: unknown };
-        if (parsed.name === "codegenie") {
+        if (parsed.name === "codegenie" || parsed.name === "@0xsequence/codegenie") {
           return currentDir;
         }
       } catch {

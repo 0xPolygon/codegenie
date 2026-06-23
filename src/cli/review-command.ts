@@ -62,6 +62,7 @@ export function parseReviewCommand(
   const program = new Command();
   program
     .name("codegenie")
+    .option("-V, --version", "show codegenie version")
     .exitOverride();
 
   if (!opts.allowOutput) {
@@ -106,6 +107,7 @@ export function parseReviewCommand(
   providerConfig.command("set-model").argument("<provider>").argument("<model>");
   providerConfig.command("set-depth").argument("<light|normal|deep>");
   providerConfig.command("set-reasoning").argument("<low|medium|high|xhigh|auto>");
+  program.command("version").description("show codegenie version");
   program.command("eval").description("run codegenie eval suites");
 
   try {
