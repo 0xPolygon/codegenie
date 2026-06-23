@@ -74,6 +74,7 @@ type ProviderConfigLayers = {
 export type RunProviderCommandOptions = {
   yes?: boolean;
   all?: boolean;
+  apiKeyLogin?: boolean;
   apiKey?: string;
   homeOverride?: string;
   services?: ProviderServices;
@@ -188,15 +189,23 @@ function parseLogoutArgs(args: string[], opts: RunProviderCommandOptions): { arg
   };
 }
 
+function parseLoginArgs(args: string[], opts: RunProviderCommandOptions): { provider: string; apiKeyLogin: boolean } {
+  const provider = args.find((arg) => arg !== "--api-key");
+  return {
+    provider: requireArg(provider, "provider login <provider>"),
+    apiKeyLogin: opts.apiKeyLogin === true || opts.apiKey !== undefined || args.includes("--api-key")
+  };
+}
+
 async function commandLogin(
   args: string[],
   services: ProviderServices,
   opts: RunProviderCommandOptions
 ): Promise<void> {
-  const provider = requireArg(args[0], "provider login <provider>");
+  const { provider, apiKeyLogin } = parseLoginArgs(args, opts);
   assertProviderExists(provider, services);
   const oauthProvider = getOAuthProvider(provider);
-  if (oauthProvider && !opts.apiKey) {
+  if (oauthProvider && !apiKeyLogin) {
     const credentials = await oauthProvider.login({
       onAuth: (info) => {
         (opts.writeOut ?? ((text: string) => output.write(text)))(`${info.url}\n${info.instructions ?? ""}\n`);
@@ -380,6 +389,7 @@ function renderProviderList(services: ProviderServices): string {
     ...rows.map(renderRow),
     "",
     "Run `codegenie provider login <provider>` to authenticate.",
+    "Use `codegenie provider login <provider> --api-key` to store an API key instead of OAuth.",
     ""
   );
   return lines.join("\n");
@@ -416,7 +426,7 @@ function titleCaseProvider(provider: string): string {
 const KNOWN_PROVIDER_DESCRIPTIONS: Record<string, string> = {
   "amazon-bedrock": "Amazon Bedrock",
   "ant-ling": "Ant Ling",
-  "anthropic": "Anthropic (Claude Pro/Max)",
+  "anthropic": "Anthropic (Claude Pro/Max OAuth or API key)",
   "antling": "Ant Ling",
   "azure-openai-responses": "Azure OpenAI (Responses)",
   "cerebras": "Cerebras",
@@ -444,8 +454,8 @@ const KNOWN_PROVIDER_DESCRIPTIONS: Record<string, string> = {
   "opencode": "OpenCode",
   "opencode-go": "OpenCode Go",
   "opencode-zen": "OpenCode Zen",
-  "openai": "OpenAI",
-  "openai-codex": "ChatGPT Plus/Pro (Codex Subscription)",
+  "openai": "OpenAI (API key)",
+  "openai-codex": "OpenAI Codex (ChatGPT Plus/Pro OAuth)",
   "openrouter": "OpenRouter",
   "together": "Together AI",
   "together-ai": "Together AI",

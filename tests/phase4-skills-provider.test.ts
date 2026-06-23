@@ -341,7 +341,7 @@ describe("Phase 4 provider commands", () => {
 
     const printed = output.join("");
     expect(printed).toMatch(
-      /Popular providers:\n\s+anthropic\s+✓ logged in\s+Anthropic \(Claude Pro\/Max\)\n\s+openai\s+✗ not authenticated\s+OpenAI\n\s+openai-codex\s+✗ not authenticated\s+ChatGPT Plus\/Pro \(Codex Subscription\)\n\s+opencode\s+✗ not authenticated\s+OpenCode\n\s+opencode-go\s+✗ not authenticated\s+OpenCode Go\n\s+openrouter\s+✗ not authenticated\s+OpenRouter/u
+      /Popular providers:\n\s+anthropic\s+✓ logged in\s+Anthropic \(Claude Pro\/Max OAuth or API key\)\n\s+openai\s+✗ not authenticated\s+OpenAI \(API key\)\n\s+openai-codex\s+✗ not authenticated\s+OpenAI Codex \(ChatGPT Plus\/Pro OAuth\)\n\s+opencode\s+✗ not authenticated\s+OpenCode\n\s+opencode-go\s+✗ not authenticated\s+OpenCode Go\n\s+openrouter\s+✗ not authenticated\s+OpenRouter/u
     );
     expect(printed).toContain("\nAll available providers:\n");
     expect(printed).toMatch(/All available providers:[\s\S]*fake\s+✗ not authenticated\s+Fake/u);
@@ -525,6 +525,23 @@ describe("Phase 4 provider commands", () => {
     });
 
     expect(output.join("")).toBe("default model set to fake/fake-large (fake large); reasoning set to high\n");
+  });
+
+  it("allows API-key login for providers that also support OAuth", async () => {
+    const services = fakeProviderServices(tempDir(), { providerIds: ["anthropic"] });
+    const output: string[] = [];
+
+    await executeProviderCommand(["provider", "login", "anthropic", "--api-key"], {
+      services,
+      apiKey: "anthropic-secret",
+      writeOut: (text) => output.push(text)
+    });
+
+    expect(output.join("")).toBe("stored credentials for anthropic\n");
+    expect(services.authStorage.get("anthropic")).toMatchObject({
+      type: "api_key",
+      apiKey: "anthropic-secret"
+    });
   });
 
   it("supports provider smoke commands and settings without printing credentials", async () => {

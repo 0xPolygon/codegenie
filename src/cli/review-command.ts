@@ -97,7 +97,11 @@ export function parseReviewCommand(
     });
   const provider = program.command("provider").description("manage model providers and defaults");
   provider.command("list").description("list known providers and auth status");
-  provider.command("login").description("store credentials for a provider").argument("<provider>");
+  provider
+    .command("login")
+    .description("store credentials for a provider")
+    .argument("<provider>")
+    .option("--api-key", "store an API key instead of using OAuth");
   provider.command("logout").description("remove stored provider credentials").argument("[provider]").option("--yes", "confirm removing all credentials");
   provider.command("auth-status").description("show stored or environment auth status").argument("[provider]");
   provider.command("models").description("list available models").argument("[query]").option("--all", "include unauthenticated providers");

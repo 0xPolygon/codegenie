@@ -9,7 +9,7 @@ type ParseProviderCommandOptions = {
 
 type ParsedProviderCommand = {
   args: string[];
-  options: Pick<RunProviderCommandOptions, "yes" | "all">;
+  options: Pick<RunProviderCommandOptions, "yes" | "all" | "apiKeyLogin">;
 };
 
 export async function executeProviderCommand(
@@ -46,8 +46,12 @@ export function parseProviderCommand(
     .command("login")
     .description("store credentials for a provider")
     .argument("<provider>")
-    .action((providerId: string) => {
-      parsed = { args: ["provider", "login", providerId], options: {} };
+    .option("--api-key", "store an API key instead of using OAuth")
+    .action((providerId: string, options: { apiKey?: boolean }) => {
+      parsed = {
+        args: ["provider", "login", providerId],
+        options: { apiKeyLogin: options.apiKey === true }
+      };
     });
   provider
     .command("logout")
