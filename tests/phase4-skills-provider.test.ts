@@ -305,6 +305,41 @@ Exercise normal YAML list frontmatter.
 });
 
 describe("Phase 4 provider commands", () => {
+  it("prints provider list as an aligned human-readable table", async () => {
+    const services = fakeProviderServices(tempDir());
+    const output: string[] = [];
+
+    await runProviderCommand(["provider", "list"], {
+      services,
+      writeOut: (text) => output.push(text)
+    });
+
+    const printed = output.join("");
+    expect(printed).toContain("Available providers:\n\n");
+    expect(printed).toMatch(/  fake\s+✗ not authenticated\s+Fake/u);
+    expect(printed).toMatch(/  other\s+✗ not authenticated\s+Other/u);
+    expect(printed).toContain("\nRun `codegenie provider login <provider>` to authenticate.\n");
+  });
+
+  it("shows stored and environment provider auth distinctly in the provider list", async () => {
+    const services = fakeProviderServices(tempDir(), { envConfiguredProviders: ["other"] });
+    services.authStorage.set("fake", {
+      type: "api_key",
+      apiKey: "fake-secret",
+      createdAt: new Date(0).toISOString()
+    });
+    const output: string[] = [];
+
+    await runProviderCommand(["provider", "list"], {
+      services,
+      writeOut: (text) => output.push(text)
+    });
+
+    const printed = output.join("");
+    expect(printed).toMatch(/  fake\s+✓ logged in\s+Fake/u);
+    expect(printed).toMatch(/  other\s+✓ env configured\s+Other/u);
+  });
+
   it("supports provider smoke commands and settings without printing credentials", async () => {
     const home = tempDir();
     const services = fakeProviderServices(home);
@@ -526,9 +561,13 @@ function testSkill(input: { id: string; checks: string; falsePositives?: string;
   };
 }
 
-function fakeProviderServices(home: string): ProviderServices {
+function fakeProviderServices(
+  home: string,
+  opts: { envConfiguredProviders?: string[] } = {}
+): ProviderServices {
   const paths = getCodegeniePaths(home, {});
   const auth = new Map<string, ProviderAuthEntry>();
+  const envConfiguredProviders = new Set(opts.envConfiguredProviders ?? []);
   const authStorage: PiAuthStorage = {
     loadAll: () => Object.fromEntries(auth.entries()),
     get: (provider) => auth.get(provider),
@@ -559,9 +598,13 @@ function fakeProviderServices(home: string): ProviderServices {
     modelExists: (provider, model) => model === `${provider}-large`,
     authStatus: (provider) => {
       const entry = auth.get(provider);
-      return entry
-        ? { provider, configured: true, source: "stored", kind: entry.type }
-        : { provider, configured: false };
+      if (entry) {
+        return { provider, configured: true, source: "stored", kind: entry.type };
+      }
+      if (envConfiguredProviders.has(provider)) {
+        return { provider, configured: true, source: "environment", kind: "api_key" };
+      }
+      return { provider, configured: false };
     }
   };
   return { paths, authStorage, modelRegistry };

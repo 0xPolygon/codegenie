@@ -312,11 +312,89 @@ function renderProviderList(services: ProviderServices): string {
     const status = services.modelRegistry.authStatus(provider);
     return {
       provider,
-      auth: status.configured ? status.source : "missing"
+      status: renderProviderAuthStatus(status),
+      description: providerDescription(provider)
     };
   });
-  return `${JSON.stringify(rows, null, 2)}\n`;
+  const providerWidth = Math.max(22, ...rows.map((row) => row.provider.length));
+  const statusWidth = Math.max("not authenticated".length + 2, ...rows.map((row) => row.status.length));
+  const lines = [
+    "Available providers:",
+    "",
+    ...rows.map((row) =>
+      `  ${row.provider.padEnd(providerWidth)}  ${row.status.padEnd(statusWidth)}  ${row.description}`
+    ),
+    "",
+    "Run `codegenie provider login <provider>` to authenticate.",
+    ""
+  ];
+  return lines.join("\n");
 }
+
+function renderProviderAuthStatus(status: AuthStatus): string {
+  if (!status.configured) {
+    return "✗ not authenticated";
+  }
+  return status.source === "environment" ? "✓ env configured" : "✓ logged in";
+}
+
+function providerDescription(provider: string): string {
+  return KNOWN_PROVIDER_DESCRIPTIONS[provider] ?? titleCaseProvider(provider);
+}
+
+function titleCaseProvider(provider: string): string {
+  return provider
+    .split(/[-_]/u)
+    .filter(Boolean)
+    .map((part) => part.length <= 3 ? part.toUpperCase() : `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+}
+
+const KNOWN_PROVIDER_DESCRIPTIONS: Record<string, string> = {
+  "amazon-bedrock": "Amazon Bedrock",
+  "ant-ling": "Ant Ling",
+  "anthropic": "Anthropic (Claude Pro/Max)",
+  "antling": "Ant Ling",
+  "azure-openai-responses": "Azure OpenAI (Responses)",
+  "cerebras": "Cerebras",
+  "cloudflare-ai-gateway": "Cloudflare AI Gateway",
+  "cloudflare-workers-ai": "Cloudflare Workers AI",
+  "deepseek": "DeepSeek",
+  "fireworks": "Fireworks",
+  "github-copilot": "GitHub Copilot",
+  "google": "Google Gemini",
+  "google-antigravity": "Antigravity (Gemini, Claude, GPT-OSS)",
+  "google-gemini-cli": "Google Cloud Code Assist (Gemini CLI)",
+  "google-vertex": "Vertex AI (Gemini via Google Cloud)",
+  "groq": "Groq",
+  "huggingface": "Hugging Face",
+  "kimi-coding": "Kimi For Coding",
+  "kimi-for-coding": "Kimi For Coding",
+  "mistral": "Mistral",
+  "minimax": "MiniMax",
+  "minimax-cn": "MiniMax China",
+  "mimo": "Xiaomi MiMo",
+  "moonshotai": "Moonshot AI",
+  "moonshotai-cn": "Moonshot AI China",
+  "nvidia": "NVIDIA NIM",
+  "nvidia-nim": "NVIDIA NIM",
+  "opencode": "OpenCode",
+  "opencode-go": "OpenCode Go",
+  "opencode-zen": "OpenCode Zen",
+  "openai": "OpenAI",
+  "openai-codex": "ChatGPT Plus/Pro (Codex Subscription)",
+  "openrouter": "OpenRouter",
+  "together": "Together AI",
+  "together-ai": "Together AI",
+  "vercel-ai-gateway": "Vercel AI Gateway",
+  "xai": "xAI",
+  "xiaomi": "Xiaomi MiMo",
+  "xiaomi-token-plan-ams": "Xiaomi MiMo Token Plan (Amsterdam)",
+  "xiaomi-token-plan-cn": "Xiaomi MiMo Token Plan (China)",
+  "xiaomi-token-plan-sgp": "Xiaomi MiMo Token Plan (Singapore)",
+  "zai": "ZAI",
+  "zai-coding-cn": "ZAI Coding China"
+};
 
 function renderAuthStatus(provider: string | undefined, services: ProviderServices): string {
   const providers = provider ? [provider] : services.modelRegistry.listProviders();

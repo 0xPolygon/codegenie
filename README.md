@@ -2,7 +2,7 @@
 
 **High-signal AI code review for pull requests.** codegenie is a TypeScript CLI that reviews PR-style diffs at a staff-engineer level — real bugs, logic errors, security issues, architectural risks, and missing tests — and refuses to waste your attention on nitpicks. It prefers no comments over weak comments.
 
-It is not a chatbot pointed at a diff. It is a **review harness**: a staged pipeline where deterministic code owns the workflow's guarantees (coverage, anchoring, verification, dedup, budgets, telemetry) and LLM agents do the judgment work inside each stage.
+It is not a chatbot pointed at a diff. It is a **code review harness**: a staged pipeline where deterministic code owns the workflow's guarantees (coverage, anchoring, verification, dedup, budgets, telemetry) and LLM agents do the judgment work inside each stage.
 
 ## Install
 
@@ -24,14 +24,6 @@ bunx @0xsequence/codegenie --help
 ```
 
 NOTE: we will move `codegenie` npm package out of `@0xsequence` in the future.
-
-
-## What you get
-
-- **Findings that survive scrutiny.** Every candidate finding must cite changed-code evidence and a concrete failure mode, then pass an independent LLM verifier before it can be published. No evidence → no finding.
-- **A handful of comments, not fifty.** The default target is ~3–7 high-signal comments per PR (a soft cap — verified critical/high findings are never hidden by it). Style, naming, and formatting commentary is off unless you explicitly enable a lint lens.
-- **Honest coverage.** Every changed hunk is accounted for: planner overrides, deterministic default review, explicit skips, failures, and budget stops are tracked separately. If a review is partial, the report says so. codegenie never pretends it reviewed something it didn't.
-- **Reviews of the actual revision.** Reviewed source reads resolve through git plumbing against the PR's base/head revisions — not whatever happens to be checked out. Review policy, config, and skills still load from your trusted local checkout.
 
 ## Usage
 
