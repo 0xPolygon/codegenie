@@ -63,6 +63,7 @@ Model provider auth is configured through Pi-backed user state:
 ```bash
 codegenie provider list
 codegenie provider login <provider>
+codegenie provider use <model-name>
 codegenie provider models [provider-or-search] [--all]
 codegenie provider config set-provider <provider>
 codegenie provider config set-model <provider> <model>

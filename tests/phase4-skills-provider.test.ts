@@ -526,7 +526,11 @@ describe("Phase 4 provider commands", () => {
 
     const printed = output.join("");
     expect(printed).toContain("stored credentials for fake");
-    expect(printed).toContain('"provider": "fake"');
+    expect(printed).toContain("Provider configuration:");
+    expect(printed).toMatch(/provider\s+fake \(settings\)/u);
+    expect(printed).toMatch(/model\s+fake-large \(settings\)/u);
+    expect(printed).toMatch(/reasoning\s+xhigh \(settings\)/u);
+    expect(printed).toContain("codegenie provider config set-reasoning <low|medium|high|xhigh|auto>");
     expect(printed).toMatch(/\* fake large\s+fake-large\s+100k context\s+low, medium, high/u);
     expect(printed).not.toContain("super-secret-provider-key");
     expect(loadProviderSettings(services.paths)).toEqual({
@@ -558,16 +562,14 @@ reasoning = "medium"
       writeOut: (text) => output.push(text)
     });
 
-    expect(JSON.parse(output.join(""))).toMatchObject({
-      defaultProvider: "fake",
-      defaultModel: "fake-large",
-      defaultDepth: "deep",
-      defaultReasoning: "medium",
-      effectiveProvider: "fake",
-      effectiveModel: "fake-large",
-      effectiveDepth: "deep",
-      effectiveReasoning: "medium"
-    });
+    const printed = output.join("");
+    expect(printed).toContain("Provider configuration:");
+    expect(printed).toMatch(/Stored defaults:[\s\S]*provider\s+unset/u);
+    expect(printed).toMatch(/provider\s+fake \(user config\)/u);
+    expect(printed).toMatch(/model\s+fake-large \(user config\)/u);
+    expect(printed).toMatch(/depth\s+deep \(user config\)/u);
+    expect(printed).toMatch(/reasoning\s+medium \(user config\)/u);
+    expect(printed).toContain("Depth controls review budget and investigation intensity.");
   });
 
   it("reports provider config effective env overrides through the shared config loader", async () => {
@@ -597,16 +599,11 @@ reasoning = "medium"
       writeOut: (text) => output.push(text)
     });
 
-    expect(JSON.parse(output.join(""))).toMatchObject({
-      defaultProvider: "fake",
-      defaultModel: "fake-large",
-      defaultDepth: "deep",
-      defaultReasoning: "medium",
-      effectiveProvider: "other",
-      effectiveModel: "other-large",
-      effectiveDepth: "deep",
-      effectiveReasoning: "xhigh"
-    });
+    const printed = output.join("");
+    expect(printed).toMatch(/provider\s+other \(environment\)/u);
+    expect(printed).toMatch(/model\s+other-large \(environment\)/u);
+    expect(printed).toMatch(/depth\s+deep \(user config\)/u);
+    expect(printed).toMatch(/reasoning\s+xhigh \(environment\)/u);
   });
 
   it("rejects malformed provider auth files as config errors", () => {

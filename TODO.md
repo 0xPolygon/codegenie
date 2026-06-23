@@ -5,7 +5,7 @@ TODO
 - [ ] check against trails-api repo directly, lets make sure we don't have .codegenie/ standard
 - [ ] check global config works
 - [ ] update codegenie.toml config, any naming changes?
-- [ ] FTUE, what happens if user runs codegenie review without any provider setup?
+- [x] FTUE, what happens if user runs codegenie review without any provider setup?
 
 - [ ] make sure --version returns a version, from package.json and elsewhere
 

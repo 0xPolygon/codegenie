@@ -301,7 +301,7 @@ async function commandConfig(
   const [subcommand, ...rest] = args;
   if (!subcommand) {
     const settings = loadProviderSettings(services.paths);
-    writeOut(`${JSON.stringify(providerConfigJson(services, settings, loadResolvedUserConfig(services.paths, env)), null, 2)}\n`);
+    writeOut(renderProviderConfig(services, settings, loadResolvedUserConfig(services.paths, env)));
     return;
   }
 
@@ -513,6 +513,87 @@ function renderModels(query: string | undefined, all: boolean, services: Provide
   }
   lines.push("");
   return lines.join("\n");
+}
+
+function renderProviderConfig(
+  services: ProviderServices,
+  settings: ProviderSettings,
+  layers: ProviderConfigLayers
+): string {
+  const effectiveProvider = layers.effective.config.llm.provider;
+  const effectiveModel = layers.effective.config.llm.model;
+  const effectiveReasoning = layers.effective.config.llm.reasoning ?? "high";
+  const effectiveReasoningSource = layers.effective.sources["llm.reasoning"] ?? "built-in";
+  const auth = effectiveProvider !== undefined ? services.modelRegistry.authStatus(effectiveProvider) : undefined;
+  const lines = [
+    "Provider configuration:",
+    "",
+    "Paths:",
+    `  home       ${services.paths.home}`,
+    `  settings   ${services.paths.settingsPath}`,
+    `  auth       ${services.paths.authPath}`,
+    "",
+    "Stored defaults:",
+    `  provider   ${settings.defaultProvider ?? "unset"}`,
+    `  model      ${settings.defaultModel ?? "unset"}`,
+    `  reasoning  ${settings.defaultReasoning ?? "unset"}`,
+    `  depth      ${settings.defaultDepth ?? "unset"}`,
+    "",
+    "Effective for reviews:",
+    `  provider   ${formatConfigValue(effectiveProvider, layers.effective.sources["llm.provider"])}`,
+    `  model      ${formatConfigValue(effectiveModel, layers.effective.sources["llm.model"])}`,
+    `  reasoning  ${formatConfigValue(effectiveReasoning, effectiveReasoningSource)}`,
+    `  depth      ${formatConfigValue(layers.effective.config.review.depth, layers.effective.sources["review.depth"])}`,
+    `  auth       ${auth ? formatProviderAuth(auth) : "not checked; no provider selected"}`,
+    "",
+    "Commands:",
+    "  codegenie provider use <model>",
+    "  codegenie provider config set-provider <provider>",
+    "  codegenie provider config set-model <provider> <model>",
+    "  codegenie provider config set-reasoning <low|medium|high|xhigh|auto>",
+    "  codegenie provider config set-depth <light|normal|deep>",
+    "",
+    "Depth controls review budget and investigation intensity. Reasoning controls model thinking effort.",
+    ""
+  ];
+  return lines.join("\n");
+}
+
+function formatConfigValue(value: string | undefined, source: string | undefined): string {
+  if (value === undefined) {
+    return "unset";
+  }
+  return source === undefined ? value : `${value} (${sourceLabel(source)})`;
+}
+
+function sourceLabel(source: string): string {
+  switch (source) {
+    case "provider-settings":
+      return "settings";
+    case "user-config":
+      return "user config";
+    case "repo-config":
+      return "repo config";
+    case "environment":
+      return "environment";
+    case "cli":
+      return "cli";
+    case "defaults":
+      return "default";
+    case "built-in":
+      return "built in";
+    default:
+      return source;
+  }
+}
+
+function formatProviderAuth(status: AuthStatus): string {
+  if (!status.configured) {
+    return `not authenticated (${status.provider})`;
+  }
+  return status.source === "environment"
+    ? `environment api key (${status.provider})`
+    : `logged in (${status.provider})`;
 }
 
 function currentModelSelection(
