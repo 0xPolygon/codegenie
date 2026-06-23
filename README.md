@@ -4,6 +4,28 @@
 
 It is not a chatbot pointed at a diff. It is a **review harness**: a staged pipeline where deterministic code owns the workflow's guarantees (coverage, anchoring, verification, dedup, budgets, telemetry) and LLM agents do the judgment work inside each stage.
 
+## Install
+
+```bash
+# npm
+npm install -g @0xsequence/codegenie
+
+# bun
+bun install -g @0xsequence/codegenie
+```
+
+This installs the `codegenie` command globally.
+
+Or run directly without installing:
+
+```bash
+npx @0xsequence/codegenie --help
+bunx @0xsequence/codegenie --help
+```
+
+NOTE: we will move `codegenie` npm package out of `@0xsequence` in the future.
+
+
 ## What you get
 
 - **Findings that survive scrutiny.** Every candidate finding must cite changed-code evidence and a concrete failure mode, then pass an independent LLM verifier before it can be published. No evidence → no finding.
