@@ -1291,7 +1291,8 @@ function buildRunStats(config: CodegenieConfig, resolved: ResolvedReviewInput, r
     git: {
       repo: resolved.pr ? `${resolved.pr.owner}/${resolved.pr.repo}` : path.basename(resolved.repoRoot),
       base: resolved.baseRefName ?? shortRef(resolved.baseRef ?? resolved.mergeBase ?? "unknown"),
-      head: resolved.headRefName ?? shortRef(resolved.headRef ?? resolved.headSha ?? "unknown")
+      head: resolved.headRefName ?? shortRef(resolved.headRef ?? resolved.headSha ?? "unknown"),
+      ...(resolved.headSha !== undefined ? { headSha: resolved.headSha } : {})
     }
   };
 }

@@ -891,6 +891,7 @@ export type ReviewRunStats = {
     repo: string;
     base: string;
     head: string;
+    headSha?: string;
   };
 };
 

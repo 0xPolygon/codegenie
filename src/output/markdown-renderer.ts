@@ -82,9 +82,22 @@ function renderRunStatLines(stats: ReviewRunStats | undefined): string[] {
     lines.push(`Elapsed time: ${formatElapsed(stats.elapsedMs)}`);
   }
   if (stats.git !== undefined) {
-    lines.push(`Git: ${stats.git.repo} from ${stats.git.base} to ${stats.git.head}`);
+    lines.push(`Git: ${stats.git.repo} from ${stats.git.base} to ${renderGitHead(stats.git)}`);
   }
   return lines;
+}
+
+function renderGitHead(git: NonNullable<ReviewRunStats["git"]>): string {
+  const shortHash = shortHashForDisplay(git.headSha);
+  if (shortHash === undefined || git.head.startsWith(shortHash)) {
+    return git.head;
+  }
+  return `${git.head} (${shortHash})`;
+}
+
+function shortHashForDisplay(sha: string | undefined): string | undefined {
+  const trimmed = sha?.trim();
+  return trimmed !== undefined && trimmed.length >= 10 ? trimmed.slice(0, 10) : undefined;
 }
 
 function renderBudgetSummaryLines(summary: BudgetSummary | undefined): string[] {
