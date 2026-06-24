@@ -1,6 +1,6 @@
 # Plans
 
-This directory tracks implementation plans for confirmed improvements. Status values are `PENDING`, `BACKLOG`, `COMPLETE`, `IN PROGRESS`, and `BLOCKED`.
+This directory tracks implementation plans for confirmed improvements. Status values are `PENDING`, `BACKLOG`, `COMPLETE`, `REVERTED`, `IN PROGRESS`, and `BLOCKED`.
 
 | Plan | Status | Topic |
 | --- | --- | --- |
@@ -80,7 +80,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 74 | PENDING | Issue 74: Merged Finding Confidence Calibration |
 | 75 | PENDING | Issue 75: Human-Attention Output Discipline |
 | 76 | PENDING | Issue 76: Low-Confidence Anchorless True-Positive Suppression at the Verification Pre-Gate |
-| 77 | COMPLETE | Issue 77: Stage 6 Scoped Relationship Symbol Mention Lookups |
+| 77 | REVERTED | Issue 77: Stage 6 Scoped Relationship Symbol Mention Lookups |
 | 78 | PENDING | Issue 78: Stage-Grouped Telemetry Artifacts |
 | 79 | PENDING | Issue 79: Eval Recall-Variance Harness and Relay Wrong-Chain Case |
 

@@ -1,6 +1,7 @@
 # Issue 77: Stage 6 Scoped Relationship Symbol Mention Lookups
 
-Status: COMPLETE
+Status: REVERTED
+Reverted: implementation commit `22eee00effad878aea8e779a7f08e19416e9ba28` was reversed on branch `next-undo-plan-77` after eval comparisons of runs 36-39 indicated the scoped Stage 6 relationship lookup may have reduced review quality.
 Planned from: trails-api run `/home/peter/Dev/0xsequence/trails-api/.codegenie/runs/20260623-131851-e65f8991`, 2026-06-23
 Planned at: commit `2bf82a1` (branch `next`)
 Recommended priority: medium. This is a low-risk Stage 6 context-quality improvement: reduce noisy degraded tool results from broad deterministic symbol mention searches without weakening repo-wide model tools or hiding real cross-file relationships.
