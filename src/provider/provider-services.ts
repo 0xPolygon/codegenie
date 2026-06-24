@@ -146,7 +146,8 @@ export async function runProviderCommand(args: string[], opts: RunProviderComman
   const services = opts.services ?? createProviderServices(opts.homeOverride);
   const writeOut = opts.writeOut ?? ((text: string) => output.write(text));
 
-  const [command, ...rest] = commandArgs;
+  const [command, ...rawRest] = commandArgs;
+  const rest = rawRest.map((arg) => arg.startsWith("-") ? arg : resolveProviderAlias(arg));
   switch (command) {
     case "list":
       writeOut(renderProviderList(services));
@@ -727,6 +728,18 @@ function modelInfo(model: Model<Api>): ProviderModelInfo {
     thinkingLevels: getSupportedThinkingLevels(model).filter((level) => level !== "off"),
     input: [...model.input]
   };
+}
+
+const PROVIDER_ALIASES: Record<string, string> = {
+  "codex": "openai-codex",
+  "copilot": "github-copilot",
+  "bedrock": "amazon-bedrock",
+  "vertex": "google-vertex",
+  "gemini": "google",
+};
+
+function resolveProviderAlias(provider: string): string {
+  return PROVIDER_ALIASES[provider] ?? provider;
 }
 
 function providerKnown(provider: string): boolean {
