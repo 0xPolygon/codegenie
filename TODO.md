@@ -26,14 +26,13 @@ also need to ask to review it in detail, but it looks good from the md output
 - [ ] allow codegenie.toml to specify "lenDir = "tools/review-skills" and it will have various .md files in there for each lens/skill
       - [ ] control different skills for different folders etc.
 
-- [ ] final-review, list the 
-      - [ ] provider + model
-      - [ ] review command, that is, which branch or base:master and head:<blah-branch> abcdef123 
-            * where abcdef123 is the commit hash (shortened)
-      - [ ] ...what else?
-
 - [ ] simple "codegenie provider" would be nice to see if we're configured, or if we need to login, and also tell us what provider+model we're currently using
 - [ ] "Reviewing ... (stage 7).. would be nice for it to show hunks 10/120 and update this.. so we can see progress of hunks reviewed at this stage, since its the longest one
+- [ ] if we get a "partial" complete report, can we make sure to include the reason for why its partial..? such as "X llm calls went over budget and we were unable to review N hunks" so at least we know what happened in the run / review
+
+--
+
+- [ ] check stage 5 and stage 7 llm prompts, how can we do better
 
 --
 

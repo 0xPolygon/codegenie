@@ -81,15 +81,19 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 75 | PENDING | Issue 75: Human-Attention Output Discipline |
 | 76 | PENDING | Issue 76: Low-Confidence Anchorless True-Positive Suppression at the Verification Pre-Gate |
 | 77 | COMPLETE | Issue 77: Stage 6 Scoped Relationship Symbol Mention Lookups |
+| 78 | PENDING | Issue 78: Stage-Grouped Telemetry Artifacts |
+| 79 | PENDING | Issue 79: Eval Recall-Variance Harness and Relay Wrong-Chain Case |
 
 ## Current Queue
 
 Recommended implementation order for remaining work:
 
+- **Issue 79** — add per-case `repeat`/recall-rate to the eval harness and a precise Relay wrong-chain regression case, so Stage 7 recall variance becomes measurable and gateable (the measurement foundation for any redundancy fix).
 - **Issue 76** — recover anchors for low-confidence evidence-backed findings before the verifier pre-gate, so Stage 7 anchor omissions do not suppress repeatedly-confirmed true positives.
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
 - **Issue 74** — calibrate final confidence from compatible verified merged candidates, so Stage 10 does not publish a low-confidence final report when the merged group contains stronger confidence evidence.
 - **Issue 75** — suppress stale `Needs Human Attention` notes when Stage 9 already adjudicated the exact promoted source note or a stronger packet no-finding review already resolved the same helper predicate.
+- **Issue 78** — make `stages/<stage>/` the canonical location for future stage-owned telemetry artifacts while keeping only root discovery/stream files and root-only historical run compatibility.
 
 ## Deferred / Watch List
 
