@@ -93,7 +93,7 @@ Recommended implementation order for remaining work:
 - **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
 - **Issue 74** — calibrate final confidence from compatible verified merged candidates, so Stage 10 does not publish a low-confidence final report when the merged group contains stronger confidence evidence.
 - **Issue 75** — suppress stale `Needs Human Attention` notes when Stage 9 already adjudicated the exact promoted source note or a stronger packet no-finding review already resolved the same helper predicate.
-- **Issue 78** — make `stages/<stage>/` the canonical location for future stage-owned telemetry artifacts while keeping only root discovery/stream files and root-only historical run compatibility.
+- **Issue 78** — give each telemetry artifact exactly one home: stage-owned artifacts under `stages/<stage>/`, run-level discovery/streams at root. No duplicate writes and no fallback reads (clean break; old root-only runs are not read by updated readers).
 
 ## Deferred / Watch List
 

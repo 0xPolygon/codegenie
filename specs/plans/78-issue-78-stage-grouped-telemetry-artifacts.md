@@ -3,11 +3,11 @@
 Status: PENDING
 Planned from: local telemetry review/debugging workflow discussion after comparing trails-api Opus runs, 2026-06-23
 Planned at: commit `7ffa1e8` (branch `next`)
-Recommended priority: medium. This is a developer-experience and eval-debuggability improvement: future run directories should be easier to inspect stage by stage, with a clean staged layout for newly-created runs while keeping historical root-layout telemetry readable.
+Recommended priority: medium. This is a developer-experience and eval-debuggability improvement: new run directories become stage-by-stage browsable with exactly one canonical home per artifact — no duplicate writes and no fallback reads.
 
-> Executor instructions: do not migrate or rewrite old telemetry runs. For new runs, make `stages/<stage>/` the canonical artifact location. Keep only root-level discovery/stream files needed to identify and summarize a run. Teach artifact readers to understand both historical root-only runs and new staged runs.
+> Executor instructions: each artifact has exactly ONE canonical location. Stage-owned artifacts are written only under `stages/<NN>-<slug>/`; run-level summaries under `stages/00-run/`; discovery files, append-stream files, and the human-readable final report stay at the run root. Do NOT duplicate any artifact to two locations, and do NOT add legacy/fallback read paths. This is a clean layout change: new runs use the new layout; old root-only runs are not migrated and are not read by updated readers.
 >
-> Drift check: `git diff --stat 7ffa1e8..HEAD -- src/telemetry/run-artifacts.ts src/evals/eval-artifacts.ts tests/telemetry.test.ts tests`
+> Drift check: `git diff --stat 7ffa1e8..HEAD -- src/telemetry/run-artifacts.ts src/evals/eval-artifacts.ts src/cli/review-progress.ts tests/telemetry.test.ts tests`
 > If in-scope files changed since this plan was written, compare the "Current State" excerpts below against live code before editing.
 
 ## Problem
@@ -38,7 +38,7 @@ The data already has clear stage ownership. The filesystem layout should make th
 
 `src/telemetry/run-artifacts.ts` owns telemetry output. It has:
 
-- `KNOWN_ARTIFACTS`, a root-path allowlist;
+- `KNOWN_ARTIFACTS` (around line 51), a flat root-path allowlist of 29 artifact names;
 - `writeArtifact(relPath, data)`, used by pipeline stages;
 - `writeJson()` / `writeText()`, which already create parent directories;
 - an allowlist guard:
@@ -53,7 +53,7 @@ function assertAllowedArtifactPath(relPath: string): void {
 }
 ```
 
-`src/evals/eval-artifacts.ts` loads eval telemetry from the root-level layout:
+`src/evals/eval-artifacts.ts` loads eval telemetry from the flat root layout:
 
 ```ts
 readRequiredJson(dir, "candidate-findings.json")
@@ -63,306 +63,248 @@ readOptionalJsonl(path.join(dir, "events.jsonl"))
 loadPackets(path.join(dir, "packets"))
 ```
 
-Eval runs copy the full telemetry directory recursively, so adding directories is mechanically safe, but readers and tests should understand the new layout deliberately.
+`src/cli/review-progress.ts` (around line 18) already has a canonical stage-name map `STAGE_LABELS: Record<ReviewStage | 0, string>` (`5: "planning review"`, `8: "checking follow-ups"`, …); `ReviewStage` is `1..11` (`src/types.ts:1`). There is no stage→directory-slug mapping today; add one once and share it (Design §1).
+
+Note: `review-questions.json` is in `KNOWN_ARTIFACTS` but is no longer written by any pipeline stage (planner review questions were removed in Issue 66). It is vestigial; drop it rather than carry it into the new layout.
 
 ## Goal
 
-Make future telemetry runs easier to inspect by adding a stage-grouped artifact layout:
+A single, canonical, stage-grouped layout for new runs. Each artifact lives in exactly one place:
 
 ```text
-stages/
-  01-input/
-  02-diff/
-  03-classification/
-  04-index/
-  05-planner/
-  06-packets/
-  07-review/
-  08-system-review/
-  09-verification/
-  10-composition/
-  11-posting/
+<run>/
+  run.json  telemetry.json  artifact-manifest.json
+  run.log  events.jsonl  model-calls.jsonl  tool-calls.jsonl
+  debug/            # only when debugTrace is enabled; raw diagnostics, not stage-owned artifacts
+  final-review.md   # human-readable top-level review report
+  stages/
+    00-run/          error.json  cost-profile.json  model-calls-summary.json  tool-calls-summary.json
+    01-input/        resolved-input.json
+    02-diff/         diff.json  file-filter-decisions.json
+    03-classify/     file-facts.json
+    05-planner/      intent-signals.json  planner-dossier.json  planner-dossier-chunks.json  review-plan.json
+    06-packets/      hunk-relationships.json  packets/<id>.json
+    07-review/       # no durable JSON artifact today; data is in root streams/debug and later candidate materialization
+    08-followups/    system-review-raw-tasks.json  system-review-tasks.json  system-review-results.json
+    09-verification/ candidate-findings.json  uncertainty-promotion.json  verification.json
+    10-composition/  coverage.json  budget-summary.json  final-selection.json  human-attention-notes.json  final-findings.json
+    11-github-posting/
+                     github-posting.json
 ```
 
-while preserving:
+Properties:
 
-- historical run compatibility;
-- root-level run discovery and stream files;
-- historical packet JSON compatibility through reader fallback from `packets/`;
-- existing `run.log`, `events.jsonl`, `model-calls.jsonl`, and `tool-calls.jsonl` root streams.
+- **Exactly one home per artifact.** No artifact is written to both root and a stage dir.
+- **No legacy/fallback reads.** Readers use the canonical location directly.
+- Packet JSON moves with its stage: `stages/06-packets/packets/<id>.json`.
+- Stage directory order matches pipeline order (numeric prefix → terminal sort).
+
+Root holds only run discovery, append streams, the human-readable final report, and opt-in debug traces: `run.json`, `telemetry.json`, `artifact-manifest.json`, `final-review.md`, `run.log`, `events.jsonl`, `model-calls.jsonl`, `tool-calls.jsonl`, and `debug/` when `debugTrace` is enabled. `run.json` and `telemetry.json` stay at root because run retention, directory discovery, and ad hoc inspection use them as top-level entry points — they are run-level, not stage-owned, so this is not duplication. `final-review.md` stays at root because it is the primary human-readable review output, not a telemetry debugging artifact. `debug/` stays root because it is raw per-call diagnostics, not stage-owned review output. Notes:
+
+- `coverage.json` → `stages/10-composition/`. In the normal path it is written once after Stage 10 composition has produced `finalReview.coverage` and any budget-stop marker has been applied. The zero-work path writes the same final artifact shape early, but keep one canonical path.
+- `budget-summary.json` → `stages/10-composition/`. It is currently written by the pipeline after Stage 10 composition, not by telemetry finalization.
+- `candidate-findings.json` → `stages/09-verification/`. It is materialized after Stage 8 and after Stage 9 uncertainty promotion has prepared verifier-bound candidates, so it is the candidate set entering verification, not a pure Stage 7 artifact.
+- `uncertainty-promotion.json` → `stages/09-verification/`. It emits Stage 9 telemetry and mutates the verifier-bound candidate set.
+- `final-review.md` → root. Although it is derived from the composed `ReviewResult`, it is the top-level human report users open first, so keep it outside `stages/` as an explicit exception. It still has exactly one canonical location.
+- Stage 4 (`indexing symbols`) has no stable artifact today; reserve `stages/04-index/` for a future Stage 4 summary, do not invent one here.
+- Stage 7 (`reviewing hunks`) has no stable JSON artifact today. Packet review results are consumed in memory, and the durable candidate set is written later after Stage 8/9 additions.
+- Stage directory names are numeric + semantic so terminal sort matches pipeline order.
 
 ## Non-Goals
 
-- Do not move or rewrite old telemetry runs.
-- Do not keep ordinary stage-owned artifacts duplicated at the root in new runs.
-- Do not change pipeline stage numbering.
+- No duplicate writes; an artifact is never written to two locations.
+- No legacy/fallback read paths; do not keep root copies of stage-owned artifacts for old tooling.
+- Do not migrate or rewrite historical run directories.
+- Do not change pipeline stage numbering or `ReviewStage`.
+- Do not split `events.jsonl` / `model-calls.jsonl` / `tool-calls.jsonl` by stage (they stay root append streams; a stage-filtered *view* is a separate follow-up — see Future Work).
 - Do not change final review output semantics.
-- Do not split model/tool/event JSONL streams by stage in this plan. That can be a later plan if the root streams remain too large to inspect.
 
 ## Design
 
-### 1. Add a canonical stage artifact map
+### 1. One canonical stage table (no third naming of stages)
 
-Define a single mapping from current logical artifact names to stage-grouped paths in `src/telemetry/run-artifacts.ts`.
+Add a single shared table so the stage **slug** is derived once and cannot drift from the existing progress labels. Put this in a lightweight shared module such as `src/review-stages.ts` (or similar), not inside telemetry-specific code, so both `review-progress.ts` and `run-artifacts.ts` can depend on it without coupling progress UI to telemetry internals:
 
-For new runs, the following staged paths are canonical:
-
-```text
-stages/00-run/error.json
-stages/00-run/budget-summary.json
-stages/00-run/cost-profile.json
-stages/00-run/model-calls-summary.json
-stages/00-run/tool-calls-summary.json
-
-stages/01-input/resolved-input.json
-
-stages/02-diff/diff.json
-stages/02-diff/file-filter-decisions.json
-
-stages/03-classification/file-facts.json
-
-stages/05-planner/intent-signals.json
-stages/05-planner/planner-dossier.json
-stages/05-planner/planner-dossier-chunks.json
-stages/05-planner/review-plan.json
-stages/05-planner/review-questions.json
-
-stages/06-packets/hunk-relationships.json
-stages/06-packets/packets/<id>.json
-stages/06-packets/coverage.json
-
-stages/07-review/candidate-findings.json
-stages/07-review/uncertainty-promotion.json
-
-stages/08-system-review/system-review-raw-tasks.json
-stages/08-system-review/system-review-tasks.json
-stages/08-system-review/system-review-results.json
-
-stages/09-verification/verification.json
-
-stages/10-composition/final-selection.json
-stages/10-composition/human-attention-notes.json
-stages/10-composition/final-findings.json
-stages/10-composition/final-review.md
-
-stages/11-posting/github-posting.json
+```ts
+export const STAGES = [
+  { stage: 0,  slug: "00-run",          label: "setup" },
+  { stage: 1,  slug: "01-input",        label: "resolving input" },
+  { stage: 2,  slug: "02-diff",         label: "parsing diff" },
+  { stage: 3,  slug: "03-classify",     label: "classifying files" },
+  { stage: 4,  slug: "04-index",        label: "indexing symbols" },
+  { stage: 5,  slug: "05-planner",      label: "planning review" },
+  { stage: 6,  slug: "06-packets",      label: "building review packets" },
+  { stage: 7,  slug: "07-review",       label: "reviewing hunks" },
+  { stage: 8,  slug: "08-followups",    label: "checking follow-ups" },
+  { stage: 9,  slug: "09-verification", label: "verifying findings" },
+  { stage: 10, slug: "10-composition",  label: "composing review" },
+  { stage: 11, slug: "11-github-posting", label: "github posting" }
+] as const;
 ```
 
-Notes:
+Refactor `STAGE_LABELS` in `review-progress.ts` to derive from this table, so progress output, directory slugs, and the manifest `stageName` share one definition.
 
-- `coverage.json` is produced after verification today, but it represents run coverage over planned/built/reviewed packets. Put it in `06-packets` for human inspection unless implementation strongly prefers `10-composition` or `00-run`.
-- Stage 4 currently has no stable root artifact. Do not invent a large repo-index dump in this plan. If a later Stage 4 summary artifact is added, place it under `stages/04-index/`.
-- Keep stage directory names numeric and semantic so terminal sort order matches pipeline order.
+### 2. Canonical artifact map + single write
 
-### 2. Keep only root discovery and stream files
+Replace the flat `KNOWN_ARTIFACTS` set with a map from logical artifact name to its one canonical relative path:
 
-For new runs, root should contain only:
-
-```text
-run.json
-telemetry.json
-artifact-manifest.json
-run.log
-events.jsonl
-model-calls.jsonl
-tool-calls.jsonl
+```ts
+// run-artifacts.ts
+const ARTIFACT_LOCATION: Record<string, string> = {
+  "resolved-input.json":     "stages/01-input/resolved-input.json",
+  "diff.json":               "stages/02-diff/diff.json",
+  "review-plan.json":        "stages/05-planner/review-plan.json",
+  "candidate-findings.json": "stages/09-verification/candidate-findings.json",
+  "verification.json":       "stages/09-verification/verification.json",
+  "final-findings.json":     "stages/10-composition/final-findings.json",
+  "budget-summary.json":     "stages/10-composition/budget-summary.json",
+  // run-level discovery stays at root:
+  "run.json":                "run.json",
+  "telemetry.json":          "telemetry.json",
+  "artifact-manifest.json":  "artifact-manifest.json",
+  "final-review.md":         "final-review.md",
+  // ... full partition over every artifact ...
+};
 ```
 
-`run.json` and `telemetry.json` stay at root because run retention, directory discovery, summaries, and ad hoc inspection use them as top-level entry points. They may also be mirrored to `stages/00-run/` if implementation wants complete staged browsing, but they must remain root-level.
+`writeArtifact(name, data)` accepts the current logical artifact names only, resolves `name` → canonical path via the map, and writes it **once** there (`writeText` for `.md`, `writeJson` for JSON). Pipeline call sites should keep passing logical names like `review-plan.json`; they should not pass physical paths like `stages/05-planner/review-plan.json`. Packets resolve `packets/<id>.json` → `stages/06-packets/packets/<id>.json`. Only the central map knows directories. `finalize()` summary writes route through the same map: `run.json` / `telemetry.json` stay at root, while `cost-profile.json`, `model-calls-summary.json`, and `tool-calls-summary.json` go to `stages/00-run/`. `artifact-manifest.json` is a root finalize artifact. `budget-summary.json` is not a telemetry-finalize summary today; it is a pipeline artifact written after Stage 10 composition, so it belongs in `stages/10-composition/`.
 
-All ordinary stage-owned artifacts should be written only to staged paths in new runs:
+### 3. Artifact manifest
 
-```text
-stages/05-planner/review-plan.json
-stages/06-packets/packets/<id>.json
-stages/07-review/candidate-findings.json
-stages/09-verification/verification.json
-```
-
-Do not make pipeline call sites aware of stage paths. Keep the mapping centralized in telemetry.
-
-### 3. Add an artifact manifest
-
-Add a root artifact:
-
-```text
-artifact-manifest.json
-```
-
-with entries like:
+Emit a root `artifact-manifest.json` at finalize, indexing the canonical layout:
 
 ```json
 {
   "schemaVersion": 1,
   "layoutVersion": 2,
   "artifacts": [
-    {
-      "id": "review-plan",
-      "stage": 5,
-      "stageName": "planner",
-      "kind": "json",
-      "legacyRootPath": "review-plan.json",
-      "stagePath": "stages/05-planner/review-plan.json"
-    }
+    { "id": "review-plan", "stage": 5, "stageName": "planning review", "kind": "json", "path": "stages/05-planner/review-plan.json" }
   ]
 }
 ```
 
-The manifest gives debugging tools and eval tooling a stable index without forcing readers to hard-code every path. For stage-owned artifacts, `stagePath` is the canonical path. `legacyRootPath` documents where the same artifact lived in historical runs; it is not written for new runs.
-
-It should include root streams too, with no `stagePath` when they are intentionally root-only:
+Each entry carries the one canonical `path` (no legacy/root alias). Include root streams and the root final report too, with their root paths:
 
 ```text
-run.log
-events.jsonl
-model-calls.jsonl
-tool-calls.jsonl
+final-review.md  run.log  events.jsonl  model-calls.jsonl  tool-calls.jsonl
 ```
 
-### 4. Teach eval artifact loading to support both layouts
+The manifest is a self-describing index for external tooling; readers do not depend on it (paths are canonical and known). If a run fails before finalize, the manifest may be absent — do not risk masking the original pipeline error to write it.
 
-Update `src/evals/eval-artifacts.ts` so artifact readers try stage paths first, then historical root paths:
+### 4. Readers use canonical paths (no fallback)
 
-```text
-stages/07-review/candidate-findings.json
-candidate-findings.json
-```
-
-Stage-first makes the new layout canonical. Root fallback preserves old telemetry and copied eval run compatibility.
-
-For packets, support both:
+Update `src/evals/eval-artifacts.ts` to read the canonical stage paths directly:
 
 ```text
+stages/09-verification/candidate-findings.json
+stages/10-composition/final-findings.json
+stages/10-composition/final-selection.json
+stages/09-verification/verification.json
+stages/05-planner/review-plan.json
+stages/10-composition/coverage.json
 stages/06-packets/packets/
-packets/
+stages/00-run/cost-profile.json
+stages/00-run/model-calls-summary.json
+stages/00-run/tool-calls-summary.json
+stages/10-composition/budget-summary.json
+run.json                # root discovery, unchanged
+telemetry.json          # root discovery, unchanged
+events.jsonl            # root stream, unchanged
+model-calls.jsonl       # root stream, unchanged
+tool-calls.jsonl        # root stream, unchanged
 ```
 
-For JSONL streams, keep root-only in this plan.
+No stage-then-root probing, no try-both logic. `--from-artifacts` replay therefore requires a new-layout run directory. Keep `copyReviewOutput()` pointed at root `final-review.md`.
 
-### 5. Update the artifact allowlist
+### 5. Allowlist enforces the partition
 
-Extend `KNOWN_ARTIFACTS` / `assertAllowedArtifactPath()` to allow:
+Rework artifact validation in two layers:
 
-- `artifact-manifest.json`;
-- every mapped `stages/<stage-dir>/<artifact>` path;
-- `stages/06-packets/packets/<id>.json`.
+- Public `writeArtifact()` input validation accepts logical artifact names only (`review-plan.json`, `coverage.json`, `packets/<id>.json`) and rejects physical stage paths from call sites.
+- Internal physical-path validation accepts exactly the resolved canonical paths (each mapped stage/root path, plus `stages/06-packets/packets/<id>.json`) and rejects (a) a stage-owned artifact written to root, and (b) a root-only artifact written under `stages/`.
 
-Root-level stage-owned artifact paths should no longer be allowed for new write call sites, except where the compatibility reader deliberately supports them for old runs. Do not loosen the allowlist to arbitrary `stages/**` writes. The guard exists to catch accidental artifact churn.
+The guard's job is to catch a miswired stage path, not just unknown names. Do not loosen it to arbitrary `stages/**`.
 
 ## In-Scope Files
 
-- `src/telemetry/run-artifacts.ts` — central stage path mapping, canonical staged writes, manifest generation, allowlist.
-- `src/evals/eval-artifacts.ts` — stage-first/root-fallback artifact loading.
-- `tests/telemetry.test.ts` — artifact allowlist and write behavior tests.
-- Eval artifact-loader tests if present, or a focused new test for stage fallback.
-- `specs/plans/README.md` — index entry.
+- `src/review-stages.ts` or similar — shared `STAGES` table.
+- `src/telemetry/run-artifacts.ts` — `ARTIFACT_LOCATION` map, single-write resolution, partition-enforcing allowlist, manifest; drop vestigial `review-questions.json`.
+- `src/cli/review-progress.ts` — derive `STAGE_LABELS` from the shared `STAGES` table.
+- `src/evals/eval-artifacts.ts` — read canonical stage/root paths (no fallback).
+- `tests/telemetry.test.ts` — single-location writes; allowlist accepts canonical, rejects mislocated; partition exhaustiveness.
+- Eval artifact-loader tests if present, or a focused new test for the staged layout.
+- `specs/plans/README.md` — index/queue entry.
 
 ## Out of Scope
 
-- Reorganizing existing run directories.
-- Removing root discovery/stream artifacts.
+- Reorganizing, migrating, or reading historical root-only runs.
+- Duplicate writes or fallback reads.
 - Splitting root JSONL streams by stage.
-- Changing telemetry event schemas.
-- Changing eval scoring logic.
+- Changing telemetry event schemas or eval scoring logic.
 
 ## Implementation Steps
 
-1. Add `STAGE_ARTIFACT_PATHS` or equivalent mapping in `run-artifacts.ts`. This mapping should take the current logical artifact name used by pipeline call sites and return the canonical staged path for new writes.
-
-2. Add helpers:
-
-   ```ts
-   function canonicalArtifactPath(logicalRelPath: string): string
-   function legacyRootArtifactPath(stageRelPath: string): string | undefined
-   function writeCanonicalArtifact(logicalRelPath: string, data: unknown): void
-   ```
-
-   Keep `writeArtifact()` call-site semantics unchanged.
-
-3. Update `writeArtifact()`:
-   - accept the existing logical artifact names from pipeline call sites;
-   - resolve them to canonical staged paths;
-   - write only the staged artifact for stage-owned files;
-   - use `writeText` for `.md` artifacts and `writeJson` for JSON artifacts.
-
-4. Update `finalize()` summary writes:
-   - keep root `run.json` and root `telemetry.json`;
-   - write `model-calls-summary.json`, `tool-calls-summary.json`, `cost-profile.json`, and `budget-summary.json` under `stages/00-run/`;
-   - optionally mirror `run.json` and `telemetry.json` to `stages/00-run/` for complete staged browsing, but do not remove root copies.
-
-5. Add `artifact-manifest.json` generation during finalize. If the run fails before finalize, it is acceptable for the manifest to be absent; do not risk masking the original pipeline error. If implementation can write a partial manifest cheaply at attach time, that is optional.
-
-6. Update artifact path validation so pipeline call sites may still pass existing logical artifact names, but physical new writes permit only:
-   - root discovery/stream paths;
-   - known mapped stage artifacts;
-   - stage packet artifacts;
-   - `artifact-manifest.json`.
-
-   Historical root artifact paths should be supported by readers, not by new writers.
-
-7. Update eval artifact readers:
-   - add `readJsonWithFallback(dir, stagePath, legacyRootPath)`;
-   - add `readOptionalJsonlWithFallback` only if a future JSONL mirror is added; otherwise leave JSONL root-only;
-   - update packet loading to prefer `stages/06-packets/packets` and fallback to root `packets`.
-
-8. Update tests.
+1. Add the shared `STAGES` table in a lightweight shared module; refactor `STAGE_LABELS` to derive from it.
+2. Add `ARTIFACT_LOCATION` (the full partition) in `run-artifacts.ts`; remove the flat `KNOWN_ARTIFACTS` set and the vestigial `review-questions.json`.
+3. Update `writeArtifact()` and packet writes to resolve name → canonical path and write once; route `finalize()` summaries through the same map (`run.json`/`telemetry.json` at root; `cost-profile.json`, `model-calls-summary.json`, and `tool-calls-summary.json` under `stages/00-run/`).
+4. Rework artifact validation so public `writeArtifact()` accepts only logical names and internal resolved-path validation permits only canonical physical paths.
+5. Emit `artifact-manifest.json` at finalize (canonical paths only).
+6. Update `eval-artifacts.ts` readers to the canonical paths (no fallback); update packet loading to `stages/06-packets/packets/`.
+7. Update tests; update `specs/plans/README.md`.
 
 ## Tests
 
-Add/adjust tests for:
-
-- A telemetry run writes `stages/05-planner/review-plan.json` and does not write root `review-plan.json`.
-- Packet artifacts are written to `stages/06-packets/packets/<id>.json` and not root `packets/<id>.json`.
-- Finalize keeps root `run.json`, root `telemetry.json`, and root JSONL streams.
-- Finalize writes summaries such as `model-calls-summary.json`, `tool-calls-summary.json`, and `cost-profile.json` under `stages/00-run/`.
-- `artifact-manifest.json` exists after finalize and marks staged paths as canonical while documenting legacy root paths where applicable.
-- `assertAllowedArtifactPath` rejects unknown root artifacts, old root stage-owned artifacts for new writes, and unknown `stages/**` artifacts.
-- `loadEvalArtifacts()` can load:
-  - old root-only telemetry;
-  - new staged telemetry with only root discovery/stream files;
-  - staged fixture for at least candidates, final findings, verification, review plan, coverage, and packets.
+- `writeArtifact("review-plan.json", …)` writes `stages/05-planner/review-plan.json` and creates **no** root `review-plan.json`.
+- Packets are written only under `stages/06-packets/packets/<id>.json`.
+- `finalize()` keeps root `run.json`, root `telemetry.json`, root JSONL streams, and root `debug/` when enabled; it writes telemetry-owned summaries (`cost-profile.json`, `model-calls-summary.json`, `tool-calls-summary.json`) under `stages/00-run/` with no root copies.
+- `final-review.md` is written only at root, with no staged copy.
+- `coverage.json` and `budget-summary.json` are written only under `stages/10-composition/`.
+- `candidate-findings.json`, `uncertainty-promotion.json`, and `verification.json` are written only under `stages/09-verification/`.
+- Root `packets/` is not pre-created for new runs.
+- Public `writeArtifact()` accepts logical names and rejects physical stage paths from call sites; internal physical-path validation accepts every canonical path and rejects: a stage-owned artifact at root (e.g. `candidate-findings.json`), a root-only artifact under `stages/`, and unknown paths.
+- **Partition exhaustiveness:** a test asserts every artifact the pipeline can emit is classified in `ARTIFACT_LOCATION` exactly once (stage or root) — so a future new artifact cannot silently skip the layout.
+- `artifact-manifest.json` exists after finalize, lists canonical paths, and includes root streams.
+- `loadEvalArtifacts()` loads a new-layout fixture run for candidates, final findings, final selection, verification, review plan, coverage, packets, cost profile, model/tool summaries, budget summary, root run metadata, root telemetry summary, and root model/tool/event streams.
 
 ## Validation
 
-Run:
-
 ```bash
+pnpm typecheck
 pnpm test -- tests/telemetry.test.ts
 pnpm test -- tests/evals.test.ts
-pnpm typecheck
 ```
 
-If the repo does not have a focused eval-artifact test file, run the full test suite:
-
-```bash
-pnpm test
-```
-
-Manual spot check on a small review or eval run:
+Manual spot check on a small review run:
 
 ```text
 .codegenie/runs/<run-id>/
   run.json
   telemetry.json
   artifact-manifest.json
+  final-review.md
   stages/05-planner/review-plan.json
-  stages/07-review/candidate-findings.json
+  stages/09-verification/candidate-findings.json
+  stages/10-composition/coverage.json
+  stages/10-composition/final-findings.json
+  (no root review-plan.json / candidate-findings.json / final-findings.json)
 ```
 
 ## Risks and Mitigations
 
-- **Clean break misses a reader.** Moving ordinary artifacts out of the root can break any reader that is not updated. Mitigation: update official eval artifact loading in the same change, add tests for old and new layouts, and keep root `run.json`/`telemetry.json` for run discovery.
-
-- **Path mapping drifts from pipeline ownership.** Mitigation: keep one central map and cover representative artifacts in tests.
-
-- **Old tooling assumes root-only layout.** Mitigation: official readers support both layouts. Ad hoc scripts should switch to `artifact-manifest.json` or staged paths for new runs.
-
-- **New tooling cannot find summary files at root.** Mitigation: keep root `run.json`, `telemetry.json`, and JSONL streams; put summary JSON paths in `artifact-manifest.json`.
+- **Clean break for historical runs.** Updated eval/replay readers will not read old root-only runs; external scripts referencing root artifact paths break. Mitigation: intended — old runs are throwaway; update any kept scripts to canonical paths. No fallback is added by design.
+- **A reader is missed during the move.** Mitigation: update the official eval reader in the same change; the partition-exhaustiveness and load tests cover the canonical paths.
+- **Stage-name drift.** Mitigation: one shared `STAGES` table feeds labels, slugs, and manifest; covered by tests.
+- **A new artifact is added without a location.** Mitigation: the partition-exhaustiveness test fails until it is classified.
 
 ## Success Criteria
 
-- New telemetry runs are browsable by stage under `stages/`.
-- New telemetry runs do not duplicate ordinary stage-owned artifacts at root.
-- Existing eval and comparison commands still work on old root-only runs.
-- Eval artifact loading works with both root and stage-grouped layouts.
-- No pipeline stage call sites need to know the stage directory names.
+- New run directories are browsable by stage under `stages/`, with run-level discovery + streams at root, telemetry-owned summaries under `stages/00-run/`, and composition-produced summaries under `stages/10-composition/`.
+- Stage 11 artifacts use `stages/11-github-posting/`.
+- Every artifact has exactly one canonical location; no duplicates, no fallback reads.
+- Eval artifact loading works on the staged layout.
+- Stage slugs derive from a single shared table; the partition is exhaustively tested.
+- No pipeline call site needs to know stage directory names.
+
+## Future Work
+
+- A read-side stage inspector (e.g. `codegenie inspect <run> --stage 7`) that lists a stage's artifacts and filters the root append streams (`events`/`model-calls`/`tool-calls`, which already carry a `stage` field) — this is where most stage-by-stage *tracing* value lives, beyond grouping the structured JSON files.
