@@ -9569,6 +9569,11 @@ describe("phase 5 pipeline regressions", () => {
         partial: false,
         reasons: []
       },
+      runStats: {
+        model: { provider: "anthropic", id: "claude-opus-4-8", reasoning: "xhigh" },
+        elapsedMs: 450_000,
+        git: { repo: "codegenie", base: "master", head: "feature/stats" }
+      },
       budgetSummary: {
         completeness: "complete",
         partialReasons: [],
@@ -9600,7 +9605,11 @@ describe("phase 5 pipeline regressions", () => {
       noFindings: true
     });
 
-    expect(output).toContain("## Budget");
+    expect(output).toContain("## Stats");
+    expect(output).not.toContain("## Budget");
+    expect(output).toContain("Model: anthropic claude-opus-4-8 xhigh");
+    expect(output).toContain("Elapsed time: 7m 30s");
+    expect(output).toContain("Git: codegenie from master to feature/stats");
     expect(output).toContain("Review completeness: complete.");
     expect(output).toContain("Usage: model calls 5, tokens 225, cost $0.1234.");
     expect(output).toContain("Effective caps: model calls 4 (configured 2, multiplier 2), tokens 200 (configured 100, multiplier 2).");
@@ -9691,6 +9700,7 @@ describe("phase 5 pipeline regressions", () => {
       noFindings: true
     });
 
+    expect(output).not.toContain("## Stats");
     expect(output).not.toContain("## Budget");
     expect(output).not.toContain("Local context pressure");
   });

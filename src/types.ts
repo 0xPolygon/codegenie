@@ -180,7 +180,9 @@ export type ResolvedReviewInput = {
   mode: ReviewMode;
   repoRoot: string;
   baseRef?: string;
+  baseRefName?: string;
   headRef?: string;
+  headRefName?: string;
   startCommit?: string;
   endCommit?: string;
   mergeBase?: string;
@@ -878,9 +880,24 @@ export type PostingPlan = {
   reviewBody: string;
 };
 
+export type ReviewRunStats = {
+  model?: {
+    provider?: string;
+    id?: string;
+    reasoning?: ReasoningLevel;
+  };
+  elapsedMs?: number;
+  git?: {
+    repo: string;
+    base: string;
+    head: string;
+  };
+};
+
 export type ReviewResult = {
   summary: string;
   coverage: RunCoverageStatus;
+  runStats?: ReviewRunStats;
   budgetSummary?: BudgetSummary;
   findings: FinalFinding[];
   summaryOnlyFindings: FinalFinding[];

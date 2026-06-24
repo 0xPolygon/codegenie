@@ -40,6 +40,7 @@ import type {
   ReviewPacket,
   ReviewPlan,
   ReviewResult,
+  ReviewRunStats,
   ReviewStage,
   RunCoverageStatus,
   TelemetryEvent
@@ -334,6 +335,7 @@ export async function runReview(
         }
       });
     }
+    finalReview.runStats = buildRunStats(config, resolved, run);
     await renderOutputs(finalReview, overrides, run.telemetry);
     await run.finalize({
       status: finalReview.coverage.partial ? "completed_partial" : "completed_full",
@@ -894,6 +896,7 @@ async function maybeZeroWork(
   await maybePublishToGitHub(result, resolved, config, run.telemetry, {
     ...(overrides.github !== undefined ? { github: overrides.github } : {})
   });
+  result.runStats = buildRunStats(config, resolved, run);
   await renderOutputs(result, overrides, run.telemetry);
   run.telemetry.event({ stage: 2, level: "info", message: "zero_work_short_circuit", data: { totalHunks, reasons } });
   return result;
@@ -1267,7 +1270,9 @@ function summarizeResolvedInput(resolved: ResolvedReviewInput): Omit<ResolvedRev
     mode: resolved.mode,
     repoRoot: resolved.repoRoot,
     ...(resolved.baseRef !== undefined ? { baseRef: resolved.baseRef } : {}),
+    ...(resolved.baseRefName !== undefined ? { baseRefName: resolved.baseRefName } : {}),
     ...(resolved.headRef !== undefined ? { headRef: resolved.headRef } : {}),
+    ...(resolved.headRefName !== undefined ? { headRefName: resolved.headRefName } : {}),
     ...(resolved.startCommit !== undefined ? { startCommit: resolved.startCommit } : {}),
     ...(resolved.endCommit !== undefined ? { endCommit: resolved.endCommit } : {}),
     ...(resolved.mergeBase !== undefined ? { mergeBase: resolved.mergeBase } : {}),
@@ -1276,6 +1281,57 @@ function summarizeResolvedInput(resolved: ResolvedReviewInput): Omit<ResolvedRev
     commits: resolved.commits,
     rawDiffChars: resolved.rawDiff.length
   };
+}
+
+function buildRunStats(config: CodegenieConfig, resolved: ResolvedReviewInput, run: RunContext): ReviewRunStats {
+  const model = modelStats(config);
+  return {
+    ...(model !== undefined ? { model } : {}),
+    elapsedMs: run.budget.elapsedMs(),
+    git: {
+      repo: resolved.pr ? `${resolved.pr.owner}/${resolved.pr.repo}` : path.basename(resolved.repoRoot),
+      base: resolved.baseRefName ?? shortRef(resolved.baseRef ?? resolved.mergeBase ?? "unknown"),
+      head: resolved.headRefName ?? shortRef(resolved.headRef ?? resolved.headSha ?? "unknown")
+    }
+  };
+}
+
+function modelStats(config: CodegenieConfig): ReviewRunStats["model"] {
+  const provider = nonEmpty(config.llm.provider);
+  const model = nonEmpty(config.llm.model);
+  const reasoning = config.llm.reasoning ?? "high";
+  if (provider === undefined && model !== undefined) {
+    const split = splitProviderQualifiedModel(model);
+    return split !== undefined ? { provider: split.provider, id: split.id, reasoning } : { id: model, reasoning };
+  }
+  if (provider !== undefined && model !== undefined) {
+    const id = model.startsWith(`${provider}/`) ? model.slice(provider.length + 1) : model;
+    return { provider, id, reasoning };
+  }
+  if (provider !== undefined) {
+    return { provider, reasoning };
+  }
+  return undefined;
+}
+
+function splitProviderQualifiedModel(model: string): { provider: string; id: string } | undefined {
+  const slash = model.indexOf("/");
+  if (slash <= 0 || slash === model.length - 1) {
+    return undefined;
+  }
+  return { provider: model.slice(0, slash), id: model.slice(slash + 1) };
+}
+
+function shortRef(ref: string): string {
+  return /^[a-f0-9]{40}$/i.test(ref) ? ref.slice(0, 12) : ref;
+}
+
+function nonEmpty(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 function filterSkippedHunkCount(allFiles: DiffFile[], decisions: FileFilterDecision[]): number {
@@ -1371,6 +1427,10 @@ export class BudgetLedger {
 
   stopSnapshot(): BudgetStop | undefined {
     return this.stop;
+  }
+
+  elapsedMs(): number {
+    return Date.now() - this.startedAt;
   }
 
   hasDispatchBlocks(): boolean {

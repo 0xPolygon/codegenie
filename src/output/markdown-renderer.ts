@@ -1,4 +1,4 @@
-import type { BudgetLimitEvent, BudgetSummary, FinalFinding, ReviewResult, RunCoverageStatus } from "../types.js";
+import type { BudgetLimitEvent, BudgetSummary, FinalFinding, ReviewResult, ReviewRunStats, RunCoverageStatus } from "../types.js";
 import { renderCoverageSummaryLines } from "../util/coverage-summary.js";
 
 export function renderMarkdownReview(result: ReviewResult): string {
@@ -11,7 +11,7 @@ export function renderMarkdownReview(result: ReviewResult): string {
     renderFindings("Findings", result.findings),
     renderFindings("Summary-Only Findings", result.summaryOnlyFindings),
     renderNeedsHumanAttention(result),
-    renderBudgetSummary(result.budgetSummary),
+    renderStats(result.runStats, result.budgetSummary),
     result.noFindings ? "## No Findings\n\nNo credible findings were found." : ""
   ].filter((section) => section.trim().length > 0);
 
@@ -58,13 +58,41 @@ function renderNeedsHumanAttention(result: ReviewResult): string {
   return lines.join("\n");
 }
 
-function renderBudgetSummary(summary: BudgetSummary | undefined): string {
-  if (!summary || !shouldRenderBudgetSummary(summary)) {
+function renderStats(stats: ReviewRunStats | undefined, summary: BudgetSummary | undefined): string {
+  const statLines = renderRunStatLines(stats);
+  const budgetLines = renderBudgetSummaryLines(summary);
+  if (statLines.length === 0 && budgetLines.length === 0) {
     return "";
   }
 
-  const lines = ["## Budget"];
-  lines.push("");
+  return ["## Stats", "", ...statLines, ...budgetLines].join("\n");
+}
+
+function renderRunStatLines(stats: ReviewRunStats | undefined): string[] {
+  if (stats === undefined) {
+    return [];
+  }
+
+  const lines: string[] = [];
+  const model = renderModel(stats.model);
+  if (model !== undefined) {
+    lines.push(`Model: ${model}`);
+  }
+  if (stats.elapsedMs !== undefined) {
+    lines.push(`Elapsed time: ${formatElapsed(stats.elapsedMs)}`);
+  }
+  if (stats.git !== undefined) {
+    lines.push(`Git: ${stats.git.repo} from ${stats.git.base} to ${stats.git.head}`);
+  }
+  return lines;
+}
+
+function renderBudgetSummaryLines(summary: BudgetSummary | undefined): string[] {
+  if (!summary || !shouldRenderBudgetSummary(summary)) {
+    return [];
+  }
+
+  const lines: string[] = [];
   lines.push(`Review completeness: ${summary.completeness}.`);
   const pressure = renderContextPressure(summary);
   const usage = [`model calls ${summary.usage.modelCalls}`, `tokens ${summary.usage.totalTokens}`];
@@ -85,7 +113,7 @@ function renderBudgetSummary(summary: BudgetSummary | undefined): string {
   if (pressure.length > 0) {
     lines.push(`Local context pressure: ${pressure.join(", ")}.`);
   }
-  return lines.join("\n");
+  return lines;
 }
 
 function shouldRenderBudgetSummary(summary: BudgetSummary): boolean {
@@ -154,4 +182,44 @@ function renderContextPressure(summary: BudgetSummary): string[] {
     parts.push(`${pressure.unresolvedNotes.omitted} unresolved note${pressure.unresolvedNotes.omitted === 1 ? "" : "s"} suppressed`);
   }
   return parts;
+}
+
+function renderModel(model: ReviewRunStats["model"]): string | undefined {
+  if (model === undefined) {
+    return undefined;
+  }
+  const provider = model.provider?.trim();
+  const id = model.id?.trim();
+  const reasoning = model.reasoning?.trim();
+  const parts: string[] = [];
+  if (provider && id) {
+    parts.push(provider, id);
+  } else if (provider) {
+    parts.push(provider);
+  } else if (id) {
+    parts.push(id);
+  }
+  if (reasoning) {
+    parts.push(reasoning);
+  }
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}
+
+function formatElapsed(elapsedMs: number): string {
+  const ms = Math.max(0, Math.round(elapsedMs));
+  if (ms < 1000) {
+    return `${ms}ms`;
+  }
+
+  const totalSeconds = Math.round(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${seconds}s`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`;
+  }
+  return `${seconds}s`;
 }

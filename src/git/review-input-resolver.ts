@@ -152,7 +152,9 @@ async function resolvePullRequestReview(
     mode: "github_pr",
     repoRoot,
     baseRef: pr.baseSha,
+    baseRefName: pr.baseRefName,
     headRef: pr.headSha,
+    headRefName: pr.headRefName,
     mergeBase,
     headSha: pr.headSha,
     pr,
@@ -400,7 +402,9 @@ async function resolveBranchReview(
     mode: "branch",
     repoRoot,
     baseRef: base.sha,
+    baseRefName: base.shortName,
     headRef: branch.sha,
+    headRefName: input.branchName,
     mergeBase,
     headSha: branch.sha,
     commits,
@@ -472,7 +476,9 @@ async function resolveCommitReview(
       mode: "commit_range",
       repoRoot,
       baseRef: parent,
+      baseRefName: shortRef(parent),
       headRef: startSha,
+      headRefName: shortRef(startSha),
       startCommit: startSha,
       mergeBase: parent,
       headSha: startSha,
@@ -501,7 +507,9 @@ async function resolveCommitReview(
     mode: "commit_range",
     repoRoot,
     baseRef: startSha,
+    baseRefName: shortRef(startSha),
     headRef: endSha,
+    headRefName: shortRef(endSha),
     startCommit: startSha,
     endCommit: endSha,
     mergeBase: startSha,
@@ -552,12 +560,18 @@ async function resolveHeadReview(
     mode: "head",
     repoRoot,
     baseRef: baseSha,
+    baseRefName: input.baseRef,
     headRef: headSha,
+    headRefName: input.headRef,
     mergeBase,
     headSha,
     commits,
     rawDiff
   };
+}
+
+function shortRef(ref: string): string {
+  return /^[a-f0-9]{40}$/i.test(ref) ? ref.slice(0, 12) : ref;
 }
 
 async function resolveBranchWithShallowRecovery(
