@@ -28,21 +28,20 @@ export function parseProviderCommand(
   const program = new Command();
   program.name("codegenie").exitOverride();
 
-  if (!opts.allowOutput) {
-    program.configureOutput({
-      writeOut: () => undefined,
-      writeErr: () => undefined
-    });
-  }
+  program.configureOutput({
+    writeOut: opts.allowOutput ? (text) => process.stdout.write(text) : () => undefined,
+    writeErr: () => undefined
+  });
 
   const provider = program.command("provider").description("manage model providers and defaults");
+  const helpByPath = new Map<string, Command>();
   provider
     .command("list")
     .description("list known providers and auth status")
     .action(() => {
       parsed = { args: ["provider", "list"], options: {} };
     });
-  provider
+  const loginCommand = provider
     .command("login")
     .description("store credentials for a provider")
     .argument("<provider>")
@@ -53,6 +52,7 @@ export function parseProviderCommand(
         options: { apiKeyLogin: options.apiKey === true }
       };
     });
+  helpByPath.set("provider login", loginCommand);
   provider
     .command("logout")
     .description("remove one provider credential, or all credentials with --yes")
@@ -85,43 +85,48 @@ export function parseProviderCommand(
         options: { all: options.all === true }
       };
     });
-  provider
+  const useCommand = provider
     .command("use")
     .description("set the default provider/model by fuzzy model id")
     .argument("<model>")
     .action((modelQuery: string) => {
       parsed = { args: ["provider", "use", modelQuery], options: {} };
     });
+  helpByPath.set("provider use", useCommand);
 
   const config = provider.command("config").description("show or update provider defaults");
   config.action(() => {
     parsed = { args: ["provider", "config"], options: {} };
   });
-  config
+  const configSetProviderCommand = config
     .command("set-provider")
     .argument("<provider>")
     .action((providerId: string) => {
       parsed = { args: ["provider", "config", "set-provider", providerId], options: {} };
     });
-  config
+  helpByPath.set("provider config set-provider", configSetProviderCommand);
+  const configSetModelCommand = config
     .command("set-model")
     .argument("<provider>")
     .argument("<model>")
     .action((providerId: string, modelId: string) => {
       parsed = { args: ["provider", "config", "set-model", providerId, modelId], options: {} };
     });
-  config
+  helpByPath.set("provider config set-model", configSetModelCommand);
+  const configSetDepthCommand = config
     .command("set-depth")
     .argument("<light|normal|deep>")
     .action((depth: string) => {
       parsed = { args: ["provider", "config", "set-depth", depth], options: {} };
     });
-  config
+  helpByPath.set("provider config set-depth", configSetDepthCommand);
+  const configSetReasoningCommand = config
     .command("set-reasoning")
     .argument("<low|medium|high|xhigh|auto>")
     .action((reasoning: string) => {
       parsed = { args: ["provider", "config", "set-reasoning", reasoning], options: {} };
     });
+  helpByPath.set("provider config set-reasoning", configSetReasoningCommand);
 
   try {
     program.parse(argv, { from: "user" });
@@ -129,7 +134,7 @@ export function parseProviderCommand(
     if (isCommanderDisplayExit(error)) {
       throw new CliDisplayExit(error.exitCode);
     }
-    throw commanderToCodegenieError(error);
+    throw commanderToCodegenieError(error, argv, helpByPath);
   }
 
   if (!parsed) {
@@ -142,14 +147,38 @@ function isCommanderDisplayExit(error: unknown): error is CommanderError {
   return error instanceof CommanderError && error.exitCode === 0;
 }
 
-function commanderToCodegenieError(error: unknown): CodegenieError {
+function commanderToCodegenieError(
+  error: unknown,
+  argv: string[],
+  helpByPath: Map<string, Command>
+): CodegenieError {
   if (error instanceof CommanderError) {
+    const commandPath = commandPathForArgv(argv);
+    const helpText = error.code === "commander.missingArgument" ? helpByPath.get(commandPath)?.helpInformation() : undefined;
+    const hint = commandPath === "provider login"
+      ? "⭐🧞 Please run `codegenie provider list` to get a list of LLM providers."
+      : undefined;
     return new CodegenieError("invalid_args", error.message, {
-      context: { code: error.code, exitCode: error.exitCode }
+      context: {
+        code: error.code,
+        exitCode: error.exitCode,
+        ...(helpText !== undefined ? { helpText } : {}),
+        ...(hint !== undefined ? { hint } : {})
+      }
     });
   }
   if (error instanceof CodegenieError) {
     return error;
   }
   return new CodegenieError("invalid_args", "failed to parse provider command line", { cause: error });
+}
+
+function commandPathForArgv(argv: string[]): string {
+  if (argv[0] === "help") {
+    return argv.slice(1, 4).join(" ");
+  }
+  if (argv[0] === "provider" && argv[1] === "config") {
+    return argv.slice(0, 3).join(" ");
+  }
+  return argv.slice(0, 2).join(" ");
 }

@@ -48,7 +48,7 @@ async function main(): Promise<void> {
       return;
     }
     if (isCodegenieError(error)) {
-      process.stderr.write(stripCredentials(`${error.code}: ${error.message}\n`));
+      process.stderr.write(stripCredentials(renderCodegenieError(error)));
     } else if (error instanceof Error) {
       process.stderr.write(stripCredentials(`${error.name}: ${error.message}\n`));
     } else {
@@ -56,6 +56,15 @@ async function main(): Promise<void> {
     }
     process.exitCode = errorExitCode(error);
   }
+}
+
+function renderCodegenieError(error: { code: string; message: string; context?: Record<string, unknown> }): string {
+  const helpText = typeof error.context?.helpText === "string" ? error.context.helpText.trimEnd() : undefined;
+  const hint = typeof error.context?.hint === "string" ? error.context.hint : undefined;
+  if (helpText !== undefined) {
+    return `${error.message}\n\n${helpText}${hint !== undefined ? `\n\n${hint}` : ""}\n`;
+  }
+  return `${error.code}: ${error.message}\n`;
 }
 
 await main();

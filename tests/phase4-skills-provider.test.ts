@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { executeProviderCommand } from "../src/cli/provider-command.js";
+import { executeProviderCommand, parseProviderCommand } from "../src/cli/provider-command.js";
 import { getCodegeniePaths } from "../src/config/paths.js";
 import { defaultConfig } from "../src/config/schema.js";
 import {
@@ -306,6 +306,43 @@ Exercise normal YAML list frontmatter.
 });
 
 describe("Phase 4 provider commands", () => {
+  it("includes login help and provider-list hint when the login provider is missing", () => {
+    let thrown: unknown;
+
+    try {
+      parseProviderCommand(["provider", "login"]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(CodegenieError);
+    const error = thrown as CodegenieError;
+    expect(error.message).toBe("error: missing required argument 'provider'");
+    expect(error.context).toMatchObject({
+      code: "commander.missingArgument",
+      hint: "⭐ 🧞 Please run `codegenie provider list` to get a list of LLM providers."
+    });
+    expect(error.context?.helpText).toContain("Usage: codegenie provider login [options] <provider>");
+    expect(error.context?.helpText).toContain("store credentials for a provider");
+    expect(error.context?.helpText).toContain("--api-key   store an API key instead of using OAuth");
+  });
+
+  it("includes command help for other missing required provider arguments", () => {
+    let thrown: unknown;
+
+    try {
+      parseProviderCommand(["provider", "use"]);
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(CodegenieError);
+    const error = thrown as CodegenieError;
+    expect(error.message).toBe("error: missing required argument 'model'");
+    expect(error.context?.helpText).toContain("Usage: codegenie provider use [options] <model>");
+    expect(error.context?.hint).toBeUndefined();
+  });
+
   it("prints provider list as an aligned human-readable table", async () => {
     const services = fakeProviderServices(tempDir());
     const output: string[] = [];
