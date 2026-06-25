@@ -23,7 +23,7 @@ import {
   stableJson
 } from "../src/skills/prompt-builder.js";
 import type { Skill } from "../src/skills/skill-loader.js";
-import { createRunTelemetry } from "../src/telemetry/run-artifacts.js";
+import { canonicalArtifactPath, createRunTelemetry } from "../src/telemetry/run-artifacts.js";
 import { buildTestCoverageDelta, testCoverageRewriteSignals } from "../src/repo/test-coverage-delta.js";
 import type {
   CandidateFinding,
@@ -4392,7 +4392,7 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir, piAdapter: adapter }
     );
 
-    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as {
+    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as {
       status: { partial: boolean; budgetStopped: boolean };
       records: Array<{ status: string; reason?: string }>;
     };
@@ -4451,7 +4451,7 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir, piAdapter: adapter }
     );
 
-    const budgetSummary = JSON.parse(readFileSync(path.join(runArtifactDir, "budget-summary.json"), "utf8")) as {
+    const budgetSummary = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("budget-summary.json")), "utf8")) as {
       contextPressure?: {
         toolBudgetRejections: number;
         toolBudgetRejectionsByStage: Record<string, number>;
@@ -4585,7 +4585,8 @@ describe("phase 5 pipeline regressions", () => {
 
     await telemetry.recorder.writeArtifact("planner-dossier-chunks.json", []);
 
-    expect(existsSync(path.join(attached.runDir, "planner-dossier-chunks.json"))).toBe(true);
+    expect(existsSync(path.join(attached.runDir, canonicalArtifactPath("planner-dossier-chunks.json")))).toBe(true);
+    expect(existsSync(path.join(attached.runDir, "planner-dossier-chunks.json"))).toBe(false);
   });
 
   it("omits run ids from planner prompts while keeping them in dossier artifacts", async () => {
@@ -7417,7 +7418,7 @@ describe("phase 5 pipeline regressions", () => {
         outcome: { status: string; errorCode: string | null };
       };
       expect(runJson.outcome).toMatchObject({ status: "failed", errorCode: "llm_call_failed" });
-      const errorJson = JSON.parse(readFileSync(path.join(runArtifactDir, "error.json"), "utf8")) as {
+      const errorJson = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("error.json")), "utf8")) as {
         errorCode: string;
         error: string;
         context: { reason: string };
@@ -7490,9 +7491,9 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir, runner }
     );
 
-    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as { status: { reasons: string[] } };
+    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as { status: { reasons: string[] } };
     expect(coverage.status.reasons).toContain("semantic composition skipped; deterministic fallback used");
-    const finalSelection = JSON.parse(readFileSync(path.join(runArtifactDir, "final-selection.json"), "utf8")) as {
+    const finalSelection = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("final-selection.json")), "utf8")) as {
       composition: { mode: string; fallbackReason: string };
       records: Array<{ findingId: string; decision: string }>;
     };
@@ -7527,7 +7528,7 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir }
     );
 
-    expect(existsSync(path.join(runArtifactDir, "coverage.json"))).toBe(true);
+    expect(existsSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")))).toBe(true);
     expect(existsSync(path.join(runArtifactDir, "final-review.md"))).toBe(true);
     expect(existsSync(path.join(runArtifactDir, "run.json"))).toBe(true);
   });
@@ -7604,10 +7605,10 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir, piAdapter: adapter }
     );
 
-    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as {
+    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as {
       status: { budgetStopped: boolean; partial: boolean; reasons: string[] };
     };
-    const modelCalls = JSON.parse(readFileSync(path.join(runArtifactDir, "model-calls-summary.json"), "utf8")) as {
+    const modelCalls = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("model-calls-summary.json")), "utf8")) as {
       cache: { write: number; disabled: number };
     };
     expect(adapter.calls).toBe(3);
@@ -7667,7 +7668,7 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir, runner }
     );
 
-    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as {
+    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as {
       records: Array<{ hunkId: string; path: string; source: string; status: string; reason?: string }>;
     };
     const defaultRecord = coverage.records.find((record) => record.hunkId === aHunk.id);
@@ -7721,7 +7722,7 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir, runner }
     );
 
-    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as {
+    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as {
       status: { degradedPlanning: boolean };
       records: Array<{ hunkId: string; path: string; source: string; status: string; reason?: string }>;
     };

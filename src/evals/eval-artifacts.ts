@@ -14,6 +14,7 @@ import type {
   RunCoverageStatus
 } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
+import { canonicalArtifactPath } from "../telemetry/run-artifacts.js";
 
 export async function allocateRunDir(logsDir: string): Promise<{ runNumber: number; dir: string }> {
   await mkdir(logsDir, { recursive: true });
@@ -34,17 +35,17 @@ export async function allocateRunDir(logsDir: string): Promise<{ runNumber: numb
 
 export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtifacts> {
   const dir = path.resolve(telemetryDir);
-  const candidates = await readRequiredJson<CandidateFinding[]>(dir, "candidate-findings.json");
-  const finalFindings = await readRequiredJson<FinalFinding[]>(dir, "final-findings.json");
-  const selectionRaw = await readOptionalJson<unknown>(dir, "final-selection.json");
-  const coverageRaw = await readOptionalJson<unknown>(dir, "coverage.json");
-  const reviewPlan = await readOptionalJson<ReviewPlan>(dir, "review-plan.json");
+  const candidates = await readRequiredJson<CandidateFinding[]>(dir, canonicalArtifactPath("candidate-findings.json"));
+  const finalFindings = await readRequiredJson<FinalFinding[]>(dir, canonicalArtifactPath("final-findings.json"));
+  const selectionRaw = await readOptionalJson<unknown>(dir, canonicalArtifactPath("final-selection.json"));
+  const coverageRaw = await readOptionalJson<unknown>(dir, canonicalArtifactPath("coverage.json"));
+  const reviewPlan = await readOptionalJson<ReviewPlan>(dir, canonicalArtifactPath("review-plan.json"));
   const coverage = normalizeCoverage(coverageRaw);
   const metricsSources: EvalArtifacts["metricsSources"] = {};
-  const costProfile = await readOptionalJson<unknown>(dir, "cost-profile.json");
-  const modelCallsSummary = await readOptionalJson<unknown>(dir, "model-calls-summary.json");
-  const toolCallsSummary = await readOptionalJson<unknown>(dir, "tool-calls-summary.json");
-  const budgetSummary = await readOptionalJson<BudgetSummary>(dir, "budget-summary.json");
+  const costProfile = await readOptionalJson<unknown>(dir, canonicalArtifactPath("cost-profile.json"));
+  const modelCallsSummary = await readOptionalJson<unknown>(dir, canonicalArtifactPath("model-calls-summary.json"));
+  const toolCallsSummary = await readOptionalJson<unknown>(dir, canonicalArtifactPath("tool-calls-summary.json"));
+  const budgetSummary = await readOptionalJson<BudgetSummary>(dir, canonicalArtifactPath("budget-summary.json"));
   const runJson = await readOptionalJson<unknown>(dir, "run.json");
   const telemetry = await readOptionalJson<unknown>(dir, "telemetry.json");
   const modelCalls = await readOptionalJsonl(path.join(dir, "model-calls.jsonl"));
@@ -75,10 +76,10 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
   }
   const artifacts: EvalArtifacts = {
     candidates: Array.isArray(candidates) ? candidates : [],
-    verification: normalizeVerification(await readOptionalJson<unknown>(dir, "verification.json")),
+    verification: normalizeVerification(await readOptionalJson<unknown>(dir, canonicalArtifactPath("verification.json"))),
     finalSelection: normalizeSelection(selectionRaw),
     finalFindings: Array.isArray(finalFindings) ? finalFindings : [],
-    packets: await loadPackets(path.join(dir, "packets")),
+    packets: await loadPackets(path.join(dir, "stages", "06-packets", "packets")),
     hintEvents: await loadHintEvents(path.join(dir, "events.jsonl")),
     metricsSources
   };

@@ -26,6 +26,7 @@ import type { LlmCallRecord, TelemetryRecorder } from "./telemetry-recorder.js";
 import { stripCredentials } from "./redaction.js";
 import { isLocalToolBudgetRejectionReason } from "../util/context-pressure.js";
 import { resolveCodegenieRuntimeProvenance } from "../util/runtime-provenance.js";
+import { STAGE_LABELS, STAGES } from "../review-stages.js";
 
 type CreateRunTelemetryOptions = {
   telemetryConfig: CodegenieConfig["telemetry"];
@@ -48,37 +49,46 @@ const LOG_LEVEL_ORDER: Record<LogLevel, number> = {
   error: 40
 };
 
-export const KNOWN_ARTIFACTS = new Set([
-  "error.json",
-  "intent-signals.json",
-  "planner-dossier.json",
-  "planner-dossier-chunks.json",
-  "resolved-input.json",
-  "diff.json",
-  "file-filter-decisions.json",
-  "file-facts.json",
-  "review-plan.json",
-  "review-questions.json",
-  "hunk-relationships.json",
-  "coverage.json",
-  "budget-summary.json",
-  "system-review-raw-tasks.json",
-  "system-review-tasks.json",
-  "system-review-results.json",
-  "candidate-findings.json",
-  "uncertainty-promotion.json",
-  "verification.json",
-  "final-selection.json",
-  "human-attention-notes.json",
-  "final-findings.json",
-  "cost-profile.json",
-  "final-review.md",
-  "github-posting.json",
-  "telemetry.json",
-  "run.json",
-  "model-calls-summary.json",
-  "tool-calls-summary.json"
-]);
+export const ARTIFACT_LOCATION = {
+  "error.json": "stages/00-run/error.json",
+  "cost-profile.json": "stages/00-run/cost-profile.json",
+  "model-calls-summary.json": "stages/00-run/model-calls-summary.json",
+  "tool-calls-summary.json": "stages/00-run/tool-calls-summary.json",
+  "resolved-input.json": "stages/01-input/resolved-input.json",
+  "diff.json": "stages/02-diff/diff.json",
+  "file-filter-decisions.json": "stages/02-diff/file-filter-decisions.json",
+  "file-facts.json": "stages/03-classify/file-facts.json",
+  "intent-signals.json": "stages/05-planner/intent-signals.json",
+  "planner-dossier.json": "stages/05-planner/planner-dossier.json",
+  "planner-dossier-chunks.json": "stages/05-planner/planner-dossier-chunks.json",
+  "review-plan.json": "stages/05-planner/review-plan.json",
+  "hunk-relationships.json": "stages/06-packets/hunk-relationships.json",
+  "system-review-raw-tasks.json": "stages/08-followups/system-review-raw-tasks.json",
+  "system-review-tasks.json": "stages/08-followups/system-review-tasks.json",
+  "system-review-results.json": "stages/08-followups/system-review-results.json",
+  "candidate-findings.json": "stages/09-verification/candidate-findings.json",
+  "uncertainty-promotion.json": "stages/09-verification/uncertainty-promotion.json",
+  "verification.json": "stages/09-verification/verification.json",
+  "coverage.json": "stages/10-composition/coverage.json",
+  "budget-summary.json": "stages/10-composition/budget-summary.json",
+  "final-selection.json": "stages/10-composition/final-selection.json",
+  "human-attention-notes.json": "stages/10-composition/human-attention-notes.json",
+  "final-findings.json": "stages/10-composition/final-findings.json",
+  "github-posting.json": "stages/11-github-posting/github-posting.json",
+  "final-review.md": "final-review.md",
+  "run.json": "run.json",
+  "telemetry.json": "telemetry.json",
+  "artifact-manifest.json": "artifact-manifest.json"
+} as const;
+
+export type LogicalArtifactName = keyof typeof ARTIFACT_LOCATION;
+
+export const KNOWN_ARTIFACTS = new Set(Object.keys(ARTIFACT_LOCATION));
+
+const ROOT_STREAM_ARTIFACTS = ["run.log", "events.jsonl", "model-calls.jsonl", "tool-calls.jsonl"] as const;
+const PACKET_ARTIFACT_RE = /^packets\/[^/]+\.json$/u;
+const CANONICAL_PACKET_ARTIFACT_RE = /^stages\/06-packets\/packets\/[^/]+\.json$/u;
+const CANONICAL_ARTIFACT_PATHS: ReadonlySet<string> = new Set(Object.values(ARTIFACT_LOCATION));
 
 type CacheCounts = Record<"hit" | "miss" | "disabled" | "write", number>;
 type ModelStatusCounts = Record<LlmCallRecord["status"], number>;
@@ -242,6 +252,23 @@ type RunReviewArtifactMetadata = {
   lenses: string[];
   format: string | null;
   postGithubComments: boolean;
+};
+
+type ArtifactKind = "json" | "jsonl" | "markdown" | "text";
+
+type ArtifactManifestEntry = {
+  id: string;
+  stage: ReviewStage | 0;
+  stageName: string;
+  kind: ArtifactKind;
+  path: string;
+};
+
+type ArtifactManifest = {
+  schemaVersion: 1;
+  layoutVersion: 2;
+  generatedAt: string;
+  artifacts: ArtifactManifestEntry[];
 };
 
 type PipelineTotals = {
@@ -456,7 +483,6 @@ class RunTelemetryImpl {
 
     const runDir = path.join(runsRoot, this.runId);
     mkdirSync(runDir, { recursive: true });
-    mkdirSync(path.join(runDir, "packets"), { recursive: true });
     if (this.config.debugTrace) {
       mkdirSync(path.join(runDir, "debug", "llm-calls"), { recursive: true });
       mkdirSync(path.join(runDir, "debug", "tool-calls"), { recursive: true });
@@ -479,7 +505,7 @@ class RunTelemetryImpl {
     const totals = this.runTotals();
     const normalizedOutcome = normalizeOutcome(outcome);
     const codegenieRuntime = resolveCodegenieRuntimeProvenance();
-    this.writeJson("run.json", {
+    this.writeArtifactJson("run.json", {
       schemaVersion: 1,
       runId: this.runId,
       codegenieVersion: codegenieRuntime.packageVersion,
@@ -497,7 +523,7 @@ class RunTelemetryImpl {
       totals
     });
     const modelSummary = this.finalModelSummary();
-    this.writeJson("telemetry.json", {
+    this.writeArtifactJson("telemetry.json", {
       schemaVersion: 1,
       runId: this.runId,
       codegenieRuntime,
@@ -530,9 +556,10 @@ class RunTelemetryImpl {
       modelCalls: modelSummary,
       toolCalls: this.finalToolSummary()
     });
-    this.writeJson("model-calls-summary.json", modelSummary);
-    this.writeJson("tool-calls-summary.json", this.finalToolSummary());
-    this.writeJson("cost-profile.json", this.costProfile());
+    this.writeArtifactJson("model-calls-summary.json", modelSummary);
+    this.writeArtifactJson("tool-calls-summary.json", this.finalToolSummary());
+    this.writeArtifactJson("cost-profile.json", this.costProfile());
+    this.writeArtifactJson("artifact-manifest.json", this.artifactManifest());
   }
 
   private log(level: LogLevel, event: Omit<LogEvent, "timestamp" | "level">): void {
@@ -669,12 +696,74 @@ class RunTelemetryImpl {
     if (!this.config.enabled || !this.runDirectory) {
       return;
     }
-    assertAllowedArtifactPath(relPath);
-    if (relPath === "final-review.md") {
-      this.writeText(relPath, typeof data === "string" ? data : serialize(data, 2));
+    const artifactPath = canonicalArtifactPath(relPath);
+    assertAllowedResolvedArtifactPath(artifactPath);
+    if (normalizeArtifactPath(relPath) === "final-review.md") {
+      this.writeText(artifactPath, typeof data === "string" ? data : serialize(data, 2));
       return;
     }
-    this.writeJson(relPath, data);
+    this.writeJson(artifactPath, data);
+  }
+
+  private writeArtifactJson(relPath: LogicalArtifactName, data: unknown): void {
+    const artifactPath = canonicalArtifactPath(relPath);
+    assertAllowedResolvedArtifactPath(artifactPath);
+    this.writeJson(artifactPath, data);
+  }
+
+  private artifactManifest(): ArtifactManifest {
+    const entries: ArtifactManifestEntry[] = [];
+    const seen = new Set<string>();
+    for (const [logicalName, relPath] of Object.entries(ARTIFACT_LOCATION)) {
+      if (logicalName !== "artifact-manifest.json" && !this.artifactExists(relPath)) {
+        continue;
+      }
+      entries.push(manifestEntry(logicalName, relPath));
+      seen.add(relPath);
+    }
+    for (const relPath of ROOT_STREAM_ARTIFACTS) {
+      if (seen.has(relPath) || !this.artifactExists(relPath)) {
+        continue;
+      }
+      entries.push(manifestEntry(relPath, relPath));
+      seen.add(relPath);
+    }
+    for (const relPath of this.packetArtifactPaths()) {
+      if (seen.has(relPath)) {
+        continue;
+      }
+      const packetId = path.basename(relPath, ".json");
+      entries.push(manifestEntry(`packet:${packetId}`, relPath));
+      seen.add(relPath);
+    }
+
+    return {
+      schemaVersion: 1,
+      layoutVersion: 2,
+      generatedAt: this.clock().toISOString(),
+      artifacts: entries.sort((left, right) => left.path.localeCompare(right.path))
+    };
+  }
+
+  private artifactExists(relPath: string): boolean {
+    return this.runDirectory !== undefined && existsSync(path.join(this.runDirectory, relPath));
+  }
+
+  private packetArtifactPaths(): string[] {
+    if (!this.runDirectory) {
+      return [];
+    }
+    const packetDir = path.join(this.runDirectory, "stages", "06-packets", "packets");
+    let entries: string[];
+    try {
+      entries = readdirSync(packetDir);
+    } catch {
+      return [];
+    }
+    return entries
+      .filter((entry) => entry.endsWith(".json"))
+      .sort()
+      .map((entry) => path.posix.join("stages", "06-packets", "packets", entry));
   }
 
   private writeDebug(kind: "llm-calls" | "tool-calls", id: string, record: unknown): void {
@@ -1893,12 +1982,77 @@ function touchCoreFiles(runDir: string): void {
   }
 }
 
-function assertAllowedArtifactPath(relPath: string): void {
-  const normalized = relPath.split(path.sep).join("/");
-  if (KNOWN_ARTIFACTS.has(normalized) || /^packets\/[^/]+\.json$/.test(normalized)) {
+export function canonicalArtifactPath(relPath: string): string {
+  const normalized = normalizeArtifactPath(relPath);
+  assertSafeRelativeArtifactPath(normalized, relPath);
+  if (PACKET_ARTIFACT_RE.test(normalized)) {
+    return path.posix.join("stages", "06-packets", normalized);
+  }
+  const artifactPath = ARTIFACT_LOCATION[normalized as LogicalArtifactName];
+  if (artifactPath === undefined) {
+    throw new Error(`unknown run artifact path: ${relPath}`);
+  }
+  return artifactPath;
+}
+
+function assertAllowedResolvedArtifactPath(relPath: string): void {
+  const normalized = normalizeArtifactPath(relPath);
+  assertSafeRelativeArtifactPath(normalized, relPath);
+  if (CANONICAL_ARTIFACT_PATHS.has(normalized) || CANONICAL_PACKET_ARTIFACT_RE.test(normalized)) {
     return;
   }
-  throw new Error(`unknown run artifact path: ${relPath}`);
+  throw new Error(`unknown canonical run artifact path: ${relPath}`);
+}
+
+function normalizeArtifactPath(relPath: string): string {
+  return relPath.replace(/\\/gu, "/");
+}
+
+function assertSafeRelativeArtifactPath(normalized: string, original: string): void {
+  if (
+    normalized.length === 0 ||
+    normalized.startsWith("/") ||
+    normalized.split("/").some((part) => part === "" || part === "." || part === "..")
+  ) {
+    throw new Error(`unsafe run artifact path: ${original}`);
+  }
+}
+
+function manifestEntry(id: string, relPath: string): ArtifactManifestEntry {
+  const stage = manifestStage(relPath);
+  return {
+    id: artifactId(id),
+    stage,
+    stageName: STAGE_LABELS[stage],
+    kind: artifactKind(relPath),
+    path: relPath
+  };
+}
+
+function manifestStage(relPath: string): ReviewStage | 0 {
+  const match = /^stages\/(\d{2})-[^/]+\//u.exec(relPath);
+  if (!match) {
+    return 0;
+  }
+  const stage = Number(match[1]);
+  return STAGES.some((entry) => entry.stage === stage) ? (stage as ReviewStage | 0) : 0;
+}
+
+function artifactKind(relPath: string): ArtifactKind {
+  if (relPath.endsWith(".jsonl")) {
+    return "jsonl";
+  }
+  if (relPath.endsWith(".json")) {
+    return "json";
+  }
+  if (relPath.endsWith(".md")) {
+    return "markdown";
+  }
+  return "text";
+}
+
+function artifactId(id: string): string {
+  return id.replace(/\.(?:jsonl|json|md)$/u, "");
 }
 
 function eventLogData(event: TelemetryEvent): Record<string, unknown> | undefined {

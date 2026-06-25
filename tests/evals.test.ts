@@ -17,6 +17,7 @@ import type {
   EvalScore,
   FinalFinding
 } from "../src/types.js";
+import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
 import { CodegenieError } from "../src/util/errors.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
@@ -1136,6 +1137,54 @@ describe("eval artifacts", () => {
 
     expect(artifacts.hintEvents[0]).toMatchObject({ packetId: "packet-top-level" });
   });
+
+  it("loads canonical staged artifacts and root telemetry streams", async () => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-staged-artifacts-"));
+    const candidates = [candidate("cand-1", "src/app.ts", 3)];
+    const finalFindings = [finalFinding("final-1", "src/app.ts", 3)];
+    writeArtifactSet(telemetry, candidates, finalFindings);
+    writeTelemetryArtifact(telemetry, "review-plan.json", { coverage: [{ hunkId: "h1", path: "src/app.ts", coverage: "normal" }] });
+    writeTelemetryArtifact(telemetry, "coverage.json", { status: { totalHunks: 1, reviewedHunks: 1 }, records: [{ hunkId: "h1" }] });
+    writeTelemetryArtifact(telemetry, "packets/packet-1.json", { id: "packet-1", filePath: "src/app.ts" });
+    writeTelemetryArtifact(telemetry, "cost-profile.json", { totalCostUSD: 1.23 });
+    writeTelemetryArtifact(telemetry, "model-calls-summary.json", { totalCalls: 2 });
+    writeTelemetryArtifact(telemetry, "tool-calls-summary.json", { totalCalls: 3 });
+    writeTelemetryArtifact(telemetry, "budget-summary.json", { usage: { total: 4 } });
+    writeFileSync(path.join(telemetry, "run.json"), "{\"runId\":\"run-1\"}\n");
+    writeFileSync(path.join(telemetry, "telemetry.json"), "{\"events\":1}\n");
+    writeFileSync(path.join(telemetry, "model-calls.jsonl"), "{\"callId\":\"mc-1\"}\n");
+    writeFileSync(path.join(telemetry, "tool-calls.jsonl"), "{\"toolCallId\":\"tc-1\"}\n");
+    writeFileSync(path.join(telemetry, "events.jsonl"), `${JSON.stringify({
+      runId: "run-1",
+      eventId: "ev-1",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      stage: 7,
+      level: "info",
+      message: "uncertainty",
+      data: { question: "Check staged event", files: ["src/app.ts"], symbols: [] }
+    })}\n`);
+
+    const artifacts = await loadEvalArtifacts(telemetry);
+
+    expect(artifacts.candidates).toHaveLength(1);
+    expect(artifacts.finalFindings).toHaveLength(1);
+    expect(artifacts.finalSelection).toHaveLength(1);
+    expect(artifacts.verification).toHaveLength(1);
+    expect(artifacts.reviewPlan).toMatchObject({ coverage: [expect.objectContaining({ hunkId: "h1" })] });
+    expect(artifacts.coverage).toMatchObject({ totalHunks: 1, hunks: [expect.objectContaining({ hunkId: "h1" })] });
+    expect(artifacts.packets).toEqual([expect.objectContaining({ id: "packet-1" })]);
+    expect(artifacts.hintEvents).toEqual([expect.objectContaining({ question: "Check staged event" })]);
+    expect(artifacts.metricsSources).toMatchObject({
+      costProfile: { totalCostUSD: 1.23 },
+      modelCallsSummary: { totalCalls: 2 },
+      toolCallsSummary: { totalCalls: 3 },
+      budgetSummary: { usage: { total: 4 } },
+      runJson: { runId: "run-1" },
+      telemetry: { events: 1 },
+      modelCalls: [{ callId: "mc-1" }],
+      toolCalls: [{ toolCallId: "tc-1" }]
+    });
+  });
 });
 
 describe("artifact replay", () => {
@@ -1234,7 +1283,7 @@ describe("artifact replay", () => {
     const sourceRun = path.join(logsDir, "1");
     const telemetry = path.join(sourceRun, "telemetry");
     mkdirSync(telemetry, { recursive: true });
-    writeFileSync(path.join(telemetry, "candidate-findings.json"), "[]\n");
+    writeTelemetryArtifact(telemetry, "candidate-findings.json", []);
     const evalCase: EvalCase = {
       name: "broken-replay",
       artifacts: { path: "logs/1" },
@@ -1269,7 +1318,7 @@ describe("artifact replay", () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-artifact-error-source-"));
     const artifactRun = path.join(suiteDir, "artifacts", "broken");
     mkdirSync(path.join(artifactRun, "telemetry"), { recursive: true });
-    writeFileSync(path.join(artifactRun, "telemetry", "candidate-findings.json"), "[]\n");
+    writeTelemetryArtifact(path.join(artifactRun, "telemetry"), "candidate-findings.json", []);
     writeFileSync(path.join(suiteDir, "broken.yml"), [
       "name: broken-artifact",
       "artifacts:",
@@ -1655,17 +1704,23 @@ describe("eval command fixture suite", () => {
 });
 
 function writeArtifactSet(telemetryDir: string, candidates: CandidateFinding[], finalFindings: FinalFinding[]): void {
-  writeFileSync(path.join(telemetryDir, "candidate-findings.json"), `${JSON.stringify(candidates, null, 2)}\n`);
-  writeFileSync(path.join(telemetryDir, "final-findings.json"), `${JSON.stringify(finalFindings, null, 2)}\n`);
-  writeFileSync(path.join(telemetryDir, "verification.json"), `${JSON.stringify(candidates.map((item) => ({
+  writeTelemetryArtifact(telemetryDir, "candidate-findings.json", candidates);
+  writeTelemetryArtifact(telemetryDir, "final-findings.json", finalFindings);
+  writeTelemetryArtifact(telemetryDir, "verification.json", candidates.map((item) => ({
     candidateId: item.id,
     gate: "passed",
     verdict: { candidateId: item.id, verdict: "keep", reason: "ok", requiredEvidencePresent: true, falsePositiveRisk: "low" }
-  })), null, 2)}\n`);
-  writeFileSync(path.join(telemetryDir, "final-selection.json"), `${JSON.stringify({
+  })));
+  writeTelemetryArtifact(telemetryDir, "final-selection.json", {
     records: finalFindings.flatMap((item) => item.mergedCandidateIds.map((id) => ({ findingId: id, decision: "published", reason: "composer-selected" }))),
     groups: []
-  }, null, 2)}\n`);
+  });
+}
+
+function writeTelemetryArtifact(telemetryDir: string, logicalName: string, data: unknown): void {
+  const target = path.join(telemetryDir, canonicalArtifactPath(logicalName));
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, `${JSON.stringify(data, null, 2)}\n`);
 }
 
 function candidate(id: string, filePath: string, line: number, overrides: Partial<CandidateFinding> = {}): CandidateFinding {

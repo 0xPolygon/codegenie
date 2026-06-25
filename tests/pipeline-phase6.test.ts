@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import type { PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
 import { reviewCacheFingerprint, runReview } from "../src/pipeline/review-runner.js";
+import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
 import type { CodegenieConfig, PlannerDossier, ResolvedReviewInput, ReviewPacket } from "../src/types.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
@@ -193,7 +194,7 @@ describe("phase 6 live review path", () => {
     expect(finalReview).toContain("Unreviewed hunks by file:");
     expect(finalReview).toContain("budget stopped before dispatch");
 
-    const coverageJson = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as {
+    const coverageJson = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as {
       status: { budgetStop?: { reason?: string }; unreviewedHunksByPath?: unknown[] };
       records: Array<{ status: string; reason?: string }>;
     };

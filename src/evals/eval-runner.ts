@@ -22,6 +22,7 @@ import type {
   ReviewCommandTarget
 } from "../types.js";
 import { runGit } from "../git/subprocess.js";
+import { canonicalArtifactPath } from "../telemetry/run-artifacts.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { sha256Hex } from "../util/hashing.js";
 import { resolveCodegenieRuntimeProvenance } from "../util/runtime-provenance.js";
@@ -827,7 +828,7 @@ function expandHome(input: string): string {
 
 async function repoInfo(repoRoot: string, telemetryDir: string): Promise<EvalRunInfo["repo"]> {
   try {
-    const resolved = JSON.parse(await readFile(path.join(telemetryDir, "resolved-input.json"), "utf8")) as Record<string, unknown>;
+    const resolved = JSON.parse(await readFile(path.join(telemetryDir, canonicalArtifactPath("resolved-input.json")), "utf8")) as Record<string, unknown>;
     return {
       root: repoRoot,
       ...(typeof resolved.baseRef === "string" ? { baseSha: resolved.baseRef } : {}),

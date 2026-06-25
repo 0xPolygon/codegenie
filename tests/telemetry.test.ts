@@ -13,7 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
-import { KNOWN_ARTIFACTS, createRunTelemetry } from "../src/telemetry/run-artifacts.js";
+import { ARTIFACT_LOCATION, KNOWN_ARTIFACTS, canonicalArtifactPath, createRunTelemetry } from "../src/telemetry/run-artifacts.js";
 import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
 
 describe("run telemetry", () => {
@@ -246,8 +246,13 @@ describe("run telemetry", () => {
       "tool-calls-summary.json",
       "cost-profile.json"
     ]) {
-      expect(existsSync(path.join(attached.runDir, relPath)), relPath).toBe(true);
+      expect(existsSync(runFilePath(attached.runDir, relPath)), relPath).toBe(true);
     }
+    expect(existsSync(path.join(attached.runDir, "coverage.json"))).toBe(false);
+    expect(existsSync(path.join(attached.runDir, "model-calls-summary.json"))).toBe(false);
+    expect(existsSync(path.join(attached.runDir, "tool-calls-summary.json"))).toBe(false);
+    expect(existsSync(path.join(attached.runDir, "cost-profile.json"))).toBe(false);
+    expect(existsSync(path.join(attached.runDir, "packets"))).toBe(false);
 
     const allRunText = readRunFiles(attached.runDir);
     expect(allRunText).not.toContain("super-secret-token");
@@ -370,7 +375,7 @@ describe("run telemetry", () => {
       posting: { attempted: 1, postedComments: 1, skippedDuplicates: 1, failed: 0 }
     });
 
-    const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
+    const modelSummary = readJson(runFilePath(attached.runDir, "model-calls-summary.json"));
     expect(modelSummary).toMatchObject({
       totalRecords: 3,
       totalCalls: 2,
@@ -401,9 +406,18 @@ describe("run telemetry", () => {
       repairCalls: 1,
       schemaInvalidCalls: 1
     });
-    const coverageJson = readFileSync(path.join(attached.runDir, "coverage.json"), "utf8");
+    const coverageJson = readFileSync(runFilePath(attached.runDir, "coverage.json"), "utf8");
     expect(coverageJson.indexOf('"aFirst"')).toBeLessThan(coverageJson.indexOf('"status"'));
     expect(coverageJson.indexOf('"status"')).toBeLessThan(coverageJson.indexOf('"zLast"'));
+    const manifest = readJson(runFilePath(attached.runDir, "artifact-manifest.json"));
+    expect(manifest).toMatchObject({ schemaVersion: 1, layoutVersion: 2 });
+    expect(manifest.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "coverage", stage: 10, stageName: "composing review", kind: "json", path: ARTIFACT_LOCATION["coverage.json"] }),
+      expect.objectContaining({ id: "model-calls-summary", stage: 0, stageName: "run", kind: "json", path: ARTIFACT_LOCATION["model-calls-summary.json"] }),
+      expect.objectContaining({ id: "run", stage: 0, stageName: "run", kind: "json", path: "run.json" }),
+      expect.objectContaining({ id: "events", stage: 0, stageName: "run", kind: "jsonl", path: "events.jsonl" }),
+      expect.objectContaining({ id: "artifact-manifest", stage: 0, stageName: "run", kind: "json", path: "artifact-manifest.json" })
+    ]));
     expect(stderr).not.toHaveBeenCalled();
     stderr.mockRestore();
     clearRegisteredSecretsForTests();
@@ -489,7 +503,7 @@ describe("run telemetry", () => {
     });
     await run.finalize({ status: "completed_full", exitCode: 0 });
 
-    const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
+    const modelSummary = readJson(runFilePath(attached.runDir, "model-calls-summary.json"));
     expect(modelSummary).toMatchObject({
       schemaInvalidCalls: 1,
       schemaRecovery: {
@@ -580,7 +594,7 @@ describe("run telemetry", () => {
     });
     await run.finalize({ status: "failed", errorCode: "llm_schema_invalid", exitCode: 1 });
 
-    const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
+    const modelSummary = readJson(runFilePath(attached.runDir, "model-calls-summary.json"));
     expect(modelSummary.schemaRecovery).toMatchObject({
       schemaInvalidCalls: 2,
       schemaInvalidRecovered: 0,
@@ -651,7 +665,7 @@ describe("run telemetry", () => {
 
     const modelCalls = readJsonl(path.join(attached.runDir, "model-calls.jsonl"));
     expect(modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
-    const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
+    const modelSummary = readJson(runFilePath(attached.runDir, "model-calls-summary.json"));
     expect(modelSummary.schemaRecovery).toMatchObject({
       schemaInvalidCalls: 1,
       schemaInvalidRecovered: 1,
@@ -737,7 +751,7 @@ describe("run telemetry", () => {
     };
     const runJson = readJson(path.join(attached.runDir, "run.json"));
     expect(runJson.totals.toolResultCache).toEqual(expected);
-    const toolSummary = readJson(path.join(attached.runDir, "tool-calls-summary.json"));
+    const toolSummary = readJson(runFilePath(attached.runDir, "tool-calls-summary.json"));
     expect(toolSummary.resultCache).toEqual(expected);
     expect(toolSummary.byTool.read_range).toMatchObject({
       count: 5,
@@ -849,7 +863,7 @@ describe("run telemetry", () => {
       providerPromptCache: { readTokens: 100, writeTokens: 2, readCostUSD: 0.003, writeCostUSD: 0.004 }
     });
 
-    const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
+    const modelSummary = readJson(runFilePath(attached.runDir, "model-calls-summary.json"));
     expect(modelSummary).toMatchObject({
       totalRecords: 2,
       providerCalls: 1,
@@ -879,7 +893,7 @@ describe("run telemetry", () => {
       providerPromptCache: { readTokens: 100, writeTokens: 2, readCostUSD: 0.003, writeCostUSD: 0.004 }
     });
 
-    const costProfile = readJson(path.join(attached.runDir, "cost-profile.json"));
+    const costProfile = readJson(runFilePath(attached.runDir, "cost-profile.json"));
     expect(costProfile).toMatchObject({
       totalCostUSD: 0.037,
       localModelCallCache: { hit: 1, miss: 1, disabled: 0, write: 0 },
@@ -967,7 +981,7 @@ describe("run telemetry", () => {
 
     await run.finalize({ status: "completed_full", exitCode: 0 });
 
-    const modelSummary = readJson(path.join(attached.runDir, "model-calls-summary.json"));
+    const modelSummary = readJson(runFilePath(attached.runDir, "model-calls-summary.json"));
     expect(modelSummary.cache).toMatchObject({ hit: 0, miss: 1, disabled: 0, write: 1 });
     expect(modelSummary.localModelCallCache).toMatchObject({ hit: 0, miss: 1, disabled: 0, write: 1 });
     expect(modelSummary.byStage["7"].cache).toMatchObject({ hit: 0, miss: 1, disabled: 0, write: 1 });
@@ -1155,6 +1169,60 @@ describe("run artifact allowlist", () => {
   // call sites and fails at test time instead.
   const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");
 
+  it("writes logical artifacts to their canonical stage locations", async () => {
+    const repoRoot = tempDir();
+    const run = createRunTelemetry({
+      telemetryConfig: {
+        ...defaultConfig.telemetry,
+        enabled: true
+      },
+      idFactory: () => "canonical-stage-layout"
+    });
+    const attached = await run.attachRunDirectory(repoRoot);
+
+    await run.recorder.writeArtifact("review-plan.json", { ok: true });
+    await run.recorder.writeArtifact("packets/packet-1.json", { id: "packet-1" });
+    await run.recorder.writeArtifact("final-review.md", "Final report");
+    await run.finalize({ status: "completed_full", exitCode: 0 });
+
+    expect(existsSync(runFilePath(attached.runDir, "review-plan.json"))).toBe(true);
+    expect(existsSync(path.join(attached.runDir, "review-plan.json"))).toBe(false);
+    expect(existsSync(runFilePath(attached.runDir, "packets/packet-1.json"))).toBe(true);
+    expect(existsSync(path.join(attached.runDir, "packets", "packet-1.json"))).toBe(false);
+    expect(existsSync(path.join(attached.runDir, "final-review.md"))).toBe(true);
+
+    const manifest = readJson(runFilePath(attached.runDir, "artifact-manifest.json"));
+    expect(manifest.artifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "review-plan", stage: 5, path: ARTIFACT_LOCATION["review-plan.json"] }),
+      expect.objectContaining({ id: "packet:packet-1", stage: 6, path: "stages/06-packets/packets/packet-1.json" }),
+      expect.objectContaining({ id: "final-review", stage: 0, path: "final-review.md" })
+    ]));
+  });
+
+  it("rejects physical stage paths from public artifact writes", async () => {
+    const repoRoot = tempDir();
+    const run = createRunTelemetry({
+      telemetryConfig: {
+        ...defaultConfig.telemetry,
+        enabled: true
+      },
+      idFactory: () => "reject-physical-artifact-paths"
+    });
+    await run.attachRunDirectory(repoRoot);
+
+    await expect(run.recorder.writeArtifact("stages/05-planner/review-plan.json", {}))
+      .rejects.toThrow("unknown run artifact path");
+  });
+
+  it("keeps the canonical artifact partition exhaustive and one-to-one", () => {
+    const logicalNames = Object.keys(ARTIFACT_LOCATION);
+    const physicalPaths = Object.values(ARTIFACT_LOCATION);
+    expect(new Set(logicalNames).size).toBe(logicalNames.length);
+    expect(new Set(physicalPaths).size).toBe(physicalPaths.length);
+    expect([...KNOWN_ARTIFACTS].sort()).toEqual(logicalNames.sort());
+    expect(KNOWN_ARTIFACTS.has("review-questions.json")).toBe(false);
+  });
+
   function collectTsFiles(dir: string): string[] {
     const out: string[] = [];
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -1202,6 +1270,12 @@ function readRunFiles(runDir: string): string {
     }
   }
   return chunks.join("\n");
+}
+
+function runFilePath(runDir: string, relPath: string): string {
+  return path.join(runDir, KNOWN_ARTIFACTS.has(relPath) || /^packets\/[^/]+\.json$/u.test(relPath)
+    ? canonicalArtifactPath(relPath)
+    : relPath);
 }
 
 function readJson(filePath: string): any {
