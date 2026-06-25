@@ -3826,6 +3826,29 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
+  it("does not resolve deprecated real Pi models even when auth is usable", () => {
+    const previous = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "plain-deprecated-anthropic-secret";
+    clearRegisteredSecretsForTests();
+    try {
+      expect(
+        createRealPiAiAdapter().resolveModel({
+          provider: "anthropic",
+          model: "claude-3-5-haiku-20241022"
+        })
+      ).toBeUndefined();
+      const fallback = createRealPiAiAdapter().resolveModel({ provider: "anthropic" });
+      expect(fallback?.id).not.toMatch(/^claude-3/u);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ANTHROPIC_API_KEY;
+      } else {
+        process.env.ANTHROPIC_API_KEY = previous;
+      }
+      clearRegisteredSecretsForTests();
+    }
+  });
+
   it("rejects unknown real model ids during runner construction", () => {
     const previous = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "plain-unknown-model-secret";

@@ -15,6 +15,7 @@ import { getCodegeniePaths } from "../src/config/paths.js";
 import { defaultConfig } from "../src/config/schema.js";
 import {
   createFileAuthStorage,
+  createPiModelRegistry,
   type PiAuthStorage,
   type PiModelRegistry,
   type ProviderModelInfo,
@@ -313,6 +314,16 @@ Exercise normal YAML list frontmatter.
 });
 
 describe("Phase 4 provider commands", () => {
+  it("omits deprecated Pi models from provider model listings", () => {
+    const registry = createPiModelRegistry(memoryAuthStorage());
+    const models = registry.listModels("anthropic").map((model) => model.id);
+
+    expect(models).not.toContain("claude-3-5-haiku-20241022");
+    expect(models).not.toContain("claude-3-5-haiku-latest");
+    expect(models).not.toContain("claude-3-7-sonnet-20250219");
+    expect(models).toContain("claude-haiku-4-5");
+  });
+
   it("includes login help and provider-list hint when the login provider is missing", () => {
     let thrown: unknown;
 
@@ -588,6 +599,94 @@ describe("Phase 4 provider commands", () => {
     });
   });
 
+  it("sets the preferred Anthropic default model after login using fuzzy opus matching", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: ["anthropic"],
+      modelsByProvider: {
+        anthropic: [
+          fakeModel("anthropic", "claude-opus-4-0", "Claude Opus 4"),
+          fakeModel("anthropic", "claude-sonnet-4-6", "Claude Sonnet 4.6"),
+          fakeModel("anthropic", "claude-opus-4-8", "Claude Opus 4.8")
+        ]
+      }
+    });
+    const output: string[] = [];
+
+    await executeProviderCommand(["provider", "login", "anthropic", "--api-key"], {
+      services,
+      apiKey: "anthropic-secret",
+      writeOut: (text) => output.push(text)
+    });
+
+    expect(output.join("")).toBe(
+      [
+        "stored credentials for anthropic",
+        "default model set to anthropic/claude-opus-4-8 (Claude Opus 4.8); reasoning set to high",
+        ""
+      ].join("\n")
+    );
+    expect(loadProviderSettings(services.paths)).toEqual({
+      defaultProvider: "anthropic",
+      defaultModel: "claude-opus-4-8",
+      defaultReasoning: "high"
+    });
+  });
+
+  it("sets the preferred OpenAI Codex default model after login using fuzzy gpt matching", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: ["openai-codex"],
+      modelsByProvider: {
+        "openai-codex": [
+          fakeModel("openai-codex", "gpt-5.3-codex-spark", "GPT-5.3 Codex Spark"),
+          fakeModel("openai-codex", "gpt-5.4", "GPT-5.4"),
+          fakeModel("openai-codex", "gpt-5.5", "GPT-5.5")
+        ]
+      }
+    });
+    const output: string[] = [];
+
+    await executeProviderCommand(["provider", "login", "openai-codex", "--api-key"], {
+      services,
+      apiKey: "codex-secret",
+      writeOut: (text) => output.push(text)
+    });
+
+    expect(output.join("")).toContain("default model set to openai-codex/gpt-5.5 (GPT-5.5); reasoning set to high\n");
+    expect(loadProviderSettings(services.paths)).toEqual({
+      defaultProvider: "openai-codex",
+      defaultModel: "gpt-5.5",
+      defaultReasoning: "high"
+    });
+  });
+
+  it("does not override an existing complete default model after login", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: ["anthropic", "other"],
+      modelsByProvider: {
+        anthropic: [fakeModel("anthropic", "claude-opus-4-8", "Claude Opus 4.8")]
+      }
+    });
+    saveProviderSettings({
+      defaultProvider: "other",
+      defaultModel: "other-large",
+      defaultReasoning: "medium"
+    }, services.paths);
+    const output: string[] = [];
+
+    await executeProviderCommand(["provider", "login", "anthropic", "--api-key"], {
+      services,
+      apiKey: "anthropic-secret",
+      writeOut: (text) => output.push(text)
+    });
+
+    expect(output.join("")).toBe("stored credentials for anthropic\n");
+    expect(loadProviderSettings(services.paths)).toEqual({
+      defaultProvider: "other",
+      defaultModel: "other-large",
+      defaultReasoning: "medium"
+    });
+  });
+
   it("opens the local browser for callback OAuth login when the user presses enter", async () => {
     const providerId = `test-oauth-browser-${Date.now()}`;
     const authUrl = "https://auth.example.test/login?client=codegenie";
@@ -658,6 +757,41 @@ describe("Phase 4 provider commands", () => {
     expect(manualInput).toBe(manualRedirect);
     expect(opened).toEqual([]);
     expect(services.authStorage.get(providerId)).toMatchObject({ type: "oauth" });
+  });
+
+  it("requests closed connections for OAuth fetches during login", async () => {
+    const providerId = `test-oauth-fetch-close-${Date.now()}`;
+    const services = fakeProviderServices(tempDir(), { providerIds: [providerId] });
+    const originalFetch = globalThis.fetch;
+    const seenConnections: Array<string | null> = [];
+    const seenContentTypes: Array<string | null> = [];
+    const fakeFetch: typeof fetch = async (_request, init) => {
+      const headers = new Headers(init?.headers);
+      seenConnections.push(headers.get("connection"));
+      seenContentTypes.push(headers.get("content-type"));
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    };
+    globalThis.fetch = fakeFetch;
+    registerOAuthProvider(testOAuthProvider(providerId, async () => {
+      await fetch("https://auth.example.test/token", {
+        method: "POST",
+        headers: { "content-type": "application/json" }
+      });
+      return fakeOAuthCredentials();
+    }, { usesCallbackServer: false }));
+
+    try {
+      await runProviderCommand(["provider", "login", providerId], { services });
+      expect(seenConnections).toEqual(["close"]);
+      expect(seenContentTypes).toEqual(["application/json"]);
+      expect(globalThis.fetch).toBe(fakeFetch);
+    } finally {
+      globalThis.fetch = originalFetch;
+      unregisterOAuthProvider(providerId);
+    }
   });
 
   it("opens the local browser for device-code OAuth login when the user presses enter", async () => {
@@ -964,6 +1098,23 @@ function fakeOAuthCredentials(): OAuthCredentials {
     access: "access-token",
     refresh: "refresh-token",
     expires: Date.now() + 60_000
+  };
+}
+
+function memoryAuthStorage(): PiAuthStorage {
+  const auth = new Map<string, ProviderAuthEntry>();
+  return {
+    loadAll: () => Object.fromEntries(auth.entries()),
+    get: (provider) => auth.get(provider),
+    set: (provider, entry) => {
+      auth.set(provider, entry);
+    },
+    delete: (provider) => {
+      auth.delete(provider);
+    },
+    clear: () => {
+      auth.clear();
+    }
   };
 }
 

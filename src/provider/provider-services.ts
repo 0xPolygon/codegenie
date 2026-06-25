@@ -18,6 +18,7 @@ import { ensureCodegenieHome, getCodegeniePaths } from "../config/paths.js";
 import { registerSecret } from "../telemetry/redaction.js";
 import type { CodegeniePaths, ProviderSettings, ReasoningLevel, ReviewDepth } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
+import { filterDeprecatedProviderModels } from "./model-policy.js";
 import { loadProviderSettings, saveProviderSettings } from "./provider-settings.js";
 
 export { ensureCodegenieHome, getCodegeniePaths, loadProviderSettings, saveProviderSettings };
@@ -78,6 +79,17 @@ type PromptInputOptions = {
   allowEmpty?: boolean;
   readInput?: InputReader | undefined;
   signal?: AbortSignal | undefined;
+};
+type PreferredProviderDefault = {
+  modelQuery: string;
+  reasoning: ReasoningLevel;
+};
+type LoginCommandResult = {
+  provider: string;
+  preferredDefault?: {
+    model: ProviderModelInfo;
+    reasoning: ReasoningLevel;
+  } | undefined;
 };
 
 export type RunProviderCommandOptions = {
@@ -164,8 +176,14 @@ export async function runProviderCommand(args: string[], opts: RunProviderComman
       writeOut(renderProviderList(services));
       return;
     case "login":
-      await commandLogin(rest, services, opts);
-      writeOut(`stored credentials for ${requireArg(rest[0], "provider login <provider>")}\n`);
+      {
+        const result = await commandLogin(rest, services, opts);
+        writeOut(`stored credentials for ${result.provider}\n`);
+        if (result.preferredDefault !== undefined) {
+          const { model, reasoning } = result.preferredDefault;
+          writeOut(`default model set to ${model.provider}/${model.id} (${model.name}); reasoning set to ${reasoning}\n`);
+        }
+      }
       return;
     case "logout":
       {
@@ -213,15 +231,16 @@ async function commandLogin(
   args: string[],
   services: ProviderServices,
   opts: RunProviderCommandOptions
-): Promise<void> {
+): Promise<LoginCommandResult> {
   const { provider, apiKeyLogin } = parseLoginArgs(args, opts);
   assertProviderExists(provider, services);
   const oauthProvider = getOAuthProvider(provider);
   if (oauthProvider && !apiKeyLogin) {
     let authUrl: string | undefined;
+    const manualInputController = new AbortController();
     const devicePromptControllers: AbortController[] = [];
     try {
-      const credentials = await oauthProvider.login({
+      const credentials = await withOAuthFetchConnectionClose(() => oauthProvider.login({
         onAuth: (info) => {
           authUrl = info.url;
           (opts.writeOut ?? ((text: string) => output.write(text)))(
@@ -243,7 +262,7 @@ async function commandLogin(
         }),
         ...(oauthProvider.usesCallbackServer === true
           ? {
-              onManualCodeInput: async () => promptForBrowserOrManualCode(authUrl, opts)
+              onManualCodeInput: async () => promptForBrowserOrManualCode(authUrl, opts, manualInputController.signal)
             }
           : {}),
         onSelect: async (prompt) => {
@@ -261,14 +280,18 @@ async function commandLogin(
         onProgress: (message) => {
           (opts.writeErr ?? ((text: string) => process.stderr.write(text)))(`${message}\n`);
         }
-      });
+      }));
       services.authStorage.set(provider, {
         type: "oauth",
         credentials,
         createdAt: new Date().toISOString()
       });
-      return;
+      return {
+        provider,
+        preferredDefault: applyPreferredDefaultAfterLogin(provider, services)
+      };
     } finally {
+      manualInputController.abort();
       devicePromptControllers.forEach((controller) => controller.abort());
     }
   }
@@ -280,6 +303,10 @@ async function commandLogin(
     apiKey,
     createdAt: new Date().toISOString()
   });
+  return {
+    provider,
+    preferredDefault: applyPreferredDefaultAfterLogin(provider, services)
+  };
 }
 
 function commandLogout(args: string[], services: ProviderServices, opts: RunProviderCommandOptions): void {
@@ -307,12 +334,13 @@ function commandUse(args: string[], services: ProviderServices, writeOut: (text:
   writeOut(`default model set to ${match.provider}/${match.id} (${match.name}); reasoning set to high\n`);
 }
 
-function findUsableModel(query: string, services: ProviderServices): ProviderModelInfo | undefined {
+function findUsableModel(query: string, services: ProviderServices, opts: { provider?: string } = {}): ProviderModelInfo | undefined {
   const normalizedQuery = normalizeModelSearch(query);
   if (normalizedQuery.length === 0) {
     return undefined;
   }
-  const candidates = services.modelRegistry.listProviders()
+  const candidateProviders = opts.provider !== undefined ? [opts.provider] : services.modelRegistry.listProviders();
+  const candidates = candidateProviders
     .filter((provider) => services.modelRegistry.authStatus(provider).configured)
     .flatMap((provider) => services.modelRegistry.listModels(provider));
   const ranked = candidates
@@ -335,6 +363,45 @@ function modelMatchRank(normalizedQuery: string, modelId: string): number | unde
 
 function normalizeModelSearch(value: string): string {
   return value.toLowerCase().replace(/[-.]/gu, "");
+}
+
+const PREFERRED_PROVIDER_DEFAULTS: Record<string, PreferredProviderDefault> = {
+  "anthropic": { modelQuery: "opus", reasoning: "high" },
+  "openai-codex": { modelQuery: "gpt", reasoning: "high" }
+};
+
+function applyPreferredDefaultAfterLogin(
+  provider: string,
+  services: ProviderServices
+): LoginCommandResult["preferredDefault"] | undefined {
+  const preference = PREFERRED_PROVIDER_DEFAULTS[provider];
+  if (preference === undefined) {
+    return undefined;
+  }
+
+  const settings = loadProviderSettings(services.paths);
+  if (settings.defaultProvider !== undefined && settings.defaultProvider !== provider) {
+    return undefined;
+  }
+  if (settings.defaultModel !== undefined) {
+    return undefined;
+  }
+
+  const model = findUsableModel(preference.modelQuery, services, { provider });
+  if (model === undefined) {
+    return undefined;
+  }
+
+  saveProviderSettings(
+    {
+      ...settings,
+      defaultProvider: provider,
+      defaultModel: model.id,
+      defaultReasoning: preference.reasoning
+    },
+    services.paths
+  );
+  return { model, reasoning: preference.reasoning };
 }
 
 async function commandConfig(
@@ -749,7 +816,7 @@ function modelsForProvider(provider: string): ProviderModelInfo[] {
   if (!providerKnown(provider)) {
     return [];
   }
-  return getModels(provider as KnownProvider).map((model) => modelInfo(model as Model<Api>));
+  return filterDeprecatedProviderModels(getModels(provider as KnownProvider)).map((model) => modelInfo(model as Model<Api>));
 }
 
 function modelInfo(model: Model<Api>): ProviderModelInfo {
@@ -896,7 +963,7 @@ async function defaultPromptInput(message: string, signal?: AbortSignal): Promis
   }
 }
 
-async function promptForBrowserOrManualCode(authUrl: string | undefined, opts: RunProviderCommandOptions): Promise<string> {
+async function promptForBrowserOrManualCode(authUrl: string | undefined, opts: RunProviderCommandOptions, signal?: AbortSignal): Promise<string> {
   const inputValue = await promptForInput("> ", { allowEmpty: true, readInput: opts.readInput });
   if (inputValue) {
     return inputValue;
@@ -911,7 +978,45 @@ async function promptForBrowserOrManualCode(authUrl: string | undefined, opts: R
     writeErr(`failed to open browser: ${errorMessage(error)}\n`);
     return promptForInput("Paste the final redirect URL or authorization code: ", { readInput: opts.readInput });
   }
-  return new Promise<string>(() => undefined);
+  return waitForManualInputCleanup(signal);
+}
+
+async function withOAuthFetchConnectionClose<T>(operation: () => Promise<T>): Promise<T> {
+  const originalFetch = globalThis.fetch;
+  const wrappedFetch: typeof fetch = (request, init) =>
+    originalFetch(request, fetchInitWithConnectionClose(request, init));
+  globalThis.fetch = wrappedFetch;
+  try {
+    return await operation();
+  } finally {
+    if (globalThis.fetch === wrappedFetch) {
+      globalThis.fetch = originalFetch;
+    }
+  }
+}
+
+function fetchInitWithConnectionClose(request: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]): RequestInit {
+  const headers = typeof Request !== "undefined" && request instanceof Request
+    ? new Headers(request.headers)
+    : new Headers();
+  new Headers(init?.headers).forEach((value, key) => {
+    headers.set(key, value);
+  });
+  headers.set("connection", "close");
+  return { ...init, headers };
+}
+
+function waitForManualInputCleanup(signal: AbortSignal | undefined): Promise<string> {
+  return new Promise((resolve) => {
+    if (signal === undefined) {
+      return;
+    }
+    if (signal.aborted) {
+      resolve("");
+      return;
+    }
+    signal.addEventListener("abort", () => resolve(""), { once: true });
+  });
 }
 
 function browserLoginInstruction(): string {

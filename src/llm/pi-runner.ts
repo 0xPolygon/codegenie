@@ -17,6 +17,7 @@ import {
 import { getOAuthApiKey, getOAuthProvider, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import pLimit from "p-limit";
 import { createFileAuthStorage } from "../provider/provider-services.js";
+import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../provider/model-policy.js";
 import { getCodegeniePaths } from "../config/paths.js";
 import { registerSecret, stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
@@ -3222,6 +3223,9 @@ function resolveRealModel(provider: string | undefined, model: string | undefine
   const resolvedModel = qualified?.model ?? model;
 
   if (resolvedProvider && resolvedModel) {
+    if (isDeprecatedProviderModel(resolvedProvider, resolvedModel)) {
+      return undefined;
+    }
     try {
       const raw = (getModel as unknown as (provider: string, model: string) => unknown)(resolvedProvider, resolvedModel);
       if (!raw) {
@@ -3239,7 +3243,7 @@ function resolveRealModel(provider: string | undefined, model: string | undefine
     if (!auth) {
       return undefined;
     }
-    const models = getModels(resolvedProvider as KnownProvider);
+    const models = filterDeprecatedProviderModels(getModels(resolvedProvider as KnownProvider));
     const first = models[0];
     return first ? { provider: resolvedProvider, id: first.id, raw: first, ...auth } : undefined;
   }
@@ -3249,7 +3253,7 @@ function resolveRealModel(provider: string | undefined, model: string | undefine
     if (!auth) {
       continue;
     }
-    const models = getModels(providerId);
+    const models = filterDeprecatedProviderModels(getModels(providerId));
     const match = resolvedModel ? models.find((candidate) => candidate.id === resolvedModel) : models[0];
     if (match) {
       return { provider: providerId, id: match.id, raw: match, ...auth };
