@@ -225,13 +225,13 @@ async function commandLogin(
         onAuth: (info) => {
           authUrl = info.url;
           (opts.writeOut ?? ((text: string) => output.write(text)))(
-            `${info.url}\n\n⭐ 🧞 ${browserLoginInstruction()}\n`
+            `${info.url}\n${browserLoginInstruction()}\n`
           );
         },
         onDeviceCode: (info) => {
           const writeOut = opts.writeOut ?? ((text: string) => output.write(text));
           writeOut(
-            `${info.verificationUri}\nEnter code: ${info.userCode}\n\n⭐ 🧞 ${deviceCodeLoginInstruction()}\n`
+            `${info.verificationUri}\nEnter code: ${info.userCode}\n${deviceCodeLoginInstruction()}\n`
           );
           const controller = new AbortController();
           devicePromptControllers.push(controller);
@@ -915,11 +915,11 @@ async function promptForBrowserOrManualCode(authUrl: string | undefined, opts: R
 }
 
 function browserLoginInstruction(): string {
-  return "Press enter to open the URL above in your local browser. If the browser is on another machine, copy manually and paste the final redirect URL here.";
+  return "\n⭐ 🧞 Press enter to open the URL above in your local browser. If the browser is on another machine, copy manually and paste the final redirect URL here.";
 }
 
 function deviceCodeLoginInstruction(): string {
-  return "Press enter to open the URL above in your local browser. If the browser is on another machine, copy the URL and code manually to complete login there.";
+  return "\n⭐ 🧞 Press enter to open the URL above in your local browser. If the browser is on another machine, copy the URL and code manually to complete login there.";
 }
 
 function startDeviceCodeBrowserPrompt(url: string, opts: RunProviderCommandOptions, signal: AbortSignal): void {
