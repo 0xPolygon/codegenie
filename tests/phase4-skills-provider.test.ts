@@ -880,6 +880,7 @@ describe("Phase 4 provider commands", () => {
 
     const printed = output.join("");
     expect(printed).toContain("stored credentials for fake");
+    expect(printed).toContain("⭐ 🧞 You're using fake fake-large xhigh\n\nProvider configuration:");
     expect(printed).toContain("Provider configuration:");
     expect(printed).toMatch(/provider\s+fake \(settings\)/u);
     expect(printed).toMatch(/model\s+fake-large \(settings\)/u);
@@ -917,6 +918,7 @@ reasoning = "medium"
     });
 
     const printed = output.join("");
+    expect(printed).toContain("⭐ 🧞 You're using fake fake-large medium\n\nProvider configuration:");
     expect(printed).toContain("Provider configuration:");
     expect(printed).toMatch(/Stored defaults:[\s\S]*provider\s+unset/u);
     expect(printed).toMatch(/provider\s+fake \(user config\)/u);
@@ -954,6 +956,7 @@ reasoning = "medium"
     });
 
     const printed = output.join("");
+    expect(printed).toContain("⭐ 🧞 You're using other other-large xhigh\n\nProvider configuration:");
     expect(printed).toMatch(/provider\s+other \(environment\)/u);
     expect(printed).toMatch(/model\s+other-large \(environment\)/u);
     expect(printed).toMatch(/depth\s+deep \(user config\)/u);

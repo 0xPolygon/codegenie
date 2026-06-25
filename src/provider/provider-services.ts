@@ -655,6 +655,8 @@ function renderProviderConfig(
   const effectiveReasoningSource = layers.effective.sources["llm.reasoning"] ?? "built-in";
   const auth = effectiveProvider !== undefined ? services.modelRegistry.authStatus(effectiveProvider) : undefined;
   const lines = [
+    renderProviderConfigSummary(effectiveProvider, effectiveModel, effectiveReasoning),
+    "",
     "Provider configuration:",
     "",
     "Paths:",
@@ -686,6 +688,10 @@ function renderProviderConfig(
     ""
   ];
   return lines.join("\n");
+}
+
+function renderProviderConfigSummary(provider: string | undefined, model: string | undefined, reasoning: ReasoningLevel): string {
+  return `⭐ 🧞 You're using ${provider ?? "unset"} ${model ?? "unset"} ${reasoning}`;
 }
 
 function formatConfigValue(value: string | undefined, source: string | undefined): string {
