@@ -2,6 +2,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  registerOAuthProvider,
+  unregisterOAuthProvider,
+  type OAuthCredentials,
+  type OAuthLoginCallbacks,
+  type OAuthProviderInterface
+} from "@earendil-works/pi-ai/oauth";
 import { describe, expect, it, vi } from "vitest";
 import { executeProviderCommand, parseProviderCommand } from "../src/cli/provider-command.js";
 import { getCodegeniePaths } from "../src/config/paths.js";
@@ -581,6 +588,140 @@ describe("Phase 4 provider commands", () => {
     });
   });
 
+  it("opens the local browser for callback OAuth login when the user presses enter", async () => {
+    const providerId = `test-oauth-browser-${Date.now()}`;
+    const authUrl = "https://auth.example.test/login?client=codegenie";
+    const services = fakeProviderServices(tempDir(), { providerIds: [providerId] });
+    const output: string[] = [];
+    const prompts: string[] = [];
+    const opened: string[] = [];
+    registerOAuthProvider(testOAuthProvider(providerId, async (callbacks) => {
+      callbacks.onAuth({ url: authUrl, instructions: "old provider instruction" });
+      void callbacks.onManualCodeInput?.();
+      await new Promise((resolve) => setImmediate(resolve));
+      return fakeOAuthCredentials();
+    }));
+
+    try {
+      await runProviderCommand(["provider", "login", providerId], {
+        services,
+        writeOut: (text) => output.push(text),
+        readInput: async (message) => {
+          prompts.push(message);
+          return "";
+        },
+        openBrowser: async (url) => {
+          opened.push(url);
+        }
+      });
+    } finally {
+      unregisterOAuthProvider(providerId);
+    }
+
+    expect(opened).toEqual([authUrl]);
+    expect(prompts).toEqual(["> "]);
+    expect(output.join("")).toContain(`${authUrl}\n\n⭐ 🧞 Press enter to open the URL above in your local browser.`);
+    expect(output.join("")).not.toContain("old provider instruction");
+    expect(services.authStorage.get(providerId)).toMatchObject({
+      type: "oauth",
+      credentials: {
+        access: "access-token",
+        refresh: "refresh-token"
+      }
+    });
+  });
+
+  it("uses pasted callback OAuth input instead of opening a browser", async () => {
+    const providerId = `test-oauth-manual-${Date.now()}`;
+    const manualRedirect = "http://localhost:53692/callback?code=manual-code&state=manual-state";
+    const services = fakeProviderServices(tempDir(), { providerIds: [providerId] });
+    const opened: string[] = [];
+    let manualInput: string | undefined;
+    registerOAuthProvider(testOAuthProvider(providerId, async (callbacks) => {
+      callbacks.onAuth({ url: "https://auth.example.test/login" });
+      manualInput = await callbacks.onManualCodeInput?.();
+      return fakeOAuthCredentials();
+    }));
+
+    try {
+      await runProviderCommand(["provider", "login", providerId], {
+        services,
+        readInput: async () => manualRedirect,
+        openBrowser: async (url) => {
+          opened.push(url);
+        }
+      });
+    } finally {
+      unregisterOAuthProvider(providerId);
+    }
+
+    expect(manualInput).toBe(manualRedirect);
+    expect(opened).toEqual([]);
+    expect(services.authStorage.get(providerId)).toMatchObject({ type: "oauth" });
+  });
+
+  it("opens the local browser for device-code OAuth login when the user presses enter", async () => {
+    const providerId = `test-oauth-device-${Date.now()}`;
+    const verificationUri = "https://device.example.test/activate";
+    const services = fakeProviderServices(tempDir(), { providerIds: [providerId] });
+    const output: string[] = [];
+    const prompts: string[] = [];
+    const opened: string[] = [];
+    registerOAuthProvider(testOAuthProvider(providerId, async (callbacks) => {
+      callbacks.onDeviceCode({ verificationUri, userCode: "ABCD-1234" });
+      await new Promise((resolve) => setImmediate(resolve));
+      return fakeOAuthCredentials();
+    }, { usesCallbackServer: false }));
+
+    try {
+      await runProviderCommand(["provider", "login", providerId], {
+        services,
+        writeOut: (text) => output.push(text),
+        readInput: async (message) => {
+          prompts.push(message);
+          return "";
+        },
+        openBrowser: async (url) => {
+          opened.push(url);
+        }
+      });
+    } finally {
+      unregisterOAuthProvider(providerId);
+    }
+
+    expect(output.join("")).toContain(`${verificationUri}\nEnter code: ABCD-1234`);
+    expect(output.join("")).toContain("⭐ 🧞 Press enter to open the URL above in your local browser.");
+    expect(prompts).toEqual(["> "]);
+    expect(opened).toEqual([verificationUri]);
+    expect(services.authStorage.get(providerId)).toMatchObject({ type: "oauth" });
+  });
+
+  it("does not open the local browser for device-code OAuth login when input is non-empty", async () => {
+    const providerId = `test-oauth-device-manual-${Date.now()}`;
+    const services = fakeProviderServices(tempDir(), { providerIds: [providerId] });
+    const opened: string[] = [];
+    registerOAuthProvider(testOAuthProvider(providerId, async (callbacks) => {
+      callbacks.onDeviceCode({ verificationUri: "https://device.example.test/activate", userCode: "WXYZ-9876" });
+      await new Promise((resolve) => setImmediate(resolve));
+      return fakeOAuthCredentials();
+    }, { usesCallbackServer: false }));
+
+    try {
+      await runProviderCommand(["provider", "login", providerId], {
+        services,
+        readInput: async () => "manual-device-completion",
+        openBrowser: async (url) => {
+          opened.push(url);
+        }
+      });
+    } finally {
+      unregisterOAuthProvider(providerId);
+    }
+
+    expect(opened).toEqual([]);
+    expect(services.authStorage.get(providerId)).toMatchObject({ type: "oauth" });
+  });
+
   it("supports provider smoke commands and settings without printing credentials", async () => {
     const home = tempDir();
     const services = fakeProviderServices(home);
@@ -797,6 +938,32 @@ function testSkill(input: { id: string; checks: string; falsePositives?: string;
     contentSha: "0".repeat(64),
     sections,
     summaryLine: input.id
+  };
+}
+
+function testOAuthProvider(
+  id: string,
+  login: (callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials>,
+  opts: { usesCallbackServer?: boolean } = { usesCallbackServer: true }
+): OAuthProviderInterface {
+  const provider: OAuthProviderInterface = {
+    id,
+    name: "Test OAuth",
+    login,
+    refreshToken: async () => fakeOAuthCredentials(),
+    getApiKey: (credentials) => credentials.access
+  };
+  if (opts.usesCallbackServer !== undefined) {
+    provider.usesCallbackServer = opts.usesCallbackServer;
+  }
+  return provider;
+}
+
+function fakeOAuthCredentials(): OAuthCredentials {
+  return {
+    access: "access-token",
+    refresh: "refresh-token",
+    expires: Date.now() + 60_000
   };
 }
 

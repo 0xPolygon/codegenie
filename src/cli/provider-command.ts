@@ -156,7 +156,7 @@ function commanderToCodegenieError(
     const commandPath = commandPathForArgv(argv);
     const helpText = error.code === "commander.missingArgument" ? helpByPath.get(commandPath)?.helpInformation() : undefined;
     const hint = commandPath === "provider login"
-      ? "⭐🧞 Please run `codegenie provider list` to get a list of LLM providers."
+      ? "⭐ 🧞 Please run `codegenie provider list` to get a list of LLM providers."
       : undefined;
     return new CodegenieError("invalid_args", error.message, {
       context: {

@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
@@ -71,6 +72,14 @@ type ProviderConfigLayers = {
   effective: LoadedConfig;
 };
 
+type InputReader = (message: string) => Promise<string>;
+type BrowserOpener = (url: string) => Promise<void> | void;
+type PromptInputOptions = {
+  allowEmpty?: boolean;
+  readInput?: InputReader | undefined;
+  signal?: AbortSignal | undefined;
+};
+
 export type RunProviderCommandOptions = {
   yes?: boolean;
   all?: boolean;
@@ -80,6 +89,8 @@ export type RunProviderCommandOptions = {
   services?: ProviderServices;
   writeOut?: (text: string) => void;
   writeErr?: (text: string) => void;
+  readInput?: InputReader;
+  openBrowser?: BrowserOpener;
   env?: NodeJS.ProcessEnv;
 };
 
@@ -207,38 +218,62 @@ async function commandLogin(
   assertProviderExists(provider, services);
   const oauthProvider = getOAuthProvider(provider);
   if (oauthProvider && !apiKeyLogin) {
-    const credentials = await oauthProvider.login({
-      onAuth: (info) => {
-        (opts.writeOut ?? ((text: string) => output.write(text)))(`${info.url}\n${info.instructions ?? ""}\n`);
-      },
-      onDeviceCode: (info) => {
-        const writeOut = opts.writeOut ?? ((text: string) => output.write(text));
-        writeOut(`${info.verificationUri}\nEnter code: ${info.userCode}\n`);
-      },
-      onPrompt: async (prompt) => promptForSecret(prompt.message),
-      onSelect: async (prompt) => {
-        const writeOut = opts.writeOut ?? ((text: string) => output.write(text));
-        writeOut(`${prompt.message}\n`);
-        prompt.options.forEach((option, index) => {
-          writeOut(`  ${index + 1}. ${option.label}\n`);
-        });
-        const selected = await promptForSecret(`Enter number (1-${prompt.options.length}): `);
-        const index = Number.parseInt(selected, 10) - 1;
-        return prompt.options[index]?.id;
-      },
-      onProgress: (message) => {
-        (opts.writeErr ?? ((text: string) => process.stderr.write(text)))(`${message}\n`);
-      }
-    });
-    services.authStorage.set(provider, {
-      type: "oauth",
-      credentials,
-      createdAt: new Date().toISOString()
-    });
-    return;
+    let authUrl: string | undefined;
+    const devicePromptControllers: AbortController[] = [];
+    try {
+      const credentials = await oauthProvider.login({
+        onAuth: (info) => {
+          authUrl = info.url;
+          (opts.writeOut ?? ((text: string) => output.write(text)))(
+            `${info.url}\n\n⭐ 🧞 ${browserLoginInstruction()}\n`
+          );
+        },
+        onDeviceCode: (info) => {
+          const writeOut = opts.writeOut ?? ((text: string) => output.write(text));
+          writeOut(
+            `${info.verificationUri}\nEnter code: ${info.userCode}\n\n⭐ 🧞 ${deviceCodeLoginInstruction()}\n`
+          );
+          const controller = new AbortController();
+          devicePromptControllers.push(controller);
+          startDeviceCodeBrowserPrompt(info.verificationUri, opts, controller.signal);
+        },
+        onPrompt: async (prompt) => promptForInput(prompt.message, {
+          allowEmpty: prompt.allowEmpty === true,
+          readInput: opts.readInput
+        }),
+        ...(oauthProvider.usesCallbackServer === true
+          ? {
+              onManualCodeInput: async () => promptForBrowserOrManualCode(authUrl, opts)
+            }
+          : {}),
+        onSelect: async (prompt) => {
+          const writeOut = opts.writeOut ?? ((text: string) => output.write(text));
+          writeOut(`${prompt.message}\n`);
+          prompt.options.forEach((option, index) => {
+            writeOut(`  ${index + 1}. ${option.label}\n`);
+          });
+          const selected = await promptForInput(`Enter number (1-${prompt.options.length}): `, {
+            readInput: opts.readInput
+          });
+          const index = Number.parseInt(selected, 10) - 1;
+          return prompt.options[index]?.id;
+        },
+        onProgress: (message) => {
+          (opts.writeErr ?? ((text: string) => process.stderr.write(text)))(`${message}\n`);
+        }
+      });
+      services.authStorage.set(provider, {
+        type: "oauth",
+        credentials,
+        createdAt: new Date().toISOString()
+      });
+      return;
+    } finally {
+      devicePromptControllers.forEach((controller) => controller.abort());
+    }
   }
 
-  const apiKey = opts.apiKey ?? (await promptForSecret(`API key for ${provider}: `));
+  const apiKey = opts.apiKey ?? (await promptForInput(`API key for ${provider}: `, { readInput: opts.readInput }));
   registerSecret(apiKey);
   services.authStorage.set(provider, {
     type: "api_key",
@@ -840,17 +875,105 @@ function registerAuthEntry(entry: ProviderAuthEntry): void {
   registerSecret(entry.credentials.refresh);
 }
 
-async function promptForSecret(message: string): Promise<string> {
+async function promptForInput(
+  message: string,
+  opts: PromptInputOptions = {}
+): Promise<string> {
+  const rawValue = opts.readInput !== undefined ? await opts.readInput(message) : await defaultPromptInput(message, opts.signal);
+  const value = rawValue.trim();
+  if (!value && opts.allowEmpty !== true) {
+    throw new CodegenieError("invalid_args", "credential value cannot be empty");
+  }
+  return value;
+}
+
+async function defaultPromptInput(message: string, signal?: AbortSignal): Promise<string> {
   const rl = createInterface({ input, output });
   try {
-    const value = await rl.question(message);
-    if (!value.trim()) {
-      throw new CodegenieError("invalid_args", "credential value cannot be empty");
-    }
-    return value.trim();
+    return signal !== undefined ? await rl.question(message, { signal }) : await rl.question(message);
   } finally {
     rl.close();
   }
+}
+
+async function promptForBrowserOrManualCode(authUrl: string | undefined, opts: RunProviderCommandOptions): Promise<string> {
+  const inputValue = await promptForInput("> ", { allowEmpty: true, readInput: opts.readInput });
+  if (inputValue) {
+    return inputValue;
+  }
+  if (!authUrl) {
+    throw new CodegenieError("config_error", "OAuth login did not provide an authorization URL");
+  }
+  try {
+    await openBrowserUrl(authUrl, opts);
+  } catch (error) {
+    const writeErr = opts.writeErr ?? ((text: string) => process.stderr.write(text));
+    writeErr(`failed to open browser: ${errorMessage(error)}\n`);
+    return promptForInput("Paste the final redirect URL or authorization code: ", { readInput: opts.readInput });
+  }
+  return new Promise<string>(() => undefined);
+}
+
+function browserLoginInstruction(): string {
+  return "Press enter to open the URL above in your local browser. If the browser is on another machine, copy manually and paste the final redirect URL here.";
+}
+
+function deviceCodeLoginInstruction(): string {
+  return "Press enter to open the URL above in your local browser. If the browser is on another machine, copy the URL and code manually to complete login there.";
+}
+
+function startDeviceCodeBrowserPrompt(url: string, opts: RunProviderCommandOptions, signal: AbortSignal): void {
+  void promptForInput("> ", { allowEmpty: true, readInput: opts.readInput, signal })
+    .then(async (inputValue) => {
+      if (!inputValue) {
+        await openBrowserUrl(url, opts);
+      }
+    })
+    .catch((error) => {
+      if (isAbortError(error)) {
+        return;
+      }
+      const writeErr = opts.writeErr ?? ((text: string) => process.stderr.write(text));
+      writeErr(`failed to open browser: ${errorMessage(error)}\n`);
+    });
+}
+
+async function openBrowserUrl(url: string, opts: RunProviderCommandOptions): Promise<void> {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new CodegenieError("invalid_args", "OAuth authorization URL must use http or https");
+  }
+  await (opts.openBrowser ?? openUrlInBrowser)(parsed.href);
+}
+
+function openUrlInBrowser(url: string): Promise<void> {
+  const { command, args } = browserOpenCommand(process.platform, url);
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+function browserOpenCommand(platform: NodeJS.Platform, url: string): { command: string; args: string[] } {
+  if (platform === "darwin") {
+    return { command: "open", args: [url] };
+  }
+  if (platform === "win32") {
+    return { command: "rundll32", args: ["url.dll,FileProtocolHandler", url] };
+  }
+  return { command: "xdg-open", args: [url] };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 function requireArg(value: string | undefined, usage: string): string {
