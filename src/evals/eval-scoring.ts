@@ -706,6 +706,12 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   if (providerPromptCacheWriteCostUSD !== undefined) {
     metrics.providerPromptCacheWriteCostUSD = providerPromptCacheWriteCostUSD;
   }
+  const toolChoiceDowngradedCalls = firstNumberPath([
+    [artifacts.metricsSources.modelCallsSummary, ["toolChoiceDowngradedCalls"]]
+  ]);
+  if (toolChoiceDowngradedCalls !== undefined) {
+    metrics.toolChoiceDowngradedCalls = toolChoiceDowngradedCalls;
+  }
   const schemaRecovery = schemaRecoveryMetrics(artifacts);
   if (schemaRecovery.schemaInvalidCalls !== undefined) {
     metrics.schemaInvalidCalls = schemaRecovery.schemaInvalidCalls;

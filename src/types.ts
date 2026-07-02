@@ -1090,6 +1090,7 @@ export type EvalRunMetrics = {
   modelCalls?: number;
   verificationCalls?: number;
   toolCalls?: number;
+  toolChoiceDowngradedCalls?: number;
   maxPromptCharsByStage?: Partial<Record<ReviewStage, number>>;
   reviewCompleteness?: "complete" | "partial";
   budgetOverruns?: number;

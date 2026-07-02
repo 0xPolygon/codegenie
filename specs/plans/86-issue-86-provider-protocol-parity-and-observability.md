@@ -1,6 +1,7 @@
 # Issue 86: Provider Protocol Parity and Observability
 
-Status: PENDING
+Status: IN PROGRESS — steps 1-2 and 4 COMPLETE (2026-07-02); step 3 (Anthropic forcing change) scheduled Wave 3, step 5 (cross-provider study) after Plan 79.
+Implementation notes (steps 1-2, 4): per-call protocol recorded on every `model-calls.jsonl` record (`toolChoiceRequested/Effective/Downgraded`, `reasoningRequested/Mechanism/LevelEffective`) via `describeProviderProtocol` in `pi-runner`; once-per-run `provider_protocol` info event; first-occurrence `tool_choice_downgraded` warn; `toolChoiceDowngradedCalls` aggregated into `model-calls-summary.json`/`telemetry.json` and exposed as an eval metric; provider matrix documented in `skills_llm_telemetry.md`. `reasoningTokens` deferred — pi-ai usage does not expose thinking/reasoning token counts today (step-1 field dropped until it does).
 Planned from: Fable review (`specs/reviews/1-fable-review.md` §5.2), pi-runner audit, and the 2-run gpt-5.5 vs 5-run opus relay comparison in `~/Dev/0xsequence/trails-api/.codegenie/runs/`, 2026-07-01
 Recommended priority: high, sequenced with/after Issue 79. Issue 79 gives the recall-rate instrument; this issue makes cross-provider comparisons *valid* by recording and normalizing the protocol each provider actually runs. Without it, "opus vs gpt-5.5" compares two different protocols, not two models. Relationship to neighbors: Issue 80 (degrade-and-disclose) lowers the blast radius of any residual submit failure this plan's forcing change might surface; Issue 84 (Stage-7 ensemble) and any cross-provider "gigabrain" second-pass idea should be evaluated *after* this plan's step-5 study, so provider choice is informed by protocol-controlled data.
 

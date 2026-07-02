@@ -399,6 +399,7 @@ class RunTelemetryImpl {
     retryAttempts: 0,
     repairCalls: 0,
     schemaInvalidCalls: 0,
+    toolChoiceDowngradedCalls: 0,
     finalize: emptyModelFinalizeSummary(),
     byStage: {} as Record<string, ModelStageSummary>
   };
@@ -845,6 +846,7 @@ class RunTelemetryImpl {
     this.modelSummary.retryAttempts += providerCallCount > 0 && record.attempt > 1 ? 1 : 0;
     this.modelSummary.repairCalls += record.kind === "repair" ? 1 : 0;
     this.modelSummary.schemaInvalidCalls += record.status === "schema_invalid" ? 1 : 0;
+    this.modelSummary.toolChoiceDowngradedCalls += providerCallCount > 0 && record.toolChoiceDowngraded === true ? 1 : 0;
     this.updateSchemaRecoveryFromModelCall(record);
     this.updateStage7SchemaRepairSummaryFromModelCall(record);
     if (providerCallCount === 0) {

@@ -200,6 +200,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
   let modelCallSeq = 0;
   const nextModelCallId = (): string => `mc-${String(++modelCallSeq).padStart(6, "0")}`;
   const recordedPromptCacheStages = new Set<ReviewStage>();
+  const protocolFlags = { providerProtocolRecorded: false, downgradeWarned: false };
 
   return {
     runStructured: async <T>(request: LlmStructuredRequest<T>): Promise<T> => {
@@ -209,6 +210,29 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       const budget = request.toolBudget ?? NO_REPOSITORY_TOOL_BUDGET;
       const providerPromptCache = providerPromptCacheOptions(opts.telemetry.runId, request.stage);
       recordProviderPromptCacheStrategy(opts, request, providerPromptCache, recordedPromptCacheStages);
+      if (!protocolFlags.providerProtocolRecorded) {
+        protocolFlags.providerProtocolRecorded = true;
+        const forcedProbe = describeProviderProtocol(
+          model,
+          { type: "tool", name: submitTool.name },
+          opts.llmConfig.reasoning ?? "high"
+        );
+        opts.telemetry.event({
+          stage: request.stage,
+          level: "info",
+          message: "provider_protocol",
+          data: {
+            provider: model.provider,
+            model: model.id,
+            api: (model.raw as { api?: string }).api,
+            forcedToolChoiceEffective: forcedProbe.toolChoiceEffective,
+            toolChoiceDowngraded: forcedProbe.toolChoiceDowngraded,
+            reasoningMechanism: forcedProbe.reasoningMechanism,
+            ...(forcedProbe.reasoningRequested !== undefined ? { reasoningRequested: forcedProbe.reasoningRequested } : {}),
+            ...(forcedProbe.reasoningLevelEffective !== undefined ? { reasoningLevelEffective: forcedProbe.reasoningLevelEffective } : {})
+          }
+        });
+      }
       const messages: ConversationMessage[] = [
         { role: "user", content: request.prompt, timestamp: 0 }
       ];
@@ -271,7 +295,8 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               providerPromptCache,
               budgetExempt: budgetForceFinalize,
               finalizeMode,
-              finalizeTarget
+              finalizeTarget,
+              protocolFlags
             });
           } catch (cause) {
             if (!forceFinalize && isBudgetExhaustedError(cause) && messages.length > 1) {
@@ -799,6 +824,7 @@ async function completeWithCache(input: {
   budgetExempt?: boolean;
   finalizeMode?: "compact" | "full" | undefined;
   finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
+  protocolFlags?: { providerProtocolRecorded: boolean; downgradeWarned: boolean };
 }): Promise<ProviderCallResult> {
   const {
     opts,
@@ -818,6 +844,21 @@ async function completeWithCache(input: {
     finalizeMode,
     finalizeTarget
   } = input;
+  const protocol = describeProviderProtocol(model, toolChoice, opts.llmConfig.reasoning ?? "high");
+  if (protocol.toolChoiceDowngraded && input.protocolFlags !== undefined && !input.protocolFlags.downgradeWarned) {
+    input.protocolFlags.downgradeWarned = true;
+    opts.telemetry.event({
+      stage: request.stage,
+      level: "warn",
+      message: "tool_choice_downgraded",
+      data: {
+        provider: model.provider,
+        model: model.id,
+        toolChoiceRequested: protocol.toolChoiceRequested,
+        toolChoiceEffective: protocol.toolChoiceEffective
+      }
+    });
+  }
   const canonicalRequest = canonicalModelRequest({
     cacheSchemaVersion: MODEL_CALL_CACHE_SCHEMA_VERSION,
     runFingerprint: opts.cache?.runFingerprint ?? null,
@@ -882,6 +923,7 @@ async function completeWithCache(input: {
         });
         recordModelCall(opts, request, model, cachedResponse.message, {
           callId,
+          protocol,
           kind,
           finalizeMode,
           finalizeTarget,
@@ -986,6 +1028,7 @@ async function completeWithCache(input: {
         const retry = classifyProviderRetry(providerFailure.cause, attempt);
         recordModelCall(opts, request, model, message, {
           callId,
+          protocol,
           kind,
           finalizeMode,
           finalizeTarget,
@@ -1033,6 +1076,7 @@ async function completeWithCache(input: {
       const cacheStatus = await modelCallCacheWriteStatus(opts, cacheKey, request.stage, message, cacheable);
       const modelCallMeta = definedRecord({
         callId,
+        protocol,
         kind,
         finalizeMode,
         finalizeTarget,
@@ -1071,6 +1115,7 @@ async function completeWithCache(input: {
       const retry = classifyProviderRetry(cause, attempt);
       recordErroredModelCall(opts, request, model, {
         callId,
+        protocol,
         kind,
         finalizeMode,
         finalizeTarget,
@@ -1327,6 +1372,77 @@ function mapProviderToolChoice(model: Model<Api>, choice: unknown): unknown {
       return { type: "function", name: choice.name };
     default:
       return "required";
+  }
+}
+
+type ProviderProtocolFields = {
+  toolChoiceRequested: string;
+  toolChoiceEffective: string;
+  toolChoiceDowngraded: boolean;
+  reasoningRequested?: string;
+  reasoningMechanism: string;
+  reasoningLevelEffective?: string;
+};
+
+// Describes the protocol the provider actually runs for this call (plan 86):
+// requested vs effective tool choice (the anthropic-messages forced-submit
+// downgrade becomes visible instead of silent) and the reasoning mechanism the
+// codegenie reasoning level maps onto for this API family.
+function describeProviderProtocol(
+  model: PiModelRef,
+  toolChoice: ToolChoiceMode,
+  reasoning: string | undefined
+): ProviderProtocolFields {
+  const raw = model.raw as Model<Api>;
+  const requested = isForcedToolChoice(toolChoice) ? `forced:${toolChoice.name}` : "auto";
+  const mapped = mapProviderToolChoice(raw, toolChoice);
+  const effective = mapped === "auto"
+    ? "auto"
+    : mapped === "any" || mapped === "required"
+      ? String(mapped)
+      : mapped && typeof mapped === "object"
+        ? `forced:${forcedToolChoiceName(mapped) ?? "tool"}`
+        : requested;
+  const api = (raw as { api?: string }).api;
+  return definedRecord({
+    toolChoiceRequested: requested,
+    toolChoiceEffective: effective,
+    toolChoiceDowngraded: requested.startsWith("forced:") && effective === "auto",
+    reasoningRequested: reasoning,
+    reasoningMechanism: reasoning === undefined ? "none" : reasoningMechanismForApi(api),
+    reasoningLevelEffective: reasoning === undefined
+      ? undefined
+      : api === "google-generative-ai" || api === "google-vertex"
+        ? googleThinkingLevel(reasoning)
+        : reasoning
+  }) as ProviderProtocolFields;
+}
+
+function forcedToolChoiceName(mapped: object): string | undefined {
+  const direct = (mapped as { name?: unknown }).name;
+  if (typeof direct === "string") {
+    return direct;
+  }
+  const fn = (mapped as { function?: { name?: unknown } }).function?.name;
+  return typeof fn === "string" ? fn : undefined;
+}
+
+function reasoningMechanismForApi(api: string | undefined): string {
+  switch (api) {
+    case "anthropic-messages":
+      return "adaptive-effort";
+    case "google-generative-ai":
+    case "google-vertex":
+      return "thinking-level";
+    case "bedrock-converse-stream":
+    case "mistral-conversations":
+    case "openai-completions":
+    case "openai-responses":
+    case "azure-openai-responses":
+    case "openai-codex-responses":
+      return "reasoning-effort";
+    default:
+      return "unknown";
   }
 }
 
@@ -2563,6 +2679,7 @@ function recordModelCall(
   meta: {
     callId: string;
     kind: ModelCallKind;
+    protocol?: ProviderProtocolFields;
     finalizeMode?: "compact" | "full" | undefined;
     finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
     attempt: number;
@@ -2584,6 +2701,7 @@ function recordModelCall(
   const usage = normalizeUsage(meta.usage ?? message.usage);
   const record = definedRecord({
     callId: meta.callId,
+    ...meta.protocol,
     stage: request.stage,
     role: roleForStage(request.stage),
     model: model.id,
@@ -2636,6 +2754,7 @@ function recordErroredModelCall(
   meta: {
     callId: string;
     kind: ModelCallKind;
+    protocol?: ProviderProtocolFields;
     finalizeMode?: "compact" | "full" | undefined;
     finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
     attempt: number;
@@ -2653,6 +2772,7 @@ function recordErroredModelCall(
 ): void {
   const record = definedRecord({
     callId: meta.callId,
+    ...meta.protocol,
     stage: request.stage,
     role: roleForStage(request.stage),
     model: model.id,

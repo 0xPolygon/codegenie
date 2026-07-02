@@ -228,6 +228,21 @@ Rules:
 
 The `LlmRunner` interface and `LlmStructuredRequest<T>` type in `architecture.md` are law and are not restated here. This component provides the implementation and its construction seam:
 
+#### Provider Protocol Matrix (plan 86)
+
+codegenie's normalized interface maps onto vendor dialects inside `pi-runner`'s per-API adaptation layer (`mapProviderToolChoice`, `mapReasoningOptions`). The mapping the provider actually runs is recorded per model call (`toolChoiceRequested/Effective/Downgraded`, `reasoningMechanism`, `reasoningLevelEffective` in `model-calls.jsonl`), summarized once per run (`provider_protocol` event), and warned on first downgrade (`tool_choice_downgraded`); downgrade counts aggregate into `model-calls-summary.json` (`toolChoiceDowngradedCalls`) and eval metrics.
+
+| API family | Forced submit tool choice | Reasoning mechanism | Notes |
+| --- | --- | --- | --- |
+| `anthropic-messages` | **downgraded to `auto`** (forced choice conflicts with extended thinking) | `adaptive-effort` (`thinkingEnabled` + effort) | The downgrade is the plan-86 step-3 target; submit compliance rests on prompt text + repair ladder until then |
+| `bedrock-converse-stream` | `{type:"tool",name}` | `reasoning-effort` (pass-through) | |
+| `google-generative-ai` / `google-vertex` | `"any"` | `thinking-level` (`LOW`/`MEDIUM`/`HIGH`; `xhigh` clamps to `HIGH`) | |
+| `mistral-conversations` / `openai-completions` | `{type:"function",function:{name}}` | `reasoning-effort` | |
+| `openai-responses` family | payload-injected `tool_choice` (`withToolChoicePayload`) | `reasoning-effort` | |
+| unknown | `"required"` | `unknown` | |
+
+Reasoning-token spend is not exposed by pi-ai usage today; `reasoningTokens` recording is deferred until it is.
+
 ```ts
 // src/llm/llm-runner.ts
 

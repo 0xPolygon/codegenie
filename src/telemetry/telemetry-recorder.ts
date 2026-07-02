@@ -16,6 +16,14 @@ export type LlmCallRecord = {
   kind: "initial" | "tool-continuation" | "repair" | "finalize";
   finalizeMode?: "compact" | "full" | undefined;
   finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
+  // Effective provider protocol for this call (plan 86): requested vs
+  // effective tool choice and the reasoning mechanism the level maps onto.
+  toolChoiceRequested?: string;
+  toolChoiceEffective?: string;
+  toolChoiceDowngraded?: boolean;
+  reasoningRequested?: string;
+  reasoningMechanism?: string;
+  reasoningLevelEffective?: string;
   attempt: number;
   promptChars: number;
   promptHash: string;

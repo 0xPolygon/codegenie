@@ -881,6 +881,76 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.modelCalls[1]).toMatchObject({ kind: "finalize", status: "ok" });
   });
 
+  it("records the effective provider protocol on model calls and emits provider_protocol once", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-protocol"));
+
+    expect(telemetry.modelCalls[0]).toMatchObject({
+      toolChoiceRequested: "forced:submit_review",
+      toolChoiceEffective: "required",
+      toolChoiceDowngraded: false,
+      reasoningRequested: "high",
+      reasoningMechanism: "unknown",
+      reasoningLevelEffective: "high"
+    });
+    const protocolEvents = telemetry.events.filter((event) => event.message === "provider_protocol");
+    expect(protocolEvents).toHaveLength(1);
+    expect(protocolEvents[0]?.data).toMatchObject({
+      api: "faux",
+      forcedToolChoiceEffective: "required",
+      toolChoiceDowngraded: false,
+      reasoningMechanism: "unknown"
+    });
+    expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(0);
+  });
+
+  it("surfaces the anthropic forced-tool-choice downgrade instead of staying silent", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const adapter: typeof scripted = {
+      ...scripted,
+      resolveModel: () => ({ provider: "anthropic", id: "fake-opus", raw: { id: "fake-opus", api: "anthropic-messages" } })
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "anthropic", model: "fake-opus", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-anthropic-protocol"));
+
+    expect(telemetry.modelCalls[0]).toMatchObject({
+      toolChoiceRequested: "forced:submit_review",
+      toolChoiceEffective: "auto",
+      toolChoiceDowngraded: true,
+      reasoningMechanism: "adaptive-effort"
+    });
+    const downgraded = telemetry.events.filter((event) => event.message === "tool_choice_downgraded");
+    expect(downgraded).toHaveLength(1);
+    expect(downgraded[0]?.level).toBe("warn");
+  });
+
   it("enforces maxConcurrentCalls across provider misses", async () => {
     const telemetry = fakeTelemetry();
     let active = 0;
