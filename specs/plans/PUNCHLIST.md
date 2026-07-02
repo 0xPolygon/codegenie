@@ -19,8 +19,8 @@ File-conflict note: 80, 85, 82 all touch `verifier.ts`/`lens-runner.ts` — land
 ## Wave 2 — the instrument, then the baseline
 
 - [x] **Plan 83** — wording-independent fingerprints + compare integrity (fable D7, bug 3). Lands before/with 79: cross-run identity is the harness's regression assertion, and Plan 84 needs stable fingerprints for union-dedupe. (2026-07-02; note: first compare against a pre-83 run shows one-time fingerprint churn)
-- [ ] **Plan 79** — repeat/recall-rate harness + relay wrong-chain case. The measurement foundation; nothing recall-related gets judged without it after this point.
-- [ ] **Baseline campaign** — `repeat: 10`, `cache: false` on `0c4d5213`, `49f4645b`, relay case, opus, Wave-1 system. Reference dataset for every Wave-3 A/B. Record as a findings note under `specs/reviews/`.
+- [x] **Plan 79** — repeat/recall-rate harness + relay wrong-chain case. The measurement foundation; nothing recall-related gets judged without it after this point. (2026-07-02; relay case at `trails-api/relay-wc`, pinned to `dad51fda`)
+- [ ] **Baseline campaign** — `repeat: 10`, `cache: false` on `0c4d5213`, `49f4645b`, relay case, opus, Wave-1 system. Reference dataset for every Wave-3 A/B. Record as a findings note under `specs/reviews/`. GATED on provider latency recovery (July 1-2 degradation ~5x; probe with one cheap small-case run before launching — at degraded latency the campaign is ~8h/$200+ vs ~2h/$50 healthy).
 
 ## Wave 3 — behavior changes, one at a time, measured against the baseline
 

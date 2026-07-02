@@ -4,6 +4,7 @@ import type {
   CandidateFinding,
   EvalArtifacts,
   EvalHintEvent,
+  EvalHumanAttentionNote,
   EvalRunInfo,
   EvalSelectionRecord,
   EvalVerificationRecord,
@@ -85,6 +86,7 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
     finalSelection: normalizeSelection(selectionRaw),
     finalFindings: Array.isArray(finalFindings) ? finalFindings : [],
     missingArtifacts,
+    humanAttentionNotes: normalizeHumanAttentionNotes(await readOptionalArtifact<unknown>(dir, "human-attention-notes.json")),
     packets: await loadPackets(path.join(dir, "stages", "06-packets", "packets")),
     hintEvents: await loadHintEvents(path.join(dir, "events.jsonl")),
     metricsSources
@@ -170,6 +172,34 @@ async function nextRunNumber(logsDir: string): Promise<number> {
     .map((entry) => Number(entry))
     .filter((entry) => Number.isInteger(entry) && entry > 0);
   return existing.length === 0 ? 1 : Math.max(...existing) + 1;
+}
+
+// The published-notes artifact has carried two shapes: a bare array of notes
+// and the grouped `{ groups: [...] }` form. Normalize both into flat notes so
+// the scorer can attribute the NOTE outcome (plan 79).
+function normalizeHumanAttentionNotes(raw: unknown): EvalHumanAttentionNote[] {
+  const entries = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === "object" && Array.isArray((raw as { groups?: unknown }).groups)
+      ? (raw as { groups: unknown[] }).groups
+      : [];
+  return entries.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+    const note = entry as { question?: unknown; files?: unknown; reason?: unknown; reasons?: unknown };
+    const question = typeof note.question === "string" ? note.question : "";
+    if (question.length === 0) {
+      return [];
+    }
+    const files = Array.isArray(note.files) ? note.files.filter((file): file is string => typeof file === "string") : [];
+    const reasons = Array.isArray(note.reasons)
+      ? note.reasons.filter((reason): reason is string => typeof reason === "string")
+      : typeof note.reason === "string"
+        ? [note.reason]
+        : [];
+    return [{ question, files, reasons }];
+  });
 }
 
 // Optional artifact read with the same pre-layout-v2 root fallback as

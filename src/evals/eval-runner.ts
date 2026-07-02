@@ -13,6 +13,7 @@ import { createGitClient } from "../git/git-client.js";
 import { runReview } from "../pipeline/review-runner.js";
 import type {
   CodegenieConfig,
+  EvalArtifacts,
   EvalCase,
   EvalCaseResult,
   EvalFindingExpectation,
@@ -36,7 +37,7 @@ import {
   writeEvalRunInfo
 } from "./eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "./eval-compare.js";
-import { scoreEvalRun } from "./eval-scoring.js";
+import { aggregateRepeatScores, scoreEvalRun } from "./eval-scoring.js";
 
 export type EvalSuite = {
   dir: string;
@@ -70,7 +71,9 @@ const expectationSchema = z
     category: findingCategorySchema.optional(),
     severityAtLeast: severitySchema.optional(),
     titlePattern: z.string().min(1).optional(),
-    failureModePattern: z.string().min(1).optional()
+    failureModePattern: z.string().min(1).optional(),
+    minRecallRate: z.number().min(0).max(1).optional(),
+    minCandidateRate: z.number().min(0).max(1).optional()
   })
   .strict()
   .superRefine((expectation, ctx) => {
@@ -104,6 +107,7 @@ const expectationSchema = z
 const caseSchema = z
   .object({
     name: z.string().min(1),
+    repeat: positiveIntSchema.optional(),
     repo: z
       .object({
         external: z.string().min(1).optional(),
@@ -212,6 +216,14 @@ const caseSchema = z
     }
     if (evalCase.command?.head !== undefined && evalCase.command.base === undefined) {
       ctx.addIssue({ code: "custom", path: ["command", "base"], message: "command.head requires command.base" });
+    }
+    if ((evalCase.repeat ?? 1) > 1) {
+      if (evalCase.artifacts !== undefined) {
+        ctx.addIssue({ code: "custom", path: ["repeat"], message: "repeat > 1 is incompatible with artifact-backed cases (replays are deterministic)" });
+      }
+      if (evalCase.review?.cache !== false) {
+        ctx.addIssue({ code: "custom", path: ["repeat"], message: "repeat > 1 requires review.cache: false — repeats need fresh sampling, not cached model calls" });
+      }
     }
     if (evalCase.command?.target !== undefined && evalCase.command.target.includes("..")) {
       if (evalCase.command.target.includes("...")) {
@@ -398,6 +410,9 @@ async function runLiveCase(
   allocated: { runNumber: number; dir: string },
   options: EvalRunOptions
 ): Promise<EvalCaseResult> {
+  if ((entry.evalCase.repeat ?? 1) > 1) {
+    return runRepeatedLiveCase(suite, entry, allocated, options, entry.evalCase.repeat ?? 1);
+  }
   const startedAt = new Date().toISOString();
   let reviewRunId: string | undefined;
   let errorConfig = options.config;
@@ -452,6 +467,96 @@ async function runLiveCase(
       ...(reviewRunId !== undefined ? { reviewRunId } : {})
     });
     await writeRunOutputs(allocated.dir, path.dirname(allocated.dir), info, artifacts.finalFindings);
+    return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
+  } catch (error) {
+    return writeErroredCase(allocated, entry, errorConfig, startedAt, error, "live", undefined, errorCache);
+  }
+}
+
+// Repeated live case (plan 79): N independent executions under
+// logs/<run>/repeats/<k>/, aggregated into recall rates and one parent
+// info.json. The repo/config are resolved once (fixture repos materialize
+// once); each execution gets a fresh telemetry dir and score. A crashed
+// execution is recorded as an errored sample and the loop continues.
+// Compare-to-previous is skipped: an aggregate has no single finding set.
+async function runRepeatedLiveCase(
+  suite: EvalSuite,
+  entry: EvalSuite["cases"][number],
+  allocated: { runNumber: number; dir: string },
+  options: EvalRunOptions,
+  repeat: number
+): Promise<EvalCaseResult> {
+  const startedAt = new Date().toISOString();
+  let errorConfig = options.config;
+  let errorCache: EvalRunInfo["cache"] | undefined;
+  try {
+    const repoRoot = await resolveRepoRoot(suite.dir, entry.evalCase, allocated.dir);
+    const git = createGitClient(repoRoot);
+    if (!(await git.isInsideWorktree())) {
+      throw new CodegenieError("not_git_worktree", `eval case repository is not a git worktree: ${repoRoot}`, {
+        context: { repoRoot }
+      });
+    }
+    const actualRepoRoot = await git.repoRoot();
+    const repoLayer = applyRepoConfigLayer(options.config, actualRepoRoot);
+    const caseConfig = applyCaseReviewConfig(repoLayer.config, entry.evalCase, options.cacheOverride);
+    errorConfig = caseConfig.config;
+    errorCache = caseConfig.cache;
+    if (caseConfig.cache.enabled) {
+      throw new CodegenieError("config_error", "repeat > 1 requires the local model-call cache to be disabled — repeats need fresh sampling (set review.cache: false and do not pass --cache)", {
+        context: { repeat, cacheSource: caseConfig.cache.source }
+      });
+    }
+    const target = targetForCase(entry.evalCase);
+    const executions: Array<{ runDir: string; score: EvalScore; artifacts?: EvalArtifacts }> = [];
+    for (let execution = 1; execution <= repeat; execution += 1) {
+      const execDirName = path.join("repeats", String(execution));
+      const execDir = path.join(allocated.dir, execDirName);
+      await mkdir(execDir, { recursive: true });
+      try {
+        let reviewOutput = "";
+        await runReview(target, caseConfig.config, {
+          repoRoot: actualRepoRoot,
+          runArtifactDir: path.join(execDir, "telemetry"),
+          format: "markdown",
+          postGithubComments: false,
+          configWarnings: repoLayer.warnings,
+          writeOutput: (chunk) => {
+            reviewOutput += chunk;
+          }
+        });
+        if (reviewOutput.trim().length > 0) {
+          await writeFile(path.join(execDir, "codegenie-review.out.md"), reviewOutput);
+        }
+        const artifacts = await loadEvalArtifacts(path.join(execDir, "telemetry"));
+        const score = scoreEvalRun(entry.evalCase, artifacts, "live");
+        await writeFile(path.join(execDir, "score.json"), `${JSON.stringify(score, null, 2)}\n`);
+        executions.push({ runDir: execDirName, score, artifacts });
+      } catch (error) {
+        const score = errorScore(error);
+        await writeFile(path.join(execDir, "score.json"), `${JSON.stringify(score, null, 2)}\n`);
+        executions.push({ runDir: execDirName, score });
+      }
+    }
+    const { aggregate, score } = aggregateRepeatScores(entry.evalCase, executions);
+    const finishedAt = new Date().toISOString();
+    const info = buildRunInfo({
+      runNumber: allocated.runNumber,
+      evalCase: entry.evalCase,
+      caseHash: entry.caseHash,
+      caseFile: entry.file,
+      mode: "live",
+      startedAt,
+      finishedAt,
+      score,
+      repeats: aggregate,
+      config: caseConfig.config,
+      cache: caseConfig.cache,
+      repo: await repoInfo(actualRepoRoot, path.join(allocated.dir, "repeats", "1", "telemetry"))
+    });
+    await writeFile(path.join(allocated.dir, "eval-aggregate.json"), `${JSON.stringify({ aggregate, executions: executions.map((execution) => ({ runDir: execution.runDir, score: execution.score })) }, null, 2)}\n`);
+    await writeFile(path.join(allocated.dir, "out.log"), `${JSON.stringify({ level: "info", message: "eval case scored (repeat aggregate)", status: info.score.status, repeat })}\n`);
+    await writeEvalRunInfo(allocated.dir, info);
     return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
   } catch (error) {
     return writeErroredCase(allocated, entry, errorConfig, startedAt, error, "live", undefined, errorCache);
@@ -591,6 +696,7 @@ function buildRunInfo(input: {
   caseFile?: string;
   mode: "live" | "replay";
   replay?: EvalRunInfo["replay"];
+  repeats?: EvalRunInfo["repeats"];
   repo?: EvalRunInfo["repo"];
   reviewRunId?: string;
   startedAt: string;
@@ -607,6 +713,7 @@ function buildRunInfo(input: {
     caseSnapshot: input.evalCase,
     mode: input.mode,
     ...(input.replay !== undefined ? { replay: input.replay } : {}),
+    ...(input.repeats !== undefined ? { repeats: input.repeats } : {}),
     ...(input.repo !== undefined ? { repo: input.repo } : {}),
     ...(input.reviewRunId !== undefined ? { reviewRunId: input.reviewRunId } : {}),
     codegenieRuntime: resolveCodegenieRuntimeProvenance(),

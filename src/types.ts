@@ -925,10 +925,19 @@ export type EvalFindingExpectation = {
   severityAtLeast?: Severity;
   titlePattern?: string;
   failureModePattern?: string;
+  // Recall-rate gates for repeated cases (plan 79). When present, the
+  // expectation passes iff the aggregated rate meets the threshold; when
+  // absent, rates are measured and reported but never gate.
+  minRecallRate?: number;
+  minCandidateRate?: number;
 };
 
 export type EvalCase = {
   name: string;
+  // Number of independent executions of this case (plan 79). Default 1.
+  // repeat > 1 requires caching off and is incompatible with artifact-backed
+  // cases.
+  repeat?: number;
   repo?: {
     external?: string;
     fixture?: string;
@@ -1032,6 +1041,9 @@ export type EvalLossDetail = {
   coveringPacketIds?: string[];
   coveringPacketLenses?: string[];
   plannerCoverage?: string;
+  // The lost expectation resurfaced as a published Needs Human Attention note
+  // (plan 79) — the NOTE outcome, a less-bad loss than a silent miss.
+  surfacedAsNote?: boolean;
 };
 
 export type EvalExpectationResult = {
@@ -1147,6 +1159,10 @@ export type EvalRunInfo = {
   caseHash: string;
   caseSnapshot: EvalCase;
   mode: "live" | "replay";
+  // Present when the case ran with repeat > 1 (plan 79): the score above is
+  // the aggregate; per-execution artifacts live under repeats/<k>/ in the run
+  // dir and full detail in eval-aggregate.json.
+  repeats?: EvalRepeatAggregate;
   replay?: {
     sourceArtifacts: string;
     caseSource: "yaml" | "snapshot";
@@ -1220,6 +1236,12 @@ export type EvalHintEvent = {
   confidence: Confidence;
 };
 
+export type EvalHumanAttentionNote = {
+  question: string;
+  files: string[];
+  reasons: string[];
+};
+
 export type EvalArtifacts = {
   candidates: CandidateFinding[];
   verification: EvalVerificationRecord[];
@@ -1229,6 +1251,9 @@ export type EvalArtifacts = {
   // Scoring proceeds with empty defaults and discloses these instead of
   // crashing and destroying the run's data point (plan 89 A1).
   missingArtifacts?: string[];
+  // Published Needs Human Attention notes (plan 79): lets scoring distinguish
+  // a finding that resurfaced as a note (NOTE) from a silent miss (MISS).
+  humanAttentionNotes?: EvalHumanAttentionNote[];
   reviewPlan?: ReviewPlan;
   packets: ReviewPacket[];
   hintEvents: EvalHintEvent[];
@@ -1243,6 +1268,31 @@ export type EvalArtifacts = {
     modelCalls?: unknown[];
     toolCalls?: unknown[];
   };
+};
+
+export type EvalRepeatExpectationAggregate = {
+  expectationId: string;
+  list: EvalExpectationList;
+  tier: "required" | "optional";
+  finalMatched: number;
+  candidateMatched: number;
+  noteSurfaced: number;
+  finalRecallRate: number;
+  candidateRecallRate: number;
+  noteRate: number;
+  lossHistogram: Record<string, number>;
+  // Plan 83 handoff: whether every execution that matched this expectation
+  // produced the same finding fingerprint (cross-run identity assertion).
+  fingerprintsStable?: boolean;
+  distinctFingerprints?: number;
+  gate?: { minRecallRate?: number; minCandidateRate?: number; passed: boolean };
+};
+
+export type EvalRepeatAggregate = {
+  repeat: number;
+  executions: Array<{ runDir: string; status: EvalScore["status"] }>;
+  expectations: EvalRepeatExpectationAggregate[];
+  totals: { costUSD: number; elapsedSeconds: number; errors: number };
 };
 
 export type EvalCompareReport = {

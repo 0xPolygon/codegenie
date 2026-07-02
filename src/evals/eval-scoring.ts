@@ -5,12 +5,15 @@ import type {
   EvalAssignment,
   EvalBudgetResult,
   EvalCase,
+  EvalExpectationList,
   EvalExpectationResult,
   EvalFindingExpectation,
   EvalHintEvent,
   EvalLossDetail,
   EvalLossLabel,
   EvalMatchOutcome,
+  EvalRepeatAggregate,
+  EvalRepeatExpectationAggregate,
   EvalRunMetrics,
   EvalScore,
   EvalSelectionRecord,
@@ -330,6 +333,12 @@ function scorePositiveList(
         matched: []
       };
     }
+    const loss = list === "should_find"
+      ? attributeLoss(expectation, artifacts)
+      : attributeCandidateLoss(expectation, artifacts);
+    if (list === "should_find" && expectationMatchesNote(expectation, artifacts)) {
+      loss.surfacedAsNote = true;
+    }
     return {
       expectationId: expectation.id,
       list,
@@ -337,10 +346,224 @@ function scorePositiveList(
       status: "fail",
       fromReplayedArtifacts: mode === "replay",
       matched: [],
-      loss: list === "should_find"
-        ? attributeLoss(expectation, artifacts)
-        : attributeCandidateLoss(expectation, artifacts)
+      loss
     };
+  });
+}
+
+// Aggregates per-execution scores of a repeated case (plan 79) into recall
+// rates, a loss histogram, and an aggregate EvalScore. Semantics:
+// - Expectations with minRecallRate/minCandidateRate gate on the aggregated
+//   rate; expectations without thresholds are measured but never fail —
+//   "measure first, ratchet after the fix" is the intended posture.
+// - should_not_find violations are unioned across executions (one bad
+//   execution is a violation).
+// - Budget checks take the worst outcome per check across executions.
+// - An errored execution counts against every rate's denominator (a crashed
+//   sample is a failed sample); the run errors only if every execution errored.
+export function aggregateRepeatScores(
+  evalCase: EvalCase,
+  executions: Array<{ runDir: string; score: EvalScore; artifacts?: EvalArtifacts }>
+): { aggregate: EvalRepeatAggregate; score: EvalScore } {
+  const repeat = executions.length;
+  const positiveExpectations: Array<{ expectation: EvalFindingExpectation; list: EvalExpectationList }> = [
+    ...(evalCase.should_find ?? []).map((expectation) => ({ expectation, list: "should_find" as const })),
+    ...(evalCase.should_find_candidate ?? []).map((expectation) => ({ expectation, list: "should_find_candidate" as const }))
+  ];
+
+  const expectationAggregates: EvalRepeatExpectationAggregate[] = positiveExpectations.map(({ expectation, list }) => {
+    let finalMatched = 0;
+    let candidateMatched = 0;
+    let noteSurfaced = 0;
+    const lossHistogram: Record<string, number> = {};
+    const fingerprints = new Set<string>();
+    for (const execution of executions) {
+      const result = execution.score.expectationResults.find(
+        (entry) => entry.expectationId === expectation.id && entry.list === list
+      );
+      if (result === undefined) {
+        lossHistogram.error = (lossHistogram.error ?? 0) + 1;
+        continue;
+      }
+      if (result.status === "pass") {
+        finalMatched += 1;
+        const findingId = result.matched[0]?.findingId;
+        const finding = execution.artifacts?.finalFindings.find((entry) => entry.id === findingId);
+        if (finding?.fingerprint !== undefined) {
+          fingerprints.add(finding.fingerprint);
+        }
+      } else if (result.loss !== undefined) {
+        lossHistogram[result.loss.label] = (lossHistogram[result.loss.label] ?? 0) + 1;
+        if (result.loss.surfacedAsNote === true) {
+          noteSurfaced += 1;
+        }
+      }
+      if (execution.artifacts !== undefined &&
+        execution.artifacts.candidates.some((candidateFinding) => matchExpectation(expectation, candidateFinding, execution.artifacts).matched)) {
+        candidateMatched += 1;
+      }
+    }
+    const finalRecallRate = repeat === 0 ? 0 : finalMatched / repeat;
+    const candidateRecallRate = repeat === 0 ? 0 : candidateMatched / repeat;
+    const gated = expectation.minRecallRate !== undefined || expectation.minCandidateRate !== undefined;
+    return {
+      expectationId: expectation.id,
+      list,
+      tier: expectation.tier ?? "required",
+      finalMatched,
+      candidateMatched,
+      noteSurfaced,
+      finalRecallRate,
+      candidateRecallRate,
+      noteRate: repeat === 0 ? 0 : noteSurfaced / repeat,
+      lossHistogram,
+      ...(finalMatched > 0 ? { fingerprintsStable: fingerprints.size <= 1, distinctFingerprints: fingerprints.size } : {}),
+      ...(gated
+        ? {
+            gate: {
+              ...(expectation.minRecallRate !== undefined ? { minRecallRate: expectation.minRecallRate } : {}),
+              ...(expectation.minCandidateRate !== undefined ? { minCandidateRate: expectation.minCandidateRate } : {}),
+              passed:
+                (expectation.minRecallRate === undefined || finalRecallRate >= expectation.minRecallRate) &&
+                (expectation.minCandidateRate === undefined || candidateRecallRate >= expectation.minCandidateRate)
+            }
+          }
+        : {})
+    };
+  });
+
+  const violationKeys = new Set<string>();
+  const violations = executions.flatMap((execution) =>
+    execution.score.violations.filter((violation) => {
+      const key = `${violation.expectationId}\0${violation.findingId}`;
+      if (violationKeys.has(key)) {
+        return false;
+      }
+      violationKeys.add(key);
+      return true;
+    })
+  );
+
+  const budgetByCheck = new Map<string, EvalBudgetResult>();
+  for (const execution of executions) {
+    for (const result of execution.score.budgetResults) {
+      const existing = budgetByCheck.get(result.check);
+      if (existing === undefined || (existing.status !== "fail" && result.status === "fail")) {
+        budgetByCheck.set(result.check, result);
+      }
+    }
+  }
+
+  const errors = executions.filter((execution) => execution.score.status === "error").length;
+  const totals = {
+    costUSD: executions.reduce((sum, execution) => sum + (execution.score.metrics.costUSD ?? 0), 0),
+    elapsedSeconds: executions.reduce((sum, execution) => sum + (execution.score.metrics.elapsedSeconds ?? 0), 0),
+    errors
+  };
+
+  const expectationResults: EvalExpectationResult[] = expectationAggregates.map((entry) => {
+    const rateNote = `finalRecall ${entry.finalMatched}/${repeat} | candidate ${entry.candidateMatched}/${repeat} | note ${entry.noteSurfaced}/${repeat}`;
+    return {
+      expectationId: entry.expectationId,
+      list: entry.list,
+      tier: entry.tier,
+      status: entry.gate === undefined ? "pass" : entry.gate.passed ? "pass" : "fail",
+      matched: [],
+      note: entry.gate === undefined ? `measured only: ${rateNote}` : rateNote
+    };
+  });
+  const shouldNotResults: EvalExpectationResult[] = (evalCase.should_not_find ?? []).map((expectation) => ({
+    expectationId: expectation.id,
+    list: "should_not_find",
+    tier: expectation.tier ?? "required",
+    status: violations.some((violation) => violation.expectationId === expectation.id) ? "fail" : "pass",
+    matched: []
+  }));
+  const budgetResults = [...budgetByCheck.values()];
+  const status: EvalScore["status"] = errors === repeat && repeat > 0
+    ? "error"
+    : expectationResults.some((result) => result.status === "fail") ||
+        shouldNotResults.some((result) => result.status === "fail") ||
+        budgetResults.some((result) => result.status === "fail")
+      ? "fail"
+      : "pass";
+
+  const aggregateMetrics: EvalRunMetrics = {
+    reportedFindings: Math.round(
+      executions.reduce((sum, execution) => sum + execution.score.metrics.reportedFindings, 0) / Math.max(1, repeat)
+    ),
+    inlineFindings: 0,
+    summaryOnlyFindings: 0,
+    suppressedFindings: 0,
+    candidateFindings: Math.round(
+      executions.reduce((sum, execution) => sum + execution.score.metrics.candidateFindings, 0) / Math.max(1, repeat)
+    ),
+    duplicateGroups: 0,
+    stageLossCounts: sumStageLossCounts(executions.map((execution) => execution.score.metrics.stageLossCounts)),
+    costUSD: totals.costUSD,
+    elapsedSeconds: totals.elapsedSeconds
+  };
+
+  return {
+    aggregate: {
+      repeat,
+      executions: executions.map((execution) => ({ runDir: execution.runDir, status: execution.score.status })),
+      expectations: expectationAggregates,
+      totals
+    },
+    score: {
+      status,
+      expectationResults: [...expectationResults, ...shouldNotResults],
+      budgetResults,
+      violations,
+      nearViolations: [],
+      metrics: aggregateMetrics
+    }
+  };
+}
+
+function sumStageLossCounts(counts: Array<Record<EvalLossLabel, number> | undefined>): Record<EvalLossLabel, number> {
+  const total: Record<EvalLossLabel, number> = {
+    "missed-before-candidate-generation": 0,
+    "lost-at-verification": 0,
+    "lost-at-composition": 0,
+    "partial-match": 0
+  };
+  for (const entry of counts) {
+    if (entry === undefined) {
+      continue;
+    }
+    for (const label of Object.keys(total) as EvalLossLabel[]) {
+      total[label] += entry[label] ?? 0;
+    }
+  }
+  return total;
+}
+
+// NOTE outcome (plan 79): a should_find expectation that was not published as
+// a finding but resurfaced as a Needs Human Attention note is a less-bad loss
+// than a silent miss. Notes carry no line/severity/category, so matching uses
+// the expectation's path glob against note files and its regex patterns
+// against the note's question and reasons.
+export function expectationMatchesNote(expectation: EvalFindingExpectation, artifacts: EvalArtifacts): boolean {
+  const notes = artifacts.humanAttentionNotes ?? [];
+  if (notes.length === 0) {
+    return false;
+  }
+  return notes.some((note) => {
+    if (expectation.path !== undefined) {
+      const matcher = picomatch(expectation.path, { dot: true });
+      if (!note.files.some((file) => matcher(file))) {
+        return false;
+      }
+    }
+    const text = [note.question, ...note.reasons].join("\n");
+    for (const pattern of [expectation.titlePattern, expectation.failureModePattern]) {
+      if (pattern !== undefined && !new RegExp(pattern, "i").test(text)) {
+        return false;
+      }
+    }
+    return expectation.path !== undefined || expectation.titlePattern !== undefined || expectation.failureModePattern !== undefined;
   });
 }
 
