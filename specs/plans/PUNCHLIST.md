@@ -1,0 +1,78 @@
+# Punchlist
+
+Execution-order ledger. Drains `specs/reviews/1-fable-review.md` (2026-07-01) plus subsequent eval evidence (`0c4d5213` runs 42-45, `49f4645b` runs 24-25) into ordered, dispositioned work. Plans own the detail; this file owns the order. The README table stays the per-plan status index.
+
+Ordering principle: measurement campaigns (Plan 79 baselines, Plan 86 study) are expensive — before spending on them, (a) runs must not be destroyable or pollutable by infrastructure, and (b) the baselined system should already contain the uncontroversial deterministic fixes. Behavior-changing improvements land *after* the baseline, one at a time, measured. Hygiene lands whenever there is slack; it never jumps the queue.
+
+Triage rule for spec↔code divergence (see memory: code is source of truth): each divergence is dispositioned as **code-bug** (fix code), **spec-stale** (fix or annotate docs, low priority), or **decision** (product call needed) — never an automatic "make code match spec".
+
+## Wave 1 — robustness floor (small, deterministic, no review-posture changes)
+
+- [ ] **Plan 80** — degrade-and-disclose failure semantics (fable D1, bugs 1/7). Protects every future run, including baseline runs, from one submit failure destroying the review.
+- [ ] **Plan 85** — finalize grace for per-pass timeouts + truthful incomplete labeling. Removes the timeout losses that would inflate Plan-79 variance numbers. Coordinate its outcome-label names with 79's loss attribution.
+- [ ] **Plan 82 (mechanical half)** — no severity demotion on `behaviorChange: "unknown"`; `severityBeforeCap` threaded through suppression guarantees. Bug fix; belongs in the baseline system. Calibration half stays in Wave 4.
+- [ ] **Plan 86 (steps 1-2, 4)** — protocol observability (tool-choice/reasoning recording, eval metric exposure) + provider matrix doc. Zero behavior change; its friction covariates should exist in the baseline telemetry. Step 3 (forcing) deferred to Wave 3; step 5 (study) to Wave 3 end.
+- [ ] **Plan 89, phase A (eval-signal integrity)** — scorer crash on missing artifact (fable bug 13, run 24 evidence), `a...b` target validation (bug 14), coverage under-count + mislabeled safety-coverage source (bug 19), side-less/line-less static-signal binding (bug 17), skip-rules last-match (bug 5). All deterministic; all distort the measurement signal 79 will rely on.
+
+File-conflict note: 80, 85, 82 all touch `verifier.ts`/`lens-runner.ts` — land as a short series in that order, not in parallel. Pre-79 validation is unit/fixture tests, not single eval runs.
+
+## Wave 2 — the instrument, then the baseline
+
+- [ ] **Plan 83** — wording-independent fingerprints + compare integrity (fable D7, bug 3). Lands before/with 79: cross-run identity is the harness's regression assertion, and Plan 84 needs stable fingerprints for union-dedupe.
+- [ ] **Plan 79** — repeat/recall-rate harness + relay wrong-chain case. The measurement foundation; nothing recall-related gets judged without it after this point.
+- [ ] **Baseline campaign** — `repeat: 10`, `cache: false` on `0c4d5213`, `49f4645b`, relay case, opus, Wave-1 system. Reference dataset for every Wave-3 A/B. Record as a findings note under `specs/reviews/`.
+
+## Wave 3 — behavior changes, one at a time, measured against the baseline
+
+- [ ] **Plan 76** — anchor rescue at the verification pre-gate (v6). Narrowest change; its validation protocol is itself a repeat-10 run.
+- [ ] **Plan 87** — verifier pre-clustering → exact-duplicate rule only (fable D3, bug 2). ~20 lines replacing ~260; kills the silent cluster-wide rejection of non-identical findings. Behavior change to verification admission → measured here, not Wave 1; after 83 so exact identity can use stable fingerprints.
+- [ ] **Plan 86 (step 3)** — close the Anthropic forcing gap (finalize/repair calls: thinking off + forced submit), behind `llm.forceSubmitToolChoice`. A/B on the harness.
+- [ ] **Plan 81** — minimal predicate-only uncertainty promotion (fable D2). Uses baseline promotion-conversion data (running tally: 0/5 across runs 25/45) to size the cut; gated deletions of compensation lanes.
+- [ ] **Plan 84** — Stage-7 ensemble for deep packets. The recall lever; biggest change, measured last on the most stable system.
+- [ ] **Plan 86 (step 5)** — cross-provider study (opus vs gpt-5.5 vs one more), protocol-controlled. Output: findings note, not code.
+
+## Wave 4 — calibration, production-path, hygiene, simplification
+
+- [ ] **Plan 82 (calibration half)** — only if Wave-2/3 data shows severity flapping on `severityAtLeast` expectations; consider scorer matching on `max(severity, severityBeforeCap)`.
+- [ ] **Plan 74** — merged-finding confidence calibration (fable: sound, narrow; validate on harness).
+- [ ] **Plan 75 (step 1 only)** — provenance-exact human-attention suppression. Step 2 superseded by the structural direction in fable §6.4 + Plan 81's note-admission effects.
+- [ ] **Plan 55 (re-scoped)** — docs as intent context; drop the `ReviewDisposition`/`FileRole` machinery per fable §4.
+- [ ] **Plan 88** — publisher: reachable summary-only 422 fallback + partial-coverage disclosure in posting body (fable D6, bug 1). Production GitHub path; independent of evals — can land any time a slot opens, sequenced here only because nothing measures it.
+- [ ] **Plan 89, phase B (hygiene)** — tree-sitter tree disposal (bug 9), per-stage runtime double-count (11), crashed-run pruning (12), `.codegenie/.gitignore` mutation (small-drift), Go value-receiver rendering (15), regex HTTP-status mining (16), extra-submit drop telemetry (18), stale-lock/clamp cluster (20), eval runId identity + README path + old-layout replay leftovers. One commit per item, slack-time work.
+- [ ] **Simplification (fable §6, items 5-8) — BACKLOG, each needs a plan + harness validation:** one shared submit/salvage layer + prompt "why" ledger; fixed Stage-6 symbol-context budget (delete adaptive tree — interacts with PLAN12 tree-sitter/seed-context direction); ripgrep fast path fix-or-delete (D9); shared similarity/util module. Sequenced after the measurement campaign because several touch review behavior.
+
+## Decisions needed (not code work until decided)
+
+- [ ] **D8 (eval scorer leniency stack)** — either re-spec matching to include the merged view and delete token-fallback/synonym layers, or revert to strict matching. Decide after Wave 2 baselines show how often leniency actually fires.
+- [ ] **D10 (static signals)** — keep-and-document vs delete the two unspec'd rules (`lossy-conversion-before-validation`, `test-boundary-coverage-rewrite` + `test-coverage-delta.ts`); also fix `exported-api-change` unconditional base-side parses if kept.
+- [ ] **Uncertainty promotion end-state** — if Plan-79 repeats show even predicate-only promotions never convert, delete the subsystem (Plan 81 stop-condition governs).
+
+## Spec-stale ledger (doc notes, no engineering priority — code is source of truth)
+
+From fable §2.2/§2.4, dispositioned as documentation debt, batched into an eventual doc pass: staged artifact layout v2 + manifest; eval `tier`/`llm:`/`expect.*` extensions + fixture materialization; `source {kind:"auto"}` selector; budgetBoost + run-level budget machinery; `maxTimeMinutes` / `--max-time` (2026-07-01); submit-repair ladder design; provider prompt-cache session hints; tool-result cache; adaptive symbol-context budgeting (pending its Wave-4 fate); README spec-path typo; env-var surface note. Divergences where the *code* is wrong are in the waves above instead (D1→80, D3→87, D6→88, bugs→89).
+
+## Drain map (fable §7 → disposition)
+
+| Fable item | Disposition |
+| --- | --- |
+| P0: failure ladder (D1) | Plan 80, Wave 1 |
+| P0: publisher 422 fallback (D6) | Plan 88, Wave 4 |
+| P0: fingerprint stability (D7) | Plan 83, Wave 2 |
+| P0: severity cap (D4) | Plan 82, Waves 1+4 |
+| P0: skip-rules last-match (bug 5) | Plan 89 phase A, Wave 1 |
+| P0: scorer crash + `a...b` (bugs 13/14) | Plan 89 phase A, Wave 1 |
+| P1: promotion reduction (D2) | Plan 81, Wave 3 |
+| P1: pre-clustering exact-only (D3) | Plan 87, Wave 3 |
+| P1: human-attention admission (D5) | Plan 75 step 1, Wave 4 |
+| P1: shared submit/salvage layer | Simplification backlog, Wave 4 |
+| P1: fixed Stage-6 context budget | Simplification backlog, Wave 4 |
+| P1: ripgrep fix-or-delete (D9) | Simplification backlog, Wave 4 |
+| P1: shared similarity module | Simplification backlog, Wave 4 |
+| P2: plan 79 / 76 / 74 / 55 / 75 | Waves 2 / 3 / 4 / 4 / 4 |
+| P2: gpt-5.5 study + tool-choice instrumentation | Plan 86, Waves 1+3 |
+| P2: Stage-7 ensemble | Plan 84, Wave 3 |
+| P3: spec reconciliation | Spec-stale ledger (doc pass) |
+| P3: bug sweep (9-20) | Plan 89 phases A/B |
+| P3: README paths, eval runId, old-layout replay | 89 phase B; old-layout compare handled in Plan 83 |
+
+New-evidence items with no fable ancestry: Plan 85 (Wave 1, from runs 43/45), `--max-time`/`maxTimeMinutes`/incomplete-review banner (landed 2026-07-01).

@@ -83,19 +83,13 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 77 | REVERTED | Issue 77: Stage 6 Scoped Relationship Symbol Mention Lookups |
 | 78 | COMPLETE | Issue 78: Stage-Grouped Telemetry Artifacts |
 | 79 | PENDING | Issue 79: Eval Recall-Variance Harness and Relay Wrong-Chain Case |
-
-## Current Queue
-
-Recommended implementation order for remaining work:
-
-- **Issue 79** — add per-case `repeat`/recall-rate to the eval harness and a precise Relay wrong-chain regression case, so Stage 7 recall variance becomes measurable and gateable (the measurement foundation for any redundancy fix).
-- **Issue 76** — recover anchors for low-confidence evidence-backed findings before the verifier pre-gate, so Stage 7 anchor omissions do not suppress repeatedly-confirmed true positives.
-- **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
-- **Issue 74** — calibrate final confidence from compatible verified merged candidates, so Stage 10 does not publish a low-confidence final report when the merged group contains stronger confidence evidence.
-- **Issue 75** — suppress stale `Needs Human Attention` notes when Stage 9 already adjudicated the exact promoted source note or a stronger packet no-finding review already resolved the same helper predicate.
-
-## Deferred / Watch List
-
-Promote these only if later evals show recurring evidence:
-
-- **Broad risk-note propagation** — if many packets repeatedly re-litigate the same cross-cutting helper or migration assumptions, consider a bounded shared context mechanism. Avoid fixed risk categories.
+| 80 | PENDING | Issue 80: Degrade-and-Disclose Failure Semantics for LLM Errors |
+| 81 | PENDING | Issue 81: Minimal Predicate-Only Uncertainty Promotion |
+| 82 | PENDING | Issue 82: BehaviorChange Severity Discipline |
+| 83 | PENDING | Issue 83: Wording-Independent Finding Fingerprints and Compare Integrity |
+| 84 | PENDING | Issue 84: Stage-7 Ensemble Review for Deep Packets |
+| 85 | PENDING | Issue 85: Finalize Grace for Per-Pass Worker Timeouts |
+| 86 | PENDING | Issue 86: Provider Protocol Parity and Observability |
+| 87 | PENDING | Issue 87: Verifier Pre-Clustering Restricted to Exact Duplicates |
+| 88 | PENDING | Issue 88: Publisher Summary-Only Fallback Reachability and Posting Disclosure |
+| 89 | PENDING | Issue 89: Deterministic Bug Sweep (Phases A/B) |
