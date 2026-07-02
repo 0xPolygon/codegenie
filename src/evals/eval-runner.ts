@@ -303,6 +303,7 @@ export async function replayFromArtifacts(
     const telemetryDir = await copyTelemetryArtifacts(source, allocated.dir);
     await copyReviewOutput(source, allocated.dir);
     const artifacts = await loadEvalArtifacts(telemetryDir);
+    assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(reread.evalCase, artifacts, "replay");
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
@@ -336,6 +337,19 @@ export async function replayFromArtifacts(
   }
 }
 
+// Replays take the artifact set as their input: missing core artifacts mean
+// the input is invalid and the replay errors. Live-run scoring, by contrast,
+// tolerates missing artifacts with disclosure (plan 89 A1) because the review
+// already ran and its partial record is the data point.
+function assertReplayArtifactsComplete(artifacts: { missingArtifacts?: string[] }, telemetryDir: string): void {
+  const missing = artifacts.missingArtifacts ?? [];
+  if (missing.length > 0) {
+    throw new CodegenieError("invalid_args", `required eval artifact is missing: ${missing.join(", ")} (${telemetryDir})`, {
+      context: { missing, telemetryDir }
+    });
+  }
+}
+
 async function runArtifactCase(
   suite: EvalSuite,
   entry: EvalSuite["cases"][number],
@@ -348,6 +362,7 @@ async function runArtifactCase(
     const telemetryDir = await copyTelemetryArtifacts(source, allocated.dir);
     await copyReviewOutput(source, allocated.dir);
     const artifacts = await loadEvalArtifacts(telemetryDir);
+    assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(entry.evalCase, artifacts, "replay");
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({

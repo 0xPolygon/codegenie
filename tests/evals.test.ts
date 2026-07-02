@@ -1162,6 +1162,19 @@ describe("eval artifacts", () => {
     expect(artifacts.hintEvents[0]).toMatchObject({ packetId: "packet-top-level" });
   });
 
+  it("tolerates missing scoring artifacts instead of crashing, and discloses them", async () => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-missing-artifacts-"));
+    writeFileSync(path.join(telemetry, "events.jsonl"), "");
+
+    const artifacts = await loadEvalArtifacts(telemetry);
+
+    expect(artifacts.candidates).toEqual([]);
+    expect(artifacts.finalFindings).toEqual([]);
+    expect(artifacts.missingArtifacts).toEqual(
+      expect.arrayContaining(["candidate-findings.json", "final-findings.json"])
+    );
+  });
+
   it("loads canonical staged artifacts and root telemetry streams", async () => {
     const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-staged-artifacts-"));
     const candidates = [candidate("cand-1", "src/app.ts", 3)];

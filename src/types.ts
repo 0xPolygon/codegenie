@@ -1091,6 +1091,7 @@ export type EvalRunMetrics = {
   verificationCalls?: number;
   toolCalls?: number;
   toolChoiceDowngradedCalls?: number;
+  missingArtifacts?: string[];
   maxPromptCharsByStage?: Partial<Record<ReviewStage, number>>;
   reviewCompleteness?: "complete" | "partial";
   budgetOverruns?: number;
@@ -1224,6 +1225,10 @@ export type EvalArtifacts = {
   verification: EvalVerificationRecord[];
   finalSelection: EvalSelectionRecord[];
   finalFindings: FinalFinding[];
+  // Logical artifact names that could not be read (missing or unreadable).
+  // Scoring proceeds with empty defaults and discloses these instead of
+  // crashing and destroying the run's data point (plan 89 A1).
+  missingArtifacts?: string[];
   reviewPlan?: ReviewPlan;
   packets: ReviewPacket[];
   hintEvents: EvalHintEvent[];

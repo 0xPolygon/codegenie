@@ -35,8 +35,13 @@ export async function allocateRunDir(logsDir: string): Promise<{ runNumber: numb
 
 export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtifacts> {
   const dir = path.resolve(telemetryDir);
-  const candidates = await readRequiredJson<CandidateFinding[]>(dir, canonicalArtifactPath("candidate-findings.json"));
-  const finalFindings = await readRequiredJson<FinalFinding[]>(dir, canonicalArtifactPath("final-findings.json"));
+  // Scoring must never crash on a missing or unreadable artifact — a failed
+  // review already lost its findings; losing the scorer's record of the run
+  // compounds the damage (plan 89 A1, run 0c4d5213/24). Unreadable artifacts
+  // degrade to empty defaults and are disclosed via missingArtifacts.
+  const missingArtifacts: string[] = [];
+  const candidates = await readScoredJson<CandidateFinding[]>(dir, "candidate-findings.json", missingArtifacts);
+  const finalFindings = await readScoredJson<FinalFinding[]>(dir, "final-findings.json", missingArtifacts);
   const selectionRaw = await readOptionalJson<unknown>(dir, canonicalArtifactPath("final-selection.json"));
   const coverageRaw = await readOptionalJson<unknown>(dir, canonicalArtifactPath("coverage.json"));
   const reviewPlan = await readOptionalJson<ReviewPlan>(dir, canonicalArtifactPath("review-plan.json"));
@@ -79,6 +84,7 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
     verification: normalizeVerification(await readOptionalJson<unknown>(dir, canonicalArtifactPath("verification.json"))),
     finalSelection: normalizeSelection(selectionRaw),
     finalFindings: Array.isArray(finalFindings) ? finalFindings : [],
+    missingArtifacts,
     packets: await loadPackets(path.join(dir, "stages", "06-packets", "packets")),
     hintEvents: await loadHintEvents(path.join(dir, "events.jsonl")),
     metricsSources
@@ -166,20 +172,22 @@ async function nextRunNumber(logsDir: string): Promise<number> {
   return existing.length === 0 ? 1 : Math.max(...existing) + 1;
 }
 
-async function readRequiredJson<T>(dir: string, fileName: string): Promise<T> {
-  const filePath = path.join(dir, fileName);
+// Tolerant read for scoring inputs: resolution failures, missing files, and
+// unparseable JSON all degrade to undefined and are recorded by logical name,
+// so a broken review run still produces a scored (and disclosed) data point.
+async function readScoredJson<T>(dir: string, logicalName: string, missing: string[]): Promise<T | undefined> {
+  let relPath: string;
   try {
-    return JSON.parse(await readFile(filePath, "utf8")) as T;
+    relPath = canonicalArtifactPath(logicalName);
+  } catch {
+    missing.push(`${logicalName} (unknown artifact path)`);
+    return undefined;
+  }
+  try {
+    return JSON.parse(await readFile(path.join(dir, relPath), "utf8")) as T;
   } catch (error) {
-    if (isNodeErrorCode(error, "ENOENT")) {
-      throw new CodegenieError("invalid_args", `required eval artifact is missing: ${filePath}`, {
-        context: { path: filePath }
-      });
-    }
-    throw new CodegenieError("invalid_args", `failed to read eval artifact: ${filePath}`, {
-      context: { path: filePath },
-      cause: error
-    });
+    missing.push(isNodeErrorCode(error, "ENOENT") ? logicalName : `${logicalName} (unreadable)`);
+    return undefined;
   }
 }
 

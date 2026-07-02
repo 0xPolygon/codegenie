@@ -712,6 +712,9 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   if (toolChoiceDowngradedCalls !== undefined) {
     metrics.toolChoiceDowngradedCalls = toolChoiceDowngradedCalls;
   }
+  if (artifacts.missingArtifacts !== undefined && artifacts.missingArtifacts.length > 0) {
+    metrics.missingArtifacts = [...artifacts.missingArtifacts];
+  }
   const schemaRecovery = schemaRecoveryMetrics(artifacts);
   if (schemaRecovery.schemaInvalidCalls !== undefined) {
     metrics.schemaInvalidCalls = schemaRecovery.schemaInvalidCalls;
