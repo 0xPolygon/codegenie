@@ -515,7 +515,7 @@ async function writeCompareIfAvailable(
     const previousArtifacts = await loadPreviousArtifactsForCompare(previous.dir);
     const report = compareToPrevious(
       { info, finalFindings },
-      { info: previousInfo, finalFindings: previousArtifacts }
+      { info: previousInfo, finalFindings: previousArtifacts.findings, findingsUnreadable: previousArtifacts.unreadable }
     );
     await writeFile(path.join(runDir, "compare-to-previous.json"), `${JSON.stringify(report, null, 2)}\n`);
     await writeFile(path.join(runDir, "compare-to-previous.txt"), renderEvalCompareText(report));
@@ -524,11 +524,13 @@ async function writeCompareIfAvailable(
   }
 }
 
-async function loadPreviousArtifactsForCompare(runDir: string): Promise<FinalFinding[]> {
+async function loadPreviousArtifactsForCompare(runDir: string): Promise<{ findings: FinalFinding[]; unreadable: boolean }> {
   try {
-    return (await loadEvalArtifacts(resolveTelemetryDir(runDir))).finalFindings;
+    const artifacts = await loadEvalArtifacts(resolveTelemetryDir(runDir));
+    const unreadable = (artifacts.missingArtifacts ?? []).some((name) => name.startsWith("final-findings.json"));
+    return { findings: artifacts.finalFindings, unreadable };
   } catch {
-    return [];
+    return { findings: [], unreadable: true };
   }
 }
 

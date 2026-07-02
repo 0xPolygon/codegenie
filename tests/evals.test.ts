@@ -1162,6 +1162,58 @@ describe("eval artifacts", () => {
     expect(artifacts.hintEvents[0]).toMatchObject({ packetId: "packet-top-level" });
   });
 
+  it("loads pre-layout-v2 artifacts stored at the telemetry root", async () => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-old-layout-"));
+    const candidates = [candidate("cand-1", "src/app.ts", 3)];
+    const finalFindings = [finalFinding("final-1", "src/app.ts", 3)];
+    writeFileSync(path.join(telemetry, "candidate-findings.json"), JSON.stringify(candidates));
+    writeFileSync(path.join(telemetry, "final-findings.json"), JSON.stringify(finalFindings));
+    writeFileSync(path.join(telemetry, "verification.json"), JSON.stringify([]));
+    writeFileSync(path.join(telemetry, "events.jsonl"), "");
+
+    const artifacts = await loadEvalArtifacts(telemetry);
+
+    expect(artifacts.candidates).toHaveLength(1);
+    expect(artifacts.finalFindings).toHaveLength(1);
+    expect(artifacts.missingArtifacts).toEqual([]);
+  });
+
+  it("discloses unreadable previous findings in compare reports", () => {
+    const info = (runNumber: number): EvalRunInfo => ({
+      runNumber,
+      caseName: "case",
+      caseHash: "hash",
+      mode: "live",
+      cache: { enabled: false, source: "cli" },
+      startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:01:00.000Z",
+      score: {
+        status: "pass",
+        expectationResults: [],
+        budgetResults: [],
+        violations: [],
+        nearViolations: [],
+        metrics: {
+          reportedFindings: 0,
+          inlineFindings: 0,
+          summaryOnlyFindings: 0,
+          suppressedFindings: 0,
+          candidateFindings: 0,
+          duplicateGroups: 0
+        }
+      }
+    } as unknown as EvalRunInfo);
+
+    const report = compareToPrevious(
+      { info: info(2), finalFindings: [finalFinding("final-1", "src/app.ts", 3)] },
+      { info: info(1), finalFindings: [], findingsUnreadable: true }
+    );
+
+    expect(report.previousFindingsUnreadable).toBe(true);
+    const text = renderEvalCompareText(report);
+    expect(text).toContain("Previous findings unreadable");
+  });
+
   it("tolerates missing scoring artifacts instead of crashing, and discloses them", async () => {
     const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-missing-artifacts-"));
     writeFileSync(path.join(telemetry, "events.jsonl"), "");

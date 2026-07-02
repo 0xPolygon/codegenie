@@ -1250,6 +1250,10 @@ export type EvalCompareReport = {
   currentRun: number;
   previousRun: number;
   caseHashChanged: boolean;
+  // Set when the previous run's final findings could not be read: the finding
+  // diff is then added-only and must not be read as a balanced comparison
+  // (plan 83).
+  previousFindingsUnreadable?: boolean;
   statusChange?: { from: EvalScore["status"]; to: EvalScore["status"] };
   regressions: Array<{ expectationId: string; lossLabel?: EvalLossLabel }>;
   fixes: Array<{ expectationId: string }>;

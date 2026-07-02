@@ -9,7 +9,7 @@ import type {
 
 export function compareToPrevious(
   current: { info: EvalRunInfo; finalFindings: FinalFinding[] },
-  previous: { info: EvalRunInfo; finalFindings: FinalFinding[] }
+  previous: { info: EvalRunInfo; finalFindings: FinalFinding[]; findingsUnreadable?: boolean }
 ): EvalCompareReport {
   const currentExpectations = new Map(current.info.score.expectationResults.map((result) => [result.expectationId, result]));
   const previousExpectations = new Map(previous.info.score.expectationResults.map((result) => [result.expectationId, result]));
@@ -20,6 +20,7 @@ export function compareToPrevious(
     currentRun: current.info.runNumber,
     previousRun: previous.info.runNumber,
     caseHashChanged: current.info.caseHash !== previous.info.caseHash,
+    ...(previous.findingsUnreadable === true ? { previousFindingsUnreadable: true } : {}),
     ...(current.info.score.status !== previous.info.score.status
       ? { statusChange: { from: previous.info.score.status, to: current.info.score.status } }
       : {}),
@@ -74,6 +75,9 @@ export function renderEvalCompareText(report: EvalCompareReport): string {
   }
   if (report.resolvedViolations.length > 0) {
     lines.push(`Resolved violations: ${report.resolvedViolations.map((item) => `${item.expectationId}/${item.findingId}`).join(", ")}`);
+  }
+  if (report.previousFindingsUnreadable === true) {
+    lines.push("Previous findings unreadable — finding diff is added-only, not a balanced comparison.");
   }
   lines.push(`Findings: +${report.findingDiff.added.length} -${report.findingDiff.removed.length} ~${report.findingDiff.changed.length}`);
   const cacheMetricLines = renderCacheMetricDeltaLines(report.metricDeltas);

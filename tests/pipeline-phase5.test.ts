@@ -7342,6 +7342,52 @@ describe("phase 5 pipeline regressions", () => {
     ).rejects.toMatchObject({ code: "llm_call_failed", recoverable: false });
   });
 
+  it("final finding fingerprints are stable across model rewording", async () => {
+    const coverage = (): RunCoverageStatus => ({
+      totalHunks: 1,
+      reviewedHunks: 1,
+      skippedHunks: 0,
+      failedHunks: 0,
+      coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+      degradedPlanning: false,
+      budgetStopped: false,
+      verificationIncompleteCount: 0,
+      partial: false,
+      reasons: []
+    });
+    const failingRunner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_schema_invalid", "model did not call submit_composition", { recoverable: true });
+      }
+    };
+    const compose = async (finding: CandidateFinding): Promise<string | undefined> => {
+      const result = await dedupeRankAndComposeReview(
+        { verified: [finding], verdicts: [] },
+        fakePlan(),
+        { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+        coverage(),
+        config(),
+        nullTelemetry(),
+        { runner: failingRunner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+      );
+      return [...result.findings, ...result.summaryOnlyFindings][0]?.fingerprint;
+    };
+
+    const wordingA = await compose({ ...fakeFinding(), title: "value handling regressed", failureMode: "callers observe a stale value" });
+    const wordingB = await compose({ ...fakeFinding(), title: "stale value returned to callers", failureMode: "the changed path serves an outdated value" });
+    expect(wordingA).toBeDefined();
+    expect(wordingA).toBe(wordingB);
+
+    const differentHunk = await compose({
+      ...fakeFinding(),
+      anchor: { path: "app.ts", line: 40, side: "RIGHT", hunkId: "h2" },
+      title: "value handling regressed",
+      failureMode: "callers observe a stale value"
+    });
+    expect(differentHunk).toBeDefined();
+    expect(differentHunk).not.toBe(wordingA);
+  });
+
   it("severity policy: unknown does not demote; the cap preserves pre-cap severity for guarantees", () => {
     expect(capSeverityForBehaviorChange("critical", "unknown")).toBe("critical");
     expect(capSeverityForBehaviorChange("high", undefined)).toBe("high");

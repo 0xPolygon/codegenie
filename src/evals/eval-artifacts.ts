@@ -42,15 +42,15 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
   const missingArtifacts: string[] = [];
   const candidates = await readScoredJson<CandidateFinding[]>(dir, "candidate-findings.json", missingArtifacts);
   const finalFindings = await readScoredJson<FinalFinding[]>(dir, "final-findings.json", missingArtifacts);
-  const selectionRaw = await readOptionalJson<unknown>(dir, canonicalArtifactPath("final-selection.json"));
-  const coverageRaw = await readOptionalJson<unknown>(dir, canonicalArtifactPath("coverage.json"));
-  const reviewPlan = await readOptionalJson<ReviewPlan>(dir, canonicalArtifactPath("review-plan.json"));
+  const selectionRaw = await readOptionalArtifact<unknown>(dir, "final-selection.json");
+  const coverageRaw = await readOptionalArtifact<unknown>(dir, "coverage.json");
+  const reviewPlan = await readOptionalArtifact<ReviewPlan>(dir, "review-plan.json");
   const coverage = normalizeCoverage(coverageRaw);
   const metricsSources: EvalArtifacts["metricsSources"] = {};
-  const costProfile = await readOptionalJson<unknown>(dir, canonicalArtifactPath("cost-profile.json"));
-  const modelCallsSummary = await readOptionalJson<unknown>(dir, canonicalArtifactPath("model-calls-summary.json"));
-  const toolCallsSummary = await readOptionalJson<unknown>(dir, canonicalArtifactPath("tool-calls-summary.json"));
-  const budgetSummary = await readOptionalJson<BudgetSummary>(dir, canonicalArtifactPath("budget-summary.json"));
+  const costProfile = await readOptionalArtifact<unknown>(dir, "cost-profile.json");
+  const modelCallsSummary = await readOptionalArtifact<unknown>(dir, "model-calls-summary.json");
+  const toolCallsSummary = await readOptionalArtifact<unknown>(dir, "tool-calls-summary.json");
+  const budgetSummary = await readOptionalArtifact<BudgetSummary>(dir, "budget-summary.json");
   const runJson = await readOptionalJson<unknown>(dir, "run.json");
   const telemetry = await readOptionalJson<unknown>(dir, "telemetry.json");
   const modelCalls = await readOptionalJsonl(path.join(dir, "model-calls.jsonl"));
@@ -81,7 +81,7 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
   }
   const artifacts: EvalArtifacts = {
     candidates: Array.isArray(candidates) ? candidates : [],
-    verification: normalizeVerification(await readOptionalJson<unknown>(dir, canonicalArtifactPath("verification.json"))),
+    verification: normalizeVerification(await readOptionalArtifact<unknown>(dir, "verification.json")),
     finalSelection: normalizeSelection(selectionRaw),
     finalFindings: Array.isArray(finalFindings) ? finalFindings : [],
     missingArtifacts,
@@ -172,9 +172,22 @@ async function nextRunNumber(logsDir: string): Promise<number> {
   return existing.length === 0 ? 1 : Math.max(...existing) + 1;
 }
 
+// Optional artifact read with the same pre-layout-v2 root fallback as
+// readScoredJson (plan 83): old runs stay loadable for replay and compare.
+async function readOptionalArtifact<T>(dir: string, logicalName: string): Promise<T | undefined> {
+  const relPath = canonicalArtifactPath(logicalName);
+  const primary = await readOptionalJson<T>(dir, relPath);
+  if (primary !== undefined || relPath === logicalName) {
+    return primary;
+  }
+  return readOptionalJson<T>(dir, logicalName);
+}
+
 // Tolerant read for scoring inputs: resolution failures, missing files, and
 // unparseable JSON all degrade to undefined and are recorded by logical name,
 // so a broken review run still produces a scored (and disclosed) data point.
+// Pre-layout-v2 runs stored artifacts at the telemetry root, so the bare
+// logical name is tried as a fallback (plan 83): old runs stay comparable.
 async function readScoredJson<T>(dir: string, logicalName: string, missing: string[]): Promise<T | undefined> {
   let relPath: string;
   try {
@@ -183,12 +196,20 @@ async function readScoredJson<T>(dir: string, logicalName: string, missing: stri
     missing.push(`${logicalName} (unknown artifact path)`);
     return undefined;
   }
-  try {
-    return JSON.parse(await readFile(path.join(dir, relPath), "utf8")) as T;
-  } catch (error) {
-    missing.push(isNodeErrorCode(error, "ENOENT") ? logicalName : `${logicalName} (unreadable)`);
-    return undefined;
+  const candidates = relPath === logicalName ? [relPath] : [relPath, logicalName];
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(await readFile(path.join(dir, candidate), "utf8")) as T;
+    } catch (error) {
+      lastError = error;
+      if (!isNodeErrorCode(error, "ENOENT")) {
+        break;
+      }
+    }
   }
+  missing.push(isNodeErrorCode(lastError, "ENOENT") ? logicalName : `${logicalName} (unreadable)`);
+  return undefined;
 }
 
 async function readOptionalJson<T>(dir: string, fileName: string): Promise<T | undefined> {

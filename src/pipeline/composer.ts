@@ -1238,18 +1238,17 @@ function groupLocationKeys(group: FindingGroup, packetsById: Map<string, ReviewP
   return keys;
 }
 
+// Group identity must be wording-independent (plan 83, fable D7): the spec's
+// point is that rerun duplicate suppression and cross-run eval comparison
+// survive the model rephrasing the same defect. Identity derives solely from
+// the members' structural fingerprints — a singleton keeps its member's
+// fingerprint exactly, so ungrouped findings stay stable across lanes/runs.
 function rootCauseGroupFingerprint(group: FindingGroup, packetsById: Map<string, ReviewPacket>): string {
-  const terms = [...new Set(group.findings.flatMap((finding) => [...rootCauseTerms(finding)]))]
-    .sort()
-    .slice(0, 24)
-    .join(" ");
-  const symbols = [...groupSymbols(group, packetsById)].sort().join(",");
-  return sha256Hex([
-    normalize(group.representative.path),
-    normalize(group.representative.category),
-    normalize(terms),
-    normalize(symbols)
-  ].join("\0"));
+  const memberPrints = [...new Set(group.findings.map((finding) => fingerprintFinding(finding, packetsById)))].sort();
+  if (memberPrints.length === 1) {
+    return memberPrints[0]!;
+  }
+  return sha256Hex(["root-cause-group", ...memberPrints].join("\0"));
 }
 
 type ApplyCapsOptions = {
