@@ -2,10 +2,25 @@ import { buildDiffAnchorIndex, validateDiffAnchor } from "../git/diff-parser.js"
 import type { DiffAnchor, ReviewPacket, UnifiedDiff } from "../types.js";
 import { isCodegenieError } from "../util/errors.js";
 
-export function isFatalLlmError(error: unknown): boolean {
+export function isRunFatalLlmError(error: unknown): boolean {
+  return isLlmFailure(error) && errorField(error, "recoverable") !== true;
+}
+
+export function isRecoverableLlmError(error: unknown): boolean {
+  return isLlmFailure(error) && errorField(error, "recoverable") === true;
+}
+
+function isLlmFailure(error: unknown): boolean {
   return isCodegenieError(error) &&
     (error.code === "llm_call_failed" || error.code === "llm_schema_invalid") &&
     !isBudgetExhaustedError(error);
+}
+
+export function isProviderOutageError(error: unknown): boolean {
+  return isCodegenieError(error) &&
+    error.code === "llm_call_failed" &&
+    errorField(error, "recoverable") === true &&
+    errorContextReason(error) === "transient_error";
 }
 
 export function isBudgetExhaustedError(error: unknown): boolean {
@@ -25,7 +40,7 @@ export function isRecoverableTransientLlmError(error: unknown): boolean {
 }
 
 export function isRecoverableWorkerError(error: unknown): boolean {
-  return !isFatalLlmError(error) && !isBudgetExhaustedError(error);
+  return !isRunFatalLlmError(error) && !isBudgetExhaustedError(error);
 }
 
 function errorContextReason(error: unknown): unknown {

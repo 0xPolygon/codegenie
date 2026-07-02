@@ -22,7 +22,7 @@ import type {
 } from "../types.js";
 import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { sha256Hex } from "../util/hashing.js";
-import { isBudgetExhaustedError, isRecoverableTransientLlmError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
+import { isBudgetExhaustedError, isRecoverableLlmError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
 import { summarizeIntentSignals } from "./intent-signals.js";
 import type { LlmSchemaInvalidSubmitRecoveryInput, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import {
@@ -111,7 +111,7 @@ export async function dedupeRankAndComposeReview(
   let fallbackMode: CompositionMode | undefined;
   let compositionDegraded = false;
   const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes).catch((error) => {
-    if (!canUseComposerFallback(error, groups, coverage)) {
+    if (!canUseComposerFallback(error)) {
       telemetry.event({
         stage: 10,
         level: "error",
@@ -622,24 +622,8 @@ function expandClusterFindingIds(findingIds: string[], known: Map<string, Candid
   return [...expanded];
 }
 
-function canUseComposerFallback(error: unknown, groups: FindingGroup[], coverage: RunCoverageStatus): boolean {
-  if (isBudgetExhaustedError(error)) {
-    return true;
-  }
-  if (isRecoverableComposerSchemaInvalid(error) && groups.length > 0) {
-    return true;
-  }
-  if (groups.length > 0) {
-    return isRecoverableTransientLlmError(error);
-  }
-  return isRecoverableTransientLlmError(error) &&
-    !coverage.partial &&
-    !coverage.budgetStopped &&
-    coverage.verificationIncompleteCount === 0;
-}
-
-function isRecoverableComposerSchemaInvalid(error: unknown): boolean {
-  return isSchemaInvalidError(error) && (!error || typeof error !== "object" || (error as { recoverable?: unknown }).recoverable !== false);
+function canUseComposerFallback(error: unknown): boolean {
+  return isBudgetExhaustedError(error) || isRecoverableLlmError(error);
 }
 
 function composerFallbackCoverageReason(mode: CompositionMode): string {

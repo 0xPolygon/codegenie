@@ -1,6 +1,7 @@
 # Issue 80: Degrade-and-Disclose Failure Semantics for LLM Errors
 
-Status: PENDING
+Status: COMPLETE
+Completed: 2026-07-02. Implementation notes: the "provider-wide" run-fatal predicate is concretized as `isProviderOutageError` (transient-exhausted `llm_call_failed`) enforced at the planner — the run's opening call — since after any LLM success a provider blip should degrade the unit, not the run. The Stage-7 re-dispatch needed only the classifier fix (pinned by the `badPacketAttempts === 2` test). Composer fallback gate reduced to `isBudgetExhaustedError || isRecoverableLlmError`. Spec ladder table updated to match.
 Planned from: fable review D1/bugs 1,7 (`specs/reviews/1-fable-review.md`); eval error runs `0c4d5213/logs/{1,9,16}` and `49f4645b/logs/7` (whole reviews destroyed by one unrecovered submit; run 16 discarded 8 verified findings at the composer), 2026-07-01
 Planned at: commit `73ef963` (branch `next`)
 Recommended priority: highest of the P0 batch. Small diff, converts the four historical whole-run losses into disclosed partial reviews. Every future eval run carries this exposure until fixed.

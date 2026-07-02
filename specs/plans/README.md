@@ -83,7 +83,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 77 | REVERTED | Issue 77: Stage 6 Scoped Relationship Symbol Mention Lookups |
 | 78 | COMPLETE | Issue 78: Stage-Grouped Telemetry Artifacts |
 | 79 | PENDING | Issue 79: Eval Recall-Variance Harness and Relay Wrong-Chain Case |
-| 80 | PENDING | Issue 80: Degrade-and-Disclose Failure Semantics for LLM Errors |
+| 80 | COMPLETE | Issue 80: Degrade-and-Disclose Failure Semantics for LLM Errors |
 | 81 | PENDING | Issue 81: Minimal Predicate-Only Uncertainty Promotion |
 | 82 | PENDING | Issue 82: BehaviorChange Severity Discipline |
 | 83 | PENDING | Issue 83: Wording-Independent Finding Fingerprints and Compare Integrity |

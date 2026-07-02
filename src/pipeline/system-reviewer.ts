@@ -21,7 +21,7 @@ import type {
 import { sha256Hex } from "../util/hashing.js";
 import { scaleToolBudget } from "../util/budget.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
-import { isFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
+import { isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
 import { capSeverityForBehaviorChange } from "./severity-policy.js";
 
 const MAX_SYSTEM_REVIEW_TASKS = 3;
@@ -136,7 +136,7 @@ export async function runTargetedSystemReviews(
     if (outcome.outcome === "completed" && outcome.value) {
       return [outcome.value];
     }
-    if (isFatalLlmError(outcome.error) && !isSchemaInvalidError(outcome.error)) {
+    if (isRunFatalLlmError(outcome.error) && !isSchemaInvalidError(outcome.error)) {
       throw outcome.error;
     }
     telemetry.event({

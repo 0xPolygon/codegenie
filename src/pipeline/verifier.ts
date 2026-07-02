@@ -16,7 +16,7 @@ import type {
 } from "../types.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
 import {
-  isFatalLlmError,
+  isRunFatalLlmError,
   isRecoverableWorkerError,
   validateAnchorForDiff,
   validateAnchorForPacket
@@ -333,7 +333,7 @@ export async function verifyFindings(
       }
       continue;
     }
-    if (isFatalLlmError(outcome.error)) {
+    if (isRunFatalLlmError(outcome.error)) {
       throw outcome.error;
     }
     const candidateId = outcome.task.candidateId ?? "unknown";

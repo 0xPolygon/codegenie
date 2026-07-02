@@ -68,6 +68,42 @@ describe("phase 5 pipeline regressions", () => {
     ).rejects.toMatchObject({ code: "llm_call_failed", recoverable: false });
   });
 
+  it("marks Stage 7 recoverable provider failures as failed packets after one re-dispatch, without aborting the run", async () => {
+    let badPacketAttempts = 0;
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        if (request.telemetryContext?.packetId === "bad-packet") {
+          badPacketAttempts += 1;
+          throw new CodegenieError("llm_call_failed", "provider call timed out", {
+            recoverable: true,
+            context: { reason: "timeout" }
+          });
+        }
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+
+    const results = await runLensPackets(
+      fakePlan(),
+      [fakePacket({ id: "bad-packet" }), fakePacket({ id: "good-packet" })],
+      fakeTools(),
+      { ...config(), review: { ...config().review, concurrency: 2 } },
+      nullTelemetry(),
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(new Map(results.map((result) => [result.packetId, result.status]))).toEqual(new Map([
+      ["bad-packet", "failed"],
+      ["good-packet", "completed"]
+    ]));
+    expect(badPacketAttempts).toBe(2);
+  });
+
   it("marks Stage 7 schema-invalid packet output as failed without aborting the run", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const runner: LlmRunner = {
@@ -3898,6 +3934,57 @@ describe("phase 5 pipeline regressions", () => {
     expect(repairPrompt).not.toContain("+changed");
   });
 
+  it("builds the deterministic default plan when the planner call fails recoverably", async () => {
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_schema_invalid", "model did not call submit_plan", { recoverable: true });
+      }
+    };
+
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [],
+      skills: []
+    });
+
+    expect(result.degradedPlanning).toBe(true);
+    expect(result.plan.coverage.length).toBeGreaterThan(0);
+  });
+
+  it("fails the run when the planner hits a provider-wide outage or an unrecoverable failure", async () => {
+    const outageRunner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_call_failed", "LLM provider call failed", {
+          recoverable: true,
+          context: { reason: "transient_error" }
+        });
+      }
+    };
+    await expect(
+      runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
+        runner: outageRunner,
+        promptBuilder: fakePromptBuilder(),
+        lenses: [],
+        skills: []
+      })
+    ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "transient_error" } });
+
+    const authRunner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_call_failed", "LLM provider authentication failed", { recoverable: false });
+      }
+    };
+    await expect(
+      runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
+        runner: authRunner,
+        promptBuilder: fakePromptBuilder(),
+        lenses: [],
+        skills: []
+      })
+    ).rejects.toMatchObject({ code: "llm_call_failed", recoverable: false });
+  });
+
   it("recovers repaired planner submits by stripping extra root keys", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const repairedPlan = {
@@ -7093,12 +7180,48 @@ describe("phase 5 pipeline regressions", () => {
     ).rejects.toMatchObject({ code: "llm_call_failed", recoverable: false });
   });
 
-  it("rethrows non-transient composition failures instead of falling back", async () => {
+  it("uses deterministic fallback for recoverable non-transient composition failures instead of failing the run", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {
         throw new CodegenieError("llm_call_failed", "bad request", {
           recoverable: true,
           context: { reason: "request_error" }
+        });
+      }
+    };
+    const coverage: RunCoverageStatus = {
+      totalHunks: 1,
+      reviewedHunks: 1,
+      skippedHunks: 0,
+      failedHunks: 0,
+      coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+      degradedPlanning: false,
+      budgetStopped: false,
+      verificationIncompleteCount: 0,
+      partial: false,
+      reasons: []
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [fakeFinding()], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      coverage,
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    );
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.coverage.reasons).toContain("semantic composition skipped; deterministic fallback used");
+  });
+
+  it("rethrows unrecoverable composition failures instead of falling back", async () => {
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_call_failed", "provider authentication failed", {
+          recoverable: false,
+          context: { reason: "auth" }
         });
       }
     };
@@ -7125,7 +7248,7 @@ describe("phase 5 pipeline regressions", () => {
         nullTelemetry(),
         { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
       )
-    ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "request_error" } });
+    ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "auth" } });
   });
 
   it("uses deterministic fallback for schema-invalid composition failures with verified findings", async () => {
@@ -7163,7 +7286,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.coverage.reasons).toContain("semantic composition schema repair failed; deterministic fallback used");
   });
 
-  it("rethrows schema-invalid composition failures when no verified findings can be formatted", async () => {
+  it("uses deterministic fallback for schema-invalid composition failures when no verified findings can be formatted", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {
         throw new CodegenieError("llm_schema_invalid", "model did not call submit_composition", {
@@ -7184,17 +7307,18 @@ describe("phase 5 pipeline regressions", () => {
       reasons: []
     };
 
-    await expect(
-      dedupeRankAndComposeReview(
-        { verified: [], verdicts: [] },
-        fakePlan(),
-        { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
-        coverage,
-        config(),
-        nullTelemetry(),
-        { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
-      )
-    ).rejects.toMatchObject({ code: "llm_schema_invalid" });
+    const result = await dedupeRankAndComposeReview(
+      { verified: [], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      coverage,
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    );
+
+    expect(result.findings).toHaveLength(0);
+    expect(result.coverage.reasons).toContain("semantic composition schema repair failed; deterministic fallback used");
   });
 
   it("salvages composer XML parameter bleed when embedded composed findings are valid", async () => {

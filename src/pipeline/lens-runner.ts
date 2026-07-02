@@ -18,7 +18,8 @@ import type {
   UnifiedDiff
 } from "../types.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
-import { isBudgetExhaustedError, isFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff, validateAnchorForPacket } from "./pipeline-utils.js";
+import { isBudgetExhaustedError, isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff, validateAnchorForPacket } from "./pipeline-utils.js";
+import { isCodegenieError } from "../util/errors.js";
 import { capSeverityForBehaviorChange } from "./severity-policy.js";
 
 type LensRunnerOptions = {
@@ -85,7 +86,7 @@ export async function runLensPackets(
     if (outcome.outcome === "completed" && outcome.value) {
       return outcome.value;
     }
-    if (isFatalLlmError(outcome.error) && !isSchemaInvalidError(outcome.error)) {
+    if (isRunFatalLlmError(outcome.error) && !isSchemaInvalidError(outcome.error)) {
       throw outcome.error;
     }
     const packetId = outcome.task.packetId ?? "unknown";
@@ -96,7 +97,10 @@ export async function runLensPackets(
       message: `packet_review_${budgetSkipped ? "not_dispatched" : outcome.outcome}`,
       packetId,
       workerId: outcome.task.workerId,
-      data: { error: outcome.error instanceof Error ? outcome.error.message : String(outcome.error ?? "") }
+      data: {
+        error: outcome.error instanceof Error ? outcome.error.message : String(outcome.error ?? ""),
+        ...(isCodegenieError(outcome.error) ? { errorCode: outcome.error.code } : {})
+      }
     });
     return {
       packetId,

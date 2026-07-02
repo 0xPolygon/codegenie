@@ -202,7 +202,8 @@ interface WorkerRunner {
 | Packet worker terminal failure | Hunks marked `review_failed`; partial disclosure; run continues |
 | Verifier per-candidate failure after repair | `verificationIncomplete`; candidate suppressed from publication |
 | Composer terminal failure | Deterministic fallback composition with disclosure note |
-| Auth or provider-wide failure, any stage | Run fails (`llm_call_failed`, fatal) |
+| Auth failure (`recoverable: false`), any stage | Run fails (`llm_call_failed`, fatal) |
+| Provider-wide outage (transient-exhausted `llm_call_failed` at the planner, the run's opening call) | Run fails; after the planner has succeeded, transient failures degrade per-unit instead (plan 80) |
 | Soft budget exhaustion | Degradation ladder; partial disclosure; exit 0 |
 | 2x runtime budget | Fatal `timeout`; best-effort telemetry flush |
 

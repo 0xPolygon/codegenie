@@ -8,7 +8,7 @@ Triage rule for spec↔code divergence (see memory: code is source of truth): ea
 
 ## Wave 1 — robustness floor (small, deterministic, no review-posture changes)
 
-- [ ] **Plan 80** — degrade-and-disclose failure semantics (fable D1, bugs 1/7). Protects every future run, including baseline runs, from one submit failure destroying the review.
+- [x] **Plan 80** — degrade-and-disclose failure semantics (fable D1, bugs 1/7). Protects every future run, including baseline runs, from one submit failure destroying the review. (2026-07-02)
 - [ ] **Plan 85** — finalize grace for per-pass timeouts + truthful incomplete labeling. Removes the timeout losses that would inflate Plan-79 variance numbers. Coordinate its outcome-label names with 79's loss attribution.
 - [ ] **Plan 82 (mechanical half)** — no severity demotion on `behaviorChange: "unknown"`; `severityBeforeCap` threaded through suppression guarantees. Bug fix; belongs in the baseline system. Calibration half stays in Wave 4.
 - [ ] **Plan 86 (steps 1-2, 4)** — protocol observability (tool-choice/reasoning recording, eval metric exposure) + provider matrix doc. Zero behavior change; its friction covariates should exist in the baseline telemetry. Step 3 (forcing) deferred to Wave 3; step 5 (study) to Wave 3 end.
