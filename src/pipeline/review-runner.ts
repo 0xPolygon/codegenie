@@ -940,6 +940,15 @@ export function aggregateRunCoverage(
       failedHunks += packetHunks;
     }
   }
+  // Planned hunks that never became packets still count toward their planned
+  // coverage level (plan 89 A3) — otherwise coverageByLevel under-counts and
+  // no longer sums to totalHunks on runs with packet-less hunks.
+  const packetHunkIds = new Set(packets.flatMap((packet) => packet.hunks.map((hunk) => hunk.hunkId)));
+  for (const decision of plan.coverage) {
+    if (decision.coverage !== "skip" && !packetHunkIds.has(decision.hunkId)) {
+      coverageByLevel[decision.coverage] += 1;
+    }
+  }
   const skippedHunks = plan.coverage.filter((decision) => decision.coverage === "skip").length + skippedByFilter;
   coverageByLevel.skip += plan.coverage.filter((decision) => decision.coverage === "skip").length;
   const unaccountedHunks = Math.max(0, totalHunks - reviewedHunks - failedHunks - skippedHunks);
@@ -1155,7 +1164,7 @@ function buildCoverageRecords(
       const planDecision = planByHunk.get(hunk.id);
       const coverageSource = coverageSourceFor(planDecision);
       if (planDecision?.coverage === "skip") {
-        records.push({ hunkId: hunk.id, path: file.path, coverage: "skip", source: "planner", status: "skipped", reason: planDecision.reason });
+        records.push({ hunkId: hunk.id, path: file.path, coverage: "skip", source: coverageSource, status: "skipped", reason: planDecision.reason });
         continue;
       }
       const packet = packetByHunk.get(hunk.id);
@@ -1191,7 +1200,14 @@ function buildCoverageRecords(
 }
 
 function coverageSourceFor(planDecision: ReviewPlan["coverage"][number] | undefined): CoverageRecord["source"] {
-  if (planDecision === undefined || planDecision.reason.startsWith("degraded planning:")) {
+  // Deterministic upgrades (default plans and planner-recovery safety
+  // coverage) must not be attributed to the planner model (plan 89 A3) —
+  // eval coverage-source analysis keys off this field.
+  if (
+    planDecision === undefined ||
+    planDecision.reason.startsWith("degraded planning:") ||
+    planDecision.reason.startsWith("planner recovery safety coverage")
+  ) {
     return "deterministic_default";
   }
   return "planner";

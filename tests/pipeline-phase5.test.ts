@@ -3167,6 +3167,47 @@ describe("phase 5 pipeline regressions", () => {
     )).toBe(false);
   });
 
+  it("counts packet-less planned hunks toward their planned coverage level", async () => {
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 1, content: "one" },
+      { id: "h2", newStart: 100, content: "two" }
+    ]);
+    const plan = fakePlanForHunks(["h1", "h2"]);
+    plan.coverage[1] = { ...plan.coverage[1]!, coverage: "deep" };
+    const packets = await buildReviewPackets(
+      fakePlanForHunks(["h1"]),
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      fakeRepositoryIndex(),
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+    const packetsForH1 = packets.filter((packet) => packet.hunks.some((hunk) => hunk.hunkId === "h1"));
+
+    const coverage = aggregateRunCoverage(
+      plan,
+      [],
+      packetsForH1.map((packet) => ({
+        packetId: packet.id,
+        lenses: packet.lenses,
+        findings: [],
+        followUpHints: [],
+        uncertainties: [],
+        status: "completed" as const
+      })),
+      { incompleteCount: 0 },
+      nullTelemetry(),
+      { allFiles: [file], packets: packetsForH1 }
+    );
+
+    expect(coverage.totalHunks).toBe(2);
+    // h1 reviewed at its packet's level; packet-less h2 counted at its planned deep level.
+    expect(coverage.coverageByLevel.deep).toBe(1);
+    const counted = coverage.coverageByLevel.deep + coverage.coverageByLevel.normal +
+      coverage.coverageByLevel.light + coverage.coverageByLevel.skip;
+    expect(counted).toBe(coverage.totalHunks);
+  });
+
   it("coalesces nearby hunk-first packets and leaves distant hunks separate", async () => {
     const file = fakeMultiHunkFile([
       { id: "h1", newStart: 1, content: "one" },
