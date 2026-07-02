@@ -20,7 +20,7 @@ import type {
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
 import { isBudgetExhaustedError, isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff, validateAnchorForPacket } from "./pipeline-utils.js";
 import { isCodegenieError } from "../util/errors.js";
-import { capSeverityForBehaviorChange } from "./severity-policy.js";
+import { applySeverityPolicy } from "./severity-policy.js";
 
 type LensRunnerOptions = {
   runner: LlmRunner;
@@ -550,7 +550,7 @@ function stampFinding(
   return {
     id: candidateId,
     title: submitted.title,
-    severity: capSeverityForBehaviorChange(submitted.severity, submitted.behaviorChange),
+    ...applySeverityPolicy(submitted.severity, submitted.behaviorChange),
     confidence: submitted.confidence,
     path,
     ...(anchor !== undefined ? { anchor } : {}),

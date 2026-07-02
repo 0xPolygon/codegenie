@@ -22,7 +22,7 @@ import { sha256Hex } from "../util/hashing.js";
 import { scaleToolBudget } from "../util/budget.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
 import { isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
-import { capSeverityForBehaviorChange } from "./severity-policy.js";
+import { applySeverityPolicy } from "./severity-policy.js";
 
 const MAX_SYSTEM_REVIEW_TASKS = 3;
 const MAX_FINDINGS_PER_TASK = 5;
@@ -320,7 +320,7 @@ function stampSystemFinding(
   return {
     id: `${task.id.slice(0, 12)}-f${index + 1}`,
     title: submitted.title,
-    severity: capSeverityForBehaviorChange(submitted.severity, submitted.behaviorChange),
+    ...applySeverityPolicy(submitted.severity, submitted.behaviorChange),
     confidence: submitted.confidence,
     path,
     ...(anchor !== undefined ? { anchor } : {}),

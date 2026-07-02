@@ -751,6 +751,11 @@ export type CandidateFinding = {
   id: string;
   title: string;
   severity: Severity;
+  // Original model-assigned severity preserved when the behaviorChange cap
+  // demoted it (plan 82); the never-hide-critical/high guarantees consult
+  // max(severity, severityBeforeCap) so a capped critical cannot be silently
+  // suppressed at composition.
+  severityBeforeCap?: Severity;
   confidence: Confidence;
   path: string;
   anchor?: DiffAnchor;

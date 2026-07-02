@@ -1,6 +1,7 @@
 # Issue 82: BehaviorChange Severity Discipline
 
-Status: PENDING
+Status: COMPLETE (mechanical half; calibration half deferred to Wave 4 pending Plan-79 data)
+Completed: 2026-07-02 (mechanical). Implementation notes: `unknown` no longer demotes; `applySeverityPolicy` records `severityBeforeCap` at all four cap sites (Stage 7 stamp, verdict intent assessment — which preserves a Stage-7 `severityBeforeCap` when the verdict-time policy does not cap again — verifier revision, system reviewer); composer guarantees (pre-trim, soft comment cap, report cap) consult `hasCriticalOrHighGuarantee` = max(severity, severityBeforeCap). Design step 4 (scoring artifact fields) was a no-op: candidate/final findings artifacts already carry severity/confidence/behaviorChange — Plan 79's harness reads them directly. `severity_capped` telemetry event skipped: `severityBeforeCap` on the artifacts is the observable record. Spec contract paragraph added to review_pipeline.md Stage 9 section.
 Planned from: fable review D4/§5.1 watch item (`specs/reviews/1-fable-review.md`); eval evidence `49f4645b/logs/24` vs `logs/25` (identical EXACT_OUTPUT under-delivery bug published medium then low, run 25 carrying `behaviorChange: intentional_needs_confirmation`), `0c4d5213/logs/44` (severity rank decided verification survival under budget squeeze: `a81d5adf-f1` scored low/low → queued last → `budget_limited`), historical runs 3/4 (accurate routing candidate rejected over "unintended regression" framing), 2026-07-01
 Planned at: commit `73ef963` (branch `next`)
 Recommended priority: high. Small mechanical fix plus a measurement hook; the un-spec'd behaviorChange contract is silently deciding rank, publication, and (under squeeze) survival.

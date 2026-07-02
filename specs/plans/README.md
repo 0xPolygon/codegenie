@@ -85,7 +85,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 79 | PENDING | Issue 79: Eval Recall-Variance Harness and Relay Wrong-Chain Case |
 | 80 | COMPLETE | Issue 80: Degrade-and-Disclose Failure Semantics for LLM Errors |
 | 81 | PENDING | Issue 81: Minimal Predicate-Only Uncertainty Promotion |
-| 82 | PENDING | Issue 82: BehaviorChange Severity Discipline |
+| 82 | COMPLETE (mechanical) | Issue 82: BehaviorChange Severity Discipline |
 | 83 | PENDING | Issue 83: Wording-Independent Finding Fingerprints and Compare Integrity |
 | 84 | PENDING | Issue 84: Stage-7 Ensemble Review for Deep Packets |
 | 85 | COMPLETE | Issue 85: Finalize Grace for Per-Pass Worker Timeouts |

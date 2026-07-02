@@ -21,7 +21,7 @@ import {
   validateAnchorForDiff,
   validateAnchorForPacket
 } from "./pipeline-utils.js";
-import { capSeverityForBehaviorChange } from "./severity-policy.js";
+import { applySeverityPolicy } from "./severity-policy.js";
 import { isCodegenieError } from "../util/errors.js";
 import { scaleBudgetValue, scaleToolBudget } from "../util/budget.js";
 
@@ -462,9 +462,11 @@ function applyFindingRevision(candidate: CandidateFinding, revision: CandidateFi
 
 function applyVerdictIntentAssessment(candidate: CandidateFinding, verdict: VerificationVerdict): CandidateFinding {
   const behaviorChange = verdict.behaviorChange ?? candidate.behaviorChange;
+  // ...candidate first so a severityBeforeCap recorded at Stage 7 survives
+  // when the verdict-time policy does not cap again.
   return {
     ...candidate,
-    severity: capSeverityForBehaviorChange(candidate.severity, behaviorChange),
+    ...applySeverityPolicy(candidate.severity, behaviorChange),
     ...(verdict.behaviorChange !== undefined ? { behaviorChange: verdict.behaviorChange } : {}),
     ...(verdict.intentEvidence !== undefined ? { intentEvidence: verdict.intentEvidence } : {})
   };
@@ -806,7 +808,7 @@ function revisedFinding(
   const revised: CandidateFinding = {
     id: original.id,
     title: submitted.title,
-    severity: capSeverityForBehaviorChange(submitted.severity, submitted.behaviorChange),
+    ...applySeverityPolicy(submitted.severity, submitted.behaviorChange),
     confidence: submitted.confidence,
     path: anchor !== undefined ? pathFromAnchor(anchor, original.path) : original.path,
     changedLine: anchor !== undefined,

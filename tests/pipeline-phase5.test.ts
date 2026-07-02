@@ -11,6 +11,7 @@ import { buildReviewPackets, packetReviewContextFromDossier } from "../src/pipel
 import { runLensPackets } from "../src/pipeline/lens-runner.js";
 import { buildPlannerDossier, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
 import { dedupeRankAndComposeReview } from "../src/pipeline/composer.js";
+import { applySeverityPolicy, capSeverityForBehaviorChange, guaranteeSeverity, hasCriticalOrHighGuarantee } from "../src/pipeline/severity-policy.js";
 import { aggregateRunCoverage, BudgetLedger, runReview } from "../src/pipeline/review-runner.js";
 import { verifyFindings } from "../src/pipeline/verifier.js";
 import { createWorkerRunner } from "../src/pipeline/worker-runner.js";
@@ -7211,6 +7212,72 @@ describe("phase 5 pipeline regressions", () => {
         { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
       )
     ).rejects.toMatchObject({ code: "llm_call_failed", recoverable: false });
+  });
+
+  it("severity policy: unknown does not demote; the cap preserves pre-cap severity for guarantees", () => {
+    expect(capSeverityForBehaviorChange("critical", "unknown")).toBe("critical");
+    expect(capSeverityForBehaviorChange("high", undefined)).toBe("high");
+    expect(capSeverityForBehaviorChange("critical", "intentional_needs_confirmation")).toBe("medium");
+    expect(applySeverityPolicy("critical", "intentional_needs_confirmation")).toEqual({
+      severity: "medium",
+      severityBeforeCap: "critical"
+    });
+    expect(applySeverityPolicy("critical", "unknown")).toEqual({ severity: "critical" });
+    expect(applySeverityPolicy("low", "intentional_needs_confirmation")).toEqual({ severity: "low" });
+    expect(guaranteeSeverity({ severity: "medium", severityBeforeCap: "critical" })).toBe("critical");
+    expect(guaranteeSeverity({ severity: "medium" })).toBe("medium");
+    expect(hasCriticalOrHighGuarantee({ severity: "medium", severityBeforeCap: "high" })).toBe(true);
+    expect(hasCriticalOrHighGuarantee({ severity: "medium" })).toBe(false);
+  });
+
+  it("a behaviorChange-capped critical finding survives the report cap that suppresses ordinary mediums", async () => {
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_schema_invalid", "model did not call submit_composition", { recoverable: true });
+      }
+    };
+    const coverage: RunCoverageStatus = {
+      totalHunks: 4,
+      reviewedHunks: 4,
+      skippedHunks: 0,
+      failedHunks: 0,
+      coverageByLevel: { deep: 0, normal: 4, light: 0, skip: 0 },
+      degradedPlanning: false,
+      budgetStopped: false,
+      verificationIncompleteCount: 0,
+      partial: false,
+      reasons: []
+    };
+    const { anchor: _anchor, ...anchorless } = fakeFinding();
+    const findings: CandidateFinding[] = [
+      { ...anchorless, id: "finding-high-1", path: "file-1.ts", changedLine: false, severity: "high" },
+      { ...anchorless, id: "finding-high-2", path: "file-2.ts", changedLine: false, severity: "high", category: "security" },
+      {
+        ...anchorless,
+        id: "finding-capped",
+        path: "file-3.ts",
+        changedLine: false,
+        severity: "medium",
+        severityBeforeCap: "critical",
+        behaviorChange: "intentional_needs_confirmation",
+        category: "logic_bug"
+      },
+      { ...anchorless, id: "finding-plain", path: "file-4.ts", changedLine: false, severity: "medium", category: "testing" }
+    ];
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: findings, verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      coverage,
+      { ...config(), review: { ...config().review, maxFindings: 2 } },
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    );
+
+    const published = [...result.findings, ...result.summaryOnlyFindings].map((finding) => finding.id);
+    expect(published).toEqual(expect.arrayContaining(["finding-high-1", "finding-high-2", "finding-capped"]));
+    expect(published).not.toContain("finding-plain");
   });
 
   it("uses deterministic fallback for recoverable non-transient composition failures instead of failing the run", async () => {

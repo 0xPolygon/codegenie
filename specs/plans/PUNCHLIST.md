@@ -10,7 +10,7 @@ Triage rule for spec↔code divergence (see memory: code is source of truth): ea
 
 - [x] **Plan 80** — degrade-and-disclose failure semantics (fable D1, bugs 1/7). Protects every future run, including baseline runs, from one submit failure destroying the review. (2026-07-02)
 - [x] **Plan 85** — finalize grace for per-pass timeouts + truthful incomplete labeling. Removes the timeout losses that would inflate Plan-79 variance numbers. Coordinate its outcome-label names with 79's loss attribution. (2026-07-02)
-- [ ] **Plan 82 (mechanical half)** — no severity demotion on `behaviorChange: "unknown"`; `severityBeforeCap` threaded through suppression guarantees. Bug fix; belongs in the baseline system. Calibration half stays in Wave 4.
+- [x] **Plan 82 (mechanical half)** — no severity demotion on `behaviorChange: "unknown"`; `severityBeforeCap` threaded through suppression guarantees. Bug fix; belongs in the baseline system. Calibration half stays in Wave 4. (2026-07-02)
 - [ ] **Plan 86 (steps 1-2, 4)** — protocol observability (tool-choice/reasoning recording, eval metric exposure) + provider matrix doc. Zero behavior change; its friction covariates should exist in the baseline telemetry. Step 3 (forcing) deferred to Wave 3; step 5 (study) to Wave 3 end.
 - [ ] **Plan 89, phase A (eval-signal integrity)** — scorer crash on missing artifact (fable bug 13, run 24 evidence), `a...b` target validation (bug 14), coverage under-count + mislabeled safety-coverage source (bug 19), side-less/line-less static-signal binding (bug 17), skip-rules last-match (bug 5). All deterministic; all distort the measurement signal 79 will rely on.
 
@@ -46,6 +46,8 @@ File-conflict note: 80, 85, 82 all touch `verifier.ts`/`lens-runner.ts` — land
 - [ ] **D8 (eval scorer leniency stack)** — either re-spec matching to include the merged view and delete token-fallback/synonym layers, or revert to strict matching. Decide after Wave 2 baselines show how often leniency actually fires.
 - [ ] **D10 (static signals)** — keep-and-document vs delete the two unspec'd rules (`lossy-conversion-before-validation`, `test-boundary-coverage-rewrite` + `test-coverage-delta.ts`); also fix `exported-api-change` unconditional base-side parses if kept.
 - [ ] **Uncertainty promotion end-state** — if Plan-79 repeats show even predicate-only promotions never convert, delete the subsystem (Plan 81 stop-condition governs).
+- [ ] **Planner recovery / safety-deep coverage end-state** — the ~350-line unspec'd subsystem (`planner.ts:295-633`: submit recovery, sparse-plan detection, safety-deep coverage upgrades; fable §2.2) has no simplification plan today. Decide keep-and-spec vs shrink after the Wave-2 baseline shows how often recovery and safety-deep actually fire. (Gap surfaced by codex planning audit, 2026-07-02.)
+- [ ] **Intent-signals / behaviorChange capping end-state** — Plan 82 fixes the mechanical `unknown`-demotion bug only; whether the intent-signals + severity-capping subsystem (~250 lines + threading, fable §2.2/D4) shrinks, gets spec'd, or is deleted is decided on Plan-79/82 severity-flap data. (Gap surfaced by codex planning audit, 2026-07-02.)
 
 ## Spec-stale ledger (doc notes, no engineering priority — code is source of truth)
 

@@ -24,6 +24,7 @@ import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/cov
 import { sha256Hex } from "../util/hashing.js";
 import { isBudgetExhaustedError, isRecoverableLlmError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
 import { summarizeIntentSignals } from "./intent-signals.js";
+import { hasCriticalOrHighGuarantee } from "./severity-policy.js";
 import type { LlmSchemaInvalidSubmitRecoveryInput, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import {
   buildHumanAttentionNotes,
@@ -1033,9 +1034,9 @@ function pretrimComposerInput(findings: CandidateFinding[]): { kept: CandidateFi
   if (findings.length <= MAX_COMPOSER_FINDINGS) {
     return { kept: findings, suppressed: [] };
   }
-  const criticalHigh = findings.filter((finding) => finding.severity === "critical" || finding.severity === "high");
+  const criticalHigh = findings.filter((finding) => hasCriticalOrHighGuarantee(finding));
   const others = findings
-    .filter((finding) => finding.severity !== "critical" && finding.severity !== "high")
+    .filter((finding) => !hasCriticalOrHighGuarantee(finding))
     .sort(compareFindings);
   const remainingSlots = Math.max(0, MAX_COMPOSER_FINDINGS - criticalHigh.length);
   const kept = [...criticalHigh, ...others.slice(0, remainingSlots)].sort(compareFindings);
@@ -1302,7 +1303,7 @@ function applyCaps(
       return finding;
     }
     inlineCount += 1;
-    if (inlineCount > config.review.softCommentCap && finding.severity !== "critical" && finding.severity !== "high") {
+    if (inlineCount > config.review.softCommentCap && !hasCriticalOrHighGuarantee(finding)) {
       downgradeReasons.set(finding.id, "soft-comment-cap");
       return { ...finding, publication: "summary-only" as const };
     }
@@ -1315,7 +1316,7 @@ function applyCaps(
       return finding;
     }
     reportedCount += 1;
-    if (reportedCount > config.review.maxFindings && finding.severity !== "critical" && finding.severity !== "high") {
+    if (reportedCount > config.review.maxFindings && !hasCriticalOrHighGuarantee(finding)) {
       suppressedReasons.set(finding.id, "report-cap");
       return { ...finding, publication: "suppressed" as const };
     }
