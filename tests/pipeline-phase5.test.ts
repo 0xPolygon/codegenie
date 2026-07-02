@@ -5591,6 +5591,93 @@ describe("phase 5 pipeline regressions", () => {
     ]);
   });
 
+  it("binds side-less static signals only when the matching hunk is unambiguous", async () => {
+    const file: DiffFile = {
+      path: "app.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [
+        {
+          id: "h1",
+          path: "app.ts",
+          oldStart: 100,
+          oldLines: 1,
+          newStart: 5,
+          newLines: 3,
+          header: "@@ -100 +5,3 @@",
+          lines: [{ kind: "add", content: "const a = 1;", newLineNumber: 6 }]
+        },
+        {
+          id: "h2",
+          path: "app.ts",
+          oldStart: 5,
+          oldLines: 3,
+          newStart: 20,
+          newLines: 2,
+          header: "@@ -5,3 +20,2 @@",
+          lines: [{ kind: "add", content: "const b = 2;", newLineNumber: 20 }]
+        }
+      ]
+    };
+    const signal = (line: number, explanation: string): StaticSignal => ({
+      ruleId: "core/exported-api-change",
+      path: "app.ts",
+      line,
+      category: "correctness",
+      confidence: "medium",
+      explanation
+    });
+    const dossier = await buildPlannerDossier(
+      { mode: "branch", commits: [] },
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      [{ path: "app.ts", action: "keep", reason: "test", provenance: [] }],
+      {
+        ...fakeRepositoryIndex(),
+        // line 6 falls in h1's RIGHT range AND h2's LEFT range → ambiguous;
+        // line 20 falls only in h2's RIGHT range → unambiguous.
+        staticSignals: [signal(6, "ambiguous side-less"), signal(20, "unambiguous side-less")]
+      },
+      config(),
+      nullTelemetry()
+    );
+
+    expect(dossier.files[0]?.hunks[0]?.staticSignals ?? []).toEqual([]);
+    expect(dossier.files[0]?.hunks[1]?.staticSignals).toEqual([
+      expect.objectContaining({ explanation: "unambiguous side-less" })
+    ]);
+  });
+
+  it("attaches line-less static signals to a single packet hunk, not every hunk of the file", async () => {
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 1, content: "one" },
+      { id: "h3", newStart: 100, content: "three" }
+    ]);
+    const packets = await buildReviewPackets(
+      fakePlanForHunks(["h1", "h3"]),
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      {
+        ...fakeRepositoryIndex(),
+        staticSignals: [{
+          ruleId: "core/test-boundary-coverage-rewrite",
+          path: "app.ts",
+          category: "testing",
+          confidence: "medium",
+          explanation: "file-level coverage signal"
+        }]
+      },
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const attached = packets
+      .flatMap((packet) => packet.hunks)
+      .flatMap((hunk) => hunk.staticSignals ?? [])
+      .filter((entry) => entry.explanation === "file-level coverage signal");
+    expect(attached).toHaveLength(1);
+  });
+
   it("keeps renamed-file LEFT static signals emitted with the new path", async () => {
     const file: DiffFile = {
       path: "new.ts",

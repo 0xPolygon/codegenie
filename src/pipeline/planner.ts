@@ -1505,19 +1505,26 @@ function groupStaticSignals(signals: StaticSignal[], files: DiffFile[]): Map<str
 
   const grouped = new Map<string, StaticSignal[]>();
   for (const signal of signals) {
-    const hunk = (hunkByPath.get(signal.path) ?? []).find((candidate) =>
-      signal.line === undefined
-        ? false
-        : (signal.side === undefined || signal.side === candidate.side) &&
-          signal.line >= candidate.start &&
-          signal.line <= candidate.end
-    );
-    if (!hunk) {
+    if (signal.line === undefined) {
       continue;
     }
-    const list = grouped.get(hunk.id) ?? [];
+    const candidates = (hunkByPath.get(signal.path) ?? []).filter((candidate) =>
+      (signal.side === undefined || signal.side === candidate.side) &&
+      signal.line !== undefined &&
+      signal.line >= candidate.start &&
+      signal.line <= candidate.end
+    );
+    // A side-less signal whose line falls into ranges of *different* hunks is
+    // ambiguous — binding to the first match attaches it to an arbitrary hunk
+    // (plan 89 A4). Bind only when all matches agree on one hunk.
+    const hunkIds = new Set(candidates.map((candidate) => candidate.id));
+    if (hunkIds.size !== 1) {
+      continue;
+    }
+    const hunkId = candidates[0]!.id;
+    const list = grouped.get(hunkId) ?? [];
     list.push(signal);
-    grouped.set(hunk.id, list);
+    grouped.set(hunkId, list);
   }
   for (const list of grouped.values()) {
     list.sort(compareStaticSignals);

@@ -1214,8 +1214,14 @@ function hunkProximityRange(hunk: DiffHunk): { side: "old" | "new"; start: numbe
 
 function staticSignalsForHunk(file: DiffFile, hunk: DiffHunk, signals: StaticSignal[]): StaticSignal[] {
   return signals.filter((signal) => {
-    if (signal.path !== file.path || signal.line === undefined) {
-      return signal.path === file.path;
+    if (signal.path !== file.path) {
+      return false;
+    }
+    if (signal.line === undefined) {
+      // A line-less file-level signal attaches once (to the file's first
+      // hunk), not to every hunk of the file (plan 89 A4) — per-hunk
+      // duplication inflated packet context and planner risk weighting.
+      return file.hunks[0]?.id === hunk.id;
     }
     const side = signal.side ?? "RIGHT";
     if (side === "LEFT") {
