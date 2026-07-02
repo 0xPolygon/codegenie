@@ -878,7 +878,7 @@ Chosen defaults:
 - `review.perPassTimeoutMs = 8 * 60 * 1000` (per model task/worker, not per stage)
 - `review.minConfidence = "medium"`
 - `review.minInlineConfidence = "medium"`
-- `review.maxBudgetTokens = 5_850_000` (plan 90: the primary work-denominated coverage budget, 25% above the largest observed full review; time budgets are hang-guards, tokens bound coverage); `review.maxModelCalls` unset (no cap)
+- `review.maxBudgetTokens = 6_000_000` (plan 90: the primary work-denominated coverage budget, ~28% above the largest observed full review; time budgets are hang-guards, tokens bound coverage); `review.maxModelCalls` unset (no cap)
 - `github.summaryWhenNoFindings = false`
 - `git.baseBranch = undefined`
 - `classification.pathRules = []`
