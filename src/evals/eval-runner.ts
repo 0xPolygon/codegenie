@@ -128,6 +128,7 @@ const caseSchema = z
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
         budgetBoost: positiveNumberSchema.optional(),
+        maxTimeMinutes: positiveNumberSchema.optional(),
         verify: z.boolean().optional(),
         cache: z.boolean().optional(),
         cacheDir: z.string().min(1).optional(),
@@ -657,6 +658,9 @@ function applyCaseReviewConfig(
   if (review?.budgetBoost !== undefined) {
     config.review.budgetBoost = review.budgetBoost;
   }
+  if (review?.maxTimeMinutes !== undefined) {
+    config.review.timeoutMs = Math.round(review.maxTimeMinutes * 60_000);
+  }
   if (review?.verify !== undefined) {
     config.review.verify = review.verify;
   }
@@ -696,7 +700,8 @@ function applyCaseReviewConfig(
 function evalEffectiveConfig(config: CodegenieConfig): NonNullable<EvalRunInfo["effectiveConfig"]> {
   return {
     review: {
-      concurrency: config.review.concurrency
+      concurrency: config.review.concurrency,
+      timeoutMs: config.review.timeoutMs
     },
     llm: {
       ...(config.llm.provider !== undefined ? { provider: config.llm.provider } : {}),

@@ -939,6 +939,7 @@ export type EvalCase = {
     maxFindings?: number;
     concurrency?: number;
     budgetBoost?: number;
+    maxTimeMinutes?: number;
     verify?: boolean;
     cache?: boolean;
     cacheDir?: string;
@@ -1148,6 +1149,7 @@ export type EvalRunInfo = {
   effectiveConfig?: {
     review: {
       concurrency: number;
+      timeoutMs: number;
     };
     llm: {
       provider?: string;

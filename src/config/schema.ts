@@ -194,7 +194,7 @@ export const defaultConfig: CodegenieConfig = {
     minInlineConfidence: "medium",
     concurrency: 4,
     timeoutMs: 30 * 60 * 1000,
-    perPassTimeoutMs: 5 * 60 * 1000,
+    perPassTimeoutMs: 8 * 60 * 1000,
     budgetBoost: 1
   },
   github: {

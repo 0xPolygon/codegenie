@@ -26,6 +26,7 @@ type RawPathRule = NonNullable<NonNullable<RawCodegenieConfig["classification"]>
 export type CliConfigOverrides = {
   depth?: ReviewDepth;
   budgetBoost?: number;
+  timeoutMs?: number;
   lenses?: string[];
   provider?: string;
   model?: string;
@@ -458,6 +459,10 @@ function applyCliOverrides(
   if (cli.budgetBoost !== undefined) {
     config.review.budgetBoost = cli.budgetBoost;
     sources["review.budgetBoost"] = "cli";
+  }
+  if (cli.timeoutMs !== undefined) {
+    config.review.timeoutMs = cli.timeoutMs;
+    sources["review.timeoutMs"] = "cli";
   }
   if (cli.lenses !== undefined) {
     config.lenses.restrictTo = [...cli.lenses];

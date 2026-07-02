@@ -875,7 +875,7 @@ Chosen defaults:
 - `review.concurrency = 4`
 - `llm.maxConcurrentCalls = 4`
 - `review.timeoutMs = 30 * 60 * 1000`
-- `review.perPassTimeoutMs = 5 * 60 * 1000` (per model task/worker, not per stage)
+- `review.perPassTimeoutMs = 8 * 60 * 1000` (per model task/worker, not per stage)
 - `review.minConfidence = "medium"`
 - `review.minInlineConfidence = "medium"`
 - `review.maxTotalTokens` and `review.maxModelCalls` unset (no cap)

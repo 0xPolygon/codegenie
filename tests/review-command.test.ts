@@ -89,6 +89,21 @@ describe("review command", () => {
     );
   });
 
+  it("applies --max-time in minutes as the review timeout override", () => {
+    const parsed = parseReviewCommand(["review", "feature", "--max-time", "60"], testContext());
+    expect(parsed.config.review.timeoutMs).toBe(60 * 60 * 1000);
+    expect(parsed.configSources["review.timeoutMs"]).toBe("cli");
+  });
+
+  it("rejects a non-positive or non-numeric --max-time", () => {
+    expect(() => parseReviewCommand(["review", "feature", "--max-time", "0"], testContext())).toThrow(
+      /--max-time must be a positive number of minutes/
+    );
+    expect(() => parseReviewCommand(["review", "feature", "--max-time", "abc"], testContext())).toThrow(
+      /--max-time must be a positive number of minutes/
+    );
+  });
+
   it("enables progress by default and disables it for CI-friendly output", () => {
     expect(parseReviewCommand(["review", "feature"], testContext()).options.progress).toBe(true);
     expect(parseReviewCommand(["review", "feature", "--ci"], testContext()).options.progress).toBe(false);

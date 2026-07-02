@@ -96,6 +96,7 @@ describe("eval suite validation", () => {
       "  path: logs/1",
       "review:",
       "  budgetBoost: 1.5",
+      "  maxTimeMinutes: 60",
       "expect:",
       "  reviewCompleteness: complete",
       "  maxBudgetOverruns: 0",
@@ -110,6 +111,7 @@ describe("eval suite validation", () => {
     const suite = await loadEvalSuite(suiteDir);
 
     expect(suite.cases[0]?.evalCase.review?.budgetBoost).toBe(1.5);
+    expect(suite.cases[0]?.evalCase.review?.maxTimeMinutes).toBe(60);
     expect(suite.cases[0]?.evalCase.expect).toMatchObject({
       reviewCompleteness: "complete",
       maxBudgetOverruns: 0,

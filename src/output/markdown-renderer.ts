@@ -5,6 +5,7 @@ export function renderMarkdownReview(result: ReviewResult): string {
   const sections = [
     "# codegenie review",
     "",
+    renderBudgetStopNotice(result.coverage),
     result.summary.trim() || "Review completed.",
     "",
     renderCoverage(result.coverage),
@@ -20,6 +21,28 @@ export function renderMarkdownReview(result: ReviewResult): string {
 
 function renderCoverage(coverage: RunCoverageStatus): string {
   return ["## Coverage", "", ...renderCoverageSummaryLines(coverage)].join("\n");
+}
+
+function renderBudgetStopNotice(coverage: RunCoverageStatus): string {
+  const stop = coverage.budgetStop;
+  if (!coverage.budgetStopped || stop === undefined) {
+    return "";
+  }
+  if (stop.reason === "runtime_reserved_tail" || stop.reason === "hard_timeout") {
+    const minutes = Math.round(stop.timeoutMs / 60_000);
+    return (
+      `> **Sorry, this review is incomplete.** The allotted max time of ${minutes} minutes was reached ` +
+      "and the review has been degraded. Re-run with `--max-time <minutes>` " +
+      "(config `review.timeoutMs`, or `review.maxTimeMinutes` in eval cases) for a higher time allotment."
+    );
+  }
+  const limit = stop.reason === "max_model_calls"
+    ? `max model calls limit of ${stop.maxModelCalls ?? "?"} (config \`review.maxModelCalls\`)`
+    : `max token limit of ${stop.maxTotalTokens ?? "?"} (config \`review.maxTotalTokens\`)`;
+  return (
+    `> **Sorry, this review is incomplete.** The allotted ${limit} was reached ` +
+    "and the review has been degraded. Raise the limit for a complete review."
+  );
 }
 
 function renderFindings(title: string, findings: FinalFinding[]): string {
