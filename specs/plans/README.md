@@ -92,4 +92,4 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 86 | IN PROGRESS | Issue 86: Provider Protocol Parity and Observability (steps 1-2,4 done; step 3 Wave 3; step 5 after 79) |
 | 87 | PENDING | Issue 87: Verifier Pre-Clustering Restricted to Exact Duplicates |
 | 88 | PENDING | Issue 88: Publisher Summary-Only Fallback Reachability and Posting Disclosure |
-| 89 | PENDING | Issue 89: Deterministic Bug Sweep (Phases A/B) |
+| 89 | IN PROGRESS | Issue 89: Deterministic Bug Sweep (phase A done; phase B Wave 4) |

@@ -1,6 +1,7 @@
 # Issue 89: Deterministic Bug Sweep (Phases A/B)
 
-Status: PENDING
+Status: IN PROGRESS — phase A COMPLETE (2026-07-02); phase B pending (Wave 4 slack-time work).
+Phase A implementation notes: A1 scoring tolerates missing/unreadable artifacts with `metrics.missingArtifacts` disclosure, while replay-from-artifacts keeps strict input validation (missing artifacts there mean the replay's *input* is invalid → error, preserving the pinned replay tests). A2 three-dot targets rejected with a clear message. A3 packet-less planned hunks now count toward `coverageByLevel` (levels sum to totalHunks), plan-skip records use the computed coverage source, and planner-recovery safety-coverage upgrades are attributed `deterministic_default`. A4 side-less signals bind only on unambiguous matches; line-less signals attach once per file. A5 skip rules are last-match-wins (flipped the pinned first-match test). Expected metric shifts documented in the A3/A5 commits.
 Planned from: fable review §3 bugs 5, 9, 11-20 and §2.4 drift items (`specs/reviews/1-fable-review.md`); spot-verified against commit `00617d79` (file-classifier first-match, `a...b` validation, tree-sitter eviction), 2026-07-02
 Planned at: commit `00617d79` (branch `next`)
 Recommended priority: split. **Phase A (Wave 1 in `PUNCHLIST.md`)**: items that distort the eval/measurement signal — these must precede the Issue-79 baseline campaign. **Phase B (Wave 4)**: hygiene with no measurement impact. Every item is deterministic, small, and independently landable; each gets its own commit + test so a regression bisects to one item.
