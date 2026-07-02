@@ -214,9 +214,13 @@ const caseSchema = z
       ctx.addIssue({ code: "custom", path: ["command", "base"], message: "command.head requires command.base" });
     }
     if (evalCase.command?.target !== undefined && evalCase.command.target.includes("..")) {
-      const parts = evalCase.command.target.split("..");
-      if (parts.length !== 2 || (parts[0]?.length ?? 0) === 0 || (parts[1]?.length ?? 0) === 0) {
-        ctx.addIssue({ code: "custom", path: ["command", "target"], message: "command.target ranges must be <start>..<end>" });
+      if (evalCase.command.target.includes("...")) {
+        ctx.addIssue({ code: "custom", path: ["command", "target"], message: "command.target ranges must be <start>..<end> (two dots); three-dot ranges are not supported" });
+      } else {
+        const parts = evalCase.command.target.split("..");
+        if (parts.length !== 2 || (parts[0]?.length ?? 0) === 0 || (parts[1]?.length ?? 0) === 0) {
+          ctx.addIssue({ code: "custom", path: ["command", "target"], message: "command.target ranges must be <start>..<end>" });
+        }
       }
     }
     for (const stage of Object.keys(evalCase.expect?.maxPromptCharsByStage ?? {})) {

@@ -280,7 +280,7 @@ describe("file filtering and classification", () => {
     );
   });
 
-  it("treats the first matching configured processing mode as decisive for skips", async () => {
+  it("treats the last matching configured processing mode as decisive for skips", async () => {
     const config: CodegenieConfig = {
       ...defaultConfig,
       classification: {
@@ -290,7 +290,7 @@ describe("file filtering and classification", () => {
         ]
       }
     };
-    const { kept, decisions } = await filterDiffFiles(
+    const { kept } = await filterDiffFiles(
       resolvedFixture(),
       {
         files: [
@@ -307,10 +307,36 @@ describe("file filtering and classification", () => {
       { git: fakeGitClient() }
     );
 
-    expect(kept).toEqual([]);
-    expect(decisions).toEqual([
-      expect.objectContaining({ path: "src/payments/charge.ts", action: "skip", reason: "configured skip rule" })
-    ]);
+    expect(kept.map((file) => file.path)).toEqual(["src/payments/charge.ts"]);
+  });
+
+  it("a narrower later skip rule overrides a broad earlier per-hunk rule", async () => {
+    const config: CodegenieConfig = {
+      ...defaultConfig,
+      classification: {
+        pathRules: [
+          { pattern: "**", processingMode: "per-hunk", reason: "review everything" },
+          { pattern: "src/legacy/**", processingMode: "skip", reason: "legacy code is frozen" }
+        ]
+      }
+    };
+    const { kept, decisions } = await filterDiffFiles(
+      resolvedFixture(),
+      {
+        files: [
+          { path: "src/legacy/old.ts", status: "modified", language: "typescript", hunks: [] },
+          { path: "src/app.ts", status: "modified", language: "typescript", hunks: [] }
+        ]
+      },
+      config,
+      nullTelemetry(),
+      { git: fakeGitClient() }
+    );
+
+    expect(kept.map((file) => file.path)).toEqual(["src/app.ts"]);
+    expect(decisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "src/legacy/old.ts", action: "skip", reason: "configured skip rule" })
+    ]));
   });
 
   it("keeps deleted reviewable source files but skips deleted lock files", async () => {

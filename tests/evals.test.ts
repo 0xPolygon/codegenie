@@ -142,6 +142,28 @@ describe("eval suite validation", () => {
     });
   });
 
+  it("rejects three-dot command.target ranges with a clear message", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-three-dot-target-"));
+    writeFileSync(path.join(suiteDir, "target.yml"), [
+      "name: three-dot-target",
+      "repo:",
+      "  fixture: repo",
+      "command:",
+      "  target: abc123...def456",
+      "expect:",
+      "  minFindings: 1"
+    ].join("\n"));
+
+    await expect(loadEvalSuite(suiteDir)).rejects.toMatchObject({
+      code: "config_error",
+      context: expect.objectContaining({
+        errors: expect.arrayContaining([
+          expect.stringContaining("three-dot ranges are not supported")
+        ])
+      })
+    });
+  });
+
   it("rejects head eval commands without a base ref", async () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-head-missing-base-"));
     writeFileSync(path.join(suiteDir, "head.yml"), [
