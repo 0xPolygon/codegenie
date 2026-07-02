@@ -64,6 +64,7 @@ const DEFAULT_SOURCE_PATHS = [
   "review.timeoutMs",
   "review.perPassTimeoutMs",
   "review.budgetBoost",
+  "review.maxBudgetTokens",
   "github.summaryWhenNoFindings",
   "classification.pathRules",
   "llm.maxConcurrentCalls",
@@ -252,9 +253,9 @@ function applyRawConfig(
     config.review.budgetBoost = raw.review.budgetBoost;
     sources["review.budgetBoost"] = source;
   }
-  if (raw.review?.maxTotalTokens !== undefined) {
-    config.review.maxTotalTokens = raw.review.maxTotalTokens;
-    sources["review.maxTotalTokens"] = source;
+  if (raw.review?.maxBudgetTokens !== undefined) {
+    config.review.maxBudgetTokens = raw.review.maxBudgetTokens;
+    sources["review.maxBudgetTokens"] = source;
   }
   if (raw.review?.maxModelCalls !== undefined) {
     config.review.maxModelCalls = raw.review.maxModelCalls;

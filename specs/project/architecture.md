@@ -789,7 +789,7 @@ Per-key config sources (normative; Trust Boundaries defers to this table):
 | --- | --- |
 | `review.depth`, `review.maxFindings`, `review.softCommentCap`, `review.budgetBoost`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codegenie.toml`, user-scoped config, or CLI |
 | `telemetry.enabled` | Repo `codegenie.toml` or user-scoped config |
-| `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.timeoutMs`, `review.perPassTimeoutMs`, `review.maxTotalTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
+| `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.timeoutMs`, `review.perPassTimeoutMs`, `review.maxBudgetTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
 
 The loader enforces this via per-key source tracking; repo values for user-scope keys are ignored with a warning.
 
@@ -820,7 +820,7 @@ type CodegenieConfig = {
     concurrency: number
     timeoutMs: number
     perPassTimeoutMs: number
-    maxTotalTokens?: number
+    maxBudgetTokens?: number
     maxModelCalls?: number
   }
   github: {
@@ -878,7 +878,7 @@ Chosen defaults:
 - `review.perPassTimeoutMs = 8 * 60 * 1000` (per model task/worker, not per stage)
 - `review.minConfidence = "medium"`
 - `review.minInlineConfidence = "medium"`
-- `review.maxTotalTokens` and `review.maxModelCalls` unset (no cap)
+- `review.maxBudgetTokens = 5_850_000` (plan 90: the primary work-denominated coverage budget, 25% above the largest observed full review; time budgets are hang-guards, tokens bound coverage); `review.maxModelCalls` unset (no cap)
 - `github.summaryWhenNoFindings = false`
 - `git.baseBranch = undefined`
 - `classification.pathRules = []`
@@ -1334,7 +1334,7 @@ Failure and budget handling:
   - Stage 9 → existing verification failure rules unchanged.
   - Stage 10 composer → one repair retry; terminal failure triggers a deterministic fallback composition (verified findings rendered with template wording, fingerprint-level grouping only, ranked by severity/confidence) with a disclosure note that semantic composition was skipped.
   - Authentication or provider-wide failures at any stage fail the run.
-- Budgets (`timeoutMs`, `maxTotalTokens`, `maxModelCalls`) are checked before each new model call or worker dispatch. On exhaustion: stop scheduling new packet reviews → verify already-produced candidates using a reserved budget slice → always run composition and emit a partial-review disclosure.
+- Budgets (`timeoutMs`, `maxBudgetTokens`, `maxModelCalls`) are checked before each new model call or worker dispatch. On exhaustion: stop scheduling new packet reviews → verify already-produced candidates using a reserved budget slice → always run composition and emit a partial-review disclosure.
 - Approximately 15% of the configured token and model-call budgets (and a fixed tail of the runtime budget) is reserved for Stages 9-10 so completed review work is never lost to exhaustion. A hard kill at 2x the configured runtime budget is fatal; even then codegenie attempts to write telemetry artifacts before exiting.
 - Provider 429 and transient 5xx responses get up to 3 retries with exponential backoff; retries count against budgets.
 - The run-level coverage status is owned by the orchestrator, which aggregates plan-time coverage, runtime failures, budget stops, and verification incompleteness into the final coverage summary (run-level, not only `ReviewPlan.partialReview`):
@@ -1356,7 +1356,7 @@ type RunCoverageStatus = {
 }
 
 type BudgetStop = {
-  reason: "runtime_reserved_tail" | "max_model_calls" | "max_total_tokens" | "hard_timeout"
+  reason: "runtime_reserved_tail" | "max_model_calls" | "max_budget_tokens" | "hard_timeout"
   stage: ReviewStage | 0
   elapsedMs: number
   timeoutMs: number
@@ -1372,7 +1372,7 @@ type BudgetStop = {
   totalTokens: number
   inFlightTokens: number
   projectedTokens: number
-  maxTotalTokens?: number
+  maxBudgetTokens?: number
   remainingTokens?: number
   reservedTokens?: number
 }
@@ -2033,7 +2033,7 @@ Per-language `StaticSignal` rules via `LanguageAdapter.getStaticSignals`, beyond
 
 ### Cost-based budgets
 
-`review.maxCostUSD` as a run budget alongside tokens and model calls; in v1, unknown-cost calls counting zero made it a loophole, and `maxTotalTokens` covers the need. Trigger: Pi-reported pricing is reliable.
+`review.maxCostUSD` as a run budget alongside tokens and model calls; in v1, unknown-cost calls counting zero made it a loophole, and `maxBudgetTokens` covers the need. Trigger: Pi-reported pricing is reliable.
 
 ### Fine-grained eval attribution and replay
 

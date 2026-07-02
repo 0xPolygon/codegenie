@@ -38,7 +38,7 @@ function renderBudgetStopNotice(coverage: RunCoverageStatus): string {
   }
   const limit = stop.reason === "max_model_calls"
     ? `max model calls limit of ${stop.maxModelCalls ?? "?"} (config \`review.maxModelCalls\`)`
-    : `max token limit of ${stop.maxTotalTokens ?? "?"} (config \`review.maxTotalTokens\`)`;
+    : `max token limit of ${stop.maxBudgetTokens ?? "?"} (config \`review.maxBudgetTokens\`)`;
   return (
     `> **Sorry, this review is incomplete.** The allotted ${limit} was reached ` +
     "and the review has been degraded. Raise the limit for a complete review."
@@ -158,7 +158,7 @@ function shouldRenderBudgetSummary(summary: BudgetSummary): boolean {
     summary.usage.costUSD !== undefined ||
     summary.multiplier !== 1 ||
     summary.effective.maxModelCalls !== undefined ||
-    summary.effective.maxTotalTokens !== undefined ||
+    summary.effective.maxBudgetTokens !== undefined ||
     summary.overruns.length > 0 ||
     summary.dispatchBlocks.length > 0 ||
     renderContextPressure(summary).length > 0;
@@ -169,8 +169,8 @@ function budgetCapParts(summary: BudgetSummary): string[] {
   if (summary.effective.maxModelCalls !== undefined) {
     parts.push(`model calls ${summary.effective.maxModelCalls}${capSource(summary.configured.maxModelCalls, summary.multiplier)}`);
   }
-  if (summary.effective.maxTotalTokens !== undefined) {
-    parts.push(`tokens ${summary.effective.maxTotalTokens}${capSource(summary.configured.maxTotalTokens, summary.multiplier)}`);
+  if (summary.effective.maxBudgetTokens !== undefined) {
+    parts.push(`tokens ${summary.effective.maxBudgetTokens}${capSource(summary.configured.maxBudgetTokens, summary.multiplier)}`);
   }
   if (summary.multiplier !== 1 && parts.length === 0) {
     parts.push(`budget multiplier ${summary.multiplier}`);

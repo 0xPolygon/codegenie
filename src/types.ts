@@ -44,7 +44,7 @@ export type CodegenieConfig = {
     timeoutMs: number;
     perPassTimeoutMs: number;
     budgetBoost: number;
-    maxTotalTokens?: number;
+    maxBudgetTokens?: number;
     maxModelCalls?: number;
   };
   github: {
@@ -956,6 +956,7 @@ export type EvalCase = {
     concurrency?: number;
     budgetBoost?: number;
     maxTimeMinutes?: number;
+    maxBudgetTokens?: number;
     verify?: boolean;
     cache?: boolean;
     cacheDir?: string;
@@ -1175,6 +1176,7 @@ export type EvalRunInfo = {
     review: {
       concurrency: number;
       timeoutMs: number;
+      maxBudgetTokens?: number;
     };
     llm: {
       provider?: string;
@@ -1547,7 +1549,7 @@ export type RunOutcomeStatus = "completed_full" | "completed_partial" | "failed"
 export type BudgetStopReason =
   | "runtime_reserved_tail"
   | "max_model_calls"
-  | "max_total_tokens"
+  | "max_budget_tokens"
   | "hard_timeout";
 
 export type BudgetStop = {
@@ -1567,7 +1569,7 @@ export type BudgetStop = {
   totalTokens: number;
   inFlightTokens: number;
   projectedTokens: number;
-  maxTotalTokens?: number;
+  maxBudgetTokens?: number;
   remainingTokens?: number;
   reservedTokens?: number;
 };
@@ -1617,12 +1619,12 @@ export type BudgetSummary = {
   configured: {
     timeoutMs: number;
     maxModelCalls?: number;
-    maxTotalTokens?: number;
+    maxBudgetTokens?: number;
   };
   effective: {
     timeoutMs: number;
     maxModelCalls?: number;
-    maxTotalTokens?: number;
+    maxBudgetTokens?: number;
   };
   usage: {
     modelCalls: number;

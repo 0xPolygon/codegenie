@@ -20,7 +20,8 @@ File-conflict note: 80, 85, 82 all touch `verifier.ts`/`lens-runner.ts` — land
 
 - [x] **Plan 83** — wording-independent fingerprints + compare integrity (fable D7, bug 3). Lands before/with 79: cross-run identity is the harness's regression assertion, and Plan 84 needs stable fingerprints for union-dedupe. (2026-07-02; note: first compare against a pre-83 run shows one-time fingerprint churn)
 - [x] **Plan 79** — repeat/recall-rate harness + relay wrong-chain case. The measurement foundation; nothing recall-related gets judged without it after this point. (2026-07-02; relay case at `trails-api/relay-wc`, pinned to `dad51fda`)
-- [ ] **Baseline campaign** — `repeat: 10`, `cache: false` on `0c4d5213`, `49f4645b`, relay case, opus, Wave-1 system. Reference dataset for every Wave-3 A/B. Record as a findings note under `specs/reviews/`. GATED on provider latency recovery (July 1-2 degradation ~5x; probe with one cheap small-case run before launching — at degraded latency the campaign is ~8h/$200+ vs ~2h/$50 healthy).
+- [x] **Plan 90** — token-denominated primary budget: `review.maxBudgetTokens` (renamed from never-set `maxTotalTokens`), default 5,850,000 (25% above largest observed full review). Time demoted to hang-guard in posture. Watch: raise when plan 84's ensemble adds tokens. (2026-07-02)
+- [ ] **Baseline runs (owner-run)** — the repeat-10 campaign was replaced by owner-run manual evals (2026-07-02 decision): 0c4d5213 and 49f4645b, ~2 runs each, run by the owner in their own terminal on the Wave-1/2 system. Latency diagnosis closed the "wait for recovery" gate (subscription-lane queueing, quota at ~20%, quality unaffected, work latency-invariant). Caveat recorded: 2 runs/case gives weak rates — Plan 84's before/after validation will still need `repeat: N` runs on the relay case when it lands; the harness is ready.
 
 ## Wave 3 — behavior changes, one at a time, measured against the baseline
 

@@ -3785,7 +3785,7 @@ describe("phase 5 pipeline regressions", () => {
     callBudget.releaseReservation(7, 1);
     expect(callBudget.checkpoint(7)).toBe("ok");
 
-    const tokenBudget = new BudgetLedger({ ...config(), review: { ...config().review, maxTotalTokens: 100 } });
+    const tokenBudget = new BudgetLedger({ ...config(), review: { ...config().review, maxBudgetTokens: 100 } });
     expect(tokenBudget.reserve(7, 85)).toBe("ok");
     expect(tokenBudget.checkpoint(7)).toBe("exhausted");
     tokenBudget.releaseReservation(7, 85);
@@ -3852,7 +3852,7 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it("tracks post-call overruns separately from pre-dispatch budget blocks", () => {
-    const budget = new BudgetLedger({ ...config(), review: { ...config().review, maxModelCalls: 2, maxTotalTokens: 100 } });
+    const budget = new BudgetLedger({ ...config(), review: { ...config().review, maxModelCalls: 2, maxBudgetTokens: 100 } });
 
     budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 60 });
     budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 50 });
@@ -3860,7 +3860,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(budget.hasDispatchBlocks()).toBe(false);
     expect(budget.summary().overruns).toEqual([
       expect.objectContaining({
-        reason: "max_total_tokens",
+        reason: "max_budget_tokens",
         stage: 7,
         kind: "tokens",
         actual: 110,
@@ -3874,7 +3874,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(budget.hasDispatchBlocks()).toBe(true);
     expect(summary.dispatchBlocks).toEqual([
       expect.objectContaining({
-        reason: "max_total_tokens",
+        reason: "max_budget_tokens",
         stage: 7,
         afterDispatchedCall: false
       })
@@ -3883,7 +3883,7 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it("does not include active reservations in post-call overrun actuals", () => {
-    const budget = new BudgetLedger({ ...config(), review: { ...config().review, maxTotalTokens: 100 } });
+    const budget = new BudgetLedger({ ...config(), review: { ...config().review, maxBudgetTokens: 100 } });
 
     expect(budget.reserve(7, 80)).toBe("ok");
     budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 110 });
@@ -3891,7 +3891,7 @@ describe("phase 5 pipeline regressions", () => {
     const summary = budget.summary();
     expect(summary.overruns).toEqual([
       expect.objectContaining({
-        reason: "max_total_tokens",
+        reason: "max_budget_tokens",
         actual: 110,
         totalTokens: 110,
         afterDispatchedCall: true
@@ -3907,7 +3907,7 @@ describe("phase 5 pipeline regressions", () => {
   it("scales effective model-call and token caps with budgetBoost", () => {
     const budget = new BudgetLedger({
       ...config(),
-      review: { ...config().review, maxModelCalls: 4, maxTotalTokens: 100, budgetBoost: 1.5 }
+      review: { ...config().review, maxModelCalls: 4, maxBudgetTokens: 100, budgetBoost: 1.5 }
     });
 
     budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 50 });
@@ -3916,8 +3916,8 @@ describe("phase 5 pipeline regressions", () => {
     expect(budget.checkpoint(7)).toBe("ok");
     const summary = budget.summary();
     expect(summary.multiplier).toBe(1.5);
-    expect(summary.configured).toMatchObject({ maxModelCalls: 4, maxTotalTokens: 100 });
-    expect(summary.effective).toMatchObject({ maxModelCalls: 6, maxTotalTokens: 150 });
+    expect(summary.configured).toMatchObject({ maxModelCalls: 4, maxBudgetTokens: 100 });
+    expect(summary.effective).toMatchObject({ maxModelCalls: 6, maxBudgetTokens: 150 });
     expect(summary.overruns).toHaveLength(0);
   });
 
@@ -9760,8 +9760,8 @@ describe("phase 5 pipeline regressions", () => {
         completeness: "complete",
         partialReasons: [],
         multiplier: 2,
-        configured: { timeoutMs: 30_000, maxModelCalls: 2, maxTotalTokens: 100 },
-        effective: { timeoutMs: 30_000, maxModelCalls: 4, maxTotalTokens: 200 },
+        configured: { timeoutMs: 30_000, maxModelCalls: 2, maxBudgetTokens: 100 },
+        effective: { timeoutMs: 30_000, maxModelCalls: 4, maxBudgetTokens: 200 },
         usage: {
           modelCalls: 5,
           totalTokens: 225,
@@ -9770,7 +9770,7 @@ describe("phase 5 pipeline regressions", () => {
         },
         overruns: [{
           stage: 7,
-          reason: "max_total_tokens",
+          reason: "max_budget_tokens",
           elapsedMs: 1000,
           kind: "tokens",
           actual: 225,

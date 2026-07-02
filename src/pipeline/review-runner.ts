@@ -1375,7 +1375,7 @@ export class BudgetLedger {
   private inFlightModelCalls = 0;
   private inFlightTokens = 0;
   private readonly effectiveMaxModelCalls: number | undefined;
-  private readonly effectiveMaxTotalTokens: number | undefined;
+  private readonly effectiveMaxBudgetTokens: number | undefined;
   private readonly usageByStage = new Map<ReviewStage, BudgetUsageByStage>();
   private readonly overrunRecords: BudgetLimitEvent[] = [];
   private readonly dispatchBlockRecords: BudgetLimitEvent[] = [];
@@ -1388,7 +1388,7 @@ export class BudgetLedger {
     private readonly telemetry?: TelemetryRecorder
   ) {
     this.effectiveMaxModelCalls = scaleOptionalBudgetValue(config.review.maxModelCalls, config.review.budgetBoost);
-    this.effectiveMaxTotalTokens = scaleOptionalBudgetValue(config.review.maxTotalTokens, config.review.budgetBoost);
+    this.effectiveMaxBudgetTokens = scaleOptionalBudgetValue(config.review.maxBudgetTokens, config.review.budgetBoost);
   }
 
   checkpoint(stage: number): "ok" | "exhausted" {
@@ -1462,12 +1462,12 @@ export class BudgetLedger {
       configured: {
         timeoutMs: this.config.review.timeoutMs,
         ...(this.config.review.maxModelCalls !== undefined ? { maxModelCalls: this.config.review.maxModelCalls } : {}),
-        ...(this.config.review.maxTotalTokens !== undefined ? { maxTotalTokens: this.config.review.maxTotalTokens } : {})
+        ...(this.config.review.maxBudgetTokens !== undefined ? { maxBudgetTokens: this.config.review.maxBudgetTokens } : {})
       },
       effective: {
         timeoutMs: this.config.review.timeoutMs,
         ...(this.effectiveMaxModelCalls !== undefined ? { maxModelCalls: this.effectiveMaxModelCalls } : {}),
-        ...(this.effectiveMaxTotalTokens !== undefined ? { maxTotalTokens: this.effectiveMaxTotalTokens } : {})
+        ...(this.effectiveMaxBudgetTokens !== undefined ? { maxBudgetTokens: this.effectiveMaxBudgetTokens } : {})
       },
       usage: {
         modelCalls: this.modelCalls,
@@ -1491,7 +1491,7 @@ export class BudgetLedger {
       return "runtime_reserved_tail";
     }
     if (this.tokensExhausted(reserveStage, additionalReservedTokens)) {
-      return "max_total_tokens";
+      return "max_budget_tokens";
     }
     if (this.modelCallsExhausted(reserveStage, additionalReservedCalls)) {
       return "max_model_calls";
@@ -1575,11 +1575,11 @@ export class BudgetLedger {
       totalTokens: this.totalTokens,
       inFlightTokens: snapshotInFlightTokens,
       projectedTokens,
-      ...(this.effectiveMaxTotalTokens !== undefined
+      ...(this.effectiveMaxBudgetTokens !== undefined
         ? {
-            maxTotalTokens: this.effectiveMaxTotalTokens,
-            remainingTokens: Math.max(0, this.effectiveMaxTotalTokens - projectedTokens),
-            reservedTokens: reservedBudgetAmount(this.effectiveMaxTotalTokens)
+            maxBudgetTokens: this.effectiveMaxBudgetTokens,
+            remainingTokens: Math.max(0, this.effectiveMaxBudgetTokens - projectedTokens),
+            reservedTokens: reservedBudgetAmount(this.effectiveMaxBudgetTokens)
           }
         : {})
     };
@@ -1606,11 +1606,11 @@ export class BudgetLedger {
       this.markPostCallOverrun(this.limitEvent("max_model_calls", usage.stage, elapsed, 0, 0, true));
     }
     if (
-      this.effectiveMaxTotalTokens !== undefined &&
-      previousTotalTokens <= this.effectiveMaxTotalTokens &&
-      this.totalTokens > this.effectiveMaxTotalTokens
+      this.effectiveMaxBudgetTokens !== undefined &&
+      previousTotalTokens <= this.effectiveMaxBudgetTokens &&
+      this.totalTokens > this.effectiveMaxBudgetTokens
     ) {
-      this.markPostCallOverrun(this.limitEvent("max_total_tokens", usage.stage, elapsed, 0, 0, true));
+      this.markPostCallOverrun(this.limitEvent("max_budget_tokens", usage.stage, elapsed, 0, 0, true));
     }
   }
 
@@ -1626,19 +1626,19 @@ export class BudgetLedger {
     const projectedTokens = this.totalTokens + (afterDispatchedCall ? 0 : this.inFlightTokens) + additionalReservedTokens;
     const limit = reason === "max_model_calls"
       ? this.effectiveMaxModelCalls ?? 0
-      : reason === "max_total_tokens"
-        ? this.effectiveMaxTotalTokens ?? 0
+      : reason === "max_budget_tokens"
+        ? this.effectiveMaxBudgetTokens ?? 0
         : this.config.review.timeoutMs;
     const actual = reason === "max_model_calls"
       ? projectedModelCalls
-      : reason === "max_total_tokens"
+      : reason === "max_budget_tokens"
         ? projectedTokens
         : elapsed;
     return {
       stage: isReviewStage(stage) ? stage : 0,
       reason,
       elapsedMs: elapsed,
-      kind: reason === "max_model_calls" ? "model_calls" : reason === "max_total_tokens" ? "tokens" : "runtime",
+      kind: reason === "max_model_calls" ? "model_calls" : reason === "max_budget_tokens" ? "tokens" : "runtime",
       actual,
       limit,
       totalTokens: this.totalTokens,
@@ -1653,7 +1653,7 @@ export class BudgetLedger {
   }
 
   private tokensExhausted(reserveStage: boolean, additionalReservedTokens = 0): boolean {
-    const max = this.effectiveMaxTotalTokens;
+    const max = this.effectiveMaxBudgetTokens;
     if (max === undefined) {
       return false;
     }

@@ -96,6 +96,8 @@ reason = "critical lib"
     expect(loaded.sources["review.maxFindings"]).toBe("repo-config");
     expect(loaded.config.review.budgetBoost).toBe(1.5);
     expect(loaded.sources["review.budgetBoost"]).toBe("repo-config");
+    expect(loaded.config.review.maxBudgetTokens).toBe(5_850_000);
+    expect(loaded.sources["review.maxBudgetTokens"]).toBe("defaults");
     expect(loaded.config.llm.provider).toBe("env-provider");
     expect(loaded.config.llm.model).toBe("cli-model");
     expect(loaded.config.llm.reasoning).toBe("xhigh");

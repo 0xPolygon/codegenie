@@ -622,7 +622,7 @@ Telemetry per candidate: pre-gate decision, verifier prompt size, tool calls, to
 - `coverageByLevel`: effective per-hunk coverage — the packet's coverage for packeted hunks (post-fallback, post-coalescing max), `skip` for skipped hunks.
 - `degradedPlanning`: from `runPlanner` (full or per-chunk fallback).
 - `budgetStopped`: from the budget ledger.
-- `budgetStop`: first-stop snapshot from the budget ledger when present, including reason (`runtime_reserved_tail`, `max_model_calls`, `max_total_tokens`, or `hard_timeout`), stage, elapsed time, projected model-call/token counts, configured limits, and remaining/reserved budget estimates.
+- `budgetStop`: first-stop snapshot from the budget ledger when present, including reason (`runtime_reserved_tail`, `max_model_calls`, `max_budget_tokens`, or `hard_timeout`), stage, elapsed time, projected model-call/token counts, configured limits, and remaining/reserved budget estimates.
 - `unreviewedHunksByPath`: grouped file/path counts for hunks that were reviewable but did not complete packet review, with stable reasons such as `budget_stopped before dispatch`.
 - `verificationIncompleteCount`: from Stage 9.
 - `partial`: true when `reviewedHunks + skippedHunks < totalHunks`, or `failedHunks > 0`, or `budgetStopped`, or the planner declared `partialReview.isPartial`.
@@ -660,7 +660,7 @@ Composer terminal failure (after one repair retry, non-auth): deterministic fall
 
 ### Failure And Budget Semantics
 
-The budget ledger tracks, per run: elapsed wall-clock time against `review.timeoutMs`, total tokens against `review.maxTotalTokens`, and model-call count against `review.maxModelCalls`. There is no cost budget in v1 (cost-based run budgets are deferred — see architecture.md Future Considerations); cost is observability only, disclosed through `cost-profile.json`. The LLM runner reports usage per call; the ledger is updated synchronously after every call.
+The budget ledger tracks, per run: elapsed wall-clock time against `review.timeoutMs`, total tokens against `review.maxBudgetTokens`, and model-call count against `review.maxModelCalls`. There is no cost budget in v1 (cost-based run budgets are deferred — see architecture.md Future Considerations); cost is observability only, disclosed through `cost-profile.json`. The LLM runner reports usage per call; the ledger is updated synchronously after every call.
 
 Reservation: at run start the ledger reserves approximately 15% of the configured token and model-call budgets (when set) and a runtime tail of `max(60s, 10% of review.timeoutMs)` for stages 9-10, so completed review work is never lost to exhaustion. Stages 1-7 draw from the remainder; stages 9-10 may draw from both the remainder and the reserve.
 
@@ -775,7 +775,7 @@ Stage 10:
 
 Budget and coverage:
 
-- `budget_reservation_math`: with `maxTotalTokens = 100000`, stages 1-7 exhaust at 85000 while stages 9-10 may spend the reserve; the runtime tail is `max(60s, 10% of timeoutMs)`.
+- `budget_reservation_math`: with `maxBudgetTokens = 100000`, stages 1-7 exhaust at 85000 while stages 9-10 may spend the reserve; the runtime tail is `max(60s, 10% of timeoutMs)`.
 - `budget_ladder_order`: exhaustion during Stage 7 stops new packet dispatch, verifies existing candidates from the reserve, and still composes; `budgetStopped: true` with reasons.
 - `budget_each_dimension_triggers`: time, token, and model-call budgets each independently trigger the ladder at their checkpoint.
 - `coverage_aggregation_matrix`: fixtures combining filtered files, planner skips, completed packets, failed packets, undispatched packets, degraded planning, and incomplete verification produce the expected `RunCoverageStatus` counts, `coverageByLevel`, `partial` flag, and reasons; `coverage.json` includes every hunk exactly once.

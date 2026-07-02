@@ -121,7 +121,7 @@ function humanizeBudgetReason(reason: string): string {
       return "runtime reserve reached";
     case "max_model_calls":
       return "model-call limit reached";
-    case "max_total_tokens":
+    case "max_budget_tokens":
       return "token limit reached";
     case "hard_timeout":
       return "hard timeout reached";

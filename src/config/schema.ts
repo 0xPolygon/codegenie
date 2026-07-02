@@ -44,7 +44,7 @@ export const rawConfigSchema = z
         timeoutMs: positiveIntSchema.optional(),
         perPassTimeoutMs: positiveIntSchema.optional(),
         budgetBoost: positiveFiniteNumberSchema.optional(),
-        maxTotalTokens: positiveIntSchema.optional(),
+        maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional()
       })
       .strict()
@@ -128,7 +128,7 @@ export const codegenieConfigSchema = z
         timeoutMs: positiveIntSchema,
         perPassTimeoutMs: positiveIntSchema,
         budgetBoost: positiveFiniteNumberSchema,
-        maxTotalTokens: positiveIntSchema.optional(),
+        maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional()
       })
       .strict(),
@@ -195,7 +195,13 @@ export const defaultConfig: CodegenieConfig = {
     concurrency: 4,
     timeoutMs: 30 * 60 * 1000,
     perPassTimeoutMs: 8 * 60 * 1000,
-    budgetBoost: 1
+    budgetBoost: 1,
+    // Primary coverage budget (plan 90): work-denominated so provider latency
+    // can never shrink a review. Sized 25% above the largest observed full
+    // review (trails-api 0c4d5213 run 42: 4,676,284 tokens); the 15% reserved
+    // tail means dispatch soft-stops at ~4.97M. A protective ceiling, not a
+    // target — raise it if a legitimate review ever binds.
+    maxBudgetTokens: 5_850_000
   },
   github: {
     summaryWhenNoFindings: false
