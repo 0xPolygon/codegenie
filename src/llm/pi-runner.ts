@@ -966,6 +966,7 @@ async function completeWithCache(input: {
 
     const callId = nextModelCallId();
     const startedAt = Date.now();
+    const responseCapture: ProviderResponseCapture = {};
     writeModelCallRequestDebug(opts, request, model, {
       callId,
       kind,
@@ -1004,6 +1005,7 @@ async function completeWithCache(input: {
           message: "model_call_started",
           toolNames: tools.map((tool) => tool.name)
         });
+        const callStartedAt = Date.now();
         return awaitProviderCall(
           () => adapter.complete(
             model,
@@ -1014,7 +1016,27 @@ async function completeWithCache(input: {
               reasoning: opts.llmConfig.reasoning ?? "high",
               toolChoice,
               sessionId: providerPromptCache.sessionId,
-              cacheRetention: providerPromptCache.cacheRetention
+              cacheRetention: providerPromptCache.cacheRetention,
+              // Slowness diagnostics: headers arrive before the body streams,
+              // so this timestamps time-to-first-byte (queue + prefill) and
+              // captures the provider's rate-limit posture per call.
+              onResponse: (response: { status: number; headers: Record<string, string> }) => {
+                responseCapture.ttfbMs = Date.now() - callStartedAt;
+                responseCapture.providerHttpStatus = response.status;
+                const rateLimit: Record<string, string> = {};
+                for (const [key, value] of Object.entries(response.headers)) {
+                  const name = key.toLowerCase();
+                  if (name.startsWith("anthropic-ratelimit-") || name === "retry-after") {
+                    rateLimit[name] = value;
+                  }
+                  if (name === "request-id" || name === "x-request-id") {
+                    responseCapture.providerRequestId = value;
+                  }
+                }
+                if (Object.keys(rateLimit).length > 0) {
+                  responseCapture.rateLimit = rateLimit;
+                }
+              }
             }
           ),
           taskSignal,
@@ -1029,6 +1051,7 @@ async function completeWithCache(input: {
         recordModelCall(opts, request, model, message, {
           callId,
           protocol,
+          providerResponse: responseCapture,
           kind,
           finalizeMode,
           finalizeTarget,
@@ -1077,6 +1100,7 @@ async function completeWithCache(input: {
       const modelCallMeta = definedRecord({
         callId,
         protocol,
+        providerResponse: responseCapture,
         kind,
         finalizeMode,
         finalizeTarget,
@@ -1116,6 +1140,7 @@ async function completeWithCache(input: {
       recordErroredModelCall(opts, request, model, {
         callId,
         protocol,
+        providerResponse: responseCapture,
         kind,
         finalizeMode,
         finalizeTarget,
@@ -1374,6 +1399,17 @@ function mapProviderToolChoice(model: Model<Api>, choice: unknown): unknown {
       return "required";
   }
 }
+
+// Per-call provider response diagnostics (slowness debugging): ttfbMs is
+// measured from dispatch to response headers (queue + prefill), so
+// durationMs - ttfbMs approximates the decode window. rateLimit carries the
+// provider's anthropic-ratelimit-*/retry-after headers verbatim.
+type ProviderResponseCapture = {
+  ttfbMs?: number;
+  providerHttpStatus?: number;
+  providerRequestId?: string;
+  rateLimit?: Record<string, string>;
+};
 
 type ProviderProtocolFields = {
   toolChoiceRequested: string;
@@ -2680,6 +2716,7 @@ function recordModelCall(
     callId: string;
     kind: ModelCallKind;
     protocol?: ProviderProtocolFields;
+    providerResponse?: ProviderResponseCapture;
     finalizeMode?: "compact" | "full" | undefined;
     finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
     attempt: number;
@@ -2702,6 +2739,7 @@ function recordModelCall(
   const record = definedRecord({
     callId: meta.callId,
     ...meta.protocol,
+    ...meta.providerResponse,
     stage: request.stage,
     role: roleForStage(request.stage),
     model: model.id,
@@ -2755,6 +2793,7 @@ function recordErroredModelCall(
     callId: string;
     kind: ModelCallKind;
     protocol?: ProviderProtocolFields;
+    providerResponse?: ProviderResponseCapture;
     finalizeMode?: "compact" | "full" | undefined;
     finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
     attempt: number;
@@ -2773,6 +2812,7 @@ function recordErroredModelCall(
   const record = definedRecord({
     callId: meta.callId,
     ...meta.protocol,
+    ...meta.providerResponse,
     stage: request.stage,
     role: roleForStage(request.stage),
     model: model.id,

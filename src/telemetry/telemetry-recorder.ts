@@ -24,6 +24,12 @@ export type LlmCallRecord = {
   reasoningRequested?: string;
   reasoningMechanism?: string;
   reasoningLevelEffective?: string;
+  // Slowness diagnostics: time-to-first-byte (queue + prefill; decode window
+  // is durationMs - ttfbMs) and the provider's rate-limit headers per call.
+  ttfbMs?: number;
+  providerHttpStatus?: number;
+  providerRequestId?: string;
+  rateLimit?: Record<string, string>;
   attempt: number;
   promptChars: number;
   promptHash: string;

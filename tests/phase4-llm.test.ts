@@ -918,6 +918,53 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(0);
   });
 
+  it("records ttfb and rate-limit headers from the provider response", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const baseComplete = scripted.complete;
+    const adapter: typeof scripted = {
+      ...scripted,
+      complete: vi.fn(async (model, context, options) => {
+        const onResponse = (options as { onResponse?: (response: { status: number; headers: Record<string, string> }) => void }).onResponse;
+        onResponse?.({
+          status: 200,
+          headers: {
+            "request-id": "req_test123",
+            "anthropic-ratelimit-input-tokens-remaining": "39000",
+            "anthropic-ratelimit-input-tokens-limit": "40000",
+            "content-type": "application/json"
+          }
+        });
+        return baseComplete(model, context, options);
+      })
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-headers"));
+
+    expect(telemetry.modelCalls[0]).toMatchObject({
+      ttfbMs: expect.any(Number),
+      providerHttpStatus: 200,
+      providerRequestId: "req_test123",
+      rateLimit: {
+        "anthropic-ratelimit-input-tokens-remaining": "39000",
+        "anthropic-ratelimit-input-tokens-limit": "40000"
+      }
+    });
+    expect((telemetry.modelCalls[0] as { rateLimit?: Record<string, string> }).rateLimit).not.toHaveProperty("content-type");
+  });
+
   it("surfaces the anthropic forced-tool-choice downgrade instead of staying silent", async () => {
     const telemetry = fakeTelemetry();
     const scripted = scriptedAdapter([
