@@ -74,9 +74,9 @@ describe("phase 5 pipeline regressions", () => {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         if (request.telemetryContext?.packetId === "bad-packet") {
           badPacketAttempts += 1;
-          throw new CodegenieError("llm_call_failed", "provider call timed out", {
+          throw new CodegenieError("llm_call_failed", "provider hiccup", {
             recoverable: true,
-            context: { reason: "timeout" }
+            context: { reason: "transient_error" }
           });
         }
         return { findings: [], followUpHints: [], uncertainties: [] } as T;
@@ -102,6 +102,39 @@ describe("phase 5 pipeline regressions", () => {
       ["good-packet", "completed"]
     ]));
     expect(badPacketAttempts).toBe(2);
+  });
+
+  it("does not re-dispatch a packet whose pass timed out", async () => {
+    let badPacketAttempts = 0;
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        if (request.telemetryContext?.packetId === "bad-packet") {
+          badPacketAttempts += 1;
+          throw new CodegenieError("llm_call_failed", "LLM provider call timed out", {
+            recoverable: true,
+            context: { reason: "timeout" }
+          });
+        }
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+
+    const results = await runLensPackets(
+      fakePlan(),
+      [fakePacket({ id: "bad-packet" }), fakePacket({ id: "good-packet" })],
+      fakeTools(),
+      { ...config(), review: { ...config().review, concurrency: 2 } },
+      nullTelemetry(),
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(results.find((result) => result.packetId === "bad-packet")?.status).toBe("failed");
+    expect(badPacketAttempts).toBe(1);
   });
 
   it("marks Stage 7 schema-invalid packet output as failed without aborting the run", async () => {

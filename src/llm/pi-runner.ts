@@ -24,6 +24,7 @@ import { fenceUntrusted } from "../skills/prompt-builder.js";
 import type { ReviewStage, ToolBudget, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../provider/provider-services.js";
 import { sha256Hex } from "../util/hashing.js";
+import { finalizeGraceMs } from "../util/budget.js";
 import { CodegenieError, type CodegenieErrorCode } from "../util/errors.js";
 import {
   roleForStage,
@@ -222,10 +223,29 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       let budgetForceFinalize = false;
       let candidateDrafted = false;
       const toolResultSummaries: LlmToolResultSummary[] = [];
-      const taskTimeout = timeoutSignal(opts.runSignal, request.timeoutMs);
+      // Soft/hard deadline pair (plan 85): the soft deadline stops new
+      // investigation calls and routes the pass to finalize; the hard deadline
+      // (soft + grace) aborts. A pass that finished investigating is never
+      // killed mid-finalize by the soft budget alone.
+      const graceMs = finalizeGraceMs(request.timeoutMs);
+      const softDeadlineAt = Date.now() + request.timeoutMs;
+      let softDeadlineFinalize = false;
+      const taskTimeout = timeoutSignal(opts.runSignal, request.timeoutMs + graceMs);
 
       try {
         for (;;) {
+          if (!forceFinalize && messages.length > 1 && Date.now() >= softDeadlineAt) {
+            forceFinalize = true;
+            softDeadlineFinalize = true;
+            queueForcedFinalizePrompt({
+              opts,
+              request,
+              messages,
+              submitToolName: submitTool.name,
+              reason: "soft_deadline",
+              candidateDrafted
+            });
+          }
           const activeTools = forceFinalize ? [submitTool] : allTools;
           const kind = forceFinalize ? schemaRepairUsed ? "repair" : "finalize" : messages.length === 1 ? "initial" : "tool-continuation";
           const finalizeMode = forceFinalize ? "full" : undefined;
@@ -320,6 +340,20 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               }
               if (toolCalls.length > 0) {
                 recordSubmitWithExtraTools(opts, request, submitTool.name, toolCalls);
+              }
+              if (softDeadlineFinalize) {
+                opts.telemetry.event(definedRecord({
+                  stage: request.stage,
+                  level: "info",
+                  message: "finalize_grace_used",
+                  workerId: request.telemetryContext?.workerId,
+                  packetId: request.telemetryContext?.packetId,
+                  data: definedRecord({
+                    graceMsUsed: Math.max(0, Date.now() - softDeadlineAt),
+                    graceMs,
+                    candidateId: request.telemetryContext?.candidateId
+                  })
+                }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
               }
               return validated as T;
             } catch (cause) {
@@ -585,7 +619,9 @@ function queueForcedFinalizePrompt(input: {
     ? `LLM provider call budget is exhausted. Call ${input.submitToolName} now with the best schema-valid result supported by the evidence already gathered. Do not request more repository tools. ${noResultInstruction(input.request)}`
     : input.reason === "tool_budget_exhausted"
       ? `Tool budget is exhausted. Call ${input.submitToolName} now with the best schema-valid result supported by the evidence already gathered. ${noResultInstruction(input.request)}`
-      : `Finish now by calling ${input.submitToolName} with schema-valid arguments. Do not answer in plain text or call other tools. ${noResultInstruction(input.request)}`;
+      : input.reason === "soft_deadline"
+        ? `The review pass time budget is exhausted. Call ${input.submitToolName} now with the best schema-valid result supported by the evidence already gathered. Do not request more repository tools. ${noResultInstruction(input.request)}`
+        : `Finish now by calling ${input.submitToolName} with schema-valid arguments. Do not answer in plain text or call other tools. ${noResultInstruction(input.request)}`;
   input.messages.push({ role: "user", content, timestamp: 0 });
   recordFinalizeStart(
     input.opts,
@@ -626,7 +662,7 @@ function recordFinalizeStart(
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
 
-type ForcedFinalizeReason = "budget_exhausted" | "tool_budget_exhausted" | "plain_text_or_empty_response";
+type ForcedFinalizeReason = "budget_exhausted" | "tool_budget_exhausted" | "soft_deadline" | "plain_text_or_empty_response";
 
 function providerPromptCacheOptions(runId: string, stage: ReviewStage): ProviderPromptCacheOptions {
   return {

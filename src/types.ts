@@ -827,7 +827,9 @@ export type SystemReviewResult = {
 
 export type VerificationVerdict = {
   candidateId: string;
-  verdict: "keep" | "reject" | "revise";
+  // "incomplete" is runner-assigned only (timeout/budget/schema loss before a
+  // real verdict); the model-submitted verdict never carries it.
+  verdict: "keep" | "reject" | "revise" | "incomplete";
   reason: string;
   requiredEvidencePresent: boolean;
   falsePositiveRisk: "low" | "medium" | "high";

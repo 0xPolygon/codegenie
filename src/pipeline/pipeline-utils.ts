@@ -40,7 +40,13 @@ export function isRecoverableTransientLlmError(error: unknown): boolean {
 }
 
 export function isRecoverableWorkerError(error: unknown): boolean {
-  return !isRunFatalLlmError(error) && !isBudgetExhaustedError(error);
+  // Pass-timeout errors are excluded from the one transient re-dispatch: a
+  // pass that burned its soft+grace time budget should not be replayed in
+  // full (plan 85) — the retry economics are worse than the grace already
+  // granted. Provider blips (transient_error) remain re-dispatchable.
+  return !isRunFatalLlmError(error) &&
+    !isBudgetExhaustedError(error) &&
+    errorContextReason(error) !== "timeout";
 }
 
 function errorContextReason(error: unknown): unknown {

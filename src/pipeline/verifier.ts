@@ -530,15 +530,16 @@ async function verifyCandidate(
     ? revisedFinding(candidate, normalized.finalFinding, packet, opts.diff)
     : undefined;
   const revisedAnchor = normalizeAnchor(normalized.revisedAnchor, packet, opts.diff);
+  const verificationIncomplete = normalized.reason.startsWith("verification incomplete:");
   return {
     candidateId: candidate.id,
-    verdict: normalized.verdict,
+    verdict: verificationIncomplete ? "incomplete" : normalized.verdict,
     reason: normalized.reason,
     requiredEvidencePresent: normalized.requiredEvidencePresent,
     falsePositiveRisk: normalized.falsePositiveRisk,
     ...(revised !== undefined ? { finalFinding: revised } : {}),
     ...(revisedAnchor !== undefined ? { revisedAnchor } : {}),
-    ...(normalized.reason.startsWith("verification incomplete:") ? { verificationIncomplete: true } : {}),
+    ...(verificationIncomplete ? { verificationIncomplete: true } : {}),
     ...(normalized.behaviorChange !== undefined ? { behaviorChange: normalized.behaviorChange } : {}),
     ...(normalized.intentEvidence !== undefined ? { intentEvidence: normalized.intentEvidence } : {})
   };
@@ -1192,7 +1193,7 @@ function summarizeWorkerOutcomes(
 function incompleteVerificationVerdict(candidateId: string, reason: string): VerificationVerdict {
   return {
     candidateId,
-    verdict: "reject",
+    verdict: "incomplete",
     reason: `verification incomplete: ${reason}`,
     requiredEvidencePresent: false,
     falsePositiveRisk: "high",
@@ -1216,10 +1217,16 @@ function verificationRecordMeta(
   if (verdict.verificationIncomplete !== true) {
     return { verificationStatus: "completed" };
   }
-  const code = errorCode(error);
+  // errorCode must state why verification is incomplete, not the transport
+  // error class the loss surfaced through (plan 85): a budget-starved or
+  // timed-out verification is not an "llm_call_failed".
+  const reasonLabel = incompleteReasonLabel(verdict.reason);
+  const code = reasonLabel === "budget_limited" || reasonLabel === "worker_timed_out" || reasonLabel === "not_dispatched"
+    ? reasonLabel
+    : errorCode(error);
   return {
     verificationStatus: "incomplete",
-    incompleteReason: incompleteReasonLabel(verdict.reason),
+    incompleteReason: reasonLabel,
     ...(code !== undefined ? { errorCode: code } : {})
   };
 }
@@ -1240,6 +1247,9 @@ function verifierOutcomeReason(outcome: { outcome: string; error?: unknown }): s
 function incompleteReasonLabel(reason: string): string {
   if (reason.includes("budget_limited") || reason.includes("budget limit")) {
     return "budget_limited";
+  }
+  if (reason.includes("timed_out") || reason.includes("timed out")) {
+    return "worker_timed_out";
   }
   if (reason.includes("schema_invalid")) {
     return "schema_invalid";

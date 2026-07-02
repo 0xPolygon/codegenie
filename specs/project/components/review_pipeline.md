@@ -739,7 +739,7 @@ Worker runner and lens execution:
 - `workers_respect_concurrency_and_priority`: with `review.concurrency = 2` and mixed priorities, at most two tasks run concurrently and dispatch follows priority then coverage then stable order.
 - `workers_isolated_context`: two packet workers' prompts share no conversation state; each result carries its own `workerId`/`packetId`.
 - `workers_stage7_single_retry`: a transient packet failure re-dispatches once; a second failure yields `status: "failed"` and `review_failed` coverage records for all packet hunks.
-- `workers_timeout_and_cancellation`: a worker exceeding `perPassTimeoutMs` is aborted and handled as terminal; the 2x hard kill cancels in-flight workers and still writes telemetry.
+- `workers_timeout_and_cancellation`: `perPassTimeoutMs` is a soft deadline — after it, the pass dispatches no further investigation calls and is routed to one forced finalize; the worker is aborted as terminal only at the hard deadline (`perPassTimeoutMs + finalizeGraceMs`, plan 85). The 2x run-level hard kill cancels in-flight workers immediately and still writes telemetry. Timed-out passes are not re-dispatched.
 - `workers_budget_checkpoint_stops_dispatch`: model-call budget exhausts mid-queue; remaining tasks settle `not_dispatched`; their hunks are `review_failed` with the budget reason.
 - `lens_one_composite_call_per_packet`: a packet with three lenses produces exactly one model call whose prompt contains all three projections.
 - `lens_coverage_profiles`: light/normal/deep packets receive the table's tool budgets, scaled by run depth.

@@ -88,7 +88,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 82 | PENDING | Issue 82: BehaviorChange Severity Discipline |
 | 83 | PENDING | Issue 83: Wording-Independent Finding Fingerprints and Compare Integrity |
 | 84 | PENDING | Issue 84: Stage-7 Ensemble Review for Deep Packets |
-| 85 | PENDING | Issue 85: Finalize Grace for Per-Pass Worker Timeouts |
+| 85 | COMPLETE | Issue 85: Finalize Grace for Per-Pass Worker Timeouts |
 | 86 | PENDING | Issue 86: Provider Protocol Parity and Observability |
 | 87 | PENDING | Issue 87: Verifier Pre-Clustering Restricted to Exact Duplicates |
 | 88 | PENDING | Issue 88: Publisher Summary-Only Fallback Reachability and Posting Disclosure |

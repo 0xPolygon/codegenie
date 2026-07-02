@@ -831,6 +831,56 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
   });
 
+  it("routes a pass past its soft deadline to a forced finalize within the grace window", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "tool-1", name: "read_range", arguments: { path: "src/a.ts", startLine: 1, endLine: 2 } }
+      ]),
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const baseComplete = scripted.complete;
+    let firstCall = true;
+    const adapter: typeof scripted = {
+      ...scripted,
+      complete: vi.fn(async (model, context, options) => {
+        if (firstCall) {
+          firstCall = false;
+          // Push past the 150ms soft deadline while staying inside soft+grace.
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+        return baseComplete(model, context, options);
+      })
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    const result = await runner.runStructured({
+      ...submitReviewRequest("packet-soft-deadline"),
+      tools: buildRepositoryToolDefinitions(fakeRepositoryTools()),
+      toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 2000 },
+      timeoutMs: 150,
+      telemetryContext: { workerId: "worker-1", packetId: "packet-soft-deadline" }
+    });
+
+    expect(result).toEqual({ findings: [], followUpHints: [], uncertainties: [] });
+    expect(scripted.toolNames[1]).toEqual(["submit_review"]);
+    expect(scripted.contexts[1]).toContain("time budget is exhausted");
+    const finalizeStart = telemetry.events.find((event) => event.message === "full_finalize_started");
+    expect(finalizeStart?.data).toMatchObject({ reason: "soft_deadline" });
+    const graceUsed = telemetry.events.find((event) => event.message === "finalize_grace_used");
+    expect(graceUsed?.data).toMatchObject({ graceMsUsed: expect.any(Number) });
+    expect(telemetry.modelCalls[1]).toMatchObject({ kind: "finalize", status: "ok" });
+  });
+
   it("enforces maxConcurrentCalls across provider misses", async () => {
     const telemetry = fakeTelemetry();
     let active = 0;

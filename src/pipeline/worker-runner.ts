@@ -1,5 +1,6 @@
 import pLimit from "p-limit";
 import type { CoverageLevel, ReviewPriority, ReviewStage } from "../types.js";
+import { finalizeGraceMs } from "../util/budget.js";
 
 export type WorkerTask<T> = {
   workerId?: string;
@@ -135,7 +136,13 @@ async function runTaskOnce<T>(task: AssignedWorkerTask<T>, rootSignal: AbortSign
     return { task, outcome: "cancelled", error: rootSignal.reason, attempts: attempt - 1 };
   }
   rootSignal.addEventListener("abort", onAbort, { once: true });
-  const timeout = setTimeout(() => controller.abort(new Error("worker timed out")), task.timeoutMs);
+  // Hard deadline: the pass's soft budget plus the finalize grace window. The
+  // soft deadline itself is enforced cooperatively inside the LLM runner loop
+  // (no new investigation calls after it); this timer is the backstop.
+  const timeout = setTimeout(
+    () => controller.abort(new Error("worker timed out")),
+    task.timeoutMs + finalizeGraceMs(task.timeoutMs)
+  );
   const abortWaiter = abortPromise(controller.signal);
 
   try {

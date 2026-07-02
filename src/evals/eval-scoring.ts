@@ -848,7 +848,7 @@ function verificationOutcome(
     return { subReason: normalizeGateReason(record.gateReason), outcome: `pre-gate=${record.gateReason}${duplicateSuffix}` };
   }
   if (record.verdict.verificationIncomplete === true) {
-    return { subReason: "verification-incomplete", outcome: `verdict=${record.verdict.verdict}${duplicateSuffix} reason=${record.verdict.reason}` };
+    return { subReason: "verification-incomplete", outcome: `outcome=incomplete${duplicateSuffix} reason=${record.verdict.reason}` };
   }
   if (record.verdict.verdict === "reject") {
     return { subReason: "verifier-rejected", outcome: `verdict=reject${duplicateSuffix} reason=${record.verdict.reason}` };
