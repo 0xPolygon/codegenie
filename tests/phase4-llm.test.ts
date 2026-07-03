@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { complete as piComplete, completeSimple as piCompleteSimple, Type, validateToolCall } from "@earendil-works/pi-ai/compat";
+import { Type, validateToolCall } from "@earendil-works/pi-ai";
 import { getOAuthApiKey as piGetOAuthApiKey } from "@earendil-works/pi-ai/oauth";
 import { describe, expect, it, vi } from "vitest";
 import { createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
@@ -37,6 +37,10 @@ import type { ToolDefinition } from "../src/llm/llm-runner.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../src/provider/provider-services.js";
 import { CodegenieError } from "../src/util/errors.js";
 import { scaleToolBudget } from "../src/util/budget.js";
+
+type RealPiAiAdapterDepsForTest = NonNullable<Parameters<typeof createRealPiAiAdapter>[0]>;
+type PiCompleteForTest = NonNullable<RealPiAiAdapterDepsForTest["complete"]>;
+type PiCompleteSimpleForTest = NonNullable<RealPiAiAdapterDepsForTest["completeSimple"]>;
 
 describe("Phase 4 schemas and repository tool definitions", () => {
   it("redacts shared object references without mistaking them for cycles", () => {
@@ -4128,7 +4132,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const completeSimple = (async (_model, _context, options) => {
       optionsSeen.push(options as Record<string, unknown>);
       return assistant([validSubmitReviewCall("submit-simple-reasoning")]);
-    }) as typeof piCompleteSimple;
+    }) as PiCompleteSimpleForTest;
     const adapter = createRealPiAiAdapter({ completeSimple });
 
     await adapter.complete(
@@ -4150,8 +4154,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const complete = (async (_model, _context, options) => {
       rawOptionsSeen.push(options as Record<string, unknown>);
       return assistant([validSubmitReviewCall("submit-raw-forced")]);
-    }) as typeof piComplete;
-    const completeSimple = vi.fn(async () => assistant([validSubmitReviewCall("must-not-use-simple")])) as unknown as typeof piCompleteSimple;
+    }) as PiCompleteForTest;
+    const completeSimple = vi.fn(async () => assistant([validSubmitReviewCall("must-not-use-simple")])) as unknown as PiCompleteSimpleForTest;
     const adapter = createRealPiAiAdapter({ complete, completeSimple });
 
     await adapter.complete(
@@ -4181,8 +4185,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const complete = (async (_model, _context, options) => {
       rawOptionsSeen.push(options as Record<string, unknown>);
       return assistant([validSubmitReviewCall("submit-anthropic-forced")]);
-    }) as typeof piComplete;
-    const completeSimple = vi.fn(async () => assistant([validSubmitReviewCall("must-not-use-simple")])) as unknown as typeof piCompleteSimple;
+    }) as PiCompleteForTest;
+    const completeSimple = vi.fn(async () => assistant([validSubmitReviewCall("must-not-use-simple")])) as unknown as PiCompleteSimpleForTest;
     const adapter = createRealPiAiAdapter({ complete, completeSimple });
 
     await adapter.complete(
@@ -4214,7 +4218,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const complete = (async (_model, _context, options) => {
       rawOptionsSeen.push(options as Record<string, unknown>);
       return assistant([validSubmitReviewCall("submit-anthropic-downgraded")]);
-    }) as typeof piComplete;
+    }) as PiCompleteForTest;
     const adapter = createRealPiAiAdapter({ complete });
 
     await adapter.complete(
@@ -4259,7 +4263,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const completeSimple = (async (_model, _context, options) => {
       optionsSeen.push(options as Record<string, unknown>);
       return assistant([validSubmitReviewCall("submit-oauth-refresh")]);
-    }) as typeof piCompleteSimple;
+    }) as PiCompleteSimpleForTest;
     const getOAuthApiKey = vi.fn(async (_provider: string, credentials: Record<string, typeof oldCredentials>) => {
       expect(credentials["github-copilot"]).toEqual(oldCredentials);
       return { newCredentials, apiKey: "new-oauth-api-key" };

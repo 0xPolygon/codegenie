@@ -825,7 +825,7 @@ When `telemetry.debugTrace` is enabled:
 
 This component depends on:
 
-- `@earendil-works/pi-ai` — `complete()`, `validateToolCall`, TypeBox schema integration, provider/model resolution, typed provider errors, abort support, and Pi provider/auth registry surfaces. Wrapped entirely inside `src/llm/` and `src/provider/`; no other component imports pi-ai.
+- `@earendil-works/pi-ai` — a `Models` instance (`builtinModels()`) for provider/model resolution and `complete*()` calls, `validateToolCall`, TypeBox schema integration, typed provider errors, abort support, and Pi provider/auth registry surfaces. Runtime calls use codegenie's auth resolution order and inject resolved API keys per call. Wrapped entirely inside `src/llm/` and `src/provider/`; no other component imports pi-ai.
 - TypeBox (via pi-ai) for all LLM I/O schemas; `Static<>` for type derivation.
 - `components/context_and_tools.md` — the `RepositoryTools` implementation wrapped by `buildRepositoryToolDefinitions`; tool-layer caps, containment, and `ToolResultMeta` provenance.
 - `components/repository_and_github.md` — `GitClient` for the cache tracked-directory check; subprocess credential scrubbing upstream of this component's sinks.

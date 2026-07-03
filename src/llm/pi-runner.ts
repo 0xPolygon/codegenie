@@ -1,23 +1,19 @@
 import {
-  complete,
-  completeSimple,
-  getEnvApiKey,
-  getModel,
-  getModels,
-  getProviders,
   validateToolCall,
   type Api,
   type Context,
-  type KnownProvider,
   type Model,
+  type Models,
+  type ProviderStreamOptions,
   type SimpleStreamOptions,
   type Tool,
   type ToolCall
-} from "@earendil-works/pi-ai/compat";
+} from "@earendil-works/pi-ai";
 import { getOAuthApiKey, getOAuthProvider, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import pLimit from "p-limit";
 import { createFileAuthStorage } from "../provider/provider-services.js";
 import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../provider/model-policy.js";
+import { getCodegeniePiModels, getPiEnvApiKey } from "../provider/pi-ai-models.js";
 import { getCodegeniePaths } from "../config/paths.js";
 import { registerSecret, stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
@@ -174,11 +170,15 @@ const MAX_DEBUG_ARTIFACT_CHARS = 1_500_000;
 const RECORDED_PROVIDER_FAILURE = Symbol("recordedProviderFailure");
 
 type RealPiAiAdapterDeps = {
-  complete?: typeof complete;
-  completeSimple?: typeof completeSimple;
+  models?: Pick<Models, "complete" | "completeSimple" | "getModel" | "getModels" | "getProviders" | "getProvider">;
+  complete?: PiCompleteFunction;
+  completeSimple?: PiCompleteSimpleFunction;
   getOAuthApiKey?: typeof getOAuthApiKey;
   authStorage?: PiAuthStorage;
 };
+
+type PiCompleteFunction = (model: Model<Api>, context: Context, options?: ProviderStreamOptions) => Promise<PiAssistantMessage>;
+type PiCompleteSimpleFunction = (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => Promise<PiAssistantMessage>;
 
 export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
   const adapter = opts.adapter ?? createRealPiAiAdapter();
@@ -615,10 +615,11 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
 }
 
 export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): PiAiAdapter {
-  const completeFn = deps.complete ?? complete;
-  const completeSimpleFn = deps.completeSimple ?? completeSimple;
+  const models = deps.models ?? getCodegeniePiModels();
+  const completeFn = deps.complete ?? ((model, context, options) => models.complete(model, context, options) as Promise<PiAssistantMessage>);
+  const completeSimpleFn = deps.completeSimple ?? ((model, context, options) => models.completeSimple(model, context, options) as Promise<PiAssistantMessage>);
   return {
-    resolveModel: ({ provider, model }) => resolveRealModel(provider, model, deps.authStorage),
+    resolveModel: ({ provider, model }) => resolveRealModel(provider, model, deps.authStorage, models),
     complete: async (model, context, options) => {
       const apiKey = await resolveModelApiKey(model, deps);
       const completeOptions = definedRecord({ ...options, apiKey }) as SimpleStreamOptions & Record<string, unknown>;
@@ -3461,8 +3462,13 @@ function defaultToolMeta(): ToolResultMeta {
   return { backend: "text", precision: "text", degraded: false };
 }
 
-function resolveRealModel(provider: string | undefined, model: string | undefined, authStorage?: PiAuthStorage): PiModelRef | undefined {
-  const qualified = provider === undefined && model ? splitProviderQualifiedModel(model) : undefined;
+function resolveRealModel(
+  provider: string | undefined,
+  model: string | undefined,
+  authStorage?: PiAuthStorage,
+  models: Pick<Models, "getModel" | "getModels" | "getProviders" | "getProvider"> = getCodegeniePiModels()
+): PiModelRef | undefined {
+  const qualified = provider === undefined && model ? splitProviderQualifiedModel(model, models) : undefined;
   const resolvedProvider = provider ?? qualified?.provider;
   const resolvedModel = qualified?.model ?? model;
 
@@ -3471,7 +3477,7 @@ function resolveRealModel(provider: string | undefined, model: string | undefine
       return undefined;
     }
     try {
-      const raw = (getModel as unknown as (provider: string, model: string) => unknown)(resolvedProvider, resolvedModel);
+      const raw = models.getModel(resolvedProvider, resolvedModel);
       if (!raw) {
         return undefined;
       }
@@ -3487,18 +3493,19 @@ function resolveRealModel(provider: string | undefined, model: string | undefine
     if (!auth) {
       return undefined;
     }
-    const models = filterDeprecatedProviderModels(getModels(resolvedProvider as KnownProvider));
-    const first = models[0];
+    const providerModels = filterDeprecatedProviderModels([...models.getModels(resolvedProvider)]);
+    const first = providerModels[0];
     return first ? { provider: resolvedProvider, id: first.id, raw: first, ...auth } : undefined;
   }
 
-  for (const providerId of getProviders()) {
+  for (const provider of models.getProviders()) {
+    const providerId = provider.id;
     const auth = resolveProviderAuth(providerId, authStorage);
     if (!auth) {
       continue;
     }
-    const models = filterDeprecatedProviderModels(getModels(providerId));
-    const match = resolvedModel ? models.find((candidate) => candidate.id === resolvedModel) : models[0];
+    const providerModels = filterDeprecatedProviderModels([...models.getModels(providerId)]);
+    const match = resolvedModel ? providerModels.find((candidate) => candidate.id === resolvedModel) : providerModels[0];
     if (match) {
       return { provider: providerId, id: match.id, raw: match, ...auth };
     }
@@ -3506,20 +3513,23 @@ function resolveRealModel(provider: string | undefined, model: string | undefine
   return undefined;
 }
 
-function splitProviderQualifiedModel(model: string): { provider: string; model: string } | undefined {
+function splitProviderQualifiedModel(
+  model: string,
+  models: Pick<Models, "getProvider"> = getCodegeniePiModels()
+): { provider: string; model: string } | undefined {
   const slash = model.indexOf("/");
   if (slash <= 0 || slash === model.length - 1) {
     return undefined;
   }
   const provider = model.slice(0, slash);
-  if (!getProviders().includes(provider as KnownProvider)) {
+  if (models.getProvider(provider) === undefined) {
     return undefined;
   }
   return { provider, model: model.slice(slash + 1) };
 }
 
 function resolveProviderAuth(provider: string, authStorage = createFileAuthStorage(getCodegeniePaths())): Pick<PiModelRef, "apiKey" | "oauthProvider"> | undefined {
-  const envApiKey = getEnvApiKey(provider);
+  const envApiKey = getPiEnvApiKey(provider);
   if (envApiKey) {
     registerSecret(envApiKey);
     return { apiKey: envApiKey };

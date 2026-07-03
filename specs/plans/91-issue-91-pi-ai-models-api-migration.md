@@ -1,6 +1,7 @@
 # Issue 91: pi-ai Models-API Migration (off the `/compat` Entrypoint)
 
-Status: PENDING
+Status: IN PROGRESS
+Implementation status (2026-07-03): Option A selected for auth reconciliation. Runtime calls keep codegenie's env → stored api_key → stored OAuth-with-refresh resolution and inject the resolved apiKey per call; pi-ai `models.getAuth()` is intentionally unused because pi's credential-store resolver treats stored credentials as owning the provider and only falls back to env when no credential is stored. The code migration is implemented off `/compat`; the owner A/B protocol-posture diff remains the release gate before running this in a measurement campaign.
 Planned from: the pi-ai 0.80.3 upgrade (2026-07-02): the legacy global API surface codegenie uses moved to a `@earendil-works/pi-ai/compat` entrypoint that upstream documents as temporary — "verbatim behavior, one import-path change… It will be removed in a future release; migrate to `createModels()` + provider factories." Adopted commit `07edebc`; punchlisted same day.
 Planned at: commit `46872b9` (branch `next`)
 Recommended priority: medium — no forcing function while pi-ai is pinned to 0.80.x, but the pin blocks future pi upgrades (each unpinned upgrade re-rolls the compat surface). Land in a quiet window between measurement campaigns; NEVER mid-campaign — this is transport-seam surgery and every A/B depends on the transport being constant.

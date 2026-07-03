@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@earendil-works/pi-ai':
-        specifier: 0.80.3
+        specifier: ^0.80.3
         version: 0.80.3(ws@8.21.0)(zod@4.4.3)
       '@vscode/ripgrep':
         specifier: 1.18.0
