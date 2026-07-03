@@ -208,7 +208,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       const repositoryTools = request.tools ?? [];
       const allTools = [...repositoryTools, submitTool];
       const budget = request.toolBudget ?? NO_REPOSITORY_TOOL_BUDGET;
-      const providerPromptCache = providerPromptCacheOptions(opts.telemetry.runId, request.stage);
+      const providerPromptCache = providerPromptCacheOptions(opts.telemetry.runId, request.stage, request.telemetryContext?.workerId);
       recordProviderPromptCacheStrategy(opts, request, providerPromptCache, recordedPromptCacheStages);
       if (!protocolFlags.providerProtocolRecorded) {
         protocolFlags.providerProtocolRecorded = true;
@@ -225,6 +225,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             provider: model.provider,
             model: model.id,
             api: (model.raw as { api?: string }).api,
+            sessionKeyGranularity: "worker",
             forcedToolChoiceEffective: forcedProbe.toolChoiceEffective,
             toolChoiceDowngraded: forcedProbe.toolChoiceDowngraded,
             reasoningMechanism: forcedProbe.reasoningMechanism,
@@ -689,10 +690,18 @@ function recordFinalizeStart(
 
 type ForcedFinalizeReason = "budget_exhausted" | "tool_budget_exhausted" | "soft_deadline" | "plain_text_or_empty_response";
 
-function providerPromptCacheOptions(runId: string, stage: ReviewStage): ProviderPromptCacheOptions {
+// Session keys are per WORKER, not per stage: the unit of real prefix reuse
+// is one worker's growing conversation (initial → continuations → finalize).
+// On OpenAI the key maps to prompt_cache_key, where a stage-shared key would
+// concentrate all concurrent workers on one cache node past the documented
+// ~15 req/min per-key overflow threshold; on direct Anthropic the key is
+// inert; on affinity-honoring gateways per-worker keys avoid pinning N
+// concurrent workers to a single upstream shard.
+function providerPromptCacheOptions(runId: string, stage: ReviewStage, workerId?: string): ProviderPromptCacheOptions {
+  const workerPart = workerId !== undefined ? `-${safePromptCacheSessionPart(workerId)}` : "";
   return {
     strategy: "pi-session",
-    sessionId: `codegenie-${safePromptCacheSessionPart(runId)}-stage-${stage}`,
+    sessionId: `codegenie-${safePromptCacheSessionPart(runId)}-stage-${stage}${workerPart}`,
     cacheRetention: "short"
   };
 }

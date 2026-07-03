@@ -918,6 +918,47 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(0);
   });
 
+  it("scopes prompt-cache session keys per worker, stable across one worker's calls", async () => {
+    const scripted = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "tool-1", name: "read_range", arguments: { path: "src/a.ts", startLine: 1, endLine: 2 } }
+      ]),
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ]),
+      assistant([
+        { type: "toolCall", id: "submit-2", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter: scripted,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("packet-a"),
+      tools: buildRepositoryToolDefinitions(fakeRepositoryTools()),
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 2000 },
+      telemetryContext: { workerId: "w7-001", packetId: "packet-a" }
+    });
+    await runner.runStructured({
+      ...submitReviewRequest("packet-b"),
+      telemetryContext: { workerId: "w7-002", packetId: "packet-b" }
+    });
+
+    const sessionIds = scripted.options.map((options) => options.sessionId as string);
+    // Worker w7-001 made two calls (tool round + submit) sharing one key;
+    // worker w7-002 gets a different key.
+    expect(sessionIds[0]).toBe(sessionIds[1]);
+    expect(sessionIds[0]).toContain("stage-7-w7-001");
+    expect(sessionIds[2]).toContain("stage-7-w7-002");
+    expect(sessionIds[2]).not.toBe(sessionIds[0]);
+  });
+
   it("records ttfb and rate-limit headers from the provider response", async () => {
     const telemetry = fakeTelemetry();
     const scripted = scriptedAdapter([
