@@ -23,6 +23,7 @@ import { isExactDuplicateCandidate } from "./verifier.js";
 import { inferAnchorFromChangedCode, isBudgetExhaustedError, isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff, validateAnchorForPacket } from "./pipeline-utils.js";
 import { isCodegenieError } from "../util/errors.js";
 import { applySeverityPolicy } from "./severity-policy.js";
+import { MAX_DEEP_ENSEMBLE_PASSES } from "../config/schema.js";
 
 type LensRunnerOptions = {
   runner: LlmRunner;
@@ -159,7 +160,9 @@ function ensemblePassesForPacket(packet: ReviewPacket, config: CodegenieConfig):
   if (packet.coverage !== "deep") {
     return 1;
   }
-  return Math.max(1, config.review.deepEnsemblePasses ?? 1);
+  // Config schemas already reject values above the cap; this clamp keeps
+  // programmatically-built configs honest too.
+  return Math.min(MAX_DEEP_ENSEMBLE_PASSES, Math.max(1, config.review.deepEnsemblePasses ?? 1));
 }
 
 // Plan 84: merge K independent passes of one packet into a single

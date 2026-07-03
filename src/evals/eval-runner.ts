@@ -5,6 +5,7 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { applyRepoConfigLayer } from "../config/config-loader.js";
 import {
+  MAX_DEEP_ENSEMBLE_PASSES,
   reasoningLevelSchema,
   reviewDepthSchema,
   severitySchema
@@ -134,7 +135,7 @@ const caseSchema = z
         budgetBoost: positiveNumberSchema.optional(),
         maxTimeMinutes: positiveNumberSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
-        deepEnsemblePasses: positiveIntSchema.optional(),
+        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
         verify: z.boolean().optional(),
         cache: z.boolean().optional(),
         cacheDir: z.string().min(1).optional(),

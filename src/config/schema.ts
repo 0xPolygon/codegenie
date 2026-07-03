@@ -10,6 +10,10 @@ export const logLevelSchema = z.enum(["debug", "info", "warn", "error"]);
 const positiveIntSchema = z.number().int().positive();
 const nonNegativeIntSchema = z.number().int().nonnegative();
 const positiveFiniteNumberSchema = z.number().positive().finite();
+// Plan 84 guardrail: ensemble cost scales linearly with passes × deep
+// packets; beyond 3 the marginal recall of another draw is negligible while
+// cost keeps climbing. Hard cap, not a default.
+export const MAX_DEEP_ENSEMBLE_PASSES = 3;
 
 export const pathRuleSchema = z
   .object({
@@ -46,7 +50,7 @@ export const rawConfigSchema = z
         budgetBoost: positiveFiniteNumberSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional(),
-        deepEnsemblePasses: positiveIntSchema.optional()
+        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional()
       })
       .strict()
       .optional(),
@@ -132,7 +136,7 @@ export const codegenieConfigSchema = z
         budgetBoost: positiveFiniteNumberSchema,
         maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional(),
-        deepEnsemblePasses: positiveIntSchema.optional()
+        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional()
       })
       .strict(),
     github: z

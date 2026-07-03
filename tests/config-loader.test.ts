@@ -3,6 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { MAX_DEEP_ENSEMBLE_PASSES, rawConfigSchema } from "../src/config/schema.js";
 import { ensureCodegenieHome, getCodegeniePaths } from "../src/config/paths.js";
 import { loadConfig } from "../src/config/config-loader.js";
 import { loadProviderSettings, saveProviderSettings } from "../src/provider/provider-settings.js";
@@ -261,6 +262,13 @@ describe("codegenie paths and provider settings", () => {
     });
     expect(statSync(paths.home).mode & 0o077).toBe(0);
     expect(statSync(paths.settingsPath).mode & 0o077).toBe(0);
+  });
+});
+
+describe("deepEnsemblePasses cap (plan 84)", () => {
+  it("rejects values above the hard cap in raw config", () => {
+    expect(rawConfigSchema.safeParse({ review: { deepEnsemblePasses: MAX_DEEP_ENSEMBLE_PASSES } }).success).toBe(true);
+    expect(rawConfigSchema.safeParse({ review: { deepEnsemblePasses: MAX_DEEP_ENSEMBLE_PASSES + 1 } }).success).toBe(false);
   });
 });
 
