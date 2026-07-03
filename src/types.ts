@@ -50,6 +50,10 @@ export type CodegenieConfig = {
     // fed to the existing verification gate. 1 = off (the default); eval
     // cases opt in while the effect is being measured.
     deepEnsemblePasses?: number;
+    // Plan 92 layer 3: single-pass packets whose first pass shows near-miss
+    // evidence (concrete hint/uncertainty, silent-with-signal, low-confidence
+    // only) earn one additional independent review pass. Off by default.
+    adaptiveSecondPass?: boolean;
   };
   github: {
     summaryWhenNoFindings: boolean;
@@ -450,6 +454,13 @@ export type PacketHunk = {
   plannerFallbackReason?: string;
 };
 
+// Plan 92 layer 2: a deterministic structural escalator raised this packet's
+// coverage floor (recorded for provenance and attention telemetry).
+export type CoverageEscalation = {
+  rule: "test_coverage_delta";
+  reason: string;
+};
+
 export type CoverageLevel = "deep" | "normal" | "light" | "skip";
 export type PacketKind = "hunk" | "coalesced-hunks" | "file-diff" | "whole-file";
 export type ReviewProfile = "simple" | "standard" | "investigate";
@@ -538,6 +549,7 @@ export type TestCoverageDelta = {
 export type ReviewPacket = {
   id: string;
   kind: PacketKind;
+  coverageEscalation?: CoverageEscalation;
   prSummary: string;
   intentText?: string;
   intentSignals?: IntentSignals;
@@ -827,6 +839,9 @@ export type PacketReviewResult = {
   }>;
   uncertainties: StructuredUncertainty[];
   status: "completed" | "incomplete" | "failed" | "skipped";
+  // Total Stage-7 passes that produced this result (planned ensemble +
+  // adaptive second pass); absent on stage-8 system results.
+  passesRun?: number;
 };
 
 export type SystemReviewTask = {
@@ -985,6 +1000,7 @@ export type EvalCase = {
     maxTimeMinutes?: number;
     maxBudgetTokens?: number;
     deepEnsemblePasses?: number;
+    adaptiveSecondPass?: boolean;
     verify?: boolean;
     cache?: boolean;
     cacheDir?: string;
@@ -1125,7 +1141,7 @@ export type AttentionRecord = {
   packetId: string;
   path: string;
   coverage: Exclude<CoverageLevel, "skip">;
-  coverageSource: "planner" | "deterministic_default";
+  coverageSource: "planner" | "deterministic_default" | `escalated:${string}`;
   ensemblePasses: number;
   directCandidates: number;
   promotedCandidates: number;

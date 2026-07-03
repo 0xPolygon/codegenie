@@ -357,6 +357,108 @@ describe("phase 5 pipeline regressions", () => {
     );
   });
 
+  it("runs an adaptive second pass when the first pass emits a concrete near-miss hint (plan 92 T1)", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const callsByPacket = new Map<string, number>();
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: { telemetryContext?: { packetId?: string } }) => {
+        const packetId = request.telemetryContext?.packetId ?? "";
+        const call = (callsByPacket.get(packetId) ?? 0) + 1;
+        callsByPacket.set(packetId, call);
+        if (packetId === "packet-hint" && call === 1) {
+          return {
+            findings: [],
+            followUpHints: [{
+              question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
+              files: ["app.ts"],
+              symbols: [],
+              suggestedLenses: [],
+              reason: "The changed calculation divides by decimals without a zero guard.",
+              confidence: "medium"
+            }],
+            uncertainties: []
+          } as T;
+        }
+        if (packetId === "packet-hint" && call === 2) {
+          return {
+            findings: [{
+              title: "Zero-decimal origin token truncates the fee result",
+              severity: "medium",
+              confidence: "medium",
+              path: "app.ts",
+              anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+              category: "correctness",
+              evidence: { changedCode: "+bad" },
+              failureMode: "Zero-decimal origin tokens produce a truncated fee where the old path returned the exact amount.",
+              whyThisMatters: "matters",
+              verification: "test"
+            }],
+            followUpHints: [],
+            uncertainties: []
+          } as T;
+        }
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+
+    const results = await runLensPackets(
+      fakePlan(),
+      [fakePacket({ id: "packet-hint" }), fakePacket({ id: "packet-quiet" })],
+      fakeTools(),
+      { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(callsByPacket.get("packet-hint")).toBe(2);
+    expect(callsByPacket.get("packet-quiet")).toBe(1);
+    const rescued = results.find((result) => result.packetId === "packet-hint");
+    // Adaptive pass candidates carry the a-marker and the pooled result
+    // records both passes.
+    expect(rescued?.findings.map((finding) => finding.id)).toEqual(["packet-h-a2f1"]);
+    expect(rescued?.passesRun).toBe(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "stage7_adaptive_pass",
+      packetId: "packet-hint",
+      data: expect.objectContaining({ trigger: "concrete_hint", produced: 1 })
+    }));
+  });
+
+  it("does not run adaptive passes when the flag is off (plan 92 default)", async () => {
+    let calls = 0;
+    const runner: LlmRunner = {
+      runStructured: async <T>() => {
+        calls += 1;
+        return {
+          findings: [],
+          followUpHints: [{
+            question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
+            files: ["app.ts"],
+            symbols: [],
+            suggestedLenses: [],
+            reason: "The changed calculation divides by decimals without a zero guard.",
+            confidence: "medium"
+          }],
+          uncertainties: []
+        } as T;
+      }
+    };
+    await runLensPackets(
+      fakePlan(),
+      [fakePacket({ id: "packet-hint" })],
+      fakeTools(),
+      { ...config(), review: { ...config().review, concurrency: 1 } },
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+    expect(calls).toBe(1);
+  });
+
   it("runs K ensemble passes for deep packets and pools the union under exact-duplicate identity (plan 84)", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const deepCalls: number[] = [];

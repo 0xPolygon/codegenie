@@ -74,11 +74,13 @@ export function buildAttentionRecords(input: {
       packetId: packet.id,
       path: packet.path,
       coverage: packet.coverage,
-      coverageSource: packet.hunks.some((hunk) => hunk.plannerFallbackReason !== undefined) ||
-        packet.hunks.every((hunk) => input.plannedHunkIds.has(hunk.hunkId) === false)
-        ? "deterministic_default"
-        : "planner",
-      ensemblePasses: input.ensemblePassesForPacket(packet),
+      coverageSource: packet.coverageEscalation !== undefined
+        ? (`escalated:${packet.coverageEscalation.rule}` as const)
+        : packet.hunks.some((hunk) => hunk.plannerFallbackReason !== undefined) ||
+            packet.hunks.every((hunk) => input.plannedHunkIds.has(hunk.hunkId) === false)
+          ? "deterministic_default"
+          : "planner",
+      ensemblePasses: result?.passesRun ?? input.ensemblePassesForPacket(packet),
       directCandidates: result?.findings.length ?? 0,
       promotedCandidates: promotedByPacket.get(packet.id) ?? 0,
       hintsEmitted: result?.followUpHints.length ?? 0,

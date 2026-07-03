@@ -50,7 +50,8 @@ export const rawConfigSchema = z
         budgetBoost: positiveFiniteNumberSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional(),
-        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional()
+        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
+        adaptiveSecondPass: z.boolean().optional()
       })
       .strict()
       .optional(),
@@ -136,7 +137,8 @@ export const codegenieConfigSchema = z
         budgetBoost: positiveFiniteNumberSchema,
         maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional(),
-        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional()
+        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
+        adaptiveSecondPass: z.boolean().optional()
       })
       .strict(),
     github: z

@@ -2885,7 +2885,7 @@ function maxReviewPriority(priorities: ReviewPriority[]): ReviewPriority {
   return [...priorities].sort((a, b) => order[a] - order[b])[0] ?? "normal";
 }
 
-function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], profile: ReviewProfile): ToolBudget {
+export function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], profile: ReviewProfile): ToolBudget {
   if (profile === "simple") {
     return { maxToolCalls: 0, maxInvestigationRounds: 0, maxResultChars: 0 };
   }

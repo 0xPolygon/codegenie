@@ -266,6 +266,10 @@ function applyRawConfig(
     config.review.deepEnsemblePasses = raw.review.deepEnsemblePasses;
     sources["review.deepEnsemblePasses"] = source;
   }
+  if (raw.review?.adaptiveSecondPass !== undefined) {
+    config.review.adaptiveSecondPass = raw.review.adaptiveSecondPass;
+    sources["review.adaptiveSecondPass"] = source;
+  }
 
   if (raw.github?.summaryWhenNoFindings !== undefined) {
     config.github.summaryWhenNoFindings = raw.github.summaryWhenNoFindings;

@@ -50,6 +50,7 @@ import { buildPlannerDossier, runPlanner } from "./planner.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
 import { ensemblePassesForPacket, runLensPackets } from "./lens-runner.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "./attention.js";
+import { applyCoverageEscalations } from "./coverage-escalation.js";
 import { runTargetedSystemReviews, suppressResolvedFollowUpHints } from "./system-reviewer.js";
 import { promoteUncertaintiesForVerification } from "./uncertainty-promotion.js";
 import { verifyFindings } from "./verifier.js";
@@ -207,11 +208,16 @@ export async function runReview(
       skills: services.skills
     });
     throwIfHardAborted(run);
-    const packets = await buildReviewPackets(plannerResult.plan, kept, fileFacts, repoIndex, run.telemetry, {
+    const packets = applyCoverageEscalations(
+      await buildReviewPackets(plannerResult.plan, kept, fileFacts, repoIndex, run.telemetry, {
+        config,
+        enabledLenses: services.lenses.filter((lens) => lens.enabled).map((lens) => lens.id),
+        reviewContext: packetReviewContextFromDossier(dossier)
+      }),
+      plannerResult.plan,
       config,
-      enabledLenses: services.lenses.filter((lens) => lens.enabled).map((lens) => lens.id),
-      reviewContext: packetReviewContextFromDossier(dossier)
-    });
+      run.telemetry
+    );
     run.telemetry.event({
       stage: 6,
       level: "info",

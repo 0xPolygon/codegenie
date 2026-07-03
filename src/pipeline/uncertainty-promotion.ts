@@ -649,6 +649,29 @@ function isBroadFollowUpOnly(source: PromotionSource, category: FindingCategory)
     !hasSpecificPredicate;
 }
 
+// Plan 92 layer 3 (T1): does a follow-up hint / uncertainty carry a concrete
+// failure predicate tied to this packet's changed scope? Reuses the promotion
+// lane's admission checks — the same concreteness bar that separates the
+// run-50 near-miss hint from "verify X is fine" chaff.
+export function isAdaptiveNearMissSignal(
+  packet: ReviewPacket,
+  signal: { question: string; files: string[]; symbols: string[]; reason: string }
+): boolean {
+  const source = {
+    packet,
+    sourceKind: "follow_up_hint",
+    question: signal.question,
+    files: signal.files,
+    symbols: signal.symbols,
+    reason: signal.reason
+  } as PromotionSource;
+  const risk = riskProfile(source);
+  if (risk.promotable === false) {
+    return false;
+  }
+  return mentionsChangedScope(source) && hasConcreteFailurePredicate(source, risk.category);
+}
+
 function hasConcreteFailurePredicate(source: PromotionSource, category: FindingCategory): boolean {
   const text = normalizedSourceText(source);
   if (category === "testing") {
