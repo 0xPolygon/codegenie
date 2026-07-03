@@ -698,7 +698,7 @@ function toFinalFinding(
   diff: UnifiedDiff | undefined,
   publicationAnchorDecisions?: Map<string, PublicationAnchorDecision>
 ): FinalFinding {
-  const { anchor: _unvalidatedAnchor, ...findingWithoutAnchor } = finding;
+  const { anchor: _unvalidatedAnchor, anchorSource: _staleAnchorSource, ...findingWithoutAnchor } = finding;
   const publicationAnchor = selectPublicationAnchor(finding, mergedFindings, diff);
   const normalizedFinalBody = normalizeFinalBodyForRendering(finalBody, finding) || templateBody(finding);
   const normalizedTitle = normalizeFinalFindingTitle(finding, mergedFindings, normalizedFinalBody);
@@ -706,10 +706,21 @@ function toFinalFinding(
   const mergedAnchors = dedupeAnchors(mergedFindings.flatMap((item) => item.anchor === undefined ? [] : [item.anchor]));
   const mergedCategories = uniqueStrings(mergedFindings.map((item) => item.category)) as Array<CandidateFinding["category"]>;
   const mergedSeverities = uniqueStrings(mergedFindings.map((item) => item.severity)) as Array<CandidateFinding["severity"]>;
+  // anchorSource must describe the PUBLISHED anchor, not the candidate's
+  // pre-composition one: an anchor donated by a merged member carries the
+  // donor's provenance, and an anchorless finding claims no source (run 31
+  // published a merged-member anchor still labeled
+  // backfill_packet_representative).
+  const publishedAnchorSource = publicationAnchor.anchor === undefined
+    ? undefined
+    : publicationAnchor.sourceFindingId === finding.id
+      ? finding.anchorSource
+      : mergedFindings.find((item) => item.id === publicationAnchor.sourceFindingId)?.anchorSource;
   const final: FinalFinding = {
     ...findingWithoutAnchor,
     title: normalizedTitle,
     ...(publicationAnchor.anchor !== undefined ? { anchor: publicationAnchor.anchor } : {}),
+    ...(publishedAnchorSource !== undefined ? { anchorSource: publishedAnchorSource } : {}),
     changedLine: publicationAnchor.anchor !== undefined,
     fingerprint,
     finalBody: normalizedFinalBody,
@@ -889,9 +900,11 @@ function normalizeFinalFindingTitle(finding: CandidateFinding, mergedFindings: C
   if (concreteCandidateTitle !== undefined) {
     return limitTitle(concreteCandidateTitle);
   }
+  // `verification` is deliberately NOT in this ladder: it describes process
+  // ("Promoted from follow_up_hint; normal verifier must confirm…"), never
+  // content — run 31 published exactly that boilerplate as a title.
   const fallback = [
     finding.failureMode,
-    finding.verification,
     finalBody,
     finding.whyThisMatters
   ].map(firstIssueSentence).find((title) => title !== undefined);

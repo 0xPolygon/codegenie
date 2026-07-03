@@ -408,6 +408,51 @@ describe("phase 5 pipeline regressions", () => {
     ]));
   });
 
+  it("never publishes verification boilerplate as a title for question-shaped promoted findings", async () => {
+    const { anchor: _anchor, ...anchorless } = fakeFinding();
+    const finding: CandidateFinding = {
+      ...anchorless,
+      id: "finding-promoted-question",
+      changedLine: false,
+      title: "Does the changed transfer path still scale amounts by destination decimals?",
+      failureMode: "Does the changed transfer path still scale amounts by destination decimals? — if this predicate holds, callers receive under-delivered amounts.",
+      verification: "Promoted from follow_up_hint; normal verifier must confirm the concrete failure mode before publication.",
+      provenance: {
+        source: "uncertainty_promotion",
+        sourceKind: "follow_up_hint",
+        sourcePacketId: "packet-1",
+        question: "Does the changed transfer path still scale amounts by destination decimals?",
+        files: ["app.ts"],
+        symbols: [],
+        reason: "unresolved predicate"
+      }
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        summary: "Found 1 verified issue.",
+        composedFindings: [{
+          findingIds: [finding.id],
+          finalBody: "The transfer amount is truncated before scaling, so callers receive less than the quoted amount.",
+          publication: "inline"
+        }]
+      }) as T
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), packets: [fakePacket()], diff: fakeDiff() }
+    );
+
+    const published = [...result.findings, ...result.summaryOnlyFindings].find((item) => item.id === finding.id);
+    expect(published?.title).not.toContain("Promoted from");
+    expect(published?.title).toContain("truncated before scaling");
+  });
+
   it("withholds representative gate anchors from published findings", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const finding: CandidateFinding = {
