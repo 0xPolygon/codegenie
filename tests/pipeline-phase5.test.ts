@@ -357,6 +357,120 @@ describe("phase 5 pipeline regressions", () => {
     );
   });
 
+  it("runs K ensemble passes for deep packets and pools the union under exact-duplicate identity (plan 84)", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const deepCalls: number[] = [];
+    let calls = 0;
+    const findingA = {
+      title: "Zero-count division regression",
+      severity: "medium",
+      confidence: "medium",
+      path: "app.ts",
+      anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+      category: "correctness",
+      evidence: { changedCode: "+bad" },
+      failureMode: "Calling divide with count zero now returns an invalid numeric result.",
+      whyThisMatters: "Callers can propagate invalid values.",
+      verification: "test"
+    };
+    const findingB = {
+      ...findingA,
+      title: "Rounding truncates sub-unit amounts",
+      failureMode: "Sub-unit amounts are truncated toward zero and under-reported."
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: { telemetryContext?: { packetId?: string } }) => {
+        calls += 1;
+        if (request.telemetryContext?.packetId === "packet-deep") {
+          deepCalls.push(calls);
+          const pass = deepCalls.length;
+          return {
+            findings: pass === 1 ? [findingA] : pass === 2 ? [findingA, findingB] : [],
+            followUpHints: [],
+            uncertainties: []
+          } as T;
+        }
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+
+    const results = await runLensPackets(
+      fakePlan(),
+      [{ ...fakePacket({ id: "packet-deep" }), coverage: "deep" }, fakePacket({ id: "packet-normal" })],
+      fakeTools(),
+      { ...config(), review: { ...config().review, deepEnsemblePasses: 3, concurrency: 1 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(calls).toBe(4);
+    expect(deepCalls).toHaveLength(3);
+    const deepResult = results.find((result) => result.packetId === "packet-deep");
+    expect(deepResult?.status).toBe("completed");
+    // Pass 2's copy of finding A deduped; its new finding B kept with a
+    // pass-marked id and ensemble provenance.
+    expect(deepResult?.findings.map((finding) => finding.id)).toEqual(["packet-d-f1", "packet-d-e2f2"]);
+    expect(deepResult?.findings[1]?.producedBy.ensemblePass).toBe(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 7,
+      message: "stage7_ensemble",
+      packetId: "packet-deep",
+      data: expect.objectContaining({
+        passes: 3,
+        candidatesPerPass: [1, 2, 0],
+        uniqueAfterDedupe: 2,
+        duplicatesPooled: 1
+      })
+    }));
+    const normalResult = results.find((result) => result.packetId === "packet-normal");
+    expect(normalResult?.status).toBe("completed");
+  });
+
+  it("pools remaining ensemble passes when one pass fails (plan 84)", async () => {
+    let deepCallIndex = 0;
+    const runner: LlmRunner = {
+      runStructured: async <T>() => {
+        deepCallIndex += 1;
+        if (deepCallIndex === 2) {
+          throw new CodegenieError("llm_schema_invalid", "pass 2 schema failure");
+        }
+        return {
+          findings: [{
+            title: deepCallIndex === 1 ? "First-pass finding" : "Third-pass finding",
+            severity: "medium",
+            confidence: "medium",
+            path: "app.ts",
+            anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+            category: "correctness",
+            evidence: { changedCode: "+bad" },
+            failureMode: `Distinct concrete failure mode for pass ${deepCallIndex} of this packet.`,
+            whyThisMatters: "matters",
+            verification: "test"
+          }],
+          followUpHints: [],
+          uncertainties: []
+        } as T;
+      }
+    };
+
+    const [result] = await runLensPackets(
+      fakePlan(),
+      [{ ...fakePacket({ id: "packet-deep" }), coverage: "deep" }],
+      fakeTools(),
+      { ...config(), review: { ...config().review, deepEnsemblePasses: 3, concurrency: 1 } },
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(result?.status).toBe("completed");
+    expect(result?.findings.map((finding) => finding.title)).toEqual(["First-pass finding", "Third-pass finding"]);
+  });
+
   it("backfills a precise anchor from quoted changed code when Stage 7 omits the anchor", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const runner: LlmRunner = {

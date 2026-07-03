@@ -46,6 +46,10 @@ export type CodegenieConfig = {
     budgetBoost: number;
     maxBudgetTokens?: number;
     maxModelCalls?: number;
+    // Plan 84: K independent Stage-7 passes for deep-coverage packets, union
+    // fed to the existing verification gate. 1 = off (the default); eval
+    // cases opt in while the effect is being measured.
+    deepEnsemblePasses?: number;
   };
   github: {
     summaryWhenNoFindings: boolean;
@@ -739,6 +743,9 @@ export type FindingProducer = {
   lensId: string;
   skillIds: string[];
   workerId?: string;
+  // Which ensemble pass produced this candidate (plan 84); absent when the
+  // packet ran a single pass.
+  ensemblePass?: number;
 };
 
 export type CandidateFindingProvenance = {
@@ -977,6 +984,7 @@ export type EvalCase = {
     budgetBoost?: number;
     maxTimeMinutes?: number;
     maxBudgetTokens?: number;
+    deepEnsemblePasses?: number;
     verify?: boolean;
     cache?: boolean;
     cacheDir?: string;

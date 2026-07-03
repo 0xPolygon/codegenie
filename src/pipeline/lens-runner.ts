@@ -19,6 +19,7 @@ import type {
   UnifiedDiff
 } from "../types.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
+import { isExactDuplicateCandidate } from "./verifier.js";
 import { inferAnchorFromChangedCode, isBudgetExhaustedError, isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff, validateAnchorForPacket } from "./pipeline-utils.js";
 import { isCodegenieError } from "../util/errors.js";
 import { applySeverityPolicy } from "./severity-policy.js";
@@ -73,17 +74,24 @@ export async function runLensPackets(
     isRetriableError: isRecoverableWorkerError,
     ...(opts.checkpoint !== undefined ? { checkpoint: opts.checkpoint } : {})
   });
-  const tasks = packets.map((packet): WorkerTask<PacketReviewResult> => ({
+  // Plan 84: deep-coverage packets run K independent Stage-7 passes whose
+  // union feeds the existing verification gate. K=1 (the default) is the
+  // legacy single-pass path, byte-for-byte.
+  const passPlan = packets.flatMap((packet) => {
+    const passes = ensemblePassesForPacket(packet, config);
+    return Array.from({ length: passes }, (_unused, index) => ({ packet, pass: index + 1, passes }));
+  });
+  const tasks = passPlan.map(({ packet, pass, passes }): WorkerTask<PacketReviewResult> => ({
     stage: 7,
     priority: packetPriority(packet),
     coverage: packet.coverage,
     packetId: packet.id,
     timeoutMs: config.review.perPassTimeoutMs,
     retryOnTransient: true,
-    run: async (signal, task) => runPacket(packet, tools, config, opts, telemetry, task.workerId, signal)
+    run: async (signal, task) => runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, passes > 1 ? { pass, passes } : undefined)
   }));
   const outcomes = await workerRunner.schedule(tasks);
-  const results = outcomes.map((outcome): PacketReviewResult => {
+  const passResults = outcomes.map((outcome): PacketReviewResult => {
     if (outcome.outcome === "completed" && outcome.value) {
       return outcome.value;
     }
@@ -112,6 +120,17 @@ export async function runLensPackets(
       status: outcome.outcome === "not_dispatched" || budgetSkipped ? "skipped" : "failed"
     };
   });
+  const resultsByPacket = new Map<string, PacketReviewResult[]>();
+  passPlan.forEach((entry, index) => {
+    const result = passResults[index];
+    if (result === undefined) {
+      return;
+    }
+    const existing = resultsByPacket.get(entry.packet.id) ?? [];
+    existing.push(result);
+    resultsByPacket.set(entry.packet.id, existing);
+  });
+  const results = packets.map((packet) => poolEnsemblePassResults(packet, resultsByPacket.get(packet.id) ?? [], telemetry));
   telemetry.event({
     stage: 7,
     level: "info",
@@ -136,6 +155,112 @@ export async function runLensPackets(
   return results;
 }
 
+function ensemblePassesForPacket(packet: ReviewPacket, config: CodegenieConfig): number {
+  if (packet.coverage !== "deep") {
+    return 1;
+  }
+  return Math.max(1, config.review.deepEnsemblePasses ?? 1);
+}
+
+// Plan 84: merge K independent passes of one packet into a single
+// PacketReviewResult. Candidates union under the verifier's exact-duplicate
+// identity (near-duplicates that differ in wording stay separate — that is
+// the verifier's job to absorb); hints/uncertainties dedupe by normalized
+// question under the existing per-packet caps.
+function poolEnsemblePassResults(
+  packet: ReviewPacket,
+  passResults: PacketReviewResult[],
+  telemetry: TelemetryRecorder
+): PacketReviewResult {
+  const first = passResults[0];
+  if (first === undefined) {
+    return { packetId: packet.id, lenses: packet.lenses, findings: [], followUpHints: [], uncertainties: [], status: "failed" };
+  }
+  if (passResults.length === 1) {
+    return first;
+  }
+  const usable = passResults.filter((result) => result.status === "completed" || result.status === "incomplete");
+  const source = usable.length > 0 ? usable : [];
+  const pooled: CandidateFinding[] = [];
+  let duplicatesPooled = 0;
+  for (const result of source) {
+    for (const finding of result.findings) {
+      if (pooled.some((existing) => isExactDuplicateCandidate(finding, existing))) {
+        duplicatesPooled += 1;
+        continue;
+      }
+      pooled.push(finding);
+    }
+  }
+  const followUpHints = dedupeByQuestion(source.flatMap((result) => result.followUpHints)).slice(0, MAX_FOLLOW_UP_HINTS_PER_PACKET);
+  const uncertainties = dedupeByQuestion(source.flatMap((result) => result.uncertainties)).slice(0, MAX_UNCERTAINTIES_PER_PACKET);
+  const status: PacketReviewResult["status"] = usable.some((result) => result.status === "completed")
+    ? "completed"
+    : usable.length > 0
+      ? "incomplete"
+      : passResults.some((result) => result.status === "failed")
+        ? "failed"
+        : "skipped";
+  const noFindingReason = source.map((result) => result.noFindingReason).find((reason) => reason !== undefined);
+  const reviewStatus: PacketReviewResult["reviewStatus"] = pooled.length > 0
+    ? "findings"
+    : source.some((result) => result.reviewStatus === "no_findings")
+      ? "no_findings"
+      : source.some((result) => result.reviewStatus === "incomplete")
+        ? "incomplete"
+        : undefined;
+  telemetry.event({
+    stage: 7,
+    level: "info",
+    message: "stage7_ensemble",
+    packetId: packet.id,
+    data: {
+      passes: passResults.length,
+      completedPasses: passResults.filter((result) => result.status === "completed").length,
+      candidatesPerPass: passResults.map((result) => result.findings.length),
+      uniqueAfterDedupe: pooled.length,
+      duplicatesPooled
+    }
+  });
+  const merged: PacketReviewResult = {
+    packetId: packet.id,
+    lenses: packet.lenses,
+    findings: pooled,
+    ...(reviewStatus !== undefined ? { reviewStatus } : {}),
+    ...(noFindingReason !== undefined ? { noFindingReason } : {}),
+    followUpHints,
+    uncertainties,
+    status
+  };
+  const generations = source.map((result) => stage7Generation.get(result)).filter((generation) => generation !== undefined);
+  if (generations.length > 0) {
+    stage7Generation.set(merged, {
+      directCandidates: pooled.length,
+      submittedFollowUpHints: generations.reduce((sum, generation) => sum + generation.submittedFollowUpHints, 0),
+      keptFollowUpHints: followUpHints.length,
+      droppedFollowUpHints: generations.reduce((sum, generation) => sum + generation.droppedFollowUpHints, 0),
+      submittedUncertainties: generations.reduce((sum, generation) => sum + generation.submittedUncertainties, 0),
+      keptUncertainties: uncertainties.length,
+      droppedUncertainties: generations.reduce((sum, generation) => sum + generation.droppedUncertainties, 0)
+    });
+  }
+  return merged;
+}
+
+function dedupeByQuestion<T extends { question: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const kept: T[] = [];
+  for (const item of items) {
+    const key = item.question.toLowerCase().replace(/\s+/gu, " ").trim();
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    kept.push(item);
+  }
+  return kept;
+}
+
 async function runPacket(
   packet: ReviewPacket,
   tools: RepositoryTools,
@@ -143,7 +268,8 @@ async function runPacket(
   opts: LensRunnerOptions,
   telemetry: TelemetryRecorder,
   workerId: string,
-  _signal: AbortSignal
+  _signal: AbortSignal,
+  ensemble?: { pass: number; passes: number }
 ): Promise<PacketReviewResult> {
   const skills = packet.lenses.flatMap((lensId) => opts.lensRegistry.skillsForLens(lensId));
   const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills });
@@ -164,7 +290,7 @@ async function runPacket(
       buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, config.review.depth, input)
     }
   });
-  const findings = submitted.findings.map((finding, index) => stampFinding(packet, finding, index, opts.lensRegistry, workerId, telemetry, opts.diff));
+  const findings = submitted.findings.map((finding, index) => stampFinding(packet, finding, index, opts.lensRegistry, workerId, telemetry, opts.diff, ensemble));
   const reviewStatus = normalizedReviewStatus(submitted, findings.length);
   if (reviewStatus === "no_findings") {
     telemetry.event({
@@ -525,10 +651,14 @@ function stampFinding(
   lensRegistry: LensRegistry,
   workerId: string,
   telemetry: TelemetryRecorder,
-  diff: UnifiedDiff | undefined
+  diff: UnifiedDiff | undefined,
+  ensemble?: { pass: number; passes: number }
 ): CandidateFinding {
   const modelAnchor = normalizeAnchor(submitted.anchor, packet, diff);
-  const candidateId = `${packet.id.slice(0, 8)}-f${index + 1}`;
+  // Ensemble passes ≥2 carry a pass marker so candidate ids never collide
+  // across passes; pass 1 keeps the legacy id shape (plan 84).
+  const passMarker = ensemble !== undefined && ensemble.pass > 1 ? `e${ensemble.pass}` : "";
+  const candidateId = `${packet.id.slice(0, 8)}-${passMarker}f${index + 1}`;
   if (submitted.anchor !== undefined && modelAnchor === undefined) {
     telemetry.event({
       stage: 7,
@@ -602,7 +732,8 @@ function stampFinding(
       packetId: packet.id,
       lensId: primaryLens,
       skillIds: lensRegistry.skillsForLens(primaryLens).map((skill) => skill.id),
-      workerId
+      workerId,
+      ...(ensemble !== undefined ? { ensemblePass: ensemble.pass } : {})
     }
   };
 }

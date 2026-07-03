@@ -262,6 +262,10 @@ function applyRawConfig(
     config.review.maxModelCalls = raw.review.maxModelCalls;
     sources["review.maxModelCalls"] = source;
   }
+  if (raw.review?.deepEnsemblePasses !== undefined) {
+    config.review.deepEnsemblePasses = raw.review.deepEnsemblePasses;
+    sources["review.deepEnsemblePasses"] = source;
+  }
 
   if (raw.github?.summaryWhenNoFindings !== undefined) {
     config.github.summaryWhenNoFindings = raw.github.summaryWhenNoFindings;

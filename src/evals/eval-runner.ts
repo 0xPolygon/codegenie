@@ -134,6 +134,7 @@ const caseSchema = z
         budgetBoost: positiveNumberSchema.optional(),
         maxTimeMinutes: positiveNumberSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
+        deepEnsemblePasses: positiveIntSchema.optional(),
         verify: z.boolean().optional(),
         cache: z.boolean().optional(),
         cacheDir: z.string().min(1).optional(),
@@ -792,6 +793,9 @@ function applyCaseReviewConfig(
   }
   if (review?.maxBudgetTokens !== undefined) {
     config.review.maxBudgetTokens = review.maxBudgetTokens;
+  }
+  if (review?.deepEnsemblePasses !== undefined) {
+    config.review.deepEnsemblePasses = review.deepEnsemblePasses;
   }
   if (review?.verify !== undefined) {
     config.review.verify = review.verify;

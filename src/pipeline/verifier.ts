@@ -1358,7 +1358,7 @@ function clusterCandidates(
 } {
   const clusters: CandidateFinding[][] = [];
   for (const candidate of candidates) {
-    const cluster = clusters.find((members) => duplicateCandidate(candidate, members[0]));
+    const cluster = clusters.find((members) => isExactDuplicateCandidate(candidate, members[0]));
     if (cluster) {
       cluster.push(candidate);
     } else {
@@ -1427,8 +1427,9 @@ function clusterCandidates(
 // (plan 87, functional_spec:563): two candidates share a verdict iff they
 // are exact duplicates. No text similarity, no scope/symbol inference, no
 // cross-category bridging — a shared verdict a candidate did not earn is a
-// silent correlated kill (fable bug 2).
-function duplicateCandidate(a: CandidateFinding, b: CandidateFinding | undefined): boolean {
+// silent correlated kill (fable bug 2). Exported for plan 84's ensemble
+// pooling, which unions K passes' candidates under the same identity rule.
+export function isExactDuplicateCandidate(a: CandidateFinding, b: CandidateFinding | undefined): boolean {
   if (!b) {
     return false;
   }
