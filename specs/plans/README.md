@@ -79,18 +79,18 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 73 | COMPLETE | Issue 73: Caller-Visible Guarantee Invariant and Verifier Framing |
 | 74 | PENDING | Issue 74: Merged Finding Confidence Calibration |
 | 75 | PENDING | Issue 75: Human-Attention Output Discipline |
-| 76 | PENDING | Issue 76: Low-Confidence Anchorless True-Positive Suppression at the Verification Pre-Gate |
+| 76 | COMPLETE (phase 1) | Issue 76: Low-Confidence Anchorless True-Positive Suppression at the Verification Pre-Gate (phase 2 not shipped per stop condition) |
 | 77 | REVERTED | Issue 77: Stage 6 Scoped Relationship Symbol Mention Lookups |
 | 78 | COMPLETE | Issue 78: Stage-Grouped Telemetry Artifacts |
 | 79 | COMPLETE | Issue 79: Eval Recall-Variance Harness and Relay Wrong-Chain Case |
 | 80 | COMPLETE | Issue 80: Degrade-and-Disclose Failure Semantics for LLM Errors |
-| 81 | PENDING | Issue 81: Minimal Predicate-Only Uncertainty Promotion |
+| 81 | IN PROGRESS | Issue 81: Minimal Predicate-Only Uncertainty Promotion (output-quality slice landed; deletions measurement-gated) |
 | 82 | COMPLETE (mechanical) | Issue 82: BehaviorChange Severity Discipline |
 | 83 | COMPLETE | Issue 83: Wording-Independent Finding Fingerprints and Compare Integrity |
-| 84 | PENDING | Issue 84: Stage-7 Ensemble Review for Deep Packets |
+| 84 | COMPLETE (dark) | Issue 84: Stage-7 Ensemble Review for Deep Packets (default off; measurement in progress) |
 | 85 | COMPLETE | Issue 85: Finalize Grace for Per-Pass Worker Timeouts |
-| 86 | IN PROGRESS | Issue 86: Provider Protocol Parity and Observability (steps 1-2,4 done; step 3 Wave 3; step 5 after 79) |
-| 87 | PENDING | Issue 87: Verifier Pre-Clustering Restricted to Exact Duplicates |
+| 86 | IN PROGRESS | Issue 86: Provider Protocol Parity and Observability (steps 1-4 done; step 5 study pending) |
+| 87 | COMPLETE | Issue 87: Verifier Pre-Clustering Restricted to Exact Duplicates |
 | 88 | PENDING | Issue 88: Publisher Summary-Only Fallback Reachability and Posting Disclosure |
 | 89 | IN PROGRESS | Issue 89: Deterministic Bug Sweep (phase A done; phase B Wave 4) |
 | 90 | COMPLETE | Issue 90: Token-Denominated Primary Review Budget (maxBudgetTokens) |
