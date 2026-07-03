@@ -11,7 +11,7 @@ import {
   type Api,
   type KnownProvider,
   type Model
-} from "@earendil-works/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 import { getOAuthProvider, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import { loadConfig, type LoadedConfig } from "../config/config-loader.js";
 import { ensureCodegenieHome, getCodegeniePaths } from "../config/paths.js";

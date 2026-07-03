@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { complete as piComplete, completeSimple as piCompleteSimple, Type, validateToolCall } from "@earendil-works/pi-ai";
+import { complete as piComplete, completeSimple as piCompleteSimple, Type, validateToolCall } from "@earendil-works/pi-ai/compat";
 import { getOAuthApiKey as piGetOAuthApiKey } from "@earendil-works/pi-ai/oauth";
 import { describe, expect, it, vi } from "vitest";
 import { createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";

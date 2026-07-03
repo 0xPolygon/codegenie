@@ -13,7 +13,7 @@ import {
   type SimpleStreamOptions,
   type Tool,
   type ToolCall
-} from "@earendil-works/pi-ai";
+} from "@earendil-works/pi-ai/compat";
 import { getOAuthApiKey, getOAuthProvider, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import pLimit from "p-limit";
 import { createFileAuthStorage } from "../provider/provider-services.js";
