@@ -34,10 +34,14 @@ describe("uncertainty promotion", () => {
       promotedCandidateIds: [expect.stringMatching(/^packet-c-u1-/u)]
     });
     const promoted = result.packetResults[0]?.findings[0];
+    // Plan 81: no fabricated anchors — the promoted candidate is anchorless
+    // (plan 76's gate-only representative anchor proves on-diff-ness later)
+    // and its title is the hint's own predicate, not a template.
     expect(promoted).toMatchObject({
       category: "testing",
       confidence: "medium",
-      changedLine: true,
+      changedLine: false,
+      modelAnchorSubmitted: false,
       producedBy: { stage: 9, packetId: packet.id, lensId: "core/tests" },
       provenance: {
         source: "uncertainty_promotion",
@@ -47,6 +51,8 @@ describe("uncertainty promotion", () => {
         symbols: ["BalanceReader"]
       }
     });
+    expect(promoted?.anchor).toBeUndefined();
+    expect(promoted?.title).toBe("Verify deleted coverage still exercises BalanceReader through the production billing path");
     expect(promoted?.evidence.changedCode).toContain("fetchBalance");
     expect(telemetry.artifacts.get("uncertainty-promotion.json")).toMatchObject({
       promoted: 1,

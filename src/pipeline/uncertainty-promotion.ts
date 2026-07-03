@@ -256,21 +256,23 @@ function pointsAtDistinctScope(source: PromotionSource): boolean {
 
 function promotedCandidate(source: PromotionSource, index: number): CandidateFinding {
   const risk = riskProfile(source);
-  const anchor = firstChangedAnchor(source.packet);
   const confidence = promotedConfidence(source, risk.category);
-  const changedCode = source.packet.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n");
   const relatedCode = relatedEvidence(source);
+  // Plan 81: no fabricated anchors. A promoted candidate never claims a
+  // placement it did not establish — plan 76's gate-only representative
+  // anchor proves on-diff-ness at verification, and only a verifier-revised
+  // anchor may publish inline.
   return {
     id: promotedCandidateId(source, index),
     title: promotedTitle(source, risk.category),
     severity: promotedSeverity(risk.category),
     confidence,
-    path: anchor?.path ?? source.packet.path,
-    ...(anchor !== undefined ? { anchor } : {}),
-    changedLine: anchor !== undefined,
+    path: source.packet.path,
+    modelAnchorSubmitted: false,
+    changedLine: false,
     category: risk.category,
     evidence: {
-      changedCode: truncate(changedCode, MAX_EVIDENCE_CHARS),
+      changedCode: truncate(referencedChangedCode(source), MAX_EVIDENCE_CHARS),
       ...(relatedCode.length > 0 ? { relatedCode } : {})
     },
     failureMode: promotedFailureMode(source, risk.category),
@@ -307,22 +309,19 @@ function promotedCandidateId(source: PromotionSource, index: number): string {
   ].join("\n")).slice(0, 8)}`;
 }
 
-function promotedTitle(source: PromotionSource, category: FindingCategory): string {
-  if (category === "testing") {
-    return "Verify changed coverage still exercises the production path";
-  }
-  if (category === "security") {
-    return "Verify the changed path preserves the security boundary";
-  }
-  return `Verify ${mainScopeLabel(source)} behavior after this change`;
+// Plan 81: no template titles. The title is the hint's own predicate text
+// (bounded), so scorer/category/title matching — and human readers — see the
+// model's actual claim instead of promotion boilerplate.
+function promotedTitle(source: PromotionSource, _category: FindingCategory): string {
+  return truncate(source.question.trim().replace(/\s+/gu, " "), 140);
 }
 
 function promotedFailureMode(source: PromotionSource, category: FindingCategory): string {
   const predicate = promotedPredicateText(source);
   if (category === "testing") {
-    return `The review raised a concrete coverage question: ${predicate}. If the changed or deleted test coverage no longer exercises the production path, a regression in that path can ship undetected.`;
+    return `${predicate} — if the changed or deleted test coverage no longer exercises the production path, a regression in that path can ship undetected.`;
   }
-  return `The review raised a concrete unresolved behavior predicate: ${predicate}. If this predicate is true, the changed path can produce incorrect caller-visible behavior.`;
+  return `${predicate} — if this predicate holds, the changed path produces incorrect caller-visible behavior.`;
 }
 
 function promotedImpact(source: PromotionSource, category: FindingCategory): string {
@@ -463,6 +462,22 @@ function escapeRegExp(input: string): string {
 function relatedContextEvidenceLines(context: ReviewPacket["relatedChangedContext"][number]): string {
   const body = context.sourceSnippet ?? context.patchExcerpt ?? context.reason;
   return truncate(body ?? "", MAX_RELATED_CONTEXT_EVIDENCE_CHARS);
+}
+
+// Plan 81: evidence is scoped to the hunk(s) the predicate references (via
+// its symbols), not the whole packet dump. Falls back to the first hunk when
+// no symbol maps — never to the full packet.
+function referencedChangedCode(source: PromotionSource): string {
+  const referencedHunkIds = new Set(
+    source.packet.symbolFacts
+      .filter((fact) => source.symbols.some((symbol) =>
+        symbolMatchesFact(symbol, fact.enclosingSymbol) || symbolMatchesFact(symbol, fact.signature)
+      ))
+      .map((fact) => fact.hunkId)
+  );
+  const referenced = source.packet.hunks.filter((hunk) => referencedHunkIds.has(hunk.hunkId));
+  const hunks = referenced.length > 0 ? referenced : source.packet.hunks.slice(0, 1);
+  return hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n");
 }
 
 function firstChangedAnchor(packet: ReviewPacket): CandidateFinding["anchor"] | undefined {
