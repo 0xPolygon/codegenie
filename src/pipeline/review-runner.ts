@@ -313,6 +313,7 @@ export async function runReview(
     throwIfHardAborted(run);
     const attentionRecords = buildAttentionRecords({
       packets,
+      plannedHunkIds: new Set(plannerResult.plan.coverage.map((decision) => decision.hunkId)),
       packetResults: packetResultsForFinal,
       candidateFindings,
       verdicts: verified.verdicts,

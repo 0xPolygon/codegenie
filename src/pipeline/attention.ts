@@ -18,6 +18,12 @@ import type {
 
 export function buildAttentionRecords(input: {
   packets: ReviewPacket[];
+  // Hunk ids the planner explicitly covered — a packet with none of its
+  // hunks in the plan reviews under deterministic default coverage even
+  // though nothing on the packet itself says so (found live in run
+  // 0c4d5213/51: fee_calculator packets reported "planner" while absent
+  // from the review plan).
+  plannedHunkIds: Set<string>;
   packetResults: PacketReviewResult[];
   candidateFindings: CandidateFinding[];
   verdicts: VerificationVerdict[];
@@ -68,7 +74,8 @@ export function buildAttentionRecords(input: {
       packetId: packet.id,
       path: packet.path,
       coverage: packet.coverage,
-      coverageSource: packet.hunks.some((hunk) => hunk.plannerFallbackReason !== undefined)
+      coverageSource: packet.hunks.some((hunk) => hunk.plannerFallbackReason !== undefined) ||
+        packet.hunks.every((hunk) => input.plannedHunkIds.has(hunk.hunkId) === false)
         ? "deterministic_default"
         : "planner",
       ensemblePasses: input.ensemblePassesForPacket(packet),

@@ -106,6 +106,7 @@ describe("plan 92 layer 1: attention records", () => {
 
     const records = buildAttentionRecords({
       packets: [deep, defaulted],
+      plannedHunkIds: new Set(["h1"]),
       packetResults: [packetResult("packet-deep", [directA, directB], 1, 0), packetResult("packet-default", [], 2, 1)],
       candidateFindings: [directA, directB, promoted],
       verdicts,
