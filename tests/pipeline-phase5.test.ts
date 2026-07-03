@@ -431,6 +431,64 @@ describe("phase 5 pipeline regressions", () => {
     expect(normalResult?.status).toBe("completed");
   });
 
+  it("pools ensemble passes by outcome identity even when dispatch reorders tasks (plan 84 regression)", async () => {
+    // Normal packet FIRST in input order; deep tasks dispatch first, so
+    // outcome order differs from input order. Positional grouping scrambled
+    // pools across packets (eval run 0c4d5213/49).
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    let deepPass = 0;
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: { telemetryContext?: { packetId?: string } }) => {
+        if (request.telemetryContext?.packetId === "packet-deep") {
+          deepPass += 1;
+          return {
+            findings: deepPass === 2 ? [{
+              title: "Second-pass rescue finding",
+              severity: "medium",
+              confidence: "medium",
+              path: "app.ts",
+              anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+              category: "correctness",
+              evidence: { changedCode: "+bad" },
+              failureMode: "A concrete failure mode found only by the second ensemble pass.",
+              whyThisMatters: "matters",
+              verification: "test"
+            }] : [],
+            followUpHints: [],
+            uncertainties: []
+          } as T;
+        }
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+
+    const results = await runLensPackets(
+      fakePlan(),
+      [fakePacket({ id: "packet-normal" }), { ...fakePacket({ id: "packet-deep" }), coverage: "deep" }],
+      fakeTools(),
+      { ...config(), review: { ...config().review, deepEnsemblePasses: 2, concurrency: 1 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    const deepResult = results.find((result) => result.packetId === "packet-deep");
+    const normalResult = results.find((result) => result.packetId === "packet-normal");
+    // The rescue finding belongs to the deep packet's pool, not the normal
+    // packet's, regardless of dispatch order.
+    expect(deepResult?.findings.map((finding) => finding.id)).toEqual(["packet-d-e2f1"]);
+    expect(normalResult?.findings).toEqual([]);
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "stage7_ensemble",
+      packetId: "packet-deep",
+      data: expect.objectContaining({ candidatesPerPass: [0, 1], uniqueAfterDedupe: 1 })
+    }));
+  });
+
   it("pools remaining ensemble passes when one pass fails (plan 84)", async () => {
     let deepCallIndex = 0;
     const runner: LlmRunner = {
@@ -7170,10 +7228,13 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(reviewedPacketIds).toEqual(["critical-packet"]);
     expect(reviewedWorkerIds).toEqual(["w7-001"]);
-    expect(results).toEqual([
+    // Results return in input-packet order since plan 84's pooling; assert
+    // by packetId, not position (dispatch order is covered above).
+    expect(results).toEqual(expect.arrayContaining([
       expect.objectContaining({ packetId: "critical-packet", status: "completed" }),
       expect.objectContaining({ packetId: "normal-packet", status: "skipped" })
-    ]);
+    ]));
+    expect(results).toHaveLength(2);
   });
 
   it("assigns Stage 9 worker ids in verifier dispatch order after priority sorting", async () => {

@@ -87,6 +87,7 @@ export async function runLensPackets(
     priority: packetPriority(packet),
     coverage: packet.coverage,
     packetId: packet.id,
+    ensemblePass: pass,
     timeoutMs: config.review.perPassTimeoutMs,
     retryOnTransient: true,
     run: async (signal, task) => runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, passes > 1 ? { pass, passes } : undefined)
@@ -121,17 +122,27 @@ export async function runLensPackets(
       status: outcome.outcome === "not_dispatched" || budgetSkipped ? "skipped" : "failed"
     };
   });
-  const resultsByPacket = new Map<string, PacketReviewResult[]>();
-  passPlan.forEach((entry, index) => {
+  // Group per-pass results by the OUTCOME's own packet/pass identity —
+  // schedule() returns outcomes in dispatch order (priority/coverage
+  // sorted), not input order, so positional grouping would scramble pools
+  // across packets (found live in eval run 0c4d5213/49).
+  const resultsByPacket = new Map<string, Array<{ pass: number; result: PacketReviewResult }>>();
+  outcomes.forEach((outcome, index) => {
     const result = passResults[index];
     if (result === undefined) {
       return;
     }
-    const existing = resultsByPacket.get(entry.packet.id) ?? [];
-    existing.push(result);
-    resultsByPacket.set(entry.packet.id, existing);
+    const packetId = outcome.task.packetId ?? result.packetId;
+    const existing = resultsByPacket.get(packetId) ?? [];
+    existing.push({ pass: outcome.task.ensemblePass ?? 1, result });
+    resultsByPacket.set(packetId, existing);
   });
-  const results = packets.map((packet) => poolEnsemblePassResults(packet, resultsByPacket.get(packet.id) ?? [], telemetry));
+  const results = packets.map((packet) => {
+    const passes = (resultsByPacket.get(packet.id) ?? [])
+      .sort((a, b) => a.pass - b.pass)
+      .map((entry) => entry.result);
+    return poolEnsemblePassResults(packet, passes, telemetry);
+  });
   telemetry.event({
     stage: 7,
     level: "info",

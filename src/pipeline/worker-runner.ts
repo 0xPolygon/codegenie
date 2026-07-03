@@ -9,6 +9,10 @@ export type WorkerTask<T> = {
   coverage?: Exclude<CoverageLevel, "skip">;
   packetId?: string;
   candidateId?: string;
+  // Which ensemble pass this task represents (plan 84). Outcomes are
+  // returned in DISPATCH order (sorted by priority/coverage), not input
+  // order, so pass identity must ride on the task itself.
+  ensemblePass?: number;
   timeoutMs: number;
   retryOnTransient: boolean;
   run: (signal: AbortSignal, task: AssignedWorkerTask<T>) => Promise<T>;
