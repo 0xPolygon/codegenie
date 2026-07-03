@@ -94,5 +94,5 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 88 | PENDING | Issue 88: Publisher Summary-Only Fallback Reachability and Posting Disclosure |
 | 89 | IN PROGRESS | Issue 89: Deterministic Bug Sweep (phase A done; phase B Wave 4) |
 | 90 | COMPLETE | Issue 90: Token-Denominated Primary Review Budget (maxBudgetTokens) |
-| 91 | IN PROGRESS | Issue 91: pi-ai Models-API Migration (code migrated; owner A/B diff pending) |
+| 91 | COMPLETE | Issue 91: pi-ai Models-API Migration (off /compat; A/B gate passed on run 0c4d5213/50) |
 | 92 | PENDING | Issue 92: Planner Coverage Calibration and the Adaptive Second Pass |
