@@ -1006,7 +1006,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect((telemetry.modelCalls[0] as { rateLimit?: Record<string, string> }).rateLimit).not.toHaveProperty("content-type");
   });
 
-  it("surfaces the anthropic forced-tool-choice downgrade instead of staying silent", async () => {
+  it("runs anthropic submit turns with real forcing and thinking off by default (plan 86 step 3)", async () => {
     const telemetry = fakeTelemetry();
     const scripted = scriptedAdapter([
       assistant([
@@ -1027,6 +1027,45 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
 
     await runner.runStructured(submitReviewRequest("packet-anthropic-protocol"));
+
+    expect(telemetry.modelCalls[0]).toMatchObject({
+      toolChoiceRequested: "forced:submit_review",
+      toolChoiceEffective: "forced:submit_review",
+      toolChoiceDowngraded: false,
+      // The forced-submit call runs with thinking disabled, so no reasoning
+      // mechanism is in play for this call.
+      reasoningMechanism: "none"
+    });
+    expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(0);
+    const protocolEvent = telemetry.events.find((event) => event.message === "provider_protocol");
+    expect(protocolEvent?.data).toMatchObject({
+      forceSubmitToolChoice: true,
+      forcedToolChoiceEffective: "forced:submit_review",
+      toolChoiceDowngraded: false
+    });
+  });
+
+  it("surfaces the anthropic downgrade when forceSubmitToolChoice is disabled", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const adapter: typeof scripted = {
+      ...scripted,
+      resolveModel: () => ({ provider: "anthropic", id: "fake-opus", raw: { id: "fake-opus", api: "anthropic-messages" } })
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "anthropic", model: "fake-opus", maxConcurrentCalls: 1, forceSubmitToolChoice: false },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-anthropic-downgrade"));
 
     expect(telemetry.modelCalls[0]).toMatchObject({
       toolChoiceRequested: "forced:submit_review",
@@ -4137,7 +4176,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(rawOptionsSeen[0]).not.toHaveProperty("reasoning");
   });
 
-  it("keeps Anthropic thinking enabled and avoids forced provider tool choice for submit turns", async () => {
+  it("disables Anthropic thinking and applies real forced tool choice for submit turns (plan 86 step 3)", async () => {
     const rawOptionsSeen: Record<string, unknown>[] = [];
     const complete = (async (_model, _context, options) => {
       rawOptionsSeen.push(options as Record<string, unknown>);
@@ -4161,12 +4200,41 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(rawOptionsSeen).toEqual([
       expect.objectContaining({
         apiKey: "fake-api-key",
+        thinkingEnabled: false,
+        toolChoice: { type: "tool", name: "submit_review" }
+      })
+    ]);
+    expect(rawOptionsSeen[0]).not.toHaveProperty("reasoning");
+    expect(rawOptionsSeen[0]).not.toHaveProperty("effort");
+    expect(rawOptionsSeen[0]).not.toHaveProperty("forceSubmitToolChoice");
+  });
+
+  it("keeps the legacy Anthropic downgrade when forceSubmitToolChoice is disabled", async () => {
+    const rawOptionsSeen: Record<string, unknown>[] = [];
+    const complete = (async (_model, _context, options) => {
+      rawOptionsSeen.push(options as Record<string, unknown>);
+      return assistant([validSubmitReviewCall("submit-anthropic-downgraded")]);
+    }) as typeof piComplete;
+    const adapter = createRealPiAiAdapter({ complete });
+
+    await adapter.complete(
+      {
+        provider: "anthropic",
+        id: "claude-test",
+        raw: { api: "anthropic-messages", provider: "anthropic", id: "claude-test", maxTokens: 4096, reasoning: true },
+        apiKey: "fake-api-key"
+      },
+      { messages: [], tools: [] },
+      { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, forceSubmitToolChoice: false } as never
+    );
+
+    expect(rawOptionsSeen).toEqual([
+      expect.objectContaining({
         thinkingEnabled: true,
         effort: "high",
         toolChoice: "auto"
       })
     ]);
-    expect(rawOptionsSeen[0]).not.toHaveProperty("reasoning");
   });
 
   it("refreshes stored OAuth credentials through Pi helpers and persists updates", async () => {

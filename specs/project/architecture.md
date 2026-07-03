@@ -874,6 +874,7 @@ Chosen defaults:
 - `review.softCommentCap = 7` (inline target)
 - `review.concurrency = 4`
 - `llm.maxConcurrentCalls = 4`
+- `llm.forceSubmitToolChoice = true` (plan 86 step 3: Anthropic finalize/repair/no-tool calls run with thinking disabled and genuinely forced submit tool choice; `false` restores the legacy silent downgrade to `auto`)
 - `review.timeoutMs = 30 * 60 * 1000`
 - `review.perPassTimeoutMs = 8 * 60 * 1000` (per model task/worker, not per stage)
 - `review.minConfidence = "medium"`

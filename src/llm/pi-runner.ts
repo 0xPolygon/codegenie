@@ -215,7 +215,8 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
         const forcedProbe = describeProviderProtocol(
           model,
           { type: "tool", name: submitTool.name },
-          opts.llmConfig.reasoning ?? "high"
+          opts.llmConfig.reasoning ?? "high",
+          opts.llmConfig.forceSubmitToolChoice !== false
         );
         opts.telemetry.event({
           stage: request.stage,
@@ -226,6 +227,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             model: model.id,
             api: (model.raw as { api?: string }).api,
             sessionKeyGranularity: "worker",
+            forceSubmitToolChoice: opts.llmConfig.forceSubmitToolChoice !== false,
             forcedToolChoiceEffective: forcedProbe.toolChoiceEffective,
             toolChoiceDowngraded: forcedProbe.toolChoiceDowngraded,
             reasoningMechanism: forcedProbe.reasoningMechanism,
@@ -627,6 +629,7 @@ export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): PiAiAdapt
           mapProviderOptions(model.raw as Model<Api>, completeOptions)
         ) as Promise<PiAssistantMessage>;
       }
+      delete completeOptions.forceSubmitToolChoice;
       return completeSimpleFn(model.raw as Model<Api>, context as Context, completeOptions) as Promise<PiAssistantMessage>;
     },
     validateToolCall: (tools, toolCall) => validateToolCall(tools as Tool[], toolCall as ToolCall)
@@ -853,7 +856,14 @@ async function completeWithCache(input: {
     finalizeMode,
     finalizeTarget
   } = input;
-  const protocol = describeProviderProtocol(model, toolChoice, opts.llmConfig.reasoning ?? "high");
+  const forceSubmit = opts.llmConfig.forceSubmitToolChoice !== false;
+  const forcedSubmitThinkingOff = anthropicForcedSubmitCall(model, toolChoice, forceSubmit);
+  const protocol = describeProviderProtocol(
+    model,
+    toolChoice,
+    forcedSubmitThinkingOff ? undefined : opts.llmConfig.reasoning ?? "high",
+    forceSubmit
+  );
   if (protocol.toolChoiceDowngraded && input.protocolFlags !== undefined && !input.protocolFlags.downgradeWarned) {
     input.protocolFlags.downgradeWarned = true;
     opts.telemetry.event({
@@ -874,7 +884,10 @@ async function completeWithCache(input: {
     runnerMessageVersion: RUNNER_MESSAGE_VERSION,
     provider: model.provider,
     model: model.id,
-    reasoning: opts.llmConfig.reasoning ?? "high",
+    // Cache-key honesty: Anthropic forced-submit calls run with thinking
+    // disabled (plan 86 step 3), which is a different request than the same
+    // messages at the configured reasoning level.
+    reasoning: forcedSubmitThinkingOff ? "forced-submit-no-thinking" : opts.llmConfig.reasoning ?? "high",
     stage: request.stage,
     templateVersion: request.templateVersion,
     schemaName: submitToolNameForStage(request.stage),
@@ -1022,7 +1035,10 @@ async function completeWithCache(input: {
             {
               signal: taskSignal,
               maxRetries: 0,
-              reasoning: opts.llmConfig.reasoning ?? "high",
+              ...(anthropicForcedSubmitCall(model, toolChoice, opts.llmConfig.forceSubmitToolChoice !== false)
+                ? {}
+                : { reasoning: opts.llmConfig.reasoning ?? "high" }),
+              forceSubmitToolChoice: opts.llmConfig.forceSubmitToolChoice !== false,
               toolChoice,
               sessionId: providerPromptCache.sessionId,
               cacheRetention: providerPromptCache.cacheRetention,
@@ -1330,14 +1346,31 @@ function isForcedToolChoice(choice: unknown): choice is Extract<ToolChoiceMode, 
   return Boolean(choice && typeof choice === "object" && (choice as { type?: unknown }).type === "tool");
 }
 
+// True when this call runs Anthropic's forced-submit protocol (plan 86 step
+// 3): thinking is disabled for the call so the forced tool choice is legal.
+function anthropicForcedSubmitCall(model: PiModelRef, toolChoice: ToolChoiceMode, forceSubmit: boolean): boolean {
+  return forceSubmit &&
+    isForcedToolChoice(toolChoice) &&
+    (model.raw as { api?: string }).api === "anthropic-messages";
+}
+
 function mapProviderOptions(model: Model<Api>, options: SimpleStreamOptions & Record<string, unknown>): Record<string, unknown> {
   const mapped = { ...options };
   const reasoning = typeof options.reasoning === "string" ? options.reasoning : undefined;
-  const toolChoice = mapProviderToolChoice(model, options.toolChoice);
+  const forceSubmit = options.forceSubmitToolChoice !== false;
+  const toolChoice = mapProviderToolChoice(model, options.toolChoice, forceSubmit);
+  const anthropicForcedSubmit = forceSubmit && model.api === "anthropic-messages" && isForcedToolChoice(options.toolChoice);
   delete mapped.reasoning;
   delete mapped.toolChoice;
+  delete mapped.forceSubmitToolChoice;
 
-  Object.assign(mapped, mapReasoningOptions(model, reasoning));
+  if (anthropicForcedSubmit) {
+    // thinkingEnabled must be explicitly false: adaptive-thinking models
+    // default to thinking on, which the API rejects with forced tool_choice.
+    mapped.thinkingEnabled = false;
+  } else {
+    Object.assign(mapped, mapReasoningOptions(model, reasoning));
+  }
   if (toolChoice !== undefined) {
     if (model.api === "openai-responses" || model.api === "azure-openai-responses" || model.api === "openai-codex-responses") {
       mapped.onPayload = withToolChoicePayload(options.onPayload, toolChoice);
@@ -1382,7 +1415,7 @@ function googleThinkingLevel(reasoning: string): "LOW" | "MEDIUM" | "HIGH" {
   }
 }
 
-function mapProviderToolChoice(model: Model<Api>, choice: unknown): unknown {
+function mapProviderToolChoice(model: Model<Api>, choice: unknown, forceSubmit = true): unknown {
   if (choice === "auto") {
     return "auto";
   }
@@ -1391,7 +1424,12 @@ function mapProviderToolChoice(model: Model<Api>, choice: unknown): unknown {
   }
   switch (model.api) {
     case "anthropic-messages":
-      return "auto";
+      // Forced tool_choice conflicts with extended thinking on the Anthropic
+      // API. Plan 86 step 3: finalize/repair/no-tool calls (the only calls
+      // that request forcing) disable thinking instead, so the forcing is
+      // honored for real. llm.forceSubmitToolChoice=false restores the old
+      // downgrade-to-auto behavior as an escape hatch.
+      return forceSubmit ? { type: "tool", name: choice.name } : "auto";
     case "bedrock-converse-stream":
       return { type: "tool", name: choice.name };
     case "google-generative-ai":
@@ -1436,11 +1474,12 @@ type ProviderProtocolFields = {
 function describeProviderProtocol(
   model: PiModelRef,
   toolChoice: ToolChoiceMode,
-  reasoning: string | undefined
+  reasoning: string | undefined,
+  forceSubmit = true
 ): ProviderProtocolFields {
   const raw = model.raw as Model<Api>;
   const requested = isForcedToolChoice(toolChoice) ? `forced:${toolChoice.name}` : "auto";
-  const mapped = mapProviderToolChoice(raw, toolChoice);
+  const mapped = mapProviderToolChoice(raw, toolChoice, forceSubmit);
   const effective = mapped === "auto"
     ? "auto"
     : mapped === "any" || mapped === "required"

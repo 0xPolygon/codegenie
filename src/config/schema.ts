@@ -72,7 +72,8 @@ export const rawConfigSchema = z
         provider: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
         reasoning: reasoningLevelSchema.optional(),
-        maxConcurrentCalls: positiveIntSchema.optional()
+        maxConcurrentCalls: positiveIntSchema.optional(),
+        forceSubmitToolChoice: z.boolean().optional()
       })
       .strict()
       .optional(),
@@ -152,7 +153,8 @@ export const codegenieConfigSchema = z
         provider: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
         reasoning: reasoningLevelSchema.optional(),
-        maxConcurrentCalls: positiveIntSchema
+        maxConcurrentCalls: positiveIntSchema,
+        forceSubmitToolChoice: z.boolean().optional()
       })
       .strict(),
     cache: z
@@ -212,7 +214,8 @@ export const defaultConfig: CodegenieConfig = {
     pathRules: []
   },
   llm: {
-    maxConcurrentCalls: 4
+    maxConcurrentCalls: 4,
+    forceSubmitToolChoice: true
   },
   cache: {
     enabled: false,

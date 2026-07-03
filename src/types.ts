@@ -61,6 +61,10 @@ export type CodegenieConfig = {
     model?: string;
     reasoning?: ReasoningLevel;
     maxConcurrentCalls: number;
+    // Plan 86 step 3 escape hatch: when true (default), Anthropic
+    // finalize/repair/no-tool calls run with thinking disabled and genuinely
+    // forced submit tool choice instead of silently downgrading to auto.
+    forceSubmitToolChoice?: boolean;
   };
   cache: {
     enabled: boolean;

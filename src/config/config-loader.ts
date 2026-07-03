@@ -68,6 +68,7 @@ const DEFAULT_SOURCE_PATHS = [
   "github.summaryWhenNoFindings",
   "classification.pathRules",
   "llm.maxConcurrentCalls",
+  "llm.forceSubmitToolChoice",
   "cache.enabled",
   "cache.dir",
   "telemetry.enabled",

@@ -243,6 +243,8 @@ codegenie's normalized interface maps onto vendor dialects inside `pi-runner`'s 
 
 Reasoning-token spend is not exposed by pi-ai usage today; `reasoningTokens` recording is deferred until it is.
 
+**Anthropic forced-submit protocol (plan 86 step 3, landed 2026-07-02):** forced `tool_choice` conflicts with extended thinking on the Anthropic API, which previously forced a silent downgrade to `auto` on every finalize/repair/no-tool call. Now those calls (the only calls that request forcing; investigation rounds keep thinking + auto) run with thinking explicitly disabled (`thinkingEnabled: false`) and a genuinely forced submit tool choice. Escape hatch: `llm.forceSubmitToolChoice = false` restores the downgrade, which then events `tool_choice_downgraded` — never silent. The once-per-run `provider_protocol` event records the flag; forced-submit calls record `reasoningMechanism: "none"` and cache keys carry `forced-submit-no-thinking`.
+
 **Session-ID / cache-affinity semantics differ sharply per provider** (verified in pi-ai 0.80.3):
 
 - **Direct Anthropic: the session ID is inert.** pi-ai sends `x-session-affinity` only for Fireworks and Cloudflare AI Gateway (`sendSessionAffinityHeaders` compat default). Anthropic routes its prompt cache server-side from the request prefix automatically; there is no client affinity knob. codegenie's stage-scoped session ID (`codegenie-<runId>-stage-<N>`) has no wire effect here.
