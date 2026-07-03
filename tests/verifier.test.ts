@@ -3,6 +3,7 @@ import { defaultConfig } from "../src/config/schema.js";
 import { parseDiff } from "../src/git/diff-parser.js";
 import type { LlmRunner } from "../src/llm/llm-runner.js";
 import { verifyFindings } from "../src/pipeline/verifier.js";
+import { inferAnchorFromChangedCode, representativeAnchorFromPacket } from "../src/pipeline/pipeline-utils.js";
 import { createPromptBuilder } from "../src/skills/prompt-builder.js";
 import type {
   CandidateFinding,
@@ -565,3 +566,208 @@ function captureTelemetry(): {
     }
   };
 }
+
+describe("plan 76 anchor reconstruction", () => {
+  it("tier 1: reconstructs a precise anchor from quoted changed code with whitespace variance", () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const anchor = inferAnchorFromChangedCode(packet, "+   return route(provider);");
+    expect(anchor).toEqual({ path: packet.path, line: 2, side: "RIGHT", hunkId: packet.hunks[0]!.hunkId });
+  });
+
+  it("tier 1: tolerates truncated quotes via containment", () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    expect(inferAnchorFromChangedCode(packet, "return route(provider)")?.line).toBe(2);
+  });
+
+  it("tier 1: strips line-number columns quoted from contentWithLineNumbers", () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    expect(inferAnchorFromChangedCode(packet, "   2    2  return route(provider);")?.line).toBe(2);
+  });
+
+  it("tier 1: refuses ambiguous snippets that match multiple changed lines", () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const base = fixture.packets[0]!;
+    const hunk = base.hunks[0]!;
+    const packet = {
+      ...base,
+      hunks: [{
+        ...hunk,
+        lines: [...hunk.lines, { kind: "add" as const, content: "return route(provider);", newLine: 5 }],
+        changedNewLineNumbers: [2, 5]
+      }]
+    };
+    expect(inferAnchorFromChangedCode(packet, "+ return route(provider);")).toBeUndefined();
+  });
+
+  it("tier 1: fails cleanly on trivial-only snippets", () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    expect(inferAnchorFromChangedCode(fixture.packets[0]!, "}")).toBeUndefined();
+  });
+
+  it("tier 1: matches deleted lines on the LEFT side", () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const base = fixture.packets[0]!;
+    const hunk = base.hunks[0]!;
+    const packet = {
+      ...base,
+      hunks: [{
+        ...hunk,
+        lines: [{ kind: "delete" as const, content: "return previous(provider);", oldLine: 2 }],
+        changedNewLineNumbers: [],
+        changedOldLineNumbers: [2]
+      }]
+    };
+    const anchor = inferAnchorFromChangedCode(packet, "- return previous(provider);");
+    expect(anchor).toEqual({ path: packet.path, line: 2, side: "LEFT", hunkId: hunk.hunkId });
+  });
+
+  it("tier 2: representative anchor prefers the first RIGHT changed line", () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    expect(representativeAnchorFromPacket(packet)).toEqual({ path: packet.path, line: 2, side: "RIGHT", hunkId: packet.hunks[0]!.hunkId });
+  });
+
+  it("tier 2: falls back to LEFT for deletion-only packets and undefined when nothing changed", () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const base = fixture.packets[0]!;
+    const hunk = base.hunks[0]!;
+    const deletionOnly = {
+      ...base,
+      hunks: [{ ...hunk, changedNewLineNumbers: [], changedOldLineNumbers: [2] }]
+    };
+    expect(representativeAnchorFromPacket(deletionOnly)).toEqual({ path: base.path, line: 2, side: "LEFT", hunkId: hunk.hunkId });
+    const unchanged = { ...base, hunks: [{ ...hunk, changedNewLineNumbers: [], changedOldLineNumbers: [] }] };
+    expect(representativeAnchorFromPacket(unchanged)).toBeUndefined();
+  });
+
+  it("rescues an anchorless evidence-backed low-confidence candidate via a gate-only representative anchor", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const { anchor: _anchor, ...anchorless } = candidate("run36-shape", packet, {
+      confidence: "low",
+      severity: "low",
+      category: "correctness",
+      evidence: {
+        changedCode: "quotes.AmountFromUSD hard-errors on a zero-decimal origin token",
+        relatedCode: [{
+          path: "src/pricing.ts",
+          lines: "17: DecimalsFactor(0) previously returned 1",
+          whyRelevant: "The prior behavior accepted zero-decimal tokens."
+        }]
+      },
+      failureMode: "Zero-decimal origin tokens now hard-error where the previous code path succeeded."
+    });
+    const finding = { ...anchorless, changedLine: false, modelAnchorSubmitted: false };
+    const telemetry = captureTelemetry();
+    let calls = 0;
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => {
+          calls += 1;
+          return {
+            verdict: "keep",
+            reason: "The regression is confirmed against the changed code.",
+            requiredEvidencePresent: true,
+            falsePositiveRisk: "low"
+          };
+        }),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(calls).toBe(1);
+    expect(result.verified[0]?.id).toBe("run36-shape");
+    expect(result.verified[0]?.anchorSource).toBe("backfill_packet_representative");
+    expect(telemetry.artifacts.get("verification.json")).toEqual([
+      expect.objectContaining({
+        candidateId: "run36-shape",
+        gateReason: "low_confidence_evidence_backed",
+        gateFacts: expect.objectContaining({
+          modelAnchorSubmitted: false,
+          validAnchorPresent: true,
+          anchorSource: "backfill_packet_representative"
+        })
+      })
+    ]);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 9, message: "anchor_representative", data: expect.objectContaining({ candidateId: "run36-shape" }) })
+    ]));
+  });
+
+  it("does not rescue a low-confidence candidate with no quoted changed code", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const { anchor: _anchor, ...anchorless } = candidate("no-evidence", packet, {
+      confidence: "low",
+      severity: "low",
+      category: "correctness",
+      evidence: { changedCode: "  " }
+    });
+    const finding = { ...anchorless, changedLine: false };
+    const telemetry = captureTelemetry();
+    let calls = 0;
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => {
+          calls += 1;
+          return { verdict: "keep", reason: "should not run", requiredEvidencePresent: true, falsePositiveRisk: "low" };
+        }),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(calls).toBe(0);
+    expect(result.verified).toEqual([]);
+    expect(telemetry.artifacts.get("verification.json")).toEqual([
+      expect.objectContaining({ candidateId: "no-evidence", gate: "suppressed", gateReason: "missing_evidence" })
+    ]);
+    expect(telemetry.events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "anchor_representative" })
+    ]));
+  });
+
+  it("marks verifier-revised anchors with verifier_revised provenance", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const hunk = packet.hunks[0]!;
+    const finding = candidate("revise-anchor", packet, { confidence: "high" });
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      captureTelemetry().recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict: "keep",
+          reason: "Confirmed; anchor refined to the changed line.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low",
+          revisedAnchor: { path: packet.path, line: 2, side: "RIGHT", hunkId: hunk.hunkId }
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(result.verified[0]?.anchorSource).toBe("verifier_revised");
+  });
+});

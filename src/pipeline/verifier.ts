@@ -18,6 +18,7 @@ import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
 import {
   isRunFatalLlmError,
   isRecoverableWorkerError,
+  representativeAnchorFromPacket,
   validateAnchorForDiff,
   validateAnchorForPacket
 } from "./pipeline-utils.js";
@@ -63,6 +64,13 @@ type VerificationGateFacts = {
   hasFailureMode: boolean;
   failureModeConcrete: boolean;
   relatedEvidenceCount: number;
+  // Anchor provenance facts (plan 76): after reconstruction, a bare
+  // "anchor present" is unreadable — these three separate what Stage 7
+  // submitted from what is now usable.
+  modelAnchorSubmitted: boolean;
+  modelAnchorValid: boolean;
+  validAnchorPresent: boolean;
+  anchorSource?: CandidateFinding["anchorSource"];
 };
 
 type VerificationRecord =
@@ -405,11 +413,11 @@ function preGateAnchor(
   telemetry: TelemetryRecorder
 ): { candidate: CandidateFinding; anchorStripped: boolean } {
   if (!candidate.anchor) {
-    return { candidate, anchorStripped: false };
+    return { candidate: backfillRepresentativeAnchor(candidate, packet, diff, telemetry), anchorStripped: false };
   }
   const anchor = normalizeAnchor(candidate.anchor, packet, diff);
   if (!anchor) {
-    const { anchor: _invalidAnchor, ...withoutAnchor } = candidate;
+    const { anchor: _invalidAnchor, anchorSource: _invalidSource, ...withoutAnchor } = candidate;
     telemetry.event({
       stage: 9,
       level: "warn",
@@ -417,7 +425,8 @@ function preGateAnchor(
       file: candidate.path,
       data: { candidateId: candidate.id, anchor: candidate.anchor }
     });
-    return { candidate: { ...withoutAnchor, changedLine: false }, anchorStripped: true };
+    const stripped: CandidateFinding = { ...withoutAnchor, changedLine: false };
+    return { candidate: backfillRepresentativeAnchor(stripped, packet, diff, telemetry), anchorStripped: true };
   }
   return {
     candidate: {
@@ -430,6 +439,42 @@ function preGateAnchor(
   };
 }
 
+// Tier 2 anchor reconstruction (plan 76): an anchorless candidate whose
+// evidence quotes changed code is on-diff even though Stage 7 gave the gate
+// no placement to prove it with. The packet's first changed line proves
+// relevance for gating; it is NOT a publishable location (anchorSource
+// "backfill_packet_representative" is withheld at composition).
+function backfillRepresentativeAnchor(
+  candidate: CandidateFinding,
+  packet: ReviewPacket | undefined,
+  diff: UnifiedDiff | undefined,
+  telemetry: TelemetryRecorder
+): CandidateFinding {
+  if (candidate.anchor !== undefined || packet === undefined) {
+    return candidate;
+  }
+  if (candidate.evidence.changedCode.trim().length === 0) {
+    return candidate;
+  }
+  const representative = normalizeAnchor(representativeAnchorFromPacket(packet), packet, diff);
+  if (representative === undefined) {
+    return candidate;
+  }
+  telemetry.event({
+    stage: 9,
+    level: "info",
+    message: "anchor_representative",
+    file: candidate.path,
+    data: { candidateId: candidate.id, hunkId: representative.hunkId, line: representative.line, side: representative.side }
+  });
+  return {
+    ...candidate,
+    anchor: representative,
+    anchorSource: "backfill_packet_representative",
+    changedLine: true
+  };
+}
+
 function applyVerdictAnchor(candidate: CandidateFinding, verdict: VerificationVerdict): CandidateFinding {
   if (verdict.revisedAnchor === undefined) {
     return candidate;
@@ -437,6 +482,7 @@ function applyVerdictAnchor(candidate: CandidateFinding, verdict: VerificationVe
   return {
     ...candidate,
     anchor: verdict.revisedAnchor,
+    anchorSource: "verifier_revised",
     path: verdict.revisedAnchor.path,
     changedLine: true
   };
@@ -805,6 +851,15 @@ function revisedFinding(
   const submittedAnchor = normalizeAnchor(submitted.anchor, packet, diff);
   const originalAnchor = validateAnchorForDiff(original.anchor, diff);
   const anchor = submittedAnchor ?? originalAnchor;
+  // Anchor provenance survives revision: a verifier-supplied anchor is
+  // "verifier_revised"; a retained original anchor keeps its source so a
+  // gate-only representative anchor cannot slip past the composition
+  // withhold by being laundered through a wording revision (plan 76).
+  const anchorSource: CandidateFinding["anchorSource"] = submittedAnchor !== undefined
+    ? "verifier_revised"
+    : anchor !== undefined
+      ? original.anchorSource
+      : undefined;
   const revised: CandidateFinding = {
     id: original.id,
     title: submitted.title,
@@ -825,6 +880,12 @@ function revisedFinding(
   };
   if (anchor !== undefined) {
     revised.anchor = anchor;
+  }
+  if (anchorSource !== undefined) {
+    revised.anchorSource = anchorSource;
+  }
+  if (original.modelAnchorSubmitted !== undefined) {
+    revised.modelAnchorSubmitted = original.modelAnchorSubmitted;
   }
   if (submitted.suggestedFix !== undefined) {
     revised.suggestedFix = submitted.suggestedFix;
@@ -878,15 +939,20 @@ function candidateGateFacts(candidate: CandidateFinding): VerificationGateFacts 
     entry.whyRelevant.trim().length > 0
   ).length;
   const failureMode = candidate.failureMode.trim();
+  const validAnchorPresent = candidate.changedLine === true && candidate.anchor !== undefined;
   return {
     severity: candidate.severity,
     confidence: candidate.confidence,
     category: candidate.category,
-    changedLine: candidate.changedLine === true && candidate.anchor !== undefined,
+    changedLine: validAnchorPresent,
     hasChangedCode: candidate.evidence.changedCode.trim().length > 0,
     hasFailureMode: failureMode.length > 0,
     failureModeConcrete: failureMode.length >= 24,
-    relatedEvidenceCount
+    relatedEvidenceCount,
+    modelAnchorSubmitted: candidate.modelAnchorSubmitted === true,
+    modelAnchorValid: candidate.anchorSource === "model",
+    validAnchorPresent,
+    ...(candidate.anchorSource !== undefined ? { anchorSource: candidate.anchorSource } : {})
   };
 }
 
@@ -1431,7 +1497,7 @@ function candidateScopesOverlap(a: CandidateFinding, b: CandidateFinding, packet
   if (a.path === b.path) {
     const aSymbols = candidateSymbols(a, packetsById);
     const bSymbols = candidateSymbols(b, packetsById);
-    if (!a.anchor && !b.anchor && aSymbols.size > 0 && bSymbols.size > 0 && !setsIntersect(aSymbols, bSymbols)) {
+    if (!locationTrustedAnchor(a) && !locationTrustedAnchor(b) && aSymbols.size > 0 && bSymbols.size > 0 && !setsIntersect(aSymbols, bSymbols)) {
       return false;
     }
     return true;
@@ -1442,9 +1508,17 @@ function candidateScopesOverlap(a: CandidateFinding, b: CandidateFinding, packet
   return relatedRoot(a.path) === relatedRoot(b.path) && candidateSymbolsOverlap(a, b, packetsById);
 }
 
+// A representative gate anchor is not a location claim (plan 76): distinct
+// findings from the same packet all receive its first changed line, so
+// treating it as identity would merge them as duplicates.
+function locationTrustedAnchor(candidate: CandidateFinding): CandidateFinding["anchor"] {
+  return candidate.anchorSource === "backfill_packet_representative" ? undefined : candidate.anchor;
+}
+
 function locationClusterKey(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): string | undefined {
-  if (candidate.anchor) {
-    return `anchor:${candidate.anchor.path}:${candidate.anchor.side}:${candidate.anchor.line}:${candidate.anchor.hunkId}`;
+  const anchor = locationTrustedAnchor(candidate);
+  if (anchor) {
+    return `anchor:${anchor.path}:${anchor.side}:${anchor.line}:${anchor.hunkId}`;
   }
   const symbols = candidateSymbols(candidate, packetsById);
   if (symbols.size !== 1) {

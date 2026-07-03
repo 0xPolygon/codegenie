@@ -83,7 +83,8 @@ export async function dedupeRankAndComposeReview(
 ): Promise<ReviewResult> {
   telemetry.event({ stage: 10, level: "info", message: "stage_started", data: { verified: verified.verified.length } });
   const packetsById = new Map((opts.packets ?? []).map((packet) => [packet.id, packet]));
-  const pretrim = pretrimComposerInput(verified.verified);
+  const publishable = verified.verified.map((candidate) => withholdRepresentativeAnchor(candidate, telemetry));
+  const pretrim = pretrimComposerInput(publishable);
   const groups = groupFindings(pretrim.kept, packetsById);
   const attention = buildHumanAttentionNotes(opts.packetResults ?? [], {
     packets: opts.packets ?? [],
@@ -625,6 +626,26 @@ function expandClusterFindingIds(findingIds: string[], known: Map<string, Candid
 
 function canUseComposerFallback(error: unknown): boolean {
   return isBudgetExhaustedError(error) || isRecoverableLlmError(error);
+}
+
+// A "backfill_packet_representative" anchor exists to prove on-diff-ness at
+// the verification gate (plan 76); it may point at the wrong line, so it is
+// never published as an inline location. Stripping it here routes the
+// finding through the ordinary summary-only path (or the merged-anchor
+// recovery, which only uses trusted member anchors).
+function withholdRepresentativeAnchor(candidate: CandidateFinding, telemetry: TelemetryRecorder): CandidateFinding {
+  if (candidate.anchorSource !== "backfill_packet_representative" || candidate.anchor === undefined) {
+    return candidate;
+  }
+  telemetry.event({
+    stage: 10,
+    level: "info",
+    message: "representative_anchor_withheld",
+    file: candidate.path,
+    data: { candidateId: candidate.id, anchor: candidate.anchor }
+  });
+  const { anchor: _representativeAnchor, ...withoutAnchor } = candidate;
+  return { ...withoutAnchor, changedLine: false };
 }
 
 function composerFallbackCoverageReason(mode: CompositionMode): string {

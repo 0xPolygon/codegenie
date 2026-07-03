@@ -357,6 +357,98 @@ describe("phase 5 pipeline regressions", () => {
     );
   });
 
+  it("backfills a precise anchor from quoted changed code when Stage 7 omits the anchor", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          findings: [
+            {
+              title: "anchorless with quotable evidence",
+              severity: "medium",
+              confidence: "medium",
+              path: "app.ts",
+              category: "correctness",
+              evidence: { changedCode: "+ return computeRoute(provider)" },
+              failureMode: "The changed routing call can drop the provider preference.",
+              whyThisMatters: "Callers relying on the preference get the wrong route.",
+              verification: "test"
+            }
+          ],
+          followUpHints: [],
+          uncertainties: []
+        }) as T
+    };
+
+    const [result] = await runLensPackets(
+      fakePlan(),
+      [fakePacket({ hunkLines: [{ kind: "add", content: "return computeRoute(provider);", newLine: 1 }] })],
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(result?.findings[0]).toMatchObject({
+      changedLine: true,
+      anchorSource: "backfill_changed_code",
+      modelAnchorSubmitted: false,
+      anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" }
+    });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 7, message: "anchor_inferred" })
+    ]));
+    expect(events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "candidate_anchor_summary_only" })
+    ]));
+  });
+
+  it("withholds representative gate anchors from published findings", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const finding: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-representative",
+      anchorSource: "backfill_packet_representative"
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        summary: "Found 1 verified issue.",
+        composedFindings: [{
+          findingIds: [finding.id],
+          finalBody: "The changed path can regress zero-decimal handling.",
+          publication: "inline"
+        }]
+      }) as T
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      { runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), packets: [fakePacket()], diff: fakeDiff() }
+    );
+
+    const published = [...result.findings, ...result.summaryOnlyFindings].find((item) => item.id === finding.id);
+    expect(published).toBeDefined();
+    expect(published?.anchor).toBeUndefined();
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 10, message: "representative_anchor_withheld" })
+    ]));
+  });
+
   it("normalizes finding path from a valid Stage 7 anchor", async () => {
     const runner: LlmRunner = {
       runStructured: async <T>() =>
@@ -3762,12 +3854,16 @@ describe("phase 5 pipeline regressions", () => {
       { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
     );
 
+    // Plan 76: the unanchored candidate received a gate-only representative
+    // anchor before verification; the revision keeps the original path and
+    // the representative anchor stays gate-scoped (withheld at composition).
     expect(verified.verified[0]).toMatchObject({
       id: "finding-1",
       path: "app.ts",
-      changedLine: false
+      changedLine: true,
+      anchorSource: "backfill_packet_representative"
     });
-    expect(verified.verified[0]?.anchor).toBeUndefined();
+    expect(verified.verified[0]?.anchor).toEqual({ path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" });
   });
 
   it("lets Stage 9 use reserved model-call budget after Stage 7 exhausts unreserved calls", () => {
@@ -6710,10 +6806,11 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     const records = artifacts.get("verification.json") as Array<{ candidateId: string; gate: string; verdict?: { verdict: string } }>;
-    expect(verifierCandidate).toMatchObject({ id: "finding-1", changedLine: false });
-    expect(verifierCandidate?.anchor).toBeUndefined();
-    expect(verified.verified[0]).toMatchObject({ id: "finding-1", changedLine: false });
-    expect(verified.verified[0]?.anchor).toBeUndefined();
+    // Plan 76: the invalid model anchor is stripped, then a gate-only
+    // representative anchor is backfilled from the packet.
+    expect(verifierCandidate).toMatchObject({ id: "finding-1", changedLine: true, anchorSource: "backfill_packet_representative" });
+    expect(verifierCandidate?.anchor).toEqual({ path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" });
+    expect(verified.verified[0]).toMatchObject({ id: "finding-1", changedLine: true, anchorSource: "backfill_packet_representative" });
     expect(records).toEqual([
       expect.objectContaining({
         candidateId: "finding-1",

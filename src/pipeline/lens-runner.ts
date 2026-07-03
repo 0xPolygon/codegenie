@@ -5,6 +5,7 @@ import type { LensRegistry } from "../skills/lens-registry.js";
 import type { PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
+  AnchorSource,
   CandidateFinding,
   CodegenieConfig,
   DiffAnchor,
@@ -18,7 +19,7 @@ import type {
   UnifiedDiff
 } from "../types.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
-import { isBudgetExhaustedError, isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff, validateAnchorForPacket } from "./pipeline-utils.js";
+import { inferAnchorFromChangedCode, isBudgetExhaustedError, isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff, validateAnchorForPacket } from "./pipeline-utils.js";
 import { isCodegenieError } from "../util/errors.js";
 import { applySeverityPolicy } from "./severity-policy.js";
 
@@ -526,11 +527,9 @@ function stampFinding(
   telemetry: TelemetryRecorder,
   diff: UnifiedDiff | undefined
 ): CandidateFinding {
-  const anchor = normalizeAnchor(submitted.anchor, packet, diff);
-  const changedLine = anchor !== undefined;
-  const path = anchor?.path ?? packet.path;
+  const modelAnchor = normalizeAnchor(submitted.anchor, packet, diff);
   const candidateId = `${packet.id.slice(0, 8)}-f${index + 1}`;
-  if (submitted.anchor !== undefined && anchor === undefined) {
+  if (submitted.anchor !== undefined && modelAnchor === undefined) {
     telemetry.event({
       stage: 7,
       level: "warn",
@@ -538,6 +537,35 @@ function stampFinding(
       packetId: packet.id,
       data: { candidateId, finding: submitted.title, anchor: submitted.anchor }
     });
+  }
+  // Tier 1 anchor reconstruction (plan 76): when the model quoted changed
+  // code but did not provide a usable structured anchor, a precise anchor is
+  // often derivable from the quote itself.
+  let anchor = modelAnchor;
+  let anchorSource: AnchorSource | undefined = modelAnchor !== undefined ? "model" : undefined;
+  if (anchor === undefined && submitted.evidence.changedCode.trim().length > 0) {
+    const inferred = normalizeAnchor(inferAnchorFromChangedCode(packet, submitted.evidence.changedCode), packet, diff);
+    if (inferred !== undefined) {
+      anchor = inferred;
+      anchorSource = "backfill_changed_code";
+      telemetry.event({
+        stage: 7,
+        level: "info",
+        message: "anchor_inferred",
+        packetId: packet.id,
+        data: { candidateId, hunkId: inferred.hunkId, line: inferred.line, side: inferred.side }
+      });
+    } else {
+      telemetry.event({
+        stage: 7,
+        level: "info",
+        message: "anchor_inference_failed",
+        packetId: packet.id,
+        data: { candidateId }
+      });
+    }
+  }
+  if (submitted.anchor !== undefined && anchor === undefined) {
     telemetry.event({
       stage: 7,
       level: "info",
@@ -546,6 +574,8 @@ function stampFinding(
       data: { candidateId, finding: submitted.title, anchor: submitted.anchor }
     });
   }
+  const changedLine = anchor !== undefined;
+  const path = anchor?.path ?? packet.path;
   const primaryLens = packet.lenses[0] ?? "core/code-review";
   return {
     id: candidateId,
@@ -554,6 +584,8 @@ function stampFinding(
     confidence: submitted.confidence,
     path,
     ...(anchor !== undefined ? { anchor } : {}),
+    ...(anchorSource !== undefined ? { anchorSource } : {}),
+    modelAnchorSubmitted: submitted.anchor !== undefined,
     changedLine,
     category: submitted.category,
     evidence: submitted.evidence,

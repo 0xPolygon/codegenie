@@ -747,6 +747,17 @@ export type CandidateFindingProvenance = {
   reason: string;
 };
 
+// Anchor provenance (plan 76). Publication trusts only "model",
+// "backfill_changed_code", and "verifier_revised"; a
+// "backfill_packet_representative" anchor proves on-diff-ness at the
+// verification gate but may point at the wrong line and must never be
+// published as a confident inline location.
+export type AnchorSource =
+  | "model"
+  | "backfill_changed_code"
+  | "backfill_packet_representative"
+  | "verifier_revised";
+
 export type CandidateFinding = {
   id: string;
   title: string;
@@ -759,6 +770,11 @@ export type CandidateFinding = {
   confidence: Confidence;
   path: string;
   anchor?: DiffAnchor;
+  anchorSource?: AnchorSource;
+  // Whether Stage 7 submitted any structured anchor (valid or not) —
+  // distinguishes "model never anchored" from "model anchor was invalid"
+  // after reconstruction has run.
+  modelAnchorSubmitted?: boolean;
   changedLine: boolean;
   category: FindingCategory;
   evidence: {

@@ -84,3 +84,125 @@ export function validateAnchorForDiff(anchor: DiffAnchor | undefined, diff: Unif
   const validation = validateDiffAnchor(anchor, buildDiffAnchorIndex(diff));
   return validation.valid ? anchor : undefined;
 }
+
+// ---------------------------------------------------------------------------
+// Anchor reconstruction (plan 76). Tier 1 is precise and publishable: match
+// the model's quoted changedCode against the packet's changed lines. Tier 2
+// is coarse and gate-only: any changed line proves the packet is on-diff but
+// says nothing about placement.
+
+type ChangedLineTarget = {
+  normalized: string;
+  path: string;
+  line: number;
+  side: "RIGHT" | "LEFT";
+  hunkId: string;
+};
+
+const MIN_MATCHABLE_SNIPPET_CHARS = 8;
+
+function normalizeCodeLine(line: string): string {
+  return line
+    .replace(/^\s*[+-]\s?/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Models sometimes quote code copied from contentWithLineNumbers, which
+// prefixes one or two line-number columns.
+function stripLineNumberColumns(line: string): string {
+  return line.replace(/^\s*\d+(?:\s+\d+)?\s{2,}/, "");
+}
+
+function isTrivialSnippet(normalized: string): boolean {
+  if (normalized.length < MIN_MATCHABLE_SNIPPET_CHARS) {
+    return true;
+  }
+  return /^[{}()[\];,.:\s]*$/.test(normalized);
+}
+
+function snippetMatchesTarget(snippet: string, target: string): boolean {
+  if (snippet === target) {
+    return true;
+  }
+  // Tolerate truncation/reflow in either direction, but only on substantial
+  // lines — containment on short fragments would match everywhere.
+  if (snippet.length >= MIN_MATCHABLE_SNIPPET_CHARS && target.length >= MIN_MATCHABLE_SNIPPET_CHARS) {
+    return target.includes(snippet) || snippet.includes(target);
+  }
+  return false;
+}
+
+function changedLineTargets(packet: ReviewPacket): ChangedLineTarget[] {
+  const targets: ChangedLineTarget[] = [];
+  for (const hunk of packet.hunks) {
+    for (const line of hunk.lines) {
+      if (line.kind === "add" && line.newLine !== undefined) {
+        targets.push({ normalized: normalizeCodeLine(line.content), path: packet.path, line: line.newLine, side: "RIGHT", hunkId: hunk.hunkId });
+      } else if (line.kind === "delete" && line.oldLine !== undefined) {
+        targets.push({ normalized: normalizeCodeLine(line.content), path: packet.oldPath ?? packet.path, line: line.oldLine, side: "LEFT", hunkId: hunk.hunkId });
+      }
+    }
+  }
+  return targets;
+}
+
+/**
+ * Tier 1: reconstruct a precise, publishable anchor by matching the model's
+ * quoted changedCode against the packet's changed lines. Conservative by
+ * design: ambiguous snippets (matching more than one location) contribute
+ * nothing, and reconstruction fails unless the uniquely-matched lines agree
+ * on a single hunk. Failure is an expected path — that is what Tier 2 is for.
+ */
+export function inferAnchorFromChangedCode(packet: ReviewPacket, changedCode: string): DiffAnchor | undefined {
+  const targets = changedLineTargets(packet).filter((target) => !isTrivialSnippet(target.normalized));
+  if (targets.length === 0) {
+    return undefined;
+  }
+  const uniqueMatches: ChangedLineTarget[] = [];
+  for (const rawLine of changedCode.split("\n")) {
+    const variants = new Set([normalizeCodeLine(rawLine), normalizeCodeLine(stripLineNumberColumns(rawLine))]);
+    for (const snippet of variants) {
+      if (isTrivialSnippet(snippet)) {
+        continue;
+      }
+      const matches = targets.filter((target) => snippetMatchesTarget(snippet, target.normalized));
+      const distinct = new Set(matches.map((match) => `${match.side}:${match.line}:${match.hunkId}`));
+      if (distinct.size === 1) {
+        uniqueMatches.push(matches[0]!);
+        break;
+      }
+    }
+  }
+  if (uniqueMatches.length === 0) {
+    return undefined;
+  }
+  const hunkIds = new Set(uniqueMatches.map((match) => match.hunkId));
+  if (hunkIds.size > 1) {
+    return undefined;
+  }
+  const chosen = uniqueMatches[0]!;
+  return { path: chosen.path, line: chosen.line, side: chosen.side, hunkId: chosen.hunkId };
+}
+
+/**
+ * Tier 2: coarse, gate-only representative anchor — the packet's first
+ * changed line. Proves on-diff-ness by construction; may point at the wrong
+ * line. Consumers must treat anchorSource "backfill_packet_representative"
+ * as unpublishable (see plan 76).
+ */
+export function representativeAnchorFromPacket(packet: ReviewPacket): DiffAnchor | undefined {
+  for (const hunk of packet.hunks) {
+    const line = hunk.changedNewLineNumbers[0];
+    if (line !== undefined) {
+      return { path: packet.path, line, side: "RIGHT", hunkId: hunk.hunkId };
+    }
+  }
+  for (const hunk of packet.hunks) {
+    const line = hunk.changedOldLineNumbers[0];
+    if (line !== undefined) {
+      return { path: packet.oldPath ?? packet.path, line, side: "LEFT", hunkId: hunk.hunkId };
+    }
+  }
+  return undefined;
+}
