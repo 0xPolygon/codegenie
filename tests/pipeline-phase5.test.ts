@@ -6297,9 +6297,8 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
-  it("clusters duplicate root-cause candidates across packet anchors and passes sibling evidence to the verifier", async () => {
-    let verifierCalls = 0;
-    const verifierCandidates: CandidateFinding[] = [];
+  it("verifies same-file look-alikes independently so refuting one cannot kill the other (plan 87)", async () => {
+    const verdictsIssued: string[] = [];
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const first = {
       ...fakeFinding(),
@@ -6314,15 +6313,16 @@ describe("phase 5 pipeline regressions", () => {
       title: "Preferred provider fallback ignores disabled provider",
       failureMode: "Fallback routing can still select a disabled preferred provider.",
       evidence: { changedCode: "return PreferredSwapProvider" },
-      anchor: { path: "app.ts", line: 2, side: "RIGHT" as const, hunkId: "h1" },
+      anchor: { path: "app.ts", line: 2, side: "RIGHT" as const, hunkId: "h2" },
       producedBy: { ...fakeFinding().producedBy, packetId: "packet-2" }
     };
     const runner: LlmRunner = {
-      runStructured: async <T>() => {
-        verifierCalls += 1;
+      runStructured: async <T>(request: { prompt: string }) => {
+        const isSecond = request.prompt.includes("routing-2") || verdictsIssued.length > 0;
+        verdictsIssued.push(isSecond ? "reject" : "keep");
         return {
-          verdict: "keep",
-          reason: "cluster representative kept",
+          verdict: verdictsIssued[verdictsIssued.length - 1],
+          reason: "independent verdict",
           requiredEvidencePresent: true,
           falsePositiveRisk: "low"
         } as T;
@@ -6352,55 +6352,66 @@ describe("phase 5 pipeline regressions", () => {
           events.push(event);
         }
       },
-      {
-        runner,
-        promptBuilder: {
-          ...fakePromptBuilder(),
-          buildVerifierPrompt: (input) => {
-            verifierCandidates.push(input.candidate);
-            return { prompt: "", templateVersion: "test", untrustedBlockCount: 0 };
-          }
-        },
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeTwoLineDiff()
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeTwoLineDiff() }
+    );
+
+    // Similar wording, same failure mode, different hunks: two independent
+    // verifications; the reject touches only its own candidate.
+    expect(verdictsIssued).toHaveLength(2);
+    expect(verified.verified.map((finding) => finding.id)).toEqual(["routing-1"]);
+    expect(events).not.toContainEqual(expect.objectContaining({ message: "verification_candidates_clustered" }));
+  });
+
+  it("propagates reject verdicts across exact duplicate copies with a per-candidate trail (plan 87)", async () => {
+    let verifierCalls = 0;
+    const artifacts = new Map<string, unknown>();
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const copy = {
+      ...fakeFinding(),
+      id: "finding-copy",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-1" }
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() => {
+        verifierCalls += 1;
+        return {
+          verdict: "reject",
+          reason: "the shared claim is refuted",
+          requiredEvidencePresent: false,
+          falsePositiveRisk: "high"
+        } as T;
       }
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding(), copy], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        },
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
     );
 
     expect(verifierCalls).toBe(1);
-    expect(verifierCandidates).toHaveLength(1);
-    expect(verifierCandidates[0]?.evidence.relatedCode).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        path: "app.ts",
-        lines: "return PreferredSwapProvider",
-        whyRelevant: expect.stringContaining("routing-2")
-      })
-    ]));
-    expect(verified.verified.map((finding) => finding.id).sort()).toEqual(["routing-1", "routing-2"]);
-    expect(verified.verified.find((finding) => finding.id === "routing-2")).toMatchObject({
-      clusterId: "routing-1",
-      duplicateOf: "routing-1"
+    expect(verified.verified).toEqual([]);
+    const records = artifacts.get("verification.json") as Array<{ candidateId: string; duplicateOf?: string; verdict?: { verdict: string } }>;
+    expect(records.find((record) => record.candidateId === "finding-copy")).toMatchObject({
+      duplicateOf: "finding-1",
+      verdict: expect.objectContaining({ verdict: "reject" })
     });
     expect(events).toContainEqual(expect.objectContaining({
-      stage: 9,
-      level: "info",
-      message: "verification_candidate_clustering",
-      data: expect.objectContaining({
-        candidates: 2,
-        representatives: 1,
-        clusters: 1,
-        duplicateCandidates: 1
-      })
-    }));
-    expect(events).toContainEqual(expect.objectContaining({
-      stage: 9,
-      level: "info",
       message: "verification_candidates_clustered",
-      data: expect.objectContaining({
-        representativeId: "routing-1",
-        duplicateIds: ["routing-2"],
-        clusterSize: 2,
-        skippedVerificationCandidates: 1
-      })
+      data: expect.objectContaining({ rule: "exact_text" })
     }));
   });
 
@@ -6466,10 +6477,11 @@ describe("phase 5 pipeline regressions", () => {
 
   it("applies verifier keep finalFinding revisions to duplicate clusters", async () => {
     const artifacts = new Map<string, unknown>();
+    // Exact copy (plan 87): same title/failureMode/category/hunk — only
+    // severity differs, which does not break exact identity.
     const duplicate = {
       ...fakeFinding(),
       id: "finding-2",
-      title: "stale duplicate",
       severity: "low" as const,
       evidence: { changedCode: "bad" }
     };
@@ -6852,7 +6864,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(coverage.reasons).toContain("verification disabled by config; candidates were not independently verified");
   });
 
-  it("does not cluster unanchored findings from different symbols", async () => {
+  it("does not cluster unanchored findings whose quoted evidence differs", async () => {
     let verifierCalls = 0;
     const { anchor: _anchor, ...baseFinding } = fakeFinding();
     const first = {
@@ -6864,6 +6876,7 @@ describe("phase 5 pipeline regressions", () => {
     const second = {
       ...first,
       id: "finding-2",
+      evidence: { changedCode: "different snippet" },
       producedBy: { ...first.producedBy, packetId: "packet-2" }
     };
     const runner: LlmRunner = {

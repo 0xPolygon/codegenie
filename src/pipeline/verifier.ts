@@ -226,7 +226,7 @@ export async function verifyFindings(
     });
     gatePassed.push(preGated.candidate);
   }
-  const clustered = clusterCandidates(gatePassed, packetsById, telemetry);
+  const clustered = clusterCandidates(gatePassed, telemetry);
 
   if (!config.review.verify) {
     const verdicts = clustered.all.map((candidate): VerificationVerdict => ({
@@ -1349,7 +1349,6 @@ function verifierErrorSummary(error: unknown): string {
 
 function clusterCandidates(
   candidates: CandidateFinding[],
-  packetsById: Map<string, ReviewPacket>,
   telemetry: TelemetryRecorder
 ): {
   all: CandidateFinding[];
@@ -1359,7 +1358,7 @@ function clusterCandidates(
 } {
   const clusters: CandidateFinding[][] = [];
   for (const candidate of candidates) {
-    const cluster = clusters.find((members) => duplicateCandidate(candidate, members[0], packetsById));
+    const cluster = clusters.find((members) => duplicateCandidate(candidate, members[0]));
     if (cluster) {
       cluster.push(candidate);
     } else {
@@ -1395,6 +1394,7 @@ function clusterCandidates(
           representativeId: representative.id,
           duplicateIds: duplicates.map((candidate) => candidate.id),
           clusterSize: cluster.length,
+          rule: "exact_text",
           skippedVerificationCandidates: duplicates.length,
           paths: [...new Set(cluster.map((candidate) => candidate.path))].sort()
         }
@@ -1423,34 +1423,43 @@ function clusterCandidates(
   return { all, representatives, duplicatesByRepresentative, duplicateCount };
 }
 
-function duplicateCandidate(
-  a: CandidateFinding,
-  b: CandidateFinding | undefined,
-  packetsById: Map<string, ReviewPacket>
-): boolean {
+// Pre-clustering is a scheduling optimization for identical copies only
+// (plan 87, functional_spec:563): two candidates share a verdict iff they
+// are exact duplicates. No text similarity, no scope/symbol inference, no
+// cross-category bridging — a shared verdict a candidate did not earn is a
+// silent correlated kill (fable bug 2).
+function duplicateCandidate(a: CandidateFinding, b: CandidateFinding | undefined): boolean {
   if (!b) {
     return false;
   }
-  const failureMatches = strongTextMatch(a.failureMode, b.failureMode);
-  if (a.category !== b.category && !failureMatches) {
+  if (a.category !== b.category || a.path !== b.path) {
     return false;
   }
-  if (!candidateScopesOverlap(a, b, packetsById)) {
+  const aAnchor = locationTrustedAnchor(a);
+  const bAnchor = locationTrustedAnchor(b);
+  if (aAnchor !== undefined && bAnchor !== undefined) {
+    if (aAnchor.hunkId !== bAnchor.hunkId) {
+      return false;
+    }
+  } else if (aAnchor === undefined && bAnchor === undefined) {
+    const aCode = normalizeCode(a.evidence.changedCode);
+    if (aCode.length === 0 || aCode !== normalizeCode(b.evidence.changedCode)) {
+      return false;
+    }
+  } else {
     return false;
   }
-  const titleMatches = strongTextMatch(a.title, b.title);
-  const evidenceMatches = changedEvidenceMatches(a, b);
-  const symbolMatches = candidateSymbolsOverlap(a, b, packetsById);
-  const exactLocationMatches = locationClusterKey(a, packetsById) !== undefined && locationClusterKey(a, packetsById) === locationClusterKey(b, packetsById);
-  if (exactLocationMatches && (titleMatches || failureMatches || evidenceMatches)) {
-    return true;
-  }
-  if (highImpactAmbiguous(a, b) && !failureMatches && !evidenceMatches) {
-    return false;
-  }
-  return (failureMatches && (titleMatches || evidenceMatches || symbolMatches || a.path === b.path)) ||
-    (evidenceMatches && (titleMatches || failureMatches)) ||
-    (titleMatches && failureMatches);
+  return exactTextKey(a.title) === exactTextKey(b.title) &&
+    exactTextKey(a.failureMode) === exactTextKey(b.failureMode);
+}
+
+// Lowercase, strip punctuation, collapse whitespace — equality only, by
+// design. Fingerprint equality (plan 83) was considered and rejected as the
+// primary rule: fingerprints are deliberately wording-free (path + location
+// + category + lens), so two DIFFERENT findings on the same hunk would
+// collide — the exact failure mode this plan removes.
+function exactTextKey(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
 function withSiblingEvidence(representative: CandidateFinding, duplicates: CandidateFinding[]): CandidateFinding {
@@ -1488,25 +1497,6 @@ function dedupeRelatedCode(entries: RelatedCodeEvidence[]): RelatedCodeEvidence[
   return deduped;
 }
 
-function candidateScopesOverlap(a: CandidateFinding, b: CandidateFinding, packetsById: Map<string, ReviewPacket>): boolean {
-  const aLocation = locationClusterKey(a, packetsById);
-  const bLocation = locationClusterKey(b, packetsById);
-  if (aLocation !== undefined && aLocation === bLocation) {
-    return true;
-  }
-  if (a.path === b.path) {
-    const aSymbols = candidateSymbols(a, packetsById);
-    const bSymbols = candidateSymbols(b, packetsById);
-    if (!locationTrustedAnchor(a) && !locationTrustedAnchor(b) && aSymbols.size > 0 && bSymbols.size > 0 && !setsIntersect(aSymbols, bSymbols)) {
-      return false;
-    }
-    return true;
-  }
-  if (setsIntersect(candidateEvidencePaths(a), candidateEvidencePaths(b))) {
-    return true;
-  }
-  return relatedRoot(a.path) === relatedRoot(b.path) && candidateSymbolsOverlap(a, b, packetsById);
-}
 
 // A representative gate anchor is not a location claim (plan 76): distinct
 // findings from the same packet all receive its first changed line, so
@@ -1515,110 +1505,18 @@ function locationTrustedAnchor(candidate: CandidateFinding): CandidateFinding["a
   return candidate.anchorSource === "backfill_packet_representative" ? undefined : candidate.anchor;
 }
 
-function locationClusterKey(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): string | undefined {
-  const anchor = locationTrustedAnchor(candidate);
-  if (anchor) {
-    return `anchor:${anchor.path}:${anchor.side}:${anchor.line}:${anchor.hunkId}`;
-  }
-  const symbols = candidateSymbols(candidate, packetsById);
-  if (symbols.size !== 1) {
-    return undefined;
-  }
-  return `symbol:${candidate.path}:${[...symbols][0]}`;
-}
 
-function candidateEvidencePaths(candidate: CandidateFinding): Set<string> {
-  return new Set([candidate.path, ...(candidate.evidence.relatedCode ?? []).map((entry) => entry.path)]);
-}
 
-function candidateSymbolsOverlap(a: CandidateFinding, b: CandidateFinding, packetsById: Map<string, ReviewPacket>): boolean {
-  return setsIntersect(candidateSymbols(a, packetsById), candidateSymbols(b, packetsById));
-}
 
-function candidateSymbols(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): Set<string> {
-  const packet = packetsById.get(candidate.producedBy.packetId);
-  return new Set(
-    (packet?.symbolFacts ?? [])
-      .flatMap((fact) => [fact.enclosingSymbol, fact.signature])
-      .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
-      .map(normalize)
-  );
-}
 
-function changedEvidenceMatches(a: CandidateFinding, b: CandidateFinding): boolean {
-  const aChanged = normalizeCode(a.evidence.changedCode);
-  const bChanged = normalizeCode(b.evidence.changedCode);
-  if (aChanged.length > 0 && aChanged === bChanged) {
-    return true;
-  }
-  const aRelated = relatedEvidenceKeys(a);
-  const bRelated = relatedEvidenceKeys(b);
-  return setsIntersect(aRelated, bRelated);
-}
 
-function relatedEvidenceKeys(candidate: CandidateFinding): Set<string> {
-  return new Set((candidate.evidence.relatedCode ?? [])
-    .map((entry) => `${entry.path}:${normalizeCode(entry.lines)}`)
-    .filter((entry) => !entry.endsWith(":")));
-}
 
-function highImpactAmbiguous(a: CandidateFinding, b: CandidateFinding): boolean {
-  return isHighImpact(a) || isHighImpact(b);
-}
 
-function isHighImpact(candidate: CandidateFinding): boolean {
-  return candidate.severity === "critical" || candidate.severity === "high";
-}
 
-function strongTextMatch(a: string, b: string): boolean {
-  const left = normalize(a);
-  const right = normalize(b);
-  if (left.length === 0 || right.length === 0) {
-    return false;
-  }
-  if (left === right) {
-    return isSubstantiveText(left);
-  }
-  const shorter = left.length < right.length ? left : right;
-  const longer = left.length < right.length ? right : left;
-  if (shorter.length >= 24 && longer.includes(shorter)) {
-    return true;
-  }
-  const leftTokens = significantTokens(left);
-  const rightTokens = significantTokens(right);
-  if (leftTokens.size < 4 || rightTokens.size < 4) {
-    return false;
-  }
-  const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
-  const union = new Set([...leftTokens, ...rightTokens]).size;
-  return union > 0 && intersection / union >= 0.82;
-}
 
-function isSubstantiveText(input: string): boolean {
-  return input.length >= 12 || significantTokens(input).size >= 3;
-}
 
-function significantTokens(input: string): Set<string> {
-  const stopWords = new Set(["a", "an", "and", "are", "as", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "with"]);
-  return new Set(input.split(" ").filter((token) => token.length > 1 && !stopWords.has(token)));
-}
 
-function setsIntersect<T>(a: Set<T>, b: Set<T>): boolean {
-  for (const value of a) {
-    if (b.has(value)) {
-      return true;
-    }
-  }
-  return false;
-}
 
-function relatedRoot(filePath: string): string {
-  const parts = filePath.split("/").filter(Boolean);
-  if (parts.length <= 2) {
-    return parts[0] ?? filePath;
-  }
-  return parts.slice(0, 2).join("/");
-}
 
 function truncateEvidenceLines(lines: string): string {
   const trimmed = lines.trim();

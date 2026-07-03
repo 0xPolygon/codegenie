@@ -1,6 +1,7 @@
 # Issue 87: Verifier Pre-Clustering Restricted to Exact Duplicates
 
-Status: PENDING
+Status: COMPLETE
+Completed: 2026-07-02. Implementation notes: `duplicateCandidate` is now the exact rule (same path + same category + same trusted anchored hunk, or both-anchorless with identical normalized `changedCode` + equal normalized title AND failureMode via `exactTextKey`). Plan-76 interplay: hunk equality reads `locationTrustedAnchor`, so gate-only representative anchors never create identity. Fingerprint-first was REJECTED during implementation: plan-83 fingerprints are deliberately wording-free (path+location+category+lens), so two different findings on one hunk would collide — the exact failure mode this plan removes; the textual rule already covers the fingerprint's structural components. Deleted ~180 lines of fuzzy machinery (`strongTextMatch`/Jaccard, `candidateScopesOverlap`, `locationClusterKey`, symbol/evidence-path overlap, cross-category bridging, `highImpactAmbiguous`). Fan-out kept; per-cluster event now carries `rule: "exact_text"`; reject propagation across exact copies covered by a per-candidate-trail test; the fable-bug-2 fixture (same file, same failureMode, different titles/hunks) verifies independently and a reject cannot kill the sibling. Repeat A/B measurement against the Wave-2 baseline still owed (owner-run).
 Planned from: fable review D3/bug 2 (`specs/reviews/1-fable-review.md`), verified against `src/pipeline/verifier.ts` at commit `00617d79`, 2026-07-02
 Planned at: commit `00617d79` (branch `next`)
 Recommended priority: high, Wave 3 of `PUNCHLIST.md` (behavior change to verification admission — measured against the Issue-79 baseline). Sequenced after Issue 83 so exact identity can lean on stable fingerprints.
