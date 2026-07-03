@@ -243,6 +243,12 @@ codegenie's normalized interface maps onto vendor dialects inside `pi-runner`'s 
 
 Reasoning-token spend is not exposed by pi-ai usage today; `reasoningTokens` recording is deferred until it is.
 
+**Session-ID / cache-affinity semantics differ sharply per provider** (verified in pi-ai 0.80.3):
+
+- **Direct Anthropic: the session ID is inert.** pi-ai sends `x-session-affinity` only for Fireworks and Cloudflare AI Gateway (`sendSessionAffinityHeaders` compat default). Anthropic routes its prompt cache server-side from the request prefix automatically; there is no client affinity knob. codegenie's stage-scoped session ID (`codegenie-<runId>-stage-<N>`) has no wire effect here.
+- **OpenAI (`openai-responses` — the gpt-5.5 path): the session ID becomes `prompt_cache_key`** in the request body (plus `session_id`/`x-client-request-id` headers). This is OpenAI's first-class cache-routing parameter: same key ⇒ same cache node, and OpenAI documents that exceeding ~15 requests/min on one key overflows to other nodes and degrades cache hits. codegenie's stage-scoped ID therefore concentrates all concurrent Stage-7/9 workers onto one key — above the documented per-key rate during a real run.
+- **Design note (pending change, land before the plan-86 cross-provider study):** session granularity should be **per worker** (`codegenie-<runId>-stage-7-<workerId>`), not per stage. Each worker's own multi-round conversation keeps its cache routing (the bulk of reuse — continuations re-read the worker's growing prefix); only the small cross-packet preamble share is lost. Per-worker keys are inert-neutral on direct Anthropic, correct for OpenAI's per-key rate model, and avoid pinning N concurrent workers to a single upstream node on affinity-honoring gateways — the self-inflicted version of the July 2026 queueing incident.
+
 ```ts
 // src/llm/llm-runner.ts
 
