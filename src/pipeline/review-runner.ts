@@ -48,7 +48,8 @@ import type {
 import { CodegenieError, errorExitCode, isCodegenieError } from "../util/errors.js";
 import { buildPlannerDossier, runPlanner } from "./planner.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
-import { runLensPackets } from "./lens-runner.js";
+import { ensemblePassesForPacket, runLensPackets } from "./lens-runner.js";
+import { aggregateAttentionEfficiency, buildAttentionRecords } from "./attention.js";
 import { runTargetedSystemReviews, suppressResolvedFollowUpHints } from "./system-reviewer.js";
 import { promoteUncertaintiesForVerification } from "./uncertainty-promotion.js";
 import { verifyFindings } from "./verifier.js";
@@ -310,6 +311,21 @@ export async function runReview(
     emitBudgetStop(run, finalReview.coverage.budgetStop);
     finalReview.budgetSummary = run.budget.summary(finalReview.coverage, buildContextPressureSummary(run.telemetry, packets, finalReview));
     throwIfHardAborted(run);
+    const attentionRecords = buildAttentionRecords({
+      packets,
+      packetResults: packetResultsForFinal,
+      candidateFindings,
+      verdicts: verified.verdicts,
+      publishedFindings: [...finalReview.findings, ...finalReview.summaryOnlyFindings],
+      ensemblePassesForPacket: (packet) => ensemblePassesForPacket(packet, config)
+    });
+    await run.telemetry.writeArtifact("attention.json", attentionRecords);
+    run.telemetry.event({
+      stage: 10,
+      level: "info",
+      message: "attention_efficiency",
+      data: aggregateAttentionEfficiency(attentionRecords) as unknown as Record<string, unknown>
+    });
     await run.telemetry.writeArtifact("coverage.json", {
       status: finalReview.coverage,
       records: buildCoverageRecords(diff.files, decisions, plannerResult.plan, packetResults, packets)

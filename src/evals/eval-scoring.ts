@@ -25,6 +25,7 @@ import type {
   Severity
 } from "../types.js";
 import { isLocalToolBudgetRejectionReason } from "../util/context-pressure.js";
+import { aggregateAttentionEfficiency } from "../pipeline/attention.js";
 
 type ScorableFinding = CandidateFinding | FinalFinding;
 type ScoreMode = "live" | "replay";
@@ -934,6 +935,9 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   ]);
   if (toolChoiceDowngradedCalls !== undefined) {
     metrics.toolChoiceDowngradedCalls = toolChoiceDowngradedCalls;
+  }
+  if (artifacts.attention !== undefined && artifacts.attention.length > 0) {
+    metrics.attentionEfficiency = aggregateAttentionEfficiency(artifacts.attention);
   }
   if (artifacts.missingArtifacts !== undefined && artifacts.missingArtifacts.length > 0) {
     metrics.missingArtifacts = [...artifacts.missingArtifacts];

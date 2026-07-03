@@ -69,6 +69,7 @@ export const ARTIFACT_LOCATION = {
   "candidate-findings.json": "stages/09-verification/candidate-findings.json",
   "uncertainty-promotion.json": "stages/09-verification/uncertainty-promotion.json",
   "verification.json": "stages/09-verification/verification.json",
+  "attention.json": "stages/10-composition/attention.json",
   "coverage.json": "stages/10-composition/coverage.json",
   "budget-summary.json": "stages/10-composition/budget-summary.json",
   "final-selection.json": "stages/10-composition/final-selection.json",

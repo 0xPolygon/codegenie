@@ -1119,6 +1119,34 @@ export type EvalBudgetResult = {
   fromReplayedArtifacts?: boolean;
 };
 
+// Plan 92 Layer 1: per-packet attention-allocation scoring — what a packet
+// was allotted (coverage, ensemble passes) joined with what it produced.
+export type AttentionRecord = {
+  packetId: string;
+  path: string;
+  coverage: Exclude<CoverageLevel, "skip">;
+  coverageSource: "planner" | "deterministic_default";
+  ensemblePasses: number;
+  directCandidates: number;
+  promotedCandidates: number;
+  hintsEmitted: number;
+  uncertaintiesEmitted: number;
+  keptVerified: number;
+  published: number;
+};
+
+export type AttentionEfficiency = {
+  byCoverage: Partial<Record<Exclude<CoverageLevel, "skip">, {
+    packets: number;
+    ensembledPackets: number;
+    directCandidates: number;
+    hintsEmitted: number;
+    keptVerified: number;
+    published: number;
+  }>>;
+  defaultCoveragePackets: number;
+};
+
 export type EvalRunMetrics = {
   reportedFindings: number;
   inlineFindings: number;
@@ -1132,6 +1160,7 @@ export type EvalRunMetrics = {
   verificationCalls?: number;
   toolCalls?: number;
   toolChoiceDowngradedCalls?: number;
+  attentionEfficiency?: AttentionEfficiency;
   missingArtifacts?: string[];
   maxPromptCharsByStage?: Partial<Record<ReviewStage, number>>;
   reviewCompleteness?: "complete" | "partial";
@@ -1285,6 +1314,9 @@ export type EvalArtifacts = {
   // a finding that resurfaced as a note (NOTE) from a silent miss (MISS).
   humanAttentionNotes?: EvalHumanAttentionNote[];
   reviewPlan?: ReviewPlan;
+  // Plan 92 Layer 1 attention records (attention.json); absent on runs
+  // predating the instrument.
+  attention?: AttentionRecord[];
   packets: ReviewPacket[];
   hintEvents: EvalHintEvent[];
   coverage?: RunCoverageStatus & { hunks?: unknown[] };

@@ -1,6 +1,7 @@
 import { cp, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
+  AttentionRecord,
   CandidateFinding,
   EvalArtifacts,
   EvalHintEvent,
@@ -46,6 +47,7 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
   const selectionRaw = await readOptionalArtifact<unknown>(dir, "final-selection.json");
   const coverageRaw = await readOptionalArtifact<unknown>(dir, "coverage.json");
   const reviewPlan = await readOptionalArtifact<ReviewPlan>(dir, "review-plan.json");
+  const attention = await readOptionalArtifact<AttentionRecord[]>(dir, "attention.json");
   const coverage = normalizeCoverage(coverageRaw);
   const metricsSources: EvalArtifacts["metricsSources"] = {};
   const costProfile = await readOptionalArtifact<unknown>(dir, "cost-profile.json");
@@ -91,6 +93,9 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
     hintEvents: await loadHintEvents(path.join(dir, "events.jsonl")),
     metricsSources
   };
+  if (attention !== undefined && Array.isArray(attention)) {
+    artifacts.attention = attention;
+  }
   if (reviewPlan !== undefined) {
     artifacts.reviewPlan = reviewPlan;
   }

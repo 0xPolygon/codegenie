@@ -167,7 +167,7 @@ export async function runLensPackets(
   return results;
 }
 
-function ensemblePassesForPacket(packet: ReviewPacket, config: CodegenieConfig): number {
+export function ensemblePassesForPacket(packet: ReviewPacket, config: CodegenieConfig): number {
   if (packet.coverage !== "deep") {
     return 1;
   }
