@@ -207,12 +207,13 @@ export const defaultConfig: CodegenieConfig = {
     perPassTimeoutMs: 8 * 60 * 1000,
     budgetBoost: 1,
     // Primary coverage budget (plan 90): work-denominated so provider latency
-    // can never shrink a review. Sized ~42% above the largest observed full
-    // review (trails-api 0c4d5213 run 46: 4,925,828 tokens), with headroom
-    // for plan 84's ensemble; the 15% reserved tail means dispatch
-    // soft-stops at 5.95M. A protective ceiling, not a target — raise it if
-    // a legitimate review ever binds.
-    maxBudgetTokens: 7_000_000
+    // can never shrink a review. Re-derived 2026-07-04 after run 0c4d5213/53
+    // (5,921,791 tokens of legitimate work — planner-deep + escalator
+    // ensembles + capped adaptive passes — grazed the 7M cap's 5.95M
+    // soft-stop and went partial); 8M puts the soft-stop at 6.8M, ~15% above
+    // the largest observed legitimate run. A protective ceiling, not a
+    // target.
+    maxBudgetTokens: 8_000_000
   },
   github: {
     summaryWhenNoFindings: false
