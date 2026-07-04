@@ -65,7 +65,12 @@ Sequencing (2026-07-04): the measurement campaign (owner runs feeding the plan-9
   1. **Plan 93** — COMPLETE 2026-07-04: dead ripgrep fast path and per-run ignored-file enumeration deleted; git-grep is the single search engine, with `engine: "git-grep"` retained in telemetry.
   2. **Plan 94** — COMPLETE 2026-07-04: shared util modules landed (`json`, `regex`, `path-roles`, `text-similarity`); `isTestPath` dialects are explicit named exports, compact vs pretty stable JSON stayed byte-compatible, the dead `lens-runner` follow-up key was deleted, and pinning tests cover the preserved divergences.
   3. **Plan 95** — IN PROGRESS 2026-07-04: rung-utilization census complete over `0c4d5213` runs 46-54 + `49f4645b` runs 29-33 (10 schema-invalid calls / 2,436 model calls; Stage-7 cleanup, composer salvage, planner/verifier repair all live). Prompt why ledger landed beside template versions; Stage-7 repair telemetry emitters collapsed to one recorder. Remaining: move Stage-7 cleanup fully behind `recoverInvalidSubmit` and A/B schema-friction flat.
-  4. **Plan 96** — fixed Stage-6 symbol-context budget (delete the ~600-line adaptive tree). The one real behavior change; census-sized budget + truncation event; strongest A/B (both cases, ≥2 runs); coordinates with PLAN12 seed-context.
+  4. **Plan 96** — CENSUS COMPLETE 2026-07-04, code not started: `0c4d5213` runs 46-54 show real mode spread (594 budget events; adaptive selected 211; sliced modes 234; `adaptive_sliced` has the highest rough run+path finding rate). Do not delete blindly; fixed budget must be sized from productive sliced modes and A/B'd before landing.
+
+## Post-decision measurement log (ambient runs)
+
+- **Run 0c4d5213/55 (2026-07-04):** PASS 4/4. Nine findings — richest report of the wave era, including BOTH of run 40's unique extras (vacuous-test assertion, LiFi malformed-numeric) → the run-40 breadth question is closed as draw variance, and the stage-10 near-dup merge is NOT over-consolidating (watch item: positive evidence). amountfromusd matched via promotion `u1` — the lane's second zero-decimal rescue since the retention decision. Adaptive post-fix tally: 4 produced / 12 scheduled across runs 53-55. Deep set: 7 ensembled, 3 productive at [1,1]. **Operational finding: the 60-min eval ceiling bound on legitimate work** (61.3 min under congestion TTFB → 10 tail dispatch blocks, 9 verification incompletes, completed_partial — first incomplete-verdict recurrence of the wave era, purely time-tail). Fixed: `maxTimeMinutes` 60→75 both cases (`12515c2`, evals repo) per the hang-guard-not-coverage-bound principle.
+- **Run 49f4645b/34 (2026-07-04):** PASS at K=2 — $4.78 vs K=3's $7.86, same ensemble-pass-2 winning mechanism. K decision validated on first test.
 
 ## Decision record (2026-07-04) — measurement rounds concluded
 
@@ -107,8 +112,8 @@ From fable §2.2/§2.4, dispositioned as documentation debt, batched into an eve
 | P1: promotion reduction (D2) | Plan 81, Wave 3 |
 | P1: pre-clustering exact-only (D3) | Plan 87, Wave 3 |
 | P1: human-attention admission (D5) | Plan 75 step 1, Wave 4 |
-| P1: shared submit/salvage layer | Simplification backlog, Wave 4 |
-| P1: fixed Stage-6 context budget | Simplification backlog, Wave 4 |
+| P1: shared submit/salvage layer | Plan 95, in progress Wave 4 |
+| P1: fixed Stage-6 context budget | Plan 96 census complete; code gated |
 | P1: ripgrep fix-or-delete (D9) | Plan 93, complete Wave 4 |
 | P1: shared similarity module | Plan 94, complete Wave 4 |
 | P2: plan 79 / 76 / 74 / 55 / 75 | Waves 2 / 3 / 4 / 4 / 4 |
