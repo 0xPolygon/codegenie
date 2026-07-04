@@ -71,6 +71,7 @@ type PublicationAnchorCandidate = {
 
 const MAX_COMPOSER_FINDINGS = 40;
 const MAX_COMPOSER_SUMMARY_CHARS = 4000;
+const CROSS_FILE_EVIDENCE_LINK_SIMILARITY = 0.42;
 
 export async function dedupeRankAndComposeReview(
   verified: { verified: CandidateFinding[]; verdicts: VerificationVerdict[] },
@@ -1099,16 +1100,38 @@ function mergeProximityGroups(groups: FindingGroup[], packetsById: Map<string, R
 function mergeRootCauseGroups(groups: FindingGroup[], packetsById: Map<string, ReviewPacket>): FindingGroup[] {
   const merged: FindingGroup[] = [];
   for (const group of groups) {
-    const existing = merged.find((candidate) => rootCauseGroupsMatch(candidate, group, packetsById));
-    if (!existing) {
+    const matches = merged.filter((candidate) => rootCauseGroupsMatch(candidate, group, packetsById));
+    if (matches.length === 0) {
       merged.push({ ...group, fingerprint: rootCauseGroupFingerprint(group, packetsById) });
       continue;
     }
-    existing.findings.push(...group.findings);
-    existing.representative = strongest(existing.findings);
-    existing.fingerprint = rootCauseGroupFingerprint(existing, packetsById);
+    for (const match of matches) {
+      merged.splice(merged.indexOf(match), 1);
+    }
+    let combined = combineFindingGroups([group, ...matches], packetsById);
+    for (let index = 0; index < merged.length;) {
+      const candidate = merged[index];
+      if (candidate !== undefined && rootCauseGroupsMatch(candidate, combined, packetsById)) {
+        merged.splice(index, 1);
+        combined = combineFindingGroups([combined, candidate], packetsById);
+        continue;
+      }
+      index += 1;
+    }
+    merged.push(combined);
   }
   return merged.sort((a, b) => compareFindings(a.representative, b.representative));
+}
+
+function combineFindingGroups(groups: FindingGroup[], packetsById: Map<string, ReviewPacket>): FindingGroup {
+  const findings = groups.flatMap((group) => group.findings);
+  const representative = strongest(findings);
+  const combined = {
+    fingerprint: "",
+    representative,
+    findings
+  };
+  return { ...combined, fingerprint: rootCauseGroupFingerprint(combined, packetsById) };
 }
 
 function nearbyGroup(a: FindingGroup, b: FindingGroup): boolean {
@@ -1125,10 +1148,13 @@ function anchorsWithinFiveLines(a: CandidateFinding["anchor"], b: CandidateFindi
 }
 
 function rootCauseGroupsMatch(a: FindingGroup, b: FindingGroup, packetsById: Map<string, ReviewPacket>): boolean {
-  if (a.representative.path !== b.representative.path || a.representative.category !== b.representative.category) {
+  if (a.representative.category !== b.representative.category) {
     return false;
   }
   const similarity = rootCauseSimilarity(a.findings, b.findings);
+  if (a.representative.path !== b.representative.path) {
+    return crossFileRootCauseGroupsMatch(a, b, packetsById, similarity);
+  }
   if (similarity < 0.5) {
     return false;
   }
@@ -1145,6 +1171,27 @@ function rootCauseGroupsMatch(a: FindingGroup, b: FindingGroup, packetsById: Map
     return similarity >= 0.65;
   }
   return similarity >= 0.8;
+}
+
+function crossFileRootCauseGroupsMatch(
+  a: FindingGroup,
+  b: FindingGroup,
+  packetsById: Map<string, ReviewPacket>,
+  similarity: number
+): boolean {
+  if (similarity < CROSS_FILE_EVIDENCE_LINK_SIMILARITY) {
+    return false;
+  }
+  if (groupsShareEvidencePath(a, b)) {
+    return true;
+  }
+  if (groupsShareSymbol(a, b, packetsById)) {
+    return similarity >= 0.55;
+  }
+  if (groupsShareLocation(a, b, packetsById)) {
+    return similarity >= 0.6;
+  }
+  return false;
 }
 
 function rootCauseSimilarity(a: CandidateFinding[], b: CandidateFinding[]): number {
@@ -1255,6 +1302,46 @@ function groupsShareLocation(a: FindingGroup, b: FindingGroup, packetsById: Map<
   const left = groupLocationKeys(a, packetsById);
   const right = groupLocationKeys(b, packetsById);
   return left.size > 0 && [...left].some((location) => right.has(location));
+}
+
+function groupsShareEvidencePath(a: FindingGroup, b: FindingGroup): boolean {
+  const leftPrimary = groupPrimaryPaths(a);
+  const rightPrimary = groupPrimaryPaths(b);
+  const leftRelated = groupRelatedEvidencePaths(a);
+  const rightRelated = groupRelatedEvidencePaths(b);
+  return setsIntersect(leftPrimary, rightRelated) ||
+    setsIntersect(rightPrimary, leftRelated) ||
+    setsIntersect(leftRelated, rightRelated);
+}
+
+function groupPrimaryPaths(group: FindingGroup): Set<string> {
+  const paths = new Set<string>();
+  for (const finding of group.findings) {
+    addPathKey(paths, finding.path);
+    addPathKey(paths, finding.anchor?.path);
+  }
+  return paths;
+}
+
+function groupRelatedEvidencePaths(group: FindingGroup): Set<string> {
+  const paths = new Set<string>();
+  for (const finding of group.findings) {
+    for (const related of finding.evidence.relatedCode ?? []) {
+      addPathKey(paths, related.path);
+    }
+  }
+  return paths;
+}
+
+function addPathKey(paths: Set<string>, path: string | undefined): void {
+  const key = path?.trim().toLowerCase();
+  if (key && key.length > 0) {
+    paths.add(key);
+  }
+}
+
+function setsIntersect(a: Set<string>, b: Set<string>): boolean {
+  return a.size > 0 && [...a].some((item) => b.has(item));
 }
 
 function groupLocationKeys(group: FindingGroup, packetsById: Map<string, ReviewPacket>): Set<string> {

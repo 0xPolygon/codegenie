@@ -9419,6 +9419,165 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.findings[0]?.finalBody).toContain("Also reported in app.ts");
   });
 
+  it("merges cross-file helper and caller root-cause duplicates in deterministic fallback", async () => {
+    const helperPath = "lib/intentmachine/routingsolver/fallbacks.go";
+    const v1Path = "lib/intentmachine/v1/quote_intent.go";
+    const v15Path = "lib/intentmachine/v1_5/quote_intent.go";
+    const helper: CandidateFinding = {
+      ...fakeFinding(),
+      id: "routing-helper",
+      title: "Consolidated fallback helper adds hard error on explicit-preference selection failure",
+      severity: "medium",
+      confidence: "high",
+      path: helperPath,
+      anchor: { path: helperPath, line: 47, side: "RIGHT", hunkId: "h-helper" },
+      evidence: {
+        changedCode: "if prefErr == nil { usedPreferenceSelection = true } else if explicitPreference { return nil, fmt.Errorf(\"failed to select preferred route providers: %w\", prefErr) }",
+        relatedCode: [
+          {
+            path: v1Path,
+            lines: "base v1 logged preference selection failure and fell back to default routing",
+            whyRelevant: "Base v1 did not return on prefErr for explicit preference."
+          },
+          {
+            path: v15Path,
+            lines: "base v1_5 logged preference selection failure and fell back to default routing",
+            whyRelevant: "Base v1_5 did not return on prefErr for explicit preference."
+          }
+        ]
+      },
+      failureMode: "When options.Preference is explicitly set and SelectPreferredProviders returns an error, the new helper returns an error instead of logging and falling back to default routing. Requests that previously succeeded via default routing now fail.",
+      whyThisMatters: "The PR is declared behavior-preserving, but this introduces a caller-visible hard-failure path for explicit-preference quote requests.",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-routing-helper" }
+    };
+    const v1Caller: CandidateFinding = {
+      ...helper,
+      id: "routing-v1",
+      title: "Routing consolidation adds explicit-preference hard-fail and skips AUTO fallback",
+      confidence: "medium",
+      path: v1Path,
+      anchor: { path: v1Path, line: 459, side: "RIGHT", hunkId: "h-v1" },
+      evidence: {
+        changedCode: "solvedRoutes, err := routingsolver.SolveQuoteRoutingWithFallbacks(ctx, &h.routingSolver, oplog, routeReq, req.Options)",
+        relatedCode: [{
+          path: helperPath,
+          lines: "explicitPreference returns failed to select preferred route providers and gates AUTO retry with !explicitPreference",
+          whyRelevant: "The shared helper is the new source of the hard-fail and no-AUTO retry behavior."
+        }]
+      },
+      failureMode: "When a caller explicitly sets req.Options.Preference, selection failure now returns an error instead of falling back to default routing, and a preferred-provider solve failure skips the AUTO retry. Requests that previously produced a quote can now fail.",
+      whyThisMatters: "QuoteIntent clients that set Options.Preference can see new errors from what was intended as behavior-preserving routing consolidation.",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-routing-v1" }
+    };
+    const v15Caller: CandidateFinding = {
+      ...v1Caller,
+      id: "routing-v15",
+      title: "Routing refactor changes error semantics for explicit route preference",
+      path: v15Path,
+      anchor: { path: v15Path, line: 458, side: "RIGHT", hunkId: "h-v15" },
+      evidence: {
+        changedCode: "solvedRoutes, err := routingsolver.SolveQuoteRoutingWithFallbacks(ctx, &h.routingSolver, oplog, routeReq, req.Options)",
+        relatedCode: [{
+          path: helperPath,
+          lines: "explicitPreference returns failed to select preferred route providers and gates AUTO retry with !explicitPreference",
+          whyRelevant: "The shared helper changes the explicit-preference fallback contract for this caller too."
+        }]
+      },
+      failureMode: "Old inline logic logged and proceeded to default routing when SelectPreferredProviders failed, and retried with swap and bridge AUTO whenever usedPreferenceSelection was true. The extracted SolveQuoteRoutingWithFallbacks changes this for explicit req.Options.Preference: on selection failure it now returns an error instead of falling back to default routing, and on solve failure it skips the AUTO retry. A request that previously succeeded via default or AUTO routing can now hard-fail.",
+      whyThisMatters: "The change is presented as behavior-preserving routing consolidation, but it alters caller-visible error behavior for explicit-preference QuoteIntent calls.",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-routing-v15" }
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [helper, v1Caller, v15Caller], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      { ...fakeCoverage(), totalHunks: 3, reviewedHunks: 3 },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async () => {
+            throw composerTransientError();
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([
+          { path: helperPath, hunkId: "h-helper", line: 47, content: "else if explicitPreference { return nil, fmt.Errorf(\"failed to select preferred route providers\") }" },
+          { path: v1Path, hunkId: "h-v1", line: 459, content: "routingsolver.SolveQuoteRoutingWithFallbacks(ctx, &h.routingSolver, oplog, routeReq, req.Options)" },
+          { path: v15Path, hunkId: "h-v15", line: 458, content: "routingsolver.SolveQuoteRoutingWithFallbacks(ctx, &h.routingSolver, oplog, routeReq, req.Options)" }
+        ])
+      }
+    );
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.summaryOnlyFindings).toHaveLength(0);
+    expect(result.findings[0]).toMatchObject({
+      id: "routing-helper",
+      publication: "inline",
+      mergedCandidateIds: expect.arrayContaining(["routing-helper", "routing-v1", "routing-v15"])
+    });
+    expect(result.findings[0]?.mergedCandidateIds).toHaveLength(3);
+    expect(result.findings[0]?.finalBody).toContain(`Also reported in ${v1Path}:459`);
+    expect(result.findings[0]?.finalBody).toContain(`Also reported in ${v15Path}:458`);
+  });
+
+  it("does not merge unrelated cross-file findings just because they cite the same helper path", async () => {
+    const helperPath = "src/shared/helper.ts";
+    const cacheFinding: CandidateFinding = {
+      ...fakeFinding(),
+      id: "cache-finding",
+      title: "Tenant cache invalidation omits the namespace key",
+      path: "src/cache.ts",
+      anchor: { path: "src/cache.ts", line: 12, side: "RIGHT", hunkId: "h-cache" },
+      evidence: {
+        changedCode: "cache.delete(entry.id)",
+        relatedCode: [{ path: helperPath, lines: "buildTenantCacheKey(tenantId, id)", whyRelevant: "The helper shows cache keys include tenant scope." }]
+      },
+      failureMode: "Invalidating by entry id alone leaves tenant-scoped cache entries behind, so later reads can return stale data.",
+      whyThisMatters: "Stale tenant data can be served after an update.",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-cache" }
+    };
+    const billingFinding: CandidateFinding = {
+      ...fakeFinding(),
+      id: "billing-finding",
+      title: "Retry timeout can charge a completed payment twice",
+      path: "src/billing.ts",
+      anchor: { path: "src/billing.ts", line: 40, side: "RIGHT", hunkId: "h-billing" },
+      evidence: {
+        changedCode: "chargeCard(invoice)",
+        relatedCode: [{ path: helperPath, lines: "withTimeout(paymentPromise)", whyRelevant: "The helper documents timeout behavior shared by payment calls." }]
+      },
+      failureMode: "A timed-out retry does not check whether the first payment completed before issuing another charge.",
+      whyThisMatters: "Customers can be billed twice for the same invoice.",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-billing" }
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [cacheFinding, billingFinding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      { ...fakeCoverage(), totalHunks: 2, reviewedHunks: 2 },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async () => {
+            throw composerTransientError();
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([
+          { path: "src/cache.ts", hunkId: "h-cache", line: 12, content: "cache.delete(entry.id)" },
+          { path: "src/billing.ts", hunkId: "h-billing", line: 40, content: "chargeCard(invoice)" }
+        ])
+      }
+    );
+
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings.map((finding) => finding.mergedCandidateIds).sort()).toEqual([["billing-finding"], ["cache-finding"]]);
+  });
+
   it("publishes an unanchored composed finding inline using a valid merged anchor", async () => {
     const { anchor: _selectedAnchor, ...selectedBase } = fakeFinding();
     const selected: CandidateFinding = {
