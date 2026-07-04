@@ -36,17 +36,24 @@ File-conflict note: 80, 85, 82 all touch `verifier.ts`/`lens-runner.ts` — land
 - [x] **Per-worker session IDs** — stage-scoped session IDs mapped to OpenAI's `prompt_cache_key`, concentrating all Stage-7/9 workers on one cache node above OpenAI's documented ~15 req/min per-key overflow threshold; per-worker IDs (`stage-7-<workerId>`) fix gpt-5.5 cache routing, are inert on direct Anthropic (safe pre-baseline), and avoid gateway affinity pinning. `sessionKeyGranularity: "worker"` recorded in provider_protocol. (2026-07-02)
 - [ ] **Plan 86 (step 5)** — cross-provider study (opus vs gpt-5.5 vs one more), protocol-controlled. Output: findings note, not code. Requires the per-worker session-ID change above so gpt-5.5 is not handicapped by cache-key hotspotting.
 
-## Wave 4 — calibration, production-path, hygiene, simplification
+## Wave 4 — production-path fixes now, calibration when the data lands
+
+Sequencing (2026-07-04): the measurement campaign (owner runs feeding the plan-92/84 decision tables) runs in parallel with code work. Code items below are ordered so nothing landed can muddy an A/B: production-path and hygiene fixes first (eval-independent), calibration items strictly after the rates exist. Current measurement tallies to watch: adaptive hit rate 1-for-4 post-fix (run 53, incl. one expectation rescue), ensemble pass-2 rescues in 3 of 4 ensemble runs, E1 escalation 2-for-2 on aim.
 
 - [x] **Plan 92 (code)** — all three layers landed 2026-07-03 (attention instrument; E1 test-coverage-delta escalator always-on + E2 telemetry-only; adaptive second pass dark behind `review.adaptiveSecondPass`, capped). Measurement pending: owner runs with adaptive enabled in eval cases; per-mechanism attribution via coverageSource/adaptive events keeps combined-run A/Bs readable. Original planning entry: (2026-07-03 from runs 47/49/50: all three losses on normal/default-coverage packets while deep ensembles went [0,0] in 6/8 pass-runs; run 50's missed finding surfaced verbatim as a concrete follow-up hint from the missing packet). Three layers, landed separately: (1) attention-efficiency metrics — zero behavior change, can land immediately; (2) deterministic structural escalators (orphaned test-coverage delta; intent mismatch) — no domain heuristics; (3) adaptive second pass triggered by the pipeline's own near-miss signals, on plan-84 machinery, capped, dark by default. Subsumes the promotion lane's rationale — its success is what earns plan 81's gated deletions.
 
+### Now (eval-independent; land while measurement accumulates)
+
+- [ ] **Plan 88** — publisher: reachable summary-only 422 fallback + partial-coverage disclosure in posting body (fable D6, bug 1). Production GitHub path; independent of evals — can land any time a slot opens, NEXT code item (P0 in the drain map).
 - [ ] **Composition near-duplicate merge (watch → fix, from run 0c4d5213/53)** — two wording-variant routing findings from different ensemble passes published as separate inline findings; stage-9's exact rule correctly kept them separate for independent verification, but stage-10 root-cause grouping should have merged them. Diagnose groupFindings on the run-53 pair; small fix if the gap is real. Also watch: finding-set diversity vs pre-wave run 40 (two extras 53 lacked).
+- [ ] **Plan 89, phase B (hygiene)** — tree-sitter tree disposal (bug 9), per-stage runtime double-count (11), crashed-run pruning (12), `.codegenie/.gitignore` mutation (small-drift), Go value-receiver rendering (15), regex HTTP-status mining (16), extra-submit drop telemetry (18), stale-lock/clamp cluster (20), eval runId identity + README path + old-layout replay leftovers. One commit per item, slack-time work.
+
+### Data-gated (do NOT start until the decision tables have rates)
+
 - [ ] **Plan 82 (calibration half)** — only if Wave-2/3 data shows severity flapping on `severityAtLeast` expectations; consider scorer matching on `max(severity, severityBeforeCap)`.
 - [ ] **Plan 74** — merged-finding confidence calibration (fable: sound, narrow; validate on harness).
 - [ ] **Plan 75 (step 1 only)** — provenance-exact human-attention suppression. Step 2 superseded by the structural direction in fable §6.4 + Plan 81's note-admission effects.
 - [ ] **Plan 55 (re-scoped)** — docs as intent context; drop the `ReviewDisposition`/`FileRole` machinery per fable §4.
-- [ ] **Plan 88** — publisher: reachable summary-only 422 fallback + partial-coverage disclosure in posting body (fable D6, bug 1). Production GitHub path; independent of evals — can land any time a slot opens, sequenced here only because nothing measures it.
-- [ ] **Plan 89, phase B (hygiene)** — tree-sitter tree disposal (bug 9), per-stage runtime double-count (11), crashed-run pruning (12), `.codegenie/.gitignore` mutation (small-drift), Go value-receiver rendering (15), regex HTTP-status mining (16), extra-submit drop telemetry (18), stale-lock/clamp cluster (20), eval runId identity + README path + old-layout replay leftovers. One commit per item, slack-time work.
 - [ ] **Simplification (fable §6, items 5-8) — BACKLOG, each needs a plan + harness validation:** one shared submit/salvage layer + prompt "why" ledger; fixed Stage-6 symbol-context budget (delete adaptive tree — interacts with PLAN12 tree-sitter/seed-context direction); ripgrep fast path fix-or-delete (D9); shared similarity/util module. Sequenced after the measurement campaign because several touch review behavior.
 
 ## Decisions needed (not code work until decided)
