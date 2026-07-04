@@ -669,7 +669,16 @@ export function isAdaptiveNearMissSignal(
   if (risk.promotable === false) {
     return false;
   }
-  return mentionsChangedScope(source) && hasConcreteFailurePredicate(source, risk.category);
+  // Strict scope: the signal must reference the packet's own path or name a
+  // changed symbol — mentionsChangedScope's sameRoot leniency triggered 19
+  // adaptive passes in run 0c4d5213/52 (mostly producing nothing).
+  if (sourceReferencesPacketPath(source) === false && sourceNamesChangedSymbol(source) === false) {
+    return false;
+  }
+  if (isBroadFollowUpOnly(source, risk.category)) {
+    return false;
+  }
+  return hasConcreteFailurePredicate(source, risk.category);
 }
 
 function hasConcreteFailurePredicate(source: PromotionSource, category: FindingCategory): boolean {

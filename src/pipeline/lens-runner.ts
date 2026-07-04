@@ -58,6 +58,12 @@ type Stage7PacketGeneration = {
 };
 
 const MAX_FOLLOW_UP_HINTS_PER_PACKET = 2;
+const MAX_ADAPTIVE_PASSES_PER_RUN = 4;
+// Ensemble guardrail (run 0c4d5213/52): the planner assigned 14 deep packets
+// in one run (vs the usual 3-5); unbounded deep x K multiplies straight into
+// the token budget. Ensemble the first N deep packets in input order; the
+// rest run single-pass and are disclosed.
+const MAX_ENSEMBLED_PACKETS_PER_RUN = 8;
 const MAX_UNCERTAINTIES_PER_PACKET = 1;
 const stage7Generation = new WeakMap<PacketReviewResult, Stage7PacketGeneration>();
 
@@ -79,10 +85,28 @@ export async function runLensPackets(
   // Plan 84: deep-coverage packets run K independent Stage-7 passes whose
   // union feeds the existing verification gate. K=1 (the default) is the
   // legacy single-pass path, byte-for-byte.
+  let ensembledPackets = 0;
+  let ensembleCapSkipped = 0;
   const passPlan = packets.flatMap((packet) => {
-    const passes = ensemblePassesForPacket(packet, config);
+    let passes = ensemblePassesForPacket(packet, config);
+    if (passes > 1) {
+      if (ensembledPackets >= MAX_ENSEMBLED_PACKETS_PER_RUN) {
+        passes = 1;
+        ensembleCapSkipped += 1;
+      } else {
+        ensembledPackets += 1;
+      }
+    }
     return Array.from({ length: passes }, (_unused, index) => ({ packet, pass: index + 1, passes }));
   });
+  if (ensembleCapSkipped > 0) {
+    telemetry.event({
+      stage: 7,
+      level: "warn",
+      message: "stage7_ensemble_packet_cap",
+      data: { cap: MAX_ENSEMBLED_PACKETS_PER_RUN, ensembledPackets, skipped: ensembleCapSkipped }
+    });
+  }
   const tasks = passPlan.map(({ packet, pass, passes }): WorkerTask<PacketReviewResult> => ({
     stage: 7,
     priority: packetPriority(packet),
@@ -239,8 +263,10 @@ async function runAdaptiveSecondWave(
     const trigger = adaptiveTriggerFor(packet, result);
     return trigger === undefined ? [] : [{ packet, result, trigger }];
   });
-  const deepPacketCount = packets.filter((packet) => packet.coverage === "deep").length;
-  const cap = Math.max(2, deepPacketCount);
+  // Flat cap (run 0c4d5213/52): a deep-count-scaled cap compounded with a
+  // planner deep-explosion (14 planner-deep packets) into 16 adaptive passes
+  // and the first budget soft-stop breach of the wave era.
+  const cap = MAX_ADAPTIVE_PASSES_PER_RUN;
   const ordered = [...triggered].sort((a, b) => ADAPTIVE_TRIGGER_RANK[a.trigger] - ADAPTIVE_TRIGGER_RANK[b.trigger]);
   const scheduled = ordered.slice(0, cap);
   const capped = ordered.length - scheduled.length;
