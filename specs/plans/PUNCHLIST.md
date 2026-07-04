@@ -34,7 +34,13 @@ File-conflict note: 80, 85, 82 all touch `verifier.ts`/`lens-runner.ts` — land
 - [x] **Plan 81 (output-quality slice)** — landed 2026-07-02: promoted candidates carry real predicate titles (no templates), NO fabricated anchors (plan-76 gate-only anchors take over; run-30's published-template-with-fake-anchor shape is structurally impossible), and hunk-scoped evidence. Admission gates unchanged (already implement the three-part rule; promotions are load-bearing per runs 24-30). Classifier/locality/reserve deletions + compensation-lane shrink remain measurement-gated on repeat data; category-from-lens deferred to a hint-schema change (documented in plan).
 - [x] **Plan 84** — IMPLEMENTED 2026-07-02, shipped dark (`deepEnsemblePasses` default 1 = off). K independent deep-packet passes, union under plan-87 exact identity, pass-attributed ids/producers, `stage7_ensemble` telemetry. Measurement next: owner-run K=3 vs baseline on both cases (decision table in the plan governs defaults). Wave 3 code COMPLETE.
 - [x] **Per-worker session IDs** — stage-scoped session IDs mapped to OpenAI's `prompt_cache_key`, concentrating all Stage-7/9 workers on one cache node above OpenAI's documented ~15 req/min per-key overflow threshold; per-worker IDs (`stage-7-<workerId>`) fix gpt-5.5 cache routing, are inert on direct Anthropic (safe pre-baseline), and avoid gateway affinity pinning. `sessionKeyGranularity: "worker"` recorded in provider_protocol. (2026-07-02)
-- [ ] **Plan 86 (step 5)** — cross-provider study (opus vs gpt-5.5 vs one more), protocol-controlled. Output: findings note, not code. Requires the per-worker session-ID change above so gpt-5.5 is not handicapped by cache-key hotspotting.
+- [ ] **Plan 86 (step 5) — cross-provider study (opus-4-8 vs gpt-5.5), protocol-controlled. Output: findings note, not code.** Scoped 2026-07-04. Per-worker session keys done (the gpt-5.5 cache-hotspotting handicap is fixed). Prior gpt-5.5 underperformance is now separable hypotheses, each with an instrument: schema friction (first-submit validity + schemaInvalid/repair metrics), tool-call style vs opus-calibrated budgets (toolBudgetRejections, per-packet call counts), forced-choice-with-reasoning API posture (provider_protocol per call; known asymmetry: anthropic runs forced calls thinking-off, openai reasoning-on — document, don't hide), tokenizer/cache-economics differences (token totals move for non-quality reasons), and scorer wording bias (titlePatterns tuned on opus phrasing — manually adjudicate first-run misses before trusting fails, run-49-style).
+  - [ ] **Pre-study telemetry gate (code, small, eval-independent — land in the next quiet window):**
+    1. Widen the `onResponse` capture: currently keeps only `anthropic-ratelimit-*`/`request-id` — add `x-ratelimit-*` and `x-request-id` so gpt-5.5 runs record rate posture and request ids (otherwise blind on exactly the July failure dimension).
+    2. Record `reasoningTokens` per call: pi-ai 0.80.3 now exposes `usage.reasoning` (verified in run-50 debug artifacts) — the plan-86 deferral is obsolete; needed so gpt-5.5 reasoning spend vs opus thinking spend compare symmetrically.
+    3. Verify OpenAI `cached_tokens` usage maps into the fields `providerPromptCacheReadTokens` reads — else the per-worker-key fix built FOR this study is unmeasurable on the model it was built for.
+  - [ ] **Smoke run first:** one cheap gpt-5.5 run of `49f4645b` (~$5) to catch auth/400s/schema mapping before real spend; adjudicate its scoring fairness (widen titlePatterns if same-substance findings miss on wording only).
+  - [ ] **Study protocol:** both cases, N≥2-3 per model, identical configs except `llm.provider`/`llm.model` (keep K=2 + adaptiveSecondPass on — mechanism hit-rates per model are a study output); findings note reports recall WITH covariates alongside (first-submit validity, schema repairs, tool volume, cache reads, reasoningTokens, TTFB, cost) so any recall gap ships with its mechanistic explanation.
 
 ## Wave 4 — production-path fixes now, calibration when the data lands
 
@@ -55,8 +61,8 @@ Sequencing (2026-07-04): the measurement campaign (owner runs feeding the plan-9
 - [x] **Plan 75 (step 1)** — COMPLETE 2026-07-04: adjudicated-reject notes suppressed provenance-exactly; pinning tests landed same day.
 - [ ] **Plan 55 (re-scoped)** — docs as intent context; drop the `ReviewDisposition`/`FileRole` machinery per fable §4.
 - [ ] **Simplification series (fable §6 items 5-8) — PLANNED 2026-07-04, execute in risk order in quiet measurement windows:**
-  1. **Plan 93** — delete the dead ripgrep fast path + per-run ignored-file enumeration (D9). Zero model-behavior surface; land first.
-  2. **Plan 94** — shared similarity/util module (isTestPath ×5, stableJson ×4, escapeRegExp ×4, tokenJaccard ×4, followUpHintKey ×3 incl. one dead). Mechanical, but every divergence gets an explicit disposition; attention/escalation telemetry validates classification didn't drift.
+  1. **Plan 93** — COMPLETE 2026-07-04: dead ripgrep fast path and per-run ignored-file enumeration deleted; git-grep is the single search engine, with `engine: "git-grep"` retained in telemetry.
+  2. **Plan 94** — COMPLETE 2026-07-04: shared util modules landed (`json`, `regex`, `path-roles`, `text-similarity`); `isTestPath` dialects are explicit named exports, compact vs pretty stable JSON stayed byte-compatible, the dead `lens-runner` follow-up key was deleted, and pinning tests cover the preserved divergences.
   3. **Plan 95** — one shared submit/salvage layer + prompt "why" ledger. Starts with a rung-utilization census over runs 46-54 (plan-86 metrics exist for exactly this); dead rungs delete, live rungs consolidate behind the recoverInvalidSubmit seam; A/B must be invisible in schema-friction and recall metrics.
   4. **Plan 96** — fixed Stage-6 symbol-context budget (delete the ~600-line adaptive tree). The one real behavior change; census-sized budget + truncation event; strongest A/B (both cases, ≥2 runs); coordinates with PLAN12 seed-context.
 
@@ -102,8 +108,8 @@ From fable §2.2/§2.4, dispositioned as documentation debt, batched into an eve
 | P1: human-attention admission (D5) | Plan 75 step 1, Wave 4 |
 | P1: shared submit/salvage layer | Simplification backlog, Wave 4 |
 | P1: fixed Stage-6 context budget | Simplification backlog, Wave 4 |
-| P1: ripgrep fix-or-delete (D9) | Simplification backlog, Wave 4 |
-| P1: shared similarity module | Simplification backlog, Wave 4 |
+| P1: ripgrep fix-or-delete (D9) | Plan 93, complete Wave 4 |
+| P1: shared similarity module | Plan 94, complete Wave 4 |
 | P2: plan 79 / 76 / 74 / 55 / 75 | Waves 2 / 3 / 4 / 4 / 4 |
 | P2: gpt-5.5 study + tool-choice instrumentation | Plan 86, Waves 1+3 |
 | P2: Stage-7 ensemble | Plan 84, Wave 3 |
