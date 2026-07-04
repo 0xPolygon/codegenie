@@ -52,7 +52,7 @@ Sequencing (2026-07-04): the measurement campaign (owner runs feeding the plan-9
 
 - [x] **Plan 82 (calibration half)** — CLOSED 2026-07-04, no severity flapping observed (decision record). Original entry: **(was)** — only if Wave-2/3 data shows severity flapping on `severityAtLeast` expectations; consider scorer matching on `max(severity, severityBeforeCap)`.
 - [x] **Plan 74** — COMPLETE 2026-07-04 (`91dd903`): bounded merged-confidence calibration at final composition; confidenceSelections in final-selection.json.
-- [x] **Plan 75 (step 1)** — COMPLETE 2026-07-04: adjudicated-reject notes suppressed provenance-exactly; pinning test owed next session.
+- [x] **Plan 75 (step 1)** — COMPLETE 2026-07-04: adjudicated-reject notes suppressed provenance-exactly; pinning tests landed same day.
 - [ ] **Plan 55 (re-scoped)** — docs as intent context; drop the `ReviewDisposition`/`FileRole` machinery per fable §4.
 - [ ] **Simplification (fable §6, items 5-8) — BACKLOG, each needs a plan + harness validation:** one shared submit/salvage layer + prompt "why" ledger; fixed Stage-6 symbol-context budget (delete adaptive tree — interacts with PLAN12 tree-sitter/seed-context direction); ripgrep fast path fix-or-delete (D9); shared similarity/util module. Sequenced after the measurement campaign because several touch review behavior.
 
