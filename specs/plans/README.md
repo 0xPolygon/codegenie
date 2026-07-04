@@ -91,7 +91,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 85 | COMPLETE | Issue 85: Finalize Grace for Per-Pass Worker Timeouts |
 | 86 | IN PROGRESS | Issue 86: Provider Protocol Parity and Observability (steps 1-4 done; step 5 study pending) |
 | 87 | COMPLETE | Issue 87: Verifier Pre-Clustering Restricted to Exact Duplicates |
-| 88 | PENDING | Issue 88: Publisher Summary-Only Fallback Reachability and Posting Disclosure |
+| 88 | COMPLETE | Issue 88: Publisher Summary-Only Fallback Reachability and Posting Disclosure |
 | 89 | IN PROGRESS | Issue 89: Deterministic Bug Sweep (phase A done; phase B Wave 4) |
 | 90 | COMPLETE | Issue 90: Token-Denominated Primary Review Budget (maxBudgetTokens) |
 | 91 | COMPLETE | Issue 91: pi-ai Models-API Migration (off /compat; A/B gate passed on run 0c4d5213/50) |

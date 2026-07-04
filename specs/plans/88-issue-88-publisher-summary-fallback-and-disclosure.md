@@ -1,6 +1,7 @@
 # Issue 88: Publisher Summary-Only Fallback Reachability and Posting Disclosure
 
-Status: PENDING
+Status: COMPLETE
+Completed: 2026-07-04
 Planned from: fable review D6/bug 1 (`specs/reviews/1-fable-review.md`), verified against `src/github/publisher.ts` at commit `00617d79`, 2026-07-02
 Planned at: commit `00617d79` (branch `next`)
 Recommended priority: medium — production GitHub-posting path only; evals never exercise it, so it is independent of the measurement campaign and can land whenever a slot opens (Wave 4 in `PUNCHLIST.md`). It is, however, the difference between "review posted without inline comments" and "review lost" for any PR that hits three 422s.
