@@ -682,6 +682,85 @@ describe("phase 5 pipeline regressions", () => {
     ]));
   });
 
+  it("lifts merged confidence from a compatible same-group candidate without inflation (plan 74)", async () => {
+    const representative: CandidateFinding = {
+      ...fakeFinding(),
+      id: "rep-promoted",
+      severity: "medium",
+      confidence: "low",
+      category: "correctness",
+      behaviorChange: "intentional_needs_confirmation"
+    };
+    const strongerLowerSeverity: CandidateFinding = {
+      ...fakeFinding(),
+      id: "direct-medium",
+      severity: "low",
+      confidence: "medium",
+      category: "correctness",
+      behaviorChange: "intentional_needs_confirmation"
+    };
+    const twoStepGap: CandidateFinding = {
+      ...fakeFinding(),
+      id: "too-far",
+      severity: "low",
+      confidence: "high",
+      category: "correctness"
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        summary: "One verified issue.",
+        composedFindings: [{
+          findingIds: ["rep-promoted"],
+          finalBody: "The changed contract regresses caller-visible guarantees.",
+          publication: "inline"
+        }]
+      }) as T
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [representative, strongerLowerSeverity], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), packets: [fakePacket()], diff: fakeDiff() }
+    );
+
+    const published = [...result.findings, ...result.summaryOnlyFindings];
+    // Same-group medium-confidence direct candidate lifts the representative
+    // low -> medium (one-step lower severity, capped at medium); the
+    // category-mismatched high-confidence candidate lends nothing.
+    expect(published.some((finding) => finding.confidence === "medium")).toBe(true);
+    expect(published.every((finding) => finding.confidence !== "high")).toBe(true);
+
+    const highGapRep: CandidateFinding = { ...representative, id: "rep-high", severity: "high" };
+    const result2 = await dedupeRankAndComposeReview(
+      { verified: [highGapRep, twoStepGap], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            summary: "One verified issue.",
+            composedFindings: [{ findingIds: ["rep-high"], finalBody: "Two-step gap body.", publication: "inline" }]
+          }) as T
+        },
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        packets: [fakePacket()],
+        diff: fakeDiff()
+      }
+    );
+    const published2 = [...result2.findings, ...result2.summaryOnlyFindings];
+    // Two-step severity gap: no lift — the representative stays low
+    // confidence, which keeps it below the publication bar entirely (the
+    // strongest possible proof that adjacency did not inflate certainty).
+    expect(published2.find((finding) => finding.id === "rep-high")).toBeUndefined();
+  });
+
   it("never publishes verification boilerplate as a title for question-shaped promoted findings", async () => {
     const { anchor: _anchor, ...anchorless } = fakeFinding();
     const finding: CandidateFinding = {

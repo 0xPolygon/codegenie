@@ -139,9 +139,10 @@ export async function dedupeRankAndComposeReview(
   const known = new Map(pretrim.kept.map((finding) => [finding.id, finding]));
   const anchorDowngradeReasons = new Map<string, string>();
   const publicationAnchorDecisions = new Map<string, PublicationAnchorDecision>();
+  const confidenceSelections = new Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>();
   const finalFindings: FinalFinding[] = pretrim.suppressed.map((finding) => {
     const requestedPublication = "suppressed" as const;
-    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding), requestedPublication, [finding], opts.diff, publicationAnchorDecisions);
+    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     return final;
   });
@@ -172,7 +173,7 @@ export async function dedupeRankAndComposeReview(
     const representative = strongest(ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined));
     const fingerprint = fingerprintFinding(representative, packetsById);
     const mergedFindings = ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined);
-    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions);
+    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections);
     recordAnchorDowngrade(final, composed.publication, anchorDowngradeReasons);
     finalFindings.push(final);
     used.add(representative.id);
@@ -189,7 +190,7 @@ export async function dedupeRankAndComposeReview(
     }
     const fingerprint = fingerprintFinding(finding, packetsById);
     const requestedPublication = finding.anchor ? "inline" : "summary-only";
-    const final = toFinalFinding(finding, fingerprint, templateBody(finding), requestedPublication, [finding], opts.diff, publicationAnchorDecisions);
+    const final = toFinalFinding(finding, fingerprint, templateBody(finding), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     finalFindings.push(final);
     baseSelection.set(finding.id, { findingId: finding.id, decision: "published", reason: "composer_omitted_finding" });
@@ -250,6 +251,9 @@ export async function dedupeRankAndComposeReview(
     },
     records: selection,
     publicationAnchors: publicationAnchorSelectionRecords(capped.findings, publicationAnchorDecisions),
+    confidenceSelections: [...confidenceSelections.entries()]
+      .map(([findingId, selection]) => ({ findingId, ...selection }))
+      .sort((left, right) => left.findingId.localeCompare(right.findingId)),
     groups: groups.map((group) => ({
       fingerprint: group.fingerprint,
       findingIds: group.findings.map((finding) => finding.id)
@@ -690,6 +694,66 @@ function fallbackComposition(groups: FindingGroup[]): SubmitComposition {
   };
 }
 
+type ConfidenceSelection = {
+  confidence: Confidence;
+  sourceFindingId?: string;
+  reason: "representative" | "same_severity" | "compatible_lower_severity";
+};
+
+// Plan 74: the representative (severity-first) supplies the final body, but a
+// stronger-confidence verified candidate in the SAME merge group may supply
+// the final confidence — bounded so adjacency never inflates certainty:
+// same-severity candidates may lend their confidence outright; a one-step
+// lower-severity candidate lifts confidence by at most one step and never
+// above medium; larger severity gaps, category mismatches, and
+// behaviorChange disagreements lend nothing. Never lowers confidence.
+function selectMergedConfidence(
+  representative: CandidateFinding,
+  mergedFindings: CandidateFinding[]
+): ConfidenceSelection {
+  let selected: ConfidenceSelection = { confidence: representative.confidence, reason: "representative" };
+  const candidates = [...mergedFindings].sort((a, b) => a.id.localeCompare(b.id));
+  for (const candidate of candidates) {
+    if (candidate.id === representative.id || candidate.category !== representative.category) {
+      continue;
+    }
+    if (candidate.behaviorChange !== undefined && representative.behaviorChange !== undefined &&
+        candidate.behaviorChange !== representative.behaviorChange) {
+      continue;
+    }
+    if (confidenceRank(candidate.confidence) >= confidenceRank(representative.confidence)) {
+      continue;
+    }
+    const severityGap = severityRank(candidate.severity) - severityRank(representative.severity);
+    let lifted: Confidence | undefined;
+    let reason: ConfidenceSelection["reason"] | undefined;
+    if (severityGap === 0) {
+      lifted = candidate.confidence;
+      reason = "same_severity";
+    } else if (severityGap === 1) {
+      const oneStepUp = liftConfidenceOneStep(representative.confidence);
+      lifted = confidenceRank(candidate.confidence) > confidenceRank(oneStepUp) ? candidate.confidence : oneStepUp;
+      if (confidenceRank(lifted) < confidenceRank("medium")) {
+        lifted = "medium";
+      }
+      reason = "compatible_lower_severity";
+    } else {
+      continue;
+    }
+    if (confidenceRank(lifted) < confidenceRank(selected.confidence)) {
+      selected = { confidence: lifted, sourceFindingId: candidate.id, reason: reason };
+    }
+  }
+  return selected;
+}
+
+function liftConfidenceOneStep(confidence: Confidence): Confidence {
+  if (confidence === "low") {
+    return "medium";
+  }
+  return "high";
+}
+
 function toFinalFinding(
   finding: CandidateFinding,
   fingerprint: string,
@@ -697,7 +761,8 @@ function toFinalFinding(
   publication: FinalFinding["publication"],
   mergedFindings: CandidateFinding[],
   diff: UnifiedDiff | undefined,
-  publicationAnchorDecisions?: Map<string, PublicationAnchorDecision>
+  publicationAnchorDecisions?: Map<string, PublicationAnchorDecision>,
+  confidenceSelections?: Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>
 ): FinalFinding {
   const { anchor: _unvalidatedAnchor, anchorSource: _staleAnchorSource, ...findingWithoutAnchor } = finding;
   const publicationAnchor = selectPublicationAnchor(finding, mergedFindings, diff);
@@ -717,8 +782,13 @@ function toFinalFinding(
     : publicationAnchor.sourceFindingId === finding.id
       ? finding.anchorSource
       : mergedFindings.find((item) => item.id === publicationAnchor.sourceFindingId)?.anchorSource;
+  const mergedConfidence = selectMergedConfidence(finding, mergedFindings);
+  if (mergedConfidence.confidence !== finding.confidence) {
+    confidenceSelections?.set(finding.id, { ...mergedConfidence, representativeConfidence: finding.confidence });
+  }
   const final: FinalFinding = {
     ...findingWithoutAnchor,
+    confidence: mergedConfidence.confidence,
     title: normalizedTitle,
     ...(publicationAnchor.anchor !== undefined ? { anchor: publicationAnchor.anchor } : {}),
     ...(publishedAnchorSource !== undefined ? { anchorSource: publishedAnchorSource } : {}),
