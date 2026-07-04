@@ -1410,7 +1410,7 @@ export type RunPostingRecord = {
   inlinePosted: number;
   demotedToBody: number;
   skippedDuplicates: number;
-  attempts: Array<{ httpStatus?: number; commentCount: number; outcome: "ok" | "rejected" | "error" }>;
+  attempts: Array<{ httpStatus?: number; commentCount: number; outcome: "ok" | "rejected" | "error" | "fallback_summary_only" }>;
   error?: string;
   duplicateDecisions?: FindingDuplicateDecision[];
 };

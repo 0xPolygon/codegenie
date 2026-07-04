@@ -652,7 +652,7 @@ Deterministic, in code, post-composition; applied to every inline comment body a
 GitHub returns 422 when any inline comment is invalid for its diff; the review-creation call is atomic, so a 422 means nothing was posted. Recovery ladder, bounded by 3 review-creation attempts:
 
 1. Attempt 1: the full comment set. On 422, parse the error payload; when it identifies failing comments (by index or path), drop exactly those to the review body and go to the next attempt.
-2. When the payload does not identify the failure, drop the locally-suspect classes in order of rejection likelihood — LEFT-side anchors, deleted-file anchors, multi-line anchors — re-attempting after each drop, within the 3-attempt budget.
+2. When the payload does not identify the failure, drop the locally-suspect classes in order of rejection likelihood — deleted-file anchors, LEFT-side anchors, multi-line anchors — re-attempting after each drop, within the 3-attempt budget. Deleted-file anchors are first because removed-file comments are the most likely class to be rejected by GitHub while still carrying useful review content in the body.
 3. Final fallback: post a summary-only review — no inline comments, all findings rendered in the body (`summary_only_fallback`).
 4. Only if even the summary-only review fails does publishing fail the run: `github_post_failed`, fatal because `--post-github-comments` was explicitly requested.
 
