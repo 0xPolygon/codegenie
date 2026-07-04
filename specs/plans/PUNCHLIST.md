@@ -50,17 +50,32 @@ Sequencing (2026-07-04): the measurement campaign (owner runs feeding the plan-9
 
 ### Data-gated (do NOT start until the decision tables have rates)
 
-- [ ] **Plan 82 (calibration half)** — only if Wave-2/3 data shows severity flapping on `severityAtLeast` expectations; consider scorer matching on `max(severity, severityBeforeCap)`.
+- [x] **Plan 82 (calibration half)** — CLOSED 2026-07-04, no severity flapping observed (decision record). Original entry: **(was)** — only if Wave-2/3 data shows severity flapping on `severityAtLeast` expectations; consider scorer matching on `max(severity, severityBeforeCap)`.
 - [ ] **Plan 74** — merged-finding confidence calibration (fable: sound, narrow; validate on harness).
 - [ ] **Plan 75 (step 1 only)** — provenance-exact human-attention suppression. Step 2 superseded by the structural direction in fable §6.4 + Plan 81's note-admission effects.
 - [ ] **Plan 55 (re-scoped)** — docs as intent context; drop the `ReviewDisposition`/`FileRole` machinery per fable §4.
 - [ ] **Simplification (fable §6, items 5-8) — BACKLOG, each needs a plan + harness validation:** one shared submit/salvage layer + prompt "why" ledger; fixed Stage-6 symbol-context budget (delete adaptive tree — interacts with PLAN12 tree-sitter/seed-context direction); ripgrep fast path fix-or-delete (D9); shared similarity/util module. Sequenced after the measurement campaign because several touch review behavior.
 
+## Decision record (2026-07-04) — measurement rounds concluded
+
+# Decision Record — 2026-07-04 (measurement rounds: runs 32-33, 51-54)
+
+Convened on accumulated rates; no further runs requested by owner.
+
+1. **Ensemble (plan 84): KEEP, opt-in, K=2 everywhere.** Rescue-bearing in most runs (matched candidates from e2 passes in 33/53/54); K=3's third draw unproven (one pass-3 winner, run 32) at 2x small-case cost — 49f4645b set to K=2 (`0197af7` in evals repo). Product default stays 1.
+2. **Adaptive second pass (plan 92 L3): KEEP, eval-enabled, no product default.** Post-tightening: 2-for-8 scheduled passes, both hits expectation-critical (a81d5adf x2, fba381a9); 0-for-3 on 72a8ab63. Bounded by flat cap 4.
+3. **Promotion lane (plan 81): DELETION OFF THE TABLE.** Head-to-head split: adaptive beat promotion on a81d5adf (run 53), promotion converted zero-native (72a8ab63-u1, run 51) where adaptive whiffed 3 straight. Lane retained in its post-output-quality form; classifier/locality/reserve deletion steps close as not-executed (evidence contradicts).
+4. **E1 escalator: unconditional keeper** — 3-for-3 aim, ~zero cost, always-on.
+5. **Plan 82 calibration half: CLOSED, no evidence** — severity flapping never materialized across the measurement rounds.
+6. **Breadth question (run 40 comparison): resolved as variance, not mechanism cost** — zero-native's packet is reached and hint-noticed every run; conversion is borderline-judgment variance; run 54's 4-merged group verified as one root cause (merge correct).
+
+Unlocked next: plans 74 and 75-step-1 (small calibration code items). Optional spend: plan 86 step 5 study.
+
 ## Decisions needed (not code work until decided)
 
 - [ ] **D8 (eval scorer leniency stack)** — either re-spec matching to include the merged view and delete token-fallback/synonym layers, or revert to strict matching. Decide after Wave 2 baselines show how often leniency actually fires.
 - [ ] **D10 (static signals)** — keep-and-document vs delete the two unspec'd rules (`lossy-conversion-before-validation`, `test-boundary-coverage-rewrite` + `test-coverage-delta.ts`); also fix `exported-api-change` unconditional base-side parses if kept.
-- [ ] **Uncertainty promotion end-state** — if Plan-79 repeats show even predicate-only promotions never convert, delete the subsystem (Plan 81 stop-condition governs). EVIDENCE ACCUMULATING: run 53 head-to-head — on the same packet/signal, the promotion was rejected while plan-92's adaptive real draw was kept and matched the expectation. If that pattern holds across the measurement rounds, adaptive replaces promotion and the deletion executes on plan 81's terms.
+- [x] **Uncertainty promotion end-state** — DECIDED 2026-07-04: retained (see decision record). Original entry: **(was)** — if Plan-79 repeats show even predicate-only promotions never convert, delete the subsystem (Plan 81 stop-condition governs). EVIDENCE ACCUMULATING: run 53 head-to-head — on the same packet/signal, the promotion was rejected while plan-92's adaptive real draw was kept and matched the expectation. If that pattern holds across the measurement rounds, adaptive replaces promotion and the deletion executes on plan 81's terms.
 - [ ] **Planner recovery / safety-deep coverage end-state** — the ~350-line unspec'd subsystem (`planner.ts:295-633`: submit recovery, sparse-plan detection, safety-deep coverage upgrades; fable §2.2) has no simplification plan today. Decide keep-and-spec vs shrink after the Wave-2 baseline shows how often recovery and safety-deep actually fire. (Gap surfaced by codex planning audit, 2026-07-02.)
 - [ ] **Intent-signals / behaviorChange capping end-state** — Plan 82 fixes the mechanical `unknown`-demotion bug only; whether the intent-signals + severity-capping subsystem (~250 lines + threading, fable §2.2/D4) shrinks, gets spec'd, or is deleted is decided on Plan-79/82 severity-flap data. (Gap surfaced by codex planning audit, 2026-07-02.)
 
