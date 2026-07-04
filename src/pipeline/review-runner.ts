@@ -415,7 +415,7 @@ async function startRun(
     : config.telemetry;
   const run = createRunTelemetry({
     telemetryConfig,
-    ...(runArtifactDir ? { idFactory: () => path.basename(path.resolve(runArtifactDir)) } : {}),
+    ...(runArtifactDir ? { directoryNameFactory: () => path.basename(path.resolve(runArtifactDir)) } : {}),
     runMetadata: {
       argv: process.argv,
       repoRoot,
@@ -619,10 +619,11 @@ async function removeStalePullRequestRefLock(
   telemetry: TelemetryRecorder
 ): Promise<boolean> {
   const owner = await readPullRequestRefLockOwner(lockDir);
-  if (owner !== undefined && owner.pid !== undefined && processExists(owner.pid)) {
+  if (!(await pullRequestRefLockIsStale(lockDir, owner))) {
     return false;
   }
-  if (owner === undefined && !(await lockDirectoryIsOlderThan(lockDir, MISSING_LOCK_OWNER_STALE_MS))) {
+  const currentOwner = await readPullRequestRefLockOwner(lockDir);
+  if (!(await pullRequestRefLockIsStale(lockDir, currentOwner))) {
     return false;
   }
   await rm(lockDir, { recursive: true, force: true });
@@ -633,6 +634,13 @@ async function removeStalePullRequestRefLock(
     data: { prNumber, lockDir, owner }
   });
   return true;
+}
+
+async function pullRequestRefLockIsStale(lockDir: string, owner: PullRequestRefLockOwner | undefined): Promise<boolean> {
+  if (owner !== undefined) {
+    return owner.pid === undefined || !processExists(owner.pid);
+  }
+  return lockDirectoryIsOlderThan(lockDir, MISSING_LOCK_OWNER_STALE_MS);
 }
 
 async function lockDirectoryIsOlderThan(lockDir: string, ms: number): Promise<boolean> {

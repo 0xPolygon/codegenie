@@ -459,6 +459,46 @@ describe("run telemetry", () => {
     });
   });
 
+  it("does not double-count runtime when a stage emits duplicate lifecycle endpoints", async () => {
+    const repoRoot = tempDir();
+    let now = Date.parse("2026-06-17T10:00:00.000Z");
+    const run = createRunTelemetry({
+      telemetryConfig: {
+        ...defaultConfig.telemetry,
+        enabled: true,
+        logLevel: "debug"
+      },
+      idFactory: () => "20260617-100000-stage-duplicate",
+      clock: () => new Date(now)
+    });
+    const attached = await run.attachRunDirectory(repoRoot);
+
+    run.recorder.event({
+      stage: 6,
+      level: "info",
+      message: "stage_started"
+    });
+    now += 1000;
+    run.recorder.event({
+      stage: 6,
+      level: "info",
+      message: "stage_completed"
+    });
+    now += 2000;
+    run.recorder.event({
+      stage: 6,
+      level: "info",
+      message: "stage_completed"
+    });
+    await run.finalize({ status: "completed_full", exitCode: 0 });
+
+    const telemetryJson = readJson(path.join(attached.runDir, "telemetry.json"));
+    expect(telemetryJson.stages["6"]).toMatchObject({
+      events: 3,
+      runtimeMs: 1000
+    });
+  });
+
   it("reports deterministic schema recovery beside raw schema-invalid model calls", async () => {
     const repoRoot = tempDir();
     const run = createRunTelemetry({
@@ -1102,7 +1142,34 @@ describe("run telemetry", () => {
     ]);
   });
 
-  it("preserves existing .codegenie gitignore entries while adding required runtime paths", async () => {
+  it("prunes crashed run directories without requiring run.json", async () => {
+    const repoRoot = tempDir();
+    const runsRoot = path.join(repoRoot, ".codegenie", "runs");
+    mkdirSync(runsRoot, { recursive: true });
+    const crashed = path.join(runsRoot, "crashed-before-run-json");
+    mkdirSync(crashed);
+    const retained = path.join(runsRoot, "retained-finished-run");
+    mkdirSync(retained);
+    writeFileSync(path.join(retained, "run.json"), "{}");
+    const oldTime = new Date(Date.now() - 10_000);
+    const newTime = new Date(Date.now() - 1000);
+    utimesSync(crashed, oldTime, oldTime);
+    utimesSync(retained, newTime, newTime);
+
+    const run = createRunTelemetry({
+      telemetryConfig: {
+        ...defaultConfig.telemetry,
+        enabled: true,
+        retainRuns: 1
+      },
+      idFactory: () => "active-crash-prune"
+    });
+    await run.attachRunDirectory(repoRoot);
+
+    expect(readdirSync(runsRoot).sort()).toEqual(["active-crash-prune", "retained-finished-run"]);
+  });
+
+  it("does not mutate an existing .codegenie gitignore", async () => {
     const repoRoot = tempDir();
     const codegenieDir = path.join(repoRoot, ".codegenie");
     mkdirSync(codegenieDir, { recursive: true });
@@ -1115,7 +1182,7 @@ describe("run telemetry", () => {
     });
     await run.attachRunDirectory(repoRoot);
 
-    expect(readFileSync(gitignorePath, "utf8")).toBe("skills/\nruns/\ncache/\nlocks/\n");
+    expect(readFileSync(gitignorePath, "utf8")).toBe("skills/\n");
   });
 
   it("records pruning failures as warnings without aborting startup", async () => {

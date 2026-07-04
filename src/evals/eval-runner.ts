@@ -316,6 +316,7 @@ export async function replayFromArtifacts(
   const reread = await rereadReplayCase(sourceInfo, suiteDir);
   const startedAt = new Date().toISOString();
   try {
+    assertReplayLayoutSupported(source);
     const telemetryDir = await copyTelemetryArtifacts(source, allocated.dir);
     await copyReviewOutput(source, allocated.dir);
     const artifacts = await loadEvalArtifacts(telemetryDir);
@@ -364,6 +365,27 @@ function assertReplayArtifactsComplete(artifacts: { missingArtifacts?: string[] 
       context: { missing, telemetryDir }
     });
   }
+}
+
+function assertReplayLayoutSupported(sourceRunOrTelemetryDir: string): void {
+  const telemetryDir = resolveTelemetryDir(sourceRunOrTelemetryDir);
+  const oldLayoutArtifacts = [
+    "candidate-findings.json",
+    "final-findings.json",
+    "verification.json",
+    "final-selection.json"
+  ].filter((logicalName) => {
+    const canonical = canonicalArtifactPath(logicalName);
+    return canonical !== logicalName &&
+      existsSync(path.join(telemetryDir, logicalName)) &&
+      !existsSync(path.join(telemetryDir, canonical));
+  });
+  if (oldLayoutArtifacts.length === 0) {
+    return;
+  }
+  throw new CodegenieError("invalid_args", `old layout unsupported for --from-artifacts replay: ${oldLayoutArtifacts.join(", ")} (${telemetryDir})`, {
+    context: { telemetryDir, oldLayoutArtifacts }
+  });
 }
 
 async function runArtifactCase(

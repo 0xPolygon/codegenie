@@ -215,9 +215,22 @@ function findSymbolForFact(symbols: SymbolInfo[], fact: HunkSymbolFacts): Symbol
     }
   }
   if (fact.enclosingSymbol !== undefined) {
-    return symbols.find((symbol) => fact.enclosingSymbol?.endsWith(symbol.name));
+    return symbols.find((symbol) => enclosingSymbolMatchesName(fact.enclosingSymbol, symbol.name));
   }
   return undefined;
+}
+
+function enclosingSymbolMatchesName(enclosingSymbol: string | undefined, symbolName: string): boolean {
+  if (enclosingSymbol === undefined) {
+    return false;
+  }
+  const enclosing = enclosingSymbol.trim();
+  const name = symbolName.trim();
+  if (!enclosing.endsWith(name)) {
+    return false;
+  }
+  const boundaryIndex = enclosing.length - name.length - 1;
+  return boundaryIndex < 0 || !/[A-Za-z0-9_$]/u.test(enclosing[boundaryIndex] ?? "");
 }
 
 type SymbolSelection = {

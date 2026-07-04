@@ -5,7 +5,7 @@ import path from "node:path";
 import { Type, validateToolCall } from "@earendil-works/pi-ai";
 import { getOAuthApiKey as piGetOAuthApiKey } from "@earendil-works/pi-ai/oauth";
 import { describe, expect, it, vi } from "vitest";
-import { createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
+import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import type {
   LlmCallUsage,
   PiAiAdapter,
@@ -3830,6 +3830,53 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     );
   });
 
+  it("records extra_submit_dropped telemetry when one response contains multiple submit calls", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([
+        validSubmitReviewCall("submit-first"),
+        validSubmitReviewCall("submit-second"),
+        validSubmitReviewCall("submit-third")
+      ])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-extra-submit"),
+        telemetryContext: { workerId: "worker-submit", packetId: "packet-extra-submit", candidateId: "candidate-extra-submit" }
+      })
+    ).resolves.toEqual({
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
+    });
+
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        level: "warn",
+        message: "extra_submit_dropped",
+        workerId: "worker-submit",
+        packetId: "packet-extra-submit",
+        data: expect.objectContaining({
+          submitTool: "submit_review",
+          callId: "submit-first",
+          droppedToolCallCount: 2,
+          droppedCallIds: ["submit-second", "submit-third"],
+          candidateId: "candidate-extra-submit"
+        })
+      })
+    ]));
+  });
+
   it("does not retry non-auth 4xx provider errors", async () => {
     const adapter: PiAiAdapter = {
       resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
@@ -3884,10 +3931,24 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.complete).toHaveBeenCalledTimes(1);
   });
 
+  it("parses HTTP statuses only from status-coded provider error contexts", () => {
+    expect([
+      "HTTP 500 from provider",
+      "status: 503",
+      "statusCode = 429",
+      "code 400"
+    ].map((input) => __piRunnerTestHooks.parseHttpStatus(input))).toEqual([500, 503, 429, 400]);
+    expect([
+      "context of 500 tokens exceeded the window",
+      "processed 429 files before stopping",
+      "model claude-opus-4-8 400 does not exist"
+    ].map((input) => __piRunnerTestHooks.parseHttpStatus(input))).toEqual([undefined, undefined, undefined]);
+  });
+
   it("treats Pi stopReason error messages as provider failures instead of schema failures", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
-      assistantError("400 model claude-opus-4-8 does not exist")
+      assistantError("HTTP status 400 model claude-opus-4-8 does not exist")
     ]);
     const runner = createPiRunner({
       llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
@@ -3909,7 +3970,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         status: "transient_error",
         stopReason: "error",
         errorCode: "llm_call_failed",
-        errorMessage: "400 model claude-opus-4-8 does not exist",
+        errorMessage: "HTTP status 400 model claude-opus-4-8 does not exist",
         outputChars: 2
       })
     ]);

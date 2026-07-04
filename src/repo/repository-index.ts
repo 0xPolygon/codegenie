@@ -201,19 +201,6 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           return { value: { text: "", meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: 0 };
         }
         const lines = content.content.length === 0 ? [] : content.content.split(/\n/u);
-        if (startLine > lines.length) {
-          const meta: ToolResultMeta = {
-            backend: "text",
-            precision: "exact",
-            degraded: true,
-            degradationReason: "requested range starts after end of file",
-            truncated: true,
-            omittedCount: 0,
-            lookupStatus: "found",
-            deliveryStatus: "empty"
-          };
-          return { value: { text: "", meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: 0 };
-        }
         const clampedStart = Math.min(Math.max(1, startLine), Math.max(1, lines.length));
         const requestedEnd = Math.min(endLine, lines.length);
         const cappedEnd = Math.min(requestedEnd, clampedStart + READ_RANGE_MAX_LINES - 1);

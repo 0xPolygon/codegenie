@@ -549,14 +549,12 @@ export { internal as Public }
     const range = await tools.readRange("store/user.go", 1, 2);
     expect(range.meta).toMatchObject({ backend: "text", precision: "exact", degraded: false });
     const pastEofRange = await tools.readRange("store/user.go", 10_000, 10_010);
-    expect(pastEofRange.text).toBe("");
     expect(pastEofRange.meta).toMatchObject({
       backend: "text",
       precision: "exact",
-      degraded: true,
-      degradationReason: "requested range starts after end of file",
-      truncated: true,
-      omittedCount: 0
+      degraded: false,
+      lookupStatus: "found",
+      deliveryStatus: "full"
     });
     const listed = await tools.listFiles("store/*.go");
     expect(listed.paths).toEqual(expect.arrayContaining(["store/user.go", "store/user_test.go"]));

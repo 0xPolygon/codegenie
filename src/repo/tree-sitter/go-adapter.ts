@@ -95,7 +95,7 @@ export function renderGoSymbolName(symbol: SymbolInfo): string {
   }
   const signature = symbol.signature ?? "";
   const pointer = new RegExp(`\\*\\s*${escapeRegExp(symbol.ownerType)}\\b`, "u").test(signature);
-  return pointer ? `(*${symbol.ownerType}).${symbol.name}` : `${symbol.ownerType}.${symbol.name}`;
+  return pointer ? `(*${symbol.ownerType}).${symbol.name}` : `(${symbol.ownerType}).${symbol.name}`;
 }
 
 function functionSymbol(file: ParsedFile, node: Node, packageName: string | undefined): SymbolInfo | undefined {

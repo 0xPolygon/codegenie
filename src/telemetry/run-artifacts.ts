@@ -33,6 +33,7 @@ type CreateRunTelemetryOptions = {
   runMetadata?: RunArtifactMetadata;
   clock?: () => Date;
   idFactory?: () => string;
+  directoryNameFactory?: () => string;
 };
 
 export type RunTelemetry = {
@@ -365,6 +366,7 @@ export function createRunTelemetry(opts: CreateRunTelemetryOptions): RunTelemetr
 
 class RunTelemetryImpl {
   readonly runId: string;
+  private readonly directoryName: string;
   private readonly startedAt: string;
   private readonly clock: () => Date;
   private readonly config: CodegenieConfig["telemetry"];
@@ -448,6 +450,7 @@ class RunTelemetryImpl {
     this.config = opts.telemetryConfig;
     this.metadata = opts.runMetadata ?? {};
     this.runId = opts.idFactory?.() ?? createRunId(this.clock());
+    this.directoryName = opts.directoryNameFactory?.() ?? this.runId;
     this.startedAt = this.clock().toISOString();
     const thisImpl = this;
     this.recorder = {
@@ -483,7 +486,7 @@ class RunTelemetryImpl {
     provisionProjectGitignore(this.repoRoot, runsRoot);
     mkdirSync(runsRoot, { recursive: true });
 
-    const runDir = path.join(runsRoot, this.runId);
+    const runDir = path.join(runsRoot, this.directoryName);
     mkdirSync(runDir, { recursive: true });
     if (this.config.debugTrace) {
       mkdirSync(path.join(runDir, "debug", "llm-calls"), { recursive: true });
@@ -1063,7 +1066,7 @@ class RunTelemetryImpl {
     if (event.message === "stage_started" && bucket.startedAt === undefined) {
       bucket.startedAt = event.timestamp;
     }
-    if (event.message === "stage_completed" || event.message === "stage_failed") {
+    if ((event.message === "stage_completed" || event.message === "stage_failed") && bucket.completedAt === undefined) {
       bucket.completedAt = event.timestamp;
       if (bucket.startedAt !== undefined) {
         bucket.runtimeMs += durationBetween(bucket.startedAt, event.timestamp);
@@ -1912,23 +1915,12 @@ function provisionProjectGitignore(repoRoot: string, runsRoot: string): void {
 
 export function provisionCodegenieGitignore(repoRoot: string): void {
   const codegenieDir = path.resolve(repoRoot, ".codegenie");
-  const codegenieDirExisted = existsSync(codegenieDir);
   mkdirSync(codegenieDir, { recursive: true });
   const gitignorePath = path.join(codegenieDir, ".gitignore");
-  const required = ["runs/", "cache/", "locks/"];
-  const existing = codegenieDirExisted && existsSync(gitignorePath) ? readFileSync(gitignorePath, "utf8") : "";
-  const lines = new Set(existing.split(/\r?\n/u).map((line) => line.trim()).filter((line) => line.length > 0));
-  let changed = !existsSync(gitignorePath);
-  for (const requiredLine of required) {
-    if (!lines.has(requiredLine)) {
-      lines.add(requiredLine);
-      changed = true;
-    }
-  }
-  if (!changed) {
+  if (existsSync(gitignorePath)) {
     return;
   }
-  writeFileSync(gitignorePath, `${[...lines].join("\n")}\n`);
+  writeFileSync(gitignorePath, "runs/\ncache/\nlocks/\n");
 }
 
 type PruneResult = {
@@ -1939,6 +1931,7 @@ type PruneResult = {
 function pruneRuns(runsRoot: string, activeRunDir: string, retainRuns: number): PruneResult {
   const result: PruneResult = { deleted: [], failures: [] };
   const keepCount = Math.max(1, retainRuns);
+  const active = path.resolve(activeRunDir);
 
   let names: string[];
   try {
@@ -1953,7 +1946,7 @@ function pruneRuns(runsRoot: string, activeRunDir: string, retainRuns: number): 
       const entry = path.join(runsRoot, name);
       try {
         const stats = statSync(entry);
-        return stats.isDirectory() && existsSync(path.join(entry, "run.json")) ? { path: entry, mtimeMs: stats.mtimeMs } : undefined;
+        return stats.isDirectory() && path.resolve(entry) !== active ? { path: entry, mtimeMs: stats.mtimeMs } : undefined;
       } catch (error) {
         result.failures.push({ path: entry, error: errorMessage(error) });
         return undefined;
@@ -1963,13 +1956,11 @@ function pruneRuns(runsRoot: string, activeRunDir: string, retainRuns: number): 
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
 
   for (const dir of dirs.slice(keepCount)) {
-    if (path.resolve(dir.path) !== path.resolve(activeRunDir)) {
-      try {
-        rmSync(dir.path, { recursive: true, force: true });
-        result.deleted.push(dir.path);
-      } catch (error) {
-        result.failures.push({ path: dir.path, error: errorMessage(error) });
-      }
+    try {
+      rmSync(dir.path, { recursive: true, force: true });
+      result.deleted.push(dir.path);
+    } catch (error) {
+      result.failures.push({ path: dir.path, error: errorMessage(error) });
     }
   }
 

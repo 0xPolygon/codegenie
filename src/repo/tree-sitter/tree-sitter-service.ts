@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import type { ParseInput, ParsedFile } from "../../types.js";
 import type { TelemetryRecorder } from "../../telemetry/telemetry-recorder.js";
+import { sha256Hex } from "../../util/hashing.js";
 import { Parser, Language, type Tree } from "web-tree-sitter";
 
 export type GrammarId = "go" | "typescript" | "tsx" | "javascript";
@@ -65,7 +66,7 @@ export class TreeSitterService {
       return { ...genericParsed(input, true), adapterId: grammarId };
     }
 
-    const cacheKey = `${input.contentSha ?? input.content}:${grammarId}`;
+    const cacheKey = cacheKeyFor(input, grammarId);
     const cached = this.cache.get(cacheKey);
     if (cached) {
       this.cache.delete(cacheKey);
@@ -103,12 +104,16 @@ export class TreeSitterService {
         }
       });
 
+      const cacheableTree = tree !== null && !timedOut ? tree : undefined;
       const cached: CachedParse = {
         key: cacheKey,
         language: grammarId,
-        ...(tree !== null && !timedOut ? { tree } : {}),
+        ...(cacheableTree !== undefined ? { tree: cacheableTree } : {}),
         hasErrors: timedOut || tree === null || (tree.rootNode.hasError ?? false)
       };
+      if (tree !== null && cacheableTree === undefined) {
+        tree.delete();
+      }
       this.remember(cached);
       return parsedFromCache(input, cached);
     } catch {
@@ -170,8 +175,14 @@ export class TreeSitterService {
     if (oldest === undefined) {
       return;
     }
+    const evicted = this.cache.get(oldest);
     this.cache.delete(oldest);
+    evicted?.tree?.delete();
   }
+}
+
+function cacheKeyFor(input: ParseInput, grammarId: GrammarId): string {
+  return `${input.contentSha ?? sha256Hex(input.content)}:${grammarId}`;
 }
 
 function parsedFromCache(input: ParseInput, cached: CachedParse): ParsedFile {

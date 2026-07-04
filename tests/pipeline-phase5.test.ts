@@ -2217,6 +2217,94 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("records related context omissions with hunk id arrays instead of CSV strings", async () => {
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const symbols = ["source", "targetA", "targetB", "targetC", "targetD"];
+    const files: DiffFile[] = symbols.map((symbol) => ({
+      path: `${symbol}.ts`,
+      status: "modified" as const,
+      language: "typescript",
+      hunks: [{
+        id: `h-${symbol}`,
+        path: `${symbol}.ts`,
+        oldStart: 1,
+        oldLines: 3,
+        newStart: 1,
+        newLines: 3,
+        header: "@@ -1,3 +1,3 @@",
+        lines: [
+          { kind: "context" as const, content: `export function ${symbol}() {`, oldLineNumber: 1, newLineNumber: 1 },
+          { kind: "add" as const, content: "  return 1;", newLineNumber: 2 },
+          { kind: "context" as const, content: "}", oldLineNumber: 3, newLineNumber: 3 }
+        ]
+      }]
+    }));
+    const symbolFacts: HunkSymbolFacts[] = symbols.map((symbol) => ({
+      path: `${symbol}.ts`,
+      hunkId: `h-${symbol}`,
+      enclosingSymbol: symbol,
+      symbolKind: "function" as const,
+      symbolRange: [1, 3] as [number, number],
+      changedLines: [2],
+      changedLinesSide: "new" as const,
+      source: "tree-sitter" as const,
+      confidence: "syntactic" as const
+    }));
+    const tools = {
+      ...fakeTools(),
+      readSymbol: async (pathName: string, selector: { symbolName?: string }) => ({
+        text: `export function ${selector.symbolName ?? "unknown"}() {\n  return 1;\n}`,
+        symbol: {
+          path: pathName,
+          name: selector.symbolName ?? "unknown",
+          kind: "function" as const,
+          lineRange: [1, 3] as [number, number]
+        },
+        meta
+      })
+    };
+    const plan: ReviewPlan = {
+      diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" },
+      coverage: symbols.map((symbol) => ({
+        hunkId: `h-${symbol}`,
+        path: `${symbol}.ts`,
+        coverage: "normal" as const,
+        lenses: ["core/code-review"],
+        surroundingContextHints: [],
+        reason: `review ${symbol}`,
+        ...(symbol === "source" ? { relatedSymbols: ["targetA", "targetB", "targetC", "targetD"] } : {})
+      }))
+    };
+    const artifacts = new Map<string, unknown>();
+
+    await buildReviewPackets(
+      plan,
+      files,
+      files.map((file) => fakeFacts(file.path, "per-hunk")),
+      {
+        ...fakeRepositoryIndex(tools),
+        symbolFacts
+      },
+      {
+        ...nullTelemetry(),
+        writeArtifact: async (name, data) => {
+          artifacts.set(name, data);
+        }
+      },
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const graph = artifacts.get("hunk-relationships.json") as { relatedContextOmitted?: Array<{ hunkIds?: string[]; hunkId?: string; reason: string }> };
+    expect(graph.relatedContextOmitted).toEqual([
+      expect.objectContaining({
+        hunkIds: ["h-source"],
+        targetHunkId: "h-targetD",
+        reason: "related context cap exceeded"
+      })
+    ]);
+    expect(graph.relatedContextOmitted?.[0]).not.toHaveProperty("hunkId");
+  });
+
   it("does not relate unrelated changed symbols that only share a bare name", async () => {
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
     const fileA: DiffFile = {

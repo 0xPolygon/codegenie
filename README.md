@@ -188,10 +188,10 @@ Several richer designs — a broad cross-file system review pass, hierarchical p
 
 ## Status
 
-codegenie is implemented as a pre-1.0 CLI and being hardened through live evals. The full specifications live in [`specs/projects/codegenie/`](specs/projects/codegenie/):
+codegenie is implemented as a pre-1.0 CLI and being hardened through live evals. The full specifications live in [`specs/project/`](specs/project/):
 
-- [`project_overview.md`](specs/projects/codegenie/project_overview.md) — goals and shape
-- [`functional_spec.md`](specs/projects/codegenie/functional_spec.md) — behavior, stages, contracts
-- [`architecture.md`](specs/projects/codegenie/architecture.md) — components, data model, technology choices
+- [`project_overview.md`](specs/project/project_overview.md) — goals and shape
+- [`functional_spec.md`](specs/project/functional_spec.md) — behavior, stages, contracts
+- [`architecture.md`](specs/project/architecture.md) — components, data model, technology choices
 
 Built with TypeScript, [`@earendil-works/pi-ai`](https://www.npmjs.com/package/@earendil-works/pi-ai), web-tree-sitter, and `git`/`gh` as the only external CLI dependencies.

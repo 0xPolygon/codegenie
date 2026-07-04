@@ -1323,6 +1323,50 @@ describe("artifact replay", () => {
     expect(info.score.expectationResults[0]).toMatchObject({ status: "pass", fromReplayedArtifacts: true });
   });
 
+  it("errors --from-artifacts replay for old root-level artifact layouts", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-old-layout-replay-"));
+    const logsDir = path.join(suiteDir, "logs");
+    const sourceRun = path.join(logsDir, "1");
+    const telemetry = path.join(sourceRun, "telemetry");
+    mkdirSync(telemetry, { recursive: true });
+    const evalCase: EvalCase = {
+      name: "old-layout-replay",
+      artifacts: { path: "logs/1" },
+      should_find: [{ id: "reported", path: "src/app.ts", titlePattern: "Reported" }]
+    };
+    writeFileSync(path.join(suiteDir, "case.yml"), [
+      "name: old-layout-replay",
+      "artifacts:",
+      "  path: logs/1",
+      "should_find:",
+      "  - id: reported",
+      "    path: src/app.ts",
+      "    titlePattern: Reported"
+    ].join("\n"));
+    writeFileSync(path.join(telemetry, "candidate-findings.json"), "[]\n");
+    writeFileSync(path.join(telemetry, "final-findings.json"), "[]\n");
+    writeFileSync(path.join(telemetry, "verification.json"), "[]\n");
+    writeFileSync(path.join(telemetry, "final-selection.json"), "{\"records\":[],\"groups\":[]}\n");
+    writeFileSync(path.join(sourceRun, "info.json"), `${JSON.stringify({
+      runNumber: 1,
+      caseName: "old-layout-replay",
+      caseFile: "case.yml",
+      caseHash: "old",
+      caseSnapshot: evalCase,
+      mode: "replay",
+      cache: { enabled: false, source: "config", dir: ".codegenie/cache" },
+      startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:00:01.000Z",
+      score: passingScore()
+    } satisfies EvalRunInfo, null, 2)}\n`);
+
+    const result = await replayFromArtifacts(sourceRun, { config: defaultConfig });
+
+    expect(result.status).toBe("error");
+    expect(result.info.score.error?.message).toContain("old layout unsupported");
+    expect(existsSync(path.join(logsDir, "2", "info.json"))).toBe(true);
+  });
+
   it("writes compare artifacts for errored case regressions", async () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-error-compare-"));
     const logsDir = path.join(suiteDir, "logs");
@@ -1603,10 +1647,13 @@ describe("eval command fixture suite", () => {
       source: expect.stringMatching(/^(build_env|git|package|unknown)$/)
     });
     const runJson = JSON.parse(readFileSync(path.join(result.runDir, "telemetry", "run.json"), "utf8")) as {
+      runId: string;
       codegenieRuntime: { packageVersion: string };
       codegenieVersion: string;
       review: { concurrency: number; llmMaxConcurrentCalls: number };
     };
+    expect(result.info.reviewRunId).toBe(runJson.runId);
+    expect(result.info.reviewRunId).not.toBe("telemetry");
     expect(runJson.codegenieRuntime.packageVersion).toBe(runJson.codegenieVersion);
     expect(runJson.review).toMatchObject({ concurrency: 3, llmMaxConcurrentCalls: 2 });
     const events = readJsonl(path.join(result.runDir, "telemetry", "events.jsonl"));

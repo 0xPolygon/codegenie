@@ -324,6 +324,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           const submitCalls = toolCallsNamed(message, submitTool.name);
           const submitCall = submitCalls[0];
           const toolCalls = toolCallsExcept(message, submitTool.name);
+          recordExtraSubmitDropped(opts, request, submitTool.name, submitCalls);
           candidateDrafted = candidateDrafted || submitCalls.some(submitCallHasFindings);
           const submitDisciplineError = submitResponseDisciplineError(request, submitTool.name, submitCalls);
           if (submitDisciplineError !== undefined) {
@@ -2075,6 +2076,31 @@ function recordSubmitWithExtraTools(
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
 
+function recordExtraSubmitDropped(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  submitTool: string,
+  submitCalls: PiToolCall[]
+): void {
+  if (submitCalls.length <= 1) {
+    return;
+  }
+  opts.telemetry.event(definedRecord({
+    stage: request.stage,
+    level: "warn",
+    message: "extra_submit_dropped",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      submitTool,
+      callId: submitCalls[0]?.id,
+      droppedToolCallCount: submitCalls.length - 1,
+      droppedCallIds: submitCalls.slice(1).map((call) => call.id),
+      candidateId: request.telemetryContext?.candidateId
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
 function recordFinalizeMissingSubmitRetry(
   opts: CreateRunnerOptions,
   request: LlmStructuredRequest<unknown>,
@@ -3254,7 +3280,10 @@ function errorHttpStatus(cause: unknown): number | undefined {
 }
 
 function parseHttpStatus(input: string): number | undefined {
-  const match = /\b([45]\d\d)\b/.exec(input);
+  const exact = /^\s*([45]\d\d)\s*$/u.exec(input);
+  const match = exact
+    ?? /\b(?:http(?:\s+status)?|status(?:\s*code)?|code)\D{0,12}([45]\d\d)\b/iu.exec(input)
+    ?? /\b([45]\d\d)\s+(?:http\s+)?(?:status|response|error)\b/iu.exec(input);
   if (!match) {
     return undefined;
   }
@@ -3610,3 +3639,7 @@ function definedRecord<T extends Record<string, unknown>>(input: T): T {
   }
   return output as T;
 }
+
+export const __piRunnerTestHooks = {
+  parseHttpStatus
+};
