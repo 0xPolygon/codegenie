@@ -54,7 +54,11 @@ Sequencing (2026-07-04): the measurement campaign (owner runs feeding the plan-9
 - [x] **Plan 74** — COMPLETE 2026-07-04 (`91dd903`): bounded merged-confidence calibration at final composition; confidenceSelections in final-selection.json.
 - [x] **Plan 75 (step 1)** — COMPLETE 2026-07-04: adjudicated-reject notes suppressed provenance-exactly; pinning tests landed same day.
 - [ ] **Plan 55 (re-scoped)** — docs as intent context; drop the `ReviewDisposition`/`FileRole` machinery per fable §4.
-- [ ] **Simplification (fable §6, items 5-8) — BACKLOG, each needs a plan + harness validation:** one shared submit/salvage layer + prompt "why" ledger; fixed Stage-6 symbol-context budget (delete adaptive tree — interacts with PLAN12 tree-sitter/seed-context direction); ripgrep fast path fix-or-delete (D9); shared similarity/util module. Sequenced after the measurement campaign because several touch review behavior.
+- [ ] **Simplification series (fable §6 items 5-8) — PLANNED 2026-07-04, execute in risk order in quiet measurement windows:**
+  1. **Plan 93** — delete the dead ripgrep fast path + per-run ignored-file enumeration (D9). Zero model-behavior surface; land first.
+  2. **Plan 94** — shared similarity/util module (isTestPath ×5, stableJson ×4, escapeRegExp ×4, tokenJaccard ×4, followUpHintKey ×3 incl. one dead). Mechanical, but every divergence gets an explicit disposition; attention/escalation telemetry validates classification didn't drift.
+  3. **Plan 95** — one shared submit/salvage layer + prompt "why" ledger. Starts with a rung-utilization census over runs 46-54 (plan-86 metrics exist for exactly this); dead rungs delete, live rungs consolidate behind the recoverInvalidSubmit seam; A/B must be invisible in schema-friction and recall metrics.
+  4. **Plan 96** — fixed Stage-6 symbol-context budget (delete the ~600-line adaptive tree). The one real behavior change; census-sized budget + truncation event; strongest A/B (both cases, ≥2 runs); coordinates with PLAN12 seed-context.
 
 ## Decision record (2026-07-04) — measurement rounds concluded
 

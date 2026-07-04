@@ -96,3 +96,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 90 | COMPLETE | Issue 90: Token-Denominated Primary Review Budget (maxBudgetTokens) |
 | 91 | COMPLETE | Issue 91: pi-ai Models-API Migration (off /compat; A/B gate passed on run 0c4d5213/50) |
 | 92 | IMPLEMENTED (measuring) | Issue 92: Planner Coverage Calibration and the Adaptive Second Pass |
+| 93 | PENDING | Issue 93: Delete the Dead Ripgrep Fast Path (D9) |
+| 94 | PENDING | Issue 94: One Shared Similarity/Util Module |
+| 95 | PENDING | Issue 95: One Shared Submit/Salvage Layer + Prompt "Why" Ledger |
+| 96 | PENDING | Issue 96: Fixed Stage-6 Symbol-Context Budget |

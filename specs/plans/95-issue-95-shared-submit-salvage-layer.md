@@ -1,0 +1,41 @@
+# Issue 95: One Shared Submit/Salvage Layer + the Prompt "Why" Ledger
+
+Status: PENDING (simplification backlog; third — behavior-adjacent, land in a quiet window, measured)
+Planned from: fable review §2.3 + §4 ("recurring bug classes are structural") + §6 item 5 (`specs/reviews/1-fable-review.md`), 2026-07-04
+Planned at: commit `762339d` (branch `next`)
+Recommended priority: after plans 93/94. This is the highest-leverage simplification (the review's "output babysitting" class) and the one with the best measurement story: plan 86's schema-friction metrics exist specifically so this consolidation can be judged on numbers.
+
+## Problem
+
+The spec says one schema-repair retry per structured call. Reality is a 6-rung ladder rebuilt per stage four times across the plan history (schema repair appears in 11 plans): caller `recoverInvalidSubmit` hooks (planner/composer/verifier use the shared seam; **stage 7 instead has its own 511-line cleanup engine**, `llm/stage7-submit-repair.ts`) → one model repair with per-stage conversation-replacement variants → post-repair downgrade guard → finalize-missing-submit completion → stage-5/10 submit-discipline handling. Plus six near-identical stage-7 telemetry recorders and duplicated retry paths in `completeWithCache`. Root cause per the review: schema surface is the tax, repairs are interest payments — and prompt paragraphs accrete without expiry ("prompt sediment").
+
+## What the telemetry says now (measure before cutting)
+
+Plan 86 gave every run first-submit-validity, `schemaInvalidCalls`/`schemaRepairAttempts`/`deterministicSchemaRecovered`/`schemaRecoveryFailed` metrics, and plan 86.3's real forced-submit landed after the ladder was built — the friction the ladder was written against may be substantially gone. **Step 0 of this plan is a rung-utilization census over the wave-era runs (46-54 + 29-33): which rungs actually fired, how often, and what recovered.** Rungs that never fire on the modern protocol are deletions, not consolidations. Do not skip this step — the fable review's own lesson is that this subsystem got patched eleven times without that census.
+
+## Design
+
+1. **Step 0 — census (no code):** per-rung fire/recover counts from existing `model-calls.jsonl` + repair events across recent runs; written into this plan. The census decides how much of steps 2-3 is "unify" vs "delete".
+2. **One seam:** stage 7's cleanup engine moves behind the same `recoverInvalidSubmit` hook the other stages use (`llm-runner.ts:104`); `pi-runner` knows exactly one deterministic-recovery entry point. The 511-line engine shrinks to the transforms the census shows actually recover things.
+3. **One retry path:** unify the duplicated retry flows in `completeWithCache`; one repair-attempt budget enforced in one place; per-stage conversation-replacement variants collapse unless the census shows a variant earns its keep.
+4. **Collapse the six stage-7 telemetry recorders** into one parameterized recorder (pure mechanics; artifact/event shapes unchanged — eval metrics must not move).
+5. **The "why" ledger:** alongside `PROMPT_TEMPLATE_VERSIONS`, each schema field and load-bearing prompt paragraph gets a one-line reason + motivating eval case. Standing rule (spec text): new provider-facing schema fields need a stated reason; a prompt paragraph dies when its motivating case passes without it. This is the structural fix for sediment — cheap to keep, and it turns future "can we delete this?" from archaeology into a lookup.
+
+## Non-Goals
+
+- Changing any schema shape, prompt content, or repair *semantics* the census shows to be live — this plan reorganizes and deletes dead rungs; posture changes are separate measured plans.
+- Touching the salvage behaviors validated this session (composer payload salvage, run 31; schema recovery 3/3, run 28) except to relocate them behind the seam.
+
+## Validation (harness)
+
+- Full unit suite; the repair-path tests (37/51/52/59 lineage) keep passing unchanged.
+- Owner A/B vs runs 51-54 baseline: `schemaInvalidCalls`, `schemaRepairAttempts`, recovery rates, first-submit validity, and recall all flat (this plan must be *invisible* in outcome metrics while deleting code).
+
+## Done Criteria
+
+- One deterministic-recovery seam, one retry path, one stage-7 recorder; census documented; "why" ledger exists with the standing rule in the spec; net deletion consistent with the census (expect several hundred lines).
+
+## Stop Conditions
+
+- If the census shows a rung fires and recovers materially on the modern protocol, it is load-bearing — keep it behind the seam and say so; the goal is fewer *copies*, not fewer *recoveries*.
+- Any regression in schema-friction metrics or recall on the A/B → revert the consolidation commit and re-census.
