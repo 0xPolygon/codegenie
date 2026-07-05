@@ -26,6 +26,7 @@ import { applySeverityPolicy } from "./severity-policy.js";
 import { isAdaptiveNearMissSignal } from "./uncertainty-promotion.js";
 import { MAX_DEEP_ENSEMBLE_PASSES } from "../config/schema.js";
 import { isPacketReviewTestPath } from "../util/path-roles.js";
+import { stage7RecoverInvalidSubmit } from "../llm/stage7-submit-repair.js";
 import { cleanStrings } from "../util/text-similarity.js";
 
 type LensRunnerOptions = {
@@ -466,6 +467,12 @@ async function runPacket(
     toolBudget: packet.toolBudget,
     timeoutMs: config.review.perPassTimeoutMs,
     telemetryContext: { workerId, packetId: packet.id },
+    // Plan 95: stage 7's deterministic submit cleanup rides the shared
+    // recoverInvalidSubmit seam like every other stage; the engine and its
+    // telemetry live in stage7-submit-repair.ts.
+    schemaRepair: {
+      recoverInvalidSubmit: (input) => stage7RecoverInvalidSubmit(input, telemetry, { workerId, packetId: packet.id })
+    },
     finalization: {
       noResultInstruction: STAGE7_NO_FINDINGS_SUBMIT_INSTRUCTION,
       buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, config.review.depth, input)

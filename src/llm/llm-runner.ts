@@ -102,8 +102,8 @@ export type LlmStructuredRequest<T> = {
   schemaRepair?: {
     replaceConversation?: boolean;
     failAfterRepair?: boolean;
-    recoverInvalidSubmit?(input: LlmSchemaInvalidSubmitRecoveryInput): Record<string, unknown> | undefined;
-    buildPrompt(input: LlmSchemaRepairInput): string;
+    recoverInvalidSubmit?(input: LlmSchemaInvalidSubmitRecoveryInput): Record<string, unknown> | LlmInvalidSubmitRecovery | undefined;
+    buildPrompt?(input: LlmSchemaRepairInput): string;
   };
   finalization?: {
     noResultInstruction?: string;
@@ -125,6 +125,28 @@ export type LlmSchemaRepairInput = {
 
 export type LlmSchemaInvalidSubmitRecoveryInput = LlmSchemaRepairInput & {
   schemaRepairUsed: boolean;
+  // Runner conversation state: whether any earlier submit attempt carried
+  // findings (the stage-7 downgrade guard keys on it). Optional because only
+  // the packet-review flow consumes it.
+  candidateDrafted?: boolean;
+  // input.error is truncated for prompts; classification markers can sit past
+  // the cap, so recovery hooks that classify get the untruncated message.
+  fullError?: string;
+};
+
+// Rich recovery result: `kind: "recovery"` discriminates it from a plain
+// recovered-arguments record (the legacy return shape planner/composer use).
+// The outcome callbacks let a stage own its recovery telemetry while the
+// runner keeps revalidation; the repair hints feed the model-repair queue
+// when deterministic recovery declines or fails revalidation.
+export type LlmInvalidSubmitRecovery = {
+  kind: "recovery";
+  arguments?: Record<string, unknown>;
+  recoveredCallId?: string;
+  onRecovered?(recoveredCallId: string): void;
+  onRejected?(error: string): void;
+  repairClassification?: string;
+  replaceConversationOverride?: boolean;
 };
 
 export type CreateRunnerHooks = {

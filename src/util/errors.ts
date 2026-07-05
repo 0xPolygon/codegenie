@@ -77,3 +77,14 @@ export function errorExitCode(error: unknown): number {
       return 1;
   }
 }
+
+// Shared diagnostic-message truncation for prompts and telemetry payloads
+// (moved from pi-runner per plan 95; the stage-7 recovery seam needs the
+// identical cap so event payloads stay byte-compatible).
+export function truncateDiagnostic(input: string): string {
+  const maxChars = 2_000;
+  if (input.length <= maxChars) {
+    return input;
+  }
+  return `${input.slice(0, maxChars).trimEnd()}\n[validation error truncated by codegenie]`;
+}

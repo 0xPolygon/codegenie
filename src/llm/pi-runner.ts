@@ -22,11 +22,12 @@ import type { PiAuthStorage, ProviderAuthEntry } from "../provider/provider-serv
 import { sha256Hex } from "../util/hashing.js";
 import { stableJson } from "../util/json.js";
 import { finalizeGraceMs } from "../util/budget.js";
-import { CodegenieError, type CodegenieErrorCode } from "../util/errors.js";
+import { CodegenieError, truncateDiagnostic, type CodegenieErrorCode } from "../util/errors.js";
 import {
   roleForStage,
   type CreateRunnerOptions,
   type LlmCallUsage,
+  type LlmInvalidSubmitRecovery,
   type LlmSchemaInvalidSubmitRecoveryInput,
   type LlmSchemaRepairInput,
   type LlmRunner,
@@ -49,8 +50,6 @@ import { SCHEMA_VERSIONS, submitToolNameForStage } from "./schemas.js";
 import {
   classifyStage7SchemaInvalid,
   stage7CompactSchemaRepairPrompt,
-  stage7SubmitPayloadKind,
-  stage7SubmitRepairDecision,
   type Stage7SchemaInvalidKind,
   type Stage7SubmitRepairDecision
 } from "./stage7-submit-repair.js";
@@ -404,114 +403,20 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               }
               return validated as T;
             } catch (cause) {
-              const stage7Repair = stage7SubmitRepairDecision(request, submitCall, cause, candidateDraftedBeforeSubmit);
-              if (stage7Repair !== undefined) {
-                recordStage7SchemaRepairEvent({
-                  opts,
+              const submitError = `The ${submitTool.name} arguments were schema-invalid: ${truncateDiagnostic(cause instanceof Error ? cause.message : String(cause))}`;
+              const repairInput: LlmSchemaInvalidSubmitRecoveryInput = {
+                ...schemaRepairInput({
                   request,
-                  level: "warn",
-                  message: "stage7_schema_repair_attempted",
-                  data: {
-                    submitTool: submitTool.name,
-                    invalidSubmitCallCount: submitCalls.length,
-                    originalCallIds: submitCalls.map((call) => call.id),
-                    extraToolNames: toolCalls.map((toolCall) => toolCall.name),
-                    payloadKind: stage7SubmitPayloadKind(submitCalls),
-                    classification: stage7Repair.classification,
-                    error: truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause))
-                  }
-                });
-                if (stage7Repair.recovered !== undefined) {
-                  recordStage7SchemaRepairEvent({
-                    opts,
-                    request,
-                    level: "info",
-                    message: "stage7_schema_cleanup_attempted",
-                    data: stage7SchemaCleanupEventData(submitTool.name, stage7Repair)
-                  });
-                  try {
-                    const recoveredCallId = `${submitCall.id || submitTool.name}-stage7-recovered`;
-                    const validated = adapter.validateToolCall([toolSpec(submitTool)], {
-                      type: "toolCall",
-                      id: recoveredCallId,
-                      name: submitTool.name,
-                      arguments: stage7Repair.recovered
-                    });
-                    recordStage7SchemaRepairEvent({
-                      opts,
-                      request,
-                      level: "info",
-                      message: "stage7_schema_cleanup_recovered",
-                      data: {
-                        ...stage7SchemaCleanupEventData(undefined, stage7Repair),
-                        recoveredCallId
-                      }
-                    });
-                    if (stage7Repair.truncatedNoFindingReason) {
-                      recordStage7SchemaRepairEvent({
-                        opts,
-                        request,
-                        level: "info",
-                        message: "stage7_no_finding_reason_truncated",
-                        data: {
-                          cleanupKind: stage7Repair.cleanupKind,
-                          classification: stage7Repair.classification,
-                          cleanedFields: stage7Repair.cleanedFields,
-                          truncatedFields: stage7Repair.truncatedFields,
-                          recoveredCallId
-                        }
-                      });
-                    }
-                    recordStage7SchemaRepairEvent({
-                      opts,
-                      request,
-                      level: "info",
-                      message: "stage7_schema_repair_recovered",
-                      data: { classification: stage7Repair.classification }
-                    });
-                    return validated as T;
-                  } catch (recoveryCause) {
-                    recordStage7SchemaRepairEvent({
-                      opts,
-                      request,
-                      level: "warn",
-                      message: "stage7_schema_cleanup_rejected",
-                      data: {
-                        ...stage7SchemaCleanupEventData(submitTool.name, stage7Repair),
-                        error: truncatePromptDiagnostic(recoveryCause instanceof Error ? recoveryCause.message : String(recoveryCause))
-                      }
-                    });
-                  }
-                } else if (stage7Repair.cleanupKind !== undefined) {
-                  recordStage7SchemaRepairEvent({
-                    opts,
-                    request,
-                    level: "info",
-                    message: "stage7_schema_cleanup_attempted",
-                    data: stage7SchemaCleanupEventData(submitTool.name, stage7Repair)
-                  });
-                  recordStage7SchemaRepairEvent({
-                    opts,
-                    request,
-                    level: "warn",
-                    message: "stage7_schema_cleanup_rejected",
-                    data: {
-                      ...stage7SchemaCleanupEventData(submitTool.name, stage7Repair),
-                      error: truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause))
-                    }
-                  });
-                }
-              }
-              const submitError = `The ${submitTool.name} arguments were schema-invalid: ${truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause))}`;
-              const repairInput = schemaRepairInput({
-                request,
-                submitToolName: submitTool.name,
-                error: submitError,
-                submitCalls,
-                extraToolNames: toolCalls.map((toolCall) => toolCall.name),
-                schemaRepairUsed
-              });
-              const recovered = tryRecoverInvalidSubmit({
+                  submitToolName: submitTool.name,
+                  error: submitError,
+                  submitCalls,
+                  extraToolNames: toolCalls.map((toolCall) => toolCall.name),
+                  schemaRepairUsed
+                }),
+                candidateDrafted: candidateDraftedBeforeSubmit,
+                fullError: cause instanceof Error ? cause.message : String(cause)
+              };
+              const recovery = tryRecoverInvalidSubmit({
                 opts,
                 adapter,
                 request,
@@ -519,8 +424,8 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 repairInput,
                 cause
               });
-              if (recovered !== undefined) {
-                return recovered as T;
+              if (recovery.validated !== undefined) {
+                return recovery.validated as T;
               }
               queueSchemaRepair({
                 opts,
@@ -531,8 +436,8 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 extraToolNames: toolCalls.map((toolCall) => toolCall.name),
                 error: submitError,
                 schemaRepairUsed,
-                ...(stage7Repair?.classification !== undefined ? { repairClassification: stage7Repair.classification } : {}),
-                ...(stage7Repair?.compactRepair === true ? { replaceConversationOverride: true } : {}),
+                ...(recovery.repairClassification !== undefined ? { repairClassification: recovery.repairClassification as Stage7SchemaInvalidKind } : {}),
+                ...(recovery.replaceConversationOverride === true ? { replaceConversationOverride: true } : {}),
                 cause
               });
               schemaRepairUsed = true;
@@ -1269,7 +1174,7 @@ async function completeWithCache(input: {
         durationMs: Date.now() - startedAt,
         status,
         errorCode: "llm_call_failed",
-        errorMessage: cause instanceof Error ? truncatePromptDiagnostic(cause.message) : truncatePromptDiagnostic(String(cause)),
+        errorMessage: cause instanceof Error ? truncateDiagnostic(cause.message) : truncateDiagnostic(String(cause)),
         retryable: retry.retryable,
         retryReason: retry.reason,
         maxAttempts: MAX_PROVIDER_ATTEMPTS,
@@ -1424,13 +1329,6 @@ function isRecordedProviderFailure(cause: unknown): boolean {
   return Boolean(cause && typeof cause === "object" && (cause as { [RECORDED_PROVIDER_FAILURE]?: true })[RECORDED_PROVIDER_FAILURE] === true);
 }
 
-function truncatePromptDiagnostic(input: string): string {
-  const maxChars = 2_000;
-  if (input.length <= maxChars) {
-    return input;
-  }
-  return `${input.slice(0, maxChars).trimEnd()}\n[validation error truncated by codegenie]`;
-}
 
 function safeFenceLabelPart(input: string): string {
   return input.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "tool";
@@ -2228,7 +2126,7 @@ function schemaRepairInput(input: {
   return {
     stage: input.request.stage,
     submitTool: input.submitToolName,
-    error: truncatePromptDiagnostic(input.error),
+    error: truncateDiagnostic(input.error),
     submitCalls: input.submitCalls.map((call) => ({ id: call.id, arguments: call.arguments })),
     extraToolNames: input.extraToolNames,
     schemaRepairUsed: input.schemaRepairUsed
@@ -2242,49 +2140,71 @@ function tryRecoverInvalidSubmit(input: {
   submitTool: ToolDefinition;
   repairInput: LlmSchemaInvalidSubmitRecoveryInput;
   cause: unknown;
-}): unknown | undefined {
-  const recovered = input.request.schemaRepair?.recoverInvalidSubmit?.(input.repairInput);
-  if (recovered === undefined) {
-    return undefined;
+}): { validated?: unknown; repairClassification?: string; replaceConversationOverride?: boolean } {
+  const result = input.request.schemaRepair?.recoverInvalidSubmit?.(input.repairInput);
+  if (result === undefined) {
+    return {};
   }
+  const recovery: LlmInvalidSubmitRecovery = isBrandedRecovery(result) ? result : { kind: "recovery", arguments: result };
+  const hints: { validated?: unknown; repairClassification?: string; replaceConversationOverride?: boolean } = {
+    ...(recovery.repairClassification !== undefined ? { repairClassification: recovery.repairClassification } : {}),
+    ...(recovery.replaceConversationOverride !== undefined ? { replaceConversationOverride: recovery.replaceConversationOverride } : {})
+  };
+  if (recovery.arguments === undefined) {
+    return hints;
+  }
+  const recoveredCallId = recovery.recoveredCallId ?? `${input.repairInput.submitTool}-recovered`;
   try {
     const validated = input.adapter.validateToolCall([toolSpec(input.submitTool)], {
       type: "toolCall",
-      id: `${input.repairInput.submitTool}-recovered`,
+      id: recoveredCallId,
       name: input.repairInput.submitTool,
-      arguments: recovered
+      arguments: recovery.arguments
     });
-    input.opts.telemetry.event(definedRecord({
-      stage: input.request.stage,
-      level: "info",
-      message: "schema_invalid_submit_recovered",
-      workerId: input.request.telemetryContext?.workerId,
-      packetId: input.request.telemetryContext?.packetId,
-      data: definedRecord({
-        submitTool: input.repairInput.submitTool,
-        invalidSubmitCallCount: input.repairInput.submitCalls.length,
-        schemaRepairUsed: input.repairInput.schemaRepairUsed,
-        candidateId: input.request.telemetryContext?.candidateId
-      })
-    }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
-    return validated;
+    if (recovery.onRecovered !== undefined) {
+      recovery.onRecovered(recoveredCallId);
+    } else {
+      input.opts.telemetry.event(definedRecord({
+        stage: input.request.stage,
+        level: "info",
+        message: "schema_invalid_submit_recovered",
+        workerId: input.request.telemetryContext?.workerId,
+        packetId: input.request.telemetryContext?.packetId,
+        data: definedRecord({
+          submitTool: input.repairInput.submitTool,
+          invalidSubmitCallCount: input.repairInput.submitCalls.length,
+          schemaRepairUsed: input.repairInput.schemaRepairUsed,
+          candidateId: input.request.telemetryContext?.candidateId
+        })
+      }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+    }
+    return { ...hints, validated };
   } catch (recoveryCause) {
-    input.opts.telemetry.event(definedRecord({
-      stage: input.request.stage,
-      level: "warn",
-      message: "schema_invalid_submit_recovery_invalid",
-      workerId: input.request.telemetryContext?.workerId,
-      packetId: input.request.telemetryContext?.packetId,
-      data: definedRecord({
-        submitTool: input.repairInput.submitTool,
-        schemaRepairUsed: input.repairInput.schemaRepairUsed,
-        error: truncatePromptDiagnostic(recoveryCause instanceof Error ? recoveryCause.message : String(recoveryCause)),
-        originalError: truncatePromptDiagnostic(input.cause instanceof Error ? input.cause.message : String(input.cause)),
-        candidateId: input.request.telemetryContext?.candidateId
-      })
-    }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
-    return undefined;
+    const recoveryError = truncateDiagnostic(recoveryCause instanceof Error ? recoveryCause.message : String(recoveryCause));
+    if (recovery.onRejected !== undefined) {
+      recovery.onRejected(recoveryError);
+    } else {
+      input.opts.telemetry.event(definedRecord({
+        stage: input.request.stage,
+        level: "warn",
+        message: "schema_invalid_submit_recovery_invalid",
+        workerId: input.request.telemetryContext?.workerId,
+        packetId: input.request.telemetryContext?.packetId,
+        data: definedRecord({
+          submitTool: input.repairInput.submitTool,
+          schemaRepairUsed: input.repairInput.schemaRepairUsed,
+          error: recoveryError,
+          originalError: truncateDiagnostic(input.cause instanceof Error ? input.cause.message : String(input.cause)),
+          candidateId: input.request.telemetryContext?.candidateId
+        })
+      }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+    }
+    return hints;
   }
+}
+
+function isBrandedRecovery(input: Record<string, unknown> | LlmInvalidSubmitRecovery): input is LlmInvalidSubmitRecovery {
+  return (input as { kind?: unknown }).kind === "recovery";
 }
 
 function queueSchemaRepair(input: {
@@ -2300,7 +2220,7 @@ function queueSchemaRepair(input: {
   replaceConversationOverride?: boolean;
   cause?: unknown;
 }): void {
-  const error = truncatePromptDiagnostic(input.error);
+  const error = truncateDiagnostic(input.error);
   if (input.schemaRepairUsed) {
     if (input.request.stage === 7) {
       recordStage7SchemaRepairEvent({
@@ -2331,7 +2251,7 @@ function queueSchemaRepair(input: {
   const stage7CompactRepair = input.request.stage === 7 && input.replaceConversationOverride === true;
   const content = stage7CompactRepair
     ? stage7CompactSchemaRepairPrompt(input.submitToolName, error, input.repairClassification ?? "unsafe_candidate_like_payload", repairInput)
-    : input.request.schemaRepair?.buildPrompt(repairInput) ??
+    : input.request.schemaRepair?.buildPrompt?.(repairInput) ??
       defaultSchemaRepairPrompt(input.request, input.submitToolName, error);
   const replaceConversation = input.replaceConversationOverride ?? (input.request.schemaRepair?.replaceConversation === true);
   const repairMessage = {
@@ -2405,20 +2325,6 @@ function defaultSchemaRepairPrompt(
   return `${error}. Call ${submitToolName} again with exactly one corrected schema-valid set of arguments.`;
 }
 
-function stage7SchemaCleanupEventData(
-  submitTool: string | undefined,
-  decision: Stage7SubmitRepairDecision
-): Record<string, unknown> {
-  return definedRecord({
-    submitTool,
-    cleanupKind: decision.cleanupKind,
-    classification: decision.classification,
-    strippedKeys: decision.strippedKeys,
-    cleanedFields: decision.cleanedFields,
-    truncatedFields: decision.truncatedFields,
-    rejectReason: decision.rejectReason
-  });
-}
 
 function recordStage7SchemaRepairEvent(input: {
   opts: CreateRunnerOptions;
@@ -3102,7 +3008,7 @@ function providerMessageError(message: PiAssistantMessage): Error & { status?: n
 
 function providerErrorMessage(message: PiAssistantMessage): string | undefined {
   return typeof message.errorMessage === "string" && message.errorMessage.trim().length > 0
-    ? truncatePromptDiagnostic(message.errorMessage.trim())
+    ? truncateDiagnostic(message.errorMessage.trim())
     : undefined;
 }
 

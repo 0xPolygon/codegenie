@@ -32,6 +32,8 @@ import {
 import { buildRepositoryToolDefinitions } from "../src/llm/tool-definitions.js";
 import type { Logger, LogEvent, RepositoryTools, TelemetryEvent, ToolCallRecord } from "../src/types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
+import { stage7RecoverInvalidSubmit } from "../src/llm/stage7-submit-repair.js";
+import type { LlmSchemaInvalidSubmitRecoveryInput } from "../src/llm/llm-runner.js";
 import { clearRegisteredSecretsForTests, registerSecret, stripCredentials } from "../src/telemetry/redaction.js";
 import type { ToolDefinition } from "../src/llm/llm-runner.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../src/provider/provider-services.js";
@@ -2318,7 +2320,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-xml-no-findings"),
+        ...submitReviewRequest("packet-xml-no-findings", telemetry.recorder),
         telemetryContext: { packetId: "packet-xml-no-findings" }
       })
     ).resolves.toMatchObject({
@@ -2371,7 +2373,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-candidate-cleanup"),
+        ...submitReviewRequest("packet-candidate-cleanup", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-cleanup" }
       })
     ).resolves.toMatchObject({
@@ -2435,7 +2437,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
 
     const result = (await runner.runStructured({
-      ...submitReviewRequest("packet-long-no-findings"),
+      ...submitReviewRequest("packet-long-no-findings", telemetry.recorder),
       telemetryContext: { packetId: "packet-long-no-findings" }
     })) as SubmitPacketReview;
 
@@ -2497,7 +2499,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-candidate-anchor-cleanup"),
+        ...submitReviewRequest("packet-candidate-anchor-cleanup", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-anchor-cleanup" }
       })
     ).resolves.toMatchObject({
@@ -2560,7 +2562,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
 
     const result = (await runner.runStructured({
-      ...submitReviewRequest("packet-prose-no-findings"),
+      ...submitReviewRequest("packet-prose-no-findings", telemetry.recorder),
       telemetryContext: { packetId: "packet-prose-no-findings" }
     })) as SubmitPacketReview;
 
@@ -2601,7 +2603,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-candidate-repair"),
+        ...submitReviewRequest("packet-candidate-repair", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-repair" }
       })
     ).resolves.toMatchObject({ findings: [expect.objectContaining({ title: "Candidate finding" })] });
@@ -2660,7 +2662,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-candidate-substantive-extra"),
+        ...submitReviewRequest("packet-candidate-substantive-extra", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-substantive-extra" }
       })
     ).resolves.toMatchObject({ findings: [expect.objectContaining({ title: "Candidate finding" })] });
@@ -2713,7 +2715,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-candidate-invalid-enum"),
+        ...submitReviewRequest("packet-candidate-invalid-enum", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-invalid-enum" }
       })
     ).resolves.toMatchObject({ findings: [expect.objectContaining({ category: "correctness" })] });
@@ -2755,7 +2757,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-candidate-repair-fails"),
+        ...submitReviewRequest("packet-candidate-repair-fails", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-repair-fails" }
       })
     ).rejects.toMatchObject({ code: "llm_schema_invalid" });
@@ -2843,7 +2845,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-no-salvage-after-candidate"),
+        ...submitReviewRequest("packet-no-salvage-after-candidate", telemetry.recorder),
         telemetryContext: { packetId: "packet-no-salvage-after-candidate" }
       })
     ).rejects.toMatchObject({ code: "llm_schema_invalid" });
@@ -4656,13 +4658,23 @@ function validSubmitPlanCall(id: string): PiToolCall {
   };
 }
 
-function submitReviewRequest(packetId: string) {
+function submitReviewRequest(packetId: string, telemetry?: TelemetryRecorder) {
   return {
     stage: 7 as const,
     prompt: `review ${packetId}`,
     schema: SubmitPacketReviewSchema,
     templateVersion: "test-template",
-    timeoutMs: 1000
+    timeoutMs: 1000,
+    // Mirrors lens-runner's production wiring (plan 95): stage-7 deterministic
+    // cleanup arrives via the shared recoverInvalidSubmit seam.
+    ...(telemetry !== undefined
+      ? {
+          schemaRepair: {
+            recoverInvalidSubmit: (input: LlmSchemaInvalidSubmitRecoveryInput) =>
+              stage7RecoverInvalidSubmit(input, telemetry, { packetId })
+          }
+        }
+      : {})
   };
 }
 

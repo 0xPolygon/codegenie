@@ -1,6 +1,6 @@
 # Issue 95: One Shared Submit/Salvage Layer + the Prompt "Why" Ledger
 
-Status: IN PROGRESS — Step 0 census complete and eval-invisible mechanical slices landed 2026-07-04; deeper seam consolidation remains behavior-adjacent and must A/B flat
+Status: IN PROGRESS — census, mechanical slices, and the seam consolidation landed (2026-07-05): stage 7's cleanup engine now rides the shared `recoverInvalidSubmit` seam (`stage7RecoverInvalidSubmit` in stage7-submit-repair.ts; pi-runner's only stage-7 residue is the post-repair candidate-downgrade guard). The 9 repair-lineage tests run through the seam and pin event parity. Remaining: retry-path unification in `completeWithCache` (separate commit) + the A/B flat gate vs the 59/60 baseline on the next ambient runs.
 Planned from: fable review §2.3 + §4 ("recurring bug classes are structural") + §6 item 5 (`specs/reviews/1-fable-review.md`), 2026-07-04
 Planned at: commit `762339d` (branch `next`)
 Recommended priority: after plans 93/94. This is the highest-leverage simplification (the review's "output babysitting" class) and the one with the best measurement story: plan 86's schema-friction metrics exist specifically so this consolidation can be judged on numbers.
@@ -36,10 +36,14 @@ Implemented slices (2026-07-04):
 - Added `PROMPT_TEMPLATE_WHY_LEDGER` beside `PROMPT_TEMPLATE_VERSIONS`, with stage-scoped reasons and motivating evidence for current schema/prompt surfaces. `tests/shared-utils.test.ts` now guards that every versioned prompt stage has non-empty ledger entries.
 - Collapsed Stage-7 schema-repair telemetry emission to one parameterized recorder while preserving existing event names, levels, and payload fields.
 
-Remaining implementation:
+Remaining implementation (seam design, 2026-07-05):
 
-- Move Stage-7 deterministic cleanup fully behind the same `recoverInvalidSubmit` seam without losing attempted/rejected cleanup telemetry or compact-repair classification.
-- Unify the repair retry path only after the seam change, then A/B schema-friction metrics against the census window.
+- Discovery: the generic seam (`tryRecoverInvalidSubmit`, pi-runner ~514) already runs for stage 7 — the stage-7 engine block (pi-runner 407-503) is a pre-seam attempt with richer telemetry plus two back-channels into model-repair queueing (`repairClassification`, `replaceConversationOverride` at 534-535).
+- Seam extension (backward compatible): `recoverInvalidSubmit` may return either a plain `Record<string, unknown>` (planner/composer unchanged) or `{ arguments?, onRecovered?(recoveredCallId), onRejected?(error), repairClassification?, replaceConversationOverride? }`. Input gains `candidateDrafted?: boolean` (runner conversation state the stage-7 downgrade guard needs) and `fullError?: string` (classification markers can sit past the truncation cap).
+- The whole stage-7 block moves into `stage7-submit-repair.ts` as `stage7RecoverInvalidSubmit(input, telemetry)` emitting the SAME events (`stage7_schema_repair_attempted`, `stage7_schema_cleanup_attempted/recovered/rejected`, `stage7_no_finding_reason_truncated`, `stage7_schema_repair_recovered`) with identical payloads; lens-runner wires it via `schemaRepair.recoverInvalidSubmit`. When the hook returns callbacks, pi-runner invokes them instead of the generic `schema_invalid_submit_recovered`/`recovery_invalid` events (stage-7 event names must not change; generic names for planner/composer must not change either).
+- pi-runner keeps: revalidation, the post-repair candidate-downgrade guard (361-374), `queueSchemaRepair` (now reading classification/replace hints from the hook result). pi-runner's only stage-7-specific residue is the downgrade guard.
+- Retry-path unification stays a separate follow-up commit after this lands flat.
+- A/B gate: schema-friction metrics + recall vs the fresh 59/60 baseline (both models available).
 
 ## Problem
 

@@ -1,6 +1,14 @@
 import { fenceUntrusted } from "../skills/prompt-builder.js";
+import { truncateDiagnostic } from "../util/errors.js";
 import { stableJson } from "../util/json.js";
-import type { LlmSchemaRepairInput, LlmStructuredRequest, PiToolCall } from "./llm-runner.js";
+import type {
+  LlmInvalidSubmitRecovery,
+  LlmSchemaInvalidSubmitRecoveryInput,
+  LlmSchemaRepairInput,
+  LlmStructuredRequest,
+  PiToolCall
+} from "./llm-runner.js";
+import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 
 export type Stage7SubmitRepairDecision = {
   classification: Stage7SchemaInvalidKind;
@@ -98,10 +106,25 @@ export function stage7SubmitRepairDecision(
   cause: unknown,
   candidateDraftedBeforeSubmit: boolean
 ): Stage7SubmitRepairDecision | undefined {
-  if (request.stage !== 7 || submitCall.name !== "submit_review") {
+  if (request.stage !== 7) {
     return undefined;
   }
-  const classification = classifyStage7SchemaInvalid(cause instanceof Error ? cause.message : String(cause), [submitCall]);
+  return stage7SubmitRepairDecisionFromParts(
+    submitCall,
+    cause instanceof Error ? cause.message : String(cause),
+    candidateDraftedBeforeSubmit
+  );
+}
+
+export function stage7SubmitRepairDecisionFromParts(
+  submitCall: PiToolCall,
+  errorText: string,
+  candidateDraftedBeforeSubmit: boolean
+): Stage7SubmitRepairDecision | undefined {
+  if (submitCall.name !== "submit_review") {
+    return undefined;
+  }
+  const classification = classifyStage7SchemaInvalid(errorText, [submitCall]);
   if (!candidateDraftedBeforeSubmit) {
     const noFindingsCleanup = cleanupStage7NoFindingsSubmit(submitCall.arguments);
     if (noFindingsCleanup.status === "recovered") {
@@ -491,4 +514,108 @@ function safeStringify(input: unknown): string {
   } catch {
     return "";
   }
+}
+
+// Plan 95: the stage-7 cleanup engine expressed as the shared
+// recoverInvalidSubmit seam. Behavior and telemetry are byte-compatible with
+// the former pi-runner inline block: same event names, payload fields, and
+// ordering (repair_attempted -> cleanup_attempted -> [runner revalidates] ->
+// cleanup_recovered/no_finding_reason_truncated/repair_recovered on success,
+// cleanup_rejected on failure). The runner owns revalidation and invokes the
+// outcome callbacks; the repair hints steer the model-repair queue when
+// deterministic recovery declines.
+export function stage7RecoverInvalidSubmit(
+  input: LlmSchemaInvalidSubmitRecoveryInput,
+  telemetry: TelemetryRecorder,
+  context: { workerId?: string; packetId?: string }
+): LlmInvalidSubmitRecovery | undefined {
+  const submit = input.submitCalls[0];
+  if (input.stage !== 7 || input.submitTool !== "submit_review" || submit === undefined) {
+    return undefined;
+  }
+  const submitCall: PiToolCall = { type: "toolCall", id: submit.id, name: input.submitTool, arguments: submit.arguments };
+  const decision = stage7SubmitRepairDecisionFromParts(
+    submitCall,
+    input.fullError ?? input.error,
+    input.candidateDrafted === true
+  );
+  if (decision === undefined) {
+    return undefined;
+  }
+  const event = (level: "info" | "warn", message: string, data: Record<string, unknown>): void => {
+    telemetry.event(definedEventRecord({
+      stage: 7,
+      level,
+      message,
+      workerId: context.workerId,
+      packetId: context.packetId,
+      data: definedEventRecord(data)
+    }) as Parameters<TelemetryRecorder["event"]>[0]);
+  };
+  const cleanupData = (submitTool: string | undefined): Record<string, unknown> => definedEventRecord({
+    submitTool,
+    cleanupKind: decision.cleanupKind,
+    classification: decision.classification,
+    strippedKeys: decision.strippedKeys,
+    cleanedFields: decision.cleanedFields,
+    truncatedFields: decision.truncatedFields,
+    rejectReason: decision.rejectReason
+  });
+  event("warn", "stage7_schema_repair_attempted", {
+    submitTool: input.submitTool,
+    invalidSubmitCallCount: input.submitCalls.length,
+    originalCallIds: input.submitCalls.map((call) => call.id),
+    extraToolNames: input.extraToolNames,
+    payloadKind: stage7SubmitPayloadKind([submitCall]),
+    classification: decision.classification,
+    error: truncateDiagnostic(input.fullError ?? input.error)
+  });
+  const hints: LlmInvalidSubmitRecovery = {
+    kind: "recovery",
+    repairClassification: decision.classification,
+    ...(decision.compactRepair === true ? { replaceConversationOverride: true } : {})
+  };
+  if (decision.recovered !== undefined) {
+    event("info", "stage7_schema_cleanup_attempted", cleanupData(input.submitTool));
+    const recoveredCallId = `${submit.id || input.submitTool}-stage7-recovered`;
+    return {
+      ...hints,
+      arguments: decision.recovered,
+      recoveredCallId,
+      onRecovered: (callId) => {
+        event("info", "stage7_schema_cleanup_recovered", { ...cleanupData(undefined), recoveredCallId: callId });
+        if (decision.truncatedNoFindingReason) {
+          event("info", "stage7_no_finding_reason_truncated", {
+            cleanupKind: decision.cleanupKind,
+            classification: decision.classification,
+            cleanedFields: decision.cleanedFields,
+            truncatedFields: decision.truncatedFields,
+            recoveredCallId: callId
+          });
+        }
+        event("info", "stage7_schema_repair_recovered", { classification: decision.classification });
+      },
+      onRejected: (error) => {
+        event("warn", "stage7_schema_cleanup_rejected", { ...cleanupData(input.submitTool), error });
+      }
+    };
+  }
+  if (decision.cleanupKind !== undefined) {
+    event("info", "stage7_schema_cleanup_attempted", cleanupData(input.submitTool));
+    event("warn", "stage7_schema_cleanup_rejected", {
+      ...cleanupData(input.submitTool),
+      error: truncateDiagnostic(input.fullError ?? input.error)
+    });
+  }
+  return hints;
+}
+
+function definedEventRecord<T extends Record<string, unknown>>(input: T): T {
+  const output: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value !== undefined) {
+      output[key] = value;
+    }
+  }
+  return output as T;
 }

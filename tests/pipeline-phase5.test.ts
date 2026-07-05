@@ -4549,7 +4549,7 @@ describe("phase 5 pipeline regressions", () => {
         expect(request.stage).toBe(5);
         expect(request.schemaRepair?.replaceConversation).toBe(true);
         expect(request.schemaRepair?.failAfterRepair).toBe(true);
-        repairPrompt = request.schemaRepair?.buildPrompt({
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
           stage: 5,
           submitTool: "submit_plan",
           error: "Stage 5 planner responses must call submit_plan exactly once; received 2 submit_plan calls.",
@@ -7686,7 +7686,7 @@ describe("phase 5 pipeline regressions", () => {
         calls += 1;
         expect(request.schemaRepair?.replaceConversation).toBe(true);
         expect(request.schemaRepair?.failAfterRepair).toBe(false);
-        repairPrompt = request.schemaRepair?.buildPrompt({
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
           stage: 9,
           submitTool: "submit_verdict",
           error: "schema-invalid arguments: <parameter>BAD_PRIOR_XML_BODY</parameter> missing required property verdict",
@@ -7774,7 +7774,7 @@ describe("phase 5 pipeline regressions", () => {
     const artifacts = new Map<string, unknown>();
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
-        request.schemaRepair?.buildPrompt({
+        request.schemaRepair?.buildPrompt?.({
           stage: 9,
           submitTool: "submit_verdict",
           error: "schema-invalid arguments: <parameter>BAD_PRIOR_XML_BODY</parameter>",
@@ -7854,7 +7854,7 @@ describe("phase 5 pipeline regressions", () => {
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         calls += 1;
-        request.schemaRepair?.buildPrompt({
+        request.schemaRepair?.buildPrompt?.({
           stage: 9,
           submitTool: "submit_verdict",
           error: "missing required property verdict",
@@ -8328,7 +8328,7 @@ describe("phase 5 pipeline regressions", () => {
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         expect(request.schemaRepair?.replaceConversation).toBe(true);
-        const repairPrompt = request.schemaRepair?.buildPrompt({
+        const repairPrompt = request.schemaRepair?.buildPrompt?.({
           stage: 10,
           submitTool: "submit_composition",
           error: "summary exceeds 4000 characters; composedFindings is missing",
