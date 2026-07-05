@@ -71,7 +71,7 @@ export type PromptBuilder = {
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
   5: "p5.6",
-  7: "p7.9",
+  7: "p7.10",
   8: "p8.2",
   9: "p9.5",
   10: "p10.1"
@@ -96,6 +96,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
     { surface: "followUpHints", reason: "Pointer-rich unresolved predicates feed human attention and system follow-up without publishing speculation.", evidence: "Plan 92 attention records and run 50 near-miss" },
     { surface: "uncertainties", reason: "Structured uncertainty gives promotion/adaptive passes a bounded predicate shape rather than free-form review notes.", evidence: "Plan 81 promotion lane retained by 2026-07-04 decision record" },
     { surface: "noFindingReason", reason: "Short no-finding conclusions avoid the essay payloads that created malformed or oversized submits.", evidence: "Plan 95 census: Stage-7 schema friction remains live" },
+    { surface: "reviewStatus incomplete discipline", reason: "incomplete is reserved for reviews cut off before evaluation; hedged no-finding conclusions must not be counted as unreviewed coverage.", evidence: "gpt-5.5 runs 56-58: 9-10 no-finding conclusions self-reported incomplete -> ~15-17 hunks counted failed, completeness partial; opus 0" },
     { surface: "behaviorChange/intentEvidence", reason: "Preserves explicit framing for refactor-like or mixed-intent behavior changes through verification and composition.", evidence: "Plan 82 unknown-demotion fix and Plan 74 confidence calibration" },
     { surface: "staticSignals/lossy-transform guidance", reason: "Keeps validation-before-conversion and deliverable-bound checks visible where regressions have clustered.", evidence: "Fable D10 static-signal watch and Wave-era relay/hyperlane cases" },
     { surface: "strict submit_review closeout", reason: "Provider/tool dialect drift still produces extra fields and XML wrappers, so closeout remains load-bearing.", evidence: "Plan 95 census: 5 Stage-7 schema-invalid calls, 4 deterministic recoveries" }
@@ -193,6 +194,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
         "Raise candidate findings for concrete changed-line failure modes. If the evidence shows a plausible changed-line correctness, security, performance, architecture, or testing risk but one narrow predicate still needs confirmation, surface it as a candidate finding or a pointer-rich followUpHint/uncertainty for the verifier instead of suppressing it.",
         "A later verification stage filters false positives. Do not publish speculation as a finding, but do not hide a plausible verifier-resolvable concern behind reviewStatus:\"no_findings\". No-findings is appropriate only after the changed-line risk has been checked and no concrete failure mode or pointer-rich unresolved predicate remains.",
+        "reviewStatus:\"incomplete\" means the review was cut off before the changed lines could be evaluated (tool or budget exhaustion mid-investigation). If you evaluated the changed lines and no provable defect remains, report no_findings even when narrower questions stay open — record those as followUpHints or uncertainties, not as an incomplete review. An incomplete review is counted as unreviewed coverage; do not use it to hedge a no-finding conclusion.",
         "Keep Stage 7 output compact: candidate findings, exact unresolved predicates, or a short no-finding conclusion. noFindingReason is not a mini review report. Do not put detailed proof or broad exploration notes into noFindingReason.",
         "Emit followUpHints and uncertainties for concrete unresolved risks with file or symbol scope. Do not emit broad reminders like \"check if this is safe\". For behavior-preserving refactors or refactor-like changes, surface changed-line anchored changes to validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries as a candidate or verifier-bound hint when they may alter caller-visible behavior.",
         "Packet attentionNotes and relatedChangedContext are advisory context from the harness. They are not questions, findings, or proof obligations. Use them to decide what to inspect, then independently report findings or no findings from the packet evidence.",
