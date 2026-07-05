@@ -51,7 +51,6 @@ Core dependencies:
 - A TOML parser for `codegenie.toml` and a YAML parser for eval case files.
 - `picomatch` for path-rule and tool globs.
 - `execa` or Node subprocess APIs for `git` and `gh`.
-- `@vscode/ripgrep` for bundled text search, used as a fast path only when the checkout matches the reviewed head. Pinned to >=1.18.0, which ships per-platform binaries in the tarball with no postinstall download.
 - `web-tree-sitter` plus Go and TypeScript/JavaScript grammars for v1 syntax parsing.
   - `tree-sitter-go` for Go
   - `tree-sitter-typescript` for Typescript: `.ts`/`.mts`/`.cts`/`.d.ts` route to the typescript grammar; `.tsx` routes to the tsx grammar
@@ -60,7 +59,7 @@ Core dependencies:
   - Grammar files are referenced directly from `node_modules` at runtime (e.g. `require.resolve("tree-sitter-go/tree-sitter-go.wasm")` via `createRequire` under ESM); no copy step into an `assets/` folder is needed because codegenie is distributed as a normal npm package. An asset-copy step becomes necessary only if single-file bundling is introduced, which is out of scope for v1.
   - `web-tree-sitter` and the three grammar packages are pinned together; ABI compatibility is enforced at `Language.load`.
 
-Exact dependency versions are pinned via the pnpm lockfile; `@vscode/ripgrep` and tree-sitter grammar wasm artifacts ship inside their npm tarballs (no postinstall downloads permitted).
+Exact dependency versions are pinned via the pnpm lockfile; tree-sitter grammar wasm artifacts ship inside their npm tarballs (no postinstall downloads permitted).
 
 External CLI dependencies:
 
@@ -189,7 +188,7 @@ User-local provider/auth state:
 
 This state is user-scoped, never repo-tracked, and is the only place codegenie itself stores provider credentials.
 
-codegenie is distributed as a normal npm package; wasm grammars and the ripgrep binary resolve from `node_modules` at runtime. Single-file bundling is out of scope for v1.
+codegenie is distributed as a normal npm package; wasm grammars resolve from `node_modules` at runtime. Single-file bundling is out of scope for v1.
 
 ## Core Data Model
 
@@ -1110,7 +1109,7 @@ interface RepositoryTools {
 Repository tools are stable contracts backed by pluggable implementations:
 
 - Tree-sitter backend: preferred for files with available grammars. It provides symbols, enclosing blocks, imports, syntax-aware snippets, and static signals.
-- Text backend: required fallback for every repository. It uses git plumbing reads, bundled ripgrep when the checkout matches the reviewed head, line windows, and simple filename/test conventions.
+- Text backend: required fallback for every repository. It uses git plumbing reads, `git grep` at the reviewed revisions, line windows, and simple filename/test conventions.
 - Language analyzer backend: optional later enrichment for languages where stronger semantic analysis is available.
 
 Tool callers should not need to know which backend answered. Every tool result should include backend provenance, precision, and degradation metadata. `readRange`, `readDiffBlocks`, and `listFiles` do not require tree-sitter. `readFileOutline`, `readSymbol`, `findDefinition`, `findSymbolMentions`, and `findLikelyTests` should use tree-sitter when available and degrade to text-backed approximations or empty degraded results when unavailable. `readSymbol` with a line selector returns the enclosing symbol at that line; symbol enumeration is answered by `readFileOutline` (its `topLevelSymbols`). Import questions are answered by `readFileOutline`, which includes the file's imports.
@@ -1121,9 +1120,9 @@ Tool callers should not need to know which backend answered. Every tool result s
 
 Source-reading tools default to head content and can read base content when available. Base reads are required for deleted-file review and old-side context.
 
-Revision access uses git plumbing rather than the checked-out worktree. File reads use `git show <ref>:<path>`, tree listings use `git ls-tree`, and whole-tree search uses `git grep <ref>`, so base and head trees are fully accessible regardless of what is checked out, without materializing temporary worktrees. Tree-sitter parses revision content in memory and never depends on worktree files. The bundled `@vscode/ripgrep` is a search fast path used only when the checked-out HEAD equals the reviewed head revision and the relevant files are unmodified; the engine that answered (ripgrep or git grep) is recorded in telemetry, not in tool results.
+Revision access uses git plumbing rather than the checked-out worktree. File reads use `git show <ref>:<path>`, tree listings use `git ls-tree`, and whole-tree search uses `git grep <ref>`, so base and head trees are fully accessible regardless of what is checked out, without materializing temporary worktrees. Tree-sitter parses revision content in memory and never depends on worktree files. Search engine provenance is recorded in telemetry as `engine: "git-grep"` for text-search-backed calls, not in tool results.
 
-`searchFiles` query contract: the query language is POSIX ERE. The text backend invokes `git grep -E` (revision search) and ripgrep with flags aligned to ERE semantics (worktree fast path). Engine differences that actually affect results (ignore-file handling, binary detection) are recorded via `ToolResultMeta.degradationReason`; engine identity itself lives in telemetry. Queries are treated as patterns, never shell-interpolated.
+`searchFiles` query contract: the query language is POSIX ERE. The text backend invokes `git grep -E` at the resolved revision. Queries are treated as patterns, never shell-interpolated.
 
 Tool results must be capped by count and characters, include line numbers, prefer semantic blocks over whole files, and record truncation or omitted-result counts in telemetry. The model should see structured summaries and source snippets, not raw AST dumps.
 
@@ -1635,7 +1634,7 @@ type ToolCallRecord = {
   }
   backend: ToolBackend
   precision: ToolPrecision
-  engine?: "git-grep" | "ripgrep" // search-engine provenance for text-search-backed calls
+  engine?: "git-grep" // search-engine provenance for text-search-backed calls
   degraded: boolean
   degradationReason?: string
   truncated?: boolean
@@ -1857,7 +1856,7 @@ Prompt construction: untrusted content must be structurally delimited in prompts
 
 Output channel control: everything posted to GitHub passes deterministic sanitization (see Output And GitHub Publishing). Telemetry/debug artifacts contain untrusted content by design and are local-only.
 
-Repository tools path containment (single chokepoint in the RepositoryTools layer): all paths are canonicalized and required to resolve inside `repoRoot`; absolute paths and `..` traversal are rejected with a typed error (`path_outside_repo`); the worktree fast path must not follow symlinks resolving outside the repo root (git-plumbing reads are inherently contained); refs are harness-resolved only (model-facing source selectors expose `head`/`base`), and harness-side ref values are validated against `git check-ref-format` rules and rejected if option-like (leading `-`).
+Repository tools path containment (single chokepoint in the RepositoryTools layer): all paths are canonicalized as repository-relative tree paths; absolute paths and `..` traversal are rejected with a typed error (`path_outside_repo`); git-plumbing reads are inherently contained to repository object paths; refs are harness-resolved only (model-facing source selectors expose `head`/`base`), and harness-side ref values are validated against `git check-ref-format` rules and rejected if option-like (leading `-`).
 
 Config trust partitioning: the per-key config-source table in CLI And Config is normative. Repo `codegenie.toml` may set only the repo-settable safe keys listed there; every other key takes effect only with user-level opt-in — a CLI flag, `~/.codegenie/settings.json`, or the user-scoped config file `~/.codegenie/config.toml` (all under `CODEGENIE_HOME`) — and repo-config values for user-scope keys are ignored with a warning. Repo-config-relative paths are constrained to the repo root.
 
@@ -1979,7 +1978,7 @@ type SymbolEdge = {
   to: SymbolRef
   kind: "calls" | "implements" | "extends" | "imports" | "tests" | "references"
   confidence: "syntactic" | "heuristic" | "semantic"
-  source: "tree-sitter" | "ripgrep" | "lsp" | "compiler" | "custom"
+  source: "tree-sitter" | "git-grep" | "lsp" | "compiler" | "custom"
 }
 
 type ChangedSymbolGraph = {

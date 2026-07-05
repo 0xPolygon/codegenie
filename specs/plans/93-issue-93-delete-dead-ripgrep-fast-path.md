@@ -1,6 +1,7 @@
 # Issue 93: Delete the Dead Ripgrep Fast Path (and its Per-Run Enumeration Tax)
 
-Status: PENDING (simplification backlog; lowest-risk item — land first)
+Status: COMPLETE — implemented 2026-07-04.
+Implementation notes: `src/repo/search.ts` now uses `git grep` unconditionally and reports `engine: "git-grep"` for search-backed tool telemetry; the ripgrep spawn/filter/parser path is deleted. `SourceResolver` no longer snapshots worktree cleanliness or enumerates untracked/ignored files. `@vscode/ripgrep` is removed from `package.json`/`pnpm-lock.yaml`. Current project specs and rendered HTML now describe the single git-grep search engine. Historical plan text below is retained for provenance.
 Planned from: fable review D9 + §3 bug 10 + §6 item 7 (`specs/reviews/1-fable-review.md`), 2026-07-04
 Planned at: commit `762339d` (branch `next`)
 Recommended priority: first of the simplification series — zero model-behavior surface, pure deletion of dead machinery plus a real per-run cost.

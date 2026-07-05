@@ -1,9 +1,19 @@
 # Issue 94: One Shared Similarity/Util Module (Kill the Divergent Copies)
 
-Status: PENDING (simplification backlog; second — mechanical, but divergences must be dispositioned, not silently unified)
+Status: COMPLETE — implemented 2026-07-04 (shared helpers landed; divergences dispositioned without silent behavior changes)
 Planned from: fable review §6 item 8 (`specs/reviews/1-fable-review.md`); duplicate census re-verified at commit `762339d`, 2026-07-04
 Planned at: commit `762339d` (branch `next`)
 Recommended priority: after plan 93. Mechanical consolidation, but two of the copies encode *behavioral* divergences that plans in this session leaned on — unification is a disposition exercise, not a find/replace.
+
+Implementation notes (2026-07-04):
+
+- `stableJson`: compact canonical JSON moved to `src/util/json.ts#stableJson`; prompt pretty-printing stayed byte-compatible as `prettyStableJson`, with `prompt-builder` continuing to export `stableJson` as the pretty alias for existing callers/tests.
+- `escapeRegExp`: all four identical local copies moved to `src/util/regex.ts`.
+- `isTestPath`: no silent unification. The historical dialects are named in `src/util/path-roles.ts`: `isRepositoryTestPath` (packet context / TS test symbols), `isCompositionTestPath` (Stage-10 publication path-role ranking), `isCoverageEscalationTestPath` (Plan-92 coverage escalation E2 suppression, preserving `_test.*` handling), `isPacketReviewTestPath` (Stage-7 likely-test exposure), and `isPromotionTestPath` (uncertainty/adaptive promotion’s broader `_test.*` classifier). `isDocsPath` moved beside them.
+- `tokenJaccard` / `normalizedTerms`: root-cause similarity moved to `src/util/text-similarity.ts`; human-attention keeps its extra `check`/`confirm`/`review`/`verify` stop words via the named `normalizedAttentionTerms` variant.
+- `followUpHintKey`: the dead `lens-runner` copy was deleted. The two live keys remain local because they are different contracts (human-attention exact/near grouping vs system-review scope grouping), but they now share `normalizeFollowUpQuestion`, `normalizeLooseFollowUpQuestion`, and `cleanStrings`.
+- Convention notes live at the top of `path-roles.ts` and `text-similarity.ts`: new shared helpers land there first; local stage copies are a review flag unless a plan records the dialect.
+- Pinning tests added in `tests/shared-utils.test.ts`.
 
 ## Problem
 

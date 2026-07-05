@@ -32,6 +32,7 @@ import type { InternalGitClient } from "../git/git-client.js";
 import { createGitClient } from "../git/git-client.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { CodegenieError } from "../util/errors.js";
+import { escapeRegExp } from "../util/regex.js";
 import { containGlob, containPath } from "./path-guard.js";
 import { DiffBlockRenderer } from "./diff-blocks.js";
 import { LanguageAdapterRegistry } from "./language-adapter.js";
@@ -1001,8 +1002,4 @@ function recoveryReadRange(path: string, lineRange: [number, number], source: So
     source: source.kind,
     reason
   };
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

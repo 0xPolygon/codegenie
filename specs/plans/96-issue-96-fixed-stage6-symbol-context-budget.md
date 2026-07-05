@@ -1,9 +1,46 @@
 # Issue 96: Fixed Stage-6 Symbol-Context Budget (Delete the Adaptive Tree)
 
-Status: PENDING (simplification backlog; last — a real behavior change to packet inputs, needs the strongest measurement)
+Status: CENSUS COMPLETE — code not started; behavior-changing deletion remains gated on budget sizing + A/B
 Planned from: fable review §2.2 + §6 item 6 (`specs/reviews/1-fable-review.md`); plan 42's finding that context volume was not the recall constraint; PLAN12/seed-context direction (memory: `context.ts` seed-context is the real token target), 2026-07-04
 Planned at: commit `762339d` (branch `next`)
 Recommended priority: last of the simplification series, and only in a quiet measurement window — this changes what Stage 7 reads.
+
+Step 0 census (2026-07-04, private eval artifacts `0c4d5213` runs 46-54):
+
+| Metric | Count |
+|---|---:|
+| Runs | 9 |
+| `packet_symbol_context_budget` events | 594 |
+| Adaptive eligible / selected | 237 / 211 |
+| Material omission events | 234 |
+| Provider-truncated budget events | 72 |
+| `packet_symbol_source_truncated` events | 234 |
+
+Mode distribution:
+
+| Mode | Events | Finding-path rate* | Finding count* | Provider truncated |
+|---|---:|---:|---:|---:|
+| `default_full` | 260 | 18.5% | 73 | 0 |
+| `default_sliced` | 123 | 36.6% | 82 | 34 |
+| `adaptive_sliced` | 111 | 64.9% | 156 | 38 |
+| `adaptive_full` | 100 | 15.0% | 18 | 0 |
+
+`*` Finding productivity is an approximate run+path join against `candidate-findings.json`, because the symbol-context budget events do not carry packet ids. It can over-count repeated same-path packet events, but it is good enough for the deletion gate: the productive high-context modes are not obviously dead.
+
+Top reasons:
+
+- `ordinary_packet_keep_compact`: 198
+- `single_high_risk_symbol_low_pressure`: 128
+- `multiple_symbols_keep_compact`: 81
+- `ordinary_material_omission_keep_compact`: 78
+- `single_risk_signal_material_omission_adaptive_slice`: 44
+- `single_important_symbol_high_pressure_adaptive_slice`: 36
+
+Census disposition:
+
+- Do **not** delete the adaptive tree blindly. The mode spread is real, sliced modes account for 234/594 events, and `adaptive_sliced` is the highest finding-rate bucket in the rough productivity join.
+- If this plan proceeds, the fixed budget must be sized from the productive sliced modes, not merely the current normal/default-full allotment. A plausible first target is at least the observed sliced P95 emitted range (~5k chars for adaptive sliced, ~3k chars for default sliced), but the plan still needs the required A/B before code lands.
+- The code remains untouched in this slice; this census is the stop/go input for the later behavior-changing patch.
 
 ## Problem
 

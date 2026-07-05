@@ -23,7 +23,6 @@
   "license": "MIT",
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.3",
-    "@vscode/ripgrep": "1.18.0",
     "commander": "15.0.0",
     "execa": "9.6.1",
     "p-limit": "7.3.0",

@@ -22,6 +22,8 @@ import type {
 } from "../types.js";
 import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { sha256Hex } from "../util/hashing.js";
+import { isCompositionTestPath, isDocsPath } from "../util/path-roles.js";
+import { normalizedTerms, tokenJaccard } from "../util/text-similarity.js";
 import { isBudgetExhaustedError, isRecoverableLlmError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
 import { summarizeIntentSignals } from "./intent-signals.js";
 import { hasCriticalOrHighGuarantee } from "./severity-policy.js";
@@ -887,19 +889,11 @@ function categoryPathRoleRank(category: CandidateFinding["category"], filePath: 
   if (isDocsPath(filePath)) {
     return 2;
   }
-  const testPath = isTestPath(filePath);
+  const testPath = isCompositionTestPath(filePath);
   if (category === "testing") {
     return testPath ? 0 : 1;
   }
   return testPath ? 1 : 0;
-}
-
-function isTestPath(filePath: string): boolean {
-  return /(?:^|\/)(?:__tests__|tests?|spec)(?:\/|$)|(?:\.test|\.spec)\.[^/]+$/iu.test(filePath);
-}
-
-function isDocsPath(filePath: string): boolean {
-  return /(?:^|\/)(?:docs?|documentation|postmortems?)(?:\/|$)|\.(?:md|mdx|rst|txt)$/iu.test(filePath);
 }
 
 function recordMergedAnchorRecoveries(
@@ -1274,19 +1268,6 @@ function rootCauseSimilarity(a: CandidateFinding[], b: CandidateFinding[]): numb
   return best;
 }
 
-function tokenJaccard(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 || b.size === 0) {
-    return 0;
-  }
-  let intersection = 0;
-  for (const term of a) {
-    if (b.has(term)) {
-      intersection += 1;
-    }
-  }
-  return intersection / (a.size + b.size - intersection);
-}
-
 function rootCauseTerms(finding: CandidateFinding): Set<string> {
   return normalizedTerms([
     finding.title,
@@ -1296,40 +1277,6 @@ function rootCauseTerms(finding: CandidateFinding): Set<string> {
     finding.evidence.changedCode,
     ...(finding.evidence.relatedCode ?? []).flatMap((related) => [related.whyRelevant, related.lines])
   ].join(" "));
-}
-
-function normalizedTerms(text: string): Set<string> {
-  const stopWords = new Set([
-    "about",
-    "after",
-    "also",
-    "before",
-    "because",
-    "being",
-    "cannot",
-    "code",
-    "could",
-    "from",
-    "have",
-    "into",
-    "line",
-    "more",
-    "should",
-    "that",
-    "this",
-    "when",
-    "where",
-    "will",
-    "with",
-    "without",
-    "would"
-  ]);
-  return new Set(text
-    .toLowerCase()
-    .replace(/[^a-z0-9_]+/gu, " ")
-    .split(/\s+/u)
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 4 && !stopWords.has(term)));
 }
 
 function groupHasAnchor(group: FindingGroup): boolean {

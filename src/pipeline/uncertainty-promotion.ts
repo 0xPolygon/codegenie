@@ -9,6 +9,8 @@ import type {
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../util/hashing.js";
 import { scaleBudgetValue } from "../util/budget.js";
+import { isPromotionTestPath } from "../util/path-roles.js";
+import { escapeRegExp } from "../util/regex.js";
 
 const MAX_PROMOTIONS = 4;
 const MIN_PROMOTIONS_WHEN_AVAILABLE = 2;
@@ -455,10 +457,6 @@ function normalizedTermIncludes(text: string, term: string): boolean {
   return new RegExp(`(^|[^a-z0-9_])${escaped}($|[^a-z0-9_])`, "u").test(text);
 }
 
-function escapeRegExp(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
 function relatedContextEvidenceLines(context: ReviewPacket["relatedChangedContext"][number]): string {
   const body = context.sourceSnippet ?? context.patchExcerpt ?? context.reason;
   return truncate(body ?? "", MAX_RELATED_CONTEXT_EVIDENCE_CHARS);
@@ -641,7 +639,7 @@ function isBroadFollowUpOnly(source: PromotionSource, category: FindingCategory)
   if (category === "testing") {
     return /\b(needs?\s+tests?|add\s+tests?|test\s+coverage)\b/u.test(text) &&
       source.symbols.length === 0 &&
-      !source.files.some((file) => !isTestPath(file));
+      !source.files.some((file) => !isPromotionTestPath(file));
   }
   const predicateText = text.replace(/\bwithout (?:a )?concrete failure mode\b/gu, "");
   const hasSpecificPredicate = /\b(if|whether|when|without|breaks?|regression|contract|auth|permission|zero|nil|null|panic|overflow|precision|fallback|default|timeout|leak|race|incorrect|wrong|lost|removed|missing|no longer)\b/u.test(predicateText);
@@ -782,21 +780,21 @@ function isLocalBehaviorDeltaSource(source: PromotionSource, localityScore: numb
 }
 
 function mentionsChangedTestOrDeletedCoverage(source: PromotionSource): boolean {
-  return isTestPath(source.packet.path) ||
+  return isPromotionTestPath(source.packet.path) ||
     source.packet.fileStatus === "deleted" ||
     source.packet.isDeletedContent ||
-    source.files.some(isTestPath) ||
+    source.files.some(isPromotionTestPath) ||
     /\b(deleted|removed|drop|missing|coverage)\b/u.test(normalizedSourceText(source));
 }
 
 function mentionsNamedProductionScope(source: PromotionSource): boolean {
   return source.symbols.length > 0 ||
-    source.files.some((file) => !isTestPath(file)) ||
+    source.files.some((file) => !isPromotionTestPath(file)) ||
     /\b(production|prod|handler|service|worker|client|api|caller|symbol|function|method|behavior)\b/u.test(normalizedSourceText(source));
 }
 
 function mentionsProductionImpact(source: PromotionSource): boolean {
-  return !isTestPath(source.packet.path) || source.files.some((file) => !isTestPath(file));
+  return !isPromotionTestPath(source.packet.path) || source.files.some((file) => !isPromotionTestPath(file));
 }
 
 function isConcreteBehaviorDeltaSource(source: PromotionSource): boolean {
@@ -821,8 +819,8 @@ function isConcreteBehaviorDeltaSource(source: PromotionSource): boolean {
 }
 
 function isTestScopedSource(source: PromotionSource): boolean {
-  return isTestPath(source.packet.path) ||
-    source.files.some(isTestPath) ||
+  return isPromotionTestPath(source.packet.path) ||
+    source.files.some(isPromotionTestPath) ||
     source.packet.lenses.some((lens) => /(^|[/_-])tests?($|[/_-])/iu.test(lens));
 }
 
@@ -877,10 +875,6 @@ function sameRoot(left: string, right: string): boolean {
     return false;
   }
   return leftParts[0] === rightParts[0] && (leftParts[1] === undefined || rightParts[1] === undefined || leftParts[1] === rightParts[1]);
-}
-
-function isTestPath(filePath: string): boolean {
-  return /(^|[/_.-])(test|tests|spec|specs)([/_.-]|$)|(_test|\.test|\.spec)\.[^.]+$/iu.test(filePath);
 }
 
 function normalizedSourceText(source: PromotionSource): string {

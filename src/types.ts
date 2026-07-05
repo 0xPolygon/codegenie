@@ -1589,7 +1589,7 @@ export type ToolCallRecord = {
   };
   backend: ToolBackend;
   precision: ToolPrecision;
-  engine?: "git-grep" | "ripgrep";
+  engine?: "git-grep";
   degraded: boolean;
   degradationReason?: string;
   truncated?: boolean;

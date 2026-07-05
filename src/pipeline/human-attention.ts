@@ -12,6 +12,13 @@ import type {
 } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../util/hashing.js";
+import {
+  cleanStrings,
+  normalizeFollowUpQuestion as normalizeQuestion,
+  normalizeLooseFollowUpQuestion as normalizeLooseQuestion,
+  normalizedAttentionTerms as normalizedTerms,
+  tokenJaccard
+} from "../util/text-similarity.js";
 
 const MAX_HUMAN_ATTENTION_NOTES = 5;
 const HUMAN_ATTENTION_LOCATION_CAP = 6;
@@ -1065,60 +1072,6 @@ function normalizeSnippet(input: string): string {
     .trim();
 }
 
-function normalizedTerms(text: string): Set<string> {
-  const stopWords = new Set([
-    "about",
-    "after",
-    "also",
-    "before",
-    "because",
-    "being",
-    "cannot",
-    "check",
-    "code",
-    "confirm",
-    "could",
-    "from",
-    "have",
-    "into",
-    "line",
-    "more",
-    "review",
-    "should",
-    "that",
-    "this",
-    "verify",
-    "when",
-    "where",
-    "will",
-    "with",
-    "without",
-    "would"
-  ]);
-  return new Set(text
-    .toLowerCase()
-    .replace(/[^a-z0-9_]+/gu, " ")
-    .split(/\s+/u)
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 4 && !stopWords.has(term)));
-}
-
-function normalizeQuestion(question: string): string {
-  return question.toLowerCase()
-    .replace(/[`"'’]/gu, "")
-    .replace(/[^a-z0-9_./:-]+/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
-function normalizeLooseQuestion(question: string): string {
-  return question
-    .replace(/^(please\s+)?(check|confirm|verify|investigate|review)\s+(whether|if|that)?\s*/u, "")
-    .replace(/^(whether|if)\s+/u, "")
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
 function normalizedSet(values: string[]): Set<string> {
   return new Set(values.map(normalize).filter(Boolean));
 }
@@ -1135,18 +1088,6 @@ function intersectionCount(a: Set<string>, b: Set<string>): number {
     }
   }
   return count;
-}
-
-function tokenJaccard(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 || b.size === 0) {
-    return 0;
-  }
-  const shared = intersectionCount(a, b);
-  return shared / (a.size + b.size - shared);
-}
-
-function cleanStrings(values: string[]): string[] {
-  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))].sort();
 }
 
 function capStrings(values: string[]): string[] {

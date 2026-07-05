@@ -2,6 +2,7 @@ import type { CodegenieConfig, ReviewPacket, ReviewPlan } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { toolBudget } from "./packet-builder.js";
 import { scaleToolBudget } from "../util/budget.js";
+import { isCoverageEscalationTestPath } from "../util/path-roles.js";
 
 // Plan 92 layer 2: deterministic structural coverage escalators. The planner's
 // deep/normal assignment is a one-draw LLM judgment with measured run-to-run
@@ -10,8 +11,6 @@ import { scaleToolBudget } from "../util/budget.js";
 // (budgets, ensemble passes) stops depending on the planner's mood. Rules are
 // codebase-agnostic by policy — structural signals only, never path/keyword
 // domain patterns.
-
-const TEST_PATH_PATTERN = /(?:^|\/)(?:__tests__|tests?|spec)(?:\/|$)|(?:\.test|\.spec|_test)\.[^/]+$/iu;
 
 export function applyCoverageEscalations(
   packets: ReviewPacket[],
@@ -52,7 +51,7 @@ export function applyCoverageEscalations(
   const intent = plan.intentSignals;
   if (intent !== undefined && (intent.refactorLike || intent.explicitlyBehaviorPreserving)) {
     for (const packet of escalated) {
-      if (packet.coverage === "deep" || TEST_PATH_PATTERN.test(packet.path)) {
+      if (packet.coverage === "deep" || isCoverageEscalationTestPath(packet.path)) {
         continue;
       }
       const deletesProductionLines = packet.hunks.some((hunk) => hunk.lines.some((line) => line.kind === "delete"));

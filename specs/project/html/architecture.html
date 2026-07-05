@@ -261,10 +261,6 @@ eval case files.</li>
 <li><code>picomatch</code> for path-rule and tool globs.</li>
 <li><code>execa</code> or Node subprocess APIs for <code>git</code> and
 <code>gh</code>.</li>
-<li><code>@vscode/ripgrep</code> for bundled text search, used as a fast
-path only when the checkout matches the reviewed head. Pinned to
-&gt;=1.18.0, which ships per-platform binaries in the tarball with no
-postinstall download.</li>
 <li><code>web-tree-sitter</code> plus Go and TypeScript/JavaScript
 grammars for v1 syntax parsing.
 <ul>
@@ -291,8 +287,8 @@ pinned together; ABI compatibility is enforced at
 </ul></li>
 </ul>
 <p>Exact dependency versions are pinned via the pnpm lockfile;
-<code>@vscode/ripgrep</code> and tree-sitter grammar wasm artifacts ship
-inside their npm tarballs (no postinstall downloads permitted).</p>
+tree-sitter grammar wasm artifacts ship inside their npm tarballs (no
+postinstall downloads permitted).</p>
 <p>External CLI dependencies:</p>
 <ul>
 <li><code>git</code> is required for all review modes.</li>
@@ -415,9 +411,9 @@ teams can version project review policy.</p>
   sessions/               # provider/session state when Pi needs it</code></pre>
 <p>This state is user-scoped, never repo-tracked, and is the only place
 codegenie itself stores provider credentials.</p>
-<p>codegenie is distributed as a normal npm package; wasm grammars and
-the ripgrep binary resolve from <code>node_modules</code> at runtime.
-Single-file bundling is out of scope for v1.</p>
+<p>codegenie is distributed as a normal npm package; wasm grammars
+resolve from <code>node_modules</code> at runtime. Single-file bundling
+is out of scope for v1.</p>
 <h2 id="core-data-model">Core Data Model</h2>
 <p>Naming convention: type-name prefixes mark the scope a record
 describes. <code>Diff*</code> is the parsed change as truth (files,
@@ -904,6 +900,10 @@ facts, <code>HunkSymbolFacts</code>, planner coverage, selected lenses,
 processing mode, labels, and estimated size.</li>
 <li>Validate planner output and apply deterministic fallbacks for
 missing coverage, invalid skip reasons, or empty lens sets.</li>
+<li>Build a lean deterministic relationship graph over changed
+hunks/symbols using only same-symbol, changed-symbol mention, and
+explicit planner symbol/file hints. Persist
+<code>hunk-relationships.json</code>.</li>
 <li>Apply file processing mode: the skip branch is defensive only —
 configured-skip files never reach Stage 6 under filter-first — and
 produces coverage records only; whole-file files produce one file packet
@@ -1133,10 +1133,10 @@ table):</p>
 <tbody>
 <tr>
 <td><code>review.depth</code>, <code>review.maxFindings</code>,
-<code>review.softCommentCap</code>,
-<code>review.budgetMultiplier</code>, <code>git.baseBranch</code>,
-<code>lenses.enabled</code> / <code>lenses.disabled</code>,
-<code>classification.pathRules</code> (incl. labels)</td>
+<code>review.softCommentCap</code>, <code>review.budgetBoost</code>,
+<code>git.baseBranch</code>, <code>lenses.enabled</code> /
+<code>lenses.disabled</code>, <code>classification.pathRules</code>
+(incl. labels)</td>
 <td>Repo <code>codegenie.toml</code>, user-scoped config, or CLI</td>
 </tr>
 <tr>
@@ -1148,7 +1148,7 @@ table):</p>
 <code>review.minConfidence</code>,
 <code>review.minInlineConfidence</code>, <code>review.timeoutMs</code>,
 <code>review.perPassTimeoutMs</code>,
-<code>review.maxTotalTokens</code>, <code>review.maxModelCalls</code>,
+<code>review.maxBudgetTokens</code>, <code>review.maxModelCalls</code>,
 <code>review.concurrency</code>, <code>llm.*</code>,
 <code>lenses.extraSkillPaths</code>, <code>cache.*</code>,
 <code>telemetry.logLevel</code>, <code>telemetry.debugTrace</code>,
@@ -1188,7 +1188,7 @@ directly.</p>
 <span id="cb17-20"><a href="#cb17-20" aria-hidden="true" tabindex="-1"></a>    concurrency<span class="op">:</span> <span class="dt">number</span></span>
 <span id="cb17-21"><a href="#cb17-21" aria-hidden="true" tabindex="-1"></a>    timeoutMs<span class="op">:</span> <span class="dt">number</span></span>
 <span id="cb17-22"><a href="#cb17-22" aria-hidden="true" tabindex="-1"></a>    perPassTimeoutMs<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb17-23"><a href="#cb17-23" aria-hidden="true" tabindex="-1"></a>    maxTotalTokens<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb17-23"><a href="#cb17-23" aria-hidden="true" tabindex="-1"></a>    maxBudgetTokens<span class="op">?:</span> <span class="dt">number</span></span>
 <span id="cb17-24"><a href="#cb17-24" aria-hidden="true" tabindex="-1"></a>    maxModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
 <span id="cb17-25"><a href="#cb17-25" aria-hidden="true" tabindex="-1"></a>  }</span>
 <span id="cb17-26"><a href="#cb17-26" aria-hidden="true" tabindex="-1"></a>  github<span class="op">:</span> {</span>
@@ -1246,13 +1246,26 @@ another user-scoped config source.</p>
 <li><code>review.softCommentCap = 7</code> (inline target)</li>
 <li><code>review.concurrency = 4</code></li>
 <li><code>llm.maxConcurrentCalls = 4</code></li>
+<li><code>llm.forceSubmitToolChoice = true</code> (plan 86 step 3:
+Anthropic finalize/repair/no-tool calls run with thinking disabled and
+genuinely forced submit tool choice; <code>false</code> restores the
+legacy silent downgrade to <code>auto</code>)</li>
 <li><code>review.timeoutMs = 30 * 60 * 1000</code></li>
-<li><code>review.perPassTimeoutMs = 5 * 60 * 1000</code> (per model
+<li><code>review.perPassTimeoutMs = 8 * 60 * 1000</code> (per model
 task/worker, not per stage)</li>
 <li><code>review.minConfidence = &quot;medium&quot;</code></li>
 <li><code>review.minInlineConfidence = &quot;medium&quot;</code></li>
-<li><code>review.maxTotalTokens</code> and
-<code>review.maxModelCalls</code> unset (no cap)</li>
+<li><code>review.deepEnsemblePasses = 1</code>, hard-capped at 3 (plan
+84: K independent Stage-7 passes for deep-coverage packets, union
+deduped by the verifier’s exact-duplicate identity and fed to the
+unchanged verification gate; 1 = off, ships dark; eval cases opt in with
+<code>review.deepEnsemblePasses</code> while the effect is
+measured)</li>
+<li><code>review.maxBudgetTokens = 8_000_000</code> (plan 90: the
+primary work-denominated coverage budget; re-derived after run
+0c4d5213/53’s 5.92M legitimate-work run grazed the 7M soft-stop —
+soft-stop now 6.8M; time budgets are hang-guards, tokens bound
+coverage); <code>review.maxModelCalls</code> unset (no cap)</li>
 <li><code>github.summaryWhenNoFindings = false</code></li>
 <li><code>git.baseBranch = undefined</code></li>
 <li><code>classification.pathRules = []</code></li>
@@ -1530,8 +1543,8 @@ implementations:</p>
 provides symbols, enclosing blocks, imports, syntax-aware snippets, and
 static signals.</li>
 <li>Text backend: required fallback for every repository. It uses git
-plumbing reads, bundled ripgrep when the checkout matches the reviewed
-head, line windows, and simple filename/test conventions.</li>
+plumbing reads, <code>git grep</code> at the reviewed revisions, line
+windows, and simple filename/test conventions.</li>
 <li>Language analyzer backend: optional later enrichment for languages
 where stronger semantic analysis is available.</li>
 </ul>
@@ -1573,19 +1586,12 @@ tree listings use <code>git ls-tree</code>, and whole-tree search uses
 <code>git grep &lt;ref&gt;</code>, so base and head trees are fully
 accessible regardless of what is checked out, without materializing
 temporary worktrees. Tree-sitter parses revision content in memory and
-never depends on worktree files. The bundled
-<code>@vscode/ripgrep</code> is a search fast path used only when the
-checked-out HEAD equals the reviewed head revision and the relevant
-files are unmodified; the engine that answered (ripgrep or git grep) is
-recorded in telemetry, not in tool results.</p>
+never depends on worktree files. Search engine provenance is recorded in
+telemetry as <code>engine: &quot;git-grep&quot;</code> for text-search-backed
+calls, not in tool results.</p>
 <p><code>searchFiles</code> query contract: the query language is POSIX
-ERE. The text backend invokes <code>git grep -E</code> (revision search)
-and ripgrep with flags aligned to ERE semantics (worktree fast path).
-Engine differences that actually affect results (ignore-file handling,
-binary detection) are recorded via
-<code>ToolResultMeta.degradationReason</code>; engine identity itself
-lives in telemetry. Queries are treated as patterns, never
-shell-interpolated.</p>
+ERE. The text backend invokes <code>git grep -E</code> at the resolved
+revision. Queries are treated as patterns, never shell-interpolated.</p>
 <p>Tool results must be capped by count and characters, include line
 numbers, prefer semantic blocks over whole files, and record truncation
 or omitted-result counts in telemetry. The model should see structured
@@ -1890,7 +1896,7 @@ was skipped.</li>
 <li>Authentication or provider-wide failures at any stage fail the
 run.</li>
 </ul></li>
-<li>Budgets (<code>timeoutMs</code>, <code>maxTotalTokens</code>,
+<li>Budgets (<code>timeoutMs</code>, <code>maxBudgetTokens</code>,
 <code>maxModelCalls</code>) are checked before each new model call or
 worker dispatch. On exhaustion: stop scheduling new packet reviews →
 verify already-produced candidates using a reserved budget slice →
@@ -1923,7 +1929,7 @@ not only <code>ReviewPlan.partialReview</code>):</li>
 <span id="cb28-14"><a href="#cb28-14" aria-hidden="true" tabindex="-1"></a>}</span>
 <span id="cb28-15"><a href="#cb28-15" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb28-16"><a href="#cb28-16" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> BudgetStop <span class="op">=</span> {</span>
-<span id="cb28-17"><a href="#cb28-17" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="st">&quot;runtime_reserved_tail&quot;</span> <span class="op">|</span> <span class="st">&quot;max_model_calls&quot;</span> <span class="op">|</span> <span class="st">&quot;max_total_tokens&quot;</span> <span class="op">|</span> <span class="st">&quot;hard_timeout&quot;</span></span>
+<span id="cb28-17"><a href="#cb28-17" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="st">&quot;runtime_reserved_tail&quot;</span> <span class="op">|</span> <span class="st">&quot;max_model_calls&quot;</span> <span class="op">|</span> <span class="st">&quot;max_budget_tokens&quot;</span> <span class="op">|</span> <span class="st">&quot;hard_timeout&quot;</span></span>
 <span id="cb28-18"><a href="#cb28-18" aria-hidden="true" tabindex="-1"></a>  stage<span class="op">:</span> ReviewStage <span class="op">|</span> <span class="dv">0</span></span>
 <span id="cb28-19"><a href="#cb28-19" aria-hidden="true" tabindex="-1"></a>  elapsedMs<span class="op">:</span> <span class="dt">number</span></span>
 <span id="cb28-20"><a href="#cb28-20" aria-hidden="true" tabindex="-1"></a>  timeoutMs<span class="op">:</span> <span class="dt">number</span></span>
@@ -1939,7 +1945,7 @@ not only <code>ReviewPlan.partialReview</code>):</li>
 <span id="cb28-30"><a href="#cb28-30" aria-hidden="true" tabindex="-1"></a>  totalTokens<span class="op">:</span> <span class="dt">number</span></span>
 <span id="cb28-31"><a href="#cb28-31" aria-hidden="true" tabindex="-1"></a>  inFlightTokens<span class="op">:</span> <span class="dt">number</span></span>
 <span id="cb28-32"><a href="#cb28-32" aria-hidden="true" tabindex="-1"></a>  projectedTokens<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb28-33"><a href="#cb28-33" aria-hidden="true" tabindex="-1"></a>  maxTotalTokens<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb28-33"><a href="#cb28-33" aria-hidden="true" tabindex="-1"></a>  maxBudgetTokens<span class="op">?:</span> <span class="dt">number</span></span>
 <span id="cb28-34"><a href="#cb28-34" aria-hidden="true" tabindex="-1"></a>  remainingTokens<span class="op">?:</span> <span class="dt">number</span></span>
 <span id="cb28-35"><a href="#cb28-35" aria-hidden="true" tabindex="-1"></a>  reservedTokens<span class="op">?:</span> <span class="dt">number</span></span>
 <span id="cb28-36"><a href="#cb28-36" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
@@ -2265,7 +2271,7 @@ regardless of debug settings:</p>
 <span id="cb34-23"><a href="#cb34-23" aria-hidden="true" tabindex="-1"></a>  }</span>
 <span id="cb34-24"><a href="#cb34-24" aria-hidden="true" tabindex="-1"></a>  backend<span class="op">:</span> ToolBackend</span>
 <span id="cb34-25"><a href="#cb34-25" aria-hidden="true" tabindex="-1"></a>  precision<span class="op">:</span> ToolPrecision</span>
-<span id="cb34-26"><a href="#cb34-26" aria-hidden="true" tabindex="-1"></a>  engine<span class="op">?:</span> <span class="st">&quot;git-grep&quot;</span> <span class="op">|</span> <span class="st">&quot;ripgrep&quot;</span> <span class="co">// search-engine provenance for text-search-backed calls</span></span>
+<span id="cb34-26"><a href="#cb34-26" aria-hidden="true" tabindex="-1"></a>  engine<span class="op">?:</span> <span class="st">&quot;git-grep&quot;</span> <span class="co">// search-engine provenance for text-search-backed calls</span></span>
 <span id="cb34-27"><a href="#cb34-27" aria-hidden="true" tabindex="-1"></a>  degraded<span class="op">:</span> <span class="dt">boolean</span></span>
 <span id="cb34-28"><a href="#cb34-28" aria-hidden="true" tabindex="-1"></a>  degradationReason<span class="op">?:</span> <span class="dt">string</span></span>
 <span id="cb34-29"><a href="#cb34-29" aria-hidden="true" tabindex="-1"></a>  truncated<span class="op">?:</span> <span class="dt">boolean</span></span>
@@ -2510,16 +2516,15 @@ deterministic sanitization (see Output And GitHub Publishing).
 Telemetry/debug artifacts contain untrusted content by design and are
 local-only.</p>
 <p>Repository tools path containment (single chokepoint in the
-RepositoryTools layer): all paths are canonicalized and required to
-resolve inside <code>repoRoot</code>; absolute paths and <code>..</code>
+RepositoryTools layer): all paths are canonicalized as
+repository-relative tree paths; absolute paths and <code>..</code>
 traversal are rejected with a typed error
-(<code>path_outside_repo</code>); the worktree fast path must not follow
-symlinks resolving outside the repo root (git-plumbing reads are
-inherently contained); refs are harness-resolved only (model-facing
-source selectors expose <code>head</code>/<code>base</code>), and
-harness-side ref values are validated against
-<code>git check-ref-format</code> rules and rejected if option-like
-(leading <code>-</code>).</p>
+(<code>path_outside_repo</code>); git-plumbing reads are inherently
+contained to repository object paths; refs are harness-resolved only
+(model-facing source selectors expose
+<code>head</code>/<code>base</code>), and harness-side ref values are
+validated against <code>git check-ref-format</code> rules and rejected
+if option-like (leading <code>-</code>).</p>
 <p>Config trust partitioning: the per-key config-source table in CLI And
 Config is normative. Repo <code>codegenie.toml</code> may set only the
 repo-settable safe keys listed there; every other key takes effect only
@@ -2681,7 +2686,7 @@ time:</p>
 <span id="cb42-3"><a href="#cb42-3" aria-hidden="true" tabindex="-1"></a>  to<span class="op">:</span> SymbolRef</span>
 <span id="cb42-4"><a href="#cb42-4" aria-hidden="true" tabindex="-1"></a>  kind<span class="op">:</span> <span class="st">&quot;calls&quot;</span> <span class="op">|</span> <span class="st">&quot;implements&quot;</span> <span class="op">|</span> <span class="st">&quot;extends&quot;</span> <span class="op">|</span> <span class="st">&quot;imports&quot;</span> <span class="op">|</span> <span class="st">&quot;tests&quot;</span> <span class="op">|</span> <span class="st">&quot;references&quot;</span></span>
 <span id="cb42-5"><a href="#cb42-5" aria-hidden="true" tabindex="-1"></a>  confidence<span class="op">:</span> <span class="st">&quot;syntactic&quot;</span> <span class="op">|</span> <span class="st">&quot;heuristic&quot;</span> <span class="op">|</span> <span class="st">&quot;semantic&quot;</span></span>
-<span id="cb42-6"><a href="#cb42-6" aria-hidden="true" tabindex="-1"></a>  source<span class="op">:</span> <span class="st">&quot;tree-sitter&quot;</span> <span class="op">|</span> <span class="st">&quot;ripgrep&quot;</span> <span class="op">|</span> <span class="st">&quot;lsp&quot;</span> <span class="op">|</span> <span class="st">&quot;compiler&quot;</span> <span class="op">|</span> <span class="st">&quot;custom&quot;</span></span>
+<span id="cb42-6"><a href="#cb42-6" aria-hidden="true" tabindex="-1"></a>  source<span class="op">:</span> <span class="st">&quot;tree-sitter&quot;</span> <span class="op">|</span> <span class="st">&quot;git-grep&quot;</span> <span class="op">|</span> <span class="st">&quot;lsp&quot;</span> <span class="op">|</span> <span class="st">&quot;compiler&quot;</span> <span class="op">|</span> <span class="st">&quot;custom&quot;</span></span>
 <span id="cb42-7"><a href="#cb42-7" aria-hidden="true" tabindex="-1"></a>}</span>
 <span id="cb42-8"><a href="#cb42-8" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb42-9"><a href="#cb42-9" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ChangedSymbolGraph <span class="op">=</span> {</span>
@@ -2796,7 +2801,7 @@ that a deterministic rule would catch.</p>
 <h3 id="cost-based-budgets">Cost-based budgets</h3>
 <p><code>review.maxCostUSD</code> as a run budget alongside tokens and
 model calls; in v1, unknown-cost calls counting zero made it a loophole,
-and <code>maxTotalTokens</code> covers the need. Trigger: Pi-reported
+and <code>maxBudgetTokens</code> covers the need. Trigger: Pi-reported
 pricing is reliable.</p>
 <h3 id="fine-grained-eval-attribution-and-replay">Fine-grained eval
 attribution and replay</h3>

@@ -25,6 +25,8 @@ import { isCodegenieError } from "../util/errors.js";
 import { applySeverityPolicy } from "./severity-policy.js";
 import { isAdaptiveNearMissSignal } from "./uncertainty-promotion.js";
 import { MAX_DEEP_ENSEMBLE_PASSES } from "../config/schema.js";
+import { isPacketReviewTestPath } from "../util/path-roles.js";
+import { cleanStrings } from "../util/text-similarity.js";
 
 type LensRunnerOptions = {
   runner: LlmRunner;
@@ -721,10 +723,6 @@ function followUpHintRank(hint: PacketReviewResult["followUpHints"][number], pac
     concretenessScore(hint.question, hint.reason);
 }
 
-function followUpHintKey(hint: PacketReviewResult["followUpHints"][number]): string {
-  return `${hint.question}\0${hint.files.join(",")}\0${hint.symbols.join(",")}\0${hint.reason}`;
-}
-
 function uncertaintyRank(uncertainty: PacketReviewResult["uncertainties"][number], packet: ReviewPacket): number {
   return pointerScore(uncertainty.files, uncertainty.symbols, packet) * 10 +
     concretenessScore(uncertainty.question, "");
@@ -753,8 +751,8 @@ function concretenessScore(question: string, reason: string): number {
 }
 
 function shouldExposeLikelyTestsForPacket(packet: ReviewPacket): boolean {
-  return isTestPath(packet.path) ||
-    (packet.oldPath !== undefined && isTestPath(packet.oldPath)) ||
+  return isPacketReviewTestPath(packet.path) ||
+    (packet.oldPath !== undefined && isPacketReviewTestPath(packet.oldPath)) ||
     packet.lenses.some(isTestingLens) ||
     packet.testCoverageDelta !== undefined ||
     packet.labels.some(isTestingSignal) ||
@@ -769,12 +767,6 @@ function isTestingSignal(value: string): boolean {
   return /\b(test|tests|testing|coverage)\b/iu.test(value);
 }
 
-function isTestPath(filePath: string): boolean {
-  const normalized = filePath.toLowerCase().replace(/\\/gu, "/");
-  return /(^|\/)(__tests__|tests?|specs?)(\/|$)/u.test(normalized) ||
-    /(^|[._-])(test|spec)(?=\.[^/]+$)/u.test(normalized);
-}
-
 function symbolMatches(symbol: string, factValue: string | undefined): boolean {
   if (!factValue) {
     return false;
@@ -782,10 +774,6 @@ function symbolMatches(symbol: string, factValue: string | undefined): boolean {
   const left = symbol.toLowerCase().trim();
   const right = factValue.toLowerCase();
   return left.length > 0 && (right === left || right.includes(left));
-}
-
-function cleanStrings(values: string[]): string[] {
-  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))].sort();
 }
 
 function stripLocationSuffix(value: string): string {

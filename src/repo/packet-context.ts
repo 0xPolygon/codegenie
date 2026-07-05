@@ -12,6 +12,7 @@ import type { SourceResolver } from "./source-resolver.js";
 import type { LanguageAdapterRegistry } from "./language-adapter.js";
 import { importLikeScan } from "./language-adapter.js";
 import { findLikelyTestsForInput } from "./likely-tests.js";
+import { isRepositoryTestPath } from "../util/path-roles.js";
 
 const MAX_TOP_LEVEL_SYMBOLS = 120;
 const MAX_TEST_SYMBOLS = 40;
@@ -159,7 +160,7 @@ function fallbackOutline(filePath: string, language: string, content: string, no
       language,
       imports: imports.slice(0, MAX_IMPORTS),
       topLevelSymbols: [],
-      testSymbols: isTestPath(filePath)
+      testSymbols: isRepositoryTestPath(filePath)
         ? [
             {
               path: filePath,
@@ -310,8 +311,4 @@ function isTestSymbol(filePath: string, symbol: SymbolInfo): boolean {
     return /^(?:Test|Benchmark|Fuzz|Example)/u.test(symbol.name);
   }
   return symbol.nativeKind === "test case";
-}
-
-function isTestPath(filePath: string): boolean {
-  return filePath.endsWith("_test.go") || /(?:^|\/)(?:__tests__|tests?|test)\//u.test(filePath) || /\.(?:test|spec)\.[cm]?[tj]sx?$/u.test(filePath);
 }

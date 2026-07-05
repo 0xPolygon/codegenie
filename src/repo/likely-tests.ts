@@ -4,6 +4,7 @@ import type { SourceResolver } from "./source-resolver.js";
 import type { LanguageAdapterRegistry } from "./language-adapter.js";
 import { fileStem } from "./language-adapter.js";
 import { containPath } from "./path-guard.js";
+import { escapeRegExp } from "../util/regex.js";
 
 const MAX_TESTS = 20;
 
@@ -136,8 +137,4 @@ function sourceText(content: string, range: [number, number]): string {
     .split(/\n/u)
     .slice(range[0] - 1, range[1])
     .join("\n");
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

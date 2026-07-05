@@ -740,7 +740,7 @@ func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64
     });
   });
 
-  it("falls back to git grep when ignored or untracked paths would make ripgrep walk extra tree content", async () => {
+  it("searches through git grep without traversing ignored untracked or linked content", async () => {
     const repo = initRepo();
     const outsideDir = mkdtempSync(path.join(tmpdir(), "codegenie-outside-"));
     writeFileSync(path.join(outsideDir, "secret.txt"), "OutsideSecretLeak\n");
@@ -776,7 +776,7 @@ func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64
     expect(telemetry.toolCalls.filter((call) => call.tool === "search_files").every((call) => call.degraded === false)).toBe(true);
   });
 
-  it("uses the ripgrep fast path for clean tracked worktrees", async () => {
+  it("uses git grep for clean tracked worktrees", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "src/app.ts", "export const visible = 'VisibleNeedle'\n");
     const head = commitAll(repo, "base");
@@ -785,12 +785,12 @@ func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64
     expect((await tools.searchFiles("VisibleNeedle")).results.map((result) => result.path)).toContain("src/app.ts");
     expect(telemetry.toolCalls).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ tool: "search_files", engine: "ripgrep", status: "ok", degraded: false })
+        expect.objectContaining({ tool: "search_files", engine: "git-grep", status: "ok", degraded: false })
       ])
     );
   });
 
-  it("does not search checked-out submodule contents through the ripgrep fast path", async () => {
+  it("does not search checked-out submodule contents", async () => {
     const submodule = initRepo();
     writeRepoFile(submodule, "secret.txt", "SubmoduleSecretNeedle\n");
     commitAll(submodule, "submodule content");

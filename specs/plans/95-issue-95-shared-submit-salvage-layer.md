@@ -1,9 +1,45 @@
 # Issue 95: One Shared Submit/Salvage Layer + the Prompt "Why" Ledger
 
-Status: PENDING (simplification backlog; third — behavior-adjacent, land in a quiet window, measured)
+Status: IN PROGRESS — Step 0 census complete and eval-invisible mechanical slices landed 2026-07-04; deeper seam consolidation remains behavior-adjacent and must A/B flat
 Planned from: fable review §2.3 + §4 ("recurring bug classes are structural") + §6 item 5 (`specs/reviews/1-fable-review.md`), 2026-07-04
 Planned at: commit `762339d` (branch `next`)
 Recommended priority: after plans 93/94. This is the highest-leverage simplification (the review's "output babysitting" class) and the one with the best measurement story: plan 86's schema-friction metrics exist specifically so this consolidation can be judged on numbers.
+
+Step 0 census (2026-07-04, private eval artifacts `0c4d5213` runs 46-54 + `49f4645b` runs 29-33):
+
+| Scope | Count |
+|---|---:|
+| Runs / model calls | 14 / 2,436 |
+| Schema-invalid calls | 10 |
+| Deterministic recoveries | 5 |
+| Model repair attempts / recovered / unrecovered | 5 / 4 / 1 |
+| Schema recovery failures | 0 |
+
+By stage:
+
+| Stage | Schema-invalid | Deterministic recovered | Repair attempts | Repair recovered | Unrecovered |
+|---|---:|---:|---:|---:|---:|
+| 5 planner | 1 | 0 | 1 | 1 | 0 |
+| 7 packet review | 5 | 4 | 1 | 0 | 1 |
+| 9 verifier | 3 | 0 | 3 | 3 | 0 |
+| 10 composer | 1 | 1 | 0 | 0 | 0 |
+
+Rung disposition from the census:
+
+- **Keep deterministic Stage-7 candidate cleanup**: 4/4 recoveries, all `extra_finding_properties` / `candidate_payload`; stripped extra fields included `behaviorChangeEvidence`, `behaviorChangeConfidenceNote`, `behaviorChangeConfirmationNote`, `category_note`, and `hunkAnchor`.
+- **Keep composer XML-parameter salvage**: 1/1 recovery (`xml_parameter_bleed`, run 31).
+- **Keep model repair**: planner 1/1 and verifier 3/3 recovered; Stage-7 compact repair had the only unrecovered case (`missing_required_finding_fields`, run 33), but its rung is live.
+- **Do not delete retry/finalize infrastructure from this census**: no retry attempts fired in this window, but the live repair rungs still depend on a single repair budget and failure path.
+
+Implemented slices (2026-07-04):
+
+- Added `PROMPT_TEMPLATE_WHY_LEDGER` beside `PROMPT_TEMPLATE_VERSIONS`, with stage-scoped reasons and motivating evidence for current schema/prompt surfaces. `tests/shared-utils.test.ts` now guards that every versioned prompt stage has non-empty ledger entries.
+- Collapsed Stage-7 schema-repair telemetry emission to one parameterized recorder while preserving existing event names, levels, and payload fields.
+
+Remaining implementation:
+
+- Move Stage-7 deterministic cleanup fully behind the same `recoverInvalidSubmit` seam without losing attempted/rejected cleanup telemetry or compact-repair classification.
+- Unify the repair retry path only after the seam change, then A/B schema-friction metrics against the census window.
 
 ## Problem
 

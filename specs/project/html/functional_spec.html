@@ -793,7 +793,7 @@ skipped.</li>
 run.</li>
 </ul>
 <p>Budget exhaustion ladder, applying to <code>timeoutMs</code>,
-<code>maxTotalTokens</code>, and <code>maxModelCalls</code>:</p>
+<code>maxBudgetTokens</code>, and <code>maxModelCalls</code>:</p>
 <ul>
 <li>Budgets are checked before each new model call or worker
 dispatch.</li>
@@ -881,7 +881,10 @@ skip.</p>
 <code>relatedFiles</code>, and <code>surroundingContextHints</code> on a
 coverage decision. Stage 6 carries those notes into the packet only as
 advisory <code>attentionNotes</code>; it must not turn broad planner
-prose into review obligations.</p>
+prose into review obligations. When deterministic related changed
+context is attached, the strongest relationship notes should be
+preserved ahead of planner notes under the attention-note cap so
+caller/callee/output topology remains visible to Stage 7.</p>
 <p>Packet grouping should stay conservative in v1:</p>
 <ul>
 <li>Default to one packet per hunk.</li>
@@ -992,16 +995,18 @@ text.</p>
 <p>Stage 6 should deterministically prune low-value lenses before Stage
 7. The language lens remains the broad default for supported languages.
 <code>core/tests</code> should be kept for test files, deleted tests,
-static test signals, planner test hints, hunk-scoped attention notes, or important untested behavior;
-it should not be attached to every routine source packet.
-<code>core/code-review</code> should be kept for real source
-behavior/design risk, but mechanical import-only packets should usually
-be language-only/simple unless a configured priority, deep coverage,
-planner hint, or hunk-scoped attention note promotes them.</p>
+static test signals, planner test hints, hunk-scoped attention notes, or
+important untested behavior; it should not be attached to every routine
+source packet. <code>core/code-review</code> should be kept for real
+source behavior/design risk, but mechanical import-only packets should
+usually be language-only/simple unless a configured priority, deep
+coverage, planner hint, or hunk-scoped attention note promotes them.</p>
 <p>Reviewer workers should submit an empty finding list when the packet
 evidence is insufficient. They should use tools only to support, narrow,
 or reject a concrete changed-code concern, not for broad repository
-exploration.</p>
+exploration. If Stage 6 attached related changed context, a no-findings
+result should account for why that related caller/callee/output context
+does not change the packet’s observable behavior.</p>
 <p>Packet reviewers should not review a hunk in isolation. They should
 use packet context first, then use read-only repository tools when
 needed to inspect the surrounding code that determines correctness:</p>
@@ -1174,9 +1179,8 @@ file language. It should provide symbols, enclosing blocks, imports,
 syntax-aware snippets, and structured source ranges.</li>
 <li>Text backend: required fallback for every repository. It should use
 git plumbing reads and <code>git grep</code> at the reviewed revisions,
-bundled ripgrep as a fast path when the checkout matches the reviewed
-head, file listing, line windows, and simple filename/test conventions
-when tree-sitter is unavailable or parsing fails.</li>
+file listing, line windows, and simple filename/test conventions when
+tree-sitter is unavailable or parsing fails.</li>
 <li>Language analyzer backend: optional future enrichment for languages
 where deeper semantic analysis is available.</li>
 </ul>
@@ -1220,14 +1224,14 @@ degraded when parsing is unavailable. Import questions are answered by
 <li><code>read_diff_blocks</code> uses parsed diff data and does not
 require tree-sitter.</li>
 <li><code>search_files</code> uses <code>git grep</code> at the reviewed
-revision (or bundled ripgrep when the checkout matches the reviewed
-head) for discovery, then may enrich matches with tree-sitter enclosing
-symbols when <code>contextMode</code> asks for semantic context.</li>
+revision for discovery, then may enrich matches with tree-sitter
+enclosing symbols when <code>contextMode</code> asks for semantic
+context.</li>
 <li><code>find_symbol_mentions</code> uses syntax-aware identifier
 matching when available and <code>git grep</code> at the reviewed
-revision otherwise (ripgrep only as the checkout-matching fast path). It
-does not claim compiler-grade reference resolution unless a language
-analyzer backend explicitly marks the result as semantic or exact.</li>
+revision otherwise. It does not claim compiler-grade reference
+resolution unless a language analyzer backend explicitly marks the
+result as semantic or exact.</li>
 <li><code>find_likely_tests</code> combines test filename conventions
 with symbol extraction when available and filename/path heuristics
 otherwise.</li>
@@ -1237,11 +1241,8 @@ require tree-sitter.</li>
 <p>Source-reading tools should read from the resolved head revision
 through git by default, and support base-revision reads when the review
 target has a base revision. The checked-out worktree must not be trusted
-as review content unless it matches the reviewed head revision; reading
-the worktree directly is an optional fast path only when HEAD equals the
-reviewed head and the relevant files are unmodified. Base reads are
-required for reviewing deleted files and removed-line context when local
-git can provide the content.</p>
+as review content. Base reads are required for reviewing deleted files
+and removed-line context when local git can provide the content.</p>
 <p>Tool outputs must be capped by count and characters. They should
 include file paths, line numbers, backend provenance, and degradation
 notes. They should prefer semantic source blocks over whole files, and
@@ -1697,8 +1698,8 @@ chokepoint in the repository tool layer:</p>
 repository root.</li>
 <li>Absolute paths and <code>..</code> traversal are rejected with a
 typed <code>path_outside_repo</code> error.</li>
-<li>The worktree fast path must not follow symlinks resolving outside
-the repo root; git-plumbing reads are inherently contained.</li>
+<li>Git-plumbing reads are inherently contained to repository object
+paths.</li>
 <li>Refs are harness-resolved only (model-facing source reads select
 <code>head</code> or <code>base</code>, never raw refs); harness-side
 ref values are validated against <code>git check-ref-format</code> rules
