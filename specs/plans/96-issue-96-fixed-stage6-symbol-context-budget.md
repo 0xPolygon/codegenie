@@ -1,6 +1,6 @@
 # Issue 96: Fixed Stage-6 Symbol-Context Budget (Delete the Adaptive Tree)
 
-Status: CENSUS COMPLETE — code not started; behavior-changing deletion remains gated on budget sizing + A/B
+Status: CLOSED 2026-07-06 (owner decision) — census falsified the premise: the mode spread is real and `adaptive_sliced` is the highest finding-rate bucket (64.9%), so deleting the adaptive tree buys complexity reduction at plausible recall cost with no measured deficit to fix. The census stands as the record; revisit only if PLAN12 seed-context work makes the tree's inputs obsolete anyway.
 Planned from: fable review §2.2 + §6 item 6 (`specs/reviews/1-fable-review.md`); plan 42's finding that context volume was not the recall constraint; PLAN12/seed-context direction (memory: `context.ts` seed-context is the real token target), 2026-07-04
 Planned at: commit `762339d` (branch `next`)
 Recommended priority: last of the simplification series, and only in a quiet measurement window — this changes what Stage 7 reads.
