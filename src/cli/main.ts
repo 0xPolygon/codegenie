@@ -58,6 +58,19 @@ async function main(): Promise<void> {
   }
 }
 
+// pi's codex client caches per-session WebSockets with a 5-minute idle TTL;
+// without an explicit close the timers and sockets keep the process alive
+// long after results print. Closing unconditionally is safe: on runs that
+// never touched the codex lane the session cache is simply empty.
+async function closeProviderTransports(): Promise<void> {
+  try {
+    const codex = await import("@earendil-works/pi-ai/api/openai-codex-responses");
+    codex.closeOpenAICodexWebSocketSessions();
+  } catch {
+    // Transport teardown must never mask the command's own outcome.
+  }
+}
+
 function renderCodegenieError(error: { code: string; message: string; context?: Record<string, unknown> }): string {
   const helpText = typeof error.context?.helpText === "string" ? error.context.helpText.trimEnd() : undefined;
   const hint = typeof error.context?.hint === "string" ? error.context.hint : undefined;
@@ -67,4 +80,4 @@ function renderCodegenieError(error: { code: string; message: string; context?: 
   return `${error.code}: ${error.message}\n`;
 }
 
-await main();
+await main().finally(closeProviderTransports);
