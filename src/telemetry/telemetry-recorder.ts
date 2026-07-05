@@ -41,6 +41,7 @@ export type LlmCallRecord = {
   cacheWriteTokens?: number;
   billableInputTokens?: number;
   outputTokens?: number;
+  reasoningTokens?: number;
   totalTokens?: number;
   costUSD?: number;
   inputCostUSD?: number;

@@ -1193,6 +1193,7 @@ export type EvalRunMetrics = {
   providerPromptCacheWriteTokens?: number;
   providerPromptCacheReadCostUSD?: number;
   providerPromptCacheWriteCostUSD?: number;
+  reasoningTokens?: number;
   schemaInvalidCalls?: number;
   schemaInvalidRecovered?: number;
   schemaInvalidUnrecovered?: number;

@@ -132,6 +132,7 @@ type ModelStageSummary = {
   cacheWriteTokens: number;
   billableInputTokens: number;
   outputTokens: number;
+  reasoningTokens: number;
   totalTokens: number;
   costUSD: number;
   inputCostUSD: number;
@@ -391,6 +392,7 @@ class RunTelemetryImpl {
     cacheWriteTokens: 0,
     billableInputTokens: 0,
     outputTokens: 0,
+    reasoningTokens: 0,
     totalTokens: 0,
     costUSD: 0,
     inputCostUSD: 0,
@@ -844,6 +846,7 @@ class RunTelemetryImpl {
       this.modelSummary.cacheWriteTokens += record.cacheWriteTokens ?? 0;
       this.modelSummary.billableInputTokens += record.billableInputTokens ?? 0;
       this.modelSummary.outputTokens += record.outputTokens ?? 0;
+      this.modelSummary.reasoningTokens += record.reasoningTokens ?? 0;
       this.modelSummary.totalTokens += record.totalTokens ?? 0;
     }
     updateModelCacheCounts(this.modelSummary.cache, record.cacheStatus);
@@ -880,6 +883,7 @@ class RunTelemetryImpl {
       bucket.cacheWriteTokens += record.cacheWriteTokens ?? 0;
       bucket.billableInputTokens += record.billableInputTokens ?? 0;
       bucket.outputTokens += record.outputTokens ?? 0;
+      bucket.reasoningTokens += record.reasoningTokens ?? 0;
       bucket.totalTokens += record.totalTokens ?? 0;
     }
     updateModelCacheCounts(bucket.cache, record.cacheStatus);
@@ -1034,6 +1038,7 @@ class RunTelemetryImpl {
         cacheWriteTokens: this.modelSummary.cacheWriteTokens,
         billableInputTokens: this.modelSummary.billableInputTokens,
         outputTokens: this.modelSummary.outputTokens,
+        reasoningTokens: this.modelSummary.reasoningTokens,
         totalTokens: this.modelSummary.totalTokens
       },
       cost: {
@@ -1088,6 +1093,7 @@ class RunTelemetryImpl {
       cacheWriteTokens: this.modelSummary.cacheWriteTokens,
       billableInputTokens: this.modelSummary.billableInputTokens,
       outputTokens: this.modelSummary.outputTokens,
+      reasoningTokens: this.modelSummary.reasoningTokens,
       totalTokens: this.modelSummary.totalTokens,
       totalCostUSD: this.modelSummary.costUSD,
       inputCostUSD: this.modelSummary.inputCostUSD,
@@ -1476,6 +1482,7 @@ function emptyModelStageSummary(): ModelStageSummary {
     cacheWriteTokens: 0,
     billableInputTokens: 0,
     outputTokens: 0,
+    reasoningTokens: 0,
     totalTokens: 0,
     costUSD: 0,
     inputCostUSD: 0,

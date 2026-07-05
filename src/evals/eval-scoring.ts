@@ -910,6 +910,15 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   if (providerPromptCacheWriteTokens !== undefined) {
     metrics.providerPromptCacheWriteTokens = providerPromptCacheWriteTokens;
   }
+  // Reported only by providers with a reasoning breakdown (OpenAI Responses
+  // lanes); absent on Anthropic runs rather than zero.
+  const reasoningTokens = firstNumberPath([
+    [artifacts.metricsSources.modelCallsSummary, ["reasoningTokens"]],
+    [artifacts.metricsSources.costProfile, ["tokens", "reasoningTokens"]]
+  ]);
+  if (reasoningTokens !== undefined && reasoningTokens > 0) {
+    metrics.reasoningTokens = reasoningTokens;
+  }
   const providerPromptCacheReadCostUSD = firstNumberPath([
     [artifacts.metricsSources.modelCallsSummary, ["providerPromptCache", "readCostUSD"]],
     [artifacts.metricsSources.costProfile, ["providerPromptCache", "readCostUSD"]],

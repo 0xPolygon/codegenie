@@ -148,6 +148,7 @@ type NormalizedUsage = {
   cacheWriteTokens?: number;
   billableInputTokens?: number;
   outputTokens?: number;
+  reasoningTokens?: number;
   totalTokens?: number;
   costUSD?: number;
   inputCostUSD?: number;
@@ -1144,7 +1145,7 @@ async function completeWithCache(input: {
                 const rateLimit: Record<string, string> = {};
                 for (const [key, value] of Object.entries(response.headers)) {
                   const name = key.toLowerCase();
-                  if (name.startsWith("anthropic-ratelimit-") || name === "retry-after") {
+                  if (name.includes("ratelimit") || name === "retry-after") {
                     rateLimit[name] = value;
                   }
                   if (name === "request-id" || name === "x-request-id") {
@@ -1542,8 +1543,9 @@ function mapProviderToolChoice(model: Model<Api>, choice: unknown, forceSubmit =
 
 // Per-call provider response diagnostics (slowness debugging): ttfbMs is
 // measured from dispatch to response headers (queue + prefill), so
-// durationMs - ttfbMs approximates the decode window. rateLimit carries the
-// provider's anthropic-ratelimit-*/retry-after headers verbatim.
+// durationMs - ttfbMs approximates the decode window. rateLimit carries any
+// header naming a rate limit (anthropic-ratelimit-*, x-ratelimit-*) plus
+// retry-after verbatim, provider-agnostic for the cross-provider studies.
 type ProviderResponseCapture = {
   ttfbMs?: number;
   providerHttpStatus?: number;
@@ -2805,6 +2807,7 @@ function recordModelCall(
     cacheWriteTokens: usage?.cacheWriteTokens,
     billableInputTokens: usage?.billableInputTokens,
     outputTokens: usage?.outputTokens,
+    reasoningTokens: usage?.reasoningTokens,
     totalTokens: usage?.totalTokens,
     costUSD: usage?.costUSD,
     inputCostUSD: usage?.inputCostUSD,
@@ -2999,6 +3002,10 @@ function normalizeUsage(input: unknown): NormalizedUsage | undefined {
   const computedInputTokens = sumDefined(uncachedInputTokens, cacheReadTokens, cacheWriteTokens);
   const inputTokens = computedInputTokens ?? storedInputTokens;
   const outputTokens = firstNumber(record.outputTokens, record.output);
+  // pi usage.reasoning is a subset of output, reported only by providers with a
+  // reasoning breakdown (OpenAI Responses lanes); undefined must stay undefined
+  // so "not reported" is distinguishable from "zero reasoning tokens".
+  const reasoningTokens = firstNumber(record.reasoningTokens, record.reasoning);
   const computedTotalTokens = sumDefined(inputTokens, outputTokens);
   const totalTokens = firstNumber(record.totalTokens) ?? computedTotalTokens;
   const billableInputTokens = firstNumber(record.billableInputTokens) ?? inputTokens;
@@ -3015,6 +3022,7 @@ function normalizeUsage(input: unknown): NormalizedUsage | undefined {
     cacheWriteTokens: cacheWriteTokens ?? (inputTokens !== undefined ? 0 : undefined),
     billableInputTokens,
     outputTokens,
+    reasoningTokens,
     totalTokens,
     costUSD,
     inputCostUSD,

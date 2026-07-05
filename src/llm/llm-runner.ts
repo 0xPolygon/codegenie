@@ -14,6 +14,7 @@ export type LlmCallUsage = {
   cacheWriteTokens?: number;
   billableInputTokens?: number;
   outputTokens?: number;
+  reasoningTokens?: number;
   totalTokens?: number;
   costUSD?: number;
   inputCostUSD?: number;
@@ -211,6 +212,7 @@ export type StoredProviderResponse = {
     cacheWriteTokens?: number;
     billableInputTokens?: number;
     outputTokens?: number;
+    reasoningTokens?: number;
     totalTokens?: number;
     costUSD?: number;
     inputCostUSD?: number;

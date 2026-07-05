@@ -214,7 +214,8 @@ const cacheMetricLabels: Record<string, string> = {
   providerPromptCacheReadTokens: "provider prompt cache read tokens",
   providerPromptCacheWriteTokens: "provider prompt cache write tokens",
   providerPromptCacheReadCostUSD: "provider prompt cache read cost USD",
-  providerPromptCacheWriteCostUSD: "provider prompt cache write cost USD"
+  providerPromptCacheWriteCostUSD: "provider prompt cache write cost USD",
+  reasoningTokens: "reasoning tokens"
 };
 
 function formatMetricDelta(delta: EvalCompareReport["metricDeltas"][string]): string {
