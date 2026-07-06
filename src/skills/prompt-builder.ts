@@ -128,6 +128,26 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
   ]
 };
 
+// Bundled-skill provenance (plan 95 standing rule extended to skills,
+// 2026-07-06): each non-obvious check carries its motivating case so future
+// trims are lookups, not archaeology. Guarded by tests/shared-utils.test.ts.
+export const BUNDLED_SKILL_WHY_LEDGER: Record<string, PromptLedgerEntry[]> = {
+  "core/code-review": [
+    { surface: "caller-visible guarantees after transformation", reason: "Rounding/narrowing that overstates a caller-visible promise is a repeatedly-proven miss class; one check + one example, deliberately compact.", evidence: "Wave-era exact-output rounding family; cross-model study finding 5" },
+    { surface: "precision-dust FP guard + severity calibration", reason: "The same class over-fires on dust-sized or same-value-derived outputs; the guard keeps precision.", evidence: "Run 52-55 severity calibration lineage" }
+  ],
+  "core/tests": [
+    { surface: "deleted vs replacement coverage", reason: "Test rewrites that swap boundary wiring for helper-level tests silently drop real coverage; merged from two overlapping checks 2026-07-06.", evidence: "erc20 boundary-coverage expectation, converted by both model arms" },
+    { surface: "cleaner-tests FP guard", reason: "Rewrites are usually legitimate; require concrete evidence a boundary is no longer exercised.", evidence: "Verifier keep/revise/reject splits on the same lineage (runs 46-49)" }
+  ],
+  "lang/go": [
+    { surface: "lossy conversion ordering", reason: "Deliberate triple delivery with the static signal and stage-7 prompt line — highest-proven Go miss class.", evidence: "Owner-confirmed decimals uint8-narrowing production bug (5/5 gpt-5.5, live on target master)" }
+  ],
+  "lang/typescript": [
+    { surface: "whole skill", reason: "Live but never eval-validated; treat checks as designed-general until a TS eval case exists.", evidence: "Eval-diversity punchlist item 2026-07-06" }
+  ]
+};
+
 const PER_SKILL_CAP = 4000;
 const TOTAL_SKILL_CAP = 12000;
 const MIN_FRAGMENT_CHARS = 600;

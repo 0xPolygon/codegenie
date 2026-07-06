@@ -55,7 +55,7 @@ describe("Phase 4 skills, lenses, and prompts", () => {
       expect(skill.sections.checks?.length).toBeGreaterThan(100);
       expect(skill.summaryLine.length).toBeGreaterThan(10);
     }
-    expect(result.skills.find((skill) => skill.id === "core/tests")?.sections.checks).toContain("helper-level tests");
+    expect(result.skills.find((skill) => skill.id === "core/tests")?.sections.checks).toContain("Helper-level tests");
   });
 
   it("reports malformed and duplicate skills without blocking valid siblings", async () => {
