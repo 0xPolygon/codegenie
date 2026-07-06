@@ -255,12 +255,19 @@ function effectiveConfiguredSkip(
   file: DiffFile,
   rules: ClassificationPathRule[]
 ): FactProvenance | undefined {
+  // Last matching rule with a processingMode wins, matching the
+  // classification layer's precedence (plan 89 A5): a broad early rule must
+  // not shadow a narrower later skip rule.
+  let last: MatchedRule | undefined;
   for (const match of matchPathRules(file, rules)) {
     if (match.rule.processingMode !== undefined) {
-      return match.rule.processingMode === "skip" ? { ...match.provenance, fact: "processingMode" } : undefined;
+      last = match;
     }
   }
-  return undefined;
+  if (last === undefined) {
+    return undefined;
+  }
+  return last.rule.processingMode === "skip" ? { ...last.provenance, fact: "processingMode" } : undefined;
 }
 
 function matchPathRules(file: DiffFile, rules: ClassificationPathRule[]): MatchedRule[] {

@@ -4,13 +4,10 @@ import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import path from "node:path";
 import {
-  getEnvApiKey,
-  getModels,
-  getProviders,
   getSupportedThinkingLevels,
   type Api,
-  type KnownProvider,
-  type Model
+  type Model,
+  type Models
 } from "@earendil-works/pi-ai";
 import { getOAuthProvider, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import { loadConfig, type LoadedConfig } from "../config/config-loader.js";
@@ -19,6 +16,7 @@ import { registerSecret } from "../telemetry/redaction.js";
 import type { CodegeniePaths, ProviderSettings, ReasoningLevel, ReviewDepth } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 import { filterDeprecatedProviderModels } from "./model-policy.js";
+import { getCodegeniePiModels, getPiEnvApiKey } from "./pi-ai-models.js";
 import { loadProviderSettings, saveProviderSettings } from "./provider-settings.js";
 
 export { ensureCodegenieHome, getCodegeniePaths, loadProviderSettings, saveProviderSettings };
@@ -140,21 +138,21 @@ export function createFileAuthStorage(paths: CodegeniePaths): PiAuthStorage {
   };
 }
 
-export function createPiModelRegistry(authStorage: PiAuthStorage): PiModelRegistry {
+export function createPiModelRegistry(authStorage: PiAuthStorage, models: Pick<Models, "getModels" | "getProviders" | "getProvider"> = getCodegeniePiModels()): PiModelRegistry {
   return {
-    listProviders: () => [...getProviders()].sort(),
-    providerExists: (provider) => providerKnown(provider),
+    listProviders: () => models.getProviders().map((provider) => provider.id).sort(),
+    providerExists: (provider) => providerKnown(provider, models),
     listModels: (provider) => {
-      const providers = provider ? [provider] : getProviders();
-      return providers.flatMap((id) => modelsForProvider(id)).sort((a, b) => `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`));
+      const providers = provider ? [provider] : models.getProviders().map((entry) => entry.id);
+      return providers.flatMap((id) => modelsForProvider(id, models)).sort((a, b) => `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`));
     },
-    modelExists: (provider, modelId) => modelsForProvider(provider).some((model) => model.id === modelId),
+    modelExists: (provider, modelId) => modelsForProvider(provider, models).some((model) => model.id === modelId),
     authStatus: (provider) => {
       const stored = authStorage.get(provider);
       if (stored) {
         return { provider, configured: true, source: "stored", kind: stored.type };
       }
-      const envKey = getEnvApiKey(provider);
+      const envKey = getPiEnvApiKey(provider);
       if (envKey) {
         registerSecret(envKey);
         return { provider, configured: true, source: "environment", kind: "api_key" };
@@ -818,11 +816,14 @@ function loadResolvedUserConfig(paths: CodegeniePaths, env?: NodeJS.ProcessEnv):
   };
 }
 
-function modelsForProvider(provider: string): ProviderModelInfo[] {
-  if (!providerKnown(provider)) {
+function modelsForProvider(
+  provider: string,
+  models: Pick<Models, "getModels" | "getProvider"> = getCodegeniePiModels()
+): ProviderModelInfo[] {
+  if (!providerKnown(provider, models)) {
     return [];
   }
-  return filterDeprecatedProviderModels(getModels(provider as KnownProvider)).map((model) => modelInfo(model as Model<Api>));
+  return filterDeprecatedProviderModels([...models.getModels(provider)]).map((model) => modelInfo(model as Model<Api>));
 }
 
 function modelInfo(model: Model<Api>): ProviderModelInfo {
@@ -850,8 +851,8 @@ function resolveProviderAlias(provider: string): string {
   return PROVIDER_ALIASES[provider] ?? provider;
 }
 
-function providerKnown(provider: string): boolean {
-  return getProviders().includes(provider as KnownProvider);
+function providerKnown(provider: string, models: Pick<Models, "getProvider"> = getCodegeniePiModels()): boolean {
+  return models.getProvider(provider) !== undefined;
 }
 
 function assertProviderExists(provider: string, services: ProviderServices): void {

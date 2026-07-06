@@ -10,6 +10,10 @@ export const logLevelSchema = z.enum(["debug", "info", "warn", "error"]);
 const positiveIntSchema = z.number().int().positive();
 const nonNegativeIntSchema = z.number().int().nonnegative();
 const positiveFiniteNumberSchema = z.number().positive().finite();
+// Plan 84 guardrail: ensemble cost scales linearly with passes × deep
+// packets; beyond 3 the marginal recall of another draw is negligible while
+// cost keeps climbing. Hard cap, not a default.
+export const MAX_DEEP_ENSEMBLE_PASSES = 3;
 
 export const pathRuleSchema = z
   .object({
@@ -44,8 +48,10 @@ export const rawConfigSchema = z
         timeoutMs: positiveIntSchema.optional(),
         perPassTimeoutMs: positiveIntSchema.optional(),
         budgetBoost: positiveFiniteNumberSchema.optional(),
-        maxTotalTokens: positiveIntSchema.optional(),
-        maxModelCalls: positiveIntSchema.optional()
+        maxBudgetTokens: positiveIntSchema.optional(),
+        maxModelCalls: positiveIntSchema.optional(),
+        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
+        adaptiveSecondPass: z.boolean().optional()
       })
       .strict()
       .optional(),
@@ -72,7 +78,8 @@ export const rawConfigSchema = z
         provider: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
         reasoning: reasoningLevelSchema.optional(),
-        maxConcurrentCalls: positiveIntSchema.optional()
+        maxConcurrentCalls: positiveIntSchema.optional(),
+        forceSubmitToolChoice: z.boolean().optional()
       })
       .strict()
       .optional(),
@@ -128,8 +135,10 @@ export const codegenieConfigSchema = z
         timeoutMs: positiveIntSchema,
         perPassTimeoutMs: positiveIntSchema,
         budgetBoost: positiveFiniteNumberSchema,
-        maxTotalTokens: positiveIntSchema.optional(),
-        maxModelCalls: positiveIntSchema.optional()
+        maxBudgetTokens: positiveIntSchema.optional(),
+        maxModelCalls: positiveIntSchema.optional(),
+        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
+        adaptiveSecondPass: z.boolean().optional()
       })
       .strict(),
     github: z
@@ -152,7 +161,8 @@ export const codegenieConfigSchema = z
         provider: z.string().min(1).optional(),
         model: z.string().min(1).optional(),
         reasoning: reasoningLevelSchema.optional(),
-        maxConcurrentCalls: positiveIntSchema
+        maxConcurrentCalls: positiveIntSchema,
+        forceSubmitToolChoice: z.boolean().optional()
       })
       .strict(),
     cache: z
@@ -194,8 +204,16 @@ export const defaultConfig: CodegenieConfig = {
     minInlineConfidence: "medium",
     concurrency: 4,
     timeoutMs: 30 * 60 * 1000,
-    perPassTimeoutMs: 5 * 60 * 1000,
-    budgetBoost: 1
+    perPassTimeoutMs: 8 * 60 * 1000,
+    budgetBoost: 1,
+    // Primary coverage budget (plan 90): work-denominated so provider latency
+    // can never shrink a review. Re-derived 2026-07-04 after run 0c4d5213/53
+    // (5,921,791 tokens of legitimate work — planner-deep + escalator
+    // ensembles + capped adaptive passes — grazed the 7M cap's 5.95M
+    // soft-stop and went partial); 8M puts the soft-stop at 6.8M, ~15% above
+    // the largest observed legitimate run. A protective ceiling, not a
+    // target.
+    maxBudgetTokens: 8_000_000
   },
   github: {
     summaryWhenNoFindings: false
@@ -205,7 +223,8 @@ export const defaultConfig: CodegenieConfig = {
     pathRules: []
   },
   llm: {
-    maxConcurrentCalls: 4
+    maxConcurrentCalls: 4,
+    forceSubmitToolChoice: true
   },
   cache: {
     enabled: false,

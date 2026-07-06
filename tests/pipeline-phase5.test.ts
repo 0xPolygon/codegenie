@@ -11,6 +11,7 @@ import { buildReviewPackets, packetReviewContextFromDossier } from "../src/pipel
 import { runLensPackets } from "../src/pipeline/lens-runner.js";
 import { buildPlannerDossier, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
 import { dedupeRankAndComposeReview } from "../src/pipeline/composer.js";
+import { applySeverityPolicy, capSeverityForBehaviorChange, guaranteeSeverity, hasCriticalOrHighGuarantee } from "../src/pipeline/severity-policy.js";
 import { aggregateRunCoverage, BudgetLedger, runReview } from "../src/pipeline/review-runner.js";
 import { verifyFindings } from "../src/pipeline/verifier.js";
 import { createWorkerRunner } from "../src/pipeline/worker-runner.js";
@@ -23,7 +24,7 @@ import {
   stableJson
 } from "../src/skills/prompt-builder.js";
 import type { Skill } from "../src/skills/skill-loader.js";
-import { createRunTelemetry } from "../src/telemetry/run-artifacts.js";
+import { canonicalArtifactPath, createRunTelemetry } from "../src/telemetry/run-artifacts.js";
 import { buildTestCoverageDelta, testCoverageRewriteSignals } from "../src/repo/test-coverage-delta.js";
 import type {
   CandidateFinding,
@@ -66,6 +67,75 @@ describe("phase 5 pipeline regressions", () => {
         diff: fakeDiff()
       })
     ).rejects.toMatchObject({ code: "llm_call_failed", recoverable: false });
+  });
+
+  it("marks Stage 7 recoverable provider failures as failed packets after one re-dispatch, without aborting the run", async () => {
+    let badPacketAttempts = 0;
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        if (request.telemetryContext?.packetId === "bad-packet") {
+          badPacketAttempts += 1;
+          throw new CodegenieError("llm_call_failed", "provider hiccup", {
+            recoverable: true,
+            context: { reason: "transient_error" }
+          });
+        }
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+
+    const results = await runLensPackets(
+      fakePlan(),
+      [fakePacket({ id: "bad-packet" }), fakePacket({ id: "good-packet" })],
+      fakeTools(),
+      { ...config(), review: { ...config().review, concurrency: 2 } },
+      nullTelemetry(),
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(new Map(results.map((result) => [result.packetId, result.status]))).toEqual(new Map([
+      ["bad-packet", "failed"],
+      ["good-packet", "completed"]
+    ]));
+    expect(badPacketAttempts).toBe(2);
+  });
+
+  it("does not re-dispatch a packet whose pass timed out", async () => {
+    let badPacketAttempts = 0;
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        if (request.telemetryContext?.packetId === "bad-packet") {
+          badPacketAttempts += 1;
+          throw new CodegenieError("llm_call_failed", "LLM provider call timed out", {
+            recoverable: true,
+            context: { reason: "timeout" }
+          });
+        }
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+
+    const results = await runLensPackets(
+      fakePlan(),
+      [fakePacket({ id: "bad-packet" }), fakePacket({ id: "good-packet" })],
+      fakeTools(),
+      { ...config(), review: { ...config().review, concurrency: 2 } },
+      nullTelemetry(),
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(results.find((result) => result.packetId === "bad-packet")?.status).toBe("failed");
+    expect(badPacketAttempts).toBe(1);
   });
 
   it("marks Stage 7 schema-invalid packet output as failed without aborting the run", async () => {
@@ -285,6 +355,496 @@ describe("phase 5 pipeline regressions", () => {
         })
       ])
     );
+  });
+
+  it("runs an adaptive second pass when the first pass emits a concrete near-miss hint (plan 92 T1)", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const callsByPacket = new Map<string, number>();
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: { telemetryContext?: { packetId?: string } }) => {
+        const packetId = request.telemetryContext?.packetId ?? "";
+        const call = (callsByPacket.get(packetId) ?? 0) + 1;
+        callsByPacket.set(packetId, call);
+        if (packetId === "packet-hint" && call === 1) {
+          return {
+            findings: [],
+            followUpHints: [{
+              question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
+              files: ["app.ts"],
+              symbols: [],
+              suggestedLenses: [],
+              reason: "The changed calculation divides by decimals without a zero guard.",
+              confidence: "medium"
+            }],
+            uncertainties: []
+          } as T;
+        }
+        if (packetId === "packet-hint" && call === 2) {
+          return {
+            findings: [{
+              title: "Zero-decimal origin token truncates the fee result",
+              severity: "medium",
+              confidence: "medium",
+              path: "app.ts",
+              anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+              category: "correctness",
+              evidence: { changedCode: "+bad" },
+              failureMode: "Zero-decimal origin tokens produce a truncated fee where the old path returned the exact amount.",
+              whyThisMatters: "matters",
+              verification: "test"
+            }],
+            followUpHints: [],
+            uncertainties: []
+          } as T;
+        }
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+
+    const results = await runLensPackets(
+      fakePlan(),
+      [fakePacket({ id: "packet-hint" }), fakePacket({ id: "packet-quiet" })],
+      fakeTools(),
+      { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(callsByPacket.get("packet-hint")).toBe(2);
+    expect(callsByPacket.get("packet-quiet")).toBe(1);
+    const rescued = results.find((result) => result.packetId === "packet-hint");
+    // Adaptive pass candidates carry the a-marker and the pooled result
+    // records both passes.
+    expect(rescued?.findings.map((finding) => finding.id)).toEqual(["packet-h-a2f1"]);
+    expect(rescued?.passesRun).toBe(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "stage7_adaptive_pass",
+      packetId: "packet-hint",
+      data: expect.objectContaining({ trigger: "concrete_hint", produced: 1 })
+    }));
+  });
+
+  it("does not run adaptive passes when the flag is off (plan 92 default)", async () => {
+    let calls = 0;
+    const runner: LlmRunner = {
+      runStructured: async <T>() => {
+        calls += 1;
+        return {
+          findings: [],
+          followUpHints: [{
+            question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
+            files: ["app.ts"],
+            symbols: [],
+            suggestedLenses: [],
+            reason: "The changed calculation divides by decimals without a zero guard.",
+            confidence: "medium"
+          }],
+          uncertainties: []
+        } as T;
+      }
+    };
+    await runLensPackets(
+      fakePlan(),
+      [fakePacket({ id: "packet-hint" })],
+      fakeTools(),
+      { ...config(), review: { ...config().review, concurrency: 1 } },
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+    expect(calls).toBe(1);
+  });
+
+  it("runs K ensemble passes for deep packets and pools the union under exact-duplicate identity (plan 84)", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const deepCalls: number[] = [];
+    let calls = 0;
+    const findingA = {
+      title: "Zero-count division regression",
+      severity: "medium",
+      confidence: "medium",
+      path: "app.ts",
+      anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+      category: "correctness",
+      evidence: { changedCode: "+bad" },
+      failureMode: "Calling divide with count zero now returns an invalid numeric result.",
+      whyThisMatters: "Callers can propagate invalid values.",
+      verification: "test"
+    };
+    const findingB = {
+      ...findingA,
+      title: "Rounding truncates sub-unit amounts",
+      failureMode: "Sub-unit amounts are truncated toward zero and under-reported."
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: { telemetryContext?: { packetId?: string } }) => {
+        calls += 1;
+        if (request.telemetryContext?.packetId === "packet-deep") {
+          deepCalls.push(calls);
+          const pass = deepCalls.length;
+          return {
+            findings: pass === 1 ? [findingA] : pass === 2 ? [findingA, findingB] : [],
+            followUpHints: [],
+            uncertainties: []
+          } as T;
+        }
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+
+    const results = await runLensPackets(
+      fakePlan(),
+      [{ ...fakePacket({ id: "packet-deep" }), coverage: "deep" }, fakePacket({ id: "packet-normal" })],
+      fakeTools(),
+      { ...config(), review: { ...config().review, deepEnsemblePasses: 3, concurrency: 1 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(calls).toBe(4);
+    expect(deepCalls).toHaveLength(3);
+    const deepResult = results.find((result) => result.packetId === "packet-deep");
+    expect(deepResult?.status).toBe("completed");
+    // Pass 2's copy of finding A deduped; its new finding B kept with a
+    // pass-marked id and ensemble provenance.
+    expect(deepResult?.findings.map((finding) => finding.id)).toEqual(["packet-d-f1", "packet-d-e2f2"]);
+    expect(deepResult?.findings[1]?.producedBy.ensemblePass).toBe(2);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 7,
+      message: "stage7_ensemble",
+      packetId: "packet-deep",
+      data: expect.objectContaining({
+        passes: 3,
+        candidatesPerPass: [1, 2, 0],
+        uniqueAfterDedupe: 2,
+        duplicatesPooled: 1
+      })
+    }));
+    const normalResult = results.find((result) => result.packetId === "packet-normal");
+    expect(normalResult?.status).toBe("completed");
+  });
+
+  it("pools ensemble passes by outcome identity even when dispatch reorders tasks (plan 84 regression)", async () => {
+    // Normal packet FIRST in input order; deep tasks dispatch first, so
+    // outcome order differs from input order. Positional grouping scrambled
+    // pools across packets (eval run 0c4d5213/49).
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    let deepPass = 0;
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: { telemetryContext?: { packetId?: string } }) => {
+        if (request.telemetryContext?.packetId === "packet-deep") {
+          deepPass += 1;
+          return {
+            findings: deepPass === 2 ? [{
+              title: "Second-pass rescue finding",
+              severity: "medium",
+              confidence: "medium",
+              path: "app.ts",
+              anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+              category: "correctness",
+              evidence: { changedCode: "+bad" },
+              failureMode: "A concrete failure mode found only by the second ensemble pass.",
+              whyThisMatters: "matters",
+              verification: "test"
+            }] : [],
+            followUpHints: [],
+            uncertainties: []
+          } as T;
+        }
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+
+    const results = await runLensPackets(
+      fakePlan(),
+      [fakePacket({ id: "packet-normal" }), { ...fakePacket({ id: "packet-deep" }), coverage: "deep" }],
+      fakeTools(),
+      { ...config(), review: { ...config().review, deepEnsemblePasses: 2, concurrency: 1 } },
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    const deepResult = results.find((result) => result.packetId === "packet-deep");
+    const normalResult = results.find((result) => result.packetId === "packet-normal");
+    // The rescue finding belongs to the deep packet's pool, not the normal
+    // packet's, regardless of dispatch order.
+    expect(deepResult?.findings.map((finding) => finding.id)).toEqual(["packet-d-e2f1"]);
+    expect(normalResult?.findings).toEqual([]);
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "stage7_ensemble",
+      packetId: "packet-deep",
+      data: expect.objectContaining({ candidatesPerPass: [0, 1], uniqueAfterDedupe: 1 })
+    }));
+  });
+
+  it("pools remaining ensemble passes when one pass fails (plan 84)", async () => {
+    let deepCallIndex = 0;
+    const runner: LlmRunner = {
+      runStructured: async <T>() => {
+        deepCallIndex += 1;
+        if (deepCallIndex === 2) {
+          throw new CodegenieError("llm_schema_invalid", "pass 2 schema failure");
+        }
+        return {
+          findings: [{
+            title: deepCallIndex === 1 ? "First-pass finding" : "Third-pass finding",
+            severity: "medium",
+            confidence: "medium",
+            path: "app.ts",
+            anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+            category: "correctness",
+            evidence: { changedCode: "+bad" },
+            failureMode: `Distinct concrete failure mode for pass ${deepCallIndex} of this packet.`,
+            whyThisMatters: "matters",
+            verification: "test"
+          }],
+          followUpHints: [],
+          uncertainties: []
+        } as T;
+      }
+    };
+
+    const [result] = await runLensPackets(
+      fakePlan(),
+      [{ ...fakePacket({ id: "packet-deep" }), coverage: "deep" }],
+      fakeTools(),
+      { ...config(), review: { ...config().review, deepEnsemblePasses: 3, concurrency: 1 } },
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(result?.status).toBe("completed");
+    expect(result?.findings.map((finding) => finding.title)).toEqual(["First-pass finding", "Third-pass finding"]);
+  });
+
+  it("backfills a precise anchor from quoted changed code when Stage 7 omits the anchor", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>() =>
+        ({
+          findings: [
+            {
+              title: "anchorless with quotable evidence",
+              severity: "medium",
+              confidence: "medium",
+              path: "app.ts",
+              category: "correctness",
+              evidence: { changedCode: "+ return computeRoute(provider)" },
+              failureMode: "The changed routing call can drop the provider preference.",
+              whyThisMatters: "Callers relying on the preference get the wrong route.",
+              verification: "test"
+            }
+          ],
+          followUpHints: [],
+          uncertainties: []
+        }) as T
+    };
+
+    const [result] = await runLensPackets(
+      fakePlan(),
+      [fakePacket({ hunkLines: [{ kind: "add", content: "return computeRoute(provider);", newLine: 1 }] })],
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(result?.findings[0]).toMatchObject({
+      changedLine: true,
+      anchorSource: "backfill_changed_code",
+      modelAnchorSubmitted: false,
+      anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" }
+    });
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 7, message: "anchor_inferred" })
+    ]));
+    expect(events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "candidate_anchor_summary_only" })
+    ]));
+  });
+
+  it("lifts merged confidence from a compatible same-group candidate without inflation (plan 74)", async () => {
+    const representative: CandidateFinding = {
+      ...fakeFinding(),
+      id: "rep-promoted",
+      severity: "medium",
+      confidence: "low",
+      category: "correctness",
+      behaviorChange: "intentional_needs_confirmation"
+    };
+    const strongerLowerSeverity: CandidateFinding = {
+      ...fakeFinding(),
+      id: "direct-medium",
+      severity: "low",
+      confidence: "medium",
+      category: "correctness",
+      behaviorChange: "intentional_needs_confirmation"
+    };
+    const twoStepGap: CandidateFinding = {
+      ...fakeFinding(),
+      id: "too-far",
+      severity: "low",
+      confidence: "high",
+      category: "correctness"
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        summary: "One verified issue.",
+        composedFindings: [{
+          findingIds: ["rep-promoted"],
+          finalBody: "The changed contract regresses caller-visible guarantees.",
+          publication: "inline"
+        }]
+      }) as T
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [representative, strongerLowerSeverity], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), packets: [fakePacket()], diff: fakeDiff() }
+    );
+
+    const published = [...result.findings, ...result.summaryOnlyFindings];
+    // Same-group medium-confidence direct candidate lifts the representative
+    // low -> medium (one-step lower severity, capped at medium); the
+    // category-mismatched high-confidence candidate lends nothing.
+    expect(published.some((finding) => finding.confidence === "medium")).toBe(true);
+    expect(published.every((finding) => finding.confidence !== "high")).toBe(true);
+
+    const highGapRep: CandidateFinding = { ...representative, id: "rep-high", severity: "high" };
+    const result2 = await dedupeRankAndComposeReview(
+      { verified: [highGapRep, twoStepGap], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            summary: "One verified issue.",
+            composedFindings: [{ findingIds: ["rep-high"], finalBody: "Two-step gap body.", publication: "inline" }]
+          }) as T
+        },
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        packets: [fakePacket()],
+        diff: fakeDiff()
+      }
+    );
+    const published2 = [...result2.findings, ...result2.summaryOnlyFindings];
+    // Two-step severity gap: no lift — the representative stays low
+    // confidence, which keeps it below the publication bar entirely (the
+    // strongest possible proof that adjacency did not inflate certainty).
+    expect(published2.find((finding) => finding.id === "rep-high")).toBeUndefined();
+  });
+
+  it("never publishes verification boilerplate as a title for question-shaped promoted findings", async () => {
+    const { anchor: _anchor, ...anchorless } = fakeFinding();
+    const finding: CandidateFinding = {
+      ...anchorless,
+      id: "finding-promoted-question",
+      changedLine: false,
+      title: "Does the changed transfer path still scale amounts by destination decimals?",
+      failureMode: "Does the changed transfer path still scale amounts by destination decimals? — if this predicate holds, callers receive under-delivered amounts.",
+      verification: "Promoted from follow_up_hint; normal verifier must confirm the concrete failure mode before publication.",
+      provenance: {
+        source: "uncertainty_promotion",
+        sourceKind: "follow_up_hint",
+        sourcePacketId: "packet-1",
+        question: "Does the changed transfer path still scale amounts by destination decimals?",
+        files: ["app.ts"],
+        symbols: [],
+        reason: "unresolved predicate"
+      }
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        summary: "Found 1 verified issue.",
+        composedFindings: [{
+          findingIds: [finding.id],
+          finalBody: "The transfer amount is truncated before scaling, so callers receive less than the quoted amount.",
+          publication: "inline"
+        }]
+      }) as T
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), packets: [fakePacket()], diff: fakeDiff() }
+    );
+
+    const published = [...result.findings, ...result.summaryOnlyFindings].find((item) => item.id === finding.id);
+    expect(published?.title).not.toContain("Promoted from");
+    expect(published?.title).toContain("truncated before scaling");
+  });
+
+  it("withholds representative gate anchors from published findings", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const finding: CandidateFinding = {
+      ...fakeFinding(),
+      id: "finding-representative",
+      anchorSource: "backfill_packet_representative"
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        summary: "Found 1 verified issue.",
+        composedFindings: [{
+          findingIds: [finding.id],
+          finalBody: "The changed path can regress zero-decimal handling.",
+          publication: "inline"
+        }]
+      }) as T
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      { runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), packets: [fakePacket()], diff: fakeDiff() }
+    );
+
+    const published = [...result.findings, ...result.summaryOnlyFindings].find((item) => item.id === finding.id);
+    expect(published).toBeDefined();
+    expect(published?.anchor).toBeUndefined();
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 10, message: "representative_anchor_withheld" })
+    ]));
   });
 
   it("normalizes finding path from a valid Stage 7 anchor", async () => {
@@ -1736,6 +2296,94 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("records related context omissions with hunk id arrays instead of CSV strings", async () => {
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const symbols = ["source", "targetA", "targetB", "targetC", "targetD"];
+    const files: DiffFile[] = symbols.map((symbol) => ({
+      path: `${symbol}.ts`,
+      status: "modified" as const,
+      language: "typescript",
+      hunks: [{
+        id: `h-${symbol}`,
+        path: `${symbol}.ts`,
+        oldStart: 1,
+        oldLines: 3,
+        newStart: 1,
+        newLines: 3,
+        header: "@@ -1,3 +1,3 @@",
+        lines: [
+          { kind: "context" as const, content: `export function ${symbol}() {`, oldLineNumber: 1, newLineNumber: 1 },
+          { kind: "add" as const, content: "  return 1;", newLineNumber: 2 },
+          { kind: "context" as const, content: "}", oldLineNumber: 3, newLineNumber: 3 }
+        ]
+      }]
+    }));
+    const symbolFacts: HunkSymbolFacts[] = symbols.map((symbol) => ({
+      path: `${symbol}.ts`,
+      hunkId: `h-${symbol}`,
+      enclosingSymbol: symbol,
+      symbolKind: "function" as const,
+      symbolRange: [1, 3] as [number, number],
+      changedLines: [2],
+      changedLinesSide: "new" as const,
+      source: "tree-sitter" as const,
+      confidence: "syntactic" as const
+    }));
+    const tools = {
+      ...fakeTools(),
+      readSymbol: async (pathName: string, selector: { symbolName?: string }) => ({
+        text: `export function ${selector.symbolName ?? "unknown"}() {\n  return 1;\n}`,
+        symbol: {
+          path: pathName,
+          name: selector.symbolName ?? "unknown",
+          kind: "function" as const,
+          lineRange: [1, 3] as [number, number]
+        },
+        meta
+      })
+    };
+    const plan: ReviewPlan = {
+      diffUnderstanding: { declaredIntent: "test", inferredBehavior: "test" },
+      coverage: symbols.map((symbol) => ({
+        hunkId: `h-${symbol}`,
+        path: `${symbol}.ts`,
+        coverage: "normal" as const,
+        lenses: ["core/code-review"],
+        surroundingContextHints: [],
+        reason: `review ${symbol}`,
+        ...(symbol === "source" ? { relatedSymbols: ["targetA", "targetB", "targetC", "targetD"] } : {})
+      }))
+    };
+    const artifacts = new Map<string, unknown>();
+
+    await buildReviewPackets(
+      plan,
+      files,
+      files.map((file) => fakeFacts(file.path, "per-hunk")),
+      {
+        ...fakeRepositoryIndex(tools),
+        symbolFacts
+      },
+      {
+        ...nullTelemetry(),
+        writeArtifact: async (name, data) => {
+          artifacts.set(name, data);
+        }
+      },
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const graph = artifacts.get("hunk-relationships.json") as { relatedContextOmitted?: Array<{ hunkIds?: string[]; hunkId?: string; reason: string }> };
+    expect(graph.relatedContextOmitted).toEqual([
+      expect.objectContaining({
+        hunkIds: ["h-source"],
+        targetHunkId: "h-targetD",
+        reason: "related context cap exceeded"
+      })
+    ]);
+    expect(graph.relatedContextOmitted?.[0]).not.toHaveProperty("hunkId");
+  });
+
   it("does not relate unrelated changed symbols that only share a bare name", async () => {
     const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
     const fileA: DiffFile = {
@@ -3097,6 +3745,47 @@ describe("phase 5 pipeline regressions", () => {
     )).toBe(false);
   });
 
+  it("counts packet-less planned hunks toward their planned coverage level", async () => {
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 1, content: "one" },
+      { id: "h2", newStart: 100, content: "two" }
+    ]);
+    const plan = fakePlanForHunks(["h1", "h2"]);
+    plan.coverage[1] = { ...plan.coverage[1]!, coverage: "deep" };
+    const packets = await buildReviewPackets(
+      fakePlanForHunks(["h1"]),
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      fakeRepositoryIndex(),
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+    const packetsForH1 = packets.filter((packet) => packet.hunks.some((hunk) => hunk.hunkId === "h1"));
+
+    const coverage = aggregateRunCoverage(
+      plan,
+      [],
+      packetsForH1.map((packet) => ({
+        packetId: packet.id,
+        lenses: packet.lenses,
+        findings: [],
+        followUpHints: [],
+        uncertainties: [],
+        status: "completed" as const
+      })),
+      { incompleteCount: 0 },
+      nullTelemetry(),
+      { allFiles: [file], packets: packetsForH1 }
+    );
+
+    expect(coverage.totalHunks).toBe(2);
+    // h1 reviewed at its packet's level; packet-less h2 counted at its planned deep level.
+    expect(coverage.coverageByLevel.deep).toBe(1);
+    const counted = coverage.coverageByLevel.deep + coverage.coverageByLevel.normal +
+      coverage.coverageByLevel.light + coverage.coverageByLevel.skip;
+    expect(counted).toBe(coverage.totalHunks);
+  });
+
   it("coalesces nearby hunk-first packets and leaves distant hunks separate", async () => {
     const file = fakeMultiHunkFile([
       { id: "h1", newStart: 1, content: "one" },
@@ -3651,12 +4340,16 @@ describe("phase 5 pipeline regressions", () => {
       { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
     );
 
+    // Plan 76: the unanchored candidate received a gate-only representative
+    // anchor before verification; the revision keeps the original path and
+    // the representative anchor stays gate-scoped (withheld at composition).
     expect(verified.verified[0]).toMatchObject({
       id: "finding-1",
       path: "app.ts",
-      changedLine: false
+      changedLine: true,
+      anchorSource: "backfill_packet_representative"
     });
-    expect(verified.verified[0]?.anchor).toBeUndefined();
+    expect(verified.verified[0]?.anchor).toEqual({ path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" });
   });
 
   it("lets Stage 9 use reserved model-call budget after Stage 7 exhausts unreserved calls", () => {
@@ -3674,7 +4367,7 @@ describe("phase 5 pipeline regressions", () => {
     callBudget.releaseReservation(7, 1);
     expect(callBudget.checkpoint(7)).toBe("ok");
 
-    const tokenBudget = new BudgetLedger({ ...config(), review: { ...config().review, maxTotalTokens: 100 } });
+    const tokenBudget = new BudgetLedger({ ...config(), review: { ...config().review, maxBudgetTokens: 100 } });
     expect(tokenBudget.reserve(7, 85)).toBe("ok");
     expect(tokenBudget.checkpoint(7)).toBe("exhausted");
     tokenBudget.releaseReservation(7, 85);
@@ -3741,7 +4434,7 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it("tracks post-call overruns separately from pre-dispatch budget blocks", () => {
-    const budget = new BudgetLedger({ ...config(), review: { ...config().review, maxModelCalls: 2, maxTotalTokens: 100 } });
+    const budget = new BudgetLedger({ ...config(), review: { ...config().review, maxModelCalls: 2, maxBudgetTokens: 100 } });
 
     budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 60 });
     budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 50 });
@@ -3749,7 +4442,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(budget.hasDispatchBlocks()).toBe(false);
     expect(budget.summary().overruns).toEqual([
       expect.objectContaining({
-        reason: "max_total_tokens",
+        reason: "max_budget_tokens",
         stage: 7,
         kind: "tokens",
         actual: 110,
@@ -3763,7 +4456,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(budget.hasDispatchBlocks()).toBe(true);
     expect(summary.dispatchBlocks).toEqual([
       expect.objectContaining({
-        reason: "max_total_tokens",
+        reason: "max_budget_tokens",
         stage: 7,
         afterDispatchedCall: false
       })
@@ -3772,7 +4465,7 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it("does not include active reservations in post-call overrun actuals", () => {
-    const budget = new BudgetLedger({ ...config(), review: { ...config().review, maxTotalTokens: 100 } });
+    const budget = new BudgetLedger({ ...config(), review: { ...config().review, maxBudgetTokens: 100 } });
 
     expect(budget.reserve(7, 80)).toBe("ok");
     budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 110 });
@@ -3780,7 +4473,7 @@ describe("phase 5 pipeline regressions", () => {
     const summary = budget.summary();
     expect(summary.overruns).toEqual([
       expect.objectContaining({
-        reason: "max_total_tokens",
+        reason: "max_budget_tokens",
         actual: 110,
         totalTokens: 110,
         afterDispatchedCall: true
@@ -3796,7 +4489,7 @@ describe("phase 5 pipeline regressions", () => {
   it("scales effective model-call and token caps with budgetBoost", () => {
     const budget = new BudgetLedger({
       ...config(),
-      review: { ...config().review, maxModelCalls: 4, maxTotalTokens: 100, budgetBoost: 1.5 }
+      review: { ...config().review, maxModelCalls: 4, maxBudgetTokens: 100, budgetBoost: 1.5 }
     });
 
     budget.recordUsage({ stage: 7, providerCalls: 1, totalTokens: 50 });
@@ -3805,8 +4498,8 @@ describe("phase 5 pipeline regressions", () => {
     expect(budget.checkpoint(7)).toBe("ok");
     const summary = budget.summary();
     expect(summary.multiplier).toBe(1.5);
-    expect(summary.configured).toMatchObject({ maxModelCalls: 4, maxTotalTokens: 100 });
-    expect(summary.effective).toMatchObject({ maxModelCalls: 6, maxTotalTokens: 150 });
+    expect(summary.configured).toMatchObject({ maxModelCalls: 4, maxBudgetTokens: 100 });
+    expect(summary.effective).toMatchObject({ maxModelCalls: 6, maxBudgetTokens: 150 });
     expect(summary.overruns).toHaveLength(0);
   });
 
@@ -3856,7 +4549,7 @@ describe("phase 5 pipeline regressions", () => {
         expect(request.stage).toBe(5);
         expect(request.schemaRepair?.replaceConversation).toBe(true);
         expect(request.schemaRepair?.failAfterRepair).toBe(true);
-        repairPrompt = request.schemaRepair?.buildPrompt({
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
           stage: 5,
           submitTool: "submit_plan",
           error: "Stage 5 planner responses must call submit_plan exactly once; received 2 submit_plan calls.",
@@ -3896,6 +4589,57 @@ describe("phase 5 pipeline regressions", () => {
     expect(repairPrompt).toContain("planner-repair-dossier");
     expect(repairPrompt).toContain("\"hunkId\": \"h1\"");
     expect(repairPrompt).not.toContain("+changed");
+  });
+
+  it("builds the deterministic default plan when the planner call fails recoverably", async () => {
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_schema_invalid", "model did not call submit_plan", { recoverable: true });
+      }
+    };
+
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [],
+      skills: []
+    });
+
+    expect(result.degradedPlanning).toBe(true);
+    expect(result.plan.coverage.length).toBeGreaterThan(0);
+  });
+
+  it("fails the run when the planner hits a provider-wide outage or an unrecoverable failure", async () => {
+    const outageRunner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_call_failed", "LLM provider call failed", {
+          recoverable: true,
+          context: { reason: "transient_error" }
+        });
+      }
+    };
+    await expect(
+      runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
+        runner: outageRunner,
+        promptBuilder: fakePromptBuilder(),
+        lenses: [],
+        skills: []
+      })
+    ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "transient_error" } });
+
+    const authRunner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_call_failed", "LLM provider authentication failed", { recoverable: false });
+      }
+    };
+    await expect(
+      runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
+        runner: authRunner,
+        promptBuilder: fakePromptBuilder(),
+        lenses: [],
+        skills: []
+      })
+    ).rejects.toMatchObject({ code: "llm_call_failed", recoverable: false });
   });
 
   it("recovers repaired planner submits by stripping extra root keys", async () => {
@@ -4392,7 +5136,7 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir, piAdapter: adapter }
     );
 
-    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as {
+    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as {
       status: { partial: boolean; budgetStopped: boolean };
       records: Array<{ status: string; reason?: string }>;
     };
@@ -4451,7 +5195,7 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir, piAdapter: adapter }
     );
 
-    const budgetSummary = JSON.parse(readFileSync(path.join(runArtifactDir, "budget-summary.json"), "utf8")) as {
+    const budgetSummary = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("budget-summary.json")), "utf8")) as {
       contextPressure?: {
         toolBudgetRejections: number;
         toolBudgetRejectionsByStage: Record<string, number>;
@@ -4585,7 +5329,8 @@ describe("phase 5 pipeline regressions", () => {
 
     await telemetry.recorder.writeArtifact("planner-dossier-chunks.json", []);
 
-    expect(existsSync(path.join(attached.runDir, "planner-dossier-chunks.json"))).toBe(true);
+    expect(existsSync(path.join(attached.runDir, canonicalArtifactPath("planner-dossier-chunks.json")))).toBe(true);
+    expect(existsSync(path.join(attached.runDir, "planner-dossier-chunks.json"))).toBe(false);
   });
 
   it("omits run ids from planner prompts while keeping them in dossier artifacts", async () => {
@@ -5428,6 +6173,93 @@ describe("phase 5 pipeline regressions", () => {
     ]);
   });
 
+  it("binds side-less static signals only when the matching hunk is unambiguous", async () => {
+    const file: DiffFile = {
+      path: "app.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: [
+        {
+          id: "h1",
+          path: "app.ts",
+          oldStart: 100,
+          oldLines: 1,
+          newStart: 5,
+          newLines: 3,
+          header: "@@ -100 +5,3 @@",
+          lines: [{ kind: "add", content: "const a = 1;", newLineNumber: 6 }]
+        },
+        {
+          id: "h2",
+          path: "app.ts",
+          oldStart: 5,
+          oldLines: 3,
+          newStart: 20,
+          newLines: 2,
+          header: "@@ -5,3 +20,2 @@",
+          lines: [{ kind: "add", content: "const b = 2;", newLineNumber: 20 }]
+        }
+      ]
+    };
+    const signal = (line: number, explanation: string): StaticSignal => ({
+      ruleId: "core/exported-api-change",
+      path: "app.ts",
+      line,
+      category: "correctness",
+      confidence: "medium",
+      explanation
+    });
+    const dossier = await buildPlannerDossier(
+      { mode: "branch", commits: [] },
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      [{ path: "app.ts", action: "keep", reason: "test", provenance: [] }],
+      {
+        ...fakeRepositoryIndex(),
+        // line 6 falls in h1's RIGHT range AND h2's LEFT range → ambiguous;
+        // line 20 falls only in h2's RIGHT range → unambiguous.
+        staticSignals: [signal(6, "ambiguous side-less"), signal(20, "unambiguous side-less")]
+      },
+      config(),
+      nullTelemetry()
+    );
+
+    expect(dossier.files[0]?.hunks[0]?.staticSignals ?? []).toEqual([]);
+    expect(dossier.files[0]?.hunks[1]?.staticSignals).toEqual([
+      expect.objectContaining({ explanation: "unambiguous side-less" })
+    ]);
+  });
+
+  it("attaches line-less static signals to a single packet hunk, not every hunk of the file", async () => {
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 1, content: "one" },
+      { id: "h3", newStart: 100, content: "three" }
+    ]);
+    const packets = await buildReviewPackets(
+      fakePlanForHunks(["h1", "h3"]),
+      [file],
+      [fakeFacts("app.ts", "per-hunk")],
+      {
+        ...fakeRepositoryIndex(),
+        staticSignals: [{
+          ruleId: "core/test-boundary-coverage-rewrite",
+          path: "app.ts",
+          category: "testing",
+          confidence: "medium",
+          explanation: "file-level coverage signal"
+        }]
+      },
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+
+    const attached = packets
+      .flatMap((packet) => packet.hunks)
+      .flatMap((hunk) => hunk.staticSignals ?? [])
+      .filter((entry) => entry.explanation === "file-level coverage signal");
+    expect(attached).toHaveLength(1);
+  });
+
   it("keeps renamed-file LEFT static signals emitted with the new path", async () => {
     const file: DiffFile = {
       path: "new.ts",
@@ -5951,9 +6783,8 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
-  it("clusters duplicate root-cause candidates across packet anchors and passes sibling evidence to the verifier", async () => {
-    let verifierCalls = 0;
-    const verifierCandidates: CandidateFinding[] = [];
+  it("verifies same-file look-alikes independently so refuting one cannot kill the other (plan 87)", async () => {
+    const verdictsIssued: string[] = [];
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const first = {
       ...fakeFinding(),
@@ -5968,15 +6799,16 @@ describe("phase 5 pipeline regressions", () => {
       title: "Preferred provider fallback ignores disabled provider",
       failureMode: "Fallback routing can still select a disabled preferred provider.",
       evidence: { changedCode: "return PreferredSwapProvider" },
-      anchor: { path: "app.ts", line: 2, side: "RIGHT" as const, hunkId: "h1" },
+      anchor: { path: "app.ts", line: 2, side: "RIGHT" as const, hunkId: "h2" },
       producedBy: { ...fakeFinding().producedBy, packetId: "packet-2" }
     };
     const runner: LlmRunner = {
-      runStructured: async <T>() => {
-        verifierCalls += 1;
+      runStructured: async <T>(request: { prompt: string }) => {
+        const isSecond = request.prompt.includes("routing-2") || verdictsIssued.length > 0;
+        verdictsIssued.push(isSecond ? "reject" : "keep");
         return {
-          verdict: "keep",
-          reason: "cluster representative kept",
+          verdict: verdictsIssued[verdictsIssued.length - 1],
+          reason: "independent verdict",
           requiredEvidencePresent: true,
           falsePositiveRisk: "low"
         } as T;
@@ -6006,55 +6838,66 @@ describe("phase 5 pipeline regressions", () => {
           events.push(event);
         }
       },
-      {
-        runner,
-        promptBuilder: {
-          ...fakePromptBuilder(),
-          buildVerifierPrompt: (input) => {
-            verifierCandidates.push(input.candidate);
-            return { prompt: "", templateVersion: "test", untrustedBlockCount: 0 };
-          }
-        },
-        lensRegistry: fakeLensRegistry(),
-        diff: fakeTwoLineDiff()
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeTwoLineDiff() }
+    );
+
+    // Similar wording, same failure mode, different hunks: two independent
+    // verifications; the reject touches only its own candidate.
+    expect(verdictsIssued).toHaveLength(2);
+    expect(verified.verified.map((finding) => finding.id)).toEqual(["routing-1"]);
+    expect(events).not.toContainEqual(expect.objectContaining({ message: "verification_candidates_clustered" }));
+  });
+
+  it("propagates reject verdicts across exact duplicate copies with a per-candidate trail (plan 87)", async () => {
+    let verifierCalls = 0;
+    const artifacts = new Map<string, unknown>();
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const copy = {
+      ...fakeFinding(),
+      id: "finding-copy",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-1" }
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>() => {
+        verifierCalls += 1;
+        return {
+          verdict: "reject",
+          reason: "the shared claim is refuted",
+          requiredEvidencePresent: false,
+          falsePositiveRisk: "high"
+        } as T;
       }
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding(), copy], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        },
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
     );
 
     expect(verifierCalls).toBe(1);
-    expect(verifierCandidates).toHaveLength(1);
-    expect(verifierCandidates[0]?.evidence.relatedCode).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        path: "app.ts",
-        lines: "return PreferredSwapProvider",
-        whyRelevant: expect.stringContaining("routing-2")
-      })
-    ]));
-    expect(verified.verified.map((finding) => finding.id).sort()).toEqual(["routing-1", "routing-2"]);
-    expect(verified.verified.find((finding) => finding.id === "routing-2")).toMatchObject({
-      clusterId: "routing-1",
-      duplicateOf: "routing-1"
+    expect(verified.verified).toEqual([]);
+    const records = artifacts.get("verification.json") as Array<{ candidateId: string; duplicateOf?: string; verdict?: { verdict: string } }>;
+    expect(records.find((record) => record.candidateId === "finding-copy")).toMatchObject({
+      duplicateOf: "finding-1",
+      verdict: expect.objectContaining({ verdict: "reject" })
     });
     expect(events).toContainEqual(expect.objectContaining({
-      stage: 9,
-      level: "info",
-      message: "verification_candidate_clustering",
-      data: expect.objectContaining({
-        candidates: 2,
-        representatives: 1,
-        clusters: 1,
-        duplicateCandidates: 1
-      })
-    }));
-    expect(events).toContainEqual(expect.objectContaining({
-      stage: 9,
-      level: "info",
       message: "verification_candidates_clustered",
-      data: expect.objectContaining({
-        representativeId: "routing-1",
-        duplicateIds: ["routing-2"],
-        clusterSize: 2,
-        skippedVerificationCandidates: 1
-      })
+      data: expect.objectContaining({ rule: "exact_text" })
     }));
   });
 
@@ -6120,10 +6963,11 @@ describe("phase 5 pipeline regressions", () => {
 
   it("applies verifier keep finalFinding revisions to duplicate clusters", async () => {
     const artifacts = new Map<string, unknown>();
+    // Exact copy (plan 87): same title/failureMode/category/hunk — only
+    // severity differs, which does not break exact identity.
     const duplicate = {
       ...fakeFinding(),
       id: "finding-2",
-      title: "stale duplicate",
       severity: "low" as const,
       evidence: { changedCode: "bad" }
     };
@@ -6460,10 +7304,11 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     const records = artifacts.get("verification.json") as Array<{ candidateId: string; gate: string; verdict?: { verdict: string } }>;
-    expect(verifierCandidate).toMatchObject({ id: "finding-1", changedLine: false });
-    expect(verifierCandidate?.anchor).toBeUndefined();
-    expect(verified.verified[0]).toMatchObject({ id: "finding-1", changedLine: false });
-    expect(verified.verified[0]?.anchor).toBeUndefined();
+    // Plan 76: the invalid model anchor is stripped, then a gate-only
+    // representative anchor is backfilled from the packet.
+    expect(verifierCandidate).toMatchObject({ id: "finding-1", changedLine: true, anchorSource: "backfill_packet_representative" });
+    expect(verifierCandidate?.anchor).toEqual({ path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" });
+    expect(verified.verified[0]).toMatchObject({ id: "finding-1", changedLine: true, anchorSource: "backfill_packet_representative" });
     expect(records).toEqual([
       expect.objectContaining({
         candidateId: "finding-1",
@@ -6505,7 +7350,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(coverage.reasons).toContain("verification disabled by config; candidates were not independently verified");
   });
 
-  it("does not cluster unanchored findings from different symbols", async () => {
+  it("does not cluster unanchored findings whose quoted evidence differs", async () => {
     let verifierCalls = 0;
     const { anchor: _anchor, ...baseFinding } = fakeFinding();
     const first = {
@@ -6517,6 +7362,7 @@ describe("phase 5 pipeline regressions", () => {
     const second = {
       ...first,
       id: "finding-2",
+      evidence: { changedCode: "different snippet" },
       producedBy: { ...first.producedBy, packetId: "packet-2" }
     };
     const runner: LlmRunner = {
@@ -6651,10 +7497,13 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(reviewedPacketIds).toEqual(["critical-packet"]);
     expect(reviewedWorkerIds).toEqual(["w7-001"]);
-    expect(results).toEqual([
+    // Results return in input-packet order since plan 84's pooling; assert
+    // by packetId, not position (dispatch order is covered above).
+    expect(results).toEqual(expect.arrayContaining([
       expect.objectContaining({ packetId: "critical-packet", status: "completed" }),
       expect.objectContaining({ packetId: "normal-packet", status: "skipped" })
-    ]);
+    ]));
+    expect(results).toHaveLength(2);
   });
 
   it("assigns Stage 9 worker ids in verifier dispatch order after priority sorting", async () => {
@@ -6837,7 +7686,7 @@ describe("phase 5 pipeline regressions", () => {
         calls += 1;
         expect(request.schemaRepair?.replaceConversation).toBe(true);
         expect(request.schemaRepair?.failAfterRepair).toBe(false);
-        repairPrompt = request.schemaRepair?.buildPrompt({
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
           stage: 9,
           submitTool: "submit_verdict",
           error: "schema-invalid arguments: <parameter>BAD_PRIOR_XML_BODY</parameter> missing required property verdict",
@@ -6925,7 +7774,7 @@ describe("phase 5 pipeline regressions", () => {
     const artifacts = new Map<string, unknown>();
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
-        request.schemaRepair?.buildPrompt({
+        request.schemaRepair?.buildPrompt?.({
           stage: 9,
           submitTool: "submit_verdict",
           error: "schema-invalid arguments: <parameter>BAD_PRIOR_XML_BODY</parameter>",
@@ -7005,7 +7854,7 @@ describe("phase 5 pipeline regressions", () => {
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         calls += 1;
-        request.schemaRepair?.buildPrompt({
+        request.schemaRepair?.buildPrompt?.({
           stage: 9,
           submitTool: "submit_verdict",
           error: "missing required property verdict",
@@ -7092,12 +7941,160 @@ describe("phase 5 pipeline regressions", () => {
     ).rejects.toMatchObject({ code: "llm_call_failed", recoverable: false });
   });
 
-  it("rethrows non-transient composition failures instead of falling back", async () => {
+  it("final finding fingerprints are stable across model rewording", async () => {
+    const coverage = (): RunCoverageStatus => ({
+      totalHunks: 1,
+      reviewedHunks: 1,
+      skippedHunks: 0,
+      failedHunks: 0,
+      coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+      degradedPlanning: false,
+      budgetStopped: false,
+      verificationIncompleteCount: 0,
+      partial: false,
+      reasons: []
+    });
+    const failingRunner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_schema_invalid", "model did not call submit_composition", { recoverable: true });
+      }
+    };
+    const compose = async (finding: CandidateFinding): Promise<string | undefined> => {
+      const result = await dedupeRankAndComposeReview(
+        { verified: [finding], verdicts: [] },
+        fakePlan(),
+        { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+        coverage(),
+        config(),
+        nullTelemetry(),
+        { runner: failingRunner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+      );
+      return [...result.findings, ...result.summaryOnlyFindings][0]?.fingerprint;
+    };
+
+    const wordingA = await compose({ ...fakeFinding(), title: "value handling regressed", failureMode: "callers observe a stale value" });
+    const wordingB = await compose({ ...fakeFinding(), title: "stale value returned to callers", failureMode: "the changed path serves an outdated value" });
+    expect(wordingA).toBeDefined();
+    expect(wordingA).toBe(wordingB);
+
+    const differentHunk = await compose({
+      ...fakeFinding(),
+      anchor: { path: "app.ts", line: 40, side: "RIGHT", hunkId: "h2" },
+      title: "value handling regressed",
+      failureMode: "callers observe a stale value"
+    });
+    expect(differentHunk).toBeDefined();
+    expect(differentHunk).not.toBe(wordingA);
+  });
+
+  it("severity policy: unknown does not demote; the cap preserves pre-cap severity for guarantees", () => {
+    expect(capSeverityForBehaviorChange("critical", "unknown")).toBe("critical");
+    expect(capSeverityForBehaviorChange("high", undefined)).toBe("high");
+    expect(capSeverityForBehaviorChange("critical", "intentional_needs_confirmation")).toBe("medium");
+    expect(applySeverityPolicy("critical", "intentional_needs_confirmation")).toEqual({
+      severity: "medium",
+      severityBeforeCap: "critical"
+    });
+    expect(applySeverityPolicy("critical", "unknown")).toEqual({ severity: "critical" });
+    expect(applySeverityPolicy("low", "intentional_needs_confirmation")).toEqual({ severity: "low" });
+    expect(guaranteeSeverity({ severity: "medium", severityBeforeCap: "critical" })).toBe("critical");
+    expect(guaranteeSeverity({ severity: "medium" })).toBe("medium");
+    expect(hasCriticalOrHighGuarantee({ severity: "medium", severityBeforeCap: "high" })).toBe(true);
+    expect(hasCriticalOrHighGuarantee({ severity: "medium" })).toBe(false);
+  });
+
+  it("a behaviorChange-capped critical finding survives the report cap that suppresses ordinary mediums", async () => {
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_schema_invalid", "model did not call submit_composition", { recoverable: true });
+      }
+    };
+    const coverage: RunCoverageStatus = {
+      totalHunks: 4,
+      reviewedHunks: 4,
+      skippedHunks: 0,
+      failedHunks: 0,
+      coverageByLevel: { deep: 0, normal: 4, light: 0, skip: 0 },
+      degradedPlanning: false,
+      budgetStopped: false,
+      verificationIncompleteCount: 0,
+      partial: false,
+      reasons: []
+    };
+    const { anchor: _anchor, ...anchorless } = fakeFinding();
+    const findings: CandidateFinding[] = [
+      { ...anchorless, id: "finding-high-1", path: "file-1.ts", changedLine: false, severity: "high" },
+      { ...anchorless, id: "finding-high-2", path: "file-2.ts", changedLine: false, severity: "high", category: "security" },
+      {
+        ...anchorless,
+        id: "finding-capped",
+        path: "file-3.ts",
+        changedLine: false,
+        severity: "medium",
+        severityBeforeCap: "critical",
+        behaviorChange: "intentional_needs_confirmation",
+        category: "logic_bug"
+      },
+      { ...anchorless, id: "finding-plain", path: "file-4.ts", changedLine: false, severity: "medium", category: "testing" }
+    ];
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: findings, verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      coverage,
+      { ...config(), review: { ...config().review, maxFindings: 2 } },
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    );
+
+    const published = [...result.findings, ...result.summaryOnlyFindings].map((finding) => finding.id);
+    expect(published).toEqual(expect.arrayContaining(["finding-high-1", "finding-high-2", "finding-capped"]));
+    expect(published).not.toContain("finding-plain");
+  });
+
+  it("uses deterministic fallback for recoverable non-transient composition failures instead of failing the run", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {
         throw new CodegenieError("llm_call_failed", "bad request", {
           recoverable: true,
           context: { reason: "request_error" }
+        });
+      }
+    };
+    const coverage: RunCoverageStatus = {
+      totalHunks: 1,
+      reviewedHunks: 1,
+      skippedHunks: 0,
+      failedHunks: 0,
+      coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+      degradedPlanning: false,
+      budgetStopped: false,
+      verificationIncompleteCount: 0,
+      partial: false,
+      reasons: []
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [fakeFinding()], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      coverage,
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    );
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.coverage.reasons).toContain("semantic composition skipped; deterministic fallback used");
+  });
+
+  it("rethrows unrecoverable composition failures instead of falling back", async () => {
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_call_failed", "provider authentication failed", {
+          recoverable: false,
+          context: { reason: "auth" }
         });
       }
     };
@@ -7124,7 +8121,7 @@ describe("phase 5 pipeline regressions", () => {
         nullTelemetry(),
         { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
       )
-    ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "request_error" } });
+    ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "auth" } });
   });
 
   it("uses deterministic fallback for schema-invalid composition failures with verified findings", async () => {
@@ -7162,7 +8159,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.coverage.reasons).toContain("semantic composition schema repair failed; deterministic fallback used");
   });
 
-  it("rethrows schema-invalid composition failures when no verified findings can be formatted", async () => {
+  it("uses deterministic fallback for schema-invalid composition failures when no verified findings can be formatted", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {
         throw new CodegenieError("llm_schema_invalid", "model did not call submit_composition", {
@@ -7183,17 +8180,18 @@ describe("phase 5 pipeline regressions", () => {
       reasons: []
     };
 
-    await expect(
-      dedupeRankAndComposeReview(
-        { verified: [], verdicts: [] },
-        fakePlan(),
-        { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
-        coverage,
-        config(),
-        nullTelemetry(),
-        { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
-      )
-    ).rejects.toMatchObject({ code: "llm_schema_invalid" });
+    const result = await dedupeRankAndComposeReview(
+      { verified: [], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      coverage,
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    );
+
+    expect(result.findings).toHaveLength(0);
+    expect(result.coverage.reasons).toContain("semantic composition schema repair failed; deterministic fallback used");
   });
 
   it("salvages composer XML parameter bleed when embedded composed findings are valid", async () => {
@@ -7330,7 +8328,7 @@ describe("phase 5 pipeline regressions", () => {
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         expect(request.schemaRepair?.replaceConversation).toBe(true);
-        const repairPrompt = request.schemaRepair?.buildPrompt({
+        const repairPrompt = request.schemaRepair?.buildPrompt?.({
           stage: 10,
           submitTool: "submit_composition",
           error: "summary exceeds 4000 characters; composedFindings is missing",
@@ -7417,7 +8415,7 @@ describe("phase 5 pipeline regressions", () => {
         outcome: { status: string; errorCode: string | null };
       };
       expect(runJson.outcome).toMatchObject({ status: "failed", errorCode: "llm_call_failed" });
-      const errorJson = JSON.parse(readFileSync(path.join(runArtifactDir, "error.json"), "utf8")) as {
+      const errorJson = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("error.json")), "utf8")) as {
         errorCode: string;
         error: string;
         context: { reason: string };
@@ -7490,9 +8488,9 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir, runner }
     );
 
-    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as { status: { reasons: string[] } };
+    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as { status: { reasons: string[] } };
     expect(coverage.status.reasons).toContain("semantic composition skipped; deterministic fallback used");
-    const finalSelection = JSON.parse(readFileSync(path.join(runArtifactDir, "final-selection.json"), "utf8")) as {
+    const finalSelection = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("final-selection.json")), "utf8")) as {
       composition: { mode: string; fallbackReason: string };
       records: Array<{ findingId: string; decision: string }>;
     };
@@ -7527,7 +8525,7 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir }
     );
 
-    expect(existsSync(path.join(runArtifactDir, "coverage.json"))).toBe(true);
+    expect(existsSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")))).toBe(true);
     expect(existsSync(path.join(runArtifactDir, "final-review.md"))).toBe(true);
     expect(existsSync(path.join(runArtifactDir, "run.json"))).toBe(true);
   });
@@ -7604,10 +8602,10 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir, piAdapter: adapter }
     );
 
-    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as {
+    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as {
       status: { budgetStopped: boolean; partial: boolean; reasons: string[] };
     };
-    const modelCalls = JSON.parse(readFileSync(path.join(runArtifactDir, "model-calls-summary.json"), "utf8")) as {
+    const modelCalls = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("model-calls-summary.json")), "utf8")) as {
       cache: { write: number; disabled: number };
     };
     expect(adapter.calls).toBe(3);
@@ -7667,7 +8665,7 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir, runner }
     );
 
-    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as {
+    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as {
       records: Array<{ hunkId: string; path: string; source: string; status: string; reason?: string }>;
     };
     const defaultRecord = coverage.records.find((record) => record.hunkId === aHunk.id);
@@ -7721,7 +8719,7 @@ describe("phase 5 pipeline regressions", () => {
       { repoRoot: repo, runArtifactDir, runner }
     );
 
-    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, "coverage.json"), "utf8")) as {
+    const coverage = JSON.parse(readFileSync(path.join(runArtifactDir, canonicalArtifactPath("coverage.json")), "utf8")) as {
       status: { degradedPlanning: boolean };
       records: Array<{ hunkId: string; path: string; source: string; status: string; reason?: string }>;
     };
@@ -8588,6 +9586,165 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.findings[0]?.finalBody).toContain("Also reported in app.ts");
   });
 
+  it("merges cross-file helper and caller root-cause duplicates in deterministic fallback", async () => {
+    const helperPath = "lib/intentmachine/routingsolver/fallbacks.go";
+    const v1Path = "lib/intentmachine/v1/quote_intent.go";
+    const v15Path = "lib/intentmachine/v1_5/quote_intent.go";
+    const helper: CandidateFinding = {
+      ...fakeFinding(),
+      id: "routing-helper",
+      title: "Consolidated fallback helper adds hard error on explicit-preference selection failure",
+      severity: "medium",
+      confidence: "high",
+      path: helperPath,
+      anchor: { path: helperPath, line: 47, side: "RIGHT", hunkId: "h-helper" },
+      evidence: {
+        changedCode: "if prefErr == nil { usedPreferenceSelection = true } else if explicitPreference { return nil, fmt.Errorf(\"failed to select preferred route providers: %w\", prefErr) }",
+        relatedCode: [
+          {
+            path: v1Path,
+            lines: "base v1 logged preference selection failure and fell back to default routing",
+            whyRelevant: "Base v1 did not return on prefErr for explicit preference."
+          },
+          {
+            path: v15Path,
+            lines: "base v1_5 logged preference selection failure and fell back to default routing",
+            whyRelevant: "Base v1_5 did not return on prefErr for explicit preference."
+          }
+        ]
+      },
+      failureMode: "When options.Preference is explicitly set and SelectPreferredProviders returns an error, the new helper returns an error instead of logging and falling back to default routing. Requests that previously succeeded via default routing now fail.",
+      whyThisMatters: "The PR is declared behavior-preserving, but this introduces a caller-visible hard-failure path for explicit-preference quote requests.",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-routing-helper" }
+    };
+    const v1Caller: CandidateFinding = {
+      ...helper,
+      id: "routing-v1",
+      title: "Routing consolidation adds explicit-preference hard-fail and skips AUTO fallback",
+      confidence: "medium",
+      path: v1Path,
+      anchor: { path: v1Path, line: 459, side: "RIGHT", hunkId: "h-v1" },
+      evidence: {
+        changedCode: "solvedRoutes, err := routingsolver.SolveQuoteRoutingWithFallbacks(ctx, &h.routingSolver, oplog, routeReq, req.Options)",
+        relatedCode: [{
+          path: helperPath,
+          lines: "explicitPreference returns failed to select preferred route providers and gates AUTO retry with !explicitPreference",
+          whyRelevant: "The shared helper is the new source of the hard-fail and no-AUTO retry behavior."
+        }]
+      },
+      failureMode: "When a caller explicitly sets req.Options.Preference, selection failure now returns an error instead of falling back to default routing, and a preferred-provider solve failure skips the AUTO retry. Requests that previously produced a quote can now fail.",
+      whyThisMatters: "QuoteIntent clients that set Options.Preference can see new errors from what was intended as behavior-preserving routing consolidation.",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-routing-v1" }
+    };
+    const v15Caller: CandidateFinding = {
+      ...v1Caller,
+      id: "routing-v15",
+      title: "Routing refactor changes error semantics for explicit route preference",
+      path: v15Path,
+      anchor: { path: v15Path, line: 458, side: "RIGHT", hunkId: "h-v15" },
+      evidence: {
+        changedCode: "solvedRoutes, err := routingsolver.SolveQuoteRoutingWithFallbacks(ctx, &h.routingSolver, oplog, routeReq, req.Options)",
+        relatedCode: [{
+          path: helperPath,
+          lines: "explicitPreference returns failed to select preferred route providers and gates AUTO retry with !explicitPreference",
+          whyRelevant: "The shared helper changes the explicit-preference fallback contract for this caller too."
+        }]
+      },
+      failureMode: "Old inline logic logged and proceeded to default routing when SelectPreferredProviders failed, and retried with swap and bridge AUTO whenever usedPreferenceSelection was true. The extracted SolveQuoteRoutingWithFallbacks changes this for explicit req.Options.Preference: on selection failure it now returns an error instead of falling back to default routing, and on solve failure it skips the AUTO retry. A request that previously succeeded via default or AUTO routing can now hard-fail.",
+      whyThisMatters: "The change is presented as behavior-preserving routing consolidation, but it alters caller-visible error behavior for explicit-preference QuoteIntent calls.",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-routing-v15" }
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [helper, v1Caller, v15Caller], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      { ...fakeCoverage(), totalHunks: 3, reviewedHunks: 3 },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async () => {
+            throw composerTransientError();
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([
+          { path: helperPath, hunkId: "h-helper", line: 47, content: "else if explicitPreference { return nil, fmt.Errorf(\"failed to select preferred route providers\") }" },
+          { path: v1Path, hunkId: "h-v1", line: 459, content: "routingsolver.SolveQuoteRoutingWithFallbacks(ctx, &h.routingSolver, oplog, routeReq, req.Options)" },
+          { path: v15Path, hunkId: "h-v15", line: 458, content: "routingsolver.SolveQuoteRoutingWithFallbacks(ctx, &h.routingSolver, oplog, routeReq, req.Options)" }
+        ])
+      }
+    );
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.summaryOnlyFindings).toHaveLength(0);
+    expect(result.findings[0]).toMatchObject({
+      id: "routing-helper",
+      publication: "inline",
+      mergedCandidateIds: expect.arrayContaining(["routing-helper", "routing-v1", "routing-v15"])
+    });
+    expect(result.findings[0]?.mergedCandidateIds).toHaveLength(3);
+    expect(result.findings[0]?.finalBody).toContain(`Also reported in ${v1Path}:459`);
+    expect(result.findings[0]?.finalBody).toContain(`Also reported in ${v15Path}:458`);
+  });
+
+  it("does not merge unrelated cross-file findings just because they cite the same helper path", async () => {
+    const helperPath = "src/shared/helper.ts";
+    const cacheFinding: CandidateFinding = {
+      ...fakeFinding(),
+      id: "cache-finding",
+      title: "Tenant cache invalidation omits the namespace key",
+      path: "src/cache.ts",
+      anchor: { path: "src/cache.ts", line: 12, side: "RIGHT", hunkId: "h-cache" },
+      evidence: {
+        changedCode: "cache.delete(entry.id)",
+        relatedCode: [{ path: helperPath, lines: "buildTenantCacheKey(tenantId, id)", whyRelevant: "The helper shows cache keys include tenant scope." }]
+      },
+      failureMode: "Invalidating by entry id alone leaves tenant-scoped cache entries behind, so later reads can return stale data.",
+      whyThisMatters: "Stale tenant data can be served after an update.",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-cache" }
+    };
+    const billingFinding: CandidateFinding = {
+      ...fakeFinding(),
+      id: "billing-finding",
+      title: "Retry timeout can charge a completed payment twice",
+      path: "src/billing.ts",
+      anchor: { path: "src/billing.ts", line: 40, side: "RIGHT", hunkId: "h-billing" },
+      evidence: {
+        changedCode: "chargeCard(invoice)",
+        relatedCode: [{ path: helperPath, lines: "withTimeout(paymentPromise)", whyRelevant: "The helper documents timeout behavior shared by payment calls." }]
+      },
+      failureMode: "A timed-out retry does not check whether the first payment completed before issuing another charge.",
+      whyThisMatters: "Customers can be billed twice for the same invoice.",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-billing" }
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [cacheFinding, billingFinding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      { ...fakeCoverage(), totalHunks: 2, reviewedHunks: 2 },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async () => {
+            throw composerTransientError();
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([
+          { path: "src/cache.ts", hunkId: "h-cache", line: 12, content: "cache.delete(entry.id)" },
+          { path: "src/billing.ts", hunkId: "h-billing", line: 40, content: "chargeCard(invoice)" }
+        ])
+      }
+    );
+
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings.map((finding) => finding.mergedCandidateIds).sort()).toEqual([["billing-finding"], ["cache-finding"]]);
+  });
+
   it("publishes an unanchored composed finding inline using a valid merged anchor", async () => {
     const { anchor: _selectedAnchor, ...selectedBase } = fakeFinding();
     const selected: CandidateFinding = {
@@ -9361,8 +10518,8 @@ describe("phase 5 pipeline regressions", () => {
         completeness: "complete",
         partialReasons: [],
         multiplier: 2,
-        configured: { timeoutMs: 30_000, maxModelCalls: 2, maxTotalTokens: 100 },
-        effective: { timeoutMs: 30_000, maxModelCalls: 4, maxTotalTokens: 200 },
+        configured: { timeoutMs: 30_000, maxModelCalls: 2, maxBudgetTokens: 100 },
+        effective: { timeoutMs: 30_000, maxModelCalls: 4, maxBudgetTokens: 200 },
         usage: {
           modelCalls: 5,
           totalTokens: 225,
@@ -9371,7 +10528,7 @@ describe("phase 5 pipeline regressions", () => {
         },
         overruns: [{
           stage: 7,
-          reason: "max_total_tokens",
+          reason: "max_budget_tokens",
           elapsedMs: 1000,
           kind: "tokens",
           actual: 225,

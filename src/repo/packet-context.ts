@@ -12,6 +12,7 @@ import type { SourceResolver } from "./source-resolver.js";
 import type { LanguageAdapterRegistry } from "./language-adapter.js";
 import { importLikeScan } from "./language-adapter.js";
 import { findLikelyTestsForInput } from "./likely-tests.js";
+import { isRepositoryTestPath } from "../util/path-roles.js";
 
 const MAX_TOP_LEVEL_SYMBOLS = 120;
 const MAX_TEST_SYMBOLS = 40;
@@ -159,7 +160,7 @@ function fallbackOutline(filePath: string, language: string, content: string, no
       language,
       imports: imports.slice(0, MAX_IMPORTS),
       topLevelSymbols: [],
-      testSymbols: isTestPath(filePath)
+      testSymbols: isRepositoryTestPath(filePath)
         ? [
             {
               path: filePath,
@@ -215,9 +216,22 @@ function findSymbolForFact(symbols: SymbolInfo[], fact: HunkSymbolFacts): Symbol
     }
   }
   if (fact.enclosingSymbol !== undefined) {
-    return symbols.find((symbol) => fact.enclosingSymbol?.endsWith(symbol.name));
+    return symbols.find((symbol) => enclosingSymbolMatchesName(fact.enclosingSymbol, symbol.name));
   }
   return undefined;
+}
+
+function enclosingSymbolMatchesName(enclosingSymbol: string | undefined, symbolName: string): boolean {
+  if (enclosingSymbol === undefined) {
+    return false;
+  }
+  const enclosing = enclosingSymbol.trim();
+  const name = symbolName.trim();
+  if (!enclosing.endsWith(name)) {
+    return false;
+  }
+  const boundaryIndex = enclosing.length - name.length - 1;
+  return boundaryIndex < 0 || !/[A-Za-z0-9_$]/u.test(enclosing[boundaryIndex] ?? "");
 }
 
 type SymbolSelection = {
@@ -297,8 +311,4 @@ function isTestSymbol(filePath: string, symbol: SymbolInfo): boolean {
     return /^(?:Test|Benchmark|Fuzz|Example)/u.test(symbol.name);
   }
   return symbol.nativeKind === "test case";
-}
-
-function isTestPath(filePath: string): boolean {
-  return filePath.endsWith("_test.go") || /(?:^|\/)(?:__tests__|tests?|test)\//u.test(filePath) || /\.(?:test|spec)\.[cm]?[tj]sx?$/u.test(filePath);
 }

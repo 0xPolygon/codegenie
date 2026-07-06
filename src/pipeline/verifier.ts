@@ -16,12 +16,13 @@ import type {
 } from "../types.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
 import {
-  isFatalLlmError,
+  isRunFatalLlmError,
   isRecoverableWorkerError,
+  representativeAnchorFromPacket,
   validateAnchorForDiff,
   validateAnchorForPacket
 } from "./pipeline-utils.js";
-import { capSeverityForBehaviorChange } from "./severity-policy.js";
+import { applySeverityPolicy } from "./severity-policy.js";
 import { isCodegenieError } from "../util/errors.js";
 import { scaleBudgetValue, scaleToolBudget } from "../util/budget.js";
 
@@ -63,6 +64,13 @@ type VerificationGateFacts = {
   hasFailureMode: boolean;
   failureModeConcrete: boolean;
   relatedEvidenceCount: number;
+  // Anchor provenance facts (plan 76): after reconstruction, a bare
+  // "anchor present" is unreadable — these three separate what Stage 7
+  // submitted from what is now usable.
+  modelAnchorSubmitted: boolean;
+  modelAnchorValid: boolean;
+  validAnchorPresent: boolean;
+  anchorSource?: CandidateFinding["anchorSource"];
 };
 
 type VerificationRecord =
@@ -218,7 +226,7 @@ export async function verifyFindings(
     });
     gatePassed.push(preGated.candidate);
   }
-  const clustered = clusterCandidates(gatePassed, packetsById, telemetry);
+  const clustered = clusterCandidates(gatePassed, telemetry);
 
   if (!config.review.verify) {
     const verdicts = clustered.all.map((candidate): VerificationVerdict => ({
@@ -333,7 +341,7 @@ export async function verifyFindings(
       }
       continue;
     }
-    if (isFatalLlmError(outcome.error)) {
+    if (isRunFatalLlmError(outcome.error)) {
       throw outcome.error;
     }
     const candidateId = outcome.task.candidateId ?? "unknown";
@@ -405,11 +413,11 @@ function preGateAnchor(
   telemetry: TelemetryRecorder
 ): { candidate: CandidateFinding; anchorStripped: boolean } {
   if (!candidate.anchor) {
-    return { candidate, anchorStripped: false };
+    return { candidate: backfillRepresentativeAnchor(candidate, packet, diff, telemetry), anchorStripped: false };
   }
   const anchor = normalizeAnchor(candidate.anchor, packet, diff);
   if (!anchor) {
-    const { anchor: _invalidAnchor, ...withoutAnchor } = candidate;
+    const { anchor: _invalidAnchor, anchorSource: _invalidSource, ...withoutAnchor } = candidate;
     telemetry.event({
       stage: 9,
       level: "warn",
@@ -417,7 +425,8 @@ function preGateAnchor(
       file: candidate.path,
       data: { candidateId: candidate.id, anchor: candidate.anchor }
     });
-    return { candidate: { ...withoutAnchor, changedLine: false }, anchorStripped: true };
+    const stripped: CandidateFinding = { ...withoutAnchor, changedLine: false };
+    return { candidate: backfillRepresentativeAnchor(stripped, packet, diff, telemetry), anchorStripped: true };
   }
   return {
     candidate: {
@@ -430,6 +439,42 @@ function preGateAnchor(
   };
 }
 
+// Tier 2 anchor reconstruction (plan 76): an anchorless candidate whose
+// evidence quotes changed code is on-diff even though Stage 7 gave the gate
+// no placement to prove it with. The packet's first changed line proves
+// relevance for gating; it is NOT a publishable location (anchorSource
+// "backfill_packet_representative" is withheld at composition).
+function backfillRepresentativeAnchor(
+  candidate: CandidateFinding,
+  packet: ReviewPacket | undefined,
+  diff: UnifiedDiff | undefined,
+  telemetry: TelemetryRecorder
+): CandidateFinding {
+  if (candidate.anchor !== undefined || packet === undefined) {
+    return candidate;
+  }
+  if (candidate.evidence.changedCode.trim().length === 0) {
+    return candidate;
+  }
+  const representative = normalizeAnchor(representativeAnchorFromPacket(packet), packet, diff);
+  if (representative === undefined) {
+    return candidate;
+  }
+  telemetry.event({
+    stage: 9,
+    level: "info",
+    message: "anchor_representative",
+    file: candidate.path,
+    data: { candidateId: candidate.id, hunkId: representative.hunkId, line: representative.line, side: representative.side }
+  });
+  return {
+    ...candidate,
+    anchor: representative,
+    anchorSource: "backfill_packet_representative",
+    changedLine: true
+  };
+}
+
 function applyVerdictAnchor(candidate: CandidateFinding, verdict: VerificationVerdict): CandidateFinding {
   if (verdict.revisedAnchor === undefined) {
     return candidate;
@@ -437,6 +482,7 @@ function applyVerdictAnchor(candidate: CandidateFinding, verdict: VerificationVe
   return {
     ...candidate,
     anchor: verdict.revisedAnchor,
+    anchorSource: "verifier_revised",
     path: verdict.revisedAnchor.path,
     changedLine: true
   };
@@ -462,9 +508,11 @@ function applyFindingRevision(candidate: CandidateFinding, revision: CandidateFi
 
 function applyVerdictIntentAssessment(candidate: CandidateFinding, verdict: VerificationVerdict): CandidateFinding {
   const behaviorChange = verdict.behaviorChange ?? candidate.behaviorChange;
+  // ...candidate first so a severityBeforeCap recorded at Stage 7 survives
+  // when the verdict-time policy does not cap again.
   return {
     ...candidate,
-    severity: capSeverityForBehaviorChange(candidate.severity, behaviorChange),
+    ...applySeverityPolicy(candidate.severity, behaviorChange),
     ...(verdict.behaviorChange !== undefined ? { behaviorChange: verdict.behaviorChange } : {}),
     ...(verdict.intentEvidence !== undefined ? { intentEvidence: verdict.intentEvidence } : {})
   };
@@ -530,15 +578,16 @@ async function verifyCandidate(
     ? revisedFinding(candidate, normalized.finalFinding, packet, opts.diff)
     : undefined;
   const revisedAnchor = normalizeAnchor(normalized.revisedAnchor, packet, opts.diff);
+  const verificationIncomplete = normalized.reason.startsWith("verification incomplete:");
   return {
     candidateId: candidate.id,
-    verdict: normalized.verdict,
+    verdict: verificationIncomplete ? "incomplete" : normalized.verdict,
     reason: normalized.reason,
     requiredEvidencePresent: normalized.requiredEvidencePresent,
     falsePositiveRisk: normalized.falsePositiveRisk,
     ...(revised !== undefined ? { finalFinding: revised } : {}),
     ...(revisedAnchor !== undefined ? { revisedAnchor } : {}),
-    ...(normalized.reason.startsWith("verification incomplete:") ? { verificationIncomplete: true } : {}),
+    ...(verificationIncomplete ? { verificationIncomplete: true } : {}),
     ...(normalized.behaviorChange !== undefined ? { behaviorChange: normalized.behaviorChange } : {}),
     ...(normalized.intentEvidence !== undefined ? { intentEvidence: normalized.intentEvidence } : {})
   };
@@ -802,10 +851,19 @@ function revisedFinding(
   const submittedAnchor = normalizeAnchor(submitted.anchor, packet, diff);
   const originalAnchor = validateAnchorForDiff(original.anchor, diff);
   const anchor = submittedAnchor ?? originalAnchor;
+  // Anchor provenance survives revision: a verifier-supplied anchor is
+  // "verifier_revised"; a retained original anchor keeps its source so a
+  // gate-only representative anchor cannot slip past the composition
+  // withhold by being laundered through a wording revision (plan 76).
+  const anchorSource: CandidateFinding["anchorSource"] = submittedAnchor !== undefined
+    ? "verifier_revised"
+    : anchor !== undefined
+      ? original.anchorSource
+      : undefined;
   const revised: CandidateFinding = {
     id: original.id,
     title: submitted.title,
-    severity: capSeverityForBehaviorChange(submitted.severity, submitted.behaviorChange),
+    ...applySeverityPolicy(submitted.severity, submitted.behaviorChange),
     confidence: submitted.confidence,
     path: anchor !== undefined ? pathFromAnchor(anchor, original.path) : original.path,
     changedLine: anchor !== undefined,
@@ -822,6 +880,12 @@ function revisedFinding(
   };
   if (anchor !== undefined) {
     revised.anchor = anchor;
+  }
+  if (anchorSource !== undefined) {
+    revised.anchorSource = anchorSource;
+  }
+  if (original.modelAnchorSubmitted !== undefined) {
+    revised.modelAnchorSubmitted = original.modelAnchorSubmitted;
   }
   if (submitted.suggestedFix !== undefined) {
     revised.suggestedFix = submitted.suggestedFix;
@@ -875,15 +939,20 @@ function candidateGateFacts(candidate: CandidateFinding): VerificationGateFacts 
     entry.whyRelevant.trim().length > 0
   ).length;
   const failureMode = candidate.failureMode.trim();
+  const validAnchorPresent = candidate.changedLine === true && candidate.anchor !== undefined;
   return {
     severity: candidate.severity,
     confidence: candidate.confidence,
     category: candidate.category,
-    changedLine: candidate.changedLine === true && candidate.anchor !== undefined,
+    changedLine: validAnchorPresent,
     hasChangedCode: candidate.evidence.changedCode.trim().length > 0,
     hasFailureMode: failureMode.length > 0,
     failureModeConcrete: failureMode.length >= 24,
-    relatedEvidenceCount
+    relatedEvidenceCount,
+    modelAnchorSubmitted: candidate.modelAnchorSubmitted === true,
+    modelAnchorValid: candidate.anchorSource === "model",
+    validAnchorPresent,
+    ...(candidate.anchorSource !== undefined ? { anchorSource: candidate.anchorSource } : {})
   };
 }
 
@@ -1192,7 +1261,7 @@ function summarizeWorkerOutcomes(
 function incompleteVerificationVerdict(candidateId: string, reason: string): VerificationVerdict {
   return {
     candidateId,
-    verdict: "reject",
+    verdict: "incomplete",
     reason: `verification incomplete: ${reason}`,
     requiredEvidencePresent: false,
     falsePositiveRisk: "high",
@@ -1216,10 +1285,16 @@ function verificationRecordMeta(
   if (verdict.verificationIncomplete !== true) {
     return { verificationStatus: "completed" };
   }
-  const code = errorCode(error);
+  // errorCode must state why verification is incomplete, not the transport
+  // error class the loss surfaced through (plan 85): a budget-starved or
+  // timed-out verification is not an "llm_call_failed".
+  const reasonLabel = incompleteReasonLabel(verdict.reason);
+  const code = reasonLabel === "budget_limited" || reasonLabel === "worker_timed_out" || reasonLabel === "not_dispatched"
+    ? reasonLabel
+    : errorCode(error);
   return {
     verificationStatus: "incomplete",
-    incompleteReason: incompleteReasonLabel(verdict.reason),
+    incompleteReason: reasonLabel,
     ...(code !== undefined ? { errorCode: code } : {})
   };
 }
@@ -1240,6 +1315,9 @@ function verifierOutcomeReason(outcome: { outcome: string; error?: unknown }): s
 function incompleteReasonLabel(reason: string): string {
   if (reason.includes("budget_limited") || reason.includes("budget limit")) {
     return "budget_limited";
+  }
+  if (reason.includes("timed_out") || reason.includes("timed out")) {
+    return "worker_timed_out";
   }
   if (reason.includes("schema_invalid")) {
     return "schema_invalid";
@@ -1271,7 +1349,6 @@ function verifierErrorSummary(error: unknown): string {
 
 function clusterCandidates(
   candidates: CandidateFinding[],
-  packetsById: Map<string, ReviewPacket>,
   telemetry: TelemetryRecorder
 ): {
   all: CandidateFinding[];
@@ -1281,7 +1358,7 @@ function clusterCandidates(
 } {
   const clusters: CandidateFinding[][] = [];
   for (const candidate of candidates) {
-    const cluster = clusters.find((members) => duplicateCandidate(candidate, members[0], packetsById));
+    const cluster = clusters.find((members) => isExactDuplicateCandidate(candidate, members[0]));
     if (cluster) {
       cluster.push(candidate);
     } else {
@@ -1317,6 +1394,7 @@ function clusterCandidates(
           representativeId: representative.id,
           duplicateIds: duplicates.map((candidate) => candidate.id),
           clusterSize: cluster.length,
+          rule: "exact_text",
           skippedVerificationCandidates: duplicates.length,
           paths: [...new Set(cluster.map((candidate) => candidate.path))].sort()
         }
@@ -1345,34 +1423,44 @@ function clusterCandidates(
   return { all, representatives, duplicatesByRepresentative, duplicateCount };
 }
 
-function duplicateCandidate(
-  a: CandidateFinding,
-  b: CandidateFinding | undefined,
-  packetsById: Map<string, ReviewPacket>
-): boolean {
+// Pre-clustering is a scheduling optimization for identical copies only
+// (plan 87, functional_spec:563): two candidates share a verdict iff they
+// are exact duplicates. No text similarity, no scope/symbol inference, no
+// cross-category bridging — a shared verdict a candidate did not earn is a
+// silent correlated kill (fable bug 2). Exported for plan 84's ensemble
+// pooling, which unions K passes' candidates under the same identity rule.
+export function isExactDuplicateCandidate(a: CandidateFinding, b: CandidateFinding | undefined): boolean {
   if (!b) {
     return false;
   }
-  const failureMatches = strongTextMatch(a.failureMode, b.failureMode);
-  if (a.category !== b.category && !failureMatches) {
+  if (a.category !== b.category || a.path !== b.path) {
     return false;
   }
-  if (!candidateScopesOverlap(a, b, packetsById)) {
+  const aAnchor = locationTrustedAnchor(a);
+  const bAnchor = locationTrustedAnchor(b);
+  if (aAnchor !== undefined && bAnchor !== undefined) {
+    if (aAnchor.hunkId !== bAnchor.hunkId) {
+      return false;
+    }
+  } else if (aAnchor === undefined && bAnchor === undefined) {
+    const aCode = normalizeCode(a.evidence.changedCode);
+    if (aCode.length === 0 || aCode !== normalizeCode(b.evidence.changedCode)) {
+      return false;
+    }
+  } else {
     return false;
   }
-  const titleMatches = strongTextMatch(a.title, b.title);
-  const evidenceMatches = changedEvidenceMatches(a, b);
-  const symbolMatches = candidateSymbolsOverlap(a, b, packetsById);
-  const exactLocationMatches = locationClusterKey(a, packetsById) !== undefined && locationClusterKey(a, packetsById) === locationClusterKey(b, packetsById);
-  if (exactLocationMatches && (titleMatches || failureMatches || evidenceMatches)) {
-    return true;
-  }
-  if (highImpactAmbiguous(a, b) && !failureMatches && !evidenceMatches) {
-    return false;
-  }
-  return (failureMatches && (titleMatches || evidenceMatches || symbolMatches || a.path === b.path)) ||
-    (evidenceMatches && (titleMatches || failureMatches)) ||
-    (titleMatches && failureMatches);
+  return exactTextKey(a.title) === exactTextKey(b.title) &&
+    exactTextKey(a.failureMode) === exactTextKey(b.failureMode);
+}
+
+// Lowercase, strip punctuation, collapse whitespace — equality only, by
+// design. Fingerprint equality (plan 83) was considered and rejected as the
+// primary rule: fingerprints are deliberately wording-free (path + location
+// + category + lens), so two DIFFERENT findings on the same hunk would
+// collide — the exact failure mode this plan removes.
+function exactTextKey(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9]+/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
 function withSiblingEvidence(representative: CandidateFinding, duplicates: CandidateFinding[]): CandidateFinding {
@@ -1410,129 +1498,26 @@ function dedupeRelatedCode(entries: RelatedCodeEvidence[]): RelatedCodeEvidence[
   return deduped;
 }
 
-function candidateScopesOverlap(a: CandidateFinding, b: CandidateFinding, packetsById: Map<string, ReviewPacket>): boolean {
-  const aLocation = locationClusterKey(a, packetsById);
-  const bLocation = locationClusterKey(b, packetsById);
-  if (aLocation !== undefined && aLocation === bLocation) {
-    return true;
-  }
-  if (a.path === b.path) {
-    const aSymbols = candidateSymbols(a, packetsById);
-    const bSymbols = candidateSymbols(b, packetsById);
-    if (!a.anchor && !b.anchor && aSymbols.size > 0 && bSymbols.size > 0 && !setsIntersect(aSymbols, bSymbols)) {
-      return false;
-    }
-    return true;
-  }
-  if (setsIntersect(candidateEvidencePaths(a), candidateEvidencePaths(b))) {
-    return true;
-  }
-  return relatedRoot(a.path) === relatedRoot(b.path) && candidateSymbolsOverlap(a, b, packetsById);
+
+// A representative gate anchor is not a location claim (plan 76): distinct
+// findings from the same packet all receive its first changed line, so
+// treating it as identity would merge them as duplicates.
+function locationTrustedAnchor(candidate: CandidateFinding): CandidateFinding["anchor"] {
+  return candidate.anchorSource === "backfill_packet_representative" ? undefined : candidate.anchor;
 }
 
-function locationClusterKey(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): string | undefined {
-  if (candidate.anchor) {
-    return `anchor:${candidate.anchor.path}:${candidate.anchor.side}:${candidate.anchor.line}:${candidate.anchor.hunkId}`;
-  }
-  const symbols = candidateSymbols(candidate, packetsById);
-  if (symbols.size !== 1) {
-    return undefined;
-  }
-  return `symbol:${candidate.path}:${[...symbols][0]}`;
-}
 
-function candidateEvidencePaths(candidate: CandidateFinding): Set<string> {
-  return new Set([candidate.path, ...(candidate.evidence.relatedCode ?? []).map((entry) => entry.path)]);
-}
 
-function candidateSymbolsOverlap(a: CandidateFinding, b: CandidateFinding, packetsById: Map<string, ReviewPacket>): boolean {
-  return setsIntersect(candidateSymbols(a, packetsById), candidateSymbols(b, packetsById));
-}
 
-function candidateSymbols(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): Set<string> {
-  const packet = packetsById.get(candidate.producedBy.packetId);
-  return new Set(
-    (packet?.symbolFacts ?? [])
-      .flatMap((fact) => [fact.enclosingSymbol, fact.signature])
-      .filter((symbol): symbol is string => symbol !== undefined && symbol.trim().length > 0)
-      .map(normalize)
-  );
-}
 
-function changedEvidenceMatches(a: CandidateFinding, b: CandidateFinding): boolean {
-  const aChanged = normalizeCode(a.evidence.changedCode);
-  const bChanged = normalizeCode(b.evidence.changedCode);
-  if (aChanged.length > 0 && aChanged === bChanged) {
-    return true;
-  }
-  const aRelated = relatedEvidenceKeys(a);
-  const bRelated = relatedEvidenceKeys(b);
-  return setsIntersect(aRelated, bRelated);
-}
 
-function relatedEvidenceKeys(candidate: CandidateFinding): Set<string> {
-  return new Set((candidate.evidence.relatedCode ?? [])
-    .map((entry) => `${entry.path}:${normalizeCode(entry.lines)}`)
-    .filter((entry) => !entry.endsWith(":")));
-}
 
-function highImpactAmbiguous(a: CandidateFinding, b: CandidateFinding): boolean {
-  return isHighImpact(a) || isHighImpact(b);
-}
 
-function isHighImpact(candidate: CandidateFinding): boolean {
-  return candidate.severity === "critical" || candidate.severity === "high";
-}
 
-function strongTextMatch(a: string, b: string): boolean {
-  const left = normalize(a);
-  const right = normalize(b);
-  if (left.length === 0 || right.length === 0) {
-    return false;
-  }
-  if (left === right) {
-    return isSubstantiveText(left);
-  }
-  const shorter = left.length < right.length ? left : right;
-  const longer = left.length < right.length ? right : left;
-  if (shorter.length >= 24 && longer.includes(shorter)) {
-    return true;
-  }
-  const leftTokens = significantTokens(left);
-  const rightTokens = significantTokens(right);
-  if (leftTokens.size < 4 || rightTokens.size < 4) {
-    return false;
-  }
-  const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
-  const union = new Set([...leftTokens, ...rightTokens]).size;
-  return union > 0 && intersection / union >= 0.82;
-}
 
-function isSubstantiveText(input: string): boolean {
-  return input.length >= 12 || significantTokens(input).size >= 3;
-}
 
-function significantTokens(input: string): Set<string> {
-  const stopWords = new Set(["a", "an", "and", "are", "as", "be", "by", "for", "from", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "with"]);
-  return new Set(input.split(" ").filter((token) => token.length > 1 && !stopWords.has(token)));
-}
 
-function setsIntersect<T>(a: Set<T>, b: Set<T>): boolean {
-  for (const value of a) {
-    if (b.has(value)) {
-      return true;
-    }
-  }
-  return false;
-}
 
-function relatedRoot(filePath: string): string {
-  const parts = filePath.split("/").filter(Boolean);
-  if (parts.length <= 2) {
-    return parts[0] ?? filePath;
-  }
-  return parts.slice(0, 2).join("/");
-}
 
 function truncateEvidenceLines(lines: string): string {
   const trimmed = lines.trim();

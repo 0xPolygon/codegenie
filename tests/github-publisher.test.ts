@@ -595,6 +595,183 @@ describe("GitHub publisher", () => {
     expect(record?.demotedToBody).toBe(2);
     expect(postedComments[0]).toHaveLength(1);
   });
+
+  it("falls back to a summary-only review after three inline 422 rejections", async () => {
+    const diff = parseDiff(MIXED_ANCHOR_DIFF);
+    const hunk = diff.files[0]?.hunks[0];
+    if (!hunk) {
+      throw new Error("missing hunk");
+    }
+    const left = finalFinding({
+      id: "left",
+      hunkId: hunk.id,
+      line: 1,
+      side: "LEFT",
+      fingerprint: "b".repeat(64),
+      finalBody: "LEFT-side comment should move to the body."
+    });
+    const multiline = finalFinding({
+      id: "multi",
+      hunkId: hunk.id,
+      line: 2,
+      startLine: 1,
+      fingerprint: "c".repeat(64),
+      finalBody: "Multiline comment should move to the body."
+    });
+    const right = finalFinding({
+      id: "right",
+      hunkId: hunk.id,
+      line: 3,
+      fingerprint: "d".repeat(64),
+      finalBody: "Remaining right comment should move to the summary-only fallback."
+    });
+    const commentCounts: number[] = [];
+    const postedBodies: string[] = [];
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        commentCounts.push(review.comments.length);
+        if (commentCounts.length <= 3) {
+          throw github422({ message: "Validation failed without comment indexes" });
+        }
+        postedBodies.push(review.body);
+      }
+    });
+
+    const record = await maybePublishToGitHub(reviewResult(left, multiline, right), resolved(), defaultConfig, nullTelemetry(), {
+      github,
+      diff
+    });
+
+    expect(commentCounts).toEqual([3, 2, 1, 0]);
+    expect(record?.status).toBe("summary_only_fallback");
+    expect(record?.inlinePosted).toBe(0);
+    expect(record?.demotedToBody).toBe(3);
+    expect(record?.attempts).toEqual([
+      { httpStatus: 422, commentCount: 3, outcome: "rejected" },
+      { httpStatus: 422, commentCount: 2, outcome: "rejected" },
+      { httpStatus: 422, commentCount: 1, outcome: "rejected" },
+      { commentCount: 0, outcome: "fallback_summary_only" }
+    ]);
+    expect(postedBodies[0]).toContain("LEFT-side comment should move to the body.");
+    expect(postedBodies[0]).toContain("Multiline comment should move to the body.");
+    expect(postedBodies[0]).toContain("Remaining right comment should move to the summary-only fallback.");
+  });
+
+  it("fails only if the summary-only fallback review is also rejected", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const hunk = diff.files[0]?.hunks[0];
+    if (!hunk) {
+      throw new Error("missing hunk");
+    }
+    const commentCounts: number[] = [];
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        commentCounts.push(review.comments.length);
+        if (commentCounts.length === 1) {
+          throw github422({ message: "Validation failed without comment indexes" });
+        }
+        throw new CodegenieError("github_post_failed", "summary body rejected", {
+          context: { httpStatus: 500 }
+        });
+      }
+    });
+
+    await expect(
+      maybePublishToGitHub(reviewResult(finalFinding({ hunkId: hunk.id, line: 1 })), resolved(), defaultConfig, nullTelemetry(), {
+        github,
+        diff
+      })
+    ).rejects.toMatchObject({
+      code: "github_post_failed",
+      message: "summary body rejected"
+    });
+    expect(commentCounts).toEqual([1, 0]);
+  });
+
+  it("fails fast on non-422 GitHub posting errors", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const hunk = diff.files[0]?.hunks[0];
+    if (!hunk) {
+      throw new Error("missing hunk");
+    }
+    const commentCounts: number[] = [];
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        commentCounts.push(review.comments.length);
+        throw new CodegenieError("github_post_failed", "bad credentials", {
+          context: { httpStatus: 401 }
+        });
+      }
+    });
+
+    await expect(
+      maybePublishToGitHub(reviewResult(finalFinding({ hunkId: hunk.id, line: 1 })), resolved(), defaultConfig, nullTelemetry(), {
+        github,
+        diff
+      })
+    ).rejects.toMatchObject({
+      code: "github_post_failed",
+      message: "bad credentials"
+    });
+    expect(commentCounts).toEqual([1]);
+  });
+
+  it("adds partial coverage disclosure to posting bodies that do not already include it", async () => {
+    const createdBodies: string[] = [];
+    const result = reviewResult();
+    result.coverage = {
+      totalHunks: 3,
+      reviewedHunks: 1,
+      skippedHunks: 0,
+      failedHunks: 1,
+      coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+      degradedPlanning: false,
+      budgetStopped: true,
+      budgetStop: {
+        reason: "max_budget_tokens",
+        stage: 7,
+        elapsedMs: 10_000,
+        timeoutMs: 600_000,
+        hardTimeoutMs: 660_000,
+        remainingRuntimeMs: 100_000,
+        reservedTailRuntimeMs: 60_000,
+        modelCalls: 4,
+        inFlightModelCalls: 0,
+        projectedModelCalls: 4,
+        totalTokens: 1_000,
+        inFlightTokens: 0,
+        projectedTokens: 1_000,
+        maxBudgetTokens: 1_000,
+        remainingTokens: 0,
+        reservedTokens: 0
+      },
+      verificationIncompleteCount: 1,
+      partial: true,
+      reasons: ["semantic composition skipped; deterministic fallback used"]
+    };
+    result.postingPlan = {
+      inline: [],
+      reviewBody: "Found issues."
+    };
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        createdBodies.push(review.body);
+      }
+    });
+
+    const record = await maybePublishToGitHub(result, resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, summaryWhenNoFindings: true }
+    }, nullTelemetry(), { github, diff: parseDiff(RAW_DIFF) });
+
+    expect(record?.status).toBe("posted");
+    expect(createdBodies[0]).toContain("Sorry, this review is incomplete.");
+    expect(createdBodies[0]).toContain("## Coverage");
+    expect(createdBodies[0]).toContain("Partial review: 2 hunks were not reviewed because budget was exhausted before dispatch.");
+    expect(createdBodies[0]).toContain("Reviewed 1/3 hunks before stopping.");
+    expect(createdBodies[0]).toContain("Verification incomplete for 1 candidate.");
+    expect(createdBodies[0]).toContain("semantic composition skipped; deterministic fallback used");
+  });
 });
 
 function fakeGithub(

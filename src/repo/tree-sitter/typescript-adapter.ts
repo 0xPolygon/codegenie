@@ -17,6 +17,7 @@ import {
   treeFromParsed,
   walkNamed
 } from "../language-adapter.js";
+import { isRepositoryTestPath } from "../../util/path-roles.js";
 import { TreeSitterService, type GrammarId } from "./tree-sitter-service.js";
 
 type ExportContext = {
@@ -275,7 +276,7 @@ function directClassMembers(classNode: Node): Node[] {
 }
 
 function testSymbols(file: ParsedFile): SymbolInfo[] {
-  if (!isTestPath(file.path)) {
+  if (!isRepositoryTestPath(file.path)) {
     return [];
   }
   const tree = treeFromParsed(file);
@@ -477,10 +478,6 @@ function declarationKeyword(text: string): "const" | "let" | "var" {
 function firstStringLiteral(text: string): string | undefined {
   const match = /["'`]([^"'`]+)["'`]/u.exec(text);
   return match?.[1];
-}
-
-function isTestPath(filePath: string): boolean {
-  return /(?:^|\/)(?:__tests__|tests?|test)\//u.test(filePath) || /\.(?:test|spec)\.[cm]?[tj]sx?$/u.test(filePath);
 }
 
 function dedupeSymbols(symbols: SymbolInfo[]): SymbolInfo[] {

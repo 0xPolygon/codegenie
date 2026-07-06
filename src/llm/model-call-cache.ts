@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { sha256Hex } from "../util/hashing.js";
+import { stableJson } from "../util/json.js";
 import { CodegenieError } from "../util/errors.js";
 import { provisionCodegenieGitignore } from "../telemetry/run-artifacts.js";
 import { stripCredentials } from "../telemetry/redaction.js";
@@ -328,22 +329,4 @@ function isReviewStage(input: unknown): input is ReviewStage {
 
 function isRecord(input: unknown): input is Record<string, unknown> {
   return Boolean(input && typeof input === "object" && !Array.isArray(input));
-}
-
-function stableJson(input: unknown): string {
-  return JSON.stringify(sortJson(input));
-}
-
-function sortJson(input: unknown): unknown {
-  if (Array.isArray(input)) {
-    return input.map(sortJson);
-  }
-  if (input && typeof input === "object") {
-    const output: Record<string, unknown> = {};
-    for (const key of Object.keys(input).sort()) {
-      output[key] = sortJson((input as Record<string, unknown>)[key]);
-    }
-    return output;
-  }
-  return input;
 }

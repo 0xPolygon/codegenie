@@ -11,6 +11,7 @@ import type {
   RunPostingRecord,
   UnifiedDiff
 } from "../types.js";
+import { renderBudgetStopNotice, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { sanitizeGitHubCommentBody } from "./comment-sanitizer.js";
 import { createGitHubClient } from "./github-client.js";
@@ -174,15 +175,20 @@ async function postWithRecovery(
   let summaryOnly = false;
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const attemptingSummaryOnly = summaryOnly && comments.length === 0;
     try {
       await github.createReview(prNumber, {
         body: currentBody,
         event: "COMMENT",
         comments: comments.map((comment) => comment.input)
       });
-      record.attempts.push({ commentCount: comments.length, outcome: "ok" });
+      record.attempts.push({ commentCount: comments.length, outcome: attemptingSummaryOnly ? "fallback_summary_only" : "ok" });
       return { inlinePosted: comments.length, summaryOnly };
     } catch (error) {
+      if (attemptingSummaryOnly) {
+        recordFailedPostingAttempt(record, 0, error);
+        throw error;
+      }
       if (!isGithub422(error)) {
         record.attempts.push({ commentCount: comments.length, outcome: "error" });
         throw error;
@@ -216,14 +222,28 @@ async function postWithRecovery(
         summaryOnly = true;
       }
       if (attempt === 3) {
-        throw error;
+        currentBody = demoteCommentsIntoBody(currentBody, comments, record);
+        comments = [];
+        summaryOnly = true;
       }
     }
   }
 
-  await github.createReview(prNumber, { body: currentBody, event: "COMMENT", comments: [] });
-  record.attempts.push({ commentCount: 0, outcome: "ok" });
+  try {
+    await github.createReview(prNumber, { body: currentBody, event: "COMMENT", comments: [] });
+    record.attempts.push({ commentCount: 0, outcome: "fallback_summary_only" });
+  } catch (error) {
+    recordFailedPostingAttempt(record, 0, error);
+    throw error;
+  }
   return { inlinePosted: 0, summaryOnly: true };
+}
+
+function recordFailedPostingAttempt(record: RunPostingRecord, commentCount: number, error: unknown): void {
+  const httpStatus = githubHttpStatus(error);
+  record.attempts.push(httpStatus === undefined
+    ? { commentCount, outcome: "error" }
+    : { httpStatus, commentCount, outcome: "error" });
 }
 
 function nextLocal422SuspectClass(comments: PreparedInlineComment[]): PreparedInlineComment[] {
@@ -292,7 +312,26 @@ function buildPostingBody(
   if (!shouldIncludeBase) {
     return "";
   }
-  return appendDemotedFindings(finalReview.postingPlan?.reviewBody ?? finalReview.summary, demoted);
+  const body = appendPostingCoverageDisclosure(finalReview.postingPlan?.reviewBody ?? finalReview.summary, finalReview.coverage);
+  return appendDemotedFindings(body, demoted);
+}
+
+function appendPostingCoverageDisclosure(body: string, coverage: ReviewResult["coverage"]): string {
+  if (!coverage.partial) {
+    return body;
+  }
+  const sections: string[] = [];
+  const budgetNotice = renderBudgetStopNotice(coverage);
+  if (budgetNotice && !body.includes(budgetNotice)) {
+    sections.push(budgetNotice);
+  }
+  if (!body.includes("Coverage disclosure:") && !body.includes("## Coverage")) {
+    sections.push("## Coverage", "", ...renderCoverageSummaryLines(coverage));
+  }
+  if (sections.length === 0) {
+    return body;
+  }
+  return body.trim().length > 0 ? [body.trim(), "", ...sections].join("\n") : sections.join("\n");
 }
 
 function appendDemotedFindings(body: string, findings: FinalFinding[]): string {

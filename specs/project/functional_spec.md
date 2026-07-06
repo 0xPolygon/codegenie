@@ -384,7 +384,7 @@ Per-stage LLM failure policy:
 - Stage 10 composer: one repair retry. Terminal failure triggers a deterministic fallback composition — verified findings rendered with template wording, fingerprint-level grouping only, ranked by severity and confidence — with a disclosure note that semantic composition was skipped.
 - Authentication or provider-wide failures at any stage fail the run.
 
-Budget exhaustion ladder, applying to `timeoutMs`, `maxTotalTokens`, and `maxModelCalls`:
+Budget exhaustion ladder, applying to `timeoutMs`, `maxBudgetTokens`, and `maxModelCalls`:
 
 - Budgets are checked before each new model call or worker dispatch.
 - On exhaustion: stop scheduling new packet reviews, then verify already-produced candidates using the reserved budget slice, and always run composition and emit a partial-review disclosure.
@@ -612,7 +612,7 @@ V1 tools should be read-only by default. They should feel like familiar read/lis
 The repository tool layer should support pluggable backends:
 
 - Tree-sitter backend: preferred when a grammar is available for the file language. It should provide symbols, enclosing blocks, imports, syntax-aware snippets, and structured source ranges.
-- Text backend: required fallback for every repository. It should use git plumbing reads and `git grep` at the reviewed revisions, bundled ripgrep as a fast path when the checkout matches the reviewed head, file listing, line windows, and simple filename/test conventions when tree-sitter is unavailable or parsing fails.
+- Text backend: required fallback for every repository. It should use git plumbing reads and `git grep` at the reviewed revisions, file listing, line windows, and simple filename/test conventions when tree-sitter is unavailable or parsing fails.
 - Language analyzer backend: optional future enrichment for languages where deeper semantic analysis is available.
 
 Callers should not need to know which backend answered a tool call. Tool results should include backend provenance such as `tree-sitter`, `text`, or `language-analyzer`, precision such as `exact`, `semantic`, `syntactic`, `heuristic`, or `text`, and degraded-result metadata when a semantic request falls back to an approximate implementation.
@@ -636,12 +636,12 @@ Expected backend behavior:
 - `read_symbol` uses tree-sitter when available; given a line selector it returns the enclosing symbol; falls back to exact-name text search plus bounded line windows.
 - `find_definition` uses `git grep` to find candidate files at the reviewed revision, then tree-sitter parsing to return only definition sites; it falls back to text matches marked degraded when parsing is unavailable. Import questions are answered by `read_file_outline`, which includes the file's imports.
 - `read_diff_blocks` uses parsed diff data and does not require tree-sitter.
-- `search_files` uses `git grep` at the reviewed revision (or bundled ripgrep when the checkout matches the reviewed head) for discovery, then may enrich matches with tree-sitter enclosing symbols when `contextMode` asks for semantic context.
-- `find_symbol_mentions` uses syntax-aware identifier matching when available and `git grep` at the reviewed revision otherwise (ripgrep only as the checkout-matching fast path). It does not claim compiler-grade reference resolution unless a language analyzer backend explicitly marks the result as semantic or exact.
+- `search_files` uses `git grep` at the reviewed revision for discovery, then may enrich matches with tree-sitter enclosing symbols when `contextMode` asks for semantic context.
+- `find_symbol_mentions` uses syntax-aware identifier matching when available and `git grep` at the reviewed revision otherwise. It does not claim compiler-grade reference resolution unless a language analyzer backend explicitly marks the result as semantic or exact.
 - `find_likely_tests` combines test filename conventions with symbol extraction when available and filename/path heuristics otherwise.
 - `list_files` uses filesystem/git listing and does not require tree-sitter.
 
-Source-reading tools should read from the resolved head revision through git by default, and support base-revision reads when the review target has a base revision. The checked-out worktree must not be trusted as review content unless it matches the reviewed head revision; reading the worktree directly is an optional fast path only when HEAD equals the reviewed head and the relevant files are unmodified. Base reads are required for reviewing deleted files and removed-line context when local git can provide the content.
+Source-reading tools should read from the resolved head revision through git by default, and support base-revision reads when the review target has a base revision. The checked-out worktree must not be trusted as review content. Base reads are required for reviewing deleted files and removed-line context when local git can provide the content.
 
 Tool outputs must be capped by count and characters. They should include file paths, line numbers, backend provenance, and degradation notes. They should prefer semantic source blocks over whole files, and record truncation or omitted-result counts in telemetry.
 
@@ -977,7 +977,7 @@ Repository tool path containment should be enforced at a single chokepoint in th
 
 - All paths are canonicalized and required to resolve inside the repository root.
 - Absolute paths and `..` traversal are rejected with a typed `path_outside_repo` error.
-- The worktree fast path must not follow symlinks resolving outside the repo root; git-plumbing reads are inherently contained.
+- Git-plumbing reads are inherently contained to repository object paths.
 - Refs are harness-resolved only (model-facing source reads select `head` or `base`, never raw refs); harness-side ref values are validated against `git check-ref-format` rules and rejected if option-like (leading `-`).
 
 Config trust partitioning:

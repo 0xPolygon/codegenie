@@ -5,6 +5,7 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { applyRepoConfigLayer } from "../config/config-loader.js";
 import {
+  MAX_DEEP_ENSEMBLE_PASSES,
   reasoningLevelSchema,
   reviewDepthSchema,
   severitySchema
@@ -13,6 +14,7 @@ import { createGitClient } from "../git/git-client.js";
 import { runReview } from "../pipeline/review-runner.js";
 import type {
   CodegenieConfig,
+  EvalArtifacts,
   EvalCase,
   EvalCaseResult,
   EvalFindingExpectation,
@@ -22,6 +24,7 @@ import type {
   ReviewCommandTarget
 } from "../types.js";
 import { runGit } from "../git/subprocess.js";
+import { canonicalArtifactPath } from "../telemetry/run-artifacts.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { sha256Hex } from "../util/hashing.js";
 import { resolveCodegenieRuntimeProvenance } from "../util/runtime-provenance.js";
@@ -35,7 +38,7 @@ import {
   writeEvalRunInfo
 } from "./eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "./eval-compare.js";
-import { scoreEvalRun } from "./eval-scoring.js";
+import { aggregateRepeatScores, scoreEvalRun } from "./eval-scoring.js";
 
 export type EvalSuite = {
   dir: string;
@@ -69,7 +72,9 @@ const expectationSchema = z
     category: findingCategorySchema.optional(),
     severityAtLeast: severitySchema.optional(),
     titlePattern: z.string().min(1).optional(),
-    failureModePattern: z.string().min(1).optional()
+    failureModePattern: z.string().min(1).optional(),
+    minRecallRate: z.number().min(0).max(1).optional(),
+    minCandidateRate: z.number().min(0).max(1).optional()
   })
   .strict()
   .superRefine((expectation, ctx) => {
@@ -103,6 +108,7 @@ const expectationSchema = z
 const caseSchema = z
   .object({
     name: z.string().min(1),
+    repeat: positiveIntSchema.optional(),
     repo: z
       .object({
         external: z.string().min(1).optional(),
@@ -127,6 +133,10 @@ const caseSchema = z
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
         budgetBoost: positiveNumberSchema.optional(),
+        maxTimeMinutes: positiveNumberSchema.optional(),
+        maxBudgetTokens: positiveIntSchema.optional(),
+        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
+        adaptiveSecondPass: z.boolean().optional(),
         verify: z.boolean().optional(),
         cache: z.boolean().optional(),
         cacheDir: z.string().min(1).optional(),
@@ -211,10 +221,22 @@ const caseSchema = z
     if (evalCase.command?.head !== undefined && evalCase.command.base === undefined) {
       ctx.addIssue({ code: "custom", path: ["command", "base"], message: "command.head requires command.base" });
     }
+    if ((evalCase.repeat ?? 1) > 1) {
+      if (evalCase.artifacts !== undefined) {
+        ctx.addIssue({ code: "custom", path: ["repeat"], message: "repeat > 1 is incompatible with artifact-backed cases (replays are deterministic)" });
+      }
+      if (evalCase.review?.cache !== false) {
+        ctx.addIssue({ code: "custom", path: ["repeat"], message: "repeat > 1 requires review.cache: false — repeats need fresh sampling, not cached model calls" });
+      }
+    }
     if (evalCase.command?.target !== undefined && evalCase.command.target.includes("..")) {
-      const parts = evalCase.command.target.split("..");
-      if (parts.length !== 2 || (parts[0]?.length ?? 0) === 0 || (parts[1]?.length ?? 0) === 0) {
-        ctx.addIssue({ code: "custom", path: ["command", "target"], message: "command.target ranges must be <start>..<end>" });
+      if (evalCase.command.target.includes("...")) {
+        ctx.addIssue({ code: "custom", path: ["command", "target"], message: "command.target ranges must be <start>..<end> (two dots); three-dot ranges are not supported" });
+      } else {
+        const parts = evalCase.command.target.split("..");
+        if (parts.length !== 2 || (parts[0]?.length ?? 0) === 0 || (parts[1]?.length ?? 0) === 0) {
+          ctx.addIssue({ code: "custom", path: ["command", "target"], message: "command.target ranges must be <start>..<end>" });
+        }
       }
     }
     for (const stage of Object.keys(evalCase.expect?.maxPromptCharsByStage ?? {})) {
@@ -294,9 +316,11 @@ export async function replayFromArtifacts(
   const reread = await rereadReplayCase(sourceInfo, suiteDir);
   const startedAt = new Date().toISOString();
   try {
+    assertReplayLayoutSupported(source);
     const telemetryDir = await copyTelemetryArtifacts(source, allocated.dir);
     await copyReviewOutput(source, allocated.dir);
     const artifacts = await loadEvalArtifacts(telemetryDir);
+    assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(reread.evalCase, artifacts, "replay");
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
@@ -330,6 +354,40 @@ export async function replayFromArtifacts(
   }
 }
 
+// Replays take the artifact set as their input: missing core artifacts mean
+// the input is invalid and the replay errors. Live-run scoring, by contrast,
+// tolerates missing artifacts with disclosure (plan 89 A1) because the review
+// already ran and its partial record is the data point.
+function assertReplayArtifactsComplete(artifacts: { missingArtifacts?: string[] }, telemetryDir: string): void {
+  const missing = artifacts.missingArtifacts ?? [];
+  if (missing.length > 0) {
+    throw new CodegenieError("invalid_args", `required eval artifact is missing: ${missing.join(", ")} (${telemetryDir})`, {
+      context: { missing, telemetryDir }
+    });
+  }
+}
+
+function assertReplayLayoutSupported(sourceRunOrTelemetryDir: string): void {
+  const telemetryDir = resolveTelemetryDir(sourceRunOrTelemetryDir);
+  const oldLayoutArtifacts = [
+    "candidate-findings.json",
+    "final-findings.json",
+    "verification.json",
+    "final-selection.json"
+  ].filter((logicalName) => {
+    const canonical = canonicalArtifactPath(logicalName);
+    return canonical !== logicalName &&
+      existsSync(path.join(telemetryDir, logicalName)) &&
+      !existsSync(path.join(telemetryDir, canonical));
+  });
+  if (oldLayoutArtifacts.length === 0) {
+    return;
+  }
+  throw new CodegenieError("invalid_args", `old layout unsupported for --from-artifacts replay: ${oldLayoutArtifacts.join(", ")} (${telemetryDir})`, {
+    context: { telemetryDir, oldLayoutArtifacts }
+  });
+}
+
 async function runArtifactCase(
   suite: EvalSuite,
   entry: EvalSuite["cases"][number],
@@ -342,6 +400,7 @@ async function runArtifactCase(
     const telemetryDir = await copyTelemetryArtifacts(source, allocated.dir);
     await copyReviewOutput(source, allocated.dir);
     const artifacts = await loadEvalArtifacts(telemetryDir);
+    assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(entry.evalCase, artifacts, "replay");
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
@@ -377,6 +436,9 @@ async function runLiveCase(
   allocated: { runNumber: number; dir: string },
   options: EvalRunOptions
 ): Promise<EvalCaseResult> {
+  if ((entry.evalCase.repeat ?? 1) > 1) {
+    return runRepeatedLiveCase(suite, entry, allocated, options, entry.evalCase.repeat ?? 1);
+  }
   const startedAt = new Date().toISOString();
   let reviewRunId: string | undefined;
   let errorConfig = options.config;
@@ -431,6 +493,96 @@ async function runLiveCase(
       ...(reviewRunId !== undefined ? { reviewRunId } : {})
     });
     await writeRunOutputs(allocated.dir, path.dirname(allocated.dir), info, artifacts.finalFindings);
+    return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
+  } catch (error) {
+    return writeErroredCase(allocated, entry, errorConfig, startedAt, error, "live", undefined, errorCache);
+  }
+}
+
+// Repeated live case (plan 79): N independent executions under
+// logs/<run>/repeats/<k>/, aggregated into recall rates and one parent
+// info.json. The repo/config are resolved once (fixture repos materialize
+// once); each execution gets a fresh telemetry dir and score. A crashed
+// execution is recorded as an errored sample and the loop continues.
+// Compare-to-previous is skipped: an aggregate has no single finding set.
+async function runRepeatedLiveCase(
+  suite: EvalSuite,
+  entry: EvalSuite["cases"][number],
+  allocated: { runNumber: number; dir: string },
+  options: EvalRunOptions,
+  repeat: number
+): Promise<EvalCaseResult> {
+  const startedAt = new Date().toISOString();
+  let errorConfig = options.config;
+  let errorCache: EvalRunInfo["cache"] | undefined;
+  try {
+    const repoRoot = await resolveRepoRoot(suite.dir, entry.evalCase, allocated.dir);
+    const git = createGitClient(repoRoot);
+    if (!(await git.isInsideWorktree())) {
+      throw new CodegenieError("not_git_worktree", `eval case repository is not a git worktree: ${repoRoot}`, {
+        context: { repoRoot }
+      });
+    }
+    const actualRepoRoot = await git.repoRoot();
+    const repoLayer = applyRepoConfigLayer(options.config, actualRepoRoot);
+    const caseConfig = applyCaseReviewConfig(repoLayer.config, entry.evalCase, options.cacheOverride);
+    errorConfig = caseConfig.config;
+    errorCache = caseConfig.cache;
+    if (caseConfig.cache.enabled) {
+      throw new CodegenieError("config_error", "repeat > 1 requires the local model-call cache to be disabled — repeats need fresh sampling (set review.cache: false and do not pass --cache)", {
+        context: { repeat, cacheSource: caseConfig.cache.source }
+      });
+    }
+    const target = targetForCase(entry.evalCase);
+    const executions: Array<{ runDir: string; score: EvalScore; artifacts?: EvalArtifacts }> = [];
+    for (let execution = 1; execution <= repeat; execution += 1) {
+      const execDirName = path.join("repeats", String(execution));
+      const execDir = path.join(allocated.dir, execDirName);
+      await mkdir(execDir, { recursive: true });
+      try {
+        let reviewOutput = "";
+        await runReview(target, caseConfig.config, {
+          repoRoot: actualRepoRoot,
+          runArtifactDir: path.join(execDir, "telemetry"),
+          format: "markdown",
+          postGithubComments: false,
+          configWarnings: repoLayer.warnings,
+          writeOutput: (chunk) => {
+            reviewOutput += chunk;
+          }
+        });
+        if (reviewOutput.trim().length > 0) {
+          await writeFile(path.join(execDir, "codegenie-review.out.md"), reviewOutput);
+        }
+        const artifacts = await loadEvalArtifacts(path.join(execDir, "telemetry"));
+        const score = scoreEvalRun(entry.evalCase, artifacts, "live");
+        await writeFile(path.join(execDir, "score.json"), `${JSON.stringify(score, null, 2)}\n`);
+        executions.push({ runDir: execDirName, score, artifacts });
+      } catch (error) {
+        const score = errorScore(error);
+        await writeFile(path.join(execDir, "score.json"), `${JSON.stringify(score, null, 2)}\n`);
+        executions.push({ runDir: execDirName, score });
+      }
+    }
+    const { aggregate, score } = aggregateRepeatScores(entry.evalCase, executions);
+    const finishedAt = new Date().toISOString();
+    const info = buildRunInfo({
+      runNumber: allocated.runNumber,
+      evalCase: entry.evalCase,
+      caseHash: entry.caseHash,
+      caseFile: entry.file,
+      mode: "live",
+      startedAt,
+      finishedAt,
+      score,
+      repeats: aggregate,
+      config: caseConfig.config,
+      cache: caseConfig.cache,
+      repo: await repoInfo(actualRepoRoot, path.join(allocated.dir, "repeats", "1", "telemetry"))
+    });
+    await writeFile(path.join(allocated.dir, "eval-aggregate.json"), `${JSON.stringify({ aggregate, executions: executions.map((execution) => ({ runDir: execution.runDir, score: execution.score })) }, null, 2)}\n`);
+    await writeFile(path.join(allocated.dir, "out.log"), `${JSON.stringify({ level: "info", message: "eval case scored (repeat aggregate)", status: info.score.status, repeat })}\n`);
+    await writeEvalRunInfo(allocated.dir, info);
     return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
   } catch (error) {
     return writeErroredCase(allocated, entry, errorConfig, startedAt, error, "live", undefined, errorCache);
@@ -494,7 +646,7 @@ async function writeCompareIfAvailable(
     const previousArtifacts = await loadPreviousArtifactsForCompare(previous.dir);
     const report = compareToPrevious(
       { info, finalFindings },
-      { info: previousInfo, finalFindings: previousArtifacts }
+      { info: previousInfo, finalFindings: previousArtifacts.findings, findingsUnreadable: previousArtifacts.unreadable }
     );
     await writeFile(path.join(runDir, "compare-to-previous.json"), `${JSON.stringify(report, null, 2)}\n`);
     await writeFile(path.join(runDir, "compare-to-previous.txt"), renderEvalCompareText(report));
@@ -503,11 +655,13 @@ async function writeCompareIfAvailable(
   }
 }
 
-async function loadPreviousArtifactsForCompare(runDir: string): Promise<FinalFinding[]> {
+async function loadPreviousArtifactsForCompare(runDir: string): Promise<{ findings: FinalFinding[]; unreadable: boolean }> {
   try {
-    return (await loadEvalArtifacts(resolveTelemetryDir(runDir))).finalFindings;
+    const artifacts = await loadEvalArtifacts(resolveTelemetryDir(runDir));
+    const unreadable = (artifacts.missingArtifacts ?? []).some((name) => name.startsWith("final-findings.json"));
+    return { findings: artifacts.finalFindings, unreadable };
   } catch {
-    return [];
+    return { findings: [], unreadable: true };
   }
 }
 
@@ -568,6 +722,7 @@ function buildRunInfo(input: {
   caseFile?: string;
   mode: "live" | "replay";
   replay?: EvalRunInfo["replay"];
+  repeats?: EvalRunInfo["repeats"];
   repo?: EvalRunInfo["repo"];
   reviewRunId?: string;
   startedAt: string;
@@ -584,6 +739,7 @@ function buildRunInfo(input: {
     caseSnapshot: input.evalCase,
     mode: input.mode,
     ...(input.replay !== undefined ? { replay: input.replay } : {}),
+    ...(input.repeats !== undefined ? { repeats: input.repeats } : {}),
     ...(input.repo !== undefined ? { repo: input.repo } : {}),
     ...(input.reviewRunId !== undefined ? { reviewRunId: input.reviewRunId } : {}),
     codegenieRuntime: resolveCodegenieRuntimeProvenance(),
@@ -656,6 +812,18 @@ function applyCaseReviewConfig(
   if (review?.budgetBoost !== undefined) {
     config.review.budgetBoost = review.budgetBoost;
   }
+  if (review?.maxTimeMinutes !== undefined) {
+    config.review.timeoutMs = Math.round(review.maxTimeMinutes * 60_000);
+  }
+  if (review?.maxBudgetTokens !== undefined) {
+    config.review.maxBudgetTokens = review.maxBudgetTokens;
+  }
+  if (review?.deepEnsemblePasses !== undefined) {
+    config.review.deepEnsemblePasses = review.deepEnsemblePasses;
+  }
+  if (review?.adaptiveSecondPass !== undefined) {
+    config.review.adaptiveSecondPass = review.adaptiveSecondPass;
+  }
   if (review?.verify !== undefined) {
     config.review.verify = review.verify;
   }
@@ -695,7 +863,9 @@ function applyCaseReviewConfig(
 function evalEffectiveConfig(config: CodegenieConfig): NonNullable<EvalRunInfo["effectiveConfig"]> {
   return {
     review: {
-      concurrency: config.review.concurrency
+      concurrency: config.review.concurrency,
+      timeoutMs: config.review.timeoutMs,
+      ...(config.review.maxBudgetTokens !== undefined ? { maxBudgetTokens: config.review.maxBudgetTokens } : {})
     },
     llm: {
       ...(config.llm.provider !== undefined ? { provider: config.llm.provider } : {}),
@@ -827,7 +997,7 @@ function expandHome(input: string): string {
 
 async function repoInfo(repoRoot: string, telemetryDir: string): Promise<EvalRunInfo["repo"]> {
   try {
-    const resolved = JSON.parse(await readFile(path.join(telemetryDir, "resolved-input.json"), "utf8")) as Record<string, unknown>;
+    const resolved = JSON.parse(await readFile(path.join(telemetryDir, canonicalArtifactPath("resolved-input.json")), "utf8")) as Record<string, unknown>;
     return {
       root: repoRoot,
       ...(typeof resolved.baseRef === "string" ? { baseSha: resolved.baseRef } : {}),

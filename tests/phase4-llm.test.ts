@@ -2,10 +2,10 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { complete as piComplete, completeSimple as piCompleteSimple, Type, validateToolCall } from "@earendil-works/pi-ai";
+import { Type, validateToolCall } from "@earendil-works/pi-ai";
 import { getOAuthApiKey as piGetOAuthApiKey } from "@earendil-works/pi-ai/oauth";
 import { describe, expect, it, vi } from "vitest";
-import { createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
+import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import type {
   LlmCallUsage,
   PiAiAdapter,
@@ -32,11 +32,17 @@ import {
 import { buildRepositoryToolDefinitions } from "../src/llm/tool-definitions.js";
 import type { Logger, LogEvent, RepositoryTools, TelemetryEvent, ToolCallRecord } from "../src/types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
+import { stage7RecoverInvalidSubmit } from "../src/llm/stage7-submit-repair.js";
+import type { LlmSchemaInvalidSubmitRecoveryInput } from "../src/llm/llm-runner.js";
 import { clearRegisteredSecretsForTests, registerSecret, stripCredentials } from "../src/telemetry/redaction.js";
 import type { ToolDefinition } from "../src/llm/llm-runner.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../src/provider/provider-services.js";
 import { CodegenieError } from "../src/util/errors.js";
 import { scaleToolBudget } from "../src/util/budget.js";
+
+type RealPiAiAdapterDepsForTest = NonNullable<Parameters<typeof createRealPiAiAdapter>[0]>;
+type PiCompleteForTest = NonNullable<RealPiAiAdapterDepsForTest["complete"]>;
+type PiCompleteSimpleForTest = NonNullable<RealPiAiAdapterDepsForTest["completeSimple"]>;
 
 describe("Phase 4 schemas and repository tool definitions", () => {
   it("redacts shared object references without mistaking them for cycles", () => {
@@ -829,6 +835,253 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       errorCode: "llm_call_failed",
       error: { message: "LLM model task timed out" }
     });
+  });
+
+  it("routes a pass past its soft deadline to a forced finalize within the grace window", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "tool-1", name: "read_range", arguments: { path: "src/a.ts", startLine: 1, endLine: 2 } }
+      ]),
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const baseComplete = scripted.complete;
+    let firstCall = true;
+    const adapter: typeof scripted = {
+      ...scripted,
+      complete: vi.fn(async (model, context, options) => {
+        if (firstCall) {
+          firstCall = false;
+          // Push past the 150ms soft deadline while staying inside soft+grace.
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+        return baseComplete(model, context, options);
+      })
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    const result = await runner.runStructured({
+      ...submitReviewRequest("packet-soft-deadline"),
+      tools: buildRepositoryToolDefinitions(fakeRepositoryTools()),
+      toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 2000 },
+      timeoutMs: 150,
+      telemetryContext: { workerId: "worker-1", packetId: "packet-soft-deadline" }
+    });
+
+    expect(result).toEqual({ findings: [], followUpHints: [], uncertainties: [] });
+    expect(scripted.toolNames[1]).toEqual(["submit_review"]);
+    expect(scripted.contexts[1]).toContain("time budget is exhausted");
+    const finalizeStart = telemetry.events.find((event) => event.message === "full_finalize_started");
+    expect(finalizeStart?.data).toMatchObject({ reason: "soft_deadline" });
+    const graceUsed = telemetry.events.find((event) => event.message === "finalize_grace_used");
+    expect(graceUsed?.data).toMatchObject({ graceMsUsed: expect.any(Number) });
+    expect(telemetry.modelCalls[1]).toMatchObject({ kind: "finalize", status: "ok" });
+  });
+
+  it("records the effective provider protocol on model calls and emits provider_protocol once", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-protocol"));
+
+    expect(telemetry.modelCalls[0]).toMatchObject({
+      toolChoiceRequested: "forced:submit_review",
+      toolChoiceEffective: "required",
+      toolChoiceDowngraded: false,
+      reasoningRequested: "high",
+      reasoningMechanism: "unknown",
+      reasoningLevelEffective: "high"
+    });
+    const protocolEvents = telemetry.events.filter((event) => event.message === "provider_protocol");
+    expect(protocolEvents).toHaveLength(1);
+    expect(protocolEvents[0]?.data).toMatchObject({
+      api: "faux",
+      forcedToolChoiceEffective: "required",
+      toolChoiceDowngraded: false,
+      reasoningMechanism: "unknown"
+    });
+    expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(0);
+  });
+
+  it("scopes prompt-cache session keys per worker, stable across one worker's calls", async () => {
+    const scripted = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "tool-1", name: "read_range", arguments: { path: "src/a.ts", startLine: 1, endLine: 2 } }
+      ]),
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ]),
+      assistant([
+        { type: "toolCall", id: "submit-2", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter: scripted,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("packet-a"),
+      tools: buildRepositoryToolDefinitions(fakeRepositoryTools()),
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 2000 },
+      telemetryContext: { workerId: "w7-001", packetId: "packet-a" }
+    });
+    await runner.runStructured({
+      ...submitReviewRequest("packet-b"),
+      telemetryContext: { workerId: "w7-002", packetId: "packet-b" }
+    });
+
+    const sessionIds = scripted.options.map((options) => options.sessionId as string);
+    // Worker w7-001 made two calls (tool round + submit) sharing one key;
+    // worker w7-002 gets a different key.
+    expect(sessionIds[0]).toBe(sessionIds[1]);
+    expect(sessionIds[0]).toContain("stage-7-w7-001");
+    expect(sessionIds[2]).toContain("stage-7-w7-002");
+    expect(sessionIds[2]).not.toBe(sessionIds[0]);
+  });
+
+  it("records ttfb and rate-limit headers from the provider response", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const baseComplete = scripted.complete;
+    const adapter: typeof scripted = {
+      ...scripted,
+      complete: vi.fn(async (model, context, options) => {
+        const onResponse = (options as { onResponse?: (response: { status: number; headers: Record<string, string> }) => void }).onResponse;
+        onResponse?.({
+          status: 200,
+          headers: {
+            "request-id": "req_test123",
+            "anthropic-ratelimit-input-tokens-remaining": "39000",
+            "anthropic-ratelimit-input-tokens-limit": "40000",
+            "content-type": "application/json"
+          }
+        });
+        return baseComplete(model, context, options);
+      })
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-headers"));
+
+    expect(telemetry.modelCalls[0]).toMatchObject({
+      ttfbMs: expect.any(Number),
+      providerHttpStatus: 200,
+      providerRequestId: "req_test123",
+      rateLimit: {
+        "anthropic-ratelimit-input-tokens-remaining": "39000",
+        "anthropic-ratelimit-input-tokens-limit": "40000"
+      }
+    });
+    expect((telemetry.modelCalls[0] as { rateLimit?: Record<string, string> }).rateLimit).not.toHaveProperty("content-type");
+  });
+
+  it("runs anthropic submit turns with real forcing and thinking off by default (plan 86 step 3)", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const adapter: typeof scripted = {
+      ...scripted,
+      resolveModel: () => ({ provider: "anthropic", id: "fake-opus", raw: { id: "fake-opus", api: "anthropic-messages" } })
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "anthropic", model: "fake-opus", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-anthropic-protocol"));
+
+    expect(telemetry.modelCalls[0]).toMatchObject({
+      toolChoiceRequested: "forced:submit_review",
+      toolChoiceEffective: "forced:submit_review",
+      toolChoiceDowngraded: false,
+      // The forced-submit call runs with thinking disabled, so no reasoning
+      // mechanism is in play for this call.
+      reasoningMechanism: "none"
+    });
+    expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(0);
+    const protocolEvent = telemetry.events.find((event) => event.message === "provider_protocol");
+    expect(protocolEvent?.data).toMatchObject({
+      forceSubmitToolChoice: true,
+      forcedToolChoiceEffective: "forced:submit_review",
+      toolChoiceDowngraded: false
+    });
+  });
+
+  it("surfaces the anthropic downgrade when forceSubmitToolChoice is disabled", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const adapter: typeof scripted = {
+      ...scripted,
+      resolveModel: () => ({ provider: "anthropic", id: "fake-opus", raw: { id: "fake-opus", api: "anthropic-messages" } })
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "anthropic", model: "fake-opus", maxConcurrentCalls: 1, forceSubmitToolChoice: false },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-anthropic-downgrade"));
+
+    expect(telemetry.modelCalls[0]).toMatchObject({
+      toolChoiceRequested: "forced:submit_review",
+      toolChoiceEffective: "auto",
+      toolChoiceDowngraded: true,
+      reasoningMechanism: "adaptive-effort"
+    });
+    const downgraded = telemetry.events.filter((event) => event.message === "tool_choice_downgraded");
+    expect(downgraded).toHaveLength(1);
+    expect(downgraded[0]?.level).toBe("warn");
   });
 
   it("enforces maxConcurrentCalls across provider misses", async () => {
@@ -2067,7 +2320,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-xml-no-findings"),
+        ...submitReviewRequest("packet-xml-no-findings", telemetry.recorder),
         telemetryContext: { packetId: "packet-xml-no-findings" }
       })
     ).resolves.toMatchObject({
@@ -2120,7 +2373,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-candidate-cleanup"),
+        ...submitReviewRequest("packet-candidate-cleanup", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-cleanup" }
       })
     ).resolves.toMatchObject({
@@ -2184,7 +2437,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
 
     const result = (await runner.runStructured({
-      ...submitReviewRequest("packet-long-no-findings"),
+      ...submitReviewRequest("packet-long-no-findings", telemetry.recorder),
       telemetryContext: { packetId: "packet-long-no-findings" }
     })) as SubmitPacketReview;
 
@@ -2246,7 +2499,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-candidate-anchor-cleanup"),
+        ...submitReviewRequest("packet-candidate-anchor-cleanup", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-anchor-cleanup" }
       })
     ).resolves.toMatchObject({
@@ -2309,7 +2562,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
 
     const result = (await runner.runStructured({
-      ...submitReviewRequest("packet-prose-no-findings"),
+      ...submitReviewRequest("packet-prose-no-findings", telemetry.recorder),
       telemetryContext: { packetId: "packet-prose-no-findings" }
     })) as SubmitPacketReview;
 
@@ -2350,7 +2603,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-candidate-repair"),
+        ...submitReviewRequest("packet-candidate-repair", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-repair" }
       })
     ).resolves.toMatchObject({ findings: [expect.objectContaining({ title: "Candidate finding" })] });
@@ -2409,7 +2662,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-candidate-substantive-extra"),
+        ...submitReviewRequest("packet-candidate-substantive-extra", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-substantive-extra" }
       })
     ).resolves.toMatchObject({ findings: [expect.objectContaining({ title: "Candidate finding" })] });
@@ -2462,7 +2715,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-candidate-invalid-enum"),
+        ...submitReviewRequest("packet-candidate-invalid-enum", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-invalid-enum" }
       })
     ).resolves.toMatchObject({ findings: [expect.objectContaining({ category: "correctness" })] });
@@ -2504,7 +2757,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-candidate-repair-fails"),
+        ...submitReviewRequest("packet-candidate-repair-fails", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-repair-fails" }
       })
     ).rejects.toMatchObject({ code: "llm_schema_invalid" });
@@ -2592,7 +2845,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(
       runner.runStructured({
-        ...submitReviewRequest("packet-no-salvage-after-candidate"),
+        ...submitReviewRequest("packet-no-salvage-after-candidate", telemetry.recorder),
         telemetryContext: { packetId: "packet-no-salvage-after-candidate" }
       })
     ).rejects.toMatchObject({ code: "llm_schema_invalid" });
@@ -3579,6 +3832,53 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     );
   });
 
+  it("records extra_submit_dropped telemetry when one response contains multiple submit calls", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([
+        validSubmitReviewCall("submit-first"),
+        validSubmitReviewCall("submit-second"),
+        validSubmitReviewCall("submit-third")
+      ])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(
+      runner.runStructured({
+        ...submitReviewRequest("packet-extra-submit"),
+        telemetryContext: { workerId: "worker-submit", packetId: "packet-extra-submit", candidateId: "candidate-extra-submit" }
+      })
+    ).resolves.toEqual({
+      findings: [],
+      followUpHints: [],
+      uncertainties: []
+    });
+
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 7,
+        level: "warn",
+        message: "extra_submit_dropped",
+        workerId: "worker-submit",
+        packetId: "packet-extra-submit",
+        data: expect.objectContaining({
+          submitTool: "submit_review",
+          callId: "submit-first",
+          droppedToolCallCount: 2,
+          droppedCallIds: ["submit-second", "submit-third"],
+          candidateId: "candidate-extra-submit"
+        })
+      })
+    ]));
+  });
+
   it("does not retry non-auth 4xx provider errors", async () => {
     const adapter: PiAiAdapter = {
       resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
@@ -3633,10 +3933,24 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.complete).toHaveBeenCalledTimes(1);
   });
 
+  it("parses HTTP statuses only from status-coded provider error contexts", () => {
+    expect([
+      "HTTP 500 from provider",
+      "status: 503",
+      "statusCode = 429",
+      "code 400"
+    ].map((input) => __piRunnerTestHooks.parseHttpStatus(input))).toEqual([500, 503, 429, 400]);
+    expect([
+      "context of 500 tokens exceeded the window",
+      "processed 429 files before stopping",
+      "model claude-opus-4-8 400 does not exist"
+    ].map((input) => __piRunnerTestHooks.parseHttpStatus(input))).toEqual([undefined, undefined, undefined]);
+  });
+
   it("treats Pi stopReason error messages as provider failures instead of schema failures", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
-      assistantError("400 model claude-opus-4-8 does not exist")
+      assistantError("HTTP status 400 model claude-opus-4-8 does not exist")
     ]);
     const runner = createPiRunner({
       llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
@@ -3658,7 +3972,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         status: "transient_error",
         stopReason: "error",
         errorCode: "llm_call_failed",
-        errorMessage: "400 model claude-opus-4-8 does not exist",
+        errorMessage: "HTTP status 400 model claude-opus-4-8 does not exist",
         outputChars: 2
       })
     ]);
@@ -3881,7 +4195,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const completeSimple = (async (_model, _context, options) => {
       optionsSeen.push(options as Record<string, unknown>);
       return assistant([validSubmitReviewCall("submit-simple-reasoning")]);
-    }) as typeof piCompleteSimple;
+    }) as PiCompleteSimpleForTest;
     const adapter = createRealPiAiAdapter({ completeSimple });
 
     await adapter.complete(
@@ -3903,8 +4217,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const complete = (async (_model, _context, options) => {
       rawOptionsSeen.push(options as Record<string, unknown>);
       return assistant([validSubmitReviewCall("submit-raw-forced")]);
-    }) as typeof piComplete;
-    const completeSimple = vi.fn(async () => assistant([validSubmitReviewCall("must-not-use-simple")])) as unknown as typeof piCompleteSimple;
+    }) as PiCompleteForTest;
+    const completeSimple = vi.fn(async () => assistant([validSubmitReviewCall("must-not-use-simple")])) as unknown as PiCompleteSimpleForTest;
     const adapter = createRealPiAiAdapter({ complete, completeSimple });
 
     await adapter.complete(
@@ -3929,13 +4243,13 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(rawOptionsSeen[0]).not.toHaveProperty("reasoning");
   });
 
-  it("keeps Anthropic thinking enabled and avoids forced provider tool choice for submit turns", async () => {
+  it("disables Anthropic thinking and applies real forced tool choice for submit turns (plan 86 step 3)", async () => {
     const rawOptionsSeen: Record<string, unknown>[] = [];
     const complete = (async (_model, _context, options) => {
       rawOptionsSeen.push(options as Record<string, unknown>);
       return assistant([validSubmitReviewCall("submit-anthropic-forced")]);
-    }) as typeof piComplete;
-    const completeSimple = vi.fn(async () => assistant([validSubmitReviewCall("must-not-use-simple")])) as unknown as typeof piCompleteSimple;
+    }) as PiCompleteForTest;
+    const completeSimple = vi.fn(async () => assistant([validSubmitReviewCall("must-not-use-simple")])) as unknown as PiCompleteSimpleForTest;
     const adapter = createRealPiAiAdapter({ complete, completeSimple });
 
     await adapter.complete(
@@ -3953,12 +4267,41 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(rawOptionsSeen).toEqual([
       expect.objectContaining({
         apiKey: "fake-api-key",
+        thinkingEnabled: false,
+        toolChoice: { type: "tool", name: "submit_review" }
+      })
+    ]);
+    expect(rawOptionsSeen[0]).not.toHaveProperty("reasoning");
+    expect(rawOptionsSeen[0]).not.toHaveProperty("effort");
+    expect(rawOptionsSeen[0]).not.toHaveProperty("forceSubmitToolChoice");
+  });
+
+  it("keeps the legacy Anthropic downgrade when forceSubmitToolChoice is disabled", async () => {
+    const rawOptionsSeen: Record<string, unknown>[] = [];
+    const complete = (async (_model, _context, options) => {
+      rawOptionsSeen.push(options as Record<string, unknown>);
+      return assistant([validSubmitReviewCall("submit-anthropic-downgraded")]);
+    }) as PiCompleteForTest;
+    const adapter = createRealPiAiAdapter({ complete });
+
+    await adapter.complete(
+      {
+        provider: "anthropic",
+        id: "claude-test",
+        raw: { api: "anthropic-messages", provider: "anthropic", id: "claude-test", maxTokens: 4096, reasoning: true },
+        apiKey: "fake-api-key"
+      },
+      { messages: [], tools: [] },
+      { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, forceSubmitToolChoice: false } as never
+    );
+
+    expect(rawOptionsSeen).toEqual([
+      expect.objectContaining({
         thinkingEnabled: true,
         effort: "high",
         toolChoice: "auto"
       })
     ]);
-    expect(rawOptionsSeen[0]).not.toHaveProperty("reasoning");
   });
 
   it("refreshes stored OAuth credentials through Pi helpers and persists updates", async () => {
@@ -3983,7 +4326,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const completeSimple = (async (_model, _context, options) => {
       optionsSeen.push(options as Record<string, unknown>);
       return assistant([validSubmitReviewCall("submit-oauth-refresh")]);
-    }) as typeof piCompleteSimple;
+    }) as PiCompleteSimpleForTest;
     const getOAuthApiKey = vi.fn(async (_provider: string, credentials: Record<string, typeof oldCredentials>) => {
       expect(credentials["github-copilot"]).toEqual(oldCredentials);
       return { newCredentials, apiKey: "new-oauth-api-key" };
@@ -4315,13 +4658,23 @@ function validSubmitPlanCall(id: string): PiToolCall {
   };
 }
 
-function submitReviewRequest(packetId: string) {
+function submitReviewRequest(packetId: string, telemetry?: TelemetryRecorder) {
   return {
     stage: 7 as const,
     prompt: `review ${packetId}`,
     schema: SubmitPacketReviewSchema,
     templateVersion: "test-template",
-    timeoutMs: 1000
+    timeoutMs: 1000,
+    // Mirrors lens-runner's production wiring (plan 95): stage-7 deterministic
+    // cleanup arrives via the shared recoverInvalidSubmit seam.
+    ...(telemetry !== undefined
+      ? {
+          schemaRepair: {
+            recoverInvalidSubmit: (input: LlmSchemaInvalidSubmitRecoveryInput) =>
+              stage7RecoverInvalidSubmit(input, telemetry, { packetId })
+          }
+        }
+      : {})
   };
 }
 

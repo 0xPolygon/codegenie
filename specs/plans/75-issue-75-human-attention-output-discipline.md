@@ -1,9 +1,12 @@
 # Issue 75: Human-Attention Output Discipline
 
-Status: PENDING
+Status: COMPLETE (step 1, 2026-07-04; step 2 superseded per header)
+Step-1 implementation notes: VerificationResolution gains a source mode; a completed reject with falsePositiveRisk=high on a PROMOTED candidate ("stage9_adjudicated_reject") resolves its exact source note via provenance-only matching (no fuzzy fallthrough — enforced structurally in attentionGroupResolvedByVerification); suppression records read "adjudicated by stage 9 reject verdict for <id>"; stage-10 event human_attention_hints_suppressed_by_adjudicated_reject. Uncertain rejects (medium/low risk or incomplete) leave notes visible. Pinning tests landed 2026-07-04 (`tests/human-attention-adjudication.test.ts`): confident reject suppresses the exact source note with provenanceMatched=true; uncertain (medium-risk) reject produces no resolution and the note survives; adjudicated rejects never fuzzy-match unrelated notes.
 Planned from: trails-api eval `0c4d5213/logs/34` compared with `0c4d5213/logs/33`, 2026-06-19
 Planned at: commit `f62da93`
 Recommended priority: medium. This is output-quality hardening after Issues 70-74; it should not change Stage 7 recall, verifier strictness, or final finding selection.
+
+> **Scope supersession (2026-07-02, per `specs/reviews/1-fable-review.md` §4/§6.4 and `PUNCHLIST.md` Wave 4): Step 1 only.** Step 2 (heuristic packet-resolution suppression, §"2. (Conditional)" below) is superseded — the fable review identifies it as the ~6th suppression patch on a subsystem that needs the structural fix instead (notes rare by construction; drop Jaccard tiers and diff-universe path filtering). Do not implement Step 2; its sections are retained for context only.
 
 > Executor instructions: follow this plan step by step. Run each verification command before moving on. If any STOP condition occurs, stop and report rather than improvising.
 >
@@ -242,7 +245,7 @@ Telemetry/artifact:
   - `message: "human_attention_hints_suppressed_by_adjudicated_reject"`
   - `data.suppressed`.
 
-### 2. (Conditional) Suppress call-site helper notes already resolved by a stronger no-finding packet
+### 2. (Conditional — SUPERSEDED 2026-07-02, do not implement; see header note) Suppress call-site helper notes already resolved by a stronger no-finding packet
 
 **Implement Step 1 first, then re-measure before doing this step.** Step 1 is provenance-exact and low-risk. Step 2 is a heuristic — it lets a strong no-finding packet "cover" a weaker packet's question — and it carries real over-suppression risk. After Step 1 ships, re-run the eval and inspect `human-attention-notes.json`. **Do Step 2 only if redundant helper/callee notes still survive.** If Step 1 clears the noise, skip Step 2 entirely; it is not required to close this issue.
 

@@ -1,15 +1,10 @@
 import {
-  complete,
-  completeSimple,
-  getEnvApiKey,
-  getModel,
-  getModels,
-  getProviders,
   validateToolCall,
   type Api,
   type Context,
-  type KnownProvider,
   type Model,
+  type Models,
+  type ProviderStreamOptions,
   type SimpleStreamOptions,
   type Tool,
   type ToolCall
@@ -18,17 +13,21 @@ import { getOAuthApiKey, getOAuthProvider, type OAuthCredentials } from "@earend
 import pLimit from "p-limit";
 import { createFileAuthStorage } from "../provider/provider-services.js";
 import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../provider/model-policy.js";
+import { getCodegeniePiModels, getPiEnvApiKey } from "../provider/pi-ai-models.js";
 import { getCodegeniePaths } from "../config/paths.js";
 import { registerSecret, stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import type { ReviewStage, ToolBudget, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../provider/provider-services.js";
 import { sha256Hex } from "../util/hashing.js";
-import { CodegenieError, type CodegenieErrorCode } from "../util/errors.js";
+import { stableJson } from "../util/json.js";
+import { finalizeGraceMs } from "../util/budget.js";
+import { CodegenieError, truncateDiagnostic, type CodegenieErrorCode } from "../util/errors.js";
 import {
   roleForStage,
   type CreateRunnerOptions,
   type LlmCallUsage,
+  type LlmInvalidSubmitRecovery,
   type LlmSchemaInvalidSubmitRecoveryInput,
   type LlmSchemaRepairInput,
   type LlmRunner,
@@ -51,8 +50,6 @@ import { SCHEMA_VERSIONS, submitToolNameForStage } from "./schemas.js";
 import {
   classifyStage7SchemaInvalid,
   stage7CompactSchemaRepairPrompt,
-  stage7SubmitPayloadKind,
-  stage7SubmitRepairDecision,
   type Stage7SchemaInvalidKind,
   type Stage7SubmitRepairDecision
 } from "./stage7-submit-repair.js";
@@ -150,6 +147,7 @@ type NormalizedUsage = {
   cacheWriteTokens?: number;
   billableInputTokens?: number;
   outputTokens?: number;
+  reasoningTokens?: number;
   totalTokens?: number;
   costUSD?: number;
   inputCostUSD?: number;
@@ -173,11 +171,15 @@ const MAX_DEBUG_ARTIFACT_CHARS = 1_500_000;
 const RECORDED_PROVIDER_FAILURE = Symbol("recordedProviderFailure");
 
 type RealPiAiAdapterDeps = {
-  complete?: typeof complete;
-  completeSimple?: typeof completeSimple;
+  models?: Pick<Models, "complete" | "completeSimple" | "getModel" | "getModels" | "getProviders" | "getProvider">;
+  complete?: PiCompleteFunction;
+  completeSimple?: PiCompleteSimpleFunction;
   getOAuthApiKey?: typeof getOAuthApiKey;
   authStorage?: PiAuthStorage;
 };
+
+type PiCompleteFunction = (model: Model<Api>, context: Context, options?: ProviderStreamOptions) => Promise<PiAssistantMessage>;
+type PiCompleteSimpleFunction = (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => Promise<PiAssistantMessage>;
 
 export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
   const adapter = opts.adapter ?? createRealPiAiAdapter();
@@ -199,6 +201,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
   let modelCallSeq = 0;
   const nextModelCallId = (): string => `mc-${String(++modelCallSeq).padStart(6, "0")}`;
   const recordedPromptCacheStages = new Set<ReviewStage>();
+  const protocolFlags = { providerProtocolRecorded: false, downgradeWarned: false };
 
   return {
     runStructured: async <T>(request: LlmStructuredRequest<T>): Promise<T> => {
@@ -206,8 +209,34 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       const repositoryTools = request.tools ?? [];
       const allTools = [...repositoryTools, submitTool];
       const budget = request.toolBudget ?? NO_REPOSITORY_TOOL_BUDGET;
-      const providerPromptCache = providerPromptCacheOptions(opts.telemetry.runId, request.stage);
+      const providerPromptCache = providerPromptCacheOptions(opts.telemetry.runId, request.stage, request.telemetryContext?.workerId);
       recordProviderPromptCacheStrategy(opts, request, providerPromptCache, recordedPromptCacheStages);
+      if (!protocolFlags.providerProtocolRecorded) {
+        protocolFlags.providerProtocolRecorded = true;
+        const forcedProbe = describeProviderProtocol(
+          model,
+          { type: "tool", name: submitTool.name },
+          opts.llmConfig.reasoning ?? "high",
+          opts.llmConfig.forceSubmitToolChoice !== false
+        );
+        opts.telemetry.event({
+          stage: request.stage,
+          level: "info",
+          message: "provider_protocol",
+          data: {
+            provider: model.provider,
+            model: model.id,
+            api: (model.raw as { api?: string }).api,
+            sessionKeyGranularity: "worker",
+            forceSubmitToolChoice: opts.llmConfig.forceSubmitToolChoice !== false,
+            forcedToolChoiceEffective: forcedProbe.toolChoiceEffective,
+            toolChoiceDowngraded: forcedProbe.toolChoiceDowngraded,
+            reasoningMechanism: forcedProbe.reasoningMechanism,
+            ...(forcedProbe.reasoningRequested !== undefined ? { reasoningRequested: forcedProbe.reasoningRequested } : {}),
+            ...(forcedProbe.reasoningLevelEffective !== undefined ? { reasoningLevelEffective: forcedProbe.reasoningLevelEffective } : {})
+          }
+        });
+      }
       const messages: ConversationMessage[] = [
         { role: "user", content: request.prompt, timestamp: 0 }
       ];
@@ -217,15 +246,65 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       const sourceExtensionState: ToolBudgetExtensionState = { toolCallsUsed: 0, resultCharsUsed: 0 };
       let schemaRepairUsed = false;
       let finalizeNudgeUsed = false;
+      // Plan 95: the single model-repair scheduler. Every schema-repair retry
+      // (discipline errors and schema-invalid submits alike) books the one
+      // repair attempt and routes the pass to finalize through this closure;
+      // queueSchemaRepair enforces the budget and fails the call when the
+      // attempt is already spent.
+      const scheduleModelRepair = (repair: {
+        submitToolName: string;
+        submitCalls: PiToolCall[];
+        extraToolNames: string[];
+        error: string;
+        repairClassification?: string;
+        replaceConversationOverride?: boolean;
+        cause?: unknown;
+      }): void => {
+        queueSchemaRepair({
+          opts,
+          request,
+          messages,
+          submitToolName: repair.submitToolName,
+          submitCalls: repair.submitCalls,
+          extraToolNames: repair.extraToolNames,
+          error: repair.error,
+          schemaRepairUsed,
+          ...(repair.repairClassification !== undefined ? { repairClassification: repair.repairClassification as Stage7SchemaInvalidKind } : {}),
+          ...(repair.replaceConversationOverride === true ? { replaceConversationOverride: true } : {}),
+          ...(repair.cause !== undefined ? { cause: repair.cause } : {})
+        });
+        schemaRepairUsed = true;
+        forceFinalize = true;
+        budgetForceFinalize = false;
+      };
       let finalizeSubmitRetryUsed = false;
       let forceFinalize = false;
       let budgetForceFinalize = false;
       let candidateDrafted = false;
       const toolResultSummaries: LlmToolResultSummary[] = [];
-      const taskTimeout = timeoutSignal(opts.runSignal, request.timeoutMs);
+      // Soft/hard deadline pair (plan 85): the soft deadline stops new
+      // investigation calls and routes the pass to finalize; the hard deadline
+      // (soft + grace) aborts. A pass that finished investigating is never
+      // killed mid-finalize by the soft budget alone.
+      const graceMs = finalizeGraceMs(request.timeoutMs);
+      const softDeadlineAt = Date.now() + request.timeoutMs;
+      let softDeadlineFinalize = false;
+      const taskTimeout = timeoutSignal(opts.runSignal, request.timeoutMs + graceMs);
 
       try {
         for (;;) {
+          if (!forceFinalize && messages.length > 1 && Date.now() >= softDeadlineAt) {
+            forceFinalize = true;
+            softDeadlineFinalize = true;
+            queueForcedFinalizePrompt({
+              opts,
+              request,
+              messages,
+              submitToolName: submitTool.name,
+              reason: "soft_deadline",
+              candidateDrafted
+            });
+          }
           const activeTools = forceFinalize ? [submitTool] : allTools;
           const kind = forceFinalize ? schemaRepairUsed ? "repair" : "finalize" : messages.length === 1 ? "initial" : "tool-continuation";
           const finalizeMode = forceFinalize ? "full" : undefined;
@@ -251,7 +330,8 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               providerPromptCache,
               budgetExempt: budgetForceFinalize,
               finalizeMode,
-              finalizeTarget
+              finalizeTarget,
+              protocolFlags
             });
           } catch (cause) {
             if (!forceFinalize && isBudgetExhaustedError(cause) && messages.length > 1) {
@@ -276,6 +356,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           const submitCalls = toolCallsNamed(message, submitTool.name);
           const submitCall = submitCalls[0];
           const toolCalls = toolCallsExcept(message, submitTool.name);
+          recordExtraSubmitDropped(opts, request, submitTool.name, submitCalls);
           candidateDrafted = candidateDrafted || submitCalls.some(submitCallHasFindings);
           const submitDisciplineError = submitResponseDisciplineError(request, submitTool.name, submitCalls);
           if (submitDisciplineError !== undefined) {
@@ -289,19 +370,12 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 schemaRepairUsed
               }));
             }
-            queueSchemaRepair({
-              opts,
-              request,
-              messages,
+            scheduleModelRepair({
               submitToolName: submitTool.name,
               submitCalls,
               extraToolNames: toolCalls.map((toolCall) => toolCall.name),
-              error: submitDisciplineError,
-              schemaRepairUsed
+              error: submitDisciplineError
             });
-            schemaRepairUsed = true;
-            forceFinalize = true;
-            budgetForceFinalize = false;
             continue;
           }
           if (submitCall) {
@@ -310,53 +384,63 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               if (request.stage === 7 && schemaRepairUsed) {
                 if (candidateDrafted && !submitCallHasFindings(submitCall)) {
                   const error = "Stage 7 candidate schema repair returned no findings; codegenie will not silently downgrade malformed findings to no-findings.";
-                  recordStage7SchemaRepairFailed(opts, request, submitTool.name, "unsafe_candidate_like_payload", error);
+                  recordStage7SchemaRepairEvent({
+                    opts,
+                    request,
+                    level: "warn",
+                    message: "stage7_schema_repair_failed",
+                    data: {
+                      submitTool: submitTool.name,
+                      classification: "unsafe_candidate_like_payload",
+                      error
+                    }
+                  });
                   throw new CodegenieError("llm_schema_invalid", error, {
                     recoverable: true,
                     context: { submitTool: submitTool.name, error }
                   });
                 }
-                recordStage7SchemaRepairRecovered(opts, request, "schema_valid_after_retry");
+                recordStage7SchemaRepairEvent({
+                  opts,
+                  request,
+                  level: "info",
+                  message: "stage7_schema_repair_recovered",
+                  data: { classification: "schema_valid_after_retry" }
+                });
               }
               if (toolCalls.length > 0) {
                 recordSubmitWithExtraTools(opts, request, submitTool.name, toolCalls);
               }
+              if (softDeadlineFinalize) {
+                opts.telemetry.event(definedRecord({
+                  stage: request.stage,
+                  level: "info",
+                  message: "finalize_grace_used",
+                  workerId: request.telemetryContext?.workerId,
+                  packetId: request.telemetryContext?.packetId,
+                  data: definedRecord({
+                    graceMsUsed: Math.max(0, Date.now() - softDeadlineAt),
+                    graceMs,
+                    candidateId: request.telemetryContext?.candidateId
+                  })
+                }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+              }
               return validated as T;
             } catch (cause) {
-              const stage7Repair = stage7SubmitRepairDecision(request, submitCall, cause, candidateDraftedBeforeSubmit);
-              if (stage7Repair !== undefined) {
-                recordStage7SchemaRepairAttempted(opts, request, submitTool.name, submitCalls, toolCalls, stage7Repair.classification, cause);
-                if (stage7Repair.recovered !== undefined) {
-                  recordStage7SchemaCleanupAttempted(opts, request, submitTool.name, stage7Repair);
-                  try {
-                    const recoveredCallId = `${submitCall.id || submitTool.name}-stage7-recovered`;
-                    const validated = adapter.validateToolCall([toolSpec(submitTool)], {
-                      type: "toolCall",
-                      id: recoveredCallId,
-                      name: submitTool.name,
-                      arguments: stage7Repair.recovered
-                    });
-                    recordStage7SchemaCleanupRecovered(opts, request, stage7Repair, recoveredCallId);
-                    recordStage7SchemaRepairRecovered(opts, request, stage7Repair.classification);
-                    return validated as T;
-                  } catch (recoveryCause) {
-                    recordStage7SchemaCleanupRejected(opts, request, submitTool.name, stage7Repair, recoveryCause);
-                  }
-                } else if (stage7Repair.cleanupKind !== undefined) {
-                  recordStage7SchemaCleanupAttempted(opts, request, submitTool.name, stage7Repair);
-                  recordStage7SchemaCleanupRejected(opts, request, submitTool.name, stage7Repair, cause);
-                }
-              }
-              const submitError = `The ${submitTool.name} arguments were schema-invalid: ${truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause))}`;
-              const repairInput = schemaRepairInput({
-                request,
-                submitToolName: submitTool.name,
-                error: submitError,
-                submitCalls,
-                extraToolNames: toolCalls.map((toolCall) => toolCall.name),
-                schemaRepairUsed
-              });
-              const recovered = tryRecoverInvalidSubmit({
+              const submitError = `The ${submitTool.name} arguments were schema-invalid: ${truncateDiagnostic(cause instanceof Error ? cause.message : String(cause))}`;
+              const repairInput: LlmSchemaInvalidSubmitRecoveryInput = {
+                ...schemaRepairInput({
+                  request,
+                  submitToolName: submitTool.name,
+                  error: submitError,
+                  submitCalls,
+                  extraToolNames: toolCalls.map((toolCall) => toolCall.name),
+                  schemaRepairUsed
+                }),
+                candidateDrafted: candidateDraftedBeforeSubmit,
+                fullError: cause instanceof Error ? cause.message : String(cause)
+              };
+              const recovery = tryRecoverInvalidSubmit({
                 opts,
                 adapter,
                 request,
@@ -364,25 +448,18 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 repairInput,
                 cause
               });
-              if (recovered !== undefined) {
-                return recovered as T;
+              if (recovery.validated !== undefined) {
+                return recovery.validated as T;
               }
-              queueSchemaRepair({
-                opts,
-                request,
-                messages,
+              scheduleModelRepair({
                 submitToolName: submitTool.name,
                 submitCalls,
                 extraToolNames: toolCalls.map((toolCall) => toolCall.name),
                 error: submitError,
-                schemaRepairUsed,
-                ...(stage7Repair?.classification !== undefined ? { repairClassification: stage7Repair.classification } : {}),
-                ...(stage7Repair?.compactRepair === true ? { replaceConversationOverride: true } : {}),
+                ...(recovery.repairClassification !== undefined ? { repairClassification: recovery.repairClassification } : {}),
+                ...(recovery.replaceConversationOverride === true ? { replaceConversationOverride: true } : {}),
                 cause
               });
-              schemaRepairUsed = true;
-              forceFinalize = true;
-              budgetForceFinalize = false;
               continue;
             }
           }
@@ -553,10 +630,11 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
 }
 
 export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): PiAiAdapter {
-  const completeFn = deps.complete ?? complete;
-  const completeSimpleFn = deps.completeSimple ?? completeSimple;
+  const models = deps.models ?? getCodegeniePiModels();
+  const completeFn = deps.complete ?? ((model, context, options) => models.complete(model, context, options) as Promise<PiAssistantMessage>);
+  const completeSimpleFn = deps.completeSimple ?? ((model, context, options) => models.completeSimple(model, context, options) as Promise<PiAssistantMessage>);
   return {
-    resolveModel: ({ provider, model }) => resolveRealModel(provider, model, deps.authStorage),
+    resolveModel: ({ provider, model }) => resolveRealModel(provider, model, deps.authStorage, models),
     complete: async (model, context, options) => {
       const apiKey = await resolveModelApiKey(model, deps);
       const completeOptions = definedRecord({ ...options, apiKey }) as SimpleStreamOptions & Record<string, unknown>;
@@ -567,6 +645,7 @@ export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): PiAiAdapt
           mapProviderOptions(model.raw as Model<Api>, completeOptions)
         ) as Promise<PiAssistantMessage>;
       }
+      delete completeOptions.forceSubmitToolChoice;
       return completeSimpleFn(model.raw as Model<Api>, context as Context, completeOptions) as Promise<PiAssistantMessage>;
     },
     validateToolCall: (tools, toolCall) => validateToolCall(tools as Tool[], toolCall as ToolCall)
@@ -585,7 +664,9 @@ function queueForcedFinalizePrompt(input: {
     ? `LLM provider call budget is exhausted. Call ${input.submitToolName} now with the best schema-valid result supported by the evidence already gathered. Do not request more repository tools. ${noResultInstruction(input.request)}`
     : input.reason === "tool_budget_exhausted"
       ? `Tool budget is exhausted. Call ${input.submitToolName} now with the best schema-valid result supported by the evidence already gathered. ${noResultInstruction(input.request)}`
-      : `Finish now by calling ${input.submitToolName} with schema-valid arguments. Do not answer in plain text or call other tools. ${noResultInstruction(input.request)}`;
+      : input.reason === "soft_deadline"
+        ? `The review pass time budget is exhausted. Call ${input.submitToolName} now with the best schema-valid result supported by the evidence already gathered. Do not request more repository tools. ${noResultInstruction(input.request)}`
+        : `Finish now by calling ${input.submitToolName} with schema-valid arguments. Do not answer in plain text or call other tools. ${noResultInstruction(input.request)}`;
   input.messages.push({ role: "user", content, timestamp: 0 });
   recordFinalizeStart(
     input.opts,
@@ -626,12 +707,20 @@ function recordFinalizeStart(
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
 
-type ForcedFinalizeReason = "budget_exhausted" | "tool_budget_exhausted" | "plain_text_or_empty_response";
+type ForcedFinalizeReason = "budget_exhausted" | "tool_budget_exhausted" | "soft_deadline" | "plain_text_or_empty_response";
 
-function providerPromptCacheOptions(runId: string, stage: ReviewStage): ProviderPromptCacheOptions {
+// Session keys are per WORKER, not per stage: the unit of real prefix reuse
+// is one worker's growing conversation (initial → continuations → finalize).
+// On OpenAI the key maps to prompt_cache_key, where a stage-shared key would
+// concentrate all concurrent workers on one cache node past the documented
+// ~15 req/min per-key overflow threshold; on direct Anthropic the key is
+// inert; on affinity-honoring gateways per-worker keys avoid pinning N
+// concurrent workers to a single upstream shard.
+function providerPromptCacheOptions(runId: string, stage: ReviewStage, workerId?: string): ProviderPromptCacheOptions {
+  const workerPart = workerId !== undefined ? `-${safePromptCacheSessionPart(workerId)}` : "";
   return {
     strategy: "pi-session",
-    sessionId: `codegenie-${safePromptCacheSessionPart(runId)}-stage-${stage}`,
+    sessionId: `codegenie-${safePromptCacheSessionPart(runId)}-stage-${stage}${workerPart}`,
     cacheRetention: "short"
   };
 }
@@ -763,6 +852,7 @@ async function completeWithCache(input: {
   budgetExempt?: boolean;
   finalizeMode?: "compact" | "full" | undefined;
   finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
+  protocolFlags?: { providerProtocolRecorded: boolean; downgradeWarned: boolean };
 }): Promise<ProviderCallResult> {
   const {
     opts,
@@ -782,13 +872,38 @@ async function completeWithCache(input: {
     finalizeMode,
     finalizeTarget
   } = input;
+  const forceSubmit = opts.llmConfig.forceSubmitToolChoice !== false;
+  const forcedSubmitThinkingOff = anthropicForcedSubmitCall(model, toolChoice, forceSubmit);
+  const protocol = describeProviderProtocol(
+    model,
+    toolChoice,
+    forcedSubmitThinkingOff ? undefined : opts.llmConfig.reasoning ?? "high",
+    forceSubmit
+  );
+  if (protocol.toolChoiceDowngraded && input.protocolFlags !== undefined && !input.protocolFlags.downgradeWarned) {
+    input.protocolFlags.downgradeWarned = true;
+    opts.telemetry.event({
+      stage: request.stage,
+      level: "warn",
+      message: "tool_choice_downgraded",
+      data: {
+        provider: model.provider,
+        model: model.id,
+        toolChoiceRequested: protocol.toolChoiceRequested,
+        toolChoiceEffective: protocol.toolChoiceEffective
+      }
+    });
+  }
   const canonicalRequest = canonicalModelRequest({
     cacheSchemaVersion: MODEL_CALL_CACHE_SCHEMA_VERSION,
     runFingerprint: opts.cache?.runFingerprint ?? null,
     runnerMessageVersion: RUNNER_MESSAGE_VERSION,
     provider: model.provider,
     model: model.id,
-    reasoning: opts.llmConfig.reasoning ?? "high",
+    // Cache-key honesty: Anthropic forced-submit calls run with thinking
+    // disabled (plan 86 step 3), which is a different request than the same
+    // messages at the configured reasoning level.
+    reasoning: forcedSubmitThinkingOff ? "forced-submit-no-thinking" : opts.llmConfig.reasoning ?? "high",
     stage: request.stage,
     templateVersion: request.templateVersion,
     schemaName: submitToolNameForStage(request.stage),
@@ -846,6 +961,7 @@ async function completeWithCache(input: {
         });
         recordModelCall(opts, request, model, cachedResponse.message, {
           callId,
+          protocol,
           kind,
           finalizeMode,
           finalizeTarget,
@@ -888,6 +1004,7 @@ async function completeWithCache(input: {
 
     const callId = nextModelCallId();
     const startedAt = Date.now();
+    const responseCapture: ProviderResponseCapture = {};
     writeModelCallRequestDebug(opts, request, model, {
       callId,
       kind,
@@ -926,6 +1043,7 @@ async function completeWithCache(input: {
           message: "model_call_started",
           toolNames: tools.map((tool) => tool.name)
         });
+        const callStartedAt = Date.now();
         return awaitProviderCall(
           () => adapter.complete(
             model,
@@ -933,10 +1051,33 @@ async function completeWithCache(input: {
             {
               signal: taskSignal,
               maxRetries: 0,
-              reasoning: opts.llmConfig.reasoning ?? "high",
+              ...(anthropicForcedSubmitCall(model, toolChoice, opts.llmConfig.forceSubmitToolChoice !== false)
+                ? {}
+                : { reasoning: opts.llmConfig.reasoning ?? "high" }),
+              forceSubmitToolChoice: opts.llmConfig.forceSubmitToolChoice !== false,
               toolChoice,
               sessionId: providerPromptCache.sessionId,
-              cacheRetention: providerPromptCache.cacheRetention
+              cacheRetention: providerPromptCache.cacheRetention,
+              // Slowness diagnostics: headers arrive before the body streams,
+              // so this timestamps time-to-first-byte (queue + prefill) and
+              // captures the provider's rate-limit posture per call.
+              onResponse: (response: { status: number; headers: Record<string, string> }) => {
+                responseCapture.ttfbMs = Date.now() - callStartedAt;
+                responseCapture.providerHttpStatus = response.status;
+                const rateLimit: Record<string, string> = {};
+                for (const [key, value] of Object.entries(response.headers)) {
+                  const name = key.toLowerCase();
+                  if (name.includes("ratelimit") || name === "retry-after") {
+                    rateLimit[name] = value;
+                  }
+                  if (name === "request-id" || name === "x-request-id") {
+                    responseCapture.providerRequestId = value;
+                  }
+                }
+                if (Object.keys(rateLimit).length > 0) {
+                  responseCapture.rateLimit = rateLimit;
+                }
+              }
             }
           ),
           taskSignal,
@@ -950,6 +1091,8 @@ async function completeWithCache(input: {
         const retry = classifyProviderRetry(providerFailure.cause, attempt);
         recordModelCall(opts, request, model, message, {
           callId,
+          protocol,
+          providerResponse: responseCapture,
           kind,
           finalizeMode,
           finalizeTarget,
@@ -997,6 +1140,8 @@ async function completeWithCache(input: {
       const cacheStatus = await modelCallCacheWriteStatus(opts, cacheKey, request.stage, message, cacheable);
       const modelCallMeta = definedRecord({
         callId,
+        protocol,
+        providerResponse: responseCapture,
         kind,
         finalizeMode,
         finalizeTarget,
@@ -1035,6 +1180,8 @@ async function completeWithCache(input: {
       const retry = classifyProviderRetry(cause, attempt);
       recordErroredModelCall(opts, request, model, {
         callId,
+        protocol,
+        providerResponse: responseCapture,
         kind,
         finalizeMode,
         finalizeTarget,
@@ -1044,7 +1191,7 @@ async function completeWithCache(input: {
         durationMs: Date.now() - startedAt,
         status,
         errorCode: "llm_call_failed",
-        errorMessage: cause instanceof Error ? truncatePromptDiagnostic(cause.message) : truncatePromptDiagnostic(String(cause)),
+        errorMessage: cause instanceof Error ? truncateDiagnostic(cause.message) : truncateDiagnostic(String(cause)),
         retryable: retry.retryable,
         retryReason: retry.reason,
         maxAttempts: MAX_PROVIDER_ATTEMPTS,
@@ -1199,13 +1346,6 @@ function isRecordedProviderFailure(cause: unknown): boolean {
   return Boolean(cause && typeof cause === "object" && (cause as { [RECORDED_PROVIDER_FAILURE]?: true })[RECORDED_PROVIDER_FAILURE] === true);
 }
 
-function truncatePromptDiagnostic(input: string): string {
-  const maxChars = 2_000;
-  if (input.length <= maxChars) {
-    return input;
-  }
-  return `${input.slice(0, maxChars).trimEnd()}\n[validation error truncated by codegenie]`;
-}
 
 function safeFenceLabelPart(input: string): string {
   return input.replace(/[^A-Za-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "tool";
@@ -1215,14 +1355,31 @@ function isForcedToolChoice(choice: unknown): choice is Extract<ToolChoiceMode, 
   return Boolean(choice && typeof choice === "object" && (choice as { type?: unknown }).type === "tool");
 }
 
+// True when this call runs Anthropic's forced-submit protocol (plan 86 step
+// 3): thinking is disabled for the call so the forced tool choice is legal.
+function anthropicForcedSubmitCall(model: PiModelRef, toolChoice: ToolChoiceMode, forceSubmit: boolean): boolean {
+  return forceSubmit &&
+    isForcedToolChoice(toolChoice) &&
+    (model.raw as { api?: string }).api === "anthropic-messages";
+}
+
 function mapProviderOptions(model: Model<Api>, options: SimpleStreamOptions & Record<string, unknown>): Record<string, unknown> {
   const mapped = { ...options };
   const reasoning = typeof options.reasoning === "string" ? options.reasoning : undefined;
-  const toolChoice = mapProviderToolChoice(model, options.toolChoice);
+  const forceSubmit = options.forceSubmitToolChoice !== false;
+  const toolChoice = mapProviderToolChoice(model, options.toolChoice, forceSubmit);
+  const anthropicForcedSubmit = forceSubmit && model.api === "anthropic-messages" && isForcedToolChoice(options.toolChoice);
   delete mapped.reasoning;
   delete mapped.toolChoice;
+  delete mapped.forceSubmitToolChoice;
 
-  Object.assign(mapped, mapReasoningOptions(model, reasoning));
+  if (anthropicForcedSubmit) {
+    // thinkingEnabled must be explicitly false: adaptive-thinking models
+    // default to thinking on, which the API rejects with forced tool_choice.
+    mapped.thinkingEnabled = false;
+  } else {
+    Object.assign(mapped, mapReasoningOptions(model, reasoning));
+  }
   if (toolChoice !== undefined) {
     if (model.api === "openai-responses" || model.api === "azure-openai-responses" || model.api === "openai-codex-responses") {
       mapped.onPayload = withToolChoicePayload(options.onPayload, toolChoice);
@@ -1267,7 +1424,7 @@ function googleThinkingLevel(reasoning: string): "LOW" | "MEDIUM" | "HIGH" {
   }
 }
 
-function mapProviderToolChoice(model: Model<Api>, choice: unknown): unknown {
+function mapProviderToolChoice(model: Model<Api>, choice: unknown, forceSubmit = true): unknown {
   if (choice === "auto") {
     return "auto";
   }
@@ -1276,7 +1433,12 @@ function mapProviderToolChoice(model: Model<Api>, choice: unknown): unknown {
   }
   switch (model.api) {
     case "anthropic-messages":
-      return "auto";
+      // Forced tool_choice conflicts with extended thinking on the Anthropic
+      // API. Plan 86 step 3: finalize/repair/no-tool calls (the only calls
+      // that request forcing) disable thinking instead, so the forcing is
+      // honored for real. llm.forceSubmitToolChoice=false restores the old
+      // downgrade-to-auto behavior as an escape hatch.
+      return forceSubmit ? { type: "tool", name: choice.name } : "auto";
     case "bedrock-converse-stream":
       return { type: "tool", name: choice.name };
     case "google-generative-ai":
@@ -1291,6 +1453,90 @@ function mapProviderToolChoice(model: Model<Api>, choice: unknown): unknown {
       return { type: "function", name: choice.name };
     default:
       return "required";
+  }
+}
+
+// Per-call provider response diagnostics (slowness debugging): ttfbMs is
+// measured from dispatch to response headers (queue + prefill), so
+// durationMs - ttfbMs approximates the decode window. rateLimit carries any
+// header naming a rate limit (anthropic-ratelimit-*, x-ratelimit-*) plus
+// retry-after verbatim, provider-agnostic for the cross-provider studies.
+type ProviderResponseCapture = {
+  ttfbMs?: number;
+  providerHttpStatus?: number;
+  providerRequestId?: string;
+  rateLimit?: Record<string, string>;
+};
+
+type ProviderProtocolFields = {
+  toolChoiceRequested: string;
+  toolChoiceEffective: string;
+  toolChoiceDowngraded: boolean;
+  reasoningRequested?: string;
+  reasoningMechanism: string;
+  reasoningLevelEffective?: string;
+};
+
+// Describes the protocol the provider actually runs for this call (plan 86):
+// requested vs effective tool choice (the anthropic-messages forced-submit
+// downgrade becomes visible instead of silent) and the reasoning mechanism the
+// codegenie reasoning level maps onto for this API family.
+function describeProviderProtocol(
+  model: PiModelRef,
+  toolChoice: ToolChoiceMode,
+  reasoning: string | undefined,
+  forceSubmit = true
+): ProviderProtocolFields {
+  const raw = model.raw as Model<Api>;
+  const requested = isForcedToolChoice(toolChoice) ? `forced:${toolChoice.name}` : "auto";
+  const mapped = mapProviderToolChoice(raw, toolChoice, forceSubmit);
+  const effective = mapped === "auto"
+    ? "auto"
+    : mapped === "any" || mapped === "required"
+      ? String(mapped)
+      : mapped && typeof mapped === "object"
+        ? `forced:${forcedToolChoiceName(mapped) ?? "tool"}`
+        : requested;
+  const api = (raw as { api?: string }).api;
+  return definedRecord({
+    toolChoiceRequested: requested,
+    toolChoiceEffective: effective,
+    toolChoiceDowngraded: requested.startsWith("forced:") && effective === "auto",
+    reasoningRequested: reasoning,
+    reasoningMechanism: reasoning === undefined ? "none" : reasoningMechanismForApi(api),
+    reasoningLevelEffective: reasoning === undefined
+      ? undefined
+      : api === "google-generative-ai" || api === "google-vertex"
+        ? googleThinkingLevel(reasoning)
+        : reasoning
+  }) as ProviderProtocolFields;
+}
+
+function forcedToolChoiceName(mapped: object): string | undefined {
+  const direct = (mapped as { name?: unknown }).name;
+  if (typeof direct === "string") {
+    return direct;
+  }
+  const fn = (mapped as { function?: { name?: unknown } }).function?.name;
+  return typeof fn === "string" ? fn : undefined;
+}
+
+function reasoningMechanismForApi(api: string | undefined): string {
+  switch (api) {
+    case "anthropic-messages":
+      return "adaptive-effort";
+    case "google-generative-ai":
+    case "google-vertex":
+      return "thinking-level";
+    case "bedrock-converse-stream":
+    case "mistral-conversations":
+    case "openai-completions":
+    case "openai-responses":
+    case "azure-openai-responses":
+    case "openai-codex-responses":
+      return "reasoning-effort";
+    default:
+      return "unknown";
   }
 }
 
@@ -1838,6 +2084,31 @@ function recordSubmitWithExtraTools(
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
 
+function recordExtraSubmitDropped(
+  opts: CreateRunnerOptions,
+  request: LlmStructuredRequest<unknown>,
+  submitTool: string,
+  submitCalls: PiToolCall[]
+): void {
+  if (submitCalls.length <= 1) {
+    return;
+  }
+  opts.telemetry.event(definedRecord({
+    stage: request.stage,
+    level: "warn",
+    message: "extra_submit_dropped",
+    workerId: request.telemetryContext?.workerId,
+    packetId: request.telemetryContext?.packetId,
+    data: definedRecord({
+      submitTool,
+      callId: submitCalls[0]?.id,
+      droppedToolCallCount: submitCalls.length - 1,
+      droppedCallIds: submitCalls.slice(1).map((call) => call.id),
+      candidateId: request.telemetryContext?.candidateId
+    })
+  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+}
+
 function recordFinalizeMissingSubmitRetry(
   opts: CreateRunnerOptions,
   request: LlmStructuredRequest<unknown>,
@@ -1872,7 +2143,7 @@ function schemaRepairInput(input: {
   return {
     stage: input.request.stage,
     submitTool: input.submitToolName,
-    error: truncatePromptDiagnostic(input.error),
+    error: truncateDiagnostic(input.error),
     submitCalls: input.submitCalls.map((call) => ({ id: call.id, arguments: call.arguments })),
     extraToolNames: input.extraToolNames,
     schemaRepairUsed: input.schemaRepairUsed
@@ -1886,49 +2157,71 @@ function tryRecoverInvalidSubmit(input: {
   submitTool: ToolDefinition;
   repairInput: LlmSchemaInvalidSubmitRecoveryInput;
   cause: unknown;
-}): unknown | undefined {
-  const recovered = input.request.schemaRepair?.recoverInvalidSubmit?.(input.repairInput);
-  if (recovered === undefined) {
-    return undefined;
+}): { validated?: unknown; repairClassification?: string; replaceConversationOverride?: boolean } {
+  const result = input.request.schemaRepair?.recoverInvalidSubmit?.(input.repairInput);
+  if (result === undefined) {
+    return {};
   }
+  const recovery: LlmInvalidSubmitRecovery = isBrandedRecovery(result) ? result : { kind: "recovery", arguments: result };
+  const hints: { validated?: unknown; repairClassification?: string; replaceConversationOverride?: boolean } = {
+    ...(recovery.repairClassification !== undefined ? { repairClassification: recovery.repairClassification } : {}),
+    ...(recovery.replaceConversationOverride !== undefined ? { replaceConversationOverride: recovery.replaceConversationOverride } : {})
+  };
+  if (recovery.arguments === undefined) {
+    return hints;
+  }
+  const recoveredCallId = recovery.recoveredCallId ?? `${input.repairInput.submitTool}-recovered`;
   try {
     const validated = input.adapter.validateToolCall([toolSpec(input.submitTool)], {
       type: "toolCall",
-      id: `${input.repairInput.submitTool}-recovered`,
+      id: recoveredCallId,
       name: input.repairInput.submitTool,
-      arguments: recovered
+      arguments: recovery.arguments
     });
-    input.opts.telemetry.event(definedRecord({
-      stage: input.request.stage,
-      level: "info",
-      message: "schema_invalid_submit_recovered",
-      workerId: input.request.telemetryContext?.workerId,
-      packetId: input.request.telemetryContext?.packetId,
-      data: definedRecord({
-        submitTool: input.repairInput.submitTool,
-        invalidSubmitCallCount: input.repairInput.submitCalls.length,
-        schemaRepairUsed: input.repairInput.schemaRepairUsed,
-        candidateId: input.request.telemetryContext?.candidateId
-      })
-    }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
-    return validated;
+    if (recovery.onRecovered !== undefined) {
+      recovery.onRecovered(recoveredCallId);
+    } else {
+      input.opts.telemetry.event(definedRecord({
+        stage: input.request.stage,
+        level: "info",
+        message: "schema_invalid_submit_recovered",
+        workerId: input.request.telemetryContext?.workerId,
+        packetId: input.request.telemetryContext?.packetId,
+        data: definedRecord({
+          submitTool: input.repairInput.submitTool,
+          invalidSubmitCallCount: input.repairInput.submitCalls.length,
+          schemaRepairUsed: input.repairInput.schemaRepairUsed,
+          candidateId: input.request.telemetryContext?.candidateId
+        })
+      }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+    }
+    return { ...hints, validated };
   } catch (recoveryCause) {
-    input.opts.telemetry.event(definedRecord({
-      stage: input.request.stage,
-      level: "warn",
-      message: "schema_invalid_submit_recovery_invalid",
-      workerId: input.request.telemetryContext?.workerId,
-      packetId: input.request.telemetryContext?.packetId,
-      data: definedRecord({
-        submitTool: input.repairInput.submitTool,
-        schemaRepairUsed: input.repairInput.schemaRepairUsed,
-        error: truncatePromptDiagnostic(recoveryCause instanceof Error ? recoveryCause.message : String(recoveryCause)),
-        originalError: truncatePromptDiagnostic(input.cause instanceof Error ? input.cause.message : String(input.cause)),
-        candidateId: input.request.telemetryContext?.candidateId
-      })
-    }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
-    return undefined;
+    const recoveryError = truncateDiagnostic(recoveryCause instanceof Error ? recoveryCause.message : String(recoveryCause));
+    if (recovery.onRejected !== undefined) {
+      recovery.onRejected(recoveryError);
+    } else {
+      input.opts.telemetry.event(definedRecord({
+        stage: input.request.stage,
+        level: "warn",
+        message: "schema_invalid_submit_recovery_invalid",
+        workerId: input.request.telemetryContext?.workerId,
+        packetId: input.request.telemetryContext?.packetId,
+        data: definedRecord({
+          submitTool: input.repairInput.submitTool,
+          schemaRepairUsed: input.repairInput.schemaRepairUsed,
+          error: recoveryError,
+          originalError: truncateDiagnostic(input.cause instanceof Error ? input.cause.message : String(input.cause)),
+          candidateId: input.request.telemetryContext?.candidateId
+        })
+      }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
+    }
+    return hints;
   }
+}
+
+function isBrandedRecovery(input: Record<string, unknown> | LlmInvalidSubmitRecovery): input is LlmInvalidSubmitRecovery {
+  return (input as { kind?: unknown }).kind === "recovery";
 }
 
 function queueSchemaRepair(input: {
@@ -1944,16 +2237,20 @@ function queueSchemaRepair(input: {
   replaceConversationOverride?: boolean;
   cause?: unknown;
 }): void {
-  const error = truncatePromptDiagnostic(input.error);
+  const error = truncateDiagnostic(input.error);
   if (input.schemaRepairUsed) {
     if (input.request.stage === 7) {
-      recordStage7SchemaRepairFailed(
-        input.opts,
-        input.request,
-        input.submitToolName,
-        input.repairClassification ?? classifyStage7SchemaInvalid(input.error, input.submitCalls),
-        error
-      );
+      recordStage7SchemaRepairEvent({
+        opts: input.opts,
+        request: input.request,
+        level: "warn",
+        message: "stage7_schema_repair_failed",
+        data: {
+          submitTool: input.submitToolName,
+          classification: input.repairClassification ?? classifyStage7SchemaInvalid(input.error, input.submitCalls),
+          error
+        }
+      });
     }
     throw new CodegenieError("llm_schema_invalid", "model submit payload failed schema validation after repair", {
       recoverable: input.request.schemaRepair?.failAfterRepair === true ? false : true,
@@ -1971,7 +2268,7 @@ function queueSchemaRepair(input: {
   const stage7CompactRepair = input.request.stage === 7 && input.replaceConversationOverride === true;
   const content = stage7CompactRepair
     ? stage7CompactSchemaRepairPrompt(input.submitToolName, error, input.repairClassification ?? "unsafe_candidate_like_payload", repairInput)
-    : input.request.schemaRepair?.buildPrompt(repairInput) ??
+    : input.request.schemaRepair?.buildPrompt?.(repairInput) ??
       defaultSchemaRepairPrompt(input.request, input.submitToolName, error);
   const replaceConversation = input.replaceConversationOverride ?? (input.request.schemaRepair?.replaceConversation === true);
   const repairMessage = {
@@ -2045,163 +2342,23 @@ function defaultSchemaRepairPrompt(
   return `${error}. Call ${submitToolName} again with exactly one corrected schema-valid set of arguments.`;
 }
 
-function recordStage7SchemaRepairAttempted(
-  opts: CreateRunnerOptions,
-  request: LlmStructuredRequest<unknown>,
-  submitTool: string,
-  submitCalls: PiToolCall[],
-  extraToolCalls: PiToolCall[],
-  classification: Stage7SchemaInvalidKind,
-  cause: unknown
-): void {
-  opts.telemetry.event(definedRecord({
-    stage: 7,
-    level: "warn",
-    message: "stage7_schema_repair_attempted",
-    workerId: request.telemetryContext?.workerId,
-    packetId: request.telemetryContext?.packetId,
-    data: definedRecord({
-      submitTool,
-      invalidSubmitCallCount: submitCalls.length,
-      originalCallIds: submitCalls.map((call) => call.id),
-      extraToolNames: extraToolCalls.map((toolCall) => toolCall.name),
-      payloadKind: stage7SubmitPayloadKind(submitCalls),
-      classification,
-      error: truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause)),
-      candidateId: request.telemetryContext?.candidateId
-    })
-  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
-}
 
-function recordStage7SchemaCleanupAttempted(
-  opts: CreateRunnerOptions,
-  request: LlmStructuredRequest<unknown>,
-  submitTool: string,
-  decision: Stage7SubmitRepairDecision
-): void {
-  opts.telemetry.event(definedRecord({
+function recordStage7SchemaRepairEvent(input: {
+  opts: CreateRunnerOptions;
+  request: LlmStructuredRequest<unknown>;
+  level: "info" | "warn";
+  message: string;
+  data: Record<string, unknown>;
+}): void {
+  input.opts.telemetry.event(definedRecord({
     stage: 7,
-    level: "info",
-    message: "stage7_schema_cleanup_attempted",
-    workerId: request.telemetryContext?.workerId,
-    packetId: request.telemetryContext?.packetId,
+    level: input.level,
+    message: input.message,
+    workerId: input.request.telemetryContext?.workerId,
+    packetId: input.request.telemetryContext?.packetId,
     data: definedRecord({
-      submitTool,
-      cleanupKind: decision.cleanupKind,
-      classification: decision.classification,
-      strippedKeys: decision.strippedKeys,
-      cleanedFields: decision.cleanedFields,
-      truncatedFields: decision.truncatedFields,
-      rejectReason: decision.rejectReason,
-      candidateId: request.telemetryContext?.candidateId
-    })
-  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
-}
-
-function recordStage7SchemaCleanupRecovered(
-  opts: CreateRunnerOptions,
-  request: LlmStructuredRequest<unknown>,
-  decision: Stage7SubmitRepairDecision,
-  recoveredCallId: string
-): void {
-  opts.telemetry.event(definedRecord({
-    stage: 7,
-    level: "info",
-    message: "stage7_schema_cleanup_recovered",
-    workerId: request.telemetryContext?.workerId,
-    packetId: request.telemetryContext?.packetId,
-    data: definedRecord({
-      cleanupKind: decision.cleanupKind,
-      classification: decision.classification,
-      strippedKeys: decision.strippedKeys,
-      cleanedFields: decision.cleanedFields,
-      truncatedFields: decision.truncatedFields,
-      recoveredCallId,
-      candidateId: request.telemetryContext?.candidateId
-    })
-  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
-  if (decision.truncatedNoFindingReason) {
-    opts.telemetry.event(definedRecord({
-      stage: 7,
-      level: "info",
-      message: "stage7_no_finding_reason_truncated",
-      workerId: request.telemetryContext?.workerId,
-      packetId: request.telemetryContext?.packetId,
-      data: definedRecord({
-        cleanupKind: decision.cleanupKind,
-        classification: decision.classification,
-        cleanedFields: decision.cleanedFields,
-        truncatedFields: decision.truncatedFields,
-        recoveredCallId,
-        candidateId: request.telemetryContext?.candidateId
-      })
-    }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
-  }
-}
-
-function recordStage7SchemaCleanupRejected(
-  opts: CreateRunnerOptions,
-  request: LlmStructuredRequest<unknown>,
-  submitTool: string,
-  decision: Stage7SubmitRepairDecision,
-  cause: unknown
-): void {
-  opts.telemetry.event(definedRecord({
-    stage: 7,
-    level: "warn",
-    message: "stage7_schema_cleanup_rejected",
-    workerId: request.telemetryContext?.workerId,
-    packetId: request.telemetryContext?.packetId,
-    data: definedRecord({
-      submitTool,
-      cleanupKind: decision.cleanupKind,
-      classification: decision.classification,
-      strippedKeys: decision.strippedKeys,
-      cleanedFields: decision.cleanedFields,
-      truncatedFields: decision.truncatedFields,
-      rejectReason: decision.rejectReason,
-      error: truncatePromptDiagnostic(cause instanceof Error ? cause.message : String(cause)),
-      candidateId: request.telemetryContext?.candidateId
-    })
-  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
-}
-
-function recordStage7SchemaRepairRecovered(
-  opts: CreateRunnerOptions,
-  request: LlmStructuredRequest<unknown>,
-  classification: Stage7SchemaInvalidKind | "schema_valid_after_retry"
-): void {
-  opts.telemetry.event(definedRecord({
-    stage: 7,
-    level: "info",
-    message: "stage7_schema_repair_recovered",
-    workerId: request.telemetryContext?.workerId,
-    packetId: request.telemetryContext?.packetId,
-    data: definedRecord({
-      classification,
-      candidateId: request.telemetryContext?.candidateId
-    })
-  }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
-}
-
-function recordStage7SchemaRepairFailed(
-  opts: CreateRunnerOptions,
-  request: LlmStructuredRequest<unknown>,
-  submitTool: string,
-  classification: Stage7SchemaInvalidKind,
-  error: string
-): void {
-  opts.telemetry.event(definedRecord({
-    stage: 7,
-    level: "warn",
-    message: "stage7_schema_repair_failed",
-    workerId: request.telemetryContext?.workerId,
-    packetId: request.telemetryContext?.packetId,
-    data: definedRecord({
-      submitTool,
-      classification,
-      error,
-      candidateId: request.telemetryContext?.candidateId
+      ...input.data,
+      candidateId: input.request.telemetryContext?.candidateId
     })
   }) as Parameters<CreateRunnerOptions["telemetry"]["event"]>[0]);
 }
@@ -2527,6 +2684,8 @@ function recordModelCall(
   meta: {
     callId: string;
     kind: ModelCallKind;
+    protocol?: ProviderProtocolFields;
+    providerResponse?: ProviderResponseCapture;
     finalizeMode?: "compact" | "full" | undefined;
     finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
     attempt: number;
@@ -2548,6 +2707,8 @@ function recordModelCall(
   const usage = normalizeUsage(meta.usage ?? message.usage);
   const record = definedRecord({
     callId: meta.callId,
+    ...meta.protocol,
+    ...meta.providerResponse,
     stage: request.stage,
     role: roleForStage(request.stage),
     model: model.id,
@@ -2569,6 +2730,7 @@ function recordModelCall(
     cacheWriteTokens: usage?.cacheWriteTokens,
     billableInputTokens: usage?.billableInputTokens,
     outputTokens: usage?.outputTokens,
+    reasoningTokens: usage?.reasoningTokens,
     totalTokens: usage?.totalTokens,
     costUSD: usage?.costUSD,
     inputCostUSD: usage?.inputCostUSD,
@@ -2600,6 +2762,8 @@ function recordErroredModelCall(
   meta: {
     callId: string;
     kind: ModelCallKind;
+    protocol?: ProviderProtocolFields;
+    providerResponse?: ProviderResponseCapture;
     finalizeMode?: "compact" | "full" | undefined;
     finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
     attempt: number;
@@ -2617,6 +2781,8 @@ function recordErroredModelCall(
 ): void {
   const record = definedRecord({
     callId: meta.callId,
+    ...meta.protocol,
+    ...meta.providerResponse,
     stage: request.stage,
     role: roleForStage(request.stage),
     model: model.id,
@@ -2759,6 +2925,10 @@ function normalizeUsage(input: unknown): NormalizedUsage | undefined {
   const computedInputTokens = sumDefined(uncachedInputTokens, cacheReadTokens, cacheWriteTokens);
   const inputTokens = computedInputTokens ?? storedInputTokens;
   const outputTokens = firstNumber(record.outputTokens, record.output);
+  // pi usage.reasoning is a subset of output, reported only by providers with a
+  // reasoning breakdown (OpenAI Responses lanes); undefined must stay undefined
+  // so "not reported" is distinguishable from "zero reasoning tokens".
+  const reasoningTokens = firstNumber(record.reasoningTokens, record.reasoning);
   const computedTotalTokens = sumDefined(inputTokens, outputTokens);
   const totalTokens = firstNumber(record.totalTokens) ?? computedTotalTokens;
   const billableInputTokens = firstNumber(record.billableInputTokens) ?? inputTokens;
@@ -2775,6 +2945,7 @@ function normalizeUsage(input: unknown): NormalizedUsage | undefined {
     cacheWriteTokens: cacheWriteTokens ?? (inputTokens !== undefined ? 0 : undefined),
     billableInputTokens,
     outputTokens,
+    reasoningTokens,
     totalTokens,
     costUSD,
     inputCostUSD,
@@ -2854,7 +3025,7 @@ function providerMessageError(message: PiAssistantMessage): Error & { status?: n
 
 function providerErrorMessage(message: PiAssistantMessage): string | undefined {
   return typeof message.errorMessage === "string" && message.errorMessage.trim().length > 0
-    ? truncatePromptDiagnostic(message.errorMessage.trim())
+    ? truncateDiagnostic(message.errorMessage.trim())
     : undefined;
 }
 
@@ -3009,7 +3180,10 @@ function errorHttpStatus(cause: unknown): number | undefined {
 }
 
 function parseHttpStatus(input: string): number | undefined {
-  const match = /\b([45]\d\d)\b/.exec(input);
+  const exact = /^\s*([45]\d\d)\s*$/u.exec(input);
+  const match = exact
+    ?? /\b(?:http(?:\s+status)?|status(?:\s*code)?|code)\D{0,12}([45]\d\d)\b/iu.exec(input)
+    ?? /\b([45]\d\d)\s+(?:http\s+)?(?:status|response|error)\b/iu.exec(input);
   if (!match) {
     return undefined;
   }
@@ -3217,8 +3391,13 @@ function defaultToolMeta(): ToolResultMeta {
   return { backend: "text", precision: "text", degraded: false };
 }
 
-function resolveRealModel(provider: string | undefined, model: string | undefined, authStorage?: PiAuthStorage): PiModelRef | undefined {
-  const qualified = provider === undefined && model ? splitProviderQualifiedModel(model) : undefined;
+function resolveRealModel(
+  provider: string | undefined,
+  model: string | undefined,
+  authStorage?: PiAuthStorage,
+  models: Pick<Models, "getModel" | "getModels" | "getProviders" | "getProvider"> = getCodegeniePiModels()
+): PiModelRef | undefined {
+  const qualified = provider === undefined && model ? splitProviderQualifiedModel(model, models) : undefined;
   const resolvedProvider = provider ?? qualified?.provider;
   const resolvedModel = qualified?.model ?? model;
 
@@ -3227,7 +3406,7 @@ function resolveRealModel(provider: string | undefined, model: string | undefine
       return undefined;
     }
     try {
-      const raw = (getModel as unknown as (provider: string, model: string) => unknown)(resolvedProvider, resolvedModel);
+      const raw = models.getModel(resolvedProvider, resolvedModel);
       if (!raw) {
         return undefined;
       }
@@ -3243,18 +3422,19 @@ function resolveRealModel(provider: string | undefined, model: string | undefine
     if (!auth) {
       return undefined;
     }
-    const models = filterDeprecatedProviderModels(getModels(resolvedProvider as KnownProvider));
-    const first = models[0];
+    const providerModels = filterDeprecatedProviderModels([...models.getModels(resolvedProvider)]);
+    const first = providerModels[0];
     return first ? { provider: resolvedProvider, id: first.id, raw: first, ...auth } : undefined;
   }
 
-  for (const providerId of getProviders()) {
+  for (const provider of models.getProviders()) {
+    const providerId = provider.id;
     const auth = resolveProviderAuth(providerId, authStorage);
     if (!auth) {
       continue;
     }
-    const models = filterDeprecatedProviderModels(getModels(providerId));
-    const match = resolvedModel ? models.find((candidate) => candidate.id === resolvedModel) : models[0];
+    const providerModels = filterDeprecatedProviderModels([...models.getModels(providerId)]);
+    const match = resolvedModel ? providerModels.find((candidate) => candidate.id === resolvedModel) : providerModels[0];
     if (match) {
       return { provider: providerId, id: match.id, raw: match, ...auth };
     }
@@ -3262,20 +3442,23 @@ function resolveRealModel(provider: string | undefined, model: string | undefine
   return undefined;
 }
 
-function splitProviderQualifiedModel(model: string): { provider: string; model: string } | undefined {
+function splitProviderQualifiedModel(
+  model: string,
+  models: Pick<Models, "getProvider"> = getCodegeniePiModels()
+): { provider: string; model: string } | undefined {
   const slash = model.indexOf("/");
   if (slash <= 0 || slash === model.length - 1) {
     return undefined;
   }
   const provider = model.slice(0, slash);
-  if (!getProviders().includes(provider as KnownProvider)) {
+  if (models.getProvider(provider) === undefined) {
     return undefined;
   }
   return { provider, model: model.slice(slash + 1) };
 }
 
 function resolveProviderAuth(provider: string, authStorage = createFileAuthStorage(getCodegeniePaths())): Pick<PiModelRef, "apiKey" | "oauthProvider"> | undefined {
-  const envApiKey = getEnvApiKey(provider);
+  const envApiKey = getPiEnvApiKey(provider);
   if (envApiKey) {
     registerSecret(envApiKey);
     return { apiKey: envApiKey };
@@ -3329,24 +3512,6 @@ function persistRefreshedOAuthCredentials(
   });
 }
 
-function stableJson(input: unknown): string {
-  return JSON.stringify(sortJson(input));
-}
-
-function sortJson(input: unknown): unknown {
-  if (Array.isArray(input)) {
-    return input.map(sortJson);
-  }
-  if (input && typeof input === "object") {
-    const output: Record<string, unknown> = {};
-    for (const key of Object.keys(input).sort()) {
-      output[key] = sortJson((input as Record<string, unknown>)[key]);
-    }
-    return output;
-  }
-  return input;
-}
-
 function definedRecord<T extends Record<string, unknown>>(input: T): T {
   const output: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(input)) {
@@ -3356,3 +3521,7 @@ function definedRecord<T extends Record<string, unknown>>(input: T): T {
   }
   return output as T;
 }
+
+export const __piRunnerTestHooks = {
+  parseHttpStatus
+};

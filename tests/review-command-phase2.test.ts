@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { executeReviewCommand, parseReviewCommand } from "../src/cli/review-command.js";
+import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("review command pipeline", () => {
@@ -37,10 +38,10 @@ describe("review command pipeline", () => {
       "final-findings.json",
       "final-review.md"
     ]) {
-      expect(existsSync(path.join(result.runDir, relPath)), relPath).toBe(true);
+      expect(existsSync(runFilePath(result.runDir, relPath)), relPath).toBe(true);
     }
-    expect(readdirSync(path.join(result.runDir, "packets")).filter((file) => file.endsWith(".json"))).toHaveLength(1);
-    const coverage = JSON.parse(readFileSync(path.join(result.runDir, "coverage.json"), "utf8"));
+    expect(readdirSync(path.join(result.runDir, "stages", "06-packets", "packets")).filter((file) => file.endsWith(".json"))).toHaveLength(1);
+    const coverage = JSON.parse(readFileSync(runFilePath(result.runDir, "coverage.json"), "utf8"));
     expect(coverage).toMatchObject({
       status: {
         totalHunks: 1,
@@ -143,6 +144,7 @@ describe("review command pipeline", () => {
       }
     });
     expect(existsSync(path.join(result.runDir, "planner-dossier.json"))).toBe(false);
+    expect(existsSync(runFilePath(result.runDir, "planner-dossier.json"))).toBe(false);
   });
 
   it("rejects unknown explicit lenses before zero-work short-circuiting", async () => {
@@ -167,7 +169,9 @@ describe("review command pipeline", () => {
     expect(runDirs).toHaveLength(1);
     const runDir = path.join(runsRoot, runDirs[0] ?? "");
     expect(existsSync(path.join(runDir, "planner-dossier.json"))).toBe(false);
+    expect(existsSync(runFilePath(runDir, "planner-dossier.json"))).toBe(false);
     expect(existsSync(path.join(runDir, "review-plan.json"))).toBe(false);
+    expect(existsSync(runFilePath(runDir, "review-plan.json"))).toBe(false);
     const runJson = JSON.parse(readFileSync(path.join(runDir, "run.json"), "utf8"));
     expect(runJson.outcome).toMatchObject({
       status: "failed",
@@ -216,4 +220,8 @@ function enableTelemetry(parsed: ReturnType<typeof parseReviewCommand>): ReturnT
       }
     }
   };
+}
+
+function runFilePath(runDir: string, relPath: string): string {
+  return path.join(runDir, canonicalArtifactPath(relPath));
 }

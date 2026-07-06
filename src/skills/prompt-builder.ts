@@ -10,6 +10,9 @@ import type {
 import type { Skill, SkillSectionName } from "./skill-loader.js";
 import type { LensDescriptor, LensRegistry } from "./lens-registry.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
+import { prettyStableJson as stableJson } from "../util/json.js";
+
+export { stableJson };
 
 export type SkillProjection = {
   text: string;
@@ -68,10 +71,61 @@ export type PromptBuilder = {
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
   5: "p5.6",
-  7: "p7.9",
+  7: "p7.10",
   8: "p8.2",
   9: "p9.5",
   10: "p10.1"
+};
+
+type PromptLedgerEntry = {
+  surface: string;
+  reason: string;
+  evidence: string;
+};
+
+// Standing rule (plan 95): every provider-facing schema field and
+// load-bearing prompt paragraph carries a one-line reason plus its motivating
+// evidence here. New surfaces need a ledger entry to land; a paragraph dies
+// when its motivating case passes without it. This turns future "can we
+// delete this?" from archaeology into a lookup.
+export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedgerEntry[]> = {
+  5: [
+    { surface: "diffUnderstanding", reason: "Keeps declared intent and inferred behavior separate so later stages can frame refactor-vs-contract changes.", evidence: "Plan 82 / Wave-2 severity calibration" },
+    { surface: "coverage", reason: "Primary scheduling output; omitted hunks still receive normal default review, so only non-default hunk decisions need to be emitted.", evidence: "Plan 79 baseline and Plan 90 budget posture" },
+    { surface: "surroundingContextHints", reason: "Mechanical retrieval hints let Stage 6 attach context without turning planner prose into semantic obligations.", evidence: "Plan 12 seed-context direction and Plan 95 prompt-sediment audit" },
+    { surface: "focusNotes/relatedSymbols/relatedFiles", reason: "Hunk-scoped hints preserve planner attention without allowing broad bug claims in the plan.", evidence: "Plan 92 attention and escalation telemetry" },
+    { surface: "strict submit_plan closeout", reason: "Prevents string-wrapped, root-wrapped, split, or plain-text plans that previously required repair.", evidence: "Plan 59 and Plan 95 census: 1 planner schema repair in runs 46-54 / 29-33" }
+  ],
+  7: [
+    { surface: "findings", reason: "Candidate findings carry concrete changed-line failure modes for verifier filtering instead of hiding plausible issues in no_findings.", evidence: "Plans 81, 84, and 92 rescue findings" },
+    { surface: "followUpHints", reason: "Pointer-rich unresolved predicates feed human attention and system follow-up without publishing speculation.", evidence: "Plan 92 attention records and run 50 near-miss" },
+    { surface: "uncertainties", reason: "Structured uncertainty gives promotion/adaptive passes a bounded predicate shape rather than free-form review notes.", evidence: "Plan 81 promotion lane retained by 2026-07-04 decision record" },
+    { surface: "noFindingReason", reason: "Short no-finding conclusions avoid the essay payloads that created malformed or oversized submits.", evidence: "Plan 95 census: Stage-7 schema friction remains live" },
+    { surface: "reviewStatus incomplete discipline", reason: "incomplete is reserved for reviews cut off before evaluation; hedged no-finding conclusions must not be counted as unreviewed coverage.", evidence: "gpt-5.5 runs 56-58: 9-10 no-finding conclusions self-reported incomplete -> ~15-17 hunks counted failed, completeness partial; opus 0" },
+    { surface: "behaviorChange/intentEvidence", reason: "Preserves explicit framing for refactor-like or mixed-intent behavior changes through verification and composition.", evidence: "Plan 82 unknown-demotion fix and Plan 74 confidence calibration" },
+    { surface: "staticSignals/lossy-transform guidance", reason: "Keeps validation-before-conversion and deliverable-bound checks visible where regressions have clustered.", evidence: "Fable D10 static-signal watch and Wave-era relay/hyperlane cases" },
+    { surface: "strict submit_review closeout", reason: "Provider/tool dialect drift still produces extra fields and XML wrappers, so closeout remains load-bearing.", evidence: "Plan 95 census: 5 Stage-7 schema-invalid calls, 4 deterministic recoveries" }
+  ],
+  8: [
+    { surface: "targeted repeated predicate", reason: "System review should resolve only repeated concrete follow-up predicates, not reopen general review.", evidence: "Plan 75 human-attention suppression and Plan 92 attention groups" },
+    { surface: "resolvedHints", reason: "Resolution records let Stage 10 suppress covered attention notes by exact predicate scope.", evidence: "Plan 75 step 1 adjudicated-reject suppression" },
+    { surface: "strict submit_system_review closeout", reason: "Keeps the follow-up lane structured and prevents plain-text system-review answers.", evidence: "Plan 95 no schema friction observed, retained as standing structured-call contract" }
+  ],
+  9: [
+    { surface: "verdict/requiredEvidencePresent/falsePositiveRisk", reason: "Separates truth decision, evidence sufficiency, and residual risk for final selection.", evidence: "Plan 74 merged-confidence calibration and Plan 87 exact duplicate policy" },
+    { surface: "finalFinding/revisedAnchor", reason: "Allows revise-with-evidence without letting gate-only or stale anchors create identity.", evidence: "Plan 76 anchor rescue and Plan 87 identity hardening" },
+    { surface: "promoted predicate guidance", reason: "Promotion/adaptive candidates must be judged on the preserved predicate, not rejected for their original hint wording.", evidence: "Plan 81 and Plan 92 adaptive-vs-promotion measurement" },
+    { surface: "helper/callee complete-branch guidance", reason: "Prevents keeping helper-dependent claims from truncated or partial source reads.", evidence: "Fable review verifier false-positive class" },
+    { surface: "testing candidate guidance", reason: "Keeps real test-boundary regressions while rejecting generic add-more-tests comments.", evidence: "Plan 92 E1 escalator and Plan 75 suppression" },
+    { surface: "strict submit_verdict closeout", reason: "Verifier model repair is still live and successful, so the structured closeout remains load-bearing.", evidence: "Plan 95 census: 3 Stage-9 schema repairs, all recovered" }
+  ],
+  10: [
+    { surface: "composedFindings.findingIds", reason: "Final composition must preserve verified finding identity and grouping provenance.", evidence: "Plan 83 fingerprints and run-53 near-duplicate Stage-10 merge fix" },
+    { surface: "composedFindings.finalBody", reason: "Final body rules prevent duplicated headings, metadata dumps, and task-shaped titles in user-facing output.", evidence: "Plan 81 output-quality slice" },
+    { surface: "composedFindings.publication", reason: "Publication mode lets the publisher choose inline vs summary-only without losing coverage disclosure.", evidence: "Plan 88 summary-only 422 fallback" },
+    { surface: "behavior-change wording guidance", reason: "Composition must not overstate accidental regressions when findings are marked specified or confirmation-needed.", evidence: "Plan 74 and Plan 82 behavior-change calibration" },
+    { surface: "strict submit_composition closeout", reason: "Composer XML parameter bleed salvage remains live, so final composition stays schema-forced.", evidence: "Plan 95 census: run 31 composer salvage recovered" }
+  ]
 };
 
 const PER_SKILL_CAP = 4000;
@@ -145,6 +199,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
         "Raise candidate findings for concrete changed-line failure modes. If the evidence shows a plausible changed-line correctness, security, performance, architecture, or testing risk but one narrow predicate still needs confirmation, surface it as a candidate finding or a pointer-rich followUpHint/uncertainty for the verifier instead of suppressing it.",
         "A later verification stage filters false positives. Do not publish speculation as a finding, but do not hide a plausible verifier-resolvable concern behind reviewStatus:\"no_findings\". No-findings is appropriate only after the changed-line risk has been checked and no concrete failure mode or pointer-rich unresolved predicate remains.",
+        "reviewStatus:\"incomplete\" means the review was cut off before the changed lines could be evaluated (tool or budget exhaustion mid-investigation). If you evaluated the changed lines and no provable defect remains, report no_findings even when narrower questions stay open — record those as followUpHints or uncertainties, not as an incomplete review. An incomplete review is counted as unreviewed coverage; do not use it to hedge a no-finding conclusion.",
         "Keep Stage 7 output compact: candidate findings, exact unresolved predicates, or a short no-finding conclusion. noFindingReason is not a mini review report. Do not put detailed proof or broad exploration notes into noFindingReason.",
         "Emit followUpHints and uncertainties for concrete unresolved risks with file or symbol scope. Do not emit broad reminders like \"check if this is safe\". For behavior-preserving refactors or refactor-like changes, surface changed-line anchored changes to validation predicates, fallback paths, lossy conversions, behavior boundaries, or test coverage boundaries as a candidate or verifier-bound hint when they may alter caller-visible behavior.",
         "Packet attentionNotes and relatedChangedContext are advisory context from the harness. They are not questions, findings, or proof obligations. Use them to decide what to inspect, then independently report findings or no findings from the packet evidence.",
@@ -526,10 +581,6 @@ export function fenceUntrusted(content: string, label: string): string {
   ].join("\n");
 }
 
-export function stableJson(input: unknown): string {
-  return JSON.stringify(sortJson(input), null, 2);
-}
-
 function buildPrompt(
   stage: 5 | 7 | 8 | 9 | 10,
   parts: string[],
@@ -701,15 +752,4 @@ function dedupeSkills(skills: Skill[]): Skill[] {
     }
   }
   return result;
-}
-
-function sortJson(input: unknown): unknown {
-  if (Array.isArray(input)) {
-    return input.map(sortJson);
-  }
-  if (input && typeof input === "object") {
-    const record = input as Record<string, unknown>;
-    return Object.fromEntries(Object.keys(record).sort().map((key) => [key, sortJson(record[key])]));
-  }
-  return input;
 }

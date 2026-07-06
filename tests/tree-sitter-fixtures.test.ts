@@ -1,10 +1,11 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import { parseDiff } from "../src/git/diff-parser.js";
 import { buildRepositoryIndex } from "../src/repo/repository-index.js";
 import { LanguageAdapterRegistry } from "../src/repo/language-adapter.js";
+import { renderGoSymbolName } from "../src/repo/tree-sitter/go-adapter.js";
 import { TreeSitterService } from "../src/repo/tree-sitter/tree-sitter-service.js";
 import type { DiffFile, FileFacts, RepositoryToolsHost, TelemetryEvent, ToolCallRecord } from "../src/types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
@@ -39,6 +40,12 @@ describe("parser-derived fixture summaries", () => {
         expect.objectContaining({ name: "newRequest", kind: "method", ownerType: "Client", exported: false, packageName: "httpbin" })
       ])
     );
+    const statusSymbol = symbols.find((symbol) => symbol.name === "Status");
+    const versionSymbol = symbols.find((symbol) => symbol.name === "Version");
+    expect(statusSymbol).toBeDefined();
+    expect(versionSymbol).toBeDefined();
+    expect(renderGoSymbolName(statusSymbol!)).toBe("(Client).Status");
+    expect(renderGoSymbolName(versionSymbol!)).toBe("(*Client).Version");
 
     const testParsed = await parseFixture(registry, "httpbin_client_test.go", fixture("go/httpbin_client_test.go"));
     const testSymbols = registry.forPath("httpbin_client_test.go").listSymbols(testParsed);
@@ -162,6 +169,30 @@ describe("parser-derived fixture summaries", () => {
     expect(tsTests.tests.map((test) => test.path)).toContain("src/httpbinClient.test.ts");
   });
 
+  it("disposes evicted cached parse trees", async () => {
+    const service = new TreeSitterService();
+    const first = await service.parse({
+      path: "cache-0.ts",
+      language: "typescript",
+      source: { kind: "head" },
+      content: "export const value0 = 0;\n"
+    });
+    expect(first.tree).toBeDefined();
+    const tree = first.tree as unknown as { delete: () => void };
+    const deleteSpy = vi.spyOn(tree, "delete");
+
+    for (let index = 1; index <= 128; index += 1) {
+      await service.parse({
+        path: `cache-${index}.ts`,
+        language: "typescript",
+        source: { kind: "head" },
+        content: `export const value${index} = ${index};\n`
+      });
+    }
+
+    expect(deleteSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("builds packet context from fixture diffs as summaries and test references", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "httpbin_client.go", fixture("go/httpbin_client.go"));
@@ -194,6 +225,52 @@ describe("parser-derived fixture summaries", () => {
     });
     expect(packetContext.outline?.topLevelSymbols).toEqual(expect.arrayContaining([expect.objectContaining({ name: "Client" })]));
     expect(packetContext.relevantTests.map((test) => test.path)).toContain("httpbin_client_test.go");
+  });
+
+  it("matches enclosing symbol suffixes only on segment boundaries", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "cache.go", [
+      "package pkg",
+      "",
+      "type Cache struct{}",
+      "",
+      "func loadUserCache() int {",
+      "\treturn 1",
+      "}"
+    ].join("\n"));
+    const base = commitAll(repo, "base");
+    writeRepoFile(repo, "cache.go", [
+      "package pkg",
+      "",
+      "type Cache struct{}",
+      "",
+      "func loadUserCache() int {",
+      "\treturn 2",
+      "}"
+    ].join("\n"));
+    const head = commitAll(repo, "change cache loader");
+    const { diff, tools } = await buildIndexForRange(repo, base, head);
+    const file = diff.files.find((item) => item.path === "cache.go");
+    expect(file).toBeDefined();
+
+    const packetContext = await tools.buildPacketContext(
+      file!,
+      file!.hunks,
+      [{
+        path: "cache.go",
+        hunkId: file!.hunks[0]!.id,
+        enclosingSymbol: "pkg.loadUserCache",
+        symbolKind: "function",
+        symbolRange: [5, 7],
+        changedLines: [6],
+        changedLinesSide: "new",
+        source: "tree-sitter",
+        confidence: "syntactic"
+      }]
+    );
+
+    expect(packetContext.context.enclosingFunction?.name).toBe("loadUserCache");
+    expect(packetContext.context.enclosingType?.name).not.toBe("Cache");
   });
 
   it("reports Go exported struct and interface shape changes as API changes", async () => {

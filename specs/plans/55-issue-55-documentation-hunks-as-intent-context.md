@@ -4,6 +4,8 @@ Status: PENDING
 Planned from: trails-api eval runs `49f4645b/logs/1` and `49f4645b/logs/9`, 2026-06-17
 Recommended priority: medium-high, because documentation packets are now creating noisy unresolved notes and should be converted into bounded intent context
 
+> **STALE — re-scope before implementing (2026-07-02, per `specs/reviews/1-fable-review.md` §4 and `PUNCHLIST.md` Wave 4).** Half this plan's motivation predates plan 66 (planner review questions were since removed). The remaining real problems — coverage wording for skipped docs, and docs as intent evidence — do not need the `ReviewDisposition`/`FileRole` machinery proposed below. Rewrite as a smaller plan before execution; the design below is retained for reference only.
+
 ## Problem
 
 The final review report currently says:

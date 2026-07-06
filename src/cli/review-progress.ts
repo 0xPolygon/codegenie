@@ -1,4 +1,5 @@
-import type { ReviewStage, TelemetryEvent } from "../types.js";
+import type { TelemetryEvent } from "../types.js";
+import { STAGE_LABELS } from "../review-stages.js";
 
 type ProgressEvent = Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">;
 
@@ -14,21 +15,6 @@ export type ReviewProgress = {
 };
 
 const FRAMES = ["-", "\\", "|", "/"] as const;
-
-const STAGE_LABELS: Record<ReviewStage | 0, string> = {
-  0: "setup",
-  1: "resolving input",
-  2: "parsing diff",
-  3: "classifying files",
-  4: "indexing symbols",
-  5: "planning review",
-  6: "building review packets",
-  7: "reviewing hunks",
-  8: "checking follow-ups",
-  9: "verifying findings",
-  10: "composing review",
-  11: "publishing"
-};
 
 export function createReviewProgress(options: ProgressOptions): ReviewProgress | undefined {
   const stream = options.stream ?? process.stderr;

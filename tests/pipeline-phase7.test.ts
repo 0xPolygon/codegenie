@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import { runReview } from "../src/pipeline/review-runner.js";
+import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
 import type { CodegenieConfig, GitHubClient, PullRequestMetadata } from "../src/types.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
@@ -39,8 +40,8 @@ describe("phase 7 GitHub pipeline integration", () => {
     expect(posted[0]?.comments).toHaveLength(1);
     expect(output.join("\n")).toContain("Status: posted");
     expect(output.join("\n")).toContain("Inline comments posted: 1");
-    expect(existsSync(path.join(runArtifactDir, "github-posting.json"))).toBe(true);
-    expect(readFileSync(path.join(runArtifactDir, "github-posting.json"), "utf8")).toContain("\"status\": \"posted\"");
+    expect(existsSync(runFilePath(runArtifactDir, "github-posting.json"))).toBe(true);
+    expect(readFileSync(runFilePath(runArtifactDir, "github-posting.json"), "utf8")).toContain("\"status\": \"posted\"");
     expect(existsSync(lockDir)).toBe(false);
   });
 
@@ -69,7 +70,7 @@ describe("phase 7 GitHub pipeline integration", () => {
     expect(result.posting).toMatchObject({ status: "posted", inlinePosted: 0 });
     expect(posted).toEqual([{ comments: [], body: "Nothing to review." }]);
     expect(output.join("\n")).toContain("Status: posted");
-    expect(readFileSync(path.join(runArtifactDir, "github-posting.json"), "utf8")).toContain("\"inlinePosted\": 0");
+    expect(readFileSync(runFilePath(runArtifactDir, "github-posting.json"), "utf8")).toContain("\"inlinePosted\": 0");
   });
 
   it("scrubs pinned secret patterns from final review artifacts", async () => {
@@ -88,7 +89,7 @@ describe("phase 7 GitHub pipeline integration", () => {
     );
 
     const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
-    const finalFindings = readFileSync(path.join(runArtifactDir, "final-findings.json"), "utf8");
+    const finalFindings = readFileSync(runFilePath(runArtifactDir, "final-findings.json"), "utf8");
     expect(finalReview).not.toContain("xoxb-abcdefghijklmnop");
     expect(finalFindings).not.toContain("xoxb-abcdefghijklmnop");
     expect(finalReview).toContain("[redacted:slack-token]");
@@ -126,4 +127,8 @@ function fakeGithub(baseSha: string, headSha: string, posted: Array<{ comments: 
       posted.push({ comments: review.comments, body: review.body });
     }
   };
+}
+
+function runFilePath(runDir: string, relPath: string): string {
+  return path.join(runDir, canonicalArtifactPath(relPath));
 }

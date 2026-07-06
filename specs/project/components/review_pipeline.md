@@ -202,7 +202,8 @@ interface WorkerRunner {
 | Packet worker terminal failure | Hunks marked `review_failed`; partial disclosure; run continues |
 | Verifier per-candidate failure after repair | `verificationIncomplete`; candidate suppressed from publication |
 | Composer terminal failure | Deterministic fallback composition with disclosure note |
-| Auth or provider-wide failure, any stage | Run fails (`llm_call_failed`, fatal) |
+| Auth failure (`recoverable: false`), any stage | Run fails (`llm_call_failed`, fatal) |
+| Provider-wide outage (transient-exhausted `llm_call_failed` at the planner, the run's opening call) | Run fails; after the planner has succeeded, transient failures degrade per-unit instead (plan 80) |
 | Soft budget exhaustion | Degradation ladder; partial disclosure; exit 0 |
 | 2x runtime budget | Fatal `timeout`; best-effort telemetry flush |
 
@@ -606,6 +607,8 @@ Verdict handling (`VerificationVerdict` per candidate):
 
 Failure rules: authentication or provider-wide failures fail the run or mark the review incomplete (fatal per the global policy). Individual schema/parse failures get the one repair attempt; candidates still unverified are marked `verificationIncomplete: true`, suppressed from publication by default, and counted into `RunCoverageStatus.verificationIncompleteCount`. When `review.verify === false` (explicit configuration only), gates 1-6 still run, the LLM verifier is skipped, gate-surviving candidates pass through as the verified set, and the coverage summary discloses that verification was skipped.
 
+BehaviorChange severity contract (plan 82): findings and verdicts may carry `behaviorChange: "accidental_regression" | "intentional_needs_confirmation" | "specified_change" | "unknown"`. Only `intentional_needs_confirmation` caps severity (critical/high → medium) — a deliberate-change callout reads differently from a regression. `"unknown"` and an omitted field are equivalent and never demote (punishing honest uncertainty taught models to omit the field). When the cap fires, the pre-cap severity is preserved as `severityBeforeCap`, and every never-hide-critical/high guarantee (composer pre-trim, soft comment cap, report cap) consults `max(severity, severityBeforeCap)` so a capped critical cannot be silently suppressed at composition.
+
 Telemetry per candidate: pre-gate decision, verifier prompt size, tool calls, token usage, runtime, verdict, revision details, rejection reason, incomplete reason. `verification.json` persists one record per candidate: gate-rejected/suppressed candidates record `{ candidateId, gate: "suppressed", gateReason }`, and verified candidates record `{ candidateId, gate: "passed", verdict: VerificationVerdict }` (revised findings carry `verdict.finalFinding`). Pre-clustered duplicate members carry no record of their own — readers resolve them through `duplicateOf` to the representative's verdict. This is the reader contract consumed by `components/evals.md`. Stage 9 does not decide the final review shape.
 
 ### Run Coverage Aggregation
@@ -619,7 +622,7 @@ Telemetry per candidate: pre-gate decision, verifier prompt size, tool calls, to
 - `coverageByLevel`: effective per-hunk coverage — the packet's coverage for packeted hunks (post-fallback, post-coalescing max), `skip` for skipped hunks.
 - `degradedPlanning`: from `runPlanner` (full or per-chunk fallback).
 - `budgetStopped`: from the budget ledger.
-- `budgetStop`: first-stop snapshot from the budget ledger when present, including reason (`runtime_reserved_tail`, `max_model_calls`, `max_total_tokens`, or `hard_timeout`), stage, elapsed time, projected model-call/token counts, configured limits, and remaining/reserved budget estimates.
+- `budgetStop`: first-stop snapshot from the budget ledger when present, including reason (`runtime_reserved_tail`, `max_model_calls`, `max_budget_tokens`, or `hard_timeout`), stage, elapsed time, projected model-call/token counts, configured limits, and remaining/reserved budget estimates.
 - `unreviewedHunksByPath`: grouped file/path counts for hunks that were reviewable but did not complete packet review, with stable reasons such as `budget_stopped before dispatch`.
 - `verificationIncompleteCount`: from Stage 9.
 - `partial`: true when `reviewedHunks + skippedHunks < totalHunks`, or `failedHunks > 0`, or `budgetStopped`, or the planner declared `partialReview.isPartial`.
@@ -657,7 +660,7 @@ Composer terminal failure (after one repair retry, non-auth): deterministic fall
 
 ### Failure And Budget Semantics
 
-The budget ledger tracks, per run: elapsed wall-clock time against `review.timeoutMs`, total tokens against `review.maxTotalTokens`, and model-call count against `review.maxModelCalls`. There is no cost budget in v1 (cost-based run budgets are deferred — see architecture.md Future Considerations); cost is observability only, disclosed through `cost-profile.json`. The LLM runner reports usage per call; the ledger is updated synchronously after every call.
+The budget ledger tracks, per run: elapsed wall-clock time against `review.timeoutMs`, total tokens against `review.maxBudgetTokens`, and model-call count against `review.maxModelCalls`. There is no cost budget in v1 (cost-based run budgets are deferred — see architecture.md Future Considerations); cost is observability only, disclosed through `cost-profile.json`. The LLM runner reports usage per call; the ledger is updated synchronously after every call.
 
 Reservation: at run start the ledger reserves approximately 15% of the configured token and model-call budgets (when set) and a runtime tail of `max(60s, 10% of review.timeoutMs)` for stages 9-10, so completed review work is never lost to exhaustion. Stages 1-7 draw from the remainder; stages 9-10 may draw from both the remainder and the reserve.
 
@@ -738,7 +741,7 @@ Worker runner and lens execution:
 - `workers_respect_concurrency_and_priority`: with `review.concurrency = 2` and mixed priorities, at most two tasks run concurrently and dispatch follows priority then coverage then stable order.
 - `workers_isolated_context`: two packet workers' prompts share no conversation state; each result carries its own `workerId`/`packetId`.
 - `workers_stage7_single_retry`: a transient packet failure re-dispatches once; a second failure yields `status: "failed"` and `review_failed` coverage records for all packet hunks.
-- `workers_timeout_and_cancellation`: a worker exceeding `perPassTimeoutMs` is aborted and handled as terminal; the 2x hard kill cancels in-flight workers and still writes telemetry.
+- `workers_timeout_and_cancellation`: `perPassTimeoutMs` is a soft deadline — after it, the pass dispatches no further investigation calls and is routed to one forced finalize; the worker is aborted as terminal only at the hard deadline (`perPassTimeoutMs + finalizeGraceMs`, plan 85). The 2x run-level hard kill cancels in-flight workers immediately and still writes telemetry. Timed-out passes are not re-dispatched.
 - `workers_budget_checkpoint_stops_dispatch`: model-call budget exhausts mid-queue; remaining tasks settle `not_dispatched`; their hunks are `review_failed` with the budget reason.
 - `lens_one_composite_call_per_packet`: a packet with three lenses produces exactly one model call whose prompt contains all three projections.
 - `lens_coverage_profiles`: light/normal/deep packets receive the table's tool budgets, scaled by run depth.
@@ -772,7 +775,7 @@ Stage 10:
 
 Budget and coverage:
 
-- `budget_reservation_math`: with `maxTotalTokens = 100000`, stages 1-7 exhaust at 85000 while stages 9-10 may spend the reserve; the runtime tail is `max(60s, 10% of timeoutMs)`.
+- `budget_reservation_math`: with `maxBudgetTokens = 100000`, stages 1-7 exhaust at 85000 while stages 9-10 may spend the reserve; the runtime tail is `max(60s, 10% of timeoutMs)`.
 - `budget_ladder_order`: exhaustion during Stage 7 stops new packet dispatch, verifies existing candidates from the reserve, and still composes; `budgetStopped: true` with reasons.
 - `budget_each_dimension_triggers`: time, token, and model-call budgets each independently trigger the ladder at their checkpoint.
 - `coverage_aggregation_matrix`: fixtures combining filtered files, planner skips, completed packets, failed packets, undispatched packets, degraded planning, and incomplete verification produce the expected `RunCoverageStatus` counts, `coverageByLevel`, `partial` flag, and reasons; `coverage.json` includes every hunk exactly once.

@@ -1,5 +1,6 @@
 import pLimit from "p-limit";
 import type { CoverageLevel, ReviewPriority, ReviewStage } from "../types.js";
+import { finalizeGraceMs } from "../util/budget.js";
 
 export type WorkerTask<T> = {
   workerId?: string;
@@ -8,6 +9,10 @@ export type WorkerTask<T> = {
   coverage?: Exclude<CoverageLevel, "skip">;
   packetId?: string;
   candidateId?: string;
+  // Which ensemble pass this task represents (plan 84). Outcomes are
+  // returned in DISPATCH order (sorted by priority/coverage), not input
+  // order, so pass identity must ride on the task itself.
+  ensemblePass?: number;
   timeoutMs: number;
   retryOnTransient: boolean;
   run: (signal: AbortSignal, task: AssignedWorkerTask<T>) => Promise<T>;
@@ -135,7 +140,13 @@ async function runTaskOnce<T>(task: AssignedWorkerTask<T>, rootSignal: AbortSign
     return { task, outcome: "cancelled", error: rootSignal.reason, attempts: attempt - 1 };
   }
   rootSignal.addEventListener("abort", onAbort, { once: true });
-  const timeout = setTimeout(() => controller.abort(new Error("worker timed out")), task.timeoutMs);
+  // Hard deadline: the pass's soft budget plus the finalize grace window. The
+  // soft deadline itself is enforced cooperatively inside the LLM runner loop
+  // (no new investigation calls after it); this timer is the backstop.
+  const timeout = setTimeout(
+    () => controller.abort(new Error("worker timed out")),
+    task.timeoutMs + finalizeGraceMs(task.timeoutMs)
+  );
   const abortWaiter = abortPromise(controller.signal);
 
   try {

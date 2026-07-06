@@ -51,7 +51,6 @@ Core dependencies:
 - A TOML parser for `codegenie.toml` and a YAML parser for eval case files.
 - `picomatch` for path-rule and tool globs.
 - `execa` or Node subprocess APIs for `git` and `gh`.
-- `@vscode/ripgrep` for bundled text search, used as a fast path only when the checkout matches the reviewed head. Pinned to >=1.18.0, which ships per-platform binaries in the tarball with no postinstall download.
 - `web-tree-sitter` plus Go and TypeScript/JavaScript grammars for v1 syntax parsing.
   - `tree-sitter-go` for Go
   - `tree-sitter-typescript` for Typescript: `.ts`/`.mts`/`.cts`/`.d.ts` route to the typescript grammar; `.tsx` routes to the tsx grammar
@@ -60,7 +59,7 @@ Core dependencies:
   - Grammar files are referenced directly from `node_modules` at runtime (e.g. `require.resolve("tree-sitter-go/tree-sitter-go.wasm")` via `createRequire` under ESM); no copy step into an `assets/` folder is needed because codegenie is distributed as a normal npm package. An asset-copy step becomes necessary only if single-file bundling is introduced, which is out of scope for v1.
   - `web-tree-sitter` and the three grammar packages are pinned together; ABI compatibility is enforced at `Language.load`.
 
-Exact dependency versions are pinned via the pnpm lockfile; `@vscode/ripgrep` and tree-sitter grammar wasm artifacts ship inside their npm tarballs (no postinstall downloads permitted).
+Exact dependency versions are pinned via the pnpm lockfile; tree-sitter grammar wasm artifacts ship inside their npm tarballs (no postinstall downloads permitted).
 
 External CLI dependencies:
 
@@ -189,7 +188,7 @@ User-local provider/auth state:
 
 This state is user-scoped, never repo-tracked, and is the only place codegenie itself stores provider credentials.
 
-codegenie is distributed as a normal npm package; wasm grammars and the ripgrep binary resolve from `node_modules` at runtime. Single-file bundling is out of scope for v1.
+codegenie is distributed as a normal npm package; wasm grammars resolve from `node_modules` at runtime. Single-file bundling is out of scope for v1.
 
 ## Core Data Model
 
@@ -789,7 +788,7 @@ Per-key config sources (normative; Trust Boundaries defers to this table):
 | --- | --- |
 | `review.depth`, `review.maxFindings`, `review.softCommentCap`, `review.budgetBoost`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codegenie.toml`, user-scoped config, or CLI |
 | `telemetry.enabled` | Repo `codegenie.toml` or user-scoped config |
-| `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.timeoutMs`, `review.perPassTimeoutMs`, `review.maxTotalTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
+| `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.timeoutMs`, `review.perPassTimeoutMs`, `review.maxBudgetTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
 
 The loader enforces this via per-key source tracking; repo values for user-scope keys are ignored with a warning.
 
@@ -820,7 +819,7 @@ type CodegenieConfig = {
     concurrency: number
     timeoutMs: number
     perPassTimeoutMs: number
-    maxTotalTokens?: number
+    maxBudgetTokens?: number
     maxModelCalls?: number
   }
   github: {
@@ -874,11 +873,13 @@ Chosen defaults:
 - `review.softCommentCap = 7` (inline target)
 - `review.concurrency = 4`
 - `llm.maxConcurrentCalls = 4`
+- `llm.forceSubmitToolChoice = true` (plan 86 step 3: Anthropic finalize/repair/no-tool calls run with thinking disabled and genuinely forced submit tool choice; `false` restores the legacy silent downgrade to `auto`)
 - `review.timeoutMs = 30 * 60 * 1000`
-- `review.perPassTimeoutMs = 5 * 60 * 1000` (per model task/worker, not per stage)
+- `review.perPassTimeoutMs = 8 * 60 * 1000` (per model task/worker, not per stage)
 - `review.minConfidence = "medium"`
 - `review.minInlineConfidence = "medium"`
-- `review.maxTotalTokens` and `review.maxModelCalls` unset (no cap)
+- `review.deepEnsemblePasses = 1`, hard-capped at 3 (plan 84: K independent Stage-7 passes for deep-coverage packets, union deduped by the verifier's exact-duplicate identity and fed to the unchanged verification gate; 1 = off, ships dark; eval cases opt in with `review.deepEnsemblePasses` while the effect is measured)
+- `review.maxBudgetTokens = 8_000_000` (plan 90: the primary work-denominated coverage budget; re-derived after run 0c4d5213/53's 5.92M legitimate-work run grazed the 7M soft-stop — soft-stop now 6.8M; time budgets are hang-guards, tokens bound coverage); `review.maxModelCalls` unset (no cap)
 - `github.summaryWhenNoFindings = false`
 - `git.baseBranch = undefined`
 - `classification.pathRules = []`
@@ -1108,7 +1109,7 @@ interface RepositoryTools {
 Repository tools are stable contracts backed by pluggable implementations:
 
 - Tree-sitter backend: preferred for files with available grammars. It provides symbols, enclosing blocks, imports, syntax-aware snippets, and static signals.
-- Text backend: required fallback for every repository. It uses git plumbing reads, bundled ripgrep when the checkout matches the reviewed head, line windows, and simple filename/test conventions.
+- Text backend: required fallback for every repository. It uses git plumbing reads, `git grep` at the reviewed revisions, line windows, and simple filename/test conventions.
 - Language analyzer backend: optional later enrichment for languages where stronger semantic analysis is available.
 
 Tool callers should not need to know which backend answered. Every tool result should include backend provenance, precision, and degradation metadata. `readRange`, `readDiffBlocks`, and `listFiles` do not require tree-sitter. `readFileOutline`, `readSymbol`, `findDefinition`, `findSymbolMentions`, and `findLikelyTests` should use tree-sitter when available and degrade to text-backed approximations or empty degraded results when unavailable. `readSymbol` with a line selector returns the enclosing symbol at that line; symbol enumeration is answered by `readFileOutline` (its `topLevelSymbols`). Import questions are answered by `readFileOutline`, which includes the file's imports.
@@ -1119,9 +1120,9 @@ Tool callers should not need to know which backend answered. Every tool result s
 
 Source-reading tools default to head content and can read base content when available. Base reads are required for deleted-file review and old-side context.
 
-Revision access uses git plumbing rather than the checked-out worktree. File reads use `git show <ref>:<path>`, tree listings use `git ls-tree`, and whole-tree search uses `git grep <ref>`, so base and head trees are fully accessible regardless of what is checked out, without materializing temporary worktrees. Tree-sitter parses revision content in memory and never depends on worktree files. The bundled `@vscode/ripgrep` is a search fast path used only when the checked-out HEAD equals the reviewed head revision and the relevant files are unmodified; the engine that answered (ripgrep or git grep) is recorded in telemetry, not in tool results.
+Revision access uses git plumbing rather than the checked-out worktree. File reads use `git show <ref>:<path>`, tree listings use `git ls-tree`, and whole-tree search uses `git grep <ref>`, so base and head trees are fully accessible regardless of what is checked out, without materializing temporary worktrees. Tree-sitter parses revision content in memory and never depends on worktree files. Search engine provenance is recorded in telemetry as `engine: "git-grep"` for text-search-backed calls, not in tool results.
 
-`searchFiles` query contract: the query language is POSIX ERE. The text backend invokes `git grep -E` (revision search) and ripgrep with flags aligned to ERE semantics (worktree fast path). Engine differences that actually affect results (ignore-file handling, binary detection) are recorded via `ToolResultMeta.degradationReason`; engine identity itself lives in telemetry. Queries are treated as patterns, never shell-interpolated.
+`searchFiles` query contract: the query language is POSIX ERE. The text backend invokes `git grep -E` at the resolved revision. Queries are treated as patterns, never shell-interpolated.
 
 Tool results must be capped by count and characters, include line numbers, prefer semantic blocks over whole files, and record truncation or omitted-result counts in telemetry. The model should see structured summaries and source snippets, not raw AST dumps.
 
@@ -1334,7 +1335,7 @@ Failure and budget handling:
   - Stage 9 → existing verification failure rules unchanged.
   - Stage 10 composer → one repair retry; terminal failure triggers a deterministic fallback composition (verified findings rendered with template wording, fingerprint-level grouping only, ranked by severity/confidence) with a disclosure note that semantic composition was skipped.
   - Authentication or provider-wide failures at any stage fail the run.
-- Budgets (`timeoutMs`, `maxTotalTokens`, `maxModelCalls`) are checked before each new model call or worker dispatch. On exhaustion: stop scheduling new packet reviews → verify already-produced candidates using a reserved budget slice → always run composition and emit a partial-review disclosure.
+- Budgets (`timeoutMs`, `maxBudgetTokens`, `maxModelCalls`) are checked before each new model call or worker dispatch. On exhaustion: stop scheduling new packet reviews → verify already-produced candidates using a reserved budget slice → always run composition and emit a partial-review disclosure.
 - Approximately 15% of the configured token and model-call budgets (and a fixed tail of the runtime budget) is reserved for Stages 9-10 so completed review work is never lost to exhaustion. A hard kill at 2x the configured runtime budget is fatal; even then codegenie attempts to write telemetry artifacts before exiting.
 - Provider 429 and transient 5xx responses get up to 3 retries with exponential backoff; retries count against budgets.
 - The run-level coverage status is owned by the orchestrator, which aggregates plan-time coverage, runtime failures, budget stops, and verification incompleteness into the final coverage summary (run-level, not only `ReviewPlan.partialReview`):
@@ -1356,7 +1357,7 @@ type RunCoverageStatus = {
 }
 
 type BudgetStop = {
-  reason: "runtime_reserved_tail" | "max_model_calls" | "max_total_tokens" | "hard_timeout"
+  reason: "runtime_reserved_tail" | "max_model_calls" | "max_budget_tokens" | "hard_timeout"
   stage: ReviewStage | 0
   elapsedMs: number
   timeoutMs: number
@@ -1372,7 +1373,7 @@ type BudgetStop = {
   totalTokens: number
   inFlightTokens: number
   projectedTokens: number
-  maxTotalTokens?: number
+  maxBudgetTokens?: number
   remainingTokens?: number
   reservedTokens?: number
 }
@@ -1633,7 +1634,7 @@ type ToolCallRecord = {
   }
   backend: ToolBackend
   precision: ToolPrecision
-  engine?: "git-grep" | "ripgrep" // search-engine provenance for text-search-backed calls
+  engine?: "git-grep" // search-engine provenance for text-search-backed calls
   degraded: boolean
   degradationReason?: string
   truncated?: boolean
@@ -1855,7 +1856,7 @@ Prompt construction: untrusted content must be structurally delimited in prompts
 
 Output channel control: everything posted to GitHub passes deterministic sanitization (see Output And GitHub Publishing). Telemetry/debug artifacts contain untrusted content by design and are local-only.
 
-Repository tools path containment (single chokepoint in the RepositoryTools layer): all paths are canonicalized and required to resolve inside `repoRoot`; absolute paths and `..` traversal are rejected with a typed error (`path_outside_repo`); the worktree fast path must not follow symlinks resolving outside the repo root (git-plumbing reads are inherently contained); refs are harness-resolved only (model-facing source selectors expose `head`/`base`), and harness-side ref values are validated against `git check-ref-format` rules and rejected if option-like (leading `-`).
+Repository tools path containment (single chokepoint in the RepositoryTools layer): all paths are canonicalized as repository-relative tree paths; absolute paths and `..` traversal are rejected with a typed error (`path_outside_repo`); git-plumbing reads are inherently contained to repository object paths; refs are harness-resolved only (model-facing source selectors expose `head`/`base`), and harness-side ref values are validated against `git check-ref-format` rules and rejected if option-like (leading `-`).
 
 Config trust partitioning: the per-key config-source table in CLI And Config is normative. Repo `codegenie.toml` may set only the repo-settable safe keys listed there; every other key takes effect only with user-level opt-in — a CLI flag, `~/.codegenie/settings.json`, or the user-scoped config file `~/.codegenie/config.toml` (all under `CODEGENIE_HOME`) — and repo-config values for user-scope keys are ignored with a warning. Repo-config-relative paths are constrained to the repo root.
 
@@ -1977,7 +1978,7 @@ type SymbolEdge = {
   to: SymbolRef
   kind: "calls" | "implements" | "extends" | "imports" | "tests" | "references"
   confidence: "syntactic" | "heuristic" | "semantic"
-  source: "tree-sitter" | "ripgrep" | "lsp" | "compiler" | "custom"
+  source: "tree-sitter" | "git-grep" | "lsp" | "compiler" | "custom"
 }
 
 type ChangedSymbolGraph = {
@@ -2033,7 +2034,7 @@ Per-language `StaticSignal` rules via `LanguageAdapter.getStaticSignals`, beyond
 
 ### Cost-based budgets
 
-`review.maxCostUSD` as a run budget alongside tokens and model calls; in v1, unknown-cost calls counting zero made it a loophole, and `maxTotalTokens` covers the need. Trigger: Pi-reported pricing is reliable.
+`review.maxCostUSD` as a run budget alongside tokens and model calls; in v1, unknown-cost calls counting zero made it a loophole, and `maxBudgetTokens` covers the need. Trigger: Pi-reported pricing is reliable.
 
 ### Fine-grained eval attribution and replay
 

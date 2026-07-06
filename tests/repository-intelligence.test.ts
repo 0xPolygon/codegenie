@@ -549,14 +549,12 @@ export { internal as Public }
     const range = await tools.readRange("store/user.go", 1, 2);
     expect(range.meta).toMatchObject({ backend: "text", precision: "exact", degraded: false });
     const pastEofRange = await tools.readRange("store/user.go", 10_000, 10_010);
-    expect(pastEofRange.text).toBe("");
     expect(pastEofRange.meta).toMatchObject({
       backend: "text",
       precision: "exact",
-      degraded: true,
-      degradationReason: "requested range starts after end of file",
-      truncated: true,
-      omittedCount: 0
+      degraded: false,
+      lookupStatus: "found",
+      deliveryStatus: "full"
     });
     const listed = await tools.listFiles("store/*.go");
     expect(listed.paths).toEqual(expect.arrayContaining(["store/user.go", "store/user_test.go"]));
@@ -742,7 +740,7 @@ func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64
     });
   });
 
-  it("falls back to git grep when ignored or untracked paths would make ripgrep walk extra tree content", async () => {
+  it("searches through git grep without traversing ignored untracked or linked content", async () => {
     const repo = initRepo();
     const outsideDir = mkdtempSync(path.join(tmpdir(), "codegenie-outside-"));
     writeFileSync(path.join(outsideDir, "secret.txt"), "OutsideSecretLeak\n");
@@ -778,7 +776,7 @@ func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64
     expect(telemetry.toolCalls.filter((call) => call.tool === "search_files").every((call) => call.degraded === false)).toBe(true);
   });
 
-  it("uses the ripgrep fast path for clean tracked worktrees", async () => {
+  it("uses git grep for clean tracked worktrees", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "src/app.ts", "export const visible = 'VisibleNeedle'\n");
     const head = commitAll(repo, "base");
@@ -787,12 +785,12 @@ func CalculatePriceUSD(decimals uint8, amountUSD float64, amount int64) (float64
     expect((await tools.searchFiles("VisibleNeedle")).results.map((result) => result.path)).toContain("src/app.ts");
     expect(telemetry.toolCalls).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ tool: "search_files", engine: "ripgrep", status: "ok", degraded: false })
+        expect.objectContaining({ tool: "search_files", engine: "git-grep", status: "ok", degraded: false })
       ])
     );
   });
 
-  it("does not search checked-out submodule contents through the ripgrep fast path", async () => {
+  it("does not search checked-out submodule contents", async () => {
     const submodule = initRepo();
     writeRepoFile(submodule, "secret.txt", "SubmoduleSecretNeedle\n");
     commitAll(submodule, "submodule content");

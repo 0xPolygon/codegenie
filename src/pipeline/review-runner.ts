@@ -48,7 +48,9 @@ import type {
 import { CodegenieError, errorExitCode, isCodegenieError } from "../util/errors.js";
 import { buildPlannerDossier, runPlanner } from "./planner.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
-import { runLensPackets } from "./lens-runner.js";
+import { ensemblePassesForPacket, runLensPackets } from "./lens-runner.js";
+import { aggregateAttentionEfficiency, buildAttentionRecords } from "./attention.js";
+import { applyCoverageEscalations } from "./coverage-escalation.js";
 import { runTargetedSystemReviews, suppressResolvedFollowUpHints } from "./system-reviewer.js";
 import { promoteUncertaintiesForVerification } from "./uncertainty-promotion.js";
 import { verifyFindings } from "./verifier.js";
@@ -206,11 +208,16 @@ export async function runReview(
       skills: services.skills
     });
     throwIfHardAborted(run);
-    const packets = await buildReviewPackets(plannerResult.plan, kept, fileFacts, repoIndex, run.telemetry, {
+    const packets = applyCoverageEscalations(
+      await buildReviewPackets(plannerResult.plan, kept, fileFacts, repoIndex, run.telemetry, {
+        config,
+        enabledLenses: services.lenses.filter((lens) => lens.enabled).map((lens) => lens.id),
+        reviewContext: packetReviewContextFromDossier(dossier)
+      }),
+      plannerResult.plan,
       config,
-      enabledLenses: services.lenses.filter((lens) => lens.enabled).map((lens) => lens.id),
-      reviewContext: packetReviewContextFromDossier(dossier)
-    });
+      run.telemetry
+    );
     run.telemetry.event({
       stage: 6,
       level: "info",
@@ -310,6 +317,22 @@ export async function runReview(
     emitBudgetStop(run, finalReview.coverage.budgetStop);
     finalReview.budgetSummary = run.budget.summary(finalReview.coverage, buildContextPressureSummary(run.telemetry, packets, finalReview));
     throwIfHardAborted(run);
+    const attentionRecords = buildAttentionRecords({
+      packets,
+      plannedHunkIds: new Set(plannerResult.plan.coverage.map((decision) => decision.hunkId)),
+      packetResults: packetResultsForFinal,
+      candidateFindings,
+      verdicts: verified.verdicts,
+      publishedFindings: [...finalReview.findings, ...finalReview.summaryOnlyFindings],
+      ensemblePassesForPacket: (packet) => ensemblePassesForPacket(packet, config)
+    });
+    await run.telemetry.writeArtifact("attention.json", attentionRecords);
+    run.telemetry.event({
+      stage: 10,
+      level: "info",
+      message: "attention_efficiency",
+      data: aggregateAttentionEfficiency(attentionRecords) as unknown as Record<string, unknown>
+    });
     await run.telemetry.writeArtifact("coverage.json", {
       status: finalReview.coverage,
       records: buildCoverageRecords(diff.files, decisions, plannerResult.plan, packetResults, packets)
@@ -392,7 +415,7 @@ async function startRun(
     : config.telemetry;
   const run = createRunTelemetry({
     telemetryConfig,
-    ...(runArtifactDir ? { idFactory: () => path.basename(path.resolve(runArtifactDir)) } : {}),
+    ...(runArtifactDir ? { directoryNameFactory: () => path.basename(path.resolve(runArtifactDir)) } : {}),
     runMetadata: {
       argv: process.argv,
       repoRoot,
@@ -596,10 +619,11 @@ async function removeStalePullRequestRefLock(
   telemetry: TelemetryRecorder
 ): Promise<boolean> {
   const owner = await readPullRequestRefLockOwner(lockDir);
-  if (owner !== undefined && owner.pid !== undefined && processExists(owner.pid)) {
+  if (!(await pullRequestRefLockIsStale(lockDir, owner))) {
     return false;
   }
-  if (owner === undefined && !(await lockDirectoryIsOlderThan(lockDir, MISSING_LOCK_OWNER_STALE_MS))) {
+  const currentOwner = await readPullRequestRefLockOwner(lockDir);
+  if (!(await pullRequestRefLockIsStale(lockDir, currentOwner))) {
     return false;
   }
   await rm(lockDir, { recursive: true, force: true });
@@ -610,6 +634,13 @@ async function removeStalePullRequestRefLock(
     data: { prNumber, lockDir, owner }
   });
   return true;
+}
+
+async function pullRequestRefLockIsStale(lockDir: string, owner: PullRequestRefLockOwner | undefined): Promise<boolean> {
+  if (owner !== undefined) {
+    return owner.pid === undefined || !processExists(owner.pid);
+  }
+  return lockDirectoryIsOlderThan(lockDir, MISSING_LOCK_OWNER_STALE_MS);
 }
 
 async function lockDirectoryIsOlderThan(lockDir: string, ms: number): Promise<boolean> {
@@ -940,6 +971,15 @@ export function aggregateRunCoverage(
       failedHunks += packetHunks;
     }
   }
+  // Planned hunks that never became packets still count toward their planned
+  // coverage level (plan 89 A3) — otherwise coverageByLevel under-counts and
+  // no longer sums to totalHunks on runs with packet-less hunks.
+  const packetHunkIds = new Set(packets.flatMap((packet) => packet.hunks.map((hunk) => hunk.hunkId)));
+  for (const decision of plan.coverage) {
+    if (decision.coverage !== "skip" && !packetHunkIds.has(decision.hunkId)) {
+      coverageByLevel[decision.coverage] += 1;
+    }
+  }
   const skippedHunks = plan.coverage.filter((decision) => decision.coverage === "skip").length + skippedByFilter;
   coverageByLevel.skip += plan.coverage.filter((decision) => decision.coverage === "skip").length;
   const unaccountedHunks = Math.max(0, totalHunks - reviewedHunks - failedHunks - skippedHunks);
@@ -1155,7 +1195,7 @@ function buildCoverageRecords(
       const planDecision = planByHunk.get(hunk.id);
       const coverageSource = coverageSourceFor(planDecision);
       if (planDecision?.coverage === "skip") {
-        records.push({ hunkId: hunk.id, path: file.path, coverage: "skip", source: "planner", status: "skipped", reason: planDecision.reason });
+        records.push({ hunkId: hunk.id, path: file.path, coverage: "skip", source: coverageSource, status: "skipped", reason: planDecision.reason });
         continue;
       }
       const packet = packetByHunk.get(hunk.id);
@@ -1191,7 +1231,14 @@ function buildCoverageRecords(
 }
 
 function coverageSourceFor(planDecision: ReviewPlan["coverage"][number] | undefined): CoverageRecord["source"] {
-  if (planDecision === undefined || planDecision.reason.startsWith("degraded planning:")) {
+  // Deterministic upgrades (default plans and planner-recovery safety
+  // coverage) must not be attributed to the planner model (plan 89 A3) —
+  // eval coverage-source analysis keys off this field.
+  if (
+    planDecision === undefined ||
+    planDecision.reason.startsWith("degraded planning:") ||
+    planDecision.reason.startsWith("planner recovery safety coverage")
+  ) {
     return "deterministic_default";
   }
   return "planner";
@@ -1359,7 +1406,7 @@ export class BudgetLedger {
   private inFlightModelCalls = 0;
   private inFlightTokens = 0;
   private readonly effectiveMaxModelCalls: number | undefined;
-  private readonly effectiveMaxTotalTokens: number | undefined;
+  private readonly effectiveMaxBudgetTokens: number | undefined;
   private readonly usageByStage = new Map<ReviewStage, BudgetUsageByStage>();
   private readonly overrunRecords: BudgetLimitEvent[] = [];
   private readonly dispatchBlockRecords: BudgetLimitEvent[] = [];
@@ -1372,7 +1419,7 @@ export class BudgetLedger {
     private readonly telemetry?: TelemetryRecorder
   ) {
     this.effectiveMaxModelCalls = scaleOptionalBudgetValue(config.review.maxModelCalls, config.review.budgetBoost);
-    this.effectiveMaxTotalTokens = scaleOptionalBudgetValue(config.review.maxTotalTokens, config.review.budgetBoost);
+    this.effectiveMaxBudgetTokens = scaleOptionalBudgetValue(config.review.maxBudgetTokens, config.review.budgetBoost);
   }
 
   checkpoint(stage: number): "ok" | "exhausted" {
@@ -1446,12 +1493,12 @@ export class BudgetLedger {
       configured: {
         timeoutMs: this.config.review.timeoutMs,
         ...(this.config.review.maxModelCalls !== undefined ? { maxModelCalls: this.config.review.maxModelCalls } : {}),
-        ...(this.config.review.maxTotalTokens !== undefined ? { maxTotalTokens: this.config.review.maxTotalTokens } : {})
+        ...(this.config.review.maxBudgetTokens !== undefined ? { maxBudgetTokens: this.config.review.maxBudgetTokens } : {})
       },
       effective: {
         timeoutMs: this.config.review.timeoutMs,
         ...(this.effectiveMaxModelCalls !== undefined ? { maxModelCalls: this.effectiveMaxModelCalls } : {}),
-        ...(this.effectiveMaxTotalTokens !== undefined ? { maxTotalTokens: this.effectiveMaxTotalTokens } : {})
+        ...(this.effectiveMaxBudgetTokens !== undefined ? { maxBudgetTokens: this.effectiveMaxBudgetTokens } : {})
       },
       usage: {
         modelCalls: this.modelCalls,
@@ -1475,7 +1522,7 @@ export class BudgetLedger {
       return "runtime_reserved_tail";
     }
     if (this.tokensExhausted(reserveStage, additionalReservedTokens)) {
-      return "max_total_tokens";
+      return "max_budget_tokens";
     }
     if (this.modelCallsExhausted(reserveStage, additionalReservedCalls)) {
       return "max_model_calls";
@@ -1559,11 +1606,11 @@ export class BudgetLedger {
       totalTokens: this.totalTokens,
       inFlightTokens: snapshotInFlightTokens,
       projectedTokens,
-      ...(this.effectiveMaxTotalTokens !== undefined
+      ...(this.effectiveMaxBudgetTokens !== undefined
         ? {
-            maxTotalTokens: this.effectiveMaxTotalTokens,
-            remainingTokens: Math.max(0, this.effectiveMaxTotalTokens - projectedTokens),
-            reservedTokens: reservedBudgetAmount(this.effectiveMaxTotalTokens)
+            maxBudgetTokens: this.effectiveMaxBudgetTokens,
+            remainingTokens: Math.max(0, this.effectiveMaxBudgetTokens - projectedTokens),
+            reservedTokens: reservedBudgetAmount(this.effectiveMaxBudgetTokens)
           }
         : {})
     };
@@ -1590,11 +1637,11 @@ export class BudgetLedger {
       this.markPostCallOverrun(this.limitEvent("max_model_calls", usage.stage, elapsed, 0, 0, true));
     }
     if (
-      this.effectiveMaxTotalTokens !== undefined &&
-      previousTotalTokens <= this.effectiveMaxTotalTokens &&
-      this.totalTokens > this.effectiveMaxTotalTokens
+      this.effectiveMaxBudgetTokens !== undefined &&
+      previousTotalTokens <= this.effectiveMaxBudgetTokens &&
+      this.totalTokens > this.effectiveMaxBudgetTokens
     ) {
-      this.markPostCallOverrun(this.limitEvent("max_total_tokens", usage.stage, elapsed, 0, 0, true));
+      this.markPostCallOverrun(this.limitEvent("max_budget_tokens", usage.stage, elapsed, 0, 0, true));
     }
   }
 
@@ -1610,19 +1657,19 @@ export class BudgetLedger {
     const projectedTokens = this.totalTokens + (afterDispatchedCall ? 0 : this.inFlightTokens) + additionalReservedTokens;
     const limit = reason === "max_model_calls"
       ? this.effectiveMaxModelCalls ?? 0
-      : reason === "max_total_tokens"
-        ? this.effectiveMaxTotalTokens ?? 0
+      : reason === "max_budget_tokens"
+        ? this.effectiveMaxBudgetTokens ?? 0
         : this.config.review.timeoutMs;
     const actual = reason === "max_model_calls"
       ? projectedModelCalls
-      : reason === "max_total_tokens"
+      : reason === "max_budget_tokens"
         ? projectedTokens
         : elapsed;
     return {
       stage: isReviewStage(stage) ? stage : 0,
       reason,
       elapsedMs: elapsed,
-      kind: reason === "max_model_calls" ? "model_calls" : reason === "max_total_tokens" ? "tokens" : "runtime",
+      kind: reason === "max_model_calls" ? "model_calls" : reason === "max_budget_tokens" ? "tokens" : "runtime",
       actual,
       limit,
       totalTokens: this.totalTokens,
@@ -1637,7 +1684,7 @@ export class BudgetLedger {
   }
 
   private tokensExhausted(reserveStage: boolean, additionalReservedTokens = 0): boolean {
-    const max = this.effectiveMaxTotalTokens;
+    const max = this.effectiveMaxBudgetTokens;
     if (max === undefined) {
       return false;
     }

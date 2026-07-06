@@ -79,24 +79,24 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 73 | COMPLETE | Issue 73: Caller-Visible Guarantee Invariant and Verifier Framing |
 | 74 | PENDING | Issue 74: Merged Finding Confidence Calibration |
 | 75 | PENDING | Issue 75: Human-Attention Output Discipline |
-| 76 | PENDING | Issue 76: Low-Confidence Anchorless True-Positive Suppression at the Verification Pre-Gate |
+| 76 | COMPLETE (phase 1) | Issue 76: Low-Confidence Anchorless True-Positive Suppression at the Verification Pre-Gate (phase 2 not shipped per stop condition) |
 | 77 | REVERTED | Issue 77: Stage 6 Scoped Relationship Symbol Mention Lookups |
-| 78 | PENDING | Issue 78: Stage-Grouped Telemetry Artifacts |
-| 79 | PENDING | Issue 79: Eval Recall-Variance Harness and Relay Wrong-Chain Case |
-
-## Current Queue
-
-Recommended implementation order for remaining work:
-
-- **Issue 79** — add per-case `repeat`/recall-rate to the eval harness and a precise Relay wrong-chain regression case, so Stage 7 recall variance becomes measurable and gateable (the measurement foundation for any redundancy fix).
-- **Issue 76** — recover anchors for low-confidence evidence-backed findings before the verifier pre-gate, so Stage 7 anchor omissions do not suppress repeatedly-confirmed true positives.
-- **Issue 55** — treat docs/specs/postmortems as bounded intent context for code packets instead of standalone Stage 7 review packets; this prevents stale doc-only human-attention notes and fixes coverage wording.
-- **Issue 74** — calibrate final confidence from compatible verified merged candidates, so Stage 10 does not publish a low-confidence final report when the merged group contains stronger confidence evidence.
-- **Issue 75** — suppress stale `Needs Human Attention` notes when Stage 9 already adjudicated the exact promoted source note or a stronger packet no-finding review already resolved the same helper predicate.
-- **Issue 78** — give each telemetry artifact exactly one home: stage-owned artifacts under `stages/<stage>/`, run-level discovery/streams at root. No duplicate writes and no fallback reads (clean break; old root-only runs are not read by updated readers).
-
-## Deferred / Watch List
-
-Promote these only if later evals show recurring evidence:
-
-- **Broad risk-note propagation** — if many packets repeatedly re-litigate the same cross-cutting helper or migration assumptions, consider a bounded shared context mechanism. Avoid fixed risk categories.
+| 78 | COMPLETE | Issue 78: Stage-Grouped Telemetry Artifacts |
+| 79 | COMPLETE | Issue 79: Eval Recall-Variance Harness and Relay Wrong-Chain Case |
+| 80 | COMPLETE | Issue 80: Degrade-and-Disclose Failure Semantics for LLM Errors |
+| 81 | IN PROGRESS | Issue 81: Minimal Predicate-Only Uncertainty Promotion (output-quality slice landed; deletions measurement-gated) |
+| 82 | COMPLETE (mechanical) | Issue 82: BehaviorChange Severity Discipline |
+| 83 | COMPLETE | Issue 83: Wording-Independent Finding Fingerprints and Compare Integrity |
+| 84 | COMPLETE (dark) | Issue 84: Stage-7 Ensemble Review for Deep Packets (default off; measurement in progress) |
+| 85 | COMPLETE | Issue 85: Finalize Grace for Per-Pass Worker Timeouts |
+| 86 | IN PROGRESS | Issue 86: Provider Protocol Parity and Observability (steps 1-4 done; step 5 study pending) |
+| 87 | COMPLETE | Issue 87: Verifier Pre-Clustering Restricted to Exact Duplicates |
+| 88 | COMPLETE | Issue 88: Publisher Summary-Only Fallback Reachability and Posting Disclosure |
+| 89 | IN PROGRESS | Issue 89: Deterministic Bug Sweep (phase A done; phase B Wave 4) |
+| 90 | COMPLETE | Issue 90: Token-Denominated Primary Review Budget (maxBudgetTokens) |
+| 91 | COMPLETE | Issue 91: pi-ai Models-API Migration (off /compat; A/B gate passed on run 0c4d5213/50) |
+| 92 | IMPLEMENTED (measuring) | Issue 92: Planner Coverage Calibration and the Adaptive Second Pass |
+| 93 | PENDING | Issue 93: Delete the Dead Ripgrep Fast Path (D9) |
+| 94 | PENDING | Issue 94: One Shared Similarity/Util Module |
+| 95 | PENDING | Issue 95: One Shared Submit/Salvage Layer + Prompt "Why" Ledger |
+| 96 | PENDING | Issue 96: Fixed Stage-6 Symbol-Context Budget |

@@ -44,8 +44,16 @@ export type CodegenieConfig = {
     timeoutMs: number;
     perPassTimeoutMs: number;
     budgetBoost: number;
-    maxTotalTokens?: number;
+    maxBudgetTokens?: number;
     maxModelCalls?: number;
+    // Plan 84: K independent Stage-7 passes for deep-coverage packets, union
+    // fed to the existing verification gate. 1 = off (the default); eval
+    // cases opt in while the effect is being measured.
+    deepEnsemblePasses?: number;
+    // Plan 92 layer 3: single-pass packets whose first pass shows near-miss
+    // evidence (concrete hint/uncertainty, silent-with-signal, low-confidence
+    // only) earn one additional independent review pass. Off by default.
+    adaptiveSecondPass?: boolean;
   };
   github: {
     summaryWhenNoFindings: boolean;
@@ -61,6 +69,10 @@ export type CodegenieConfig = {
     model?: string;
     reasoning?: ReasoningLevel;
     maxConcurrentCalls: number;
+    // Plan 86 step 3 escape hatch: when true (default), Anthropic
+    // finalize/repair/no-tool calls run with thinking disabled and genuinely
+    // forced submit tool choice instead of silently downgrading to auto.
+    forceSubmitToolChoice?: boolean;
   };
   cache: {
     enabled: boolean;
@@ -442,6 +454,13 @@ export type PacketHunk = {
   plannerFallbackReason?: string;
 };
 
+// Plan 92 layer 2: a deterministic structural escalator raised this packet's
+// coverage floor (recorded for provenance and attention telemetry).
+export type CoverageEscalation = {
+  rule: "test_coverage_delta";
+  reason: string;
+};
+
 export type CoverageLevel = "deep" | "normal" | "light" | "skip";
 export type PacketKind = "hunk" | "coalesced-hunks" | "file-diff" | "whole-file";
 export type ReviewProfile = "simple" | "standard" | "investigate";
@@ -530,6 +549,7 @@ export type TestCoverageDelta = {
 export type ReviewPacket = {
   id: string;
   kind: PacketKind;
+  coverageEscalation?: CoverageEscalation;
   prSummary: string;
   intentText?: string;
   intentSignals?: IntentSignals;
@@ -735,6 +755,9 @@ export type FindingProducer = {
   lensId: string;
   skillIds: string[];
   workerId?: string;
+  // Which ensemble pass produced this candidate (plan 84); absent when the
+  // packet ran a single pass.
+  ensemblePass?: number;
 };
 
 export type CandidateFindingProvenance = {
@@ -747,13 +770,34 @@ export type CandidateFindingProvenance = {
   reason: string;
 };
 
+// Anchor provenance (plan 76). Publication trusts only "model",
+// "backfill_changed_code", and "verifier_revised"; a
+// "backfill_packet_representative" anchor proves on-diff-ness at the
+// verification gate but may point at the wrong line and must never be
+// published as a confident inline location.
+export type AnchorSource =
+  | "model"
+  | "backfill_changed_code"
+  | "backfill_packet_representative"
+  | "verifier_revised";
+
 export type CandidateFinding = {
   id: string;
   title: string;
   severity: Severity;
+  // Original model-assigned severity preserved when the behaviorChange cap
+  // demoted it (plan 82); the never-hide-critical/high guarantees consult
+  // max(severity, severityBeforeCap) so a capped critical cannot be silently
+  // suppressed at composition.
+  severityBeforeCap?: Severity;
   confidence: Confidence;
   path: string;
   anchor?: DiffAnchor;
+  anchorSource?: AnchorSource;
+  // Whether Stage 7 submitted any structured anchor (valid or not) —
+  // distinguishes "model never anchored" from "model anchor was invalid"
+  // after reconstruction has run.
+  modelAnchorSubmitted?: boolean;
   changedLine: boolean;
   category: FindingCategory;
   evidence: {
@@ -795,6 +839,9 @@ export type PacketReviewResult = {
   }>;
   uncertainties: StructuredUncertainty[];
   status: "completed" | "incomplete" | "failed" | "skipped";
+  // Total Stage-7 passes that produced this result (planned ensemble +
+  // adaptive second pass); absent on stage-8 system results.
+  passesRun?: number;
 };
 
 export type SystemReviewTask = {
@@ -827,7 +874,9 @@ export type SystemReviewResult = {
 
 export type VerificationVerdict = {
   candidateId: string;
-  verdict: "keep" | "reject" | "revise";
+  // "incomplete" is runner-assigned only (timeout/budget/schema loss before a
+  // real verdict); the model-submitted verdict never carries it.
+  verdict: "keep" | "reject" | "revise" | "incomplete";
   reason: string;
   requiredEvidencePresent: boolean;
   falsePositiveRisk: "low" | "medium" | "high";
@@ -918,10 +967,19 @@ export type EvalFindingExpectation = {
   severityAtLeast?: Severity;
   titlePattern?: string;
   failureModePattern?: string;
+  // Recall-rate gates for repeated cases (plan 79). When present, the
+  // expectation passes iff the aggregated rate meets the threshold; when
+  // absent, rates are measured and reported but never gate.
+  minRecallRate?: number;
+  minCandidateRate?: number;
 };
 
 export type EvalCase = {
   name: string;
+  // Number of independent executions of this case (plan 79). Default 1.
+  // repeat > 1 requires caching off and is incompatible with artifact-backed
+  // cases.
+  repeat?: number;
   repo?: {
     external?: string;
     fixture?: string;
@@ -939,6 +997,10 @@ export type EvalCase = {
     maxFindings?: number;
     concurrency?: number;
     budgetBoost?: number;
+    maxTimeMinutes?: number;
+    maxBudgetTokens?: number;
+    deepEnsemblePasses?: number;
+    adaptiveSecondPass?: boolean;
     verify?: boolean;
     cache?: boolean;
     cacheDir?: string;
@@ -1024,6 +1086,9 @@ export type EvalLossDetail = {
   coveringPacketIds?: string[];
   coveringPacketLenses?: string[];
   plannerCoverage?: string;
+  // The lost expectation resurfaced as a published Needs Human Attention note
+  // (plan 79) — the NOTE outcome, a less-bad loss than a silent miss.
+  surfacedAsNote?: boolean;
 };
 
 export type EvalExpectationResult = {
@@ -1070,6 +1135,34 @@ export type EvalBudgetResult = {
   fromReplayedArtifacts?: boolean;
 };
 
+// Plan 92 Layer 1: per-packet attention-allocation scoring — what a packet
+// was allotted (coverage, ensemble passes) joined with what it produced.
+export type AttentionRecord = {
+  packetId: string;
+  path: string;
+  coverage: Exclude<CoverageLevel, "skip">;
+  coverageSource: "planner" | "deterministic_default" | `escalated:${string}`;
+  ensemblePasses: number;
+  directCandidates: number;
+  promotedCandidates: number;
+  hintsEmitted: number;
+  uncertaintiesEmitted: number;
+  keptVerified: number;
+  published: number;
+};
+
+export type AttentionEfficiency = {
+  byCoverage: Partial<Record<Exclude<CoverageLevel, "skip">, {
+    packets: number;
+    ensembledPackets: number;
+    directCandidates: number;
+    hintsEmitted: number;
+    keptVerified: number;
+    published: number;
+  }>>;
+  defaultCoveragePackets: number;
+};
+
 export type EvalRunMetrics = {
   reportedFindings: number;
   inlineFindings: number;
@@ -1082,6 +1175,9 @@ export type EvalRunMetrics = {
   modelCalls?: number;
   verificationCalls?: number;
   toolCalls?: number;
+  toolChoiceDowngradedCalls?: number;
+  attentionEfficiency?: AttentionEfficiency;
+  missingArtifacts?: string[];
   maxPromptCharsByStage?: Partial<Record<ReviewStage, number>>;
   reviewCompleteness?: "complete" | "partial";
   budgetOverruns?: number;
@@ -1097,6 +1193,7 @@ export type EvalRunMetrics = {
   providerPromptCacheWriteTokens?: number;
   providerPromptCacheReadCostUSD?: number;
   providerPromptCacheWriteCostUSD?: number;
+  reasoningTokens?: number;
   schemaInvalidCalls?: number;
   schemaInvalidRecovered?: number;
   schemaInvalidUnrecovered?: number;
@@ -1137,6 +1234,10 @@ export type EvalRunInfo = {
   caseHash: string;
   caseSnapshot: EvalCase;
   mode: "live" | "replay";
+  // Present when the case ran with repeat > 1 (plan 79): the score above is
+  // the aggregate; per-execution artifacts live under repeats/<k>/ in the run
+  // dir and full detail in eval-aggregate.json.
+  repeats?: EvalRepeatAggregate;
   replay?: {
     sourceArtifacts: string;
     caseSource: "yaml" | "snapshot";
@@ -1148,6 +1249,8 @@ export type EvalRunInfo = {
   effectiveConfig?: {
     review: {
       concurrency: number;
+      timeoutMs: number;
+      maxBudgetTokens?: number;
     };
     llm: {
       provider?: string;
@@ -1209,12 +1312,28 @@ export type EvalHintEvent = {
   confidence: Confidence;
 };
 
+export type EvalHumanAttentionNote = {
+  question: string;
+  files: string[];
+  reasons: string[];
+};
+
 export type EvalArtifacts = {
   candidates: CandidateFinding[];
   verification: EvalVerificationRecord[];
   finalSelection: EvalSelectionRecord[];
   finalFindings: FinalFinding[];
+  // Logical artifact names that could not be read (missing or unreadable).
+  // Scoring proceeds with empty defaults and discloses these instead of
+  // crashing and destroying the run's data point (plan 89 A1).
+  missingArtifacts?: string[];
+  // Published Needs Human Attention notes (plan 79): lets scoring distinguish
+  // a finding that resurfaced as a note (NOTE) from a silent miss (MISS).
+  humanAttentionNotes?: EvalHumanAttentionNote[];
   reviewPlan?: ReviewPlan;
+  // Plan 92 Layer 1 attention records (attention.json); absent on runs
+  // predating the instrument.
+  attention?: AttentionRecord[];
   packets: ReviewPacket[];
   hintEvents: EvalHintEvent[];
   coverage?: RunCoverageStatus & { hunks?: unknown[] };
@@ -1230,11 +1349,40 @@ export type EvalArtifacts = {
   };
 };
 
+export type EvalRepeatExpectationAggregate = {
+  expectationId: string;
+  list: EvalExpectationList;
+  tier: "required" | "optional";
+  finalMatched: number;
+  candidateMatched: number;
+  noteSurfaced: number;
+  finalRecallRate: number;
+  candidateRecallRate: number;
+  noteRate: number;
+  lossHistogram: Record<string, number>;
+  // Plan 83 handoff: whether every execution that matched this expectation
+  // produced the same finding fingerprint (cross-run identity assertion).
+  fingerprintsStable?: boolean;
+  distinctFingerprints?: number;
+  gate?: { minRecallRate?: number; minCandidateRate?: number; passed: boolean };
+};
+
+export type EvalRepeatAggregate = {
+  repeat: number;
+  executions: Array<{ runDir: string; status: EvalScore["status"] }>;
+  expectations: EvalRepeatExpectationAggregate[];
+  totals: { costUSD: number; elapsedSeconds: number; errors: number };
+};
+
 export type EvalCompareReport = {
   caseName: string;
   currentRun: number;
   previousRun: number;
   caseHashChanged: boolean;
+  // Set when the previous run's final findings could not be read: the finding
+  // diff is then added-only and must not be read as a balanced comparison
+  // (plan 83).
+  previousFindingsUnreadable?: boolean;
   statusChange?: { from: EvalScore["status"]; to: EvalScore["status"] };
   regressions: Array<{ expectationId: string; lossLabel?: EvalLossLabel }>;
   fixes: Array<{ expectationId: string }>;
@@ -1263,7 +1411,7 @@ export type RunPostingRecord = {
   inlinePosted: number;
   demotedToBody: number;
   skippedDuplicates: number;
-  attempts: Array<{ httpStatus?: number; commentCount: number; outcome: "ok" | "rejected" | "error" }>;
+  attempts: Array<{ httpStatus?: number; commentCount: number; outcome: "ok" | "rejected" | "error" | "fallback_summary_only" }>;
   error?: string;
   duplicateDecisions?: FindingDuplicateDecision[];
 };
@@ -1442,7 +1590,7 @@ export type ToolCallRecord = {
   };
   backend: ToolBackend;
   precision: ToolPrecision;
-  engine?: "git-grep" | "ripgrep";
+  engine?: "git-grep";
   degraded: boolean;
   degradationReason?: string;
   truncated?: boolean;
@@ -1478,7 +1626,7 @@ export type RunOutcomeStatus = "completed_full" | "completed_partial" | "failed"
 export type BudgetStopReason =
   | "runtime_reserved_tail"
   | "max_model_calls"
-  | "max_total_tokens"
+  | "max_budget_tokens"
   | "hard_timeout";
 
 export type BudgetStop = {
@@ -1498,7 +1646,7 @@ export type BudgetStop = {
   totalTokens: number;
   inFlightTokens: number;
   projectedTokens: number;
-  maxTotalTokens?: number;
+  maxBudgetTokens?: number;
   remainingTokens?: number;
   reservedTokens?: number;
 };
@@ -1548,12 +1696,12 @@ export type BudgetSummary = {
   configured: {
     timeoutMs: number;
     maxModelCalls?: number;
-    maxTotalTokens?: number;
+    maxBudgetTokens?: number;
   };
   effective: {
     timeoutMs: number;
     maxModelCalls?: number;
-    maxTotalTokens?: number;
+    maxBudgetTokens?: number;
   };
   usage: {
     modelCalls: number;

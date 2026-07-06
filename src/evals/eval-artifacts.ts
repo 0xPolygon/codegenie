@@ -1,9 +1,11 @@
 import { cp, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
+  AttentionRecord,
   CandidateFinding,
   EvalArtifacts,
   EvalHintEvent,
+  EvalHumanAttentionNote,
   EvalRunInfo,
   EvalSelectionRecord,
   EvalVerificationRecord,
@@ -14,6 +16,7 @@ import type {
   RunCoverageStatus
 } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
+import { canonicalArtifactPath } from "../telemetry/run-artifacts.js";
 
 export async function allocateRunDir(logsDir: string): Promise<{ runNumber: number; dir: string }> {
   await mkdir(logsDir, { recursive: true });
@@ -34,17 +37,23 @@ export async function allocateRunDir(logsDir: string): Promise<{ runNumber: numb
 
 export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtifacts> {
   const dir = path.resolve(telemetryDir);
-  const candidates = await readRequiredJson<CandidateFinding[]>(dir, "candidate-findings.json");
-  const finalFindings = await readRequiredJson<FinalFinding[]>(dir, "final-findings.json");
-  const selectionRaw = await readOptionalJson<unknown>(dir, "final-selection.json");
-  const coverageRaw = await readOptionalJson<unknown>(dir, "coverage.json");
-  const reviewPlan = await readOptionalJson<ReviewPlan>(dir, "review-plan.json");
+  // Scoring must never crash on a missing or unreadable artifact — a failed
+  // review already lost its findings; losing the scorer's record of the run
+  // compounds the damage (plan 89 A1, run 0c4d5213/24). Unreadable artifacts
+  // degrade to empty defaults and are disclosed via missingArtifacts.
+  const missingArtifacts: string[] = [];
+  const candidates = await readScoredJson<CandidateFinding[]>(dir, "candidate-findings.json", missingArtifacts);
+  const finalFindings = await readScoredJson<FinalFinding[]>(dir, "final-findings.json", missingArtifacts);
+  const selectionRaw = await readOptionalArtifact<unknown>(dir, "final-selection.json");
+  const coverageRaw = await readOptionalArtifact<unknown>(dir, "coverage.json");
+  const reviewPlan = await readOptionalArtifact<ReviewPlan>(dir, "review-plan.json");
+  const attention = await readOptionalArtifact<AttentionRecord[]>(dir, "attention.json");
   const coverage = normalizeCoverage(coverageRaw);
   const metricsSources: EvalArtifacts["metricsSources"] = {};
-  const costProfile = await readOptionalJson<unknown>(dir, "cost-profile.json");
-  const modelCallsSummary = await readOptionalJson<unknown>(dir, "model-calls-summary.json");
-  const toolCallsSummary = await readOptionalJson<unknown>(dir, "tool-calls-summary.json");
-  const budgetSummary = await readOptionalJson<BudgetSummary>(dir, "budget-summary.json");
+  const costProfile = await readOptionalArtifact<unknown>(dir, "cost-profile.json");
+  const modelCallsSummary = await readOptionalArtifact<unknown>(dir, "model-calls-summary.json");
+  const toolCallsSummary = await readOptionalArtifact<unknown>(dir, "tool-calls-summary.json");
+  const budgetSummary = await readOptionalArtifact<BudgetSummary>(dir, "budget-summary.json");
   const runJson = await readOptionalJson<unknown>(dir, "run.json");
   const telemetry = await readOptionalJson<unknown>(dir, "telemetry.json");
   const modelCalls = await readOptionalJsonl(path.join(dir, "model-calls.jsonl"));
@@ -75,13 +84,18 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
   }
   const artifacts: EvalArtifacts = {
     candidates: Array.isArray(candidates) ? candidates : [],
-    verification: normalizeVerification(await readOptionalJson<unknown>(dir, "verification.json")),
+    verification: normalizeVerification(await readOptionalArtifact<unknown>(dir, "verification.json")),
     finalSelection: normalizeSelection(selectionRaw),
     finalFindings: Array.isArray(finalFindings) ? finalFindings : [],
-    packets: await loadPackets(path.join(dir, "packets")),
+    missingArtifacts,
+    humanAttentionNotes: normalizeHumanAttentionNotes(await readOptionalArtifact<unknown>(dir, "human-attention-notes.json")),
+    packets: await loadPackets(path.join(dir, "stages", "06-packets", "packets")),
     hintEvents: await loadHintEvents(path.join(dir, "events.jsonl")),
     metricsSources
   };
+  if (attention !== undefined && Array.isArray(attention)) {
+    artifacts.attention = attention;
+  }
   if (reviewPlan !== undefined) {
     artifacts.reviewPlan = reviewPlan;
   }
@@ -165,21 +179,72 @@ async function nextRunNumber(logsDir: string): Promise<number> {
   return existing.length === 0 ? 1 : Math.max(...existing) + 1;
 }
 
-async function readRequiredJson<T>(dir: string, fileName: string): Promise<T> {
-  const filePath = path.join(dir, fileName);
-  try {
-    return JSON.parse(await readFile(filePath, "utf8")) as T;
-  } catch (error) {
-    if (isNodeErrorCode(error, "ENOENT")) {
-      throw new CodegenieError("invalid_args", `required eval artifact is missing: ${filePath}`, {
-        context: { path: filePath }
-      });
+// The published-notes artifact has carried two shapes: a bare array of notes
+// and the grouped `{ groups: [...] }` form. Normalize both into flat notes so
+// the scorer can attribute the NOTE outcome (plan 79).
+function normalizeHumanAttentionNotes(raw: unknown): EvalHumanAttentionNote[] {
+  const entries = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === "object" && Array.isArray((raw as { groups?: unknown }).groups)
+      ? (raw as { groups: unknown[] }).groups
+      : [];
+  return entries.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
     }
-    throw new CodegenieError("invalid_args", `failed to read eval artifact: ${filePath}`, {
-      context: { path: filePath },
-      cause: error
-    });
+    const note = entry as { question?: unknown; files?: unknown; reason?: unknown; reasons?: unknown };
+    const question = typeof note.question === "string" ? note.question : "";
+    if (question.length === 0) {
+      return [];
+    }
+    const files = Array.isArray(note.files) ? note.files.filter((file): file is string => typeof file === "string") : [];
+    const reasons = Array.isArray(note.reasons)
+      ? note.reasons.filter((reason): reason is string => typeof reason === "string")
+      : typeof note.reason === "string"
+        ? [note.reason]
+        : [];
+    return [{ question, files, reasons }];
+  });
+}
+
+// Optional artifact read with the same pre-layout-v2 root fallback as
+// readScoredJson (plan 83): old runs stay loadable for replay and compare.
+async function readOptionalArtifact<T>(dir: string, logicalName: string): Promise<T | undefined> {
+  const relPath = canonicalArtifactPath(logicalName);
+  const primary = await readOptionalJson<T>(dir, relPath);
+  if (primary !== undefined || relPath === logicalName) {
+    return primary;
   }
+  return readOptionalJson<T>(dir, logicalName);
+}
+
+// Tolerant read for scoring inputs: resolution failures, missing files, and
+// unparseable JSON all degrade to undefined and are recorded by logical name,
+// so a broken review run still produces a scored (and disclosed) data point.
+// Pre-layout-v2 runs stored artifacts at the telemetry root, so the bare
+// logical name is tried as a fallback (plan 83): old runs stay comparable.
+async function readScoredJson<T>(dir: string, logicalName: string, missing: string[]): Promise<T | undefined> {
+  let relPath: string;
+  try {
+    relPath = canonicalArtifactPath(logicalName);
+  } catch {
+    missing.push(`${logicalName} (unknown artifact path)`);
+    return undefined;
+  }
+  const candidates = relPath === logicalName ? [relPath] : [relPath, logicalName];
+  let lastError: unknown;
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(await readFile(path.join(dir, candidate), "utf8")) as T;
+    } catch (error) {
+      lastError = error;
+      if (!isNodeErrorCode(error, "ENOENT")) {
+        break;
+      }
+    }
+  }
+  missing.push(isNodeErrorCode(lastError, "ENOENT") ? logicalName : `${logicalName} (unreadable)`);
+  return undefined;
 }
 
 async function readOptionalJson<T>(dir: string, fileName: string): Promise<T | undefined> {

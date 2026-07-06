@@ -1,6 +1,7 @@
 # Issue 74: Merged Finding Confidence Calibration
 
-Status: PENDING
+Status: COMPLETE (2026-07-04)
+Implementation notes: `selectMergedConfidence` in composer.ts applied at `toFinalFinding` — same-severity merge-group candidates lend confidence outright; one-step-lower-severity candidates lift by at most one step capped at medium; larger gaps/category mismatches/behaviorChange disagreements lend nothing; never lowers. `confidenceSelections` records (differing selections only) written to final-selection.json. Test pins the run-21 lift shape and the two-step-gap counterexample (which correctly stays below the publication bar).
 Planned from: trails-api eval `49f4645b/logs/21` compared with `49f4645b/logs/20`, 2026-06-19
 Planned at: commit `81c6430`
 Recommended priority: medium. This is output-quality polish after Issues 70-73; it should not change recall, verification strictness, or candidate generation.

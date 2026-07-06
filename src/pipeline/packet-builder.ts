@@ -78,7 +78,7 @@ type HunkRelationshipEdge = {
 };
 
 type RelatedContextOmission = {
-  hunkId: string;
+  hunkIds: string[];
   targetHunkId?: string | undefined;
   reason: string;
 };
@@ -853,6 +853,7 @@ async function buildRelatedChangedContext(
   telemetry: TelemetryRecorder
 ): Promise<RelatedChangedContext[]> {
   const currentHunks = new Set(planned.map((entry) => entry.hunk.id));
+  const currentHunkIds = [...currentHunks].sort();
   const currentFiles = new Set(planned.map((entry) => entry.file.path));
   const targets = new Map<string, RelatedContextTarget>();
   for (const hunkId of currentHunks) {
@@ -865,7 +866,7 @@ async function buildRelatedChangedContext(
       }
       const related = graph.plannedByHunk.get(edge.toHunkId);
       if (related === undefined) {
-        graph.relatedContextOmitted.push({ hunkId: [...currentHunks].join(","), targetHunkId: edge.toHunkId, reason: "target hunk unavailable" });
+        graph.relatedContextOmitted.push({ hunkIds: currentHunkIds, targetHunkId: edge.toHunkId, reason: "target hunk unavailable" });
         continue;
       }
       const key = relatedContextTargetKey(related);
@@ -887,12 +888,12 @@ async function buildRelatedChangedContext(
     const edge = target.edge;
     duplicateTargets += Math.max(0, target.targetHunkIds.size - 1);
     if (contexts.length >= MAX_RELATED_CONTEXTS_PER_PACKET) {
-      graph.relatedContextOmitted.push({ hunkId: [...currentHunks].join(","), targetHunkId: edge.toHunkId, reason: "related context cap exceeded" });
+      graph.relatedContextOmitted.push({ hunkIds: currentHunkIds, targetHunkId: edge.toHunkId, reason: "related context cap exceeded" });
       continue;
     }
     const related = edge.toHunkId === undefined ? undefined : graph.plannedByHunk.get(edge.toHunkId);
     if (related === undefined) {
-      graph.relatedContextOmitted.push({ hunkId: [...currentHunks].join(","), targetHunkId: edge.toHunkId, reason: "target hunk unavailable" });
+      graph.relatedContextOmitted.push({ hunkIds: currentHunkIds, targetHunkId: edge.toHunkId, reason: "target hunk unavailable" });
       continue;
     }
     if (currentFiles.has(related.file.path) && currentHunks.has(related.hunk.id)) {
@@ -900,7 +901,7 @@ async function buildRelatedChangedContext(
     }
     const context = await relatedContextForTarget(related, edge, [...target.targetHunkIds].sort(), repoIndex, telemetry);
     if (context === undefined) {
-      graph.relatedContextOmitted.push({ hunkId: [...currentHunks].join(","), targetHunkId: edge.toHunkId, reason: "source unavailable" });
+      graph.relatedContextOmitted.push({ hunkIds: currentHunkIds, targetHunkId: edge.toHunkId, reason: "source unavailable" });
       continue;
     }
     contexts.push(context);
@@ -1214,8 +1215,14 @@ function hunkProximityRange(hunk: DiffHunk): { side: "old" | "new"; start: numbe
 
 function staticSignalsForHunk(file: DiffFile, hunk: DiffHunk, signals: StaticSignal[]): StaticSignal[] {
   return signals.filter((signal) => {
-    if (signal.path !== file.path || signal.line === undefined) {
-      return signal.path === file.path;
+    if (signal.path !== file.path) {
+      return false;
+    }
+    if (signal.line === undefined) {
+      // A line-less file-level signal attaches once (to the file's first
+      // hunk), not to every hunk of the file (plan 89 A4) — per-hunk
+      // duplication inflated packet context and planner risk weighting.
+      return file.hunks[0]?.id === hunk.id;
     }
     const side = signal.side ?? "RIGHT";
     if (side === "LEFT") {
@@ -2879,7 +2886,7 @@ function maxReviewPriority(priorities: ReviewPriority[]): ReviewPriority {
   return [...priorities].sort((a, b) => order[a] - order[b])[0] ?? "normal";
 }
 
-function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], profile: ReviewProfile): ToolBudget {
+export function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], profile: ReviewProfile): ToolBudget {
   if (profile === "simple") {
     return { maxToolCalls: 0, maxInvestigationRounds: 0, maxResultChars: 0 };
   }

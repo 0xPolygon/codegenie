@@ -1,6 +1,6 @@
 # Issue 78: Stage-Grouped Telemetry Artifacts
 
-Status: PENDING
+Status: COMPLETE
 Planned from: local telemetry review/debugging workflow discussion after comparing trails-api Opus runs, 2026-06-23
 Planned at: commit `7ffa1e8` (branch `next`)
 Recommended priority: medium. This is a developer-experience and eval-debuggability improvement: new run directories become stage-by-stage browsable with exactly one canonical home per artifact — no duplicate writes and no fallback reads.
@@ -127,7 +127,7 @@ Add a single shared table so the stage **slug** is derived once and cannot drift
 
 ```ts
 export const STAGES = [
-  { stage: 0,  slug: "00-run",          label: "setup" },
+  { stage: 0,  slug: "00-run",          label: "run" },
   { stage: 1,  slug: "01-input",        label: "resolving input" },
   { stage: 2,  slug: "02-diff",         label: "parsing diff" },
   { stage: 3,  slug: "03-classify",     label: "classifying files" },

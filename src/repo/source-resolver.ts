@@ -1,7 +1,6 @@
 import picomatch from "picomatch";
 import type { SearchResult, SourceSelector, ResolvedReviewInput } from "../types.js";
 import { createGitClient, type InternalGitClient } from "../git/git-client.js";
-import { runGit } from "../git/subprocess.js";
 import { CodegenieError } from "../util/errors.js";
 import { sha256Hex } from "../util/hashing.js";
 import { containGlob, containPath, containRef } from "./path-guard.js";
@@ -9,12 +8,6 @@ import { containGlob, containPath, containRef } from "./path-guard.js";
 export type RevisionBinding = {
   headCommit: string;
   baseCommit: string;
-};
-
-export type WorktreeSnapshot = {
-  headEqualsReviewedHead: boolean;
-  trackedClean: boolean;
-  untrackedPaths: Set<string>;
 };
 
 export type ResolvedContent = {
@@ -30,25 +23,21 @@ export class SourceResolver {
   readonly repoRoot: string;
   readonly git: InternalGitClient;
   readonly binding: RevisionBinding;
-  readonly worktree: WorktreeSnapshot;
   private readonly contentCache = new Map<string, Promise<ResolvedContent | undefined>>();
 
   private constructor(
     repoRoot: string,
     git: InternalGitClient,
-    binding: RevisionBinding,
-    worktree: WorktreeSnapshot
+    binding: RevisionBinding
   ) {
     this.repoRoot = repoRoot;
     this.git = git;
     this.binding = binding;
-    this.worktree = worktree;
   }
 
   static async create(resolved: ResolvedReviewInput, git: InternalGitClient = createGitClient(resolved.repoRoot)): Promise<SourceResolver> {
     const binding = await deriveRevisionBinding(resolved, git);
-    const worktree = await snapshotWorktree(resolved.repoRoot, binding.headCommit, git);
-    return new SourceResolver(resolved.repoRoot, git, binding, worktree);
+    return new SourceResolver(resolved.repoRoot, git, binding);
   }
 
   resolveSource(source: SourceSelector = { kind: "head" }): string {
@@ -166,40 +155,4 @@ async function resolveBaseCommit(resolved: ResolvedReviewInput, git: InternalGit
     return (await git.firstParent(containRef(resolved.startCommit))) ?? (await git.emptyTreeSha());
   }
   return git.emptyTreeSha();
-}
-
-async function snapshotWorktree(
-  repoRoot: string,
-  reviewedHead: string,
-  git: InternalGitClient
-): Promise<WorktreeSnapshot> {
-  try {
-    const currentHead = await git.revParse("HEAD");
-    const trackedStatus = await runGit(repoRoot, ["status", "--porcelain=v1", "-uno"], {
-      errorCode: "git_ref_missing"
-    });
-    const untrackedOutput = await runGit(repoRoot, ["ls-files", "--others", "-z", "--exclude-standard"], {
-      stripFinalNewline: false,
-      errorCode: "git_ref_missing"
-    });
-    const ignoredUntrackedOutput = await runGit(repoRoot, ["ls-files", "--others", "--ignored", "-z", "--exclude-standard"], {
-      stripFinalNewline: false,
-      errorCode: "git_ref_missing"
-    });
-    return {
-      headEqualsReviewedHead: currentHead === reviewedHead,
-      trackedClean: trackedStatus.trim().length === 0,
-      untrackedPaths: new Set([...parseNulPaths(untrackedOutput), ...parseNulPaths(ignoredUntrackedOutput)])
-    };
-  } catch {
-    return {
-      headEqualsReviewedHead: false,
-      trackedClean: false,
-      untrackedPaths: new Set()
-    };
-  }
-}
-
-function parseNulPaths(output: string): Set<string> {
-  return new Set(output.split("\0").filter(Boolean));
 }

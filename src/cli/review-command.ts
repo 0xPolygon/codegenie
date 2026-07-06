@@ -42,6 +42,7 @@ type CommanderReviewOptions = {
   base?: string;
   depth?: string;
   budgetBoost?: string;
+  maxTime?: string;
   lens?: string[];
   provider?: string;
   model?: string;
@@ -83,6 +84,7 @@ export function parseReviewCommand(
     .option("--base <branch>", "base branch/ref for branch/head/default review")
     .option("--depth <depth>", "review depth: light, normal, or deep")
     .option("--budget-boost <factor>", "scale per-packet tool/result/call budgets by this factor (e.g. 2 doubles them)")
+    .option("--max-time <minutes>", "maximum review runtime in minutes before budget stop (default 30)")
     .option("--lens <lens>", "review lens to enable for this run", collect, [])
     .option("--provider <provider>", "provider override")
     .option("--model <model>", "model override")
@@ -283,6 +285,9 @@ function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides 
   if (options.budgetBoost !== undefined) {
     cli.budgetBoost = parseBudgetBoost(options.budgetBoost);
   }
+  if (options.maxTime !== undefined) {
+    cli.timeoutMs = parseMaxTime(options.maxTime);
+  }
   if (options.lens && options.lens.length > 0) {
     cli.lenses = options.lens;
   }
@@ -353,6 +358,14 @@ function parseBudgetBoost(value: string): number {
     throw new CodegenieError("invalid_args", "--budget-boost must be a positive number");
   }
   return parsed;
+}
+
+function parseMaxTime(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new CodegenieError("invalid_args", "--max-time must be a positive number of minutes");
+  }
+  return Math.round(parsed * 60_000);
 }
 
 function parseReasoning(value: string): ReasoningLevel | "auto" {

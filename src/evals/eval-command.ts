@@ -171,6 +171,25 @@ export function renderCaseResult(result: EvalCaseResult): string {
     parts.push(`provider prompt cache ${metrics.providerPromptCacheReadTokens ?? 0} read/${metrics.providerPromptCacheWriteTokens ?? 0} write tokens`);
   }
   const lines = [parts.join(" | ")];
+  if (result.info.repeats !== undefined) {
+    const repeats = result.info.repeats;
+    lines.push(`  REPEAT x${repeats.repeat}: ${repeats.executions.map((execution) => execution.status).join(",")} | total $${repeats.totals.costUSD.toFixed(2)} ${repeats.totals.elapsedSeconds.toFixed(0)}s${repeats.totals.errors > 0 ? ` | ${repeats.totals.errors} errored` : ""}`);
+    for (const expectation of repeats.expectations) {
+      const loss = Object.entries(expectation.lossHistogram)
+        .filter(([, count]) => count > 0)
+        .map(([label, count]) => `${label}=${count}`)
+        .join(", ");
+      const gate = expectation.gate === undefined
+        ? "measured"
+        : expectation.gate.passed
+          ? "gate pass"
+          : "gate FAIL";
+      const fingerprint = expectation.fingerprintsStable === false ? " | FINGERPRINT UNSTABLE" : "";
+      lines.push(
+        `  ${expectation.expectationId}: finalRecall ${expectation.finalMatched}/${repeats.repeat} (${expectation.finalRecallRate.toFixed(2)}) | candidate ${expectation.candidateMatched}/${repeats.repeat} | note ${expectation.noteSurfaced}/${repeats.repeat} | ${gate}${loss.length > 0 ? ` | loss{${loss}}` : ""}${fingerprint}`
+      );
+    }
+  }
   for (const failure of score.expectationResults.filter((item) => item.status === "fail")) {
     lines.push(`  FAIL ${failure.expectationId}: ${failure.loss?.label ?? "expectation failed"}${failure.loss?.subReason ? ` (${failure.loss.subReason})` : ""}`);
   }

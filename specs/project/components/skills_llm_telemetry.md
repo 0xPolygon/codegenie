@@ -228,6 +228,30 @@ Rules:
 
 The `LlmRunner` interface and `LlmStructuredRequest<T>` type in `architecture.md` are law and are not restated here. This component provides the implementation and its construction seam:
 
+#### Provider Protocol Matrix (plan 86)
+
+codegenie's normalized interface maps onto vendor dialects inside `pi-runner`'s per-API adaptation layer (`mapProviderToolChoice`, `mapReasoningOptions`). The mapping the provider actually runs is recorded per model call (`toolChoiceRequested/Effective/Downgraded`, `reasoningMechanism`, `reasoningLevelEffective` in `model-calls.jsonl`), summarized once per run (`provider_protocol` event), and warned on first downgrade (`tool_choice_downgraded`); downgrade counts aggregate into `model-calls-summary.json` (`toolChoiceDowngradedCalls`) and eval metrics.
+
+| API family | Forced submit tool choice | Reasoning mechanism | Notes |
+| --- | --- | --- | --- |
+| `anthropic-messages` | **downgraded to `auto`** (forced choice conflicts with extended thinking) | `adaptive-effort` (`thinkingEnabled` + effort) | The downgrade is the plan-86 step-3 target; submit compliance rests on prompt text + repair ladder until then |
+| `bedrock-converse-stream` | `{type:"tool",name}` | `reasoning-effort` (pass-through) | |
+| `google-generative-ai` / `google-vertex` | `"any"` | `thinking-level` (`LOW`/`MEDIUM`/`HIGH`; `xhigh` clamps to `HIGH`) | |
+| `mistral-conversations` / `openai-completions` | `{type:"function",function:{name}}` | `reasoning-effort` | |
+| `openai-responses` family | payload-injected `tool_choice` (`withToolChoicePayload`) | `reasoning-effort` | |
+| unknown | `"required"` | `unknown` | |
+
+Reasoning-token spend is not exposed by pi-ai usage today; `reasoningTokens` recording is deferred until it is.
+
+**Anthropic forced-submit protocol (plan 86 step 3, landed 2026-07-02):** forced `tool_choice` conflicts with extended thinking on the Anthropic API, which previously forced a silent downgrade to `auto` on every finalize/repair/no-tool call. Now those calls (the only calls that request forcing; investigation rounds keep thinking + auto) run with thinking explicitly disabled (`thinkingEnabled: false`) and a genuinely forced submit tool choice. Escape hatch: `llm.forceSubmitToolChoice = false` restores the downgrade, which then events `tool_choice_downgraded` — never silent. The once-per-run `provider_protocol` event records the flag; forced-submit calls record `reasoningMechanism: "none"` and cache keys carry `forced-submit-no-thinking`.
+
+**Session-ID / cache-affinity semantics differ sharply per provider** (verified in pi-ai 0.80.3):
+
+- **Direct Anthropic: the session ID is inert.** pi-ai sends `x-session-affinity` only for Fireworks and Cloudflare AI Gateway (`sendSessionAffinityHeaders` compat default). Anthropic routes its prompt cache server-side from the request prefix automatically; there is no client affinity knob. codegenie's stage-scoped session ID (`codegenie-<runId>-stage-<N>`) has no wire effect here.
+- **OpenAI (`openai-responses` — the gpt-5.5 path): the session ID becomes `prompt_cache_key`** in the request body (plus `session_id`/`x-client-request-id` headers). This is OpenAI's first-class cache-routing parameter: same key ⇒ same cache node, and OpenAI documents that exceeding ~15 requests/min on one key overflows to other nodes and degrades cache hits. codegenie's stage-scoped ID therefore concentrates all concurrent Stage-7/9 workers onto one key — above the documented per-key rate during a real run.
+- **Design (landed 2026-07-02):** session granularity is **per worker** (`codegenie-<runId>-stage-7-<workerId>`), not per stage. Each worker's own multi-round conversation keeps its cache routing (the bulk of reuse — continuations re-read the worker's growing prefix); only the small cross-packet preamble share is lost. Per-worker keys are inert-neutral on direct Anthropic, correct for OpenAI's per-key rate model, and avoid pinning N concurrent workers to a single upstream node on affinity-honoring gateways — the self-inflicted version of the July 2026 queueing incident.
+- **OpenAI Codex (`openai-codex-responses` — the ChatGPT-plan OAuth lane): third regime, verified live 2026-07-05 (eval run 49f4645b/37).** The session ID is **transport identity, not `prompt_cache_key`**: pi's codex client uses it as the WebSocket request ID and SSE-fallback tracker. Prompt caching still works under per-worker keys (87% of stage-7 input tokens read from cache on the smoke run), reported via `input_tokens_details.cached_tokens` → `cacheReadTokens`; cache writes are always 0 on this lane (not reported/billed). Two codex-specific caveats: (1) **response-header telemetry is transport-gated** — the client prefers WebSocket, and `onResponse` fires only on the SSE/HTTP fallback, so `ttfbMs`/`rateLimit`/`providerRequestId` are empty on nearly all calls; per-call `durationMs`, tokens, and cost remain comparable. Forcing `transport: "sse"` would restore headers but changes the serving path being measured — documented asymmetry, deliberately not forced. (2) **OAuth refresh tokens are single-use rotating**: a refresh whose rotation isn't persisted permanently bricks the credential (`401 refresh_token_reused`); the only fix is re-login, and one grant must never be shared between tools (e.g., the Codex CLI runs its own separate grant).
+
 ```ts
 // src/llm/llm-runner.ts
 
@@ -802,7 +826,7 @@ When `telemetry.debugTrace` is enabled:
 
 This component depends on:
 
-- `@earendil-works/pi-ai` — `complete()`, `validateToolCall`, TypeBox schema integration, provider/model resolution, typed provider errors, abort support, and Pi provider/auth registry surfaces. Wrapped entirely inside `src/llm/` and `src/provider/`; no other component imports pi-ai.
+- `@earendil-works/pi-ai` — a `Models` instance (`builtinModels()`) for provider/model resolution and `complete*()` calls, `validateToolCall`, TypeBox schema integration, typed provider errors, abort support, and Pi provider/auth registry surfaces. Runtime calls use codegenie's auth resolution order and inject resolved API keys per call. Wrapped entirely inside `src/llm/` and `src/provider/`; no other component imports pi-ai.
 - TypeBox (via pi-ai) for all LLM I/O schemas; `Static<>` for type derivation.
 - `components/context_and_tools.md` — the `RepositoryTools` implementation wrapped by `buildRepositoryToolDefinitions`; tool-layer caps, containment, and `ToolResultMeta` provenance.
 - `components/repository_and_github.md` — `GitClient` for the cache tracked-directory check; subprocess credential scrubbing upstream of this component's sinks.

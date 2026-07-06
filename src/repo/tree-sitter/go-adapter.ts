@@ -14,6 +14,7 @@ import {
   nodeName,
   treeFromParsed
 } from "../language-adapter.js";
+import { escapeRegExp } from "../../util/regex.js";
 import { TreeSitterService } from "./tree-sitter-service.js";
 
 export class GoAdapter implements LanguageAdapter {
@@ -95,7 +96,7 @@ export function renderGoSymbolName(symbol: SymbolInfo): string {
   }
   const signature = symbol.signature ?? "";
   const pointer = new RegExp(`\\*\\s*${escapeRegExp(symbol.ownerType)}\\b`, "u").test(signature);
-  return pointer ? `(*${symbol.ownerType}).${symbol.name}` : `${symbol.ownerType}.${symbol.name}`;
+  return pointer ? `(*${symbol.ownerType}).${symbol.name}` : `(${symbol.ownerType}).${symbol.name}`;
 }
 
 function functionSymbol(file: ParsedFile, node: Node, packageName: string | undefined): SymbolInfo | undefined {
@@ -280,8 +281,4 @@ function receiverOwner(receiver: string): string | undefined {
 
 function span(symbol: SymbolInfo): number {
   return symbol.lineRange[1] - symbol.lineRange[0];
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

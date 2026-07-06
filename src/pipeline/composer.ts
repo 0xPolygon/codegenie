@@ -22,8 +22,11 @@ import type {
 } from "../types.js";
 import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { sha256Hex } from "../util/hashing.js";
-import { isBudgetExhaustedError, isRecoverableTransientLlmError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
+import { isCompositionTestPath, isDocsPath } from "../util/path-roles.js";
+import { normalizedTerms, tokenJaccard } from "../util/text-similarity.js";
+import { isBudgetExhaustedError, isRecoverableLlmError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
 import { summarizeIntentSignals } from "./intent-signals.js";
+import { hasCriticalOrHighGuarantee } from "./severity-policy.js";
 import type { LlmSchemaInvalidSubmitRecoveryInput, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import {
   buildHumanAttentionNotes,
@@ -70,6 +73,7 @@ type PublicationAnchorCandidate = {
 
 const MAX_COMPOSER_FINDINGS = 40;
 const MAX_COMPOSER_SUMMARY_CHARS = 4000;
+const CROSS_FILE_EVIDENCE_LINK_SIMILARITY = 0.42;
 
 export async function dedupeRankAndComposeReview(
   verified: { verified: CandidateFinding[]; verdicts: VerificationVerdict[] },
@@ -82,7 +86,8 @@ export async function dedupeRankAndComposeReview(
 ): Promise<ReviewResult> {
   telemetry.event({ stage: 10, level: "info", message: "stage_started", data: { verified: verified.verified.length } });
   const packetsById = new Map((opts.packets ?? []).map((packet) => [packet.id, packet]));
-  const pretrim = pretrimComposerInput(verified.verified);
+  const publishable = verified.verified.map((candidate) => withholdRepresentativeAnchor(candidate, telemetry));
+  const pretrim = pretrimComposerInput(publishable);
   const groups = groupFindings(pretrim.kept, packetsById);
   const attention = buildHumanAttentionNotes(opts.packetResults ?? [], {
     packets: opts.packets ?? [],
@@ -111,7 +116,7 @@ export async function dedupeRankAndComposeReview(
   let fallbackMode: CompositionMode | undefined;
   let compositionDegraded = false;
   const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes).catch((error) => {
-    if (!canUseComposerFallback(error, groups, coverage)) {
+    if (!canUseComposerFallback(error)) {
       telemetry.event({
         stage: 10,
         level: "error",
@@ -136,9 +141,10 @@ export async function dedupeRankAndComposeReview(
   const known = new Map(pretrim.kept.map((finding) => [finding.id, finding]));
   const anchorDowngradeReasons = new Map<string, string>();
   const publicationAnchorDecisions = new Map<string, PublicationAnchorDecision>();
+  const confidenceSelections = new Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>();
   const finalFindings: FinalFinding[] = pretrim.suppressed.map((finding) => {
     const requestedPublication = "suppressed" as const;
-    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding), requestedPublication, [finding], opts.diff, publicationAnchorDecisions);
+    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     return final;
   });
@@ -169,7 +175,7 @@ export async function dedupeRankAndComposeReview(
     const representative = strongest(ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined));
     const fingerprint = fingerprintFinding(representative, packetsById);
     const mergedFindings = ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined);
-    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions);
+    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections);
     recordAnchorDowngrade(final, composed.publication, anchorDowngradeReasons);
     finalFindings.push(final);
     used.add(representative.id);
@@ -186,7 +192,7 @@ export async function dedupeRankAndComposeReview(
     }
     const fingerprint = fingerprintFinding(finding, packetsById);
     const requestedPublication = finding.anchor ? "inline" : "summary-only";
-    const final = toFinalFinding(finding, fingerprint, templateBody(finding), requestedPublication, [finding], opts.diff, publicationAnchorDecisions);
+    const final = toFinalFinding(finding, fingerprint, templateBody(finding), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     finalFindings.push(final);
     baseSelection.set(finding.id, { findingId: finding.id, decision: "published", reason: "composer_omitted_finding" });
@@ -247,6 +253,9 @@ export async function dedupeRankAndComposeReview(
     },
     records: selection,
     publicationAnchors: publicationAnchorSelectionRecords(capped.findings, publicationAnchorDecisions),
+    confidenceSelections: [...confidenceSelections.entries()]
+      .map(([findingId, selection]) => ({ findingId, ...selection }))
+      .sort((left, right) => left.findingId.localeCompare(right.findingId)),
     groups: groups.map((group) => ({
       fingerprint: group.fingerprint,
       findingIds: group.findings.map((finding) => finding.id)
@@ -622,24 +631,28 @@ function expandClusterFindingIds(findingIds: string[], known: Map<string, Candid
   return [...expanded];
 }
 
-function canUseComposerFallback(error: unknown, groups: FindingGroup[], coverage: RunCoverageStatus): boolean {
-  if (isBudgetExhaustedError(error)) {
-    return true;
-  }
-  if (isRecoverableComposerSchemaInvalid(error) && groups.length > 0) {
-    return true;
-  }
-  if (groups.length > 0) {
-    return isRecoverableTransientLlmError(error);
-  }
-  return isRecoverableTransientLlmError(error) &&
-    !coverage.partial &&
-    !coverage.budgetStopped &&
-    coverage.verificationIncompleteCount === 0;
+function canUseComposerFallback(error: unknown): boolean {
+  return isBudgetExhaustedError(error) || isRecoverableLlmError(error);
 }
 
-function isRecoverableComposerSchemaInvalid(error: unknown): boolean {
-  return isSchemaInvalidError(error) && (!error || typeof error !== "object" || (error as { recoverable?: unknown }).recoverable !== false);
+// A "backfill_packet_representative" anchor exists to prove on-diff-ness at
+// the verification gate (plan 76); it may point at the wrong line, so it is
+// never published as an inline location. Stripping it here routes the
+// finding through the ordinary summary-only path (or the merged-anchor
+// recovery, which only uses trusted member anchors).
+function withholdRepresentativeAnchor(candidate: CandidateFinding, telemetry: TelemetryRecorder): CandidateFinding {
+  if (candidate.anchorSource !== "backfill_packet_representative" || candidate.anchor === undefined) {
+    return candidate;
+  }
+  telemetry.event({
+    stage: 10,
+    level: "info",
+    message: "representative_anchor_withheld",
+    file: candidate.path,
+    data: { candidateId: candidate.id, anchor: candidate.anchor }
+  });
+  const { anchor: _representativeAnchor, ...withoutAnchor } = candidate;
+  return { ...withoutAnchor, changedLine: false };
 }
 
 function composerFallbackCoverageReason(mode: CompositionMode): string {
@@ -683,6 +696,66 @@ function fallbackComposition(groups: FindingGroup[]): SubmitComposition {
   };
 }
 
+type ConfidenceSelection = {
+  confidence: Confidence;
+  sourceFindingId?: string;
+  reason: "representative" | "same_severity" | "compatible_lower_severity";
+};
+
+// Plan 74: the representative (severity-first) supplies the final body, but a
+// stronger-confidence verified candidate in the SAME merge group may supply
+// the final confidence — bounded so adjacency never inflates certainty:
+// same-severity candidates may lend their confidence outright; a one-step
+// lower-severity candidate lifts confidence by at most one step and never
+// above medium; larger severity gaps, category mismatches, and
+// behaviorChange disagreements lend nothing. Never lowers confidence.
+function selectMergedConfidence(
+  representative: CandidateFinding,
+  mergedFindings: CandidateFinding[]
+): ConfidenceSelection {
+  let selected: ConfidenceSelection = { confidence: representative.confidence, reason: "representative" };
+  const candidates = [...mergedFindings].sort((a, b) => a.id.localeCompare(b.id));
+  for (const candidate of candidates) {
+    if (candidate.id === representative.id || candidate.category !== representative.category) {
+      continue;
+    }
+    if (candidate.behaviorChange !== undefined && representative.behaviorChange !== undefined &&
+        candidate.behaviorChange !== representative.behaviorChange) {
+      continue;
+    }
+    if (confidenceRank(candidate.confidence) >= confidenceRank(representative.confidence)) {
+      continue;
+    }
+    const severityGap = severityRank(candidate.severity) - severityRank(representative.severity);
+    let lifted: Confidence | undefined;
+    let reason: ConfidenceSelection["reason"] | undefined;
+    if (severityGap === 0) {
+      lifted = candidate.confidence;
+      reason = "same_severity";
+    } else if (severityGap === 1) {
+      const oneStepUp = liftConfidenceOneStep(representative.confidence);
+      lifted = confidenceRank(candidate.confidence) > confidenceRank(oneStepUp) ? candidate.confidence : oneStepUp;
+      if (confidenceRank(lifted) < confidenceRank("medium")) {
+        lifted = "medium";
+      }
+      reason = "compatible_lower_severity";
+    } else {
+      continue;
+    }
+    if (confidenceRank(lifted) < confidenceRank(selected.confidence)) {
+      selected = { confidence: lifted, sourceFindingId: candidate.id, reason: reason };
+    }
+  }
+  return selected;
+}
+
+function liftConfidenceOneStep(confidence: Confidence): Confidence {
+  if (confidence === "low") {
+    return "medium";
+  }
+  return "high";
+}
+
 function toFinalFinding(
   finding: CandidateFinding,
   fingerprint: string,
@@ -690,9 +763,10 @@ function toFinalFinding(
   publication: FinalFinding["publication"],
   mergedFindings: CandidateFinding[],
   diff: UnifiedDiff | undefined,
-  publicationAnchorDecisions?: Map<string, PublicationAnchorDecision>
+  publicationAnchorDecisions?: Map<string, PublicationAnchorDecision>,
+  confidenceSelections?: Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>
 ): FinalFinding {
-  const { anchor: _unvalidatedAnchor, ...findingWithoutAnchor } = finding;
+  const { anchor: _unvalidatedAnchor, anchorSource: _staleAnchorSource, ...findingWithoutAnchor } = finding;
   const publicationAnchor = selectPublicationAnchor(finding, mergedFindings, diff);
   const normalizedFinalBody = normalizeFinalBodyForRendering(finalBody, finding) || templateBody(finding);
   const normalizedTitle = normalizeFinalFindingTitle(finding, mergedFindings, normalizedFinalBody);
@@ -700,10 +774,26 @@ function toFinalFinding(
   const mergedAnchors = dedupeAnchors(mergedFindings.flatMap((item) => item.anchor === undefined ? [] : [item.anchor]));
   const mergedCategories = uniqueStrings(mergedFindings.map((item) => item.category)) as Array<CandidateFinding["category"]>;
   const mergedSeverities = uniqueStrings(mergedFindings.map((item) => item.severity)) as Array<CandidateFinding["severity"]>;
+  // anchorSource must describe the PUBLISHED anchor, not the candidate's
+  // pre-composition one: an anchor donated by a merged member carries the
+  // donor's provenance, and an anchorless finding claims no source (run 31
+  // published a merged-member anchor still labeled
+  // backfill_packet_representative).
+  const publishedAnchorSource = publicationAnchor.anchor === undefined
+    ? undefined
+    : publicationAnchor.sourceFindingId === finding.id
+      ? finding.anchorSource
+      : mergedFindings.find((item) => item.id === publicationAnchor.sourceFindingId)?.anchorSource;
+  const mergedConfidence = selectMergedConfidence(finding, mergedFindings);
+  if (mergedConfidence.confidence !== finding.confidence) {
+    confidenceSelections?.set(finding.id, { ...mergedConfidence, representativeConfidence: finding.confidence });
+  }
   const final: FinalFinding = {
     ...findingWithoutAnchor,
+    confidence: mergedConfidence.confidence,
     title: normalizedTitle,
     ...(publicationAnchor.anchor !== undefined ? { anchor: publicationAnchor.anchor } : {}),
+    ...(publishedAnchorSource !== undefined ? { anchorSource: publishedAnchorSource } : {}),
     changedLine: publicationAnchor.anchor !== undefined,
     fingerprint,
     finalBody: normalizedFinalBody,
@@ -799,19 +889,11 @@ function categoryPathRoleRank(category: CandidateFinding["category"], filePath: 
   if (isDocsPath(filePath)) {
     return 2;
   }
-  const testPath = isTestPath(filePath);
+  const testPath = isCompositionTestPath(filePath);
   if (category === "testing") {
     return testPath ? 0 : 1;
   }
   return testPath ? 1 : 0;
-}
-
-function isTestPath(filePath: string): boolean {
-  return /(?:^|\/)(?:__tests__|tests?|spec)(?:\/|$)|(?:\.test|\.spec)\.[^/]+$/iu.test(filePath);
-}
-
-function isDocsPath(filePath: string): boolean {
-  return /(?:^|\/)(?:docs?|documentation|postmortems?)(?:\/|$)|\.(?:md|mdx|rst|txt)$/iu.test(filePath);
 }
 
 function recordMergedAnchorRecoveries(
@@ -883,9 +965,11 @@ function normalizeFinalFindingTitle(finding: CandidateFinding, mergedFindings: C
   if (concreteCandidateTitle !== undefined) {
     return limitTitle(concreteCandidateTitle);
   }
+  // `verification` is deliberately NOT in this ladder: it describes process
+  // ("Promoted from follow_up_hint; normal verifier must confirm…"), never
+  // content — run 31 published exactly that boilerplate as a title.
   const fallback = [
     finding.failureMode,
-    finding.verification,
     finalBody,
     finding.whyThisMatters
   ].map(firstIssueSentence).find((title) => title !== undefined);
@@ -1049,9 +1133,9 @@ function pretrimComposerInput(findings: CandidateFinding[]): { kept: CandidateFi
   if (findings.length <= MAX_COMPOSER_FINDINGS) {
     return { kept: findings, suppressed: [] };
   }
-  const criticalHigh = findings.filter((finding) => finding.severity === "critical" || finding.severity === "high");
+  const criticalHigh = findings.filter((finding) => hasCriticalOrHighGuarantee(finding));
   const others = findings
-    .filter((finding) => finding.severity !== "critical" && finding.severity !== "high")
+    .filter((finding) => !hasCriticalOrHighGuarantee(finding))
     .sort(compareFindings);
   const remainingSlots = Math.max(0, MAX_COMPOSER_FINDINGS - criticalHigh.length);
   const kept = [...criticalHigh, ...others.slice(0, remainingSlots)].sort(compareFindings);
@@ -1080,16 +1164,38 @@ function mergeProximityGroups(groups: FindingGroup[], packetsById: Map<string, R
 function mergeRootCauseGroups(groups: FindingGroup[], packetsById: Map<string, ReviewPacket>): FindingGroup[] {
   const merged: FindingGroup[] = [];
   for (const group of groups) {
-    const existing = merged.find((candidate) => rootCauseGroupsMatch(candidate, group, packetsById));
-    if (!existing) {
+    const matches = merged.filter((candidate) => rootCauseGroupsMatch(candidate, group, packetsById));
+    if (matches.length === 0) {
       merged.push({ ...group, fingerprint: rootCauseGroupFingerprint(group, packetsById) });
       continue;
     }
-    existing.findings.push(...group.findings);
-    existing.representative = strongest(existing.findings);
-    existing.fingerprint = rootCauseGroupFingerprint(existing, packetsById);
+    for (const match of matches) {
+      merged.splice(merged.indexOf(match), 1);
+    }
+    let combined = combineFindingGroups([group, ...matches], packetsById);
+    for (let index = 0; index < merged.length;) {
+      const candidate = merged[index];
+      if (candidate !== undefined && rootCauseGroupsMatch(candidate, combined, packetsById)) {
+        merged.splice(index, 1);
+        combined = combineFindingGroups([combined, candidate], packetsById);
+        continue;
+      }
+      index += 1;
+    }
+    merged.push(combined);
   }
   return merged.sort((a, b) => compareFindings(a.representative, b.representative));
+}
+
+function combineFindingGroups(groups: FindingGroup[], packetsById: Map<string, ReviewPacket>): FindingGroup {
+  const findings = groups.flatMap((group) => group.findings);
+  const representative = strongest(findings);
+  const combined = {
+    fingerprint: "",
+    representative,
+    findings
+  };
+  return { ...combined, fingerprint: rootCauseGroupFingerprint(combined, packetsById) };
 }
 
 function nearbyGroup(a: FindingGroup, b: FindingGroup): boolean {
@@ -1106,10 +1212,13 @@ function anchorsWithinFiveLines(a: CandidateFinding["anchor"], b: CandidateFindi
 }
 
 function rootCauseGroupsMatch(a: FindingGroup, b: FindingGroup, packetsById: Map<string, ReviewPacket>): boolean {
-  if (a.representative.path !== b.representative.path || a.representative.category !== b.representative.category) {
+  if (a.representative.category !== b.representative.category) {
     return false;
   }
   const similarity = rootCauseSimilarity(a.findings, b.findings);
+  if (a.representative.path !== b.representative.path) {
+    return crossFileRootCauseGroupsMatch(a, b, packetsById, similarity);
+  }
   if (similarity < 0.5) {
     return false;
   }
@@ -1128,6 +1237,27 @@ function rootCauseGroupsMatch(a: FindingGroup, b: FindingGroup, packetsById: Map
   return similarity >= 0.8;
 }
 
+function crossFileRootCauseGroupsMatch(
+  a: FindingGroup,
+  b: FindingGroup,
+  packetsById: Map<string, ReviewPacket>,
+  similarity: number
+): boolean {
+  if (similarity < CROSS_FILE_EVIDENCE_LINK_SIMILARITY) {
+    return false;
+  }
+  if (groupsShareEvidencePath(a, b)) {
+    return true;
+  }
+  if (groupsShareSymbol(a, b, packetsById)) {
+    return similarity >= 0.55;
+  }
+  if (groupsShareLocation(a, b, packetsById)) {
+    return similarity >= 0.6;
+  }
+  return false;
+}
+
 function rootCauseSimilarity(a: CandidateFinding[], b: CandidateFinding[]): number {
   let best = 0;
   for (const left of a) {
@@ -1136,19 +1266,6 @@ function rootCauseSimilarity(a: CandidateFinding[], b: CandidateFinding[]): numb
     }
   }
   return best;
-}
-
-function tokenJaccard(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 || b.size === 0) {
-    return 0;
-  }
-  let intersection = 0;
-  for (const term of a) {
-    if (b.has(term)) {
-      intersection += 1;
-    }
-  }
-  return intersection / (a.size + b.size - intersection);
 }
 
 function rootCauseTerms(finding: CandidateFinding): Set<string> {
@@ -1160,40 +1277,6 @@ function rootCauseTerms(finding: CandidateFinding): Set<string> {
     finding.evidence.changedCode,
     ...(finding.evidence.relatedCode ?? []).flatMap((related) => [related.whyRelevant, related.lines])
   ].join(" "));
-}
-
-function normalizedTerms(text: string): Set<string> {
-  const stopWords = new Set([
-    "about",
-    "after",
-    "also",
-    "before",
-    "because",
-    "being",
-    "cannot",
-    "code",
-    "could",
-    "from",
-    "have",
-    "into",
-    "line",
-    "more",
-    "should",
-    "that",
-    "this",
-    "when",
-    "where",
-    "will",
-    "with",
-    "without",
-    "would"
-  ]);
-  return new Set(text
-    .toLowerCase()
-    .replace(/[^a-z0-9_]+/gu, " ")
-    .split(/\s+/u)
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 4 && !stopWords.has(term)));
 }
 
 function groupHasAnchor(group: FindingGroup): boolean {
@@ -1238,6 +1321,46 @@ function groupsShareLocation(a: FindingGroup, b: FindingGroup, packetsById: Map<
   return left.size > 0 && [...left].some((location) => right.has(location));
 }
 
+function groupsShareEvidencePath(a: FindingGroup, b: FindingGroup): boolean {
+  const leftPrimary = groupPrimaryPaths(a);
+  const rightPrimary = groupPrimaryPaths(b);
+  const leftRelated = groupRelatedEvidencePaths(a);
+  const rightRelated = groupRelatedEvidencePaths(b);
+  return setsIntersect(leftPrimary, rightRelated) ||
+    setsIntersect(rightPrimary, leftRelated) ||
+    setsIntersect(leftRelated, rightRelated);
+}
+
+function groupPrimaryPaths(group: FindingGroup): Set<string> {
+  const paths = new Set<string>();
+  for (const finding of group.findings) {
+    addPathKey(paths, finding.path);
+    addPathKey(paths, finding.anchor?.path);
+  }
+  return paths;
+}
+
+function groupRelatedEvidencePaths(group: FindingGroup): Set<string> {
+  const paths = new Set<string>();
+  for (const finding of group.findings) {
+    for (const related of finding.evidence.relatedCode ?? []) {
+      addPathKey(paths, related.path);
+    }
+  }
+  return paths;
+}
+
+function addPathKey(paths: Set<string>, path: string | undefined): void {
+  const key = path?.trim().toLowerCase();
+  if (key && key.length > 0) {
+    paths.add(key);
+  }
+}
+
+function setsIntersect(a: Set<string>, b: Set<string>): boolean {
+  return a.size > 0 && [...a].some((item) => b.has(item));
+}
+
 function groupLocationKeys(group: FindingGroup, packetsById: Map<string, ReviewPacket>): Set<string> {
   const keys = new Set<string>();
   for (const finding of group.findings) {
@@ -1253,18 +1376,17 @@ function groupLocationKeys(group: FindingGroup, packetsById: Map<string, ReviewP
   return keys;
 }
 
+// Group identity must be wording-independent (plan 83, fable D7): the spec's
+// point is that rerun duplicate suppression and cross-run eval comparison
+// survive the model rephrasing the same defect. Identity derives solely from
+// the members' structural fingerprints — a singleton keeps its member's
+// fingerprint exactly, so ungrouped findings stay stable across lanes/runs.
 function rootCauseGroupFingerprint(group: FindingGroup, packetsById: Map<string, ReviewPacket>): string {
-  const terms = [...new Set(group.findings.flatMap((finding) => [...rootCauseTerms(finding)]))]
-    .sort()
-    .slice(0, 24)
-    .join(" ");
-  const symbols = [...groupSymbols(group, packetsById)].sort().join(",");
-  return sha256Hex([
-    normalize(group.representative.path),
-    normalize(group.representative.category),
-    normalize(terms),
-    normalize(symbols)
-  ].join("\0"));
+  const memberPrints = [...new Set(group.findings.map((finding) => fingerprintFinding(finding, packetsById)))].sort();
+  if (memberPrints.length === 1) {
+    return memberPrints[0]!;
+  }
+  return sha256Hex(["root-cause-group", ...memberPrints].join("\0"));
 }
 
 type ApplyCapsOptions = {
@@ -1318,7 +1440,7 @@ function applyCaps(
       return finding;
     }
     inlineCount += 1;
-    if (inlineCount > config.review.softCommentCap && finding.severity !== "critical" && finding.severity !== "high") {
+    if (inlineCount > config.review.softCommentCap && !hasCriticalOrHighGuarantee(finding)) {
       downgradeReasons.set(finding.id, "soft-comment-cap");
       return { ...finding, publication: "summary-only" as const };
     }
@@ -1331,7 +1453,7 @@ function applyCaps(
       return finding;
     }
     reportedCount += 1;
-    if (reportedCount > config.review.maxFindings && finding.severity !== "critical" && finding.severity !== "high") {
+    if (reportedCount > config.review.maxFindings && !hasCriticalOrHighGuarantee(finding)) {
       suppressedReasons.set(finding.id, "report-cap");
       return { ...finding, publication: "suppressed" as const };
     }

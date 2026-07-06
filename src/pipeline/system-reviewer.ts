@@ -20,9 +20,14 @@ import type {
 } from "../types.js";
 import { sha256Hex } from "../util/hashing.js";
 import { scaleToolBudget } from "../util/budget.js";
+import {
+  cleanStrings,
+  normalizeFollowUpQuestion,
+  normalizeLooseFollowUpQuestion
+} from "../util/text-similarity.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
-import { isFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
-import { capSeverityForBehaviorChange } from "./severity-policy.js";
+import { isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
+import { applySeverityPolicy } from "./severity-policy.js";
 
 const MAX_SYSTEM_REVIEW_TASKS = 3;
 const MAX_FINDINGS_PER_TASK = 5;
@@ -136,7 +141,7 @@ export async function runTargetedSystemReviews(
     if (outcome.outcome === "completed" && outcome.value) {
       return [outcome.value];
     }
-    if (isFatalLlmError(outcome.error) && !isSchemaInvalidError(outcome.error)) {
+    if (isRunFatalLlmError(outcome.error) && !isSchemaInvalidError(outcome.error)) {
       throw outcome.error;
     }
     telemetry.event({
@@ -320,7 +325,7 @@ function stampSystemFinding(
   return {
     id: `${task.id.slice(0, 12)}-f${index + 1}`,
     title: submitted.title,
-    severity: capSeverityForBehaviorChange(submitted.severity, submitted.behaviorChange),
+    ...applySeverityPolicy(submitted.severity, submitted.behaviorChange),
     confidence: submitted.confidence,
     path,
     ...(anchor !== undefined ? { anchor } : {}),
@@ -507,10 +512,6 @@ function confidenceRank(confidence: Confidence): number {
   return { high: 0, medium: 1, low: 2 }[confidence];
 }
 
-function cleanStrings(values: string[]): string[] {
-  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))].sort();
-}
-
 type FollowUpHintKeyInput = {
   question: string;
   files: string[];
@@ -518,21 +519,10 @@ type FollowUpHintKeyInput = {
 };
 
 function followUpHintKey(input: FollowUpHintKeyInput): string {
-  const question = normalizeFollowUpQuestion(input.question)
-    .replace(/^(please\s+)?(check|confirm|verify|investigate|review)\s+(whether|if|that)?\s*/u, "")
-    .replace(/^(whether|if)\s+/u, "")
-    .trim();
+  const question = normalizeLooseFollowUpQuestion(normalizeFollowUpQuestion(input.question));
   const files = cleanStrings(input.files).map(normalizeScopeValue).slice(0, 5).join(",");
   const symbols = cleanStrings(input.symbols).map(normalizeScopeValue).slice(0, 5).join(",");
   return `q:${question}|files:${files || "none"}|symbols:${symbols || "none"}`;
-}
-
-function normalizeFollowUpQuestion(question: string): string {
-  return question.toLowerCase()
-    .replace(/[`"'’]/gu, "")
-    .replace(/[^a-z0-9_./:-]+/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
 }
 
 function normalizeScopeValue(input: string): string {

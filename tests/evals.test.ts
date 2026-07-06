@@ -8,15 +8,17 @@ import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "../src/evals/eval-compare.js";
 import { executeEvalCommand, renderCaseResult, runEvalCommand } from "../src/evals/eval-command.js";
 import { loadEvalSuite, replayFromArtifacts, runEvalCase } from "../src/evals/eval-runner.js";
-import { assignExpectations, matchExpectation, scoreEvalRun } from "../src/evals/eval-scoring.js";
+import { aggregateRepeatScores, assignExpectations, matchExpectation, scoreEvalRun } from "../src/evals/eval-scoring.js";
 import type {
   CandidateFinding,
+  EvalArtifacts,
   EvalCase,
   EvalRunInfo,
   EvalRunMetrics,
   EvalScore,
   FinalFinding
 } from "../src/types.js";
+import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
 import { CodegenieError } from "../src/util/errors.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
@@ -95,6 +97,7 @@ describe("eval suite validation", () => {
       "  path: logs/1",
       "review:",
       "  budgetBoost: 1.5",
+      "  maxTimeMinutes: 60",
       "expect:",
       "  reviewCompleteness: complete",
       "  maxBudgetOverruns: 0",
@@ -109,6 +112,7 @@ describe("eval suite validation", () => {
     const suite = await loadEvalSuite(suiteDir);
 
     expect(suite.cases[0]?.evalCase.review?.budgetBoost).toBe(1.5);
+    expect(suite.cases[0]?.evalCase.review?.maxTimeMinutes).toBe(60);
     expect(suite.cases[0]?.evalCase.expect).toMatchObject({
       reviewCompleteness: "complete",
       maxBudgetOverruns: 0,
@@ -136,6 +140,28 @@ describe("eval suite validation", () => {
     expect(suite.cases[0]?.evalCase.command).toEqual({
       head: "49f4645b40e3e17f3a7f7c243d4d1de0a0a6e95c",
       base: "master"
+    });
+  });
+
+  it("rejects three-dot command.target ranges with a clear message", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-three-dot-target-"));
+    writeFileSync(path.join(suiteDir, "target.yml"), [
+      "name: three-dot-target",
+      "repo:",
+      "  fixture: repo",
+      "command:",
+      "  target: abc123...def456",
+      "expect:",
+      "  minFindings: 1"
+    ].join("\n"));
+
+    await expect(loadEvalSuite(suiteDir)).rejects.toMatchObject({
+      code: "config_error",
+      context: expect.objectContaining({
+        errors: expect.arrayContaining([
+          expect.stringContaining("three-dot ranges are not supported")
+        ])
+      })
     });
   });
 
@@ -451,7 +477,7 @@ describe("eval scoring", () => {
           usage: { modelCalls: 3, totalTokens: 100, byStage: [{ stage: 7, modelCalls: 3, totalTokens: 100 }] },
           overruns: [
             { stage: 7, reason: "max_model_calls", elapsedMs: 1, kind: "model_calls", actual: 3, limit: 2, totalTokens: 100, modelCalls: 3, afterDispatchedCall: true },
-            { stage: 9, reason: "max_total_tokens", elapsedMs: 2, kind: "tokens", actual: 125, limit: 100, totalTokens: 125, modelCalls: 3, afterDispatchedCall: true }
+            { stage: 9, reason: "max_budget_tokens", elapsedMs: 2, kind: "tokens", actual: 125, limit: 100, totalTokens: 125, modelCalls: 3, afterDispatchedCall: true }
           ],
           dispatchBlocks: []
         }
@@ -1136,6 +1162,119 @@ describe("eval artifacts", () => {
 
     expect(artifacts.hintEvents[0]).toMatchObject({ packetId: "packet-top-level" });
   });
+
+  it("loads pre-layout-v2 artifacts stored at the telemetry root", async () => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-old-layout-"));
+    const candidates = [candidate("cand-1", "src/app.ts", 3)];
+    const finalFindings = [finalFinding("final-1", "src/app.ts", 3)];
+    writeFileSync(path.join(telemetry, "candidate-findings.json"), JSON.stringify(candidates));
+    writeFileSync(path.join(telemetry, "final-findings.json"), JSON.stringify(finalFindings));
+    writeFileSync(path.join(telemetry, "verification.json"), JSON.stringify([]));
+    writeFileSync(path.join(telemetry, "events.jsonl"), "");
+
+    const artifacts = await loadEvalArtifacts(telemetry);
+
+    expect(artifacts.candidates).toHaveLength(1);
+    expect(artifacts.finalFindings).toHaveLength(1);
+    expect(artifacts.missingArtifacts).toEqual([]);
+  });
+
+  it("discloses unreadable previous findings in compare reports", () => {
+    const info = (runNumber: number): EvalRunInfo => ({
+      runNumber,
+      caseName: "case",
+      caseHash: "hash",
+      mode: "live",
+      cache: { enabled: false, source: "cli" },
+      startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:01:00.000Z",
+      score: {
+        status: "pass",
+        expectationResults: [],
+        budgetResults: [],
+        violations: [],
+        nearViolations: [],
+        metrics: {
+          reportedFindings: 0,
+          inlineFindings: 0,
+          summaryOnlyFindings: 0,
+          suppressedFindings: 0,
+          candidateFindings: 0,
+          duplicateGroups: 0
+        }
+      }
+    } as unknown as EvalRunInfo);
+
+    const report = compareToPrevious(
+      { info: info(2), finalFindings: [finalFinding("final-1", "src/app.ts", 3)] },
+      { info: info(1), finalFindings: [], findingsUnreadable: true }
+    );
+
+    expect(report.previousFindingsUnreadable).toBe(true);
+    const text = renderEvalCompareText(report);
+    expect(text).toContain("Previous findings unreadable");
+  });
+
+  it("tolerates missing scoring artifacts instead of crashing, and discloses them", async () => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-missing-artifacts-"));
+    writeFileSync(path.join(telemetry, "events.jsonl"), "");
+
+    const artifacts = await loadEvalArtifacts(telemetry);
+
+    expect(artifacts.candidates).toEqual([]);
+    expect(artifacts.finalFindings).toEqual([]);
+    expect(artifacts.missingArtifacts).toEqual(
+      expect.arrayContaining(["candidate-findings.json", "final-findings.json"])
+    );
+  });
+
+  it("loads canonical staged artifacts and root telemetry streams", async () => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-staged-artifacts-"));
+    const candidates = [candidate("cand-1", "src/app.ts", 3)];
+    const finalFindings = [finalFinding("final-1", "src/app.ts", 3)];
+    writeArtifactSet(telemetry, candidates, finalFindings);
+    writeTelemetryArtifact(telemetry, "review-plan.json", { coverage: [{ hunkId: "h1", path: "src/app.ts", coverage: "normal" }] });
+    writeTelemetryArtifact(telemetry, "coverage.json", { status: { totalHunks: 1, reviewedHunks: 1 }, records: [{ hunkId: "h1" }] });
+    writeTelemetryArtifact(telemetry, "packets/packet-1.json", { id: "packet-1", filePath: "src/app.ts" });
+    writeTelemetryArtifact(telemetry, "cost-profile.json", { totalCostUSD: 1.23 });
+    writeTelemetryArtifact(telemetry, "model-calls-summary.json", { totalCalls: 2 });
+    writeTelemetryArtifact(telemetry, "tool-calls-summary.json", { totalCalls: 3 });
+    writeTelemetryArtifact(telemetry, "budget-summary.json", { usage: { total: 4 } });
+    writeFileSync(path.join(telemetry, "run.json"), "{\"runId\":\"run-1\"}\n");
+    writeFileSync(path.join(telemetry, "telemetry.json"), "{\"events\":1}\n");
+    writeFileSync(path.join(telemetry, "model-calls.jsonl"), "{\"callId\":\"mc-1\"}\n");
+    writeFileSync(path.join(telemetry, "tool-calls.jsonl"), "{\"toolCallId\":\"tc-1\"}\n");
+    writeFileSync(path.join(telemetry, "events.jsonl"), `${JSON.stringify({
+      runId: "run-1",
+      eventId: "ev-1",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      stage: 7,
+      level: "info",
+      message: "uncertainty",
+      data: { question: "Check staged event", files: ["src/app.ts"], symbols: [] }
+    })}\n`);
+
+    const artifacts = await loadEvalArtifacts(telemetry);
+
+    expect(artifacts.candidates).toHaveLength(1);
+    expect(artifacts.finalFindings).toHaveLength(1);
+    expect(artifacts.finalSelection).toHaveLength(1);
+    expect(artifacts.verification).toHaveLength(1);
+    expect(artifacts.reviewPlan).toMatchObject({ coverage: [expect.objectContaining({ hunkId: "h1" })] });
+    expect(artifacts.coverage).toMatchObject({ totalHunks: 1, hunks: [expect.objectContaining({ hunkId: "h1" })] });
+    expect(artifacts.packets).toEqual([expect.objectContaining({ id: "packet-1" })]);
+    expect(artifacts.hintEvents).toEqual([expect.objectContaining({ question: "Check staged event" })]);
+    expect(artifacts.metricsSources).toMatchObject({
+      costProfile: { totalCostUSD: 1.23 },
+      modelCallsSummary: { totalCalls: 2 },
+      toolCallsSummary: { totalCalls: 3 },
+      budgetSummary: { usage: { total: 4 } },
+      runJson: { runId: "run-1" },
+      telemetry: { events: 1 },
+      modelCalls: [{ callId: "mc-1" }],
+      toolCalls: [{ toolCallId: "tc-1" }]
+    });
+  });
 });
 
 describe("artifact replay", () => {
@@ -1182,6 +1321,50 @@ describe("artifact replay", () => {
     expect(existsSync(path.join(logsDir, "2", "compare-to-previous.json"))).toBe(true);
     const info = JSON.parse(readFileSync(path.join(logsDir, "2", "info.json"), "utf8")) as EvalRunInfo;
     expect(info.score.expectationResults[0]).toMatchObject({ status: "pass", fromReplayedArtifacts: true });
+  });
+
+  it("errors --from-artifacts replay for old root-level artifact layouts", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-old-layout-replay-"));
+    const logsDir = path.join(suiteDir, "logs");
+    const sourceRun = path.join(logsDir, "1");
+    const telemetry = path.join(sourceRun, "telemetry");
+    mkdirSync(telemetry, { recursive: true });
+    const evalCase: EvalCase = {
+      name: "old-layout-replay",
+      artifacts: { path: "logs/1" },
+      should_find: [{ id: "reported", path: "src/app.ts", titlePattern: "Reported" }]
+    };
+    writeFileSync(path.join(suiteDir, "case.yml"), [
+      "name: old-layout-replay",
+      "artifacts:",
+      "  path: logs/1",
+      "should_find:",
+      "  - id: reported",
+      "    path: src/app.ts",
+      "    titlePattern: Reported"
+    ].join("\n"));
+    writeFileSync(path.join(telemetry, "candidate-findings.json"), "[]\n");
+    writeFileSync(path.join(telemetry, "final-findings.json"), "[]\n");
+    writeFileSync(path.join(telemetry, "verification.json"), "[]\n");
+    writeFileSync(path.join(telemetry, "final-selection.json"), "{\"records\":[],\"groups\":[]}\n");
+    writeFileSync(path.join(sourceRun, "info.json"), `${JSON.stringify({
+      runNumber: 1,
+      caseName: "old-layout-replay",
+      caseFile: "case.yml",
+      caseHash: "old",
+      caseSnapshot: evalCase,
+      mode: "replay",
+      cache: { enabled: false, source: "config", dir: ".codegenie/cache" },
+      startedAt: "2026-01-01T00:00:00.000Z",
+      finishedAt: "2026-01-01T00:00:01.000Z",
+      score: passingScore()
+    } satisfies EvalRunInfo, null, 2)}\n`);
+
+    const result = await replayFromArtifacts(sourceRun, { config: defaultConfig });
+
+    expect(result.status).toBe("error");
+    expect(result.info.score.error?.message).toContain("old layout unsupported");
+    expect(existsSync(path.join(logsDir, "2", "info.json"))).toBe(true);
   });
 
   it("writes compare artifacts for errored case regressions", async () => {
@@ -1234,7 +1417,7 @@ describe("artifact replay", () => {
     const sourceRun = path.join(logsDir, "1");
     const telemetry = path.join(sourceRun, "telemetry");
     mkdirSync(telemetry, { recursive: true });
-    writeFileSync(path.join(telemetry, "candidate-findings.json"), "[]\n");
+    writeTelemetryArtifact(telemetry, "candidate-findings.json", []);
     const evalCase: EvalCase = {
       name: "broken-replay",
       artifacts: { path: "logs/1" },
@@ -1269,7 +1452,7 @@ describe("artifact replay", () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-artifact-error-source-"));
     const artifactRun = path.join(suiteDir, "artifacts", "broken");
     mkdirSync(path.join(artifactRun, "telemetry"), { recursive: true });
-    writeFileSync(path.join(artifactRun, "telemetry", "candidate-findings.json"), "[]\n");
+    writeTelemetryArtifact(path.join(artifactRun, "telemetry"), "candidate-findings.json", []);
     writeFileSync(path.join(suiteDir, "broken.yml"), [
       "name: broken-artifact",
       "artifacts:",
@@ -1464,10 +1647,13 @@ describe("eval command fixture suite", () => {
       source: expect.stringMatching(/^(build_env|git|package|unknown)$/)
     });
     const runJson = JSON.parse(readFileSync(path.join(result.runDir, "telemetry", "run.json"), "utf8")) as {
+      runId: string;
       codegenieRuntime: { packageVersion: string };
       codegenieVersion: string;
       review: { concurrency: number; llmMaxConcurrentCalls: number };
     };
+    expect(result.info.reviewRunId).toBe(runJson.runId);
+    expect(result.info.reviewRunId).not.toBe("telemetry");
     expect(runJson.codegenieRuntime.packageVersion).toBe(runJson.codegenieVersion);
     expect(runJson.review).toMatchObject({ concurrency: 3, llmMaxConcurrentCalls: 2 });
     const events = readJsonl(path.join(result.runDir, "telemetry", "events.jsonl"));
@@ -1655,18 +1841,243 @@ describe("eval command fixture suite", () => {
 });
 
 function writeArtifactSet(telemetryDir: string, candidates: CandidateFinding[], finalFindings: FinalFinding[]): void {
-  writeFileSync(path.join(telemetryDir, "candidate-findings.json"), `${JSON.stringify(candidates, null, 2)}\n`);
-  writeFileSync(path.join(telemetryDir, "final-findings.json"), `${JSON.stringify(finalFindings, null, 2)}\n`);
-  writeFileSync(path.join(telemetryDir, "verification.json"), `${JSON.stringify(candidates.map((item) => ({
+  writeTelemetryArtifact(telemetryDir, "candidate-findings.json", candidates);
+  writeTelemetryArtifact(telemetryDir, "final-findings.json", finalFindings);
+  writeTelemetryArtifact(telemetryDir, "verification.json", candidates.map((item) => ({
     candidateId: item.id,
     gate: "passed",
     verdict: { candidateId: item.id, verdict: "keep", reason: "ok", requiredEvidencePresent: true, falsePositiveRisk: "low" }
-  })), null, 2)}\n`);
-  writeFileSync(path.join(telemetryDir, "final-selection.json"), `${JSON.stringify({
+  })));
+  writeTelemetryArtifact(telemetryDir, "final-selection.json", {
     records: finalFindings.flatMap((item) => item.mergedCandidateIds.map((id) => ({ findingId: id, decision: "published", reason: "composer-selected" }))),
     groups: []
-  }, null, 2)}\n`);
+  });
 }
+
+function writeTelemetryArtifact(telemetryDir: string, logicalName: string, data: unknown): void {
+  const target = path.join(telemetryDir, canonicalArtifactPath(logicalName));
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+describe("eval repeats (plan 79)", () => {
+  const emptyArtifacts = (overrides: Partial<EvalArtifacts> = {}): EvalArtifacts => ({
+    candidates: [],
+    verification: [],
+    finalSelection: [],
+    finalFindings: [],
+    packets: [],
+    hintEvents: [],
+    metricsSources: {},
+    ...overrides
+  });
+
+  it("rejects repeat > 1 without cache: false and on artifact-backed cases", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-repeat-guard-"));
+    writeFileSync(path.join(suiteDir, "guard.yml"), [
+      "name: repeat-guard",
+      "repeat: 3",
+      "repo:",
+      "  fixture: repo",
+      "command:",
+      "  branch: feature",
+      "  base: main",
+      "should_find:",
+      "  - id: x",
+      "    path: src/app.ts"
+    ].join("\n"));
+
+    await expect(loadEvalSuite(suiteDir)).rejects.toMatchObject({
+      code: "config_error",
+      context: expect.objectContaining({
+        errors: expect.arrayContaining([expect.stringContaining("repeat > 1 requires review.cache: false")])
+      })
+    });
+
+    const artifactsSuite = mkdtempSync(path.join(tmpdir(), "codegenie-repeat-artifacts-"));
+    writeFileSync(path.join(artifactsSuite, "guard.yml"), [
+      "name: repeat-artifacts",
+      "repeat: 2",
+      "review:",
+      "  cache: false",
+      "artifacts:",
+      "  path: logs/1",
+      "should_find:",
+      "  - id: x",
+      "    path: src/app.ts"
+    ].join("\n"));
+
+    await expect(loadEvalSuite(artifactsSuite)).rejects.toMatchObject({
+      code: "config_error",
+      context: expect.objectContaining({
+        errors: expect.arrayContaining([expect.stringContaining("incompatible with artifact-backed cases")])
+      })
+    });
+  });
+
+  it("runs a repeated case N times with the fake provider and aggregates rates", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-repeat-live-"));
+    const repo = initRepo();
+    writeRepoFile(repo, "src/app.js", "export const base = true;\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "src/app.js", "export const value = 'CODEGENIE_FAKE_FINDING';\n");
+    commitAll(repo, "feature");
+    writeFileSync(path.join(suiteDir, "repeat-live.yml"), [
+      "name: repeat-live",
+      "repeat: 3",
+      "repo:",
+      `  external: ${JSON.stringify(repo)}`,
+      "command:",
+      "  branch: feature",
+      "  base: main",
+      "review:",
+      "  provider: fake",
+      "  model: fake-model",
+      "  cache: false",
+      "  lenses:",
+      "    - core/code-review",
+      "should_find:",
+      "  - id: fake-finding",
+      "    path: src/app.js",
+      "    titlePattern: Fake finding"
+    ].join("\n"));
+
+    const suite = await loadEvalSuite(suiteDir);
+    const result = await runEvalCase(suite, suite.cases[0]!, { config: defaultConfig });
+
+    expect(result.status).toBe("pass");
+    expect(result.info.repeats).toMatchObject({
+      repeat: 3,
+      totals: expect.objectContaining({ errors: 0 })
+    });
+    expect(result.info.repeats?.executions.map((execution) => execution.status)).toEqual(["pass", "pass", "pass"]);
+    const aggregate = result.info.repeats?.expectations.find((entry) => entry.expectationId === "fake-finding");
+    expect(aggregate).toMatchObject({
+      finalMatched: 3,
+      finalRecallRate: 1,
+      fingerprintsStable: true
+    });
+    for (const k of [1, 2, 3]) {
+      expect(existsSync(path.join(result.runDir, "repeats", String(k), "telemetry"))).toBe(true);
+      expect(existsSync(path.join(result.runDir, "repeats", String(k), "score.json"))).toBe(true);
+    }
+    expect(existsSync(path.join(result.runDir, "eval-aggregate.json"))).toBe(true);
+    expect(renderCaseResult(result)).toContain("finalRecall 3/3 (1.00)");
+  }, 60_000);
+
+  it("aggregates recall rates, notes, and threshold gates across executions", () => {
+    const evalCase: EvalCase = {
+      name: "agg",
+      repo: { external: "/tmp/unused" },
+      should_find: [{ id: "wc", path: "src/app.ts", titlePattern: "stale value", minRecallRate: 0.5 }]
+    };
+    const matchingFinal = finalFinding("final-1", "src/app.ts", 4, { title: "stale value returned" });
+    const matchingCandidate = candidate("cand-1", "src/app.ts", 4, { title: "stale value returned" });
+    const passArtifacts = emptyArtifacts({ finalFindings: [matchingFinal], candidates: [matchingCandidate] });
+    const candidateOnlyArtifacts = emptyArtifacts({ candidates: [matchingCandidate] });
+    const noteArtifacts = emptyArtifacts({
+      humanAttentionNotes: [{ question: "Does the changed path serve a stale value?", files: ["src/app.ts"], reasons: ["stale value risk"] }]
+    });
+
+    const executions = [
+      { runDir: "repeats/1", score: scoreEvalRun(evalCase, passArtifacts, "live"), artifacts: passArtifacts },
+      { runDir: "repeats/2", score: scoreEvalRun(evalCase, candidateOnlyArtifacts, "live"), artifacts: candidateOnlyArtifacts },
+      { runDir: "repeats/3", score: scoreEvalRun(evalCase, noteArtifacts, "live"), artifacts: noteArtifacts }
+    ];
+    const { aggregate, score } = aggregateRepeatScores(evalCase, executions);
+
+    const wc = aggregate.expectations.find((entry) => entry.expectationId === "wc");
+    expect(wc).toMatchObject({
+      finalMatched: 1,
+      candidateMatched: 2,
+      noteSurfaced: 1,
+      fingerprintsStable: true,
+      distinctFingerprints: 1
+    });
+    expect(wc?.finalRecallRate).toBeCloseTo(1 / 3);
+    expect(wc?.noteRate).toBeCloseTo(1 / 3);
+    expect(Object.values(wc?.lossHistogram ?? {}).reduce((sum, count) => sum + count, 0)).toBe(2);
+    expect(wc?.gate).toMatchObject({ minRecallRate: 0.5, passed: false });
+    expect(score.status).toBe("fail");
+
+    const ungated: EvalCase = { ...evalCase, should_find: [{ id: "wc", path: "src/app.ts", titlePattern: "stale value" }] };
+    const measuredOnly = aggregateRepeatScores(ungated, executions);
+    expect(measuredOnly.score.status).toBe("pass");
+    expect(measuredOnly.score.expectationResults[0]?.note).toContain("measured only");
+
+    const boundary: EvalCase = { ...evalCase, should_find: [{ id: "wc", path: "src/app.ts", titlePattern: "stale value", minRecallRate: 1 / 3 }] };
+    expect(aggregateRepeatScores(boundary, executions).score.status).toBe("pass");
+  });
+
+  it("marks a missed expectation that resurfaced as a human-attention note", () => {
+    const score = scoreEvalRun(
+      {
+        name: "note-case",
+        repo: { external: "/tmp/unused" },
+        should_find: [{ id: "wc", path: "src/app.ts", titlePattern: "stale value" }]
+      },
+      emptyArtifacts({
+        humanAttentionNotes: [{ question: "Is a stale value served here?", files: ["src/app.ts"], reasons: [] }]
+      }),
+      "live"
+    );
+
+    const result = score.expectationResults.find((entry) => entry.expectationId === "wc");
+    expect(result?.status).toBe("fail");
+    expect(result?.loss?.surfacedAsNote).toBe(true);
+  });
+
+  it("isolates the relay wrong-chain bug from the zero-guard and duration look-alikes", () => {
+    const relayCase: EvalCase = {
+      name: "relay-wc",
+      repo: { external: "/tmp/unused" },
+      should_find: [{
+        id: "relay-gas-wrong-chain",
+        path: "lib/routes/relay/relay.go",
+        lineRange: [82, 105],
+        category: "logic_bug",
+        severityAtLeast: "medium",
+        titlePattern: "(origin).*(destination)|destination chain",
+        failureModePattern: "gas.*(origin).*(destination)|priced (on|via|using) .*origin|destination.*(fill|executes|chain)"
+      }],
+      should_not_find: [{
+        id: "relay-gas-not-zero-guard",
+        path: "lib/routes/relay/relay.go",
+        lineRange: [82, 105],
+        titlePattern: "chain 0|== 0|OriginChainID > 0|no rpc provider"
+      }]
+    };
+    const wcFinding = finalFinding("wc", "lib/routes/relay/relay.go", 92, {
+      title: "Relay fill gas priced on origin chain instead of destination chain",
+      failureMode: "The fill executes on the destination chain but gas is priced on the origin chain via EstimateGasCostUSD(req.OriginChainID, ...).",
+      category: "logic_bug",
+      severity: "medium"
+    });
+    const zgFinding = finalFinding("zg", "lib/routes/relay/relay.go", 91, {
+      title: "EstimateGasCostUSD errors when OriginChainID == 0",
+      failureMode: "A zero origin chain id has no rpc provider and returns an error.",
+      category: "correctness",
+      severity: "low"
+    });
+    const durFinding = finalFinding("dur", "lib/routes/relay/relay.go", 61, {
+      title: "defaultDurationSeconds increased from 10s to 30s",
+      failureMode: "Snapshot durations now report 30 seconds via relayFillGasEstimate-adjacent constants.",
+      category: "correctness",
+      severity: "low"
+    });
+
+    const withWc = scoreEvalRun(relayCase, emptyArtifacts({ finalFindings: [wcFinding, durFinding] }), "live");
+    expect(withWc.expectationResults.find((entry) => entry.expectationId === "relay-gas-wrong-chain")?.status).toBe("pass");
+    expect(withWc.violations).toEqual([]);
+
+    const withoutWc = scoreEvalRun(relayCase, emptyArtifacts({ finalFindings: [zgFinding, durFinding] }), "live");
+    expect(withoutWc.expectationResults.find((entry) => entry.expectationId === "relay-gas-wrong-chain")?.status).toBe("fail");
+    expect(withoutWc.violations).toEqual([
+      expect.objectContaining({ expectationId: "relay-gas-not-zero-guard", findingId: "zg" })
+    ]);
+  });
+});
 
 function candidate(id: string, filePath: string, line: number, overrides: Partial<CandidateFinding> = {}): CandidateFinding {
   return {

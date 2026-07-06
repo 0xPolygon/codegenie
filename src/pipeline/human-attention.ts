@@ -12,6 +12,13 @@ import type {
 } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../util/hashing.js";
+import {
+  cleanStrings,
+  normalizeFollowUpQuestion as normalizeQuestion,
+  normalizeLooseFollowUpQuestion as normalizeLooseQuestion,
+  normalizedAttentionTerms as normalizedTerms,
+  tokenJaccard
+} from "../util/text-similarity.js";
 
 const MAX_HUMAN_ATTENTION_NOTES = 5;
 const HUMAN_ATTENTION_LOCATION_CAP = 6;
@@ -61,6 +68,12 @@ export type HumanAttentionNotes = {
 };
 
 export type VerificationResolution = {
+  // Plan 75 step 1: "stage9_verified_predicate" is the classic path (a
+  // verified predicate resolves fuzzily-related notes);
+  // "stage9_adjudicated_reject" is a confident reject of a PROMOTED
+  // candidate resolving its exact source note only — provenance-exact
+  // matching, never fuzzy.
+  source: "stage9_verified_predicate" | "stage9_adjudicated_reject";
   candidateId: string;
   verdict: VerificationVerdict["verdict"];
   reason: string;
@@ -239,6 +252,15 @@ export function selectHumanAttentionForOutput(
         remainingGroups: availableAfterFindings.length
       }
     });
+  const adjudicatedSuppressed = verificationSuppression.suppressed.filter((record) => record.reason.startsWith("adjudicated by stage 9 reject"));
+  if (adjudicatedSuppressed.length > 0) {
+    telemetry?.event({
+      stage: 10,
+      level: "info",
+      message: "human_attention_hints_suppressed_by_adjudicated_reject",
+      data: { suppressed: adjudicatedSuppressed.length, candidateIds: adjudicatedSuppressed.map((record) => record.candidateId) }
+    });
+  }
   }
   if (verificationSuppression.suppressed.length > 0) {
     telemetry?.event({
@@ -289,7 +311,9 @@ export function suppressAttentionGroupsResolvedByVerification(
       note: toAttentionNote(group),
       candidateId: match.resolution.candidateId,
       verdict: match.resolution.verdict,
-      reason: `resolved by stage 9 ${match.resolution.verdict} verdict for ${match.resolution.candidateId}`,
+      reason: match.resolution.source === "stage9_adjudicated_reject"
+        ? `adjudicated by stage 9 reject verdict for ${match.resolution.candidateId}`
+        : `resolved by stage 9 ${match.resolution.verdict} verdict for ${match.resolution.candidateId}`,
       verdictReason: match.resolution.reason,
       match: {
         sharedFiles: match.sharedFiles,
@@ -316,10 +340,11 @@ export function buildVerificationResolutionIndex(
   }
   const candidatesById = candidateFindingsById(packetResults, verifiedFindings, verdicts);
   return verdicts.flatMap((verdict): VerificationResolution[] => {
-    if (!verdictResolvesPredicate(verdict)) {
+    const original = candidatesById.get(verdict.candidateId);
+    const adjudicatedReject = verdictIsAdjudicatedPromotionReject(verdict, original);
+    if (!verdictResolvesPredicate(verdict) && !adjudicatedReject) {
       return [];
     }
-    const original = candidatesById.get(verdict.candidateId);
     const resolved = verdict.finalFinding ?? original;
     if (original === undefined && resolved === undefined) {
       return [];
@@ -343,6 +368,7 @@ export function buildVerificationResolutionIndex(
       symbols.join(" ")
     ].join(" "));
     return [{
+      source: adjudicatedReject && !verdictResolvesPredicate(verdict) ? "stage9_adjudicated_reject" : "stage9_verified_predicate",
       candidateId: verdict.candidateId,
       verdict: verdict.verdict,
       reason: verdict.reason,
@@ -702,6 +728,20 @@ function attentionGroupResolvedByVerification(
   group: AttentionHintGroup,
   resolution: VerificationResolution
 ): VerificationResolutionMatch | undefined {
+  if (resolution.source === "stage9_adjudicated_reject") {
+    // Provenance-exact only: no fuzzy fallthrough for adjudicated rejects.
+    if (resolution.provenance !== undefined && attentionGroupMatchesProvenance(group, resolution.provenance)) {
+      return {
+        sharedFiles: sortedIntersection(normalizedSet(group.files), normalizedSet(resolution.files)),
+        sharedSymbols: sortedIntersection(normalizedSet(group.symbols), normalizedSet(resolution.symbols)),
+        sharedTerms: intersectionCount(attentionGroupTerms(group), resolution.terms),
+        similarity: tokenJaccard(attentionGroupTerms(group), resolution.terms),
+        questionMatched: true,
+        provenanceMatched: true
+      };
+    }
+    return undefined;
+  }
   if (resolution.provenance !== undefined && attentionGroupMatchesProvenance(group, resolution.provenance)) {
     const groupTerms = attentionGroupTerms(group);
     const sharedTerms = intersectionCount(groupTerms, resolution.terms);
@@ -846,6 +886,20 @@ function candidateFindingsById(
     }
   }
   return candidates;
+}
+
+// Plan 75 step 1: a completed, high-false-positive-risk reject of a
+// promoted candidate is a final adjudication of the source note's predicate
+// — re-surfacing it as Needs Human Attention is noise. Uncertain rejects
+// (medium/low risk, or incomplete verification) keep the note visible.
+function verdictIsAdjudicatedPromotionReject(
+  verdict: VerificationVerdict,
+  original: CandidateFinding | undefined
+): boolean {
+  return verdict.verdict === "reject" &&
+    verdict.verificationIncomplete !== true &&
+    verdict.falsePositiveRisk === "high" &&
+    original?.provenance?.source === "uncertainty_promotion";
 }
 
 function verdictResolvesPredicate(verdict: VerificationVerdict): boolean {
@@ -1018,60 +1072,6 @@ function normalizeSnippet(input: string): string {
     .trim();
 }
 
-function normalizedTerms(text: string): Set<string> {
-  const stopWords = new Set([
-    "about",
-    "after",
-    "also",
-    "before",
-    "because",
-    "being",
-    "cannot",
-    "check",
-    "code",
-    "confirm",
-    "could",
-    "from",
-    "have",
-    "into",
-    "line",
-    "more",
-    "review",
-    "should",
-    "that",
-    "this",
-    "verify",
-    "when",
-    "where",
-    "will",
-    "with",
-    "without",
-    "would"
-  ]);
-  return new Set(text
-    .toLowerCase()
-    .replace(/[^a-z0-9_]+/gu, " ")
-    .split(/\s+/u)
-    .map((term) => term.trim())
-    .filter((term) => term.length >= 4 && !stopWords.has(term)));
-}
-
-function normalizeQuestion(question: string): string {
-  return question.toLowerCase()
-    .replace(/[`"'’]/gu, "")
-    .replace(/[^a-z0-9_./:-]+/gu, " ")
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
-function normalizeLooseQuestion(question: string): string {
-  return question
-    .replace(/^(please\s+)?(check|confirm|verify|investigate|review)\s+(whether|if|that)?\s*/u, "")
-    .replace(/^(whether|if)\s+/u, "")
-    .replace(/\s+/gu, " ")
-    .trim();
-}
-
 function normalizedSet(values: string[]): Set<string> {
   return new Set(values.map(normalize).filter(Boolean));
 }
@@ -1088,18 +1088,6 @@ function intersectionCount(a: Set<string>, b: Set<string>): number {
     }
   }
   return count;
-}
-
-function tokenJaccard(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 || b.size === 0) {
-    return 0;
-  }
-  const shared = intersectionCount(a, b);
-  return shared / (a.size + b.size - shared);
-}
-
-function cleanStrings(values: string[]): string[] {
-  return [...new Set(values.map((value) => value.trim()).filter((value) => value.length > 0))].sort();
 }
 
 function capStrings(values: string[]): string[] {

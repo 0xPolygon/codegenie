@@ -33,6 +33,28 @@ export function renderCoverageSummaryLines(coverage: RunCoverageStatus): string[
   return uniqueLines(lines);
 }
 
+export function renderBudgetStopNotice(coverage: RunCoverageStatus): string {
+  const stop = coverage.budgetStop;
+  if (!coverage.budgetStopped || stop === undefined) {
+    return "";
+  }
+  if (stop.reason === "runtime_reserved_tail" || stop.reason === "hard_timeout") {
+    const minutes = Math.round(stop.timeoutMs / 60_000);
+    return (
+      `> **Sorry, this review is incomplete.** The allotted max time of ${minutes} minutes was reached ` +
+      "and the review has been degraded. Re-run with `--max-time <minutes>` " +
+      "(config `review.timeoutMs`, or `review.maxTimeMinutes` in eval cases) for a higher time allotment."
+    );
+  }
+  const limit = stop.reason === "max_model_calls"
+    ? `max model calls limit of ${stop.maxModelCalls ?? "?"} (config \`review.maxModelCalls\`)`
+    : `max token limit of ${stop.maxBudgetTokens ?? "?"} (config \`review.maxBudgetTokens\`)`;
+  return (
+    `> **Sorry, this review is incomplete.** The allotted ${limit} was reached ` +
+    "and the review has been degraded. Raise the limit for a complete review."
+  );
+}
+
 export function coverageDisclosureLines(coverage: RunCoverageStatus): string[] {
   const lines: string[] = [];
   if (coverage.budgetStopped) {
@@ -121,7 +143,7 @@ function humanizeBudgetReason(reason: string): string {
       return "runtime reserve reached";
     case "max_model_calls":
       return "model-call limit reached";
-    case "max_total_tokens":
+    case "max_budget_tokens":
       return "token limit reached";
     case "hard_timeout":
       return "hard timeout reached";

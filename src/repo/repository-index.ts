@@ -32,6 +32,7 @@ import type { InternalGitClient } from "../git/git-client.js";
 import { createGitClient } from "../git/git-client.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { CodegenieError } from "../util/errors.js";
+import { escapeRegExp } from "../util/regex.js";
 import { containGlob, containPath } from "./path-guard.js";
 import { DiffBlockRenderer } from "./diff-blocks.js";
 import { LanguageAdapterRegistry } from "./language-adapter.js";
@@ -201,19 +202,6 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           return { value: { text: "", meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: 0 };
         }
         const lines = content.content.length === 0 ? [] : content.content.split(/\n/u);
-        if (startLine > lines.length) {
-          const meta: ToolResultMeta = {
-            backend: "text",
-            precision: "exact",
-            degraded: true,
-            degradationReason: "requested range starts after end of file",
-            truncated: true,
-            omittedCount: 0,
-            lookupStatus: "found",
-            deliveryStatus: "empty"
-          };
-          return { value: { text: "", meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: 0 };
-        }
         const clampedStart = Math.min(Math.max(1, startLine), Math.max(1, lines.length));
         const requestedEnd = Math.min(endLine, lines.length);
         const cappedEnd = Math.min(requestedEnd, clampedStart + READ_RANGE_MAX_LINES - 1);
@@ -1014,8 +1002,4 @@ function recoveryReadRange(path: string, lineRange: [number, number], source: So
     source: source.kind,
     reason
   };
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }

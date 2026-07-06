@@ -1,10 +1,11 @@
 import type { BudgetLimitEvent, BudgetSummary, FinalFinding, ReviewResult, ReviewRunStats, RunCoverageStatus } from "../types.js";
-import { renderCoverageSummaryLines } from "../util/coverage-summary.js";
+import { renderBudgetStopNotice, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 
 export function renderMarkdownReview(result: ReviewResult): string {
   const sections = [
     "# codegenie review",
     "",
+    renderBudgetStopNotice(result.coverage),
     result.summary.trim() || "Review completed.",
     "",
     renderCoverage(result.coverage),
@@ -135,7 +136,7 @@ function shouldRenderBudgetSummary(summary: BudgetSummary): boolean {
     summary.usage.costUSD !== undefined ||
     summary.multiplier !== 1 ||
     summary.effective.maxModelCalls !== undefined ||
-    summary.effective.maxTotalTokens !== undefined ||
+    summary.effective.maxBudgetTokens !== undefined ||
     summary.overruns.length > 0 ||
     summary.dispatchBlocks.length > 0 ||
     renderContextPressure(summary).length > 0;
@@ -146,8 +147,8 @@ function budgetCapParts(summary: BudgetSummary): string[] {
   if (summary.effective.maxModelCalls !== undefined) {
     parts.push(`model calls ${summary.effective.maxModelCalls}${capSource(summary.configured.maxModelCalls, summary.multiplier)}`);
   }
-  if (summary.effective.maxTotalTokens !== undefined) {
-    parts.push(`tokens ${summary.effective.maxTotalTokens}${capSource(summary.configured.maxTotalTokens, summary.multiplier)}`);
+  if (summary.effective.maxBudgetTokens !== undefined) {
+    parts.push(`tokens ${summary.effective.maxBudgetTokens}${capSource(summary.configured.maxBudgetTokens, summary.multiplier)}`);
   }
   if (summary.multiplier !== 1 && parts.length === 0) {
     parts.push(`budget multiplier ${summary.multiplier}`);

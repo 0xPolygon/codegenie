@@ -12,8 +12,8 @@ This component owns:
 
 - The `RepositoryTools` implementation: the nine tools `readRange`, `readFileOutline`, `readSymbol`, `findDefinition`, `readDiffBlocks`, `searchFiles`, `findSymbolMentions`, `findLikelyTests`, and `listFiles`, including backend routing between the tree-sitter and text backends, degradation behavior, result caps, and `ToolResultMeta` provenance. (`readSymbol` with a line selector returns the enclosing symbol; `readFileOutline` subsumes symbol listing.)
 - The path-containment chokepoint required by Trust Boundaries: canonicalization, rejection of absolute paths and `..` traversal with typed `path_outside_repo` errors, the symlink policy for worktree access, and harness-side ref validation (model-facing source selectors are `head`/`base` only; models never supply refs).
-- Revision access through git plumbing (`git show`, `git ls-tree`, `git grep` via `GitClient`), the bundled-ripgrep search fast path, and engine provenance.
-- The `searchFiles` POSIX ERE query contract and engine flag alignment.
+- Revision access through git plumbing (`git show`, `git ls-tree`, `git grep` via `GitClient`) and engine provenance.
+- The `searchFiles` POSIX ERE query contract.
 - The tree-sitter service: WASM runtime and grammar loading from `node_modules`, extension-to-grammar routing including `tsx`, ABI pinning behavior, in-memory parsing of revision content, and parse caching.
 - The `LanguageAdapter` implementations: Go, TypeScript/JavaScript, and the generic fallback, including `SymbolKind` + `nativeKind` mapping rules and `ownerType` extraction.
 - Stage 4 changed-symbol extraction producing `HunkSymbolFacts` (enclosing-symbol mapping and fallback detection).
@@ -97,7 +97,7 @@ The `RepositoryTools` interface in `architecture.md` is the contract. Behavioral
 - `readSymbol(path, { symbolName?, line? }, source?)` — exactly one selector is required. By name: exact-name match over the file's symbols (qualified `Owner.name` queries supported); by line: the smallest enclosing symbol containing that line, returned as `SymbolInfo` plus capped source text (`precision: "syntactic"`). Multiple same-name matches return the first in file order with `omittedCount` for the rest. Fallback: by name, exact-name text search within the file plus a bounded window; by line, a bounded ±20-line window with no `symbol`, `backend: "text"`, `precision: "text"`; both `degraded: true`.
 - `findDefinition(symbolName, { pathGlob?, source? })` — `git grep` at the resolved revision (default head) finds candidate files; candidate files with grammars are parsed and filtered to definition sites whose symbol name (or `ownerType`-qualified name) matches. Unparseable candidates contribute plain text matches marked degraded. Base-side lookups support deleted-code questions.
 - `readDiffBlocks({ packetId?, path? })` — renders hunks from the parsed diff with dual old/new line numbers and change markers. Requires exactly one selector. `backend: "text"`, `precision: "exact"`. Unknown packetId or path returns a degraded empty result.
-- `searchFiles(query, options?)` — POSIX ERE search via `git grep -E` at the resolved revision, or bundled ripgrep on the worktree fast path. `contextMode` controls enrichment: `"none"` (matching line only), `"lines"` (±2 context lines), `"symbols"` (tree-sitter enclosing `SymbolRef` attached per match, best effort).
+- `searchFiles(query, options?)` — POSIX ERE search via `git grep -E` at the resolved revision. `contextMode` controls enrichment: `"none"` (matching line only), `"lines"` (±2 context lines), `"symbols"` (tree-sitter enclosing `SymbolRef` attached per match, best effort).
 - `findSymbolMentions(symbolName, { pathGlob?, source? })` — word-boundary text search for the identifier at the resolved revision (default head), then tree-sitter token verification that drops string/comment hits for files with grammars. `precision: "syntactic"` when all returned mentions are token-verified, otherwise `"text"` with a degradation note. Never claims `semantic` or `exact` in v1.
 - `findLikelyTests({ path?, symbol?, source? })` — test filename/path conventions plus, when a symbol is given, symbol-name mention filtering inside candidate test files, all at the resolved revision (default head). Always `precision: "heuristic"`. An empty result is a valid answer, not a degradation.
 - `listFiles(glob)` — `git ls-tree -r` at the head revision filtered by the glob. Returns `{ paths, meta }` like every other tool; truncation at the cap sets `meta.truncated` and `meta.omittedCount` so the model knows the listing is incomplete, and is also recorded on the call's `ToolCallRecord` in `tool-calls.jsonl`.
@@ -119,10 +119,10 @@ type SearchOptions = {
   contextMode?: SearchContextMode
   // Result cap for this call. Default 50, hard cap 200.
   maxResults?: number
-  // Default true. Maps to `git grep -i` / `rg -i` when false.
+  // Default true. Maps to `git grep -i` when false.
   caseSensitive?: boolean
   // Revision to search. Default { kind: "head" }. { kind: "base" } supports
-  // deleted-code questions. The fast path applies only to head searches.
+  // deleted-code questions.
   source?: SourceSelector
 }
 
@@ -184,7 +184,7 @@ type ParsedFile = {
 Tool methods reject with `CodegenieError` using existing stable codes only:
 
 - `path_outside_repo` — any path or glob that fails containment: absolute paths, `..` segments, NUL bytes, paths whose first segment is `.git`, or worktree paths whose resolved real path escapes the repository root.
-- `invalid_args` — malformed tool arguments: empty or oversized query (over 500 chars), a pattern rejected by both search engines, `startLine < 1` or `startLine > endLine`, both or neither of `symbolName`/`line` in `readSymbol`, or both or neither of `packetId`/`path` in `readDiffBlocks`.
+- `invalid_args` — malformed tool arguments: empty or oversized query (over 500 chars), a pattern rejected by `git grep`, `startLine < 1` or `startLine > endLine`, both or neither of `symbolName`/`line` in `readSymbol`, or both or neither of `packetId`/`path` in `readDiffBlocks`.
 
 Model-facing source selectors (`head`/`base`) never fail to resolve: the revision binding pins both commits at construction (the resolver populates `mergeBase` in every mode), so `git_ref_missing` does not occur at the tool boundary.
 
@@ -239,7 +239,7 @@ Derivation per review mode from `ResolvedReviewInput`:
 
 Harness-side ref values used to construct the binding (e.g. `headRef` when `headSha` is absent) are validated by the ref guard and resolved through `revParse` once; models never supply raw refs.
 
-All content reads go through git plumbing: `GitClient.catFile(sha, path)` (`git show <sha>:<path>` semantics), tree listings through `GitClient.lsTree`, revision search through `GitClient.grep`. Tree-sitter parses revision content in memory; no temporary worktrees are materialized and parsing never depends on checked-out files. V1 deliberately does not use the optional worktree read fast path for content tools — `git show` is cheap, and confining worktree filesystem access to ripgrep search minimizes the symlink containment surface.
+All content reads go through git plumbing: `GitClient.catFile(sha, path)` (`git show <sha>:<path>` semantics), tree listings through `GitClient.lsTree`, revision search through `GitClient.grep`. Tree-sitter parses revision content in memory; no temporary worktrees are materialized and parsing never depends on checked-out files. V1 deliberately does not use worktree reads for content tools — `git show` is cheap and keeps symlink containment simple.
 
 ### Path And Ref Containment Chokepoint
 
@@ -256,45 +256,19 @@ All content reads go through git plumbing: `GitClient.catFile(sha, path)` (`git 
 
 Violations reject with `path_outside_repo` and emit a `warn` telemetry event including the tool name and offending input (truncated).
 
-Worktree filesystem access (the ripgrep fast path's result paths) adds a physical check on top of the lexical rules: `realpath(join(repoRoot, rel))` must reside within `realpath(repoRoot)`; otherwise reject with `path_outside_repo`. Symlinks that resolve inside the repository root may be followed; symlinks resolving outside it must not be. Ripgrep is additionally invoked without `--follow` so directory traversal never walks through symlinks at all.
-
-Glob containment: `pathGlob` and `listFiles` globs are validated with the same lexical rules (rules 1–5), treating `*`, `**`, `?`, and `[...]` as opaque literals during validation. Globs are then passed as `:(glob)` pathspecs to git or `--glob` arguments to ripgrep — never interpolated into a shell.
+Glob containment: `pathGlob` and `listFiles` globs are validated with the same lexical rules (rules 1–5), treating `*`, `**`, `?`, and `[...]` as opaque literals during validation. Globs are then passed as `:(glob)` pathspecs to git — never interpolated into a shell.
 
 Ref guard: `containRef(ref)` validates harness-side ref values (revision-binding construction inputs; model-facing source selectors are `head`/`base` only, so no model-supplied ref ever reaches it). It accepts 4–64 character hex strings (SHA forms) or names passing the documented `git check-ref-format` rules, implemented locally and deterministically (no control characters, no `..`, no `~ ^ : ? * [ \`, no leading/trailing `/` or `.`, no `@{`, no `.lock` suffix, not `@`). Values matching `^-` are always rejected (`invalid_args`). Subprocess hygiene beyond validation — never invoking through a shell, `--` separators before untrusted positionals — is `GitClient`'s contract (`components/repository_and_github.md`); this component supplies only pre-validated values.
 
-### Search Engines And The Worktree Fast Path
+### Search Engine
 
-The text backend has two engines:
+The text backend has one search engine: `git grep -E <pattern> <sha>` through `GitClient.grep`, searching exactly the tracked tree at the resolved revision. Engine identity goes in-band on the record as `ToolCallRecord.engine: "git-grep"` for text-search-backed calls. `ToolResultMeta.backend` remains `"text"` because engine identity is telemetry provenance, not model-facing result content.
 
-- `git grep -E <pattern> <sha>` through `GitClient.grep` — the authoritative engine, searching exactly the tracked tree at the resolved revision.
-- Bundled `@vscode/ripgrep` over the worktree — a fast path only.
-
-Fast-path eligibility is computed once at index construction into a `WorktreeSnapshot`:
-
-```ts
-type WorktreeSnapshot = {
-  headEqualsReviewedHead: boolean // revParse("HEAD") === headCommit
-  trackedClean: boolean           // no modified/staged/deleted tracked entries
-  untrackedPaths: Set<string>     // untracked paths from git status --porcelain
-}
-```
-
-The fast path applies to a search call iff: the source resolves to `headCommit`, `headEqualsReviewedHead` is true, and `trackedClean` is true. Base-revision searches and dirty or mismatched checkouts always use `git grep`. The snapshot is taken once; mid-run worktree edits are outside the v1 contract (plumbing reads remain correct regardless, and the fast path is best-effort).
-
-Ripgrep invocation and alignment with the `git grep -E` contract:
-
-- Flags: `--json --line-number --column --no-config --no-messages`, default ignore behavior retained (respects `.gitignore`), `--hidden` not set, `--glob '!.git/**'`, plus translated `--glob` patterns and `-i` when `caseSensitive: false`. `--follow` is never passed.
-- Result alignment: matches in paths present in `untrackedPaths` are filtered out post-hoc, so fast-path results reflect tracked content at head.
-- Pattern alignment: the query contract is POSIX ERE. `git grep -E` is the reference semantics. Ripgrep's Rust regex accepts the common ERE constructs (alternation, intervals, classes, anchors) with matching meaning; if ripgrep rejects the pattern, the call falls back to `git grep` transparently. If `git grep` also rejects the pattern, the call fails with `invalid_args`.
-- Residual engine differences that cannot be aligned (`.ignore`/`.rgignore` handling, binary-detection heuristics) are disclosed as degradation notes when they are detected to have affected the result (for example, ripgrep reporting skipped binary candidates); in that case `degraded: true` with a `degradationReason` naming the engine difference. A clean fast-path result is not degraded.
-
-Engine identity goes in-band on the record: the engine that answered is stamped on the call's `ToolCallRecord.engine` field (`"git-grep" | "ripgrep"`) in `tool-calls.jsonl`, with fallback transitions visible as `engine: "git-grep"` plus a fallback telemetry note. `ToolResultMeta.backend` remains `"text"` for both engines because `ToolBackend` does not distinguish engines.
-
-Searches are executed with a bounded match count (engine-level `--max-count`/result truncation at `maxResults + 1`) so caps do not require reading unbounded output.
+Searches are executed with a bounded match count (`maxResults + 1`) so caps do not require reading unbounded output.
 
 ### Diff-File Mode Carve-Out (Deferred)
 
-The diff-file input mode's tool-layer carve-out — worktree-as-head reads with degraded provenance, degraded-empty base reads, ripgrep-only search, and the hunk-context staleness validation flow — is deferred with the mode itself (see architecture.md Future Considerations).
+The diff-file input mode's tool-layer carve-out — worktree-as-head reads with degraded provenance, degraded-empty base reads, search over the supplied diff content, and the hunk-context staleness validation flow — is deferred with the mode itself (see architecture.md Future Considerations).
 
 ### Tool Designs
 
@@ -340,7 +314,7 @@ Renders from the parsed `UnifiedDiff` retained at construction; no tree-sitter, 
 #### searchFiles
 
 1. Validate query (non-empty, ≤ 500 chars) and `pathGlob`.
-2. Select engine per the fast-path rules; run the search with `maxResults + 1` to detect truncation.
+2. Run `git grep` with `maxResults + 1` to detect truncation.
 3. Cap results, set `truncated`/`omittedCount`.
 4. Enrichment:
    - `"lines"`: read ±2 context lines per match from the same revision content (batched per file, one read per file).
@@ -349,7 +323,7 @@ Renders from the parsed `UnifiedDiff` retained at construction; no tree-sitter, 
 
 #### findSymbolMentions
 
-1. Word-boundary search for the identifier at the resolved revision (default head; `git grep -w` with a fixed string, or ripgrep `-w -F` on the head fast path), `pathGlob` applied.
+1. Word-boundary search for the identifier at the resolved revision (default head; `git grep -w` with a fixed string), `pathGlob` applied.
 2. Token verification: for matches in the first 25 distinct files with grammars, parse and verify that the node at the match position is an identifier-class token exactly equal to the symbol name. Matches inside strings and comments are dropped.
 3. Matches beyond the verification cap, or in files without grammars, are retained unverified.
 4. Meta: all returned mentions verified → `backend: "tree-sitter"`, `precision: "syntactic"`. Any unverified mentions → `backend: "text"`, `precision: "text"`, `degraded: true` with a reason counting unverified entries. The result never claims `semantic` or `exact` in v1; only a future language-analyzer backend may upgrade precision, per `architecture.md`.
@@ -496,7 +470,7 @@ Handoff contract: the Stage 6 packet builder renders `buildPacketContext`'s outp
 ### Caching And Concurrency
 
 - The tools facade is shared by concurrent packet workers and verifiers (`review.concurrency` bound). All state is read-only after construction except the parse cache and memoized content reads, both guarded by in-flight promise dedup; `bindPackets` runs once before Stage 7 concurrency begins.
-- Git and ripgrep subprocesses are bounded by an internal `p-limit` semaphore of 8 to avoid process storms under concurrent workers.
+- Git subprocesses are bounded by an internal `p-limit` semaphore of 8 to avoid process storms under concurrent workers.
 - Content reads memoize `(sha, path) → content` alongside the parse cache so repeated windows over one file cost one `git show`.
 - Nothing in this component caches across runs; the local review cache is a model-call cache and does not apply here.
 
@@ -504,7 +478,7 @@ Handoff contract: the Stage 6 packet builder renders `buildPacketContext`'s outp
 
 This component emits stage-attributed events through the injected recorder for its own passes: Stage 4 extraction (per-file parse outcomes, fallback usage, signal counts, cap hits).
 
-The `RepositoryTools` facade supplies the per-call measurement behind the always-on `ToolCallRecord` contract (`architecture.md`): every invocation produces `backend`, `precision`, `degraded`/`degradationReason`, `truncated`, `resultCount`, `resultChars`, `durationMs`, and the normalized args (path/symbol/lines/query/glob/source/contextMode), and the facade reports them to the telemetry recorder, which owns persistence to `tool-calls.jsonl` and the `tool-calls-summary.json` aggregation (`components/skills_llm_telemetry.md`). Harness-initiated invocations that go through the facade — packet-context assembly, classifier reads if any — are recorded with `initiator: "harness"` and the current stage; for model-initiated calls, attaching `workerId`, `packetId`, `modelCallId`, and the other join ids is the worker runner's responsibility. Containment rejections surface as `status: "rejected"` records. Engine identity goes in-band on the record's `engine?: "git-grep" | "ripgrep"` field for text-search-backed calls, rather than in `ToolResultMeta`, as noted above. Containment violations additionally log at `warn`.
+The `RepositoryTools` facade supplies the per-call measurement behind the always-on `ToolCallRecord` contract (`architecture.md`): every invocation produces `backend`, `precision`, `degraded`/`degradationReason`, `truncated`, `resultCount`, `resultChars`, `durationMs`, and the normalized args (path/symbol/lines/query/glob/source/contextMode), and the facade reports them to the telemetry recorder, which owns persistence to `tool-calls.jsonl` and the `tool-calls-summary.json` aggregation (`components/skills_llm_telemetry.md`). Harness-initiated invocations that go through the facade — packet-context assembly, classifier reads if any — are recorded with `initiator: "harness"` and the current stage; for model-initiated calls, attaching `workerId`, `packetId`, `modelCallId`, and the other join ids is the worker runner's responsibility. Containment rejections surface as `status: "rejected"` records. Engine identity goes in-band on the record's `engine?: "git-grep"` field for text-search-backed calls, rather than in `ToolResultMeta`, as noted above. Containment violations additionally log at `warn`.
 
 ## Dependencies
 
@@ -513,7 +487,6 @@ This component depends on:
 - `GitClient` (`components/repository_and_github.md`) for `revParse`, `catFile`, `lsTree`, and `grep` — all revision access flows through it; subprocess hygiene is its contract.
 - The parsed `UnifiedDiff`, `DiffFile`/`DiffHunk`/`DiffLine` records, and `FileFacts` produced upstream (Stages 1–3).
 - `web-tree-sitter` plus the pinned `tree-sitter-go`, `tree-sitter-typescript`, and `tree-sitter-javascript` grammar packages, resolved from `node_modules`.
-- `@vscode/ripgrep` (>= 1.18.0) for the worktree search fast path.
 - `p-limit` for subprocess concurrency bounds.
 - The `Logger` and `TelemetryRecorder` interfaces (`components/skills_llm_telemetry.md`).
 
@@ -547,14 +520,11 @@ Revision binding and source resolution:
 - `single-commit binding reads mergeBase` — base comes from `ResolvedReviewInput.mergeBase` (the first parent) with no `commit^` re-derivation; a root commit binds base to the empty-tree sentinel and base reads return missing-content degraded empties.
 - `base read returns deleted file content` — a file deleted at head reads successfully with `{ kind: "base" }`.
 
-Search engines:
+Search engine:
 
-- `fast path requires matching clean head` — engine is ripgrep only when HEAD equals the reviewed head and tracked files are clean; otherwise git grep (verified via the calls' in-band `ToolCallRecord.engine` field).
-- `fast path filters untracked hits` — a match in an untracked file is absent from fast-path results.
-- `rust-regex rejection falls back to git grep` — a pattern ripgrep rejects still answers via git grep; the call's `ToolCallRecord` carries `engine: "git-grep"` plus a fallback telemetry note.
-- `invalid pattern on both engines is invalid_args` — an ERE both engines reject surfaces as a typed tool error.
-- `ere parity fixture` — a pattern using alternation, intervals, and classes returns identical match sets from both engines on a fixture repo.
-- `base search uses git grep at base sha` — `SearchOptions.source = base` never uses ripgrep.
+- `search uses git grep` — text search is answered through `git grep` at the resolved revision and carries `engine: "git-grep"` in `ToolCallRecord`.
+- `invalid git grep pattern is invalid_args` — a rejected ERE surfaces as a typed tool error.
+- `base search uses git grep at base sha` — `SearchOptions.source = base` searches the base revision.
 - `search caps set truncated and omittedCount` — result over `maxResults` truncates with correct counts.
 - `contextMode lines returns windows` — ±2 lines attached per match.
 - `contextMode symbols attaches enclosing ref` — matches in parseable files carry `enclosingSymbol`; unparseable files omit it without degrading the call.
@@ -614,7 +584,7 @@ PacketContext assembly:
 
 Integration (temporary git repositories):
 
-- `index built against non-checked-out revision` — build the index with HEAD on an unrelated branch; reads, outlines, search, and Stage 4 facts all reflect the reviewed revisions (plumbing-only), and the fast path stays off.
+- `index built against non-checked-out revision` — build the index with HEAD on an unrelated branch; reads, outlines, search, and Stage 4 facts all reflect the reviewed revisions (plumbing-only).
 - `dirty worktree never leaks into results` — modify a tracked file in the worktree; head reads and searches return committed content.
 - `end-to-end tool meta and telemetry` — a scripted tool-call sequence produces meta and telemetry records with backend, precision, engine, degradation, and truncation fields populated as specified.
 - `harness calls record initiator harness` — packet-context assembly, run through the facade, reports `ToolCallRecord`s to the recorder with `initiator: "harness"`, the executing stage, and populated measurement fields (backend, precision, durationMs, resultChars, normalized args).

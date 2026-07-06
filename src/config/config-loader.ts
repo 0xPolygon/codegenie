@@ -26,6 +26,7 @@ type RawPathRule = NonNullable<NonNullable<RawCodegenieConfig["classification"]>
 export type CliConfigOverrides = {
   depth?: ReviewDepth;
   budgetBoost?: number;
+  timeoutMs?: number;
   lenses?: string[];
   provider?: string;
   model?: string;
@@ -63,9 +64,11 @@ const DEFAULT_SOURCE_PATHS = [
   "review.timeoutMs",
   "review.perPassTimeoutMs",
   "review.budgetBoost",
+  "review.maxBudgetTokens",
   "github.summaryWhenNoFindings",
   "classification.pathRules",
   "llm.maxConcurrentCalls",
+  "llm.forceSubmitToolChoice",
   "cache.enabled",
   "cache.dir",
   "telemetry.enabled",
@@ -251,13 +254,21 @@ function applyRawConfig(
     config.review.budgetBoost = raw.review.budgetBoost;
     sources["review.budgetBoost"] = source;
   }
-  if (raw.review?.maxTotalTokens !== undefined) {
-    config.review.maxTotalTokens = raw.review.maxTotalTokens;
-    sources["review.maxTotalTokens"] = source;
+  if (raw.review?.maxBudgetTokens !== undefined) {
+    config.review.maxBudgetTokens = raw.review.maxBudgetTokens;
+    sources["review.maxBudgetTokens"] = source;
   }
   if (raw.review?.maxModelCalls !== undefined) {
     config.review.maxModelCalls = raw.review.maxModelCalls;
     sources["review.maxModelCalls"] = source;
+  }
+  if (raw.review?.deepEnsemblePasses !== undefined) {
+    config.review.deepEnsemblePasses = raw.review.deepEnsemblePasses;
+    sources["review.deepEnsemblePasses"] = source;
+  }
+  if (raw.review?.adaptiveSecondPass !== undefined) {
+    config.review.adaptiveSecondPass = raw.review.adaptiveSecondPass;
+    sources["review.adaptiveSecondPass"] = source;
   }
 
   if (raw.github?.summaryWhenNoFindings !== undefined) {
@@ -458,6 +469,10 @@ function applyCliOverrides(
   if (cli.budgetBoost !== undefined) {
     config.review.budgetBoost = cli.budgetBoost;
     sources["review.budgetBoost"] = "cli";
+  }
+  if (cli.timeoutMs !== undefined) {
+    config.review.timeoutMs = cli.timeoutMs;
+    sources["review.timeoutMs"] = "cli";
   }
   if (cli.lenses !== undefined) {
     config.lenses.restrictTo = [...cli.lenses];
