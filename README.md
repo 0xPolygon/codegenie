@@ -101,15 +101,46 @@ processingMode = "skip"
 
 ## How a review runs
 
-Eleven stages; each is a telemetry and artifact boundary. Deterministic stages (1–4, 6, 11) parse and filter the diff, classify files, index symbols with Tree-sitter, build focused review packets, and publish — no LLM calls. The model stages:
+Eleven stages, each a telemetry and artifact boundary. Five make LLM calls (shaded); everything else is deterministic code — and the deterministic stages own the guarantees.
 
-- **Stage 5 — Plan.** One planner call decides intent framing, per-hunk coverage depth, and lenses. It doesn't hunt bugs.
-- **Stage 7 — Review.** Parallel packet reviewers examine hunks with read-only repo tools (`read_symbol`, `find_definition`, `search_files`, …) and return candidate findings, uncertainties, and follow-up hints.
-- **Stage 8 — Follow up (usually skipped).** Runs only when multiple packets independently raise the same scoped question.
-- **Stage 9 — Verify.** Every surviving candidate is independently re-examined in a fresh context that never saw the reviewer's reasoning.
-- **Stage 10 — Compose.** One call dedupes, ranks, caps, and phrases the final review, with deterministic validation and fallback.
+```mermaid
+flowchart TB
+    S1["1 · Resolve input<br/>PR / branch / commits → base, head, diff"]
+    S2["2 · Parse & filter diff<br/>skip generated / vendor / binary"]
+    S3["3 · Classify files<br/>language, test vs source, priority"]
+    S4["4 · Index symbols<br/>tree-sitter parse, static signals"]
+    S5(["5 · Plan (LLM)<br/>intent, coverage depth, lenses"])
+    S6["6 · Build review packets<br/>hunks + symbols + tests + context"]
+    S7(["7 · Review packets (LLM × packet)<br/>parallel, read-only repo tools"])
+    S8(["8 · Follow-up (LLM, usually skipped)"])
+    S9(["9 · Verify (LLM × candidate)<br/>fresh context, never sees reviewer reasoning"])
+    S10(["10 · Compose (LLM)<br/>merge, rank, cap, phrase"])
+    S11["11 · Publish<br/>stdout / JSON / optional GitHub comments"]
 
-The unit of review is the changed hunk; the unit of understanding is the affected system. Reviewers don't get the repository dumped into context — they get a compact packet (changed lines, enclosing symbol, file outline, likely tests, bounded related context) plus tools to pull exactly what a concern depends on.
+    S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7
+    S7 --> S9
+    S7 -. "repeated scoped questions only" .-> S8 --> S9
+    S9 --> S10 --> S11
+
+    classDef llm fill:#fdf3d8,stroke:#c8963e,color:#5b4a1e;
+    class S5,S7,S8,S9,S10 llm;
+```
+
+| # | Stage | What it does | LLM calls |
+|---|-------|--------------|-----------|
+| 1 | Resolve input | Turn `--pr` / branch / commit args into trusted base+head revisions and the raw diff. | — |
+| 2 | Parse & filter | Parse the unified diff; skip generated/vendor/lock/binary files; short-circuit zero-work runs. | — |
+| 3 | Classify | Assign language, test-vs-source status, review priority, and path-rule labels. | — |
+| 4 | Index | Build the symbol index (tree-sitter), extract changed-symbol facts and static risk signals. | — |
+| 5 | Plan | Decide intent framing, per-hunk coverage depth, and lenses. Doesn't hunt bugs. | 1 |
+| 6 | Build packets | Assemble focused packets: changed hunks, enclosing symbols, file outline, likely tests, bounded related context. | — |
+| 7 | Review | Parallel reviewers examine each packet with read-only repo tools (`read_symbol`, `find_definition`, …) and return candidate findings + uncertainties. | 1 per packet |
+| 8 | Follow up | Runs only when several packets independently raise the same scoped question; most runs skip it. | 0–few |
+| 9 | Verify | Every candidate is independently re-examined in a fresh context that never saw the reviewer's reasoning. | 1 per candidate |
+| 10 | Compose | Dedupe and merge same-root-cause findings, rank, cap, and phrase the final review. | 1 |
+| 11 | Publish | Write stdout/JSON; post GitHub comments only with the explicit flag. | — |
+
+The unit of review is the changed hunk; the unit of understanding is the affected system. Reviewers don't get the repository dumped into context — they get a compact packet plus tools to pull exactly what a concern depends on, within per-packet budgets.
 
 ## Design and philosophy
 
