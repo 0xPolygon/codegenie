@@ -83,6 +83,11 @@ type PromptLedgerEntry = {
   evidence: string;
 };
 
+// Standing rule (plan 95): every provider-facing schema field and
+// load-bearing prompt paragraph carries a one-line reason plus its motivating
+// evidence here. New surfaces need a ledger entry to land; a paragraph dies
+// when its motivating case passes without it. This turns future "can we
+// delete this?" from archaeology into a lookup.
 export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedgerEntry[]> = {
   5: [
     { surface: "diffUnderstanding", reason: "Keeps declared intent and inferred behavior separate so later stages can frame refactor-vs-contract changes.", evidence: "Plan 82 / Wave-2 severity calibration" },

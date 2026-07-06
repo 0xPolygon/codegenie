@@ -246,6 +246,37 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       const sourceExtensionState: ToolBudgetExtensionState = { toolCallsUsed: 0, resultCharsUsed: 0 };
       let schemaRepairUsed = false;
       let finalizeNudgeUsed = false;
+      // Plan 95: the single model-repair scheduler. Every schema-repair retry
+      // (discipline errors and schema-invalid submits alike) books the one
+      // repair attempt and routes the pass to finalize through this closure;
+      // queueSchemaRepair enforces the budget and fails the call when the
+      // attempt is already spent.
+      const scheduleModelRepair = (repair: {
+        submitToolName: string;
+        submitCalls: PiToolCall[];
+        extraToolNames: string[];
+        error: string;
+        repairClassification?: string;
+        replaceConversationOverride?: boolean;
+        cause?: unknown;
+      }): void => {
+        queueSchemaRepair({
+          opts,
+          request,
+          messages,
+          submitToolName: repair.submitToolName,
+          submitCalls: repair.submitCalls,
+          extraToolNames: repair.extraToolNames,
+          error: repair.error,
+          schemaRepairUsed,
+          ...(repair.repairClassification !== undefined ? { repairClassification: repair.repairClassification as Stage7SchemaInvalidKind } : {}),
+          ...(repair.replaceConversationOverride === true ? { replaceConversationOverride: true } : {}),
+          ...(repair.cause !== undefined ? { cause: repair.cause } : {})
+        });
+        schemaRepairUsed = true;
+        forceFinalize = true;
+        budgetForceFinalize = false;
+      };
       let finalizeSubmitRetryUsed = false;
       let forceFinalize = false;
       let budgetForceFinalize = false;
@@ -339,19 +370,12 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 schemaRepairUsed
               }));
             }
-            queueSchemaRepair({
-              opts,
-              request,
-              messages,
+            scheduleModelRepair({
               submitToolName: submitTool.name,
               submitCalls,
               extraToolNames: toolCalls.map((toolCall) => toolCall.name),
-              error: submitDisciplineError,
-              schemaRepairUsed
+              error: submitDisciplineError
             });
-            schemaRepairUsed = true;
-            forceFinalize = true;
-            budgetForceFinalize = false;
             continue;
           }
           if (submitCall) {
@@ -427,22 +451,15 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               if (recovery.validated !== undefined) {
                 return recovery.validated as T;
               }
-              queueSchemaRepair({
-                opts,
-                request,
-                messages,
+              scheduleModelRepair({
                 submitToolName: submitTool.name,
                 submitCalls,
                 extraToolNames: toolCalls.map((toolCall) => toolCall.name),
                 error: submitError,
-                schemaRepairUsed,
-                ...(recovery.repairClassification !== undefined ? { repairClassification: recovery.repairClassification as Stage7SchemaInvalidKind } : {}),
+                ...(recovery.repairClassification !== undefined ? { repairClassification: recovery.repairClassification } : {}),
                 ...(recovery.replaceConversationOverride === true ? { replaceConversationOverride: true } : {}),
                 cause
               });
-              schemaRepairUsed = true;
-              forceFinalize = true;
-              budgetForceFinalize = false;
               continue;
             }
           }
