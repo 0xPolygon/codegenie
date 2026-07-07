@@ -1,8 +1,8 @@
 # codegenie 🧞
 
-**High-signal AI code review for pull requests.** codegenie is a TypeScript CLI that reviews PR-style diffs at a staff-engineer level — real bugs, logic errors, security issues, architectural risks, and missing tests — and refuses to waste your attention on nitpicks. It prefers no comments over weak comments.
+**AI code review harness.** codegenie is a TypeScript CLI that reviews PR-style diffs at a staff-engineer level — real bugs, logic errors, security issues, architectural risks, and missing tests — and avoids wasting your attention on nitpicks. It prefers no comments over weak comments. codegenie supports all popular LLM providers.
 
-It is not a chatbot pointed at a diff. It is a **code review harness**: a staged pipeline where deterministic code owns the guarantees (coverage, anchoring, verification, dedup, budgets, telemetry) and LLM agents do the judgment work inside each stage.
+It is not a chatbot pointed at a diff. It is a multi-staged code review harness: a staged pipeline where deterministic code owns the guarantees (coverage, anchoring, verification, dedup, budgets, telemetry) and LLM agents do the judgment work inside each stage. codegenie is built on pi AI library and tree-sitter language parser to offer the harness more powerful tools to traverse code more efficiently.
 
 ## Install
 
@@ -101,7 +101,7 @@ processingMode = "skip"
 
 ## How a review runs
 
-Eleven stages, each a telemetry and artifact boundary. Five make LLM calls (shaded); everything else is deterministic code — and the deterministic stages own the guarantees.
+Eleven stages, each with a telemetry and artifact boundary. Five make LLM calls (shaded); everything else is deterministic code — and the deterministic stages own the guarantees.
 
 ```mermaid
 flowchart TB
