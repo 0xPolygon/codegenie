@@ -15,7 +15,11 @@ import {
   normalizedTerms,
   tokenJaccard
 } from "../src/util/text-similarity.js";
-import { PROMPT_TEMPLATE_VERSIONS, PROMPT_TEMPLATE_WHY_LEDGER } from "../src/skills/prompt-builder.js";
+import { BUNDLED_SKILL_WHY_LEDGER, PROMPT_TEMPLATE_VERSIONS, PROMPT_TEMPLATE_WHY_LEDGER, projectSkills } from "../src/skills/prompt-builder.js";
+import { loadSkills } from "../src/skills/skill-loader.js";
+import { nullTelemetry } from "./helpers/git.js";
+import { readdirSync, readFileSync } from "node:fs";
+import path from "node:path";
 
 describe("shared utility helpers", () => {
   it("keeps compact and pretty stable JSON byte shapes distinct", () => {
@@ -78,6 +82,47 @@ describe("shared utility helpers", () => {
         expect(entry.reason.trim()).not.toBe("");
         expect(entry.evidence.trim()).not.toBe("");
       }
+    }
+  });
+});
+
+describe("bundled skills: provenance ledger and projection caps", () => {
+  const bundledIds = ["core", "lang"].flatMap((dir) =>
+    readdirSync(path.resolve("bundled-skills", dir)).map((file) => {
+      const raw = readFileSync(path.resolve("bundled-skills", dir, file), "utf8");
+      const match = raw.match(/^id:\s*(\S+)/mu);
+      return match?.[1] ?? "";
+    })
+  );
+
+  it("every bundled skill has non-empty WHY-ledger entries", () => {
+    expect(bundledIds.length).toBeGreaterThanOrEqual(4);
+    for (const id of bundledIds) {
+      const entries = BUNDLED_SKILL_WHY_LEDGER[id];
+      expect(entries, id).toBeDefined();
+      expect(entries!.length, id).toBeGreaterThan(0);
+      for (const entry of entries!) {
+        expect(entry.reason.length, id).toBeGreaterThan(0);
+        expect(entry.evidence.length, id).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("every bundled skill projects at stage 7 without truncation or omission", async () => {
+    const noop = () => undefined;
+    const loaded = await loadSkills({
+      repoRoot: process.cwd(),
+      extraSkillPaths: [],
+      logger: { debug: noop, info: noop, warn: noop, error: noop } as never,
+      telemetry: nullTelemetry()
+    });
+    for (const id of bundledIds) {
+      const skill = loaded.skills.find((entry) => entry.id === id);
+      expect(skill, id).toBeDefined();
+      const projection = projectSkills([skill!], 7);
+      const per = projection.perSkill[0]!;
+      expect(per.omitted, id).toBe(false);
+      expect(per.truncatedChars, id).toBe(0);
     }
   });
 });

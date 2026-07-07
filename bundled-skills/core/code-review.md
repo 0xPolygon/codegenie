@@ -19,9 +19,9 @@ Find correctness, security, lifecycle, and design problems that would matter to 
 - Concurrency basics: unsynchronized shared-state mutation, ordering assumptions, races between async tasks, lost cancellation, and work that can outlive its owner.
 - Security correctness: authorization gaps, injection into shell/SQL/regex/path contexts, unsafe deserialization, secret exposure, overly broad permissions, and user-controlled paths crossing trust boundaries.
 - API misuse: calls made with the wrong units, lifetime, ownership, mutability, nullability, or error contract; version-specific behavior that the code ignores.
-- Architectural regressions: layering violations, circular dependencies, bypassed chokepoints, duplicated policy, hidden global state, and changes that make future review harder.
-- Performance risks: new unbounded loops, repeated I/O in hot paths, quadratic operations on user-sized input, and caches that can go stale or leak memory.
-- Caller-visible guarantees after transformation: when changed code rounds, truncates, normalizes, narrows, coerces, or otherwise transforms a value that is later exposed as a caller-visible bound, quote, limit, minimum, maximum, balance, capacity, or guarantee, verify that the exposed promise is still satisfiable from the transformed value. Internal unit/type/field consistency is not enough.
+- Architectural regressions: layering violations, circular dependencies, bypassed chokepoints, duplicated policy, and hidden global state.
+- Performance risks: new unbounded loops, repeated I/O in hot paths, quadratic operations on user-sized input, and caches that go stale or leak.
+- Caller-visible guarantees after transformation: when changed code rounds, truncates, narrows, or coerces a value that is later exposed as a caller-visible bound or guarantee, verify the exposed promise is still satisfiable from the transformed value. Internal unit/type/field consistency is not enough.
 
 # False Positives
 
@@ -29,8 +29,8 @@ Find correctness, security, lifecycle, and design problems that would matter to 
 - Do not flag a missing check when the same invariant is enforced by a nearby typed contract, validation chokepoint, or deterministic caller guarantee.
 - Do not treat every theoretical exception as a bug; require a concrete path where the change makes behavior worse.
 - Do not prefer a different architecture unless the current change creates a specific maintenance, correctness, or security failure mode.
-- Do not report unavoidable precision dust when the caller-visible output is derived from the same rounded value, or when the rounding/narrowing behavior is explicitly part of the contract and does not overstate what can be delivered. Before applying this guard, trace whether the visible output is derived from the rounded/transformed value or from the original unrounded value.
-- Calibrate severity for guarantee or contract violations by reachability and magnitude. Sub-unit, dust-sized, pathological-input-only, or author-confirmation-dependent violations are usually low or medium, not high.
+- Do not report unavoidable precision dust when the caller-visible output is derived from the same transformed value; trace which value actually flows to the caller before applying this guard.
+- Calibrate severity for guarantee or contract violations by reachability and magnitude. Sub-unit, pathological-input-only, or author-confirmation-dependent violations are usually low or medium, not high.
 
 # Safe Patterns
 
@@ -41,8 +41,8 @@ Find correctness, security, lifecycle, and design problems that would matter to 
 
 # Examples
 
-- A changed path join that accepts `../` from model output is a real security finding when it can read outside the repo.
+- A changed path join that accepts `../` from external input is a real security finding when it can read outside the intended root.
 - A retry loop that catches every error and returns an empty result is a correctness finding when callers interpret empty as success.
 - A new async task that keeps using a request-scoped object after cancellation is a lifecycle finding.
-- A direct file read that bypasses the existing source resolver is an architecture finding because it skips revision binding and containment.
-- Code rounds a value down during a conversion, but still reports the original un-rounded value to the caller as a guaranteed minimum. The delivered amount is now smaller than the promised minimum, so the guarantee can no longer be met — a correctness finding.
+- A database write that bypasses the repository layer is an architecture finding when it skips that layer's validation or tenancy chokepoint.
+- Code rounds a value down during a conversion, but still reports the original un-rounded value to the caller as a guaranteed minimum.
