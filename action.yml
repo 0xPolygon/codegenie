@@ -1,0 +1,102 @@
+name: "codegenie review"
+description: "High-signal AI code review on pull requests, with a live status comment that becomes the final report."
+branding:
+  icon: "eye"
+  color: "purple"
+
+inputs:
+  trigger-phrase:
+    description: "Comment text that triggers a review on the issue_comment lane (matched exactly, never interpreted)."
+    default: "codegenie review"
+  on-pull-request:
+    description: "Run automatically on pull_request opened/synchronize events (true/false)."
+    default: "true"
+  allowed-associations:
+    description: "Comma-separated author associations allowed to trigger (payload check; a live write-permission check also applies)."
+    default: "OWNER,MEMBER,COLLABORATOR"
+  allowed-users:
+    description: "Comma-separated logins allowed to trigger regardless of association. Widening this is a deliberate security decision."
+    default: ""
+  post-inline-comments:
+    description: "Also post inline finding comments as a PR review (true/false). The status-comment report posts either way."
+    default: "true"
+  depth:
+    description: "Review depth: light, normal, or deep."
+    default: ""
+  lenses:
+    description: "Comma-separated review lenses to enable."
+    default: ""
+  model:
+    description: "Model spec: provider/model[:reasoning], e.g. anthropic/claude-opus-4-8:xhigh. Reasoning defaults to high."
+    default: ""
+  llm-api-key:
+    description: "Generic LLM API key, routed to the provider named in `model`. Provider-native env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...) also work and take precedence."
+    default: ""
+  max-time:
+    description: "Maximum review runtime in minutes before budget stop."
+    default: ""
+  budget-boost:
+    description: "Scale per-packet review budgets by this factor."
+    default: ""
+  github-token:
+    description: "Token used for PR metadata, the status comment, and inline posting."
+    default: "${{ github.token }}"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+
+    - name: Install codegenie
+      shell: bash
+      run: npm install -g "@0xsequence/codegenie@$(node -p "require('${{ github.action_path }}/package.json').version")"
+
+    - name: Run codegenie review
+      shell: bash
+      # Inputs pass through env, never inline ${{ }} interpolation into the
+      # script — robust quoting, and no script-injection shape even though
+      # inputs are workflow-author-controlled.
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        CODEGENIE_REPORT_PATH: ${{ runner.temp }}/codegenie-report.md
+        INPUT_TRIGGER_PHRASE: ${{ inputs.trigger-phrase }}
+        INPUT_ON_PULL_REQUEST: ${{ inputs.on-pull-request }}
+        INPUT_ALLOWED_ASSOCIATIONS: ${{ inputs.allowed-associations }}
+        INPUT_ALLOWED_USERS: ${{ inputs.allowed-users }}
+        INPUT_POST_INLINE_COMMENTS: ${{ inputs.post-inline-comments }}
+        INPUT_DEPTH: ${{ inputs.depth }}
+        INPUT_LENSES: ${{ inputs.lenses }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_MAX_TIME: ${{ inputs.max-time }}
+        INPUT_BUDGET_BOOST: ${{ inputs.budget-boost }}
+        # Falls back to caller-provided env so `env: LLM_API_KEY:` on the
+        # uses: step works too — a composite step env would otherwise shadow
+        # it with the empty input default.
+        LLM_API_KEY: ${{ inputs.llm-api-key || env.LLM_API_KEY }}
+      run: |
+        args=()
+        args+=(--trigger-phrase "$INPUT_TRIGGER_PHRASE")
+        args+=(--on-pull-request "$INPUT_ON_PULL_REQUEST")
+        args+=(--allowed-associations "$INPUT_ALLOWED_ASSOCIATIONS")
+        args+=(--allowed-users "$INPUT_ALLOWED_USERS")
+        args+=(--post-inline-comments "$INPUT_POST_INLINE_COMMENTS")
+        args+=(--depth "$INPUT_DEPTH")
+        args+=(--model "$INPUT_MODEL")
+        args+=(--max-time "$INPUT_MAX_TIME")
+        args+=(--budget-boost "$INPUT_BUDGET_BOOST")
+        IFS=',' read -ra lenses <<< "$INPUT_LENSES"
+        for lens in "${lenses[@]}"; do
+          [ -n "$lens" ] && args+=(--lens "$lens")
+        done
+        codegenie github-action "${args[@]}"
+
+    - name: Upload review report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: codegenie-report
+        path: ${{ runner.temp }}/codegenie-report.md
+        if-no-files-found: ignore

@@ -59,6 +59,41 @@ codegenie review --pr 123 --post-github-comments   # publish inline comments (ex
 
 Posting to GitHub is a single `COMMENT`-type review with inline comments anchored to changed lines — it never approves or requests changes, and only happens when you pass the flag. Interactive runs show a stderr progress spinner (auto-disabled in CI; `--no-progress` disables it explicitly); the report itself always goes to stdout.
 
+## GitHub Action
+
+codegenie ships as a reusable GitHub Action: reviews run automatically on PR open/update, or on demand when a collaborator comments `codegenie review` on a PR. The run posts a single status comment ("Reviewing ...") that live-updates through the pipeline stages and finishes as the full markdown report; inline finding comments post as a PR review alongside it (on by default, `post-inline-comments: "false"` disables).
+
+```yaml
+# .github/workflows/codegenie.yml
+name: codegenie review
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+concurrency:
+  group: codegenie-review-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: 0xPolygon/codegenie@v0.4.2
+        with:
+          model: "anthropic/claude-opus-4-8:high"
+          llm-api-key: ${{ secrets.LLM_API_KEY }}
+```
+
+The `model` input is one spec: `provider/model[:reasoning]` — any model in [models.md](./models.md) works (`openai/gpt-5.5:xhigh`, `google/gemini-3-pro`, ...), with reasoning defaulting to `high`. `llm-api-key` is provider-generic: codegenie routes it to whatever variable the named provider reads. Provider-native env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...) also work and take precedence if you already keep secrets under those names.
+
+See `examples/workflows/` for both trigger lanes (automatic and comment-triggered). Security posture: triggering requires repository write access (payload association plus a live permission check; `allowed-users` widens it explicitly), the trigger phrase is matched exactly and never parsed for options, fork `pull_request` events skip cleanly (no secrets by GitHub's design — the comment lane serves fork PRs), and all posting is deterministic harness code — reviewed content and comment text never reach the model as instructions or tools. Costs are the usual two: GitHub Actions minutes and provider tokens.
+
 ## Providers and models
 
 ```bash
@@ -67,6 +102,8 @@ codegenie provider login <provider>      # OAuth by default; --api-key to store 
 codegenie provider models [query]        # list available models (e.g. `models gpt`)
 codegenie provider use <model>           # set the default by fuzzy model id
 ```
+
+The full list of supported models — every provider, model id, context window, and reasoning levels — lives in [models.md](./models.md) (generated from the [models.dev](https://models.dev) registry; regenerate with `make models-list`).
 
 `provider use` fuzzy-matches: `use opus`, `use sonnet`, `use gpt-5.5` all resolve to a concrete provider/model pair and print what they picked. Credentials and defaults live under `~/.codegenie/`, never in the repository. Supported lanes include Anthropic (API key) and OpenAI via both the API and ChatGPT-plan Codex OAuth — all on each provider's current APIs.
 

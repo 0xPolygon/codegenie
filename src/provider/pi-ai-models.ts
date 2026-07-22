@@ -46,6 +46,17 @@ export function getCodegeniePiModels(credentials?: CredentialStore): Models {
   return credentials === undefined ? piModels : builtinModels({ credentials });
 }
 
+// The API-key env var a provider reads (OAuth-token vars are skipped when an
+// _API_KEY-named var exists). The github-action adapter uses this to route a
+// generic LLM_API_KEY to the right provider variable.
+export function getPiApiKeyEnvVarName(provider: string): string | undefined {
+  const envVars = API_KEY_ENV_VARS[provider];
+  if (envVars === undefined || envVars.length === 0) {
+    return undefined;
+  }
+  return envVars.find((name) => name.endsWith("_API_KEY")) ?? envVars[envVars.length - 1];
+}
+
 export function getPiEnvApiKey(provider: string, env?: ProviderEnv): string | undefined {
   const envVars = API_KEY_ENV_VARS[provider];
   const firstKey = envVars?.find((name) => providerEnvValue(name, env) !== undefined);

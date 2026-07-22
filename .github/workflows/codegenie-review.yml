@@ -1,0 +1,58 @@
+# Dogfood: codegenie reviews its own PRs, built from the PR's source.
+#
+# Deliberately NOT `uses: 0xPolygon/codegenie@<tag>` — the published action
+# installs from npm, while this builds the checked-out code so every PR is
+# reviewed by the codegenie it contains. Requires the LLM_API_KEY repository
+# secret (routed to the provider in --model); until it is set, runs fail with
+# provider auth errors.
+name: codegenie review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: codegenie-review-pr-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event_name == 'pull_request' || github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Build codegenie from source
+        run: |
+          npm install -g pnpm
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Run codegenie review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          CODEGENIE_REPORT_PATH: ${{ runner.temp }}/codegenie-report.md
+        run: node dist/cli/main.js github-action --model "anthropic/claude-opus-4-8:high"
+
+      - name: Upload review report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codegenie-report
+          path: ${{ runner.temp }}/codegenie-report.md
+          if-no-files-found: ignore

@@ -1,4 +1,4 @@
-.PHONY: init build run install uninstall typecheck test clean help
+.PHONY: init build run install uninstall typecheck test clean help models-list
 
 # Default target
 help:
@@ -11,6 +11,7 @@ help:
 	@echo "  make uninstall   Remove codegenie symlink"
 	@echo "  make typecheck   Run TypeScript type checking"
 	@echo "  make test        Run tests"
+	@echo "  make models-list Regenerate models.md from the model registry"
 	@echo "  make clean       Remove dist/"
 	@echo ""
 	@echo "Examples:"
@@ -50,6 +51,9 @@ typecheck:
 
 test:
 	pnpm test
+
+models-list: build
+	pnpm run models-list
 
 clean:
 	rm -rf dist/

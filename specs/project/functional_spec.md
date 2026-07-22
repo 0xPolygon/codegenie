@@ -127,6 +127,16 @@ Behavior:
 - Collect commit titles and commit descriptions across the reviewed commit or range as planner input.
 - Do not attempt to post GitHub comments in v1 from commit or commit-range mode.
 
+## GitHub Action Mode
+
+`codegenie github-action` is the entrypoint the bundled composite action (`action.yml`) invokes inside GitHub Actions runners; it is not intended for interactive use. It reads the standard Actions environment (`GITHUB_EVENT_NAME`, `GITHUB_EVENT_PATH`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`), decides whether the event should trigger a review, and when it should, runs the ordinary `--pr` review with a live status comment on the PR (see `components/repository_and_github.md`, GitHub Action Adapter).
+
+- Trigger lanes: `pull_request` (opened/synchronize/ready_for_review; drafts and fork heads skip) and `issue_comment` (created, on an open PR; the trimmed comment must equal the configured trigger phrase, default `codegenie review`, or start with it followed by whitespace — trailing text is ignored and never parsed into options).
+- Authorization: payload author association must be in the allowlist (default OWNER/MEMBER/COLLABORATOR) and a live collaborator-permission check must report write or admin; `allowed-users` bypasses both explicitly. Bot actors are ignored unless allowlisted.
+- A non-triggering event is a skip: exit `0`, one-line stdout reason, nothing posted. Review and posting failures keep their existing nonzero exit semantics.
+- Inline posting maps to the existing `--post-github-comments` flag; the status comment is enabled only by this entrypoint. Repo-resident config can enable neither.
+- Model selection is a single spec input, `provider/model[:reasoning]` (reasoning defaults to `high` in action context; a `:suffix` that is not a reasoning level stays part of the model id). A generic `LLM_API_KEY` env var/input is routed to the env variable the named provider reads (via the provider registry's env-var map); provider-native env vars keep working and are never overwritten.
+
 ## Provider And Model CLI
 
 codegenie should expose a provider command namespace for LLM provider setup, backed by Pi's provider/model registry and auth storage:

@@ -8,13 +8,15 @@
   },
   "files": [
     "dist",
-    "bundled-skills"
+    "bundled-skills",
+    "models.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/write-version.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "models-list": "node scripts/write-models-md.mjs",
     "dev": "tsx src/cli/main.ts"
   },
   "engines": {

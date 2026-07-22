@@ -1,0 +1,34 @@
+# Automatic codegenie review on every PR open/update.
+#
+# Uses the `pull_request` event (never `pull_request_target`): fork PRs run
+# without secrets and are skipped cleanly — use the comment-trigger workflow
+# for fork PRs. Requires a provider credential in repository secrets.
+name: codegenie review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: codegenie-review-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: 0xPolygon/codegenie@v0.4.2
+        with:
+          model: "anthropic/claude-opus-4-8:high"
+          llm-api-key: ${{ secrets.LLM_API_KEY }}
+          post-inline-comments: "true"

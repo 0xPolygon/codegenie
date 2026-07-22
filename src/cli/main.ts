@@ -2,6 +2,7 @@
 import { executeReviewCommand, isCliDisplayExit, parseReviewCommand } from "./review-command.js";
 import { createReviewProgress, type ReviewProgress } from "./review-progress.js";
 import { executeProviderCommand } from "./provider-command.js";
+import { executeGitHubActionCommand } from "../github-action/entrypoint.js";
 import { executeEvalCommand } from "../evals/eval-command.js";
 import { stripCredentials } from "../telemetry/redaction.js";
 import { errorExitCode, isCodegenieError } from "../util/errors.js";
@@ -17,6 +18,10 @@ async function main(): Promise<void> {
     }
     if (argv[0] === "provider" || (argv[0] === "help" && argv[1] === "provider")) {
       await executeProviderCommand(argv, { allowOutput: true });
+      return;
+    }
+    if (argv[0] === "github-action") {
+      await executeGitHubActionCommand(argv.slice(1));
       return;
     }
     if (argv[0] === "eval" || (argv[0] === "help" && argv[1] === "eval")) {

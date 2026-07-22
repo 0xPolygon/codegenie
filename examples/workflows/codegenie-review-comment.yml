@@ -1,0 +1,37 @@
+# Comment-triggered codegenie review: write "codegenie review" on a PR.
+#
+# issue_comment workflows run in base-repo context with secrets, so this lane
+# also serves fork PRs — which is exactly why triggering is write-gated:
+# the trigger phrase is matched exactly and never interpreted, and only
+# collaborators with write access (or explicitly allowlisted users) can start
+# a run.
+name: codegenie review (comment)
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: codegenie-review-pr-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: 0xPolygon/codegenie@v0.4.2
+        with:
+          model: "anthropic/claude-opus-4-8:high"
+          llm-api-key: ${{ secrets.LLM_API_KEY }}
+          trigger-phrase: "codegenie review"

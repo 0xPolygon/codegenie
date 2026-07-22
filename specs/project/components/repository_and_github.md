@@ -608,7 +608,7 @@ Detection flow, run by the publisher before posting:
 3. Fuzzy pass: a finding whose side-appropriate path matches a prior codegenie-authored comment's path and whose anchor line is within ±5 lines of that comment's line (falling back to `original_line` for outdated comments) → `skip_fuzzy_proximity`. Per `architecture.md`, the fuzzy rule is path + proximity over codegenie-authored comments only; category is not part of it — it is hashed inside the fingerprint and not recoverable from posted markers.
 4. Everything else → `post`.
 
-Skipped findings are not demoted to the body (skip means "already said"); each decision is recorded as a `FindingDuplicateDecision` in telemetry and `github-posting.json`. v1 never updates or deletes stale comments: when a safe update is not possible, prefer posting no duplicate over mutating existing comments. Duplicate suppression covers inline comments only; review bodies are per-run artifacts and are not fingerprint-tracked in v1.
+Skipped findings are not demoted to the body (skip means "already said"); each decision is recorded as a `FindingDuplicateDecision` in telemetry and `github-posting.json`. v1 never updates or deletes stale comments: when a safe update is not possible, prefer posting no duplicate over mutating existing comments. (The github-action adapter's status comment is a distinct, explicitly-mutable comment class carved out from this rule — see GitHub Action Adapter below; finding comments remain immutable.) Duplicate suppression covers inline comments only; review bodies are per-run artifacts and are not fingerprint-tracked in v1.
 
 ### GitHub Publishing
 
@@ -657,6 +657,14 @@ GitHub returns 422 when any inline comment is invalid for its diff; the review-c
 4. Only if even the summary-only review fails does publishing fail the run: `github_post_failed`, fatal because `--post-github-comments` was explicitly requested.
 
 Every attempt, demotion, and the final status is recorded in `RunPostingRecord` and stage-11 telemetry events (`github_review_posted`, `github_422_recovery`, `github_posting_failed`).
+
+### GitHub Action Adapter (Plan 97)
+
+`src/github-action/` is a self-contained adapter around the review path — the GitHub Actions trigger surface (`codegenie github-action`), event gating, and the status comment. It composes public seams only (synthesized `review --pr` argv, `onTelemetryEvent`, the returned report); nothing in this component or the pipeline imports from it, and its only touches to shared code are the CLI dispatch line and the viewer-identity fallback below. Functional behavior (lanes, trigger phrase, authorization) is specified in `functional_spec.md` GitHub Action Mode.
+
+The **status comment** is one issue comment per PR carrying the `<!-- codegenie:status-comment -->` marker: created (or reclaimed from a prior run) before the review starts, edited in place at stage boundaries (throttled, default minimum 10s between edits; after 3 consecutive edit failures the run continues headless), and terminally edited into the sanitized markdown report — capped to GitHub's 65,536-character comment limit with a truncation disclosure — or a short failure state. It is the explicitly-mutable exception to the never-mutate rule above; reclaim requires the marker AND an author match (own login, or the GitHub-reserved `[bot]` suffix when the login is not yet resolvable), so a marker pasted by another user is never overwritten. Bodies pass the comment sanitizer first, marker appended after, same ordering as finding markers. Adapter telemetry lands as a module-owned `github-action.json` in the run dir.
+
+**Viewer-identity fallback:** Actions installation tokens have no `/user` context, so `gh api user` fails; the adapter reads back the status comment's author and injects it via `CODEGENIE_GITHUB_LOGIN`, which `loadViewerLogin` uses only when `gh api user` fails. Duplicate detection is otherwise unchanged.
 
 ## Dependencies
 
