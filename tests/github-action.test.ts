@@ -1003,6 +1003,7 @@ type WorkflowJob = {
 };
 
 type WorkflowDocument = {
+  concurrency?: { group?: string; "cancel-in-progress"?: boolean | string };
   jobs: Record<string, WorkflowJob>;
 };
 
@@ -1031,52 +1032,36 @@ describe("GitHub Action and workflow contracts", () => {
     expect(runStep?.run).toContain('args+=(--preflight-only "$INPUT_PREFLIGHT_ONLY")');
   });
 
-  it("keeps concurrency behind an authoritative preflight in every workflow", () => {
-    for (const workflowPath of workflowPaths) {
+  it("keeps authorization in the binary and one newest-event-wins concurrency policy", () => {
+    const documents = workflowPaths.map((workflowPath) => {
       const raw = readFileSync(path.resolve(workflowPath), "utf8");
-      const workflow = parseYaml(raw) as WorkflowDocument;
-      const preflight = workflow.jobs.preflight;
-      const review = workflow.jobs.review;
-      expect(preflight, workflowPath).toBeDefined();
-      expect(preflight?.concurrency, workflowPath).toBeUndefined();
-      expect(review?.needs, workflowPath).toBe("preflight");
-      expect(review?.if, workflowPath).toContain("needs.preflight.outputs.should-run == 'true'");
-      expect(review?.concurrency?.group, workflowPath).toContain("needs.preflight.outputs.pr-number");
-      expect(review?.concurrency?.["cancel-in-progress"], workflowPath).toBe(true);
+      // Authorization lives only in the codegenie binary; any YAML phrase or
+      // association matching is a dual source of truth and forbidden.
       expect(raw, workflowPath).not.toContain("startsWith(");
-
-      const preflightStep = preflight?.steps?.find((step) => step.id === "gate");
-      const delegatesToAuthoritativeGate = preflightStep?.with?.["preflight-only"] === "true" ||
-        preflightStep?.run?.includes("--preflight-only true") === true;
-      expect(delegatesToAuthoritativeGate, workflowPath).toBe(true);
-    }
+      expect(raw, workflowPath).not.toContain("author_association");
+      const workflow = parseYaml(raw) as WorkflowDocument;
+      expect(workflow.jobs.preflight, workflowPath).toBeUndefined();
+      expect(workflow.jobs.review, workflowPath).toBeDefined();
+      expect(workflow.concurrency?.group, workflowPath).toContain("codegenie-review-pr-");
+      // Owner decision: uniform cancel-in-progress — newest event wins.
+      expect(workflow.concurrency?.["cancel-in-progress"], workflowPath).toBe(true);
+      return workflow;
+    });
+    const commentExample = documents[1];
+    const commentReviewStep = commentExample?.jobs.review?.steps?.find((step) => step.uses?.startsWith("0xPolygon/codegenie@"));
+    expect(commentReviewStep?.with?.["trigger-phrase"]).toBe("codegenie review");
   });
 
   it("pins pull-request jobs to the base SHA and leaves comment jobs on the default branch", () => {
     const dogfood = parseYaml(readFileSync(path.resolve(workflowPaths[0] ?? ""), "utf8")) as WorkflowDocument;
     const prExample = parseYaml(readFileSync(path.resolve(workflowPaths[2] ?? ""), "utf8")) as WorkflowDocument;
     const commentExample = parseYaml(readFileSync(path.resolve(workflowPaths[1] ?? ""), "utf8")) as WorkflowDocument;
-    for (const jobName of ["preflight", "review"]) {
-      const dogfoodCheckout = dogfood.jobs[jobName]?.steps?.find((step) => step.uses === "actions/checkout@v4");
-      expect(dogfoodCheckout?.with?.ref).toContain("github.event.pull_request.base.sha || ''");
-      const prCheckout = prExample.jobs[jobName]?.steps?.find((step) => step.uses === "actions/checkout@v4");
-      expect(prCheckout?.with?.ref).toContain("github.event.pull_request.base.sha");
-      const commentCheckout = commentExample.jobs[jobName]?.steps?.find((step) => step.uses === "actions/checkout@v4");
-      expect(commentCheckout?.with?.ref).toBeUndefined();
-    }
-  });
-
-  it("uses one workflow-level authorization configuration for preflight and review", () => {
-    for (const workflowPath of workflowPaths.slice(1)) {
-      const workflow = parseYaml(readFileSync(path.resolve(workflowPath), "utf8")) as WorkflowDocument;
-      const preflight = workflow.jobs.preflight?.steps?.find((step) => step.id === "gate");
-      const review = workflow.jobs.review?.steps?.find((step) => step.uses === "0xPolygon/codegenie@v0.4.2");
-      expect(preflight?.with?.["allowed-associations"], workflowPath).toBe(review?.with?.["allowed-associations"]);
-      expect(preflight?.with?.["allowed-users"], workflowPath).toBe(review?.with?.["allowed-users"]);
-      if (workflowPath.includes("comment")) {
-        expect(preflight?.with?.["trigger-phrase"]).toBe(review?.with?.["trigger-phrase"]);
-      }
-    }
+    const dogfoodCheckout = dogfood.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v4");
+    expect(dogfoodCheckout?.with?.ref).toContain("github.event.pull_request.base.sha || ''");
+    const prCheckout = prExample.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v4");
+    expect(prCheckout?.with?.ref).toContain("github.event.pull_request.base.sha");
+    const commentCheckout = commentExample.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v4");
+    expect(commentCheckout?.with?.ref).toBeUndefined();
   });
 });
 

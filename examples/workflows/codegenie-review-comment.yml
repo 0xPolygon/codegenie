@@ -1,9 +1,15 @@
 # Comment-triggered codegenie review: write "codegenie review" on a PR.
 #
 # issue_comment workflows run from the default branch, so codegenie's config
-# and skills come from trusted code and this lane also serves fork PRs. The
-# first job runs codegenie's exact trigger matcher and live write-permission
-# check. Only an authorized event can start the cancellable review job.
+# and skills come from trusted code and this lane also serves fork PRs. All
+# trigger authorization (exact phrase match, live write-permission check)
+# happens inside codegenie — no gating logic in YAML.
+#
+# cancel-in-progress: newest event wins. Note the trade-off: any comment on
+# the PR starts a run that supersedes an in-flight review of that PR before
+# codegenie decides it is a skip. If your PR threads are chatty, set this to
+# false (re-triggers then queue) or gate a separate ungrouped job with the
+# `preflight-only` input.
 name: codegenie review (comment)
 
 on:
@@ -15,39 +21,12 @@ permissions:
   pull-requests: write
   issues: write
 
-env:
-  # Customize authorization once; preflight and review consume the same values.
-  CODEGENIE_TRIGGER_PHRASE: "codegenie review"
-  CODEGENIE_ALLOWED_ASSOCIATIONS: "OWNER,MEMBER,COLLABORATOR"
-  CODEGENIE_ALLOWED_USERS: ""
+concurrency:
+  group: codegenie-review-pr-${{ github.event.issue.number }}
+  cancel-in-progress: true
 
 jobs:
-  preflight:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      should-run: ${{ steps.gate.outputs.should-run }}
-      pr-number: ${{ steps.gate.outputs.pr-number }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Authorize review trigger
-        id: gate
-        uses: 0xPolygon/codegenie@v0.4.2
-        with:
-          preflight-only: "true"
-          trigger-phrase: ${{ env.CODEGENIE_TRIGGER_PHRASE }}
-          allowed-associations: ${{ env.CODEGENIE_ALLOWED_ASSOCIATIONS }}
-          allowed-users: ${{ env.CODEGENIE_ALLOWED_USERS }}
-
   review:
-    needs: preflight
-    if: ${{ needs.preflight.outputs.should-run == 'true' }}
-    concurrency:
-      group: codegenie-review-pr-${{ needs.preflight.outputs.pr-number }}
-      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -59,6 +38,4 @@ jobs:
         with:
           model: "anthropic/claude-opus-4-8:high"
           llm-api-key: ${{ secrets.LLM_API_KEY }}
-          trigger-phrase: ${{ env.CODEGENIE_TRIGGER_PHRASE }}
-          allowed-associations: ${{ env.CODEGENIE_ALLOWED_ASSOCIATIONS }}
-          allowed-users: ${{ env.CODEGENIE_ALLOWED_USERS }}
+          trigger-phrase: "codegenie review"

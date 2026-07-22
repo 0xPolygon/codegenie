@@ -1,10 +1,16 @@
 # Dogfood: codegenie reviews this repo's PRs, built from the TRUSTED base.
 #
 # Deliberately NOT `uses: 0xPolygon/codegenie@<tag>` — the published action
-# installs from npm, while this builds from source. Both jobs pin the base
+# installs from npm, while this builds from source. The checkout pins the base
 # revision (default branch on comment events), so a PR cannot modify the
-# reviewer that reviews it. The PR head is fetched by `--pr` as untrusted
+# reviewer that reviews it; the PR head is fetched by `--pr` as untrusted
 # data. Requires the LLM_API_KEY repository secret.
+#
+# All trigger authorization (phrase match, live write-permission check) lives
+# in the codegenie binary — no gating logic in YAML. cancel-in-progress:
+# newest event wins — a push supersedes the now-stale review; a comment on
+# the PR also supersedes an in-flight run before codegenie decides skip/run
+# (accepted trade-off for one simple policy).
 name: codegenie review
 
 on:
@@ -18,52 +24,12 @@ permissions:
   pull-requests: write
   issues: write
 
-env:
-  CODEGENIE_TRIGGER_PHRASE: "codegenie review"
-  CODEGENIE_ALLOWED_ASSOCIATIONS: "OWNER,MEMBER,COLLABORATOR"
-  CODEGENIE_ALLOWED_USERS: ""
+concurrency:
+  group: codegenie-review-pr-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
 
 jobs:
-  preflight:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    outputs:
-      should-run: ${{ steps.gate.outputs.should-run }}
-      pr-number: ${{ steps.gate.outputs.pr-number }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          # base SHA on pull_request events; default branch on comment events
-          ref: ${{ github.event.pull_request.base.sha || '' }}
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-
-      - name: Build codegenie from trusted source
-        run: |
-          npm install -g pnpm
-          pnpm install --frozen-lockfile
-          pnpm build
-
-      - name: Authorize review trigger
-        id: gate
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          node dist/cli/main.js github-action
-          --preflight-only true
-          --trigger-phrase "$CODEGENIE_TRIGGER_PHRASE"
-          --allowed-associations "$CODEGENIE_ALLOWED_ASSOCIATIONS"
-          --allowed-users "$CODEGENIE_ALLOWED_USERS"
-
   review:
-    needs: preflight
-    if: ${{ needs.preflight.outputs.should-run == 'true' }}
-    concurrency:
-      group: codegenie-review-pr-${{ needs.preflight.outputs.pr-number }}
-      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -88,12 +54,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           CODEGENIE_REPORT_PATH: ${{ runner.temp }}/codegenie-report.md
-        run: >-
-          node dist/cli/main.js github-action
-          --trigger-phrase "$CODEGENIE_TRIGGER_PHRASE"
-          --allowed-associations "$CODEGENIE_ALLOWED_ASSOCIATIONS"
-          --allowed-users "$CODEGENIE_ALLOWED_USERS"
-          --model "anthropic/claude-opus-4-8:high"
+        run: node dist/cli/main.js github-action --model "anthropic/claude-opus-4-8:high"
 
       - name: Upload review report
         if: always()

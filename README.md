@@ -73,32 +73,11 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
-env:
-  CODEGENIE_ALLOWED_ASSOCIATIONS: "OWNER,MEMBER,COLLABORATOR"
-  CODEGENIE_ALLOWED_USERS: ""
+concurrency:
+  group: codegenie-review-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true  # newest event wins; a push supersedes the stale review
 jobs:
-  preflight:
-    runs-on: ubuntu-latest
-    outputs:
-      should-run: ${{ steps.gate.outputs.should-run }}
-      pr-number: ${{ steps.gate.outputs.pr-number }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          fetch-depth: 0
-      - id: gate
-        uses: 0xPolygon/codegenie@v0.4.2
-        with:
-          preflight-only: "true"
-          allowed-associations: ${{ env.CODEGENIE_ALLOWED_ASSOCIATIONS }}
-          allowed-users: ${{ env.CODEGENIE_ALLOWED_USERS }}
   review:
-    needs: preflight
-    if: ${{ needs.preflight.outputs.should-run == 'true' }}
-    concurrency:
-      group: codegenie-review-pr-${{ needs.preflight.outputs.pr-number }}
-      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -110,13 +89,11 @@ jobs:
         with:
           model: "anthropic/claude-opus-4-8:high"
           llm-api-key: ${{ secrets.LLM_API_KEY }}
-          allowed-associations: ${{ env.CODEGENIE_ALLOWED_ASSOCIATIONS }}
-          allowed-users: ${{ env.CODEGENIE_ALLOWED_USERS }}
 ```
 
 The `model` input is one spec: `provider/model[:reasoning]` — any model in [models.md](./models.md) works (`openai/gpt-5.5:xhigh`, `google/gemini-3-pro`, ...), with reasoning defaulting to `high`. `llm-api-key` is provider-generic: codegenie routes it to whatever variable the named provider reads. Provider-native env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...) also work and take precedence if you already keep secrets under those names.
 
-See `examples/workflows/` for both trigger lanes (automatic and comment-triggered). Keep trigger/authorization values in workflow-level `env` so the preflight and review steps consume the same configuration. The non-cancellable preflight runs codegenie's authoritative TypeScript gate, including the live write-permission check; only an authorized result can enter the downstream job's `cancel-in-progress` group. Fork `pull_request` events skip cleanly (the comment lane serves fork PRs), and all posting is deterministic harness code — reviewed content and comment text never reach the model as instructions or tools. Costs are the usual two: GitHub Actions minutes and provider tokens.
+See `examples/workflows/` for both trigger lanes (automatic and comment-triggered). All authorization — exact trigger-phrase match, live write-permission check — happens inside codegenie; the workflows contain no gating logic to drift. Cancellation policy is one rule: `cancel-in-progress: true`, newest event wins — a push supersedes the now-stale review. On the comment lane that also means any comment on a PR supersedes that PR's in-flight run before codegenie decides it's a skip; if your PR threads are chatty, set it to `false` there (re-triggers queue instead), or gate a separate ungrouped job with the `preflight-only` input for the strictest setup. Fork `pull_request` events skip cleanly (the comment lane serves fork PRs), and all posting is deterministic harness code — reviewed content and comment text never reach the model as instructions or tools. Costs are the usual two: GitHub Actions minutes and provider tokens.
 
 ## Providers and models
 
