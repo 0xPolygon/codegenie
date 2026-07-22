@@ -100,3 +100,4 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 94 | PENDING | Issue 94: One Shared Similarity/Util Module |
 | 95 | PENDING | Issue 95: One Shared Submit/Salvage Layer + Prompt "Why" Ledger |
 | 96 | PENDING | Issue 96: Fixed Stage-6 Symbol-Context Budget |
+| 97 | PENDING | Issue 97: GitHub Action Integration (comment-triggered PR review + live status comment) |
