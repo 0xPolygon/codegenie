@@ -1,10 +1,9 @@
 # Comment-triggered codegenie review: write "codegenie review" on a PR.
 #
-# issue_comment workflows run in base-repo context with secrets, so this lane
-# also serves fork PRs — which is exactly why triggering is write-gated:
-# the trigger phrase is matched exactly and never interpreted, and only
-# collaborators with write access (or explicitly allowlisted users) can start
-# a run.
+# issue_comment workflows run from the default branch, so codegenie's config
+# and skills come from trusted code and this lane also serves fork PRs. The
+# first job runs codegenie's exact trigger matcher and live write-permission
+# check. Only an authorized event can start the cancellable review job.
 name: codegenie review (comment)
 
 on:
@@ -16,13 +15,39 @@ permissions:
   pull-requests: write
   issues: write
 
-concurrency:
-  group: codegenie-review-pr-${{ github.event.issue.number }}
-  cancel-in-progress: true
+env:
+  # Customize authorization once; preflight and review consume the same values.
+  CODEGENIE_TRIGGER_PHRASE: "codegenie review"
+  CODEGENIE_ALLOWED_ASSOCIATIONS: "OWNER,MEMBER,COLLABORATOR"
+  CODEGENIE_ALLOWED_USERS: ""
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      should-run: ${{ steps.gate.outputs.should-run }}
+      pr-number: ${{ steps.gate.outputs.pr-number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Authorize review trigger
+        id: gate
+        uses: 0xPolygon/codegenie@v0.4.2
+        with:
+          preflight-only: "true"
+          trigger-phrase: ${{ env.CODEGENIE_TRIGGER_PHRASE }}
+          allowed-associations: ${{ env.CODEGENIE_ALLOWED_ASSOCIATIONS }}
+          allowed-users: ${{ env.CODEGENIE_ALLOWED_USERS }}
+
   review:
-    if: github.event.issue.pull_request
+    needs: preflight
+    if: ${{ needs.preflight.outputs.should-run == 'true' }}
+    concurrency:
+      group: codegenie-review-pr-${{ needs.preflight.outputs.pr-number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -34,4 +59,6 @@ jobs:
         with:
           model: "anthropic/claude-opus-4-8:high"
           llm-api-key: ${{ secrets.LLM_API_KEY }}
-          trigger-phrase: "codegenie review"
+          trigger-phrase: ${{ env.CODEGENIE_TRIGGER_PHRASE }}
+          allowed-associations: ${{ env.CODEGENIE_ALLOWED_ASSOCIATIONS }}
+          allowed-users: ${{ env.CODEGENIE_ALLOWED_USERS }}

@@ -2,7 +2,9 @@ import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { executeReviewCommand, parseReviewCommand } from "../cli/review-command.js";
 import { getPiApiKeyEnvVarName } from "../provider/pi-ai-models.js";
-import type { TelemetryEvent } from "../types.js";
+import { renderMarkdownReview } from "../output/markdown-renderer.js";
+import { sanitizeGitHubCommentBody, scrubGitHubSecrets } from "../github/comment-sanitizer.js";
+import type { ReviewResult, TelemetryEvent } from "../types.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import {
   DEFAULT_ALLOWED_ASSOCIATIONS,
@@ -17,13 +19,20 @@ import { createStatusCommentController } from "./status-comment.js";
 type ProgressEvent = Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">;
 
 type ReviewHooks = {
+  onRunStart: (run: RunAttachment) => void;
   onTelemetryEvent: (event: ProgressEvent) => void;
   writeOutput: (text: string) => void;
 };
 
-type RunReviewResult = {
+type RunAttachment = {
   runId: string;
   runDir: string;
+};
+
+export type RunReviewResult = RunAttachment & {
+  // The full markdown review. Never the writeOutput capture: with inline
+  // posting enabled, stdout carries the short posting summary, not the report.
+  reportMarkdown: string;
 };
 
 export type ExecuteGitHubActionOptions = {
@@ -41,8 +50,16 @@ type GitHubActionInputs = {
   allowedAssociations: string[];
   allowedUsers: string[];
   postInlineComments: boolean;
+  preflightOnly: boolean;
+  botLogin?: string;
   model?: ModelSpec;
   reviewPassthrough: string[];
+};
+
+type PermissionCheck = "allowlisted" | "write";
+
+type AuthorizedDecision = Extract<TriggerDecision, { run: true }> & {
+  permissionCheck: PermissionCheck;
 };
 
 export type ModelSpec = {
@@ -64,7 +81,6 @@ export async function executeGitHubActionCommand(
   const write = opts.writeOutput ?? ((text: string) => process.stdout.write(text));
   const repoRoot = opts.repoRoot ?? process.cwd();
   const inputs = parseGitHubActionArgs(argv);
-  applyGenericApiKey(env, inputs.model);
 
   const eventName = requireEnv(env, "GITHUB_EVENT_NAME");
   const eventPath = requireEnv(env, "GITHUB_EVENT_PATH");
@@ -81,6 +97,8 @@ export async function executeGitHubActionCommand(
   const decision = decideTrigger(eventName, payload, rules);
   if (!decision.run) {
     write(`github-action: skipped — ${decision.reason}\n`);
+    writeDecisionRecord(write, { eventName, run: false, reason: decision.reason });
+    writePreflightOutputs(env, false);
     return;
   }
 
@@ -88,30 +106,69 @@ export async function executeGitHubActionCommand(
 
   // Payload association fields are attacker-visible history; the live
   // permission check is authoritative. Explicitly allowlisted users skip it.
+  let permissionCheck: PermissionCheck = "allowlisted";
   if (!decision.actorAllowlisted) {
     const permitted = await hasWritePermission(comments, decision.actor);
     if (!permitted) {
-      write(`github-action: skipped — actor ${decision.actor} lacks repository write access\n`);
+      const reason = `actor ${decision.actor} lacks repository write access`;
+      write(`github-action: skipped — ${reason}\n`);
+      writeDecisionRecord(write, {
+        eventName,
+        run: false,
+        reason,
+        lane: decision.lane,
+        prNumber: decision.prNumber,
+        actor: decision.actor,
+        association: decision.association,
+        actorAllowlisted: false,
+        permissionCheck: "denied"
+      });
+      writePreflightOutputs(env, false);
       return;
     }
+    permissionCheck = "write";
   }
+
+  const authorized: AuthorizedDecision = { ...decision, permissionCheck };
+  writePreflightOutputs(env, true, decision.prNumber);
+  writeDecisionRecord(write, {
+    eventName,
+    run: true,
+    lane: decision.lane,
+    prNumber: decision.prNumber,
+    actor: decision.actor,
+    association: decision.association,
+    actorAllowlisted: decision.actorAllowlisted,
+    permissionCheck
+  });
+  if (inputs.preflightOnly) {
+    write(`github-action: preflight authorized ${decision.lane} trigger for PR #${decision.prNumber}\n`);
+    return;
+  }
+
+  applyGenericApiKey(env, inputs.model);
+
+  // Identity resolution order: explicit bot-login input (custom GitHub
+  // Apps) → /user lookup (PATs) → the GITHUB_TOKEN default. Reclaim and
+  // duplicate detection both key off this, so it must be exact.
+  const ownLogin = inputs.botLogin ?? (await comments.getViewerLogin()) ?? "github-actions[bot]";
 
   const controller = createStatusCommentController({
     comments,
     prNumber: decision.prNumber,
+    ownLogin,
+    log: write,
     ...(runUrl !== undefined ? { runUrl } : {}),
     ...(opts.minEditIntervalMs !== undefined ? { minEditIntervalMs: opts.minEditIntervalMs } : {})
   });
   const claimed = await controller.claim();
   write(`github-action: ${decision.lane} trigger by ${decision.actor} — reviewing PR #${decision.prNumber} (status comment ${claimed.commentId})\n`);
 
-  // The run's own gh-backed client resolves identity via `gh api user`,
-  // which fails for Actions installation tokens; the read-back author of the
-  // status comment is the same identity, injected through the client's
-  // guarded fallback seam.
-  if (claimed.author !== "") {
-    env.CODEGENIE_GITHUB_LOGIN = claimed.author;
-  }
+  // Injected into the run's gh-backed client (guarded fallback seam) for
+  // duplicate detection under installation tokens. The read-back author of a
+  // comment we just created is ground truth, so it wins over the resolved
+  // login — self-correcting for a custom app missing its bot-login input.
+  env.CODEGENIE_GITHUB_LOGIN = claimed.author !== "" ? claimed.author : ownLogin;
 
   const reviewArgv = [
     "review",
@@ -131,26 +188,37 @@ export async function executeGitHubActionCommand(
     ...inputs.reviewPassthrough
   ];
 
-  let report = "";
   const runReview = opts.runReview ?? defaultRunReview(repoRoot);
-  let runResult: RunReviewResult | undefined;
+  let attachment: RunAttachment | undefined;
+  let runResult: RunReviewResult;
   try {
     runResult = await runReview(reviewArgv, {
+      onRunStart: (run) => {
+        attachment = run;
+      },
       onTelemetryEvent: controller.onTelemetryEvent,
-      writeOutput: (text) => {
-        report += text;
-      }
+      // Pass stdout through to the Actions log; with inline posting on it is
+      // the posting summary, which belongs in the log, not the comment.
+      writeOutput: write
     });
   } catch (error) {
     const code = error instanceof CodegenieError ? error.code : error instanceof Error ? error.name : "unknown_error";
     await controller.finalizeFailure(code);
-    writeActionRecord(runResult?.runDir, eventName, decision, controller.stats(), env);
+    emitActionRecord(attachment?.runDir, eventName, authorized, "review_failed", controller.stats(), env, write, code);
     throw error;
   }
 
-  await controller.finalizeSuccess(report);
-  publishReportFiles(report, env);
-  writeActionRecord(runResult.runDir, eventName, decision, controller.stats(), env);
+  // Fallback copies land before the terminal PATCH so the report survives a
+  // failed edit (which still fails the run as github_post_failed).
+  publishReportFiles(runResult.reportMarkdown, env);
+  try {
+    await controller.finalizeSuccess(runResult.reportMarkdown);
+  } catch (error) {
+    const code = error instanceof CodegenieError ? error.code : error instanceof Error ? error.name : "unknown_error";
+    emitActionRecord(runResult.runDir, eventName, authorized, "terminal_post_failed", controller.stats(), env, write, code);
+    throw error;
+  }
+  emitActionRecord(runResult.runDir, eventName, authorized, "success", controller.stats(), env, write);
   write(`github-action: review complete — report posted to PR #${decision.prNumber}\n`);
 }
 
@@ -158,10 +226,19 @@ function defaultRunReview(repoRoot: string): (reviewArgv: string[], hooks: Revie
   return async (reviewArgv, hooks) => {
     const parsed = parseReviewCommand(reviewArgv, { repoRoot });
     const result = await executeReviewCommand(parsed, {
+      onRunStart: hooks.onRunStart,
       onTelemetryEvent: hooks.onTelemetryEvent,
       writeOutput: hooks.writeOutput
     });
-    return { runId: result.runId, runDir: result.runDir };
+    return toRunReviewResult(result);
+  };
+}
+
+export function toRunReviewResult(result: { runId: string; runDir: string; review: ReviewResult }): RunReviewResult {
+  return {
+    runId: result.runId,
+    runDir: result.runDir,
+    reportMarkdown: scrubGitHubSecrets(renderMarkdownReview(result.review))
   };
 }
 
@@ -172,6 +249,7 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
     allowedAssociations: [...DEFAULT_ALLOWED_ASSOCIATIONS],
     allowedUsers: [],
     postInlineComments: true,
+    preflightOnly: false,
     reviewPassthrough: []
   };
   const passthroughFlags = new Set(["--depth", "--lens", "--max-time", "--budget-boost"]);
@@ -192,9 +270,15 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
       inputs.allowedUsers = parseCsv(value);
     } else if (flag === "--post-inline-comments") {
       inputs.postInlineComments = parseBoolean(flag, value);
+    } else if (flag === "--preflight-only") {
+      inputs.preflightOnly = parseBoolean(flag, value);
     } else if (flag === "--model") {
       if (value.trim() !== "") {
         inputs.model = parseModelSpec(value.trim());
+      }
+    } else if (flag === "--bot-login") {
+      if (value.trim() !== "") {
+        inputs.botLogin = value.trim();
       }
     } else if (passthroughFlags.has(flag)) {
       if (value.trim() !== "") {
@@ -306,7 +390,10 @@ function publishReportFiles(report: string, env: NodeJS.ProcessEnv): void {
   const stepSummary = env.GITHUB_STEP_SUMMARY;
   if (stepSummary !== undefined && stepSummary !== "") {
     try {
-      appendFileSync(stepSummary, `${report.trimEnd()}\n`);
+      // The job summary is a GitHub-rendered surface just like a comment.
+      // Keep the canonical secret-scrubbed Markdown in the downloadable file,
+      // but also neutralize mentions and HTML comments in the summary copy.
+      appendFileSync(stepSummary, `${sanitizeGitHubCommentBody(report).trimEnd()}\n`);
     } catch {
       // ignore
     }
@@ -321,26 +408,86 @@ function publishReportFiles(report: string, env: NodeJS.ProcessEnv): void {
   }
 }
 
-function writeActionRecord(
-  runDir: string | undefined,
-  eventName: string,
-  decision: Extract<TriggerDecision, { run: true }>,
-  stats: ReturnType<ReturnType<typeof createStatusCommentController>["stats"]>,
-  env: NodeJS.ProcessEnv
-): void {
-  if (runDir === undefined || runDir === "") {
+type DecisionRecord =
+  | { eventName: string; run: false; reason: string }
+  | {
+      eventName: string;
+      run: true;
+      lane: AuthorizedDecision["lane"];
+      prNumber: number;
+      actor: string;
+      association: string;
+      actorAllowlisted: boolean;
+      permissionCheck: PermissionCheck;
+    }
+  | {
+      eventName: string;
+      run: false;
+      reason: string;
+      lane: AuthorizedDecision["lane"];
+      prNumber: number;
+      actor: string;
+      association: string;
+      actorAllowlisted: false;
+      permissionCheck: "denied";
+    };
+
+function writeDecisionRecord(write: (text: string) => void, record: DecisionRecord): void {
+  write(`github-action: decision ${JSON.stringify(scrubGitHubSecrets(record))}\n`);
+}
+
+function writePreflightOutputs(env: NodeJS.ProcessEnv, shouldRun: boolean, prNumber?: number): void {
+  const outputPath = env.GITHUB_OUTPUT;
+  if (outputPath === undefined || outputPath === "") {
     return;
   }
+  try {
+    const lines = [`should-run=${shouldRun}`];
+    if (prNumber !== undefined) {
+      lines.push(`pr-number=${prNumber}`);
+    }
+    appendFileSync(outputPath, `${lines.join("\n")}\n`);
+  } catch {
+    // GitHub owns this path. A missing/unwritable output file should fail the
+    // preflight because otherwise the authorized review job can never start.
+    if (env.GITHUB_ACTIONS === "true") {
+      throw new CodegenieError("invalid_args", "failed to write GitHub Action preflight outputs");
+    }
+  }
+}
+
+function emitActionRecord(
+  runDir: string | undefined,
+  eventName: string,
+  decision: AuthorizedDecision,
+  outcome: "success" | "review_failed" | "terminal_post_failed",
+  stats: ReturnType<ReturnType<typeof createStatusCommentController>["stats"]>,
+  env: NodeJS.ProcessEnv,
+  write: (text: string) => void,
+  errorCode?: string
+): void {
   const record = {
+    schemaVersion: 1,
     eventName,
     lane: decision.lane,
     prNumber: decision.prNumber,
     actor: decision.actor,
     association: decision.association,
     actorAllowlisted: decision.actorAllowlisted,
+    permissionCheck: decision.permissionCheck,
+    outcome,
+    ...(errorCode !== undefined ? { errorCode } : {}),
     runUrl: buildRunUrl(env, env.GITHUB_REPOSITORY ?? "") ?? null,
     statusComment: stats
   };
+  const serialized = JSON.stringify(scrubGitHubSecrets(record));
+  // Telemetry is intentionally off by default. The same bounded lifecycle
+  // record always reaches the CI log; persistence is an optional extra when
+  // the review attached a telemetry run directory.
+  write(`github-action: lifecycle ${serialized}\n`);
+  if (runDir === undefined || runDir === "") {
+    return;
+  }
   try {
     writeFileSync(path.join(runDir, "github-action.json"), `${JSON.stringify(record, null, 2)}\n`);
   } catch {

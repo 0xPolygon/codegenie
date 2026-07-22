@@ -65,8 +65,8 @@ export function renderFailureBody(errorCode: string, runUrl: string | undefined)
 
 export type CappedTerminalBody = {
   body: string;
+  bodyBeforeCap: string;
   truncated: boolean;
-  bytesBeforeCap: number;
 };
 
 // Caps the sanitized report so body + footer + marker fit the comment limit.
@@ -78,7 +78,7 @@ export function capTerminalBody(report: string, runUrl: string | undefined, rese
   const full = assemble(report);
   const limit = ISSUE_COMMENT_MAX_CHARS - reservedChars;
   if (full.length <= limit) {
-    return { body: full, truncated: false, bytesBeforeCap: full.length };
+    return { body: full, bodyBeforeCap: full, truncated: false };
   }
 
   const overhead = footer.length + TRUNCATION_DISCLOSURE.length + 8;
@@ -88,7 +88,7 @@ export function capTerminalBody(report: string, runUrl: string | undefined, rese
   const newlineCut = slice.lastIndexOf("\n");
   const cut = headingCut > cutLimit / 2 ? headingCut : Math.max(0, newlineCut);
   const truncatedReport = `${slice.slice(0, cut).trimEnd()}\n\n${TRUNCATION_DISCLOSURE}`;
-  return { body: assemble(truncatedReport), truncated: true, bytesBeforeCap: full.length };
+  return { body: assemble(truncatedReport), bodyBeforeCap: full, truncated: true };
 }
 
 function renderRunLinkFooter(runUrl: string | undefined): string[] {

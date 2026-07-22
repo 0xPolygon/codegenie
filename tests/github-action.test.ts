@@ -1,7 +1,9 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { Buffer } from "node:buffer";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { parse as parseYaml } from "yaml";
 import {
   DEFAULT_ALLOWED_ASSOCIATIONS,
   DEFAULT_TRIGGER_PHRASE,
@@ -12,15 +14,17 @@ import {
   applyGenericApiKey,
   executeGitHubActionCommand,
   parseGitHubActionArgs,
-  parseModelSpec
+  parseModelSpec,
+  toRunReviewResult
 } from "../src/github-action/entrypoint.js";
 import type { IssueComment, IssueCommentClient } from "../src/github-action/issue-comments.js";
 import { createIssueCommentClient } from "../src/github-action/issue-comments.js";
-import { STATUS_COMMENT_MARKER } from "../src/github-action/marker.js";
+import { appendStatusCommentMarker, STATUS_COMMENT_MARKER } from "../src/github-action/marker.js";
 import { createStatusCommentController } from "../src/github-action/status-comment.js";
 import { ISSUE_COMMENT_MAX_CHARS, TRUNCATION_DISCLOSURE } from "../src/github-action/render.js";
 import { createGitHubClient } from "../src/github/github-client.js";
 import type { runGh } from "../src/git/subprocess.js";
+import type { ReviewResult } from "../src/types.js";
 import { CodegenieError } from "../src/util/errors.js";
 
 type RunGh = typeof runGh;
@@ -145,12 +149,14 @@ type FakeCommentCall =
   | { kind: "list"; issueNumber: number }
   | { kind: "create"; issueNumber: number; body: string }
   | { kind: "update"; commentId: number; body: string }
-  | { kind: "permission"; login: string };
+  | { kind: "permission"; login: string }
+  | { kind: "viewer" };
 
 function createFakeComments(opts: {
   existing?: IssueComment[];
   permission?: string;
   failUpdates?: boolean;
+  viewerLogin?: string;
 } = {}): { client: IssueCommentClient; calls: FakeCommentCall[] } {
   const calls: FakeCommentCall[] = [];
   let nextId = 100;
@@ -173,21 +179,37 @@ function createFakeComments(opts: {
     async getCollaboratorPermission(login) {
       calls.push({ kind: "permission", login });
       return opts.permission ?? "write";
+    },
+    async getViewerLogin() {
+      calls.push({ kind: "viewer" });
+      return opts.viewerLogin;
     }
   };
   return { client, calls };
 }
 
+const BOT = "codegenie[bot]";
+
 function stageEvent(message: "stage_started" | "stage_completed", stage: number): Parameters<ReturnType<typeof createStatusCommentController>["onTelemetryEvent"]>[0] {
   return { stage: stage as 1, level: "info", message };
+}
+
+function deferred<T = void>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("status comment controller", () => {
   it("creates the comment when none exists and reclaims its own marker comment on rerun", async () => {
     const fresh = createFakeComments();
-    const controller = createStatusCommentController({ comments: fresh.client, prNumber: 7 });
+    const controller = createStatusCommentController({ comments: fresh.client, prNumber: 7, ownLogin: BOT });
     const claimed = await controller.claim();
-    expect(claimed.author).toBe("codegenie[bot]");
+    expect(claimed.author).toBe(BOT);
     expect(fresh.calls[1]).toMatchObject({ kind: "create", issueNumber: 7 });
     expect((fresh.calls[1] as { body: string }).body).toContain(STATUS_COMMENT_MARKER);
     expect(controller.stats().claimed).toBe("created");
@@ -195,55 +217,167 @@ describe("status comment controller", () => {
     const rerun = createFakeComments({
       existing: [
         { id: 1, body: `spoof ${STATUS_COMMENT_MARKER}`, author: "mallory" },
-        { id: 2, body: `old status ${STATUS_COMMENT_MARKER}`, author: "codegenie[bot]" }
+        { id: 2, body: `old status ${STATUS_COMMENT_MARKER}`, author: "Codegenie[bot]" }
       ]
     });
-    const rerunController = createStatusCommentController({ comments: rerun.client, prNumber: 7 });
+    const rerunController = createStatusCommentController({ comments: rerun.client, prNumber: 7, ownLogin: BOT });
     const reclaimed = await rerunController.claim();
     expect(reclaimed.commentId).toBe(2);
     expect(rerunController.stats().claimed).toBe("reclaimed");
     expect(rerun.calls[1]).toMatchObject({ kind: "update", commentId: 2 });
   });
 
-  it("never reclaims a human-authored marker comment even with ownLogin resolved", async () => {
-    const fake = createFakeComments({
+  it("never reclaims marker comments from humans or other bots — exact author match only", async () => {
+    const human = createFakeComments({
       existing: [{ id: 1, body: `spoof ${STATUS_COMMENT_MARKER}`, author: "mallory" }]
     });
-    const controller = createStatusCommentController({ comments: fake.client, prNumber: 7, ownLogin: "codebot" });
-    await controller.claim();
-    expect(controller.stats().claimed).toBe("created");
+    const humanController = createStatusCommentController({ comments: human.client, prNumber: 7, ownLogin: "codebot" });
+    await humanController.claim();
+    expect(humanController.stats().claimed).toBe("created");
+
+    const foreignBot = createFakeComments({
+      existing: [{ id: 3, body: `other app ${STATUS_COMMENT_MARKER}`, author: "other-app[bot]" }]
+    });
+    const foreignController = createStatusCommentController({ comments: foreignBot.client, prNumber: 7, ownLogin: "github-actions[bot]" });
+    await foreignController.claim();
+    expect(foreignController.stats().claimed).toBe("created");
   });
 
-  it("throttles progress edits and renders the stage checklist", async () => {
-    let clock = 0;
-    const fake = createFakeComments();
-    const controller = createStatusCommentController({
-      comments: fake.client,
-      prNumber: 7,
-      minEditIntervalMs: 10_000,
-      now: () => clock
-    });
-    await controller.claim();
+  it("throttles fast events, then flushes the latest state on the trailing edge", async () => {
+    vi.useFakeTimers();
+    try {
+      const fake = createFakeComments();
+      const controller = createStatusCommentController({
+        comments: fake.client,
+        prNumber: 7,
+        ownLogin: BOT,
+        minEditIntervalMs: 10_000
+      });
+      await controller.claim();
 
-    controller.onTelemetryEvent(stageEvent("stage_started", 1));
-    await controller.settle();
-    expect(fake.calls.filter((call) => call.kind === "update")).toHaveLength(0);
-    expect(controller.stats().throttledCount).toBe(1);
+      // stages 1-4 complete fast, all inside the throttle window
+      controller.onTelemetryEvent(stageEvent("stage_started", 1));
+      controller.onTelemetryEvent(stageEvent("stage_completed", 1));
+      controller.onTelemetryEvent(stageEvent("stage_started", 5));
+      expect(fake.calls.filter((call) => call.kind === "update")).toHaveLength(0);
+      expect(controller.stats().throttledCount).toBe(3);
 
-    clock = 15_000;
-    controller.onTelemetryEvent(stageEvent("stage_started", 5));
-    await controller.settle();
-    const updates = fake.calls.filter((call) => call.kind === "update") as Array<{ body: string }>;
-    expect(updates).toHaveLength(1);
-    expect(updates[0]?.body).toContain("☑ resolving input");
-    expect(updates[0]?.body).toContain("▸ planning review");
-    expect(updates[0]?.body).toContain("☐ verifying findings");
-    expect(controller.stats().editCount).toBe(1);
+      // the trailing-edge flush lands the LATEST state without another event
+      await vi.advanceTimersByTimeAsync(10_100);
+      const updates = fake.calls.filter((call) => call.kind === "update") as Array<{ body: string }>;
+      expect(updates).toHaveLength(1);
+      expect(updates[0]?.body).toContain("☑ resolving input");
+      expect(updates[0]?.body).toContain("▸ planning review");
+      expect(updates[0]?.body).toContain("☐ verifying findings");
+      expect(controller.stats().editCount).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not poll while a progress PATCH is in flight and flushes once after it settles", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const fake = createFakeComments();
+      const firstPatch = deferred();
+      let patchCount = 0;
+      fake.client.updateComment = async (commentId, body) => {
+        fake.calls.push({ kind: "update", commentId, body });
+        patchCount += 1;
+        if (patchCount === 1) {
+          await firstPatch.promise;
+        }
+      };
+      const controller = createStatusCommentController({
+        comments: fake.client,
+        prNumber: 7,
+        ownLogin: BOT,
+        minEditIntervalMs: 1_000
+      });
+      await controller.claim();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      controller.onTelemetryEvent(stageEvent("stage_started", 1));
+      controller.onTelemetryEvent(stageEvent("stage_completed", 1));
+      controller.onTelemetryEvent(stageEvent("stage_started", 2));
+      expect(fake.calls.filter((call) => call.kind === "update")).toHaveLength(1);
+      expect(controller.stats().throttledCount).toBe(2);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(fake.calls.filter((call) => call.kind === "update")).toHaveLength(1);
+      expect(controller.stats().throttledCount).toBe(2);
+
+      firstPatch.resolve();
+      await vi.advanceTimersByTimeAsync(50);
+      const updates = fake.calls.filter((call) => call.kind === "update") as Array<{ body: string }>;
+      expect(updates).toHaveLength(2);
+      expect(updates[1]?.body).toContain("▸ parsing diff");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records a timer-driven progress failure without blocking the terminal edit", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const fake = createFakeComments();
+      let failProgress = true;
+      fake.client.updateComment = async (commentId, body) => {
+        fake.calls.push({ kind: "update", commentId, body });
+        if (failProgress) {
+          throw new CodegenieError("github_post_failed", "progress failed");
+        }
+      };
+      const controller = createStatusCommentController({
+        comments: fake.client,
+        prNumber: 7,
+        ownLogin: BOT,
+        minEditIntervalMs: 1_000
+      });
+      await controller.claim();
+      controller.onTelemetryEvent(stageEvent("stage_started", 1));
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(controller.stats().editFailures).toBe(1);
+
+      failProgress = false;
+      await controller.finalizeSuccess("# final report");
+      expect(controller.stats()).toMatchObject({ terminalState: "report", editCount: 1, editFailures: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("supersedes a pending flush and seals the terminal state against late telemetry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const fake = createFakeComments();
+      const controller = createStatusCommentController({
+        comments: fake.client,
+        prNumber: 7,
+        ownLogin: BOT,
+        minEditIntervalMs: 1_000
+      });
+      await controller.claim();
+      controller.onTelemetryEvent(stageEvent("stage_started", 1));
+      await controller.finalizeSuccess("# final report");
+      const updatesBeforeLateEvent = fake.calls.filter((call) => call.kind === "update").length;
+
+      controller.onTelemetryEvent(stageEvent("stage_started", 2));
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fake.calls.filter((call) => call.kind === "update")).toHaveLength(updatesBeforeLateEvent);
+      expect(updatesBeforeLateEvent).toBe(1);
+      expect(controller.stats().terminalState).toBe("report");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("goes headless after repeated edit failures but still lands the terminal edit", async () => {
-    let clock = 0;
     let failUpdates = true;
+    const logs: string[] = [];
     const calls: FakeCommentCall[] = [];
     const client: IssueCommentClient = {
       async listComments() {
@@ -251,7 +385,7 @@ describe("status comment controller", () => {
       },
       async createComment(issueNumber, body) {
         calls.push({ kind: "create", issueNumber, body });
-        return { id: 9, body, author: "codegenie[bot]" };
+        return { id: 9, body, author: BOT };
       },
       async updateComment(commentId, body) {
         calls.push({ kind: "update", commentId, body });
@@ -261,14 +395,20 @@ describe("status comment controller", () => {
       },
       async getCollaboratorPermission() {
         return "write";
+      },
+      async getViewerLogin() {
+        return undefined;
       }
     };
     const controller = createStatusCommentController({
       comments: client,
       prNumber: 7,
+      ownLogin: BOT,
       minEditIntervalMs: 0,
       maxConsecutiveEditFailures: 2,
-      now: () => (clock += 10)
+      log: (message) => {
+        logs.push(message);
+      }
     });
     await controller.claim();
 
@@ -283,6 +423,8 @@ describe("status comment controller", () => {
     await controller.finalizeSuccess("# review\n\nall good");
     expect(calls.filter((call) => call.kind === "update")).toHaveLength(3);
     expect(controller.stats().terminalState).toBe("report");
+    expect(logs.some((line) => line.includes("progress edit failed"))).toBe(true);
+    expect(logs.some((line) => line.includes("headless"))).toBe(true);
   });
 
   it("sanitizes the terminal report, appends the marker after sanitization, and links the run", async () => {
@@ -290,10 +432,11 @@ describe("status comment controller", () => {
     const controller = createStatusCommentController({
       comments: fake.client,
       prNumber: 7,
+      ownLogin: BOT,
       runUrl: "https://github.com/acme/widgets/actions/runs/42"
     });
     await controller.claim();
-    await controller.finalizeSuccess("# review\n\nping @alice <!-- sneaky --> done");
+    await controller.finalizeSuccess("# review\n\nUnicode café 🧞; ping @alice <!-- sneaky --> done");
     const terminal = fake.calls.at(-1) as { body: string };
     expect(terminal.body).toContain("`@alice`");
     expect(terminal.body).not.toContain("sneaky");
@@ -301,42 +444,69 @@ describe("status comment controller", () => {
     expect(terminal.body).toContain("actions/runs/42");
     expect(terminal.body.indexOf(STATUS_COMMENT_MARKER)).toBeGreaterThan(terminal.body.indexOf("done"));
     expect(controller.stats().terminalState).toBe("report");
+    const terminalBytes = Buffer.byteLength(terminal.body, "utf8");
+    expect(terminalBytes).toBeGreaterThan(terminal.body.length);
+    expect(controller.stats()).toMatchObject({
+      finalBodyBytes: terminalBytes,
+      finalBodyBytesBeforeCap: terminalBytes
+    });
   });
 
   it("caps oversized terminal reports with a disclosure", async () => {
     const fake = createFakeComments();
-    const controller = createStatusCommentController({ comments: fake.client, prNumber: 7 });
+    const controller = createStatusCommentController({ comments: fake.client, prNumber: 7, ownLogin: BOT });
     await controller.claim();
-    const report = `# review\n\n${"finding line\n".repeat(9_000)}`;
+    const report = `# review\n\n${"é🧞 finding line\n".repeat(9_000)}`;
     await controller.finalizeSuccess(report);
     const terminal = fake.calls.at(-1) as { body: string };
     expect(terminal.body.length).toBeLessThanOrEqual(ISSUE_COMMENT_MAX_CHARS);
     expect(terminal.body).toContain(TRUNCATION_DISCLOSURE);
     expect(terminal.body).toContain(STATUS_COMMENT_MARKER);
     expect(controller.stats().terminalState).toBe("report_truncated");
-    expect(controller.stats().finalBodyBytesBeforeCap).toBeGreaterThan(ISSUE_COMMENT_MAX_CHARS);
+    expect(controller.stats().finalBodyBytes).toBe(Buffer.byteLength(terminal.body, "utf8"));
+    expect(controller.stats().finalBodyBytesBeforeCap).toBe(
+      Buffer.byteLength(appendStatusCommentMarker(report), "utf8")
+    );
+    expect(controller.stats().finalBodyBytesBeforeCap).toBeGreaterThan(controller.stats().finalBodyBytes ?? 0);
   });
 
   it("posts a failure terminal state and reports edit failure without throwing", async () => {
     const ok = createFakeComments();
-    const controller = createStatusCommentController({ comments: ok.client, prNumber: 7 });
+    const controller = createStatusCommentController({ comments: ok.client, prNumber: 7, ownLogin: BOT });
     await controller.claim();
-    await expect(controller.finalizeFailure("llm_call_failed")).resolves.toBe(true);
+    await expect(controller.finalizeFailure("échec_🧞")).resolves.toBe(true);
     const terminal = ok.calls.at(-1) as { body: string };
-    expect(terminal.body).toContain("`llm_call_failed`");
+    expect(terminal.body).toContain("`échec_🧞`");
     expect(controller.stats().terminalState).toBe("failure");
+    const failureBytes = Buffer.byteLength(terminal.body, "utf8");
+    expect(failureBytes).toBeGreaterThan(terminal.body.length);
+    expect(controller.stats()).toMatchObject({
+      finalBodyBytes: failureBytes,
+      finalBodyBytesBeforeCap: failureBytes
+    });
 
     const failing = createFakeComments({ failUpdates: true });
-    const failingController = createStatusCommentController({ comments: failing.client, prNumber: 7 });
+    const failingController = createStatusCommentController({ comments: failing.client, prNumber: 7, ownLogin: BOT });
     // claim's initial write is a create, which succeeds even when updates fail
     failing.calls.length = 0;
     await failingController.claim();
     await expect(failingController.finalizeFailure("timeout")).resolves.toBe(false);
+    expect(failingController.stats()).toMatchObject({
+      terminalState: "failure",
+      editFailures: 1,
+      finalBodyBytes: expect.any(Number),
+      finalBodyBytesBeforeCap: expect.any(Number)
+    });
+    expect(failingController.stats().finalBodyBytes).toBe(failingController.stats().finalBodyBytesBeforeCap);
   });
 });
 
 describe("github-action entrypoint", () => {
   const scratch = mkdtempSync(path.join(os.tmpdir(), "codegenie-gha-"));
+
+  afterAll(() => {
+    rmSync(scratch, { recursive: true, force: true });
+  });
 
   function actionEnv(payload: Record<string, unknown>, eventName: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     const eventPath = path.join(scratch, `event-${Math.random().toString(36).slice(2)}.json`);
@@ -419,6 +589,59 @@ describe("github-action entrypoint", () => {
     ).rejects.toMatchObject({ code: "gh_auth_failed" });
   });
 
+  it("uses the authoritative event gate and live permission check in preflight mode", async () => {
+    async function preflight(
+      payload: Record<string, unknown>,
+      comments: ReturnType<typeof createFakeComments>,
+      args: string[] = []
+    ): Promise<Record<string, string>> {
+      const outputPath = path.join(scratch, `output-${Math.random().toString(36).slice(2)}.txt`);
+      await executeGitHubActionCommand(["--preflight-only", "true", ...args], {
+        env: actionEnv(payload, "issue_comment", { GITHUB_OUTPUT: outputPath, GITHUB_ACTIONS: "true" }),
+        issueComments: comments.client,
+        writeOutput: () => undefined,
+        runReview: async () => {
+          throw new Error("preflight must not run a review");
+        }
+      });
+      return Object.fromEntries(
+        readFileSync(outputPath, "utf8").trim().split("\n").map((line) => line.split("=", 2) as [string, string])
+      );
+    }
+
+    const leadingWhitespace = createFakeComments({ permission: "write" });
+    await expect(preflight(issueCommentPayload({ body: "  codegenie review\n" }), leadingWhitespace)).resolves.toMatchObject({
+      "should-run": "true",
+      "pr-number": "7"
+    });
+    expect(leadingWhitespace.calls).toEqual([{ kind: "permission", login: "alice" }]);
+
+    const prefix = createFakeComments();
+    await expect(preflight(issueCommentPayload({ body: "codegenie reviewer" }), prefix)).resolves.toEqual({ "should-run": "false" });
+    expect(prefix.calls).toHaveLength(0);
+
+    const customPhrase = createFakeComments();
+    await expect(
+      preflight(issueCommentPayload({ body: "review now", association: "NONE", login: "release-bot" }), customPhrase, [
+        "--trigger-phrase", "review now",
+        "--allowed-users", "release-bot"
+      ])
+    ).resolves.toMatchObject({ "should-run": "true", "pr-number": "7" });
+    expect(customPhrase.calls).toHaveLength(0);
+
+    const narrowed = createFakeComments({ permission: "write" });
+    await expect(
+      preflight(issueCommentPayload({ association: "COLLABORATOR" }), narrowed, ["--allowed-associations", "OWNER,MEMBER"])
+    ).resolves.toEqual({ "should-run": "false" });
+    expect(narrowed.calls).toHaveLength(0);
+
+    const triageCollaborator = createFakeComments({ permission: "read" });
+    await expect(preflight(issueCommentPayload({ association: "COLLABORATOR" }), triageCollaborator)).resolves.toEqual({
+      "should-run": "false"
+    });
+    expect(triageCollaborator.calls).toEqual([{ kind: "permission", login: "alice" }]);
+  });
+
   it("runs the full lifecycle: claim, progress edits, terminal report, identity injection, artifacts", async () => {
     const fake = createFakeComments();
     const runDir = mkdtempSync(path.join(scratch, "run-"));
@@ -441,8 +664,9 @@ describe("github-action entrypoint", () => {
           hooks.onTelemetryEvent(stageEvent("stage_completed", stage));
           await Promise.resolve();
         }
-        hooks.writeOutput("# review report\n\nno findings\n");
-        return { runId: "r1", runDir };
+        // stdout carries the short posting summary when inline posting is on
+        hooks.writeOutput("codegenie GitHub posting summary\n");
+        return { runId: "r1", runDir, reportMarkdown: "# codegenie review\n\nfull report body\n" };
       }
     });
 
@@ -451,13 +675,17 @@ describe("github-action entrypoint", () => {
     ]);
     expect(env.CODEGENIE_GITHUB_LOGIN).toBe("codegenie[bot]");
     expect(fake.calls[0]).toMatchObject({ kind: "permission" });
-    expect(fake.calls[1]).toMatchObject({ kind: "list" });
-    expect(fake.calls[2]).toMatchObject({ kind: "create" });
+    expect(fake.calls[1]).toMatchObject({ kind: "viewer" });
+    expect(fake.calls[2]).toMatchObject({ kind: "list" });
+    expect(fake.calls[3]).toMatchObject({ kind: "create" });
     const terminal = fake.calls.at(-1) as { kind: string; body: string };
     expect(terminal.kind).toBe("update");
-    expect(terminal.body).toContain("# review report");
+    // the comment gets the FULL report, never the stdout posting summary
+    expect(terminal.body).toContain("# codegenie review");
+    expect(terminal.body).not.toContain("posting summary");
     expect(terminal.body).toContain(STATUS_COMMENT_MARKER);
-    expect(readFileSync(reportPath, "utf8")).toContain("# review report");
+    expect(output).toContain("posting summary");
+    expect(readFileSync(reportPath, "utf8")).toContain("# codegenie review");
     const record = JSON.parse(readFileSync(path.join(runDir, "github-action.json"), "utf8")) as Record<string, unknown>;
     expect(record).toMatchObject({ lane: "issue_comment", prNumber: 7, actor: "alice" });
     expect(output).toContain("review complete");
@@ -465,13 +693,18 @@ describe("github-action entrypoint", () => {
 
   it("posts a failure terminal state and rethrows when the review fails", async () => {
     const fake = createFakeComments();
+    const runDir = mkdtempSync(path.join(scratch, "failed-run-"));
+    let output = "";
     await expect(
       executeGitHubActionCommand([], {
         env: actionEnv(pullRequestPayload(), "pull_request"),
         issueComments: fake.client,
         minEditIntervalMs: 0,
-        writeOutput: () => undefined,
-        runReview: async () => {
+        writeOutput: (text) => {
+          output += text;
+        },
+        runReview: async (_argv, hooks) => {
+          hooks.onRunStart({ runId: "failed", runDir });
           throw new CodegenieError("llm_call_failed", "provider down");
         }
       })
@@ -479,6 +712,16 @@ describe("github-action entrypoint", () => {
     const terminal = fake.calls.at(-1) as { kind: string; body: string };
     expect(terminal.kind).toBe("update");
     expect(terminal.body).toContain("`llm_call_failed`");
+    expect(JSON.parse(readFileSync(path.join(runDir, "github-action.json"), "utf8"))).toMatchObject({
+      outcome: "review_failed",
+      errorCode: "llm_call_failed",
+      statusComment: {
+        terminalState: "failure",
+        finalBodyBytes: expect.any(Number),
+        finalBodyBytesBeforeCap: expect.any(Number)
+      }
+    });
+    expect(output).toContain('"outcome":"review_failed"');
   });
 
   it("disables inline posting when post-inline-comments is false", async () => {
@@ -489,13 +732,94 @@ describe("github-action entrypoint", () => {
       issueComments: fake.client,
       minEditIntervalMs: 0,
       writeOutput: () => undefined,
-      runReview: async (argv, hooks) => {
+      runReview: async (argv) => {
         reviewArgv = argv;
-        hooks.writeOutput("# report");
-        return { runId: "r1", runDir: "" };
+        return { runId: "r1", runDir: "", reportMarkdown: "# report" };
       }
     });
     expect(reviewArgv).not.toContain("--post-github-comments");
+  });
+
+  it("publishes the report fallback even when the terminal edit fails", async () => {
+    const fake = createFakeComments({ failUpdates: true });
+    const reportPath = path.join(scratch, `fallback-${Math.random().toString(36).slice(2)}.md`);
+    const stepSummaryPath = path.join(scratch, `summary-${Math.random().toString(36).slice(2)}.md`);
+    const runDir = mkdtempSync(path.join(scratch, "post-failed-run-"));
+    await expect(
+      executeGitHubActionCommand([], {
+        env: actionEnv(issueCommentPayload(), "issue_comment", {
+          CODEGENIE_REPORT_PATH: reportPath,
+          GITHUB_STEP_SUMMARY: stepSummaryPath
+        }),
+        issueComments: fake.client,
+        writeOutput: () => undefined,
+        runReview: async () => ({
+          runId: "r1",
+          runDir,
+          reportMarkdown: "# fallback report\n\nping @alice <!-- hidden -->"
+        })
+      })
+    ).rejects.toMatchObject({ code: "github_post_failed" });
+    expect(readFileSync(reportPath, "utf8")).toContain("# fallback report");
+    const stepSummary = readFileSync(stepSummaryPath, "utf8");
+    expect(stepSummary).toContain("`@alice`");
+    expect(stepSummary).not.toContain("hidden");
+    expect(JSON.parse(readFileSync(path.join(runDir, "github-action.json"), "utf8"))).toMatchObject({
+      outcome: "terminal_post_failed",
+      errorCode: "github_post_failed",
+      statusComment: {
+        terminalState: "report",
+        editFailures: 1,
+        finalBodyBytes: expect.any(Number),
+        finalBodyBytesBeforeCap: expect.any(Number)
+      }
+    });
+  });
+
+  it("resolves identity via viewer login (PATs) or the bot-login input, and reclaims only exact matches", async () => {
+    // PAT: /user resolves → own prior comment reclaimed
+    const pat = createFakeComments({
+      viewerLogin: "peter",
+      existing: [{ id: 9, body: `old ${STATUS_COMMENT_MARKER}`, author: "peter" }]
+    });
+    await executeGitHubActionCommand([], {
+      env: actionEnv(issueCommentPayload(), "issue_comment"),
+      issueComments: pat.client,
+      minEditIntervalMs: 0,
+      writeOutput: () => undefined,
+      runReview: async () => ({ runId: "r1", runDir: "", reportMarkdown: "# r" })
+    });
+    expect(pat.calls.some((call) => call.kind === "create")).toBe(false);
+    expect(pat.calls.some((call) => call.kind === "update" && call.commentId === 9)).toBe(true);
+
+    // custom app: --bot-login reclaims case-insensitively
+    const app = createFakeComments({
+      viewerLogin: "conflicting-pat-login",
+      existing: [{ id: 4, body: `old ${STATUS_COMMENT_MARKER}`, author: "My-App[bot]" }]
+    });
+    await executeGitHubActionCommand(["--bot-login", "my-app[bot]"], {
+      env: actionEnv(issueCommentPayload(), "issue_comment"),
+      issueComments: app.client,
+      minEditIntervalMs: 0,
+      writeOutput: () => undefined,
+      runReview: async () => ({ runId: "r1", runDir: "", reportMarkdown: "# r" })
+    });
+    expect(app.calls.some((call) => call.kind === "create")).toBe(false);
+    expect(app.calls.some((call) => call.kind === "update" && call.commentId === 4)).toBe(true);
+    expect(app.calls.some((call) => call.kind === "viewer")).toBe(false);
+
+    // installation token, no input: another app's marker is never adopted
+    const foreign = createFakeComments({
+      existing: [{ id: 3, body: `other ${STATUS_COMMENT_MARKER}`, author: "other-app[bot]" }]
+    });
+    await executeGitHubActionCommand([], {
+      env: actionEnv(issueCommentPayload(), "issue_comment"),
+      issueComments: foreign.client,
+      minEditIntervalMs: 0,
+      writeOutput: () => undefined,
+      runReview: async () => ({ runId: "r1", runDir: "", reportMarkdown: "# r" })
+    });
+    expect(foreign.calls.some((call) => call.kind === "create")).toBe(true);
   });
 
   it("parses provider/model:reasoning specs with a high default", () => {
@@ -510,6 +834,37 @@ describe("github-action entrypoint", () => {
     expect(parseModelSpec("ollama/llama3:8b")).toEqual({ provider: "ollama", model: "llama3:8b", reasoning: "high" });
     expect(() => parseModelSpec("/claude")).toThrow(/provider\/model/u);
     expect(() => parseModelSpec("anthropic/")).toThrow(/provider\/model/u);
+  });
+
+  it("adapts the production ReviewResult into a complete secret-scrubbed report", () => {
+    const review: ReviewResult = {
+      summary: "Review completed; token=super-secret-value",
+      coverage: {
+        totalHunks: 2,
+        reviewedHunks: 2,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 1, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      findings: [],
+      summaryOnlyFindings: [],
+      needsHumanAttention: [],
+      noFindings: true,
+      postingPlan: { inline: [], reviewBody: "concise posting summary" }
+    };
+
+    const result = toRunReviewResult({ runId: "r1", runDir: "", review });
+    expect(result.reportMarkdown).toContain("# codegenie review");
+    expect(result.reportMarkdown).toContain("## Coverage");
+    expect(result.reportMarkdown).toContain("## No Findings");
+    expect(result.reportMarkdown).not.toContain("super-secret-value");
+    expect(result.reportMarkdown).toContain("[redacted:secret]");
+    expect(result.reportMarkdown).not.toContain("concise posting summary");
   });
 
   it("routes LLM_API_KEY to the provider's env var without clobbering native vars", () => {
@@ -538,10 +893,9 @@ describe("github-action entrypoint", () => {
       issueComments: fake.client,
       minEditIntervalMs: 0,
       writeOutput: () => undefined,
-      runReview: async (argv, hooks) => {
+      runReview: async (argv) => {
         reviewArgv = argv;
-        hooks.writeOutput("# report");
-        return { runId: "r1", runDir: "" };
+        return { runId: "r1", runDir: "", reportMarkdown: "# report" };
       }
     });
     expect(reviewArgv).toEqual([
@@ -557,10 +911,12 @@ describe("github-action entrypoint", () => {
     const parsed = parseGitHubActionArgs([
       "--allowed-associations", "OWNER, MEMBER",
       "--allowed-users", "alice,bob",
+      "--preflight-only", "true",
       "--depth", ""
     ]);
     expect(parsed.allowedAssociations).toEqual(["OWNER", "MEMBER"]);
     expect(parsed.allowedUsers).toEqual(["alice", "bob"]);
+    expect(parsed.preflightOnly).toBe(true);
     expect(parsed.reviewPassthrough).toEqual([]);
   });
 });
@@ -586,6 +942,9 @@ describe("issue comment client", () => {
       if (args.includes("PATCH")) {
         return "{}";
       }
+      if (args.join(" ") === "api user --jq .login") {
+        return "peter\n";
+      }
       if (endpoint.includes("/collaborators/")) {
         return "write\n";
       }
@@ -600,10 +959,124 @@ describe("issue comment client", () => {
     await client.updateComment(55, "updated");
     expect(calls.some((args) => args.includes("PATCH") && (args[1] ?? "").endsWith("/issues/comments/55"))).toBe(true);
     await expect(client.getCollaboratorPermission("alice")).resolves.toBe("write");
+    await expect(client.getViewerLogin()).resolves.toBe("peter");
+  });
+
+  it("handles empty and installation-token /user responses without hiding authentication failures", async () => {
+    const empty = createIssueCommentClient("/repo", "acme/widgets", {
+      runGh: async () => "\n"
+    });
+    await expect(empty.getViewerLogin()).resolves.toBeUndefined();
+
+    const installationToken = createIssueCommentClient("/repo", "acme/widgets", {
+      runGh: async () => {
+        throw new CodegenieError("gh_auth_failed", "gh: Resource not accessible by integration (HTTP 403)");
+      }
+    });
+    await expect(installationToken.getViewerLogin()).resolves.toBeUndefined();
+
+    const badCredentials = createIssueCommentClient("/repo", "acme/widgets", {
+      runGh: async () => {
+        throw new CodegenieError("gh_auth_failed", "gh: Bad credentials (HTTP 401)");
+      }
+    });
+    await expect(badCredentials.getViewerLogin()).rejects.toMatchObject({ code: "gh_auth_failed" });
   });
 
   it("rejects malformed repository names", () => {
     expect(() => createIssueCommentClient("/repo", "not-a-repo")).toThrow(/invalid repository name/u);
+  });
+});
+
+type WorkflowStep = {
+  id?: string;
+  uses?: string;
+  run?: string;
+  with?: Record<string, string>;
+};
+
+type WorkflowJob = {
+  needs?: string;
+  if?: string;
+  concurrency?: { group?: string; "cancel-in-progress"?: boolean };
+  steps?: WorkflowStep[];
+};
+
+type WorkflowDocument = {
+  jobs: Record<string, WorkflowJob>;
+};
+
+describe("GitHub Action and workflow contracts", () => {
+  const workflowPaths = [
+    ".github/workflows/codegenie-review.yml",
+    "examples/workflows/codegenie-review-comment.yml",
+    "examples/workflows/codegenie-review-pr.yml"
+  ];
+
+  it("forwards preflight and bot identity inputs through the composite action", () => {
+    const raw = readFileSync(path.resolve("action.yml"), "utf8");
+    const action = parseYaml(raw) as {
+      inputs: Record<string, { description?: string }>;
+      outputs: Record<string, { value?: string }>;
+      runs: { steps: WorkflowStep[] };
+    };
+    expect(action.inputs["on-pull-request"]?.description).toContain("ready_for_review");
+    expect(action.inputs["bot-login"]).toBeDefined();
+    expect(action.inputs["preflight-only"]).toBeDefined();
+    expect(action.outputs["should-run"]?.value).toContain("steps.run.outputs.should-run");
+    expect(action.outputs["pr-number"]?.value).toContain("steps.run.outputs.pr-number");
+
+    const runStep = action.runs.steps.find((step) => step.id === "run");
+    expect(runStep?.run).toContain('args+=(--bot-login "$INPUT_BOT_LOGIN")');
+    expect(runStep?.run).toContain('args+=(--preflight-only "$INPUT_PREFLIGHT_ONLY")');
+  });
+
+  it("keeps concurrency behind an authoritative preflight in every workflow", () => {
+    for (const workflowPath of workflowPaths) {
+      const raw = readFileSync(path.resolve(workflowPath), "utf8");
+      const workflow = parseYaml(raw) as WorkflowDocument;
+      const preflight = workflow.jobs.preflight;
+      const review = workflow.jobs.review;
+      expect(preflight, workflowPath).toBeDefined();
+      expect(preflight?.concurrency, workflowPath).toBeUndefined();
+      expect(review?.needs, workflowPath).toBe("preflight");
+      expect(review?.if, workflowPath).toContain("needs.preflight.outputs.should-run == 'true'");
+      expect(review?.concurrency?.group, workflowPath).toContain("needs.preflight.outputs.pr-number");
+      expect(review?.concurrency?.["cancel-in-progress"], workflowPath).toBe(true);
+      expect(raw, workflowPath).not.toContain("startsWith(");
+
+      const preflightStep = preflight?.steps?.find((step) => step.id === "gate");
+      const delegatesToAuthoritativeGate = preflightStep?.with?.["preflight-only"] === "true" ||
+        preflightStep?.run?.includes("--preflight-only true") === true;
+      expect(delegatesToAuthoritativeGate, workflowPath).toBe(true);
+    }
+  });
+
+  it("pins pull-request jobs to the base SHA and leaves comment jobs on the default branch", () => {
+    const dogfood = parseYaml(readFileSync(path.resolve(workflowPaths[0] ?? ""), "utf8")) as WorkflowDocument;
+    const prExample = parseYaml(readFileSync(path.resolve(workflowPaths[2] ?? ""), "utf8")) as WorkflowDocument;
+    const commentExample = parseYaml(readFileSync(path.resolve(workflowPaths[1] ?? ""), "utf8")) as WorkflowDocument;
+    for (const jobName of ["preflight", "review"]) {
+      const dogfoodCheckout = dogfood.jobs[jobName]?.steps?.find((step) => step.uses === "actions/checkout@v4");
+      expect(dogfoodCheckout?.with?.ref).toContain("github.event.pull_request.base.sha || ''");
+      const prCheckout = prExample.jobs[jobName]?.steps?.find((step) => step.uses === "actions/checkout@v4");
+      expect(prCheckout?.with?.ref).toContain("github.event.pull_request.base.sha");
+      const commentCheckout = commentExample.jobs[jobName]?.steps?.find((step) => step.uses === "actions/checkout@v4");
+      expect(commentCheckout?.with?.ref).toBeUndefined();
+    }
+  });
+
+  it("uses one workflow-level authorization configuration for preflight and review", () => {
+    for (const workflowPath of workflowPaths.slice(1)) {
+      const workflow = parseYaml(readFileSync(path.resolve(workflowPath), "utf8")) as WorkflowDocument;
+      const preflight = workflow.jobs.preflight?.steps?.find((step) => step.id === "gate");
+      const review = workflow.jobs.review?.steps?.find((step) => step.uses === "0xPolygon/codegenie@v0.4.2");
+      expect(preflight?.with?.["allowed-associations"], workflowPath).toBe(review?.with?.["allowed-associations"]);
+      expect(preflight?.with?.["allowed-users"], workflowPath).toBe(review?.with?.["allowed-users"]);
+      if (workflowPath.includes("comment")) {
+        expect(preflight?.with?.["trigger-phrase"]).toBe(review?.with?.["trigger-phrase"]);
+      }
+    }
   });
 });
 

@@ -4,12 +4,20 @@ branding:
   icon: "eye"
   color: "purple"
 
+outputs:
+  should-run:
+    description: "Whether the authoritative trigger and live-permission gate authorized this event."
+    value: ${{ steps.run.outputs.should-run }}
+  pr-number:
+    description: "Pull request number resolved by an authorized preflight."
+    value: ${{ steps.run.outputs.pr-number }}
+
 inputs:
   trigger-phrase:
     description: "Comment text that triggers a review on the issue_comment lane (matched exactly, never interpreted)."
     default: "codegenie review"
   on-pull-request:
-    description: "Run automatically on pull_request opened/synchronize events (true/false)."
+    description: "Run automatically on pull_request opened/synchronize/ready_for_review events (true/false)."
     default: "true"
   allowed-associations:
     description: "Comma-separated author associations allowed to trigger (payload check; a live write-permission check also applies)."
@@ -41,6 +49,12 @@ inputs:
   github-token:
     description: "Token used for PR metadata, the status comment, and inline posting."
     default: "${{ github.token }}"
+  bot-login:
+    description: "Exact comment-author login when using a custom GitHub App token (e.g. my-app[bot]). Defaults to /user lookup for PATs, else github-actions[bot]."
+    default: ""
+  preflight-only:
+    description: "Only evaluate the authoritative trigger/live-permission gate and set should-run/pr-number outputs. Use this in a job before the cancellable review job."
+    default: "false"
 
 runs:
   using: "composite"
@@ -54,7 +68,8 @@ runs:
       shell: bash
       run: npm install -g "@0xsequence/codegenie@$(node -p "require('${{ github.action_path }}/package.json').version")"
 
-    - name: Run codegenie review
+    - name: Run codegenie
+      id: run
       shell: bash
       # Inputs pass through env, never inline ${{ }} interpolation into the
       # script — robust quoting, and no script-injection shape even though
@@ -70,6 +85,8 @@ runs:
         INPUT_DEPTH: ${{ inputs.depth }}
         INPUT_LENSES: ${{ inputs.lenses }}
         INPUT_MODEL: ${{ inputs.model }}
+        INPUT_BOT_LOGIN: ${{ inputs.bot-login }}
+        INPUT_PREFLIGHT_ONLY: ${{ inputs.preflight-only }}
         INPUT_MAX_TIME: ${{ inputs.max-time }}
         INPUT_BUDGET_BOOST: ${{ inputs.budget-boost }}
         # Falls back to caller-provided env so `env: LLM_API_KEY:` on the
@@ -85,6 +102,8 @@ runs:
         args+=(--post-inline-comments "$INPUT_POST_INLINE_COMMENTS")
         args+=(--depth "$INPUT_DEPTH")
         args+=(--model "$INPUT_MODEL")
+        args+=(--bot-login "$INPUT_BOT_LOGIN")
+        args+=(--preflight-only "$INPUT_PREFLIGHT_ONLY")
         args+=(--max-time "$INPUT_MAX_TIME")
         args+=(--budget-boost "$INPUT_BUDGET_BOOST")
         IFS=',' read -ra lenses <<< "$INPUT_LENSES"
@@ -94,7 +113,7 @@ runs:
         codegenie github-action "${args[@]}"
 
     - name: Upload review report
-      if: always()
+      if: ${{ always() && inputs.preflight-only != 'true' }}
       uses: actions/upload-artifact@v4
       with:
         name: codegenie-report

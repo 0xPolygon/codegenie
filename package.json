@@ -14,7 +14,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json && node scripts/write-version.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
+    "check:workflows": "bash scripts/check-workflows.sh",
+    "check": "pnpm run typecheck && pnpm run check:workflows",
+    "test": "pnpm run check:workflows && vitest run",
     "test:watch": "vitest",
     "models-list": "node scripts/write-models-md.mjs",
     "dev": "tsx src/cli/main.ts"

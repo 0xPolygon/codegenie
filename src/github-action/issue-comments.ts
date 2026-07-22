@@ -1,5 +1,5 @@
 import { runGh } from "../git/subprocess.js";
-import { CodegenieError, type CodegenieErrorCode } from "../util/errors.js";
+import { CodegenieError, isCodegenieError, type CodegenieErrorCode } from "../util/errors.js";
 
 type RunGh = typeof runGh;
 
@@ -15,6 +15,9 @@ export type IssueCommentClient = {
   createComment(issueNumber: number, body: string): Promise<IssueComment>;
   updateComment(commentId: number, body: string): Promise<void>;
   getCollaboratorPermission(login: string): Promise<string>;
+  // The authenticated login, or undefined when the token has no /user
+  // context (Actions installation tokens).
+  getViewerLogin(): Promise<string | undefined>;
 };
 
 type CreateIssueCommentClientOptions = {
@@ -85,6 +88,22 @@ export function createIssueCommentClient(
       );
     },
 
+    async getViewerLogin(): Promise<string | undefined> {
+      try {
+        const stdout = await gh(repoRoot, ["api", "user", "--jq", ".login"], { errorCode: "gh_auth_failed" });
+        const login = stdout.trim();
+        return login === "" ? undefined : login;
+      } catch (error) {
+        // Installation tokens do not have a user context. Only that known
+        // limitation may fall through to github-actions[bot]; authentication
+        // and infrastructure failures must remain visible.
+        if (isInstallationTokenUserError(error)) {
+          return undefined;
+        }
+        throw error;
+      }
+    },
+
     async getCollaboratorPermission(login: string): Promise<string> {
       const stdout = await gh(
         repoRoot,
@@ -94,6 +113,16 @@ export function createIssueCommentClient(
       return stdout.trim();
     }
   };
+}
+
+function isInstallationTokenUserError(error: unknown): boolean {
+  if (!isCodegenieError(error)) {
+    return false;
+  }
+  const raw = [error.message, error.context?.stderr, error.context?.stdout]
+    .map((value) => (typeof value === "string" ? value : ""))
+    .join("\n");
+  return /Resource not accessible by integration|\b404\b|Not Found/iu.test(raw);
 }
 
 function mapComment(comment: GhIssueComment): IssueComment | undefined {

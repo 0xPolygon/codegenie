@@ -2,7 +2,11 @@
 #
 # Uses the `pull_request` event (never `pull_request_target`): fork PRs run
 # without secrets and are skipped cleanly — use the comment-trigger workflow
-# for fork PRs. Requires a provider credential in repository secrets.
+# for fork PRs. Requires the LLM_API_KEY secret (routed to the provider named
+# in `model`).
+#
+# Both jobs pin the BASE revision: codegenie's config and skills load from
+# trusted code, while the PR head is fetched by `--pr` as untrusted data.
 name: codegenie review
 
 on:
@@ -14,17 +18,43 @@ permissions:
   pull-requests: write
   issues: write
 
-concurrency:
-  group: codegenie-review-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+env:
+  CODEGENIE_ALLOWED_ASSOCIATIONS: "OWNER,MEMBER,COLLABORATOR"
+  CODEGENIE_ALLOWED_USERS: ""
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      should-run: ${{ steps.gate.outputs.should-run }}
+      pr-number: ${{ steps.gate.outputs.pr-number }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 0
+
+      - name: Authorize review trigger
+        id: gate
+        uses: 0xPolygon/codegenie@v0.4.2
+        with:
+          preflight-only: "true"
+          allowed-associations: ${{ env.CODEGENIE_ALLOWED_ASSOCIATIONS }}
+          allowed-users: ${{ env.CODEGENIE_ALLOWED_USERS }}
+
   review:
+    needs: preflight
+    if: ${{ needs.preflight.outputs.should-run == 'true' }}
+    concurrency:
+      group: codegenie-review-pr-${{ needs.preflight.outputs.pr-number }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
 
       - uses: 0xPolygon/codegenie@v0.4.2
@@ -32,3 +62,5 @@ jobs:
           model: "anthropic/claude-opus-4-8:high"
           llm-api-key: ${{ secrets.LLM_API_KEY }}
           post-inline-comments: "true"
+          allowed-associations: ${{ env.CODEGENIE_ALLOWED_ASSOCIATIONS }}
+          allowed-users: ${{ env.CODEGENIE_ALLOWED_USERS }}
