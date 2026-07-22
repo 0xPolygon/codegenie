@@ -49,14 +49,34 @@ Primary sources: the action repo (`docs/security.md`, `docs/setup.md`, `docs/con
 
 ## Design
 
-### 1. Entry point: `codegenie github-action` subcommand, thin composite action
+### 1. Isolation: one adapter module, near-zero harness diff
 
-All GitHub-event logic lives in the codegenie codebase (testable), not in YAML/bash — consistent with "the harness owns the workflow" (architecture.md:18). A new `codegenie github-action` subcommand:
+The GitHub Action surface is an *adapter around* the harness, not part of it. All new code lives in a single self-contained module:
+
+```
+src/github-action/
+  entrypoint.ts       # the `codegenie github-action` subcommand body: env/payload → decision → orchestrate
+  event-gate.ts       # pure decision functions: event × trigger phrase × association → run | skip(reason)
+  status-comment.ts   # sticky-comment state machine (claim/create → throttled edits → terminal states)
+  issue-comments.ts   # issue-comment CRUD over the existing `runGh` primitive (the shared client is PR-review-scoped; comment CRUD stays here)
+  render.ts           # checklist + terminal-body templates (imports STAGE_LABELS from src/review-stages.ts)
+  marker.ts           # status-comment marker (sibling of, not a change to, the findings marker)
+```
+
+The module drives the review exclusively through seams that already exist: it synthesizes a review invocation (`review --pr <n> [--post-github-comments] ...` argv → `parseReviewCommand`/`executeReviewCommand`), subscribes to `stage_started`/`stage_completed` via the existing `onTelemetryEvent` hook for progress, and takes the final markdown/`ReviewResult` from the run's return value for the terminal edit. Nothing inside `src/pipeline/`, `src/github/publisher.ts`, or `src/output/` changes; the review path cannot tell whether an Action invoked it.
+
+Permitted touches to existing code — exactly two, both one-liners in spirit:
+1. `src/cli/main.ts` — dispatch the `github-action` subcommand to `src/github-action/entrypoint.ts`.
+2. `src/github/github-client.ts` — a guarded viewer-identity fallback (§4): accept an injected login when `gh api user` fails. No other client changes; no new client methods.
+
+If implementation pressure ever wants a third touch, that is a design smell to resolve inside the module first (see Stop Conditions).
+
+GitHub-event logic stays in TypeScript (testable), not in YAML/bash — consistent with "the harness owns the workflow" (architecture.md:18). The `codegenie github-action` subcommand (implemented entirely in the module):
 
 - Reads standard Actions env: `GITHUB_EVENT_NAME`, `GITHUB_EVENT_PATH` (payload JSON), `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, plus `GH_TOKEN`.
-- Decides run/skip: event type supported? trigger phrase matched (for `issue_comment`)? author association allowed? PR resolvable? Skips exit `0` with a one-line reason on stdout and a `github_action_skipped` telemetry event — a non-matching comment must not fail the check.
+- Decides run/skip: event type supported? trigger phrase matched (for `issue_comment`)? author association allowed? PR resolvable? Skips exit `0` with a one-line reason on stdout (the §7 skip record) — a non-matching comment must not fail the check.
 - Resolves the PR number from the payload (`pull_request.number`, or the `issue_comment` issue number after verifying the issue *is* a PR).
-- Invokes the existing review path (`executeReviewCommand` internals) with `mode: "github_pr"`, status-comment posting on, inline posting per input, and CI-lane progress (spinner already self-disables under `CI`, review-progress.ts:80).
+- Invokes the existing review path via synthesized argv (`mode: "github_pr"` falls out of `--pr`), inline posting per input, CI-lane progress (spinner already self-disables under `CI`, review-progress.ts:80), while the module itself runs the status comment off the telemetry-event stream.
 
 The composite action (`action.yml` in this repo, consumed as `0xPolygon/codegenie@<tag>`) only: sets up Node, installs the pinned codegenie version matching the action tag, and runs `codegenie github-action`. Consumers provide checkout (`fetch-depth: 0`) before it.
 
@@ -70,13 +90,13 @@ Trigger matching rule: trimmed comment body must equal the trigger phrase or sta
 
 ### 3. Sticky status comment
 
-New module `src/github/status-comment.ts` + two client methods (issue-comment create/update via `gh api`):
+Module-internal (`status-comment.ts` + `issue-comments.ts` over `runGh`; the shared `src/github/` client is untouched):
 
 - **Claim:** find the newest own comment on the PR carrying the status marker (an HTML-comment marker à la the existing finding markers, parsed with the same author-verified rule: marker AND author == our login). Found → reclaim and overwrite (a rerun or a dangling "Reviewing ..." from a cancelled job gets superseded naturally); absent → create. One status comment per PR, ever.
 - **Progress rendering:** deterministic template — header line (`**codegenie** is reviewing this PR ...`), stage checklist from `STAGE_LABELS` (☑ done / ▸ current / ☐ pending) driven by `stage_started`/`stage_completed` events through the existing `onTelemetryEvent` seam, footer with the Actions run link. Zero model involvement.
 - **Throttle:** stage boundaries only, coalesced with a minimum edit interval (default 10s; latest state wins) — ≤ ~13 PATCH calls per run. A failed progress edit logs + counts in telemetry and never fails the review; edits stop after N consecutive failures (default 3) and the run continues headless.
 - **Terminal edit (always attempted, even on failure paths):**
-  - Success → the comment becomes the sanitized markdown report (same renderer as stdout), with coverage/partial disclosure appended per existing publisher rules. If the body exceeds the issue-comment cap (65,536 chars), truncate at a section boundary with a disclosure line + link to the run (the full report is also written to `GITHUB_STEP_SUMMARY` and uploaded as a run artifact by the action wrapper).
+  - Success → the comment becomes the sanitized markdown report (same renderer as stdout, which already carries the coverage/partial disclosure — the module adds nothing to it). If the body exceeds the issue-comment cap (65,536 chars), truncate at a section boundary with a disclosure line + link to the run (the full report is also written to `GITHUB_STEP_SUMMARY` and uploaded as a run artifact by the action wrapper).
   - Review failure → short failure state with error class + run link; process still exits nonzero per existing exit-code semantics.
   - The terminal edit failing IS a posting failure → `github_post_failed`, nonzero (the report still reaches logs/step summary).
 - **Sanitization ordering:** body passes `sanitizeGitHubCommentBody` (mentions neutralized — the report can't ping people; HTML comments stripped; secrets scrubbed), *then* the status marker is appended — same order the finding-marker path uses, so the marker survives its own sanitizer.
@@ -84,11 +104,11 @@ New module `src/github/status-comment.ts` + two client methods (issue-comment cr
 
 ### 4. Identity under installation tokens
 
-`listOwnComments` and marker verification key off `viewerLogin` from `gh api user` — which fails for Actions installation tokens (`GITHUB_TOKEN` is an app token; `/user` has no user context). Fix inside the client: after creating (or claiming) the status comment, read back its author login and cache that as the viewer identity for the run (works for `github-actions[bot]`, custom app bots, and PATs alike, no config needed). `gh api user` remains the fast path when it succeeds.
+`listOwnComments` and marker verification key off `viewerLogin` from `gh api user` — which fails for Actions installation tokens (`GITHUB_TOKEN` is an app token; `/user` has no user context). The fix lives in the module: the adapter claims/creates the status comment *before* starting the review, reads back its author login (works for `github-actions[bot]`, custom app bots, and PATs alike, no config needed), and injects it into the run. The shared client's only change is the guarded fallback seam from §1: use the injected login when `gh api user` fails; `gh api user` remains the fast path when it succeeds.
 
 ### 5. Posting enablement stays CLI/workflow-side
 
-`--github-status-comment` (requires `--pr`) joins `--post-github-comments` as CLI-only flags that repo config cannot set — the Trust Boundaries rule is unchanged: workflow YAML (repo-admin-controlled) enables posting; `codegenie.toml` and PR content cannot. `codegenie github-action` maps action inputs → these flags. Action inputs (v1): `trigger-phrase`, `on-pull-request` (bool, default true), `allowed-associations`, `allowed-users`, `post-inline-comments` (bool, default true), `depth`, `lenses`, `provider`, `model`, `reasoning`, `max-time`, `budget-boost`. Provider credentials via env from secrets, exactly as the CLI expects today.
+No new flags on `codegenie review` — the status comment is enabled solely by running the `codegenie github-action` entrypoint, which only workflow YAML (repo-admin-controlled) invokes; inline posting rides the existing CLI-only `--post-github-comments` flag in the synthesized invocation. The Trust Boundaries rule is unchanged and now has an even smaller surface: repo config and PR content cannot enable posting because the review command itself gained no posting surface at all. `codegenie github-action` maps action inputs → the synthesized argv. Action inputs (v1): `trigger-phrase`, `on-pull-request` (bool, default true), `allowed-associations`, `allowed-users`, `post-inline-comments` (bool, default true), `depth`, `lenses`, `provider`, `model`, `reasoning`, `max-time`, `budget-boost`. Provider credentials via env from secrets, exactly as the CLI expects today.
 
 ### 6. Concurrency and cancellation
 
@@ -96,9 +116,8 @@ Template workflows set `concurrency: codegenie-review-pr-${{ github.event.pull_r
 
 ### 7. Telemetry
 
-- `github_action` record in run artifacts: event name, lane, trigger decision, association-check outcome, skip reason.
-- `github_status_comment` events: created/claimed (comment id), edit count, throttled count, edit failures, terminal state, final body bytes (pre/post cap).
-- Existing `github-posting.json` unchanged for the inline lane.
+- Module-owned artifact `github-action.json`, written by the adapter into the run dir it learns from `onRunStart` (no `TelemetryRecorder` changes): event name, lane, trigger decision, association-check outcome, skip reason, and status-comment counters (created/claimed + comment id, edit count, throttled count, edit failures, terminal state, final body bytes pre/post cap). Skip decisions that never start a run log the same record to stdout only.
+- Existing `github-posting.json` and recorder-owned artifacts unchanged.
 
 ## Non-Goals
 
@@ -110,22 +129,20 @@ Template workflows set `concurrency: codegenie-review-pr-${{ github.event.pull_r
 
 ## In-Scope Files
 
-- `src/cli/main.ts`, `src/cli/review-command.ts` — `codegenie github-action` subcommand; `--github-status-comment` flag; event-payload parsing + trigger/authorization decision (pure functions over the payload JSON for testability).
-- `src/github/github-client.ts` — `createIssueComment`, `updateIssueComment`, `getIssueComment` (author read-back); viewer-identity fallback (§4); permission-check call.
-- `src/github/status-comment.ts` (new) — marker, claim/create, checklist rendering, throttle, terminal states.
-- `src/github/publisher.ts` — final-report handoff to the status comment; ordering with the inline-review post (inline review first, then terminal status edit referencing it).
-- `src/github/duplicate-detector.ts` — status-comment marker parse (or a sibling marker helper; findings markers untouched).
-- `src/config/schema.ts` — nothing that enables posting; only cosmetic additions if needed (none expected v1).
+- `src/github-action/` (new, the whole feature): `entrypoint.ts`, `event-gate.ts`, `status-comment.ts`, `issue-comments.ts`, `render.ts`, `marker.ts` — per the §1 layout. Imports from the harness: `parseReviewCommand`/`executeReviewCommand`, `runGh`, `STAGE_LABELS`, the sanitizer, `CodegenieError`. Nothing in the harness imports from this module.
+- `src/cli/main.ts` — subcommand dispatch line only.
+- `src/github/github-client.ts` — guarded viewer-identity fallback seam only (§4). No new methods; comment CRUD lives in the module's `issue-comments.ts`.
+- NOT in scope (previously considered, now explicitly excluded): `src/cli/review-command.ts`, `src/github/publisher.ts`, `src/github/duplicate-detector.ts`, `src/config/schema.ts`, everything under `src/pipeline/` and `src/output/`.
 - `action.yml` (new, repo root) + `examples/workflows/` (two templates: PR-open lane, comment lane) + README section.
 - `specs/project/components/repository_and_github.md`, `functional_spec.md`, `project_overview.md` — status-comment carve-out, action mode, trigger authorization, comment-text-is-data trust rule.
 - Tests: trigger/gate decision tables over fixture payloads; status-comment lifecycle against the fake gh client (create → N throttled edits → final; error → terminal state; rerun → reclaim; edit-failure → headless continue); marker-survives-sanitizer; identity read-back fallback; cap/truncation boundary.
 
 ## Implementation Steps
 
-1. Client methods + identity read-back fallback (§4) against the fake `runGh` — no behavior change for existing lanes.
-2. `status-comment.ts` lifecycle + throttle + terminal states, driven purely by injected telemetry events; unit-test the full state machine.
-3. `codegenie github-action` subcommand: payload parsing, trigger match, association gate (payload + live re-check), skip semantics; wire to the review path with status comment + CI progress.
-4. Publisher ordering: inline review post → terminal status edit; cap/truncation + step-summary/artifact fallbacks.
+1. Module scaffold: `issue-comments.ts` over the fake `runGh`; `event-gate.ts` pure decision functions with fixture payloads. Zero existing-code changes yet.
+2. `status-comment.ts` + `render.ts` + `marker.ts`: lifecycle, throttle, terminal states, driven purely by injected telemetry events; unit-test the full state machine.
+3. `entrypoint.ts` + the `main.ts` dispatch line: claim comment → identity read-back → synthesize review argv → run with `onTelemetryEvent` subscription → terminal edit (inline posting happens inside the run, so ordering falls out naturally); add the github-client fallback seam (§4) here, with a test proving existing lanes are byte-identical without the injection.
+4. Terminal-body handling: cap/truncation at a section boundary + `GITHUB_STEP_SUMMARY` write + run-artifact upload in the action wrapper.
 5. `action.yml` + example workflows + docs (permissions block, secrets, `fetch-depth: 0`, concurrency group, fork-PR guidance, cost note).
 6. Spec updates (carve-out + action mode + trust-rule extension).
 7. Dogfood: enable both lanes on this repo; run against a real PR (e.g., the next plan's PR) before advertising anywhere.
@@ -140,10 +157,12 @@ Template workflows set `concurrency: codegenie-review-pr-${{ github.event.pull_r
 
 - A consuming repo enables codegenie with the documented workflow + secrets; both lanes work; the status comment goes "Reviewing ..." → live stage checklist → final markdown report; reruns reclaim the comment and don't duplicate findings.
 - No new path lets repo config, PR content, or comment text enable posting, widen tools, or reach the model as instructions.
-- Existing local CLI behavior byte-identical when the new flag/subcommand is unused.
+- Existing local CLI behavior byte-identical when the subcommand is unused.
+- Isolation holds: `git diff --stat` for the implementation shows existing-module changes confined to the `main.ts` dispatch line and the github-client fallback seam; all other new code sits under `src/github-action/`, `action.yml`, and `examples/`; no harness module imports from `src/github-action/`.
 
 ## Stop Conditions
 
 - If in-place comment editing trips GitHub secondary rate limits / abuse detection during dogfooding, drop to three edit points (claim, midpoint, terminal) before building any queueing machinery.
 - If `gh` proves unreliable under installation tokens in runners (auth-status preflight, api quirks), stop and make a deliberate client decision (direct REST with the token for the Actions lane) rather than patching around `gh` piecemeal.
 - If the association live re-check adds meaningful latency or permission friction for legitimate users, reconsider payload-only checking as a documented tradeoff — do not silently widen the default allowlist.
+- If implementation wants a third touch to existing modules (beyond the `main.ts` dispatch and the client identity seam), stop and redesign inside `src/github-action/` first; a growing harness diff means the adapter boundary is wrong, and that is a plan amendment, not a quiet exception.
