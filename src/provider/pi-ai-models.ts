@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import type { Models, ProviderEnv } from "@earendil-works/pi-ai";
+import type { CredentialStore, Models, ProviderEnv } from "@earendil-works/pi-ai";
 
 const piModels = builtinModels();
 
@@ -42,8 +42,8 @@ const API_KEY_ENV_VARS: Record<string, string[]> = {
   "zai-coding-cn": ["ZAI_CODING_CN_API_KEY"]
 };
 
-export function getCodegeniePiModels(): Models {
-  return piModels;
+export function getCodegeniePiModels(credentials?: CredentialStore): Models {
+  return credentials === undefined ? piModels : builtinModels({ credentials });
 }
 
 export function getPiEnvApiKey(provider: string, env?: ProviderEnv): string | undefined {

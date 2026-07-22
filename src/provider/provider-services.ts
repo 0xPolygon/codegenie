@@ -5,11 +5,16 @@ import { createInterface } from "node:readline/promises";
 import path from "node:path";
 import {
   getSupportedThinkingLevels,
+  type AuthEvent,
+  type AuthPrompt,
   type Api,
+  type Credential,
+  type CredentialStore,
   type Model,
-  type Models
+  type Models,
+  type OAuthAuth,
+  type OAuthCredentials
 } from "@earendil-works/pi-ai";
-import { getOAuthProvider, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import { loadConfig, type LoadedConfig } from "../config/config-loader.js";
 import { ensureCodegenieHome, getCodegeniePaths } from "../config/paths.js";
 import { registerSecret } from "../telemetry/redaction.js";
@@ -64,6 +69,7 @@ export type ProviderServices = {
   paths: CodegeniePaths;
   authStorage: PiAuthStorage;
   modelRegistry: PiModelRegistry;
+  oauthAuth(provider: string): OAuthAuth | undefined;
 };
 
 type ProviderConfigLayers = {
@@ -107,10 +113,12 @@ export type RunProviderCommandOptions = {
 export function createProviderServices(homeOverride?: string): ProviderServices {
   const paths = getCodegeniePaths(homeOverride);
   const authStorage = createFileAuthStorage(paths);
+  const models = getCodegeniePiModels();
   return {
     paths,
     authStorage,
-    modelRegistry: createPiModelRegistry(authStorage)
+    modelRegistry: createPiModelRegistry(authStorage, models),
+    oauthAuth: (provider) => models.getProvider(provider)?.auth.oauth
   };
 }
 
@@ -136,6 +144,59 @@ export function createFileAuthStorage(paths: CodegeniePaths): PiAuthStorage {
       }
     }
   };
+}
+
+export function createPiCredentialStore(authStorage: PiAuthStorage): CredentialStore {
+  const chains = new Map<string, Promise<void>>();
+  const enqueue = <T>(provider: string, operation: () => Promise<T>): Promise<T> => {
+    const previous = chains.get(provider) ?? Promise.resolve();
+    const next = previous.then(operation);
+    chains.set(provider, next.then(() => undefined, () => undefined));
+    return next;
+  };
+
+  return {
+    read: async (provider) => providerAuthEntryToCredential(authStorage.get(provider)),
+    list: async () => Object.entries(authStorage.loadAll()).map(([providerId, entry]) => ({
+      providerId,
+      type: entry.type
+    })),
+    modify: (provider, update) => enqueue(provider, async () => {
+      const existing = authStorage.get(provider);
+      const current = providerAuthEntryToCredential(existing);
+      const updated = await update(current);
+      if (updated === undefined) {
+        return current;
+      }
+      authStorage.set(provider, credentialToProviderAuthEntry(updated, existing));
+      return updated;
+    }),
+    delete: (provider) => enqueue(provider, async () => {
+      authStorage.delete(provider);
+    })
+  };
+}
+
+function providerAuthEntryToCredential(entry: ProviderAuthEntry | undefined): Credential | undefined {
+  if (entry === undefined) {
+    return undefined;
+  }
+  if (entry.type === "api_key") {
+    return { type: "api_key", key: entry.apiKey };
+  }
+  return { ...entry.credentials, type: "oauth" };
+}
+
+function credentialToProviderAuthEntry(credential: Credential, existing: ProviderAuthEntry | undefined): ProviderAuthEntry {
+  const createdAt = existing?.createdAt ?? new Date().toISOString();
+  if (credential.type === "api_key") {
+    if (!credential.key) {
+      throw new CodegenieError("config_error", "provider returned an API-key credential without a key");
+    }
+    return { type: "api_key", apiKey: credential.key, createdAt };
+  }
+  const { type: _type, ...credentials } = credential;
+  return { type: "oauth", credentials, createdAt };
 }
 
 export function createPiModelRegistry(authStorage: PiAuthStorage, models: Pick<Models, "getModels" | "getProviders" | "getProvider"> = getCodegeniePiModels()): PiModelRegistry {
@@ -232,56 +293,21 @@ async function commandLogin(
 ): Promise<LoginCommandResult> {
   const { provider, apiKeyLogin } = parseLoginArgs(args, opts);
   assertProviderExists(provider, services);
-  const oauthProvider = getOAuthProvider(provider);
-  if (oauthProvider && !apiKeyLogin) {
+  const oauthAuth = services.oauthAuth(provider);
+  if (oauthAuth && !apiKeyLogin) {
     let authUrl: string | undefined;
-    const manualInputController = new AbortController();
     const devicePromptControllers: AbortController[] = [];
     try {
-      const credentials = await withOAuthFetchConnectionClose(() => oauthProvider.login({
-        onAuth: (info) => {
-          authUrl = info.url;
-          (opts.writeOut ?? ((text: string) => output.write(text)))(
-            `${info.url}\n${browserLoginInstruction()}\n`
-          );
-        },
-        onDeviceCode: (info) => {
-          const writeOut = opts.writeOut ?? ((text: string) => output.write(text));
-          writeOut(
-            `${info.verificationUri}\nEnter code: ${info.userCode}\n${deviceCodeLoginInstruction()}\n`
-          );
-          const controller = new AbortController();
-          devicePromptControllers.push(controller);
-          startDeviceCodeBrowserPrompt(info.verificationUri, opts, controller.signal);
-        },
-        onPrompt: async (prompt) => promptForInput(prompt.message, {
-          allowEmpty: prompt.allowEmpty === true,
-          readInput: opts.readInput
-        }),
-        ...(oauthProvider.usesCallbackServer === true
-          ? {
-              onManualCodeInput: async () => promptForBrowserOrManualCode(authUrl, opts, manualInputController.signal)
-            }
-          : {}),
-        onSelect: async (prompt) => {
-          const writeOut = opts.writeOut ?? ((text: string) => output.write(text));
-          writeOut(`${prompt.message}\n`);
-          prompt.options.forEach((option, index) => {
-            writeOut(`  ${index + 1}. ${option.label}\n`);
-          });
-          const selected = await promptForInput(`Enter number (1-${prompt.options.length}): `, {
-            readInput: opts.readInput
-          });
-          const index = Number.parseInt(selected, 10) - 1;
-          return prompt.options[index]?.id;
-        },
-        onProgress: (message) => {
-          (opts.writeErr ?? ((text: string) => process.stderr.write(text)))(`${message}\n`);
+      const credentials = await withOAuthFetchConnectionClose(() => oauthAuth.login({
+        prompt: (prompt) => handleOAuthPrompt(prompt, authUrl, opts),
+        notify: (event) => {
+          authUrl = handleOAuthEvent(event, authUrl, opts, devicePromptControllers);
         }
       }));
+      const { type: _type, ...storedCredentials } = credentials;
       services.authStorage.set(provider, {
         type: "oauth",
-        credentials,
+        credentials: storedCredentials,
         createdAt: new Date().toISOString()
       });
       return {
@@ -289,7 +315,6 @@ async function commandLogin(
         preferredDefault: applyPreferredDefaultAfterLogin(provider, services)
       };
     } finally {
-      manualInputController.abort();
       devicePromptControllers.forEach((controller) => controller.abort());
     }
   }
@@ -305,6 +330,59 @@ async function commandLogin(
     provider,
     preferredDefault: applyPreferredDefaultAfterLogin(provider, services)
   };
+}
+
+async function handleOAuthPrompt(prompt: AuthPrompt, authUrl: string | undefined, opts: RunProviderCommandOptions): Promise<string> {
+  if (prompt.type === "manual_code") {
+    return promptForBrowserOrManualCode(authUrl, opts, prompt.signal);
+  }
+  if (prompt.type !== "select") {
+    return promptForInput(prompt.message, { readInput: opts.readInput, signal: prompt.signal });
+  }
+
+  const writeOut = opts.writeOut ?? ((text: string) => output.write(text));
+  writeOut(`${prompt.message}\n`);
+  prompt.options.forEach((option, index) => {
+    writeOut(`  ${index + 1}. ${option.label}\n`);
+  });
+  const selected = await promptForInput(`Enter number (1-${prompt.options.length}): `, {
+    readInput: opts.readInput,
+    signal: prompt.signal
+  });
+  const index = Number.parseInt(selected, 10) - 1;
+  const option = prompt.options[index];
+  if (option === undefined) {
+    throw new CodegenieError("invalid_args", "selected OAuth option is out of range");
+  }
+  return option.id;
+}
+
+function handleOAuthEvent(
+  event: AuthEvent,
+  authUrl: string | undefined,
+  opts: RunProviderCommandOptions,
+  devicePromptControllers: AbortController[]
+): string | undefined {
+  const writeOut = opts.writeOut ?? ((text: string) => output.write(text));
+  switch (event.type) {
+    case "auth_url":
+      writeOut(`${event.url}\n${browserLoginInstruction()}\n`);
+      return event.url;
+    case "device_code": {
+      writeOut(`${event.verificationUri}\nEnter code: ${event.userCode}\n${deviceCodeLoginInstruction()}\n`);
+      const controller = new AbortController();
+      devicePromptControllers.push(controller);
+      startDeviceCodeBrowserPrompt(event.verificationUri, opts, controller.signal);
+      return authUrl;
+    }
+    case "info":
+      writeOut(`${event.message}\n`);
+      event.links?.forEach((link) => writeOut(`${link.label ?? "More information"}: ${link.url}\n`));
+      return authUrl;
+    case "progress":
+      (opts.writeErr ?? ((text: string) => process.stderr.write(text)))(`${event.message}\n`);
+      return authUrl;
+  }
 }
 
 function commandLogout(args: string[], services: ProviderServices, opts: RunProviderCommandOptions): void {
@@ -971,7 +1049,7 @@ async function defaultPromptInput(message: string, signal?: AbortSignal): Promis
 }
 
 async function promptForBrowserOrManualCode(authUrl: string | undefined, opts: RunProviderCommandOptions, signal?: AbortSignal): Promise<string> {
-  const inputValue = await promptForInput("> ", { allowEmpty: true, readInput: opts.readInput });
+  const inputValue = await promptForInput("> ", { allowEmpty: true, readInput: opts.readInput, signal });
   if (inputValue) {
     return inputValue;
   }
