@@ -172,9 +172,9 @@ export async function dedupeRankAndComposeReview(
       telemetry.event({ stage: 10, level: "warn", message: "composer_overlapping_finding_group", data: { findingIds: composed.findingIds, expandedFindingIds: ids, overlappingIds } });
       continue;
     }
-    const representative = strongest(ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined));
-    const fingerprint = fingerprintFinding(representative, packetsById);
     const mergedFindings = ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined);
+    const representative = canonicalMergedRepresentative(mergedFindings, opts.diff);
+    const fingerprint = fingerprintFinding(representative, packetsById);
     const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections);
     recordAnchorDowngrade(final, composed.publication, anchorDowngradeReasons);
     finalFindings.push(final);
@@ -607,7 +607,7 @@ function groupFindings(findings: CandidateFinding[], packetsById: Map<string, Re
   const exactGroups = [...groups.entries()]
     .map(([fingerprint, members]) => ({
       fingerprint,
-      representative: strongest(members),
+      representative: canonicalMergedRepresentative(members),
       findings: members
     }))
     .sort((a, b) => compareFindings(a.representative, b.representative));
@@ -702,7 +702,7 @@ type ConfidenceSelection = {
   reason: "representative" | "same_severity" | "compatible_lower_severity";
 };
 
-// Plan 74: the representative (severity-first) supplies the final body, but a
+// Plan 74: the canonical representative supplies the final metadata, but a
 // stronger-confidence verified candidate in the SAME merge group may supply
 // the final confidence — bounded so adjacency never inflates certainty:
 // same-severity candidates may lend their confidence outright; a one-step
@@ -1155,7 +1155,7 @@ function mergeProximityGroups(groups: FindingGroup[], packetsById: Map<string, R
       continue;
     }
     existing.findings.push(...group.findings);
-    existing.representative = strongest(existing.findings);
+    existing.representative = canonicalMergedRepresentative(existing.findings);
     existing.fingerprint = fingerprintFinding(existing.representative, packetsById);
   }
   return merged.sort((a, b) => compareFindings(a.representative, b.representative));
@@ -1189,7 +1189,7 @@ function mergeRootCauseGroups(groups: FindingGroup[], packetsById: Map<string, R
 
 function combineFindingGroups(groups: FindingGroup[], packetsById: Map<string, ReviewPacket>): FindingGroup {
   const findings = groups.flatMap((group) => group.findings);
-  const representative = strongest(findings);
+  const representative = canonicalMergedRepresentative(findings);
   const combined = {
     fingerprint: "",
     representative,
@@ -1830,6 +1830,29 @@ function strongest(findings: CandidateFinding[]): CandidateFinding {
     throw new Error("cannot choose representative from empty finding group");
   }
   return first;
+}
+
+function canonicalMergedRepresentative(
+  findings: CandidateFinding[],
+  diff?: UnifiedDiff
+): CandidateFinding {
+  if (!findings.some(isPromotedFinding)) {
+    return strongest(findings);
+  }
+  const anchoredDirect = findings.filter((finding) =>
+    !isPromotedFinding(finding) &&
+    finding.anchor !== undefined &&
+    (diff === undefined || validateAnchorForDiff(finding.anchor, diff) !== undefined)
+  );
+  if (anchoredDirect.length === 0) {
+    return strongest(findings);
+  }
+  const declarative = anchoredDirect.filter((finding) => !isQuestionShapedFindingTitle(finding.title));
+  return strongest(declarative.length > 0 ? declarative : anchoredDirect);
+}
+
+function isPromotedFinding(finding: CandidateFinding): boolean {
+  return finding.provenance?.source === "uncertainty_promotion";
 }
 
 function compareFindings(
