@@ -24,6 +24,11 @@ permissions:
   pull-requests: write
   issues: write
 
+env:
+  # provider/model[:reasoning] — the LLM_API_KEY secret is routed to this
+  # provider. See models.md for the full list.
+  CODEGENIE_MODEL: "anthropic/claude-opus-4-8:high"
+
 concurrency:
   group: codegenie-review-pr-${{ github.event.pull_request.number || github.event.issue.number }}
   cancel-in-progress: true
@@ -33,13 +38,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # base SHA on pull_request events; default branch on comment events
           ref: ${{ github.event.pull_request.base.sha || '' }}
           fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "26"
 
@@ -67,11 +72,11 @@ jobs:
             echo "github-action: base build predates the github-action adapter — skipping (bootstrap)"
             exit 0
           fi
-          node dist/cli/main.js github-action --model "anthropic/claude-opus-4-8:high"
+          node dist/cli/main.js github-action --model "$CODEGENIE_MODEL"
 
       - name: Upload review report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codegenie-report
           path: ${{ runner.temp }}/codegenie-report.md
