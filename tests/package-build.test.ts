@@ -41,7 +41,7 @@ describe("package build scaffold", () => {
     expect(workspacePolicy).toContain("  ignoreMissing:\n    - tree-sitter");
   });
 
-  it("loads the Rust and Python skills and grammars from an installed package tarball", () => {
+  it("loads the Rust, Python, and Solidity skills and grammars from a scripts-enabled installed package", () => {
     const sandbox = mkdtempSync(path.join(tmpdir(), "codegenie-package-smoke-"));
     try {
       const packageDirectory = path.join(sandbox, "package");
@@ -55,14 +55,20 @@ describe("package build scaffold", () => {
       })) as Array<{ filename: string; files: Array<{ path: string }> }>;
       const artifact = packed[0];
       expect(artifact?.files.map((file) => file.path)).toEqual(expect.arrayContaining([
+        "bundled-skills/core/code-review.md",
+        "bundled-skills/core/tests.md",
+        "bundled-skills/lang/go.md",
         "bundled-skills/lang/python.md",
         "bundled-skills/lang/rust.md",
+        "bundled-skills/lang/solidity.md",
+        "bundled-skills/lang/typescript.md",
         "dist/repo/tree-sitter/python-adapter.js",
         "dist/repo/tree-sitter/rust-adapter.js",
+        "dist/repo/tree-sitter/solidity-adapter.js",
         "package.json"
       ]));
       const tarballPath = path.join(packageDirectory, artifact!.filename);
-      const parserPackages = new Set(["tree-sitter-python", "tree-sitter-rust", "web-tree-sitter"]);
+      const parserPackages = new Set(["tree-sitter-python", "tree-sitter-rust", "tree-sitter-solidity", "web-tree-sitter"]);
       const parserTarballs = new Map([...parserPackages].map((packageName) => {
         const dependencyPack = JSON.parse(execFileSync("npm", [
           "pack",
@@ -94,9 +100,10 @@ describe("package build scaffold", () => {
         ...parserOverrides,
         `  'node-addon-api': 'link:${path.resolve("node_modules/node-addon-api")}'`,
         `  'node-gyp-build': 'link:${path.resolve("node_modules/node-gyp-build")}'`,
+        `  'yarn': 'link:${path.resolve("node_modules/yarn")}'`,
         ""
       ].join("\n"));
-      execFileSync("pnpm", ["install", "--offline", "--ignore-scripts", "--prod", "--no-frozen-lockfile"], {
+      execFileSync("pnpm", ["install", "--offline", "--prod", "--no-frozen-lockfile"], {
         cwd: consumerDirectory,
         stdio: "pipe"
       });
@@ -116,15 +123,21 @@ const { skills, failures } = await loadSkills({
   telemetry: { event: noop }
 });
 if (failures.length > 0) throw new Error(JSON.stringify(failures));
+const bundledIds = skills.filter((skill) => skill.source === "bundled").map((skill) => skill.id).sort();
+const expectedBundledIds = ["core/code-review", "core/tests", "lang/go", "lang/python", "lang/rust", "lang/solidity", "lang/typescript"];
+if (JSON.stringify(bundledIds) !== JSON.stringify(expectedBundledIds)) throw new Error("installed bundled skills differ: " + JSON.stringify(bundledIds));
 const rust = skills.find((skill) => skill.id === "lang/rust");
 if (!rust) throw new Error("installed Rust skill is missing");
 const python = skills.find((skill) => skill.id === "lang/python");
 if (!python) throw new Error("installed Python skill is missing");
+const solidity = skills.find((skill) => skill.id === "lang/solidity");
+if (!solidity) throw new Error("installed Solidity skill is missing");
 
 const serviceUrl = import.meta.resolve("@0xsequence/codegenie/dist/repo/tree-sitter/tree-sitter-service.js");
 const installedRequire = createRequire(serviceUrl);
 const rustGrammarPath = installedRequire.resolve("tree-sitter-rust/tree-sitter-rust.wasm");
 const pythonGrammarPath = installedRequire.resolve("tree-sitter-python/tree-sitter-python.wasm");
+const solidityGrammarPath = installedRequire.resolve("tree-sitter-solidity/tree-sitter-solidity.wasm");
 const registry = new LanguageAdapterRegistry(new TreeSitterService());
 const rustAdapter = registry.forPath("src/lib.rs");
 const parsed = await rustAdapter.parse({
@@ -146,15 +159,32 @@ const pythonMethod = pythonAdapter.listSymbols(pythonParsed).find((symbol) => sy
 if (pythonParsed.hasErrors || !pythonParsed.tree || pythonMethod?.ownerType !== "Service" || pythonMethod.lineRange[0] !== 3) {
   throw new Error("installed Python parser smoke failed");
 }
+const solidityAdapter = registry.forPath("contracts/Vault.sol");
+const solidityParsed = await solidityAdapter.parse({
+  path: "contracts/Vault.sol",
+  language: "solidity",
+  source: { kind: "head" },
+  content: "contract Vault { uint256 public total; function withdraw(uint256 amount) external { total -= amount; } }"
+});
+const solidityValue = solidityAdapter.listSymbols(solidityParsed).find((symbol) => symbol.name === "total");
+const solidityMethod = solidityAdapter.listSymbols(solidityParsed).find((symbol) => symbol.name === "withdraw");
+if (solidityParsed.hasErrors || !solidityParsed.tree || solidityValue?.kind !== "value" || solidityValue.ownerType !== "Vault" || solidityMethod?.ownerType !== "Vault") {
+  throw new Error("installed Solidity parser smoke failed");
+}
 console.log(JSON.stringify({
   rustSkillPath: rust.filePath,
   pythonSkillPath: python.filePath,
+  soliditySkillPath: solidity.filePath,
   rustGrammarPath,
   pythonGrammarPath,
+  solidityGrammarPath,
   rustLanguage: parsed.language,
   rustOwnerType: method.ownerType,
   pythonLanguage: pythonParsed.language,
-  pythonOwnerType: pythonMethod.ownerType
+  pythonOwnerType: pythonMethod.ownerType,
+  solidityLanguage: solidityParsed.language,
+  solidityOwnerType: solidityMethod.ownerType,
+  solidityValueKind: solidityValue.kind
 }));
 `);
       const smoke = JSON.parse(execFileSync(process.execPath, [smokePath], {
@@ -163,25 +193,35 @@ console.log(JSON.stringify({
       })) as {
         rustSkillPath: string;
         pythonSkillPath: string;
+        soliditySkillPath: string;
         rustGrammarPath: string;
         pythonGrammarPath: string;
+        solidityGrammarPath: string;
         rustLanguage: string;
         rustOwnerType: string;
         pythonLanguage: string;
         pythonOwnerType: string;
+        solidityLanguage: string;
+        solidityOwnerType: string;
+        solidityValueKind: string;
       };
 
       expect(smoke).toMatchObject({
         rustLanguage: "rust",
         rustOwnerType: "(u8, u8)",
         pythonLanguage: "python",
-        pythonOwnerType: "Service"
+        pythonOwnerType: "Service",
+        solidityLanguage: "solidity",
+        solidityOwnerType: "Vault",
+        solidityValueKind: "value"
       });
       for (const installedPath of [
         smoke.rustSkillPath,
         smoke.pythonSkillPath,
+        smoke.soliditySkillPath,
         smoke.rustGrammarPath,
-        smoke.pythonGrammarPath
+        smoke.pythonGrammarPath,
+        smoke.solidityGrammarPath
       ]) {
         expect(installedPath.startsWith(`${consumerDirectory}${path.sep}`)).toBe(true);
       }

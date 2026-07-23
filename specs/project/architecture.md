@@ -51,7 +51,7 @@ Core dependencies:
 - A TOML parser for `codegenie.toml` and a YAML parser for eval case files.
 - `picomatch` for path-rule and tool globs.
 - `execa` or Node subprocess APIs for `git` and `gh`.
-- `web-tree-sitter` plus Go, TypeScript/JavaScript, Rust, Python, and Solidity grammars for syntax parsing. Rust and Python have semantic adapters in the current slice; Solidity retains grammar-backed routing until its vertical slice lands.
+- `web-tree-sitter` plus Go, TypeScript/JavaScript, Rust, Python, and Solidity grammars for syntax parsing. Rust, Python, and Solidity have semantic adapters in the current unreleased Plan 98 integration series.
   - `tree-sitter-go` for Go
   - `tree-sitter-typescript` for Typescript: `.ts`/`.mts`/`.cts`/`.d.ts` route to the typescript grammar; `.tsx` routes to the tsx grammar
   - `tree-sitter-javascript` for Javascript: `.js`/`.jsx`/`.mjs`/`.cjs`
@@ -61,6 +61,7 @@ Core dependencies:
   - Tree-sitter runs entirely via WASM: the `web-tree-sitter` runtime (`tree-sitter.wasm`) plus one `.wasm` grammar per language, all shipped inside their npm tarballs.
   - Grammar files are referenced directly from `node_modules` at runtime (e.g. `require.resolve("tree-sitter-go/tree-sitter-go.wasm")` via `createRequire` under ESM); no copy step into an `assets/` folder is needed because codegenie is distributed as a normal npm package. An asset-copy step becomes necessary only if single-file bundling is introduced, which is out of scope for v1.
   - `web-tree-sitter` and the six grammar packages are pinned together; ABI compatibility is enforced at `Language.load`.
+  - `tree-sitter-solidity@1.2.13` publishes the required WASM but also declares an unused native install script and a misspelled optional-peer metadata key. The pnpm policy ignores the unused grammar build and missing native `tree-sitter` peer; the packed-consumer gate installs without `--ignore-scripts`, resolves the published WASM from the consumer dependency tree, and parses through the production adapter. Because that supported install/runtime succeeds, the vendored-WASM stop path is not active.
 
 Exact dependency versions are pinned via the pnpm lockfile; tree-sitter grammar wasm artifacts ship inside their npm tarballs (no postinstall downloads permitted).
 
@@ -327,11 +328,11 @@ Every review packet must include absolute line numbers for hunk lines. Added and
 type SymbolKind =
   | "function"   // free-standing callables
   | "method"     // callables attached to a type: Go receiver funcs, Rust impl fns, class members, constructors, accessors
-  | "type"       // concrete type definitions: class, struct, enum, type alias, Solidity contract/event/error
+  | "type"       // concrete type definitions: class, struct, enum, type alias, Solidity contract/library
   | "interface"  // contract-defining types: interface, trait, protocol
   | "value"      // const, var, let, static, Solidity state variables
-  | "container"  // module, namespace, package, Rust mod, Swift extension, Solidity library (Rust impl is ownership context, not a symbol)
-  | "other"      // macros, Solidity modifiers, anything unmapped
+  | "container"  // module, namespace, package, Rust mod, Swift extension (Rust impl is ownership context, not a symbol)
+  | "other"      // macros, Solidity events/errors, anything unmapped
 
 type SymbolRef = {
   path: string
@@ -895,7 +896,7 @@ Chosen defaults:
 - `telemetry.runDir = ".codegenie/runs"`
 - `telemetry.retainRuns = 20`
 - `eval.logsDir = "logs"`
-- Default-enabled lens set = all six currently bundled lenses (`core/code-review`, `core/tests`, `lang/go`, `lang/python`, `lang/rust`, `lang/typescript`). Plan 98 adds Solidity later in the same unreleased integration series.
+- Default-enabled lens set = all seven currently bundled lenses (`core/code-review`, `core/tests`, `lang/go`, `lang/python`, `lang/rust`, `lang/solidity`, `lang/typescript`). The Plan 98 language series remains unreleased until its Phase-5 cross-language gate.
 
 Neither `review.maxFindings` nor `review.softCommentCap` suppresses verified critical/high findings.
 

@@ -155,6 +155,11 @@ export const BUNDLED_SKILL_WHY_LEDGER: Record<string, PromptLedgerEntry[]> = {
     { surface: "state, absence, and exception predicates", reason: "Python review must connect mutable defaults, None propagation, and broad exception handling to a reachable cross-call or caller-visible failure instead of flagging syntax alone.", evidence: "Plan 98 §3.2 owner-accepted failure and false-positive cases, 2026-07-23" },
     { surface: "exact units and event-loop liveness", reason: "Float and blocking-call findings are actionable only when a named exact-unit contract or an event-loop workload makes the failure material.", evidence: "Plan 98 Python bundled-skill owner matrix checks 4-5, 2026-07-23" },
     { surface: "injection, file identity, and iteration safety", reason: "Security and collection-mutation checks require concrete untrusted flow, a real check/use race, or named skipped/duplicated elements while preserving argv, descriptor, and snapshot safe patterns.", evidence: "Plan 98 §3.2 required unsafe/safe distinctions and owner acceptance gate, 2026-07-23" }
+  ],
+  "lang/solidity": [
+    { surface: "external control and low-level call outcomes", reason: "Reentrancy and unchecked-call findings require a reachable invariant or required effect, while CEI, guards, checked calls, and reverting typed calls remain explicit safe cases.", evidence: "Plan 98 §4.2 checks 1-2 and owner acceptance matrix, 2026-07-23" },
+    { surface: "asset units, authority, narrowing, and msg.value", reason: "Accounting and authorization reports must name the producer/consumer units, privileged effect, concrete lost range, or repeated full-value credit rather than matching casts, loops, or public functions alone.", evidence: "Plan 98 §4.2 checks 3-6 required unsafe/safe distinctions, 2026-07-23" },
+    { surface: "delegate storage, oracle validity, and audit events", reason: "These checks are actionable only with a named storage invariant, freshness/nonzero consumer guarantee, or external event contract and exclude documented compatible layouts and optional events.", evidence: "Plan 98 §4.2 checks 7-9 and owner content gate, 2026-07-23" }
   ]
 };
 

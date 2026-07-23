@@ -1,0 +1,25 @@
+name: fixture-solidity-lens
+repo:
+  fixture: repos/solidity
+command:
+  branch: feature
+  base: main
+review:
+  provider: fake
+  model: fake-model
+  verify: true
+  cache: false
+  lenses:
+    - lang/solidity
+expect:
+  minFindings: 1
+  maxFindings: 1
+should_find:
+  - id: solidity-fake-finding
+    path: contracts/Positive.sol
+    category: correctness
+    severityAtLeast: medium
+    titlePattern: Fake finding
+should_not_find:
+  - id: solidity-marker-free-negative-control
+    path: contracts/Negative.sol

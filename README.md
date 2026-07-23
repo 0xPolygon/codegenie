@@ -46,7 +46,7 @@ codegenie review abc1234 def5678            # a commit range
 
 A single positional target is branch-first: if it resolves as a branch, codegenie reviews it against its base; otherwise it is treated as a single commit.
 
-First-class syntax context and default language guidance currently cover Go, TypeScript/JavaScript, Rust, and Python. Python packets include decorator-aware functions/classes, immediate class ownership, stable module imports, and deterministic sibling plus nearest-package `tests/` pytest links. `.pyi` stubs and custom pytest collection configuration remain deferred; Python symbols intentionally leave `exported` unset. Rust same-file `#[cfg(test)]` discovery and arbitrary-name integration-test scanning also remain deferred.
+First-class syntax context and default language guidance currently cover Go, TypeScript/JavaScript, Rust, Python, and Solidity. Solidity packets include contract-owned methods/types/events/errors/state values, source-only imports, overload-safe declaration identity, and deterministic default Foundry test links only when a nearest `foundry.toml` exists. File-level constants are not value symbols. Solidity storage-layout, generated-getter, ABI/export analysis, custom Foundry directories, and Hardhat TypeScript linking remain deferred; Solidity symbols intentionally leave `exported` unset. Python `.pyi` stubs/custom collection and Rust same-file/arbitrary integration-test discovery also remain deferred.
 
 Common options:
 

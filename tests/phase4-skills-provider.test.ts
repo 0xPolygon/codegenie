@@ -43,6 +43,7 @@ describe("Phase 4 skills, lenses, and prompts", () => {
       "lang/go",
       "lang/python",
       "lang/rust",
+      "lang/solidity",
       "lang/typescript"
     ]);
     for (const skill of result.skills) {

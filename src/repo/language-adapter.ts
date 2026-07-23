@@ -11,9 +11,9 @@ import { TreeSitterService, isGrammarId, languageFromPath } from "./tree-sitter/
 import { GenericAdapter } from "./tree-sitter/generic-adapter.js";
 import { GoAdapter } from "./tree-sitter/go-adapter.js";
 import { TypeScriptAdapter } from "./tree-sitter/typescript-adapter.js";
-import { GrammarAdapter } from "./tree-sitter/grammar-adapter.js";
 import { RustAdapter } from "./tree-sitter/rust-adapter.js";
 import { PythonAdapter } from "./tree-sitter/python-adapter.js";
+import { SolidityAdapter } from "./tree-sitter/solidity-adapter.js";
 
 export class LanguageAdapterRegistry {
   private readonly generic: GenericAdapter;
@@ -27,7 +27,7 @@ export class LanguageAdapterRegistry {
     const js = new TypeScriptAdapter(service, "javascript");
     const rust = new RustAdapter(service);
     const python = new PythonAdapter(service);
-    const solidity = new GrammarAdapter(service, "solidity", [".sol"]);
+    const solidity = new SolidityAdapter(service);
     for (const adapter of [go, ts, tsx, js, rust, python, solidity]) {
       this.adapters.set(adapter.id, adapter);
     }

@@ -101,7 +101,10 @@ export function candidateTestPaths(subjectPath: string, allPaths: string[], lang
   }
 
   if (language === "solidity") {
-    const packageRoot = nearestPackageRoot(subjectPath, allPathSet, ["foundry.toml"]) ?? ".";
+    const packageRoot = nearestPackageRoot(subjectPath, allPathSet, ["foundry.toml"]);
+    if (packageRoot === undefined) {
+      return [];
+    }
     candidates.add(joinRoot(packageRoot, `test/${stem}.t.sol`));
     candidates.add(joinRoot(packageRoot, `test/${stem}Test.t.sol`));
     return presentSorted(candidates, allPathSet);

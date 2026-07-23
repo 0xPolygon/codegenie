@@ -15,7 +15,7 @@ This component owns:
 - Revision access through git plumbing (`git show`, `git ls-tree`, `git grep` via `GitClient`) and engine provenance.
 - The `searchFiles` POSIX ERE query contract.
 - The tree-sitter service: WASM runtime and grammar loading from `node_modules`, extension-to-grammar routing including `tsx`, ABI pinning behavior, in-memory parsing of revision content, and parse caching.
-- The `LanguageAdapter` implementations: Go, TypeScript/JavaScript, Rust, Python, and the generic fallback, including `SymbolKind` + `nativeKind` mapping rules, ownership, declaration identity, and language-specific imports/test symbols. Solidity remains grammar-routed through the shared placeholder until its vertical slice lands.
+- The `LanguageAdapter` implementations: Go, TypeScript/JavaScript, Rust, Python, Solidity, and the generic fallback, including `SymbolKind` + `nativeKind` mapping rules, ownership, declaration identity, and language-specific imports/test symbols.
 - Stage 4 changed-symbol extraction producing `HunkSymbolFacts` (enclosing-symbol mapping and fallback detection).
 - Static signal extraction: the two v1 cross-language rules (per-language rule packs are deferred to Future Considerations — see architecture.md).
 - `PacketContext` assembly (path, package name, enclosing function/type/method) plus the file outline and the likely-tests list for `ReviewPacket.relevantTests`, all consumed by the Stage 6 packet builder.
@@ -150,8 +150,7 @@ type ParseInput = {
   path: string
   // Resolved language id routed by the adapter registry:
   // "go" | "typescript" | "tsx" | "javascript" | "rust" | "python" |
-  // "solidity"; grammars without a semantic vertical slice use the shared
-  // grammar adapter, and unsupported extensions use the generic adapter.
+  // "solidity"; unsupported extensions use the generic adapter.
   language: string
   // Full file text at the requested revision; parsing is in-memory only.
   content: string
@@ -217,7 +216,8 @@ src/repo/
     typescript-adapter.ts    # covers typescript, tsx, javascript
     rust-adapter.ts
     python-adapter.ts
-    grammar-adapter.ts       # semantic placeholder for Solidity
+    solidity-adapter.ts
+    grammar-adapter.ts       # grammar-only registration seam for future slices
     generic-adapter.ts
 ```
 
@@ -285,7 +285,7 @@ Resolve content via the revision binding, split into lines once (memoized with t
 Route by adapter. Tree-sitter path: parse at the resolved revision, then build `FileOutline`:
 
 - `packageName`: Go package clause; TS/JS: undefined (no package construct; the nearest `package.json` name is a Stage 3 fact, not re-derived here).
-- `imports`: adapter `getImports` — Go import paths; TS/JS import specifiers plus literal `require("...")` arguments; Rust compact `use` arguments (grouped, aliased, and wildcard forms preserved) plus `extern crate` source names, in source order with deduplication.
+- `imports`: adapter `getImports` — Go import paths; TS/JS import specifiers plus literal `require("...")` arguments; Rust compact `use` arguments plus `extern crate` names; Python dependency modules; Solidity unquoted source paths from plain/alias/named import forms; all in source order with deduplication.
 - `topLevelSymbols`: adapter `listSymbols` filtered to top-level declarations plus methods of top-level types, in source order, capped.
 - `testSymbols`: test symbols per adapter conventions (see Language Adapters), capped.
 - `notes`: parse-error notes (`hasErrors`), truncation notes, and fallback notes.
@@ -340,9 +340,10 @@ Input is a path or a `SymbolRef` (which carries its own path). Candidate test fi
 - TS/JS: sibling `<stem>.test.*` and `<stem>.spec.*`, `__tests__/` entries matching the stem, and `test/`/`tests/` directory entries matching the stem.
 - Rust: sibling `<stem>_test.rs` plus nearest Cargo-package `tests/<stem>.rs`; same-file `#[cfg(test)]` and arbitrary-name integration scanning are explicitly deferred.
 - Python: sibling `test_<stem>.py` and `<stem>_test.py`, plus those variants in the nearest package's `tests/` directory. Custom pytest collection configuration is explicitly deferred.
+- Solidity: require the nearest `foundry.toml`, then use only that package's default `test/<Stem>.t.sol` and `test/<Stem>Test.t.sol`; without the marker there are no candidates. Custom Foundry directory configuration and Solidity-to-Hardhat-TypeScript linking are explicitly deferred.
 - Generic: filename stem match under the same conventions.
 
-Candidates come from tree listings at the resolved revision (default head; `source?` supports base-side questions about deleted tests). With a symbol input, candidate files are filtered to those whose content mentions the symbol name (word-boundary text match). Files with grammars are parsed and their recognized test symbols returned as `SymbolRef[]` (Go `Test*`/`Benchmark*`/`Fuzz*`/`Example*`; TS/JS `describe`/`it`/`test`; Rust functions in candidate test files carrying `#[test]`, `#[tokio::test]`, `#[async_std::test]`, or `#[actix_rt::test]`; Python top-level `test_*` functions and direct `test_*` methods of `Test*` classes, all language-specific cases with `nativeKind: "test case"`). When a symbol input is present, only test-symbol bodies mentioning the symbol survive. Results are deduplicated, sorted by path/range/name, then capped. Unparseable test files contribute one file-level `SymbolRef` (`kind: "other"`, `lineRange: [1, 1]`) so the model still learns the file exists. `likely-tests.ts` is the only production discovery mechanism; `LanguageAdapter` has no likely-test hook. Meta: `precision: "heuristic"` always; `backend` reflects whether parsing refined the answer; an empty list is a valid non-degraded answer.
+Candidates come from tree listings at the resolved revision (default head; `source?` supports base-side questions about deleted tests). With a symbol input, candidate files are filtered to those whose content mentions the symbol name (word-boundary text match). Files with grammars are parsed and their recognized test symbols returned as `SymbolRef[]` (Go `Test*`/`Benchmark*`/`Fuzz*`/`Example*`; TS/JS `describe`/`it`/`test`; Rust supported attributed test functions; Python top-level `test_*` functions and direct `test_*` methods of `Test*` classes; Solidity direct contract methods beginning `test` or `invariant`, excluding `setUp` and helpers; all language-specific cases use `nativeKind: "test case"`). When a symbol input is present, only test-symbol bodies mentioning the symbol survive. Results are deduplicated, sorted by path/range/name, then capped. Unparseable test files contribute one file-level `SymbolRef` (`kind: "other"`, `lineRange: [1, 1]`) so the model still learns the file exists. `likely-tests.ts` is the only production discovery mechanism; `LanguageAdapter` has no likely-test hook. Meta: `precision: "heuristic"` always; `backend` reflects whether parsing refined the answer; an empty list is a valid non-degraded answer.
 
 #### listFiles
 
@@ -380,7 +381,7 @@ Every truncation sets `truncated: true` and `omittedCount` where the signature a
 
 The `LanguageAdapter` interface is law. The adapter registry routes by extension and exposes a shared base implementation that walks named node types per language (no `.scm` query assets in v1). Adapter authors map symbols with the single question defined in `architecture.md` and always pass the language's own word through `nativeKind`.
 
-Qualified-name rendering: each adapter defines the conventional qualified rendering used wherever an enclosing symbol is shown as a string (`HunkSymbolFacts.enclosingSymbol`, snippets, prompts): Go methods render as `(*Store).SaveUser` for pointer receivers and `Store.SaveUser` for value receivers; TS/JS and Python members render as `ClassName.method`; free functions render bare. `SymbolInfo.name` always carries the bare name; the owner lives in `ownerType`.
+Qualified-name rendering: each adapter defines the conventional qualified rendering used wherever an enclosing symbol is shown as a string (`HunkSymbolFacts.enclosingSymbol`, snippets, prompts): Go methods render as `(*Store).SaveUser` for pointer receivers and `Store.SaveUser` for value receivers; TS/JS, Python, and Solidity members render as `OwnerName.method`; free functions render bare. `SymbolInfo.name` always carries the bare name; the owner lives in `ownerType`.
 
 #### Go Adapter
 
@@ -427,6 +428,14 @@ Python maps module-level and nested-local `function_definition` nodes to `functi
 An outer `decorated_definition` owns the declaration range. Signatures are built by byte-slicing from the outer decorator start to the definition's `body` field, compacting decorator lines and the complete multiline header through its colon, and capping at 600 characters independently of suite size. The adapter never calls the brace-based `compactSignature`. Enclosing lookup chooses the smallest decorated declaration, so decorator/header/body lines bind to their semantic function, method, or class. Changed-symbol identity is path + kind + owner + name + decorated range + signature.
 
 Imports are dependency module specifiers in source order with deduplication: each module in direct `import a, b as alias`, the module portion of `from .pkg import member` with relative dots preserved, and `__future__`. Aliases and imported member names are excluded. In convention-selected Python candidate files, only top-level `test_*` functions and direct `test_*` methods under `Test*` classes use `nativeKind: "test case"`; nested local test-named functions and methods on other classes remain ordinary symbols. `.pyi` and custom pytest collection rules are deferred.
+
+#### Solidity Adapter
+
+Solidity contract/abstract-contract/library declarations map to `type`; interfaces to `interface`. Direct owner members map as follows: functions, constructors, fallback/receive handlers, and modifiers → `method` with the immediate contract/interface/library `ownerType` and explicit native kind; file-level free functions → `function`; immediately contract-owned state variables and constants → minimal `value`, while file-level constants are excluded; structs, enums, and user-defined value types → `type`; events and custom errors → `other` with explicit native kind. State-variable symbols provide packet precision only: storage layout, generated getters, ABI/export signals, and upgrade compatibility are not inferred. Every Solidity symbol leaves `exported` unset.
+
+Declaration ranges retain complete bodies for enclosure while signatures stop at the AST `body` field and cap at 600 characters; declaration-only values/events/errors retain their bounded full declaration. Enclosing lookup picks the smallest direct member for header and body lines, falling back to its containing contract only outside a member. Changed-symbol identity is path + kind + owner + name + range + signature, so multiple lines in one declaration merge and same-named overloads remain distinct. Imports emit only the unquoted `source` field from plain, namespace/unit-alias, and named-import forms in first-seen order with deduplication.
+
+In convention-selected `.t.sol` candidates, only direct contract methods whose names begin `test` or `invariant` become `nativeKind: "test case"`; `setUp`, helpers, and file-level free functions remain ordinary symbols. V1 does not read custom Foundry test-directory configuration and does not link Hardhat TypeScript tests.
 
 #### Generic Adapter
 
@@ -588,6 +597,8 @@ Stage 4 extraction (aligning with the fixture tests named in `architecture.md`):
 - `rust likely tests and deferrals` — exact sibling/Cargo-package paths return only supported attributed test functions; inline `#[cfg(test)]` and arbitrary integration names do not enter discovery.
 - `python declaration contract` — decorated functions/classes, direct methods, nested-local ownership reset, nested-class context, body-free capped multiline signatures, dependency imports, deterministic identity, and unset `exported` fields match the Python contract.
 - `python likely tests and deferrals` — exact sibling/nearest-package paths return only top-level `test_*` functions and direct methods under `Test*` classes; `.pyi` and custom pytest collection do not enter discovery.
+- `solidity declaration contract` — exact type/interface/method/function/value/other mappings, immediate owners, synthetic callable names, minimal state values, body-free capped signatures, source-only imports, overload identity, smallest-member enclosure, deterministic order, and unset `exported` fields.
+- `solidity likely tests and deferrals` — exact nearest-package default Foundry paths return only direct `test*`/`invariant*` contract methods; setup/helpers, custom Foundry directories, and Hardhat TypeScript links do not enter discovery.
 - `deletion-only hunk maps to base side` — removed lines map to the base-revision symbol with old-side `changedLines` and `changedLinesSide: "old"`; add-bearing hunks carry `changedLinesSide: "new"`.
 - `primary symbol pick is deterministic` — a hunk spanning two functions picks the one covering more changed lines; tie breaks by span then start line.
 - `fallback regex extraction` — with parsing disabled, a Go hunk yields `source: "fallback"`, `confidence: "heuristic"`, signature from the matched line, no `symbolRange`.

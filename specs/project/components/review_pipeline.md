@@ -548,7 +548,7 @@ Outcome handling:
 Execution rules:
 
 - One composite model task per packet. All selected lenses are projected into that single task; there is never one model call per lens. Skill projection for the review stage includes only Checks, False Positives, and Examples sections, capped at 4000 chars per skill and 12000 chars total per prompt, with truncation recorded in telemetry (projection mechanics owned by `components/skills_llm_telemetry.md`).
-- Before Stage 7 projection, skills are defensively filtered to language-neutral skills or skills whose `languages` contains the packet's canonical language. Stage 9 applies the same rule to verifier guidance, preventing Rust/Python content from entering Go/TypeScript prompts or each other's prompts and vice versa.
+- Before Stage 7 projection, skills are defensively filtered to language-neutral skills or skills whose `languages` contains the packet's canonical language. Stage 9 applies the same rule to verifier guidance, preventing Rust/Python/Solidity content from entering Go/TypeScript prompts or one another's prompts and vice versa.
 - Coverage-aware execution profiles:
   - `light`: one structured call; tiny optional read-only tool budget (table above); compact prompting biased toward submitting immediately.
   - `normal`: one structured, tool-capable task; real read-only tool access; focused review instructions; bounded investigation.
