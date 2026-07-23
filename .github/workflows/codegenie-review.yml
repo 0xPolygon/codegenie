@@ -41,7 +41,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "26"
 
       - name: Build codegenie from trusted source
         # --ignore-scripts: the build is plain tsc and tree-sitter runs from
