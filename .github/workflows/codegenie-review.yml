@@ -44,9 +44,13 @@ jobs:
           node-version: "22"
 
       - name: Build codegenie from trusted source
+        # --ignore-scripts: the build is plain tsc and tree-sitter runs from
+        # prebuilt WASM, so no dependency build script is needed — and pnpm's
+        # build-script policy then cannot fail the install regardless of what
+        # the checked-out base revision configures.
         run: |
           npm install -g pnpm
-          pnpm install --frozen-lockfile
+          pnpm install --frozen-lockfile --ignore-scripts
           pnpm build
 
       - name: Run codegenie review
@@ -54,7 +58,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           CODEGENIE_REPORT_PATH: ${{ runner.temp }}/codegenie-report.md
-        run: node dist/cli/main.js github-action --model "anthropic/claude-opus-4-8:high"
+        # Bootstrap guard: the trusted-base checkout builds the BASE branch's
+        # codegenie, so a PR whose base predates the github-action adapter
+        # cannot run it — skip cleanly instead of failing. Once the adapter is
+        # on the default branch this never fires.
+        run: |
+          if [ ! -d dist/github-action ]; then
+            echo "github-action: base build predates the github-action adapter — skipping (bootstrap)"
+            exit 0
+          fi
+          node dist/cli/main.js github-action --model "anthropic/claude-opus-4-8:high"
 
       - name: Upload review report
         if: always()
