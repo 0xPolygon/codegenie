@@ -63,7 +63,9 @@ function formatTokens(value) {
 }
 
 function escapeCell(value) {
-  return value.replace(/\|/gu, "\\|");
+  return value
+    .replace(/\\/gu, "\\\\")
+    .replace(/\|/gu, "\\|");
 }
 
 const target = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "models.md");
