@@ -1477,6 +1477,7 @@ describe("eval command fixture suite", () => {
     expect(suite.cases.map((entry) => entry.evalCase.name).sort()).toEqual([
       "fixture-core-lens",
       "fixture-go-lens",
+      "fixture-rust-lens",
       "fixture-tests-lens",
       "fixture-typescript-lens"
     ]);
@@ -1485,6 +1486,9 @@ describe("eval command fixture suite", () => {
       expect(entry.evalCase.repo?.fixture).toMatch(/^repos\//u);
       expect(entry.evalCase.review).toMatchObject({ provider: "fake", model: "fake-model" });
     }
+    expect(suite.cases.find((entry) => entry.evalCase.name === "fixture-rust-lens")?.evalCase.should_not_find).toEqual([
+      expect.objectContaining({ id: "rust-marker-free-negative-control", path: "src/negative.rs" })
+    ]);
     expect(findNestedGitDirs(path.join(process.cwd(), "evals", "fixtures", "repos"))).toEqual([]);
   });
 
@@ -1508,7 +1512,7 @@ describe("eval command fixture suite", () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(output).toContain("Suite: 4 passed, 0 failed, 0 errored");
+    expect(output).toContain("Suite: 5 passed, 0 failed, 0 errored");
     expect(existsSync(path.join(suiteDir, "logs", "1", "fixture-repo", ".git"))).toBe(true);
   }, 60_000);
 

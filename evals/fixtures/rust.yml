@@ -1,0 +1,25 @@
+name: fixture-rust-lens
+repo:
+  fixture: repos/rust
+command:
+  branch: feature
+  base: main
+review:
+  provider: fake
+  model: fake-model
+  verify: true
+  cache: false
+  lenses:
+    - lang/rust
+expect:
+  minFindings: 1
+  maxFindings: 1
+should_find:
+  - id: rust-fake-finding
+    path: src/positive.rs
+    category: correctness
+    severityAtLeast: medium
+    titlePattern: Fake finding
+should_not_find:
+  - id: rust-marker-free-negative-control
+    path: src/negative.rs

@@ -12,6 +12,7 @@ import { GenericAdapter } from "./tree-sitter/generic-adapter.js";
 import { GoAdapter } from "./tree-sitter/go-adapter.js";
 import { TypeScriptAdapter } from "./tree-sitter/typescript-adapter.js";
 import { GrammarAdapter } from "./tree-sitter/grammar-adapter.js";
+import { RustAdapter } from "./tree-sitter/rust-adapter.js";
 
 export class LanguageAdapterRegistry {
   private readonly generic: GenericAdapter;
@@ -23,7 +24,7 @@ export class LanguageAdapterRegistry {
     const ts = new TypeScriptAdapter(service, "typescript");
     const tsx = new TypeScriptAdapter(service, "tsx");
     const js = new TypeScriptAdapter(service, "javascript");
-    const rust = new GrammarAdapter(service, "rust", [".rs"]);
+    const rust = new RustAdapter(service);
     const python = new GrammarAdapter(service, "python", [".py"]);
     const solidity = new GrammarAdapter(service, "solidity", [".sol"]);
     for (const adapter of [go, ts, tsx, js, rust, python, solidity]) {

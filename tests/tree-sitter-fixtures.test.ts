@@ -7,7 +7,7 @@ import { buildRepositoryIndex } from "../src/repo/repository-index.js";
 import { LanguageAdapterRegistry } from "../src/repo/language-adapter.js";
 import { renderGoSymbolName } from "../src/repo/tree-sitter/go-adapter.js";
 import { TreeSitterService } from "../src/repo/tree-sitter/tree-sitter-service.js";
-import type { DiffFile, FileFacts, RepositoryToolsHost, TelemetryEvent, ToolCallRecord } from "../src/types.js";
+import type { DiffFile, DiffHunk, FileFacts, RepositoryToolsHost, TelemetryEvent, ToolCallRecord } from "../src/types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
@@ -109,6 +109,328 @@ describe("parser-derived fixture summaries", () => {
         expect.objectContaining({ name: "uses injected transport without network calls", nativeKind: "test case" })
       ])
     );
+  });
+
+  it("derives Rust declarations, ownership, attributes, imports, and test symbols from fixtures", async () => {
+    const service = new TreeSitterService();
+    const registry = new LanguageAdapterRegistry(service);
+    const adapter = registry.forPath("src/payment.rs");
+    const parsed = await parseFixture(registry, "src/payment.rs", fixture("rust/payment.rs"));
+    const symbols = adapter.listSymbols(parsed);
+
+    expect(adapter.id).toBe("rust");
+    expect(parsed).toMatchObject({ language: "rust", adapterId: "rust", hasErrors: false });
+    expect(adapter.getImports(parsed)).toEqual([
+      "std::{fmt::Debug as StdDebug, sync::*}",
+      "anyhow::Result",
+      "alloc"
+    ]);
+    expect(symbols).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "Payment", kind: "type", nativeKind: "struct", lineRange: [6, 10] }),
+      expect.objectContaining({ name: "PaymentBits", kind: "type", nativeKind: "union" }),
+      expect.objectContaining({ name: "PaymentState", kind: "type", nativeKind: "enum" }),
+      expect.objectContaining({ name: "PaymentId", kind: "type", nativeKind: "type alias" }),
+      expect.objectContaining({ name: "DEFAULT_LIMIT", kind: "value", nativeKind: "constant" }),
+      expect.objectContaining({ name: "NEXT_ID", kind: "value", nativeKind: "static" }),
+      expect.objectContaining({ name: "Gateway", kind: "interface", nativeKind: "trait" }),
+      expect.objectContaining({ name: "Receipt", kind: "type", nativeKind: "associated type", ownerType: "Gateway" }),
+      expect.objectContaining({ name: "MAX_RETRIES", kind: "value", nativeKind: "associated constant", ownerType: "Gateway" }),
+      expect.objectContaining({ name: "capture", kind: "method", ownerType: "Payment", lineRange: [60, 63] }),
+      expect.objectContaining({ name: "payment_id", kind: "other", nativeKind: "macro definition", lineRange: [66, 71] }),
+      expect.objectContaining({ name: "audit", kind: "container", nativeKind: "module" }),
+      expect.objectContaining({ name: "record", kind: "function", nativeKind: "function" })
+    ]));
+
+    const authorizeMethods = symbols.filter((symbol) => symbol.name === "authorize");
+    expect(authorizeMethods).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ownerType: "Gateway", nativeKind: "trait method", lineRange: [26, 30] }),
+      expect.objectContaining({ ownerType: "BackupGateway", nativeKind: "trait method", lineRange: [37, 37] }),
+      expect.objectContaining({
+        ownerType: "Payment",
+        nativeKind: "impl method",
+        lineRange: [44, 50],
+        signature: expect.stringContaining("impl<T> Gateway for Payment<T> :: #[track_caller] fn authorize")
+      }),
+      expect.objectContaining({
+        ownerType: "Payment",
+        nativeKind: "impl method",
+        lineRange: [54, 56],
+        signature: expect.stringContaining("impl<T> BackupGateway for Payment<T> :: fn authorize")
+      })
+    ]));
+    expect(symbols.every((symbol) => symbol.exported === undefined)).toBe(true);
+    expect(adapter.getEnclosingSymbol(parsed, 44)).toMatchObject({ name: "authorize", lineRange: [44, 50] });
+    expect(adapter.getEnclosingSymbol(parsed, 45)).toMatchObject({ name: "authorize", lineRange: [44, 50] });
+    expect(adapter.getEnclosingSymbol(parsed, 49)).toMatchObject({ name: "authorize", lineRange: [44, 50] });
+    expect(adapter.getEnclosingSymbol(parsed, 51)).toBeUndefined();
+
+    const hunk: DiffHunk = {
+      id: "rust-identity",
+      path: parsed.path,
+      oldStart: 44,
+      oldLines: 0,
+      newStart: 44,
+      newLines: 12,
+      header: "",
+      lines: [44, 49, 55].map((line) => ({ kind: "add" as const, content: "+", newLineNumber: line }))
+    };
+    expect(adapter.getChangedSymbols(parsed, hunk)).toEqual([
+      expect.objectContaining({ name: "authorize", lineRange: [44, 50], changedLines: [44, 49] }),
+      expect.objectContaining({ name: "authorize", lineRange: [54, 56], changedLines: [55] })
+    ]);
+
+    const testsParsed = await parseFixture(registry, "src/payment_test.rs", fixture("rust/payment_test.rs"));
+    const testSymbols = adapter.listSymbols(testsParsed);
+    expect(testSymbols).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "authorize_rejects_zero", nativeKind: "test case", lineRange: [3, 7] }),
+      expect.objectContaining({ name: "authorize_async", nativeKind: "test case", lineRange: [9, 13] }),
+      expect.objectContaining({ name: "helper_is_not_a_test_case", nativeKind: "function", lineRange: [15, 18] })
+    ]));
+  });
+
+  it("keeps Rust partial output and signatures bounded without enabling deferred inline tests", async () => {
+    const registry = new LanguageAdapterRegistry(new TreeSitterService());
+    const adapter = registry.forPath("src/lib.rs");
+    const parsed = await adapter.parse({
+      path: "src/lib.rs",
+      language: "rust",
+      source: { kind: "head" },
+      content: `#[cfg(test)]\n#[test]\nfn inline_test() {}\n\ntype Long = ${"Result<".repeat(150)}u8${">".repeat(150)};\nfn intact() {}\nfn broken(`
+    });
+    const symbols = adapter.listSymbols(parsed);
+
+    expect(parsed.hasErrors).toBe(true);
+    expect(symbols).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "inline_test", nativeKind: "function" }),
+      expect.objectContaining({ name: "intact", nativeKind: "function" })
+    ]));
+    expect(symbols.find((symbol) => symbol.name === "Long")?.signature?.length).toBeLessThanOrEqual(600);
+    expect(symbols.some((symbol) => symbol.nativeKind === "test case")).toBe(false);
+  });
+
+  it("retains non-nominal Rust impl methods and prefers inner declarations on shared lines", async () => {
+    const registry = new LanguageAdapterRegistry(new TreeSitterService());
+    const adapter = registry.forPath("src/lib.rs");
+    const parsed = await adapter.parse({
+      path: "src/lib.rs",
+      language: "rust",
+      source: { kind: "head" },
+      content: [
+        "trait Inline { fn f(); }",
+        "mod nested { fn g() {} }",
+        "trait Local { fn tuple(&self); }",
+        "trait Marker {}",
+        "impl Local for (u8, u8) { fn tuple(&self) {} }",
+        "impl Local for [u8; 4] { fn array(&self) {} }",
+        "impl Local for [u8] { fn slice(&self) {} }",
+        "impl Local for () { fn unit(&self) {} }",
+        "impl Local for dyn Marker { fn dynamic(&self) {} }",
+        "impl Local for fn(u8) -> u8 { fn function(&self) {} }",
+        "impl Local for &Foo { fn reference(&self) {} }",
+        "impl Local for <Foo as Other>::Assoc { fn projection(&self) {} }",
+        "impl Local for <Foo as Other>::Assoc::Nested { fn nested_projection(&self) {} }",
+        "impl<T> Local for T::Assoc { fn generic_projection(&self) {} }",
+        "impl Local for Self::Assoc { fn self_projection(&self) {} }",
+        "impl Local for module::Concrete { fn nominal_path(&self) {} }",
+        "impl Local for ::module::Absolute { fn absolute_path(&self) {} }",
+        "impl Local for ::module::Generic<u8> { fn absolute_generic(&self) {} }",
+        "impl Local for ::RootAbsolute { fn root_absolute(&self) {} }",
+        "impl Local for ::RootGeneric<u8> { fn root_absolute_generic(&self) {} }",
+        "impl Local for crate::r#Type<u8> { fn raw_path(&self) {} }",
+        "impl Local for r#Raw { fn raw_nominal(&self) {} }",
+        "impl Local for crate::東京 { fn unicode_qualified(&self) {} }",
+        "impl<T> Local for crate::東京<T> { fn unicode_qualified_generic(&self) {} }",
+        "impl Local for ::東京 { fn unicode_root_absolute(&self) {} }",
+        "impl<T> Local for ::東京<T> { fn unicode_root_absolute_generic(&self) {} }",
+        "impl Local for crate::r#東京 { fn unicode_raw_qualified(&self) {} }",
+        "impl<T> Local for crate::r#東京<T> { fn unicode_raw_qualified_generic(&self) {} }"
+      ].join("\n")
+    });
+    const symbols = adapter.listSymbols(parsed);
+
+    expect(parsed.hasErrors).toBe(false);
+    expect(symbols).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "tuple", kind: "method", ownerType: "(u8, u8)" }),
+      expect.objectContaining({ name: "array", kind: "method", ownerType: "[u8; 4]" }),
+      expect.objectContaining({ name: "slice", kind: "method", ownerType: "[u8]" }),
+      expect.objectContaining({ name: "unit", kind: "method", ownerType: "()" }),
+      expect.objectContaining({ name: "dynamic", kind: "method", ownerType: "dyn Marker" }),
+      expect.objectContaining({ name: "function", kind: "method", ownerType: "fn(u8) -> u8" }),
+      expect.objectContaining({ name: "reference", kind: "method", ownerType: "&Foo" }),
+      expect.objectContaining({ name: "projection", kind: "method", ownerType: "<Foo as Other>::Assoc" }),
+      expect.objectContaining({
+        name: "nested_projection",
+        kind: "method",
+        ownerType: "<Foo as Other>::Assoc::Nested"
+      }),
+      expect.objectContaining({ name: "generic_projection", kind: "method", ownerType: "T::Assoc" }),
+      expect.objectContaining({ name: "self_projection", kind: "method", ownerType: "Self::Assoc" }),
+      expect.objectContaining({ name: "nominal_path", kind: "method", ownerType: "Concrete" }),
+      expect.objectContaining({ name: "absolute_path", kind: "method", ownerType: "Absolute" }),
+      expect.objectContaining({ name: "absolute_generic", kind: "method", ownerType: "Generic" }),
+      expect.objectContaining({ name: "root_absolute", kind: "method", ownerType: "RootAbsolute" }),
+      expect.objectContaining({ name: "root_absolute_generic", kind: "method", ownerType: "RootGeneric" }),
+      expect.objectContaining({ name: "raw_path", kind: "method", ownerType: "r#Type" }),
+      expect.objectContaining({ name: "raw_nominal", kind: "method", ownerType: "r#Raw" }),
+      expect.objectContaining({ name: "unicode_qualified", kind: "method", ownerType: "東京" }),
+      expect.objectContaining({ name: "unicode_qualified_generic", kind: "method", ownerType: "東京" }),
+      expect.objectContaining({ name: "unicode_root_absolute", kind: "method", ownerType: "東京" }),
+      expect.objectContaining({ name: "unicode_root_absolute_generic", kind: "method", ownerType: "東京" }),
+      expect.objectContaining({ name: "unicode_raw_qualified", kind: "method", ownerType: "r#東京" }),
+      expect.objectContaining({ name: "unicode_raw_qualified_generic", kind: "method", ownerType: "r#東京" })
+    ]));
+    expect(adapter.getEnclosingSymbol(parsed, 1)).toMatchObject({
+      name: "f",
+      kind: "method",
+      ownerType: "Inline"
+    });
+    expect(adapter.getEnclosingSymbol(parsed, 2)).toMatchObject({ name: "g", kind: "function" });
+  });
+
+  it("removes Rust import comment trivia before semantic deduplication", async () => {
+    const registry = new LanguageAdapterRegistry(new TreeSitterService());
+    const adapter = registry.forPath("src/lib.rs");
+    const parsed = await adapter.parse({
+      path: "src/lib.rs",
+      language: "rust",
+      source: { kind: "head" },
+      content: [
+        "use crate::{",
+        "    alpha, // line comment between use-tree entries",
+        "    beta::{self, /* block comment before an entry */ Item},",
+        "};",
+        "use crate::{alpha, beta::{self, Item}};",
+        "use crate::{gamma, /* unique block comment */ delta};",
+        "use crate::{gamma, delta,};"
+      ].join("\n")
+    });
+
+    expect(parsed.hasErrors).toBe(false);
+    expect(adapter.getImports(parsed)).toEqual([
+      "crate::{alpha, beta::{self, Item},}",
+      "crate::{gamma, delta}"
+    ]);
+    expect(adapter.getImports(parsed).join(" ")).not.toMatch(/comment|\/\*|\/\//u);
+  });
+
+  it("keeps Rust outer attributes attached across comment trivia", async () => {
+    const registry = new LanguageAdapterRegistry(new TreeSitterService());
+    const adapter = registry.forPath("tests/commented.rs");
+    const parsed = await adapter.parse({
+      path: "tests/commented.rs",
+      language: "rust",
+      source: { kind: "head" },
+      content: [
+        "#[test]",
+        "// Documents why this test exists.",
+        "fn commented_test() {}",
+        "#[tokio::test]",
+        "/* This comment is also declaration trivia. */",
+        "async fn commented_async_test() {}"
+      ].join("\n")
+    });
+
+    expect(parsed.hasErrors).toBe(false);
+    expect(adapter.listSymbols(parsed)).toEqual([
+      expect.objectContaining({
+        name: "commented_test",
+        nativeKind: "test case",
+        lineRange: [1, 3],
+        signature: "#[test] fn commented_test()"
+      }),
+      expect.objectContaining({
+        name: "commented_async_test",
+        nativeKind: "test case",
+        lineRange: [4, 6],
+        signature: "#[tokio::test] async fn commented_async_test()"
+      })
+    ]);
+  });
+
+  it("extracts local Rust items and resets method ownership inside callable bodies", async () => {
+    const registry = new LanguageAdapterRegistry(new TreeSitterService());
+    const adapter = registry.forPath("src/lib.rs");
+    const sourceLines = [
+      "struct Foo;",
+      "impl Foo {",
+      "    fn outer(&self) {",
+      "        fn local_function() {",
+      "            struct LocalType;",
+      "            let _local = 1;",
+      "        }",
+      "        if true {",
+      "            type LocalAlias = u8;",
+      "            struct Inner;",
+      "            impl Inner {",
+      "                fn local_method(&self) {",
+      "                    let _nested = 2;",
+      "                }",
+      "            }",
+      "        }",
+      "    }",
+      "}"
+    ];
+    const parsed = await adapter.parse({
+      path: "src/lib.rs",
+      language: "rust",
+      source: { kind: "head" },
+      content: sourceLines.join("\n")
+    });
+    const symbols = adapter.listSymbols(parsed);
+
+    expect(parsed.hasErrors).toBe(false);
+    expect(symbols).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "outer", kind: "method", ownerType: "Foo" }),
+      expect.objectContaining({ name: "local_function", kind: "function", nativeKind: "function" }),
+      expect.objectContaining({ name: "LocalType", kind: "type", nativeKind: "struct" }),
+      expect.objectContaining({ name: "LocalAlias", kind: "type", nativeKind: "type alias" }),
+      expect.objectContaining({ name: "Inner", kind: "type", nativeKind: "struct" }),
+      expect.objectContaining({ name: "local_method", kind: "method", ownerType: "Inner" })
+    ]));
+    expect(symbols.find((symbol) => symbol.name === "local_function")?.ownerType).toBeUndefined();
+    expect(symbols.find((symbol) => symbol.name === "LocalType")?.ownerType).toBeUndefined();
+    expect(adapter.getEnclosingSymbol(parsed, sourceLines.indexOf("            struct LocalType;") + 1)).toMatchObject({
+      name: "LocalType"
+    });
+    expect(adapter.getEnclosingSymbol(parsed, sourceLines.indexOf("            let _local = 1;") + 1)).toMatchObject({
+      name: "local_function"
+    });
+    expect(adapter.getEnclosingSymbol(parsed, sourceLines.indexOf("                    let _nested = 2;") + 1)).toMatchObject({
+      name: "local_method",
+      ownerType: "Inner"
+    });
+  });
+
+  it("keeps Rust macro signatures body-free at the first rule boundary", async () => {
+    const registry = new LanguageAdapterRegistry(new TreeSitterService());
+    const adapter = registry.forPath("src/lib.rs");
+    const parsed = await adapter.parse({
+      path: "src/lib.rs",
+      language: "rust",
+      source: { kind: "head" },
+      content: [
+        "#[macro_export]",
+        "macro_rules! traced {",
+        "    // Body trivia must not leak into the signature.",
+        "    ($value:expr) => {{ println!(\"{}\", $value); $value }};",
+        "    () => { 0 };",
+        "}",
+        "macro_rules! empty {}"
+      ].join("\n")
+    });
+    const symbols = adapter.listSymbols(parsed);
+    const macro = symbols.find((symbol) => symbol.name === "traced");
+
+    expect(parsed.hasErrors).toBe(false);
+    expect(macro).toMatchObject({
+      kind: "other",
+      nativeKind: "macro definition",
+      lineRange: [1, 6],
+      signature: "#[macro_export] macro_rules! traced {"
+    });
+    expect(macro?.signature).not.toContain("$value");
+    expect(macro?.signature).not.toContain("println!");
+    expect(symbols.find((symbol) => symbol.name === "empty")?.signature).toBe("macro_rules! empty {");
   });
 
   it("serves parser-derived summaries and source snippets through repository tools", async () => {

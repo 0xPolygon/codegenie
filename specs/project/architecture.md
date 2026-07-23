@@ -51,13 +51,16 @@ Core dependencies:
 - A TOML parser for `codegenie.toml` and a YAML parser for eval case files.
 - `picomatch` for path-rule and tool globs.
 - `execa` or Node subprocess APIs for `git` and `gh`.
-- `web-tree-sitter` plus Go and TypeScript/JavaScript grammars for v1 syntax parsing.
+- `web-tree-sitter` plus Go, TypeScript/JavaScript, Rust, Python, and Solidity grammars for syntax parsing. Rust has a semantic adapter in the current slice; Python and Solidity retain grammar-backed routing until their vertical slices land.
   - `tree-sitter-go` for Go
   - `tree-sitter-typescript` for Typescript: `.ts`/`.mts`/`.cts`/`.d.ts` route to the typescript grammar; `.tsx` routes to the tsx grammar
   - `tree-sitter-javascript` for Javascript: `.js`/`.jsx`/`.mjs`/`.cjs`
+  - `tree-sitter-rust` for Rust: `.rs`
+  - `tree-sitter-python` for Python: `.py` (`.pyi` remains unknown/generic)
+  - `tree-sitter-solidity` for Solidity: `.sol`
   - Tree-sitter runs entirely via WASM: the `web-tree-sitter` runtime (`tree-sitter.wasm`) plus one `.wasm` grammar per language, all shipped inside their npm tarballs.
   - Grammar files are referenced directly from `node_modules` at runtime (e.g. `require.resolve("tree-sitter-go/tree-sitter-go.wasm")` via `createRequire` under ESM); no copy step into an `assets/` folder is needed because codegenie is distributed as a normal npm package. An asset-copy step becomes necessary only if single-file bundling is introduced, which is out of scope for v1.
-  - `web-tree-sitter` and the three grammar packages are pinned together; ABI compatibility is enforced at `Language.load`.
+  - `web-tree-sitter` and the six grammar packages are pinned together; ABI compatibility is enforced at `Language.load`.
 
 Exact dependency versions are pinned via the pnpm lockfile; tree-sitter grammar wasm artifacts ship inside their npm tarballs (no postinstall downloads permitted).
 
@@ -327,7 +330,7 @@ type SymbolKind =
   | "type"       // concrete type definitions: class, struct, enum, type alias, Solidity contract/event/error
   | "interface"  // contract-defining types: interface, trait, protocol
   | "value"      // const, var, let, static, Solidity state variables
-  | "container"  // module, namespace, package, Rust mod/impl block, Swift extension, Solidity library
+  | "container"  // module, namespace, package, Rust mod, Swift extension, Solidity library (Rust impl is ownership context, not a symbol)
   | "other"      // macros, Solidity modifiers, anything unmapped
 
 type SymbolRef = {
@@ -892,7 +895,7 @@ Chosen defaults:
 - `telemetry.runDir = ".codegenie/runs"`
 - `telemetry.retainRuns = 20`
 - `eval.logsDir = "logs"`
-- Default-enabled lens set = all four bundled lenses.
+- Default-enabled lens set = all five currently bundled lenses (`core/code-review`, `core/tests`, `lang/go`, `lang/rust`, `lang/typescript`). Plan 98 adds Python and Solidity later in the same unreleased integration series.
 
 Neither `review.maxFindings` nor `review.softCommentCap` suppresses verified critical/high findings.
 
@@ -1044,6 +1047,7 @@ V1 language adapters:
 
 - Go.
 - TypeScript/JavaScript.
+- Rust, with attribute-aware declarations, trait/impl ownership context, nominal impl owners, stable imports, and deterministic declaration identity.
 - Generic fallback for unsupported files.
 
 Language adapter interface:
@@ -1059,9 +1063,10 @@ interface LanguageAdapter {
   getImports(file: ParsedFile): string[]
   getChangedSymbols(file: ParsedFile, hunk: DiffHunk): ChangedSymbol[]
   getStaticSignals?(file: ParsedFile, hunk: DiffHunk): StaticSignal[]
-  findLikelyTests?(symbol: SymbolInfo, index: RepositoryIndex): SymbolInfo[]
 }
 ```
+
+Likely-test discovery is owned once by `src/repo/likely-tests.ts`, not by an adapter hook. Rust candidates are sibling `<stem>_test.rs` and nearest Cargo-package `tests/<stem>.rs`; supported attributed test functions are returned in deterministic path/range/name order. Same-file `#[cfg(test)]` and arbitrary integration-test scanning are explicit deferrals.
 
 Repository tool interface:
 
@@ -1401,7 +1406,7 @@ Planner dossier construction:
 V1 repository intelligence can be incremental:
 
 - Required for v1: diff parsing, filtering, simple file classification, package-root hints, test-file detection, configured labels/priorities, absolute hunk line numbers, and seed context retrieval.
-- Strongly preferred for v1: tree-sitter enclosing symbol and changed-symbol extraction for Go and TypeScript/JavaScript.
+- Strongly preferred for v1: tree-sitter enclosing symbol and changed-symbol extraction for Go, TypeScript/JavaScript, and Rust.
 - Deferred to Future Considerations: symbol edges, caller/test relationship graphs, and semantic analyzer integrations.
 
 ### Verifier, Deduper, Composer

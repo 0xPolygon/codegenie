@@ -145,6 +145,11 @@ export const BUNDLED_SKILL_WHY_LEDGER: Record<string, PromptLedgerEntry[]> = {
   ],
   "lang/typescript": [
     { surface: "whole skill", reason: "Live but never eval-validated; treat checks as designed-general until a TS eval case exists.", evidence: "Eval-diversity punchlist item 2026-07-06" }
+  ],
+  "lang/rust": [
+    { surface: "runtime failure predicates", reason: "Rust review must distinguish reachable panics, boundary failures, and materially lost Results from idiomatic syntax that has no observable failure.", evidence: "Plan 98 §2.2 owner-accepted positive and required false-positive cases, 2026-07-23" },
+    { surface: "unsafe invariant discipline", reason: "Unsafe syntax is only actionable when a named aliasing, lifetime, initialization, layout, thread-safety, or ownership invariant is violated.", evidence: "Plan 98 bundled-skill owner matrix and Rust acceptance gate, 2026-07-23" },
+    { surface: "async blocking and suspension", reason: "Runtime blocking and synchronization across await are valid only with executor placement, suspension, and conflict evidence; compiler-rejected Send/lifetime claims are excluded.", evidence: "Plan 98 §2.2 async materiality and false-positive contract, 2026-07-23" }
   ]
 };
 

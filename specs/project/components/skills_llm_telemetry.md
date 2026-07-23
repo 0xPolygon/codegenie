@@ -560,7 +560,7 @@ Body parsing:
 
 ### Skill Loading And Trust
 
-- Bundled skills resolve relative to the installed package: the loader walks `bundled-skills/**/*.md` from a directory resolved via `import.meta.url`, consistent with how grammar wasm files resolve from `node_modules` (`architecture.md`, Technology Choices). The v1 bundled inventory is one skill per bundled lens — four files: `core/code-review.md` (absorbing logic-bug and architecture guidance as sections of the one core skill) and `core/tests.md` under `bundled-skills/core/`, and `go.md`, `typescript.md` under `bundled-skills/lang/` (the TypeScript skill declares `languages: ["typescript", "tsx", "javascript"]`). `bundled-skills/domain/` ships empty in v1. A bundled skill failing validation is still recoverable `skill_invalid` (warn, skip, disclose) — a packaging bug must not brick review.
+- Bundled skills resolve relative to the installed package: the loader walks `bundled-skills/**/*.md` from a directory resolved via `import.meta.url`, consistent with how grammar wasm files resolve from `node_modules` (`architecture.md`, Technology Choices). The current bundled inventory is five files: `core/code-review.md` and `core/tests.md` under `bundled-skills/core/`, plus `go.md`, `rust.md`, and `typescript.md` under `bundled-skills/lang/`. Rust declares only `languages: ["rust"]`; TypeScript declares `languages: ["typescript", "tsx", "javascript"]`. `bundled-skills/domain/` ships empty. A bundled skill failing validation is still recoverable `skill_invalid` (warn, skip, disclose) — a packaging bug must not brick review.
 - Repo-local skills are `.codegenie/skills/**/*.md` read from the working copy. Per the policy-load-revision rule in Trust Boundaries, the loader never resolves these through git at the reviewed head; if the PR under review modifies `.codegenie/skills/` or `codegenie.toml`, surfacing that as a planner risk signal is the dossier's job (`components/review_pipeline.md`) — the loader's only obligation is to read the trusted checkout.
 - `extraSkillPaths` entries are files or directories; directories are walked for `*.md`. The config loader has already enforced trust partitioning (repo-config values outside the repo root were ignored with a warning); the loader re-checks repo-sourced entries against `repoRoot` containment as defense in depth.
 - Discovery order within each source is deterministic: lexicographic by repo-relative (or absolute) path. The resulting `skills` array order is the registry's load order and the tiebreaker for duplicate-id handling.
@@ -568,7 +568,7 @@ Body parsing:
 
 ### Bundled Skill Content Outlines
 
-Loader, registry, and projection machinery do not make reviews good — skill content does, and bundled skill content is the day-one review-quality gap this component must close. The four bundled skills ship with at least checklist-level content; the outlines below are the normative minimum for each skill's `Checks` section, with 5-8 concrete check areas per skill:
+Loader, registry, and projection machinery do not make reviews good — skill content does, and bundled skill content is the day-one review-quality gap this component must close. The five bundled skills ship with evidence-driven content; the outlines below are the normative minimum for each skill's `Checks` section:
 
 - `core/code-review`:
   - Logic/correctness: boundary conditions, off-by-one errors, inverted conditions.
@@ -581,9 +581,10 @@ Loader, registry, and projection machinery do not make reviews good — skill co
   - Plus substantive `False Positives` and `Safe Patterns` themes alongside the checks.
 - `core/tests`: missing coverage for changed behavior, deleted or weakened tests, assertion quality, flaky patterns (timing/order dependence), test-only code leaking into production.
 - `lang/go`: goroutine leaks, context misuse/replacement, defer-in-loop, nil map/pointer writes, error shadowing (`:=`), channel deadlocks, slice aliasing/append sharing, missing mutex on mixed access.
+- `lang/rust`: reachable production panics, actually narrowing casts, materially ignored `Result`, executor-blocking work, concrete range/slice boundary failures, violated unsafe invariants, and runtime synchronization or unsafe/manual trait behavior across `.await`. Compiler-rejected lifetime/`Send` claims, widening/nonnumeric casts, explicit best-effort results, test-only panics, and bare `unsafe` syntax are required false positives.
 - `lang/typescript`: floating promises, `any`-casts erasing type safety, non-null assertions, missing exhaustiveness checks, async error handling (unawaited rejections), equality/coercion pitfalls, mutation of shared references.
 
-Phase 4 authors the four skill files against these outlines; the outlines are the minimum bar, not the ceiling.
+Every new language check must name an observable failure, a reachability/materiality and severity rule, a concrete unsafe example, a safe counterexample, and a mitigation. `BUNDLED_SKILL_WHY_LEDGER` carries evidence-bearing entries for `lang/rust`. The full Rust Stage-7 projection must fit the 4000-character per-skill cap without truncation.
 
 ### Lens Resolution Algorithm
 
@@ -847,7 +848,7 @@ All tests use Vitest. LLM tests use a fake pi-ai adapter returning scripted comp
 
 Skill loader:
 
-- `skills_load_bundled_inventory`: loading with no repo skills returns the four bundled skills with correct ids, sources, lens declarations, and non-empty `Checks` sections; load order is deterministic.
+- `skills_load_bundled_inventory`: loading with no repo skills returns the five bundled skills with correct ids, sources, lens declarations, and non-empty `Checks` sections; load order is deterministic.
 - `skills_frontmatter_validation_failures`: fixtures missing `id`, missing `lenses`, with a malformed id, with an empty title, and over 256KB each produce one `SkillLoadFailure` with a `warn` log and `skill_invalid` telemetry; valid siblings still load.
 - `skills_section_parsing`: a skill with all five sections, lower-level headings inside sections, content before the first H1, an unknown H1, and duplicate `# Checks` headings parses into the expected `sections` map (duplicates concatenated, preamble and unknown sections excluded).
 - `skills_guidance_required`: a Purpose-only skill is `skill_invalid`; a skill with only `False Positives` loads with a missing-Checks warning.

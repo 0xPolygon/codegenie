@@ -46,6 +46,8 @@ codegenie review abc1234 def5678            # a commit range
 
 A single positional target is branch-first: if it resolves as a branch, codegenie reviews it against its base; otherwise it is treated as a single commit.
 
+First-class syntax context and default language guidance currently cover Go, TypeScript/JavaScript, and Rust. Rust packets include trait/impl-aware symbols, stable `use`/`extern crate` imports, and deterministic sibling `<stem>_test.rs` plus nearest Cargo-package `tests/<stem>.rs` test links. Same-file `#[cfg(test)]` discovery and arbitrary-name integration-test scanning remain deferred.
+
 Common options:
 
 ```bash
