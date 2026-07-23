@@ -426,7 +426,6 @@ export interface LanguageAdapter {
   getImports(file: ParsedFile): string[];
   getChangedSymbols(file: ParsedFile, hunk: DiffHunk): ChangedSymbol[];
   getStaticSignals?(file: ParsedFile, hunk: DiffHunk): StaticSignal[];
-  findLikelyTests?(symbol: SymbolInfo, index: RepositoryIndex): SymbolInfo[];
 }
 
 export type PacketLine = {

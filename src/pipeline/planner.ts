@@ -1301,7 +1301,8 @@ function validatePlan(
     ...dossier.files.flatMap((file) => file.hunks.map((hunk) => hunk.hunkId)),
     ...dossier.directories.flatMap((directory) => directory.hunkIds)
   ]);
-  const enabledLensIds = new Set(lenses.filter((lens) => lens.enabled).map((lens) => lens.id));
+  const enabledLenses = lenses.filter((lens) => lens.enabled);
+  const enabledLensById = new Map(enabledLenses.map((lens) => [lens.id, lens]));
   const hunkLanguageById = new Map([
     ...dossier.files.flatMap((file) => file.hunks.map((hunk) => [hunk.hunkId, file.language] as const)),
     ...dossier.directories.flatMap((directory) => Object.entries(directory.hunkLanguages))
@@ -1345,8 +1346,10 @@ function validatePlan(
       }
       continue;
     }
+    const hunkLanguage = hunkLanguageById.get(decision.hunkId) ?? "";
     const survivingLenses = decision.lenses.filter((lens) => {
-      const known = enabledLensIds.has(lens);
+      const descriptor = enabledLensById.get(lens);
+      const known = descriptor !== undefined;
       if (!known) {
         telemetry.event({
           stage: 5,
@@ -1357,9 +1360,30 @@ function validatePlan(
           data: { hunkId: decision.hunkId }
         });
       }
+      if (descriptor !== undefined &&
+          descriptor.languageNeutral !== true &&
+          descriptor.languages.length > 0 &&
+          !descriptor.languages.includes(hunkLanguage)) {
+        telemetry.event({
+          stage: 5,
+          level: "warn",
+          message: "planner_incompatible_language_lens",
+          lensId: lens,
+          file: decision.path,
+          data: { hunkId: decision.hunkId, hunkLanguage, lensLanguages: descriptor.languages }
+        });
+        return false;
+      }
       return known;
     });
-    const normalizedDecision = normalizeCoverageDecision({ ...decision, lenses: survivingLenses }, knownFiles);
+    const defaultedLenses = survivingLenses.length === 0;
+    const normalizedDecision = normalizeCoverageDecision({
+      ...decision,
+      lenses: !defaultedLenses
+        ? survivingLenses
+        : defaultLensesForFile(hunkLanguage, lenses),
+      reason: defaultedLenses ? `planner_empty_lenses: ${decision.reason}` : decision.reason
+    }, knownFiles);
     const existing = coverageByHunk.get(decision.hunkId);
     if (existing) {
       const conflict = !sameCoverageDecision(existing, normalizedDecision);
@@ -1463,7 +1487,8 @@ function coverageRank(coverage: CoverageLevel): number {
 function defaultLensesForFile(language: string, lenses: LensDescriptor[]): string[] {
   const enabled = lenses.filter((lens) => lens.enabled);
   const selected = enabled.filter((lens) => lens.id.startsWith("core/"));
-  const languageLens = enabled.find((lens) => {
+  const exactLanguageLens = enabled.find((lens) => lens.id === `lang/${language}`);
+  const languageLens = exactLanguageLens ?? enabled.find((lens) => {
     if (language === "go") {
       return lens.id === "lang/go";
     }

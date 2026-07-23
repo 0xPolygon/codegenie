@@ -11,6 +11,7 @@ import { TreeSitterService, isGrammarId, languageFromPath } from "./tree-sitter/
 import { GenericAdapter } from "./tree-sitter/generic-adapter.js";
 import { GoAdapter } from "./tree-sitter/go-adapter.js";
 import { TypeScriptAdapter } from "./tree-sitter/typescript-adapter.js";
+import { GrammarAdapter } from "./tree-sitter/grammar-adapter.js";
 
 export class LanguageAdapterRegistry {
   private readonly generic: GenericAdapter;
@@ -22,7 +23,10 @@ export class LanguageAdapterRegistry {
     const ts = new TypeScriptAdapter(service, "typescript");
     const tsx = new TypeScriptAdapter(service, "tsx");
     const js = new TypeScriptAdapter(service, "javascript");
-    for (const adapter of [go, ts, tsx, js]) {
+    const rust = new GrammarAdapter(service, "rust", [".rs"]);
+    const python = new GrammarAdapter(service, "python", [".py"]);
+    const solidity = new GrammarAdapter(service, "solidity", [".sol"]);
+    for (const adapter of [go, ts, tsx, js, rust, python, solidity]) {
       this.adapters.set(adapter.id, adapter);
     }
   }
@@ -107,7 +111,8 @@ export function changedSymbolsFromEnclosing(
   file: ParsedFile,
   hunk: DiffHunk,
   getEnclosing: (line: number) => SymbolInfo | undefined,
-  side: "old" | "new"
+  side: "old" | "new",
+  identity: (symbol: SymbolInfo) => string = qualifiedSymbolName
 ): ChangedSymbol[] {
   const byKey = new Map<string, ChangedSymbol>();
   for (const line of changedLinesForHunk(hunk, side)) {
@@ -115,7 +120,7 @@ export function changedSymbolsFromEnclosing(
     if (!symbol) {
       continue;
     }
-    const key = qualifiedSymbolName(symbol);
+    const key = identity(symbol);
     const existing = byKey.get(key);
     if (existing) {
       existing.changedLines.push(line);

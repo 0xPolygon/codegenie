@@ -604,6 +604,15 @@ function languageFromPath(filePath: string): string {
   if (/\.(?:js|jsx|mjs|cjs)$/u.test(filePath)) {
     return "javascript";
   }
+  if (filePath.endsWith(".rs")) {
+    return "rust";
+  }
+  if (filePath.endsWith(".py")) {
+    return "python";
+  }
+  if (filePath.endsWith(".sol")) {
+    return "solidity";
+  }
   if (filePath.endsWith(".json")) {
     return "json";
   }

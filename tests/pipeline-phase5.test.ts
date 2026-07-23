@@ -23,6 +23,7 @@ import {
   plannerDossierProjectionStats,
   stableJson
 } from "../src/skills/prompt-builder.js";
+import { buildLensRegistry } from "../src/skills/lens-registry.js";
 import type { Skill } from "../src/skills/skill-loader.js";
 import { canonicalArtifactPath, createRunTelemetry } from "../src/telemetry/run-artifacts.js";
 import { buildTestCoverageDelta, testCoverageRewriteSignals } from "../src/repo/test-coverage-delta.js";
@@ -5163,6 +5164,68 @@ describe("phase 5 pipeline regressions", () => {
     expect(results).toEqual([expect.objectContaining({ packetId: "simple-packet", status: "completed" })]);
   });
 
+  it("projects only neutral and packet-compatible skills into Stage 7", async () => {
+    let prompt = "";
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        prompt = request.prompt;
+        return { findings: [], followUpHints: [], uncertainties: [] } as T;
+      }
+    };
+    const skills = [
+      languageProjectionSkill("neutral", [], "NEUTRAL_SKILL_MARKER"),
+      languageProjectionSkill("go", ["go"], "GO_SKILL_MARKER"),
+      languageProjectionSkill("typescript", ["typescript"], "TYPESCRIPT_SKILL_MARKER"),
+      languageProjectionSkill("rust", ["rust"], "RUST_SKILL_MARKER"),
+      languageProjectionSkill("python", ["python"], "PYTHON_SKILL_MARKER"),
+      languageProjectionSkill("solidity", ["solidity"], "SOLIDITY_SKILL_MARKER")
+    ];
+    const registry = {
+      ...fakeLensRegistry(),
+      skillsForLens: () => skills
+    };
+    const packet: ReviewPacket = {
+      ...fakePacket({ id: "rust-projection" }),
+      language: "rust",
+      lenses: ["shared/review"]
+    };
+
+    await runLensPackets(fakePlan(), [packet], fakeTools(), config(), nullTelemetry(), {
+      runner,
+      promptBuilder: createPromptBuilder(registry),
+      lensRegistry: registry,
+      diff: fakeDiff()
+    });
+
+    expect(prompt).toContain("NEUTRAL_SKILL_MARKER");
+    expect(prompt).toContain("RUST_SKILL_MARKER");
+    expect(prompt).not.toContain("PYTHON_SKILL_MARKER");
+    expect(prompt).not.toContain("SOLIDITY_SKILL_MARKER");
+
+    for (const { language, marker } of [
+      { language: "go", marker: "GO_SKILL_MARKER" },
+      { language: "typescript", marker: "TYPESCRIPT_SKILL_MARKER" }
+    ]) {
+      prompt = "";
+      const existingLanguagePacket: ReviewPacket = {
+        ...fakePacket({ id: `${language}-projection` }),
+        language,
+        lenses: ["shared/review"]
+      };
+      await runLensPackets(fakePlan(), [existingLanguagePacket], fakeTools(), config(), nullTelemetry(), {
+        runner,
+        promptBuilder: createPromptBuilder(registry),
+        lensRegistry: registry,
+        diff: fakeDiff()
+      });
+      expect(prompt).toContain("NEUTRAL_SKILL_MARKER");
+      expect(prompt).toContain(marker);
+      expect(prompt).not.toContain("RUST_SKILL_MARKER");
+      expect(prompt).not.toContain("PYTHON_SKILL_MARKER");
+      expect(prompt).not.toContain("SOLIDITY_SKILL_MARKER");
+    }
+  });
+
   it("records undispatched budget-stopped packets as failed coverage records", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "a.ts", "export const a = 1;\n");
@@ -6091,6 +6154,102 @@ describe("phase 5 pipeline regressions", () => {
       lenses: ["core/code-review", "lang/typescript"],
       reason: "planner_invalid_skip"
     });
+  });
+
+  it("removes wrong-language planner lenses and restores exact deterministic defaults", async () => {
+    const base = fakeDossier(["lib.rs", "service.py"]);
+    const dossier: PlannerDossier = {
+      ...base,
+      files: base.files.map((file, index) => ({
+        ...file,
+        language: index === 0 ? "rust" : "python"
+      }))
+    };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        diffUnderstanding: { declaredIntent: "language routing", inferredBehavior: "language routing" },
+        coverage: [
+          { hunkId: "h1", path: "lib.rs", coverage: "normal", lenses: ["lang/python"], surroundingContextHints: [], reason: "wrong language" },
+          { hunkId: "h2", path: "service.py", coverage: "normal", lenses: [], surroundingContextHints: [], reason: "empty lenses" }
+        ]
+      }) as T
+    };
+    const descriptor = (id: string, languages: string[]) => ({
+      id,
+      title: id,
+      description: id,
+      skillIds: [],
+      enabledByDefault: true,
+      enabled: true,
+      languages
+    });
+
+    const result = await runPlanner(dossier, config(), {
+      ...nullTelemetry(),
+      event: (event) => events.push(event)
+    }, {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [
+        descriptor("core/code-review", []),
+        descriptor("lang/rust", ["rust"]),
+        descriptor("lang/python", ["python"])
+      ],
+      skills: []
+    });
+
+    expect(result.plan.coverage).toEqual([
+      expect.objectContaining({ hunkId: "h1", lenses: ["core/code-review", "lang/rust"], reason: expect.stringContaining("planner_empty_lenses") }),
+      expect.objectContaining({ hunkId: "h2", lenses: ["core/code-review", "lang/python"], reason: expect.stringContaining("planner_empty_lenses") })
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 5,
+      message: "planner_incompatible_language_lens",
+      lensId: "lang/python",
+      data: expect.objectContaining({ hunkId: "h1", hunkLanguage: "rust", lensLanguages: ["python"] })
+    }));
+  });
+
+  it("keeps a real mixed shared lens when its neutral skill applies to the hunk language", async () => {
+    const dossier = fakeDossier(["lib.rs"]);
+    dossier.files[0] = { ...dossier.files[0]!, language: "rust" };
+    const telemetry = nullTelemetry();
+    const registry = buildLensRegistry(
+      [
+        languageProjectionSkill("neutral", [], "neutral"),
+        languageProjectionSkill("python", ["python"], "python")
+      ],
+      defaultConfig.lenses,
+      { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined },
+      telemetry
+    );
+    expect(registry.lens("shared/review")).toMatchObject({
+      languages: ["python"],
+      languageNeutral: true
+    });
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        diffUnderstanding: { declaredIntent: "mixed lens", inferredBehavior: "mixed lens" },
+        coverage: [{
+          hunkId: "h1",
+          path: "lib.rs",
+          coverage: "normal",
+          lenses: ["shared/review"],
+          surroundingContextHints: [],
+          reason: "use shared guidance"
+        }]
+      }) as T
+    };
+
+    const result = await runPlanner(dossier, config(), telemetry, {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: registry.enabledLenses(),
+      skills: []
+    });
+
+    expect(result.plan.coverage[0]?.lenses).toEqual(["shared/review"]);
   });
 
   it("carries planner partial-review reasons into coverage disclosure", async () => {
@@ -13094,5 +13253,21 @@ function fakeTestsSkill(): Skill {
       falsePositives: "Require concrete evidence that the production boundary or behavior is no longer exercised.",
       examples: "If specialized adapter tests are replaced by a shared helper, verify the helper test still exercises the adapter boundary."
     }
+  };
+}
+
+function languageProjectionSkill(id: string, languages: string[], marker: string): Skill {
+  return {
+    id: `projection/${id}`,
+    title: `Projection ${id}`,
+    lenses: ["shared/review"],
+    languages,
+    categories: ["correctness"],
+    enabledByDefault: true,
+    source: "bundled",
+    filePath: `bundled-skills/projection/${id}.md`,
+    contentSha: id,
+    summaryLine: marker,
+    sections: { checks: marker, falsePositives: marker }
   };
 }

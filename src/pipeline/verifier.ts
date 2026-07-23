@@ -1,7 +1,7 @@
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmRunner, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import { SubmitVerificationVerdictSchema, type SubmitVerificationVerdict } from "../llm/schemas.js";
-import type { LensRegistry } from "../skills/lens-registry.js";
+import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-registry.js";
 import { fenceUntrusted, stableJson, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
@@ -564,7 +564,9 @@ async function verifyCandidate(
   telemetry: TelemetryRecorder,
   runtimeStats: VerificationRuntimeStats
 ): Promise<VerificationVerdict> {
-  const skills = opts.lensRegistry.skillsForLens(candidate.producedBy.lensId);
+  const lensSkills = opts.lensRegistry.skillsForLens(candidate.producedBy.lensId);
+  const language = packet?.language ?? candidateLanguageFromDiff(candidate, opts.diff);
+  const skills = skillsCompatibleWithLanguage(lensSkills, language);
   const prompt = opts.promptBuilder.buildVerifierPrompt({
     candidate,
     originContext: verificationOriginContext(candidate, packet),
@@ -591,6 +593,17 @@ async function verifyCandidate(
     ...(normalized.behaviorChange !== undefined ? { behaviorChange: normalized.behaviorChange } : {}),
     ...(normalized.intentEvidence !== undefined ? { intentEvidence: normalized.intentEvidence } : {})
   };
+}
+
+function candidateLanguageFromDiff(candidate: CandidateFinding, diff: UnifiedDiff | undefined): string | undefined {
+  if (diff === undefined) {
+    return undefined;
+  }
+  const candidatePaths = new Set([candidate.path, candidate.anchor?.path].filter((path): path is string => path !== undefined));
+  const languages = new Set(diff.files
+    .filter((file) => candidatePaths.has(file.path) || (file.oldPath !== undefined && candidatePaths.has(file.oldPath)))
+    .map((file) => file.language));
+  return languages.size === 1 ? [...languages][0] : undefined;
 }
 
 function verificationOriginContext(candidate: CandidateFinding, packet: ReviewPacket | undefined): string {

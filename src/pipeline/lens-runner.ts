@@ -1,7 +1,7 @@
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmPostToolNudgeInput, LlmRunner } from "../llm/llm-runner.js";
 import { SubmitPacketReviewSchema, type SubmitPacketReview } from "../llm/schemas.js";
-import type { LensRegistry } from "../skills/lens-registry.js";
+import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-registry.js";
 import type { PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
@@ -453,7 +453,10 @@ async function runPacket(
   _signal: AbortSignal,
   ensemble?: { pass: number; passes: number; adaptive?: boolean }
 ): Promise<PacketReviewResult> {
-  const skills = packet.lenses.flatMap((lensId) => opts.lensRegistry.skillsForLens(lensId));
+  const skills = skillsCompatibleWithLanguage(
+    packet.lenses.flatMap((lensId) => opts.lensRegistry.skillsForLens(lensId)),
+    packet.language
+  );
   const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills });
   const repositoryTools = packet.reviewProfile === "simple" || packet.toolBudget.maxToolCalls <= 0
     ? []
@@ -907,7 +910,7 @@ function stampFinding(
       stage: 7,
       packetId: packet.id,
       lensId: primaryLens,
-      skillIds: lensRegistry.skillsForLens(primaryLens).map((skill) => skill.id),
+      skillIds: skillsCompatibleWithLanguage(lensRegistry.skillsForLens(primaryLens), packet.language).map((skill) => skill.id),
       workerId,
       ...(ensemble !== undefined ? { ensemblePass: ensemble.pass } : {})
     }

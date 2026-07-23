@@ -2872,6 +2872,8 @@ function defaultLensesForLanguage(facts: FileFacts, enabled: string[]): string[]
     selected.push("lang/go");
   } else if (["typescript", "javascript", "ts", "js", "tsx", "jsx"].includes(language) && enabled.includes("lang/typescript")) {
     selected.push("lang/typescript");
+  } else if (enabled.includes(`lang/${language}`)) {
+    selected.push(`lang/${language}`);
   }
   if (facts.testStatus === "test" && enabled.includes("core/tests")) {
     selected.push("core/tests");

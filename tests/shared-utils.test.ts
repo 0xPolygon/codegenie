@@ -41,20 +41,37 @@ describe("shared utility helpers", () => {
     expect(isRepositoryTestPath("pkg/service_test.go")).toBe(true);
     expect(isRepositoryTestPath("src/widget.spec.ts")).toBe(true);
     expect(isRepositoryTestPath("src/specs/widget.ts")).toBe(false);
+    for (const testPath of ["test_widget.py", "widget_test.py", "tests/widget.py", "tests/widget.rs", "widget_test.rs", "Vault.t.sol"]) {
+      expect(isRepositoryTestPath(testPath), testPath).toBe(true);
+    }
+    expect(isRepositoryTestPath("src/widget.rs")).toBe(false);
+    expect(isRepositoryTestPath("src/Vault.sol")).toBe(false);
 
     expect(isCompositionTestPath("src/widget.spec.ts")).toBe(true);
     expect(isCompositionTestPath("src/specs/widget.ts")).toBe(false);
     expect(isCompositionTestPath("pkg/service_test.go")).toBe(false);
+    for (const testPath of ["test_widget.py", "widget_test.py", "tests/widget.rs", "widget_test.rs", "Vault.t.sol"]) {
+      expect(isCompositionTestPath(testPath), testPath).toBe(true);
+    }
 
     expect(isCoverageEscalationTestPath("pkg/service_test.go")).toBe(true);
     expect(isCoverageEscalationTestPath("src/widget.spec.ts")).toBe(true);
     expect(isCoverageEscalationTestPath("src/specs/widget.ts")).toBe(false);
+    for (const testPath of ["test_widget.py", "widget_test.py", "tests/widget.rs", "widget_test.rs", "Vault.t.sol"]) {
+      expect(isCoverageEscalationTestPath(testPath), testPath).toBe(true);
+    }
 
     expect(isPacketReviewTestPath("src/specs/widget.ts")).toBe(true);
     expect(isPacketReviewTestPath("src/widget-test.py")).toBe(true);
+    for (const testPath of ["test_widget.py", "widget_test.py", "tests/widget.rs", "widget_test.rs", "Vault.t.sol"]) {
+      expect(isPacketReviewTestPath(testPath), testPath).toBe(true);
+    }
 
     expect(isPromotionTestPath("src/widget_test.py")).toBe(true);
     expect(isPromotionTestPath("src/specs/widget.ts")).toBe(true);
+    for (const testPath of ["test_widget.py", "widget_test.py", "tests/widget.rs", "widget_test.rs", "Vault.t.sol"]) {
+      expect(isPromotionTestPath(testPath), testPath).toBe(true);
+    }
 
     expect(isDocsPath("docs/ADR.md")).toBe(true);
     expect(isDocsPath("src/widget.ts")).toBe(false);

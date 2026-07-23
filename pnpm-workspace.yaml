@@ -1,6 +1,13 @@
 minimumReleaseAgeExclude:
   - '@earendil-works/pi-ai'
 
+# tree-sitter-solidity mis-spells its optional-peer metadata key as
+# `tree_sitter`. codegenie resolves only its published WASM through
+# web-tree-sitter, so installing the native tree-sitter peer is unnecessary.
+peerDependencyRules:
+  ignoreMissing:
+    - tree-sitter
+
 # Dependency build scripts are blocked by pnpm 10+ by default (supply-chain
 # protection). esbuild is approved: tsx/vitest need its platform binary. The
 # rest are explicitly ignored: tree-sitter grammars run from prebuilt WASM at
@@ -13,4 +20,7 @@ ignoredBuiltDependencies:
   - protobufjs
   - tree-sitter-go
   - tree-sitter-javascript
+  - tree-sitter-python
+  - tree-sitter-rust
+  - tree-sitter-solidity
   - tree-sitter-typescript
