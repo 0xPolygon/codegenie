@@ -127,6 +127,18 @@ Behavior:
 - Collect commit titles and commit descriptions across the reviewed commit or range as planner input.
 - Do not attempt to post GitHub comments in v1 from commit or commit-range mode.
 
+## GitHub Action Mode
+
+`codegenie github-action` is the entrypoint the bundled composite action (`action.yml`) invokes inside GitHub Actions runners; it is not intended for interactive use. It reads the standard Actions environment (`GITHUB_EVENT_NAME`, `GITHUB_EVENT_PATH`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`), decides whether the event should trigger a review, and when it should, runs the ordinary `--pr` review with a live status comment on the PR (see `components/repository_and_github.md`, GitHub Action Adapter). With `preflight-only: true`, it performs the same trigger and live-permission checks without claiming a comment or starting a review, and returns `should-run`/`pr-number` Action outputs.
+
+- Trigger lanes: `pull_request` (opened/synchronize/ready_for_review; drafts and fork heads skip) and `issue_comment` (created, on an open PR; the trimmed comment must equal the configured trigger phrase, default `codegenie review`, or start with it followed by whitespace — trailing text is ignored and never parsed into options).
+- Authorization: payload author association must be in the allowlist (default OWNER/MEMBER/COLLABORATOR) and a live collaborator-permission check must report write or admin; `allowed-users` bypasses both explicitly. Bot actors are ignored unless allowlisted. Authorization logic lives only in the binary — payload-only YAML approximations are forbidden. Workflow templates are single-job with per-PR `concurrency` and uniform `cancel-in-progress: true` (newest event wins); the accepted residual is that a comment can supersede its own PR's in-flight run before the skip decision. `preflight-only: true` remains available for a stricter two-job pattern: it runs the same gate without claiming a comment or reviewing, returning `should-run`/`pr-number` outputs.
+- Comment-author identity resolves as `bot-login` input → `/user` lookup → `github-actions[bot]`; status-comment reclaim requires an exact case-insensitive author match against it.
+- A non-triggering event is a skip: exit `0`, one-line stdout reason, nothing posted. Review and posting failures keep their existing nonzero exit semantics.
+- Inline posting maps to the existing `--post-github-comments` flag; the status comment is enabled only by this entrypoint. Repo-resident config can enable neither.
+- Model selection is a single spec input, `provider/model[:reasoning]` (reasoning defaults to `high` in action context; a `:suffix` that is not a reasoning level stays part of the model id). A generic `LLM_API_KEY` env var/input is routed to the env variable the named provider reads (via the provider registry's env-var map); provider-native env vars keep working and are never overwritten.
+- Telemetry remains disabled by default. Gate decisions and bounded terminal lifecycle/status counters are logged in CI. Terminal pre/post-cap body sizes are UTF-8 byte counts over the complete attempted payload including the status marker. The same terminal lifecycle object is persisted as `github-action.json` only when telemetry is enabled and the review exposes a run directory; preflight/skips are log-only because no review run exists.
+
 ## Provider And Model CLI
 
 codegenie should expose a provider command namespace for LLM provider setup, backed by Pi's provider/model registry and auth storage:

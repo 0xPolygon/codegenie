@@ -18,7 +18,7 @@ The first version should output clean, structured Markdown to stdout and also be
 
 Review quality should be measurable, not vibes: codegenie should support local telemetry and run artifacts for reviews when enabled, and ship an eval system that always captures artifacts and can attribute every missed or lost finding to the pipeline stage that lost it. The eval suite, skills, and telemetry are the compounding assets; models are swappable underneath them.
 
-Because codegenie reviews attacker-influenced content and can post publicly, it must treat reviewed content as data rather than instructions, contain repository tools to the repository root, and never let repo-resident configuration enable command execution or posting on its own.
+Because codegenie reviews attacker-influenced content and can post publicly, it must treat reviewed content as data rather than instructions, contain repository tools to the repository root, and never let repo-resident configuration enable command execution or posting on its own. The GitHub Action trigger extends the same rule to comment text: a trigger phrase is matched exactly, never interpreted, and never parsed into review options — review knobs come only from workflow inputs, which repo admins control.
 
 A successful review finds real correctness, security, and design issues; explains the impact; cites the relevant code; and avoids style nits unless they hide meaningful risk. By default, codegenie should avoid comments about formatting, naming, or subjective style. Style and lint-oriented review should only run when explicitly configured, potentially through a `codegenie.toml` file, a lint mode, or language-specific lint skills such as a Go lint skill.
 

@@ -82,12 +82,22 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
       return viewerLogin;
     }
     await preflight();
-    const stdout = await gh(repoRoot, ["api", "user", "--jq", ".login"], { errorCode: "gh_auth_failed" });
-    const login = stdout.trim();
-    if (login.length === 0) {
-      throw new CodegenieError("gh_auth_failed", "gh api user did not return the authenticated login");
+    try {
+      const stdout = await gh(repoRoot, ["api", "user", "--jq", ".login"], { errorCode: "gh_auth_failed" });
+      const login = stdout.trim();
+      if (login.length === 0) {
+        throw new CodegenieError("gh_auth_failed", "gh api user did not return the authenticated login");
+      }
+      viewerLogin = login;
+    } catch (error) {
+      // Actions installation tokens have no /user context; the github-action
+      // adapter injects the bot login it read back from the status comment.
+      const fallback = process.env.CODEGENIE_GITHUB_LOGIN?.trim();
+      if (fallback === undefined || fallback === "") {
+        throw error;
+      }
+      viewerLogin = fallback;
     }
-    viewerLogin = login;
     return viewerLogin;
   }
 

@@ -3,15 +3,18 @@ import {
   type Api,
   type Context,
   type Model,
+  type ModelAuth,
   type Models,
+  type OAuthCredential,
+  type OAuthCredentials,
+  type ProviderHeaders,
   type ProviderStreamOptions,
   type SimpleStreamOptions,
   type Tool,
   type ToolCall
 } from "@earendil-works/pi-ai";
-import { getOAuthApiKey, getOAuthProvider, type OAuthCredentials } from "@earendil-works/pi-ai/oauth";
 import pLimit from "p-limit";
-import { createFileAuthStorage } from "../provider/provider-services.js";
+import { createFileAuthStorage, createPiCredentialStore } from "../provider/provider-services.js";
 import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../provider/model-policy.js";
 import { getCodegeniePiModels, getPiEnvApiKey } from "../provider/pi-ai-models.js";
 import { getCodegeniePaths } from "../config/paths.js";
@@ -174,12 +177,19 @@ type RealPiAiAdapterDeps = {
   models?: Pick<Models, "complete" | "completeSimple" | "getModel" | "getModels" | "getProviders" | "getProvider">;
   complete?: PiCompleteFunction;
   completeSimple?: PiCompleteSimpleFunction;
-  getOAuthApiKey?: typeof getOAuthApiKey;
+  getOAuthApiKey?: GetOAuthApiKey;
   authStorage?: PiAuthStorage;
 };
 
 type PiCompleteFunction = (model: Model<Api>, context: Context, options?: ProviderStreamOptions) => Promise<PiAssistantMessage>;
 type PiCompleteSimpleFunction = (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => Promise<PiAssistantMessage>;
+type OAuthApiKeyResult = {
+  newCredentials: OAuthCredentials;
+  apiKey: string;
+  baseUrl?: string;
+  headers?: ProviderHeaders;
+};
+type GetOAuthApiKey = (provider: string, credentials: Record<string, OAuthCredentials>) => Promise<OAuthApiKeyResult | undefined>;
 
 export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
   const adapter = opts.adapter ?? createRealPiAiAdapter();
@@ -630,23 +640,33 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
 }
 
 export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): PiAiAdapter {
-  const models = deps.models ?? getCodegeniePiModels();
-  const completeFn = deps.complete ?? ((model, context, options) => models.complete(model, context, options) as Promise<PiAssistantMessage>);
-  const completeSimpleFn = deps.completeSimple ?? ((model, context, options) => models.completeSimple(model, context, options) as Promise<PiAssistantMessage>);
+  const authStorage = deps.authStorage ?? createFileAuthStorage(getCodegeniePaths());
+  const models = deps.models ?? getCodegeniePiModels(createPiCredentialStore(authStorage));
   return {
-    resolveModel: ({ provider, model }) => resolveRealModel(provider, model, deps.authStorage, models),
+    resolveModel: ({ provider, model }) => resolveRealModel(provider, model, authStorage, models),
     complete: async (model, context, options) => {
-      const apiKey = await resolveModelApiKey(model, deps);
-      const completeOptions = definedRecord({ ...options, apiKey }) as SimpleStreamOptions & Record<string, unknown>;
+      const completeOptions = { ...options } as SimpleStreamOptions & Record<string, unknown>;
       if (isForcedToolChoice(completeOptions.toolChoice)) {
-        return completeFn(
+        if (deps.complete !== undefined) {
+          const prepared = await prepareInjectedCompletion(model, completeOptions, deps, models);
+          return deps.complete(
+            prepared.model,
+            context as Context,
+            mapProviderOptions(prepared.model, prepared.options)
+          ) as Promise<PiAssistantMessage>;
+        }
+        return models.complete(
           model.raw as Model<Api>,
           context as Context,
           mapProviderOptions(model.raw as Model<Api>, completeOptions)
         ) as Promise<PiAssistantMessage>;
       }
       delete completeOptions.forceSubmitToolChoice;
-      return completeSimpleFn(model.raw as Model<Api>, context as Context, completeOptions) as Promise<PiAssistantMessage>;
+      if (deps.completeSimple !== undefined) {
+        const prepared = await prepareInjectedCompletion(model, completeOptions, deps, models);
+        return deps.completeSimple(prepared.model, context as Context, prepared.options) as Promise<PiAssistantMessage>;
+      }
+      return models.completeSimple(model.raw as Model<Api>, context as Context, completeOptions) as Promise<PiAssistantMessage>;
     },
     validateToolCall: (tools, toolCall) => validateToolCall(tools as Tool[], toolCall as ToolCall)
   };
@@ -3410,7 +3430,7 @@ function resolveRealModel(
       if (!raw) {
         return undefined;
       }
-      const auth = resolveProviderAuth(resolvedProvider, authStorage);
+      const auth = resolveProviderAuth(resolvedProvider, authStorage, models);
       return auth ? { provider: resolvedProvider, id: resolvedModel, raw, ...auth } : undefined;
     } catch {
       return undefined;
@@ -3418,7 +3438,7 @@ function resolveRealModel(
   }
 
   if (resolvedProvider) {
-    const auth = resolveProviderAuth(resolvedProvider, authStorage);
+    const auth = resolveProviderAuth(resolvedProvider, authStorage, models);
     if (!auth) {
       return undefined;
     }
@@ -3429,7 +3449,7 @@ function resolveRealModel(
 
   for (const provider of models.getProviders()) {
     const providerId = provider.id;
-    const auth = resolveProviderAuth(providerId, authStorage);
+    const auth = resolveProviderAuth(providerId, authStorage, models);
     if (!auth) {
       continue;
     }
@@ -3457,7 +3477,11 @@ function splitProviderQualifiedModel(
   return { provider, model: model.slice(slash + 1) };
 }
 
-function resolveProviderAuth(provider: string, authStorage = createFileAuthStorage(getCodegeniePaths())): Pick<PiModelRef, "apiKey" | "oauthProvider"> | undefined {
+function resolveProviderAuth(
+  provider: string,
+  authStorage = createFileAuthStorage(getCodegeniePaths()),
+  models: Pick<Models, "getProvider"> = getCodegeniePiModels()
+): Pick<PiModelRef, "apiKey" | "oauthProvider"> | undefined {
   const envApiKey = getPiEnvApiKey(provider);
   if (envApiKey) {
     registerSecret(envApiKey);
@@ -3470,33 +3494,94 @@ function resolveProviderAuth(provider: string, authStorage = createFileAuthStora
   if (stored.type === "api_key") {
     return { apiKey: stored.apiKey };
   }
-  return getOAuthProvider(provider) ? { oauthProvider: provider } : undefined;
+  return models.getProvider(provider)?.auth.oauth ? { oauthProvider: provider } : undefined;
 }
 
-async function resolveModelApiKey(model: PiModelRef, deps: RealPiAiAdapterDeps): Promise<string | undefined> {
+async function prepareInjectedCompletion(
+  model: PiModelRef,
+  options: SimpleStreamOptions & Record<string, unknown>,
+  deps: RealPiAiAdapterDeps,
+  models: Pick<Models, "getProvider">
+): Promise<{ model: Model<Api>; options: SimpleStreamOptions & Record<string, unknown> }> {
+  const auth = await resolveModelAuth(model, deps, models);
+  const rawModel = auth.baseUrl === undefined
+    ? model.raw as Model<Api>
+    : { ...model.raw as Model<Api>, baseUrl: auth.baseUrl };
+  const headers = auth.headers === undefined && options.headers === undefined
+    ? undefined
+    : { ...auth.headers, ...options.headers };
+  return {
+    model: rawModel,
+    options: definedRecord({ ...options, apiKey: auth.apiKey, headers }) as SimpleStreamOptions & Record<string, unknown>
+  };
+}
+
+async function resolveModelAuth(
+  model: PiModelRef,
+  deps: RealPiAiAdapterDeps,
+  models: Pick<Models, "getProvider">
+): Promise<ModelAuth> {
   if (model.apiKey) {
-    return model.apiKey;
+    return { apiKey: model.apiKey };
   }
   if (!model.oauthProvider) {
-    return undefined;
+    return {};
   }
 
   const authStorage = deps.authStorage ?? createFileAuthStorage(getCodegeniePaths());
   const stored = authStorage.get(model.oauthProvider);
   if (!stored || stored.type !== "oauth") {
-    return undefined;
+    return {};
   }
 
-  const result = await (deps.getOAuthApiKey ?? getOAuthApiKey)(model.oauthProvider, {
+  const getOAuthApiKey = deps.getOAuthApiKey ?? ((provider, credentials) => getOAuthApiKeyFromProvider(provider, credentials, models));
+  const result = await getOAuthApiKey(model.oauthProvider, {
     [model.oauthProvider]: stored.credentials
   });
   if (!result) {
-    return undefined;
+    return {};
   }
 
   persistRefreshedOAuthCredentials(authStorage, model.oauthProvider, stored, result.newCredentials);
   registerSecret(result.apiKey);
-  return result.apiKey;
+  result.headers && Object.values(result.headers).forEach((value) => {
+    if (typeof value === "string") {
+      registerSecret(value);
+    }
+  });
+  return {
+    apiKey: result.apiKey,
+    ...(result.baseUrl !== undefined ? { baseUrl: result.baseUrl } : {}),
+    ...(result.headers !== undefined ? { headers: result.headers } : {})
+  };
+}
+
+async function getOAuthApiKeyFromProvider(
+  provider: string,
+  credentials: Record<string, OAuthCredentials>,
+  models: Pick<Models, "getProvider">
+): Promise<OAuthApiKeyResult | undefined> {
+  const oauthAuth = models.getProvider(provider)?.auth.oauth;
+  const stored = credentials[provider];
+  if (oauthAuth === undefined || stored === undefined) {
+    return undefined;
+  }
+
+  let credential: OAuthCredential = { ...stored, type: "oauth" };
+  if (Date.now() >= credential.expires) {
+    credential = await oauthAuth.refresh(credential);
+  }
+  const auth = await oauthAuth.toAuth(credential);
+  if (auth.apiKey === undefined) {
+    return undefined;
+  }
+  const { type: _type, ...newCredentials } = credential;
+  return {
+    newCredentials,
+    apiKey: auth.apiKey,
+    ...(auth.baseUrl !== undefined ? { baseUrl: auth.baseUrl } : {}),
+    ...(auth.headers !== undefined ? { headers: auth.headers } : {})
+  };
 }
 
 function persistRefreshedOAuthCredentials(

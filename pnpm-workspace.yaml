@@ -1,2 +1,16 @@
 minimumReleaseAgeExclude:
   - '@earendil-works/pi-ai'
+
+# Dependency build scripts are blocked by pnpm 10+ by default (supply-chain
+# protection). esbuild is approved: tsx/vitest need its platform binary. The
+# rest are explicitly ignored: tree-sitter grammars run from prebuilt WASM at
+# runtime (native builds unused), and @google/genai / protobufjs postinstalls
+# are not needed by anything codegenie executes.
+onlyBuiltDependencies:
+  - esbuild
+ignoredBuiltDependencies:
+  - '@google/genai'
+  - protobufjs
+  - tree-sitter-go
+  - tree-sitter-javascript
+  - tree-sitter-typescript

@@ -32,6 +32,7 @@ type ExecuteReviewCommandResult = {
 
 type ExecuteReviewCommandOptions = {
   writeOutput?: (text: string) => void;
+  onRunStart?: (run: { runId: string; runDir: string }) => void;
   onTelemetryEvent?: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => void;
 };
 
@@ -169,6 +170,7 @@ export async function executeReviewCommand(
     postGithubComments: parsed.options.postGithubComments,
     onRunStart: (run: { runId: string; runDir: string }) => {
       attached = run;
+      opts.onRunStart?.(run);
     },
     onInventory: (nextInventory: { filesChanged: number; keptFiles: number }) => {
       inventory = nextInventory;

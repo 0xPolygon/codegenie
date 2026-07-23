@@ -806,6 +806,79 @@ describe("phase 5 pipeline regressions", () => {
     expect(published?.title).toContain("truncated before scaling");
   });
 
+  it("keeps the anchored direct finding canonical when merging a promoted uncertainty", async () => {
+    const direct: CandidateFinding = {
+      ...fakeFinding(),
+      id: "direct-scale-finding",
+      title: "scaleAmount truncation under-delivers the reported ToAmountMin",
+      severity: "low",
+      confidence: "medium",
+      producedBy: { ...fakeFinding().producedBy, packetId: "packet-direct" },
+      failureMode: "The reported minimum exceeds the deliverable amount by sub-unit dust."
+    };
+    const { anchor: _anchor, ...anchorless } = fakeFinding();
+    const promoted: CandidateFinding = {
+      ...anchorless,
+      id: "promoted-scale-uncertainty",
+      changedLine: false,
+      title: "For EXACT_OUTPUT cross-decimal routes, does scaleAmount truncate the deliverable amount...",
+      severity: "medium",
+      confidence: "low",
+      producedBy: { ...anchorless.producedBy, packetId: "packet-promoted", stage: 9 },
+      failureMode: "Does scaleAmount truncate the deliverable amount below ToAmountMin?",
+      provenance: {
+        source: "uncertainty_promotion",
+        sourceKind: "uncertainty",
+        sourcePacketId: "packet-promoted",
+        question: "Does scaleAmount truncate the deliverable amount below ToAmountMin?",
+        files: ["app.ts"],
+        symbols: ["scaleAmount"],
+        reason: "packet reviewer reported an unresolved uncertainty"
+      }
+    };
+    const finalBody = "The reported ToAmountMin exceeds the deliverable amount after truncation. The impact is bounded to sub-unit dust, so this is low severity.";
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        summary: "Found 1 verified issue.",
+        composedFindings: [{
+          findingIds: [promoted.id, direct.id],
+          finalBody,
+          publication: "inline"
+        }]
+      }) as T
+    };
+
+    const result = await dedupeRankAndComposeReview(
+      { verified: [promoted, direct], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner,
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        packets: [packetWithSymbol("packet-promoted", "GetQuote"), packetWithSymbol("packet-direct", "scaleAmount")],
+        diff: fakeDiff()
+      }
+    );
+
+    const [published] = result.findings;
+    expect(published).toMatchObject({
+      id: direct.id,
+      title: direct.title,
+      severity: "low",
+      finalBody,
+      mergedCandidateIds: [direct.id, promoted.id]
+    });
+    expect(published?.fingerprint).toBe(sha256Hex([
+      "app.ts",
+      "scaleamount",
+      "correctness",
+      "core/code-review"
+    ].join("\0")));
+  });
+
   it("withholds representative gate anchors from published findings", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const finding: CandidateFinding = {

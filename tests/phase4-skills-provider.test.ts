@@ -2,19 +2,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import {
-  registerOAuthProvider,
-  unregisterOAuthProvider,
-  type OAuthCredentials,
-  type OAuthLoginCallbacks,
-  type OAuthProviderInterface
-} from "@earendil-works/pi-ai/oauth";
+import type { AuthInteraction, OAuthAuth, OAuthCredential } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { executeProviderCommand, parseProviderCommand } from "../src/cli/provider-command.js";
 import { getCodegeniePaths } from "../src/config/paths.js";
 import { defaultConfig } from "../src/config/schema.js";
 import {
   createFileAuthStorage,
+  createPiCredentialStore,
   createPiModelRegistry,
   type PiAuthStorage,
   type PiModelRegistry,
@@ -690,32 +685,33 @@ describe("Phase 4 provider commands", () => {
   it("opens the local browser for callback OAuth login when the user presses enter", async () => {
     const providerId = `test-oauth-browser-${Date.now()}`;
     const authUrl = "https://auth.example.test/login?client=codegenie";
-    const services = fakeProviderServices(tempDir(), { providerIds: [providerId] });
     const output: string[] = [];
     const prompts: string[] = [];
     const opened: string[] = [];
-    registerOAuthProvider(testOAuthProvider(providerId, async (callbacks) => {
-      callbacks.onAuth({ url: authUrl, instructions: "old provider instruction" });
-      void callbacks.onManualCodeInput?.();
+    const manualController = new AbortController();
+    const oauthAuth = testOAuthAuth(async (interaction) => {
+      interaction.notify({ type: "auth_url", url: authUrl, instructions: "old provider instruction" });
+      void interaction.prompt({ type: "manual_code", message: "Paste redirect URL", signal: manualController.signal });
       await new Promise((resolve) => setImmediate(resolve));
-      return fakeOAuthCredentials();
-    }));
+      manualController.abort();
+      return fakeOAuthCredential();
+    });
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: [providerId],
+      oauthAuthByProvider: { [providerId]: oauthAuth }
+    });
 
-    try {
-      await runProviderCommand(["provider", "login", providerId], {
-        services,
-        writeOut: (text) => output.push(text),
-        readInput: async (message) => {
-          prompts.push(message);
-          return "";
-        },
-        openBrowser: async (url) => {
-          opened.push(url);
-        }
-      });
-    } finally {
-      unregisterOAuthProvider(providerId);
-    }
+    await runProviderCommand(["provider", "login", providerId], {
+      services,
+      writeOut: (text) => output.push(text),
+      readInput: async (message) => {
+        prompts.push(message);
+        return "";
+      },
+      openBrowser: async (url) => {
+        opened.push(url);
+      }
+    });
 
     expect(opened).toEqual([authUrl]);
     expect(prompts).toEqual(["> "]);
@@ -733,26 +729,25 @@ describe("Phase 4 provider commands", () => {
   it("uses pasted callback OAuth input instead of opening a browser", async () => {
     const providerId = `test-oauth-manual-${Date.now()}`;
     const manualRedirect = "http://localhost:53692/callback?code=manual-code&state=manual-state";
-    const services = fakeProviderServices(tempDir(), { providerIds: [providerId] });
     const opened: string[] = [];
     let manualInput: string | undefined;
-    registerOAuthProvider(testOAuthProvider(providerId, async (callbacks) => {
-      callbacks.onAuth({ url: "https://auth.example.test/login" });
-      manualInput = await callbacks.onManualCodeInput?.();
-      return fakeOAuthCredentials();
-    }));
+    const oauthAuth = testOAuthAuth(async (interaction) => {
+      interaction.notify({ type: "auth_url", url: "https://auth.example.test/login" });
+      manualInput = await interaction.prompt({ type: "manual_code", message: "Paste redirect URL" });
+      return fakeOAuthCredential();
+    });
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: [providerId],
+      oauthAuthByProvider: { [providerId]: oauthAuth }
+    });
 
-    try {
-      await runProviderCommand(["provider", "login", providerId], {
-        services,
-        readInput: async () => manualRedirect,
-        openBrowser: async (url) => {
-          opened.push(url);
-        }
-      });
-    } finally {
-      unregisterOAuthProvider(providerId);
-    }
+    await runProviderCommand(["provider", "login", providerId], {
+      services,
+      readInput: async () => manualRedirect,
+      openBrowser: async (url) => {
+        opened.push(url);
+      }
+    });
 
     expect(manualInput).toBe(manualRedirect);
     expect(opened).toEqual([]);
@@ -761,7 +756,6 @@ describe("Phase 4 provider commands", () => {
 
   it("requests closed connections for OAuth fetches during login", async () => {
     const providerId = `test-oauth-fetch-close-${Date.now()}`;
-    const services = fakeProviderServices(tempDir(), { providerIds: [providerId] });
     const originalFetch = globalThis.fetch;
     const seenConnections: Array<string | null> = [];
     const seenContentTypes: Array<string | null> = [];
@@ -775,13 +769,17 @@ describe("Phase 4 provider commands", () => {
       });
     };
     globalThis.fetch = fakeFetch;
-    registerOAuthProvider(testOAuthProvider(providerId, async () => {
+    const oauthAuth = testOAuthAuth(async () => {
       await fetch("https://auth.example.test/token", {
         method: "POST",
         headers: { "content-type": "application/json" }
       });
-      return fakeOAuthCredentials();
-    }, { usesCallbackServer: false }));
+      return fakeOAuthCredential();
+    });
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: [providerId],
+      oauthAuthByProvider: { [providerId]: oauthAuth }
+    });
 
     try {
       await runProviderCommand(["provider", "login", providerId], { services });
@@ -790,38 +788,36 @@ describe("Phase 4 provider commands", () => {
       expect(globalThis.fetch).toBe(fakeFetch);
     } finally {
       globalThis.fetch = originalFetch;
-      unregisterOAuthProvider(providerId);
     }
   });
 
   it("opens the local browser for device-code OAuth login when the user presses enter", async () => {
     const providerId = `test-oauth-device-${Date.now()}`;
     const verificationUri = "https://device.example.test/activate";
-    const services = fakeProviderServices(tempDir(), { providerIds: [providerId] });
     const output: string[] = [];
     const prompts: string[] = [];
     const opened: string[] = [];
-    registerOAuthProvider(testOAuthProvider(providerId, async (callbacks) => {
-      callbacks.onDeviceCode({ verificationUri, userCode: "ABCD-1234" });
+    const oauthAuth = testOAuthAuth(async (interaction) => {
+      interaction.notify({ type: "device_code", verificationUri, userCode: "ABCD-1234" });
       await new Promise((resolve) => setImmediate(resolve));
-      return fakeOAuthCredentials();
-    }, { usesCallbackServer: false }));
+      return fakeOAuthCredential();
+    });
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: [providerId],
+      oauthAuthByProvider: { [providerId]: oauthAuth }
+    });
 
-    try {
-      await runProviderCommand(["provider", "login", providerId], {
-        services,
-        writeOut: (text) => output.push(text),
-        readInput: async (message) => {
-          prompts.push(message);
-          return "";
-        },
-        openBrowser: async (url) => {
-          opened.push(url);
-        }
-      });
-    } finally {
-      unregisterOAuthProvider(providerId);
-    }
+    await runProviderCommand(["provider", "login", providerId], {
+      services,
+      writeOut: (text) => output.push(text),
+      readInput: async (message) => {
+        prompts.push(message);
+        return "";
+      },
+      openBrowser: async (url) => {
+        opened.push(url);
+      }
+    });
 
     expect(output.join("")).toContain(`${verificationUri}\nEnter code: ABCD-1234`);
     expect(output.join("")).toContain("⭐ 🧞 Press enter to open the URL above in your local browser.");
@@ -832,25 +828,24 @@ describe("Phase 4 provider commands", () => {
 
   it("does not open the local browser for device-code OAuth login when input is non-empty", async () => {
     const providerId = `test-oauth-device-manual-${Date.now()}`;
-    const services = fakeProviderServices(tempDir(), { providerIds: [providerId] });
     const opened: string[] = [];
-    registerOAuthProvider(testOAuthProvider(providerId, async (callbacks) => {
-      callbacks.onDeviceCode({ verificationUri: "https://device.example.test/activate", userCode: "WXYZ-9876" });
+    const oauthAuth = testOAuthAuth(async (interaction) => {
+      interaction.notify({ type: "device_code", verificationUri: "https://device.example.test/activate", userCode: "WXYZ-9876" });
       await new Promise((resolve) => setImmediate(resolve));
-      return fakeOAuthCredentials();
-    }, { usesCallbackServer: false }));
+      return fakeOAuthCredential();
+    });
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: [providerId],
+      oauthAuthByProvider: { [providerId]: oauthAuth }
+    });
 
-    try {
-      await runProviderCommand(["provider", "login", providerId], {
-        services,
-        readInput: async () => "manual-device-completion",
-        openBrowser: async (url) => {
-          opened.push(url);
-        }
-      });
-    } finally {
-      unregisterOAuthProvider(providerId);
-    }
+    await runProviderCommand(["provider", "login", providerId], {
+      services,
+      readInput: async () => "manual-device-completion",
+      openBrowser: async (url) => {
+        opened.push(url);
+      }
+    });
 
     expect(opened).toEqual([]);
     expect(services.authStorage.get(providerId)).toMatchObject({ type: "oauth" });
@@ -972,6 +967,40 @@ reasoning = "medium"
     expect(() => storage.loadAll()).toThrow(/invalid provider auth file/);
   });
 
+  it("adapts stored OAuth credentials to Pi credentials and persists refreshes", async () => {
+    const authStorage = memoryAuthStorage();
+    const createdAt = new Date(0).toISOString();
+    authStorage.set("github-copilot", {
+      type: "oauth",
+      credentials: { access: "old-access", refresh: "old-refresh", expires: 1 },
+      createdAt
+    });
+    const credentials = createPiCredentialStore(authStorage);
+
+    await expect(credentials.read("github-copilot")).resolves.toEqual({
+      type: "oauth",
+      access: "old-access",
+      refresh: "old-refresh",
+      expires: 1
+    });
+
+    await credentials.modify("github-copilot", async (current) => {
+      expect(current?.type).toBe("oauth");
+      return {
+        type: "oauth",
+        access: "new-access",
+        refresh: "new-refresh",
+        expires: 2
+      };
+    });
+
+    expect(authStorage.get("github-copilot")).toEqual({
+      type: "oauth",
+      credentials: { access: "new-access", refresh: "new-refresh", expires: 2 },
+      createdAt
+    });
+  });
+
   it("clears stale default models when switching provider defaults", async () => {
     const services = fakeProviderServices(tempDir());
     const output: string[] = [];
@@ -1078,26 +1107,20 @@ function testSkill(input: { id: string; checks: string; falsePositives?: string;
   };
 }
 
-function testOAuthProvider(
-  id: string,
-  login: (callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials>,
-  opts: { usesCallbackServer?: boolean } = { usesCallbackServer: true }
-): OAuthProviderInterface {
-  const provider: OAuthProviderInterface = {
-    id,
+function testOAuthAuth(
+  login: (interaction: AuthInteraction) => Promise<OAuthCredential>
+): OAuthAuth {
+  return {
     name: "Test OAuth",
     login,
-    refreshToken: async () => fakeOAuthCredentials(),
-    getApiKey: (credentials) => credentials.access
+    refresh: async () => fakeOAuthCredential(),
+    toAuth: async (credentials) => ({ apiKey: credentials.access })
   };
-  if (opts.usesCallbackServer !== undefined) {
-    provider.usesCallbackServer = opts.usesCallbackServer;
-  }
-  return provider;
 }
 
-function fakeOAuthCredentials(): OAuthCredentials {
+function fakeOAuthCredential(): OAuthCredential {
   return {
+    type: "oauth",
     access: "access-token",
     refresh: "refresh-token",
     expires: Date.now() + 60_000
@@ -1123,7 +1146,12 @@ function memoryAuthStorage(): PiAuthStorage {
 
 function fakeProviderServices(
   home: string,
-  opts: { envConfiguredProviders?: string[]; modelsByProvider?: Record<string, ProviderModelInfo[]>; providerIds?: string[] } = {}
+  opts: {
+    envConfiguredProviders?: string[];
+    modelsByProvider?: Record<string, ProviderModelInfo[]>;
+    oauthAuthByProvider?: Record<string, OAuthAuth>;
+    providerIds?: string[];
+  } = {}
 ): ProviderServices {
   const paths = getCodegeniePaths(home, {});
   const providerIds = opts.providerIds ?? ["fake", "other"];
@@ -1159,7 +1187,12 @@ function fakeProviderServices(
       return { provider, configured: false };
     }
   };
-  return { paths, authStorage, modelRegistry };
+  return {
+    paths,
+    authStorage,
+    modelRegistry,
+    oauthAuth: (provider) => opts.oauthAuthByProvider?.[provider]
+  };
 }
 
 function fakeModel(provider: string, id: string, name: string): ProviderModelInfo {

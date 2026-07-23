@@ -3,7 +3,6 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, utimesSy
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Type, validateToolCall } from "@earendil-works/pi-ai";
-import { getOAuthApiKey as piGetOAuthApiKey } from "@earendil-works/pi-ai/oauth";
 import { describe, expect, it, vi } from "vitest";
 import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import type {
@@ -4330,7 +4329,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const getOAuthApiKey = vi.fn(async (_provider: string, credentials: Record<string, typeof oldCredentials>) => {
       expect(credentials["github-copilot"]).toEqual(oldCredentials);
       return { newCredentials, apiKey: "new-oauth-api-key" };
-    }) as unknown as typeof piGetOAuthApiKey;
+    }) as NonNullable<RealPiAiAdapterDepsForTest["getOAuthApiKey"]>;
     const adapter = createRealPiAiAdapter({ authStorage, completeSimple, getOAuthApiKey });
 
     await adapter.complete(

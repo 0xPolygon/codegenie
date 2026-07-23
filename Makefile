@@ -1,4 +1,4 @@
-.PHONY: init build run install uninstall typecheck test clean help
+.PHONY: init build run install uninstall check check-workflows typecheck test clean help models-list
 
 # Default target
 help:
@@ -9,8 +9,11 @@ help:
 	@echo "  make run         Build, then run the CLI (pass args with ARGS=, e.g. make run ARGS='--help')"
 	@echo "  make install     Build, then symlink codegenie to ~/.local/bin"
 	@echo "  make uninstall   Remove codegenie symlink"
+	@echo "  make check       Run type checking and GitHub workflow validation"
+	@echo "  make check-workflows Validate workflows with actionlint"
 	@echo "  make typecheck   Run TypeScript type checking"
 	@echo "  make test        Run tests"
+	@echo "  make models-list Regenerate models.md from the model registry"
 	@echo "  make clean       Remove dist/"
 	@echo ""
 	@echo "Examples:"
@@ -48,8 +51,17 @@ uninstall:
 typecheck:
 	pnpm run typecheck
 
+check-workflows:
+	pnpm run check:workflows
+
+check:
+	pnpm run check
+
 test:
 	pnpm test
+
+models-list: build
+	pnpm run models-list
 
 clean:
 	rm -rf dist/

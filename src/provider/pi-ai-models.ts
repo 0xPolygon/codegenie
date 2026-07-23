@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
-import type { Models, ProviderEnv } from "@earendil-works/pi-ai";
+import type { CredentialStore, Models, ProviderEnv } from "@earendil-works/pi-ai";
 
 const piModels = builtinModels();
 
@@ -42,8 +42,19 @@ const API_KEY_ENV_VARS: Record<string, string[]> = {
   "zai-coding-cn": ["ZAI_CODING_CN_API_KEY"]
 };
 
-export function getCodegeniePiModels(): Models {
-  return piModels;
+export function getCodegeniePiModels(credentials?: CredentialStore): Models {
+  return credentials === undefined ? piModels : builtinModels({ credentials });
+}
+
+// The API-key env var a provider reads (OAuth-token vars are skipped when an
+// _API_KEY-named var exists). The github-action adapter uses this to route a
+// generic LLM_API_KEY to the right provider variable.
+export function getPiApiKeyEnvVarName(provider: string): string | undefined {
+  const envVars = API_KEY_ENV_VARS[provider];
+  if (envVars === undefined || envVars.length === 0) {
+    return undefined;
+  }
+  return envVars.find((name) => name.endsWith("_API_KEY")) ?? envVars[envVars.length - 1];
 }
 
 export function getPiEnvApiKey(provider: string, env?: ProviderEnv): string | undefined {
