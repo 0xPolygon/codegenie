@@ -1056,11 +1056,11 @@ describe("GitHub Action and workflow contracts", () => {
     const dogfood = parseYaml(readFileSync(path.resolve(workflowPaths[0] ?? ""), "utf8")) as WorkflowDocument;
     const prExample = parseYaml(readFileSync(path.resolve(workflowPaths[2] ?? ""), "utf8")) as WorkflowDocument;
     const commentExample = parseYaml(readFileSync(path.resolve(workflowPaths[1] ?? ""), "utf8")) as WorkflowDocument;
-    const dogfoodCheckout = dogfood.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v4");
+    const dogfoodCheckout = dogfood.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v7");
     expect(dogfoodCheckout?.with?.ref).toContain("github.event.pull_request.base.sha || ''");
-    const prCheckout = prExample.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v4");
+    const prCheckout = prExample.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v7");
     expect(prCheckout?.with?.ref).toContain("github.event.pull_request.base.sha");
-    const commentCheckout = commentExample.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v4");
+    const commentCheckout = commentExample.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v7");
     expect(commentCheckout?.with?.ref).toBeUndefined();
   });
 });
