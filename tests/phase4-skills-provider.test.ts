@@ -41,6 +41,7 @@ describe("Phase 4 skills, lenses, and prompts", () => {
       "core/code-review",
       "core/tests",
       "lang/go",
+      "lang/python",
       "lang/rust",
       "lang/typescript"
     ]);

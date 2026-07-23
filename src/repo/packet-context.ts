@@ -124,9 +124,7 @@ export async function assemblePacketContext(
     context.enclosingFunction = primarySymbol;
   } else if (primarySymbol?.kind === "method") {
     context.enclosingMethod = primarySymbol;
-    const owner = outline.topLevelSymbols.find(
-      (symbol) => symbol.name === primarySymbol.ownerType && (symbol.kind === "type" || symbol.kind === "interface")
-    );
+    const owner = enclosingOwnerType(outline.topLevelSymbols, primarySymbol);
     if (owner) {
       context.enclosingType = owner;
     }
@@ -149,6 +147,28 @@ export async function assemblePacketContext(
     ...(noSymbolHunkIds.length > 0 ? { noSymbolHunkIds } : {}),
     ...(outlineResult.degraded ? { degradation: outlineResult.degradationReason ?? "packet context degraded" } : {})
   };
+}
+
+function enclosingOwnerType(symbols: SymbolInfo[], method: SymbolInfo): SymbolInfo | undefined {
+  const matching = symbols.filter(
+    (symbol) => symbol.name === method.ownerType && (symbol.kind === "type" || symbol.kind === "interface")
+  );
+  const containing = matching
+    .filter((symbol) => containsRange(symbol.lineRange, method.lineRange))
+    .sort((a, b) =>
+      rangeSpan(a.lineRange) - rangeSpan(b.lineRange) ||
+      a.lineRange[0] - b.lineRange[0] ||
+      a.lineRange[1] - b.lineRange[1]
+    );
+  return containing[0] ?? matching[0];
+}
+
+function containsRange(outer: [number, number], inner: [number, number]): boolean {
+  return outer[0] <= inner[0] && outer[1] >= inner[1];
+}
+
+function rangeSpan(range: [number, number]): number {
+  return range[1] - range[0];
 }
 
 function fallbackOutline(filePath: string, language: string, content: string, note: string): { outline: FileOutline; omittedCount: number } {

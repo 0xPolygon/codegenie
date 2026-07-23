@@ -425,7 +425,7 @@ Validation never re-invokes the model. The persisted `review-plan.json` is the p
 On terminal planner failure (schema-invalid after repair, transient failure after `LlmRunner` retries, or per-pass timeout — anything except authentication/provider-wide failure, which is fatal), `runPlanner` returns the deterministic default plan:
 
 - `coverage`: every reviewable hunk of every kept file at `normal`, `reason: "degraded planning: deterministic default"`, `surroundingContextHints: []`.
-- Per-hunk `lenses`: the default lens set — enabled lenses whose ids begin with `core/`, plus the enabled exact `lang/${FileFacts.language}` lens (`lang/rust` for Rust), with TypeScript/TSX/JavaScript retaining the `lang/typescript` alias, in registry order.
+- Per-hunk `lenses`: the default lens set — enabled lenses whose ids begin with `core/`, plus the enabled exact `lang/${FileFacts.language}` lens (`lang/rust` for Rust and `lang/python` for Python), with TypeScript/TSX/JavaScript retaining the `lang/typescript` alias, in registry order.
 - `diffUnderstanding`: `declaredIntent` is the PR title or first commit title (truncated, template-framed); `inferredBehavior: "unavailable (degraded planning)"`.
 - `partialReview` unset — the default plan covers all hunks; degradation is disclosed through `RunCoverageStatus.degradedPlanning` and a `reasons` entry, not through partial coverage.
 
@@ -548,7 +548,7 @@ Outcome handling:
 Execution rules:
 
 - One composite model task per packet. All selected lenses are projected into that single task; there is never one model call per lens. Skill projection for the review stage includes only Checks, False Positives, and Examples sections, capped at 4000 chars per skill and 12000 chars total per prompt, with truncation recorded in telemetry (projection mechanics owned by `components/skills_llm_telemetry.md`).
-- Before Stage 7 projection, skills are defensively filtered to language-neutral skills or skills whose `languages` contains the packet's canonical language. Stage 9 applies the same rule to verifier guidance, preventing Rust content from entering Go/TypeScript prompts and vice versa.
+- Before Stage 7 projection, skills are defensively filtered to language-neutral skills or skills whose `languages` contains the packet's canonical language. Stage 9 applies the same rule to verifier guidance, preventing Rust/Python content from entering Go/TypeScript prompts or each other's prompts and vice versa.
 - Coverage-aware execution profiles:
   - `light`: one structured call; tiny optional read-only tool budget (table above); compact prompting biased toward submitting immediately.
   - `normal`: one structured, tool-capable task; real read-only tool access; focused review instructions; bounded investigation.

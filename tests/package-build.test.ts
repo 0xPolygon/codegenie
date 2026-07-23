@@ -41,7 +41,7 @@ describe("package build scaffold", () => {
     expect(workspacePolicy).toContain("  ignoreMissing:\n    - tree-sitter");
   });
 
-  it("loads the Rust skill and grammar from an installed package tarball", () => {
+  it("loads the Rust and Python skills and grammars from an installed package tarball", () => {
     const sandbox = mkdtempSync(path.join(tmpdir(), "codegenie-package-smoke-"));
     try {
       const packageDirectory = path.join(sandbox, "package");
@@ -55,12 +55,15 @@ describe("package build scaffold", () => {
       })) as Array<{ filename: string; files: Array<{ path: string }> }>;
       const artifact = packed[0];
       expect(artifact?.files.map((file) => file.path)).toEqual(expect.arrayContaining([
+        "bundled-skills/lang/python.md",
         "bundled-skills/lang/rust.md",
+        "dist/repo/tree-sitter/python-adapter.js",
         "dist/repo/tree-sitter/rust-adapter.js",
         "package.json"
       ]));
       const tarballPath = path.join(packageDirectory, artifact!.filename);
-      const parserTarballs = new Map(["tree-sitter-rust", "web-tree-sitter"].map((packageName) => {
+      const parserPackages = new Set(["tree-sitter-python", "tree-sitter-rust", "web-tree-sitter"]);
+      const parserTarballs = new Map([...parserPackages].map((packageName) => {
         const dependencyPack = JSON.parse(execFileSync("npm", [
           "pack",
           path.resolve(`node_modules/${packageName}`),
@@ -79,7 +82,7 @@ describe("package build scaffold", () => {
       }));
       const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as { dependencies: Record<string, string> };
       const locallyLinkedDependencies = Object.keys(packageJson.dependencies)
-        .filter((name) => name !== "tree-sitter-rust" && name !== "web-tree-sitter")
+        .filter((name) => !parserPackages.has(name))
         .sort()
         .map((name) => `  '${name}': 'link:${path.resolve(`node_modules/${name}`)}'`);
       const parserOverrides = [...parserTarballs]
@@ -115,33 +118,73 @@ const { skills, failures } = await loadSkills({
 if (failures.length > 0) throw new Error(JSON.stringify(failures));
 const rust = skills.find((skill) => skill.id === "lang/rust");
 if (!rust) throw new Error("installed Rust skill is missing");
+const python = skills.find((skill) => skill.id === "lang/python");
+if (!python) throw new Error("installed Python skill is missing");
 
 const serviceUrl = import.meta.resolve("@0xsequence/codegenie/dist/repo/tree-sitter/tree-sitter-service.js");
-const grammarPath = createRequire(serviceUrl).resolve("tree-sitter-rust/tree-sitter-rust.wasm");
-const adapter = new LanguageAdapterRegistry(new TreeSitterService()).forPath("src/lib.rs");
-const parsed = await adapter.parse({
+const installedRequire = createRequire(serviceUrl);
+const rustGrammarPath = installedRequire.resolve("tree-sitter-rust/tree-sitter-rust.wasm");
+const pythonGrammarPath = installedRequire.resolve("tree-sitter-python/tree-sitter-python.wasm");
+const registry = new LanguageAdapterRegistry(new TreeSitterService());
+const rustAdapter = registry.forPath("src/lib.rs");
+const parsed = await rustAdapter.parse({
   path: "src/lib.rs",
   language: "rust",
   source: { kind: "head" },
   content: "trait Local { fn tuple(&self); }\\nimpl Local for (u8, u8) { fn tuple(&self) {} }"
 });
-const method = adapter.listSymbols(parsed).find((symbol) => symbol.name === "tuple" && symbol.nativeKind === "impl method");
+const method = rustAdapter.listSymbols(parsed).find((symbol) => symbol.name === "tuple" && symbol.nativeKind === "impl method");
 if (parsed.hasErrors || !parsed.tree || !method) throw new Error("installed Rust parser smoke failed");
+const pythonAdapter = registry.forPath("src/service.py");
+const pythonParsed = await pythonAdapter.parse({
+  path: "src/service.py",
+  language: "python",
+  source: { kind: "head" },
+  content: "@route(1)\\nclass Service:\\n    @audit\\n    async def authorize(self, amount: int) -> bool:\\n        return amount > 0\\n"
+});
+const pythonMethod = pythonAdapter.listSymbols(pythonParsed).find((symbol) => symbol.name === "authorize");
+if (pythonParsed.hasErrors || !pythonParsed.tree || pythonMethod?.ownerType !== "Service" || pythonMethod.lineRange[0] !== 3) {
+  throw new Error("installed Python parser smoke failed");
+}
 console.log(JSON.stringify({
-  skillPath: rust.filePath,
-  grammarPath,
-  language: parsed.language,
-  ownerType: method.ownerType
+  rustSkillPath: rust.filePath,
+  pythonSkillPath: python.filePath,
+  rustGrammarPath,
+  pythonGrammarPath,
+  rustLanguage: parsed.language,
+  rustOwnerType: method.ownerType,
+  pythonLanguage: pythonParsed.language,
+  pythonOwnerType: pythonMethod.ownerType
 }));
 `);
       const smoke = JSON.parse(execFileSync(process.execPath, [smokePath], {
         cwd: consumerDirectory,
         encoding: "utf8"
-      })) as { skillPath: string; grammarPath: string; language: string; ownerType: string };
+      })) as {
+        rustSkillPath: string;
+        pythonSkillPath: string;
+        rustGrammarPath: string;
+        pythonGrammarPath: string;
+        rustLanguage: string;
+        rustOwnerType: string;
+        pythonLanguage: string;
+        pythonOwnerType: string;
+      };
 
-      expect(smoke).toMatchObject({ language: "rust", ownerType: "(u8, u8)" });
-      expect(smoke.skillPath.startsWith(`${consumerDirectory}${path.sep}`)).toBe(true);
-      expect(smoke.grammarPath.startsWith(`${consumerDirectory}${path.sep}`)).toBe(true);
+      expect(smoke).toMatchObject({
+        rustLanguage: "rust",
+        rustOwnerType: "(u8, u8)",
+        pythonLanguage: "python",
+        pythonOwnerType: "Service"
+      });
+      for (const installedPath of [
+        smoke.rustSkillPath,
+        smoke.pythonSkillPath,
+        smoke.rustGrammarPath,
+        smoke.pythonGrammarPath
+      ]) {
+        expect(installedPath.startsWith(`${consumerDirectory}${path.sep}`)).toBe(true);
+      }
     } finally {
       rmSync(sandbox, { recursive: true, force: true });
     }

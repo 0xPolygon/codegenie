@@ -1,0 +1,25 @@
+name: fixture-python-lens
+repo:
+  fixture: repos/python
+command:
+  branch: feature
+  base: main
+review:
+  provider: fake
+  model: fake-model
+  verify: true
+  cache: false
+  lenses:
+    - lang/python
+expect:
+  minFindings: 1
+  maxFindings: 1
+should_find:
+  - id: python-fake-finding
+    path: src/positive.py
+    category: correctness
+    severityAtLeast: medium
+    titlePattern: Fake finding
+should_not_find:
+  - id: python-marker-free-negative-control
+    path: src/negative.py

@@ -15,7 +15,7 @@ This component owns:
 - Revision access through git plumbing (`git show`, `git ls-tree`, `git grep` via `GitClient`) and engine provenance.
 - The `searchFiles` POSIX ERE query contract.
 - The tree-sitter service: WASM runtime and grammar loading from `node_modules`, extension-to-grammar routing including `tsx`, ABI pinning behavior, in-memory parsing of revision content, and parse caching.
-- The `LanguageAdapter` implementations: Go, TypeScript/JavaScript, Rust, and the generic fallback, including `SymbolKind` + `nativeKind` mapping rules, ownership, declaration identity, and language-specific imports/test symbols. Python and Solidity are grammar-routed through the shared placeholder until their vertical slices land.
+- The `LanguageAdapter` implementations: Go, TypeScript/JavaScript, Rust, Python, and the generic fallback, including `SymbolKind` + `nativeKind` mapping rules, ownership, declaration identity, and language-specific imports/test symbols. Solidity remains grammar-routed through the shared placeholder until its vertical slice lands.
 - Stage 4 changed-symbol extraction producing `HunkSymbolFacts` (enclosing-symbol mapping and fallback detection).
 - Static signal extraction: the two v1 cross-language rules (per-language rule packs are deferred to Future Considerations — see architecture.md).
 - `PacketContext` assembly (path, package name, enclosing function/type/method) plus the file outline and the likely-tests list for `ReviewPacket.relevantTests`, all consumed by the Stage 6 packet builder.
@@ -216,7 +216,8 @@ src/repo/
     go-adapter.ts
     typescript-adapter.ts    # covers typescript, tsx, javascript
     rust-adapter.ts
-    grammar-adapter.ts       # semantic placeholder for Python/Solidity
+    python-adapter.ts
+    grammar-adapter.ts       # semantic placeholder for Solidity
     generic-adapter.ts
 ```
 
@@ -338,9 +339,10 @@ Input is a path or a `SymbolRef` (which carries its own path). Candidate test fi
 - Go: `*_test.go` in the same directory (same-package convention).
 - TS/JS: sibling `<stem>.test.*` and `<stem>.spec.*`, `__tests__/` entries matching the stem, and `test/`/`tests/` directory entries matching the stem.
 - Rust: sibling `<stem>_test.rs` plus nearest Cargo-package `tests/<stem>.rs`; same-file `#[cfg(test)]` and arbitrary-name integration scanning are explicitly deferred.
+- Python: sibling `test_<stem>.py` and `<stem>_test.py`, plus those variants in the nearest package's `tests/` directory. Custom pytest collection configuration is explicitly deferred.
 - Generic: filename stem match under the same conventions.
 
-Candidates come from tree listings at the resolved revision (default head; `source?` supports base-side questions about deleted tests). With a symbol input, candidate files are filtered to those whose content mentions the symbol name (word-boundary text match). Files with grammars are parsed and their recognized test symbols returned as `SymbolRef[]` (Go `Test*`/`Benchmark*`/`Fuzz*`/`Example*`; TS/JS `describe`/`it`/`test`; Rust functions in candidate test files carrying `#[test]`, `#[tokio::test]`, `#[async_std::test]`, or `#[actix_rt::test]`, with `nativeKind: "test case"`). When a symbol input is present, only test-symbol bodies mentioning the symbol survive. Results are deduplicated, sorted by path/range/name, then capped. Unparseable test files contribute one file-level `SymbolRef` (`kind: "other"`, `lineRange: [1, 1]`) so the model still learns the file exists. `likely-tests.ts` is the only production discovery mechanism; `LanguageAdapter` has no likely-test hook. Meta: `precision: "heuristic"` always; `backend` reflects whether parsing refined the answer; an empty list is a valid non-degraded answer.
+Candidates come from tree listings at the resolved revision (default head; `source?` supports base-side questions about deleted tests). With a symbol input, candidate files are filtered to those whose content mentions the symbol name (word-boundary text match). Files with grammars are parsed and their recognized test symbols returned as `SymbolRef[]` (Go `Test*`/`Benchmark*`/`Fuzz*`/`Example*`; TS/JS `describe`/`it`/`test`; Rust functions in candidate test files carrying `#[test]`, `#[tokio::test]`, `#[async_std::test]`, or `#[actix_rt::test]`; Python top-level `test_*` functions and direct `test_*` methods of `Test*` classes, all language-specific cases with `nativeKind: "test case"`). When a symbol input is present, only test-symbol bodies mentioning the symbol survive. Results are deduplicated, sorted by path/range/name, then capped. Unparseable test files contribute one file-level `SymbolRef` (`kind: "other"`, `lineRange: [1, 1]`) so the model still learns the file exists. `likely-tests.ts` is the only production discovery mechanism; `LanguageAdapter` has no likely-test hook. Meta: `precision: "heuristic"` always; `backend` reflects whether parsing refined the answer; an empty list is a valid non-degraded answer.
 
 #### listFiles
 
@@ -378,7 +380,7 @@ Every truncation sets `truncated: true` and `omittedCount` where the signature a
 
 The `LanguageAdapter` interface is law. The adapter registry routes by extension and exposes a shared base implementation that walks named node types per language (no `.scm` query assets in v1). Adapter authors map symbols with the single question defined in `architecture.md` and always pass the language's own word through `nativeKind`.
 
-Qualified-name rendering: each adapter defines the conventional qualified rendering used wherever an enclosing symbol is shown as a string (`HunkSymbolFacts.enclosingSymbol`, snippets, prompts): Go methods render as `(*Store).SaveUser` for pointer receivers and `Store.SaveUser` for value receivers; TS/JS members render as `ClassName.method`; free functions render bare. `SymbolInfo.name` always carries the bare name; the owner lives in `ownerType`.
+Qualified-name rendering: each adapter defines the conventional qualified rendering used wherever an enclosing symbol is shown as a string (`HunkSymbolFacts.enclosingSymbol`, snippets, prompts): Go methods render as `(*Store).SaveUser` for pointer receivers and `Store.SaveUser` for value receivers; TS/JS and Python members render as `ClassName.method`; free functions render bare. `SymbolInfo.name` always carries the bare name; the owner lives in `ownerType`.
 
 #### Go Adapter
 
@@ -417,6 +419,14 @@ Rust declarations map as follows: top-level `function_item` → `function`; `str
 Leading contiguous outer attributes extend both declaration range and signature, so attribute/header/body lines resolve to the smallest decorated declaration. Signatures stop before implementation bodies, normalize multiline headers, and cap at 600 characters. Changed-symbol identity is path + kind + owner + name + declaration range + signature: multiple lines in one declaration merge, while same-named trait/impl declarations do not. All Rust symbols leave `exported` unset.
 
 Imports preserve compact `use` arguments and `extern crate` sources in source order with deduplication. Only supported test attributes in convention-selected candidate files produce `nativeKind: "test case"`; an inline `#[test]` in ordinary Rust source remains an ordinary function because same-file discovery is deferred.
+
+#### Python Adapter
+
+Python maps module-level and nested-local `function_definition` nodes to `function`, functions directly in a class body to `method` with that immediate class as `ownerType`, and `class_definition` to `type`. Nested local functions reset class ownership even when lexically inside a method. Nested classes carry `nativeKind: "nested class"` and their immediate enclosing class as `ownerType`; their direct methods use the nested class owner. Async callables retain the same shared kind and use `nativeKind: "async function"` or `"async method"`. All Python symbols leave `exported` unset.
+
+An outer `decorated_definition` owns the declaration range. Signatures are built by byte-slicing from the outer decorator start to the definition's `body` field, compacting decorator lines and the complete multiline header through its colon, and capping at 600 characters independently of suite size. The adapter never calls the brace-based `compactSignature`. Enclosing lookup chooses the smallest decorated declaration, so decorator/header/body lines bind to their semantic function, method, or class. Changed-symbol identity is path + kind + owner + name + decorated range + signature.
+
+Imports are dependency module specifiers in source order with deduplication: each module in direct `import a, b as alias`, the module portion of `from .pkg import member` with relative dots preserved, and `__future__`. Aliases and imported member names are excluded. In convention-selected Python candidate files, only top-level `test_*` functions and direct `test_*` methods under `Test*` classes use `nativeKind: "test case"`; nested local test-named functions and methods on other classes remain ordinary symbols. `.pyi` and custom pytest collection rules are deferred.
 
 #### Generic Adapter
 
@@ -471,7 +481,7 @@ The v1 set is intentionally conservative: each rule states a syntactic certainty
 Assembly, on the side selected by Stage 4 rules (head for hunks with adds, base for deletion-only content):
 
 - `path`, `packageName`: from the file outline data.
-- `enclosingFunction` / `enclosingMethod` / `enclosingType`: resolved from the packet hunks' primary enclosing symbols. A `method` fills `enclosingMethod` and its `ownerType`'s type declaration (when found in the same file) fills `enclosingType`; a `function` fills `enclosingFunction`; changed lines directly inside a type declaration fill `enclosingType`. With multiple hunks, the primary symbol of the first hunk in file order wins; others remain visible through `symbolFacts`.
+- `enclosingFunction` / `enclosingMethod` / `enclosingType`: resolved from the packet hunks' primary enclosing symbols. A `method` fills `enclosingMethod` and its `ownerType`'s type declaration (when found in the same file) fills `enclosingType`; when same-named types collide, containing declarations are preferred by smallest range, with the existing first-name-match fallback retained for languages whose methods sit outside type ranges. A `function` fills `enclosingFunction`; changed lines directly inside a type declaration fill `enclosingType`. With multiple hunks, the primary symbol of the first hunk in file order wins; others remain visible through `symbolFacts`.
 - `outline` (returned alongside the context, not a `PacketContext` field): the same `FileOutline` the `readFileOutline` tool produces for the packet's file and side, for the builder's context-budget assembly.
 - `relevantTests` (returned alongside the context, not a `PacketContext` field): the internal `findLikelyTests` flow for the primary enclosing symbol, capped at 5. The packet builder assigns it to `ReviewPacket.relevantTests`, the single carrier of likely tests.
 
@@ -576,6 +586,8 @@ Stage 4 extraction (aligning with the fixture tests named in `architecture.md`):
 - `typescript changed-function extraction` — class method and arrow-function-const changes map to `method`/`function` with correct `nativeKind`.
 - `rust declaration contract` — attribute-inclusive declarations, trait/impl owners, associated items, same-name identity, body-free capped signatures, stable imports, and unset `exported` fields match the Rust contract.
 - `rust likely tests and deferrals` — exact sibling/Cargo-package paths return only supported attributed test functions; inline `#[cfg(test)]` and arbitrary integration names do not enter discovery.
+- `python declaration contract` — decorated functions/classes, direct methods, nested-local ownership reset, nested-class context, body-free capped multiline signatures, dependency imports, deterministic identity, and unset `exported` fields match the Python contract.
+- `python likely tests and deferrals` — exact sibling/nearest-package paths return only top-level `test_*` functions and direct methods under `Test*` classes; `.pyi` and custom pytest collection do not enter discovery.
 - `deletion-only hunk maps to base side` — removed lines map to the base-revision symbol with old-side `changedLines` and `changedLinesSide: "old"`; add-bearing hunks carry `changedLinesSide: "new"`.
 - `primary symbol pick is deterministic` — a hunk spanning two functions picks the one covering more changed lines; tie breaks by span then start line.
 - `fallback regex extraction` — with parsing disabled, a Go hunk yields `source: "fallback"`, `confidence: "heuristic"`, signature from the matched line, no `symbolRange`.
@@ -592,6 +604,7 @@ Static signals (one per rule plus engine behavior):
 PacketContext assembly:
 
 - `packet context resolves method and owner type` — method change fills `enclosingMethod` and `enclosingType` from the same file.
+- `packet context resolves nested owner collision` — with top-level `Duplicate` and `Outer.Duplicate.target`, the method attaches the smallest containing nested `Duplicate`, not the earlier top-level type.
 - `packet context returns outline and tests alongside` — a parseable file yields the `FileOutline` and a ≤5-entry likely-tests list in the wrapper return; `PacketContext` itself carries no outline or tests field.
 - `packet context degraded without parse` — unparseable file returns path plus a fallback outline and a degradation note.
 - `packet context deletion-only uses base content` — deleted-file packet context assembles from base-side parse.

@@ -433,6 +433,133 @@ describe("parser-derived fixture summaries", () => {
     expect(symbols.find((symbol) => symbol.name === "empty")?.signature).toBe("macro_rules! empty {");
   });
 
+  it("derives decorator-aware Python declarations, immediate owners, imports, and test symbols", async () => {
+    const registry = new LanguageAdapterRegistry(new TreeSitterService());
+    const adapter = registry.forPath("src/payment.py");
+    const parsed = await parseFixture(registry, "src/payment.py", fixture("python/payment.py"));
+    const symbols = adapter.listSymbols(parsed);
+
+    expect(adapter.id).toBe("python");
+    expect(parsed).toMatchObject({ language: "python", adapterId: "python", hasErrors: false });
+    expect(adapter.getImports(parsed)).toEqual([
+      "__future__",
+      "decimal",
+      "asyncio",
+      "os.path",
+      ".gateways",
+      "..shared.money",
+      "."
+    ]);
+    expect(symbols).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "BaseService", kind: "type", nativeKind: "class", lineRange: [11, 12] }),
+      expect.objectContaining({
+        name: "module_helper",
+        kind: "function",
+        nativeKind: "function",
+        lineRange: [15, 21],
+        signature: "def module_helper( value: Decimal, ) -> str:"
+      }),
+      expect.objectContaining({ name: "local_formatter", kind: "function", lineRange: [18, 19] }),
+      expect.objectContaining({
+        name: "PaymentService",
+        kind: "type",
+        nativeKind: "class",
+        lineRange: [24, 46],
+        signature: "@service_registry.register( \"payments\", ) class PaymentService(BaseService):"
+      }),
+      expect.objectContaining({
+        name: "authorize",
+        kind: "method",
+        nativeKind: "async method",
+        ownerType: "PaymentService",
+        lineRange: [28, 41],
+        signature: "@staticmethod @audit( \"authorize\", ) async def authorize( self, amount: Decimal, ) -> bool:"
+      }),
+      expect.objectContaining({ name: "normalized", kind: "function", lineRange: [36, 37] }),
+      expect.objectContaining({
+        name: "Receipt",
+        kind: "type",
+        nativeKind: "nested class",
+        ownerType: "PaymentService",
+        lineRange: [43, 46]
+      }),
+      expect.objectContaining({ name: "code", kind: "method", ownerType: "Receipt", lineRange: [44, 46] }),
+      expect.objectContaining({ name: "CachedService", kind: "type", lineRange: [49, 52] }),
+      expect.objectContaining({ name: "read", kind: "method", ownerType: "CachedService", lineRange: [51, 52] })
+    ]));
+    expect(symbols.every((symbol) => symbol.exported === undefined)).toBe(true);
+    expect(symbols.find((symbol) => symbol.name === "local_formatter")?.ownerType).toBeUndefined();
+    expect(symbols.find((symbol) => symbol.name === "normalized")?.ownerType).toBeUndefined();
+
+    expect(adapter.getEnclosingSymbol(parsed, 24)).toMatchObject({ name: "PaymentService", lineRange: [24, 46] });
+    expect(adapter.getEnclosingSymbol(parsed, 28)).toMatchObject({ name: "authorize", lineRange: [28, 41] });
+    expect(adapter.getEnclosingSymbol(parsed, 33)).toMatchObject({ name: "authorize", lineRange: [28, 41] });
+    expect(adapter.getEnclosingSymbol(parsed, 36)).toMatchObject({ name: "normalized", lineRange: [36, 37] });
+    expect(adapter.getEnclosingSymbol(parsed, 39)).toMatchObject({ name: "authorize", lineRange: [28, 41] });
+    expect(adapter.getEnclosingSymbol(parsed, 43)).toMatchObject({ name: "Receipt", lineRange: [43, 46] });
+    expect(adapter.getEnclosingSymbol(parsed, 44)).toMatchObject({ name: "code", ownerType: "Receipt" });
+
+    const hunk: DiffHunk = {
+      id: "python-identity",
+      path: parsed.path,
+      oldStart: 24,
+      oldLines: 0,
+      newStart: 24,
+      newLines: 23,
+      header: "",
+      lines: [28, 33, 39, 43].map((line) => ({ kind: "add" as const, content: "+", newLineNumber: line }))
+    };
+    expect(adapter.getChangedSymbols(parsed, hunk)).toEqual([
+      expect.objectContaining({ name: "authorize", lineRange: [28, 41], changedLines: [28, 33, 39] }),
+      expect.objectContaining({ name: "Receipt", lineRange: [43, 46], changedLines: [43] })
+    ]);
+
+    const testsParsed = await parseFixture(registry, "src/payment_test.py", fixture("python/payment_test.py"));
+    expect(adapter.listSymbols(testsParsed)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "test_authorize_rejects_zero", kind: "function", nativeKind: "test case", lineRange: [9, 13] }),
+      expect.objectContaining({
+        name: "test_authorize_accepts_positive",
+        kind: "method",
+        ownerType: "TestPaymentService",
+        nativeKind: "test case",
+        lineRange: [17, 19]
+      }),
+      expect.objectContaining({ name: "test_nested_is_not_collected", nativeKind: "function" }),
+      expect.objectContaining({ name: "test_authorize_not_collected", nativeKind: "method", ownerType: "PaymentExamples" })
+    ]));
+    expect(adapter.listSymbols(testsParsed).find((symbol) => symbol.name === "test_nested_is_not_collected")?.ownerType).toBeUndefined();
+  });
+
+  it("keeps Python partial declarations and AST-derived signatures bounded", async () => {
+    const registry = new LanguageAdapterRegistry(new TreeSitterService());
+    const adapter = registry.forPath("src/partial.py");
+    const parameters = Array.from({ length: 140 }, (_value, index) => `value_${String(index)}: int`).join(", ");
+    const parsed = await adapter.parse({
+      path: "src/partial.py",
+      language: "python",
+      source: { kind: "head" },
+      content: [
+        "@decorator",
+        `def bounded(${parameters}) -> int:`,
+        "    return 1",
+        "",
+        "def intact() -> bool:",
+        "    return True",
+        "",
+        "def broken("
+      ].join("\n")
+    });
+    const symbols = adapter.listSymbols(parsed);
+
+    expect(parsed.hasErrors).toBe(true);
+    expect(symbols).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "bounded", lineRange: [1, 3] }),
+      expect.objectContaining({ name: "intact", signature: "def intact() -> bool:" })
+    ]));
+    expect(symbols.find((symbol) => symbol.name === "bounded")?.signature?.length).toBeLessThanOrEqual(600);
+    expect(symbols.find((symbol) => symbol.name === "bounded")?.signature).not.toContain("return 1");
+  });
+
   it("serves parser-derived summaries and source snippets through repository tools", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "httpbin_client.go", fixture("go/httpbin_client.go"));

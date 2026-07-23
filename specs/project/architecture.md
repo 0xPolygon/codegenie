@@ -51,7 +51,7 @@ Core dependencies:
 - A TOML parser for `codegenie.toml` and a YAML parser for eval case files.
 - `picomatch` for path-rule and tool globs.
 - `execa` or Node subprocess APIs for `git` and `gh`.
-- `web-tree-sitter` plus Go, TypeScript/JavaScript, Rust, Python, and Solidity grammars for syntax parsing. Rust has a semantic adapter in the current slice; Python and Solidity retain grammar-backed routing until their vertical slices land.
+- `web-tree-sitter` plus Go, TypeScript/JavaScript, Rust, Python, and Solidity grammars for syntax parsing. Rust and Python have semantic adapters in the current slice; Solidity retains grammar-backed routing until its vertical slice lands.
   - `tree-sitter-go` for Go
   - `tree-sitter-typescript` for Typescript: `.ts`/`.mts`/`.cts`/`.d.ts` route to the typescript grammar; `.tsx` routes to the tsx grammar
   - `tree-sitter-javascript` for Javascript: `.js`/`.jsx`/`.mjs`/`.cjs`
@@ -895,7 +895,7 @@ Chosen defaults:
 - `telemetry.runDir = ".codegenie/runs"`
 - `telemetry.retainRuns = 20`
 - `eval.logsDir = "logs"`
-- Default-enabled lens set = all five currently bundled lenses (`core/code-review`, `core/tests`, `lang/go`, `lang/rust`, `lang/typescript`). Plan 98 adds Python and Solidity later in the same unreleased integration series.
+- Default-enabled lens set = all six currently bundled lenses (`core/code-review`, `core/tests`, `lang/go`, `lang/python`, `lang/rust`, `lang/typescript`). Plan 98 adds Solidity later in the same unreleased integration series.
 
 Neither `review.maxFindings` nor `review.softCommentCap` suppresses verified critical/high findings.
 
@@ -1048,6 +1048,7 @@ V1 language adapters:
 - Go.
 - TypeScript/JavaScript.
 - Rust, with attribute-aware declarations, trait/impl ownership context, nominal impl owners, stable imports, and deterministic declaration identity.
+- Python, with decorator-aware ranges/signatures, direct class ownership, nested-local ownership reset, stable module imports, and deterministic declaration identity. Only `.py` is supported; `.pyi` remains generic.
 - Generic fallback for unsupported files.
 
 Language adapter interface:
@@ -1066,7 +1067,7 @@ interface LanguageAdapter {
 }
 ```
 
-Likely-test discovery is owned once by `src/repo/likely-tests.ts`, not by an adapter hook. Rust candidates are sibling `<stem>_test.rs` and nearest Cargo-package `tests/<stem>.rs`; supported attributed test functions are returned in deterministic path/range/name order. Same-file `#[cfg(test)]` and arbitrary integration-test scanning are explicit deferrals.
+Likely-test discovery is owned once by `src/repo/likely-tests.ts`, not by an adapter hook. Rust candidates are sibling `<stem>_test.rs` and nearest Cargo-package `tests/<stem>.rs`; supported attributed test functions are returned in deterministic path/range/name order. Python candidates are sibling `test_<stem>.py`/`<stem>_test.py` plus nearest-package `tests/` variants; only top-level `test_*` functions and direct `test_*` methods under `Test*` classes are test cases. Same-file Rust discovery, arbitrary Rust integration scanning, and custom pytest collection configuration are explicit deferrals.
 
 Repository tool interface:
 
@@ -1406,7 +1407,7 @@ Planner dossier construction:
 V1 repository intelligence can be incremental:
 
 - Required for v1: diff parsing, filtering, simple file classification, package-root hints, test-file detection, configured labels/priorities, absolute hunk line numbers, and seed context retrieval.
-- Strongly preferred for v1: tree-sitter enclosing symbol and changed-symbol extraction for Go, TypeScript/JavaScript, and Rust.
+- Strongly preferred for v1: tree-sitter enclosing symbol and changed-symbol extraction for Go, TypeScript/JavaScript, Rust, and Python.
 - Deferred to Future Considerations: symbol edges, caller/test relationship graphs, and semantic analyzer integrations.
 
 ### Verifier, Deduper, Composer

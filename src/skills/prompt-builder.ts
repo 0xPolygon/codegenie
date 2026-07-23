@@ -150,6 +150,11 @@ export const BUNDLED_SKILL_WHY_LEDGER: Record<string, PromptLedgerEntry[]> = {
     { surface: "runtime failure predicates", reason: "Rust review must distinguish reachable panics, boundary failures, and materially lost Results from idiomatic syntax that has no observable failure.", evidence: "Plan 98 §2.2 owner-accepted positive and required false-positive cases, 2026-07-23" },
     { surface: "unsafe invariant discipline", reason: "Unsafe syntax is only actionable when a named aliasing, lifetime, initialization, layout, thread-safety, or ownership invariant is violated.", evidence: "Plan 98 bundled-skill owner matrix and Rust acceptance gate, 2026-07-23" },
     { surface: "async blocking and suspension", reason: "Runtime blocking and synchronization across await are valid only with executor placement, suspension, and conflict evidence; compiler-rejected Send/lifetime claims are excluded.", evidence: "Plan 98 §2.2 async materiality and false-positive contract, 2026-07-23" }
+  ],
+  "lang/python": [
+    { surface: "state, absence, and exception predicates", reason: "Python review must connect mutable defaults, None propagation, and broad exception handling to a reachable cross-call or caller-visible failure instead of flagging syntax alone.", evidence: "Plan 98 §3.2 owner-accepted failure and false-positive cases, 2026-07-23" },
+    { surface: "exact units and event-loop liveness", reason: "Float and blocking-call findings are actionable only when a named exact-unit contract or an event-loop workload makes the failure material.", evidence: "Plan 98 Python bundled-skill owner matrix checks 4-5, 2026-07-23" },
+    { surface: "injection, file identity, and iteration safety", reason: "Security and collection-mutation checks require concrete untrusted flow, a real check/use race, or named skipped/duplicated elements while preserving argv, descriptor, and snapshot safe patterns.", evidence: "Plan 98 §3.2 required unsafe/safe distinctions and owner acceptance gate, 2026-07-23" }
   ]
 };
 
