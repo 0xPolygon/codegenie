@@ -989,7 +989,9 @@ describe("issue comment client", () => {
 });
 
 type WorkflowStep = {
+  env?: Record<string, string>;
   id?: string;
+  name?: string;
   uses?: string;
   run?: string;
   with?: Record<string, string>;
@@ -1062,6 +1064,47 @@ describe("GitHub Action and workflow contracts", () => {
     expect(prCheckout?.with?.ref).toContain("github.event.pull_request.base.sha");
     const commentCheckout = commentExample.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v7");
     expect(commentCheckout?.with?.ref).toBeUndefined();
+  });
+
+  it("runs standalone CI against the PR head with actionlint available before every gate", () => {
+    const ciPath = ".github/workflows/ci.yml";
+    const raw = readFileSync(path.resolve(ciPath), "utf8");
+    const workflow = parseYaml(raw) as WorkflowDocument;
+    const steps = workflow.jobs.ci?.steps ?? [];
+
+    const checkoutIndex = steps.findIndex((step) => step.uses === "actions/checkout@v7");
+    const nodeIndex = steps.findIndex((step) => step.uses === "actions/setup-node@v7");
+    const pnpmIndex = steps.findIndex((step) => step.uses === "pnpm/action-setup@v4");
+    const actionlintIndex = steps.findIndex((step) => step.name === "Install actionlint");
+    const installIndex = steps.findIndex((step) => step.run?.trim() === "pnpm install --frozen-lockfile");
+    const checkIndex = steps.findIndex((step) => step.run?.trim() === "pnpm run check");
+    const testIndex = steps.findIndex((step) => step.run?.trim() === "pnpm test");
+    const buildIndex = steps.findIndex((step) => step.run?.trim() === "pnpm build");
+
+    expect(checkoutIndex).toBeGreaterThanOrEqual(0);
+    expect(steps[checkoutIndex]?.with?.ref).toContain("github.event.pull_request.head.sha");
+    expect(steps[checkoutIndex]?.with?.ref).not.toContain("base.sha");
+    expect(steps[nodeIndex]?.with?.["node-version"]).toBe("26");
+    expect(steps[pnpmIndex]?.with?.version).toBe("11.15.1");
+
+    const actionlintStep = steps[actionlintIndex];
+    expect(actionlintStep?.env?.ACTIONLINT_VERSION).toBe("1.7.12");
+    expect(actionlintStep?.env?.ACTIONLINT_SHA256).toBe(
+      "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+    );
+    expect(actionlintStep?.run).toContain("actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz");
+    expect(actionlintStep?.run).toContain("sha256sum --check");
+    expect(actionlintStep?.run).toContain('>> "${GITHUB_PATH}"');
+    expect(actionlintStep?.run).toContain('"${install_dir}/actionlint" -version');
+
+    expect(raw).not.toContain("--ignore-scripts");
+    expect(nodeIndex).toBeGreaterThan(checkoutIndex);
+    expect(pnpmIndex).toBeGreaterThan(nodeIndex);
+    expect(actionlintIndex).toBeGreaterThan(pnpmIndex);
+    expect(installIndex).toBeGreaterThan(actionlintIndex);
+    expect(checkIndex).toBeGreaterThan(installIndex);
+    expect(testIndex).toBeGreaterThan(checkIndex);
+    expect(buildIndex).toBeGreaterThan(testIndex);
   });
 });
 
