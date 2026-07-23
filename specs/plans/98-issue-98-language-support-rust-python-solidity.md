@@ -1,0 +1,528 @@
+# Issue 98: Language Support — Rust, Python, Solidity (tree-sitter adapters + bundled skills)
+
+Status: PENDING — revised 2026-07-23 after design critique; all 19 critique issues accepted
+Planned from: owner request 2026-07-23 (add first-class language support for Rust, Python, and Solidity via tree-sitter and bundled skills, plus the shared harness work required to make that support real).
+Planned at: commit `fbcc669` (branch `next`)
+Design critique: `reviews/projects/plan-98-language-support-crit/crit_summary.md`
+Recommended priority: first post-Action product arc. This creates the substrate for the PUNCHLIST eval-diversity guard; the real-repo, real-model second-language case remains a follow-up after landing.
+
+## Problem
+
+codegenie reviews any diff, but only Go and TypeScript/JavaScript receive first-class syntax context and language review guidance. Rust, Python, and Solidity currently fall through to generic parsing or incomplete cross-system language maps, so packets can lack enclosing symbols, outlines, likely-test links, and a matching language skill.
+
+The original Plan 98 treated adapters as isolated extensions. Review against the current harness disproved that assumption:
+
+- language identity is duplicated across tree-sitter routing, raw diff parsing, classification, packets, and lenses;
+- deterministic packet fallback does not reliably choose an arbitrary new `lang/<language>` lens;
+- skill `languages` metadata is descriptive in some paths rather than a complete enforcement gate;
+- the optional adapter `findLikelyTests` hook is unused, while production discovery is owned by `likely-tests.ts`;
+- adding default-enabled skills changes every Stage-5 lens/skill inventory and the registry-derived cache identity;
+- fake-runner sentinel findings do not prove that parsing, symbols, tests, or skills worked;
+- the repository has no PR-head CI workflow running the claimed gates.
+
+Plan 98 therefore includes a bounded shared-foundation phase before the three language slices. It does not change review posture, budgets, or LLM schemas.
+
+## Accepted Design-Crit Decisions
+
+1. All 19 design-crit issues are accepted.
+2. `.pyi` support is removed from v1. Python stubs are explicitly deferred.
+3. Same-file Rust `#[cfg(test)]` discovery and arbitrary-name integration-test tree scanning are deferred. V1 test discovery uses deterministic path conventions.
+4. Solidity state variables and constants are emitted as minimal contract-owned `value` symbols. Storage-layout analysis, generated-getter semantics, and storage/API static signals are deferred.
+5. No Stage-5 filtering machinery will be added merely to preserve old prompt bytes. `LensRegistry.registryHash()` hashes every loaded skill regardless of enablement, so setting new skills `enabledByDefault: false` would not preserve cache identity. Phases 1-4 therefore develop as one unreleased integration series and Phase 5 merges/releases the complete language arc atomically, producing one external Stage-5/cache measurement boundary.
+6. The Go/TypeScript non-regression contract is narrowed to unchanged classification, adapter output, packet construction, and Stage-7/9 language-specific skill projection. Existing Go/TypeScript skill text must not be polluted by the new language skills.
+7. A proper PR-head CI workflow is a standalone prerequisite, separate from the trusted-base codegenie dogfood workflow, and lands immediately before the language integration series.
+8. PR-head CI installs a pinned `actionlint` before any command that runs `check:workflows`, and uses `pnpm install --frozen-lockfile` without `--ignore-scripts` so the repository's `onlyBuiltDependencies` policy can install esbuild for Vitest.
+
+## Verified Dependency Baseline
+
+The exact proposed packages were independently inspected and load-tested with the repository's `web-tree-sitter@0.26.11`:
+
+| Language | Package | Grammar ABI | Published WASM | Load/parse result |
+| --- | --- | ---: | --- | --- |
+| Rust | `tree-sitter-rust@0.24.0` | 14 | `tree-sitter-rust.wasm` | verified |
+| Python | `tree-sitter-python@0.25.0` | 15 | `tree-sitter-python.wasm` | verified |
+| Solidity | `tree-sitter-solidity@1.2.13` | 15 | `tree-sitter-solidity.wasm` | verified |
+
+The grammar premise is viable. Solidity's package metadata nevertheless adds a peer/install surface (`tree-sitter` and native install scripts) that must be validated in the packed consumer layout; ignored local pnpm build scripts alone are not sufficient proof.
+
+## Design
+
+### 1. Shared Foundation
+
+#### 1.1 Canonical language identity
+
+The following identity must agree at every seam:
+
+| Extension | Canonical language | Grammar id | Default language lens |
+| --- | --- | --- | --- |
+| `.rs` | `rust` | `rust` | `lang/rust` |
+| `.py` | `python` | `python` | `lang/python` |
+| `.sol` | `solidity` | `solidity` | `lang/solidity` |
+
+Update and pin all owning maps, not only tree-sitter routing:
+
+- `TreeSitterService.routePath` / `GrammarId` / `GRAMMAR_WASM`;
+- raw diff `languageFromPath`;
+- `detectors.detectLanguage` and `FileFacts.language`;
+- adapter registry routing and `ParsedFile.language`/`adapterId`;
+- packet language and deterministic language-lens selection;
+- fake-planner fixture routing.
+
+Tests assert equality across `DiffFile.language`, `FileFacts.language`, adapter id, outline language, packet language, and selected lens for every supported extension. `.pyi` remains `unknown`/generic in v1 and is documented as deferred.
+
+#### 1.2 Grammar lifecycle and failure semantics
+
+There are seven grammar ids after this plan: Go, TypeScript, TSX, JavaScript, Rust, Python, and Solidity. Loading remains lazy through `TreeSitterService.parse`; adapter `init()` is not a grammar-loading gate.
+
+Pin this behavior:
+
+| Condition | Tree | `hasErrors` | Adapter id | Behavior |
+| --- | --- | --- | --- | --- |
+| Clean parse | retained | `false` | requested grammar | full adapter output |
+| Syntax-error partial parse | retained | `true` | requested grammar | bounded partial AST output allowed |
+| Grammar resolution/ABI failure | absent | `true` | requested grammar | parser-unavailable telemetry; text/generic degradation; grammar cached unavailable |
+| Parser throw | absent | `true` | requested grammar | text/generic degradation |
+| Timeout or null tree | absent | `true` | requested grammar | text/generic degradation |
+| File above parse-size cap | absent | `true` | requested grammar | bounded text/generic degradation |
+
+A table-driven load test minimally parses source with every `GrammarId`; it does not assert that malformed source switches to `GenericAdapter`.
+
+#### 1.3 Language lens enforcement
+
+Shared pipeline changes are explicit and limited:
+
+1. Generalize deterministic fallback to prefer an enabled exact `lang/${canonicalLanguage}` lens, retaining the TypeScript/JavaScript alias to `lang/typescript`.
+2. During planner semantic normalization, remove language-specific lenses whose `LensDescriptor.languages` do not include the hunk language. Emit dedicated telemetry and use deterministic defaults if nothing survives.
+3. At packet projection, defensively include a skill only when its `languages` list is empty or contains the packet's canonical language.
+4. Keep language-neutral core lenses available under their existing rules.
+
+Tests cover omitted planner decisions, empty planner lens arrays, explicit wrong-language planner output, shared lenses containing differently gated skills, and degraded/default-plan execution.
+
+#### 1.4 Stage-5 prompt and cache boundary
+
+Adding three default-enabled skills intentionally changes:
+
+- the global Stage-5 lens inventory;
+- Stage-5 skill summaries;
+- `LensRegistry.registryHash()`;
+- the review/model-call cache identity derived from that registry.
+
+`registryHash()` includes every loaded skill's content hash, not only enabled skills, plus the enabled-lens set. A ship-dark sequence that adds three disabled skill files separately and enables them later would therefore create four cache identities rather than one. Plan 98 does not use that mechanism and does not add language-scoped Stage-5 filtering solely to preserve old bytes.
+
+Instead, Phase 0 lands independently, then Phases 1-4 remain on one unreleased integration branch/series. Their intermediate commits are explicitly non-comparable measurement states and do not merge, release, or establish eval baselines independently. Phase 5 validates and merges the complete language arc once, with all three skills default-enabled, creating one external Stage-5 inventory/registry/cache boundary recorded in the PUNCHLIST and release notes. If operational necessity forces an intermediate language merge, each such merge becomes a separately disclosed boundary and results across the boundary are not compared as like-for-like measurements.
+
+The non-regression gate instead pins:
+
+- Go/TypeScript language classification and adapter outputs;
+- Go/TypeScript packet structure for unchanged fixtures;
+- Stage-7 and Stage-9 Go/TypeScript prompts contain their existing language skill content and exclude Rust/Python/Solidity skill content;
+- cache invalidation is expected and documented, not treated as a regression.
+
+#### 1.5 Declaration identity and shared adapter helpers
+
+`SymbolInfo` is the adapter contract, not merely a list of grammar node types. Each adapter must define:
+
+- `kind`, `nativeKind`, `name`, `ownerType`, `lineRange`, bounded `signature`, and deterministic ordering;
+- the smallest semantic enclosing declaration for header, attribute/decorator, and body lines;
+- stable import output;
+- explicit test-symbol classification;
+- whether `exported` is set.
+
+Rust and Solidity allow same-named declarations in the same owner. Extend `changedSymbolsFromEnclosing` with an optional identity callback (defaulting to current behavior so Go/TypeScript remain unchanged); the new adapters use an identity containing path, kind, owner, name, declaration range, and, where needed, signature. Multiple changed lines in one declaration still merge, while overloads/trait impls do not collapse.
+
+For v1, all three new adapters leave `exported` unset. This prevents accidental activation of `core/exported-api-change`. Language-specific public API semantics remain deferred.
+
+#### 1.6 Likely-test contract
+
+Production behavior is owned by `src/repo/likely-tests.ts`, not the unused optional adapter hook. Remove `LanguageAdapter.findLikelyTests?` from the interface so there is one mechanism.
+
+The shared contract has two parts:
+
+1. language-aware candidate-path generation from a contained subject path and repository file list;
+2. language-aware test-symbol classification on parsed candidates.
+
+Common rules:
+
+- deterministic sorted paths and symbols;
+- dedupe before the existing 20-result cap;
+- preserve requested `head`/`base` source selection and backend/precision metadata;
+- path-only requests return all recognized test symbols from candidates;
+- symbol requests retain the existing cheap candidate-file mention gate and symbol-body mention filter;
+- cleanly parsed candidates return only recognized test symbols; text fallback remains for unparseable candidates;
+- packet `relevantTests` and the public `find_likely_tests` tool use the same results.
+
+V1 path conventions:
+
+| Language | Subject-to-candidate conventions | Test symbols |
+| --- | --- | --- |
+| Rust | sibling `<stem>_test.rs`; nearest Cargo-package `tests/<stem>.rs` | functions carrying supported `#[test]`/async-test attributes in candidate test files, `nativeKind: test case` |
+| Python | sibling `test_<stem>.py` and `<stem>_test.py`; nearest package `tests/` variants | top-level `test_*` functions and `test_*` methods directly under `Test*` classes, `nativeKind: test case` |
+| Solidity | nearest Foundry test dir `<Stem>.t.sol` and `<Stem>Test.t.sol` | contract methods beginning `test` or `invariant`, excluding `setUp`, `nativeKind: test case` |
+
+Explicit deferrals:
+
+- same-file Rust `#[cfg(test)]` discovery;
+- arbitrary-name Rust integration-test scanning;
+- custom pytest collection configuration;
+- custom Foundry test-directory configuration beyond the detected/default package test directory;
+- Solidity-to-Hardhat-TypeScript cross-linking.
+
+#### 1.7 Classification and per-consumer test roles
+
+Built-in language, lockfile, vendored, generated, and test-path rules live in `src/git/detectors.ts`; `file-classifier.ts` consumes their facts.
+
+Existing lockfile coverage for `Cargo.lock`, `poetry.lock`, `uv.lock`, and `Pipfile.lock` is tested rather than reimplemented.
+
+No ambiguous global segment skips are added in v1 for `lib`, `target`, `out`, `cache`, `artifacts`, `venv`, or similar generic names. Without a pre-filter marker-aware mechanism, use existing gitignore/generated detection and repository `pathRules`. Distinctive Python noise such as `__pycache__`, `.tox`, and `*.egg-info` may be added only with paired positive and negative tests and a match shape supported by the detector.
+
+Pin each current path-role consumer independently:
+
+| Path form | Repository/classifier role | Composition/coverage/packet/promotion role |
+| --- | --- | --- |
+| `test_foo.py`, `foo_test.py`, `tests/foo.py` | test | test |
+| `Foo.t.sol`, `test/Foo.t.sol`, `test/FooTest.t.sol` | test | test |
+| `tests/foo.rs`, `foo_test.rs` | test | test |
+| Rust source containing inline tests | source | source (inline discovery deferred) |
+
+### 2. Rust Vertical Slice
+
+#### 2.1 Symbol contract
+
+| Rust construct | `kind` | Name/owner/range contract |
+| --- | --- | --- |
+| `function_item` outside trait/impl | `function` | declared name; leading contiguous outer attributes included in range/signature |
+| `struct_item`, `union_item`, `enum_item`, `type_item` | `type` | declared name; bounded declaration header; attributes included |
+| `trait_item` | `interface` | trait name; contains ownership context for associated items |
+| `mod_item` | `container` | module name; native kind records module |
+| `const_item`, `static_item` | `value` | declared name; owner retained when associated |
+| `macro_definition` | `other` | macro name; native kind records macro definition |
+| `function_item` / `function_signature_item` directly in trait/impl | `method` | owner is normalized nominal trait/target type; leading attributes included |
+| associated type/constant | `type` / `value` | declared name; owner metadata retained |
+
+`impl_item` is ownership context, not a standalone public symbol. Normalize `Foo<T>` to nominal owner `Foo` when resolvable, while retaining the complete impl header in contextual signature/native data. Trait methods without bodies, inherent impl methods, and same-named methods from different trait impls remain distinct.
+
+Signature extraction stops before the body, preserves bounded multiline headers and leading attributes, and has an explicit character cap. Attribute-only changes (`cfg`, `repr`, derive/procedural attributes) resolve to the decorated item.
+
+Imports are stable dependency specifiers: preserve the compact `use` argument (including grouped/aliased/wildcard forms) and supported `extern crate` source, in source order with dedupe.
+
+#### 2.2 Rust skill acceptance
+
+The default-enabled `lang/rust` skill may cover:
+
+- reachable production panic/`unwrap`/`expect` paths;
+- actually narrowing or truncating `as` casts on unbounded values;
+- materially ignored `Result` values;
+- blocking calls that materially stall an async executor;
+- range/slice arithmetic with a concrete boundary failure;
+- unsafe code with a violated safety invariant, not merely missing prose;
+- runtime synchronization or unsafe/manual trait behavior across `.await`.
+
+Compiler-rejected lifetime/`Send` claims, widening/nonnumeric casts, deliberate ignored results, test-only panics, and the mere existence of `unsafe` are required false-positive cases.
+
+### 3. Python Vertical Slice
+
+`.py` is the only v1 extension. `.pyi` is deferred.
+
+#### 3.1 Symbol contract
+
+| Python construct | `kind` | Name/owner/range contract |
+| --- | --- | --- |
+| top-level `function_definition` (including async) | `function` | function name; decorated wrapper start when present |
+| function directly inside a class body | `method` | immediate class owner; decorated wrapper start when present |
+| nested local function | `function` | no class owner inherited through an enclosing method |
+| `class_definition` | `type` | class name; decorated wrapper start when present |
+
+Use a Python-specific declaration builder, never brace-based `compactSignature`:
+
+- start at the outer `decorated_definition` when present;
+- include decorator lines and the complete multiline header through its colon;
+- stop at the `body` field before the suite;
+- keep a fixed character cap independent of implementation-body size;
+- use the decorated range for enclosing-symbol lookup so decorator-only changes bind correctly.
+
+Nested classes are supported as `type` symbols with their immediate enclosing class recorded as native/context metadata; v1 does not claim module-value or type-alias symbol coverage.
+
+Imports are dependency module specifiers: emit each direct `import a, b` module, preserve relative dots in `from .pkg import x`, include `__future__`, exclude local aliases/imported member names, retain source order, and dedupe.
+
+#### 3.2 Python skill acceptance
+
+The default-enabled `lang/python` skill may cover:
+
+- mutable defaults only when mutation creates cross-call state;
+- broad/bare exception handling only when it changes correctness, recovery, or observability materially;
+- `None` propagation that violates a caller-visible contract;
+- float use where a named monetary/unit contract requires exact arithmetic;
+- materially blocking work on an async event loop;
+- `eval`/shell/subprocess injection with concrete untrusted-data flow into an unsafe sink;
+- TOCTOU file handling with an exploitable or correctness-relevant race;
+- sequence mutation during iteration with a concrete skipped/duplicated-element failure.
+
+Safe cases include `subprocess` argv with `shell=False`, cleanup that catches and re-raises, integer minor units, deliberate iteration over a copy, and immutable/never-mutated defaults.
+
+### 4. Solidity Vertical Slice
+
+#### 4.1 Symbol contract
+
+| Solidity construct | `kind` | Name/owner/range contract |
+| --- | --- | --- |
+| contract / abstract contract / library | `type` | declaration name; enclosing owner for direct members |
+| interface | `interface` | declaration name; enclosing owner for direct members |
+| direct contract function | `method` | declared name plus owner; overload identity includes signature/range |
+| constructor | `method` | synthetic name `constructor`; owner required |
+| fallback / receive | `method` | synthetic name `fallback` or `receive`; owner required |
+| modifier | `method` | modifier name; native kind distinguishes modifier |
+| file-level free function | `function` | no contract owner |
+| state variable / constant | `value` | declared name; immediate contract owner; bounded declaration signature |
+| struct / enum / user-defined value type | `type` | declared name; immediate owner when nested |
+| event / custom error | `other` | declared name; immediate owner and explicit native kind |
+
+Minimal state-variable symbols provide precise packet context only. V1 does not analyze storage layout, generated getters, upgrade compatibility, or public ABI changes, and leaves `exported` unset.
+
+Same-named overloads remain distinct through declaration identity. Enclosing lookup chooses the smallest direct member for header/body lines and the containing contract only when no member applies.
+
+Imports emit only the unquoted source path from every supported alias/named-import form, in source order with dedupe.
+
+#### 4.2 Solidity skill acceptance
+
+The default-enabled `lang/solidity` skill may cover:
+
+- reentrancy with a concrete externally controlled call before an affected invariant is secured;
+- unchecked failure from `send` or low-level `call`/`delegatecall`/`staticcall`, not ordinary high-level calls that revert;
+- token decimals or unit scaling only when a named producer/consumer unit contract is inconsistent;
+- missing access control only for a privileged state transition or asset/authority effect;
+- actually narrowing integer casts or arithmetic truncation with a concrete failure mode;
+- repeated credit/use of full `msg.value` inside a loop, not loop presence alone;
+- delegatecall/storage-context hazards with a named invariant;
+- stale/zero oracle data where the consuming contract relies on freshness/nonzero value;
+- missing state-transition events only when an external correctness/audit contract requires them; missing events alone are not state corruption.
+
+Every check must distinguish safe CEI/guarded patterns, deliberate permissionless functions, checked low-level calls, explicit unit conversions, and documented delegatecall/storage invariants.
+
+### 5. Bundled Skill Content Gate
+
+Each new skill is default-enabled and must contain `Checks`, `False Positives`, `Safe Patterns`, and `Examples`. Every individual check must pass this owner-reviewed matrix before its language slice can complete:
+
+1. observable failure predicate;
+2. reachability/materiality rule and impact-based severity guidance;
+3. one concrete unsafe example;
+4. one safe counterexample/false-positive rule;
+5. one safe pattern or mitigation.
+
+Add evidence-bearing `BUNDLED_SKILL_WHY_LEDGER` entries for `lang/rust`, `lang/python`, and `lang/solidity`. Tests assert all seven bundled skills load, project without unexpected truncation, remain within per-skill/total caps, and inject only into compatible Stage-7/9 packet prompts.
+
+A language slice whose skill fails owner review remains `PARTIAL/BLOCKED`; adapter-only support does not satisfy Plan 98 Done Criteria.
+
+### 6. Validation Strategy
+
+#### 6.1 Structural integration tests
+
+For each language, a production-path fixture builds the repository index and packets from a base/feature diff and asserts:
+
+- canonical `DiffFile` and `FileFacts` language;
+- requested adapter id and clean tree-sitter parse without degradation;
+- expected symbol kind/name/range/owner and changed-symbol identity;
+- expected enclosing symbol for header/attribute/decorator/body boundary lines;
+- packet outline and symbol context contain the expected declaration;
+- exact `relevantTests` paths and returned test-symbol names/ranges;
+- packet lenses include the matching language lens;
+- Stage-7 and Stage-9 prompts include the matching skill and exclude the other language skills.
+
+Tests also cover malformed partial trees, forced unavailable/throw/timeout paths, overload/impl identity, imports, caps, and deterministic ordering.
+
+#### 6.2 Fake eval fixtures
+
+Add `evals/fixtures/repos/{rust,python,solidity}/` and one suite YAML per language. These remain zero-spend transport/anchoring sentinels using `CODEGENIE_FAKE_FINDING`; they prove the diff reaches packet review, verification, composition, and anchoring, not that a model or skill detects a real bug.
+
+The public fixture test is updated from four to seven cases. Each fake fixture has a marker-free negative control. Structural tests—not candidate expectations—prove adapter, symbol, likely-test, lens, and skill behavior.
+
+#### 6.3 PR-head CI
+
+Add a conventional PR-head CI workflow, separate from the trusted-base codegenie-review dogfood workflow. It performs:
+
+1. checkout of the PR revision;
+2. supported Node and pnpm setup;
+3. installation of a pinned `actionlint` binary before any check/test command (`check` and `test` both invoke `check:workflows`, which exits 127 when `actionlint` is absent);
+4. `pnpm install --frozen-lockfile` using the repository's build-script policy, explicitly without `--ignore-scripts`—Vitest/tsx require esbuild's platform binary and `onlyBuiltDependencies` is the authorization boundary;
+5. `pnpm run check`;
+6. `pnpm test`;
+7. `pnpm build`.
+
+The fixture materialization/integration test is part of `pnpm test`; if a separate fixture invocation is introduced, it becomes an explicit required gate. Workflow tests pin that the CI workflow tests PR-head code rather than the trusted base, installs pinned `actionlint` before the gates, and does not copy the dogfood workflow's `--ignore-scripts` install flag.
+
+#### 6.4 Packed-install gate
+
+`npm pack`/installed-layout validation must prove:
+
+- all seven bundled skill Markdown files are published and loadable;
+- all seven grammar WASM paths resolve from the installed dependency tree;
+- minimal Rust/Python/Solidity parses work outside the source checkout;
+- no unexpected native install requirement makes the supported install path fail.
+
+Before accepting the Solidity dependency, record pnpm and npm dependency trees and install-script decisions. If its native peer/install surface cannot be made safe for consumers, use the vendored-WASM stop path below.
+
+#### 6.5 Owner acceptance smoke
+
+Run one real review on a Rust or Solidity diff after automated gates pass. Record:
+
+- fixture/repository revision and invocation;
+- expected enclosing symbol and likely-test path;
+- expected language lens and skill id;
+- packet and prompt artifact locations inspected;
+- owner acceptance of skill quality and packet context.
+
+This smoke is product-content acceptance, not a substitute for automated shipping gates.
+
+### 7. Delivery Plan
+
+#### Phase 0 — Standalone PR-head CI prerequisite (land immediately)
+
+- Land this phase as its own PR/commit before the language arc; it has independent value and is not held for later phases.
+- Add the PR-head CI workflow with pinned `actionlint`, script-enabled frozen pnpm install governed by `onlyBuiltDependencies`, and check/test/build gates.
+- Pin workflow contract tests for PR-head checkout, actionlint availability/order, and the absence of `--ignore-scripts`.
+
+#### Phase 1 — Shared language foundation
+
+- Begin the single unreleased Plan-98 integration series after Phase 0 merges.
+- Add exact grammar dependencies, inspect frozen pnpm/npm install behavior, and prove the three proposed WASMs load from the installed dependency tree or trigger the vendored-WASM stop path.
+- Canonical routing across tree-sitter, detectors, diff parser, classification, packets, and fake planner.
+- Seven-grammar lifecycle tests and failure matrix.
+- Generic language-lens fallback, planner compatibility validation, and defensive skill projection.
+- Single likely-test candidate/test-symbol contract; remove the unused adapter hook.
+- Optional declaration-identity callback preserving current Go/TypeScript defaults.
+- Per-consumer test-role extensions and safe classifier decisions.
+- Structural-test harness and Stage-5/cache measurement-boundary documentation.
+
+#### Phase 2 — Rust vertical slice
+
+- Rust grammar registration and adapter contract.
+- Rust deterministic likely-test conventions and test symbols.
+- `lang/rust` skill, WHY-ledger entry, owner content gate.
+- Structural fixture, fake transport fixture, packed-layout assertion, docs/spec updates, full gates.
+
+#### Phase 3 — Python vertical slice
+
+- Python grammar registration and decorator-aware adapter contract for `.py`.
+- Python deterministic likely-test conventions and test symbols.
+- `lang/python` skill, WHY-ledger entry, owner content gate.
+- Structural fixture, fake transport fixture, packed-layout assertion, docs/spec updates, full gates.
+
+#### Phase 4 — Solidity vertical slice
+
+- Solidity grammar registration and adapter contract, including minimal state-variable symbols.
+- Foundry deterministic likely-test conventions and test symbols.
+- `lang/solidity` skill, WHY-ledger entry, owner content gate.
+- Structural fixture, fake transport fixture, packed-layout assertion, docs/spec updates, full gates.
+
+#### Phase 5 — Cross-language release gate
+
+- Run all checks, tests, build, fixture suites, packed-install validation, and recorded owner smoke.
+- Verify Go/TypeScript Stage-7/9 projection isolation and disclose Stage-5/cache identity change.
+- Finish normative docs and PUNCHLIST eval-diversity linkage.
+- Merge/release the complete Phase 1-4 integration series atomically; this is the single external language-skill inventory/cache measurement boundary.
+
+Each language phase is implementation-complete inside the integration series only when its adapter, test discovery, skill/ledger, structural tests, fake transport fixture, documentation, and full gates coexist. No Phase 1-4 commit merges or releases independently; intermediate commits are not valid measurement baselines.
+
+## In-Scope Files
+
+### Dependencies, packaging, and CI
+
+- `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`
+- build/package scripts or asset directory if the vendored-WASM stop path is triggered
+- `.github/workflows/ci.yml` (new) and workflow contract tests
+
+### Parser, adapters, repository context
+
+- `src/types.ts`
+- `src/repo/language-adapter.ts`
+- `src/repo/tree-sitter/tree-sitter-service.ts`
+- `src/repo/tree-sitter/rust-adapter.ts` (new)
+- `src/repo/tree-sitter/python-adapter.ts` (new)
+- `src/repo/tree-sitter/solidity-adapter.ts` (new)
+- `src/repo/likely-tests.ts`
+- `src/repo/packet-context.ts`
+- `src/repo/repository-index.ts` only if required to expose the single likely-test contract without duplicating behavior
+
+### Diff, classification, and path roles
+
+- `src/git/detectors.ts`
+- `src/git/diff-parser.ts`
+- `src/git/file-classifier.ts`
+- `src/util/path-roles.ts`
+
+### Planner, packets, skills, and fake runner
+
+- `src/pipeline/planner.ts`
+- `src/pipeline/packet-builder.ts`
+- `src/pipeline/lens-runner.ts`
+- `src/skills/lens-registry.ts`
+- `src/skills/prompt-builder.ts`
+- `src/llm/fake-runner.ts`
+- `bundled-skills/lang/rust.md` (new)
+- `bundled-skills/lang/python.md` (new)
+- `bundled-skills/lang/solidity.md` (new)
+
+### Fixtures and tests
+
+- `evals/fixtures/repos/{rust,python,solidity}/`
+- `evals/fixtures/{rust,python,solidity}.yml`
+- adapter/tree-sitter, repository intelligence, likely-test, path-role, classifier, packet, planner, prompt/skill, eval, package-build, and workflow tests
+
+### Documentation/spec synchronization
+
+- `README.md`
+- `evals/fixtures/README.md`
+- `specs/project/functional_spec.md`
+- `specs/project/architecture.md`
+- `specs/project/components/context_and_tools.md`
+- `specs/project/components/repository_and_github.md`
+- `specs/project/components/review_pipeline.md`
+- `specs/project/components/skills_llm_telemetry.md`
+- `specs/project/components/evals.md` where fixture inventory/validation is described
+- `specs/plans/PUNCHLIST.md`
+
+## Non-Goals and Explicit Deferrals
+
+- `.pyi` Python stub support.
+- Same-file Rust `#[cfg(test)]` discovery and arbitrary-name integration-test scanning.
+- Custom pytest and Foundry test-discovery configuration.
+- Solidity-to-Hardhat-TypeScript test cross-linking.
+- Rust Analyzer, Pyright, solc, or other native semantic analyzers.
+- New per-language static-signal forks.
+- `exported`/public-API static signals for the new adapters.
+- Solidity storage-layout, generated-getter, upgrade-compatibility, or ABI analysis; minimal state-variable symbols are still in scope.
+- Vyper, additional language lenses, lint mode, or review-budget/LLM-schema changes.
+- Real-model eval baselines for the new languages; owner-run follow-up after landing.
+- New marker-aware classifier machinery solely to skip ambiguous ecosystem directory names.
+
+## Done Criteria
+
+### Shared foundation
+
+- Seven grammar ids load through the installed package layout, and the parser failure matrix is pinned.
+- `.rs`, `.py`, and `.sol` carry one canonical language through diff, classification, parsing, packets, and lens selection.
+- Omitted/invalid planner lenses still yield the matching language lens; incompatible skills cannot enter packet prompts.
+- Stage-5/cache identity change is disclosed; Go/TypeScript Stage-7/9 projection isolation is pinned.
+- PR-head CI installs pinned `actionlint`, performs a frozen install without `--ignore-scripts` under the repository build-script policy, and runs check, test, and build successfully.
+
+### Per language
+
+- A clean fixture diff produces expected non-generic symbols, enclosing context, imports, changed-symbol identities, likely-test symbols, packet lens, and Stage-7/9 skill projection.
+- The language's skill passes the owner acceptance matrix and has a WHY-ledger entry.
+- Its fake eval transport fixture passes with a negative control.
+- Its grammar and skill resolve from the packed/installed layout.
+- Its normative docs are synchronized.
+
+### Plan completion
+
+- Rust, Python, and Solidity vertical slices all satisfy their per-language criteria.
+- Existing Go/TypeScript tests and packet/prompt isolation assertions pass.
+- Full `pnpm run check`, `pnpm test`, `pnpm build`, packed-install gate, fixture suites, and recorded owner smoke pass.
+- The complete language integration series merges/releases once, and that single external Stage-5/cache boundary is recorded.
+
+## Stop Conditions
+
+- If the Solidity package's peer/native install surface breaks the supported consumer install, vendor the verified WASM at a pinned grammar commit. The vendored path must include provenance, integrity hash, build copy, package allow-list, resolution, and packed-install tests; do not upgrade `web-tree-sitter` mid-plan.
+- If any grammar fails the pinned lazy-load/parse contract, stop that language slice and resolve the grammar asset independently rather than weakening structural assertions.
+- If an ambiguous ecosystem directory cannot be skipped without false positives using current mechanisms, ship without that skip and rely on gitignore/configured `pathRules`.
+- If a bundled skill cannot pass the concrete positive/negative owner rubric, mark that language slice partial/blocked; adapter-only support does not complete Plan 98.
+- If structural tests pass only through generic fallback, fake sentinels, or wrong-language lenses, the language slice is not complete regardless of eval summary.
