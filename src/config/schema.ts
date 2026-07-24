@@ -205,7 +205,7 @@ export const defaultConfig: CodegenieConfig = {
     softCommentCap: 7,
     minConfidence: "medium",
     minInlineConfidence: "medium",
-    concurrency: 4,
+    concurrency: 6,
     maxTimeMs: 30 * 60 * 1000,
     perPassTimeoutMs: 8 * 60 * 1000,
     budgetBoost: 1,
@@ -226,7 +226,7 @@ export const defaultConfig: CodegenieConfig = {
     pathRules: []
   },
   llm: {
-    maxConcurrentCalls: 4,
+    maxConcurrentCalls: 6,
     forceSubmitToolChoice: true
   },
   cache: {
