@@ -284,6 +284,38 @@ describe("Plan 98 Solidity vertical slice", () => {
     ]);
   });
 
+  it("keeps Unicode declaration signatures exact and file-level constants deferred", async () => {
+    const adapter = new LanguageAdapterRegistry(new TreeSitterService()).forPath("contracts/UnicodeVault.sol");
+    const parsed = await adapter.parse({
+      path: "contracts/UnicodeVault.sol",
+      language: "solidity",
+      content: fixture("UnicodeVault.sol"),
+      source: { kind: "head" }
+    });
+
+    expect(parsed).toMatchObject({ adapterId: "solidity", hasErrors: false });
+    const symbols = adapter.listSymbols(parsed);
+    expect(symbols).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: "UnicodeVault",
+        kind: "type",
+        signature: "contract UnicodeVault"
+      }),
+      expect.objectContaining({
+        name: "MAX_DEPOSIT",
+        kind: "value",
+        nativeKind: "constant",
+        ownerType: "UnicodeVault"
+      }),
+      expect.objectContaining({
+        name: "quote",
+        ownerType: "UnicodeVault",
+        signature: "function quote( uint256 amount ) external pure returns (uint256 quoted)"
+      })
+    ]));
+    expect(symbols.find((symbol) => symbol.name === "FILE_LIMIT")).toBeUndefined();
+  });
+
   it("holds every Solidity skill check to an independently enforced owner matrix", async () => {
     const { skills } = await loadSkills({
       repoRoot: process.cwd(),

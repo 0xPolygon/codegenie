@@ -172,7 +172,7 @@ function functionSymbol(
   }
   const method = context.directClassBody && context.enclosingClass !== undefined;
   const testCase = isPythonTest(file.path, name, method, context);
-  const async = declarationHeaderText(file, declaration.definition).trimStart().startsWith("async ");
+  const async = declarationHeaderText(declaration.definition).trimStart().startsWith("async ");
   return {
     path: file.path,
     name,
@@ -180,7 +180,7 @@ function functionSymbol(
     nativeKind: testCase ? "test case" : async ? `async ${method ? "method" : "function"}` : method ? "method" : "function",
     lineRange: declarationRange(declaration),
     ...(method ? { ownerType: context.enclosingClass } : {}),
-    signature: declarationSignature(file, declaration)
+    signature: declarationSignature(declaration)
   };
 }
 
@@ -201,7 +201,7 @@ function classSymbol(
     nativeKind: nested ? "nested class" : "class",
     lineRange: declarationRange(declaration),
     ...(nested ? { ownerType: context.enclosingClass } : {}),
-    signature: declarationSignature(file, declaration)
+    signature: declarationSignature(declaration)
   };
 }
 
@@ -209,21 +209,17 @@ function declarationRange(declaration: DeclarationNode): [number, number] {
   return [declaration.outer.startPosition.row + 1, declaration.outer.endPosition.row + 1];
 }
 
-function declarationSignature(file: ParsedFile, declaration: DeclarationNode): string {
+function declarationSignature(declaration: DeclarationNode): string {
   const body = declaration.definition.childForFieldName("body");
   const headerEnd = body?.startIndex ?? declarationColonEnd(declaration.definition) ?? declaration.definition.endIndex;
-  const source = Buffer.from(file.content, "utf8")
-    .subarray(declaration.outer.startIndex, Math.max(declaration.outer.startIndex, headerEnd))
-    .toString("utf8");
+  const source = declaration.outer.text.slice(0, Math.max(0, headerEnd - declaration.outer.startIndex));
   return boundedSignature(compactPythonHeader(source));
 }
 
-function declarationHeaderText(file: ParsedFile, definition: Node): string {
+function declarationHeaderText(definition: Node): string {
   const body = definition.childForFieldName("body");
   const headerEnd = body?.startIndex ?? declarationColonEnd(definition) ?? definition.endIndex;
-  return Buffer.from(file.content, "utf8")
-    .subarray(definition.startIndex, Math.max(definition.startIndex, headerEnd))
-    .toString("utf8");
+  return definition.text.slice(0, Math.max(0, headerEnd - definition.startIndex));
 }
 
 function declarationColonEnd(definition: Node): number | undefined {

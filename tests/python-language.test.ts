@@ -13,7 +13,7 @@ import { TreeSitterService } from "../src/repo/tree-sitter/tree-sitter-service.j
 import { buildLensRegistry, skillsCompatibleWithLanguage } from "../src/skills/lens-registry.js";
 import { BUNDLED_SKILL_WHY_LEDGER, createPromptBuilder } from "../src/skills/prompt-builder.js";
 import { loadSkills } from "../src/skills/skill-loader.js";
-import type { CandidateFinding, Logger, RepositoryToolsHost } from "../src/types.js";
+import type { CandidateFinding, DiffHunk, Logger, RepositoryToolsHost } from "../src/types.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 
 describe("Plan 98 Python vertical slice", () => {
@@ -226,6 +226,43 @@ describe("Plan 98 Python vertical slice", () => {
         lineRange: [7, 10]
       })
     });
+  });
+
+  it("keeps Unicode signatures, async classification, and changed-symbol identity exact", async () => {
+    const adapter = new LanguageAdapterRegistry(new TreeSitterService()).forPath("src/unicode.py");
+    const parsed = await adapter.parse({
+      path: "src/unicode.py",
+      language: "python",
+      content: fixture("unicode.py"),
+      source: { kind: "head" }
+    });
+
+    expect(parsed).toMatchObject({ adapterId: "python", hasErrors: false });
+    expect(adapter.listSymbols(parsed).find((entry) => entry.name === "fetch_value")).toMatchObject({
+      name: "fetch_value",
+      kind: "function",
+      nativeKind: "async function",
+      lineRange: [3, 10],
+      signature: '@trace( "café", ) async def fetch_value( item_id: str, ) -> str:'
+    });
+
+    const hunk: DiffHunk = {
+      id: "python-unicode-identity",
+      path: parsed.path,
+      oldStart: 9,
+      oldLines: 0,
+      newStart: 9,
+      newLines: 2,
+      header: "",
+      lines: [9, 10].map((line) => ({ kind: "add" as const, content: "+", newLineNumber: line }))
+    };
+    expect(adapter.getChangedSymbols(parsed, hunk)).toEqual([
+      expect.objectContaining({
+        name: "fetch_value",
+        signature: '@trace( "café", ) async def fetch_value( item_id: str, ) -> str:',
+        changedLines: [9, 10]
+      })
+    ]);
   });
 
   it("holds every Python skill check to an independently parsed owner matrix", async () => {

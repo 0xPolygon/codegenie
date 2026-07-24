@@ -224,6 +224,97 @@ describe("Plan 98 shared language foundation", () => {
       "test/Vault.t.sol",
       "test/VaultTest.t.sol"
     ]);
+    expect(candidateTestPaths("src/foo.rb", [
+      "src/foo.rb",
+      "src/foo.test.ts",
+      "src/foo_test.go",
+      "tests/bar.rb",
+      "tests/foo.rb"
+    ], "ruby")).toEqual(["tests/foo.rb"]);
+  });
+
+  it("pins Rust test filenames and shared test-directory roles", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "README.md", "base\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "src/foo_test.rs", "fn helper() {}\n");
+    writeRepoFile(repo, "tests/foo.rs", "fn integration() {}\n");
+    writeRepoFile(repo, "src/foo.rs", "fn source() {}\n");
+    commitAll(repo, "add Rust files");
+
+    const resolved = await resolveReviewInput(
+      { mode: "branch", branchName: "feature" },
+      defaultConfig,
+      nullTelemetry(),
+      { repoRoot: repo }
+    );
+    const diff = parseDiff(resolved.rawDiff);
+    const { kept, decisions } = await filterDiffFiles(resolved, diff, defaultConfig, nullTelemetry());
+    const facts = await classifyChangedFiles(resolved, kept, decisions, defaultConfig, nullTelemetry());
+    expect(facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "src/foo_test.rs", language: "rust", testStatus: "test" }),
+      expect.objectContaining({ path: "tests/foo.rs", language: "rust", testStatus: "test" }),
+      expect.objectContaining({ path: "src/foo.rs", language: "rust", testStatus: "source" })
+    ]));
+  });
+
+  it("restores generic likely tests through the public tool and packet context", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "src/foo.rb", "def foo\n  1\nend\n");
+    writeRepoFile(repo, "tests/foo.rb", "def test_foo\n  foo == 1\nend\n");
+    writeRepoFile(repo, "src/foo.test.ts", "test('foo', () => {});\n");
+    writeRepoFile(repo, "src/foo_test.go", "package src\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "src/foo.rb", "def foo\n  2\nend\n");
+    commitAll(repo, "change foo");
+
+    const telemetry = nullTelemetry();
+    const resolved = await resolveReviewInput(
+      { mode: "branch", branchName: "feature" },
+      defaultConfig,
+      telemetry,
+      { repoRoot: repo }
+    );
+    const diff = parseDiff(resolved.rawDiff);
+    const { kept, decisions } = await filterDiffFiles(resolved, diff, defaultConfig, telemetry);
+    const facts = await classifyChangedFiles(resolved, kept, decisions, defaultConfig, telemetry);
+    const index = await buildRepositoryIndex(resolved, kept, facts, defaultConfig, telemetry);
+    const lenses = languageLenses();
+    const dossier = await buildPlannerDossier(
+      resolved,
+      kept,
+      facts,
+      decisions,
+      index,
+      defaultConfig,
+      telemetry,
+      { lenses }
+    );
+    const packets = await buildReviewPackets(
+      defaultPlan(dossier, lenses, "generic likely-test compatibility"),
+      kept,
+      facts,
+      index,
+      telemetry,
+      { config: defaultConfig, enabledLenses: lenses.map((lens) => lens.id) }
+    );
+
+    expect(facts).toEqual([expect.objectContaining({ path: "src/foo.rb", language: "ruby", testStatus: "source" })]);
+    const expectedTest = expect.objectContaining({
+      path: "tests/foo.rb",
+      name: "tests/foo.rb",
+      kind: "other",
+      nativeKind: "test file",
+      lineRange: [1, 1]
+    });
+    const publicTests = await index.tools.findLikelyTests({ path: "src/foo.rb" });
+    expect(publicTests.tests).toEqual([expectedTest]);
+    expect(publicTests.meta).toMatchObject({ backend: "text", precision: "heuristic", degraded: false });
+    expect(packets).toHaveLength(1);
+    expect(packets[0]?.relevantTests).toEqual([expectedTest]);
+    expect(packets[0]?.contextText).toContain("tests/foo.rb");
   });
 
   it("uses one parsed test-symbol contract for all three candidate conventions", async () => {

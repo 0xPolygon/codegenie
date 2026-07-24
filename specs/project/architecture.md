@@ -1049,7 +1049,7 @@ V1 language adapters:
 - Go.
 - TypeScript and TSX.
 - JavaScript (`.js`, `.jsx`, `.mjs`, `.cjs`) through the shared ECMAScript adapter implementation but distinct language identity and guidance.
-- Rust, with attribute-aware declarations, trait/impl ownership context, nominal impl owners, stable imports, and deterministic declaration identity.
+- Rust, with attribute-aware declarations, trait/impl ownership context, nominal impl owners (or `impl target` for non-nominal blanket targets), stable imports, and deterministic declaration identity.
 - Python, with decorator-aware ranges/signatures, direct class ownership, nested-local ownership reset, stable module imports, and deterministic declaration identity. Only `.py` is supported; `.pyi` remains generic.
 - Solidity, with contract/member ownership, minimal state-value symbols, source imports, overload-safe identity, and default Foundry test conventions.
 - Generic fallback for unsupported files.
@@ -1070,7 +1070,7 @@ interface LanguageAdapter {
 }
 ```
 
-Likely-test discovery is owned once by `src/repo/likely-tests.ts`, not by an adapter hook. Rust candidates are sibling `<stem>_test.rs` and nearest Cargo-package `tests/<stem>.rs`; supported attributed test functions are returned in deterministic path/range/name order. Python candidates are sibling `test_<stem>.py`/`<stem>_test.py` plus nearest-package `tests/` variants; only top-level `test_*` functions and direct `test_*` methods under `Test*` classes are test cases. Same-file Rust discovery, arbitrary Rust integration scanning, and custom pytest collection configuration are explicit deferrals.
+Likely-test discovery is owned once by `src/repo/likely-tests.ts`, not by an adapter hook. Rust candidates are sibling `<stem>_test.rs` and nearest Cargo-package `tests/<stem>.rs`; supported attributed test functions are returned in deterministic path/range/name order. Python candidates are sibling `test_<stem>.py`/`<stem>_test.py` plus nearest-package `tests/` variants; only top-level `test_*` functions and direct `test_*` methods under `Test*` classes are test cases. For subjects outside the explicit language conventions, the generic fallback accepts exact stem matches only under `test`, `tests`, or `__tests__`; Go/TS/JS sibling patterns do not leak across subject languages. Same-file Rust discovery, arbitrary Rust integration scanning, and custom pytest collection configuration are explicit deferrals.
 
 Repository tool interface:
 

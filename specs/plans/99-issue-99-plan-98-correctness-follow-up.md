@@ -1,10 +1,12 @@
 # Issue 99: Plan 98 Correctness Follow-Up — Unicode-Safe Tree-sitter Extraction and Likely-Test Compatibility
 
-Status: PENDING
+Status: COMPLETE — implemented and validated 2026-07-24
 Extends: Plan 98 (`98-issue-98-language-support-rust-python-solidity.md`)
 Planned from: post-implementation `master...next` review, 2026-07-24
 Planned at: commit `42665e5` (branch `next`)
 Recommended priority: before Plan 98 merges to `master` or is included in a tagged/npm release. The Unicode bug corrupts ordinary packet context in repositories containing non-ASCII text; the likely-test change is an unapproved compatibility regression.
+
+Implementation reconciliation (2026-07-24): the five affected extraction paths now use node-relative JavaScript-string slicing, generic exact-stem test-directory discovery is restored without the old cross-language sibling leakage, and the planned dead-code/ownership/classification cleanup is complete. Unicode fixtures include astral text and pin signatures, Python async classification, Rust imports/macros, Solidity ownership, and changed-symbol identity. The focused suite passed 47/47 tests; `pnpm run check`, `pnpm test` (37 files, 734 tests, including packed-package smoke), and `pnpm build` all passed. No skill, lens, prompt, registry-hash, dependency, or workflow boundary was created.
 
 ## Goal
 

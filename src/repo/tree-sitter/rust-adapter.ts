@@ -288,8 +288,8 @@ function declarationHeader(node: Node): string {
       }
     }
     if (headerEnd !== undefined) {
-      const headerBytes = Math.max(0, headerEnd.endIndex - node.startIndex);
-      return compactRustText(Buffer.from(node.text, "utf8").subarray(0, headerBytes).toString("utf8"));
+      const headerLength = Math.max(0, headerEnd.endIndex - node.startIndex);
+      return compactRustText(node.text.slice(0, headerLength));
     }
   }
   const body = node.childForFieldName("body");
@@ -337,17 +337,17 @@ function textWithoutCommentTrivia(node: Node): string {
     return node.text;
   }
 
-  const source = Buffer.from(node.text, "utf8");
-  const segments: Buffer[] = [];
+  const source = node.text;
+  const segments: string[] = [];
   let cursor = 0;
   for (const comment of comments.sort((a, b) => a.startIndex - b.startIndex)) {
     const start = Math.max(cursor, comment.startIndex - node.startIndex);
     const end = Math.max(start, comment.endIndex - node.startIndex);
-    segments.push(source.subarray(cursor, start), Buffer.from(" "));
+    segments.push(source.slice(cursor, start), " ");
     cursor = end;
   }
-  segments.push(source.subarray(cursor));
-  return Buffer.concat(segments).toString("utf8");
+  segments.push(source.slice(cursor));
+  return segments.join("");
 }
 
 function boundedSignature(signature: string): string {
@@ -362,7 +362,7 @@ function nominalOwner(typeNode: Node | null, projectionRoots: ReadonlySet<string
     return undefined;
   }
   if (typeNode.type === "type_identifier") {
-    return typeNode.text;
+    return projectionRoots.has(typeNode.text) ? undefined : typeNode.text;
   }
   if (typeNode.type === "generic_type") {
     return nominalOwner(typeNode.childForFieldName("type"), projectionRoots);
@@ -428,7 +428,18 @@ function implOwner(implNode: Node): string {
       parameter.namedChildren.find((child) => child.type === "type_identifier") ?? null)
     .filter((parameter): parameter is Node => parameter !== null)
     .map((parameter) => parameter.text) ?? []);
+  if (isProjectionTarget(typeNode, projectionRoots)) {
+    return "impl target";
+  }
   return nominalOwner(typeNode, projectionRoots) ?? (compactRustText(typeNode.text) || "impl target");
+}
+
+function isProjectionTarget(typeNode: Node, projectionRoots: ReadonlySet<string>): boolean {
+  if (typeNode.type === "type_identifier") {
+    return projectionRoots.has(typeNode.text);
+  }
+  const nominalType = typeNode.type === "generic_type" ? typeNode.childForFieldName("type") : null;
+  return nominalType !== null && isProjectionTarget(nominalType, projectionRoots);
 }
 
 function isRustTest(filePath: string, attributes: Node[]): boolean {

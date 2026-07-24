@@ -216,7 +216,7 @@ function detectTestStatus(filePath: string, language: string): DetectorFact<"tes
     ((language === "typescript" || language === "javascript") &&
       (/\.(?:test|spec)\.[cm]?[jt]sx?$/u.test(basename) || segments.includes("__tests__"))) ||
     (language === "python" && (/^test_.*\.py$/u.test(basename) || /_test\.py$/u.test(basename))) ||
-    (language === "rust" && (basename.endsWith("_test.rs") || segments.includes("tests"))) ||
+    (language === "rust" && basename.endsWith("_test.rs")) ||
     (language === "solidity" && basename.endsWith(".t.sol")) ||
     segments.includes("test") ||
     segments.includes("tests");

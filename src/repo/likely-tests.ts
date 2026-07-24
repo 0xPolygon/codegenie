@@ -147,8 +147,7 @@ export function candidateTestPaths(subjectPath: string, allPaths: string[], lang
       candidates.add(filePath);
       continue;
     }
-    if ((language === "go" || language === "typescript" || language === "tsx" || language === "javascript") &&
-        /(?:^|\/)(?:__tests__|tests?|test)\//u.test(filePath) && fileStem(filePath) === stem) {
+    if (/(?:^|\/)(?:__tests__|tests?|test)\//u.test(filePath) && fileStem(filePath) === stem) {
       candidates.add(filePath);
     }
   }

@@ -183,13 +183,6 @@ function symbolForDeclaration(file: ParsedFile, node: Node, owner?: OwnerContext
       const name = node.childForFieldName("name")?.text;
       return name ? declarationSymbol(file, node, name, "value", stateVariableNativeKind(node), owner) : undefined;
     }
-    case "constant_variable_declaration": {
-      if (owner === undefined) {
-        return undefined;
-      }
-      const name = node.childForFieldName("name")?.text;
-      return name ? declarationSymbol(file, node, name, "value", "constant", owner) : undefined;
-    }
     case "struct_declaration":
       return namedDeclarationSymbol(file, node, "type", "struct", owner);
     case "enum_declaration":
@@ -224,7 +217,7 @@ function declarationSymbol(
   nativeKind: string,
   owner?: OwnerContext
 ): SymbolInfo {
-  const signature = declarationSignature(file, node);
+  const signature = declarationSignature(node);
   return {
     path: file.path,
     name,
@@ -236,12 +229,10 @@ function declarationSymbol(
   };
 }
 
-function declarationSignature(file: ParsedFile, node: Node): string {
+function declarationSignature(node: Node): string {
   const body = node.childForFieldName("body");
   const end = body?.startIndex ?? node.endIndex;
-  const source = Buffer.from(file.content, "utf8")
-    .subarray(node.startIndex, Math.max(node.startIndex, end))
-    .toString("utf8");
+  const source = node.text.slice(0, Math.max(0, end - node.startIndex));
   return boundedSignature(compactSolidityText(source));
 }
 

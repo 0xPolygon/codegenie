@@ -166,6 +166,32 @@ describe("Plan 98 Rust vertical slice", () => {
     });
   });
 
+  it("preserves Unicode macro/import text and avoids nominal owners for blanket impls", async () => {
+    const adapter = new LanguageAdapterRegistry(new TreeSitterService()).forPath("src/unicode.rs");
+    const parsed = await adapter.parse({
+      path: "src/unicode.rs",
+      language: "rust",
+      content: fixture("unicode.rs"),
+      source: { kind: "head" }
+    });
+
+    expect(parsed).toMatchObject({ adapterId: "rust", hasErrors: false });
+    expect(adapter.getImports(parsed)).toEqual(["crate::{Foo, Bar,}"]);
+    const symbols = adapter.listSymbols(parsed);
+    expect(symbols.find((symbol) => symbol.name === "collect_values")).toMatchObject({
+      nativeKind: "macro definition",
+      signature: "macro_rules! /* règle 😀 */ collect_values {"
+    });
+    expect(symbols.find((symbol) => symbol.name === "run" && symbol.nativeKind === "impl method")).toMatchObject({
+      ownerType: "impl target",
+      signature: expect.stringContaining("impl<T> Blanket for T")
+    });
+    expect(symbols.find((symbol) => symbol.name === "run_concrete" && symbol.nativeKind === "impl method")).toMatchObject({
+      ownerType: "Container",
+      signature: expect.stringContaining("impl<T> Concrete for Container<T>")
+    });
+  });
+
   it("holds every Rust skill check to the owner failure/materiality/example/mitigation matrix", async () => {
     const { skills } = await loadSkills({
       repoRoot: process.cwd(),
