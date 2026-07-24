@@ -103,8 +103,12 @@ describe("package build scaffold", () => {
         "web-tree-sitter"
       ]);
       const parserTarballs = new Map([...parserPackages].map((packageName) => {
+        // These are already-published package contents. Repacking them must not run
+        // source-repository prepack hooks; the consumer install below still runs
+        // dependency lifecycle scripts under its explicit allowBuilds policy.
         const dependencyPack = JSON.parse(execFileSync("npm", [
           "pack",
+          "--ignore-scripts",
           path.resolve(`node_modules/${packageName}`),
           "--json",
           "--pack-destination",

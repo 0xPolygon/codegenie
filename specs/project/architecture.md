@@ -896,7 +896,7 @@ Chosen defaults:
 - `telemetry.runDir = ".codegenie/runs"`
 - `telemetry.retainRuns = 20`
 - `eval.logsDir = "logs"`
-- Default-enabled lens set = all seven currently bundled lenses (`core/code-review`, `core/tests`, `lang/go`, `lang/python`, `lang/rust`, `lang/solidity`, `lang/typescript`). The three Plan 98 language skills form one external Stage-5 inventory/registry/cache measurement boundary when the complete series is merged or released; intermediate local commits are non-comparable development states and do not establish that boundary.
+- Default-enabled lens set = all seven currently bundled lenses (`core/code-review`, `core/tests`, `lang/go`, `lang/python`, `lang/rust`, `lang/solidity`, `lang/typescript`). The three Plan 98 language skills established one external Stage-5 inventory/registry/cache measurement boundary when the complete Phase 1-4 inventory was pushed to `origin/next` at `eb20533`. Measurements before and after `eb20533` are non-comparable cache/prompt regimes. The later Phase-5 validation commit `40b87b0` does not alter skill inventory/content or `LensRegistry.registryHash()`, so its branch push is not a second Stage-5 cache boundary; neither branch push is itself a tag/npm/GitHub release.
 
 Neither `review.maxFindings` nor `review.softCommentCap` suppresses verified critical/high findings.
 

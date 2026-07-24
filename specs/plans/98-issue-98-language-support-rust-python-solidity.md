@@ -1,10 +1,12 @@
 # Issue 98: Language Support — Rust, Python, Solidity (tree-sitter adapters + bundled skills)
 
-Status: PENDING — revised 2026-07-23 after design critique; all 19 critique issues accepted
+Status: COMPLETE — implemented and reconciled 2026-07-23
 Planned from: owner request 2026-07-23 (add first-class language support for Rust, Python, and Solidity via tree-sitter and bundled skills, plus the shared harness work required to make that support real).
 Planned at: commit `fbcc669` (branch `next`)
 Design critique: `reviews/projects/plan-98-language-support-crit/crit_summary.md`
 Recommended priority: first post-Action product arc. This creates the substrate for the PUNCHLIST eval-diversity guard; the real-repo, real-model second-language case remains a follow-up after landing.
+
+Implementation reconciliation (2026-07-23): the intended single inventory boundary was preserved, but it occurred as a branch push before Phase-5 validation rather than as the final release action. The complete Phase 1-4 inventory reached `origin/next` at `eb20533` at `2026-07-23T20:28:11-04:00`, establishing the one external Stage-5 inventory/registry/cache boundary. Reviewed Phase-5 gate `40b87b0` was pushed at `2026-07-23T20:31:28-04:00` without changing bundled skill inventory/content or `LensRegistry.registryHash()`. Neither push was a master merge, tag, npm publication, or GitHub release; pre-`eb20533` and post-`eb20533` measurements are non-comparable.
 
 ## Problem
 
@@ -28,10 +30,10 @@ Plan 98 therefore includes a bounded shared-foundation phase before the three la
 2. `.pyi` support is removed from v1. Python stubs are explicitly deferred.
 3. Same-file Rust `#[cfg(test)]` discovery and arbitrary-name integration-test tree scanning are deferred. V1 test discovery uses deterministic path conventions.
 4. Solidity state variables and constants are emitted as minimal contract-owned `value` symbols. Storage-layout analysis, generated-getter semantics, and storage/API static signals are deferred.
-5. No Stage-5 filtering machinery will be added merely to preserve old prompt bytes. `LensRegistry.registryHash()` hashes every loaded skill regardless of enablement, so setting new skills `enabledByDefault: false` would not preserve cache identity. Phases 1-4 therefore develop as one unreleased integration series and Phase 5 merges/releases the complete language arc atomically, producing one external Stage-5/cache measurement boundary.
+5. No Stage-5 filtering machinery will be added merely to preserve old prompt bytes. `LensRegistry.registryHash()` hashes every loaded skill regardless of enablement, so setting new skills `enabledByDefault: false` would not preserve cache identity. Phases 1-4 developed as one integration series and were pushed together to `origin/next` at `eb20533`, producing one external Stage-5/cache measurement boundary before Phase-5 validation. Phase 5 does not alter the skill inventory/hash and therefore does not create a second boundary.
 6. The Go/TypeScript non-regression contract is narrowed to unchanged classification, adapter output, packet construction, and Stage-7/9 language-specific skill projection. Existing Go/TypeScript skill text must not be polluted by the new language skills.
 7. A proper PR-head CI workflow is a standalone prerequisite, separate from the trusted-base codegenie dogfood workflow, and lands immediately before the language integration series.
-8. PR-head CI installs a pinned `actionlint` before any command that runs `check:workflows`, and uses `pnpm install --frozen-lockfile` without `--ignore-scripts` so the repository's `onlyBuiltDependencies` policy can install esbuild for Vitest.
+8. PR-head CI installs a pinned `actionlint` before any command that runs `check:workflows`, and uses `pnpm install --frozen-lockfile --config.ignore-scripts=false` so the repository's pnpm-11 `allowBuilds` policy can install esbuild for Vitest while explicitly denying unused dependency builds.
 
 ## Verified Dependency Baseline
 
@@ -109,7 +111,7 @@ Adding three default-enabled skills intentionally changes:
 
 `registryHash()` includes every loaded skill's content hash, not only enabled skills, plus the enabled-lens set. A ship-dark sequence that adds three disabled skill files separately and enables them later would therefore create four cache identities rather than one. Plan 98 does not use that mechanism and does not add language-scoped Stage-5 filtering solely to preserve old bytes.
 
-Instead, Phase 0 lands independently, then Phases 1-4 remain on one unreleased integration branch/series. Their intermediate commits are explicitly non-comparable measurement states and do not merge, release, or establish eval baselines independently. Phase 5 validates and merges the complete language arc once, with all three skills default-enabled, creating one external Stage-5 inventory/registry/cache boundary recorded in the PUNCHLIST and release notes. If operational necessity forces an intermediate language merge, each such merge becomes a separately disclosed boundary and results across the boundary are not compared as like-for-like measurements.
+Instead, Phase 0 landed independently, then Phases 1-4 remained one integration series until the complete inventory was pushed to `origin/next` at `eb20533`. No intermediate language commit established an external measurement state. That push, before Phase-5 validation committed, exposed all three default-enabled skills together and created the one external Stage-5 inventory/registry/cache boundary recorded in the PUNCHLIST. Results before `eb20533` and at/after it are not compared as like-for-like measurements. Phase-5 commit `40b87b0` subsequently reached the same branch but does not change skill inventory/content or the registry hash, so it is not a second cache boundary. Branch exposure remains distinct from a master merge, tag, npm publication, or GitHub release.
 
 The non-regression gate instead pins:
 
@@ -377,12 +379,12 @@ This smoke is product-content acceptance, not a substitute for automated shippin
 #### Phase 0 — Standalone PR-head CI prerequisite (land immediately)
 
 - Land this phase as its own PR/commit before the language arc; it has independent value and is not held for later phases.
-- Add the PR-head CI workflow with pinned `actionlint`, script-enabled frozen pnpm install governed by `onlyBuiltDependencies`, and check/test/build gates.
-- Pin workflow contract tests for PR-head checkout, actionlint availability/order, and the absence of `--ignore-scripts`.
+- Add the PR-head CI workflow with pinned `actionlint`, explicit scripts-enabled frozen pnpm install governed by pnpm-11 `allowBuilds` (with compatible pnpm-10 legacy keys), and check/test/build gates.
+- Pin workflow contract tests for PR-head checkout, actionlint availability/order, pnpm 11.15.1, and exact `--config.ignore-scripts=false` installation.
 
 #### Phase 1 — Shared language foundation
 
-- Begin the single unreleased Plan-98 integration series after Phase 0 merges.
+- Begin the single Plan-98 integration series after Phase 0 merges; keep its intermediate language commits from establishing separate external measurement boundaries.
 - Add exact grammar dependencies, inspect frozen pnpm/npm install behavior, and prove the three proposed WASMs load from the installed dependency tree or trigger the vendored-WASM stop path.
 - Canonical routing across tree-sitter, detectors, diff parser, classification, packets, and fake planner.
 - Seven-grammar lifecycle tests and failure matrix.
@@ -418,9 +420,9 @@ This smoke is product-content acceptance, not a substitute for automated shippin
 - Run all checks, tests, build, fixture suites, packed-install validation, and recorded owner smoke.
 - Verify Go/TypeScript Stage-7/9 projection isolation and disclose Stage-5/cache identity change.
 - Finish normative docs and PUNCHLIST eval-diversity linkage.
-- Merge/release the complete Phase 1-4 integration series atomically; this is the single external language-skill inventory/cache measurement boundary.
+- Validate the already-exposed complete Phase 1-4 inventory and record that its `eb20533` push was the single external language-skill inventory/cache measurement boundary; distinguish this branch boundary from later tag/npm/GitHub release operations.
 
-Each language phase is implementation-complete inside the integration series only when its adapter, test discovery, skill/ledger, structural tests, fake transport fixture, documentation, and full gates coexist. No Phase 1-4 commit merges or releases independently; intermediate commits are not valid measurement baselines.
+Each language phase is implementation-complete inside the integration series only when its adapter, test discovery, skill/ledger, structural tests, fake transport fixture, documentation, and full gates coexist. No Phase 1-4 commit established an independent external boundary; intermediate commits are not valid measurement baselines.
 
 ## In-Scope Files
 
@@ -502,7 +504,7 @@ Each language phase is implementation-complete inside the integration series onl
 - `.rs`, `.py`, and `.sol` carry one canonical language through diff, classification, parsing, packets, and lens selection.
 - Omitted/invalid planner lenses still yield the matching language lens; incompatible skills cannot enter packet prompts.
 - Stage-5/cache identity change is disclosed; Go/TypeScript Stage-7/9 projection isolation is pinned.
-- PR-head CI installs pinned `actionlint`, performs a frozen install without `--ignore-scripts` under the repository build-script policy, and runs check, test, and build successfully.
+- PR-head CI installs pinned `actionlint`, performs `pnpm install --frozen-lockfile --config.ignore-scripts=false` under the repository build-script policy, and runs check, test, and build successfully.
 
 ### Per language
 
@@ -517,7 +519,7 @@ Each language phase is implementation-complete inside the integration series onl
 - Rust, Python, and Solidity vertical slices all satisfy their per-language criteria.
 - Existing Go/TypeScript tests and packet/prompt isolation assertions pass.
 - Full `pnpm run check`, `pnpm test`, `pnpm build`, packed-install gate, fixture suites, and recorded owner smoke pass.
-- The complete language integration series merges/releases once, and that single external Stage-5/cache boundary is recorded.
+- The complete language inventory reached `origin/next` once at `eb20533`, and that single external Stage-5/cache boundary plus the non-comparability rule is recorded separately from any later master/tag/npm/GitHub release.
 
 ## Stop Conditions
 
