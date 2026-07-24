@@ -3,7 +3,21 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { parse as parseYaml } from "yaml";
 import { renderVersion } from "../src/cli/version.js";
+
+const APPROVED_DEPENDENCY_BUILDS = ["esbuild"];
+const DENIED_DEPENDENCY_BUILDS = [
+  "@google/genai",
+  "protobufjs",
+  "tree-sitter-go",
+  "tree-sitter-javascript",
+  "tree-sitter-python",
+  "tree-sitter-rust",
+  "tree-sitter-solidity",
+  "tree-sitter-typescript",
+  "yarn"
+];
 
 describe("package build scaffold", () => {
   it("emits the installed CLI at the package bin path", () => {
@@ -23,9 +37,14 @@ describe("package build scaffold", () => {
     expect(renderVersion()).toMatch(new RegExp(`^codegenie v${packageJson.version} / (unknown|[a-f0-9]{40})\\n$`));
   });
 
-  it("pins the shared language grammar assets and install policy", () => {
+  it("pins the shared language grammar assets and pnpm 10/11 install policy", () => {
     const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
     const workspacePolicy = readFileSync("pnpm-workspace.yaml", "utf8");
+    const parsedPolicy = parseYaml(workspacePolicy) as {
+      allowBuilds: Record<string, boolean>;
+      onlyBuiltDependencies: string[];
+      ignoredBuiltDependencies: string[];
+    };
     const grammars: Array<[string, string, string]> = [
       ["tree-sitter-rust", "0.24.0", "tree-sitter-rust.wasm"],
       ["tree-sitter-python", "0.25.0", "tree-sitter-python.wasm"],
@@ -39,9 +58,15 @@ describe("package build scaffold", () => {
     }
     expect(workspacePolicy).toContain("peerDependencyRules:");
     expect(workspacePolicy).toContain("  ignoreMissing:\n    - tree-sitter");
+    expect(parsedPolicy.allowBuilds).toEqual(Object.fromEntries([
+      ...APPROVED_DEPENDENCY_BUILDS.map((name) => [name, true]),
+      ...DENIED_DEPENDENCY_BUILDS.map((name) => [name, false])
+    ]));
+    expect(parsedPolicy.onlyBuiltDependencies).toEqual(APPROVED_DEPENDENCY_BUILDS);
+    expect(parsedPolicy.ignoredBuiltDependencies).toEqual(DENIED_DEPENDENCY_BUILDS);
   });
 
-  it("loads the Rust, Python, and Solidity skills and grammars from a scripts-enabled installed package", () => {
+  it("loads all skills and grammars under an explicit consumer build-script policy", () => {
     const sandbox = mkdtempSync(path.join(tmpdir(), "codegenie-package-smoke-"));
     try {
       const packageDirectory = path.join(sandbox, "package");
@@ -68,7 +93,15 @@ describe("package build scaffold", () => {
         "package.json"
       ]));
       const tarballPath = path.join(packageDirectory, artifact!.filename);
-      const parserPackages = new Set(["tree-sitter-python", "tree-sitter-rust", "tree-sitter-solidity", "web-tree-sitter"]);
+      const parserPackages = new Set([
+        "tree-sitter-go",
+        "tree-sitter-javascript",
+        "tree-sitter-python",
+        "tree-sitter-rust",
+        "tree-sitter-solidity",
+        "tree-sitter-typescript",
+        "web-tree-sitter"
+      ]);
       const parserTarballs = new Map([...parserPackages].map((packageName) => {
         const dependencyPack = JSON.parse(execFileSync("npm", [
           "pack",
@@ -94,16 +127,81 @@ describe("package build scaffold", () => {
       const parserOverrides = [...parserTarballs]
         .map(([name, tarball]) => `  '${name}': 'file:${tarball}'`);
       // Keep unrelated product dependencies offline while installing packed parser dependencies into the consumer.
-      writeFileSync(path.join(consumerDirectory, "pnpm-workspace.yaml"), [
+      const consumerWorkspacePolicy = [
         "overrides:",
         ...locallyLinkedDependencies,
         ...parserOverrides,
         `  'node-addon-api': 'link:${path.resolve("node_modules/node-addon-api")}'`,
         `  'node-gyp-build': 'link:${path.resolve("node_modules/node-gyp-build")}'`,
         `  'yarn': 'link:${path.resolve("node_modules/yarn")}'`,
+        "onlyBuiltDependencies:",
+        ...APPROVED_DEPENDENCY_BUILDS.map((name) => `  - '${name}'`),
+        "ignoredBuiltDependencies:",
+        ...DENIED_DEPENDENCY_BUILDS.map((name) => `  - '${name}'`),
+        "allowBuilds:",
+        ...APPROVED_DEPENDENCY_BUILDS.map((name) => `  '${name}': true`),
+        ...DENIED_DEPENDENCY_BUILDS.map((name) => `  '${name}': false`),
         ""
-      ].join("\n"));
-      execFileSync("pnpm", ["install", "--offline", "--prod", "--no-frozen-lockfile"], {
+      ].join("\n");
+      writeFileSync(path.join(consumerDirectory, "pnpm-workspace.yaml"), consumerWorkspacePolicy);
+      expect(consumerWorkspacePolicy).toContain("onlyBuiltDependencies:\n  - 'esbuild'");
+      for (const packageName of DENIED_DEPENDENCY_BUILDS) {
+        expect(consumerWorkspacePolicy).toContain(`  - '${packageName}'`);
+        expect(consumerWorkspacePolicy).toContain(`  '${packageName}': false`);
+      }
+      expect(consumerWorkspacePolicy).toContain("allowBuilds:\n  'esbuild': true");
+      const effectiveOnlyBuiltDependencies = JSON.parse(execFileSync("pnpm", [
+        "config",
+        "get",
+        "only-built-dependencies",
+        "--json"
+      ], {
+        cwd: consumerDirectory,
+        encoding: "utf8"
+      })) as string[];
+      const effectiveIgnoredBuiltDependencies = JSON.parse(execFileSync("pnpm", [
+        "config",
+        "get",
+        "ignored-built-dependencies",
+        "--json"
+      ], {
+        cwd: consumerDirectory,
+        encoding: "utf8"
+      })) as string[];
+      const effectiveAllowBuilds = JSON.parse(execFileSync("pnpm", [
+        "config",
+        "get",
+        "allow-builds",
+        "--json"
+      ], {
+        cwd: consumerDirectory,
+        encoding: "utf8"
+      })) as Record<string, boolean>;
+      expect(effectiveOnlyBuiltDependencies).toEqual(APPROVED_DEPENDENCY_BUILDS);
+      expect(effectiveIgnoredBuiltDependencies).toEqual(DENIED_DEPENDENCY_BUILDS);
+      expect(effectiveAllowBuilds).toEqual(Object.fromEntries([
+        ...APPROVED_DEPENDENCY_BUILDS.map((name) => [name, true]),
+        ...DENIED_DEPENDENCY_BUILDS.map((name) => [name, false])
+      ]));
+      const installArgs = [
+        "install",
+        "--offline",
+        "--prod",
+        "--no-frozen-lockfile",
+        "--config.ignore-scripts=false"
+      ];
+      const effectiveIgnoreScripts = execFileSync("pnpm", [
+        "config",
+        "get",
+        "ignore-scripts",
+        "--config.ignore-scripts=false"
+      ], {
+        cwd: consumerDirectory,
+        encoding: "utf8"
+      }).trim();
+      expect(effectiveIgnoreScripts).toBe("false");
+      expect(installArgs).toContain("--config.ignore-scripts=false");
+      execFileSync("pnpm", installArgs, {
         cwd: consumerDirectory,
         stdio: "pipe"
       });
@@ -135,10 +233,37 @@ if (!solidity) throw new Error("installed Solidity skill is missing");
 
 const serviceUrl = import.meta.resolve("@0xsequence/codegenie/dist/repo/tree-sitter/tree-sitter-service.js");
 const installedRequire = createRequire(serviceUrl);
+const goGrammarPath = installedRequire.resolve("tree-sitter-go/tree-sitter-go.wasm");
+const typescriptGrammarPath = installedRequire.resolve("tree-sitter-typescript/tree-sitter-typescript.wasm");
+const tsxGrammarPath = installedRequire.resolve("tree-sitter-typescript/tree-sitter-tsx.wasm");
+const javascriptGrammarPath = installedRequire.resolve("tree-sitter-javascript/tree-sitter-javascript.wasm");
 const rustGrammarPath = installedRequire.resolve("tree-sitter-rust/tree-sitter-rust.wasm");
 const pythonGrammarPath = installedRequire.resolve("tree-sitter-python/tree-sitter-python.wasm");
 const solidityGrammarPath = installedRequire.resolve("tree-sitter-solidity/tree-sitter-solidity.wasm");
-const registry = new LanguageAdapterRegistry(new TreeSitterService());
+const service = new TreeSitterService();
+const grammarInputs = [
+  ["go", "package fixture\\nfunc value() int { return 1 }"],
+  ["typescript", "export function value(): number { return 1 }"],
+  ["tsx", "export function View() { return <div /> }"],
+  ["javascript", "export function value() { return 1 }"],
+  ["rust", "pub fn value() -> i32 { 1 }"],
+  ["python", "def value():\\n    return 1"],
+  ["solidity", "pragma solidity ^0.8.20; contract Value { function value() external pure returns (uint256) { return 1; } }"]
+];
+const parsedGrammars = [];
+for (const [grammarId, content] of grammarInputs) {
+  const grammarParse = await service.parse({
+    path: "installed-" + grammarId,
+    language: grammarId,
+    source: { kind: "head" },
+    content
+  });
+  if (grammarParse.hasErrors || !grammarParse.tree || grammarParse.adapterId !== grammarId) {
+    throw new Error("installed grammar parse failed: " + grammarId);
+  }
+  parsedGrammars.push(grammarId);
+}
+const registry = new LanguageAdapterRegistry(service);
 const rustAdapter = registry.forPath("src/lib.rs");
 const parsed = await rustAdapter.parse({
   path: "src/lib.rs",
@@ -175,9 +300,16 @@ console.log(JSON.stringify({
   rustSkillPath: rust.filePath,
   pythonSkillPath: python.filePath,
   soliditySkillPath: solidity.filePath,
-  rustGrammarPath,
-  pythonGrammarPath,
-  solidityGrammarPath,
+  grammarPaths: [
+    goGrammarPath,
+    typescriptGrammarPath,
+    tsxGrammarPath,
+    javascriptGrammarPath,
+    rustGrammarPath,
+    pythonGrammarPath,
+    solidityGrammarPath
+  ],
+  parsedGrammars,
   rustLanguage: parsed.language,
   rustOwnerType: method.ownerType,
   pythonLanguage: pythonParsed.language,
@@ -194,9 +326,8 @@ console.log(JSON.stringify({
         rustSkillPath: string;
         pythonSkillPath: string;
         soliditySkillPath: string;
-        rustGrammarPath: string;
-        pythonGrammarPath: string;
-        solidityGrammarPath: string;
+        grammarPaths: string[];
+        parsedGrammars: string[];
         rustLanguage: string;
         rustOwnerType: string;
         pythonLanguage: string;
@@ -213,15 +344,14 @@ console.log(JSON.stringify({
         pythonOwnerType: "Service",
         solidityLanguage: "solidity",
         solidityOwnerType: "Vault",
-        solidityValueKind: "value"
+        solidityValueKind: "value",
+        parsedGrammars: ["go", "typescript", "tsx", "javascript", "rust", "python", "solidity"]
       });
       for (const installedPath of [
         smoke.rustSkillPath,
         smoke.pythonSkillPath,
         smoke.soliditySkillPath,
-        smoke.rustGrammarPath,
-        smoke.pythonGrammarPath,
-        smoke.solidityGrammarPath
+        ...smoke.grammarPaths
       ]) {
         expect(installedPath.startsWith(`${consumerDirectory}${path.sep}`)).toBe(true);
       }

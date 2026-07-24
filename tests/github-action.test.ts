@@ -1076,7 +1076,9 @@ describe("GitHub Action and workflow contracts", () => {
     const nodeIndex = steps.findIndex((step) => step.uses === "actions/setup-node@v7");
     const pnpmIndex = steps.findIndex((step) => step.uses === "pnpm/action-setup@v4");
     const actionlintIndex = steps.findIndex((step) => step.name === "Install actionlint");
-    const installIndex = steps.findIndex((step) => step.run?.trim() === "pnpm install --frozen-lockfile");
+    const installIndex = steps.findIndex((step) => (
+      step.run?.trim() === "pnpm install --frozen-lockfile --config.ignore-scripts=false"
+    ));
     const checkIndex = steps.findIndex((step) => step.run?.trim() === "pnpm run check");
     const testIndex = steps.findIndex((step) => step.run?.trim() === "pnpm test");
     const buildIndex = steps.findIndex((step) => step.run?.trim() === "pnpm build");
@@ -1086,6 +1088,9 @@ describe("GitHub Action and workflow contracts", () => {
     expect(steps[checkoutIndex]?.with?.ref).not.toContain("base.sha");
     expect(steps[nodeIndex]?.with?.["node-version"]).toBe("26");
     expect(steps[pnpmIndex]?.with?.version).toBe("11.15.1");
+    expect(steps[installIndex]?.run?.trim()).toBe(
+      "pnpm install --frozen-lockfile --config.ignore-scripts=false"
+    );
 
     const actionlintStep = steps[actionlintIndex];
     expect(actionlintStep?.env?.ACTIONLINT_VERSION).toBe("1.7.12");

@@ -44,7 +44,7 @@ jobs:
           "${install_dir}/actionlint" -version
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --config.ignore-scripts=false
 
       - name: Check
         run: pnpm run check

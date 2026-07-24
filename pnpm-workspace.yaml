@@ -8,11 +8,25 @@ peerDependencyRules:
   ignoreMissing:
     - tree-sitter
 
-# Dependency build scripts are blocked by pnpm 10+ by default (supply-chain
-# protection). esbuild is approved: tsx/vitest need its platform binary. The
-# rest are explicitly ignored: tree-sitter grammars run from prebuilt WASM at
-# runtime (native builds unused), and @google/genai / protobufjs postinstalls
-# are not needed by anything codegenie executes.
+# pnpm 11's strict dependency-build policy uses allowBuilds. esbuild is the
+# only approved build: tsx/vitest need its platform binary. The denied entries
+# are intentionally unused by codegenie: tree-sitter runs from published WASM,
+# while the provider/protobuf/yarn postinstalls are not needed at runtime.
+allowBuilds:
+  esbuild: true
+  '@google/genai': false
+  protobufjs: false
+  tree-sitter-go: false
+  tree-sitter-javascript: false
+  tree-sitter-python: false
+  tree-sitter-rust: false
+  tree-sitter-solidity: false
+  tree-sitter-typescript: false
+  yarn: false
+
+# Retain pnpm 10's compatible legacy keys for contributors on that major. Keep
+# these lists equivalent to allowBuilds so both pnpm generations enforce the
+# same one-approved-build policy.
 onlyBuiltDependencies:
   - esbuild
 ignoredBuiltDependencies:
@@ -24,3 +38,4 @@ ignoredBuiltDependencies:
   - tree-sitter-rust
   - tree-sitter-solidity
   - tree-sitter-typescript
+  - yarn

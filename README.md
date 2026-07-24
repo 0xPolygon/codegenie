@@ -48,6 +48,8 @@ A single positional target is branch-first: if it resolves as a branch, codegeni
 
 First-class syntax context and default language guidance currently cover Go, TypeScript/JavaScript, Rust, Python, and Solidity. Solidity packets include contract-owned methods/types/events/errors/state values, source-only imports, overload-safe declaration identity, and deterministic default Foundry test links only when a nearest `foundry.toml` exists. File-level constants are not value symbols. Solidity storage-layout, generated-getter, ABI/export analysis, custom Foundry directories, and Hardhat TypeScript linking remain deferred; Solidity symbols intentionally leave `exported` unset. Python `.pyi` stubs/custom collection and Rust same-file/arbitrary integration-test discovery also remain deferred.
 
+Rust, Python, and Solidity ship as one release unit. Their three default-enabled skills intentionally change the global Stage-5 skill inventory, registry hash, and model-call cache identity; intermediate language commits are not comparable eval baselines. The single external measurement boundary occurs only when the complete series is merged or released, never merely because an intermediate local revision exists.
+
 Common options:
 
 ```bash
