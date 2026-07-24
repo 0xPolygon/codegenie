@@ -188,4 +188,51 @@ describe("GitHub client", () => {
       }
     });
   });
+
+  it("accepts Actions installation tokens that fail `gh auth status`", async () => {
+    const calls: string[][] = [];
+    const gh: RunGh = async (_repoRoot, args) => {
+      calls.push(args);
+      if (args[0] === "--version") {
+        return "";
+      }
+      if (args.join(" ") === "auth status") {
+        throw new CodegenieError("gh_auth_failed", "The token in GH_TOKEN is invalid.");
+      }
+      if (args.join(" ") === "api rate_limit") {
+        return JSON.stringify({ resources: { core: { remaining: 4999 } } });
+      }
+      if (args.join(" ") === "repo view --json owner,name") {
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codegenie" });
+      }
+      if (args[0] === "pr") {
+        return JSON.stringify({ number: 7, baseRefName: "main", headRefName: "feature" });
+      }
+      if (args[0] === "api" && args[1] === "repos/0xPolygon/codegenie/pulls/7") {
+        return JSON.stringify({ base: { sha: "b".repeat(40) }, head: { sha: "h".repeat(40) } });
+      }
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    };
+
+    const client = createGitHubClient("/repo", { runGh: gh });
+
+    await expect(client.viewPr(7)).resolves.toMatchObject({ owner: "0xPolygon", number: 7 });
+    expect(calls).toContainEqual(["api", "rate_limit"]);
+  });
+
+  it("still fails when both `gh auth status` and the API probe reject", async () => {
+    const gh: RunGh = async (_repoRoot, args) => {
+      if (args[0] === "--version") {
+        return "";
+      }
+      if (args.join(" ") === "auth status" || args.join(" ") === "api rate_limit") {
+        throw new CodegenieError("gh_auth_failed", "gh: Bad credentials (HTTP 401)");
+      }
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    };
+
+    const client = createGitHubClient("/repo", { runGh: gh });
+
+    await expect(client.viewPr(7)).rejects.toMatchObject({ code: "gh_auth_failed" });
+  });
 });

@@ -57,7 +57,15 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
       return;
     }
     await gh(repoRoot, ["--version"], { errorCode: "gh_missing" });
-    await gh(repoRoot, ["auth", "status"], { errorCode: "gh_auth_failed" });
+    try {
+      await gh(repoRoot, ["auth", "status"], { errorCode: "gh_auth_failed" });
+    } catch {
+      // Actions installation tokens have no /user context, so `gh auth status`
+      // reports them invalid even though they authenticate API calls fine.
+      // Probe an endpoint any valid token can reach; a genuinely bad token
+      // fails this too and surfaces the same gh_auth_failed.
+      await gh(repoRoot, ["api", "rate_limit"], { errorCode: "gh_auth_failed" });
+    }
     preflightDone = true;
   }
 
