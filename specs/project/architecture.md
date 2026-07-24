@@ -792,11 +792,13 @@ Per-key config sources (normative; Trust Boundaries defers to this table):
 
 | Keys | Allowed sources |
 | --- | --- |
-| `review.depth`, `review.maxFindings`, `review.softCommentCap`, `review.budgetBoost`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codegenie.toml`, user-scoped config, or CLI |
+| `review.depth`, `review.maxFindings`, `review.softCommentCap`, `review.budgetBoost`, `review.maxTime`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codegenie.toml`, user-scoped config, or CLI |
 | `telemetry.enabled` | Repo `codegenie.toml` or user-scoped config |
-| `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.timeoutMs`, `review.perPassTimeoutMs`, `review.maxBudgetTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
+| `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.perPassTimeoutMs`, `review.maxBudgetTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
 
 The loader enforces this via per-key source tracking; repo values for user-scope keys are ignored with a warning.
+
+The public TOML key `review.maxTime` is a positive finite number of minutes, capped at `Number.MAX_SAFE_INTEGER / 120_000` so both the resolved soft limit and its 2x hard deadline remain finite and safely representable in milliseconds. It is deliberately repo-settable, defaults to 30 when omitted, and is overridden by `--max-time <minutes>`. The loader tracks its source as `review.maxTime` and converts it once to the resolved internal `review.maxTimeMs`; `review.timeoutMs` is not a public config key.
 
 All merging happens once, in the config loader, which tracks per-key sources to enforce the trust partition and produces the single resolved `CodegenieConfig`. Downstream components — including the LLM runner — consume the resolved config only and never read user state directly.
 
@@ -823,7 +825,7 @@ type CodegenieConfig = {
     minConfidence: Confidence
     minInlineConfidence: Confidence
     concurrency: number
-    timeoutMs: number
+    maxTimeMs: number
     perPassTimeoutMs: number
     maxBudgetTokens?: number
     maxModelCalls?: number
@@ -880,7 +882,7 @@ Chosen defaults:
 - `review.concurrency = 4`
 - `llm.maxConcurrentCalls = 4`
 - `llm.forceSubmitToolChoice = true` (plan 86 step 3: Anthropic finalize/repair/no-tool calls run with thinking disabled and genuinely forced submit tool choice; `false` restores the legacy silent downgrade to `auto`)
-- `review.timeoutMs = 30 * 60 * 1000`
+- `review.maxTimeMs = 30 * 60 * 1000` (resolved from public `review.maxTime`, whose built-in default is 30 minutes)
 - `review.perPassTimeoutMs = 8 * 60 * 1000` (per model task/worker, not per stage)
 - `review.minConfidence = "medium"`
 - `review.minInlineConfidence = "medium"`
@@ -1363,7 +1365,7 @@ Failure and budget handling:
   - Stage 9 → existing verification failure rules unchanged.
   - Stage 10 composer → one repair retry; terminal failure triggers a deterministic fallback composition (verified findings rendered with template wording, fingerprint-level grouping only, ranked by severity/confidence) with a disclosure note that semantic composition was skipped.
   - Authentication or provider-wide failures at any stage fail the run.
-- Budgets (`timeoutMs`, `maxBudgetTokens`, `maxModelCalls`) are checked before each new model call or worker dispatch. On exhaustion: stop scheduling new packet reviews → verify already-produced candidates using a reserved budget slice → always run composition and emit a partial-review disclosure.
+- Budgets (`maxTimeMs`, `maxBudgetTokens`, `maxModelCalls`) are checked before each new model call or worker dispatch. On exhaustion: stop scheduling new packet reviews → verify already-produced candidates using a reserved budget slice → always run composition and emit a partial-review disclosure.
 - Approximately 15% of the configured token and model-call budgets (and a fixed tail of the runtime budget) is reserved for Stages 9-10 so completed review work is never lost to exhaustion. A hard kill at 2x the configured runtime budget is fatal; even then codegenie attempts to write telemetry artifacts before exiting.
 - Provider 429 and transient 5xx responses get up to 3 retries with exponential backoff; retries count against budgets.
 - The run-level coverage status is owned by the orchestrator, which aggregates plan-time coverage, runtime failures, budget stops, and verification incompleteness into the final coverage summary (run-level, not only `ReviewPlan.partialReview`):
@@ -1886,7 +1888,7 @@ Output channel control: everything posted to GitHub passes deterministic sanitiz
 
 Repository tools path containment (single chokepoint in the RepositoryTools layer): all paths are canonicalized as repository-relative tree paths; absolute paths and `..` traversal are rejected with a typed error (`path_outside_repo`); git-plumbing reads are inherently contained to repository object paths; refs are harness-resolved only (model-facing source selectors expose `head`/`base`), and harness-side ref values are validated against `git check-ref-format` rules and rejected if option-like (leading `-`).
 
-Config trust partitioning: the per-key config-source table in CLI And Config is normative. Repo `codegenie.toml` may set only the repo-settable safe keys listed there; every other key takes effect only with user-level opt-in — a CLI flag, `~/.codegenie/settings.json`, or the user-scoped config file `~/.codegenie/config.toml` (all under `CODEGENIE_HOME`) — and repo-config values for user-scope keys are ignored with a warning. Repo-config-relative paths are constrained to the repo root.
+Config trust partitioning: the per-key config-source table in CLI And Config is normative. Repo `codegenie.toml` may set only the repo-settable safe keys listed there, including the positive-minute `review.maxTime` run bound; every other key takes effect only with user-level opt-in — a CLI flag, `~/.codegenie/settings.json`, or the user-scoped config file `~/.codegenie/config.toml` (all under `CODEGENIE_HOME`) — and repo-config values for user-scope keys are ignored with a warning. Repo-config-relative paths are constrained to the repo root.
 
 Policy load revision: `codegenie.toml` and `.codegenie/skills/` always load from the trusted local checkout (the user's working copy), never from the PR head revision. If the PR under review modifies policy files (config or skills), that is surfaced to the planner as a risk signal and noted in the report.
 

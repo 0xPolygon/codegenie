@@ -4476,7 +4476,7 @@ describe("phase 5 pipeline regressions", () => {
     const clock = vi.spyOn(Date, "now");
     try {
       clock.mockReturnValue(1_000);
-      const budget = new BudgetLedger({ ...config(), review: { ...config().review, timeoutMs: 10_000 } });
+      const budget = new BudgetLedger({ ...config(), review: { ...config().review, maxTimeMs: 10_000 } });
       clock.mockReturnValue(1_001);
 
       expect(budget.checkpoint(7)).toBe("ok");

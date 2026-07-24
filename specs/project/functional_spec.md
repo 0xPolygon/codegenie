@@ -404,7 +404,7 @@ Per-stage LLM failure policy:
 - Stage 10 composer: one repair retry. Terminal failure triggers a deterministic fallback composition — verified findings rendered with template wording, fingerprint-level grouping only, ranked by severity and confidence — with a disclosure note that semantic composition was skipped.
 - Authentication or provider-wide failures at any stage fail the run.
 
-Budget exhaustion ladder, applying to `timeoutMs`, `maxBudgetTokens`, and `maxModelCalls`:
+Budget exhaustion ladder, applying to resolved `maxTimeMs`, `maxBudgetTokens`, and `maxModelCalls`:
 
 - Budgets are checked before each new model call or worker dispatch.
 - On exhaustion: stop scheduling new packet reviews, then verify already-produced candidates using the reserved budget slice, and always run composition and emit a partial-review disclosure.

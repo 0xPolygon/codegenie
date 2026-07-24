@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { Command, CommanderError } from "commander";
 import { loadConfig, type CliConfigOverrides, type LoadConfigOptions } from "../config/config-loader.js";
+import { MAX_REVIEW_TIME_MINUTES } from "../config/schema.js";
 import type {
   OutputFormat,
   ParsedReviewCommand,
@@ -85,7 +86,7 @@ export function parseReviewCommand(
     .option("--base <branch>", "base branch/ref for branch/head/default review")
     .option("--depth <depth>", "review depth: light, normal, or deep")
     .option("--budget-boost <factor>", "scale per-packet tool/result/call budgets by this factor (e.g. 2 doubles them)")
-    .option("--max-time <minutes>", "maximum review runtime in minutes before budget stop (default 30)")
+    .option("--max-time <minutes>", "override review.maxTime in minutes for this run (default 30)")
     .option("--lens <lens>", "review lens to enable for this run", collect, [])
     .option("--provider <provider>", "provider override")
     .option("--model <model>", "model override")
@@ -288,7 +289,7 @@ function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides 
     cli.budgetBoost = parseBudgetBoost(options.budgetBoost);
   }
   if (options.maxTime !== undefined) {
-    cli.timeoutMs = parseMaxTime(options.maxTime);
+    cli.maxTimeMs = parseMaxTime(options.maxTime);
   }
   if (options.lens && options.lens.length > 0) {
     cli.lenses = options.lens;
@@ -367,7 +368,13 @@ function parseMaxTime(value: string): number {
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new CodegenieError("invalid_args", "--max-time must be a positive number of minutes");
   }
-  return Math.round(parsed * 60_000);
+  if (parsed > MAX_REVIEW_TIME_MINUTES) {
+    throw new CodegenieError(
+      "invalid_args",
+      `--max-time exceeds the supported maximum of ${MAX_REVIEW_TIME_MINUTES} minutes`
+    );
+  }
+  return parsed * 60_000;
 }
 
 function parseReasoning(value: string): ReasoningLevel | "auto" {

@@ -671,9 +671,9 @@ Composer terminal failure (after one repair retry, non-auth): deterministic fall
 
 ### Failure And Budget Semantics
 
-The budget ledger tracks, per run: elapsed wall-clock time against `review.timeoutMs`, total tokens against `review.maxBudgetTokens`, and model-call count against `review.maxModelCalls`. There is no cost budget in v1 (cost-based run budgets are deferred — see architecture.md Future Considerations); cost is observability only, disclosed through `cost-profile.json`. The LLM runner reports usage per call; the ledger is updated synchronously after every call.
+The budget ledger tracks, per run: elapsed wall-clock time against resolved `review.maxTimeMs`, total tokens against `review.maxBudgetTokens`, and model-call count against `review.maxModelCalls`. There is no cost budget in v1 (cost-based run budgets are deferred — see architecture.md Future Considerations); cost is observability only, disclosed through `cost-profile.json`. The LLM runner reports usage per call; the ledger is updated synchronously after every call.
 
-Reservation: at run start the ledger reserves approximately 15% of the configured token and model-call budgets (when set) and a runtime tail of `max(60s, 10% of review.timeoutMs)` for stages 9-10, so completed review work is never lost to exhaustion. Stages 1-7 draw from the remainder; stages 9-10 may draw from both the remainder and the reserve.
+Reservation: at run start the ledger reserves approximately 15% of the configured token and model-call budgets (when set) and a runtime tail of `max(60s, 10% of review.maxTimeMs)` for stages 9-10, so completed review work is never lost to exhaustion. Stages 1-7 draw from the remainder; stages 9-10 may draw from both the remainder and the reserve.
 
 Checkpoints: `budget.checkpoint(stage)` is evaluated before every new model call and every worker dispatch. It returns exhausted when any unreserved dimension is depleted for stages 1-7, or any total dimension is depleted for stages 9-10. Checkpoints never cancel in-flight work.
 
@@ -685,7 +685,7 @@ Exhaustion ladder, in order:
 
 Run outcome: full successful reviews finalize as `completed_full`; partial successful reviews finalize as `completed_partial` with exit code 0 by default; fatal runs finalize as `failed`. `run.json`, `telemetry.json`, `coverage.json`, and final Markdown all carry the budget-stop reason when budget exhaustion caused the partial review.
 
-Hard kill: at 2x `review.timeoutMs` the run aborts fatally (`timeout`): the root `AbortController` cancels all in-flight work, and codegenie attempts to write telemetry artifacts before exiting nonzero.
+Hard kill: at 2x `review.maxTimeMs` the run aborts fatally (`timeout`): the root `AbortController` cancels all in-flight work, and codegenie attempts to write telemetry artifacts before exiting nonzero.
 
 Per-stage terminal policies, budget interplay, and the recoverable/fatal split are as defined in the Error Conditions Summary table; `budget_exhausted` is the recoverable signal driving this ladder and never escapes the pipeline. Provider rate limiting (429/transient 5xx, 3 retries with exponential backoff) is implemented in the LLM runner; retries count against this ledger.
 
@@ -786,7 +786,7 @@ Stage 10:
 
 Budget and coverage:
 
-- `budget_reservation_math`: with `maxBudgetTokens = 100000`, stages 1-7 exhaust at 85000 while stages 9-10 may spend the reserve; the runtime tail is `max(60s, 10% of timeoutMs)`.
+- `budget_reservation_math`: with `maxBudgetTokens = 100000`, stages 1-7 exhaust at 85000 while stages 9-10 may spend the reserve; the runtime tail is `max(60s, 10% of maxTimeMs)`.
 - `budget_ladder_order`: exhaustion during Stage 7 stops new packet dispatch, verifies existing candidates from the reserve, and still composes; `budgetStopped: true` with reasons.
 - `budget_each_dimension_triggers`: time, token, and model-call budgets each independently trigger the ladder at their checkpoint.
 - `coverage_aggregation_matrix`: fixtures combining filtered files, planner skips, completed packets, failed packets, undispatched packets, degraded planning, and incomplete verification produce the expected `RunCoverageStatus` counts, `coverageByLevel`, `partial` flag, and reasons; `coverage.json` includes every hunk exactly once.

@@ -41,7 +41,7 @@ export type CodegenieConfig = {
     minConfidence: Confidence;
     minInlineConfidence: Confidence;
     concurrency: number;
-    timeoutMs: number;
+    maxTimeMs: number;
     perPassTimeoutMs: number;
     budgetBoost: number;
     maxBudgetTokens?: number;

@@ -124,6 +124,7 @@ baseBranch = "main"
 
 [review]
 depth = "normal"
+maxTime = 60        # positive number of minutes; --max-time overrides this per run
 budgetBoost = 1.0   # scales per-packet review budgets; does not change finding caps
 
 [telemetry]
@@ -141,7 +142,7 @@ processingMode = "skip"
 
 - **Telemetry is off by default.** Repo config may only set `telemetry.enabled`; user-level `~/.codegenie/config.toml` can also set run directory, log level, and retention.
 - **Skills travel with the repo.** Teams can version project-specific review expertise as Markdown skills in `.codegenie/skills/` — concrete checks, false-positive rules, and safe patterns.
-- **Budgets are dispatch controls, not mid-call interrupts.** Crossing a soft cap lets in-flight work finish, records the overrun, and stops dispatching non-essential work.
+- **Budgets are dispatch controls, not mid-call interrupts.** `review.maxTime` defaults to 30 minutes and may be set in repo or user config; `--max-time <minutes>` is the final per-run override. Crossing a soft cap lets in-flight work finish, records the overrun, and stops dispatching non-essential work.
 
 ## How a review runs
 
