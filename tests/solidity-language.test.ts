@@ -208,7 +208,7 @@ describe("Plan 98 Solidity vertical slice", () => {
     const promptBuilder = createPromptBuilder(lenses);
     const stage7 = promptBuilder.buildPacketReviewPrompt({ packet, skills: compatibleSkills });
     expect(stage7.prompt).toContain("Repeated full `msg.value`");
-    expect(stage7.prompt).toContain("typed reverting calls");
+    expect(stage7.prompt).toContain("Typed reverting calls");
     expect(stage7.prompt).not.toContain("Mutable defaults");
     expect(stage7.prompt).not.toContain("Reachable panic paths");
     expect(stage7.projection?.perSkill.every((entry) => !entry.omitted && entry.truncatedChars === 0)).toBe(true);
@@ -221,7 +221,7 @@ describe("Plan 98 Solidity vertical slice", () => {
       skills: compatibleSkills
     });
     expect(stage9.prompt).toContain("documented compatible delegatecall layouts");
-    expect(stage9.prompt).toContain("validate oracle data");
+    expect(stage9.prompt).toContain("Oracle consumers must check positive value");
     expect(stage9.prompt).not.toContain("integer minor units");
     expect(stage9.prompt).not.toContain("mere presence of `unsafe`");
     expect(stage9.projection?.perSkill.every((entry) => !entry.omitted && entry.truncatedChars === 0)).toBe(true);
@@ -330,9 +330,10 @@ describe("Plan 98 Solidity vertical slice", () => {
       lenses: ["lang/solidity"],
       enabledByDefault: true
     });
-    for (const section of ["checks", "falsePositives", "safePatterns", "examples"] as const) {
+    for (const section of ["checks", "falsePositives", "safePatterns"] as const) {
       expect(solidity?.sections[section]?.trim().length, section).toBeGreaterThan(0);
     }
+    expect(solidity?.sections.examples).toBeUndefined();
 
     const checks = solidity?.sections.checks?.split(/\n(?=\d+\. \*\*)/u) ?? [];
     expect(checks).toHaveLength(9);
@@ -350,32 +351,32 @@ describe("Plan 98 Solidity vertical slice", () => {
       expect(matrix.safe, check).not.toContain("...");
     }
     const repeatedValue = checks.find((check) => check.includes("Repeated full `msg.value`")) ?? "";
-    expect(repeatedValue).toContain("function creditAll");
-    expect(repeatedValue).toContain("uint256 i");
-    expect(repeatedValue).toContain("each * users.length");
+    expect(repeatedValue).toContain("each*users.length");
+    expect(repeatedValue).toContain("credit[user]+=each");
     const delegatecall = checks.find((check) => check.includes("Delegatecall storage hazard")) ?? "";
-    expect(delegatecall).toContain("contract Proxy");
-    expect(delegatecall).toContain("contract Impl");
+    expect(delegatecall).toContain("Proxy.slot0=owner");
+    expect(delegatecall).toContain("Impl.slot0=total");
     expect(delegatecall).toContain("delegatecall");
     expect(delegatecall).toContain("ProxyStorage");
     const delegatecallMatrix = parseOwnerMatrix(delegatecall);
-    expect(delegatecallMatrix.safe).toContain("contract Proxy is ProxyStorage");
-    expect(delegatecallMatrix.safe).toContain("address immutable impl");
-    expect(delegatecallMatrix.safe).toContain("impl.delegatecall(msg.data)");
-    expect(delegatecallMatrix.safe).toContain("require(ok)");
-    expect(delegatecallMatrix.safe).toContain("contract Impl is ProxyStorage");
+    expect(delegatecallMatrix.safe).toContain("Proxy and Impl inherit ProxyStorage");
+    expect(delegatecallMatrix.safe).toContain("target is allowlisted");
     const oracle = checks.find((check) => check.includes("Invalid oracle data")) ?? "";
     expect(oracle).toContain("latestRoundData");
-    expect(oracle).toContain("answeredInRound >= roundId");
-    expect(oracle).toContain("updatedAt + 1 hours >= block.timestamp");
+    expect(oracle).not.toContain("answeredInRound");
+    expect(oracle).toContain("answer>0");
+    expect(oracle).toContain("updatedAt!=0");
+    expect(oracle).toContain("updatedAt<=now");
+    expect(oracle).toContain("now-updatedAt<=maxAge");
+    expect(oracle).toContain("feed.decimals()");
     const event = checks.find((check) => check.includes("Required event omitted")) ?? "";
-    expect(event).toContain("function transferOwnership");
+    expect(event).toContain("owner=next");
     expect(event).toContain("emit OwnershipTransferred");
     expect(solidity?.sections.falsePositives).toContain("CEI/guards");
-    expect(solidity?.sections.falsePositives).toContain("typed reverting calls");
-    expect(solidity?.sections.falsePositives).toContain("deliberate permissionless effects");
+    expect(solidity?.sections.falsePositives).toContain("Typed reverting calls");
+    expect(solidity?.sections.falsePositives).toContain("Deliberate permissionless effects");
     expect(solidity?.sections.falsePositives).toContain("documented compatible delegatecall layouts");
-    expect(solidity?.sections.falsePositives).toContain("events no external correctness/audit contract requires");
+    expect(solidity?.sections.falsePositives).toContain("optional events have no external correctness/audit contract");
 
     const ledger = BUNDLED_SKILL_WHY_LEDGER["lang/solidity"];
     expect(ledger?.length).toBeGreaterThanOrEqual(3);

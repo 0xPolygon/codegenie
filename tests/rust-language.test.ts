@@ -156,7 +156,7 @@ describe("Plan 98 Rust vertical slice", () => {
       hunksText: packet.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n"),
       skills: compatibleSkills
     });
-    expect(stage9.prompt).toContain("Exclude compiler-rejected lifetime");
+    expect(stage9.prompt).toContain("Compiler-rejected lifetime");
     expect(stage9.prompt).toContain("Prefer `TryFrom`");
     expect(stage9.prompt).not.toContain("Promise.allSettled");
     expect(stage9.prompt).not.toContain("Passing caller context");
@@ -205,9 +205,10 @@ describe("Plan 98 Rust vertical slice", () => {
       lenses: ["lang/rust"],
       enabledByDefault: true
     });
-    for (const section of ["checks", "falsePositives", "safePatterns", "examples"] as const) {
+    for (const section of ["checks", "falsePositives", "safePatterns"] as const) {
       expect(rust?.sections[section]?.trim().length, section).toBeGreaterThan(0);
     }
+    expect(rust?.sections.examples).toBeUndefined();
     const checks = rust?.sections.checks?.split(/\n(?=\d+\. \*\*)/u) ?? [];
     expect(checks).toHaveLength(7);
     for (const check of checks) {
@@ -231,11 +232,11 @@ describe("Plan 98 Rust vertical slice", () => {
       expect(mitigation.length, check).toBeGreaterThan("Mitigation:".length + 20);
       expect(mitigation, check).not.toBe(safeCounterexample);
     }
-    expect(rust?.sections.falsePositives).toContain("compiler-rejected lifetime");
-    expect(rust?.sections.falsePositives).toContain("widening/nonnumeric/bounded casts");
+    expect(rust?.sections.falsePositives).toContain("Compiler-rejected lifetime");
+    expect(rust?.sections.falsePositives).toContain("Widening/nonnumeric/bounded casts");
     expect(rust?.sections.falsePositives).toContain("best-effort results");
-    expect(rust?.sections.falsePositives).toContain("test-only");
-    expect(rust?.sections.falsePositives).toContain("mere presence of `unsafe`");
+    expect(rust?.sections.falsePositives).toContain("Test-only");
+    expect(rust?.sections.falsePositives).toContain("`unsafe`, sync APIs, mutexes, or `.await`");
   });
 });
 

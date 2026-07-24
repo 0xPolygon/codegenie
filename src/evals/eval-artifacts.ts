@@ -316,6 +316,7 @@ async function loadHintEvents(filePath: string): Promise<EvalHintEvent[]> {
       question,
       files: arrayOfStrings(data.files),
       symbols: arrayOfStrings(data.symbols),
+      projectedSkillIds: arrayOfStrings(data.projectedSkillIds),
       ...(typeof data.reason === "string" ? { reason: data.reason } : {}),
       confidence: parseConfidence(data.confidence)
     }];

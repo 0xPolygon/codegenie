@@ -125,7 +125,7 @@ describe("bundled skills: provenance ledger and projection caps", () => {
     }
   });
 
-  it("every bundled skill projects at stage 7 without truncation or omission", async () => {
+  it("every bundled skill projects at stages 7, 8, and 9 without truncation or omission", async () => {
     const noop = () => undefined;
     const loaded = await loadSkills({
       repoRoot: process.cwd(),
@@ -136,10 +136,67 @@ describe("bundled skills: provenance ledger and projection caps", () => {
     for (const id of bundledIds) {
       const skill = loaded.skills.find((entry) => entry.id === id);
       expect(skill, id).toBeDefined();
-      const projection = projectSkills([skill!], 7);
-      const per = projection.perSkill[0]!;
-      expect(per.omitted, id).toBe(false);
-      expect(per.truncatedChars, id).toBe(0);
+      for (const stage of [7, 8, 9] as const) {
+        const projection = projectSkills([skill!], stage);
+        const per = projection.perSkill[0]!;
+        expect(per.omitted, `${id} stage ${String(stage)}`).toBe(false);
+        expect(per.truncatedChars, `${id} stage ${String(stage)}`).toBe(0);
+      }
     }
+  });
+
+  it("keeps Examples optional and uses inline owner matrices for language skills", async () => {
+    const noop = () => undefined;
+    const loaded = await loadSkills({
+      repoRoot: process.cwd(),
+      extraSkillPaths: [],
+      logger: { debug: noop, info: noop, warn: noop, error: noop } as never,
+      telemetry: nullTelemetry()
+    });
+    const languages = loaded.skills.filter((skill) => skill.id.startsWith("lang/"));
+    expect(languages).toHaveLength(6);
+    for (const skill of languages) {
+      expect(skill.sections.examples, skill.id).toBeUndefined();
+      const checks = skill.sections.checks?.split(/\n(?=\d+\. \*\*)/u) ?? [];
+      expect(checks.length, skill.id).toBeGreaterThan(0);
+      for (const check of checks) {
+        const matrix = /Failure: (?<failure>.*?) Materiality: (?<materiality>.*?) Unsafe: (?<unsafe>.*?) Safe: (?<safe>.*?) Mitigation: (?<mitigation>.*)$/u.exec(check)?.groups;
+        expect(matrix, `${skill.id}: ${check}`).toBeDefined();
+        expect(matrix!.failure!.length, check).toBeGreaterThan(15);
+        expect(matrix?.materiality, check).toMatch(/severity/iu);
+        expect(matrix?.unsafe, check).toMatch(/^`[^`]+`/u);
+        expect(matrix?.safe, check).toMatch(/^`[^`]+`/u);
+        expect(matrix?.safe, check).not.toBe(matrix?.unsafe);
+        expect(matrix!.mitigation!.length, check).toBeGreaterThan(20);
+      }
+    }
+    expect(loaded.skills.find((skill) => skill.id === "core/code-review")?.sections.examples).toBeDefined();
+    expect(loaded.skills.find((skill) => skill.id === "core/tests")?.sections.examples).toBeDefined();
+  });
+
+  it("keeps Stage 9 sections standalone and canonical composite projections within caps", async () => {
+    const noop = () => undefined;
+    const loaded = await loadSkills({
+      repoRoot: process.cwd(),
+      extraSkillPaths: [],
+      logger: { debug: noop, info: noop, warn: noop, error: noop } as never,
+      telemetry: nullTelemetry()
+    });
+    const core = ["core/code-review", "core/tests"].map((id) => loaded.skills.find((skill) => skill.id === id)!);
+    const dangling = /checks? above|matching concrete failure|stated materiality|this guard|as written/iu;
+    for (const skill of loaded.skills) {
+      const stage9 = projectSkills([skill], 9);
+      expect(stage9.text, skill.id).not.toMatch(dangling);
+      expect(stage9.text, skill.id).toContain("### False Positives");
+      expect(stage9.text, skill.id).toContain("### Safe Patterns");
+    }
+    for (const language of loaded.skills.filter((skill) => skill.id.startsWith("lang/"))) {
+      for (const stage of [7, 8, 9] as const) {
+        const projection = projectSkills([language, ...core], stage);
+        expect(projection.totalChars, `${language.id} stage ${String(stage)}`).toBeLessThanOrEqual(12_000);
+        expect(projection.perSkill.every((entry) => !entry.omitted && entry.truncatedChars === 0), `${language.id} stage ${String(stage)}`).toBe(true);
+      }
+    }
+    expect(projectSkills([loaded.skills.find((skill) => skill.id === "lang/solidity")!], 8).totalChars).toBeLessThanOrEqual(3_800);
   });
 });

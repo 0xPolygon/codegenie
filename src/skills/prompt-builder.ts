@@ -73,7 +73,7 @@ export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
   5: "p5.6",
   7: "p7.10",
   8: "p8.2",
-  9: "p9.5",
+  9: "p9.6",
   10: "p10.1"
 };
 
@@ -117,6 +117,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
     { surface: "promoted predicate guidance", reason: "Promotion/adaptive candidates must be judged on the preserved predicate, not rejected for their original hint wording.", evidence: "Plan 81 and Plan 92 adaptive-vs-promotion measurement" },
     { surface: "helper/callee complete-branch guidance", reason: "Prevents keeping helper-dependent claims from truncated or partial source reads.", evidence: "Fable review verifier false-positive class" },
     { surface: "testing candidate guidance", reason: "Keeps real test-boundary regressions while rejecting generic add-more-tests comments.", evidence: "Plan 92 E1 escalator and Plan 75 suppression" },
+    { surface: "conditional skill guidance block", reason: "An empty authoritative provenance list must not leave a provider-facing label that implies verifier guidance was supplied.", evidence: "Plan 101 exact skill provenance" },
     { surface: "strict submit_verdict closeout", reason: "Verifier model repair is still live and successful, so the structured closeout remains load-bearing.", evidence: "Plan 95 census: 3 Stage-9 schema repairs, all recovered" }
   ],
   10: [
@@ -141,30 +142,39 @@ export const BUNDLED_SKILL_WHY_LEDGER: Record<string, PromptLedgerEntry[]> = {
     { surface: "cleaner-tests FP guard", reason: "Rewrites are usually legitimate; require concrete evidence a boundary is no longer exercised.", evidence: "Verifier keep/revise/reject splits on the same lineage (runs 46-49)" }
   ],
   "lang/go": [
+    { surface: "concurrency and lifetime owner matrices", reason: "Goroutine, context, channel, and shared-state reports now require a named owner, participant schedule, or conflicting access while retaining the original inventory.", evidence: "Plan 101 format-only Go candidate over the Plan-4 inventory" },
+    { surface: "nil, defer, error, and slice owner matrices", reason: "Inline failure/materiality/safe pairs make the retained runtime checks independently reviewable without a redundant Examples section.", evidence: "Plan 101 bundled-language content contract" },
     { surface: "lossy conversion ordering", reason: "Deliberate triple delivery with the static signal and stage-7 prompt line — highest-proven Go miss class.", evidence: "Owner-confirmed decimals uint8-narrowing production bug (5/5 gpt-5.5, live on target master)" }
   ],
   "lang/typescript": [
-    { surface: "whole skill", reason: "Live but never eval-validated; treat checks as designed-general until a TS eval case exists.", evidence: "Eval-diversity punchlist item 2026-07-06" }
+    { surface: "erased proof and external boundary", reason: "Assertions and any are compile-time only; unchecked runtime data must be traced to a failing consumer, while post-validator assertions remain safe.", evidence: "Plan 101 marker-free TypeScript malformed-config positive/control fixture" },
+    { surface: "promise completion and multi-promise cleanup", reason: "The retained checks distinguish a lost owned operation from deliberate contained detachment and define sibling-failure cleanup separately.", evidence: "Plan 101 owner-matrix rewrite preserving the original TypeScript inventory" },
+    { surface: "absence, closed unions, coercion, and shared mutation", reason: "These retained checks require a named runtime producer, closed-domain contract, distinct falsy state, or alias observer rather than syntax alone.", evidence: "Plan 101 owner-matrix rewrite; dedicated inventory changes remain measurement-gated" }
   ],
   "lang/javascript": [
     { surface: "async and module runtime behavior", reason: "JavaScript review must connect detached work or module-shape differences to a reachable lost failure, ordering error, undefined binding, or load failure rather than importing compile-time TypeScript assumptions.", evidence: "Plan 98 §5.2 JavaScript owner matrix checks 1-2, 2026-07-23" },
+    { surface: "current module interop example", reason: "A bare require of eligible ESM is no longer inherently failing on current Node; the example now depends on an actual export-condition/binding or top-level-await mismatch.", evidence: "Plan 101 objective factual correction" },
     { surface: "receiver, coercion, and property semantics", reason: "Receiver and dynamic-property reports require a concrete call/key path and wrong runtime result while preserving lexical arrows, explicit nullish checks, own-property APIs, and null-prototype maps.", evidence: "Plan 98 §5.2 required unsafe and safe JavaScript distinctions, 2026-07-23" },
     { surface: "runtime boundaries, aliasing, and lifecycle", reason: "Boundary, mutation, and resource findings are actionable only with an unvalidated producer-to-consumer flow, a named shared observer, or a reachable replacement/shutdown leak.", evidence: "Plan 98 bundled-skill content gate and JavaScript checks 6-8, 2026-07-23" }
   ],
   "lang/rust": [
     { surface: "runtime failure predicates", reason: "Rust review must distinguish reachable panics, boundary failures, and materially lost Results from idiomatic syntax that has no observable failure.", evidence: "Plan 98 §2.2 owner-accepted positive and required false-positive cases, 2026-07-23" },
     { surface: "unsafe invariant discipline", reason: "Unsafe syntax is only actionable when a named aliasing, lifetime, initialization, layout, thread-safety, or ownership invariant is violated.", evidence: "Plan 98 bundled-skill owner matrix and Rust acceptance gate, 2026-07-23" },
-    { surface: "async blocking and suspension", reason: "Runtime blocking and synchronization across await are valid only with executor placement, suspension, and conflict evidence; compiler-rejected Send/lifetime claims are excluded.", evidence: "Plan 98 §2.2 async materiality and false-positive contract, 2026-07-23" }
+    { surface: "async blocking and suspension", reason: "Runtime blocking and synchronization across await are valid only with executor placement, suspension, and conflict evidence; compiler-rejected Send/lifetime claims are excluded.", evidence: "Plan 98 §2.2 async materiality and false-positive contract, 2026-07-23" },
+    { surface: "inline examples without meta Examples", reason: "Each retained Rust check already owns distinct unsafe/safe/mitigation fields, so the old meta-only Examples paragraph added no decision information.", evidence: "Plan 101 optional Examples content contract" }
   ],
   "lang/python": [
     { surface: "state, absence, and exception predicates", reason: "Python review must connect mutable defaults, None propagation, and broad exception handling to a reachable cross-call or caller-visible failure instead of flagging syntax alone.", evidence: "Plan 98 §3.2 owner-accepted failure and false-positive cases, 2026-07-23" },
     { surface: "exact units and event-loop liveness", reason: "Float and blocking-call findings are actionable only when a named exact-unit contract or an event-loop workload makes the failure material.", evidence: "Plan 98 Python bundled-skill owner matrix checks 4-5, 2026-07-23" },
-    { surface: "injection, file identity, and iteration safety", reason: "Security and collection-mutation checks require concrete untrusted flow, a real check/use race, or named skipped/duplicated elements while preserving argv, descriptor, and snapshot safe patterns.", evidence: "Plan 98 §3.2 required unsafe/safe distinctions and owner acceptance gate, 2026-07-23" }
+    { surface: "injection, file identity, and iteration safety", reason: "Security and collection-mutation checks require concrete untrusted flow, a real check/use race, or named skipped/duplicated elements while preserving argv, descriptor, and snapshot safe patterns.", evidence: "Plan 98 §3.2 required unsafe/safe distinctions and owner acceptance gate, 2026-07-23" },
+    { surface: "contract-preserving safe examples", reason: "Mutable-default, None, exact-unit, subprocess, and TOCTOU controls now preserve the relevant API/computation/threat contract instead of merely changing the example shape.", evidence: "Plan 101 marker-free Python mutable-default pair and objective example audit" }
   ],
   "lang/solidity": [
     { surface: "external control and low-level call outcomes", reason: "Reentrancy and unchecked-call findings require a reachable invariant or required effect, while CEI, guards, checked calls, and reverting typed calls remain explicit safe cases.", evidence: "Plan 98 §4.2 checks 1-2 and owner acceptance matrix, 2026-07-23" },
     { surface: "asset units, authority, narrowing, and msg.value", reason: "Accounting and authorization reports must name the producer/consumer units, privileged effect, concrete lost range, or repeated full-value credit rather than matching casts, loops, or public functions alone.", evidence: "Plan 98 §4.2 checks 3-6 required unsafe/safe distinctions, 2026-07-23" },
-    { surface: "delegate storage, oracle validity, and audit events", reason: "These checks are actionable only with a named storage invariant, freshness/nonzero consumer guarantee, or external event contract and exclude documented compatible layouts and optional events.", evidence: "Plan 98 §4.2 checks 7-9 and owner content gate, 2026-07-23" }
+    { surface: "delegate storage, oracle validity, and audit events", reason: "These checks are actionable only with a named storage invariant, freshness/nonzero consumer guarantee, or external event contract and exclude documented compatible layouts and optional events.", evidence: "Plan 98 §4.2 checks 7-9 and owner content gate, 2026-07-23" },
+    { surface: "current oracle validation contract", reason: "Fresh-price consumers must validate positive data, nonzero/nonfuture timestamps, feed-specific age, and units without relying on deprecated answeredInRound logic.", evidence: "Plan 101 marker-free stale-round Foundry positive/control fixture" },
+    { surface: "Stage-8 projection budget", reason: "Readable compact owner examples retain all nine checks while preventing silent loss of false-positive/safe guidance in system review.", evidence: "Plan 101 deterministic Stage-8 projection gate: 3784 characters" }
   ]
 };
 
@@ -279,6 +289,9 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
     },
     buildVerifierPrompt: ({ candidate, originContext, hunksText, intentSignals, skills }) => {
       const projection = projectSkills(skills, 9, options);
+      const skillGuidance = projection.text.length > 0
+        ? "Skill false-positive guidance:\n" + projection.text
+        : "";
       const blocks = [
         fenceUntrusted(stableJson(candidate), "candidate-finding"),
         intentSignals !== undefined ? fenceUntrusted(stableJson(intentSignals), "intent-signals") : "",
@@ -299,7 +312,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Same-PR tests that assert new behavior prove the behavior changed; they do not by themselves prove the behavior is safe or intended. If intent signals are refactor-like or behavior-preserving without explicit behavior-change intent, compare base versus head behavior and keep or revise material semantic regressions that can break callers. If intent signals are mixed, frame the issue as intentional_needs_confirmation unless evidence proves accidental regression. Reject accidental-regression framing when PR text/spec clearly requires the behavior change and caller impact is covered.",
         "Examples of refactor-like or behavior-preserving intent include refactor, cleanup, consolidation, behavior-preserving, no behavior change, and equivalent behavior.",
         "When revising or keeping a behavior-change finding, preserve or set behaviorChange and intentEvidence. Do not use accidental-regression framing without behavior-preserving/refactor evidence and a concrete caller-visible regression.",
-        "Skill false-positive guidance:\n" + projection.text,
+        skillGuidance,
         ...blocks,
         "Finish by calling submit_verdict with schema-valid arguments. Do not answer in plain text."
       ], projection, blocks.length);
@@ -328,6 +341,21 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
 
 export function plannerDossierPromptProjection(dossier: PlannerDossier): Record<string, unknown> {
   return projectPlannerDossier(dossier).projection;
+}
+
+/** Ordered skill ids that contributed at least one character to a prompt. */
+export function projectedSkillIds(projection: SkillProjection | undefined): string[] {
+  if (projection === undefined) {
+    return [];
+  }
+  const seen = new Set<string>();
+  return projection.perSkill.flatMap((entry) => {
+    if (entry.omitted || entry.chars <= 0 || seen.has(entry.skillId)) {
+      return [];
+    }
+    seen.add(entry.skillId);
+    return [entry.skillId];
+  });
 }
 
 export function plannerDossierProjectionStats(dossier: PlannerDossier): PlannerDossierProjectionStats {

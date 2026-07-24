@@ -38,19 +38,19 @@ describe("Plan 98 cross-language release gate", () => {
         language: "go",
         path: "service.go",
         lensId: "lang/go",
-        stage7Marker: "Goroutine leaks",
-        stage9Marker: "Passing caller context through unchanged",
+        stage7Marker: "Goroutine lifetime",
+        stage9Marker: "Pass caller context",
         stage7ExcludedMarkers: ["Module interop mismatch", "Reachable panic paths", "Mutable defaults", "Repeated full `msg.value`"],
-        stage9ExcludedMarkers: ["dual-package exports", "compiler-rejected lifetime", "integer minor units", "documented compatible delegatecall layouts"]
+        stage9ExcludedMarkers: ["dual-package exports", "Compiler-rejected lifetime", "Allocate state per call", "Typed reverting calls"]
       },
       {
         language: "typescript",
         path: "service.ts",
         lensId: "lang/typescript",
-        stage7Marker: "Floating promises",
+        stage7Marker: "Promise completion",
         stage9Marker: "Promise.allSettled",
         stage7ExcludedMarkers: ["Module interop mismatch", "Reachable panic paths", "Mutable defaults", "Repeated full `msg.value`"],
-        stage9ExcludedMarkers: ["dual-package exports", "compiler-rejected lifetime", "integer minor units", "documented compatible delegatecall layouts"]
+        stage9ExcludedMarkers: ["dual-package exports", "Compiler-rejected lifetime", "Allocate state per call", "Typed reverting calls"]
       },
       {
         language: "javascript",
@@ -58,8 +58,8 @@ describe("Plan 98 cross-language release gate", () => {
         lensId: "lang/javascript",
         stage7Marker: "Module interop mismatch",
         stage9Marker: "dual-package exports",
-        stage7ExcludedMarkers: ["Non-null assertions", "Reachable panic paths", "Mutable defaults", "Repeated full `msg.value`"],
-        stage9ExcludedMarkers: ["Exhaustive `never` checks", "compiler-rejected lifetime", "integer minor units", "documented compatible delegatecall layouts"]
+        stage7ExcludedMarkers: ["Erased runtime proof", "Reachable panic paths", "Mutable defaults", "Repeated full `msg.value`"],
+        stage9ExcludedMarkers: ["Post-validator", "Compiler-rejected lifetime", "Allocate state per call", "Typed reverting calls"]
       }
     ]) {
       const packet = releasePacket(fixture.path, fixture.language, fixture.lensId);

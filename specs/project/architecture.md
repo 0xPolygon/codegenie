@@ -604,6 +604,7 @@ type PacketReviewResult = {
     suggestedLenses: string[]
     reason: string
     confidence: "high" | "medium" | "low"
+    projectedSkillIds: string[] // pipeline-stamped from this producing pass
   }>
   uncertainties: StructuredUncertainty[]
   status: "completed" | "incomplete" | "failed" | "skipped"
@@ -613,6 +614,7 @@ type StructuredUncertainty = {
   question: string
   files: string[]
   symbols: string[]
+  projectedSkillIds: string[] // pipeline-stamped from this producing pass
 }
 ```
 
@@ -662,8 +664,9 @@ type DiffAnchor = {
 }
 
 // V1 findings are always packet-produced; static signals are prompt hints only.
-// producedBy.lensId is stamped deterministically by Stage 7 validation as the
-// packet's first (primary) lens; the model does not claim lenses.
+// producedBy.lensId is attribution only. skillIds is the ordered, deduplicated
+// set that contributed non-omitted guidance to the producing prompt. Both are
+// pipeline-stamped; the model does not claim lenses or skill provenance.
 type FindingProducer = { kind: "packet"; stage: ReviewStage; packetId: string; lensId: string; skillIds: string[]; workerId?: string }
 
 type CandidateFinding = {
@@ -1170,8 +1173,10 @@ enabledByDefault: true
 
 # Safe Patterns
 
-# Examples
+# Examples (optional)
 ```
+
+`Examples` is a supported optional section for distinct worked cases, not a required ritual. A narrowly owned check may instead carry its unsafe and safe examples inline; bundled language skills use that owner-matrix form and omit a redundant Examples section. Core skills may retain Examples when they add scenarios not already encoded by the checks.
 
 Bundled v1 lenses:
 
@@ -1346,7 +1351,8 @@ Lens execution rules:
 
 - Run one composite model task per scheduled packet, with the selected lenses projected into that task.
 - Do not run one model call per lens by default.
-- Project and cap skill prompt sections for the review stage so large skill files do not dominate every packet prompt. Packet review prompts receive the skill's Checks, False Positives, and Examples sections; verifier prompts receive False Positives and Safe Patterns; the planner receives one-line skill/lens summaries only; the composer receives none. A per-skill projection cap and a total skill-content cap per prompt apply, with truncation recorded in telemetry. Defaults: 4000 chars per skill projection, 12000 chars total per prompt.
+- Project and cap skill prompt sections so large skill files do not dominate prompts. Packet review receives Checks, False Positives, and optional Examples; targeted Stage 8 review receives Checks, False Positives, and Safe Patterns; verification receives False Positives and Safe Patterns; the planner receives one-line summaries only; the composer receives none. A per-skill projection cap and a total skill-content cap per prompt apply, with truncation recorded in telemetry. Defaults: 4000 chars per skill projection, 12000 chars total per prompt.
+- Derive every produced item's ordered skill provenance from its actual prompt projection. Direct Stage-7/8 findings store it in `producedBy.skillIds`; Stage-7 hints and uncertainties store it in `projectedSkillIds`, and promotions inherit the selected source item's list. Stage 9 resolves only those recorded ids, drops unknown or language-incompatible ids, and never infers guidance from `lensId`.
 - Use coverage-aware execution profiles:
   - `simple`: one structured call with no repository tools; used for light or obvious mechanical packets.
   - `standard`: one structured/tool-capable task with focused review instructions and a reduced normal-mode tool budget.
@@ -1469,7 +1475,7 @@ Pre-verification gates run before LLM verification to avoid wasting calls on inv
 - Low-confidence suppression by default, except critical/high severity candidates, which proceed to LLM verification instead.
 - Exact or obvious duplicate pre-clustering for verifier scheduling only.
 
-LLM verification is enabled by default and runs one candidate at a time with bounded concurrency. The verifier receives the candidate, originating packet context, relevant changed hunk(s), cited evidence, active lens criteria, and read-only semantic tools. It may inspect surrounding code only to validate the candidate's specific claim. It must verify, revise, or reject the candidate; it must not search for new issues or introduce unrelated findings.
+LLM verification is enabled by default and runs one candidate at a time with bounded concurrency. The verifier receives the candidate, originating packet context, relevant changed hunk(s), cited evidence, the False Positives/Safe Patterns guidance selected only by the producing item's recorded skill ids, and read-only semantic tools. Unknown or language-incompatible ids are dropped; primary-lens membership is never a fallback. It may inspect surrounding code only to validate the candidate's specific claim. It must verify, revise, or reject the candidate; it must not search for new issues or introduce unrelated findings.
 
 Verifier pre-clustering is not final deduplication. It may avoid repeated checks for identical or near-identical candidate copies, but semantic deduplication, same-root-cause grouping, comment-cap handling, ranking, and final wording happen only after verification.
 

@@ -20,7 +20,7 @@ import {
 } from "../src/provider/provider-services.js";
 import { loadProviderSettings, saveProviderSettings } from "../src/provider/provider-settings.js";
 import { buildLensRegistry, droppedLensesFromFailures } from "../src/skills/lens-registry.js";
-import { fenceUntrusted, projectSkills } from "../src/skills/prompt-builder.js";
+import { fenceUntrusted, projectedSkillIds, projectSkills } from "../src/skills/prompt-builder.js";
 import { loadSkills, type Skill } from "../src/skills/skill-loader.js";
 import type { Logger, LogEvent, TelemetryEvent } from "../src/types.js";
 import type { TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
@@ -309,6 +309,23 @@ Exercise normal YAML list frontmatter.
     expect(harness.events.map((event) => event.message)).toEqual(
       expect.arrayContaining(["skill_projection_truncated", "skill_projection_omitted"])
     );
+    expect(projectedSkillIds(projection)).toEqual([
+      "team/long-0",
+      "team/long-1",
+      "team/long-2"
+    ]);
+  });
+
+  it("records each projected skill once, including non-empty truncated skills", () => {
+    const longChecks = Array.from({ length: 240 }, (_, index) => `- check ${index}: validate a concrete failure mode.`).join("\n");
+    const long = testSkill({ id: "team/long", checks: longChecks });
+    const short = testSkill({ id: "team/short", checks: "- check the concrete failure" });
+    const projection = projectSkills([long, long, short], 7);
+
+    expect(projection.perSkill.map((entry) => entry.skillId)).toEqual(["team/long", "team/short"]);
+    expect(projection.perSkill[0]?.truncatedChars).toBeGreaterThan(0);
+    expect(projectedSkillIds(projection)).toEqual(["team/long", "team/short"]);
+    expect(projectedSkillIds(undefined)).toEqual([]);
   });
 });
 

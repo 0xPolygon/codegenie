@@ -13,26 +13,24 @@ Find reachable Solidity asset, authority, accounting, and state-machine failures
 
 # Checks
 
-1. **Reentrancy.** Failure: a call precedes invariant update. Materiality: require reentry; severity by impact. Unsafe: `user.call{value:credit[user]}("");credit[user]=0`. Safe: `uint due=credit[user];credit[user]=0;(bool ok,)=user.call{value:due}("");require(ok)`. Mitigation: use CEI or a scoped guard.
-2. **Unchecked low-level failure.** Failure: an ignored failure hides a required effect. Materiality: require reachable harm; severity by impact. Unsafe: `target.call(data);settled=true`. Safe: `(bool ok,)=target.call(data);require(ok);settled=true`. Mitigation: propagate low-level results.
-3. **Inconsistent units.** Failure: mismatched decimals yield the wrong amount. Materiality: require unit mismatch; severity by impact. Unsafe: `usdc.transfer(to,dollars*1e18)`. Safe: `usdc.transfer(to,dollars*1e6)`. Mitigation: declare units; convert once.
-4. **Missing access control.** Failure: any caller can perform a privileged transition. Materiality: require reachable privilege; severity by impact. Unsafe: `function setOwner(address n)external{owner=n;}`. Safe: `function setOwner(address n)external onlyOwner{owner=n;}`. Mitigation: enforce the intended role.
-5. **Narrowing/truncation.** Failure: a cast discards required value. Materiality: require reachable loss; severity by impact. Unsafe: `uint128 saved=uint128(amount)`. Safe: `require(amount<=type(uint128).max);uint128 saved=uint128(amount)`. Mitigation: validate before narrowing.
-6. **Repeated full `msg.value`.** Failure: a loop credits full value per user. Materiality: require repetition; severity by inflation. Unsafe: `function creditAll(address[] calldata users)external payable{for(uint256 i;i<users.length;++i)credit[users[i]]+=msg.value;}`. Safe: `function creditAll(address[] calldata users,uint256 each)external payable{require(msg.value==each * users.length);for(uint256 i;i<users.length;++i)credit[users[i]]+=each;}`. Mitigation: partition value before loops.
-7. **Delegatecall storage hazard.** Failure: `total` overwrites the proxy's `owner` slot. Materiality: require layout mismatch; severity by authority impact. Unsafe: `contract Proxy{address owner;function run(address impl)external{(bool ok,)=impl.delegatecall(abi.encodeCall(Impl.set,(1)));require(ok);}}contract Impl{uint total;function set(uint n)external{total=n;}}`. Safe: `contract ProxyStorage{address owner;uint total;}contract Proxy is ProxyStorage{address immutable impl;constructor(address a){impl=a;}function set(uint n)external{(bool ok,)=impl.delegatecall(msg.data);require(ok);}}contract Impl is ProxyStorage{function set(uint n)external{total=n;}}`. Mitigation: constrain targets and share layout.
-8. **Invalid oracle data.** Failure: stale data supplies a required fresh price. Materiality: require a violated guarantee; severity by impact. Unsafe: `function quote(uint amount)external view returns(uint){(,int p,,,)=feed.latestRoundData();return amount*uint(p);}`. Safe: `function quote(uint amount)external view returns(uint){(uint80 roundId,int p,,uint updatedAt,uint80 answeredInRound)=feed.latestRoundData();require(p>0 && answeredInRound >= roundId && updatedAt + 1 hours >= block.timestamp);return amount*uint(p);}`. Mitigation: validate sign, round, freshness.
-9. **Required event omitted.** Failure: owner change is invisible to a required indexer. Materiality: require missed transition; severity by impact. Unsafe: `function transferOwnership(address next)external onlyOwner{owner=next;}`. Safe: `function transferOwnership(address next)external onlyOwner{address old=owner;owner=next;emit OwnershipTransferred(old,next);}`. Mitigation: emit events with transitions.
+1. **Reentrancy.** Failure: external control precedes an invariant update. Materiality: require reachable reentry; severity by state/asset impact. Unsafe: `call(user,credit[user]); credit[user]=0`. Safe: `due=credit[user]; credit[user]=0; checkedCall(user,due)`. Mitigation: use checks-effects-interactions or a scoped guard.
+2. **Unchecked low-level failure.** Failure: failed `call`/`send` is recorded as success. Materiality: require downstream harm; severity by impact. Unsafe: `target.call(data); settled=true`. Safe: `(bool ok,)=target.call(data); require(ok); settled=true`. Mitigation: check and propagate low-level outcomes.
+3. **Inconsistent units.** Failure: token/feed decimal mismatch yields a wrong amount. Materiality: require both units; severity by asset error. Unsafe: `usdc.transfer(to,dollars*1e18)`. Safe: `usdc.transfer(to,dollars*1e6)`. Mitigation: name units at producers/consumers and convert once.
+4. **Missing access control.** Failure: an unintended caller performs a privileged transition. Materiality: require caller/effect; severity by authority. Unsafe: `setOwner(next) external`. Safe: `setOwner(next) external onlyOwner`. Mitigation: enforce the intended role on every entry path.
+5. **Narrowing/truncation.** Failure: a cast discards required value. Materiality: require out-of-range input and consumer; severity by impact. Unsafe: `uint128 saved=uint128(amount)`. Safe: `require(amount<=type(uint128).max); saved=uint128(amount)`. Mitigation: validate before narrowing.
+6. **Repeated full `msg.value`.** Failure: a loop credits full payment repeatedly. Materiality: require multiple iterations; severity by inflation. Unsafe: `for(user:users) credit[user]+=msg.value`. Safe: `require(msg.value==each*users.length); for(user:users) credit[user]+=each`. Mitigation: partition call value before iteration.
+7. **Delegatecall storage hazard.** Failure: implementation writes collide with proxy authority/state. Materiality: require target, slot, and write; severity by impact. Unsafe: `Proxy.slot0=owner; Impl.slot0=total; delegatecall(Impl.set)`. Safe: `Proxy and Impl inherit ProxyStorage; target is allowlisted`. Mitigation: share/version layouts and restrict implementations.
+8. **Invalid oracle data.** Failure: invalid or wrong-unit price reaches a consumer. Materiality: require feed guarantee/max age/units; severity by asset impact. Unsafe: `(,int a,,,)=feed.latestRoundData(); use(uint(a))`. Safe: `answer>0; updatedAt!=0; updatedAt<=now; now-updatedAt<=maxAge; normalize(feed.decimals())`. Mitigation: validate value, timestamp, freshness, and units.
+9. **Required event omitted.** Failure: a transition is invisible to a required indexer/auditor. Materiality: require consumer/transition; severity by impact. Unsafe: `owner=next`. Safe: `old=owner; owner=next; emit OwnershipTransferred(old,next)`. Mitigation: emit required events atomically with state changes.
 
 # False Positives
 
-- Exclude CEI/guards, typed reverting calls, deliberate permissionless effects.
-- Exclude documented compatible delegatecall layouts; events no external correctness/audit contract requires.
+- CEI/guards are safe when every entry updates invariants before external control.
+- Typed reverting calls need no low-level result check unless a return value carries failure, the revert is caught, or a low-level primitive is used.
+- Deliberate permissionless effects and documented compatible delegatecall layouts are safe when no privileged path or upgrade breaks them.
+- Oracle consumers must check positive value, nonzero/nonfuture timestamp, feed-specific freshness, and units; optional events have no external correctness/audit contract.
 
 # Safe Patterns
 
-- Secure state before calls, propagate results, enforce roles, name units/ranges, and partition call value.
-- Constrain delegatecall layouts, validate oracle data, and emit contractually required events.
-
-# Examples
-
-Require impact evidence.
+- Update state before calls, propagate outcomes, enforce roles, name units/ranges, and partition `msg.value`.
+- Share/version delegate layouts, restrict targets, validate oracle value/time/units, and emit required events.

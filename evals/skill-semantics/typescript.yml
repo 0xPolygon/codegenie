@@ -1,0 +1,26 @@
+name: skill-semantics-typescript-runtime-validation
+repeat: 3
+repo:
+  fixture: repos/typescript
+command:
+  branch: feature
+  base: main
+review:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  reasoning: high
+  depth: deep
+  verify: true
+  cache: false
+  concurrency: 1
+  lenses:
+    - lang/typescript
+should_find:
+  - id: typescript-erased-runtime-proof
+    path: src/config.ts
+    category: correctness
+    titlePattern: validate|assert|cast|config
+    failureModePattern: malformed|runtime|url
+should_not_find:
+  - id: typescript-post-validation-assertion-control
+    path: src/safe-config.ts

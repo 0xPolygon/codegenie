@@ -1,0 +1,4 @@
+[project]
+name = "codegenie-plan101-python-semantics"
+version = "0.0.0"
+requires-python = ">=3.13"

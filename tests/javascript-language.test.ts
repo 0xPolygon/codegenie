@@ -204,7 +204,7 @@ describe("Plan 98 JavaScript vertical slice", () => {
       hunksText: packet.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n"),
       skills: compatibleSkills
     });
-    expect(stage9.prompt).toContain("detached promises with contained rejection");
+    expect(stage9.prompt).toContain("Detached promises are safe when rejection/lifetime are contained");
     expect(stage9.prompt).toContain("Object.hasOwn");
     expect(stage9.prompt).not.toContain("Exhaustive `never` checks");
     expect(stage9.projection?.perSkill.every((entry) => !entry.omitted && entry.truncatedChars === 0)).toBe(true);
@@ -272,9 +272,10 @@ describe("Plan 98 JavaScript vertical slice", () => {
       enabledByDefault: true
     });
     expect(typescript).toMatchObject({ languages: ["typescript", "tsx"], lenses: ["lang/typescript"] });
-    for (const section of ["checks", "falsePositives", "safePatterns", "examples"] as const) {
+    for (const section of ["checks", "falsePositives", "safePatterns"] as const) {
       expect(javascript?.sections[section]?.trim().length, section).toBeGreaterThan(0);
     }
+    expect(javascript?.sections.examples).toBeUndefined();
 
     const checks = javascript?.sections.checks?.split(/\n(?=\d+\. \*\*)/u) ?? [];
     expect(checks).toHaveLength(8);
@@ -288,10 +289,10 @@ describe("Plan 98 JavaScript vertical slice", () => {
       expect(matrix.safe, check).not.toBe(matrix.unsafe);
       expect(matrix.mitigation.length, check).toBeGreaterThan(20);
     }
-    expect(javascript?.sections.falsePositives).toContain("detached promises with contained rejection");
+    expect(javascript?.sections.falsePositives).toContain("Detached promises are safe when rejection/lifetime are contained");
     expect(javascript?.sections.falsePositives).toContain("deliberate dual-package exports");
     expect(javascript?.sections.falsePositives).toContain("Object.hasOwn");
-    expect(javascript?.sections.falsePositives).toContain("validated values");
+    expect(javascript?.sections.falsePositives).toContain("Validated values");
     expect(javascript?.sections.falsePositives).toContain("immutable copies");
     expect(javascript?.sections.falsePositives).toContain("idempotent cleanup");
     const javascriptGuidance = Object.values(javascript?.sections ?? {}).join("\n");

@@ -149,7 +149,7 @@ describe("Plan 98 Python vertical slice", () => {
     const promptBuilder = createPromptBuilder(lenses);
     const stage7 = promptBuilder.buildPacketReviewPrompt({ packet, skills: compatibleSkills });
     expect(stage7.prompt).toContain("Mutable defaults");
-    expect(stage7.prompt).toContain("subprocess` argv with `shell=False");
+    expect(stage7.prompt).toContain("Fixed argv with `shell=False`");
     expect(stage7.prompt).not.toContain("Reachable panic paths");
     expect(stage7.prompt).not.toContain("Floating promises");
     expect(stage7.prompt).not.toContain("Goroutine leaks");
@@ -162,8 +162,8 @@ describe("Plan 98 Python vertical slice", () => {
       hunksText: packet.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n"),
       skills: compatibleSkills
     });
-    expect(stage9.prompt).toContain("integer minor units");
-    expect(stage9.prompt).toContain("already-open descriptor");
+    expect(stage9.prompt).toContain("minor-unit/`Decimal` computations");
+    expect(stage9.prompt).toContain("One opened descriptor");
     expect(stage9.prompt).not.toContain("mere presence of `unsafe`");
     expect(stage9.prompt).not.toContain("Promise.allSettled");
     expect(stage9.projection?.perSkill.every((entry) => !entry.omitted && entry.truncatedChars === 0)).toBe(true);
@@ -279,9 +279,10 @@ describe("Plan 98 Python vertical slice", () => {
       lenses: ["lang/python"],
       enabledByDefault: true
     });
-    for (const section of ["checks", "falsePositives", "safePatterns", "examples"] as const) {
+    for (const section of ["checks", "falsePositives", "safePatterns"] as const) {
       expect(python?.sections[section]?.trim().length, section).toBeGreaterThan(0);
     }
+    expect(python?.sections.examples).toBeUndefined();
 
     const checks = python?.sections.checks?.split(/\n(?=\d+\. \*\*)/u) ?? [];
     expect(checks).toHaveLength(8);
@@ -294,15 +295,19 @@ describe("Plan 98 Python vertical slice", () => {
       expect(matrix.safe, check).not.toBe(matrix.unsafe);
       expect(matrix.mitigation.length, check).toBeGreaterThan(20);
       expect(matrix.mitigation, check).not.toBe(matrix.safe);
-      if (check.includes("Invalid `None` propagation")) {
-        expect(matrix.safe, check).toContain("-> str | None");
+      if (check.includes("Invalid `None`")) {
+        expect(matrix.safe, check).toContain("raise LookupError");
+      }
+      if (check.includes("TOCTOU files")) {
+        expect(matrix.safe, check).toContain("with open");
+        expect(matrix.safe, check).toContain("os.fstat");
       }
     }
     expect(python?.sections.falsePositives).toContain("never-mutated defaults");
-    expect(python?.sections.falsePositives).toContain("catches and re-raises");
-    expect(python?.sections.falsePositives).toContain("integer minor units");
-    expect(python?.sections.falsePositives).toContain("iteration over a copy");
-    expect(python?.sections.falsePositives).toContain("argv with `shell=False`");
+    expect(python?.sections.falsePositives).toContain("cleanup that re-raises");
+    expect(python?.sections.falsePositives).toContain("minor-unit/`Decimal`");
+    expect(python?.sections.falsePositives).toContain("snapshot iteration");
+    expect(python?.sections.falsePositives).toContain("Fixed argv with `shell=False`");
 
     const ledger = BUNDLED_SKILL_WHY_LEDGER["lang/python"];
     expect(ledger?.length).toBeGreaterThanOrEqual(3);

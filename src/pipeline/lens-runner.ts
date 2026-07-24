@@ -2,7 +2,7 @@ import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmPostToolNudgeInput, LlmRunner } from "../llm/llm-runner.js";
 import { SubmitPacketReviewSchema, type SubmitPacketReview } from "../llm/schemas.js";
 import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-registry.js";
-import type { PromptBuilder } from "../skills/prompt-builder.js";
+import { projectedSkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
   AnchorSource,
@@ -460,6 +460,7 @@ async function runPacket(
     packet.language
   );
   const prompt = opts.promptBuilder.buildPacketReviewPrompt({ packet, skills });
+  const passSkillIds = projectedSkillIds(prompt.projection);
   const repositoryTools = packet.reviewProfile === "simple" || packet.toolBudget.maxToolCalls <= 0
     ? []
     : buildRepositoryToolDefinitions(tools, { includeLikelyTests: shouldExposeLikelyTestsForPacket(packet) });
@@ -483,7 +484,7 @@ async function runPacket(
       buildPostToolNudge: (input) => buildPostToolCloseNudge(packet, config.review.depth, input)
     }
   });
-  const findings = submitted.findings.map((finding, index) => stampFinding(packet, finding, index, opts.lensRegistry, workerId, telemetry, opts.diff, ensemble));
+  const findings = submitted.findings.map((finding, index) => stampFinding(packet, finding, index, passSkillIds, workerId, telemetry, opts.diff, ensemble));
   const reviewStatus = normalizedReviewStatus(submitted, findings.length);
   if (reviewStatus === "no_findings") {
     telemetry.event({
@@ -511,8 +512,8 @@ async function runPacket(
       }
     });
   }
-  const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, telemetry, workerId);
-  const uncertainties = normalizeUncertainties(submitted.uncertainties, packet, telemetry, workerId);
+  const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, passSkillIds, telemetry, workerId);
+  const uncertainties = normalizeUncertainties(submitted.uncertainties, packet, passSkillIds, telemetry, workerId);
   const result: PacketReviewResult = {
     packetId: packet.id,
     lenses: packet.lenses,
@@ -538,6 +539,7 @@ async function runPacket(
 function normalizeFollowUpHints(
   hints: SubmittedFollowUpHint[],
   packet: ReviewPacket,
+  passSkillIds: readonly string[],
   telemetry: TelemetryRecorder,
   workerId: string
 ): NormalizedHints {
@@ -549,7 +551,8 @@ function normalizeFollowUpHints(
       files: cleanStrings(hint.files),
       symbols: cleanStrings(hint.symbols),
       suggestedLenses: cleanStrings(hint.suggestedLenses),
-      reason: hint.reason.trim()
+      reason: hint.reason.trim(),
+      projectedSkillIds: [...passSkillIds]
     };
     const pointerRich = normalized.files.length > 0 || normalized.symbols.length > 0;
     if (normalized.question.length === 0 || !pointerRich) {
@@ -588,7 +591,8 @@ function normalizeFollowUpHints(
         files: hint.files,
         symbols: hint.symbols,
         reason: hint.reason,
-        confidence: hint.confidence
+        confidence: hint.confidence,
+        projectedSkillIds: hint.projectedSkillIds
       }
     });
   }
@@ -622,6 +626,7 @@ function normalizeFollowUpHints(
 function normalizeUncertainties(
   uncertainties: SubmittedUncertainty[],
   packet: ReviewPacket,
+  passSkillIds: readonly string[],
   telemetry: TelemetryRecorder,
   workerId: string
 ): NormalizedUncertainties {
@@ -629,7 +634,8 @@ function normalizeUncertainties(
     const normalized = {
       question: uncertainty.question.trim(),
       files: cleanStrings(uncertainty.files),
-      symbols: cleanStrings(uncertainty.symbols)
+      symbols: cleanStrings(uncertainty.symbols),
+      projectedSkillIds: [...passSkillIds]
     };
     if (normalized.question.length === 0) {
       telemetry.event({
@@ -827,7 +833,7 @@ function stampFinding(
   packet: ReviewPacket,
   submitted: SubmitPacketReview["findings"][number],
   index: number,
-  lensRegistry: LensRegistry,
+  passSkillIds: readonly string[],
   workerId: string,
   telemetry: TelemetryRecorder,
   diff: UnifiedDiff | undefined,
@@ -912,7 +918,7 @@ function stampFinding(
       stage: 7,
       packetId: packet.id,
       lensId: primaryLens,
-      skillIds: skillsCompatibleWithLanguage(lensRegistry.skillsForLens(primaryLens), packet.language).map((skill) => skill.id),
+      skillIds: [...passSkillIds],
       workerId,
       ...(ensemble !== undefined ? { ensemblePass: ensemble.pass } : {})
     }

@@ -1,6 +1,6 @@
 # Issue 101: Exact Skill Provenance and Evidence-Gated Bundled-Skill Revision
 
-Status: PENDING
+Status: IN PROGRESS — deterministic implementation complete; paid semantic A/B and owner acceptance pending
 Related: Plan 95 (prompt/skill WHY ledger), Plan 98 (Rust/Python/Solidity/JavaScript language support and owner matrices), Plan 99 (language-support correctness follow-up), and the open PUNCHLIST eval-diversity guard.
 Planned from: owner review of the bundled skills and Stage-7/Stage-9 prompt artifacts, 2026-07-24
 Planned at: commit `8bd6d7e` (branch `next`)
@@ -222,6 +222,18 @@ Land in this order:
 5. One reviewed integration commit containing only accepted bundled-skill/WHY-ledger/content-gate changes plus synchronized docs.
 
 The final content commit changes skill `contentSha`, `LensRegistry.registryHash()`, Stage-5 summaries where Checks text changes, and downstream prompt bytes. Prefer one externally visible integration boundary after isolated local experiments. If languages are intentionally landed separately, record each external commit as a distinct non-comparable registry/cache regime. A branch push, merge, tag, npm publication, and GitHub release remain separate events and must not be conflated.
+
+### Deterministic implementation record (2026-07-24)
+
+- Implementation work started from `94eb2ccd92d1b7889e5c7bf8fe21136f679fa9ac`. The uncommitted foundation includes both corrected Stage-9 input selection and the `p9.6` empty-guidance-block construction change; later prompt-byte comparisons must not attribute all Stage-9 differences to provenance alone.
+- Exact item-level provenance is implemented for direct Stage-7/8 findings, Stage-7 hints/uncertainties, ensemble/adaptive selection, uncertainty promotion, artifact loading/replay, and strict Stage-9 resolution. Missing runtime provenance is malformed; empty provenance is authoritative; no verifier lens fallback remains.
+- The marker-free TypeScript, Python, and Solidity fixtures are implemented and deterministically prove base pass, feature build, exact positive failure, safe-control pass, full packet context, likely-test linkage, language isolation, and untruncated projections. Recorded toolchains are Node `v26.5.0` + TypeScript `7.0.2`, CPython `3.13.14`, and Foundry `1.7.1-dev`.
+- Candidate content removes redundant Examples from all six language skills, retains the two distinct core Examples sections, standardizes every language check on the five-field owner matrix, repairs standalone Stage-9 guidance and the objective JavaScript/Python/Solidity mismatches, and preserves every existing language check inventory. No measurement-gated additions, removals, or merges were made.
+- Current candidate registry hash: `b8cc761c9a5a6486c8c172aa2b9af0f0171ca5b3e3baea9a01dfcdbf42aa8225`. Individual Stage-7/8/9 projected characters (all `0` truncated) are: core/code-review `3304/3092/1435`; core/tests `2531/2309/945`; Go `3570/3810/739`; JavaScript `3607/3839/807`; Python `3331/3552/723`; Rust `3592/3882/810`; Solidity `3543/3784/866`; TypeScript `3062/3375/755`. Solidity satisfies the explicit Stage-8 headroom gate at `3784 <= 3800`.
+- Canonical language + core/code-review + core/tests Stage-7/8/9 totals are: Go `9409/9215/3123`; JavaScript `9446/9244/3191`; Python `9170/8957/3107`; Rust `9431/9287/3194`; Solidity `9382/9189/3250`; TypeScript `8901/8780/3139`. No skill is truncated or omitted.
+- Deterministic verification passed: `pnpm run check`; `pnpm test` (40 files, 761 tests, including semantic fixture and packed-package coverage); `pnpm run build`; `git diff --check`; and regenerated `architecture.html`, `functional_spec.html`, and `project_overview.html`. In a restricted sandbox, the packed-package test may fail at `npm pack`; the independently re-run 4/4 package test passes outside that sandbox, so this is an environment caveat rather than a product regression.
+- A green foundation arm cannot be materialized by restoring Markdown alone. Starting from the candidate worktree, restore `bundled-skills/core/code-review.md` and all six `bundled-skills/lang/*.md` files to `94eb2cc`, restore only the Plan-101 candidate changes inside `BUNDLED_SKILL_WHY_LEDGER` (retain the provenance helper and `p9.6` prompt ledger), and restore the content-dependent expectations in `tests/{javascript,python,rust,solidity}-language.test.ts`, `tests/shared-utils.test.ts`, and `tests/language-release-gate.test.ts`. Keep the semantic fixture build/context tests, but make their projection assertion baseline-aware: pre-Plan-101 Solidity is expected to report its known Stage-8 truncation, while every candidate/integration arm must require zero Stage-7/8/9 truncation. This preserves a green, truthful baseline instead of silently testing candidate content against old skills.
+- Paid current-skill baseline, isolated candidate arms, integration non-inferiority comparison, registry-arm hashes, model outcomes, cost, and external visibility event: **NOT RUN / PENDING explicit owner authorization**. The working-tree language revisions are therefore candidate-arm content, not a completed evidence acceptance. Materialize the exact green foundation arm described above, then compare isolated candidate files under the pre-registered protocol.
 
 ## Non-Goals
 

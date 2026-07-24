@@ -584,7 +584,7 @@ Pre-clustering in this stage is a verifier scheduling optimization, not final de
 
 Every surviving candidate should be verified by an independent LLM verifier by default. Verification may be disabled only through explicit configuration for faster local experimentation, not as the default v1 behavior.
 
-The verifier receives one candidate at a time, its originating packet context, the relevant changed hunk(s), cited evidence, active lens criteria, and the read-only semantic tool suite. The verifier should use tools only to prove, narrow, or reject the candidate. It must not search for new issues.
+The verifier receives one candidate at a time, its originating packet context, the relevant changed hunk(s), cited evidence, and the False Positives/Safe Patterns guidance from the exact ordered skill ids recorded by the producing Stage-7/8 item. These ids are pipeline-derived from the actual producing prompt projection. Stage 9 drops unknown or language-incompatible ids and never substitutes current primary-lens membership. An authoritative empty list emits no skill sections, skill headers, or empty guidance label. The verifier also receives the read-only semantic tool suite and should use it only to prove, narrow, or reject the candidate; it must not search for new issues.
 
 The verifier may inspect surrounding code, but only to validate the candidate's specific claim. It should not expand into a new review pass or introduce unrelated findings.
 
@@ -619,7 +619,7 @@ Verification failure should be conservative:
 - Candidates that remain unverified after retry should be marked `verificationIncomplete` and suppressed from publication by default.
 - The final report should disclose verification incompleteness when it affects review coverage or suppressed high-severity candidates.
 
-Verification should run with bounded concurrency and record telemetry for every candidate: pre-gate decision, verifier prompt size, tool calls, token usage, runtime, verdict, revision details, rejection reason, and incomplete-verification reason.
+Verification should run with bounded concurrency and record telemetry for every candidate: pre-gate decision, verifier prompt size, requested/resolved/dropped skill ids, tool calls, token usage, runtime, verdict, revision details, rejection reason, and incomplete-verification reason.
 
 The output of this stage is a set of verified, rejected, revised, or incomplete findings with traceable lineage. Stage 9 does not decide the final review shape.
 

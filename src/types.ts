@@ -822,6 +822,7 @@ export type StructuredUncertainty = {
   question: string;
   files: string[];
   symbols: string[];
+  projectedSkillIds: string[];
 };
 
 export type PacketReviewResult = {
@@ -837,6 +838,7 @@ export type PacketReviewResult = {
     suggestedLenses: string[];
     reason: string;
     confidence: Confidence;
+    projectedSkillIds: string[];
   }>;
   uncertainties: StructuredUncertainty[];
   status: "completed" | "incomplete" | "failed" | "skipped";
@@ -1317,6 +1319,7 @@ export type EvalHintEvent = {
   question: string;
   files: string[];
   symbols: string[];
+  projectedSkillIds: string[];
   reason?: string;
   confidence: Confidence;
 };

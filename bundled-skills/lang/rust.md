@@ -23,17 +23,13 @@ Find reachable Rust runtime failures and invariant violations without reporting 
 
 # False Positives
 
-- Exclude compiler-rejected lifetime, borrow, trait-bound, and `Send` claims.
-- Exclude widening/nonnumeric/bounded casts, explicit best-effort results, and test-only or invariant-proven panics.
-- The mere presence of `unsafe`, sync APIs, mutexes, or `.await` is not a defect; require the matching concrete runtime failure.
+- Compiler-rejected lifetime, borrow, trait-bound, and `Send` paths cannot ship as runtime failures.
+- Widening/nonnumeric/bounded casts do not truncate; contained best-effort results do not fake required success.
+- Test-only or constructor-invariant-proven panics are safe when production input cannot violate the invariant.
+- `unsafe`, sync APIs, mutexes, or `.await` need a reachable memory violation, executor stall, deadlock/starvation, or invalid access.
 
 # Safe Patterns
 
-- Prefer `TryFrom`, checked arithmetic, `slice.get(range)`, and typed error propagation at untrusted boundaries.
-- Keep unsafe code small, state its real preconditions, validate them before entry, and wrap it behind a safe API.
-- End runtime lock/borrow scopes before `.await`; use async-aware synchronization only when state truly must span suspension.
-- Isolate blocking work explicitly and preserve cancellation/error behavior at the async boundary.
-
-# Examples
-
-Each numbered check includes a concrete unsafe example, a distinct concrete safe counterexample, and a separate mitigation; apply all three as written.
+- Prefer `TryFrom`, checked arithmetic/indexing, and typed errors at untrusted boundaries.
+- Keep unsafe code small; state and validate preconditions behind a safe API.
+- End lock/borrow scopes before `.await`; isolate blocking work while preserving cancellation/errors.

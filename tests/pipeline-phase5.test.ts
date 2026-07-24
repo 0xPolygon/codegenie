@@ -534,6 +534,78 @@ describe("phase 5 pipeline regressions", () => {
     expect(normalResult?.status).toBe("completed");
   });
 
+  it("preserves item-level projected skill ids when ensemble passes differ", async () => {
+    let pass = 0;
+    const promptBuilder = {
+      ...fakePromptBuilder(),
+      buildPacketReviewPrompt: () => {
+        pass += 1;
+        const skillId = pass === 1 ? "lang/typescript" : "core/code-review";
+        return {
+          prompt: "",
+          templateVersion: "test",
+          untrustedBlockCount: 0,
+          projection: {
+            text: skillId,
+            totalChars: skillId.length,
+            perSkill: [{ skillId, includedSections: ["checks" as const], chars: skillId.length, truncatedChars: 0, omitted: false }]
+          }
+        };
+      }
+    };
+    let modelPass = 0;
+    const runner: LlmRunner = {
+      runStructured: async <T>() => {
+        modelPass += 1;
+        return {
+          findings: [{
+            title: `Pass ${String(modelPass)} finding`,
+            severity: "medium",
+            confidence: "medium",
+            path: "app.ts",
+            anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+            category: "correctness",
+            evidence: { changedCode: "+bad" },
+            failureMode: `Concrete failure unique to pass ${String(modelPass)}.`,
+            whyThisMatters: "Callers observe the failure.",
+            verification: "Verify the changed line."
+          }],
+          followUpHints: [{
+            question: "Does the changed path preserve the caller contract?",
+            files: ["app.ts"],
+            symbols: ["changed"],
+            suggestedLenses: [],
+            reason: "The same predicate was independently raised.",
+            confidence: "medium"
+          }],
+          uncertainties: [{
+            question: "Can the changed path return an invalid value?",
+            files: ["app.ts"],
+            symbols: ["changed"]
+          }]
+        } as T;
+      }
+    };
+
+    const [result] = await runLensPackets(
+      fakePlan(),
+      [{ ...fakePacket({ id: "packet-item-provenance" }), coverage: "deep" }],
+      fakeTools(),
+      { ...config(), review: { ...config().review, deepEnsemblePasses: 2, concurrency: 1 } },
+      nullTelemetry(),
+      { runner, promptBuilder, lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+
+    expect(result?.findings.map((finding) => finding.producedBy.skillIds)).toEqual([
+      ["lang/typescript"],
+      ["core/code-review"]
+    ]);
+    expect(result?.followUpHints).toHaveLength(1);
+    expect(result?.followUpHints[0]?.projectedSkillIds).toEqual(["lang/typescript"]);
+    expect(result?.uncertainties).toHaveLength(1);
+    expect(result?.uncertainties[0]?.projectedSkillIds).toEqual(["lang/typescript"]);
+  });
+
   it("pools ensemble passes by outcome identity even when dispatch reorders tasks (plan 84 regression)", async () => {
     // Normal packet FIRST in input order; deep tasks dispatch first, so
     // outcome order differs from input order. Positional grouping scrambled
@@ -1107,7 +1179,7 @@ describe("phase 5 pipeline regressions", () => {
       "Check whether chargeTenant still handles zero totals."
     ]);
     expect(result?.uncertainties).toEqual([
-      { question: "Can chargeTenant leak tenant data?", files: ["app.ts"], symbols: ["chargeTenant"] }
+      { question: "Can chargeTenant leak tenant data?", files: ["app.ts"], symbols: ["chargeTenant"], projectedSkillIds: [] }
     ]);
     expect(events).toContainEqual(expect.objectContaining({
       stage: 7,
@@ -12085,7 +12157,8 @@ describe("phase 5 pipeline regressions", () => {
                 symbols: ["alpha"],
                 suggestedLenses: [],
                 reason: "first hint",
-                confidence: "medium"
+                confidence: "medium",
+                projectedSkillIds: []
               }
             ],
             uncertainties: [],
@@ -12102,7 +12175,8 @@ describe("phase 5 pipeline regressions", () => {
                 symbols: ["beta"],
                 suggestedLenses: [],
                 reason: "stronger hint",
-                confidence: "high"
+                confidence: "high",
+                projectedSkillIds: []
               }
             ],
             uncertainties: [],
@@ -12460,7 +12534,8 @@ describe("phase 5 pipeline regressions", () => {
               {
                 question: "Can legacy clients omit the tenant id?",
                 files: ["api/session.ts"],
-                symbols: ["createSession"]
+                symbols: ["createSession"],
+                projectedSkillIds: []
               }
             ],
             status: "completed"
@@ -12690,7 +12765,8 @@ describe("phase 5 pipeline regressions", () => {
             symbols: ["retryWorkers"],
             suggestedLenses: [],
             reason: "The retry worker lifecycle concern is independent from fee normalization.",
-            confidence: "medium"
+            confidence: "medium",
+            projectedSkillIds: []
           }],
           uncertainties: [],
           status: "completed"
@@ -13031,13 +13107,16 @@ function fakeLogger() {
 
 function packetResultWithHint(
   packetId: string,
-  hint: Omit<PacketReviewResult["followUpHints"][number], "suggestedLenses"> & { suggestedLenses?: string[] }
+  hint: Omit<PacketReviewResult["followUpHints"][number], "suggestedLenses" | "projectedSkillIds"> & {
+    suggestedLenses?: string[];
+    projectedSkillIds?: string[];
+  }
 ): PacketReviewResult {
   return {
     packetId,
     lenses: ["core/code-review"],
     findings: [],
-    followUpHints: [{ suggestedLenses: [], ...hint }],
+    followUpHints: [{ suggestedLenses: [], projectedSkillIds: [], ...hint }],
     uncertainties: [],
     status: "completed"
   };
@@ -13054,7 +13133,8 @@ function packetResultWithFindingAndHint(candidate: CandidateFinding, hintFile: s
       symbols: ["calculateFee", "normalizeAmount"],
       suggestedLenses: [],
       reason: "The helper guard determines whether the changed fee path can accept an invalid zero price.",
-      confidence: "medium"
+      confidence: "medium",
+      projectedSkillIds: []
     }],
     uncertainties: [],
     status: "completed"

@@ -8,7 +8,7 @@ codegenie is a code-reviewing AI harness and agent with a multi-stage reviewing 
 
 The goal is to build a deep code-reviewing agent that can review pull requests and give accurate and thorough advice to developers. It should review code at a top-tier staff engineer level, with a focus on finding bugs, logical errors, poor architectural patterns, performance issues, and other meaningful problems. The review output should avoid fluff and nitpicks.
 
-The system will include bundled skills and user-facing review lenses. A skill is the review knowledge unit: a Markdown file of concrete checks, false-positive rules, safe patterns, examples, and severity guidance tied to impact; the harness owns prompts, tools, and output schemas. A lens is the review perspective exposed to users, such as Go correctness, TypeScript correctness, security, API design, performance, architecture, database, concurrency, or tests. A lens may map to one or more skills. Skills should not be mostly persona; the best skills encode concrete checks rather than character description. Developers can add their own repo-local Markdown skills to give the reviewer additional expertise, with executable skill packages as a possible future extension.
+The system will include bundled skills and user-facing review lenses. A skill is the review knowledge unit: a Markdown file of concrete checks, false-positive rules, safe patterns, optional distinct examples, and severity guidance tied to impact; the harness owns prompts, tools, and output schemas. Language checks should name the observable failure, materiality, unsafe and contract-preserving safe cases, and mitigation inline; a redundant `# Examples` ritual adds no value. A lens is the review perspective exposed to users, such as Go correctness, TypeScript correctness, security, API design, performance, architecture, database, concurrency, or tests. A lens may map to one or more skills. Skills should not be mostly persona; the best skills encode concrete checks rather than character description. Developers can add their own repo-local Markdown skills to give the reviewer additional expertise, with executable skill packages as a possible future extension.
 
 codegenie should be built in TypeScript and run as a CLI.
 
@@ -33,7 +33,7 @@ The preferred review design is a staged pipeline:
 1. Whole-PR planning pass: understand intent, changed files, changed symbols, risk areas, architecture boundaries, and tests touched or missing. This pass chooses the review order and selects relevant lenses based on risk tags, language, changed symbols, and touched subsystems; codegenie should not run every lens on every hunk by default.
 2. Parallel hunk/file review passes: generate precise inline candidate findings anchored to changed lines.
 3. Optional cross-file/system follow-up: resolve repeated scoped follow-up questions from packet reviewers. The broad system pass that proactively inspects interactions across changed files, call sites, interfaces, migrations, tests, and architecture is deferred; the shipped stage only runs when repeated hints justify it.
-4. Verifier/deduper pass: reject speculative comments, merge duplicates, and publish only high-signal findings.
+4. Verifier/deduper pass: reject speculative comments using the exact skill guidance recorded by the producing review item, merge duplicates, and publish only high-signal findings.
 
 The unit of review should be the changed hunk, but the unit of understanding should be the affected system. The review flow should look like:
 

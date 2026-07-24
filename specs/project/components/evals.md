@@ -696,6 +696,8 @@ Replay semantics: budget checks measure what actually executed in this eval run.
 
 Artifact replay re-scores a previously captured run against (possibly edited) expectations: saved final findings and candidate findings are loaded and scored, and attribution walks the saved `verification.json`, `final-selection.json`, and hint events. No stages re-run, no LLM calls are made, and no repository is required. Stage-level replay modes — `candidate-recall` re-entering Stage 9 and `merge-only` re-entering Stage 10 — are deferred to Future Considerations (see architecture.md); there is no replay-mode configuration in v1.
 
+The marker-free semantic skill suite under `evals/skill-semantics/` is separate from fake transport fixtures. TypeScript, Python, and Solidity cases pin toolchain versions, require a passing base, buildable feature, exact reproducible positive failure, passing safe control, full packet context, likely-test linkage, exact language-lens isolation, and untruncated Stage-7/8/9 projections. Real-model comparisons are pre-registered at three draws per arm with cache disabled; they are paid and run only with owner authorization. Fake findings, structural tests, and artifact replay cannot substitute for that recall/precision comparison.
+
 Behavior:
 
 - `--from-artifacts <suite>/logs/<n>` allocates the next run number **in the same logs directory**, so replay runs sit beside their source and compare-to-previous naturally diffs against it. The case definition is re-read from the recorded `caseFile` when it still exists (supporting the expectation-iteration workflow: edit YAML, re-score captured artifacts), falling back to the `info.json` embedded snapshot; `info.json.replay.caseSource` records which was used.

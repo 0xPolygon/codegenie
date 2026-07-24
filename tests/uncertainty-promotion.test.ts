@@ -21,7 +21,8 @@ describe("uncertainty promotion", () => {
         uncertainties: [{
           question: "Verify deleted coverage still exercises BalanceReader through the production billing path",
           files: ["tests/billing.test.ts", "src/billing.ts"],
-          symbols: ["BalanceReader"]
+          symbols: ["BalanceReader"],
+          projectedSkillIds: ["core/tests"]
         }],
         status: "completed"
       }]
@@ -42,7 +43,7 @@ describe("uncertainty promotion", () => {
       confidence: "medium",
       changedLine: false,
       modelAnchorSubmitted: false,
-      producedBy: { stage: 9, packetId: packet.id, lensId: "core/tests" },
+      producedBy: { stage: 9, packetId: packet.id, lensId: "core/tests", skillIds: ["core/tests"] },
       provenance: {
         source: "uncertainty_promotion",
         sourceKind: "uncertainty",
@@ -85,7 +86,8 @@ describe("uncertainty promotion", () => {
           symbols: ["buildQuote", "scaleAmount"],
           suggestedLenses: ["core/tests"],
           reason: "The changed transfer calculation truncates toward zero and could under-report the value promised to callers.",
-          confidence: "medium"
+          confidence: "medium",
+          projectedSkillIds: ["lang/typescript", "core/code-review"]
         }],
         uncertainties: [],
         status: "completed"
@@ -124,10 +126,11 @@ describe("uncertainty promotion", () => {
         symbols: [`changed${index}`],
         suggestedLenses: ["core/code-review"],
         reason: "The changed fallback path may alter caller-visible behavior.",
-        confidence: "high"
+        confidence: "high",
+        projectedSkillIds: ["core/code-review"]
       }],
       uncertainties: index === 0
-        ? [{ question: "Check this maybe", files: [], symbols: [] }]
+        ? [{ question: "Check this maybe", files: [], symbols: [], projectedSkillIds: ["core/code-review"] }]
         : [],
       status: "completed"
     }));
@@ -174,7 +177,8 @@ describe("uncertainty promotion", () => {
           symbols: ["divide"],
           suggestedLenses: ["core/code-review"],
           reason: "The changed function now divides by count directly.",
-          confidence: "medium"
+          confidence: "medium",
+          projectedSkillIds: ["core/code-review"]
         }],
         uncertainties: [],
         status: "completed"
@@ -206,7 +210,8 @@ describe("uncertainty promotion", () => {
           symbols: ["charge"],
           suggestedLenses: ["core/code-review"],
           reason: "General safety concern without a concrete failure mode.",
-          confidence: "high"
+          confidence: "high",
+          projectedSkillIds: ["core/code-review"]
         }],
         uncertainties: [],
         status: "completed"
@@ -246,7 +251,8 @@ describe("uncertainty promotion", () => {
           symbols: ["routeWithFallback"],
           suggestedLenses: ["core/code-review"],
           reason: "This behavior-preserving refactor changes a fallback contract boundary.",
-          confidence: "low"
+          confidence: "low",
+          projectedSkillIds: ["core/code-review"]
         }],
         uncertainties: [],
         status: "completed"
@@ -285,7 +291,8 @@ describe("uncertainty promotion", () => {
           symbols: ["route"],
           suggestedLenses: ["core/code-review"],
           reason: "General low-confidence concern.",
-          confidence: "low"
+          confidence: "low",
+          projectedSkillIds: ["core/code-review"]
         }],
         uncertainties: [],
         status: "completed"
@@ -328,7 +335,8 @@ describe("uncertainty promotion", () => {
         reason: index === 5
           ? "This behavior-preserving refactor changes a fallback boundary."
           : "The authorization path can affect production callers.",
-        confidence: index === 5 ? "low" : "high"
+        confidence: index === 5 ? "low" : "high",
+        projectedSkillIds: ["core/code-review"]
       }],
       uncertainties: [],
       status: "completed"
@@ -375,7 +383,8 @@ describe("uncertainty promotion", () => {
               symbols: ["computeFees", "convertFromUsdStrict"],
               suggestedLenses: ["core/code-review"],
               reason: "The behavior-preserving helper replacement changes a local conversion boundary.",
-              confidence: "low"
+              confidence: "low",
+              projectedSkillIds: ["core/code-review"]
             },
             {
               question: "Verify whether convertFromUsdStrict now fails for value after this replacement across all billing modules.",
@@ -388,7 +397,8 @@ describe("uncertainty promotion", () => {
               symbols: [],
               suggestedLenses: ["core/code-review"],
               reason: "The broader conversion behavior might affect every billing caller after the replacement.",
-              confidence: "high"
+              confidence: "high",
+              projectedSkillIds: ["core/code-review"]
             }
           ],
           uncertainties: [],
@@ -404,7 +414,8 @@ describe("uncertainty promotion", () => {
             symbols: [`authorizeTenant${index}`],
             suggestedLenses: ["domain/security"],
             reason: "The changed authorization path can affect production access control.",
-            confidence: "high"
+            confidence: "high",
+            projectedSkillIds: ["domain/security"]
           }],
           uncertainties: [],
           status: "completed"
@@ -414,6 +425,17 @@ describe("uncertainty promotion", () => {
 
     expect(result.summary.promoted).toBe(2);
     expect(result.packetResults.find((item) => item.packetId === localPacket.id)?.findings).toHaveLength(1);
+    const promotedFindings = result.packetResults.flatMap((item) => item.findings);
+    expect(promotedFindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        path: localPacket.path,
+        producedBy: expect.objectContaining({ skillIds: ["core/code-review"] })
+      }),
+      expect.objectContaining({
+        path: expect.stringMatching(/^src\/security\//u),
+        producedBy: expect.objectContaining({ skillIds: ["domain/security"] })
+      })
+    ]));
 
     const localDecision = result.summary.decisions.find((decision) =>
       decision.question.includes("old computeFees conversion")
@@ -477,7 +499,8 @@ describe("uncertainty promotion", () => {
             symbols: [],
             suggestedLenses: ["core/code-review"],
             reason: "The broader conversion behavior might affect every billing caller after the helper replacement.",
-            confidence: "high"
+            confidence: "high",
+            projectedSkillIds: ["core/code-review"]
           }],
           uncertainties: [],
           status: "completed"
@@ -492,7 +515,8 @@ describe("uncertainty promotion", () => {
             symbols: [`authorizeTenant${index}`],
             suggestedLenses: ["domain/security"],
             reason: "The changed authorization path can affect production access control.",
-            confidence: "high"
+            confidence: "high",
+            projectedSkillIds: ["domain/security"]
           }],
           uncertainties: [],
           status: "completed"
@@ -528,7 +552,8 @@ describe("uncertainty promotion", () => {
         uncertainties: [{
           question: "Verify whether this fallback contract still preserves caller behavior when the preferred provider fails in tests.",
           files: ["src/routing.ts"],
-          symbols: ["SolveQuoteRoutingWithFallbacks"]
+          symbols: ["SolveQuoteRoutingWithFallbacks"],
+          projectedSkillIds: ["core/code-review"]
         }],
         status: "completed"
       }]
@@ -575,7 +600,8 @@ describe("uncertainty promotion", () => {
           symbols: ["transformValue", "publishResult"],
           suggestedLenses: ["core/code-review"],
           reason: "The changed transform truncates toward zero and could under-report the value promised to callers.",
-          confidence: "medium"
+          confidence: "medium",
+          projectedSkillIds: ["core/code-review"]
         }],
         uncertainties: [],
         status: "completed"
@@ -622,7 +648,8 @@ describe("uncertainty promotion", () => {
           symbols: ["transformValue"],
           suggestedLenses: ["core/code-review"],
           reason: "The changed transform truncates toward zero and could under-report the delivered value.",
-          confidence: "medium"
+          confidence: "medium",
+          projectedSkillIds: ["core/code-review"]
         }],
         uncertainties: [],
         status: "completed"
@@ -664,7 +691,8 @@ describe("uncertainty promotion", () => {
           symbols: ["render"],
           suggestedLenses: ["core/code-review"],
           reason: "The changed rendering path could under-report the value.",
-          confidence: "medium"
+          confidence: "medium",
+          projectedSkillIds: ["core/code-review"]
         }],
         uncertainties: [],
         status: "completed"
@@ -716,7 +744,8 @@ describe("uncertainty promotion", () => {
           symbols: ["transformValue", ...relatedSymbols],
           suggestedLenses: ["core/code-review"],
           reason: "The changed transform truncates toward zero and could under-report the delivered value.",
-          confidence: "medium"
+          confidence: "medium",
+          projectedSkillIds: ["core/code-review"]
         }],
         uncertainties: [],
         status: "completed"

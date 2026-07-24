@@ -23,7 +23,7 @@ import {
   validateAnchorForPacket
 } from "./pipeline-utils.js";
 import { applySeverityPolicy } from "./severity-policy.js";
-import { isCodegenieError } from "../util/errors.js";
+import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { scaleBudgetValue, scaleToolBudget } from "../util/budget.js";
 
 const VERIFIER_TOOL_BUDGET = {
@@ -564,9 +564,34 @@ async function verifyCandidate(
   telemetry: TelemetryRecorder,
   runtimeStats: VerificationRuntimeStats
 ): Promise<VerificationVerdict> {
-  const lensSkills = opts.lensRegistry.skillsForLens(candidate.producedBy.lensId);
+  const requestedSkillIds = candidate.producedBy.skillIds;
+  if (!Array.isArray(requestedSkillIds) || requestedSkillIds.some((id) => typeof id !== "string")) {
+    throw new CodegenieError("invalid_args", `candidate ${candidate.id} has malformed skill provenance`, {
+      context: { candidateId: candidate.id }
+    });
+  }
+  const originSkills = opts.lensRegistry.skillsById(requestedSkillIds);
   const language = packet?.language ?? candidateLanguageFromDiff(candidate, opts.diff);
-  const skills = skillsCompatibleWithLanguage(lensSkills, language);
+  const skills = skillsCompatibleWithLanguage(originSkills, language);
+  const knownIds = new Set(originSkills.map((skill) => skill.id));
+  const applicableIds = new Set(skills.map((skill) => skill.id));
+  const droppedSkillIds = requestedSkillIds.filter((id) => !applicableIds.has(id));
+  telemetry.event({
+    stage: 9,
+    level: droppedSkillIds.length > 0 ? "warn" : "debug",
+    message: "verifier_skill_provenance",
+    packetId: candidate.producedBy.packetId,
+    workerId,
+    data: {
+      candidateId: candidate.id,
+      requestedSkillIds: [...requestedSkillIds],
+      resolvedSkillIds: skills.map((skill) => skill.id),
+      droppedSkillIds,
+      unknownSkillIds: requestedSkillIds.filter((id) => !knownIds.has(id)),
+      languageIncompatibleSkillIds: requestedSkillIds.filter((id) => knownIds.has(id) && !applicableIds.has(id)),
+      ...(language !== undefined ? { language } : {})
+    }
+  });
   const prompt = opts.promptBuilder.buildVerifierPrompt({
     candidate,
     originContext: verificationOriginContext(candidate, packet),
