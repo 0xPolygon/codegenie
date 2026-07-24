@@ -413,7 +413,7 @@ Semantic validation runs in pipeline code on every schema-valid plan, before the
 - Coverage decisions referencing unknown or filtered `hunkId`s are dropped with telemetry (`planner_unknown_hunk`).
 - A `skip` decision with an empty (after trimming) `reason` is invalid; it is recorded (`planner_invalid_skip`) and the hunk is treated as having no decision. The packet builder applies the `normal` fallback.
 - Lens names not in the run's enabled lens set are dropped from each decision (`planner_unknown_lens`); a decision left with zero lenses is treated as having an empty lens set, which the packet builder fills with the default lens set.
-- Enabled language-specific lenses whose `languages` do not include the hunk's canonical language are removed with dedicated incompatibility telemetry. If nothing survives, the same deterministic core plus exact-language defaults apply; JavaScript/TSX retain the `lang/typescript` alias.
+- Enabled language-specific lenses whose `languages` do not include the hunk's canonical language are removed with dedicated incompatibility telemetry. If nothing survives, the same deterministic core plus exact-language defaults apply; TypeScript/TSX use `lang/typescript`, while JavaScript uses `lang/javascript`.
 - Coverage `focusNotes`, `relatedSymbols`, and `relatedFiles` are normalized and capped per hunk. They are advisory context only.
 - `surroundingContextHints` with paths outside the kept change set and no symbol are kept but marked tool-lookup-only; path containment itself is enforced at the repository tool chokepoint (`components/context_and_tools.md`).
 - Hunks with no surviving decision are left undecided; the packet builder owns the `normal` fallback so that later stages do not become independent risk classifiers.
@@ -425,7 +425,7 @@ Validation never re-invokes the model. The persisted `review-plan.json` is the p
 On terminal planner failure (schema-invalid after repair, transient failure after `LlmRunner` retries, or per-pass timeout — anything except authentication/provider-wide failure, which is fatal), `runPlanner` returns the deterministic default plan:
 
 - `coverage`: every reviewable hunk of every kept file at `normal`, `reason: "degraded planning: deterministic default"`, `surroundingContextHints: []`.
-- Per-hunk `lenses`: the default lens set — enabled lenses whose ids begin with `core/`, plus the enabled exact `lang/${FileFacts.language}` lens (`lang/rust` for Rust and `lang/python` for Python), with TypeScript/TSX/JavaScript retaining the `lang/typescript` alias, in registry order.
+- Per-hunk `lenses`: the default lens set — enabled lenses whose ids begin with `core/`, plus the enabled exact `lang/${FileFacts.language}` lens, with TypeScript/TSX using `lang/typescript` and JavaScript using `lang/javascript`, in registry order.
 - `diffUnderstanding`: `declaredIntent` is the PR title or first commit title (truncated, template-framed); `inferredBehavior: "unavailable (degraded planning)"`.
 - `partialReview` unset — the default plan covers all hunks; degradation is disclosed through `RunCoverageStatus.degradedPlanning` and a `reasons` entry, not through partial coverage.
 
@@ -548,7 +548,7 @@ Outcome handling:
 Execution rules:
 
 - One composite model task per packet. All selected lenses are projected into that single task; there is never one model call per lens. Skill projection for the review stage includes only Checks, False Positives, and Examples sections, capped at 4000 chars per skill and 12000 chars total per prompt, with truncation recorded in telemetry (projection mechanics owned by `components/skills_llm_telemetry.md`).
-- Before Stage 7 projection, skills are defensively filtered to language-neutral skills or skills whose `languages` contains the packet's canonical language. Stage 9 applies the same rule to verifier guidance, preventing Rust/Python/Solidity content from entering Go/TypeScript prompts or one another's prompts and vice versa.
+- Before Stage 7 projection, skills are defensively filtered to language-neutral skills or skills whose `languages` contains the packet's canonical language. Stage 9 applies the same rule to verifier guidance, preventing JavaScript/TypeScript/Rust/Python/Solidity content from entering one another's prompts or Go prompts.
 - Coverage-aware execution profiles:
   - `light`: one structured call; tiny optional read-only tool budget (table above); compact prompting biased toward submitting immediately.
   - `normal`: one structured, tool-capable task; real read-only tool access; focused review instructions; bounded investigation.

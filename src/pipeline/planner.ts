@@ -1492,7 +1492,7 @@ function defaultLensesForFile(language: string, lenses: LensDescriptor[]): strin
     if (language === "go") {
       return lens.id === "lang/go";
     }
-    if (["typescript", "javascript", "ts", "js", "tsx", "jsx"].includes(language)) {
+    if (["typescript", "ts", "tsx"].includes(language)) {
       return lens.id === "lang/typescript";
     }
     return lens.languages.includes(language);

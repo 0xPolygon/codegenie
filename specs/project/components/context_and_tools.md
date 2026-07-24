@@ -15,7 +15,7 @@ This component owns:
 - Revision access through git plumbing (`git show`, `git ls-tree`, `git grep` via `GitClient`) and engine provenance.
 - The `searchFiles` POSIX ERE query contract.
 - The tree-sitter service: WASM runtime and grammar loading from `node_modules`, extension-to-grammar routing including `tsx`, ABI pinning behavior, in-memory parsing of revision content, and parse caching.
-- The `LanguageAdapter` implementations: Go, TypeScript/JavaScript, Rust, Python, Solidity, and the generic fallback, including `SymbolKind` + `nativeKind` mapping rules, ownership, declaration identity, and language-specific imports/test symbols.
+- The `LanguageAdapter` implementations: Go, a shared TypeScript/TSX/JavaScript ECMAScript implementation with distinct canonical identities, Rust, Python, Solidity, and the generic fallback, including `SymbolKind` + `nativeKind` mapping rules, ownership, declaration identity, and language-specific imports/test symbols.
 - Stage 4 changed-symbol extraction producing `HunkSymbolFacts` (enclosing-symbol mapping and fallback detection).
 - Static signal extraction: the two v1 cross-language rules (per-language rule packs are deferred to Future Considerations — see architecture.md).
 - `PacketContext` assembly (path, package name, enclosing function/type/method) plus the file outline and the likely-tests list for `ReviewPacket.relevantTests`, all consumed by the Stage 6 packet builder.
@@ -397,13 +397,13 @@ Qualified-name rendering: each adapter defines the conventional qualified render
 
 `exported` is true when the name starts with an uppercase letter. `packageName` comes from the package clause. `signature` is the declaration source from `func` through the parameter/result list, single-line normalized (the Stage 4 example signature shape). Imports are the `import_declaration` path literals. Test conventions: `*_test.go` files; test symbols are functions named `Test*`, `Benchmark*`, `Fuzz*`, or `Example*`.
 
-#### TypeScript/JavaScript Adapter
+#### TypeScript/TSX/JavaScript ECMAScript Adapter
 
-One adapter implementation serves the `typescript`, `tsx`, and `javascript` grammars. `SymbolKind` mapping:
+One implementation serves the `typescript`, `tsx`, and `javascript` grammars, but language identity and review guidance remain distinct: TypeScript/TSX project `lang/typescript`; JavaScript projects `lang/javascript`. `SymbolKind` mapping:
 
 - `function_declaration` / generator declarations → `function` / `"function"`.
-- Top-level `const`/`let`/`var` bound to an arrow function or function expression → `function` / `"arrow function"` (callable-defining bindings map as callables).
-- `class_declaration` → `type` / `"class"`.
+- Top-level `const`/`let`/`var` bound to an arrow function or function/generator expression → `function`; arrow bindings use `"arrow function"`, other callable bindings use `"function"`.
+- Class declarations and top-level class-expression bindings → `type` / `"class"`; class-expression members use the binding name as owner.
 - `method_definition` → `method` / `"method"`; constructors → `method` / `"constructor"`; accessors → `method` / `"getter"` or `"setter"`; class fields whose value is a function → `method` / `"class field function"`. `ownerType` is the enclosing class name.
 - `interface_declaration` → `interface` / `"interface"`.
 - `type_alias_declaration` → `type` / `"type alias"`; `enum_declaration` → `type` / `"enum"`.
@@ -411,7 +411,7 @@ One adapter implementation serves the `typescript`, `tsx`, and `javascript` gram
 - `namespace`/internal module declarations → `container` / `"namespace"`; members are extracted one level deep with the namespace as their container context.
 - Anything else → `other` with the node type as `nativeKind`.
 
-`exported` is true for `export`-modified declarations, names in `export { ... }` lists, and `export default` (an anonymous default exports as name `"default"`). CommonJS `module.exports` assignment is not tracked as exported in v1 (honest precision). Imports are import-declaration module specifiers plus literal `require("...")` arguments. `signature` is the declaration header through the parameter list and return type annotation, single-line normalized. Test conventions: `*.test.*`, `*.spec.*`, `__tests__/`, `test/`, `tests/`; test symbols are `describe`/`it`/`test` call sites (including `.only`/`.skip`/`.each` member forms), named by their first string-literal argument, mapped to `function` / `"test case"`.
+`exported` is true for `export`-modified declarations, names in `export { ... }` lists, and `export default` (an anonymous default exports as name `"default"`). Private `#` members remain non-exported. CommonJS `module.exports` assignment is not tracked as exported in v1 (honest precision). Imports are static/side-effect import declarations, re-export sources, and literal `require("...")` arguments in source order with deduplication; dynamic/computed sources are excluded. Signatures stop before arrow/body boundaries, normalize to one line, and cap at 600 characters. Test conventions: `*.test.*`, `*.spec.*`, `__tests__/`, `test/`, `tests/`; test symbols are `describe`/`it`/`test` call sites (including `.only`/`.skip` and curried `.each` forms), named by the relevant string-literal argument, mapped to `function` / `"test case"`.
 
 #### Rust Adapter
 
@@ -436,6 +436,8 @@ Solidity contract/abstract-contract/library declarations map to `type`; interfac
 Declaration ranges retain complete bodies for enclosure while signatures stop at the AST `body` field and cap at 600 characters; declaration-only values/events/errors retain their bounded full declaration. Enclosing lookup picks the smallest direct member for header and body lines, falling back to its containing contract only outside a member. Changed-symbol identity is path + kind + owner + name + range + signature, so multiple lines in one declaration merge and same-named overloads remain distinct. Imports emit only the unquoted `source` field from plain, namespace/unit-alias, and named-import forms in first-seen order with deduplication.
 
 In convention-selected `.t.sol` candidates, only direct contract methods whose names begin `test` or `invariant` become `nativeKind: "test case"`; `setUp`, helpers, and file-level free functions remain ordinary symbols. V1 does not read custom Foundry test-directory configuration and does not link Hardhat TypeScript tests.
+
+For JavaScript candidate generation, sibling `*.test.*`/`*.spec.*`, `__tests__/`, and matching `test/`/`tests/` paths are deterministic across `.js`, `.jsx`, `.mjs`, and `.cjs`. Parsed candidates return supported JavaScript test call sites through the same public/internal likely-test contract used by packet context.
 
 #### Generic Adapter
 

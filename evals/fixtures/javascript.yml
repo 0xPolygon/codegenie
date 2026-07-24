@@ -1,0 +1,25 @@
+name: fixture-javascript-lens
+repo:
+  fixture: repos/javascript
+command:
+  branch: feature
+  base: main
+review:
+  provider: fake
+  model: fake-model
+  verify: true
+  cache: false
+  lenses:
+    - lang/javascript
+expect:
+  minFindings: 1
+  maxFindings: 1
+should_find:
+  - id: javascript-fake-finding
+    path: src/positive.js
+    category: correctness
+    severityAtLeast: medium
+    titlePattern: Fake finding
+should_not_find:
+  - id: javascript-marker-free-negative-control
+    path: src/negative.js

@@ -51,7 +51,7 @@ Core dependencies:
 - A TOML parser for `codegenie.toml` and a YAML parser for eval case files.
 - `picomatch` for path-rule and tool globs.
 - `execa` or Node subprocess APIs for `git` and `gh`.
-- `web-tree-sitter` plus Go, TypeScript/JavaScript, Rust, Python, and Solidity grammars for syntax parsing. Rust, Python, and Solidity have semantic adapters and ship together as the Plan 98 language release unit.
+- `web-tree-sitter` plus Go, TypeScript/TSX, JavaScript, Rust, Python, and Solidity grammars for syntax parsing. TypeScript/TSX and JavaScript share an ECMAScript adapter implementation but retain distinct language identities and skills; Rust, Python, and Solidity have dedicated semantic adapters.
   - `tree-sitter-go` for Go
   - `tree-sitter-typescript` for Typescript: `.ts`/`.mts`/`.cts`/`.d.ts` route to the typescript grammar; `.tsx` routes to the tsx grammar
   - `tree-sitter-javascript` for Javascript: `.js`/`.jsx`/`.mjs`/`.cjs`
@@ -896,7 +896,7 @@ Chosen defaults:
 - `telemetry.runDir = ".codegenie/runs"`
 - `telemetry.retainRuns = 20`
 - `eval.logsDir = "logs"`
-- Default-enabled lens set = all seven currently bundled lenses (`core/code-review`, `core/tests`, `lang/go`, `lang/python`, `lang/rust`, `lang/solidity`, `lang/typescript`). The three Plan 98 language skills established one external Stage-5 inventory/registry/cache measurement boundary when the complete Phase 1-4 inventory was pushed to `origin/next` at `eb20533`. Measurements before and after `eb20533` are non-comparable cache/prompt regimes. The later Phase-5 validation commit `40b87b0` does not alter skill inventory/content or `LensRegistry.registryHash()`, so its branch push is not a second Stage-5 cache boundary; neither branch push is itself a tag/npm/GitHub release.
+- Default-enabled lens set = all eight currently bundled lenses (`core/code-review`, `core/tests`, `lang/go`, `lang/javascript`, `lang/python`, `lang/rust`, `lang/solidity`, `lang/typescript`). The three Phase 1-4 Plan 98 skills established one external Stage-5 inventory/registry/cache boundary at `eb20533`; Phase 5 did not change it. The atomic Phase-6 JavaScript skill plus TypeScript narrowing establish a second boundary at the revision where that complete unit first becomes externally visible. Measurements across either boundary are non-comparable prompt/cache regimes; branch visibility remains distinct from tag/npm/GitHub release state.
 
 Neither `review.maxFindings` nor `review.softCommentCap` suppresses verified critical/high findings.
 
@@ -1047,9 +1047,11 @@ Responsibilities:
 V1 language adapters:
 
 - Go.
-- TypeScript/JavaScript.
+- TypeScript and TSX.
+- JavaScript (`.js`, `.jsx`, `.mjs`, `.cjs`) through the shared ECMAScript adapter implementation but distinct language identity and guidance.
 - Rust, with attribute-aware declarations, trait/impl ownership context, nominal impl owners, stable imports, and deterministic declaration identity.
 - Python, with decorator-aware ranges/signatures, direct class ownership, nested-local ownership reset, stable module imports, and deterministic declaration identity. Only `.py` is supported; `.pyi` remains generic.
+- Solidity, with contract/member ownership, minimal state-value symbols, source imports, overload-safe identity, and default Foundry test conventions.
 - Generic fallback for unsupported files.
 
 Language adapter interface:
@@ -1172,6 +1174,10 @@ Bundled v1 lenses:
 - `core/code-review` (absorbs logic-bug and architecture review as sections of one skill)
 - `core/tests`
 - `lang/go`
+- `lang/javascript`
+- `lang/python`
+- `lang/rust`
+- `lang/solidity`
 - `lang/typescript`
 
 Additional domain lenses can be added after the core pipeline works.
@@ -1408,7 +1414,7 @@ Planner dossier construction:
 V1 repository intelligence can be incremental:
 
 - Required for v1: diff parsing, filtering, simple file classification, package-root hints, test-file detection, configured labels/priorities, absolute hunk line numbers, and seed context retrieval.
-- Strongly preferred for v1: tree-sitter enclosing symbol and changed-symbol extraction for Go, TypeScript/JavaScript, Rust, and Python.
+- Strongly preferred for v1: tree-sitter enclosing symbol and changed-symbol extraction for Go, TypeScript/TSX, JavaScript, Rust, Python, and Solidity.
 - Deferred to Future Considerations: symbol edges, caller/test relationship graphs, and semantic analyzer integrations.
 
 ### Verifier, Deduper, Composer
@@ -1892,7 +1898,7 @@ Unit tests:
 Fixture tests:
 
 - Go changed-function extraction.
-- TypeScript/JavaScript changed-function extraction.
+- TypeScript/TSX and JavaScript changed-function extraction with distinct canonical language identity.
 - Review packet construction with absolute line numbers.
 - Static signal extraction for the two core cross-language rules.
 - Unsupported language fallback.

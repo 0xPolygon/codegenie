@@ -146,6 +146,11 @@ export const BUNDLED_SKILL_WHY_LEDGER: Record<string, PromptLedgerEntry[]> = {
   "lang/typescript": [
     { surface: "whole skill", reason: "Live but never eval-validated; treat checks as designed-general until a TS eval case exists.", evidence: "Eval-diversity punchlist item 2026-07-06" }
   ],
+  "lang/javascript": [
+    { surface: "async and module runtime behavior", reason: "JavaScript review must connect detached work or module-shape differences to a reachable lost failure, ordering error, undefined binding, or load failure rather than importing compile-time TypeScript assumptions.", evidence: "Plan 98 §5.2 JavaScript owner matrix checks 1-2, 2026-07-23" },
+    { surface: "receiver, coercion, and property semantics", reason: "Receiver and dynamic-property reports require a concrete call/key path and wrong runtime result while preserving lexical arrows, explicit nullish checks, own-property APIs, and null-prototype maps.", evidence: "Plan 98 §5.2 required unsafe and safe JavaScript distinctions, 2026-07-23" },
+    { surface: "runtime boundaries, aliasing, and lifecycle", reason: "Boundary, mutation, and resource findings are actionable only with an unvalidated producer-to-consumer flow, a named shared observer, or a reachable replacement/shutdown leak.", evidence: "Plan 98 bundled-skill content gate and JavaScript checks 6-8, 2026-07-23" }
+  ],
   "lang/rust": [
     { surface: "runtime failure predicates", reason: "Rust review must distinguish reachable panics, boundary failures, and materially lost Results from idiomatic syntax that has no observable failure.", evidence: "Plan 98 §2.2 owner-accepted positive and required false-positive cases, 2026-07-23" },
     { surface: "unsafe invariant discipline", reason: "Unsafe syntax is only actionable when a named aliasing, lifetime, initialization, layout, thread-safety, or ownership invariant is violated.", evidence: "Plan 98 bundled-skill owner matrix and Rust acceptance gate, 2026-07-23" },

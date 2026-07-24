@@ -1,0 +1,38 @@
+---
+id: lang/javascript
+title: JavaScript correctness
+lenses: ["lang/javascript"]
+languages: ["javascript"]
+categories: ["correctness", "async", "reliability", "security"]
+enabledByDefault: true
+---
+
+# Purpose
+
+Find reachable JavaScript runtime, boundary, state, and lifecycle failures.
+
+# Checks
+
+1. **Floating promises.** Failure: detached work rejects or completes out of order, losing a required result. Materiality: require reachable failure or ordering; severity follows the operation. Unsafe: `save(record); return accepted`. Safe: `await save(record); return accepted`. Mitigation: await, return, aggregate, or handle rejection inside deliberate detached work.
+2. **Module interop mismatch.** Failure: ESM/CommonJS disagreement produces a wrong binding or load error. Materiality: require the shipped mode and a concrete mismatch; severity follows startup/call impact. Unsafe: `const parse = require("esm-only"); parse(input)`. Safe: `const { parse } = require("dual-package"); parse(input)`. Mitigation: follow the export map and test the shipped mode.
+3. **Lost receiver.** Failure: extracting a method changes `this` and accesses wrong state. Materiality: require an observing call; severity follows state/result impact. Unsafe: `const run = client.run; run()`. Safe: `const run = client.run.bind(client); run()`. Mitigation: preserve the receiver; use arrows only for intended lexical `this`.
+4. **Coercion or truthiness collapse.** Failure: a check conflates meaningful `0`, `false`, or `""` with absence. Materiality: require reachable distinct states; severity follows the wrong branch. Unsafe: `const retries = input.retries || 3`. Safe: `const retries = input.retries ?? 3`. Mitigation: use explicit nullish, type, and equality checks.
+5. **Unsafe property handling.** Failure: inherited or attacker keys alter lookup, authority, or prototypes. Materiality: require a key source and affected access; severity follows corruption. Unsafe: `target[userKey] = value`. Safe: `const target = Object.create(null); target[userKey] = value`. Mitigation: validate keys and use own-property checks, maps, or safe dictionaries.
+6. **Unvalidated runtime boundary.** Failure: external data violates a sensitive consumer's assumptions. Materiality: require an untrusted field-to-failure trace; severity follows the effect. Unsafe: `charge(JSON.parse(body).amount)`. Safe: `charge(PaymentSchema.parse(JSON.parse(body)).amount)`. Mitigation: validate at the boundary and pass only the validated value.
+7. **Shared mutation or aliasing.** Failure: changing caller-owned or cached data surprises another observer. Materiality: require a named alias and wrong result; severity follows the impact. Unsafe: `function sortRows(rows){ return rows.sort(compare); }`. Safe: `function sortRows(rows){ return [...rows].sort(compare); }`. Mitigation: copy before mutation or make ownership transfer explicit.
+8. **Leaked lifecycle work.** Failure: timers, listeners, subscriptions, or abortable work outlive their owner. Materiality: require a repeat/unmount/close path; severity follows leak/duplication. Unsafe: `socket.on("data", onData)` on every reconnect. Safe: `socket.off("data", onData); socket.on("data", onData)`. Mitigation: return idempotent cleanup for replacement, cancellation, and shutdown.
+
+# False Positives
+
+- Exclude detached promises with contained rejection, deliberate dual-package exports, and intentional lexical-arrow `this`.
+- Exclude explicit nullish checks, `Object.hasOwn`/null-prototype maps, validated values, immutable copies, and idempotent cleanup.
+- Keep this lens limited to JavaScript runtime semantics.
+
+# Safe Patterns
+
+- Preserve async ownership; verify module shape in the shipped runtime.
+- Prefer exact checks, validated values, immutable ownership, safe containers, and paired cleanup.
+
+# Examples
+
+Require each check's stated reachability and materiality evidence.

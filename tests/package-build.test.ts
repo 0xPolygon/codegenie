@@ -83,6 +83,7 @@ describe("package build scaffold", () => {
         "bundled-skills/core/code-review.md",
         "bundled-skills/core/tests.md",
         "bundled-skills/lang/go.md",
+        "bundled-skills/lang/javascript.md",
         "bundled-skills/lang/python.md",
         "bundled-skills/lang/rust.md",
         "bundled-skills/lang/solidity.md",
@@ -226,7 +227,7 @@ const { skills, failures } = await loadSkills({
 });
 if (failures.length > 0) throw new Error(JSON.stringify(failures));
 const bundledIds = skills.filter((skill) => skill.source === "bundled").map((skill) => skill.id).sort();
-const expectedBundledIds = ["core/code-review", "core/tests", "lang/go", "lang/python", "lang/rust", "lang/solidity", "lang/typescript"];
+const expectedBundledIds = ["core/code-review", "core/tests", "lang/go", "lang/javascript", "lang/python", "lang/rust", "lang/solidity", "lang/typescript"];
 if (JSON.stringify(bundledIds) !== JSON.stringify(expectedBundledIds)) throw new Error("installed bundled skills differ: " + JSON.stringify(bundledIds));
 const rust = skills.find((skill) => skill.id === "lang/rust");
 if (!rust) throw new Error("installed Rust skill is missing");
@@ -234,6 +235,8 @@ const python = skills.find((skill) => skill.id === "lang/python");
 if (!python) throw new Error("installed Python skill is missing");
 const solidity = skills.find((skill) => skill.id === "lang/solidity");
 if (!solidity) throw new Error("installed Solidity skill is missing");
+const javascript = skills.find((skill) => skill.id === "lang/javascript");
+if (!javascript) throw new Error("installed JavaScript skill is missing");
 
 const serviceUrl = import.meta.resolve("@0xsequence/codegenie/dist/repo/tree-sitter/tree-sitter-service.js");
 const installedRequire = createRequire(serviceUrl);
@@ -300,10 +303,23 @@ const solidityMethod = solidityAdapter.listSymbols(solidityParsed).find((symbol)
 if (solidityParsed.hasErrors || !solidityParsed.tree || solidityValue?.kind !== "value" || solidityValue.ownerType !== "Vault" || solidityMethod?.ownerType !== "Vault") {
   throw new Error("installed Solidity parser smoke failed");
 }
+const javascriptAdapter = registry.forPath("src/service.js");
+const javascriptParsed = await javascriptAdapter.parse({
+  path: "src/service.js",
+  language: "javascript",
+  source: { kind: "head" },
+  content: "export const Service = class { run(input) { return input; } };"
+});
+const javascriptType = javascriptAdapter.listSymbols(javascriptParsed).find((symbol) => symbol.name === "Service");
+const javascriptMethod = javascriptAdapter.listSymbols(javascriptParsed).find((symbol) => symbol.name === "run");
+if (javascriptParsed.hasErrors || !javascriptParsed.tree || javascriptType?.kind !== "type" || javascriptMethod?.ownerType !== "Service") {
+  throw new Error("installed JavaScript parser smoke failed");
+}
 console.log(JSON.stringify({
   rustSkillPath: rust.filePath,
   pythonSkillPath: python.filePath,
   soliditySkillPath: solidity.filePath,
+  javascriptSkillPath: javascript.filePath,
   grammarPaths: [
     goGrammarPath,
     typescriptGrammarPath,
@@ -320,7 +336,9 @@ console.log(JSON.stringify({
   pythonOwnerType: pythonMethod.ownerType,
   solidityLanguage: solidityParsed.language,
   solidityOwnerType: solidityMethod.ownerType,
-  solidityValueKind: solidityValue.kind
+  solidityValueKind: solidityValue.kind,
+  javascriptLanguage: javascriptParsed.language,
+  javascriptOwnerType: javascriptMethod.ownerType
 }));
 `);
       const smoke = JSON.parse(execFileSync(process.execPath, [smokePath], {
@@ -330,6 +348,7 @@ console.log(JSON.stringify({
         rustSkillPath: string;
         pythonSkillPath: string;
         soliditySkillPath: string;
+        javascriptSkillPath: string;
         grammarPaths: string[];
         parsedGrammars: string[];
         rustLanguage: string;
@@ -339,6 +358,8 @@ console.log(JSON.stringify({
         solidityLanguage: string;
         solidityOwnerType: string;
         solidityValueKind: string;
+        javascriptLanguage: string;
+        javascriptOwnerType: string;
       };
 
       expect(smoke).toMatchObject({
@@ -349,12 +370,15 @@ console.log(JSON.stringify({
         solidityLanguage: "solidity",
         solidityOwnerType: "Vault",
         solidityValueKind: "value",
+        javascriptLanguage: "javascript",
+        javascriptOwnerType: "Service",
         parsedGrammars: ["go", "typescript", "tsx", "javascript", "rust", "python", "solidity"]
       });
       for (const installedPath of [
         smoke.rustSkillPath,
         smoke.pythonSkillPath,
         smoke.soliditySkillPath,
+        smoke.javascriptSkillPath,
         ...smoke.grammarPaths
       ]) {
         expect(installedPath.startsWith(`${consumerDirectory}${path.sep}`)).toBe(true);

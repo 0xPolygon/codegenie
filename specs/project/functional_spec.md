@@ -220,7 +220,7 @@ The unit of candidate review is the changed hunk or file. The unit of understand
 
 The planner should choose coverage and lenses based on language, changed symbols, touched subsystems, tests touched or missing, configured labels/priorities, and the actual diff content. It should not run every lens on every hunk by default.
 
-The v1 pipeline should remain useful even when syntax intelligence is incomplete. Basic diff parsing, file filtering, file classification, seed context, selected lenses, structured findings, verification, deduplication, and telemetry are required. Tree-sitter changed-symbol extraction for Go, TypeScript/JavaScript, Rust, Python, and Solidity should improve packet quality, but parser gaps should degrade gracefully rather than block review.
+The v1 pipeline should remain useful even when syntax intelligence is incomplete. Basic diff parsing, file filtering, file classification, seed context, selected lenses, structured findings, verification, deduplication, and telemetry are required. Tree-sitter changed-symbol extraction for Go, TypeScript/TSX, JavaScript, Rust, Python, and Solidity should improve packet quality, but parser gaps should degrade gracefully rather than block review.
 
 ## Stage 1: Diff Parsing And Change Inventory
 
@@ -300,6 +300,8 @@ Rust extraction is declaration-aware: outer attributes belong to the decorated d
 Python extraction is decorator-aware and never uses brace-based signature logic: decorators extend function/class ranges, multiline headers end at the suite colon, and signatures are capped independently of body size. Direct class functions are methods with their immediate class owner; nested local functions reset class ownership; nested classes record their immediate class context. Python symbols leave `exported` unset. Only `.py` is supported; `.pyi` is unknown/generic.
 
 Solidity extraction maps contracts, abstract contracts, and libraries to `type`; interfaces to `interface`; direct contract callables, constructors, fallback/receive handlers, and modifiers to owner-qualified `method`; free functions to `function`; immediately contract-owned state variables/constants to minimal `value` (file-level constants are excluded); nested/file-level structs, enums, and user-defined value types to `type`; and events/custom errors to `other` with explicit native kinds. Enclosing lookup selects the smallest direct member before its contract, bounded signatures stop before bodies, and declaration identity includes path/kind/owner/name/range/signature so overloads do not collapse. Imports contain only unquoted source paths. All Solidity symbols leave `exported` unset; storage layout, generated getters, ABI/export signals, and upgrade compatibility remain deferred.
+
+JavaScript extraction retains canonical `javascript` for `.js`, `.jsx`, `.mjs`, and `.cjs` while sharing the ECMAScript adapter implementation with TypeScript. Functions/generators, callable bindings, classes and class expressions, callable fields, methods, and top-level values receive bounded symbols; enclosing lookup selects the smallest callable/member. Static imports, side-effect imports, re-exports, and literal `require()` sources are returned in source order with deduplication. Likely-test discovery covers sibling `*.test.*`/`*.spec.*`, `__tests__/`, `test/`, and `tests/` conventions and returns supported `describe`/`it`/`test` cases including `.only`, `.skip`, and `.each`. JavaScript packets project only `lang/javascript`; CommonJS export inference and TypeScript-only semantics are not guessed.
 
 `HunkSymbolFacts` is the compact per-hunk metadata produced by changed-symbol extraction. It includes the hunk id, path, changed lines, enclosing symbol name/kind/range, signature when available, and whether the facts came from tree-sitter or fallback detection. The full TypeScript schema is defined in `architecture.md`.
 
@@ -656,7 +658,7 @@ Expected backend behavior:
 - `read_diff_blocks` uses parsed diff data and does not require tree-sitter.
 - `search_files` uses `git grep` at the reviewed revision for discovery, then may enrich matches with tree-sitter enclosing symbols when `contextMode` asks for semantic context.
 - `find_symbol_mentions` uses syntax-aware identifier matching when available and `git grep` at the reviewed revision otherwise. It does not claim compiler-grade reference resolution unless a language analyzer backend explicitly marks the result as semantic or exact.
-- `find_likely_tests` combines test filename conventions with symbol extraction when available and filename/path heuristics otherwise. Rust v1 uses sibling `<stem>_test.rs` and nearest Cargo-package `tests/<stem>.rs`, returning supported `#[test]`/async-test functions as test cases; same-file `#[cfg(test)]` and arbitrary-name integration scanning are deferred. Python uses sibling `test_<stem>.py`/`<stem>_test.py` and nearest-package `tests/` variants, returning top-level `test_*` functions and direct `test_*` methods under `Test*` classes; custom pytest collection configuration is deferred. Solidity requires a nearest `foundry.toml` and uses that package's default `test/<Stem>.t.sol` and `test/<Stem>Test.t.sol`, returning direct contract methods beginning `test` or `invariant` and excluding setup/helpers; custom Foundry directories and Hardhat TypeScript links are deferred.
+- `find_likely_tests` combines test filename conventions with symbol extraction when available and filename/path heuristics otherwise. JavaScript uses sibling `*.test.*`/`*.spec.*`, `__tests__/`, and matching `test/`/`tests/` paths across `.js`, `.jsx`, `.mjs`, and `.cjs`, returning supported `describe`/`it`/`test` call sites. Rust v1 uses sibling `<stem>_test.rs` and nearest Cargo-package `tests/<stem>.rs`, returning supported `#[test]`/async-test functions as test cases; same-file `#[cfg(test)]` and arbitrary-name integration scanning are deferred. Python uses sibling `test_<stem>.py`/`<stem>_test.py` and nearest-package `tests/` variants, returning top-level `test_*` functions and direct `test_*` methods under `Test*` classes; custom pytest collection configuration is deferred. Solidity requires a nearest `foundry.toml` and uses that package's default `test/<Stem>.t.sol` and `test/<Stem>Test.t.sol`, returning direct contract methods beginning `test` or `invariant` and excluding setup/helpers; custom Foundry directories and Hardhat TypeScript links are deferred.
 - `list_files` uses filesystem/git listing and does not require tree-sitter.
 
 Source-reading tools should read from the resolved head revision through git by default, and support base-revision reads when the review target has a base revision. The checked-out worktree must not be trusted as review content. Base reads are required for reviewing deleted files and removed-line context when local git can provide the content.
@@ -802,7 +804,8 @@ Bundled v1 lenses should include:
 - Core code review, which absorbs logic/correctness and architecture/design guidance as sections of one strong core skill.
 - Tests.
 - Go.
-- TypeScript/JavaScript.
+- TypeScript/TSX.
+- JavaScript.
 - Rust.
 - Python.
 - Solidity.

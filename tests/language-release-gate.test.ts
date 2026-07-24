@@ -10,7 +10,7 @@ import type { CandidateFinding, Logger, ReviewPacket } from "../src/types.js";
 import { nullTelemetry } from "./helpers/git.js";
 
 describe("Plan 98 cross-language release gate", () => {
-  it("keeps Go and TypeScript Stage 7/9 prompts isolated at the release boundary", async () => {
+  it("keeps Go, TypeScript, and JavaScript Stage 7/9 prompts isolated at the release boundary", async () => {
     const telemetry = nullTelemetry();
     const logger = silentLogger();
     const { skills, failures } = await loadSkills({
@@ -24,6 +24,7 @@ describe("Plan 98 cross-language release gate", () => {
       "core/code-review",
       "core/tests",
       "lang/go",
+      "lang/javascript",
       "lang/python",
       "lang/rust",
       "lang/solidity",
@@ -39,8 +40,8 @@ describe("Plan 98 cross-language release gate", () => {
         lensId: "lang/go",
         stage7Marker: "Goroutine leaks",
         stage9Marker: "Passing caller context through unchanged",
-        stage7ExcludedMarkers: ["Reachable panic paths", "Mutable defaults", "Repeated full `msg.value`"],
-        stage9ExcludedMarkers: ["compiler-rejected lifetime", "integer minor units", "documented compatible delegatecall layouts"]
+        stage7ExcludedMarkers: ["Module interop mismatch", "Reachable panic paths", "Mutable defaults", "Repeated full `msg.value`"],
+        stage9ExcludedMarkers: ["dual-package exports", "compiler-rejected lifetime", "integer minor units", "documented compatible delegatecall layouts"]
       },
       {
         language: "typescript",
@@ -48,8 +49,17 @@ describe("Plan 98 cross-language release gate", () => {
         lensId: "lang/typescript",
         stage7Marker: "Floating promises",
         stage9Marker: "Promise.allSettled",
-        stage7ExcludedMarkers: ["Reachable panic paths", "Mutable defaults", "Repeated full `msg.value`"],
-        stage9ExcludedMarkers: ["compiler-rejected lifetime", "integer minor units", "documented compatible delegatecall layouts"]
+        stage7ExcludedMarkers: ["Module interop mismatch", "Reachable panic paths", "Mutable defaults", "Repeated full `msg.value`"],
+        stage9ExcludedMarkers: ["dual-package exports", "compiler-rejected lifetime", "integer minor units", "documented compatible delegatecall layouts"]
+      },
+      {
+        language: "javascript",
+        path: "service.js",
+        lensId: "lang/javascript",
+        stage7Marker: "Module interop mismatch",
+        stage9Marker: "dual-package exports",
+        stage7ExcludedMarkers: ["Non-null assertions", "Reachable panic paths", "Mutable defaults", "Repeated full `msg.value`"],
+        stage9ExcludedMarkers: ["Exhaustive `never` checks", "compiler-rejected lifetime", "integer minor units", "documented compatible delegatecall layouts"]
       }
     ]) {
       const packet = releasePacket(fixture.path, fixture.language, fixture.lensId);

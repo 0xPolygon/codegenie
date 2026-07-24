@@ -141,9 +141,10 @@ export function qualifiedSymbolName(symbol: SymbolInfo): string {
 }
 
 export function importLikeScan(content: string): string[] {
-  const imports = new Set<string>();
+  const matches: Array<{ value: string; index: number }> = [];
   const patterns = [
     /\bimport\s+(?:[^'"]+\s+from\s+)?["']([^"']+)["']/gu,
+    /\bexport\s+(?:\*(?:\s+as\s+[$\w]+)?|\{[^}]*\})\s+from\s+["']([^"']+)["']/gu,
     /\brequire\(\s*["']([^"']+)["']\s*\)/gu,
     /^\s*from\s+([^\s]+)\s+import\b/gmu
   ];
@@ -151,11 +152,12 @@ export function importLikeScan(content: string): string[] {
     for (const match of content.matchAll(pattern)) {
       const value = match[1];
       if (value !== undefined) {
-        imports.add(value);
+        matches.push({ value, index: match.index });
       }
     }
   }
-  return [...imports];
+  matches.sort((a, b) => a.index - b.index);
+  return [...new Set(matches.map((match) => match.value))];
 }
 
 export function fileStem(filePath: string): string {

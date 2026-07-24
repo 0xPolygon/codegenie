@@ -2858,7 +2858,7 @@ function primaryLanguageLens(language: string, lenses: string[]): string | undef
   if (language === "go" && lenses.includes("lang/go")) {
     return "lang/go";
   }
-  if (["typescript", "javascript", "ts", "js", "tsx", "jsx"].includes(language) && lenses.includes("lang/typescript")) {
+  if (["typescript", "ts", "tsx"].includes(language) && lenses.includes("lang/typescript")) {
     return "lang/typescript";
   }
   const exact = `lang/${language}`;
@@ -2870,7 +2870,7 @@ function defaultLensesForLanguage(facts: FileFacts, enabled: string[]): string[]
   const language = facts.language;
   if (language === "go" && enabled.includes("lang/go")) {
     selected.push("lang/go");
-  } else if (["typescript", "javascript", "ts", "js", "tsx", "jsx"].includes(language) && enabled.includes("lang/typescript")) {
+  } else if (["typescript", "ts", "tsx"].includes(language) && enabled.includes("lang/typescript")) {
     selected.push("lang/typescript");
   } else if (enabled.includes(`lang/${language}`)) {
     selected.push(`lang/${language}`);

@@ -2,14 +2,14 @@
 id: lang/typescript
 title: TypeScript correctness
 lenses: ["lang/typescript"]
-languages: ["typescript", "tsx", "javascript"]
+languages: ["typescript", "tsx"]
 categories: ["correctness", "async", "typing"]
 enabledByDefault: true
 ---
 
 # Purpose
 
-Find TypeScript and JavaScript bugs around async behavior, erased type safety, mutation, and runtime contracts.
+Find TypeScript bugs around async behavior, erased type safety, mutation, and runtime contracts.
 
 # Checks
 

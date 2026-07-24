@@ -25,6 +25,10 @@ type ExportContext = {
   defaultExport: boolean;
 };
 
+const MAX_SIGNATURE_CHARS = 600;
+const TEST_FUNCTION = /^(?:describe|it|test)(?:\.(?:only|skip))?$/u;
+const EACH_TEST_FUNCTION = /^(?:describe|it|test)(?:\.(?:only|skip))?\.each$/u;
+
 export class TypeScriptAdapter implements LanguageAdapter {
   readonly extensions: string[];
 
@@ -97,6 +101,7 @@ function symbolsForDeclaration(
     case "arrow_function":
     case "function":
     case "function_expression":
+    case "generator_function":
       return singleSymbol(file, node, "function", node.type === "arrow_function" ? "arrow function" : "function", exportContext, exportedNames, ownerType);
     case "class":
     case "class_declaration": {
@@ -156,15 +161,24 @@ function variableSymbols(
       continue;
     }
     const value = child.childForFieldName("value");
-    const callable = value?.type === "arrow_function" || value?.type === "function" || value?.type === "function_expression";
+    const callable = isFunctionLike(value);
+    const classExpression = value?.type === "class" || value?.type === "class_expression";
+    const cleanBindingName = cleanName(name);
+    if (classExpression && value !== undefined) {
+      const exported = exportedContext || exportedNames.has(cleanBindingName);
+      const classSymbol = makeSymbol(file, child, cleanBindingName, "type", "class", exported, ownerType);
+      symbols.push(classSymbol);
+      symbols.push(...classMembers(file, value, cleanBindingName, exported, exportedNames));
+      continue;
+    }
     symbols.push(
       makeSymbol(
         file,
         child,
-        cleanName(name),
+        cleanBindingName,
         callable ? "function" : "value",
-        callable ? "arrow function" : declarationKind,
-        exportedContext || exportedNames.has(cleanName(name)),
+        callable ? (value?.type === "arrow_function" ? "arrow function" : "function") : declarationKind,
+        exportedContext || exportedNames.has(cleanBindingName),
         ownerType
       )
     );
@@ -266,8 +280,14 @@ function isPublicClassMember(node: Node, name: string): boolean {
 }
 
 function hasFunctionLikeValue(node: Node): boolean {
-  const value = node.childForFieldName("value");
-  return value?.type === "arrow_function" || value?.type === "function" || value?.type === "function_expression";
+  return isFunctionLike(node.childForFieldName("value"));
+}
+
+function isFunctionLike(node: Node | null): boolean {
+  return node?.type === "arrow_function" ||
+    node?.type === "function" ||
+    node?.type === "function_expression" ||
+    node?.type === "generator_function";
 }
 
 function directClassMembers(classNode: Node): Node[] {
@@ -288,11 +308,11 @@ function testSymbols(file: ParsedFile): SymbolInfo[] {
     if (node.type !== "call_expression") {
       return;
     }
-    const fn = node.childForFieldName("function")?.text ?? "";
-    if (!/^(?:describe|it|test)(?:\.(?:only|skip|each))?$/u.test(fn)) {
+    const call = testCall(node);
+    if (!call) {
       return;
     }
-    const name = firstStringLiteral(node.text) ?? fn;
+    const name = firstStringLiteral(call.argumentsText) ?? call.fn;
     symbols.push(makeSymbol(file, node, name, "function", "test case", false));
   });
   return symbols;
@@ -324,16 +344,17 @@ function makeSymbol(
 
 function signatureForSymbol(node: Node, nativeKind: string): string {
   const compact = compactDeclarationText(node.text);
+  let signature: string;
   if (nativeKind === "arrow function" || nativeKind === "class field function") {
-    return trimAtTopLevelArrow(compact);
+    signature = trimAtTopLevelArrow(compact);
+  } else if (nativeKind === "function" || nativeKind === "method" || nativeKind === "constructor") {
+    signature = trimAtImplementationBody(compact);
+  } else if (nativeKind === "class" || nativeKind === "namespace") {
+    signature = trimAtFirstTopLevelBrace(compact);
+  } else {
+    signature = compact;
   }
-  if (nativeKind === "function" || nativeKind === "method" || nativeKind === "constructor") {
-    return trimAtImplementationBody(compact);
-  }
-  if (nativeKind === "class" || nativeKind === "namespace") {
-    return trimAtFirstTopLevelBrace(compact);
-  }
-  return compact;
+  return signature.length <= MAX_SIGNATURE_CHARS ? signature : signature.slice(0, MAX_SIGNATURE_CHARS).trimEnd();
 }
 
 function compactDeclarationText(text: string): string {
@@ -478,6 +499,22 @@ function declarationKeyword(text: string): "const" | "let" | "var" {
 function firstStringLiteral(text: string): string | undefined {
   const match = /["'`]([^"'`]+)["'`]/u.exec(text);
   return match?.[1];
+}
+
+function testCall(node: Node): { fn: string; argumentsText: string } | undefined {
+  const fnNode = node.childForFieldName("function");
+  const fn = fnNode?.text ?? "";
+  if (TEST_FUNCTION.test(fn)) {
+    return { fn, argumentsText: node.childForFieldName("arguments")?.text ?? node.text };
+  }
+  if (fnNode?.type !== "call_expression") {
+    return undefined;
+  }
+  const eachFn = fnNode.childForFieldName("function")?.text ?? "";
+  if (!EACH_TEST_FUNCTION.test(eachFn)) {
+    return undefined;
+  }
+  return { fn: eachFn, argumentsText: node.childForFieldName("arguments")?.text ?? node.text };
 }
 
 function dedupeSymbols(symbols: SymbolInfo[]): SymbolInfo[] {

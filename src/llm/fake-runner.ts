@@ -197,7 +197,7 @@ function firstTriggeredLine(packet: ReviewPacket):
 
 export function defaultFakeLenses(path: string): string[] {
   const lenses = ["core/code-review"];
-  if (/(?:^|[./_-])(test|spec)\.(ts|tsx|js|jsx|go)$/u.test(path) ||
+  if (/(?:^|[./_-])(test|spec)\.(?:[cm]?[tj]sx?|go)$/u.test(path) ||
       /(?:^|\/)test_[^/]+\.py$/u.test(path) ||
       /_test\.(?:go|py|rs)$/u.test(path) ||
       /\.t\.sol$/u.test(path) ||
@@ -206,8 +206,10 @@ export function defaultFakeLenses(path: string): string[] {
   }
   if (/\.(go)$/u.test(path)) {
     lenses.push("lang/go");
-  } else if (/\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$/u.test(path)) {
+  } else if (/\.(ts|tsx|mts|cts)$/u.test(path)) {
     lenses.push("lang/typescript");
+  } else if (/\.(js|jsx|mjs|cjs)$/u.test(path)) {
+    lenses.push("lang/javascript");
   } else if (/\.rs$/u.test(path)) {
     lenses.push("lang/rust");
   } else if (/\.py$/u.test(path)) {
