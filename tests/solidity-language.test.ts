@@ -138,6 +138,7 @@ describe("Plan 98 Solidity vertical slice", () => {
 
     const identityHunk: DiffHunk = {
       id: "solidity-overloads",
+      hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
       path: parsed.path,
       oldStart: 36,
       oldLines: 0,

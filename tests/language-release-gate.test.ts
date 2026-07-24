@@ -103,6 +103,7 @@ describe("Plan 98 cross-language release gate", () => {
 function releasePacket(pathname: string, language: string, lensId: string): ReviewPacket {
   return {
     id: `${language}-release-packet`,
+    dispatchRank: [0, -1],
     kind: "hunk",
     prSummary: "Plan 98 release projection fixture",
     path: pathname,

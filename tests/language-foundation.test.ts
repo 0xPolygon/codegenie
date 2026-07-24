@@ -495,6 +495,7 @@ describe("Plan 98 shared language foundation", () => {
     const second = symbol("deposit", [7, 10], "Vault");
     const hunk: DiffHunk = {
       id: "h1",
+      hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
       path: file.path,
       oldStart: 1,
       oldLines: 0,

@@ -473,7 +473,7 @@ After each hunk the parser asserts consumed counts equal the header counts (else
 The architecture formula `sha256(path + oldStart + newStart + normalizedHunkHeader + changedLineNumbers)` is pinned to this canonical byte serialization (UTF-8, `\x00` separators):
 
 ```text
-hunkId = sha256Hex(
+hunkHash = sha256Hex(
   path                       // the same path the DiffFile carries
   + "\x00" + String(oldStart)
   + "\x00" + String(newStart)
@@ -489,7 +489,7 @@ changedLineNumbers   = "add:" + comma-joined newLineNumbers of add lines
                        (each in file order; empty lists allowed)
 ```
 
-Ids are stable across reruns of the same diff and intentionally change when the hunk's position or changed-line set shifts. Packet ids (`sha256(path + sorted hunkIds + kind)`) are computed by the packet builder in Stage 6 (`components/review_pipeline.md`).
+The parser first computes every full `hunkHash` after rename/copy/path resolution. A second pass over the complete `UnifiedDiff` assigns `DiffHunk.id` as the shortest unique hexadecimal prefix, trying lengths 8, 12, 16, and so on through 64. Identical full digests are a parser defect and fail parsing with `diff_parse_failed`; they are never disambiguated by position. The short ids are stable across repeated parses of the same diff and intentionally change when coordinates or changed-line sets shift. The full digest remains available on the operational `DiffHunk` and in `diff.json` for forensics, but downstream projections carry only the opaque short `id`. Packet ids (`sha256(path + sorted hunkIds + kind)`) are computed by the packet builder in Stage 6 (`components/review_pipeline.md`).
 
 #### Anchor Index
 

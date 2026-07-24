@@ -22,6 +22,7 @@ import type {
   FileFilterDecision,
   HunkCoverageDecision,
   HunkSymbolFacts,
+  PlannerCoverageStats,
   PlannerDossier,
   PlannerRecoveryTelemetry,
   RepositoryIndex,
@@ -50,8 +51,15 @@ type PlannerChunk = {
 
 export type PlannerRunResult = {
   plan: ReviewPlan;
+  plannerCoverage: PlannerCoverageStats;
   degradedPlanning: boolean;
   chunked: boolean;
+};
+
+type PlannerCallResult = {
+  plan: ReviewPlan;
+  stats: PlannerCoverageStats;
+  acceptedHunkIds: Set<string>;
 };
 
 const STATIC_SIGNALS_PER_HUNK = 5;
@@ -131,6 +139,12 @@ export async function buildPlannerDossier(
     ])
       .filter(isPolicyPath)
       .sort(),
+    hunkIndex: filtered.map((file) => ({
+      path: file.path,
+      ...(file.oldPath !== undefined ? { oldPath: file.oldPath } : {}),
+      language: factsByPath.get(file.path)?.language ?? file.language,
+      hunkIds: file.hunks.map((hunk) => hunk.id)
+    })),
     files: filtered.map((file) => {
       const facts = factsByPath.get(file.path);
       return {
@@ -222,7 +236,8 @@ export async function runPlanner(
   }
 
   try {
-    const plan = await runPlannerCall(plannerDossier, config, telemetry, opts);
+    const result = await runPlannerCall(plannerDossier, config, telemetry, opts);
+    const plan = result.plan;
     const degradedPlanning = plan.plannerRecovery?.degraded === true;
     await telemetry.writeArtifact("review-plan.json", plan);
     telemetry.event({
@@ -231,7 +246,7 @@ export async function runPlanner(
       message: "stage_completed",
       data: { degraded: degradedPlanning, compaction: plannerDossier.compaction.level }
     });
-    return { plan, degradedPlanning, chunked: false };
+    return { plan, plannerCoverage: result.stats, degradedPlanning, chunked: false };
   } catch (error) {
     // Provider-wide outage on the run's opening call stays run-fatal: a default
     // plan cannot review anything through a down provider, and the spec reserves
@@ -247,7 +262,7 @@ export async function runPlanner(
     });
     const plan = defaultPlan(dossier, opts.lenses, "degraded planning: deterministic default");
     await telemetry.writeArtifact("review-plan.json", plan);
-    return { plan, degradedPlanning: true, chunked: false };
+    return { plan, plannerCoverage: emptyPlannerCoverageStats(), degradedPlanning: true, chunked: false };
   }
 }
 
@@ -270,8 +285,8 @@ function emitPlannerProjectionTelemetry(
       renderedPromptDossierChars,
       compaction: promptDossier.compaction.level,
       files: stats.files,
-      hunks: stats.hunks,
-      directoryRollupHunks: stats.directoryRollupHunks,
+      indexedHunks: stats.indexedHunks,
+      uniqueHunks: stats.uniqueHunks,
       richHunks: stats.richHunks,
       compactHunks: stats.compactHunks,
       hunkExcerptsIncluded: stats.hunkExcerptsIncluded,
@@ -294,7 +309,7 @@ async function runPlannerCall(
   config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: RunPlannerOptions
-): Promise<ReviewPlan> {
+): Promise<PlannerCallResult> {
   const recovery = emptyPlannerRecoveryDraft();
   const prompt = opts.promptBuilder.buildPlannerPrompt({
     dossier,
@@ -314,8 +329,11 @@ async function runPlannerCall(
       buildPrompt: (input) => buildPlannerSchemaRepairPrompt(dossier, opts.lenses, input)
     }
   });
-  const plan = validatePlan(submitted as ReviewPlan, dossier, opts.lenses, telemetry);
-  return finalizePlannerRecovery(plan, dossier, opts.lenses, telemetry, recovery);
+  const validated = validatePlan(submitted as ReviewPlan, dossier, opts.lenses, telemetry);
+  return {
+    ...validated,
+    plan: finalizePlannerRecovery(validated.plan, dossier, opts.lenses, telemetry, recovery)
+  };
 }
 
 function recoverPlannerInvalidSubmit(
@@ -543,11 +561,11 @@ function applyPlannerSafetyCoverage(
 ): ReviewPlan {
   const existing = new Set(plan.coverage.map((decision) => decision.hunkId));
   const candidates = sourceHunkSafetyCandidates(dossier)
-    .filter((entry) => !existing.has(entry.hunk.hunkId))
+    .filter((entry) => !existing.has(entry.hunkId))
     .sort(compareSafetyCoverageCandidates);
   const selected = candidates.slice(0, MAX_SAFETY_DEEP_SOURCE_HUNKS);
   const safetyCoverage: HunkCoverageDecision[] = selected.map((entry) => ({
-    hunkId: entry.hunk.hunkId,
+    hunkId: entry.hunkId,
     path: entry.file.path,
     coverage: "deep",
     lenses: defaultLensesForFile(entry.file.language, lenses),
@@ -588,36 +606,53 @@ function applyPlannerSafetyCoverage(
 }
 
 function reviewableSourceHunkIds(dossier: PlannerDossier): Set<string> {
-  return new Set(
+  const sourcePaths = new Set(
     dossier.files
       .filter((file) => file.testStatus === "source" && file.processingMode !== "skip")
-      .flatMap((file) => file.hunks.map((hunk) => hunk.hunkId))
+      .map((file) => file.path)
   );
+  return new Set(dossier.hunkIndex.filter((entry) => sourcePaths.has(entry.path)).flatMap((entry) => entry.hunkIds));
 }
 
-function sourceHunkSafetyCandidates(dossier: PlannerDossier): Array<{ file: DossierFileEntry; hunk: DossierFileEntry["hunks"][number] }> {
+type SourceHunkSafetyCandidate = {
+  file: DossierFileEntry;
+  hunkId: string;
+  hasSymbolFacts: boolean;
+  staticSignalCount: number;
+};
+
+function sourceHunkSafetyCandidates(dossier: PlannerDossier): SourceHunkSafetyCandidate[] {
+  const hunkIndexByPath = new Map(dossier.hunkIndex.map((entry) => [entry.path, entry.hunkIds]));
   return dossier.files
     .filter((file) => file.testStatus === "source" && file.processingMode !== "skip")
-    .flatMap((file) => file.hunks.map((hunk) => ({ file, hunk })));
+    .flatMap((file) => {
+      const detailedById = new Map(file.hunks.map((hunk) => [hunk.hunkId, hunk]));
+      return (hunkIndexByPath.get(file.path) ?? []).map((hunkId) => {
+        const hunk = detailedById.get(hunkId);
+        return {
+          file,
+          hunkId,
+          hasSymbolFacts: hunk?.symbolFacts?.enclosingSymbol !== undefined,
+          staticSignalCount: hunk?.staticSignals.length ?? 0
+        };
+      });
+    });
 }
 
-function compareSafetyCoverageCandidates(
-  a: { file: DossierFileEntry; hunk: DossierFileEntry["hunks"][number] },
-  b: { file: DossierFileEntry; hunk: DossierFileEntry["hunks"][number] }
-): number {
+function compareSafetyCoverageCandidates(a: SourceHunkSafetyCandidate, b: SourceHunkSafetyCandidate): number {
   const priority = priorityCompactionRank(b.file.reviewPriority) - priorityCompactionRank(a.file.reviewPriority);
   if (priority !== 0) {
     return priority;
   }
-  const symbolFacts = Number(b.hunk.symbolFacts?.enclosingSymbol !== undefined) - Number(a.hunk.symbolFacts?.enclosingSymbol !== undefined);
+  const symbolFacts = Number(b.hasSymbolFacts) - Number(a.hasSymbolFacts);
   if (symbolFacts !== 0) {
     return symbolFacts;
   }
-  const staticSignals = b.hunk.staticSignals.length - a.hunk.staticSignals.length;
+  const staticSignals = b.staticSignalCount - a.staticSignalCount;
   if (staticSignals !== 0) {
     return staticSignals;
   }
-  return a.file.path.localeCompare(b.file.path) || a.hunk.hunkId.localeCompare(b.hunk.hunkId);
+  return a.file.path.localeCompare(b.file.path) || a.hunkId.localeCompare(b.hunkId);
 }
 
 function hasPlannerRequiredRoots(args: Record<string, unknown>): boolean {
@@ -683,6 +718,7 @@ function plannerRepairDossierSummary(dossier: PlannerDossier, lenses: LensDescri
     })),
     intentSignals: dossier.intentSignals,
     policyFilesChanged: dossier.policyFilesChanged,
+    hunkIndex: dossier.hunkIndex,
     totals: dossier.totals,
     compaction: dossier.compaction,
     enabledLenses: lenses
@@ -722,9 +758,7 @@ function plannerRepairDossierSummary(dossier: PlannerDossier, lenses: LensDescri
       labels: directory.labels,
       maxReviewPriority: directory.maxReviewPriority,
       testFileCount: directory.testFileCount,
-      representativePaths: directory.representativePaths,
-      hunkIds: directory.hunkIds,
-      hunkLanguages: directory.hunkLanguages
+      representativePaths: directory.representativePaths
     }))
   };
 }
@@ -739,22 +773,22 @@ async function runChunkedPlanner(
   if (chunks.length === 0) {
     const plan = defaultPlan(dossier, opts.lenses, "degraded planning: deterministic default");
     await telemetry.writeArtifact("review-plan.json", plan);
-    return { plan, degradedPlanning: true, chunked: false };
+    return { plan, plannerCoverage: emptyPlannerCoverageStats(), degradedPlanning: true, chunked: false };
   }
 
   await telemetry.writeArtifact("planner-dossier-chunks.json", chunks.map((chunk) => chunk.prompt));
-  const plans: ReviewPlan[] = [];
+  const callResults: PlannerCallResult[] = [];
   const failedRoots: string[] = [];
 
   for (const chunk of chunks) {
-    const chunkRoot = chunk.prompt.compaction.chunkRoot ?? `chunk-${String(chunk.prompt.compaction.chunkIndex ?? plans.length + 1)}`;
+    const chunkRoot = chunk.prompt.compaction.chunkRoot ?? `chunk-${String(chunk.prompt.compaction.chunkIndex ?? callResults.length + 1)}`;
     if (opts.promptBuilder.renderDossier(chunk.prompt).length > MAX_DOSSIER_PROMPT_CHARS) {
       failedRoots.push(chunkRoot);
-      plans.push(defaultPlan(chunk.full, opts.lenses, `degraded planning: chunk ${chunkRoot} exceeded planner prompt budget`));
+      callResults.push(fallbackPlannerCallResult(defaultPlan(chunk.full, opts.lenses, `degraded planning: chunk ${chunkRoot} exceeded planner prompt budget`)));
       continue;
     }
     try {
-      plans.push(await runPlannerCall(chunk.prompt, config, telemetry, opts));
+      callResults.push(await runPlannerCall(chunk.prompt, config, telemetry, opts));
     } catch (error) {
       if (isRunFatalLlmError(error) || isProviderOutageError(error)) {
         throw error;
@@ -766,11 +800,12 @@ async function runChunkedPlanner(
         message: "planner chunk fallback used",
         data: { chunkRoot, error: error instanceof Error ? error.message : String(error) }
       });
-      plans.push(defaultPlan(chunk.full, opts.lenses, `degraded planning: chunk ${chunkRoot} deterministic default`));
+      callResults.push(fallbackPlannerCallResult(defaultPlan(chunk.full, opts.lenses, `degraded planning: chunk ${chunkRoot} deterministic default`)));
     }
   }
 
-  const plan = mergeChunkPlans(plans, chunks, telemetry);
+  const plan = mergeChunkPlans(callResults.map((result) => result.plan), chunks, telemetry);
+  const plannerCoverage = aggregatePlannerCoverage(callResults);
   await telemetry.writeArtifact("review-plan.json", plan);
   telemetry.event({
     stage: 5,
@@ -778,7 +813,7 @@ async function runChunkedPlanner(
     message: "stage_completed",
     data: { degraded: failedRoots.length > 0, chunked: true, chunks: chunks.length, failedRoots }
   });
-  return { plan, degradedPlanning: failedRoots.length > 0, chunked: true };
+  return { plan, plannerCoverage, degradedPlanning: failedRoots.length > 0, chunked: true };
 }
 
 export function compactPlannerDossier(
@@ -1069,7 +1104,7 @@ function collapseHunkDetail(dossier: PlannerDossier, filePath: string): PlannerD
     {
       ...dossier,
       files: dossier.files.map((candidate) => (candidate.path === filePath ? { ...candidate, hunks: [] } : candidate)),
-      directories: mergeDirectoryRollup(dossier.directories, file, hunkIds)
+      directories: mergeDirectoryRollup(dossier.directories, file)
     },
     {
       what: "per-hunk detail",
@@ -1084,12 +1119,11 @@ function collapseFileDetail(dossier: PlannerDossier, filePath: string): PlannerD
   if (!file) {
     return dossier;
   }
-  const hunkIds = file.hunks.map((hunk) => hunk.hunkId);
   return recordCompaction(
     {
       ...dossier,
       files: dossier.files.filter((candidate) => candidate.path !== filePath),
-      directories: hunkIds.length > 0 ? mergeDirectoryRollup(dossier.directories, file, hunkIds) : dossier.directories
+      directories: file.hunkCount === 0 ? mergeDirectoryRollup(dossier.directories, file) : dossier.directories
     },
     {
       what: "per-file detail",
@@ -1101,8 +1135,7 @@ function collapseFileDetail(dossier: PlannerDossier, filePath: string): PlannerD
 
 function mergeDirectoryRollup(
   directories: DossierDirectoryRollup[],
-  file: DossierFileEntry,
-  hunkIds: string[]
+  file: DossierFileEntry
 ): DossierDirectoryRollup[] {
   const root = dossierFileRoot(file);
   const existing = directories.find((directory) => directory.root === root);
@@ -1115,9 +1148,7 @@ function mergeDirectoryRollup(
     labels: file.labels,
     maxReviewPriority: file.reviewPriority,
     testFileCount: file.testStatus === "test" ? 1 : 0,
-    representativePaths: [file.path],
-    hunkIds,
-    hunkLanguages: Object.fromEntries(hunkIds.map((hunkId) => [hunkId, file.language]))
+    representativePaths: [file.path]
   };
   const merged = existing ? mergeRollups(existing, addition) : normalizeRollup(addition);
   return [
@@ -1136,9 +1167,7 @@ function mergeRollups(a: DossierDirectoryRollup, b: DossierDirectoryRollup): Dos
     labels: [...a.labels, ...b.labels],
     maxReviewPriority: strongestPriority(a.maxReviewPriority, b.maxReviewPriority),
     testFileCount: a.testFileCount + b.testFileCount,
-    representativePaths: [...a.representativePaths, ...b.representativePaths],
-    hunkIds: [...a.hunkIds, ...b.hunkIds],
-    hunkLanguages: { ...a.hunkLanguages, ...b.hunkLanguages }
+    representativePaths: [...a.representativePaths, ...b.representativePaths]
   });
 }
 
@@ -1147,9 +1176,7 @@ function normalizeRollup(rollup: DossierDirectoryRollup): DossierDirectoryRollup
     ...rollup,
     languages: dedupe(rollup.languages).sort(),
     labels: dedupe(rollup.labels).sort(),
-    representativePaths: dedupe(rollup.representativePaths).sort().slice(0, 5),
-    hunkIds: dedupe(rollup.hunkIds).sort(),
-    hunkLanguages: Object.fromEntries(Object.entries(rollup.hunkLanguages).sort(([a], [b]) => a.localeCompare(b)))
+    representativePaths: dedupe(rollup.representativePaths).sort().slice(0, 5)
   };
 }
 
@@ -1176,8 +1203,10 @@ function groupFilesBySubdirectory(root: string, files: DossierFileEntry[]): Arra
 }
 
 function chunkDossier(base: PlannerDossier, files: DossierFileEntry[], root: string): PlannerDossier {
+  const paths = new Set(files.map((file) => file.path));
   return {
     ...base,
+    hunkIndex: base.hunkIndex.filter((entry) => paths.has(entry.path)),
     files,
     directories: [],
     compaction: {
@@ -1266,9 +1295,9 @@ export function defaultPlan(
       inferredBehavior: "unavailable (degraded planning)"
     },
     ...(dossier.intentSignals !== undefined ? { intentSignals: dossier.intentSignals } : {}),
-    coverage: dossier.files.flatMap((file) =>
-      file.hunks.map((hunk) => ({
-        hunkId: hunk.hunkId,
+    coverage: dossier.hunkIndex.flatMap((file) =>
+      file.hunkIds.map((hunkId) => ({
+        hunkId,
         path: file.path,
         coverage: "normal" as CoverageLevel,
         lenses: defaultLensesForFile(file.language, lenses),
@@ -1296,23 +1325,22 @@ function validatePlan(
   dossier: PlannerDossier,
   lenses: LensDescriptor[],
   telemetry: TelemetryRecorder
-): ReviewPlan {
-  const knownHunks = new Set([
-    ...dossier.files.flatMap((file) => file.hunks.map((hunk) => hunk.hunkId)),
-    ...dossier.directories.flatMap((directory) => directory.hunkIds)
-  ]);
+): PlannerCallResult {
+  const submittedEntries = plan.coverage?.length ?? 0;
+  const knownHunks = new Set(dossier.hunkIndex.flatMap((file) => file.hunkIds));
   const enabledLenses = lenses.filter((lens) => lens.enabled);
   const enabledLensById = new Map(enabledLenses.map((lens) => [lens.id, lens]));
-  const hunkLanguageById = new Map([
-    ...dossier.files.flatMap((file) => file.hunks.map((hunk) => [hunk.hunkId, file.language] as const)),
-    ...dossier.directories.flatMap((directory) => Object.entries(directory.hunkLanguages))
-  ]);
-  const knownFiles = new Set(dossier.files.flatMap((file) => [file.path, ...(file.oldPath !== undefined ? [file.oldPath] : [])]));
+  const hunkLanguageById = new Map(dossier.hunkIndex.flatMap((file) => file.hunkIds.map((hunkId) => [hunkId, file.language] as const)));
+  const knownFiles = new Set(dossier.hunkIndex.flatMap((file) => [file.path, ...(file.oldPath !== undefined ? [file.oldPath] : [])]));
   const coverageByHunk = new Map<string, HunkCoverageDecision>();
   const coverageOrder: string[] = [];
+  const acceptedHunkIds = new Set<string>();
+  let acceptedEntries = 0;
+  let rejectedUnknownHunk = 0;
 
   for (const decision of plan.coverage ?? []) {
     if (!knownHunks.has(decision.hunkId)) {
+      rejectedUnknownHunk += 1;
       telemetry.event({
         stage: 5,
         level: "warn",
@@ -1322,6 +1350,8 @@ function validatePlan(
       });
       continue;
     }
+    acceptedEntries += 1;
+    acceptedHunkIds.add(decision.hunkId);
     if (decision.coverage === "skip" && decision.reason.trim().length === 0) {
       telemetry.event({
         stage: 5,
@@ -1401,7 +1431,25 @@ function validatePlan(
     coverageOrder.push(decision.hunkId);
   }
 
-  return {
+  const stats: PlannerCoverageStats = {
+    submittedEntries,
+    acceptedEntries,
+    acceptedUniqueHunks: acceptedHunkIds.size,
+    rejectedUnknownHunk
+  };
+  if (rejectedUnknownHunk > 0) {
+    telemetry.event({
+      stage: 5,
+      level: acceptedEntries === 0 ? "error" : "warn",
+      message: "planner_coverage_lost",
+      data: {
+        ...stats,
+        ...(dossier.compaction.chunkRoot !== undefined ? { chunkRoot: dossier.compaction.chunkRoot } : {})
+      }
+    });
+  }
+
+  return { plan: {
     diffUnderstanding: plan.diffUnderstanding,
     ...(dossier.intentSignals !== undefined ? { intentSignals: dossier.intentSignals } : {}),
     coverage: coverageOrder.flatMap((hunkId) => {
@@ -1409,6 +1457,24 @@ function validatePlan(
       return decision === undefined ? [] : [decision];
     }),
     ...(plan.partialReview !== undefined ? { partialReview: plan.partialReview } : {})
+  }, stats, acceptedHunkIds };
+}
+
+function emptyPlannerCoverageStats(): PlannerCoverageStats {
+  return { submittedEntries: 0, acceptedEntries: 0, acceptedUniqueHunks: 0, rejectedUnknownHunk: 0 };
+}
+
+function fallbackPlannerCallResult(plan: ReviewPlan): PlannerCallResult {
+  return { plan, stats: emptyPlannerCoverageStats(), acceptedHunkIds: new Set() };
+}
+
+function aggregatePlannerCoverage(results: PlannerCallResult[]): PlannerCoverageStats {
+  const acceptedHunkIds = new Set(results.flatMap((result) => [...result.acceptedHunkIds]));
+  return {
+    submittedEntries: results.reduce((sum, result) => sum + result.stats.submittedEntries, 0),
+    acceptedEntries: results.reduce((sum, result) => sum + result.stats.acceptedEntries, 0),
+    acceptedUniqueHunks: acceptedHunkIds.size,
+    rejectedUnknownHunk: results.reduce((sum, result) => sum + result.stats.rejectedUnknownHunk, 0)
   };
 }
 

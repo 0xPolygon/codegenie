@@ -278,6 +278,7 @@ function fakeCandidate(packetId: string): CandidateFinding {
 function fakePacket(id: string, path: string, symbol = "divide"): ReviewPacket {
   return {
     id,
+    dispatchRank: [0, -1],
     kind: "hunk",
     prSummary: "test",
     path,

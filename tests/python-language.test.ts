@@ -248,6 +248,7 @@ describe("Plan 98 Python vertical slice", () => {
 
     const hunk: DiffHunk = {
       id: "python-unicode-identity",
+      hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
       path: parsed.path,
       oldStart: 9,
       oldLines: 0,

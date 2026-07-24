@@ -103,3 +103,4 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 97 | IMPLEMENTED (dogfood pending) | Issue 97: GitHub Action Integration (comment-triggered PR review + live status comment) |
 | 98 | COMPLETE | Issue 98: Language Support — Rust, Python, Solidity, JavaScript (tree-sitter adapters + bundled skills) |
 | 99 | COMPLETE | Issue 99: Plan 98 Correctness Follow-Up — Unicode-Safe Tree-sitter Extraction and Likely-Test Compatibility |
+| 100 | COMPLETE | Issue 100: Short Hunk IDs — Planner Coverage Survival and Dispatch Resilience |

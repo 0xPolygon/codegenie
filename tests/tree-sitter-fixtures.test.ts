@@ -166,6 +166,7 @@ describe("parser-derived fixture summaries", () => {
 
     const hunk: DiffHunk = {
       id: "rust-identity",
+      hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
       path: parsed.path,
       oldStart: 44,
       oldLines: 0,
@@ -501,6 +502,7 @@ describe("parser-derived fixture summaries", () => {
 
     const hunk: DiffHunk = {
       id: "python-identity",
+      hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
       path: parsed.path,
       oldStart: 24,
       oldLines: 0,

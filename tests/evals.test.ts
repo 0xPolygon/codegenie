@@ -21,6 +21,10 @@ import type {
 import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
 import { CodegenieError } from "../src/util/errors.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
+import {
+  normalizeCrossVersionHunkIds,
+  type HunkIdParityFixture
+} from "./helpers/hunk-id-parity.js";
 
 describe("eval suite validation", () => {
   it("rejects unknown keys, duplicate expectation ids, and invalid source shapes", async () => {
@@ -1287,7 +1291,7 @@ describe("artifact replay", () => {
     const evalCase: EvalCase = {
       name: "replay-case",
       artifacts: { path: "logs/1" },
-      should_find: [{ id: "reported", path: "src/app.ts", titlePattern: "Fake" }]
+      should_find: [{ id: "reported", path: "src/app.ts", lineRange: [3, 3], titlePattern: "Fake" }]
     };
     writeFileSync(path.join(suiteDir, "case.yml"), [
       "name: replay-case",
@@ -1296,9 +1300,30 @@ describe("artifact replay", () => {
       "should_find:",
       "  - id: reported",
       "    path: src/app.ts",
+      "    lineRange: [3, 3]",
       "    titlePattern: Fake"
     ].join("\n"));
-    writeArtifactSet(telemetry, [candidate("cand-1", "src/app.ts", 3)], [finalFinding("final-1", "src/app.ts", 3)]);
+    const historicalHunkId = "a".repeat(64);
+    writeArtifactSet(
+      telemetry,
+      [candidate("cand-1", "src/app.ts", 3, { anchor: { path: "src/app.ts", line: 3, side: "RIGHT", hunkId: historicalHunkId } })],
+      [finalFinding("final-1", "src/app.ts", 3, { anchor: { path: "src/app.ts", line: 3, side: "RIGHT", hunkId: historicalHunkId } })]
+    );
+    writeTelemetryArtifact(telemetry, "review-plan.json", {
+      diffUnderstanding: { declaredIntent: "historical", inferredBehavior: "historical" },
+      coverage: [{ hunkId: historicalHunkId, path: "src/app.ts", coverage: "normal", lenses: [], reason: "historical" }]
+    });
+    writeTelemetryArtifact(telemetry, "coverage.json", {
+      status: { totalHunks: 1, reviewedHunks: 1 },
+      records: [{ hunkId: historicalHunkId, path: "src/app.ts", coverage: "normal", status: "reviewed" }]
+    });
+    writeTelemetryArtifact(telemetry, "packets/packet-1.json", {
+      id: "historical-packet",
+      path: "src/app.ts",
+      coverage: "normal",
+      lenses: ["core/code-review"],
+      hunks: [{ hunkId: historicalHunkId, changedNewLineNumbers: [3], changedOldLineNumbers: [] }]
+    });
     const sourceInfo: EvalRunInfo = {
       runNumber: 1,
       caseName: "replay-case",
@@ -1321,6 +1346,38 @@ describe("artifact replay", () => {
     expect(existsSync(path.join(logsDir, "2", "compare-to-previous.json"))).toBe(true);
     const info = JSON.parse(readFileSync(path.join(logsDir, "2", "info.json"), "utf8")) as EvalRunInfo;
     expect(info.score.expectationResults[0]).toMatchObject({ status: "pass", fromReplayedArtifacts: true });
+    const loaded = await loadEvalArtifacts(telemetry);
+    expect(loaded.reviewPlan?.coverage[0]?.hunkId).toBe(historicalHunkId);
+    expect(loaded.coverage?.hunks).toEqual([expect.objectContaining({ hunkId: historicalHunkId })]);
+    expect(loaded.packets[0]?.hunks[0]?.hunkId).toBe(historicalHunkId);
+  });
+
+  it("proves bijective semantic parity between recorded full-id and post-change short-id runs", () => {
+    const fixtureRoot = path.join(process.cwd(), "evals", "fixtures", "artifacts", "plan-100-hunk-id-parity");
+    const baseline = JSON.parse(readFileSync(path.join(fixtureRoot, "historical-full-ids.json"), "utf8")) as HunkIdParityFixture;
+    const current = JSON.parse(readFileSync(path.join(fixtureRoot, "post-change-short-ids.json"), "utf8")) as HunkIdParityFixture;
+
+    expect(current.metadata).toMatchObject({
+      caseName: baseline.metadata.caseName,
+      caseHash: baseline.metadata.caseHash,
+      status: "pass",
+      idFormat: "short"
+    });
+    expect(baseline.diff[0]?.id).toMatch(/^[0-9a-f]{64}$/u);
+    expect(current.diff[0]).toMatchObject({
+      id: baseline.diff[0]?.id.slice(0, 8),
+      hunkHash: baseline.diff[0]?.id
+    });
+
+    const parity = normalizeCrossVersionHunkIds(baseline, current);
+    expect([...parity.hunkBijection.entries()]).toEqual([[baseline.diff[0]?.id, current.diff[0]?.id]]);
+    expect([...parity.packetBijection.entries()]).toEqual([[baseline.packets[0]?.id, current.packets[0]?.id]]);
+    expect([...parity.candidateBijection.entries()]).toEqual([[baseline.candidates[0]?.id, current.candidates[0]?.id]]);
+    expect(parity.current).toEqual(parity.baseline);
+
+    const broken = structuredClone(current);
+    broken.coverageRecords[0]!.hunkId = "unknown-short-id";
+    expect(() => normalizeCrossVersionHunkIds(baseline, broken)).toThrow(/coverage record hunk references unknown id/u);
   });
 
   it("errors --from-artifacts replay for old root-level artifact layouts", async () => {

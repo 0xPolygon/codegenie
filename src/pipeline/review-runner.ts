@@ -358,7 +358,7 @@ export async function runReview(
         }
       });
     }
-    finalReview.runStats = buildRunStats(config, resolved, run);
+    finalReview.runStats = buildRunStats(config, resolved, run, plannerResult.plannerCoverage);
     await renderOutputs(finalReview, overrides, run.telemetry);
     await run.finalize({
       status: finalReview.coverage.partial ? "completed_partial" : "completed_full",
@@ -1330,11 +1330,17 @@ function summarizeResolvedInput(resolved: ResolvedReviewInput): Omit<ResolvedRev
   };
 }
 
-function buildRunStats(config: CodegenieConfig, resolved: ResolvedReviewInput, run: RunContext): ReviewRunStats {
+function buildRunStats(
+  config: CodegenieConfig,
+  resolved: ResolvedReviewInput,
+  run: RunContext,
+  plannerCoverage?: ReviewRunStats["plannerCoverage"]
+): ReviewRunStats {
   const model = modelStats(config);
   return {
     ...(model !== undefined ? { model } : {}),
     elapsedMs: run.budget.elapsedMs(),
+    ...(plannerCoverage !== undefined ? { plannerCoverage } : {}),
     git: {
       repo: resolved.pr ? `${resolved.pr.owner}/${resolved.pr.repo}` : path.basename(resolved.repoRoot),
       base: resolved.baseRefName ?? shortRef(resolved.baseRef ?? resolved.mergeBase ?? "unknown"),

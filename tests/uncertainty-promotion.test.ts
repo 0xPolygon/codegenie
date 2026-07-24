@@ -737,6 +737,7 @@ function fakePacket(
 ): ReviewPacket {
   return {
     id,
+    dispatchRank: [0, -1],
     kind: "hunk",
     prSummary: "test",
     path: filePath,

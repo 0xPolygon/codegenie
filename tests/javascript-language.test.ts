@@ -123,6 +123,7 @@ describe("Plan 98 JavaScript vertical slice", () => {
 
     const identityHunk: DiffHunk = {
       id: "javascript-load-record",
+      hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
       path: parsed.path,
       oldStart: 10,
       oldLines: 0,

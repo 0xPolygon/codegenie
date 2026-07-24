@@ -297,6 +297,12 @@ type PlannerDossier = {
   // Changed paths matching codegenie.toml or .codegenie/skills/** — a planner risk signal
   // per the Trust Boundaries policy-load rule.
   policyFilesChanged: string[]
+  hunkIndex: Array<{
+    path: string
+    oldPath?: string
+    language: string
+    hunkIds: string[]
+  }>
   files: DossierFileEntry[]
   directories: DossierDirectoryRollup[]        // non-empty only when compaction collapsed file detail
   filterSummary: {
@@ -356,7 +362,6 @@ type DossierDirectoryRollup = {
   maxReviewPriority: ReviewPriority
   testFileCount: number
   representativePaths: string[]     // first 5 paths, lexicographic
-  hunkIds: string[]                 // every hunk id in the rollup — planner overrides may target any of these hunks
 }
 
 type DossierCompaction = {
@@ -376,6 +381,7 @@ Construction rules:
 - `policyFilesChanged` is computed from the pre-filter change inventory (`codegenie.toml`, any path under `.codegenie/skills/`), regardless of filter decisions.
 - `lenses` lists the run's enabled lens set (after `--lens` overrides) with one-line summaries from the lens registry; the planner receives one-line summaries only, never skill bodies.
 - The dossier includes hunk detail only for kept files; filtered files appear solely in `filterSummary`.
+- `hunkIndex` is the mandatory path-associated identifier inventory. It contains every kept changed file and all of its hunk ids, includes `oldPath` for renames/copies, and is immutable through every compaction level. Each chunk carries only the index entries for that chunk's files.
 
 ### Dossier Compaction
 
@@ -383,7 +389,7 @@ The rendered dossier prompt has a deterministic budget: `maxDossierPromptChars =
 
 1. Drop `excerpt` from all hunks (`what: "hunk excerpts"`).
 2. Reduce `staticSignals` per hunk from 5 to 1, keeping the highest-confidence signal (`what: "static signals"`).
-3. Collapse per-hunk detail into per-file summaries (clear `hunks`, keep `DossierFileEntry` scalar facts) in ascending `reviewPriority` order (`low` first, `critical` last), lexicographic within a priority tier, stopping as soon as the dossier fits. Collapsed files' hunk ids are listed in a `DossierDirectoryRollup` for their root so every hunk id remains visible to the planner (`what: "per-hunk detail"`).
+3. Collapse per-hunk detail into per-file summaries (clear `hunks`, keep `DossierFileEntry` scalar facts) in ascending `reviewPriority` order (`low` first, `critical` last), lexicographic within a priority tier, stopping as soon as the dossier fits. The immutable `hunkIndex` keeps every path-to-id association visible (`what: "per-hunk detail"`).
 4. Collapse per-file entries into `DossierDirectoryRollup`s, same ordering, stopping as soon as the dossier fits (`what: "per-file detail"`).
 
 `compaction.level` is `"full"` when no reduction ran and `"compacted"` otherwise. The full deterministic inventory is always complete on disk regardless of compaction; only the planner's view is reduced.
@@ -393,7 +399,7 @@ The rendered dossier prompt has a deterministic budget: `maxDossierPromptChars =
 If the dossier still exceeds the budget after step 4, planning chunks deterministically:
 
 - Partition kept files by `packageRoot`, falling back to the top-level directory when no package root is known. Sort roots lexicographically and greedily pack them, in order, into chunks whose rendered size (chunk files at full detail plus the shared preamble) fits the budget. A single root that alone exceeds the budget is split further by subdirectory, then by file; a single file that alone exceeds the budget enters its own chunk with compaction steps 1-3 applied to that chunk only.
-- Each chunk dossier carries the shared global sections (`pr`, `commits`, `policyFilesChanged`, `filterSummary`, `lenses`, `totals`) plus only its chunk's `files`, with `compaction = { level: "chunked", chunkCount, chunkIndex, chunkRoot }`.
+- Each chunk dossier carries the shared global sections (`pr`, `commits`, `policyFilesChanged`, `filterSummary`, `lenses`, `totals`) plus only its chunk's `files` and matching `hunkIndex` slice, with `compaction = { level: "chunked", chunkCount, chunkIndex, chunkRoot }`.
 - The same planner prompt runs once per chunk. Chunk calls may run concurrently, bounded by `llm.maxConcurrentCalls`. There is no meta-planner and no model-driven grouping in v1; hierarchical planning is deferred (Future Considerations).
 
 Mechanical concatenation of per-chunk `ReviewPlan`s, in chunk-index order:
@@ -410,7 +416,7 @@ The planner call is one `LlmRunner.runStructured` per dossier (or per chunk) wit
 
 Semantic validation runs in pipeline code on every schema-valid plan, before the plan is persisted:
 
-- Coverage decisions referencing unknown or filtered `hunkId`s are dropped with telemetry (`planner_unknown_hunk`).
+- Validation derives known ids, hunk languages, and current/old known paths exclusively from `hunkIndex`, so the accepted identifier set is definitionally the set displayed to the planner. Coverage decisions referencing unknown or filtered `hunkId`s are dropped with telemetry (`planner_unknown_hunk`).
 - A `skip` decision with an empty (after trimming) `reason` is invalid; it is recorded (`planner_invalid_skip`) and the hunk is treated as having no decision. The packet builder applies the `normal` fallback.
 - Lens names not in the run's enabled lens set are dropped from each decision (`planner_unknown_lens`); a decision left with zero lenses is treated as having an empty lens set, which the packet builder fills with the default lens set.
 - Enabled language-specific lenses whose `languages` do not include the hunk's canonical language are removed with dedicated incompatibility telemetry. If nothing survives, the same deterministic core plus exact-language defaults apply; TypeScript/TSX use `lang/typescript`, while JavaScript uses `lang/javascript`.
@@ -419,6 +425,8 @@ Semantic validation runs in pipeline code on every schema-valid plan, before the
 - Hunks with no surviving decision are left undecided; the packet builder owns the `normal` fallback so that later stages do not become independent risk classifiers.
 
 Validation never re-invokes the model. The persisted `review-plan.json` is the post-validation plan.
+
+Every validation also returns `PlannerCoverageStats`: submitted entries, accepted entries, accepted unique hunk ids, and unknown-id rejections. Known duplicate entries count as accepted entries even when the plan later merges them. Partial loss emits `planner_coverage_lost` at warn level; total loss emits it at error level, with a chunk root on chunked calls. Deterministic fallback coverage contributes zero submitted entries. Chunked planning sums entry counts and unions accepted model-submitted ids. The aggregate is copied to `ReviewRunStats.plannerCoverage`; when unknown ids were rejected, the Markdown Stats block renders the loss counts.
 
 ### Degraded-Planning Default Plan
 
@@ -486,6 +494,7 @@ Step 10 — packet lenses and review profile. `lenses` = the deduplicated union 
 Packet assembly details:
 
 - `id = sha256(path + sorted hunkIds + kind)` per `architecture.md`; stable across reruns of the same diff.
+- `dispatchRank = [fileClassRank, -packetChangedLines]`, where changed lines are counted from the source `DiffHunk`s before packet rendering or truncation. File class uses first-match precedence: snapshot/fixture (3), docs/config (2), test source (1), product source (0).
 - `prSummary`: deterministic one-paragraph projection of dossier metadata (PR title or first commit title plus totals), capped 500 chars; it is data framing, not model output.
 - `PacketHunk` line data is copied from the parsed diff with absolute old/new numbers preserved exactly; `changedNewLineNumbers` (add lines) and `changedOldLineNumbers` (delete lines) are derived from `DiffLine` kinds.
 - `toolBudget` is assigned from the review-profile/coverage/depth table below.
@@ -511,7 +520,7 @@ The worker runner (`src/pipeline/worker-runner.ts`) is the shared execution subs
 
 Scheduling:
 
-- A priority queue ordered by: task priority (`critical > high > normal > low`), then coverage level for packet tasks (`deep > normal > light`), then stable insertion order (packet path, first hunk position for packet tasks; candidate id for verifier tasks). Packet task priority derives from the packet's max configured `reviewPriority` across its hunks' files.
+- A priority queue ordered by: task priority (`critical > high > normal > low`), then coverage level for packet tasks (`deep > normal > light`), then lexicographic `dispatchRank` when both tasks carry one, then stable insertion order. Both initial and adaptive Stage-7 packet tasks copy the packet rank. Stage 8 and Stage 9 tasks omit it and therefore retain their previous byte-identical ordering. Packet task priority derives from the packet's max configured `reviewPriority` across its hunks' files.
 - Bounded concurrency via `p-limit` at `review.concurrency`; LLM provider calls are additionally capped by `llm.maxConcurrentCalls` inside the LLM runner.
 - Before each dispatch, the runner calls the budget ledger checkpoint. On exhaustion it stops dispatching: remaining queued tasks settle as `not_dispatched` and the stage records them per the budget ladder (Stage 7: hunks not reviewed, partial disclosure; Stage 9: reserved-slice rules apply).
 - Under budget pressure, higher-priority tasks dispatch first — this is the priority queue's only job in v1; there are no planner scheduling groups (Future Considerations).
@@ -718,7 +727,7 @@ Planner dossier and planning:
 - `dossier_full_fidelity_small_pr`: under budget, `compaction.level === "full"`, per-hunk entries carry symbol facts, top-5 capped static signals, and 400-char excerpts; byte-identical JSON across two builds.
 - `dossier_untrusted_truncation`: oversized PR body and commit bodies truncate to their caps.
 - `dossier_policy_files_risk_signal`: a diff touching `codegenie.toml` and `.codegenie/skills/x.md` populates `policyFilesChanged` even when those files are filtered.
-- `dossier_compaction_ordered_reductions`: an oversized dossier drops excerpts first, then trims signals, then collapses files by ascending priority into rollups whose `hunkIds` remain complete; every reduction appears in `compaction.omitted`.
+- `dossier_compaction_ordered_reductions`: an oversized dossier drops excerpts first, then trims signals, then collapses files by ascending priority while `hunkIndex` remains complete and path-associated; directory rollups contain no bare id pools; every reduction appears in `compaction.omitted`.
 - `planner_chunking_deterministic_merge`: a dossier exceeding the budget after compaction chunks by package root; per-chunk plans concatenate mechanically (coverage concat, dedup of lists, chunk-1 `declaredIntent`); identical chunking across reruns.
 - `planner_chunk_partial_failure`: one chunk fails terminally; only its hunks get default-plan coverage; `degradedPlanning: true` with the chunk root named in reasons.
 - `planner_validation_rules`: unknown-hunk decisions dropped; empty-reason skip treated as missing; unknown lenses dropped and empty lens sets flagged — each with its telemetry code.
@@ -740,7 +749,7 @@ Packet builder:
 
 Worker runner and lens execution:
 
-- `workers_respect_concurrency_and_priority`: with `review.concurrency = 2` and mixed priorities, at most two tasks run concurrently and dispatch follows priority then coverage then stable order.
+- `workers_respect_concurrency_and_priority`: with `review.concurrency = 2` and mixed priorities, at most two tasks run concurrently and Stage 7 dispatch follows priority, coverage, packet rank, then stable order; unranked Stage 8/9 tasks retain stable order.
 - `workers_isolated_context`: two packet workers' prompts share no conversation state; each result carries its own `workerId`/`packetId`.
 - `workers_stage7_single_retry`: a transient packet failure re-dispatches once; a second failure yields `status: "failed"` and `review_failed` coverage records for all packet hunks.
 - `workers_timeout_and_cancellation`: `perPassTimeoutMs` is a soft deadline — after it, the pass dispatches no further investigation calls and is routed to one forced finalize; the worker is aborted as terminal only at the hard deadline (`perPassTimeoutMs + finalizeGraceMs`, plan 85). The 2x run-level hard kill cancels in-flight workers immediately and still writes telemetry. Timed-out passes are not re-dispatched.

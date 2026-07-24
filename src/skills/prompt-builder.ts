@@ -181,10 +181,10 @@ const PLANNER_STATIC_SIGNAL_SNIPPET_CHARS = 140;
 const PLANNER_CHANGED_LINES_CAP = 40;
 
 export type PlannerDossierProjectionStats = {
-  version: "planner-routing-v1";
+  version: "planner-routing-v2";
   files: number;
-  hunks: number;
-  directoryRollupHunks: number;
+  indexedHunks: number;
+  uniqueHunks: number;
   richHunks: number;
   compactHunks: number;
   hunkExcerptsIncluded: number;
@@ -216,7 +216,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("planning"),
         injectionInstruction(),
         "Build a lightweight coverage plan that schedules later reviewer attention. Summarize the declared intent and likely changed behavior from the planner-dossier, then choose coverage, lenses, and short hunk-scoped reasons.",
-        "The planner-dossier is a routing projection, not the full review packet. Compact hunks still have stable hunk IDs and line ranges; request deeper coverage when compact metadata suggests centrality or uncertainty.",
+        "The planner-dossier is a routing projection, not the full review packet. Every changed file always lists its hunk IDs in hunkIndex; request deeper coverage when compact metadata suggests centrality or uncertainty.",
         "Coverage is the main scheduling output. Emit coverage entries only for hunks that need non-default coverage, specific lenses, optional hunk-scoped focus notes, related changed symbols/files, context hints, or an explicit skip. Omitted reviewable hunks are reviewed later at normal coverage with default core/language lenses. If unsure, prefer deeper coverage for central changed hunks.",
         "Use focusNotes, relatedSymbols, relatedFiles, and surroundingContextHints sparingly and only when they are grounded in a specific changed hunk. Omit empty optional arrays; if there are no surroundingContextHints, omit that field or send an empty array. If an observation cannot be tied to a changed hunk, keep it in diffUnderstanding.",
         "Context hint contract: choose a mechanical retrieval mode, not a risk category. Use kind:\"enclosing_symbol\" when you want Stage 6 to read a known function/method/type/test body. Use kind:\"call_site\" only when symbol names the callee/helper/API whose callers or usages should be inspected; do not use call_site when the desired context is that symbol's own body. Use kind:\"test\" for relevant test symbols, kind:\"line_range\" for explicit lines, and put semantic intent in reason.",
@@ -335,13 +335,12 @@ export function plannerDossierProjectionStats(dossier: PlannerDossier): PlannerD
 }
 
 function projectPlannerDossier(dossier: PlannerDossier): { projection: Record<string, unknown>; stats: PlannerDossierProjectionStats } {
-  const fileHunks = dossier.files.reduce((sum, file) => sum + file.hunks.length, 0);
-  const directoryRollupHunks = dossier.directories.reduce((sum, directory) => sum + directory.hunkIds.length, 0);
+  const indexedHunkIds = dossier.hunkIndex.flatMap((file) => file.hunkIds);
   const stats: PlannerDossierProjectionStats = {
-    version: "planner-routing-v1",
-    files: dossier.files.length,
-    hunks: fileHunks + directoryRollupHunks,
-    directoryRollupHunks,
+    version: "planner-routing-v2",
+    files: dossier.hunkIndex.length,
+    indexedHunks: indexedHunkIds.length,
+    uniqueHunks: new Set(indexedHunkIds).size,
     richHunks: 0,
     compactHunks: 0,
     hunkExcerptsIncluded: 0,

@@ -299,7 +299,8 @@ type DiffFile = {
 }
 
 type DiffHunk = {
-  id: string
+  id: string       // shortest unique 8/12/.../64-character prefix within this parsed diff
+  hunkHash: string // full 64-character coordinate digest; serialized only in stage-2 diff.json
   path: string
   oldStart: number
   oldLines: number
@@ -546,6 +547,7 @@ type ReviewProfile = "simple" | "standard" | "investigate"
 
 type ReviewPacket = {
   id: string
+  dispatchRank: [number, number] // Stage-7 tie-break: [file class, negative packet changed lines]
   kind: PacketKind
   prSummary: string
   intentText?: string // the dossier's already-fenced declared-intent projection (PR title/body extract), capped at ~1000 chars
@@ -706,7 +708,7 @@ type FinalFinding = CandidateFinding & {
 }
 ```
 
-Path semantics: for deleted files, `DiffFile.path` and `FileFacts.path` carry the old path; for renames, `path` is the new path and `oldPath` the old. `DiffAnchor.path` must use the side-appropriate path (LEFT anchors → old path, RIGHT anchors → new path). Hunk ids hash the same path the `DiffFile` carries.
+Path semantics: for deleted files, `DiffFile.path` and `FileFacts.path` carry the old path; for renames, `path` is the new path and `oldPath` the old. `DiffAnchor.path` must use the side-appropriate path (LEFT anchors → old path, RIGHT anchors → new path). `DiffHunk.hunkHash` hashes the same final path the `DiffFile` carries; `DiffHunk.id` is its allocated short prefix.
 
 Candidate findings are invalid unless they include evidence and a concrete failure mode. Pre-verification gates require an anchor only for inline-intended candidates; unanchored candidates are summary-only candidates. Inline GitHub publishing also requires a valid changed-line anchor.
 
@@ -1295,6 +1297,12 @@ async function runReview(input: ReviewInput, config: CodegenieConfig): Promise<R
 type ReviewResult = {
   summary: string
   coverage: RunCoverageStatus
+  runStats?: {
+    model?: { provider?: string; id?: string; reasoning?: ReasoningLevel }
+    elapsedMs?: number
+    git?: { repo: string; base: string; head: string; headSha?: string }
+    plannerCoverage?: PlannerCoverageStats
+  }
   findings: FinalFinding[] // publication "inline" only; suppressed findings are artifact-only (final-findings.json / final-selection.json)
   summaryOnlyFindings: FinalFinding[] // publication "summary-only"
   needsHumanAttention: Array<{ question: string; files: string[]; symbols: string[]; reason: string; confidence: "high" | "medium" }> // code-assembled notes from medium/high-confidence follow-up hints
@@ -1303,6 +1311,13 @@ type ReviewResult = {
     inline: Array<{ findingId: string; anchor: DiffAnchor }>
     reviewBody: string
   }
+}
+
+type PlannerCoverageStats = {
+  submittedEntries: number
+  acceptedEntries: number
+  acceptedUniqueHunks: number
+  rejectedUnknownHunk: number
 }
 ```
 

@@ -1390,6 +1390,7 @@ func NormalizeDecimals(externalDecimals uint64) uint8 {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "pkg/decimals.go",
           oldStart: 10,
           oldLines: 1,
@@ -1417,6 +1418,7 @@ func NormalizeDecimals(externalDecimals uint64) uint8 {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "pkg/decimals.go",
           oldStart: 10,
           oldLines: 1,
@@ -1452,6 +1454,7 @@ func NormalizeDecimals(externalDecimals uint64) uint8 {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "pkg/decimals.go",
           oldStart: 10,
           oldLines: 1,
@@ -1482,6 +1485,7 @@ func NormalizeDecimals(externalDecimals uint64) uint8 {
         hunks: [
           {
             id: `h${index}`,
+            hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
             path: filePath,
             oldStart: 1,
             oldLines: 1,
@@ -1521,6 +1525,7 @@ func NormalizeDecimals(externalDecimals uint64) uint8 {
       language: "go",
       hunks: Array.from({ length: 25 }, (_, index) => ({
         id: `h${index}`,
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: "pkg/api.go",
         oldStart: index + 1,
         oldLines: 1,

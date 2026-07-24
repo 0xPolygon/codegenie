@@ -421,7 +421,7 @@ Zero-work path: if the resolved diff is empty, or every changed file is filtered
 
 codegenie should parallelize review work when doing so does not reduce review quality.
 
-V1 should support bounded concurrency for independent hunk/file review packets. Packets are independent by construction in v1 — workers have isolated context and packets never span files — so all packets may run concurrently up to the configured limit. Scheduling order is per-packet priority derived from coverage level and configured priority; under budget pressure, higher-priority packets are dispatched first. The planner does not emit scheduling groups in v1 (see Future Considerations).
+V1 should support bounded concurrency for independent hunk/file review packets. Packets are independent by construction in v1 — workers have isolated context and packets never span files — so all packets may run concurrently up to the configured limit. Stage 7 scheduling orders configured priority, then coverage, then a deterministic product-source/test/docs/snapshot class rank and larger packet-local changed-line count; stable input order breaks final ties. This rank is Stage-7-only, so verification and system-review ordering is unchanged. The planner does not emit scheduling groups in v1 (see Future Considerations).
 
 Parallel execution rules:
 

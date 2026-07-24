@@ -607,6 +607,7 @@ index 1111111..2222222 100644
 function fakePacket(packetId: string, filePath: string, hunkId = "h1", symbol = "changed"): ReviewPacket {
   return {
     id: packetId,
+    dispatchRank: [0, -1],
     kind: "hunk",
     prSummary: "test",
     path: filePath,

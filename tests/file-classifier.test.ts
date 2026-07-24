@@ -446,6 +446,7 @@ describe("file filtering and classification", () => {
           hunks: [
             {
               id: "h1",
+              hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
               path: "src/deleted.ts",
               oldStart: 1,
               oldLines: 1,

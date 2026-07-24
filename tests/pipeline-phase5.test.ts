@@ -7,9 +7,9 @@ import type { LlmRunner, LlmStructuredRequest, PiAiAdapter, PiAssistantMessage, 
 import { parseDiff } from "../src/git/diff-parser.js";
 import { createPiRunner } from "../src/llm/pi-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
-import { buildReviewPackets, packetReviewContextFromDossier } from "../src/pipeline/packet-builder.js";
+import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier } from "../src/pipeline/packet-builder.js";
 import { runLensPackets } from "../src/pipeline/lens-runner.js";
-import { buildPlannerDossier, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
+import { buildPlannerDossier, compactPlannerDossier, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
 import { dedupeRankAndComposeReview } from "../src/pipeline/composer.js";
 import { applySeverityPolicy, capSeverityForBehaviorChange, guaranteeSeverity, hasCriticalOrHighGuarantee } from "../src/pipeline/severity-policy.js";
 import { aggregateRunCoverage, BudgetLedger, runReview } from "../src/pipeline/review-runner.js";
@@ -1229,6 +1229,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "app.ts",
           oldStart: 1,
           oldLines: 1,
@@ -1291,6 +1292,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "deleted.ts",
           oldStart: 1,
           oldLines: 1,
@@ -1336,6 +1338,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "deleted.ts",
           oldStart: 1,
           oldLines: 1,
@@ -1674,6 +1677,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h-helper",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "quote.ts",
           oldStart: 1,
           oldLines: 3,
@@ -1688,6 +1692,7 @@ describe("phase 5 pipeline regressions", () => {
         },
         {
           id: "h-caller",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "quote.ts",
           oldStart: 100,
           oldLines: 4,
@@ -1808,6 +1813,7 @@ describe("phase 5 pipeline regressions", () => {
       language: "typescript",
       hunks: [{
         id: "h-caller",
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: "caller.ts",
         oldStart: 10,
         oldLines: 5,
@@ -1828,6 +1834,7 @@ describe("phase 5 pipeline regressions", () => {
       language: "typescript",
       hunks: [{
         id: "h-scale",
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: "scale.ts",
         oldStart: 1,
         oldLines: 3,
@@ -1847,6 +1854,7 @@ describe("phase 5 pipeline regressions", () => {
       language: "typescript",
       hunks: [{
         id: "h-process",
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: "process.ts",
         oldStart: 1,
         oldLines: 3,
@@ -1981,6 +1989,7 @@ describe("phase 5 pipeline regressions", () => {
       language: "typescript",
       hunks: [{
         id: "h-helper",
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: "helper.ts",
         oldStart: 1,
         oldLines: 3,
@@ -2000,6 +2009,7 @@ describe("phase 5 pipeline regressions", () => {
       language: "typescript",
       hunks: [{
         id: "h-caller",
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: "caller.ts",
         oldStart: 10,
         oldLines: 3,
@@ -2113,6 +2123,7 @@ describe("phase 5 pipeline regressions", () => {
       language: "typescript",
       hunks: [{
         id: "h-helper",
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: "helper.ts",
         oldStart: 1,
         oldLines: 3,
@@ -2132,6 +2143,7 @@ describe("phase 5 pipeline regressions", () => {
       language: "typescript",
       hunks: [{
         id: "h-caller",
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: "caller.ts",
         oldStart: 10,
         oldLines: 3,
@@ -2238,6 +2250,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h-helper-1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "helper.ts",
           oldStart: 1,
           oldLines: 3,
@@ -2252,6 +2265,7 @@ describe("phase 5 pipeline regressions", () => {
         },
         {
           id: "h-helper-2",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "helper.ts",
           oldStart: 8,
           oldLines: 3,
@@ -2272,6 +2286,7 @@ describe("phase 5 pipeline regressions", () => {
       language: "typescript",
       hunks: [{
         id: "h-caller",
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: "caller.ts",
         oldStart: 20,
         oldLines: 3,
@@ -2379,6 +2394,7 @@ describe("phase 5 pipeline regressions", () => {
       language: "typescript",
       hunks: [{
         id: `h-${symbol}`,
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: `${symbol}.ts`,
         oldStart: 1,
         oldLines: 3,
@@ -2466,6 +2482,7 @@ describe("phase 5 pipeline regressions", () => {
       language: "typescript",
       hunks: [{
         id: "h-a",
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: "a.ts",
         oldStart: 1,
         oldLines: 3,
@@ -2485,6 +2502,7 @@ describe("phase 5 pipeline regressions", () => {
       language: "typescript",
       hunks: [{
         id: "h-b",
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: "b.ts",
         oldStart: 1,
         oldLines: 3,
@@ -3507,6 +3525,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h-import",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "app.ts",
           oldStart: 1,
           oldLines: 1,
@@ -3517,6 +3536,7 @@ describe("phase 5 pipeline regressions", () => {
         },
         {
           id: "h-function",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "app.ts",
           oldStart: 20,
           oldLines: 1,
@@ -3693,6 +3713,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "app.ts",
           oldStart: 1,
           oldLines: 1,
@@ -3703,6 +3724,7 @@ describe("phase 5 pipeline regressions", () => {
         },
         {
           id: "h2",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "app.ts",
           oldStart: 20,
           oldLines: 1,
@@ -3894,6 +3916,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "app.ts",
           oldStart: 1,
           oldLines: 0,
@@ -3904,6 +3927,7 @@ describe("phase 5 pipeline regressions", () => {
         },
         {
           id: "h2",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "app.ts",
           oldStart: 20,
           oldLines: 1,
@@ -5399,6 +5423,12 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.chunked).toBe(true);
     expect(promptRoots).toEqual(["pkg-a+pkg-b", "pkg-c"]);
     expect(result.plan.coverage.map((decision) => decision.hunkId).sort()).toEqual(["h1", "h2", "h3"]);
+    expect(result.plannerCoverage).toEqual({
+      submittedEntries: 3,
+      acceptedEntries: 3,
+      acceptedUniqueHunks: 3,
+      rejectedUnknownHunk: 0
+    });
   });
 
   it("splits oversized planner roots by subdirectory and file before compaction", async () => {
@@ -5520,6 +5550,7 @@ describe("phase 5 pipeline regressions", () => {
     const prompt = promptBuilder.buildPlannerPrompt({ dossier: fakeDossier(["app.ts"]), lenses: [], skills: [] }).prompt;
 
     expect(prompt).toContain("Build a lightweight coverage plan");
+    expect(prompt).toContain("Every changed file always lists its hunk IDs in hunkIndex");
     expect(prompt).toContain("calling submit_plan exactly once with object arguments");
     expect(prompt).toContain("Do not pass a JSON string");
     expect(prompt).toContain("do not wrap the object in a plan field");
@@ -5619,8 +5650,9 @@ describe("phase 5 pipeline regressions", () => {
     expect(projection.pr?.body.length).toBeLessThanOrEqual(1600);
     expect(projection.commits[0]?.body.length).toBeLessThanOrEqual(500);
     expect(projection.promptProjection).toMatchObject({
-      version: "planner-routing-v1",
-      hunks: 3,
+      version: "planner-routing-v2",
+      indexedHunks: 3,
+      uniqueHunks: 3,
       richHunks: 2,
       compactHunks: 1,
       staticSignalHunksPreserved: 1,
@@ -5674,11 +5706,87 @@ describe("phase 5 pipeline regressions", () => {
         rawDossierChars: expect.any(Number),
         projectedDossierChars: expect.any(Number),
         renderedPromptDossierChars: expect.any(Number),
-        hunks: 2,
+        indexedHunks: 2,
+        uniqueHunks: 2,
         compactHunks: 1,
         richHunks: 1
       })
     }));
+  });
+
+  it("keeps a path-associated hunk index through Run-A-sized full compaction", async () => {
+    const paths = Array.from({ length: 90 }, (_, index) => `pkg/file-${String(index + 1)}.ts`);
+    const base = fakeDossier(paths);
+    let nextHunk = 1;
+    const files = base.files.map((file, fileIndex) => {
+      const count = fileIndex < 33 ? 3 : 2;
+      const template = file.hunks[0]!;
+      const hunks = Array.from({ length: count }, (_, hunkIndex) => ({
+        ...template,
+        hunkId: `h${String(nextHunk++)}`,
+        oldStart: hunkIndex * 10 + 1,
+        newStart: hunkIndex * 10 + 1
+      }));
+      return { ...file, hunkCount: count, hunks };
+    });
+    const dossier: PlannerDossier = {
+      ...base,
+      files,
+      hunkIndex: files.map((file) => ({
+        path: file.path,
+        language: file.language,
+        hunkIds: file.hunks.map((hunk) => hunk.hunkId)
+      })),
+      totals: { ...base.totals, hunks: 213 }
+    };
+    const realBuilder = createPromptBuilder(fakeLensRegistry());
+    const forceFullCollapse = (candidate: PlannerDossier): string =>
+      candidate.files.length > 0
+        ? "x".repeat(MAX_DOSSIER_PROMPT_CHARS + 1)
+        : realBuilder.renderDossier(candidate);
+    const compacted = compactPlannerDossier(dossier, forceFullCollapse);
+
+    expect(compacted.files).toEqual([]);
+    expect(compacted.hunkIndex).toHaveLength(90);
+    expect(compacted.hunkIndex.flatMap((entry) => entry.hunkIds)).toHaveLength(213);
+    expect(compacted.directories.every((directory) => !("hunkIds" in directory))).toBe(true);
+    const projected = plannerDossierPromptProjection(compacted) as { hunkIndex: PlannerDossier["hunkIndex"] };
+    expect(projected.hunkIndex).toEqual(dossier.hunkIndex);
+
+    let submittedDossier: PlannerDossier | undefined;
+    const result = await runPlanner(dossier, config(), nullTelemetry(), {
+      runner: {
+        runStructured: async <T>() => ({
+          diffUnderstanding: { declaredIntent: "large plan", inferredBehavior: "large plan" },
+          coverage: (submittedDossier?.hunkIndex ?? []).flatMap((entry) => entry.hunkIds.map((hunkId) => ({
+            hunkId,
+            path: entry.path,
+            coverage: "normal",
+            lenses: [],
+            surroundingContextHints: [],
+            reason: "displayed id"
+          })))
+        }) as T
+      },
+      promptBuilder: {
+        ...fakePromptBuilder(),
+        renderDossier: forceFullCollapse,
+        buildPlannerPrompt: ({ dossier: promptDossier }: { dossier: PlannerDossier }) => {
+          submittedDossier = promptDossier;
+          return { prompt: JSON.stringify(promptDossier), templateVersion: "test", untrustedBlockCount: 1 };
+        }
+      },
+      lenses: [],
+      skills: []
+    });
+
+    expect(result.plan.coverage).toHaveLength(213);
+    expect(result.plannerCoverage).toEqual({
+      submittedEntries: 213,
+      acceptedEntries: 213,
+      acceptedUniqueHunks: 213,
+      rejectedUnknownHunk: 0
+    });
   });
 
   it("planner fallback covers full hunks after dossier compaction clears prompt hunks", async () => {
@@ -5704,6 +5812,12 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(result.degradedPlanning).toBe(true);
     expect(result.plan.coverage.map((decision) => decision.hunkId).sort()).toEqual(["h1", "h2"]);
+    expect(result.plannerCoverage).toEqual({
+      submittedEntries: 0,
+      acceptedEntries: 0,
+      acceptedUniqueHunks: 0,
+      rejectedUnknownHunk: 0
+    });
   });
 
   it("chunk fallback covers full hunks when compacted chunks omit hunk detail", async () => {
@@ -5784,6 +5898,12 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(result.plan.coverage).toHaveLength(1);
+    expect(result.plannerCoverage).toEqual({
+      submittedEntries: 2,
+      acceptedEntries: 2,
+      acceptedUniqueHunks: 1,
+      rejectedUnknownHunk: 0
+    });
     expect(result.plan.coverage[0]).toMatchObject({
       hunkId: "h1",
       coverage: "normal",
@@ -5802,6 +5922,12 @@ describe("phase 5 pipeline regressions", () => {
         events.push(event);
       }
     };
+    const baseDossier = fakeDossier(["app.ts"]);
+    const dossier: PlannerDossier = {
+      ...baseDossier,
+      hunkIndex: baseDossier.hunkIndex.map((entry) => ({ ...entry, oldPath: "old-app.ts" })),
+      files: baseDossier.files.map((file) => ({ ...file, oldPath: "old-app.ts" }))
+    };
     const runner: LlmRunner = {
       runStructured: async <T>() =>
         ({
@@ -5815,12 +5941,12 @@ describe("phase 5 pipeline regressions", () => {
             reason: "review changed handler",
             focusNotes: ["  app.ts changes handler, which returns a transformed amount  ", ""],
             relatedSymbols: ["handler", "handler"],
-            relatedFiles: ["app.ts", "missing.ts"]
+            relatedFiles: ["app.ts", "old-app.ts", "missing.ts"]
           }]
         }) as T
     };
 
-    const result = await runPlanner(fakeDossier(["app.ts"]), config(), telemetry, {
+    const result = await runPlanner(dossier, config(), telemetry, {
       runner,
       promptBuilder: fakePromptBuilder(),
       lenses: [{
@@ -5841,7 +5967,7 @@ describe("phase 5 pipeline regressions", () => {
         lenses: ["core/code-review"],
         focusNotes: ["app.ts changes handler, which returns a transformed amount"],
         relatedSymbols: ["handler"],
-        relatedFiles: ["app.ts"]
+        relatedFiles: ["app.ts", "old-app.ts"]
       })
     ]);
     expect(events).toEqual(expect.arrayContaining([
@@ -6020,6 +6146,7 @@ describe("phase 5 pipeline regressions", () => {
     const baseDossier = fakeDossier(["app.ts"]);
     const dossier: PlannerDossier = {
       ...baseDossier,
+      hunkIndex: [{ path: "app.ts", language: "typescript", hunkIds: ["h1", "h2"] }],
       files: [
         {
           ...baseDossier.files[0]!,
@@ -6096,6 +6223,12 @@ describe("phase 5 pipeline regressions", () => {
     const packetHunks = packets.flatMap((packet) => packet.hunks);
 
     expect(result.plan.coverage.map((decision) => decision.hunkId)).toEqual(["h2"]);
+    expect(result.plannerCoverage).toEqual({
+      submittedEntries: 2,
+      acceptedEntries: 1,
+      acceptedUniqueHunks: 1,
+      rejectedUnknownHunk: 1
+    });
     expect(packetHunks.map((hunk) => hunk.hunkId).sort()).toEqual(["h1", "h2"]);
     expect(packetHunks.find((hunk) => hunk.hunkId === "h2")?.plannerFallbackReason).toBeUndefined();
     expect(events).toContainEqual(expect.objectContaining({
@@ -6104,9 +6237,15 @@ describe("phase 5 pipeline regressions", () => {
       message: "planner_unknown_hunk",
       data: expect.objectContaining({ hunkId: "h1-suffix" })
     }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 5,
+      level: "warn",
+      message: "planner_coverage_lost",
+      data: expect.objectContaining({ submittedEntries: 2, acceptedEntries: 1, rejectedUnknownHunk: 1 })
+    }));
   });
 
-  it("uses rollup hunk language when recovering invalid skip decisions for compacted hunks", async () => {
+  it("uses hunk-index language when recovering invalid skip decisions for compacted hunks", async () => {
     const dossier = fakeDossier(["app.ts"]);
     const compacted: PlannerDossier = {
       ...dossier,
@@ -6121,9 +6260,7 @@ describe("phase 5 pipeline regressions", () => {
           labels: [],
           maxReviewPriority: "normal",
           testFileCount: 0,
-          representativePaths: ["app.ts"],
-          hunkIds: ["h1"],
-          hunkLanguages: { h1: "typescript" }
+          representativePaths: ["app.ts"]
         }
       ],
       compaction: { level: "compacted", omitted: [{ what: "per-hunk detail", count: 1, reason: "test" }] }
@@ -6156,10 +6293,49 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
+  it("reports total planner coverage loss as an error without manufacturing fallback submissions", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        diffUnderstanding: { declaredIntent: "bad id", inferredBehavior: "bad id" },
+        coverage: [{
+          hunkId: "app.ts",
+          path: "app.ts",
+          coverage: "deep",
+          lenses: [],
+          surroundingContextHints: [],
+          reason: "path substituted for id"
+        }]
+      }) as T
+    };
+
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), {
+      ...nullTelemetry(),
+      event: (event) => events.push(event)
+    }, { runner, promptBuilder: fakePromptBuilder(), lenses: [], skills: [] });
+
+    expect(result.plan.coverage).toEqual([]);
+    expect(result.plannerCoverage).toEqual({
+      submittedEntries: 1,
+      acceptedEntries: 0,
+      acceptedUniqueHunks: 0,
+      rejectedUnknownHunk: 1
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      level: "error",
+      message: "planner_coverage_lost",
+      data: expect.objectContaining({ submittedEntries: 1, acceptedEntries: 0, rejectedUnknownHunk: 1 })
+    }));
+  });
+
   it("removes wrong-language planner lenses and restores exact deterministic defaults", async () => {
     const base = fakeDossier(["lib.rs", "service.py"]);
     const dossier: PlannerDossier = {
       ...base,
+      hunkIndex: base.hunkIndex.map((entry, index) => ({
+        ...entry,
+        language: index === 0 ? "rust" : "python"
+      })),
       files: base.files.map((file, index) => ({
         ...file,
         language: index === 0 ? "rust" : "python"
@@ -6367,6 +6543,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "app.test.ts",
           oldStart: 10,
           oldLines: 1,
@@ -6413,6 +6590,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "app.ts",
           oldStart: 100,
           oldLines: 1,
@@ -6423,6 +6601,7 @@ describe("phase 5 pipeline regressions", () => {
         },
         {
           id: "h2",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "app.ts",
           oldStart: 5,
           oldLines: 3,
@@ -6501,6 +6680,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "new.ts",
           oldStart: 10,
           oldLines: 1,
@@ -6874,6 +7054,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "src/review-note.md",
           oldStart: 1,
           oldLines: 1,
@@ -6909,6 +7090,7 @@ describe("phase 5 pipeline regressions", () => {
       hunks: [
         {
           id: "h1",
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: "docs/review-note.md",
           oldStart: 1,
           oldLines: 1,
@@ -7692,6 +7874,128 @@ describe("phase 5 pipeline regressions", () => {
     expect(outcomes).toEqual([
       expect.objectContaining({ outcome: "completed", task: expect.objectContaining({ packetId: "deep" }) }),
       expect.objectContaining({ outcome: "not_dispatched", task: expect.objectContaining({ packetId: "normal" }) })
+    ]);
+  });
+
+  it("orders equal-tier Stage 7 tasks by dispatch rank while unranked Stage 9 tasks retain input order", async () => {
+    const dispatched: string[] = [];
+    const rankedRunner = createWorkerRunner({
+      concurrency: 1,
+      checkpoint: (() => {
+        let calls = 0;
+        return () => ++calls === 1 ? "ok" as const : "exhausted" as const;
+      })()
+    });
+    const task = (packetId: string, dispatchRank: number[]) => ({
+      stage: 7 as const,
+      priority: "normal" as const,
+      coverage: "normal" as const,
+      dispatchRank,
+      packetId,
+      timeoutMs: 10_000,
+      retryOnTransient: false,
+      run: async () => {
+        dispatched.push(packetId);
+        return packetId;
+      }
+    });
+
+    await rankedRunner.schedule([
+      task("snapshot", [3, -100]),
+      task("product-small", [0, -2]),
+      task("product-large", [0, -20])
+    ]);
+    expect(dispatched).toEqual(["product-large"]);
+
+    const stage9Dispatched: string[] = [];
+    const unrankedRunner = createWorkerRunner({
+      concurrency: 1,
+      checkpoint: (() => {
+        let calls = 0;
+        return () => ++calls === 1 ? "ok" as const : "exhausted" as const;
+      })()
+    });
+    await unrankedRunner.schedule(["first", "second"].map((candidateId) => ({
+      stage: 9 as const,
+      priority: "normal" as const,
+      candidateId,
+      timeoutMs: 10_000,
+      retryOnTransient: false,
+      run: async () => {
+        stage9Dispatched.push(candidateId);
+        return candidateId;
+      }
+    })));
+    expect(stage9Dispatched).toEqual(["first"]);
+  });
+
+  it("classifies mutually exclusive packet dispatch ranks in precedence order", () => {
+    const source = { testStatus: "source" as const };
+    const test = { testStatus: "test" as const };
+    expect(packetDispatchRank("tests/__snapshots__/view.test.ts", test, 5)).toEqual([3, -5]);
+    expect(packetDispatchRank("fixtures/config.md", source, 4)).toEqual([3, -4]);
+    expect(packetDispatchRank("src/view.snap.ts", source, 3)).toEqual([3, -3]);
+    expect(packetDispatchRank("README.md", source, 2)).toEqual([2, -2]);
+    expect(packetDispatchRank(".eslintrc", test, 2)).toEqual([2, -2]);
+    expect(packetDispatchRank("Makefile", source, 2)).toEqual([2, -2]);
+    expect(packetDispatchRank("tests/core.test.ts", test, 2)).toEqual([1, -2]);
+    expect(packetDispatchRank("src/core.ts", source, 2)).toEqual([0, -2]);
+  });
+
+  it("wires packet ranks into Stage 7 so a budget stop dispatches product source first", async () => {
+    const paths = ["tests/__snapshots__/ui.snap.ts", "README.md", "src/core.ts"];
+    const files = paths.map((filePath, index) => {
+      const file = fakeDiffFile(filePath, `export const value${String(index)} = ${String(index)};`);
+      const id = `h${String(index + 1)}`;
+      return {
+        ...file,
+        hunks: file.hunks.map((hunk) => ({
+          ...hunk,
+          id,
+          hunkHash: String(index + 1).repeat(64)
+        }))
+      };
+    });
+    const facts = paths.map((filePath) => fakeFacts(filePath, "per-hunk"));
+    const plan: ReviewPlan = {
+      diffUnderstanding: { declaredIntent: "mixed files", inferredBehavior: "mixed files" },
+      coverage: files.map((file) => ({
+        hunkId: file.hunks[0]!.id,
+        path: file.path,
+        coverage: "normal",
+        lenses: ["core/code-review"],
+        surroundingContextHints: [],
+        reason: "mixed dispatch fixture"
+      }))
+    };
+    const packets = await buildReviewPackets(plan, files, facts, fakeRepositoryIndex(), nullTelemetry(), {
+      config: config(),
+      enabledLenses: ["core/code-review"]
+    });
+    expect(Object.fromEntries(packets.map((packet) => [packet.path, packet.dispatchRank]))).toEqual({
+      "tests/__snapshots__/ui.snap.ts": [3, -1],
+      "README.md": [2, -1],
+      "src/core.ts": [0, -1]
+    });
+
+    let checkpoints = 0;
+    const results = await runLensPackets(plan, packets, fakeTools(), {
+      ...config(),
+      review: { ...config().review, concurrency: 1 }
+    }, nullTelemetry(), {
+      runner: {
+        runStructured: async <T>() => ({ findings: [], followUpHints: [], uncertainties: [] }) as T
+      },
+      promptBuilder: fakePromptBuilder(),
+      lensRegistry: fakeLensRegistry(),
+      checkpoint: () => ++checkpoints === 1 ? "ok" : "exhausted",
+      diff: { files }
+    });
+    const pathByPacket = new Map(packets.map((packet) => [packet.id, packet.path]));
+    expect(results.filter((result) => result.status === "completed").map((result) => pathByPacket.get(result.packetId))).toEqual(["src/core.ts"]);
+    expect(results.filter((result) => result.status === "skipped").map((result) => pathByPacket.get(result.packetId)).sort()).toEqual([
+      "README.md",
+      "tests/__snapshots__/ui.snap.ts"
     ]);
   });
 
@@ -9089,6 +9393,7 @@ describe("phase 5 pipeline regressions", () => {
           hunks: [
             {
               id: "h1",
+              hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
               path: "app.ts",
               oldStart: 10,
               oldLines: 1,
@@ -9099,6 +9404,7 @@ describe("phase 5 pipeline regressions", () => {
             },
             {
               id: "h2",
+              hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
               path: "app.ts",
               oldStart: 12,
               oldLines: 1,
@@ -9176,6 +9482,7 @@ describe("phase 5 pipeline regressions", () => {
           hunks: [
             {
               id: "h1",
+              hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
               path: "app.ts",
               oldStart: 10,
               oldLines: 1,
@@ -9186,6 +9493,7 @@ describe("phase 5 pipeline regressions", () => {
             },
             {
               id: "h2",
+              hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
               path: "app.ts",
               oldStart: 15,
               oldLines: 1,
@@ -9196,6 +9504,7 @@ describe("phase 5 pipeline regressions", () => {
             },
             {
               id: "h3",
+              hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
               path: "app.ts",
               oldStart: 20,
               oldLines: 1,
@@ -10744,7 +11053,13 @@ describe("phase 5 pipeline regressions", () => {
       runStats: {
         model: { provider: "anthropic", id: "claude-opus-4-8", reasoning: "xhigh" },
         elapsedMs: 450_000,
-        git: { repo: "codegenie", base: "master", head: "feature/stats", headSha: "abcdef0123456789abcdef0123456789abcdef01" }
+        git: { repo: "codegenie", base: "master", head: "feature/stats", headSha: "abcdef0123456789abcdef0123456789abcdef01" },
+        plannerCoverage: {
+          submittedEntries: 15,
+          acceptedEntries: 1,
+          acceptedUniqueHunks: 1,
+          rejectedUnknownHunk: 14
+        }
       },
       budgetSummary: {
         completeness: "complete",
@@ -10782,6 +11097,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(output).toContain("Model: anthropic claude-opus-4-8 xhigh");
     expect(output).toContain("Elapsed time: 7m 30s");
     expect(output).toContain("Git: codegenie from master to feature/stats (abcdef0123)");
+    expect(output).toContain("Planner coverage: submitted 15, accepted 1 entry / 1 unique hunk, rejected 14 unknown hunks");
     expect(output).toContain("Review completeness: complete.");
     expect(output).toContain("Usage: model calls 5, tokens 225, cost $0.1234.");
     expect(output).toContain("Effective caps: model calls 4 (configured 2, multiplier 2), tokens 200 (configured 100, multiplier 2).");
@@ -12855,6 +13171,7 @@ function fakePacket(opts: {
   const packetPath = opts.path ?? "app.ts";
   return {
     id: opts.id ?? "packet-1",
+    dispatchRank: [0, -1],
     kind: "hunk",
     prSummary: "test",
     path: packetPath,
@@ -12918,6 +13235,7 @@ function fakeDiffFile(path: string, content = "export const value = 1;"): DiffFi
     hunks: [
       {
         id: "h1",
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path,
         oldStart: 1,
         oldLines: 1,
@@ -12939,6 +13257,7 @@ function genericTestRewriteFile(): DiffFile {
     hunks: [
       {
         id: "h1",
+        hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
         path: pathName,
         oldStart: 1,
         oldLines: 7,
@@ -12970,6 +13289,7 @@ function fakeMultiHunkFile(hunks: Array<{ id: string; newStart: number; content:
     language: "typescript",
     hunks: hunks.map((hunk) => ({
       id: hunk.id,
+      hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
       path: "app.ts",
       oldStart: hunk.newStart,
       oldLines: 1,
@@ -13010,6 +13330,7 @@ function fakeDiff(): UnifiedDiff {
         hunks: [
           {
             id: "h1",
+            hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
             path: "app.ts",
             oldStart: 1,
             oldLines: 1,
@@ -13033,6 +13354,7 @@ function fakeChangedLineDiff(lines: Array<{ path: string; hunkId: string; line: 
       hunks: [
         {
           id: item.hunkId,
+          hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
           path: item.path,
           oldStart: item.line,
           oldLines: 1,
@@ -13057,6 +13379,7 @@ function fakeRenameDiff(): UnifiedDiff {
         hunks: [
           {
             id: "h1",
+            hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
             path: "new.ts",
             oldStart: 1,
             oldLines: 1,
@@ -13081,6 +13404,7 @@ function fakeTwoLineDiff(): UnifiedDiff {
         hunks: [
           {
             id: "h1",
+            hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
             path: "app.ts",
             oldStart: 1,
             oldLines: 1,
@@ -13151,6 +13475,11 @@ function fakeDossier(paths: string[]): PlannerDossier {
     target: {},
     commits: [],
     policyFilesChanged: [],
+    hunkIndex: paths.map((filePath, index) => ({
+      path: filePath,
+      language: "typescript",
+      hunkIds: [`h${String(index + 1)}`]
+    })),
     files: paths.map((filePath, index) => ({
       path: filePath,
       status: "modified",

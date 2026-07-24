@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildDiffAnchorIndex, parseDiff, validateDiffAnchor } from "../src/git/diff-parser.js";
+import { allocateShortHunkIds, buildDiffAnchorIndex, parseDiff, validateDiffAnchor } from "../src/git/diff-parser.js";
+import type { DiffHunk, UnifiedDiff } from "../src/types.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("diff parser", () => {
@@ -21,7 +22,8 @@ describe("diff parser", () => {
     expect(diff.files[4]?.modeOnly).toBe(true);
 
     const firstHunk = diff.files[0]?.hunks[0];
-    expect(firstHunk?.id).toMatch(/^[0-9a-f]{64}$/);
+    expect(firstHunk?.id).toMatch(/^[0-9a-f]{8}$/);
+    expect(firstHunk?.hunkHash).toMatch(/^[0-9a-f]{64}$/);
     expect(parseDiff(FIXTURE_DIFF).files[0]?.hunks[0]?.id).toBe(firstHunk?.id);
     expect(firstHunk?.lines).toMatchObject([
       { kind: "context", oldLineNumber: 1, newLineNumber: 1 },
@@ -56,11 +58,28 @@ index 1111111..2222222 100644
  line3
 `);
 
-    const originalId = original.files[0]?.hunks[0]?.id;
-    const shiftedId = shifted.files[0]?.hunks[0]?.id;
-    expect(originalId).toBe("67b374e1b962d93f6e48a62c580d36498d2bbe3c3c03e35813c353894883d2e5");
-    expect(shiftedId).toMatch(/^[0-9a-f]{64}$/u);
+    const originalHunk = original.files[0]?.hunks[0];
+    const shiftedHunk = shifted.files[0]?.hunks[0];
+    const originalId = originalHunk?.id;
+    const shiftedId = shiftedHunk?.id;
+    expect(originalId).toBe("67b374e1");
+    expect(originalHunk?.hunkHash).toBe("67b374e1b962d93f6e48a62c580d36498d2bbe3c3c03e35813c353894883d2e5");
+    expect(shiftedId).toMatch(/^[0-9a-f]{8}$/u);
     expect(shiftedId).not.toBe(originalId);
+  });
+
+  it("extends only colliding short-id groups and rejects duplicate full digests", () => {
+    const firstHash = `aaaaaaaa1${"0".repeat(55)}`;
+    const secondHash = `aaaaaaaa2${"0".repeat(55)}`;
+    const distinctHash = `bbbbbbbb${"0".repeat(56)}`;
+    const allocated = allocateShortHunkIds(syntheticDiff([firstHash, secondHash, distinctHash]));
+
+    expect(allocated.files[0]?.hunks.map((hunk) => hunk.id)).toEqual([
+      "aaaaaaaa1000",
+      "aaaaaaaa2000",
+      "bbbbbbbb"
+    ]);
+    expect(() => allocateShortHunkIds(syntheticDiff([firstHash, firstHash]))).toThrow(/duplicate hunk digest/u);
   });
 
   it("validates changed-line anchors on the correct side", () => {
@@ -247,6 +266,27 @@ index 1234567..89abcde 160000
     });
   });
 });
+
+function syntheticDiff(hashes: string[]): UnifiedDiff {
+  return {
+    files: [{
+      path: "synthetic.ts",
+      status: "modified",
+      language: "typescript",
+      hunks: hashes.map((hunkHash, index): DiffHunk => ({
+        id: hunkHash,
+        hunkHash,
+        path: "synthetic.ts",
+        oldStart: index + 1,
+        oldLines: 1,
+        newStart: index + 1,
+        newLines: 1,
+        header: "",
+        lines: [{ kind: "add", content: String(index), newLineNumber: index + 1 }]
+      }))
+    }]
+  };
+}
 
 const FIXTURE_DIFF = `diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644
