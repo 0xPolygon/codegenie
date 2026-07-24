@@ -5,6 +5,7 @@ Planned from: owner requests 2026-07-23 (add first-class language support for Ru
 Planned at: commit `fbcc669` (branch `next`)
 Design critique: `reviews/projects/plan-98-language-support-crit/crit_summary.md`
 Recommended priority: first post-Action product arc. This creates the substrate for the PUNCHLIST eval-diversity guard; the real-repo, real-model second-language case remains a follow-up after landing.
+Post-completion corrective extension: Plan 99 (`99-issue-99-plan-98-correctness-follow-up.md`) owns the final-review Unicode offset repairs, generic likely-test compatibility restoration, and associated dead-code cleanup. Plan 98 remains the completed feature plan.
 
 Implementation reconciliation (2026-07-23): the intended single inventory boundary was preserved, but it occurred as a branch push before Phase-5 validation rather than as the final release action. The complete Phase 1-4 inventory reached `origin/next` at `eb20533` at `2026-07-23T20:28:11-04:00`, establishing the one external Stage-5 inventory/registry/cache boundary. Reviewed Phase-5 gate `40b87b0` was pushed at `2026-07-23T20:31:28-04:00` without changing bundled skill inventory/content or `LensRegistry.registryHash()`. Neither push was a master merge, tag, npm publication, or GitHub release; pre-`eb20533` and post-`eb20533` measurements are non-comparable.
 
