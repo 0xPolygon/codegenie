@@ -1356,6 +1356,25 @@ describe("packet packing eval analysis", () => {
   });
 
   it("joins requested and routed lenses to the persisted Stage-5 plan and A atoms", () => {
+    const pruned = abcCohort(1);
+    for (const run of pruned.runs) {
+      for (const execution of run.executions) {
+        for (const decision of execution.plan.coverage) {
+          decision.lenses = ["core/code-review", "core/tests"];
+        }
+        for (const event of execution.events.filter((entry) => entry.message === "same_file_atoms_packed")) {
+          event.data = {
+            ...event.data,
+            requestedLensSignature: JSON.stringify(["core/code-review", "core/tests"])
+          };
+        }
+      }
+    }
+    expect(failureCodes(analyzeEvalCohort(pruned, 1).failures)).not.toEqual(expect.arrayContaining([
+      "requested_lens_join",
+      "routed_lens_join"
+    ]));
+
     const planned = abcCohort(1);
     planned.runs[0]!.executions[0]!.plan.coverage[0]!.lenses = ["security/auth"];
     expect(failureCodes(analyzeEvalCohort(planned, 1).failures)).toContain("requested_lens_join");
@@ -1509,6 +1528,12 @@ describe("packet packing eval analysis", () => {
     await attachProducerSummaryEvidence(base.runs[0]!);
     expect(failureCodes(analyzeEvalCohort(base, 1).failures)).not.toContain("paid_summary_reconciliation");
 
+    const reorderedAttention = structuredClone(base);
+    reorderedAttention.runs[0]!.executions[0]!.summaryArtifacts!.attention = [
+      ...(reorderedAttention.runs[0]!.executions[0]!.summaryArtifacts!.attention as unknown[])
+    ].reverse();
+    expect(failureCodes(analyzeEvalCohort(reorderedAttention, 1).failures)).not.toContain("paid_summary_reconciliation");
+
     const paths = [
       ["cost", "costBreakdown", "total", "costUSD"],
       ["run", "totals", "costBreakdown", "total", "costUSD"],
@@ -1610,6 +1635,33 @@ describe("packet packing eval analysis", () => {
       mutate(cohort.runs[1]!.executions[0]!);
       expect(failureCodes(analyzeEvalCohort(cohort, 1).failures), `mutation ${index}`).toContain("paid_evidence_relations");
     }
+  });
+
+  it("accepts Stage 9 producers only for relational uncertainty promotions", () => {
+    const promoted = abcCohort(1);
+    const promotedRun = promoted.runs[1]!;
+    const promotedExecution = promotedRun.executions[0]!;
+    const promotedCandidate = promotedExecution.candidateFindings[0]!;
+    const provenance = {
+      source: "uncertainty_promotion" as const,
+      sourceKind: "uncertainty" as const,
+      sourcePacketId: promotedCandidate.producedBy.packetId,
+      question: "Does this changed boundary remain safe?",
+      files: [promotedCandidate.path],
+      symbols: [],
+      reason: "The packet review left the boundary unresolved."
+    };
+    promotedCandidate.producedBy.stage = 9;
+    promotedCandidate.provenance = provenance;
+    promotedExecution.verification[0]!.candidateProvenance = structuredClone(provenance);
+    refreshRunEvidenceScores(promotedRun);
+    expect(failureCodes(analyzeEvalCohort(promoted, 1).failures)).not.toContain("paid_evidence_relations");
+
+    const arbitraryStage9 = abcCohort(1);
+    const arbitraryRun = arbitraryStage9.runs[1]!;
+    arbitraryRun.executions[0]!.candidateFindings[0]!.producedBy.stage = 9;
+    refreshRunEvidenceScores(arbitraryRun);
+    expect(failureCodes(analyzeEvalCohort(arbitraryStage9, 1).failures)).toContain("paid_evidence_relations");
   });
 
   it("replays verifier gates from raw candidates instead of trusting collusive persisted decisions", () => {

@@ -2511,15 +2511,11 @@ function analyzeTreatmentExecution(
       ) {
         failures.push(failure("requested_lens_join", `packet ${packetId} requested-lens telemetry does not match Stage-5 decisions for its A atoms`));
       }
-      const aRequestedLenses = sortedUnique(resolvedAtoms.flatMap((atom) => requestedLensesForAtom(baselineExecution, atom) ?? []));
+      // Stage 6 may validly prune a requested lens before constructing the A
+      // atom. Packing must preserve that routed A surface exactly; it must not
+      // reinterpret intentional A-side routing as a packing regression.
       const aRoutedLenses = sortedUnique(resolvedAtoms.flatMap((atom) => atom.lenses));
       const selectedRoutedLenses = sortedUnique(packet.lenses);
-      const missingFromA = aRequestedLenses.filter((lens) => !aRoutedLenses.includes(lens));
-      if (missingFromA.length > 0) {
-        failures.push(failure("a_lens_route_join", `A atoms omit one or more of their explicit Stage-5 lenses`, {
-          missingLensHashes: missingFromA.map((lens) => sha256Hex(lens))
-        }));
-      }
       if (stableJson(selectedRoutedLenses) !== stableJson(aRoutedLenses)) {
         const missingRoutedLenses = aRoutedLenses.filter((lens) => !selectedRoutedLenses.includes(lens));
         const extraRoutedLenses = selectedRoutedLenses.filter((lens) => !aRoutedLenses.includes(lens));
@@ -4330,6 +4326,7 @@ function attentionRelationsMatch(
   records: Array<z.infer<typeof attentionRecordSchema>>,
   execution: EvalExecutionInput
 ): boolean {
+  const packetById = new Map(execution.packets.map((packet) => [packet.id, packet]));
   const candidatePacketById = new Map(execution.candidateFindings.map((candidate) => [candidate.id, candidate.producedBy.packetId]));
   const countByPacket = (predicate: (candidate: CandidateFinding) => boolean): NumericRecord => {
     const counts: NumericRecord = {};
@@ -4353,20 +4350,21 @@ function attentionRelationsMatch(
     for (const packetId of packetIds) published[packetId] = (published[packetId] ?? 0) + 1;
   }
   const plannedHunkIds = new Set(execution.plan.coverage.map((decision) => decision.hunkId));
-  return records.length === execution.packets.length && records.every((record, index) => {
-    const packet = execution.packets[index];
-    if (packet === undefined) return false;
-    const coverageSource = packet.coverageEscalation !== undefined
-      ? `escalated:${packet.coverageEscalation.rule}`
-      : packet.hunks.some((hunk) => hunk.plannerFallbackReason !== undefined) ||
-          packet.hunks.every((hunk) => !plannedHunkIds.has(hunk.hunkId))
-        ? "deterministic_default"
-        : "planner";
-    return record.packetId === packet.id && record.path === packet.path && record.coverage === packet.coverage &&
-      record.coverageSource === coverageSource && record.ensemblePasses >= 1 &&
-      record.directCandidates === (direct[packet.id] ?? 0) && record.promotedCandidates === (promoted[packet.id] ?? 0) &&
-      record.keptVerified === (kept[packet.id] ?? 0) && record.published === (published[packet.id] ?? 0);
-  });
+  return packetById.size === execution.packets.length && records.length === execution.packets.length &&
+    unique(records.map((record) => record.packetId)).length === records.length && records.every((record) => {
+      const packet = packetById.get(record.packetId);
+      if (packet === undefined) return false;
+      const coverageSource = packet.coverageEscalation !== undefined
+        ? `escalated:${packet.coverageEscalation.rule}`
+        : packet.hunks.some((hunk) => hunk.plannerFallbackReason !== undefined) ||
+            packet.hunks.every((hunk) => !plannedHunkIds.has(hunk.hunkId))
+          ? "deterministic_default"
+          : "planner";
+      return record.packetId === packet.id && record.path === packet.path && record.coverage === packet.coverage &&
+        record.coverageSource === coverageSource && record.ensemblePasses >= 1 &&
+        record.directCandidates === (direct[packet.id] ?? 0) && record.promotedCandidates === (promoted[packet.id] ?? 0) &&
+        record.keptVerified === (kept[packet.id] ?? 0) && record.published === (published[packet.id] ?? 0);
+    });
 }
 
 function humanAttentionRelationsMatch(input: z.infer<typeof humanAttentionArtifactSchema>): boolean {
@@ -4535,8 +4533,11 @@ function validateExecutionEvidence(run: EvalCaseRunInput, execution: EvalExecuti
   for (const candidate of execution.candidateFindings) {
     const packet = packetById.get(candidate.producedBy.packetId);
     const record = verificationById.get(candidate.id);
+    const producerStageValid = candidate.provenance?.source === "uncertainty_promotion"
+      ? candidate.producedBy.stage === 9 && candidate.provenance.sourcePacketId === candidate.producedBy.packetId
+      : candidate.producedBy.stage === 7 || candidate.producedBy.stage === 8;
     const producerValid = packet !== undefined && candidate.producedBy.kind === "packet" &&
-      (candidate.producedBy.stage === 7 || candidate.producedBy.stage === 8) && candidate.producedBy.lensId.trim().length > 0 &&
+      producerStageValid && candidate.producedBy.lensId.trim().length > 0 &&
       packet.lenses.includes(candidate.producedBy.lensId) && candidate.producedBy.skillIds.every((id) => id.trim().length > 0);
     const provenanceValid = candidate.provenance === undefined || (
       packetById.has(candidate.provenance.sourcePacketId) && candidate.provenance.question.trim().length > 0 && candidate.provenance.reason.trim().length > 0 &&
