@@ -35,7 +35,7 @@ const lines = [
   "",
   "- `codegenie review --provider <provider> --model <model> [--reasoning <level>]`",
   "- `codegenie provider use <fuzzy>` (e.g. `use opus`) to set a default",
-  "- the GitHub Action `model` input: `provider/model[:reasoning]`, e.g. `anthropic/claude-opus-4-8:xhigh`",
+  "- the GitHub Action `model` input: `provider/model[:reasoning]`, e.g. `anthropic/claude-opus-5:xhigh`",
   "",
   "The **Reasoning levels** column shows each model's native thinking levels from the registry (a dash means none).",
   "codegenie's `--reasoning` flag (and the `:reasoning` suffix) accepts `low`, `medium`, `high`, `xhigh`, or `auto`",

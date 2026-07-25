@@ -3,11 +3,11 @@
 > Generated from the pi model registry ([models.dev](https://models.dev)) — do not edit by hand.
 > Regenerate with `make models-list`.
 
-codegenie is multi-provider: **1092 models** across **37 providers**. Use any of them as:
+codegenie is multi-provider: **1103 models** across **37 providers**. Use any of them as:
 
 - `codegenie review --provider <provider> --model <model> [--reasoning <level>]`
 - `codegenie provider use <fuzzy>` (e.g. `use opus`) to set a default
-- the GitHub Action `model` input: `provider/model[:reasoning]`, e.g. `anthropic/claude-opus-4-8:xhigh`
+- the GitHub Action `model` input: `provider/model[:reasoning]`, e.g. `anthropic/claude-opus-5:xhigh`
 
 The **Reasoning levels** column shows each model's native thinking levels from the registry (a dash means none).
 codegenie's `--reasoning` flag (and the `:reasoning` suffix) accepts `low`, `medium`, `high`, `xhigh`, or `auto`
@@ -35,6 +35,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `au.anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 (AU) | 200k | 64k | minimal, low, medium, high |
 | `au.anthropic.claude-opus-4-6-v1` | AU Anthropic Claude Opus 4.6 | 1000k | 128k | minimal, low, medium, high, max |
 | `au.anthropic.claude-opus-4-8` | Claude Opus 4.8 (AU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `au.anthropic.claude-opus-5` | Claude Opus 5 (AU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `au.anthropic.claude-sonnet-4-5-20250929-v1:0` | Claude Sonnet 4.5 (AU) | 200k | 64k | minimal, low, medium, high |
 | `au.anthropic.claude-sonnet-4-6` | AU Anthropic Claude Sonnet 4.6 | 1000k | 128k | minimal, low, medium, high, max |
 | `au.anthropic.claude-sonnet-5` | Claude Sonnet 5 (AU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
@@ -47,6 +48,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `eu.anthropic.claude-opus-4-6-v1` | Claude Opus 4.6 (EU) | 1000k | 128k | minimal, low, medium, high, max |
 | `eu.anthropic.claude-opus-4-7` | Claude Opus 4.7 (EU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `eu.anthropic.claude-opus-4-8` | Claude Opus 4.8 (EU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `eu.anthropic.claude-opus-5` | Claude Opus 5 (EU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `eu.anthropic.claude-sonnet-4-5-20250929-v1:0` | Claude Sonnet 4.5 (EU) | 200k | 64k | minimal, low, medium, high |
 | `eu.anthropic.claude-sonnet-4-6` | Claude Sonnet 4.6 (EU) | 1000k | 64k | minimal, low, medium, high, max |
 | `eu.anthropic.claude-sonnet-5` | Claude Sonnet 5 (EU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
@@ -56,6 +58,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `global.anthropic.claude-opus-4-6-v1` | Claude Opus 4.6 (Global) | 1000k | 128k | minimal, low, medium, high, max |
 | `global.anthropic.claude-opus-4-7` | Claude Opus 4.7 (Global) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `global.anthropic.claude-opus-4-8` | Claude Opus 4.8 (Global) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `global.anthropic.claude-opus-5` | Claude Opus 5 (Global) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `global.anthropic.claude-sonnet-4-5-20250929-v1:0` | Claude Sonnet 4.5 (Global) | 200k | 64k | minimal, low, medium, high |
 | `global.anthropic.claude-sonnet-4-6` | Claude Sonnet 4.6 (Global) | 1000k | 64k | minimal, low, medium, high, max |
 | `global.anthropic.claude-sonnet-5` | Claude Sonnet 5 (Global) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
@@ -64,6 +67,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `jp.anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 (JP) | 200k | 64k | minimal, low, medium, high |
 | `jp.anthropic.claude-opus-4-7` | Claude Opus 4.7 (JP) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `jp.anthropic.claude-opus-4-8` | Claude Opus 4.8 (JP) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `jp.anthropic.claude-opus-5` | Claude Opus 5 (JP) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `jp.anthropic.claude-sonnet-4-5-20250929-v1:0` | Claude Sonnet 4.5 (JP) | 200k | 64k | minimal, low, medium, high |
 | `jp.anthropic.claude-sonnet-4-6` | Claude Sonnet 4.6 (JP) | 1000k | 64k | minimal, low, medium, high, max |
 | `jp.anthropic.claude-sonnet-5` | Claude Sonnet 5 (JP) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
@@ -115,6 +119,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `us.anthropic.claude-opus-4-6-v1` | Claude Opus 4.6 (US) | 1000k | 128k | minimal, low, medium, high, max |
 | `us.anthropic.claude-opus-4-7` | Claude Opus 4.7 (US) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `us.anthropic.claude-opus-4-8` | Claude Opus 4.8 (US) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `us.anthropic.claude-opus-5` | Claude Opus 5 (US) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` | Claude Sonnet 4.5 (US) | 200k | 64k | minimal, low, medium, high |
 | `us.anthropic.claude-sonnet-4-6` | Claude Sonnet 4.6 (US) | 1000k | 64k | minimal, low, medium, high, max |
 | `us.anthropic.claude-sonnet-5` | Claude Sonnet 5 (US) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
@@ -150,6 +155,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `claude-opus-4-6` | Claude Opus 4.6 | 1000k | 128k | minimal, low, medium, high, max |
 | `claude-opus-4-7` | Claude Opus 4.7 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-opus-4-8` | Claude Opus 4.8 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `claude-opus-5` | Claude Opus 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-sonnet-4-5` | Claude Sonnet 4.5 (latest) | 1000k | 64k | minimal, low, medium, high |
 | `claude-sonnet-4-5-20250929` | Claude Sonnet 4.5 | 1000k | 64k | minimal, low, medium, high |
 | `claude-sonnet-4-6` | Claude Sonnet 4.6 | 1000k | 128k | minimal, low, medium, high, max |
@@ -171,18 +177,12 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `gpt-4o-mini` | GPT-4o mini | 128k | 16384 | — |
 | `gpt-5` | GPT-5 | 400k | 128k | minimal, low, medium, high |
 | `gpt-5-chat-latest` | GPT-5 Chat Latest | 128k | 16384 | — |
-| `gpt-5-codex` | GPT-5-Codex | 400k | 128k | minimal, low, medium, high |
 | `gpt-5-mini` | GPT-5 Mini | 400k | 128k | minimal, low, medium, high |
 | `gpt-5-nano` | GPT-5 Nano | 400k | 128k | minimal, low, medium, high |
 | `gpt-5-pro` | GPT-5 Pro | 400k | 128k | minimal, low, medium, high |
 | `gpt-5.1` | GPT-5.1 | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.1-chat-latest` | GPT-5.1 Chat | 128k | 16384 | minimal, low, medium, high |
-| `gpt-5.1-codex` | GPT-5.1 Codex | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.1-codex-max` | GPT-5.1 Codex Max | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.1-codex-mini` | GPT-5.1 Codex mini | 400k | 128k | minimal, low, medium, high |
 | `gpt-5.2` | GPT-5.2 | 400k | 128k | minimal, low, medium, high, xhigh |
 | `gpt-5.2-chat-latest` | GPT-5.2 Chat | 128k | 16384 | minimal, low, medium, high, xhigh |
-| `gpt-5.2-codex` | GPT-5.2 Codex | 400k | 128k | minimal, low, medium, high, xhigh |
 | `gpt-5.2-pro` | GPT-5.2 Pro | 400k | 128k | minimal, low, medium, high, xhigh |
 | `gpt-5.3-chat-latest` | GPT-5.3 Chat (latest) | 128k | 16384 | — |
 | `gpt-5.3-codex` | GPT-5.3 Codex | 400k | 128k | minimal, low, medium, high, xhigh |
@@ -200,19 +200,17 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `o1` | o1 | 200k | 100k | minimal, low, medium, high |
 | `o1-pro` | o1-pro | 200k | 100k | minimal, low, medium, high |
 | `o3` | o3 | 200k | 100k | minimal, low, medium, high |
-| `o3-deep-research` | o3-deep-research | 200k | 100k | minimal, low, medium, high |
 | `o3-mini` | o3-mini | 200k | 100k | minimal, low, medium, high |
 | `o3-pro` | o3-pro | 200k | 100k | minimal, low, medium, high |
 | `o4-mini` | o4-mini | 200k | 100k | minimal, low, medium, high |
-| `o4-mini-deep-research` | o4-mini-deep-research | 200k | 100k | minimal, low, medium, high |
 
 ## cerebras
 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
-| `gemma-4-31b` | Gemma 4 31B IT | 131072 | 40960 | minimal, low, medium, high |
-| `gpt-oss-120b` | GPT OSS 120B | 131072 | 40960 | minimal, low, medium, high |
-| `zai-glm-4.7` | Z.AI GLM-4.7 | 131072 | 40960 | minimal, low, medium, high |
+| `gemma-4-31b` | Gemma 4 31B IT | 131072 | 40960 | low, medium, high |
+| `gpt-oss-120b` | GPT OSS 120B | 131072 | 40960 | low, medium, high |
+| `zai-glm-4.7` | Z.AI GLM-4.7 | 131072 | 40960 | — |
 
 ## cloudflare-ai-gateway
 
@@ -240,21 +238,21 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `gpt-4-turbo` | GPT-4 Turbo | 128k | 4096 | — |
 | `gpt-4o` | GPT-4o | 128k | 16384 | — |
 | `gpt-4o-mini` | GPT-4o mini | 128k | 16384 | — |
-| `gpt-5.1` | GPT-5.1 | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.1-codex` | GPT-5.1 Codex | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.2` | GPT-5.2 | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.2-codex` | GPT-5.2 Codex | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.3-codex` | GPT-5.3 Codex | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.4` | GPT-5.4 | 1050k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.5` | GPT-5.5 | 1050k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.6-luna` | GPT-5.6 Luna | 1050k | 128k | minimal, low, medium, high, xhigh, max |
-| `gpt-5.6-sol` | GPT-5.6 Sol | 1050k | 128k | minimal, low, medium, high, xhigh, max |
-| `gpt-5.6-terra` | GPT-5.6 Terra | 1050k | 128k | minimal, low, medium, high, xhigh, max |
-| `o1` | o1 | 200k | 100k | minimal, low, medium, high |
-| `o3` | o3 | 200k | 100k | minimal, low, medium, high |
-| `o3-mini` | o3-mini | 200k | 100k | minimal, low, medium, high |
-| `o3-pro` | o3-pro | 200k | 100k | minimal, low, medium, high |
-| `o4-mini` | o4-mini | 200k | 100k | minimal, low, medium, high |
+| `gpt-5.1` | GPT-5.1 | 400k | 128k | low, medium, high |
+| `gpt-5.1-codex` | GPT-5.1 Codex | 400k | 128k | low, medium, high |
+| `gpt-5.2` | GPT-5.2 | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.2-codex` | GPT-5.2 Codex | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.3-codex` | GPT-5.3 Codex | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.4` | GPT-5.4 | 1050k | 128k | low, medium, high, xhigh |
+| `gpt-5.5` | GPT-5.5 | 1050k | 128k | low, medium, high, xhigh |
+| `gpt-5.6-luna` | GPT-5.6 Luna | 1050k | 128k | low, medium, high, xhigh, max |
+| `gpt-5.6-sol` | GPT-5.6 Sol | 1050k | 128k | low, medium, high, xhigh, max |
+| `gpt-5.6-terra` | GPT-5.6 Terra | 1050k | 128k | low, medium, high, xhigh, max |
+| `o1` | o1 | 200k | 100k | low, medium, high |
+| `o3` | o3 | 200k | 100k | low, medium, high |
+| `o3-mini` | o3-mini | 200k | 100k | low, medium, high |
+| `o3-pro` | o3-pro | 200k | 100k | low, medium, high |
+| `o4-mini` | o4-mini | 200k | 100k | low, medium, high |
 | `workers-ai/@cf/moonshotai/kimi-k2.5` | Kimi K2.5 | 256k | 256k | minimal, low, medium, high |
 | `workers-ai/@cf/moonshotai/kimi-k2.6` | Kimi K2.6 | 256k | 256k | minimal, low, medium, high |
 | `workers-ai/@cf/nvidia/nemotron-3-120b-a12b` | Nemotron 3 Super 120B | 256k | 256k | minimal, low, medium, high |
@@ -265,19 +263,19 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
-| `@cf/google/gemma-4-26b-a4b-it` | Gemma 4 26B A4B IT | 256k | 16384 | minimal, low, medium, high |
+| `@cf/google/gemma-4-26b-a4b-it` | Gemma 4 26B A4B IT | 256k | 16384 | low, medium, high |
 | `@cf/ibm-granite/granite-4.0-h-micro` | Granite 4.0 H Micro | 131k | 131k | — |
 | `@cf/meta/llama-3.3-70b-instruct-fp8-fast` | Llama 3.3 70B Instruct fp8 Fast | 24k | 24k | — |
 | `@cf/meta/llama-4-scout-17b-16e-instruct` | Llama 4 Scout 17B 16E Instruct | 131k | 16384 | — |
 | `@cf/mistralai/mistral-small-3.1-24b-instruct` | Mistral Small 3.1 24B Instruct | 128k | 128k | — |
-| `@cf/moonshotai/kimi-k2.6` | Kimi K2.6 | 262144 | 256k | minimal, low, medium, high |
-| `@cf/moonshotai/kimi-k2.7-code` | Kimi K2.7 Code | 262144 | 262144 | minimal, low, medium, high |
-| `@cf/nvidia/nemotron-3-120b-a12b` | Nemotron 3 Super 120B | 256k | 256k | minimal, low, medium, high |
-| `@cf/openai/gpt-oss-120b` | GPT OSS 120B | 128k | 16384 | minimal, low, medium, high |
+| `@cf/moonshotai/kimi-k2.6` | Kimi K2.6 | 262144 | 256k | low, medium, high |
+| `@cf/moonshotai/kimi-k2.7-code` | Kimi K2.7 Code | 262144 | 262144 | low, medium, high |
+| `@cf/nvidia/nemotron-3-120b-a12b` | Nemotron 3 Super 120B | 256k | 256k | low, medium, high |
+| `@cf/openai/gpt-oss-120b` | GPT OSS 120B | 128k | 16384 | low, medium, high |
 | `@cf/openai/gpt-oss-20b` | GPT OSS 20B | 128k | 16384 | minimal, low, medium, high |
 | `@cf/qwen/qwen3-30b-a3b-fp8` | Qwen3 30B A3b fp8 | 32768 | 32768 | minimal, low, medium, high |
-| `@cf/zai-org/glm-4.7-flash` | GLM-4.7-Flash | 131072 | 131072 | minimal, low, medium, high |
-| `@cf/zai-org/glm-5.2` | Glm 5.2 | 262144 | 262144 | minimal, low, medium, high |
+| `@cf/zai-org/glm-4.7-flash` | GLM-4.7-Flash | 131072 | 131072 | low, medium, high |
+| `@cf/zai-org/glm-5.2` | Glm 5.2 | 262144 | 262144 | low, medium, high |
 
 ## deepseek
 
@@ -317,6 +315,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `claude-opus-4.6` | Claude Opus 4.6 | 1000k | 32k | minimal, low, medium, high, max |
 | `claude-opus-4.7` | Claude Opus 4.7 | 1000k | 32k | minimal, low, medium, high, xhigh, max |
 | `claude-opus-4.8` | Claude Opus 4.8 | 1000k | 64k | minimal, low, medium, high, xhigh, max |
+| `claude-opus-5` | Claude Opus 5 | 1000k | 64k | minimal, low, medium, high, xhigh, max |
 | `claude-sonnet-4` | Claude Sonnet 4 (latest) | 216k | 16k | minimal, low, medium, high |
 | `claude-sonnet-4.5` | Claude Sonnet 4.5 (latest) | 200k | 32k | minimal, low, medium, high |
 | `claude-sonnet-4.6` | Claude Sonnet 4.6 | 1000k | 32k | minimal, low, medium, high, max |
@@ -338,7 +337,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `gpt-5.6-sol` | GPT-5.6 Sol | 1050k | 128k | minimal, low, medium, high, xhigh, max |
 | `gpt-5.6-terra` | GPT-5.6 Terra | 1050k | 128k | minimal, low, medium, high, xhigh, max |
 | `kimi-k2.7-code` | Kimi K2.7 Code | 256k | 32k | minimal, low, medium, high |
-| `mai-code-1-flash-picker` | MAI-Code-1-Flash | 256k | 128k | minimal, low, medium, high |
+| `mai-code-1-flash-picker` | MAI-Code-1-Flash | 256k | 128k | low, medium, high |
 
 ## google-vertex
 
@@ -352,6 +351,8 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | 1048576 | 65536 | low, high |
 | `gemini-3.1-pro-preview-customtools` | Gemini 3.1 Pro Preview Custom Tools | 1048576 | 65536 | low, high |
 | `gemini-3.5-flash` | Gemini 3.5 Flash | 1048576 | 65536 | minimal, low, medium, high |
+| `gemini-3.5-flash-lite` | Gemini 3.5 Flash Lite | 1048576 | 65536 | minimal, low, medium, high |
+| `gemini-3.6-flash` | Gemini 3.6 Flash | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-flash-latest` | Gemini Flash Latest | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-flash-lite-latest` | Gemini Flash-Lite Latest | 1048576 | 65536 | minimal, low, medium, high |
 
@@ -359,15 +360,20 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
+| `deep-research-max-preview-04-2026` | Deep Research Max Preview (Apr-21-2026) | 131072 | 65536 | minimal, low, medium, high |
+| `deep-research-preview-04-2026` | Deep Research Preview (Apr-21-2026) | 131072 | 65536 | minimal, low, medium, high |
 | `gemini-2.0-flash` | Gemini 2.0 Flash | 1048576 | 8192 | — |
 | `gemini-2.0-flash-lite` | Gemini 2.0 Flash-Lite | 1048576 | 8192 | — |
+| `gemini-2.5-computer-use-preview-10-2025` | Gemini 2.5 Computer Use Preview 10-2025 | 131072 | 65536 | minimal, low, medium, high |
 | `gemini-2.5-flash` | Gemini 2.5 Flash | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-2.5-flash-lite` | Gemini 2.5 Flash-Lite | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-2.5-pro` | Gemini 2.5 Pro | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-3-flash-preview` | Gemini 3 Flash Preview | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-3-pro-preview` | Gemini 3 Pro Preview | 1048576 | 65536 | low, high |
 | `gemini-3.1-flash-lite` | Gemini 3.1 Flash Lite | 1048576 | 65536 | minimal, low, medium, high |
+| `gemini-3.1-flash-lite-image` | Nano Banana 2 Lite | 65536 | 65536 | minimal, low, medium, high |
 | `gemini-3.1-flash-lite-preview` | Gemini 3.1 Flash Lite Preview | 1048576 | 65536 | minimal, low, medium, high |
+| `gemini-3.1-flash-live-preview` | Gemini 3.1 Flash Live Preview | 131072 | 65536 | minimal, low, medium, high |
 | `gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | 1048576 | 65536 | low, high |
 | `gemini-3.1-pro-preview-customtools` | Gemini 3.1 Pro Preview Custom Tools | 1048576 | 65536 | low, high |
 | `gemini-3.5-flash` | Gemini 3.5 Flash | 1048576 | 65536 | minimal, low, medium, high |
@@ -375,6 +381,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `gemini-3.6-flash` | Gemini 3.6 Flash | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-flash-latest` | Gemini Flash Latest | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-flash-lite-latest` | Gemini Flash-Lite Latest | 1048576 | 65536 | minimal, low, medium, high |
+| `gemini-robotics-er-1.6-preview` | Gemini Robotics-ER 1.6 Preview | 131072 | 65536 | minimal, low, medium, high |
 | `gemma-4-26b-a4b-it` | Gemma 4 26B A4B IT | 262144 | 32768 | minimal, high |
 | `gemma-4-31b-it` | Gemma 4 31B IT | 262144 | 32768 | minimal, high |
 
@@ -385,9 +392,9 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `llama-3.1-8b-instant` | Llama 3.1 8B | 131072 | 131072 | — |
 | `llama-3.3-70b-versatile` | Llama 3.3 70B | 131072 | 32768 | — |
 | `meta-llama/llama-4-scout-17b-16e-instruct` | Llama 4 Scout 17B 16E | 131072 | 8192 | — |
-| `openai/gpt-oss-120b` | GPT OSS 120B | 131072 | 65536 | minimal, low, medium, high |
-| `openai/gpt-oss-20b` | GPT OSS 20B | 131072 | 65536 | minimal, low, medium, high |
-| `openai/gpt-oss-safeguard-20b` | Safety GPT OSS 20B | 131072 | 65536 | minimal, low, medium, high |
+| `openai/gpt-oss-120b` | GPT OSS 120B | 131072 | 65536 | low, medium, high |
+| `openai/gpt-oss-20b` | GPT OSS 20B | 131072 | 65536 | low, medium, high |
+| `openai/gpt-oss-safeguard-20b` | Safety GPT OSS 20B | 131072 | 65536 | low, medium, high |
 | `qwen/qwen3-32b` | Qwen3-32B | 131072 | 40960 | high |
 
 ## huggingface
@@ -398,7 +405,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `deepseek-ai/DeepSeek-R1-0528` | DeepSeek-R1-0528 | 163840 | 163840 | minimal, low, medium, high |
 | `deepseek-ai/DeepSeek-V3.2` | DeepSeek-V3.2 | 163840 | 65536 | minimal, low, medium, high |
 | `deepseek-ai/DeepSeek-V4-Flash` | DeepSeek V4 Flash | 1048576 | 384k | minimal, low, medium, high |
-| `deepseek-ai/DeepSeek-V4-Pro` | DeepSeek V4 Pro | 1048576 | 393216 | minimal, low, medium, high |
+| `deepseek-ai/DeepSeek-V4-Pro` | DeepSeek V4 Pro | 1048576 | 393216 | high |
 | `google/gemma-4-26B-A4B-it` | Gemma 4 26B A4B IT | 262144 | 32768 | minimal, low, medium, high |
 | `google/gemma-4-31B-it` | Gemma 4 31B IT | 262144 | 32768 | minimal, low, medium, high |
 | `meta-llama/Llama-3.3-70B-Instruct` | Llama-3.3-70B-Instruct | 131072 | 4096 | — |
@@ -413,8 +420,8 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `moonshotai/Kimi-K2.5` | Kimi-K2.5 | 262144 | 262144 | minimal, low, medium, high |
 | `moonshotai/Kimi-K2.6` | Kimi-K2.6 | 262144 | 262144 | minimal, low, medium, high |
 | `moonshotai/Kimi-K2.7-Code` | Kimi K2.7 Code | 262144 | 262144 | minimal, low, medium, high |
-| `openai/gpt-oss-120b` | GPT OSS 120B | 131072 | 32768 | minimal, low, medium, high |
-| `openai/gpt-oss-20b` | GPT OSS 20B | 131072 | 32768 | minimal, low, medium, high |
+| `openai/gpt-oss-120b` | GPT OSS 120B | 131072 | 32768 | low, medium, high |
+| `openai/gpt-oss-20b` | GPT OSS 20B | 131072 | 32768 | low, medium, high |
 | `Qwen/Qwen3-235B-A22B` | Qwen3 235B-A22B | 40960 | 16384 | minimal, low, medium, high |
 | `Qwen/Qwen3-235B-A22B-Thinking-2507` | Qwen3-235B-A22B-Thinking-2507 | 262144 | 131072 | minimal, low, medium, high |
 | `Qwen/Qwen3-32B` | Qwen3 32B | 131072 | 16384 | minimal, low, medium, high |
@@ -426,14 +433,15 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `Qwen/Qwen3.5-122B-A10B` | Qwen3.5 122B-A10B | 262144 | 65536 | minimal, low, medium, high |
 | `Qwen/Qwen3.5-27B` | Qwen3.5 27B | 262144 | 65536 | minimal, low, medium, high |
 | `Qwen/Qwen3.5-35B-A3B` | Qwen3.5 35B-A3B | 262144 | 65536 | minimal, low, medium, high |
-| `Qwen/Qwen3.5-397B-A17B` | Qwen3.5-397B-A17B | 262144 | 32768 | minimal, low, medium, high |
+| `Qwen/Qwen3.5-397B-A17B` | Qwen3.5-397B-A17B | 262144 | 32768 | low, medium, high |
 | `Qwen/Qwen3.5-9B` | Qwen3.5 9B | 262144 | 65536 | minimal, low, medium, high |
 | `Qwen/Qwen3.6-27B` | Qwen3.6 27B | 262144 | 65536 | minimal, low, medium, high |
 | `Qwen/Qwen3.6-35B-A3B` | Qwen3.6 35B-A3B | 262144 | 65536 | minimal, low, medium, high |
 | `stepfun-ai/Step-3.5-Flash` | Step 3.5 Flash | 262144 | 256k | minimal, low, medium, high |
-| `stepfun-ai/Step-3.7-Flash` | Step 3.7 Flash | 262144 | 256k | minimal, low, medium, high |
+| `stepfun-ai/Step-3.7-Flash` | Step 3.7 Flash | 262144 | 256k | low, medium, high |
 | `XiaomiMiMo/MiMo-V2-Flash` | MiMo-V2-Flash | 262144 | 4096 | minimal, low, medium, high |
-| `XiaomiMiMo/MiMo-V2.5-Pro` | MiMo-V2.5-Pro | 1048576 | 131072 | minimal, low, medium, high |
+| `XiaomiMiMo/MiMo-V2.5` | MiMo-V2.5 | 262144 | 131072 | low, medium, high, xhigh |
+| `XiaomiMiMo/MiMo-V2.5-Pro` | MiMo-V2.5-Pro | 1048576 | 131072 | low, medium, high, xhigh |
 | `zai-org/GLM-4.5` | GLM-4.5 | 131072 | 98304 | minimal, low, medium, high |
 | `zai-org/GLM-4.5-Air` | GLM-4.5-Air | 131072 | 98304 | minimal, low, medium, high |
 | `zai-org/GLM-4.5V` | GLM-4.5V | 65536 | 16384 | minimal, low, medium, high |
@@ -449,6 +457,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
 | `k3` | Kimi K3 | 1048576 | 131072 | low, high, max |
+| `k3-256k` | Kimi K3-256K | 262144 | 131072 | low, high, max |
 | `kimi-for-coding` | Kimi K2.7 Code | 262144 | 32768 | minimal, low, medium, high |
 | `kimi-for-coding-highspeed` | Kimi For Coding HighSpeed | 262144 | 32768 | minimal, low, medium, high |
 
@@ -543,7 +552,6 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `meta/llama-3.2-90b-vision-instruct` | Llama-3.2-90B-Vision-Instruct | 128k | 8192 | — |
 | `meta/llama-3.3-70b-instruct` | Llama 3.3 70b Instruct | 128k | 4096 | — |
 | `minimaxai/minimax-m3` | MiniMax-M3 | 1000k | 16384 | minimal, low, medium, high |
-| `mistralai/mistral-large-3-675b-instruct-2512` | Mistral Large 3 675B Instruct 2512 | 262144 | 262144 | — |
 | `mistralai/mistral-small-4-119b-2603` | mistral-small-4-119b-2603 | 128k | 8192 | minimal, low, medium, high |
 | `moonshotai/kimi-k2.6` | Kimi K2.6 | 262144 | 262144 | minimal, low, medium, high |
 | `nvidia/nemotron-3-nano-30b-a3b` | nemotron-3-nano-30b-a3b | 131072 | 131072 | minimal, low, medium, high |
@@ -585,40 +593,32 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `gpt-4o-mini` | GPT-4o mini | 128k | 16384 | — |
 | `gpt-5` | GPT-5 | 400k | 128k | minimal, low, medium, high |
 | `gpt-5-chat-latest` | GPT-5 Chat Latest | 128k | 16384 | — |
-| `gpt-5-codex` | GPT-5-Codex | 400k | 128k | minimal, low, medium, high |
 | `gpt-5-mini` | GPT-5 Mini | 400k | 128k | minimal, low, medium, high |
 | `gpt-5-nano` | GPT-5 Nano | 400k | 128k | minimal, low, medium, high |
-| `gpt-5-pro` | GPT-5 Pro | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.1` | GPT-5.1 | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.1-chat-latest` | GPT-5.1 Chat | 128k | 16384 | minimal, low, medium, high |
-| `gpt-5.1-codex` | GPT-5.1 Codex | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.1-codex-max` | GPT-5.1 Codex Max | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.1-codex-mini` | GPT-5.1 Codex mini | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.2` | GPT-5.2 | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.2-chat-latest` | GPT-5.2 Chat | 128k | 16384 | minimal, low, medium, high, xhigh |
-| `gpt-5.2-codex` | GPT-5.2 Codex | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.2-pro` | GPT-5.2 Pro | 400k | 128k | minimal, low, medium, high, xhigh |
+| `gpt-5-pro` | GPT-5 Pro | 400k | 128k | high |
+| `gpt-5.1` | GPT-5.1 | 400k | 128k | low, medium, high |
+| `gpt-5.2` | GPT-5.2 | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.2-chat-latest` | GPT-5.2 Chat | 128k | 16384 | medium, xhigh |
+| `gpt-5.2-pro` | GPT-5.2 Pro | 400k | 128k | medium, high, xhigh |
 | `gpt-5.3-chat-latest` | GPT-5.3 Chat (latest) | 128k | 16384 | — |
-| `gpt-5.3-codex` | GPT-5.3 Codex | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.3-codex-spark` | GPT-5.3 Codex Spark | 128k | 32k | minimal, low, medium, high, xhigh |
-| `gpt-5.4` | GPT-5.4 | 272k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.4-mini` | GPT-5.4 mini | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.4-nano` | GPT-5.4 nano | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.4-pro` | GPT-5.4 Pro | 1050k | 128k | minimal, low, medium, high, xhigh |
+| `gpt-5.3-codex` | GPT-5.3 Codex | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.3-codex-spark` | GPT-5.3 Codex Spark | 128k | 32k | low, medium, high, xhigh |
+| `gpt-5.4` | GPT-5.4 | 272k | 128k | low, medium, high, xhigh |
+| `gpt-5.4-mini` | GPT-5.4 mini | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.4-nano` | GPT-5.4 nano | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.4-pro` | GPT-5.4 Pro | 1050k | 128k | medium, high, xhigh |
 | `gpt-5.5` | GPT-5.5 | 272k | 128k | low, medium, high, xhigh |
 | `gpt-5.5-pro` | GPT-5.5 Pro | 1050k | 128k | medium, high, xhigh |
-| `gpt-5.6-luna` | GPT-5.6 Luna | 272k | 128k | minimal, low, medium, high, xhigh, max |
-| `gpt-5.6-sol` | GPT-5.6 Sol | 272k | 128k | minimal, low, medium, high, xhigh, max |
-| `gpt-5.6-terra` | GPT-5.6 Terra | 272k | 128k | minimal, low, medium, high, xhigh, max |
-| `gpt-realtime-2.1` | GPT-Realtime-2.1 | 128k | 32k | minimal, low, medium, high |
-| `o1` | o1 | 200k | 100k | minimal, low, medium, high |
-| `o1-pro` | o1-pro | 200k | 100k | minimal, low, medium, high |
-| `o3` | o3 | 200k | 100k | minimal, low, medium, high |
-| `o3-deep-research` | o3-deep-research | 200k | 100k | minimal, low, medium, high |
-| `o3-mini` | o3-mini | 200k | 100k | minimal, low, medium, high |
-| `o3-pro` | o3-pro | 200k | 100k | minimal, low, medium, high |
-| `o4-mini` | o4-mini | 200k | 100k | minimal, low, medium, high |
-| `o4-mini-deep-research` | o4-mini-deep-research | 200k | 100k | minimal, low, medium, high |
+| `gpt-5.6-luna` | GPT-5.6 Luna | 272k | 128k | low, medium, high, xhigh, max |
+| `gpt-5.6-sol` | GPT-5.6 Sol | 272k | 128k | low, medium, high, xhigh, max |
+| `gpt-5.6-terra` | GPT-5.6 Terra | 272k | 128k | low, medium, high, xhigh, max |
+| `gpt-realtime-2.1` | GPT-Realtime-2.1 | 128k | 32k | minimal, low, medium, high, xhigh |
+| `o1` | o1 | 200k | 100k | low, medium, high |
+| `o1-pro` | o1-pro | 200k | 100k | low, medium, high |
+| `o3` | o3 | 200k | 100k | low, medium, high |
+| `o3-mini` | o3-mini | 200k | 100k | low, medium, high |
+| `o3-pro` | o3-pro | 200k | 100k | low, medium, high |
+| `o4-mini` | o4-mini | 200k | 100k | low, medium, high |
 
 ## opencode-go
 
@@ -628,10 +628,11 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `deepseek-v4-pro` | DeepSeek V4 Pro | 1000k | 384k | high, max |
 | `glm-5.1` | GLM-5.1 | 202752 | 32768 | minimal, low, medium, high |
 | `glm-5.2` | GLM-5.2 | 1000k | 131072 | high, max |
-| `grok-4.5` | Grok 4.5 | 500k | 500k | minimal, low, medium, high |
+| `grok-4.5` | Grok 4.5 | 500k | 500k | low, medium, high |
+| `hy3` | Hy3 | 256k | 64k | low, high |
 | `kimi-k2.6` | Kimi K2.6 | 262144 | 65536 | high |
 | `kimi-k2.7-code` | Kimi K2.7 Code | 262144 | 262144 | minimal, low, medium, high |
-| `kimi-k3` | Kimi K3 (2x usage) | 1048576 | 131072 | minimal, low, medium, high |
+| `kimi-k3` | Kimi K3 (2x usage) | 1048576 | 131072 | max |
 | `mimo-v2.5` | MiMo V2.5 | 1000k | 128k | minimal, low, medium, high |
 | `mimo-v2.5-pro` | MiMo V2.5 Pro | 1048576 | 128k | minimal, low, medium, high |
 | `minimax-m2.7` | MiniMax-M2.7 | 204800 | 131072 | minimal, low, medium, high |
@@ -652,6 +653,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `claude-opus-4-6` | Claude Opus 4.6 | 1000k | 128k | minimal, low, medium, high, max |
 | `claude-opus-4-7` | Claude Opus 4.7 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-opus-4-8` | Claude Opus 4.8 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `claude-opus-5` | Claude Opus 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-sonnet-4` | Claude Sonnet 4 | 200k | 64k | minimal, low, medium, high |
 | `claude-sonnet-4-5` | Claude Sonnet 4.5 | 200k | 64k | minimal, low, medium, high |
 | `claude-sonnet-4-6` | Claude Sonnet 4.6 | 1000k | 64k | minimal, low, medium, high, max |
@@ -666,37 +668,39 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `gemini-3.6-flash` | Gemini 3.6 Flash | 1048576 | 65536 | minimal, low, medium, high |
 | `glm-5` | GLM-5 | 204800 | 131072 | minimal, low, medium, high |
 | `glm-5.1` | GLM-5.1 | 204800 | 131072 | minimal, low, medium, high |
-| `glm-5.2` | GLM-5.2 | 1000k | 131072 | minimal, low, medium, high |
+| `glm-5.2` | GLM-5.2 | 1000k | 131072 | high, max |
 | `gpt-5` | GPT-5 | 400k | 128k | minimal, low, medium, high |
-| `gpt-5-codex` | GPT-5 Codex | 400k | 128k | minimal, low, medium, high |
+| `gpt-5-codex` | GPT-5 Codex | 400k | 128k | low, medium, high |
 | `gpt-5-nano` | GPT-5 Nano | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.1` | GPT-5.1 | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.1-codex` | GPT-5.1 Codex | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.1-codex-max` | GPT-5.1 Codex Max | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.1-codex-mini` | GPT-5.1 Codex Mini | 400k | 128k | minimal, low, medium, high |
-| `gpt-5.2` | GPT-5.2 | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.2-codex` | GPT-5.2 Codex | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.3-codex` | GPT-5.3 Codex | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.4` | GPT-5.4 | 272k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.4-mini` | GPT-5.4 Mini | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.4-nano` | GPT-5.4 Nano | 400k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.4-pro` | GPT-5.4 Pro | 1050k | 128k | minimal, low, medium, high, xhigh |
-| `gpt-5.5` | GPT-5.5 | 1050k | 128k | minimal, low, medium, high, xhigh |
+| `gpt-5.1` | GPT-5.1 | 400k | 128k | low, medium, high |
+| `gpt-5.1-codex` | GPT-5.1 Codex | 400k | 128k | low, medium, high |
+| `gpt-5.1-codex-max` | GPT-5.1 Codex Max | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.1-codex-mini` | GPT-5.1 Codex Mini | 400k | 128k | low, medium, high |
+| `gpt-5.2` | GPT-5.2 | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.2-codex` | GPT-5.2 Codex | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.3-codex` | GPT-5.3 Codex | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.4` | GPT-5.4 | 272k | 128k | low, medium, high, xhigh |
+| `gpt-5.4-mini` | GPT-5.4 Mini | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.4-nano` | GPT-5.4 Nano | 400k | 128k | low, medium, high, xhigh |
+| `gpt-5.4-pro` | GPT-5.4 Pro | 1050k | 128k | medium, high, xhigh |
+| `gpt-5.5` | GPT-5.5 | 1050k | 128k | low, medium, high, xhigh |
 | `gpt-5.5-pro` | GPT-5.5 Pro | 1050k | 128k | medium, high, xhigh |
-| `gpt-5.6-luna` | GPT-5.6 Luna | 1050k | 128k | minimal, low, medium, high, xhigh, max |
-| `gpt-5.6-sol` | GPT-5.6 Sol | 1050k | 128k | minimal, low, medium, high, xhigh, max |
-| `gpt-5.6-terra` | GPT-5.6 Terra | 1050k | 128k | minimal, low, medium, high, xhigh, max |
-| `grok-4.5` | Grok 4.5 | 500k | 500k | minimal, low, medium, high |
+| `gpt-5.6-luna` | GPT-5.6 Luna | 1050k | 128k | low, medium, high, xhigh, max |
+| `gpt-5.6-sol` | GPT-5.6 Sol | 1050k | 128k | low, medium, high, xhigh, max |
+| `gpt-5.6-terra` | GPT-5.6 Terra | 1050k | 128k | low, medium, high, xhigh, max |
+| `grok-4.5` | Grok 4.5 | 500k | 500k | low, medium, high |
 | `grok-build-0.1` | Grok Build 0.1 | 256k | 256k | high |
 | `kimi-k2.5` | Kimi K2.5 | 262144 | 65536 | minimal, low, medium, high |
 | `kimi-k2.6` | Kimi K2.6 | 262144 | 65536 | minimal, low, medium, high |
 | `kimi-k2.7-code` | Kimi K2.7 Code | 262144 | 262144 | minimal, low, medium, high |
+| `laguna-s-2.1-free` | Laguna S 2.1 Free | 256k | 32k | low, medium, high |
+| `ling-3.0-flash-free` | Ling-3.0-flash Free | 262144 | 32768 | low, medium, high |
 | `mimo-v2.5-free` | MiMo V2.5 Free | 200k | 32k | minimal, low, medium, high |
 | `minimax-m2.5` | MiniMax-M2.5 | 204800 | 131072 | minimal, low, medium, high |
 | `minimax-m2.7` | MiniMax-M2.7 | 204800 | 131072 | minimal, low, medium, high |
 | `minimax-m3` | MiniMax-M3 | 512k | 128k | minimal, low, medium, high |
 | `nemotron-3-ultra-free` | Nemotron 3 Ultra Free | 1000k | 128k | minimal, low, medium, high |
-| `north-mini-code-free` | North Mini Code Free | 256k | 64k | minimal, low, medium, high |
+| `north-mini-code-free` | North Mini Code Free | 256k | 64k | high |
 | `qwen3.5-plus` | Qwen3.5 Plus | 262144 | 65536 | minimal, low, medium, high |
 | `qwen3.6-plus` | Qwen3.6 Plus | 262144 | 65536 | minimal, low, medium, high |
 
@@ -732,10 +736,12 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `anthropic/claude-opus-4.7-fast` | Anthropic: Claude Opus 4.7 (Fast) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-opus-4.8` | Anthropic: Claude Opus 4.8 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-opus-4.8-fast` | Anthropic: Claude Opus 4.8 (Fast) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-opus-5` | Claude Opus 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-opus-5-fast` | Claude Opus 5 (Fast) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-sonnet-4.5` | Anthropic: Claude Sonnet 4.5 | 1000k | 64k | minimal, low, medium, high |
 | `anthropic/claude-sonnet-4.6` | Anthropic: Claude Sonnet 4.6 | 1000k | 128k | minimal, low, medium, high, max |
 | `anthropic/claude-sonnet-5` | Anthropic: Claude Sonnet 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
-| `arcee-ai/trinity-large-thinking` | Arcee AI: Trinity Large Thinking | 262144 | 80k | minimal, low, medium, high |
+| `arcee-ai/trinity-large-thinking` | Arcee AI: Trinity Large Thinking | 262144 | 262144 | minimal, low, medium, high |
 | `arcee-ai/virtuoso-large` | Arcee AI: Virtuoso Large | 131072 | 64k | — |
 | `auto` | Auto | 2000k | 30k | minimal, low, medium, high |
 | `bytedance-seed/seed-1.6` | ByteDance Seed: Seed 1.6 | 262144 | 32768 | minimal, low, medium, high |
@@ -767,18 +773,19 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `google/gemini-3.1-pro-preview` | Google: Gemini 3.1 Pro Preview | 1048576 | 65536 | minimal, low, medium, high |
 | `google/gemini-3.1-pro-preview-customtools` | Google: Gemini 3.1 Pro Preview Custom Tools | 1048576 | 65536 | minimal, low, medium, high |
 | `google/gemini-3.5-flash` | Google: Gemini 3.5 Flash | 1048576 | 65536 | minimal, low, medium, high |
-| `google/gemini-3.5-flash-lite` | Google: Gemini 3.5 Flash-Lite | 1048576 | 65536 | minimal, low, medium, high |
+| `google/gemini-3.5-flash-lite` | Google: Gemini 3.5 Flash Lite | 1048576 | 65536 | minimal, low, medium, high |
 | `google/gemini-3.6-flash` | Google: Gemini 3.6 Flash | 1048576 | 65536 | minimal, low, medium, high |
 | `google/gemma-3-12b-it` | Google: Gemma 3 12B | 131072 | 16384 | — |
-| `google/gemma-3-27b-it` | Google: Gemma 3 27B | 110k | 4096 | — |
-| `google/gemma-4-26b-a4b-it` | Google: Gemma 4 26B A4B  | 262144 | 16384 | minimal, low, medium, high |
+| `google/gemma-3-27b-it` | Google: Gemma 3 27B | 131072 | 131072 | — |
+| `google/gemma-4-26b-a4b-it` | Google: Gemma 4 26B A4B  | 262144 | 262144 | minimal, low, medium, high |
 | `google/gemma-4-26b-a4b-it:free` | Google: Gemma 4 26B A4B  (free) | 131072 | 32768 | minimal, low, medium, high |
-| `google/gemma-4-31b-it` | Google: Gemma 4 31B | 262144 | 16384 | minimal, low, medium, high |
+| `google/gemma-4-31b-it` | Google: Gemma 4 31B | 262144 | 262144 | minimal, low, medium, high |
 | `google/gemma-4-31b-it:free` | Google: Gemma 4 31B (free) | 262144 | 32768 | minimal, low, medium, high |
 | `ibm-granite/granite-4.1-8b` | IBM: Granite 4.1 8B | 131072 | 131072 | — |
 | `inception/mercury-2` | Inception: Mercury 2 | 128k | 50k | minimal, low, medium, high |
 | `inclusionai/ling-2.6-1t` | inclusionAI: Ling-2.6-1T | 262144 | 32768 | — |
 | `inclusionai/ling-2.6-flash` | inclusionAI: Ling-2.6-flash | 262144 | 32768 | — |
+| `inclusionai/ling-3.0-flash:free` | Ling-3.0-flash (free) | 262144 | 32768 | minimal, low, medium, high |
 | `inclusionai/ring-2.6-1t` | inclusionAI: Ring-2.6-1T | 262144 | 65536 | minimal, low, medium, high |
 | `kwaipilot/kat-coder-air-v2.5` | Kwaipilot: KAT-Coder-Air V2.5 | 256k | 80k | — |
 | `kwaipilot/kat-coder-pro-v2` | Kwaipilot: KAT-Coder-Pro V2 | 256k | 80k | — |
@@ -825,7 +832,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `nvidia/nemotron-3-nano-30b-a3b` | NVIDIA: Nemotron 3 Nano 30B A3B | 262144 | 228k | minimal, low, medium, high |
 | `nvidia/nemotron-3-nano-30b-a3b:free` | NVIDIA: Nemotron 3 Nano 30B A3B (free) | 256k | 4096 | minimal, low, medium, high |
 | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | NVIDIA: Nemotron 3 Nano Omni (free) | 256k | 65536 | minimal, low, medium, high |
-| `nvidia/nemotron-3-super-120b-a12b` | NVIDIA: Nemotron 3 Super | 262144 | 4096 | minimal, low, medium, high |
+| `nvidia/nemotron-3-super-120b-a12b` | NVIDIA: Nemotron 3 Super | 262144 | 16384 | minimal, low, medium, high |
 | `nvidia/nemotron-3-super-120b-a12b:free` | NVIDIA: Nemotron 3 Super (free) | 262144 | 262144 | minimal, low, medium, high |
 | `nvidia/nemotron-3-ultra-550b-a55b` | NVIDIA: Nemotron 3 Ultra | 512288 | 4096 | minimal, low, medium, high |
 | `nvidia/nemotron-3-ultra-550b-a55b:free` | NVIDIA: Nemotron 3 Ultra (free) | 1000k | 65536 | minimal, low, medium, high |
@@ -896,6 +903,8 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `openrouter/fusion` | OpenRouter: Fusion | 1000k | 30k | minimal, low, medium, high |
 | `poolside/laguna-m.1` | Poolside: Laguna M.1 | 262144 | 32768 | minimal, low, medium, high |
 | `poolside/laguna-m.1:free` | Poolside: Laguna M.1 (free) | 262144 | 32768 | minimal, low, medium, high |
+| `poolside/laguna-s-2.1` | Poolside: Laguna S 2.1 | 1048576 | 131072 | minimal, low, medium, high |
+| `poolside/laguna-s-2.1:free` | Poolside: Laguna S 2.1 (free) | 262144 | 32768 | minimal, low, medium, high |
 | `poolside/laguna-xs-2.1` | Poolside: Laguna XS 2.1 | 262144 | 32768 | minimal, low, medium, high |
 | `poolside/laguna-xs-2.1:free` | Poolside: Laguna XS 2.1 (free) | 262144 | 32768 | minimal, low, medium, high |
 | `qwen/qwen-2.5-72b-instruct` | Qwen2.5 72B Instruct | 32768 | 16384 | — |
@@ -903,7 +912,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `qwen/qwen-plus` | Qwen: Qwen-Plus | 1000k | 32768 | — |
 | `qwen/qwen-plus-2025-07-28` | Qwen: Qwen Plus 0728 | 1000k | 32768 | — |
 | `qwen/qwen-plus-2025-07-28:thinking` | Qwen: Qwen Plus 0728 (thinking) | 1000k | 32768 | minimal, low, medium, high |
-| `qwen/qwen3-14b` | Qwen: Qwen3 14B | 40960 | 16384 | minimal, low, medium, high |
+| `qwen/qwen3-14b` | Qwen: Qwen3 14B | 131072 | 8192 | minimal, low, medium, high |
 | `qwen/qwen3-235b-a22b` | Qwen: Qwen3 235B A22B | 131072 | 8192 | minimal, low, medium, high |
 | `qwen/qwen3-235b-a22b-2507` | Qwen: Qwen3 235B A22B Instruct 2507 | 262144 | 16384 | — |
 | `qwen/qwen3-235b-a22b-thinking-2507` | Qwen: Qwen3 235B A22B Thinking 2507 | 131072 | 32768 | minimal, low, medium, high |
@@ -919,24 +928,24 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `qwen/qwen3-coder-plus` | Qwen: Qwen3 Coder Plus | 1000k | 65536 | — |
 | `qwen/qwen3-max` | Qwen: Qwen3 Max | 262144 | 32768 | — |
 | `qwen/qwen3-max-thinking` | Qwen: Qwen3 Max Thinking | 262144 | 32768 | minimal, low, medium, high |
-| `qwen/qwen3-next-80b-a3b-instruct` | Qwen: Qwen3 Next 80B A3B Instruct | 131072 | 32768 | — |
+| `qwen/qwen3-next-80b-a3b-instruct` | Qwen: Qwen3 Next 80B A3B Instruct | 262144 | 262144 | — |
 | `qwen/qwen3-next-80b-a3b-thinking` | Qwen: Qwen3 Next 80B A3B Thinking | 131072 | 32768 | minimal, low, medium, high |
 | `qwen/qwen3-vl-235b-a22b-instruct` | Qwen: Qwen3 VL 235B A22B Instruct | 131072 | 32768 | — |
 | `qwen/qwen3-vl-235b-a22b-thinking` | Qwen: Qwen3 VL 235B A22B Thinking | 131072 | 32768 | minimal, low, medium, high |
-| `qwen/qwen3-vl-30b-a3b-instruct` | Qwen: Qwen3 VL 30B A3B Instruct | 131072 | 32768 | — |
+| `qwen/qwen3-vl-30b-a3b-instruct` | Qwen: Qwen3 VL 30B A3B Instruct | 262144 | 16384 | — |
 | `qwen/qwen3-vl-30b-a3b-thinking` | Qwen: Qwen3 VL 30B A3B Thinking | 131072 | 32768 | minimal, low, medium, high |
 | `qwen/qwen3-vl-32b-instruct` | Qwen: Qwen3 VL 32B Instruct | 131072 | 32768 | — |
 | `qwen/qwen3-vl-8b-instruct` | Qwen: Qwen3 VL 8B Instruct | 131072 | 32768 | — |
 | `qwen/qwen3-vl-8b-thinking` | Qwen: Qwen3 VL 8B Thinking | 131072 | 32768 | minimal, low, medium, high |
 | `qwen/qwen3.5-122b-a10b` | Qwen: Qwen3.5-122B-A10B | 262144 | 65536 | minimal, low, medium, high |
-| `qwen/qwen3.5-27b` | Qwen: Qwen3.5-27B | 262144 | 81920 | minimal, low, medium, high |
+| `qwen/qwen3.5-27b` | Qwen: Qwen3.5-27B | 262144 | 65536 | minimal, low, medium, high |
 | `qwen/qwen3.5-35b-a3b` | Qwen: Qwen3.5-35B-A3B | 262144 | 262144 | minimal, low, medium, high |
 | `qwen/qwen3.5-397b-a17b` | Qwen: Qwen3.5 397B A17B | 262144 | 65536 | minimal, low, medium, high |
 | `qwen/qwen3.5-9b` | Qwen: Qwen3.5-9B | 262144 | 262144 | minimal, low, medium, high |
 | `qwen/qwen3.5-flash-02-23` | Qwen: Qwen3.5-Flash | 1000k | 65536 | minimal, low, medium, high |
 | `qwen/qwen3.5-plus-02-15` | Qwen: Qwen3.5 Plus 2026-02-15 | 1000k | 65536 | minimal, low, medium, high |
 | `qwen/qwen3.5-plus-20260420` | Qwen: Qwen3.5 Plus 2026-04-20 | 1000k | 65536 | minimal, low, medium, high |
-| `qwen/qwen3.6-27b` | Qwen: Qwen3.6 27B | 262144 | 65536 | minimal, low, medium, high |
+| `qwen/qwen3.6-27b` | Qwen: Qwen3.6 27B | 131072 | 131072 | minimal, low, medium, high |
 | `qwen/qwen3.6-35b-a3b` | Qwen: Qwen3.6 35B A3B | 262144 | 262144 | minimal, low, medium, high |
 | `qwen/qwen3.6-flash` | Qwen: Qwen3.6 Flash | 1000k | 65536 | minimal, low, medium, high |
 | `qwen/qwen3.6-max-preview` | Qwen: Qwen3.6 Max Preview | 262144 | 65536 | minimal, low, medium, high |
@@ -949,7 +958,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `sao10k/l3.1-euryale-70b` | Sao10K: Llama 3.1 Euryale 70B v2.2 | 131072 | 16384 | — |
 | `stepfun/step-3.5-flash` | StepFun: Step 3.5 Flash | 262144 | 65536 | minimal, low, medium, high |
 | `stepfun/step-3.7-flash` | StepFun: Step 3.7 Flash | 256k | 256k | minimal, low, medium, high |
-| `tencent/hy3` | Tencent: Hy3 | 262144 | 262144 | minimal, low, medium, high |
+| `tencent/hy3` | Tencent: Hy3 | 262144 | 128k | minimal, low, medium, high |
 | `tencent/hy3-preview` | Tencent: Hy3 preview | 262144 | 4096 | minimal, low, medium, high |
 | `thedrummer/unslopnemo-12b` | TheDrummer: UnslopNemo 12B | 32768 | 32768 | — |
 | `thinkingmachines/inkling` | Thinking Machines: Inkling | 524288 | 4096 | minimal, low, medium, high |
@@ -966,7 +975,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `z-ai/glm-4.6` | Z.ai: GLM 4.6 | 202752 | 131072 | minimal, low, medium, high |
 | `z-ai/glm-4.6v` | Z.ai: GLM 4.6V | 131072 | 32768 | minimal, low, medium, high |
 | `z-ai/glm-4.7` | Z.ai: GLM 4.7 | 202752 | 131072 | minimal, low, medium, high |
-| `z-ai/glm-4.7-flash` | Z.ai: GLM 4.7 Flash | 131072 | 131072 | minimal, low, medium, high |
+| `z-ai/glm-4.7-flash` | Z.ai: GLM 4.7 Flash | 202752 | 16384 | minimal, low, medium, high |
 | `z-ai/glm-5` | Z.ai: GLM 5 | 204800 | 131072 | minimal, low, medium, high |
 | `z-ai/glm-5-turbo` | Z.ai: GLM 5 Turbo | 202752 | 131072 | minimal, low, medium, high |
 | `z-ai/glm-5.1` | Z.ai: GLM 5.1 | 200k | 128k | minimal, low, medium, high |
@@ -983,14 +992,14 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `glm-5` | GLM-5 | 202752 | 16384 | minimal, low, medium, high |
 | `glm-5.1` | GLM-5.1 | 202752 | 128k | minimal, low, medium, high |
 | `glm-5.2` | GLM-5.2 | 1000k | 131072 | minimal, low, medium, high |
-| `kimi-k2.5` | Kimi K2.5 | 262144 | 32768 | minimal, low, medium, high |
-| `kimi-k2.6` | Kimi K2.6 | 262144 | 16384 | minimal, low, medium, high |
+| `kimi-k2.5` | Kimi K2.5 | 262144 | 98304 | minimal, low, medium, high |
+| `kimi-k2.6` | Kimi K2.6 | 262144 | 262144 | minimal, low, medium, high |
 | `kimi-k2.7-code` | Kimi K2.7 Code | 262144 | 262144 | minimal, low, medium, high |
-| `MiniMax-M2.5` | MiniMax-M2.5 | 196608 | 24576 | minimal, low, medium, high |
+| `MiniMax-M2.5` | MiniMax-M2.5 | 196608 | 32768 | minimal, low, medium, high |
 | `qwen3.6-flash` | Qwen3.6 Flash | 1000k | 65536 | minimal, low, medium, high |
 | `qwen3.6-plus` | Qwen3.6 Plus | 1000k | 65536 | minimal, low, medium, high |
-| `qwen3.7-max` | Qwen3.7 Max | 1000k | 65536 | minimal, low, medium, high |
-| `qwen3.7-plus` | Qwen3.7 Plus | 1000k | 64k | minimal, low, medium, high |
+| `qwen3.7-max` | Qwen3.7 Max | 1000k | 131072 | minimal, low, medium, high |
+| `qwen3.7-plus` | Qwen3.7 Plus | 1000k | 65536 | minimal, low, medium, high |
 | `qwen3.8-max-preview` | Qwen3.8 Max Preview | 1000k | 131072 | minimal, low, medium, high |
 
 ## qwen-token-plan
@@ -1003,14 +1012,14 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `glm-5` | GLM-5 | 202752 | 16384 | minimal, low, medium, high |
 | `glm-5.1` | GLM-5.1 | 202752 | 128k | minimal, low, medium, high |
 | `glm-5.2` | GLM-5.2 | 1000k | 131072 | minimal, low, medium, high |
-| `kimi-k2.5` | Kimi K2.5 | 262144 | 32768 | minimal, low, medium, high |
-| `kimi-k2.6` | Kimi K2.6 | 262144 | 16384 | minimal, low, medium, high |
+| `kimi-k2.5` | Kimi K2.5 | 262144 | 98304 | minimal, low, medium, high |
+| `kimi-k2.6` | Kimi K2.6 | 262144 | 262144 | minimal, low, medium, high |
 | `kimi-k2.7-code` | Kimi K2.7 Code | 262144 | 262144 | minimal, low, medium, high |
-| `MiniMax-M2.5` | MiniMax-M2.5 | 196608 | 24576 | minimal, low, medium, high |
+| `MiniMax-M2.5` | MiniMax-M2.5 | 196608 | 32768 | minimal, low, medium, high |
 | `qwen3.6-flash` | Qwen3.6 Flash | 1000k | 65536 | minimal, low, medium, high |
 | `qwen3.6-plus` | Qwen3.6 Plus | 1000k | 65536 | minimal, low, medium, high |
-| `qwen3.7-max` | Qwen3.7 Max | 1000k | 65536 | minimal, low, medium, high |
-| `qwen3.7-plus` | Qwen3.7 Plus | 1000k | 64k | minimal, low, medium, high |
+| `qwen3.7-max` | Qwen3.7 Max | 1000k | 131072 | minimal, low, medium, high |
+| `qwen3.7-plus` | Qwen3.7 Plus | 1000k | 65536 | minimal, low, medium, high |
 | `qwen3.8-max-preview` | Qwen3.8 Max Preview | 1000k | 131072 | minimal, low, medium, high |
 
 ## together
@@ -1072,9 +1081,10 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `anthropic/claude-opus-4.5` | Claude Opus 4.5 | 200k | 64k | minimal, low, medium, high |
 | `anthropic/claude-opus-4.6` | Claude Opus 4.6 | 1000k | 128k | minimal, low, medium, high, max |
 | `anthropic/claude-opus-4.7` | Claude Opus 4.7 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
-| `anthropic/claude-opus-4.7-fast` | Claude Opus 4.7 (Fast) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-opus-4.8` | Claude Opus 4.8 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-opus-4.8-fast` | Claude Opus 4.8 (Fast) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-opus-5` | Claude Opus 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-opus-5-fast` | Claude Opus 5 (Fast) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-sonnet-4.5` | Claude Sonnet 4.5 | 1000k | 64k | minimal, low, medium, high |
 | `anthropic/claude-sonnet-4.6` | Claude Sonnet 4.6 | 1000k | 128k | minimal, low, medium, high, max |
 | `anthropic/claude-sonnet-5` | Claude Sonnet 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
@@ -1097,7 +1107,6 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `google/gemini-3-flash` | Gemini 3 Flash | 1000k | 65k | minimal, low, medium, high |
 | `google/gemini-3-pro-preview` | Gemini 3 Pro Preview | 1000k | 64k | minimal, low, medium, high |
 | `google/gemini-3.1-flash-lite` | Gemini 3.1 Flash Lite | 1000k | 65k | minimal, low, medium, high |
-| `google/gemini-3.1-flash-lite-preview` | Gemini 3.1 Flash Lite Preview | 1000k | 65k | minimal, low, medium, high |
 | `google/gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | 1000k | 64k | minimal, low, medium, high |
 | `google/gemini-3.5-flash` | Gemini 3.5 Flash | 1000k | 64k | minimal, low, medium, high |
 | `google/gemini-3.5-flash-lite` | Gemini 3.5 Flash Lite | 1000k | 65k | minimal, low, medium, high |
@@ -1106,6 +1115,7 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `google/gemma-4-31b-it` | Gemma 4 31B IT | 262144 | 131072 | minimal, low, medium, high |
 | `inception/mercury-2` | Mercury 2 | 128k | 128k | minimal, low, medium, high |
 | `inception/mercury-coder-small` | Mercury Coder Small Beta | 32k | 16384 | — |
+| `inclusionai/ling-3.0-flash-free` | Ling 3.0 Flash | 256k | 256k | minimal, low, medium, high |
 | `interfaze/interfaze-beta` | Interfaze Beta | 1000k | 32k | minimal, low, medium, high |
 | `kwaipilot/kat-coder-air-v2.5` | Kat Coder Air V2.5 | 256k | 80k | minimal, low, medium, high |
 | `kwaipilot/kat-coder-pro-v1` | KAT-Coder-Pro V1 | 256k | 32k | — |
@@ -1159,7 +1169,6 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `openai/gpt-4o` | GPT-4o | 128k | 16384 | — |
 | `openai/gpt-4o-mini` | GPT-4o mini | 128k | 16384 | — |
 | `openai/gpt-5` | GPT-5 | 400k | 128k | minimal, low, medium, high |
-| `openai/gpt-5-chat` | GPT 5 Chat | 128k | 16384 | — |
 | `openai/gpt-5-codex` | GPT-5-Codex | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5-mini` | GPT-5 mini | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5-nano` | GPT-5 nano | 400k | 128k | minimal, low, medium, high |
@@ -1170,7 +1179,6 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `openai/gpt-5.1-instant` | GPT-5.1 Instant | 128k | 16384 | — |
 | `openai/gpt-5.1-thinking` | GPT 5.1 Thinking | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5.2` | GPT 5.2 | 400k | 128k | minimal, low, medium, high, xhigh |
-| `openai/gpt-5.2-chat` | GPT 5.2 Chat | 128k | 16384 | — |
 | `openai/gpt-5.2-codex` | GPT 5.2 Codex | 400k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.2-pro` | GPT 5.2  | 400k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.3-chat` | GPT-5.3 Chat | 128k | 16384 | — |
@@ -1193,9 +1201,12 @@ connect a provider with `codegenie provider login <provider>` (or env vars / the
 | `openai/o3-mini` | o3-mini | 200k | 100k | minimal, low, medium, high |
 | `openai/o3-pro` | o3 Pro | 200k | 100k | minimal, low, medium, high |
 | `openai/o4-mini` | o4-mini | 200k | 100k | minimal, low, medium, high |
+| `poolside/laguna-s-2.1` | Laguna S 2.1 | 1000k | 131072 | minimal, low, medium, high |
+| `poolside/laguna-s-2.1-free` | Laguna S 2.1 Free | 256k | 32768 | minimal, low, medium, high |
 | `sakana/fugu-ultra` | Fugu Ultra | 1000k | 1000k | minimal, low, medium, high |
 | `stepfun/step-3.5-flash` | StepFun 3.5 Flash | 262114 | 262114 | minimal, low, medium, high |
 | `stepfun/step-3.7-flash` | Step 3.7 Flash | 256k | 256k | minimal, low, medium, high |
+| `tencent/hy3` | Hy3 | 262144 | 262144 | minimal, low, medium, high |
 | `thinkingmachines/inkling` | Inkling | 256k | 256k | minimal, low, medium, high |
 | `xai/grok-4.1-fast-non-reasoning` | Grok 4.1 Fast Non-Reasoning | 1000k | 1000k | — |
 | `xai/grok-4.1-fast-reasoning` | Grok 4.1 Fast Reasoning | 1000k | 1000k | minimal, low, medium, high |

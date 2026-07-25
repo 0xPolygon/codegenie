@@ -36,6 +36,6 @@ jobs:
 
       - uses: 0xPolygon/codegenie@v0.4.2
         with:
-          model: "anthropic/claude-opus-4-8:high"
+          model: "anthropic/claude-opus-5:high"
           llm-api-key: ${{ secrets.LLM_API_KEY }}
           post-inline-comments: "true"

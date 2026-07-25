@@ -27,7 +27,7 @@ permissions:
 env:
   # provider/model[:reasoning] — the LLM_API_KEY secret is routed to this
   # provider. See models.md for the full list.
-  CODEGENIE_MODEL: "anthropic/claude-opus-4-8:high"
+  CODEGENIE_MODEL: "anthropic/claude-opus-5:high"
 
 concurrency:
   group: codegenie-review-pr-${{ github.event.pull_request.number || github.event.issue.number }}

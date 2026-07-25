@@ -35,7 +35,7 @@ inputs:
     description: "Comma-separated review lenses to enable."
     default: ""
   model:
-    description: "Model spec: provider/model[:reasoning], e.g. anthropic/claude-opus-4-8:xhigh. Reasoning defaults to high."
+    description: "Model spec: provider/model[:reasoning], e.g. anthropic/claude-opus-5:xhigh. Reasoning defaults to high."
     default: ""
   llm-api-key:
     description: "Generic LLM API key, routed to the provider named in `model`. Provider-native env vars (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...) also work and take precedence."
