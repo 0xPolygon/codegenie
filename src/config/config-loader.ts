@@ -64,8 +64,6 @@ const DEFAULT_SOURCE_PATHS = [
   "review.maxTime",
   "review.perPassTimeoutMs",
   "review.budgetBoost",
-  "review.packSameFileHunks",
-  "review.packedToolBudgetMode",
   "review.maxBudgetTokens",
   "github.summaryWhenNoFindings",
   "classification.pathRules",
@@ -81,15 +79,7 @@ const DEFAULT_SOURCE_PATHS = [
   "eval.logsDir"
 ];
 
-const REPO_SAFE_REVIEW_KEYS = new Set([
-  "depth",
-  "maxFindings",
-  "softCommentCap",
-  "budgetBoost",
-  "maxTime",
-  "packSameFileHunks",
-  "packedToolBudgetMode"
-]);
+const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap", "budgetBoost", "maxTime"]);
 const CREDENTIAL_KEY_PATTERN = /(?:api[_-]?key|apikey|secret|token|password|passwd|authorization|credentials|auth)/i;
 
 export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
@@ -264,14 +254,6 @@ function applyRawConfig(
     config.review.budgetBoost = raw.review.budgetBoost;
     sources["review.budgetBoost"] = source;
   }
-  if (raw.review?.packSameFileHunks !== undefined) {
-    config.review.packSameFileHunks = raw.review.packSameFileHunks;
-    sources["review.packSameFileHunks"] = source;
-  }
-  if (raw.review?.packedToolBudgetMode !== undefined) {
-    config.review.packedToolBudgetMode = raw.review.packedToolBudgetMode;
-    sources["review.packedToolBudgetMode"] = source;
-  }
   if (raw.review?.maxBudgetTokens !== undefined) {
     config.review.maxBudgetTokens = raw.review.maxBudgetTokens;
     sources["review.maxBudgetTokens"] = source;
@@ -382,12 +364,6 @@ function filterRepoConfig(raw: RawCodegenieConfig, warnings: ConfigWarning[]): R
     }
     if (raw.review.budgetBoost !== undefined) {
       safe.review.budgetBoost = raw.review.budgetBoost;
-    }
-    if (raw.review.packSameFileHunks !== undefined) {
-      safe.review.packSameFileHunks = raw.review.packSameFileHunks;
-    }
-    if (raw.review.packedToolBudgetMode !== undefined) {
-      safe.review.packedToolBudgetMode = raw.review.packedToolBudgetMode;
     }
     if (raw.review.maxTime !== undefined) {
       safe.review.maxTime = raw.review.maxTime;

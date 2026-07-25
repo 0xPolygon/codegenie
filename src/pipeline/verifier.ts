@@ -7,7 +7,6 @@ import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
   CandidateFinding,
   CodegenieConfig,
-  EvalVerificationRecord,
   PacketReviewResult,
   RepositoryTools,
   ReviewPacket,
@@ -141,12 +140,6 @@ type RelatedCodeEvidence = NonNullable<CandidateFinding["evidence"]["relatedCode
 type CandidateGateDecision =
   | { outcome: "suppress"; reason: string; facts: VerificationGateFacts }
   | { outcome: "schedule"; reason: string; lane: VerificationLane; facts: VerificationGateFacts };
-
-export type ReconstructedVerificationGateDecision = {
-  candidate: CandidateFinding;
-  anchorStripped: boolean;
-  decision: CandidateGateDecision;
-};
 
 export async function verifyFindings(
   input: { packetResults: PacketReviewResult[]; packets: ReviewPacket[] },
@@ -500,101 +493,6 @@ function applyVerificationVerdict(candidate: CandidateFinding, verdict: Verifica
     ? applyFindingRevision(candidate, verdict.finalFinding)
     : candidate;
   return applyVerdictIntentAssessment(applyVerdictAnchor(revised, verdict), verdict);
-}
-
-export function reconstructVerifiedFindingsFromArtifacts(
-  candidates: CandidateFinding[],
-  records: EvalVerificationRecord[],
-  packets: ReviewPacket[],
-  diff: UnifiedDiff
-): CandidateFinding[] {
-  const clusteredById = new Map(reconstructVerifierCandidatesFromArtifacts(candidates, records, packets, diff)
-    .map((candidate) => [candidate.id, candidate]));
-  return records.flatMap((record) => {
-    if (!("verdict" in record) || record.verdict.verificationIncomplete === true ||
-        record.verdict.verdict === "reject" || record.verdict.verdict === "incomplete") {
-      return [];
-    }
-    const candidate = clusteredById.get(record.candidateId);
-    return candidate === undefined ? [] : [applyVerificationVerdict(candidate, record.verdict)];
-  });
-}
-
-export function reconstructVerifierCandidatesFromArtifacts(
-  candidates: CandidateFinding[],
-  records: EvalVerificationRecord[],
-  packets: ReviewPacket[],
-  diff: UnifiedDiff
-): CandidateFinding[] {
-  const packetsById = new Map(packets.map((packet) => [packet.id, packet]));
-  const recordsById = new Map(records.map((record) => [record.candidateId, record]));
-  const quietTelemetry = { event: () => undefined } as unknown as TelemetryRecorder;
-  const preGated = candidates.map((candidate) =>
-    preGateAnchor(candidate, packetsById.get(candidate.producedBy.packetId), diff, quietTelemetry).candidate
-  ).filter((candidate) => recordsById.get(candidate.id)?.gateDecision !== "suppressed");
-  const clustered = clusterCandidates(preGated, quietTelemetry);
-  return clustered.all;
-}
-
-export function reconstructDuplicateVerificationVerdict(
-  duplicate: CandidateFinding,
-  representativeVerdict: VerificationVerdict
-): VerificationVerdict {
-  return {
-    ...representativeVerdict,
-    candidateId: duplicate.id,
-    ...(representativeVerdict.finalFinding !== undefined
-      ? { finalFinding: applyVerificationVerdict(duplicate, representativeVerdict) }
-      : {})
-  };
-}
-
-export function reconstructVerificationGateFactsFromArtifacts(
-  candidate: CandidateFinding,
-  packet: ReviewPacket | undefined,
-  diff: UnifiedDiff
-): VerificationGateFacts {
-  const quietTelemetry = { event: () => undefined } as unknown as TelemetryRecorder;
-  return candidateGateFacts(preGateAnchor(candidate, packet, diff, quietTelemetry).candidate);
-}
-
-export function reconstructVerificationGateDecisionFromArtifacts(
-  candidate: CandidateFinding,
-  packet: ReviewPacket | undefined,
-  diff: UnifiedDiff,
-  config: CodegenieConfig
-): ReconstructedVerificationGateDecision {
-  const quietTelemetry = { event: () => undefined } as unknown as TelemetryRecorder;
-  const preGated = preGateAnchor(candidate, packet, diff, quietTelemetry);
-  return {
-    candidate: preGated.candidate,
-    anchorStripped: preGated.anchorStripped,
-    decision: gateCandidate(preGated.candidate, config)
-  };
-}
-
-export function reconstructGatedVerifierCandidatesFromArtifacts(
-  candidates: CandidateFinding[],
-  packets: ReviewPacket[],
-  diff: UnifiedDiff,
-  config: CodegenieConfig
-): {
-  evaluations: ReconstructedVerificationGateDecision[];
-  candidates: CandidateFinding[];
-} {
-  const packetsById = new Map(packets.map((packet) => [packet.id, packet]));
-  const evaluations = candidates.map((candidate) => reconstructVerificationGateDecisionFromArtifacts(
-    candidate,
-    packetsById.get(candidate.producedBy.packetId),
-    diff,
-    config
-  ));
-  const quietTelemetry = { event: () => undefined } as unknown as TelemetryRecorder;
-  const clustered = clusterCandidates(
-    evaluations.flatMap((evaluation) => evaluation.decision.outcome === "schedule" ? [evaluation.candidate] : []),
-    quietTelemetry
-  );
-  return { evaluations, candidates: clustered.all };
 }
 
 function applyFindingRevision(candidate: CandidateFinding, revision: CandidateFinding): CandidateFinding {

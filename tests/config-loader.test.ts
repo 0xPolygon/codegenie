@@ -14,42 +14,6 @@ import { loadProviderSettings, saveProviderSettings } from "../src/provider/prov
 import { CodegenieError } from "../src/util/errors.js";
 
 describe("config loader", () => {
-  it("loads dark packet-packing defaults and tracks safe user and repository overrides", () => {
-    const repoRoot = tempDir();
-    const home = tempDir();
-
-    const defaults = loadConfig({ repoRoot, homeOverride: home });
-    expect(defaults.config.review.packSameFileHunks).toBe(false);
-    expect(defaults.config.review.packedToolBudgetMode).toBe("base");
-    expect(defaults.sources["review.packSameFileHunks"]).toBe("defaults");
-    expect(defaults.sources["review.packedToolBudgetMode"]).toBe("defaults");
-
-    writeFileSync(path.join(home, "config.toml"), [
-      "[review]",
-      "packSameFileHunks = true",
-      'packedToolBudgetMode = "atom-scaled"'
-    ].join("\n"));
-    const userConfigured = loadConfig({ repoRoot, homeOverride: home });
-    expect(userConfigured.config.review.packSameFileHunks).toBe(true);
-    expect(userConfigured.config.review.packedToolBudgetMode).toBe("atom-scaled");
-    expect(userConfigured.sources["review.packSameFileHunks"]).toBe("user-config");
-    expect(userConfigured.sources["review.packedToolBudgetMode"]).toBe("user-config");
-
-    writeFileSync(path.join(repoRoot, "codegenie.toml"), [
-      "[review]",
-      "packSameFileHunks = false",
-      'packedToolBudgetMode = "base"'
-    ].join("\n"));
-    const repoConfigured = loadConfig({ repoRoot, homeOverride: home });
-    expect(repoConfigured.config.review.packSameFileHunks).toBe(false);
-    expect(repoConfigured.config.review.packedToolBudgetMode).toBe("base");
-    expect(repoConfigured.sources["review.packSameFileHunks"]).toBe("repo-config");
-    expect(repoConfigured.sources["review.packedToolBudgetMode"]).toBe("repo-config");
-    expect(repoConfigured.warnings).toEqual([]);
-
-    expect(rawConfigSchema.safeParse({ review: { packedToolBudgetMode: "linear" } }).success).toBe(false);
-  });
-
   it("resolves maxTime minutes from defaults, user config, repo config, and CLI in precedence order", () => {
     const repoRoot = tempDir();
     const home = tempDir();

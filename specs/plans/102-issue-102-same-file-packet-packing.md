@@ -1,11 +1,11 @@
 # Issue 102: Same-File Packet Packing
 
-Status: PENDING
+Status: COMPLETE — failed treatment gate; baseline restored
 Related: Plan 100 (COMPLETE; dispatch rank), Plans 40/44 (recall calibration), Plan 79 (repeat/recall harness)
 Planned from: production run `.codegenie/runs/20260724-184952-dca8d870` against `0xsequence/trails-api` PR 846 (88 files, 217 hunks, `--max-time 60`, concurrency 4), plus retained runs `740d73f2`, `fe1548ae`, and `81f806a6`, 2026-07-24
 Production replay refs: base/merge-base `d1c49bdf6a8002ec2ec27faac94a932d736532b2`; head `fbb5f8761c2c296e115af17e919a7c35d9de8373`
 Planned at: commit `6909e1a` (branch `next`)
-Recommended priority: next throughput plan. Plan 100 is complete, and run `dca8d870` is the clean planner-survival/dispatch-order baseline: 32/32 planner entries survived and all 19 deep hunks were dispatched. Its dependency is satisfied.
+Final outcome: the repaired one-repeat treatment gate failed, so same-file packet packing did not roll out. Step 12 restored the baseline packet path and removed the experiment; the immutable reports and paid logs retain the rejected design's measurement record.
 
 > Executor instructions: preserve the output of today's semantic hunk grouper as indivisible **atoms**. Do not replace `canJoinGroup` with an affinity sort: proximity is not transitive, and a sort cannot preserve its semantics. Never combine atoms with different effective coverage levels. Preserve each atom's standalone review profile as a monotonic floor when packing internalizes relationship context. Keep source order, `MAX_HUNKS_PER_PACKET = 5`, and `MAX_PATCH_CHARS = 12_000`. Land packing dark, validate deterministic packet shape before spending model calls, then record treatment for every paid execution and require at least 8/10 treated B/C executions per arm/case. Use paired repeated A/B/C evals to select the production behavior and tool-budget calculation, preserve the paid evidence, then remove every experiment-only flag and alternate path in the dedicated teardown step.
 >
@@ -107,6 +107,35 @@ The report's authoritative reconstructed `retryPreflightCostUSD` is `$3.986221`;
 The failed retry report is preserved byte-for-byte at `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/reports/plan102-eval-preflight-retry-invalid-5bd80f2c.json`, SHA-256 `650113d24d092e6fd712303e1828b297010c76f672d7efb799f5081f79635517`. The new run/manifests aggregate SHA-256 is `dabb5d4700a0fe559490216da73d335bd9f28cec6d3c004d8b41b4cb7c77c3c1`. The original runs 1–6 plus manifest retain aggregate SHA-256 `2a3232651752a4f3652334d5126e2eebca6169da658e854214b6f98a158eb750`, and the original invalid report remains SHA-256 `3368178d57d6c4c46865fccb52b8aa160d1f9acf3536be9e1cde4d05d52c50ab`. No historical log, manifest, or report was edited or deleted.
 
 Plan 102 steps 8–11 are `not_run` because the repaired retry gate failed. Step 12's failure teardown is also `not_run` in Phase 4 and is reserved for the next separately reviewed phase; no case was changed to repeat 10, no arm was selected, no collateral or production suite ran, no rollout verdict was made, and no experiment code or evidence was torn down in this phase.
+
+### Phase 5 failed-outcome teardown and final gate (2026-07-25)
+
+Plan 102 is complete through the explicit failed-outcome branch, not through rollout. The repaired retry never established a valid preflight: consistency B/C each treated the target `0/1`, and independently sampled planner hints prevented exact A-to-B/C standalone-profile reconciliation in both case families. No report condition was waived and no third paid attempt was made. The product decision is therefore to reject this packing design for this iteration and restore the original baseline path.
+
+Before teardown, every JSON report actually produced by the completed phases was preserved under `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/reports/`:
+
+| Preserved report | SHA-256 |
+| --- | --- |
+| `plan102-packet-shape.json` | `77af0c38937bd6957806f05ad201cbad32461414c1d667824096208473c276fa` |
+| `plan102-eval-preflight-invalid-ace65769.json` | `3368178d57d6c4c46865fccb52b8aa160d1f9acf3536be9e1cde4d05d52c50ab` |
+| `plan102-eval-preflight-retry-invalid-5bd80f2c.json` | `650113d24d092e6fd712303e1828b297010c76f672d7efb799f5081f79635517` |
+
+`reports/manifest.sha256`, itself SHA-256 `7c6a1dfb923aea7a36986e50c40068eb878688611f22bc31e4c3c20128970667`, covers exactly those three report basenames. `sha256sum -c manifest.sha256` passes for all three. The deterministic replay was copied byte-for-byte from `/tmp/plan102-packet-shape.json`; the two existing invalid-preflight reports were hash-verified and never rewritten. No repeat-10, collateral, or production-capacity report exists because those phases were not reached.
+
+Both paid invocations use the immutable log root `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/recall/logs` and retain their invocation manifests and run artifacts unchanged:
+
+| Invocation UUID | Eval runs | Review run IDs | Authoritative cost USD |
+| --- | --- | --- | ---: |
+| `ace65769-3a68-4bd1-bd36-662fa6827dc6` | 1–6 | `20260725-120233-6c490c44`, `20260725-120706-36842f4b`, `20260725-121006-87a8ed77`, `20260725-121205-5a020015`, `20260725-121737-6249976f`, `20260725-121917-4c7e8289` | 5.207657 |
+| `5bd80f2c-865e-40f0-a605-07387138b904` | 7–12 | `20260725-131014-ff7643a9`, `20260725-131217-78051528`, `20260725-131407-46ee2073`, `20260725-131627-fd970500`, `20260725-131904-9623b816`, `20260725-132212-896d115e` | 3.986221 |
+
+Final cumulative `actualValidationCostUSD` is `$9.193878`, below the owner-approved `approvedValidationCostUSD: $500`. There is no projected remaining validation spend: step 8 (repeat-10 recall), step 9 (deterministic and real-model collateral), step 10 (production-capacity pair), and step 11 (arm selection and rollout documentation) are all `not_run` because the repaired step-7 treatment gate failed. Their absent reports and `$0` later-phase spend are intentional, not missing evidence. No paid model call occurred during teardown or the final repository gate.
+
+Step 12 completed through the failure branch. The same-file packing pass, atom-scaled and base experiment modes, both temporary config fields and eval/config plumbing, experiment-only atom wrappers/IDs/provenance/profile floor/telemetry, report script and tests, and dead artifact-reconstruction exports/metadata were removed. `scripts/`, `src/`, and `tests/` now match the pre-experiment product baseline at commit `5aca256` for every Plan 102 code path, restoring the original `hunkFirstGroups()` packet behavior and ordinary packet tool budget rather than retaining a dark alternate path. No golden packet-packing fixture was created.
+
+The private active suite no longer contains A/B/C case YAMLs. B/C declarations were retired with the experiment. `consistency-a` was also removed because its repaired baseline run met `0/2` declared expectations, and `dilution-a` was removed because it met only `1/2`; neither satisfied the suite's existing all-expectations-pass policy. Both fixture repositories under `recall/repos/`, all twelve run directories, both invocation manifests, and every log/report artifact remain unchanged. No production or collateral case was created merely for teardown.
+
+The exact step-12 evidence, retired-field grep, report-absence, strict-suite no-model parse, and focused baseline tests pass. Step 13's complete `pnpm run check`, `pnpm test`, and `pnpm build` gate plus `git diff --check` also pass. This completed status records a failed experiment with verified baseline restoration; it does not claim rollout, recall safety, throughput gain, or production economics.
 
 ## Phase 2 deterministic reconciliation (2026-07-24)
 

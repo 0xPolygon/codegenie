@@ -9,12 +9,10 @@ import { compareToPrevious, renderEvalCompareText } from "../src/evals/eval-comp
 import { executeEvalCommand, renderCaseResult, runEvalCommand } from "../src/evals/eval-command.js";
 import { loadEvalSuite, replayFromArtifacts, runEvalCase } from "../src/evals/eval-runner.js";
 import { aggregateRepeatScores, assignExpectations, matchExpectation, scoreEvalRun } from "../src/evals/eval-scoring.js";
-import { loadEvalRuns } from "../scripts/packet-packing-report.js";
 import type {
   CandidateFinding,
   EvalArtifacts,
   EvalCase,
-  EvalInvocationManifest,
   EvalRunInfo,
   EvalRunMetrics,
   EvalScore,
@@ -126,34 +124,6 @@ describe("eval suite validation", () => {
       maxDegradedHunks: 0,
       maxUnresolvedNotesSuppressed: 0
     });
-  });
-
-  it("strictly parses packet-packing eval overrides", async () => {
-    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-packet-packing-"));
-    writeFileSync(path.join(suiteDir, "packing.yml"), [
-      "name: packet-packing",
-      "artifacts:",
-      "  path: logs/1",
-      "review:",
-      "  packSameFileHunks: true",
-      "  packedToolBudgetMode: atom-scaled"
-    ].join("\n"));
-
-    const suite = await loadEvalSuite(suiteDir);
-    expect(suite.cases[0]?.evalCase.review).toMatchObject({
-      packSameFileHunks: true,
-      packedToolBudgetMode: "atom-scaled"
-    });
-
-    const invalidDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-packet-packing-invalid-"));
-    writeFileSync(path.join(invalidDir, "packing.yml"), [
-      "name: packet-packing-invalid",
-      "artifacts:",
-      "  path: logs/1",
-      "review:",
-      "  packedToolBudgetMode: linear"
-    ].join("\n"));
-    await expect(loadEvalSuite(invalidDir)).rejects.toMatchObject({ code: "config_error" });
   });
 
   it("accepts pinned head/base eval commands", async () => {
@@ -1640,7 +1610,6 @@ describe("eval command fixture suite", () => {
     });
 
     let output = "";
-    const suite = await loadEvalSuite(suiteDir);
     const exitCode = await runEvalCommand({ evalDir: suiteDir, cache: false }, defaultConfig, {
       writeOutput: (text) => {
         output += text;
@@ -1650,115 +1619,6 @@ describe("eval command fixture suite", () => {
     expect(exitCode).toBe(0);
     expect(output).toContain("Suite: 8 passed, 0 failed, 0 errored");
     expect(existsSync(path.join(suiteDir, "logs", "1", "fixture-repo", ".git"))).toBe(true);
-    const invocationFiles = readdirSync(path.join(suiteDir, "logs", "invocations"));
-    expect(invocationFiles).toHaveLength(1);
-    const invocationFile = invocationFiles[0]!;
-    const manifest = JSON.parse(readFileSync(path.join(suiteDir, "logs", "invocations", invocationFile), "utf8")) as EvalInvocationManifest;
-    expect(manifest).toMatchObject({
-      schemaVersion: 1,
-      suiteDir,
-      status: "complete",
-      completedAt: expect.any(String),
-      cases: suite.cases.map((entry, caseIndex) => ({
-        caseIndex,
-        caseName: entry.evalCase.name,
-        caseHash: entry.caseHash,
-        caseFile: entry.file
-      })),
-      runs: suite.cases.map((entry, caseIndex) => ({
-        caseIndex,
-        caseName: entry.evalCase.name,
-        caseHash: entry.caseHash,
-        runNumber: caseIndex + 1,
-        logsRoot: path.join(suiteDir, "logs"),
-        runPath: String(caseIndex + 1)
-      }))
-    });
-    for (const [caseIndex, run] of manifest.runs.entries()) {
-      const info = JSON.parse(readFileSync(path.join(suiteDir, "logs", String(run.runNumber), "info.json"), "utf8")) as EvalRunInfo;
-      expect(info.invocation).toEqual({
-        id: manifest.invocationId,
-        caseIndex,
-        manifest: path.join("invocations", invocationFile)
-      });
-    }
-    const reportRuns = await loadEvalRuns(path.join(suiteDir, "logs"));
-    expect(reportRuns.map((run) => run.info.invocation?.caseIndex)).toEqual(suite.cases.map((_, index) => index));
-
-    const interruptedManifest: EvalInvocationManifest = {
-      schemaVersion: 1,
-      invocationId: "historical-interrupted",
-      suiteDir,
-      status: "running",
-      startedAt: "2000-01-01T00:00:00.000Z",
-      cases: [{ caseIndex: 0, caseName: "interrupted", caseHash: "interrupted", caseFile: suite.cases[0]!.file }],
-      runs: [{
-        caseIndex: 0,
-        caseName: "interrupted",
-        caseHash: "interrupted",
-        runNumber: 999,
-        logsRoot: path.join(suiteDir, "logs"),
-        runPath: "999"
-      }]
-    };
-    writeFileSync(
-      path.join(suiteDir, "logs", "invocations", `${interruptedManifest.invocationId}.json`),
-      `${JSON.stringify(interruptedManifest, null, 2)}\n`
-    );
-    mkdirSync(path.join(suiteDir, "logs", "999"));
-    expect((await loadEvalRuns(path.join(suiteDir, "logs"), "latest")).map((run) => run.runNumber)).toEqual(manifest.runs.map((run) => run.runNumber));
-    expect((await loadEvalRuns(path.join(suiteDir, "logs"), manifest.invocationId)).map((run) => run.runNumber)).toEqual(manifest.runs.map((run) => run.runNumber));
-
-    const firstRecordedRun = manifest.runs[0]!;
-    const firstInfoPath = path.join(suiteDir, "logs", String(firstRecordedRun.runNumber), "info.json");
-    const mutuallyAlteredInfo = JSON.parse(readFileSync(firstInfoPath, "utf8")) as EvalRunInfo;
-    mutuallyAlteredInfo.caseHash = "mutually-altered-hash";
-    mutuallyAlteredInfo.caseSnapshot.should_find![0]!.id = "mutually-altered-expectation";
-    mutuallyAlteredInfo.score.expectationResults[0]!.expectationId = "mutually-altered-expectation";
-    manifest.cases[0]!.caseHash = "mutually-altered-hash";
-    manifest.runs[0]!.caseHash = "mutually-altered-hash";
-    writeFileSync(firstInfoPath, `${JSON.stringify(mutuallyAlteredInfo, null, 2)}\n`);
-    writeFileSync(path.join(suiteDir, "logs", "invocations", invocationFile), `${JSON.stringify(manifest, null, 2)}\n`);
-    await expect(loadEvalRuns(path.join(suiteDir, "logs"), manifest.invocationId)).rejects.toMatchObject({
-      failures: [expect.objectContaining({ code: "declared_case_join" })]
-    });
-  }, 60_000);
-
-  it("records exact per-entry root ownership and loads one invocation across multiple log roots", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "codegenie-multi-root-invocation-"));
-    const suiteDir = path.join(root, "fixtures");
-    const firstRoot = path.join(root, "logs-a");
-    const secondRoot = path.join(root, "logs-b");
-    cpSync(path.join(process.cwd(), "evals", "fixtures"), suiteDir, {
-      recursive: true,
-      filter: (source) => path.basename(source) !== ".git" && path.basename(source) !== "logs" && !source.includes(`${path.sep}.git${path.sep}`)
-    });
-    const caseFiles = readdirSync(suiteDir).filter((entry) => /\.ya?ml$/u.test(entry)).sort();
-    for (const [index, file] of caseFiles.entries()) {
-      const logsRoot = index < caseFiles.length / 2 ? firstRoot : secondRoot;
-      const target = path.join(suiteDir, file);
-      writeFileSync(target, `${readFileSync(target, "utf8").trimEnd()}\nlogs:\n  dir: ${logsRoot}\n`);
-    }
-
-    expect(await runEvalCommand({ evalDir: suiteDir, cache: false }, defaultConfig)).toBe(0);
-    const manifestFile = readdirSync(path.join(firstRoot, "invocations"))[0]!;
-    const firstManifest = JSON.parse(readFileSync(path.join(firstRoot, "invocations", manifestFile), "utf8")) as EvalInvocationManifest;
-    const secondManifestPath = path.join(secondRoot, "invocations", manifestFile);
-    expect(JSON.parse(readFileSync(secondManifestPath, "utf8"))).toEqual(firstManifest);
-    expect(new Set(firstManifest.runs.map((entry) => entry.logsRoot))).toEqual(new Set([firstRoot, secondRoot]));
-    expect(new Set(firstManifest.runs.map((entry) => `${entry.logsRoot}\0${entry.runPath}`)).size).toBe(caseFiles.length);
-    expect(new Set(firstManifest.runs.map((entry) => entry.runNumber)).size).toBeLessThan(caseFiles.length);
-
-    const loaded = await loadEvalRuns(firstRoot, firstManifest.invocationId);
-    expect(loaded).toHaveLength(caseFiles.length);
-    expect(new Set(loaded.map((run) => path.dirname(run.runDir)))).toEqual(new Set([firstRoot, secondRoot]));
-
-    const altered = structuredClone(firstManifest);
-    altered.runs.at(-1)!.logsRoot = firstRoot;
-    writeFileSync(secondManifestPath, `${JSON.stringify(altered, null, 2)}\n`);
-    await expect(loadEvalRuns(firstRoot, firstManifest.invocationId)).rejects.toMatchObject({
-      failures: [expect.objectContaining({ code: "invocation_root_ownership" })]
-    });
   }, 60_000);
 
   it("does not leak the invocation directory repo config into live cases", async () => {
@@ -1865,8 +1725,6 @@ describe("eval command fixture suite", () => {
       "  model: not-real-model",
       "  reasoning: low",
       "  concurrency: 3",
-      "  packSameFileHunks: true",
-      "  packedToolBudgetMode: atom-scaled",
       "  lenses:",
       "    - core/code-review",
       "llm:",
@@ -1890,11 +1748,7 @@ describe("eval command fixture suite", () => {
 
     expect(result.status).toBe("pass");
     expect(result.info.effectiveConfig).toMatchObject({
-      review: {
-        concurrency: 3,
-        packSameFileHunks: true,
-        packedToolBudgetMode: "atom-scaled"
-      },
+      review: { concurrency: 3 },
       llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 2 }
     });
     expect(result.info.codegenieRuntime).toMatchObject({

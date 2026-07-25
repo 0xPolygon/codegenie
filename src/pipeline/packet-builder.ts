@@ -64,42 +64,6 @@ type PacketGroup = {
   degradationReason?: string;
 };
 
-type HunkFirstGroup = PacketGroup & {
-  origin: "hunk-first";
-};
-
-type PacketAtom = {
-  origin: "hunk-first";
-  atomId: string;
-  group: HunkFirstGroup;
-  hunkCount: number;
-  patchChars: number;
-  firstSourcePosition: number;
-  effectiveCoverage: Exclude<CoverageLevel, "skip">;
-  requestedLensSignature: string;
-  standalonePacket: ReviewPacket;
-  protectedFocusNotes: string[];
-};
-
-type PackedAtomGroup = {
-  group: HunkFirstGroup;
-  atoms: PacketAtom[];
-  firstSourcePosition: number;
-  stableOrder: number;
-};
-
-type PacketBuildOverrides = {
-  profileFloor?: ReviewProfile;
-  atomCount?: number;
-};
-
-type BuiltPacket = {
-  packet: ReviewPacket;
-  derivedReviewProfile: ReviewProfile;
-  baseToolBudget: ToolBudget;
-  patchChars: number;
-};
-
 type HunkRelationshipSource = "same_symbol" | "symbol_mention" | "planner_hint";
 type HunkRelationshipStrength = "strong" | "medium" | "weak";
 
@@ -226,108 +190,15 @@ export async function buildReviewPackets(
     }
     const allowWholeFileContext = includedPlanned.length === planned.length;
 
-    const groups = await groupHunks(includedPlanned, repoIndex, telemetry, { allowWholeFileContext });
-    if (!opts.config.review.packSameFileHunks || !groups.every(isHunkFirstGroup)) {
-      for (const group of groups) {
-        const first = group.hunks[0];
-        if (!first) {
-          continue;
-        }
-        const includedDecisions = decisionsForGroup(group, effectiveByHunk);
-        const built = await buildPacket(group.hunks, includedDecisions, group, relationshipGraph, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics, packetBuildMetrics);
-        packets.push(built.packet);
-      }
-      continue;
-    }
-
-    const sourcePositionByHunk = new Map(includedPlanned.map((entry, index) => [entry.hunk.id, index]));
-    const atoms: PacketAtom[] = [];
-    for (const group of groups) {
+    for (const group of await groupHunks(includedPlanned, repoIndex, telemetry, { allowWholeFileContext })) {
       const first = group.hunks[0];
       if (!first) {
         continue;
       }
-      const includedDecisions = decisionsForGroup(group, effectiveByHunk);
-      const standalone = await buildPacket(
-        group.hunks,
-        includedDecisions,
-        group,
-        isolatedRelationshipGraph(relationshipGraph),
-        repoIndex,
-        opts.config,
-        probeTelemetry(telemetry),
-        opts.reviewContext,
-        emptySymbolContextMetrics(),
-        emptyPacketBuildMetrics()
-      );
-      atoms.push(packetAtom(group, includedDecisions, standalone.packet, sourcePositionByHunk.get(first.hunk.id) ?? atoms.length));
-    }
-
-    const candidates = packCompatibleAtoms(atoms);
-    const accepted: PackedAtomGroup[] = [];
-    for (const candidate of candidates) {
-      if (candidate.atoms.length === 1) {
-        accepted.push(candidate);
-        continue;
-      }
-      const profileFloor = maxReviewProfile(candidate.atoms.map((atom) => atom.standalonePacket.reviewProfile));
-      const includedDecisions = decisionsForGroup(candidate.group, effectiveByHunk);
-      const probe = await buildPacket(
-        candidate.group.hunks,
-        includedDecisions,
-        candidate.group,
-        isolatedRelationshipGraph(relationshipGraph),
-        repoIndex,
-        opts.config,
-        probeTelemetry(telemetry),
-        opts.reviewContext,
-        emptySymbolContextMetrics(),
-        emptyPacketBuildMetrics(),
-        { profileFloor, atomCount: candidate.atoms.length }
-      );
-      const rejection = packingCandidateRejection(candidate.atoms, probe.packet);
-      if (rejection === undefined) {
-        accepted.push(candidate);
-        continue;
-      }
-      telemetry.event({
-        stage: 6,
-        level: "info",
-        message: "same_file_atom_pack_rejected",
-        ...(candidate.group.hunks[0]?.file.path !== undefined ? { file: candidate.group.hunks[0].file.path } : {}),
-        data: { reason: rejection, atomIds: candidate.atoms.map((atom) => atom.atomId) }
-      });
-      accepted.push(...candidate.atoms.map((atom, index) => ({
-        group: atom.group,
-        atoms: [atom],
-        firstSourcePosition: atom.firstSourcePosition,
-        stableOrder: candidate.stableOrder + index / Math.max(1, candidate.atoms.length)
-      })));
-    }
-
-    accepted.sort((a, b) => a.firstSourcePosition - b.firstSourcePosition || a.stableOrder - b.stableOrder);
-    for (const packed of accepted) {
-      const profileFloor = maxReviewProfile(packed.atoms.map((atom) => atom.standalonePacket.reviewProfile));
-      const includedDecisions = decisionsForGroup(packed.group, effectiveByHunk);
-      const built = await buildPacket(
-        packed.group.hunks,
-        includedDecisions,
-        packed.group,
-        relationshipGraph,
-        repoIndex,
-        opts.config,
-        telemetry,
-        opts.reviewContext,
-        symbolContextMetrics,
-        packetBuildMetrics,
-        { profileFloor, atomCount: packed.atoms.length }
-      );
-      const rejection = packingCandidateRejection(packed.atoms, built.packet);
-      if (rejection !== undefined) {
-        throw new Error(`same-file packet packing invariant failed: ${rejection}`);
-      }
-      emitSameFileAtomsPacked(telemetry, packed.atoms, built, profileFloor, opts.config.review.packedToolBudgetMode);
-      packets.push(built.packet);
+      const groupDecisions = group.hunks.map((entry) => effectiveByHunk.get(entry.hunk.id)).filter((decision): decision is EffectiveDecision => decision !== undefined);
+      const includedDecisions = groupDecisions.filter(isNonSkipDecision);
+      const packet = await buildPacket(group.hunks, includedDecisions, group, relationshipGraph, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics, packetBuildMetrics);
+      packets.push(packet);
     }
   }
 
@@ -400,143 +271,6 @@ async function groupHunks(
   return hunkFirstGroups(planned);
 }
 
-function isHunkFirstGroup(group: PacketGroup): group is HunkFirstGroup {
-  return "origin" in group && group.origin === "hunk-first";
-}
-
-function decisionsForGroup(
-  group: PacketGroup,
-  effectiveByHunk: Map<string, EffectiveDecision>
-): NonSkipDecision[] {
-  return group.hunks
-    .map((entry) => effectiveByHunk.get(entry.hunk.id))
-    .filter((decision): decision is NonSkipDecision => decision !== undefined && isNonSkipDecision(decision));
-}
-
-function packetAtom(
-  group: HunkFirstGroup,
-  decisions: NonSkipDecision[],
-  standalonePacket: ReviewPacket,
-  firstSourcePosition: number
-): PacketAtom {
-  const hunkIds = group.hunks.map((entry) => entry.hunk.id);
-  const protectedFocusNotes = dedupe(group.hunks.flatMap((entry, index) => {
-    if (entry.facts.reviewPriority !== "critical" && entry.facts.reviewPriority !== "high") {
-      return [];
-    }
-    return (decisions[index]?.focusNotes ?? []).map(normalizeNote);
-  })).filter((note) => standalonePacket.attentionNotes.includes(note));
-  return {
-    origin: "hunk-first",
-    atomId: sha256Hex(`hunk-first\n${hunkIds.join("\n")}`),
-    group,
-    hunkCount: group.hunks.length,
-    patchChars: combinedPatchChars(group.hunks),
-    firstSourcePosition,
-    effectiveCoverage: maxCoverage(decisions.map((decision) => decision.coverage)),
-    requestedLensSignature: normalizedLensSignature(decisions),
-    standalonePacket,
-    protectedFocusNotes
-  };
-}
-
-function normalizedLensSignature(decisions: NonSkipDecision[]): string {
-  return JSON.stringify(cleanStrings(decisions.flatMap((decision) => decision.lenses)));
-}
-
-function packCompatibleAtoms(atoms: PacketAtom[]): PackedAtomGroup[] {
-  const partitions = new Map<string, PacketAtom[][]>();
-  for (const atom of atoms) {
-    const key = `${atom.effectiveCoverage}\0${atom.requestedLensSignature}`;
-    const groups = partitions.get(key) ?? [];
-    const current = groups.at(-1);
-    if (
-      current !== undefined &&
-      current.reduce((sum, member) => sum + member.hunkCount, 0) + atom.hunkCount <= MAX_HUNKS_PER_PACKET &&
-      current.reduce((sum, member) => sum + member.patchChars, 0) + atom.patchChars <= MAX_PATCH_CHARS
-    ) {
-      current.push(atom);
-    } else {
-      groups.push([atom]);
-    }
-    partitions.set(key, groups);
-  }
-
-  let stableOrder = 0;
-  return [...partitions.values()]
-    .flatMap((groups) => groups.map((members): PackedAtomGroup => {
-      const degradationReason = cleanStrings(members.flatMap((atom) => atom.group.degradationReason ?? []));
-      const hunks = members.flatMap((atom) => atom.group.hunks);
-      return {
-        group: packetGroup(hunks, degradationReason.length > 0 ? degradationReason.join("; ") : undefined),
-        atoms: members,
-        firstSourcePosition: members[0]?.firstSourcePosition ?? Number.MAX_SAFE_INTEGER,
-        stableOrder: stableOrder++
-      };
-    }))
-    .sort((a, b) => a.firstSourcePosition - b.firstSourcePosition || a.stableOrder - b.stableOrder);
-}
-
-function packingCandidateRejection(atoms: PacketAtom[], packet: ReviewPacket): string | undefined {
-  const expectedHunkIds = atoms.flatMap((atom) => atom.group.hunks.map((entry) => entry.hunk.id));
-  const actualHunkIds = packet.hunks.map((hunk) => hunk.hunkId);
-  if (JSON.stringify(actualHunkIds) !== JSON.stringify(expectedHunkIds)) {
-    return "source atom hunks were split, duplicated, or reordered";
-  }
-  if (
-    packet.hunks.length > MAX_HUNKS_PER_PACKET ||
-    (atoms.length > 1 && atoms.reduce((sum, atom) => sum + atom.patchChars, 0) > MAX_PATCH_CHARS)
-  ) {
-    return "packet cap exceeded";
-  }
-  if (atoms.some((atom) => atom.effectiveCoverage !== packet.coverage)) {
-    return "effective coverage promotion";
-  }
-  const missingLenses = cleanStrings(atoms.flatMap((atom) => atom.standalonePacket.lenses))
-    .filter((lens) => !packet.lenses.includes(lens));
-  if (missingLenses.length > 0) {
-    return `standalone routed lenses omitted: ${missingLenses.join(", ")}`;
-  }
-  const missingFocus = dedupe(atoms.flatMap((atom) => atom.protectedFocusNotes))
-    .filter((note) => !packet.attentionNotes.includes(note));
-  if (missingFocus.length > 0) {
-    return `high-priority planner focus omitted: ${missingFocus.join(" | ")}`;
-  }
-  const profileFloor = maxReviewProfile(atoms.map((atom) => atom.standalonePacket.reviewProfile));
-  if (reviewProfileRank(packet.reviewProfile) < reviewProfileRank(profileFloor)) {
-    return `effective profile ${packet.reviewProfile} is below ${profileFloor}`;
-  }
-  return undefined;
-}
-
-function isolatedRelationshipGraph(graph: HunkRelationshipGraph): HunkRelationshipGraph {
-  return {
-    ...graph,
-    relatedContextAttached: [],
-    relatedContextOmitted: []
-  };
-}
-
-function emptyPacketBuildMetrics(): PacketBuildMetrics {
-  return {
-    relatedContextBudgetNudges: 0,
-    relatedContextBudgetNudgeSources: new Set()
-  };
-}
-
-function probeTelemetry(telemetry: TelemetryRecorder): TelemetryRecorder {
-  return {
-    runId: telemetry.runId,
-    runDir: telemetry.runDir,
-    event: () => undefined,
-    recordModelCall: () => undefined,
-    recordToolCall: () => "stage6-packet-probe",
-    writeArtifact: async () => undefined,
-    writeDebug: async () => undefined,
-    flush: async () => undefined
-  };
-}
-
 async function buildPacket(
   planned: PlannedHunk[],
   decisions: NonSkipDecision[],
@@ -547,9 +281,8 @@ async function buildPacket(
   telemetry: TelemetryRecorder,
   reviewContext: PacketReviewContext | undefined,
   symbolContextMetrics: SymbolContextMetrics,
-  packetBuildMetrics: PacketBuildMetrics,
-  overrides: PacketBuildOverrides = {}
-): Promise<BuiltPacket> {
+  packetBuildMetrics: PacketBuildMetrics
+): Promise<ReviewPacket> {
   const first = planned[0];
   if (!first) {
     throw new Error("cannot build empty packet");
@@ -620,7 +353,7 @@ async function buildPacket(
     hasRelatedChangedContext,
     strongRelatedContext: false
   });
-  const derivedReviewProfile = packetReviewProfile({
+  const reviewProfile = packetReviewProfile({
     coverage,
     reviewPriority,
     planned,
@@ -629,8 +362,7 @@ async function buildPacket(
     hasRelatedChangedContext,
     strongRelatedContext
   });
-  const reviewProfile = maxReviewProfile([derivedReviewProfile, overrides.profileFloor]);
-  if (strongRelatedContext && baseReviewProfile !== "investigate" && derivedReviewProfile === "investigate") {
+  if (strongRelatedContext && baseReviewProfile !== "investigate" && reviewProfile === "investigate") {
     const relationshipSources = cleanStrings(relatedChangedContext.flatMap((context) => context.relationshipSource ?? []));
     packetBuildMetrics.relatedContextBudgetNudges += 1;
     for (const source of relationshipSources) {
@@ -644,7 +376,7 @@ async function buildPacket(
       data: {
         coverage,
         baseReviewProfile,
-        reviewProfile: derivedReviewProfile,
+        reviewProfile,
         relatedContextCount: relatedChangedContext.length,
         relationshipSources
       }
@@ -664,7 +396,6 @@ async function buildPacket(
     telemetry
   });
   emitPacketContextQuality(telemetry, first.file.path, coverage, reviewPriority, contextQuality, contextDegradationReasons);
-  const baseToolBudget = toolBudget(coverage, config.review.depth, reviewProfile);
   const packet: ReviewPacket = {
     id: sha256Hex(`${first.file.path}\n${[...hunkIds].sort().join("\n")}\n${kind}`),
     dispatchRank: packetDispatchRank(first.file.path, first.facts, packetChangedLines),
@@ -692,10 +423,7 @@ async function buildPacket(
     labels: first.facts.labels,
     attentionNotes,
     relatedChangedContext,
-    toolBudget: scaleToolBudget(
-      packedToolBudget(baseToolBudget, reviewProfile, overrides.atomCount ?? 1, config.review.packedToolBudgetMode),
-      config.review.budgetBoost
-    ),
+    toolBudget: scaleToolBudget(toolBudget(coverage, config.review.depth, reviewProfile), config.review.budgetBoost),
     ...(reviewContext?.intentText !== undefined ? { intentText: reviewContext.intentText } : {}),
     ...(reviewContext?.intentSignals !== undefined ? { intentSignals: reviewContext.intentSignals } : {}),
     ...(context.degradation !== undefined || truncationReason.length > 0 || contextDropReason !== undefined || contextTruncationReason !== undefined || group.degradationReason !== undefined
@@ -707,45 +435,7 @@ async function buildPacket(
         ? { fileContext: { mode: "file-diff", reason: "grouped file hunks" } }
         : {})
   };
-  return { packet, derivedReviewProfile, baseToolBudget, patchChars };
-}
-
-function emitSameFileAtomsPacked(
-  telemetry: TelemetryRecorder,
-  atoms: PacketAtom[],
-  built: BuiltPacket,
-  profileFloor: ReviewProfile,
-  toolBudgetMode: CodegenieConfig["review"]["packedToolBudgetMode"]
-): void {
-  telemetry.event({
-    stage: 6,
-    level: "info",
-    message: "same_file_atoms_packed",
-    file: built.packet.path,
-    data: {
-      packetId: built.packet.id,
-      atomIds: atoms.map((atom) => atom.atomId),
-      standaloneProfiles: atoms.map((atom) => atom.standalonePacket.reviewProfile),
-      sourceAtomCount: atoms.length,
-      hunkCount: built.packet.hunks.length,
-      effectiveCoverage: built.packet.coverage,
-      requestedLensSignature: atoms[0]?.requestedLensSignature ?? "[]",
-      capUsage: {
-        hunks: built.packet.hunks.length,
-        maxHunks: MAX_HUNKS_PER_PACKET,
-        patchChars: built.patchChars,
-        maxPatchChars: MAX_PATCH_CHARS
-      },
-      derivedPackedProfile: built.derivedReviewProfile,
-      profileFloor,
-      effectiveProfile: built.packet.reviewProfile,
-      profileFloorApplied: reviewProfileRank(built.derivedReviewProfile) < reviewProfileRank(profileFloor),
-      plannerLensesPreserved: true,
-      toolBudgetMode,
-      baseToolBudget: built.baseToolBudget,
-      effectiveToolBudget: built.packet.toolBudget
-    }
-  });
+  return packet;
 }
 
 const DOCS_CONFIG_EXTENSIONS = new Set([".md", ".yml", ".yaml", ".toml", ".conf", ".sample", ".txt"]);
@@ -1489,8 +1179,8 @@ function dedupe<T>(values: T[]): T[] {
   return [...new Set(values)];
 }
 
-function hunkFirstGroups(planned: PlannedHunk[], degradationReason?: string): HunkFirstGroup[] {
-  const groups: HunkFirstGroup[] = [];
+function hunkFirstGroups(planned: PlannedHunk[], degradationReason?: string): PacketGroup[] {
+  const groups: PacketGroup[] = [];
   let current: PlannedHunk[] = [];
 
   for (const entry of planned) {
@@ -1576,7 +1266,7 @@ function lineInRange(line: number, start: number, lines: number): boolean {
   return line >= start && line <= start + lines - 1;
 }
 
-function packetGroup(hunks: PlannedHunk[], degradationReason?: string): HunkFirstGroup {
+function packetGroup(hunks: PlannedHunk[], degradationReason?: string): PacketGroup {
   const first = hunks[0];
   const kind: ReviewPacket["kind"] =
     first && hunks.length > 1 && hunks.length === first.file.hunks.length
@@ -1584,7 +1274,7 @@ function packetGroup(hunks: PlannedHunk[], degradationReason?: string): HunkFirs
       : hunks.length > 1
         ? "coalesced-hunks"
         : "hunk";
-  return { origin: "hunk-first", hunks, kind, ...(degradationReason !== undefined ? { degradationReason } : {}) };
+  return { hunks, kind, ...(degradationReason !== undefined ? { degradationReason } : {}) };
 }
 
 function packetKind(group: PacketGroup, planned: PlannedHunk[], file: DiffFile): ReviewPacket["kind"] {
@@ -3256,39 +2946,6 @@ export function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: Code
         }
       : {})
   };
-}
-
-function packedToolBudget(
-  base: ToolBudget,
-  profile: ReviewProfile,
-  atomCount: number,
-  mode: CodegenieConfig["review"]["packedToolBudgetMode"]
-): ToolBudget {
-  if (mode === "base" || atomCount <= 1 || profile === "simple") {
-    return base;
-  }
-  const additionalAtoms = atomCount - 1;
-  return {
-    ...base,
-    maxToolCalls: Math.min(base.maxToolCalls + additionalAtoms, Math.ceil(1.75 * base.maxToolCalls)),
-    maxResultChars: Math.min(base.maxResultChars + additionalAtoms * 2_000, Math.ceil(1.75 * base.maxResultChars))
-  };
-}
-
-const REVIEW_PROFILE_RANK: Record<ReviewProfile, number> = {
-  simple: 0,
-  standard: 1,
-  investigate: 2
-};
-
-function reviewProfileRank(profile: ReviewProfile): number {
-  return REVIEW_PROFILE_RANK[profile];
-}
-
-function maxReviewProfile(profiles: Array<ReviewProfile | undefined>): ReviewProfile {
-  return profiles
-    .filter((profile): profile is ReviewProfile => profile !== undefined)
-    .reduce((highest, profile) => reviewProfileRank(profile) > reviewProfileRank(highest) ? profile : highest, "simple");
 }
 
 function packetReviewProfile(input: {

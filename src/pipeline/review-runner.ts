@@ -921,13 +921,7 @@ async function maybeZeroWork(
   });
   await run.telemetry.writeArtifact("candidate-findings.json", []);
   await run.telemetry.writeArtifact("verification.json", []);
-  await run.telemetry.writeArtifact("final-selection.json", {
-    composition: { mode: "deterministic_fallback", fallbackReason: "zero-work short circuit" },
-    records: [],
-    publicationAnchors: [],
-    confidenceSelections: [],
-    groups: []
-  });
+  await run.telemetry.writeArtifact("final-selection.json", { records: [], groups: [] });
   await run.telemetry.writeArtifact("final-findings.json", []);
   await run.telemetry.writeArtifact("budget-summary.json", result.budgetSummary);
   await maybePublishToGitHub(result, resolved, config, run.telemetry, {

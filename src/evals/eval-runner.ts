@@ -6,7 +6,6 @@ import { z } from "zod";
 import { applyRepoConfigLayer } from "../config/config-loader.js";
 import {
   MAX_DEEP_ENSEMBLE_PASSES,
-  packedToolBudgetModeSchema,
   reasoningLevelSchema,
   reviewDepthSchema,
   reviewMaxTimeMinutesSchema,
@@ -50,7 +49,6 @@ export type EvalSuite = {
 export type EvalRunOptions = {
   cacheOverride?: boolean;
   config: CodegenieConfig;
-  invocation?: EvalRunInfo["invocation"];
 };
 
 const positiveNumberSchema = z.number().positive();
@@ -136,8 +134,6 @@ const caseSchema = z
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
         budgetBoost: positiveNumberSchema.optional(),
-        packSameFileHunks: z.boolean().optional(),
-        packedToolBudgetMode: packedToolBudgetModeSchema.optional(),
         maxTimeMinutes: reviewMaxTimeMinutesSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
         deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
@@ -337,7 +333,6 @@ export async function replayFromArtifacts(
       finishedAt,
       score,
       config: options.config,
-      ...(options.invocation !== undefined ? { invocation: options.invocation } : {}),
       replay: { sourceArtifacts: source, caseSource: reread.source },
       ...(sourceInfo.caseFile !== undefined ? { caseFile: sourceInfo.caseFile } : {})
     });
@@ -355,9 +350,7 @@ export async function replayFromArtifacts(
       startedAt,
       error,
       "replay",
-      { sourceArtifacts: source, caseSource: reread.source },
-      undefined,
-      options.invocation
+      { sourceArtifacts: source, caseSource: reread.source }
     );
   }
 }
@@ -421,7 +414,6 @@ async function runArtifactCase(
       finishedAt,
       score,
       config: options.config,
-      ...(options.invocation !== undefined ? { invocation: options.invocation } : {}),
       replay: { sourceArtifacts: source, caseSource: "yaml" }
     });
     await writeRunOutputs(allocated.dir, path.dirname(allocated.dir), info, artifacts.finalFindings);
@@ -434,9 +426,7 @@ async function runArtifactCase(
       startedAt,
       error,
       "replay",
-      { sourceArtifacts: source, caseSource: "yaml" },
-      undefined,
-      options.invocation
+      { sourceArtifacts: source, caseSource: "yaml" }
     );
   }
 }
@@ -499,7 +489,6 @@ async function runLiveCase(
       finishedAt,
       score,
       config: caseConfig.config,
-      ...(options.invocation !== undefined ? { invocation: options.invocation } : {}),
       cache: caseConfig.cache,
       repo: await repoInfo(actualRepoRoot, telemetryDir),
       ...(reviewRunId !== undefined ? { reviewRunId } : {})
@@ -507,7 +496,7 @@ async function runLiveCase(
     await writeRunOutputs(allocated.dir, path.dirname(allocated.dir), info, artifacts.finalFindings);
     return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
   } catch (error) {
-    return writeErroredCase(allocated, entry, errorConfig, startedAt, error, "live", undefined, errorCache, options.invocation);
+    return writeErroredCase(allocated, entry, errorConfig, startedAt, error, "live", undefined, errorCache);
   }
 }
 
@@ -589,7 +578,6 @@ async function runRepeatedLiveCase(
       score,
       repeats: aggregate,
       config: caseConfig.config,
-      ...(options.invocation !== undefined ? { invocation: options.invocation } : {}),
       cache: caseConfig.cache,
       repo: await repoInfo(actualRepoRoot, path.join(allocated.dir, "repeats", "1", "telemetry"))
     });
@@ -598,7 +586,7 @@ async function runRepeatedLiveCase(
     await writeEvalRunInfo(allocated.dir, info);
     return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
   } catch (error) {
-    return writeErroredCase(allocated, entry, errorConfig, startedAt, error, "live", undefined, errorCache, options.invocation);
+    return writeErroredCase(allocated, entry, errorConfig, startedAt, error, "live", undefined, errorCache);
   }
 }
 
@@ -610,8 +598,7 @@ async function writeErroredCase(
   error: unknown,
   mode: "live" | "replay",
   replay?: EvalRunInfo["replay"],
-  cache?: EvalRunInfo["cache"],
-  invocation?: EvalRunInfo["invocation"]
+  cache?: EvalRunInfo["cache"]
 ): Promise<EvalCaseResult> {
   const finishedAt = new Date().toISOString();
   const score = errorScore(error);
@@ -626,7 +613,6 @@ async function writeErroredCase(
     finishedAt,
     score,
     config,
-    ...(invocation !== undefined ? { invocation } : {}),
     ...(cache !== undefined ? { cache } : {})
   });
   await writeFile(path.join(allocated.dir, "out.log"), `${JSON.stringify({ level: "error", message: score.error?.message, code: score.error?.code })}\n`);
@@ -704,13 +690,6 @@ async function loadCaseFile(filePath: string, suiteDir: string): Promise<EvalSui
   };
 }
 
-export async function loadEvalCaseDeclaration(
-  filePath: string,
-  suiteDir: string
-): Promise<EvalSuite["cases"][number]> {
-  return loadCaseFile(path.resolve(filePath), path.resolve(suiteDir));
-}
-
 async function rereadReplayCase(
   sourceInfo: EvalRunInfo,
   suiteDir: string
@@ -747,7 +726,6 @@ function buildRunInfo(input: {
   repeats?: EvalRunInfo["repeats"];
   repo?: EvalRunInfo["repo"];
   reviewRunId?: string;
-  invocation?: EvalRunInfo["invocation"];
   startedAt: string;
   finishedAt: string;
   score: EvalScore;
@@ -765,7 +743,6 @@ function buildRunInfo(input: {
     ...(input.repeats !== undefined ? { repeats: input.repeats } : {}),
     ...(input.repo !== undefined ? { repo: input.repo } : {}),
     ...(input.reviewRunId !== undefined ? { reviewRunId: input.reviewRunId } : {}),
-    ...(input.invocation !== undefined ? { invocation: input.invocation } : {}),
     codegenieRuntime: resolveCodegenieRuntimeProvenance(),
     cache: input.cache ?? { enabled: input.config.cache.enabled, source: "config", dir: input.config.cache.dir },
     effectiveConfig: evalEffectiveConfig(input.config),
@@ -836,12 +813,6 @@ function applyCaseReviewConfig(
   if (review?.budgetBoost !== undefined) {
     config.review.budgetBoost = review.budgetBoost;
   }
-  if (review?.packSameFileHunks !== undefined) {
-    config.review.packSameFileHunks = review.packSameFileHunks;
-  }
-  if (review?.packedToolBudgetMode !== undefined) {
-    config.review.packedToolBudgetMode = review.packedToolBudgetMode;
-  }
   if (review?.maxTimeMinutes !== undefined) {
     config.review.maxTimeMs = Math.round(review.maxTimeMinutes * 60_000);
   }
@@ -895,14 +866,6 @@ function evalEffectiveConfig(config: CodegenieConfig): NonNullable<EvalRunInfo["
     review: {
       concurrency: config.review.concurrency,
       timeoutMs: config.review.maxTimeMs,
-      verify: config.review.verify,
-      ...(config.review.minSeverity !== undefined ? { minSeverity: config.review.minSeverity } : {}),
-      maxFindings: config.review.maxFindings,
-      softCommentCap: config.review.softCommentCap,
-      minConfidence: config.review.minConfidence,
-      minInlineConfidence: config.review.minInlineConfidence,
-      packSameFileHunks: config.review.packSameFileHunks,
-      packedToolBudgetMode: config.review.packedToolBudgetMode,
       ...(config.review.maxBudgetTokens !== undefined ? { maxBudgetTokens: config.review.maxBudgetTokens } : {})
     },
     llm: {
@@ -954,7 +917,7 @@ async function resolveRepoRoot(suiteDir: string, evalCase: EvalCase, runDir: str
   return materializeFixtureRepo(fixturePath, runDir);
 }
 
-export function resolveLogsDir(suiteDir: string, evalCase: EvalCase, config: CodegenieConfig): string {
+function resolveLogsDir(suiteDir: string, evalCase: EvalCase, config: CodegenieConfig): string {
   const configured = evalCase.logs?.dir ?? config.eval.logsDir;
   return path.isAbsolute(configured) ? configured : path.join(suiteDir, configured);
 }
