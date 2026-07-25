@@ -61,6 +61,9 @@ export type CodegenieConfig = {
     // supported user surface. Eval cases set them; nothing else can.
     packCompatibleAtoms: boolean;
     packMaxHunks: number;
+    // Plan 103 eval-only: replay one recorded Stage-5 plan across arms so
+    // packet size is the only difference between them.
+    pinnedPlanPath?: string;
   };
   github: {
     summaryWhenNoFindings: boolean;
@@ -1023,6 +1026,7 @@ export type EvalCase = {
     // these; removed at teardown.
     packCompatibleAtoms?: boolean;
     packMaxHunks?: number;
+    pinnedPlanPath?: string;
     verify?: boolean;
     cache?: boolean;
     cacheDir?: string;

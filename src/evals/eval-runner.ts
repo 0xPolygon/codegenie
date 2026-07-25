@@ -143,6 +143,7 @@ const caseSchema = z
         // set these. No codegenie.toml may.
         packCompatibleAtoms: z.boolean().optional(),
         packMaxHunks: positiveIntSchema.max(MAX_PACK_HUNKS).optional(),
+        pinnedPlanPath: z.string().min(1).optional(),
         verify: z.boolean().optional(),
         cache: z.boolean().optional(),
         cacheDir: z.string().min(1).optional(),
@@ -835,6 +836,9 @@ function applyCaseReviewConfig(
   }
   if (review?.packMaxHunks !== undefined) {
     config.review.packMaxHunks = review.packMaxHunks;
+  }
+  if (review?.pinnedPlanPath !== undefined) {
+    config.review.pinnedPlanPath = review.pinnedPlanPath;
   }
   if (review?.verify !== undefined) {
     config.review.verify = review.verify;

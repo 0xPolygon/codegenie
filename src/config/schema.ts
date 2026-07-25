@@ -149,7 +149,8 @@ export const codegenieConfigSchema = z
         deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
         adaptiveSecondPass: z.boolean().optional(),
         packCompatibleAtoms: z.boolean(),
-        packMaxHunks: positiveIntSchema.max(MAX_PACK_HUNKS)
+        packMaxHunks: positiveIntSchema.max(MAX_PACK_HUNKS),
+        pinnedPlanPath: z.string().min(1).optional()
       })
       .strict(),
     github: z

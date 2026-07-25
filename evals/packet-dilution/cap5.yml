@@ -1,0 +1,40 @@
+name: packet-dilution-cap5
+repeat: 6
+repo:
+  fixture: repos/dilution
+command:
+  branch: feature
+  base: main
+review:
+  provider: anthropic
+  model: claude-opus-4-8
+  reasoning: high
+  depth: normal
+  verify: true
+  cache: false
+  concurrency: 1
+  maxTimeMinutes: 20
+  lenses:
+    - lang/go
+  packCompatibleAtoms: true
+  packMaxHunks: 5
+  pinnedPlanPath: evals/packet-dilution/plans/frozen.json
+expect:
+  maxCostUSD: 3
+should_find:
+  - id: dilution-transfer-limit
+    path: limits/limits.go
+    failureModePattern: limit|boundary|exclusive|reject|equal
+    titlePattern: limit|transfer|boundary|compar
+  - id: dilution-retry-off-by-one
+    path: limits/limits.go
+    failureModePattern: retry|attempt|off.by.one|extra|exceed
+    titlePattern: retry|attempt|maximum
+  - id: dilution-shard-range
+    path: limits/limits.go
+    failureModePattern: shard|range|index|modulo|out of
+    titlePattern: shard|index|range
+should_not_find:
+  - id: dilution-capacity-control
+    path: limits/limits.go
+    titlePattern: AtCapacity
