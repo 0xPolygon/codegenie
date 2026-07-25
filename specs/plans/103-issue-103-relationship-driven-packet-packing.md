@@ -11,7 +11,7 @@ Recommended priority: after Plan 101's paid A/B settles.
 
 ### The problem
 
-Reviews run out of time before they run out of code. On the motivating pull request, Stage 6 produced **96 packets** covering 142 changed hunks. Only 57 packets were dispatched before the deadline, so **53 hunks received no review at all**.
+Reviews run out of time before they run out of code. On the motivating pull request, Stage 6 produced **96 packets** covering 142 changed hunks. Only 56 packets were dispatched before the deadline, so **53 hunks received no review at all**.
 
 A packet is one conversation with the model, and most of its cost is fixed — the skill text, the prompt scaffolding, the forced finalization at the end. Measurements from that run show a five-hunk packet costs roughly the same as a one-hunk packet: about 3 model calls and 228 seconds either way. Yet 73 of the 96 packets held a single hunk.
 
@@ -52,11 +52,11 @@ Packing can make a hunk **more** expensive than it would have been alone: the pr
 
 **Attention dilution.** A bug in a five-hunk packet might get less scrutiny than the same bug alone.
 
-One test repository, fifteen separated changes in one Go file, **three** independent bugs at different positions plus a safe-looking control. The same review runs at packet caps 1, 3, and 5, six repeats each, all against one hand-authored frozen plan so packet size is the only variable. Three bugs times six repeats gives **18 observations per arm**, not 6 — the same spend buys three times the statistical resolution.
+One test repository, fifteen separated changes in one Go file, **three** independent bugs placed so that no two share a packet at any tested cap, plus a safe-looking control. The same review runs at packet caps 1, 3, and 5, six repeats each, all against one hand-authored frozen plan so packet size is the only variable. Three bugs times six repeats gives **18 recall opportunities per arm** rather than 6 — the same spend buys three times the resolution. Those opportunities are *clustered*, not independent: repeats share a fixture and an authored plan, so they are treated as three per-bug series rather than 18 free trials, and recall is reported per bug as well as in aggregate.
 
 The pass bar is derived, not chosen: packing must not cost more per-hunk recall than the coverage it buys. If the replay shows packing reviewing 108 hunks where the baseline reviews 89, per-hunk recall may fall no further than 89/108 ≈ **82.4%** of baseline before the whole thing is a net loss.
 
-Cost: about **$14** to answer that, plus an optional $50 production-scale confirmation.
+Cost: about **$14** to answer that, and a $50 production-scale confirmation that is **required once the curve passes**, not optional.
 
 ### The outcome, either way
 
@@ -97,13 +97,21 @@ Reproducible via `scripts/packing-diagnostics.mjs`; outputs preserved under `/ho
 
 | Artifact | SHA-256 |
 | --- | --- |
-| `plan103-affinity-pairs.json` | `677958c7caf9ef3b5243085385cefd0659b4c5df60869dd7cf917788b85d18f4` |
+| `plan103-affinity-pairs.json` | `2d0f6f2d14ce907822128e5338c2627e97fc9d495a528f807d71ffec0ac6bc76` |
 | `plan103-cap-sweep.json` | `f9915c77210d329c2859531007f6175c90eaca45cb52417a22d8dbc3e08de371` |
 | `plan103-ordering-comparison.json` | `e4e6bf2e3cfe585b1c04db1280a2bcb1c1bb5516975352b545fb96211bf24a57` |
 
-On `dca8d870`, 13 atom pairs are related but currently split: 7 blocked by the caps, 2 by coverage inequality, 4 eligible. Relationship-required packing gives 96→92 (4.2%). Relationship-preferred *ordering* gives 75/66/83 packets across the three distinct diffs — identical to plain source order, including multi-atom counts.
+On `dca8d870`, 13 atom pairs are related but currently split: 6 blocked by the caps, 2 by coverage inequality, 2 by lens-signature mismatch, 3 eligible. On `81f806a6`, 11 pairs: 7 caps, 4 eligible. Relationship-required packing gives 96→92 (4.2%). Relationship-preferred *ordering* gives 75/66/83 packets across the three distinct diffs — identical to plain source order, including multi-atom counts.
 
-Both measurements use documented approximations (patch proxy, owner prefix from display strings). Neither is close enough to its threshold for the approximation to change the conclusion.
+Both measurements use documented approximations (patch proxy, owner prefix from display strings, synthetic `DEFAULT` lens signature for planner-undeclared hunks). Neither is close enough to its threshold for the approximation to change the conclusion.
+
+### The fixed-slot estimator is validated against the real run
+
+The coverage claim is gated on a fixed-slot estimator rather than packet count, so the estimator itself was checked against `dca8d870`. `worker-runner.ts` sorts by `(priority, coverage, dispatchRank, input order)` and latches `exhausted`, so the undispatched set is a suffix of that order — the "first N in dispatch order" model is exactly how scheduling behaves.
+
+Applying that sort to the 96 flag-off packets and taking the first N reproduces the actual result exactly: **89 hunks covered, matching the 89 the run actually reviewed**, with 55 of 56 packets in common (the single difference comes from using packet ID as a stand-in for true input order, which artifacts do not record).
+
+Note the true baseline is **56 dispatched packets**, not the 57 quoted in Plan 102's reconciliation note: the run recorded 40 `packet_review_not_dispatched` events against 96 packets. This plan uses 56 slots.
 
 ### The 5-hunk cap is near-optimal
 
@@ -162,11 +170,20 @@ Constants:
 Rules:
 
 1. At least `MAX_CONTEXT_CHARS - PACKET_SYMBOL_CONTEXT_BUDGET` (3,000 characters) is reserved for outline, likely-tests, and planner-hint context. Symbol source never consumes it.
-2. Each distinct member primary symbol receives `floor(PACKET_SYMBOL_CONTEXT_BUDGET / memberSymbolCount)`, subject to `MIN_MEMBER_SYMBOL_CHARS`.
-3. If `memberSymbolCount * MIN_MEMBER_SYMBOL_CHARS > PACKET_SYMBOL_CONTEXT_BUDGET`, the candidate is abandoned — the packet cannot represent all its members.
-4. Members needing less than their share release the remainder; one redistribution pass, in source order, to members that requested more.
-5. Existing adaptive/sliced selection applies per member within its share. Members render in source order.
-6. **Per-member context quality is computed after `renderPacketContextText()` truncation, not before.** A member with fewer than `MIN_SLICED_MEMBER_CHARS` surviving is a candidate abandonment, never a reported `sliced`.
+2. **Only members with a resolvable primary symbol participate in the allocation.** `memberSymbolCount` counts distinct resolvable primary symbol identities, never all members.
+3. Each participating member receives `floor(PACKET_SYMBOL_CONTEXT_BUDGET / memberSymbolCount)`, subject to `MIN_MEMBER_SYMBOL_CHARS`.
+4. If `memberSymbolCount * MIN_MEMBER_SYMBOL_CHARS > PACKET_SYMBOL_CONTEXT_BUDGET`, the candidate is abandoned — the packet cannot represent all its symbol-bearing members.
+5. Members needing less than their share release the remainder; one redistribution pass, in source order, to members that requested more.
+6. Existing adaptive/sliced selection applies per member within its share. Members render in source order.
+7. **Per-member context quality is computed after `renderPacketContextText()` truncation, not before.** A participating member with fewer than `MIN_SLICED_MEMBER_CHARS` surviving is a candidate abandonment, never a reported `sliced`.
+
+**Symbol-less members.** Configuration, documentation, generic-adapter, and fallback hunks frequently have no resolvable primary symbol; `readEnclosingSymbolSource()` returns empty for them today and their standalone context quality is `outline_only` or `path_only`. Such members:
+
+- do not participate in the symbol allocation and consume none of it;
+- are **exempt from the `MIN_SLICED_MEMBER_CHARS` rule** — applying a symbol-source floor to a member that never had symbol source would reject every packet containing one, including the config- and docs-heavy files where compatible atoms are most abundant;
+- must retain their standalone outline or path context quality after packing. A symbol-less member whose quality degrades below what it held alone is a candidate abandonment.
+
+A packet whose members are *all* symbol-less allocates no symbol budget and is judged solely on the standalone-quality rule.
 
 ### 3. Transactional candidate evaluation
 
@@ -186,7 +203,7 @@ packMaxHunks: number;          // default 5, never exceeds MAX_HUNKS_PER_PACKET 
 
 Neither appears in `rawConfigSchema`, neither is repo-safe filtered, and no `codegenie.toml` can set them. They exist in the resolved config, defaults, config-source telemetry, the strict eval-case `review` schema, and `applyCaseReviewConfig()`. Both are deleted in step 9.
 
-The pinned-plan seam is likewise eval-only: a planner-draw mode writing a `ReviewPlan` plus SHA-256, and an eval-case field `review.pinnedPlanPath` validated by hash and by exact `hunkId` membership against the current diff, failing closed on mismatch.
+The pinned-plan seam is likewise eval-only: a planner-draw mode writing a `ReviewPlan` plus SHA-256, and an eval-case field `review.pinnedPlanPath` validated by SHA-256, by full `ReviewPlan` schema parse, by exact `hunkId` membership against the current diff, and by recorded base/head identity — failing closed on any mismatch. A hash match over a plan that no longer parses, or that targets a different diff, is not sufficient.
 
 ## Validation Strategy
 
@@ -196,14 +213,18 @@ Port `scripts/packet-packing-report.ts` from `7ebfd2f` down to `replay` plus `tr
 
 Assert per run: packet counts reproduce Plan 102's frozen result within 2; every hunk appears exactly once in source order; no atom split; no coverage promotion; caps hold; no lens or high-priority note lost without a recorded abandonment; no member below `MIN_SLICED_MEMBER_CHARS`; no profile or budget below the standalone maximum; dispatch ranks match the formula; flag-off is artifact-identical including `hunk-relationships.json`.
 
-**Fixed-slot hunk yield is the primary gate.** Sort packed packets by the full Stage-7 scheduling tuple `(priority, coverage, dispatchRank, input order)`, take the first 57 — the motivating run's observed dispatch capacity — and count reviewable hunks covered. Baseline is 89.
+**Fixed-slot hunk yield is the primary gate.** Sort packets by the full Stage-7 scheduling tuple `(priority, coverage, dispatchRank, input order)`, take the first 56 — the motivating run's observed dispatch capacity — and count reviewable hunks covered.
+
+**The estimator must first reconcile against the actual run.** Apply it to the *flag-off* packets and require it to reproduce the 89 hunks the run actually reviewed. If it does not, the estimator is not comparable to the historical baseline and must not define `B` until reconciled. This has been validated once by hand (89 = 89, 55/56 packets in common); the report re-proves it mechanically because it also feeds the paid gate.
 
 | Gate | Threshold |
 | --- | --- |
-| Fixed-slot hunk yield at 57 packets | `>= 102` hunks (≥15% over baseline 89) |
+| Flag-off estimator reconciliation | exactly `89` hunks at 56 slots |
+| Fixed-slot hunk yield at 56 packets, flag on | `>= 102` hunks (≥15% over baseline 89) |
 | Packet reduction | `>= 20%` per distinct diff |
 | Deviation from Plan 102's frozen counts | `<= 2` packets per run |
-| Members below `MIN_SLICED_MEMBER_CHARS` | `0` |
+| Participating members below `MIN_SLICED_MEMBER_CHARS` | `0` |
+| Symbol-less members losing standalone quality | `0` |
 | New coverage promotions | `0` |
 
 Also report, off versus on: per-member profile upgrades, total tool-call allowance, total context characters, and projected cost and service time per reviewed hunk. The measured yield ratio `baselineYield / packedYield` becomes the break-even bar for phase B.
@@ -214,7 +235,7 @@ Also report, off versus on: per-member profile upgrades, total tool-call allowan
 
 **Fixture.** One Go file, fifteen separated single-hunk changes, far enough apart that today's grouper yields fifteen atoms. It carries:
 
-- **three independent bugs** at atom positions 1, 5, and 8 — under cap 5 that is packet 1 position 1, packet 1 position 5, and packet 2 position 3, so first/last/middle positions are all covered;
+- **three independent bugs** at atom positions 1, 10, and 13. Under cap 5 the packets are `[1-5][6-10][11-15]`, placing the bugs in three *different* packets at positions 1, 5, and 3 — first, last, and middle. Under cap 3 the packets are `[1-3]…[10-12][13-15]`, again three different packets. **No two bugs ever share a packet at any tested cap**, so no arm reviews an unnaturally bug-dense packet and no two opportunities collapse into one conversation;
 - **one safe-but-suspicious change** as a `should_not_find` control, so a rise in false positives is visible;
 - eleven ordinary safe changes.
 
@@ -226,22 +247,33 @@ Fixture-quality rules, each learned from a Plan 102 failure:
 4. **Constrain path, line range, and failure mode — never category.** Plan 102 lost three executions that found its bug because the expectation demanded `correctness` and the reviewer said `security`.
 5. **Prove treatment model-free before paying.** Build Stage 6 against the frozen plan at caps 1, 3, and 5 and require exactly 15, 5, and 3 packets, with each bug's atom in a packet of exactly 1, 3, and 5 source atoms. Any miss is a fixture defect: fix the fixture, never the sample.
 
-**The frozen plan is hand-authored, not drawn.** Authoring it makes coverage and lens assignment deterministic, so all fifteen atoms are guaranteed into one partition; removes planner variance so packet size is genuinely the only variable; eliminates any temptation to redraw unfavourable plans; and costs nothing. Record one real planner draw alongside it and diff the two, so the authored plan's realism is documented rather than assumed.
+**The frozen plan is hand-authored, not drawn.** Authoring it makes coverage and lens assignment deterministic, so all fifteen atoms are guaranteed into one partition; removes planner variance so packet size is genuinely the only variable; eliminates any temptation to redraw unfavourable plans; and costs nothing.
 
-**Arms.** Three cases differing only in `packMaxHunks` — 1, 3, 5 — at `repeat: 6`, cache off, all pinned to the same authored plan. Three bugs × six repeats = **18 observations per arm**.
+**But an authored plan must be shown to be realistic, not merely convenient.** Draw **three** reference plans from the real planner against the same fixture and require that in **at least 2 of 3**, every target atom lands in a partition of at least three compatible atoms at cap 5 — that is, production would plausibly create the shape being tested. Fewer than 2 of 3 means the fixture exercises a partition the planner would rarely produce: **the fixture is invalid and must be redesigned before any reviewer call**, not merely documented. Record all three draws, their diffs against the authored plan, and the pass count.
 
-**Decision rule.** Let `R1`, `R3`, `R5` be hits out of 18 and `B` the break-even ratio measured in phase A (`baselineYield / packedYield`; ≈ 0.824 at the projected 89/108).
+**Arms.** Three cases differing only in `packMaxHunks` — 1, 3, 5 — at `repeat: 6`, cache off, all pinned to the same authored plan. Three bugs × six repeats = **18 recall opportunities per arm**.
+
+Those opportunities are **clustered, not independent**: all repeats share one fixture and one authored plan, and each repeat's three bugs are reviewed by the same run. Treat the data as three per-bug series of six, report `R` per bug alongside the aggregate, and never describe it as 18 independent trials.
+
+**Decision rule.** Let `R1`, `R3`, `R5` be aggregate hits out of 18, `R{n}[i]` the per-bug hits out of 6 for bug `i`, and `B` the break-even ratio measured in phase A (`baselineYield / packedYield`; ≈ 0.824 at 89/108).
 
 | Condition | Outcome |
 | --- | --- |
-| `R1 < 15` | **Void.** Baseline too unreliable to measure a ratio against; fix the fixture. |
-| `R5 / R1 >= B` and no monotone decline `R1 > R3 > R5` | **Pass.** |
-| `R5 / R1 >= B` but `R1 > R3 > R5` | **Stop for investigation.** A consistent decline across all three sizes is a dilution signature even when the ratio clears; extend repeats on the affected arms before deciding. |
+| `R1 < 15` | **Void.** Baseline too unreliable to measure a ratio against. |
+| any bug with `R1[i] >= 5` and `R5[i] <= 1` | **Fail (per-bug collapse).** One target falling from reliable detection to near-zero is a real regression regardless of the aggregate. |
+| `R5 / R1 >= B`, no per-bug collapse, and no monotone decline `R1 > R3 > R5` | **Pass.** |
+| `R5 / R1 >= B` but `R1 > R3 > R5` | **Extend once** (see below). |
 | `R5 / R1 < B` | **Fail.** Packing costs more recall than the coverage it buys. |
 
 `R3` therefore has a real role — it distinguishes a cliff from a gradient — and there is no unreachable branch.
 
-**Honest limits.** Eighteen observations per arm can detect a large regression; it cannot resolve, say, 100% versus 85% with confidence. The gate is a screen against material harm, not a certificate of equivalence, and the reconciliation note must say so. Report per-arm cost, tokens, and model-service time per reviewed hunk alongside recall.
+**Void and extension are bounded and preregistered, not discretionary:**
+
+- **Void permits exactly one fixture redesign and one rerun.** A second Void is a **Fail** and takes the teardown branch. Void never means "keep trying until the numbers work."
+- **Monotone decline permits exactly one extension:** six additional repeats on **all three arms**, budgeted below at ~$14. Re-apply the same decision rule to the combined 12-repeat totals (36 opportunities per arm). Its outcome is final — a second extension is not available, and a still-monotone result after extension is a **Fail**.
+- Every Void or extension is recorded in the reconciliation note with its trigger, cost, and result.
+
+**Honest limits.** Eighteen clustered opportunities per arm can detect a large regression; they cannot resolve, say, 100% versus 85% with confidence. The gate is a screen against material harm, not a certificate of equivalence, and the reconciliation note must say so. Report per-arm cost, tokens, and model-service time per reviewed hunk alongside recall.
 
 ### C. Collateral
 
@@ -256,14 +288,16 @@ No paid call before `approvedValidationCostUSD` is recorded here.
 | Phase | Executions | Projection |
 | --- | ---: | ---: |
 | Fake-provider expectation validation | — | $0 |
-| One reference planner draw | 1 | ~$1 |
+| Three reference planner draws | 3 | ~$3 |
 | Recall curve, 6 repeats × 3 arms | 18 | ~$14 |
+| Reserved: one bounded extension, 6 more repeats × 3 arms | 18 | ~$14 |
+| Reserved: one fixture redesign rerun after a single Void | 18 | ~$14 |
 | `evals/fixtures/` and cross-language shape cases | — | $0 |
 | Production capacity pair | 2 | ~$50 |
-| Contingency 25% | — | ~$16 |
-| **Reservation** | | **~$81** |
+| Contingency 25% | — | ~$24 |
+| **Reservation** | | **~$119** |
 
-Phases through the curve cost ~$15 and decide whether packing ships; the capacity pair runs last and only after a pass.
+The two reserved contingencies are the *only* reruns this plan authorizes; a second Void or a second extension is a Fail, not another draw on the budget. Phases through the first curve cost ~$17 and decide whether packing ships; the capacity pair runs last and only after a pass.
 
 ## In-Scope Files
 
@@ -316,11 +350,13 @@ Phases through the curve cost ~$15 and decide whether packing ships; the capacit
    **Verify:** treatment proof shows 15/5/3 packets with each bug at 1/3/5 source atoms; all three arms consumed the same plan hash; the decision table yields Pass, Fail, Void, or Stop-for-investigation with no discretion; the capacity pair confirms the phase-A yield prediction; spend stays within the ceiling.
 9. Record the decision and tear down in a dedicated commit.
 
-   **Preserve evidence first:** copy every produced JSON report and the authored plan into `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-dilution/reports/`, extending its existing `manifest.sha256`. Do not modify Plan 102's manifest, which its reconciliation note describes as covering exactly three files. Mark unreached phases `not_run` with their stopping reason.
+   **Preserve evidence first:** copy into `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-dilution/reports/` every produced JSON report, the authored frozen plan, all three reference draws and their diffs, the treatment proof, the capacity-pair reports, and a `not_run` ledger naming every unreached phase with its stopping reason — then regenerate `manifest.sha256` over the complete set. Do not modify Plan 102's manifest, which its reconciliation note describes as covering exactly three files.
 
    **If Pass:** make packing unconditional at cap 5; delete both settings and the unpacked path. Keep atoms, partitions, the profile floor, multi-member symbol context, and transactional rejection. Reduce the report script to a golden check. Keep `evals/packet-dilution/` as a standing suite with the shipped cap only, and retain the curve in the reconciliation note.
 
-   **If Fail, Void, or unresolved Stop-for-investigation:** delete the packing pass, both settings, the atom wrapper, and the report script with its tests. Multi-member symbol context survives only if the replay showed it improving context quality with packing off. Keep the fixture and the measured curve — the curve is the durable asset regardless of outcome. Do not leave the feature dark.
+   **If Fail — including a second Void, a post-extension monotone decline, or any per-bug collapse:** delete the packing pass, both settings, the atom wrapper, and the report script with its tests. Multi-member symbol context survives only if the replay showed it improving context quality with packing off. Keep the fixture and the measured curve — the curve is the durable asset regardless of outcome. Do not leave the feature dark.
+
+   A *first* Void or a *first* monotone decline does not reach this step: each authorizes exactly one bounded rerun under phase B's preregistered limits, and only its result reaches teardown.
 
    **Verify:** `rg -n "packCompatibleAtoms|packMaxHunks" src scripts tests evals` → exit 1; both manifests verify; the note records the decision, actual spend, and the resolution limit of 18 observations per arm.
 10. Run the complete repository gate.
@@ -338,9 +374,12 @@ Artifact diagnostics (reproduces this plan's Evidence section, no model calls):
 
 ```bash
 RUNS=/home/peter/Dev/0xsequence/trails-api/.codegenie/runs
-node scripts/packing-diagnostics.mjs pairs $RUNS/20260724-184952-dca8d870
-node scripts/packing-diagnostics.mjs sweep $RUNS/20260724-184952-dca8d870
-node scripts/packing-diagnostics.mjs simulate $RUNS/20260724-184952-dca8d870 --predicate source
+D="$RUNS/20260724-184952-dca8d870 $RUNS/20260724-162739-81f806a6 $RUNS/20260724-135818-740d73f2"
+node scripts/packing-diagnostics.mjs pairs $D
+node scripts/packing-diagnostics.mjs sweep $D
+for p in source compatibility related; do
+  node scripts/packing-diagnostics.mjs simulate $D --predicate $p
+done
 ```
 
 Deterministic four-run replay:
@@ -363,10 +402,13 @@ Fixture validation, planner draw, and the paid curve:
 # 1. expectation wiring, fake provider, $0
 pnpm dev eval --eval-dir evals/packet-dilution/shape --no-cache
 
-# 2. one reference planner draw, for realism comparison against the authored plan
-pnpm dev plan --repo evals/packet-dilution/repos/dilution \
-  --base main --branch feature \
-  --output evals/packet-dilution/plans/reference-draw.json
+# 2. three reference planner draws; >=2 of 3 must put every target in a
+#    partition of >=3 compatible atoms at cap 5, else the fixture is invalid
+for i in 1 2 3; do
+  pnpm dev plan --repo evals/packet-dilution/repos/dilution \
+    --base main --branch feature \
+    --output evals/packet-dilution/plans/reference-draw-$i.json
+done
 
 # 3. model-free treatment proof at each cap
 pnpm exec tsx scripts/packet-packing-report.ts treatment \
@@ -400,7 +442,12 @@ Evidence preservation and verification:
 ```bash
 D=/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-dilution/reports
 cp /tmp/plan103-*.json "$D"/
-(cd "$D" && sha256sum plan103-*.json > manifest.sha256 && sha256sum -c manifest.sha256)
+cp evals/packet-dilution/plans/frozen.json "$D"/
+cp evals/packet-dilution/plans/reference-draw-*.json "$D"/
+cp /tmp/plan103-capacity-*.json "$D"/ 2>/dev/null || true   # absent if not reached
+# not_run ledger: every unreached phase and why
+"$EDITOR" "$D/not-run-ledger.md"
+(cd "$D" && sha256sum plan103-*.json frozen.json reference-draw-*.json not-run-ledger.md > manifest.sha256 && sha256sum -c manifest.sha256)
 (cd "$D/../../packet-packing/reports" && sha256sum -c manifest.sha256)   # Plan 102 evidence unchanged
 ```
 
@@ -410,12 +457,12 @@ Note the `pnpm dev eval` spelling: under pnpm 11 a literal `--` reaches Commande
 
 - Flag off produces byte-identical packet artifacts, IDs, order, profiles, context, budgets, and `hunk-relationships.json`.
 - Flag on reproduces Plan 102's packet counts within 2 per run, every hunk appearing exactly once, hunks ordered within packets by file position and packets by earliest member, under unchanged caps with zero coverage promotion.
-- Every member atom's primary symbol source is present after final rendering at or above `MIN_SLICED_MEMBER_CHARS`, or its candidate was abandoned and recorded.
+- Every member atom with a resolvable primary symbol has its source present after final rendering at or above `MIN_SLICED_MEMBER_CHARS`, or its candidate was abandoned and recorded. Symbol-less members consume no symbol budget, are exempt from that floor, and retain their standalone outline or path quality.
 - The 3,000-character non-symbol context reserve is never consumed by symbol source.
 - No lens dropped and no `high`/`critical` focus note newly omitted without a recorded abandonment; every effective profile at least the standalone maximum; dispatch ranks unchanged in formula.
-- Fixed-slot hunk yield at 57 packets is at least 102, and the measured break-even ratio is recorded and used as phase B's bar.
+- The fixed-slot estimator reproduces exactly 89 hunks on the flag-off packets at 56 slots before it is used for anything; flag-on yield at 56 slots is at least 102; the measured break-even ratio is recorded and used as phase B's bar.
 - Per-member profile upgrades, tool-call allowance, context characters, and cost and service time per reviewed hunk are reported off versus on.
-- All three curve arms consume one hash-verified authored plan; treatment is proven model-free at 15/5/3 packets before any paid call; the decision table is applied without discretion.
+- All three curve arms consume one authored plan verified by hash, schema, hunk-ID membership, and diff identity; at least 2 of 3 reference draws confirm the tested partition is one production would plausibly create; treatment is proven model-free at 15/5/3 packets with no two bugs sharing a packet at any cap; the decision table, including per-bug collapse and the bounded Void and extension allowances, is applied without discretion.
 - Cross-language shape cases prove packed context on TypeScript, Python, and Solidity; `evals/fixtures/` shows no regression; the capacity pair confirms the predicted yield.
 - Paid validation never begins without a recorded ceiling; every phase records actual and projected spend.
 - Report failures carry templated structured messages with no raw exception text, repository source, or hashing.
@@ -424,12 +471,16 @@ Note the `pnpm dev eval` spelling: under pnpm 11 a literal `--` reaches Commande
 
 ## Stop Conditions
 
+- The flag-off estimator does not reproduce 89 hunks at 56 slots: the proxy is not comparable to the historical baseline and must not define `B` until reconciled.
 - Fixed-slot hunk yield below 102, packet reduction below 20%, or deviation from Plan 102's frozen counts above 2: the port is wrong. Fix before spending anything.
 - Any atom split or reordered, hunk lost or duplicated, cap exceeded, coverage promoted, profile or budget downgraded, or member context below the minimum without abandonment: fix the deterministic design first.
 - Flag-off artifacts change in any respect: stop; parity is the basis of every later comparison.
 - The model-free treatment proof does not yield 15/5/3 packets with the target atoms at 1/3/5: fix the fixture and re-prove. Never adjust the sample to fit.
 - Any arm consumed a different plan hash: discard and rerun that repeat.
-- `R1 < 15` of 18: the baseline is too unreliable to measure against. Void; fix the fixture rather than lowering the bar.
+- Fewer than 2 of 3 reference draws place every target in a partition of at least three compatible atoms: the fixture tests a shape production would rarely create. Redesign before any reviewer call.
+- `R1 < 15` of 18: the baseline is too unreliable to measure against. Void; fix the fixture rather than lowering the bar. A second Void is a Fail.
+- Any bug with `R1[i] >= 5` and `R5[i] <= 1`: per-bug collapse. Fail regardless of the aggregate ratio.
+- A monotone decline surviving the single authorized six-repeat extension: Fail. No second extension exists.
 - `R5 / R1 < B`: packing costs more recall than the coverage it buys. Fail and take the teardown branch — do not renegotiate `B` after seeing the result.
 - A monotone decline `R1 > R3 > R5` that survives extended repeats: treat as a dilution signature and fail, even if the ratio clears.
 - Any proposal to raise `MAX_HUNKS_PER_PACKET`, revive relationship signals, or add coverage promotion to recover margin: reject here. Each has a measured Non-Goal entry.

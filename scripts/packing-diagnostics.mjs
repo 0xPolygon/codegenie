@@ -171,17 +171,21 @@ function bypassesPacking(atom) {
 // Which related-but-split atom pairs exist, and what prevents each from packing.
 function pairs(run) {
   const { byId, pairSources } = affinity(run);
-  const summary = { coverage: 0, caps: 0, bypass: 0, eligible: 0 };
+  const summary = { coverage: 0, lenses: 0, caps: 0, bypass: 0, eligible: 0 };
   const detail = [];
   for (const [key, sources] of pairSources) {
     const [x, y] = key.split("|");
     const a = byId.get(x);
     const b = byId.get(y);
+    // Checked in the same order the production predicate applies them, so the
+    // first blocker reported is the one that actually decides the pair.
     let blocker;
     if (bypassesPacking(a) || bypassesPacking(b)) {
       blocker = "bypass";
     } else if (a.coverage !== b.coverage) {
       blocker = "coverage";
+    } else if (a.lensSignature !== b.lensSignature) {
+      blocker = "lenses";
     } else if (a.hunkCount + b.hunkCount > DEFAULT_MAX_HUNKS || a.patchChars + b.patchChars > DEFAULT_MAX_PATCH) {
       blocker = "caps";
     } else {
