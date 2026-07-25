@@ -1,10 +1,12 @@
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { Command, CommanderError } from "commander";
 import { loadConfig } from "../config/config-loader.js";
-import type { CodegenieConfig, EvalCaseResult, EvalLossLabel } from "../types.js";
+import type { CodegenieConfig, EvalCaseResult, EvalInvocationManifest, EvalLossLabel } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 import { CliDisplayExit } from "../cli/review-command.js";
-import { loadEvalSuite, replayFromArtifacts, runEvalCase } from "./eval-runner.js";
+import { writeEvalInvocationManifest } from "./eval-artifacts.js";
+import { loadEvalSuite, replayFromArtifacts, resolveLogsDir, runEvalCase } from "./eval-runner.js";
 
 export type EvalCommandOptions = {
   evalDir?: string;
@@ -59,15 +61,52 @@ export async function runEvalCommand(
     throw new CodegenieError("invalid_args", "--eval-dir is required when eval.defaultEvalDir is not configured");
   }
   const suite = await loadEvalSuite(evalDir);
+  const invocationId = randomUUID();
+  const startedAt = new Date().toISOString();
+  const manifestRelativePath = `invocations/${invocationId}.json`;
+  const manifest: EvalInvocationManifest = {
+    schemaVersion: 1,
+    invocationId,
+    suiteDir: suite.dir,
+    status: "running",
+    startedAt,
+    cases: suite.cases.map((entry, caseIndex) => ({
+      caseIndex,
+      caseName: entry.evalCase.name,
+      caseHash: entry.caseHash,
+      caseFile: entry.file
+    })),
+    runs: []
+  };
+  const manifestRoots = [...new Set(suite.cases.map((entry) => resolveLogsDir(suite.dir, entry.evalCase, config)))];
+  const persistManifest = async (): Promise<void> => {
+    await Promise.all(manifestRoots.map((logsDir) => writeEvalInvocationManifest(logsDir, manifest)));
+  };
+  await persistManifest();
   const results: EvalCaseResult[] = [];
-  for (const entry of suite.cases) {
+  for (const [caseIndex, entry] of suite.cases.entries()) {
     const result = await runEvalCase(suite, entry, {
       config,
+      invocation: { id: invocationId, caseIndex, manifest: manifestRelativePath },
       ...(options.cache !== undefined ? { cacheOverride: options.cache } : {})
     });
     results.push(result);
+    const logsRoot = resolveLogsDir(suite.dir, entry.evalCase, config);
+    const runPath = path.relative(logsRoot, result.runDir);
+    manifest.runs.push({
+      caseIndex,
+      caseName: entry.evalCase.name,
+      caseHash: entry.caseHash,
+      runNumber: result.info.runNumber,
+      logsRoot,
+      runPath
+    });
+    await persistManifest();
     write(renderCaseResult(result));
   }
+  manifest.status = "complete";
+  manifest.completedAt = new Date().toISOString();
+  await persistManifest();
   write(renderSuiteTotals(results));
   return results.every((result) => result.status === "pass") ? 0 : 1;
 }

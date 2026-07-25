@@ -1260,12 +1260,23 @@ export type EvalRunInfo = {
   };
   repo?: { root: string; baseSha?: string; headSha?: string; mergeBase?: string };
   reviewRunId?: string;
+  invocation?: {
+    id: string;
+    caseIndex: number;
+    manifest: string;
+  };
   codegenieRuntime?: CodegenieRuntimeProvenance;
   cache: { enabled: boolean; source: "cli" | "case" | "config"; dir?: string };
   effectiveConfig?: {
     review: {
       concurrency: number;
       timeoutMs: number;
+      verify: boolean;
+      minSeverity?: Severity;
+      maxFindings: number;
+      softCommentCap: number;
+      minConfidence: Confidence;
+      minInlineConfidence: Confidence;
       packSameFileHunks: boolean;
       packedToolBudgetMode: PackedToolBudgetMode;
       maxBudgetTokens?: number;
@@ -1280,6 +1291,29 @@ export type EvalRunInfo = {
   startedAt: string;
   finishedAt: string;
   score: EvalScore;
+};
+
+export type EvalInvocationManifest = {
+  schemaVersion: 1;
+  invocationId: string;
+  suiteDir: string;
+  status: "running" | "complete";
+  startedAt: string;
+  completedAt?: string;
+  cases: Array<{
+    caseIndex: number;
+    caseName: string;
+    caseHash: string;
+    caseFile: string;
+  }>;
+  runs: Array<{
+    caseIndex: number;
+    caseName: string;
+    caseHash: string;
+    runNumber: number;
+    logsRoot: string;
+    runPath: string;
+  }>;
 };
 
 export type EvalCaseResult = {
@@ -1612,6 +1646,7 @@ export type ToolCallRecord = {
     glob?: string;
     source?: string;
     contextMode?: string;
+    maxResults?: number;
   };
   backend: ToolBackend;
   precision: ToolPrecision;

@@ -6,6 +6,7 @@ import type {
   EvalArtifacts,
   EvalHintEvent,
   EvalHumanAttentionNote,
+  EvalInvocationManifest,
   EvalRunInfo,
   EvalSelectionRecord,
   EvalVerificationRecord,
@@ -136,6 +137,16 @@ export async function writeEvalRunInfo(dir: string, info: EvalRunInfo): Promise<
   const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(tmp, `${JSON.stringify(info, null, 2)}\n`);
   await rename(tmp, target);
+}
+
+export async function writeEvalInvocationManifest(logsDir: string, manifest: EvalInvocationManifest): Promise<string> {
+  const relative = path.join("invocations", `${manifest.invocationId}.json`);
+  const target = path.join(logsDir, relative);
+  await mkdir(path.dirname(target), { recursive: true });
+  const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(manifest, null, 2)}\n`);
+  await rename(tmp, target);
+  return relative;
 }
 
 export function resolveTelemetryDir(runOrTelemetryDir: string): string {

@@ -13,6 +13,25 @@ Recommended priority: next throughput plan. Plan 100 is complete, and run `dca8d
 > Working-tree check: `git status --short -- src/pipeline/packet-builder.ts src/config/schema.ts src/config/config-loader.ts src/types.ts src/evals/eval-runner.ts scripts/packet-packing-report.ts tests/fixtures/packet-packing-golden.json tests/pipeline-phase5.test.ts tests/config-loader.test.ts tests/evals.test.ts tests/packet-packing-report.test.ts`
 > If the drift check reports committed changes, reconcile the current-state claims below. If the working-tree check reports changes owned by another task, stop and wait for that work to land or move this plan to an isolated worktree; do not overwrite it.
 
+## Phase 2 deterministic reconciliation (2026-07-24)
+
+Step 6's exact four-run command completed with exit `0`, `noModelCalls: true`, four explicit `modelCallsObserved: 0` row proofs, and no report failures. The frozen output is `/tmp/plan102-packet-shape.json` (SHA-256 `77af0c38937bd6957806f05ad201cbad32461414c1d667824096208473c276fa`). The authoritative motivating count is **75**: the real `combinedPatchChars()` builder produced 96→75, so the bounded 74/76 reconciliation was not used. The report's diagnostic reapplication of the old `contentWithLineNumbers` proxy produces 76 for the current atom stream while the real measurement produces 75; this does not change the golden because the authoritative builder result itself matches the plan's historical 75 target. The frozen hash was refreshed after the verifier stopped trusting serialized cap telemetry and independently rendered the source diff for every packet that actually combines multiple atoms.
+
+| Retained run | Packets off→on | Reduction | Hunks | Multi-atom packets | Hunk distribution off→on (1/2/3/4/5) | Atoms per on-packet (1/2/3/4) |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| `740d73f2` | 109→85 | 22.018% | 153 | 16 | 86/12/5/2/4 → 54/13/6/5/7 | 69/9/6/1 |
+| `fe1548ae` | 109→85 | 22.018% | 153 | 16 | 86/12/5/2/4 → 54/13/6/5/7 | 69/9/6/1 |
+| `81f806a6` | 93→68 | 26.882% | 136 | 17 | 71/11/5/2/4 → 38/12/6/4/8 | 51/10/6/1 |
+| `dca8d870` | 96→75 | 21.875% | 142 | 14 | 73/11/5/3/4 → 46/12/4/5/8 | 61/8/5/1 |
+
+All four rows have zero hunk/atom bijection failures, atom splits or reorderings, new coverage promotions, cap violations, planner-lens drops, high/critical focus omissions, deep-context downgrades, derived/effective profile downgrades, effective base-budget downgrades, and invalid dispatch ranks. The largest eligible packet has five hunks; independently rendered raw-diff patch use for every multi-atom packet is at most 11,755 characters in each run. Oversized single-hunk packets are intentionally windowed and are not atom-combination cap candidates. Flag-off and flag-on context truncation counts are identical (13/13, 13/13, 13/13, and 15/15). Each run internalizes two related-context excerpts because their target hunk is now in the same packet. Six standalone note strings per run are absent after the unchanged bounded note merge, but none belongs to a high/critical atom; this remains an explicit paid-recall concern rather than being hidden as deterministic parity. Lens omissions are zero. All treatment packets use the `base` budget and the eight direct file/whole-file bypass packets per run retain their baseline budget.
+
+Packing changes the complete scheduling position of 129, 129, 129, and 117 hunks respectively, while every recomputed rank satisfies the unchanged `[fileClassRank, -changedLines]` formula. The motivating row's 75 packets at concurrency 6 versus 96 at concurrency 4 gives a capacity multiplier of `(96 / 75) * (6 / 4) = 1.92×`. Its completion projection is `52.7 * (75 / 57) * (4 / 6) = 46.23` minutes.
+
+The motivating run has byte-identical flag-off artifacts after applying the same credential stripping used by artifact serialization. The three older retained artifacts predate Plan 100 and omit `dispatchRank`; the replay applies an explicit run-ID-pinned compatibility view that removes only that absent serialized field after validating every current rank. Those same three recorded diffs predate persisted `hunkHash` and the current derived hunk ID. Their versioned diff parity requires every hunk to use the old schema, then compares every other parsed field exactly against fresh `parseDiff(rawDiff)` output; partial migration or any semantic diff drift fails closed. The oldest clean artifact also predates the self-test context filter, so 16 exact redundant `path:path` test lines are removed in that compatibility view. Any other field drift still fails closed, and the current packing-off implementation remains covered by the packet-builder golden parity tests.
+
+Paid validation was not authorized or run in this phase: `actualValidationCostUSD = $0`; steps 7–12 are `not_run` pending an owner-supplied `approvedValidationCostUSD`. No paid model call may begin until that ceiling and the next-phase projection are recorded.
+
 ## Decision
 
 Pack more same-file work, but only across boundaries that do not carry a deliberate review signal:
@@ -202,7 +221,7 @@ Use staged measurements instead of guessing the final bill:
 3. The two production cases run as one paired suite, so approve that phase before launching either case. Run D cost `$25.2852` in total: `$22.8517` in Stage 7 across 57 dispatched packets (`$0.4009` per dispatched packet) plus `$2.4335` outside Stage 7. For frozen packed count `P`, forecast a complete pair as `2 * $2.4335 + (96 + P) * $0.4009`, or `$73.02–$73.82` for `P in {74, 75, 76}`. Applying 25% contingency yields `$91.28–$92.28`; round upward and reserve **`$95`**. This budgets all 96 baseline packets plus all packed packets even if the 60-minute baseline later truncates. Replace the reservation with actual paired cost afterward.
 4. Before starting any next phase, require `actualValidationCostUSD + projectedRemainingCostUSD <= approvedValidationCostUSD`. If it does not hold, stop for explicit owner approval rather than dropping recall or deterministic gates to save money.
 
-The report script must aggregate cohort cost from `score.metrics.costUSD`, falling back to the actual value of the `maxCostUSD` budget result when necessary. It emits cohort `actualCostUSD`; the executor records cumulative actual/projected/approved amounts in the reconciliation note using the formulas above.
+The report script must reconstruct cohort cost from every recorded model call and require the per-repeat and aggregate score cost/count fields to match that evidence. Candidate, verification, final-selection, and final artifacts must also form an exact lineage before any paid score is accepted. It emits cohort `actualCostUSD`; the executor records cumulative actual/projected/approved amounts in the reconciliation note using the formulas above.
 
 Normalize production payback to equivalent reviewed work because the baseline may truncate while the selected arm completes. For the pinned diff, set `equivalentTargetHunks = 142` and compute:
 
@@ -270,7 +289,7 @@ Author six case files (`dilution-{a,b,c}.yml`, `consistency-{a,b,c}.yml`) with `
 | B — isolate shape | on | base |
 | C — shape + capacity | on | atom-scaled |
 
-Run the one-repeat treatment preflight, then use `scripts/packet-packing-report.ts eval` on the suite logs. For both cases it must prove:
+Run the one-repeat treatment preflight, then use `scripts/packet-packing-report.ts eval` on the suite logs. Preflight proves treatment and economics only and must not select a rollout arm. Invocation manifests record each run's exact owning log root/path so a suite may span roots without ambiguous numeric run IDs. For both cases it must prove:
 
 - A's target packet has one source atom;
 - B and C put the target hunk in a packet with at least two source atoms;
@@ -302,7 +321,7 @@ Define Stage-7 tool-pressure rate per arm as:
 rejectionRate = rejected repository-tool attempts / reviewed pre-existing source atoms
 ```
 
-Report the rejection cause/limit when telemetry supplies it, result characters, used calls, continuations, and model-service time per reviewed atom. C qualifies as a budget fix only when `rejectionRate(C) <= rejectionRate(B)` and it either strictly reduces rejection rate or improves candidate/final recall. If C and B have equal recall and pressure, choose B. If the selected packed arm exceeds A by more than `0.10` rejected attempts per reviewed atom without higher candidate recall, stop and keep packing dark.
+Report the rejection cause/limit when telemetry supplies it, result characters, used calls, continuations, and model-service time per reviewed atom. C qualifies as a budget fix only when `rejectionRate(C) <= rejectionRate(B)` and it either strictly reduces rejection rate or improves candidate/final recall. If C and B have equal recall and pressure, choose B. If B fails and C passes, C must retain at least 85% of the model-service saving implied by its packet-count reduction. If the selected packed arm exceeds A by more than `0.10` rejected attempts per reviewed atom without higher candidate recall, stop and keep packing dark.
 
 ### C. Existing-suite collateral regression checks
 
@@ -313,7 +332,7 @@ After the repeated packing-sensitive gate selects B or C, run two broader suites
 
 Materialize A and selected copies in disposable directories, copying the complete suite including `repos/`, and change only `repeat`, `review.packSameFileHunks`, and `review.packedToolBudgetMode`. The report must verify those are the only YAML differences, that the selected setting reached resolved config, and how many selected executions actually packed multiple atoms. Untreated cases remain valid collateral checks for flag/config parity but are explicitly not evidence about packing recall.
 
-Add a `regression` mode to `scripts/packet-packing-report.ts` that compares the two explicit log roots and reports eval errors, expectation transitions, packet/hunk/cap/profile invariants, treatment counts, tool pressure, and dispatch-order changes. It must not merge these one-repeat outcomes into the repeated packing-sensitive recall gate.
+Add a `regression` mode to `scripts/packet-packing-report.ts` that compares the two explicit log roots and reports eval errors, expectation transitions, packet/hunk/cap/profile invariants, treatment counts, tool pressure, and dispatch-order changes. Each baseline and selected cohort must independently pass every required positive/negative expectation even when both fail identically. It must not merge these one-repeat outcomes into the repeated packing-sensitive recall gate.
 
 ### D. One production-shaped capacity confirmation
 
@@ -323,7 +342,7 @@ Confirm:
 
 - at least the same hunk set is reviewed, with the target being all 142 reviewable hunks;
 - accepted/candidate findings and known cross-hunk observations are not lost;
-- total model-service time, total tokens, cost per reviewed hunk, and wall time improve;
+- total model-service time, total/reasoning tokens, cost per reviewed hunk, and wall time improve, with totals covering planner, reviewer, verifier, composer, repair, and every other recorded call rather than Stage 7 alone;
 - raw arm costs/reviewed-hunk counts and 142-hunk equivalent costs are reported, with truncation extrapolations labeled and positive equivalent-review savings required;
 - context/tool pressure stays within the offline and eval gates;
 - profile floors hold, and dispatch-order plus reviewed-hunk-set changes are reported so a Plan-100 ordering interaction cannot masquerade as a packing-quality result.

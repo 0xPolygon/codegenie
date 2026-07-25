@@ -52,7 +52,7 @@ type FindingGroup = {
   findings: CandidateFinding[];
 };
 
-type SelectionRecord = {
+export type SelectionRecord = {
   findingId: string;
   decision: "published" | "merged" | "suppressed";
   reason: string;
@@ -60,7 +60,7 @@ type SelectionRecord = {
 };
 
 type CompositionMode = "llm" | "llm_degraded" | "deterministic_fallback" | "schema_repair_fallback";
-type PublicationAnchorDecision = {
+export type PublicationAnchorDecision = {
   anchor?: DiffAnchor;
   source: "selected" | "merged" | "none";
   reason: string;
@@ -696,7 +696,7 @@ function fallbackComposition(groups: FindingGroup[]): SubmitComposition {
   };
 }
 
-type ConfidenceSelection = {
+export type ConfidenceSelection = {
   confidence: Confidence;
   sourceFindingId?: string;
   reason: "representative" | "same_severity" | "compatible_lower_severity";
@@ -1143,6 +1143,136 @@ function pretrimComposerInput(findings: CandidateFinding[]): { kept: CandidateFi
   return {
     kept,
     suppressed: findings.filter((finding) => !keptIds.has(finding.id)).sort(compareFindings)
+  };
+}
+
+export function reconstructComposerGroupsFromArtifacts(
+  verified: CandidateFinding[],
+  packets: ReviewPacket[]
+): {
+  groups: Array<{ fingerprint: string; representativeId: string; findingIds: string[] }>;
+  pretrimSuppressedIds: string[];
+  publishable: CandidateFinding[];
+} {
+  const publishable = verified.map((candidate) => candidate.anchorSource === "backfill_packet_representative" && candidate.anchor !== undefined
+    ? (() => {
+        const { anchor: _anchor, ...withoutAnchor } = candidate;
+        return { ...withoutAnchor, changedLine: false };
+      })()
+    : candidate);
+  const pretrim = pretrimComposerInput(publishable);
+  const packetsById = new Map(packets.map((packet) => [packet.id, packet]));
+  return {
+    groups: groupFindings(pretrim.kept, packetsById).map((group) => ({
+      fingerprint: group.fingerprint,
+      representativeId: group.representative.id,
+      findingIds: group.findings.map((finding) => finding.id)
+    })),
+    pretrimSuppressedIds: pretrim.suppressed.map((finding) => finding.id),
+    publishable
+  };
+}
+
+export function reconstructFinalFindingFromArtifacts(
+  mergedFindings: CandidateFinding[],
+  packets: ReviewPacket[],
+  diff: UnifiedDiff,
+  finalBody: string,
+  publication: FinalFinding["publication"]
+): {
+  finding: FinalFinding;
+  publicationAnchor: PublicationAnchorDecision;
+  confidenceSelection: ConfidenceSelection;
+} {
+  const representative = canonicalMergedRepresentative(mergedFindings, diff);
+  const packetsById = new Map(packets.map((packet) => [packet.id, packet]));
+  const fingerprint = fingerprintFinding(representative, packetsById);
+  const publicationAnchors = new Map<string, PublicationAnchorDecision>();
+  const confidenceSelections = new Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>();
+  const finding = toFinalFinding(
+    representative,
+    fingerprint,
+    finalBody,
+    publication,
+    mergedFindings,
+    diff,
+    publicationAnchors,
+    confidenceSelections
+  );
+  return {
+    finding,
+    publicationAnchor: publicationAnchors.get(finding.id) ?? { source: "none", reason: "no publication anchor" },
+    confidenceSelection: confidenceSelections.get(finding.id) ?? { confidence: representative.confidence, reason: "representative" }
+  };
+}
+
+export type ComposerArtifactPolicyDraft = {
+  mergedFindings: CandidateFinding[];
+  finalBody: string;
+  requestedPublication: FinalFinding["publication"];
+  baseSelection: SelectionRecord[];
+};
+
+export function reconstructComposerPolicyFromArtifacts(
+  drafts: ComposerArtifactPolicyDraft[],
+  packets: ReviewPacket[],
+  diff: UnifiedDiff,
+  config: CodegenieConfig,
+  verdicts: VerificationVerdict[]
+): {
+  findings: FinalFinding[];
+  selection: SelectionRecord[];
+  publicationAnchors: Array<{
+    findingId: string;
+    fingerprint: string;
+    publication: FinalFinding["publication"];
+    source: PublicationAnchorDecision["source"];
+    reason: string;
+    sourceFindingId?: string;
+    anchor?: DiffAnchor;
+  }>;
+  confidenceSelections: Array<ConfidenceSelection & { findingId: string; representativeConfidence: Confidence }>;
+} {
+  const publicationAnchorDecisions = new Map<string, PublicationAnchorDecision>();
+  const confidenceSelections = new Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>();
+  const anchorDowngradeReasons = new Map<string, string>();
+  const packetsById = new Map(packets.map((packet) => [packet.id, packet]));
+  const baseSelection = new Map<string, SelectionRecord>();
+  const findings = drafts.map((draft) => {
+    const representative = canonicalMergedRepresentative(draft.mergedFindings, diff);
+    const finding = toFinalFinding(
+      representative,
+      fingerprintFinding(representative, packetsById),
+      draft.finalBody,
+      draft.requestedPublication,
+      draft.mergedFindings,
+      diff,
+      publicationAnchorDecisions,
+      confidenceSelections
+    );
+    recordAnchorDowngrade(finding, draft.requestedPublication, anchorDowngradeReasons);
+    for (const record of draft.baseSelection) {
+      baseSelection.set(record.findingId, record);
+    }
+    return finding;
+  });
+  const quietTelemetry = { event: () => undefined } as unknown as TelemetryRecorder;
+  const capped = applyCaps(findings, config, {
+    lowConfidencePublishableIds: lowConfidencePublishableCandidateIds(verdicts),
+    telemetry: quietTelemetry
+  });
+  for (const [id, reason] of anchorDowngradeReasons) {
+    if (!capped.downgradeReasons.has(id)) {
+      capped.downgradeReasons.set(id, reason);
+    }
+  }
+  return {
+    findings: capped.findings,
+    selection: buildSelectionRecords(capped.findings, baseSelection, capped.suppressedReasons, capped.downgradeReasons),
+    publicationAnchors: publicationAnchorSelectionRecords(capped.findings, publicationAnchorDecisions),
+    confidenceSelections: [...confidenceSelections.entries()]
+      .map(([findingId, selection]) => ({ findingId, ...selection }))
+      .sort((left, right) => left.findingId.localeCompare(right.findingId))
   };
 }
 

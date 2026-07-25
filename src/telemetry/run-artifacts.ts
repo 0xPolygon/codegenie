@@ -197,7 +197,7 @@ type TelemetryStageSummary = {
   schemaRecovery: SchemaRecoveryCounters;
 };
 
-type Stage7SchemaRepairSummary = {
+export type Stage7SchemaRepairSummary = {
   candidateInvalidSubmits: number;
   noFindingInvalidSubmits: number;
   cleanupAttempted: number;
@@ -214,7 +214,7 @@ type Stage7SchemaRepairSummary = {
   actualRepairPromptChars: number;
 };
 
-type LogOverflowSummary = {
+export type LogOverflowSummary = {
   droppedDebugInfo: number;
   droppedWarnError: number;
 };
@@ -274,7 +274,7 @@ type ArtifactManifest = {
   artifacts: ArtifactManifestEntry[];
 };
 
-type PipelineTotals = {
+export type PipelineTotals = {
   filesChanged: number;
   hunks: number;
   packets: number;
@@ -285,7 +285,7 @@ type PipelineTotals = {
   postedComments: number;
 };
 
-type PipelineTelemetrySummary = {
+export type PipelineTelemetrySummary = {
   workers: {
     started: number;
     completed: number;
@@ -498,6 +498,14 @@ class RunTelemetryImpl {
     this.runDirectory = runDir;
     touchCoreFiles(runDir);
     this.flushBuffers();
+    if (this.logOverflow.droppedDebugInfo > 0 || this.logOverflow.droppedWarnError > 0) {
+      this.recordEvent({
+        stage: 0,
+        level: "warn",
+        message: "telemetry_log_overflow",
+        data: { ...this.logOverflow }
+      });
+    }
     this.recordPruneResult(pruneRuns(runsRoot, runDir, this.config.retainRuns));
     return { runId: this.runId, runDir };
   }
@@ -1164,83 +1172,15 @@ class RunTelemetryImpl {
   }
 
   private updateStage7SchemaRepairSummaryFromEvent(event: TelemetryEvent): void {
-    if (event.stage !== 7) {
-      return;
-    }
-    const data = objectField(event.data);
-    const classification = typeof data?.classification === "string" ? data.classification : "";
-    const payloadKind = typeof data?.payloadKind === "string" ? data.payloadKind : "";
-    if (event.message === "stage7_schema_repair_attempted") {
-      if (payloadKind === "no_findings" || classification === "empty_no_findings_missing_fields") {
-        this.stage7SchemaRepairSummary.noFindingInvalidSubmits += 1;
-      } else {
-        this.stage7SchemaRepairSummary.candidateInvalidSubmits += 1;
-      }
-      return;
-    }
-    if (event.message === "stage7_schema_cleanup_attempted") {
-      this.stage7SchemaRepairSummary.cleanupAttempted += 1;
-      return;
-    }
-    if (event.message === "stage7_schema_cleanup_recovered") {
-      this.stage7SchemaRepairSummary.cleanupRecovered += 1;
-      return;
-    }
-    if (event.message === "stage7_schema_cleanup_rejected") {
-      this.stage7SchemaRepairSummary.cleanupRejected += 1;
-      return;
-    }
-    if (event.message === "stage7_schema_compact_repair_scheduled") {
-      this.stage7SchemaRepairSummary.compactRepairScheduled += 1;
-      const promptChars = numberField(data?.repairPromptChars);
-      this.stage7SchemaRepairSummary.repairPromptChars += promptChars;
-      this.stage7SchemaRepairSummary.compactRepairPromptChars += promptChars;
-      return;
-    }
-    if (event.message === "schema_repair_scheduled") {
-      const replaceConversation = data?.replaceConversation === true;
-      if (!replaceConversation) {
-        this.stage7SchemaRepairSummary.appendRepairScheduled += 1;
-        const promptChars = numberField(data?.repairPromptChars);
-        this.stage7SchemaRepairSummary.repairPromptChars += promptChars;
-        this.stage7SchemaRepairSummary.appendRepairPromptChars += promptChars;
-      }
-      return;
-    }
-    if (event.message === "stage7_schema_repair_recovered") {
-      if (classification === "schema_valid_after_retry") {
-        this.stage7SchemaRepairSummary.repairRecovered += 1;
-      }
-      return;
-    }
-    if (event.message === "stage7_schema_repair_failed") {
-      this.stage7SchemaRepairSummary.repairFailed += 1;
-    }
+    updateStage7SchemaRepairFromEvent(this.stage7SchemaRepairSummary, event);
   }
 
   private updateStage7SchemaRepairSummaryFromModelCall(record: LlmCallRecord): void {
-    if (record.stage !== 7 || record.kind !== "repair") {
-      return;
-    }
-    this.stage7SchemaRepairSummary.actualRepairCalls += 1;
-    this.stage7SchemaRepairSummary.actualRepairPromptChars += record.promptChars;
+    updateStage7SchemaRepairFromModelCall(this.stage7SchemaRepairSummary, record);
   }
 
   private updatePipelineSummaryFromEvent(event: TelemetryEvent): void {
-    if (event.message !== "pipeline_metrics" || !event.data || typeof event.data !== "object") {
-      return;
-    }
-    const data = event.data as Record<string, unknown>;
-    mergePipelineTotals(this.pipelineTotals, objectField(data.totals));
-    mergePipelineWorkers(this.pipelineSummary.workers, objectField(data.workers));
-    mergePipelinePackets(this.pipelineSummary.packets, objectField(data.packets));
-    mergePipelineLenses(this.pipelineSummary.lenses, objectField(data.lenses));
-    mergePipelineCoverage(this.pipelineSummary.coverage, objectField(data.coverage));
-    mergePipelineCandidates(this.pipelineSummary.candidates, objectField(data.candidates));
-    mergePipelineVerdicts(this.pipelineSummary.verdicts, objectField(data.verdicts));
-    mergePipelineDedup(this.pipelineSummary.dedup, objectField(data.dedup));
-    mergePipelineFinalSelection(this.pipelineSummary.finalSelection, objectField(data.finalSelection));
-    mergePipelinePosting(this.pipelineSummary.posting, objectField(data.posting));
+    updatePipelineSummaryFromEvent(this.pipelineTotals, this.pipelineSummary, event);
   }
 
   private runReviewMetadata(): RunReviewArtifactMetadata {
@@ -1658,6 +1598,97 @@ function emptyStage7SchemaRepairSummary(): Stage7SchemaRepairSummary {
     actualRepairCalls: 0,
     actualRepairPromptChars: 0
   };
+}
+
+function updateStage7SchemaRepairFromEvent(summary: Stage7SchemaRepairSummary, event: TelemetryEvent): void {
+  if (event.stage !== 7) {
+    return;
+  }
+  const data = objectField(event.data);
+  const classification = typeof data?.classification === "string" ? data.classification : "";
+  const payloadKind = typeof data?.payloadKind === "string" ? data.payloadKind : "";
+  if (event.message === "stage7_schema_repair_attempted") {
+    if (payloadKind === "no_findings" || classification === "empty_no_findings_missing_fields") {
+      summary.noFindingInvalidSubmits += 1;
+    } else {
+      summary.candidateInvalidSubmits += 1;
+    }
+  } else if (event.message === "stage7_schema_cleanup_attempted") {
+    summary.cleanupAttempted += 1;
+  } else if (event.message === "stage7_schema_cleanup_recovered") {
+    summary.cleanupRecovered += 1;
+  } else if (event.message === "stage7_schema_cleanup_rejected") {
+    summary.cleanupRejected += 1;
+  } else if (event.message === "stage7_schema_compact_repair_scheduled") {
+    summary.compactRepairScheduled += 1;
+    const promptChars = numberField(data?.repairPromptChars);
+    summary.repairPromptChars += promptChars;
+    summary.compactRepairPromptChars += promptChars;
+  } else if (event.message === "schema_repair_scheduled" && data?.replaceConversation !== true) {
+    summary.appendRepairScheduled += 1;
+    const promptChars = numberField(data?.repairPromptChars);
+    summary.repairPromptChars += promptChars;
+    summary.appendRepairPromptChars += promptChars;
+  } else if (event.message === "stage7_schema_repair_recovered" && classification === "schema_valid_after_retry") {
+    summary.repairRecovered += 1;
+  } else if (event.message === "stage7_schema_repair_failed") {
+    summary.repairFailed += 1;
+  }
+}
+
+function updateStage7SchemaRepairFromModelCall(summary: Stage7SchemaRepairSummary, record: LlmCallRecord): void {
+  if (record.stage === 7 && record.kind === "repair") {
+    summary.actualRepairCalls += 1;
+    summary.actualRepairPromptChars += record.promptChars;
+  }
+}
+
+function updatePipelineSummaryFromEvent(
+  totals: PipelineTotals,
+  summary: PipelineTelemetrySummary,
+  event: TelemetryEvent
+): void {
+  if (event.message !== "pipeline_metrics" || !event.data || typeof event.data !== "object") {
+    return;
+  }
+  const data = event.data as Record<string, unknown>;
+  mergePipelineTotals(totals, objectField(data.totals));
+  mergePipelineWorkers(summary.workers, objectField(data.workers));
+  mergePipelinePackets(summary.packets, objectField(data.packets));
+  mergePipelineLenses(summary.lenses, objectField(data.lenses));
+  mergePipelineCoverage(summary.coverage, objectField(data.coverage));
+  mergePipelineCandidates(summary.candidates, objectField(data.candidates));
+  mergePipelineVerdicts(summary.verdicts, objectField(data.verdicts));
+  mergePipelineDedup(summary.dedup, objectField(data.dedup));
+  mergePipelineFinalSelection(summary.finalSelection, objectField(data.finalSelection));
+  mergePipelinePosting(summary.posting, objectField(data.posting));
+}
+
+export function reconstructRunTelemetryDerivedEvidence(
+  events: TelemetryEvent[],
+  modelCalls: LlmCallRecord[]
+): {
+  pipelineTotals: PipelineTotals;
+  pipeline: PipelineTelemetrySummary;
+  stage7SchemaRepair: Stage7SchemaRepairSummary;
+  logOverflow: LogOverflowSummary;
+} {
+  const pipelineTotals = emptyPipelineTotals();
+  const pipeline = emptyPipelineTelemetrySummary();
+  const stage7SchemaRepair = emptyStage7SchemaRepairSummary();
+  const logOverflow: LogOverflowSummary = { droppedDebugInfo: 0, droppedWarnError: 0 };
+  for (const event of events) {
+    updatePipelineSummaryFromEvent(pipelineTotals, pipeline, event);
+    updateStage7SchemaRepairFromEvent(stage7SchemaRepair, event);
+    if (event.message === "telemetry_log_overflow") {
+      logOverflow.droppedDebugInfo = numberField(event.data?.droppedDebugInfo);
+      logOverflow.droppedWarnError = numberField(event.data?.droppedWarnError);
+    }
+  }
+  for (const record of modelCalls) {
+    updateStage7SchemaRepairFromModelCall(stage7SchemaRepair, record);
+  }
+  return { pipelineTotals, pipeline, stage7SchemaRepair, logOverflow };
 }
 
 function emptyToolBucket(): ToolBucket {
