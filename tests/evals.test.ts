@@ -126,6 +126,34 @@ describe("eval suite validation", () => {
     });
   });
 
+  it("strictly parses packet-packing eval overrides", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-packet-packing-"));
+    writeFileSync(path.join(suiteDir, "packing.yml"), [
+      "name: packet-packing",
+      "artifacts:",
+      "  path: logs/1",
+      "review:",
+      "  packSameFileHunks: true",
+      "  packedToolBudgetMode: atom-scaled"
+    ].join("\n"));
+
+    const suite = await loadEvalSuite(suiteDir);
+    expect(suite.cases[0]?.evalCase.review).toMatchObject({
+      packSameFileHunks: true,
+      packedToolBudgetMode: "atom-scaled"
+    });
+
+    const invalidDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-packet-packing-invalid-"));
+    writeFileSync(path.join(invalidDir, "packing.yml"), [
+      "name: packet-packing-invalid",
+      "artifacts:",
+      "  path: logs/1",
+      "review:",
+      "  packedToolBudgetMode: linear"
+    ].join("\n"));
+    await expect(loadEvalSuite(invalidDir)).rejects.toMatchObject({ code: "config_error" });
+  });
+
   it("accepts pinned head/base eval commands", async () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-head-base-"));
     writeFileSync(path.join(suiteDir, "head.yml"), [
@@ -1725,6 +1753,8 @@ describe("eval command fixture suite", () => {
       "  model: not-real-model",
       "  reasoning: low",
       "  concurrency: 3",
+      "  packSameFileHunks: true",
+      "  packedToolBudgetMode: atom-scaled",
       "  lenses:",
       "    - core/code-review",
       "llm:",
@@ -1748,7 +1778,11 @@ describe("eval command fixture suite", () => {
 
     expect(result.status).toBe("pass");
     expect(result.info.effectiveConfig).toMatchObject({
-      review: { concurrency: 3 },
+      review: {
+        concurrency: 3,
+        packSameFileHunks: true,
+        packedToolBudgetMode: "atom-scaled"
+      },
       llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 2 }
     });
     expect(result.info.codegenieRuntime).toMatchObject({

@@ -6,6 +6,7 @@ export const reasoningLevelSchema = z.enum(["low", "medium", "high", "xhigh"]);
 export const severitySchema = z.enum(["critical", "high", "medium", "low"]);
 export const confidenceSchema = z.enum(["high", "medium", "low"]);
 export const logLevelSchema = z.enum(["debug", "info", "warn", "error"]);
+export const packedToolBudgetModeSchema = z.enum(["base", "atom-scaled"]);
 
 const positiveIntSchema = z.number().int().positive();
 const nonNegativeIntSchema = z.number().int().nonnegative();
@@ -51,6 +52,8 @@ export const rawConfigSchema = z
         maxTime: reviewMaxTimeMinutesSchema.optional(),
         perPassTimeoutMs: positiveIntSchema.optional(),
         budgetBoost: positiveFiniteNumberSchema.optional(),
+        packSameFileHunks: z.boolean().optional(),
+        packedToolBudgetMode: packedToolBudgetModeSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional(),
         deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
@@ -138,6 +141,8 @@ export const codegenieConfigSchema = z
         maxTimeMs: positiveFiniteNumberSchema.max(MAX_REVIEW_TIME_MS),
         perPassTimeoutMs: positiveIntSchema,
         budgetBoost: positiveFiniteNumberSchema,
+        packSameFileHunks: z.boolean(),
+        packedToolBudgetMode: packedToolBudgetModeSchema,
         maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional(),
         deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
@@ -209,6 +214,8 @@ export const defaultConfig: CodegenieConfig = {
     maxTimeMs: 30 * 60 * 1000,
     perPassTimeoutMs: 8 * 60 * 1000,
     budgetBoost: 1,
+    packSameFileHunks: false,
+    packedToolBudgetMode: "base",
     // Primary coverage budget (plan 90): work-denominated so provider latency
     // can never shrink a review. Re-derived 2026-07-04 after run 0c4d5213/53
     // (5,921,791 tokens of legitimate work — planner-deep + escalator

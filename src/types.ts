@@ -8,6 +8,7 @@ export type ProcessingMode = "per-hunk" | "whole-file" | "skip";
 export type ReviewPriority = "critical" | "high" | "normal" | "low";
 export type OutputFormat = "markdown" | "json";
 export type LogLevel = "debug" | "info" | "warn" | "error";
+export type PackedToolBudgetMode = "base" | "atom-scaled";
 
 export type ConfigSource =
   | "defaults"
@@ -44,6 +45,8 @@ export type CodegenieConfig = {
     maxTimeMs: number;
     perPassTimeoutMs: number;
     budgetBoost: number;
+    packSameFileHunks: boolean;
+    packedToolBudgetMode: PackedToolBudgetMode;
     maxBudgetTokens?: number;
     maxModelCalls?: number;
     // Plan 84: K independent Stage-7 passes for deep-coverage packets, union
@@ -1008,6 +1011,8 @@ export type EvalCase = {
     maxFindings?: number;
     concurrency?: number;
     budgetBoost?: number;
+    packSameFileHunks?: boolean;
+    packedToolBudgetMode?: PackedToolBudgetMode;
     maxTimeMinutes?: number;
     maxBudgetTokens?: number;
     deepEnsemblePasses?: number;
@@ -1261,6 +1266,8 @@ export type EvalRunInfo = {
     review: {
       concurrency: number;
       timeoutMs: number;
+      packSameFileHunks: boolean;
+      packedToolBudgetMode: PackedToolBudgetMode;
       maxBudgetTokens?: number;
     };
     llm: {

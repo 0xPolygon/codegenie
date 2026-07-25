@@ -3980,6 +3980,617 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
+  it("keeps packet atom flag-off parity and bypasses whole-file groups", async () => {
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 1, content: "export const one = 1;" },
+      { id: "h2", newStart: 100, content: "export const two = 2;" }
+    ]);
+    const facts = { ...fakeFacts("app.ts", "per-hunk"), hunkCount: 2, changedLines: 2 };
+    const baselineArtifacts = new Map<string, unknown>();
+    const baseline = await buildReviewPackets(
+      fakePlanForHunks(["h1", "h2"]),
+      [file],
+      [facts],
+      fakeRepositoryIndex(),
+      {
+        ...nullTelemetry(),
+        writeArtifact: async (name, data) => {
+          baselineArtifacts.set(name, data);
+        }
+      },
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+    const darkArtifacts = new Map<string, unknown>();
+    const dark = await buildReviewPackets(
+      fakePlanForHunks(["h1", "h2"]),
+      [file],
+      [facts],
+      fakeRepositoryIndex(),
+      {
+        ...nullTelemetry(),
+        writeArtifact: async (name, data) => {
+          darkArtifacts.set(name, data);
+        }
+      },
+      {
+        config: {
+          ...config(),
+          review: { ...config().review, packSameFileHunks: false, packedToolBudgetMode: "atom-scaled" }
+        },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+
+    expect(dark).toEqual(baseline);
+    expect(darkArtifacts).toEqual(baselineArtifacts);
+
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const wholeFilePackets = await buildReviewPackets(
+      fakePlan(),
+      [fakeDiffFile("app.ts")],
+      [fakeFacts("app.ts", "whole-file")],
+      fakeRepositoryIndex(fakeTools("export const value = 1;\n")),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+    expect(wholeFilePackets[0]?.kind).toBe("whole-file");
+    expect(events.some((event) => event.message === "same_file_atoms_packed")).toBe(false);
+
+    const probedFileDiff = await buildReviewPackets(
+      fakePlan(),
+      [fakeDiffFile("app.ts")],
+      [fakeFacts("app.ts", "whole-file")],
+      fakeRepositoryIndex(fakeTools("x".repeat(9_000))),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+    expect(probedFileDiff[0]?.kind).toBe("file-diff");
+    expect(events.some((event) => event.message === "same_file_atoms_packed")).toBe(false);
+  });
+
+  it("applies stable same-file packing with source-order, cap, telemetry, and dispatch-rank invariants", async () => {
+    const file = fakeMultiHunkFile(Array.from({ length: 6 }, (_, index) => ({
+      id: `h${String(index + 1)}`,
+      newStart: index * 100 + 1,
+      content: `export const value${String(index + 1)} = ${String(index + 1)};`
+    })));
+    const facts = { ...fakeFacts("app.ts", "per-hunk"), hunkCount: 6, changedLines: 6 };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packets = await buildReviewPackets(
+      fakePlanForHunks(["h1", "h2", "h3", "h4", "h5", "h6"]),
+      [file],
+      [facts],
+      fakeRepositoryIndex(),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+
+    expect(packets.map((packet) => packet.hunks.map((hunk) => hunk.hunkId))).toEqual([
+      ["h1", "h2", "h3", "h4", "h5"],
+      ["h6"]
+    ]);
+    expect(packets.flatMap((packet) => packet.hunks.map((hunk) => hunk.hunkId))).toEqual(["h1", "h2", "h3", "h4", "h5", "h6"]);
+    expect(packets[0]?.dispatchRank).toEqual(packetDispatchRank("app.ts", facts, 5));
+    const packedEvents = events.filter((event) => event.message === "same_file_atoms_packed");
+    expect(packedEvents).toHaveLength(2);
+    expect(packedEvents.map((event) => event.data)).toEqual([
+      expect.objectContaining({
+        atomIds: ["h1", "h2", "h3", "h4", "h5"].map((hunkId) => sha256Hex(`hunk-first\n${hunkId}`)),
+        sourceAtomCount: 5,
+        hunkCount: 5,
+        effectiveCoverage: "normal",
+        requestedLensSignature: '["core/code-review"]',
+        standaloneProfiles: ["standard", "standard", "standard", "standard", "standard"],
+        plannerLensesPreserved: true,
+        capUsage: expect.objectContaining({ hunks: 5, maxHunks: 5, maxPatchChars: 12_000 })
+      }),
+      expect.objectContaining({
+        atomIds: [sha256Hex("hunk-first\nh6")],
+        sourceAtomCount: 1,
+        hunkCount: 1
+      })
+    ]);
+
+    const nearbyEvents: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    await buildReviewPackets(
+      fakePlanForHunks(["h1", "h2"]),
+      [fakeMultiHunkFile([
+        { id: "h1", newStart: 1, content: "export const one = 1;" },
+        { id: "h2", newStart: 10, content: "export const two = 2;" }
+      ])],
+      [{ ...fakeFacts("app.ts", "per-hunk"), hunkCount: 2, changedLines: 2 }],
+      fakeRepositoryIndex(),
+      { ...nullTelemetry(), event: (event) => nearbyEvents.push(event) },
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+    const nearbyAtomIds = nearbyEvents.find((event) => event.message === "same_file_atoms_packed")?.data?.atomIds;
+    expect(nearbyAtomIds).toEqual([sha256Hex("hunk-first\nh1\nh2")]);
+    expect(nearbyAtomIds).not.toEqual([sha256Hex("hunk-first\nh1"), sha256Hex("hunk-first\nh2")]);
+    expect(nearbyAtomIds).not.toEqual([sha256Hex("hunk-first\nh2\nh1")]);
+  });
+
+  it("partitions same-file packing by coverage and lens signature before restoring packet order", async () => {
+    const ids = ["h1", "h2", "h3", "h4", "h5", "h6"];
+    const file = fakeMultiHunkFile(ids.map((id, index) => ({
+      id,
+      newStart: index * 100 + 1,
+      content: `export function value${String(index)}() { return ${String(index)}; }`
+    })));
+    const plan = fakePlanForHunks(ids);
+    plan.coverage = plan.coverage.map((decision, index) => ({
+      ...decision,
+      coverage: index === 1 || index === 3 ? "light" : "normal",
+      lenses: index >= 4 ? ["core/security"] : ["core/code-review"]
+    }));
+    const packets = await buildReviewPackets(
+      plan,
+      [file],
+      [{ ...fakeFacts("app.ts", "per-hunk"), hunkCount: 6, changedLines: 6 }],
+      fakeRepositoryIndex(),
+      nullTelemetry(),
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review", "core/security"]
+      }
+    );
+
+    expect(packets.map((packet) => ({
+      coverage: packet.coverage,
+      lenses: packet.lenses,
+      hunks: packet.hunks.map((hunk) => hunk.hunkId)
+    }))).toEqual([
+      { coverage: "normal", lenses: ["core/code-review"], hunks: ["h1", "h3"] },
+      { coverage: "light", lenses: ["core/code-review"], hunks: ["h2", "h4"] },
+      { coverage: "normal", lenses: ["core/security"], hunks: ["h5", "h6"] }
+    ]);
+  });
+
+  it("leaves same-file atoms separate when packing would omit a standalone routed lens", async () => {
+    const ids = ["h1", "h2", "h3", "h4"];
+    const file = fakeMultiHunkFile(ids.map((id, index) => ({
+      id,
+      newStart: index * 100 + 1,
+      content: `export function value${String(index)}() { return ${String(index)}; }`
+    })));
+    const plan = fakePlanForHunks(ids);
+    plan.coverage = plan.coverage.map((decision, index) => ({
+      ...decision,
+      lenses: ["core/code-review", "core/tests"],
+      reason: "default_coverage",
+      focusNotes: [index === 3 ? "Check regression tests for this branch." : `Inspect behavior ${String(index + 1)}.`]
+    }));
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packets = await buildReviewPackets(
+      plan,
+      [file],
+      [{ ...fakeFacts("app.ts", "per-hunk"), hunkCount: 4, changedLines: 4 }],
+      fakeRepositoryIndex(),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review", "core/tests"]
+      }
+    );
+
+    expect(packets.map((packet) => packet.hunks.map((hunk) => hunk.hunkId))).toEqual([
+      ["h1"],
+      ["h2"],
+      ["h3"],
+      ["h4"]
+    ]);
+    expect(packets.map((packet) => packet.lenses)).toEqual([
+      ["core/code-review"],
+      ["core/code-review"],
+      ["core/code-review"],
+      ["core/code-review", "core/tests"]
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      message: "same_file_atom_pack_rejected",
+      data: expect.objectContaining({ reason: "standalone routed lenses omitted: core/tests" })
+    }));
+  });
+
+  it("preserves mixed-coverage baseline atoms and scales by newly combined atom count", async () => {
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 1, content: "export function one() { return 1; }" },
+      { id: "h2", newStart: 10, content: "export function two() { return 2; }" },
+      { id: "h3", newStart: 100, content: "export function three() { return 3; }" }
+    ]);
+    const plan = fakePlanForHunks(["h1", "h2", "h3"]);
+    plan.coverage[1] = { ...plan.coverage[1]!, coverage: "deep" };
+    plan.coverage[2] = { ...plan.coverage[2]!, coverage: "deep" };
+    const facts = { ...fakeFacts("app.ts", "per-hunk"), hunkCount: 3, changedLines: 3 };
+    const off = await buildReviewPackets(
+      plan,
+      [file],
+      [facts],
+      fakeRepositoryIndex(),
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+    expect(off.map((packet) => packet.hunks.map((hunk) => hunk.hunkId))).toEqual([["h1", "h2"], ["h3"]]);
+    expect(off.map((packet) => packet.coverage)).toEqual(["deep", "deep"]);
+
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packed = await buildReviewPackets(
+      plan,
+      [file],
+      [facts],
+      fakeRepositoryIndex(),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      {
+        config: {
+          ...config(),
+          review: { ...config().review, packSameFileHunks: true, packedToolBudgetMode: "atom-scaled" }
+        },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+    expect(packed).toHaveLength(1);
+    expect(packed[0]?.hunks.map((hunk) => hunk.hunkId)).toEqual(["h1", "h2", "h3"]);
+    expect(packed[0]?.coverage).toBe("deep");
+    expect(packed[0]?.toolBudget.maxToolCalls).toBe(16);
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "same_file_atoms_packed",
+      data: expect.objectContaining({ sourceAtomCount: 2, hunkCount: 3, effectiveCoverage: "deep" })
+    }));
+  });
+
+  it("leaves same-file atoms separate when packing would omit high-priority planner attention", async () => {
+    const ids = ["h1", "h2", "h3", "h4"];
+    const file = fakeMultiHunkFile(ids.map((id, index) => ({
+      id,
+      newStart: index * 100 + 1,
+      content: `export function value${String(index)}() { return ${String(index)}; }`
+    })));
+    const plan = fakePlanForHunks(ids);
+    plan.coverage = plan.coverage.map((decision, index) => ({
+      ...decision,
+      focusNotes: [`Protect focus ${String(index + 1)}.`]
+    }));
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packets = await buildReviewPackets(
+      plan,
+      [file],
+      [{ ...fakeFacts("app.ts", "per-hunk"), hunkCount: 4, changedLines: 4, reviewPriority: "high" }],
+      fakeRepositoryIndex(),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+
+    expect(packets).toHaveLength(4);
+    expect(packets.map((packet) => packet.attentionNotes)).toEqual([
+      expect.arrayContaining(["Protect focus 1."]),
+      expect.arrayContaining(["Protect focus 2."]),
+      expect.arrayContaining(["Protect focus 3."]),
+      expect.arrayContaining(["Protect focus 4."])
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      message: "same_file_atom_pack_rejected",
+      data: expect.objectContaining({ reason: expect.stringContaining("high-priority planner focus omitted") })
+    }));
+  });
+
+  it("merges degradation reasons deterministically while respecting the real patch cap", async () => {
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 1, content: "a".repeat(5_000) },
+      { id: "h2", newStart: 100, content: "b".repeat(5_000) },
+      { id: "h3", newStart: 200, content: "c".repeat(5_000) }
+    ]);
+    const packets = await buildReviewPackets(
+      fakePlanForHunks(["h1", "h2", "h3"]),
+      [file],
+      [{ ...fakeFacts("app.ts", "whole-file"), hunkCount: 3, changedLines: 3 }],
+      fakeRepositoryIndex(),
+      nullTelemetry(),
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+
+    expect(packets.map((packet) => packet.hunks.length)).toEqual([2, 1]);
+    expect(packets[0]?.degraded?.reason.match(/whole-file downgraded/gu)).toHaveLength(1);
+    expect(packets[0]?.hunks.reduce((sum, hunk) => sum + hunk.contentWithLineNumbers.length, 0)).toBeLessThanOrEqual(12_000);
+
+    const oversizedAtom = await buildReviewPackets(
+      fakePlan(),
+      [fakeDiffFile("app.ts", "x".repeat(20_000))],
+      [fakeFacts("app.ts", "per-hunk")],
+      fakeRepositoryIndex(),
+      nullTelemetry(),
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+    expect(oversizedAtom).toHaveLength(1);
+    expect(oversizedAtom[0]?.hunks[0]).toMatchObject({ hunkId: "h1", truncated: true });
+  });
+
+  it("applies a planner-hint profile floor when same-file packing absorbs strong related context", async () => {
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 1, content: "export function alpha() { return beta(); }" },
+      { id: "h2", newStart: 100, content: "export function beta() { return 2; }" }
+    ]);
+    const symbolFacts: HunkSymbolFacts[] = [
+      packetPackingSymbolFact("h1", "alpha", [1, 3]),
+      packetPackingSymbolFact("h2", "beta", [100, 102])
+    ];
+    const plan = fakePlanForHunks(["h1", "h2"]);
+    plan.coverage[0] = { ...plan.coverage[0]!, reason: "default_coverage", relatedSymbols: ["beta"] };
+    const off = await buildReviewPackets(
+      plan,
+      [file],
+      [{ ...fakeFacts("app.ts", "per-hunk"), hunkCount: 2, changedLines: 2 }],
+      { ...fakeRepositoryIndex(), symbolFacts },
+      nullTelemetry(),
+      { config: config(), enabledLenses: ["core/code-review"] }
+    );
+    expect(off.map((packet) => packet.reviewProfile)).toEqual(["investigate", "standard"]);
+
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packed = await buildReviewPackets(
+      plan,
+      [file],
+      [{ ...fakeFacts("app.ts", "per-hunk"), hunkCount: 2, changedLines: 2 }],
+      { ...fakeRepositoryIndex(), symbolFacts },
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+    expect(packed).toHaveLength(1);
+    expect(packed[0]).toMatchObject({
+      reviewProfile: "investigate",
+      relatedChangedContext: [],
+      toolBudget: { maxToolCalls: 6, maxInvestigationRounds: 2, maxResultChars: 12_000 }
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "same_file_atoms_packed",
+      data: expect.objectContaining({
+        standaloneProfiles: ["investigate", "standard"],
+        derivedPackedProfile: "standard",
+        profileFloor: "investigate",
+        effectiveProfile: "investigate",
+        profileFloorApplied: true
+      })
+    }));
+  });
+
+  it("applies an ordinary-context profile floor instead of demoting a packed light packet to simple", async () => {
+    const file = fakeMultiHunkFile([
+      { id: "h1", newStart: 1, content: "import { one } from './one';" },
+      { id: "h2", newStart: 100, content: "import { two } from './two';" }
+    ]);
+    const plan = fakePlanForHunks(["h1", "h2"]);
+    plan.coverage = plan.coverage.map((decision) => ({ ...decision, coverage: "light" }));
+    plan.coverage[0] = { ...plan.coverage[0]!, reason: "default_coverage", relatedFiles: ["app.ts"] };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packets = await buildReviewPackets(
+      plan,
+      [file],
+      [{ ...fakeFacts("app.ts", "per-hunk"), hunkCount: 2, changedLines: 2 }],
+      fakeRepositoryIndex(),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+
+    expect(packets).toHaveLength(1);
+    expect(packets[0]).toMatchObject({ reviewProfile: "standard", toolBudget: { maxToolCalls: 1 } });
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "same_file_atoms_packed",
+      data: expect.objectContaining({
+        standaloneProfiles: ["standard", "simple"],
+        derivedPackedProfile: "simple",
+        profileFloor: "standard",
+        effectiveProfile: "standard",
+        profileFloorApplied: true
+      })
+    }));
+  });
+
+  it("applies a symbol-mention profile floor and does not invent one for same-symbol atoms", async () => {
+    const file = fakeMultiHunkFile([
+      { id: "h-helper", newStart: 1, content: "export function scaleAmount(value) { return value / 10; }" },
+      { id: "h-caller", newStart: 100, content: "export function quote(value) { return scaleAmount(value); }" }
+    ]);
+    const symbolFacts: HunkSymbolFacts[] = [
+      packetPackingSymbolFact("h-helper", "scaleAmount", [1, 3]),
+      packetPackingSymbolFact("h-caller", "quote", [100, 102])
+    ];
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false };
+    const tools = {
+      ...fakeTools(),
+      findSymbolMentions: async (symbolName: string, options: SymbolMentionOptions = {}) => ({
+        results: symbolName === "scaleAmount" && options.contextMode === "symbols"
+          ? [{
+              path: "app.ts",
+              line: 101,
+              matchText: "return scaleAmount(value);",
+              enclosingSymbol: { path: "app.ts", name: "quote", kind: "function" as const, lineRange: [100, 102] as [number, number] }
+            }]
+          : [],
+        meta
+      })
+    };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packets = await buildReviewPackets(
+      fakePlanForHunks(["h-helper", "h-caller"]),
+      [file],
+      [{ ...fakeFacts("app.ts", "per-hunk"), hunkCount: 2, changedLines: 2 }],
+      { ...fakeRepositoryIndex(tools), symbolFacts },
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+    expect(packets).toHaveLength(1);
+    expect(packets[0]?.reviewProfile).toBe("investigate");
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "same_file_atoms_packed",
+      data: expect.objectContaining({ derivedPackedProfile: "standard", profileFloor: "investigate", profileFloorApplied: true })
+    }));
+
+    const sameSymbolEvents: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const sameSymbolFacts = [
+      packetPackingSymbolFact("h-helper", "shared", [1, 200]),
+      packetPackingSymbolFact("h-caller", "shared", [1, 200])
+    ];
+    const sameSymbolPackets = await buildReviewPackets(
+      fakePlanForHunks(["h-helper", "h-caller"]),
+      [file],
+      [{ ...fakeFacts("app.ts", "per-hunk"), hunkCount: 2, changedLines: 2 }],
+      { ...fakeRepositoryIndex(), symbolFacts: sameSymbolFacts },
+      { ...nullTelemetry(), event: (event) => sameSymbolEvents.push(event) },
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+    expect(sameSymbolPackets).toHaveLength(1);
+    expect(sameSymbolPackets[0]?.reviewProfile).toBe("standard");
+    expect(sameSymbolEvents).toContainEqual(expect.objectContaining({
+      message: "same_file_atoms_packed",
+      data: expect.objectContaining({ sourceAtomCount: 1, standaloneProfiles: ["standard"], profileFloorApplied: false })
+    }));
+  });
+
+  it("preserves the standalone profile in the same-name primarySymbols packing edge case", async () => {
+    const file = fakeMultiHunkFile([
+      { id: "h-x", newStart: 1, content: "export function source() { return shared(); }" },
+      { id: "h-y", newStart: 100, content: "export function shared() { return 1; }" },
+      { id: "h-z", newStart: 200, content: "export function shared() { return 2; }" }
+    ]);
+    const symbolFacts = [
+      packetPackingSymbolFact("h-x", "source", [1, 3]),
+      packetPackingSymbolFact("h-y", "shared", [100, 102]),
+      packetPackingSymbolFact("h-z", "shared", [200, 202])
+    ];
+    const plan = fakePlanForHunks(["h-x", "h-y", "h-z"]);
+    plan.coverage[0] = { ...plan.coverage[0]!, reason: "default_coverage", relatedSymbols: ["shared"] };
+    plan.coverage[2] = { ...plan.coverage[2]!, coverage: "deep" };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packets = await buildReviewPackets(
+      plan,
+      [file],
+      [{ ...fakeFacts("app.ts", "per-hunk"), hunkCount: 3, changedLines: 3 }],
+      { ...fakeRepositoryIndex(), symbolFacts },
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      {
+        config: { ...config(), review: { ...config().review, packSameFileHunks: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+    const packed = packets.find((packet) => packet.hunks.some((hunk) => hunk.hunkId === "h-x"));
+    expect(packed?.hunks.map((hunk) => hunk.hunkId)).toEqual(["h-x", "h-y"]);
+    expect(packed?.reviewProfile).toBe("investigate");
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "same_file_atoms_packed",
+      data: expect.objectContaining({
+        packetId: packed?.id,
+        standaloneProfiles: ["investigate", "standard"],
+        derivedPackedProfile: "standard",
+        profileFloorApplied: true
+      })
+    }));
+  });
+
+  it("scales packed tool budgets by additional atoms while preserving base, simple, rounds, and boost order", async () => {
+    const ids = ["h1", "h2", "h3", "h4", "h5"];
+    const distantFile = fakeMultiHunkFile(ids.map((id, index) => ({
+      id,
+      newStart: index * 100 + 1,
+      content: `export function value${String(index)}() { return ${String(index)}; }`
+    })));
+    const facts = { ...fakeFacts("app.ts", "per-hunk"), hunkCount: 5, changedLines: 5 };
+    const build = (review: Partial<CodegenieConfig["review"]>, plan = fakePlanForHunks(ids), file = distantFile, fileFacts = facts) =>
+      buildReviewPackets(
+        plan,
+        [file],
+        [fileFacts],
+        fakeRepositoryIndex(),
+        nullTelemetry(),
+        {
+          config: {
+            ...config(),
+            review: { ...config().review, packSameFileHunks: true, packedToolBudgetMode: "atom-scaled", ...review }
+          },
+          enabledLenses: ["core/code-review"]
+        }
+      );
+
+    const base = await build({ packedToolBudgetMode: "base" });
+    expect(base[0]?.toolBudget).toEqual({ maxToolCalls: 4, maxInvestigationRounds: 2, maxResultChars: 10_000 });
+
+    const scaled = await build({});
+    expect(scaled[0]?.toolBudget).toEqual({ maxToolCalls: 7, maxInvestigationRounds: 2, maxResultChars: 17_500 });
+
+    const investigate = await build({}, fakePlanForHunks(ids), distantFile, { ...facts, reviewPriority: "high" });
+    expect(investigate[0]?.toolBudget).toEqual({
+      maxToolCalls: 10,
+      maxInvestigationRounds: 2,
+      maxResultChars: 20_000,
+      sourceExtension: { maxToolCalls: 1, maxResultChars: 4_000 }
+    });
+
+    const boosted = await build({ budgetBoost: 1.5 }, fakePlanForHunks(ids), distantFile, { ...facts, reviewPriority: "high" });
+    expect(boosted[0]?.toolBudget).toEqual({
+      maxToolCalls: 15,
+      maxInvestigationRounds: 3,
+      maxResultChars: 30_000,
+      sourceExtension: { maxToolCalls: 2, maxResultChars: 6_000 }
+    });
+
+    const deepPlan = fakePlanForHunks(ids);
+    deepPlan.coverage = deepPlan.coverage.map((decision) => ({ ...decision, coverage: "deep" }));
+    const deep = await build({}, deepPlan);
+    expect(deep[0]?.toolBudget).toEqual({
+      maxToolCalls: 19,
+      maxInvestigationRounds: 5,
+      maxResultChars: 40_000,
+      sourceExtension: { maxToolCalls: 1, maxResultChars: 4_000 }
+    });
+
+    const nearbyFile = fakeMultiHunkFile(ids.map((id, index) => ({
+      id,
+      newStart: index * 10 + 1,
+      content: `export function nearby${String(index)}() { return ${String(index)}; }`
+    })));
+    const oneAtom = await build({}, fakePlanForHunks(ids), nearbyFile);
+    expect(oneAtom[0]?.toolBudget).toEqual({ maxToolCalls: 4, maxInvestigationRounds: 2, maxResultChars: 10_000 });
+
+    const simpleFile = fakeMultiHunkFile([
+      { id: "h1", newStart: 1, content: "import { one } from './one';" },
+      { id: "h2", newStart: 100, content: "import { two } from './two';" }
+    ]);
+    const simple = await build({}, fakePlanForHunks(["h1", "h2"]), simpleFile, { ...facts, hunkCount: 2, changedLines: 2 });
+    expect(simple[0]?.reviewProfile).toBe("simple");
+    expect(simple[0]?.toolBudget).toEqual({ maxToolCalls: 0, maxInvestigationRounds: 0, maxResultChars: 0 });
+  });
+
   it("does not coalesce add and deletion-only hunks by comparing new and old coordinates", async () => {
     const file: DiffFile = {
       path: "app.ts",
@@ -13378,6 +13989,24 @@ function fakeMultiHunkFile(hunks: Array<{ id: string; newStart: number; content:
       header: `@@ -${hunk.newStart} +${hunk.newStart} @@`,
       lines: [{ kind: "add", content: hunk.content, newLineNumber: hunk.newStart }]
     }))
+  };
+}
+
+function packetPackingSymbolFact(
+  hunkId: string,
+  enclosingSymbol: string,
+  symbolRange: [number, number]
+): HunkSymbolFacts {
+  return {
+    path: "app.ts",
+    hunkId,
+    enclosingSymbol,
+    symbolKind: "function",
+    symbolRange,
+    changedLines: [symbolRange[0]],
+    changedLinesSide: "new",
+    source: "tree-sitter",
+    confidence: "syntactic"
   };
 }
 

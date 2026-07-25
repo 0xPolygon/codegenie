@@ -6,6 +6,7 @@ import { z } from "zod";
 import { applyRepoConfigLayer } from "../config/config-loader.js";
 import {
   MAX_DEEP_ENSEMBLE_PASSES,
+  packedToolBudgetModeSchema,
   reasoningLevelSchema,
   reviewDepthSchema,
   reviewMaxTimeMinutesSchema,
@@ -134,6 +135,8 @@ const caseSchema = z
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
         budgetBoost: positiveNumberSchema.optional(),
+        packSameFileHunks: z.boolean().optional(),
+        packedToolBudgetMode: packedToolBudgetModeSchema.optional(),
         maxTimeMinutes: reviewMaxTimeMinutesSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
         deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
@@ -813,6 +816,12 @@ function applyCaseReviewConfig(
   if (review?.budgetBoost !== undefined) {
     config.review.budgetBoost = review.budgetBoost;
   }
+  if (review?.packSameFileHunks !== undefined) {
+    config.review.packSameFileHunks = review.packSameFileHunks;
+  }
+  if (review?.packedToolBudgetMode !== undefined) {
+    config.review.packedToolBudgetMode = review.packedToolBudgetMode;
+  }
   if (review?.maxTimeMinutes !== undefined) {
     config.review.maxTimeMs = Math.round(review.maxTimeMinutes * 60_000);
   }
@@ -866,6 +875,8 @@ function evalEffectiveConfig(config: CodegenieConfig): NonNullable<EvalRunInfo["
     review: {
       concurrency: config.review.concurrency,
       timeoutMs: config.review.maxTimeMs,
+      packSameFileHunks: config.review.packSameFileHunks,
+      packedToolBudgetMode: config.review.packedToolBudgetMode,
       ...(config.review.maxBudgetTokens !== undefined ? { maxBudgetTokens: config.review.maxBudgetTokens } : {})
     },
     llm: {
