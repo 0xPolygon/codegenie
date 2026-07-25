@@ -1075,6 +1075,9 @@ describe("GitHub Action and workflow contracts", () => {
     const checkoutIndex = steps.findIndex((step) => step.uses === "actions/checkout@v7");
     const nodeIndex = steps.findIndex((step) => step.uses === "actions/setup-node@v7");
     const pnpmIndex = steps.findIndex((step) => step.uses === "pnpm/action-setup@v4");
+    const foundryIndex = steps.findIndex((step) => (
+      step.uses === "foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a"
+    ));
     const actionlintIndex = steps.findIndex((step) => step.name === "Install actionlint");
     const installIndex = steps.findIndex((step) => (
       step.run?.trim() === "pnpm install --frozen-lockfile --config.ignore-scripts=false"
@@ -1088,6 +1091,7 @@ describe("GitHub Action and workflow contracts", () => {
     expect(steps[checkoutIndex]?.with?.ref).not.toContain("base.sha");
     expect(steps[nodeIndex]?.with?.["node-version"]).toBe("26");
     expect(steps[pnpmIndex]?.with?.version).toBe("11.15.1");
+    expect(steps[foundryIndex]?.with).toMatchObject({ version: "v1.7.1", cache: false });
     expect(steps[installIndex]?.run?.trim()).toBe(
       "pnpm install --frozen-lockfile --config.ignore-scripts=false"
     );
@@ -1105,7 +1109,8 @@ describe("GitHub Action and workflow contracts", () => {
     expect(raw).not.toContain("--ignore-scripts");
     expect(nodeIndex).toBeGreaterThan(checkoutIndex);
     expect(pnpmIndex).toBeGreaterThan(nodeIndex);
-    expect(actionlintIndex).toBeGreaterThan(pnpmIndex);
+    expect(foundryIndex).toBeGreaterThan(pnpmIndex);
+    expect(actionlintIndex).toBeGreaterThan(foundryIndex);
     expect(installIndex).toBeGreaterThan(actionlintIndex);
     expect(checkIndex).toBeGreaterThan(installIndex);
     expect(testIndex).toBeGreaterThan(checkIndex);

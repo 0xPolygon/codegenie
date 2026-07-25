@@ -26,6 +26,12 @@ jobs:
         with:
           version: "11.15.1"
 
+      - name: Set up Foundry
+        uses: foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a # v1
+        with:
+          version: "v1.7.1"
+          cache: false
+
       - name: Install actionlint
         env:
           ACTIONLINT_VERSION: "1.7.12"
