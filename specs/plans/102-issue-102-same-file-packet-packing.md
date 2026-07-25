@@ -7,10 +7,10 @@ Production replay refs: base/merge-base `d1c49bdf6a8002ec2ec27faac94a932d736532b
 Planned at: commit `6909e1a` (branch `next`)
 Recommended priority: next throughput plan. Plan 100 is complete, and run `dca8d870` is the clean planner-survival/dispatch-order baseline: 32/32 planner entries survived and all 19 deep hunks were dispatched. Its dependency is satisfied.
 
-> Executor instructions: preserve the output of today's semantic hunk grouper as indivisible **atoms**. Do not replace `canJoinGroup` with an affinity sort: proximity is not transitive, and a sort cannot preserve its semantics. Never combine atoms with different effective coverage levels. Preserve each atom's standalone review profile as a monotonic floor when packing internalizes relationship context. Keep source order, `MAX_HUNKS_PER_PACKET = 5`, and `MAX_PATCH_CHARS = 12_000`. Land packing dark, validate deterministic packet shape before spending model calls, then record treatment for every paid execution and require at least 8/10 treated B/C executions per arm/case. Use paired repeated A/B/C evals to decide the default and tool-budget mode.
+> Executor instructions: preserve the output of today's semantic hunk grouper as indivisible **atoms**. Do not replace `canJoinGroup` with an affinity sort: proximity is not transitive, and a sort cannot preserve its semantics. Never combine atoms with different effective coverage levels. Preserve each atom's standalone review profile as a monotonic floor when packing internalizes relationship context. Keep source order, `MAX_HUNKS_PER_PACKET = 5`, and `MAX_PATCH_CHARS = 12_000`. Land packing dark, validate deterministic packet shape before spending model calls, then record treatment for every paid execution and require at least 8/10 treated B/C executions per arm/case. Use paired repeated A/B/C evals to select the production behavior and tool-budget calculation, preserve the paid evidence, then remove every experiment-only flag and alternate path in the dedicated teardown step.
 >
-> Drift check: `git diff --stat 6909e1a..HEAD -- src/pipeline/packet-builder.ts src/config/schema.ts src/config/config-loader.ts src/types.ts src/evals/eval-runner.ts scripts/packet-packing-report.ts tests/pipeline-phase5.test.ts tests/config-loader.test.ts tests/evals.test.ts tests/packet-packing-report.test.ts`
-> Working-tree check: `git status --short -- src/pipeline/packet-builder.ts src/config/schema.ts src/config/config-loader.ts src/types.ts src/evals/eval-runner.ts scripts/packet-packing-report.ts tests/pipeline-phase5.test.ts tests/config-loader.test.ts tests/evals.test.ts tests/packet-packing-report.test.ts`
+> Drift check: `git diff --stat 6909e1a..HEAD -- src/pipeline/packet-builder.ts src/config/schema.ts src/config/config-loader.ts src/types.ts src/evals/eval-runner.ts scripts/packet-packing-report.ts tests/fixtures/packet-packing-golden.json tests/pipeline-phase5.test.ts tests/config-loader.test.ts tests/evals.test.ts tests/packet-packing-report.test.ts`
+> Working-tree check: `git status --short -- src/pipeline/packet-builder.ts src/config/schema.ts src/config/config-loader.ts src/types.ts src/evals/eval-runner.ts scripts/packet-packing-report.ts tests/fixtures/packet-packing-golden.json tests/pipeline-phase5.test.ts tests/config-loader.test.ts tests/evals.test.ts tests/packet-packing-report.test.ts`
 > If the drift check reports committed changes, reconcile the current-state claims below. If the working-tree check reports changes owned by another task, stop and wait for that work to land or move this plan to an isolated worktree; do not overwrite it.
 
 ## Decision
@@ -23,6 +23,7 @@ Pack more same-file work, but only across boundaries that do not carry a deliber
 - Review profile is not a compatibility boundary, but it is a **monotonic floor**. Packing can internalize a relationship edge, remove it from `relatedChangedContext`, and make the freshly derived profile lower even though the related hunk is now fully present. Rank profiles explicitly as `simple < standard < investigate`; the effective packed profile must be at least the maximum standalone member-atom profile. A packed profile may remain higher when the normal derivation requires it, but it may never fall below that floor.
 - Keep the five-hunk cap and render hunks in source order. Do not add a new preamble, reorder attention notes, or otherwise change prompt construction under the packing flag: that would confound the shape-only B arm. Treat newly omitted high/critical focus as a failed packing candidate/gate rather than compensating with an unmeasured prompt change.
 - Do not assume today's per-packet tool budget is sufficient or that scaling it is free. Implement an isolated atom-aware budget arm and select between it and today's budget using the recall/economics gate below.
+- Both configuration flags are **temporary measurement scaffolding, not product surface**. They exist so the A/B/C comparison can run and so flag-off byte-parity can be proven; they do not survive the decision. The gates are the safety mechanism, not the flag. Teardown commits to one path in every outcome: packing ships unconditionally, or the code is deleted. A permanently dark path is not an acceptable end state.
 
 This is deliberately more conservative than “pack every hunk in a file.” The historical artifact replay predicts 75 packets instead of 96 (21.9% fewer) without blunting Plan 100's per-hunk coverage signal; the real-builder replay below owns the authoritative count. Reaching 30% requires cross-coverage promotion and is rejected.
 
@@ -167,9 +168,10 @@ review:
 - Both fields exist in raw/resolved schemas, `CodegenieConfig`, defaults, config-source telemetry, loader application, and repo-safe review filtering.
 - Both fields exist in the strict eval-case `review` schema and are copied by `applyCaseReviewConfig()`.
 - `packedToolBudgetMode` has no effect when packing is off. `base` reproduces today's per-packet budget.
-- Defaults remain `false`/`base` until the complete gate passes. Only the winning budget mode may become the default when packing is enabled.
+- Defaults remain `false`/`base` while the experiment runs. Do not turn either field into a product default: step 12 removes the fields and either inlines the winning behavior or deletes the experiment.
+- Both fields are experiment-scoped and are removed at teardown; neither is documented as a supported user setting, and no repo `codegenie.toml` should be encouraged to set them. Treat every line of flag plumbing as code you have already agreed to delete.
 
-These are safe review-behavior settings, not credentials or filesystem authority, so project config may set them using the same source precedence as other repo-safe review settings.
+During the experiment these are safe review-behavior settings, not credentials or filesystem authority, so the private eval cases may set them using the same source precedence as other repo-safe review settings. They are not a supported repository configuration surface.
 
 ### 5. Isolated atom-aware tool-budget arm
 
@@ -337,14 +339,18 @@ Let `P` be the authoritative frozen packed count from the replay (`74`, `75`, or
 - `src/evals/eval-runner.ts` — strict eval review schema and `applyCaseReviewConfig()` support.
 - `scripts/packet-packing-report.ts` — no-LLM retained-run replay, A/B/C treatment/economics/cost reporting, existing-suite collateral comparison, and production payback inputs.
 - `tests/packet-packing-report.test.ts` — replay/report parsing, profile/rank invariant failures, cohort selection, intent-to-treat versus treated-only analysis, treatment thresholds, spend/payback accounting, and regression-suite checks.
+- `tests/fixtures/packet-packing-golden.json` — created only on a passing outcome from the authoritative replay; contains the non-sensitive unconditional packet-shape/profile/budget/rank summary used after the off path is removed.
 - `tests/pipeline-phase5.test.ts` — grouping, metadata propagation, profile monotonicity, invariants, context/lens/note behavior, dispatch rank, budget-mode tests, replay fixture.
 - `tests/config-loader.test.ts` — defaults, precedence, source tracking, strict parsing, repo config.
 - `tests/evals.test.ts` — eval schema/application for both fields and A/B/C fixture coverage.
-- `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/` — local packing-sensitive recall fixtures/cases and pinned production-capacity cases; validation assets, not shipped package content.
-- `specs/plans/README.md` and affected `specs/project/` docs — document the final behavior/default and reconciliation evidence.
+- `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/` — local packing-sensitive recall fixtures/cases, pinned production-capacity cases, immutable run logs, and final JSON reports/checksums; validation assets, not shipped package content.
+- `specs/plans/README.md` and affected `specs/project/` docs — document the final behavior and reconciliation evidence.
+
+Every file above that exists only to carry a flag — the two config fields and their schema/loader/eval plumbing, the unpacked path, and the losing budget arm — is deleted again in step 12. Write that plumbing knowing it is temporary. Paid logs and final reports are evidence, not scaffolding: preserve them even though they contain the retired field names.
 
 ## Non-Goals
 
+- Shipping `packSameFileHunks` or `packedToolBudgetMode` as durable configuration, keeping both budget modes, or leaving a permanently dark packing path. Every outcome ends in a single unconditional path (step 12). Rollback after teardown is a revert or version pin, not a runtime flag.
 - Cross-file batching, even when languages match. File identity is the context/anchor boundary; language alone is not sufficient.
 - Raising the five-hunk or 12K patch caps.
 - Splitting current semantic atoms or changing `canJoinGroup()` semantics.
@@ -388,21 +394,38 @@ Let `P` be the authoritative frozen packed count from the replay (`74`, `75`, or
 10. Create/run the two pinned production-capacity YAMLs with the selected arm at concurrency 6.
 
    **Verify:** before launching the paired suite, its `$95` reservation fits the remaining ceiling; both cases run from the same clean Codegenie commit and exact base/head; actual paired cost replaces the reservation; the selected arm reviews at least the baseline hunk set and satisfies the production economics/context gates, including positive normalized equivalent-review savings.
-11. Flip `packSameFileHunks` to true only if every gate passes. Set the winning tool-budget default, or leave both dark and record the failed gate. Update plan reconciliation, plan index, and architecture/component docs.
+11. Record the rollout decision from the gate results: whether packing ships, and which tool-budget mode won. Update plan reconciliation, plan index, and architecture/component docs to describe the post-teardown behavior rather than a flag.
 
-    **Verify:** `git diff --check` → exit 0; docs state the final defaults, n=10 limitation, actual validation spend, raw and normalized production economics, measured equivalent-review saving/break-even count, and authoritative throughput calculation without claiming an unmeasured 3× gain.
-12. Run the complete repository gate.
+    **Verify:** `git diff --check` → exit 0; docs state the final decision, n=10 limitation, actual validation spend, raw and normalized production economics, measured equivalent-review saving/break-even count, and authoritative throughput calculation without claiming an unmeasured 3× gain.
+12. Tear down the experiment scaffolding in a dedicated commit. The flags were measurement instruments and the gates above are the safety mechanism, so no second path and no dark path survives the decision.
+
+    **Preserve evidence before either outcome:** create `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/reports/`, copy every JSON report actually produced by the completed phases (replay and, when reached, one-repeat preflight, repeat-10, collateral, and production capacity) out of `/tmp`, and write a `manifest.sha256` covering those files. A gate may fail before later paid phases run; list those phases as `not_run` with the stopping reason in the reconciliation note rather than fabricating or requiring absent reports. Record the preserved report paths/hashes, paid log roots, cohort/run IDs, and final cumulative cost in that note. Treat `logs/` and `reports/` as immutable evidence: teardown must not edit or delete them merely because historical artifacts contain the retired field names.
+
+    **If the gate passed:** make packing unconditional and delete `review.packSameFileHunks` together with the unpacked code path; the flag-off byte-parity obligation retires with it. Delete the losing `packedToolBudgetMode` arm outright and inline the winner as the only budget calculation — do not ship both modes as a permanent option. Remove both fields from `schema.ts`, `CodegenieConfig`, `config-loader.ts` (application, source tracking, repo-safe filtering), and the strict eval-case schema plus `applyCaseReviewConfig()`. Keep the atom metadata, profile floor, and `same_file_atoms_packed` telemetry as unconditional parts of the hunk-first product path. Strip the A/B/C `eval` and `regression` modes from `scripts/packet-packing-report.ts`; convert its off/on replay into a current-unconditional-versus-frozen-golden check, preserve only the comparison code needed by that check, and rewrite its focused tests accordingly. Freeze the authoritative per-run packet membership, coverage/lens signatures, effective profiles/budgets, and dispatch ranks in `tests/fixtures/packet-packing-golden.json`; do not freeze proprietary source text. Replace the six recall A/B/C YAMLs with two selected-arm cases that omit both retired fields, and replace the two production-capacity YAMLs with one selected/unconditional capacity case. The old paid logs remain untouched.
+
+    **If the gate failed:** restore one baseline product path: delete the packing pass, both budget modes, both config fields, all flag plumbing, the experiment-only atom wrapper/provenance, the member-atom profile floor, `same_file_atoms_packed` telemetry, and `scripts/packet-packing-report.ts` with its tests. Those profile/telemetry mechanisms are meaningful only when multiple current groups are combined; do not retain dead code by calling them an independent fix. Remove any B/C recall YAMLs and selected production-capacity YAML created before the stop. Convert any existing A recall YAMLs and baseline production-capacity YAML to omit the retired fields. Promote a recall YAML as an ordinary active case only if its baseline arm met the suite's existing expectation policy; otherwise remove that active YAML but retain its `repos/<case>/` source fixture as archived diagnostic input. Do not create missing cases or fixtures merely for teardown after an early gate failure. Do not leave the feature dark "for now". Record the failed measurement and reason in this plan's reconciliation note; git and the preserved reports/logs retain the evidence for a future design.
+
+    **In both outcomes:** retain every fixture repository already created under `repos/`; source fixtures remain useful even when an associated positive expectation is not promoted into the active suite. If the gate failed before fixture creation, record that fact and do not create them solely for teardown. Remove retired fields from every active recall and production YAML, not from historical logs or reports.
+
+    **Verify evidence:** `test -s /home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/reports/manifest.sha256 && (cd /home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/reports && sha256sum -c manifest.sha256)` → exit 0 and every produced report is preserved and `OK`; the reconciliation note explicitly marks every unexecuted later phase `not_run` with its stopping reason.
+
+    **Verify live-code teardown:** `rg -n "packSameFileHunks|packedToolBudgetMode" src scripts tests evals` → exit 1 with no matches; `rg -n "packSameFileHunks|packedToolBudgetMode" /home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing --glob '*.yml' --glob '*.yaml' --glob '!**/logs/**' --glob '!**/reports/**'` → exit 1 with no matches. Historical matches under `logs/` or `reports/` are expected and must not be removed.
+
+    **Verify the selected outcome:** on pass, the retained-run golden check and `pnpm test -- tests/pipeline-phase5.test.ts tests/packet-packing-report.test.ts tests/evals.test.ts` exit 0 with one unconditional packing/budget path. On failure, `test ! -e scripts/packet-packing-report.ts && test ! -e tests/packet-packing-report.test.ts` and `pnpm test -- tests/pipeline-phase5.test.ts tests/evals.test.ts` exit 0 with the original baseline path. In either outcome, run `node --import tsx --input-type=module -e 'import { existsSync, readdirSync } from "node:fs"; import { loadEvalSuite } from "./src/evals/eval-runner.ts"; for (const dir of ["/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/recall", "/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/production"]) { if (existsSync(dir) && readdirSync(dir).some((name) => /\.ya?ml$/.test(name))) await loadEvalSuite(dir); } console.log("active packet-packing suites parse");'` → exit 0 with exactly `active packet-packing suites parse` and no model calls.
+13. Run the complete repository gate.
 
     **Verify:** `pnpm run check && pnpm test && pnpm build` → exit 0.
 
 ## Tests and Commands
 
+Pre-teardown experiment gates (steps 1–11):
+
 ```bash
 pnpm run check
 pnpm test -- tests/pipeline-phase5.test.ts tests/config-loader.test.ts tests/evals.test.ts tests/packet-packing-report.test.ts
-pnpm test
-pnpm build
 ```
+
+After teardown, use the branch-specific focused command in step 12 and then the complete step-13 gate (`pnpm run check && pnpm test && pnpm build`). Do not keep a reference to `tests/packet-packing-report.test.ts` on the failed branch, where that experiment-only test is deleted.
 
 Deterministic retained-run replay (run from the Codegenie repository):
 
@@ -417,6 +440,21 @@ pnpm exec tsx scripts/packet-packing-report.ts replay \
 ```
 
 Expected: exit 0, no model calls, four report rows, and `dca8d870` reports `offPackets: 96`, `onPackets: 75` (or the one-time documented/frozen 74/76 reconciliation), `newCoveragePromotions: 0`, `effectiveProfileDowngrades: 0`, and `invalidDispatchRanks: 0`.
+
+Passing-outcome post-teardown golden regression (run only after packing is unconditional and the off path is gone):
+
+```bash
+pnpm exec tsx scripts/packet-packing-report.ts golden \
+  --repo /home/peter/Dev/0xsequence/trails-api \
+  --run /home/peter/Dev/0xsequence/trails-api/.codegenie/runs/20260724-135818-740d73f2 \
+  --run /home/peter/Dev/0xsequence/trails-api/.codegenie/runs/20260724-150405-fe1548ae \
+  --run /home/peter/Dev/0xsequence/trails-api/.codegenie/runs/20260724-162739-81f806a6 \
+  --run /home/peter/Dev/0xsequence/trails-api/.codegenie/runs/20260724-184952-dca8d870 \
+  --golden tests/fixtures/packet-packing-golden.json \
+  --output /tmp/plan102-packet-golden-check.json
+```
+
+Expected: exit 0, no model calls, and an exact match for every frozen packet membership, coverage/lens signature, effective profile/budget, and dispatch rank. This mode exercises only the unconditional builder; it contains no off-path or A/B/C switch.
 
 Packing-sensitive one-repeat preflight, followed later by the same commands after changing all six cases to `repeat: 10`:
 
@@ -494,7 +532,8 @@ Expected: reserve `$95` before starting; both cases and the report exit 0; the r
 - The selected budget arm improves production-shaped reviewed-hunk throughput, wall time, total model-service time, tokens per reviewed hunk, and cost per reviewed hunk. Extra continuations may not erase more than 15% of the packet-count service-time saving.
 - The clean concurrency-6, 60-minute capacity run reviews at least the same hunk set as baseline; target completeness is all 142 reviewable hunks.
 - Paid validation never begins without an owner-approved ceiling; every phase records actual/projected spend and remains within it. The production pair reserves `$95` from full-workload run-D evidence. Final evidence records total validation cost, raw costs/reviewed-hunk counts, normalized 142-hunk equivalent costs, positive equivalent-review savings, break-even review count, any truncation extrapolation, and the limitation that n=10 only screens for large regressions in the constructed cases.
-- Config, eval, focused tests, full tests, checks, and build pass; final defaults and evidence are documented.
+- Teardown leaves exactly one product path and preserves the measurement record. After step 12, `packSameFileHunks`, `packedToolBudgetMode`, the unpacked code path, and the losing budget arm exist nowhere in live code or active eval YAML; immutable `logs/` and `reports/` may and should retain the historical field names. On a passing outcome the profile floor and packed-atom telemetry are unconditional; on a failed outcome both are removed with the packer. All retained active recall/production cases parse under the strict eval schema, and every fixture repository created before the decision remains available even when a failing expectation is not promoted as an active case. A dark/dual product path, teardown-only fixture creation, or deleted/rewritten evidence fails this criterion regardless of how the gate resolved.
+- Config, eval, focused tests, full tests, checks, and build pass; final behavior and evidence are documented.
 
 ## Stop Conditions
 
@@ -511,9 +550,11 @@ Expected: reserve `$95` before starting; both cases and the report exit 0; the r
 - If B and C both pass recall, choose the cheaper/faster arm; do not ship extra budget without measured value.
 - If the clean production-shaped run cannot complete the target hunk set within 60 minutes, record the true throughput and leave the completion claim unresolved; do not weaken recall/context gates to hit the clock.
 - If in-scope code drift invalidates atom boundaries, coverage semantics, or the eval harness assumptions, update this plan's design and replay before implementation.
+- "Keep packing dark" above always means *do not ship it in this iteration*; it never means *leave the flag in the tree indefinitely*. Every such outcome terminates in step 12's failure branch — delete the packing pass and its scaffolding, and record the measurement that killed it. Deferring teardown to an unscheduled follow-up is itself a stop condition.
 
 ## Maintenance Notes
 
-- Any future change to `hunkFirstGroups()`, `canJoinGroup()`, `buildRelatedChangedContext()`, `hasStrongRelatedChangedContext()`, `packetReviewProfile()`, coverage levels, planner lens routing, packet caps, attention-note caps, `packetDispatchRank()`, or `toolBudget()` invalidates the recorded shape/profile/budget/order baselines; rerun the deterministic report before changing defaults.
+- Any future change to `hunkFirstGroups()`, `canJoinGroup()`, `buildRelatedChangedContext()`, `hasStrongRelatedChangedContext()`, `packetReviewProfile()`, coverage levels, planner lens routing, packet caps, attention-note caps, `packetDispatchRank()`, or `toolBudget()` invalidates the recorded shape/profile/budget/order baselines; rerun the deterministic report before changing the unconditional packing or budget behavior.
 - Reviewers should scrutinize flag-off artifact parity, atom provenance, coverage/lens compatibility, profile monotonicity, treatment validity, dispatch-order movement, and continuation service time—not packet count alone.
 - Cross-file packing, larger packets, investigation-round scaling, prompt changes, and simple-profile tuning remain separate experiments because each changes a different quality/cost mechanism.
+- After a passing teardown there is no packing flag to toggle. Post-rollout regressions are handled by revert or version pin, and the frozen golden packet shapes are the regression baseline. After a failed teardown there is no packing implementation or golden check to maintain; the preserved reports/logs explain the rejected design. A future packing experiment introduces its own temporary scaffolding and removes it the same way.
