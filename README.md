@@ -91,7 +91,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}  # trusted base; PR head is fetched as review data
           fetch-depth: 0
-      - uses: 0xPolygon/codegenie@v0.4.2
+      - uses: 0xPolygon/codegenie@v0.5.0
         with:
           model: "anthropic/claude-opus-5:high"
           llm-api-key: ${{ secrets.LLM_API_KEY }}
