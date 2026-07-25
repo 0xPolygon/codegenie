@@ -43,7 +43,9 @@ type FailureCode =
   | "budget_downgraded"
   | "lens_dropped"
   | "dispatch_rank_invalid"
-  | "estimator_unreconciled";
+  | "estimator_unreconciled"
+  | "treatment_shape_unmet"
+  | "targets_share_packet";
 
 export type Failure = { code: FailureCode; run: string; message: string; fields: Record<string, unknown> };
 
@@ -190,6 +192,83 @@ export function comparePackets(run: string, off: ReviewPacket[], on: ReviewPacke
   return failures;
 }
 
+// Model-free proof that a fixture actually receives the treatment the recall
+// curve depends on: exact packet counts at each cap, and each target hunk in a
+// packet of exactly the intended size with no two targets sharing a packet.
+async function treatment(args: Map<string, string[]>): Promise<number> {
+  const repo = args.get("repo")?.[0];
+  const base = args.get("base")?.[0] ?? "main";
+  const head = args.get("head")?.[0] ?? "feature";
+  const targets = (args.get("target") ?? []).flatMap((value) => value.split(","));
+  const expectPackets = (args.get("expect-packets")?.[0] ?? "15,5,3").split(",").map(Number);
+  const caps = (args.get("caps")?.[0] ?? "1,3,5").split(",").map(Number);
+  const output = args.get("output")?.[0];
+  if (repo === undefined || output === undefined) {
+    console.error("usage: packet-packing-report.ts treatment --repo <path> --target <hunkStartLine>... --output <file>");
+    return 2;
+  }
+
+  const git = createGitClient(repo);
+  const rawDiff = await git.diff(base, head);
+  const resolved: ResolvedReviewInput = {
+    mode: "commit_range",
+    repoRoot: repo,
+    baseRef: base,
+    headRef: head,
+    headSha: head,
+    mergeBase: base,
+    commits: [],
+    rawDiff
+  };
+  const parsed = parseDiff(rawDiff);
+  const targetHunkIds = parsed.files
+    .flatMap((file) => file.hunks)
+    .filter((hunk) => targets.includes(String(hunk.newStart)))
+    .map((hunk) => hunk.id);
+
+  const failures: Failure[] = [];
+  const shapes: Array<Record<string, unknown>> = [];
+  for (const [index, cap] of caps.entries()) {
+    const config = packingConfig(repo, true);
+    config.review.packMaxHunks = cap;
+    const counters = { events: 0, modelCalls: 0 };
+    const telemetry = countingTelemetry(counters);
+    const { kept, decisions } = await filterDiffFiles(resolved, parsed, config, telemetry);
+    const facts = await classifyChangedFiles(resolved, kept, decisions, config, telemetry);
+    const repoIndex = await buildRepositoryIndex(resolved, kept, facts, config, telemetry);
+    const packets = await buildReviewPackets(
+      { diffUnderstanding: { declaredIntent: "dilution fixture", inferredBehavior: "boundary guards" }, coverage: [] },
+      kept,
+      facts,
+      repoIndex,
+      telemetry,
+      { config, enabledLenses: ["lang/go"] }
+    );
+    const expected = expectPackets[index];
+    if (expected !== undefined && packets.length !== expected) {
+      failures.push(fail("treatment_shape_unmet", `cap-${cap}`, { expected, actual: packets.length }));
+    }
+    const targetPackets = targetHunkIds.map((hunkId) => packets.find((packet) => packet.hunks.some((hunk) => hunk.hunkId === hunkId)));
+    const targetSizes = targetPackets.map((packet) => packet?.hunks.length ?? 0);
+    if (targetSizes.some((size) => size !== cap)) {
+      failures.push(fail("treatment_shape_unmet", `cap-${cap}`, { expectedTargetHunks: cap, actual: targetSizes }));
+    }
+    const targetPacketIds = targetPackets.map((packet) => packet?.id ?? "");
+    if (new Set(targetPacketIds).size !== targetPacketIds.length) {
+      failures.push(fail("targets_share_packet", `cap-${cap}`, { packetIds: targetPacketIds }));
+    }
+    if (counters.modelCalls > 0) {
+      failures.push(fail("model_call_observed", `cap-${cap}`, { modelCalls: counters.modelCalls }));
+    }
+    shapes.push({ cap, packets: packets.length, targetPacketHunks: targetSizes, distinctTargetPackets: new Set(targetPacketIds).size });
+  }
+
+  const report = { schemaVersion: 1, mode: "treatment", repo, targets, shapes, failures };
+  writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`);
+  console.log(JSON.stringify({ shapes, failures }, null, 1));
+  return failures.length === 0 ? 0 : 1;
+}
+
 async function replay(args: Map<string, string[]>): Promise<number> {
   const repo = args.get("repo")?.[0];
   const runs = args.get("run") ?? [];
@@ -311,6 +390,10 @@ async function main(): Promise<void> {
   const args = parseArgs(rest);
   if (mode === "replay") {
     process.exitCode = await replay(args);
+    return;
+  }
+  if (mode === "treatment") {
+    process.exitCode = await treatment(args);
     return;
   }
   console.error("usage: packet-packing-report.ts replay --repo <path> --run <dir>... --output <file>");

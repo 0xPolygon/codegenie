@@ -319,6 +319,8 @@ Those opportunities are **clustered, not independent**: all repeats share one fi
 
 ### Cost discipline
 
+**`approvedValidationCostUSD: $300`** — recorded 2026-07-25 on owner approval. The owner approved the plan's `$119` reservation and raised the ceiling to `$300`, and separately authorized running the production capacity pair inside Phase 4 rather than deferring it. Spend to date: `$0.00`.
+
 No paid call before `approvedValidationCostUSD` is recorded here.
 
 | Phase | Executions | Projection |
