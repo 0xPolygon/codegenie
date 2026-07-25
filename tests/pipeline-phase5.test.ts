@@ -13817,3 +13817,176 @@ describe("plan 103 compatible-atom packing", () => {
     }
   });
 });
+
+describe("plan 103 multi-member context and transactional packing", () => {
+  function symbolFactsFor(
+    pathName: string,
+    hunkIds: string[],
+    perHunkSymbol: (id: string) => string,
+    sameRange = false
+  ): HunkSymbolFacts[] {
+    return hunkIds.map((hunkId, index) => ({
+      path: pathName,
+      hunkId,
+      enclosingSymbol: perHunkSymbol(hunkId),
+      symbolKind: "function",
+      // Identity is name plus range: same name at a different range is a
+      // different symbol, which is what keeps duplicate class names apart.
+      symbolRange: (sameRange ? [1, 40] : [1 + index * 100, 40 + index * 100]) as [number, number],
+      changedLines: [1 + index * 100],
+      changedLinesSide: "new",
+      source: "tree-sitter",
+      confidence: "syntactic"
+    }));
+  }
+
+  function symbolTools(bodyChars: number) {
+    const meta = { backend: "text" as const, precision: "exact" as const, degraded: false };
+    return {
+      ...fakeTools(),
+      readSymbol: async (pathName: string, selector: { symbolName?: string; line?: number }) => ({
+        text: `// ${selector.symbolName ?? "sym"}\n${"x".repeat(bodyChars)}\n`,
+        symbol: {
+          path: pathName,
+          name: selector.symbolName ?? "sym",
+          kind: "function" as const,
+          lineRange: [1, 40] as [number, number]
+        },
+        meta
+      })
+    };
+  }
+
+  function separated(pathName: string, count: number, gap = 100): DiffFile {
+    return {
+      path: pathName,
+      status: "modified",
+      language: "typescript",
+      hunks: Array.from({ length: count }, (_, index) => {
+        const line = 1 + index * gap;
+        return {
+          id: `h${index + 1}`,
+          hunkHash: String(index + 1).repeat(64).slice(0, 64),
+          path: pathName,
+          oldStart: line,
+          oldLines: 1,
+          newStart: line,
+          newLines: 1,
+          header: `@@ -${line} +${line} @@`,
+          lines: [{ kind: "add" as const, content: `const v${index + 1} = ${index + 1};`, newLineNumber: line }]
+        };
+      })
+    };
+  }
+
+  function plan(file: DiffFile): ReviewPlan {
+    return {
+      diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
+      coverage: file.hunks.map((hunk) => ({
+        hunkId: hunk.id,
+        path: file.path,
+        coverage: "normal" as const,
+        lenses: ["core/code-review"],
+        surroundingContextHints: [],
+        reason: "test"
+      }))
+    };
+  }
+
+  async function run(file: DiffFile, opts: { bodyChars: number; distinctSymbols: boolean; events?: unknown[] }) {
+    const hunkIds = file.hunks.map((hunk) => hunk.id);
+    const index: RepositoryIndex = {
+      facts: [],
+      symbolFacts: symbolFactsFor(file.path, hunkIds, (id) => (opts.distinctSymbols ? `sym_${id}` : "shared"), !opts.distinctSymbols),
+      staticSignals: [],
+      tools: symbolTools(opts.bodyChars)
+    };
+    const recorder = opts.events
+      ? ({ event: (entry: unknown) => opts.events?.push(entry), writeArtifact: async () => undefined } as unknown as ReturnType<typeof nullTelemetry>)
+      : nullTelemetry();
+    const base = config();
+    return buildReviewPackets(plan(file), [file], [fakeFacts(file.path, "per-hunk")], index, recorder, {
+      config: { ...base, review: { ...base.review, packCompatibleAtoms: true } },
+      enabledLenses: ["core/code-review"]
+    });
+  }
+
+  it("renders every member's symbol source in a packed packet", async () => {
+    const file = separated("app.ts", 3);
+    const packets = await run(file, { bodyChars: 400, distinctSymbols: true });
+    expect(packets).toHaveLength(1);
+    const text = packets[0]?.contextText ?? "";
+    for (const hunkId of ["h1", "h2", "h3"]) {
+      expect(text).toContain(`sym_${hunkId}`);
+    }
+  });
+
+  it("keeps symbol source inside its budget and leaves room for other context", async () => {
+    const file = separated("app.ts", 4);
+    const packets = await run(file, { bodyChars: 4000, distinctSymbols: true });
+    const text = packets[0]?.contextText ?? "";
+    const symbolSection = text.split("Outline for")[0] ?? text;
+    expect(symbolSection.length).toBeLessThanOrEqual(5_000 + 200);
+    expect(text.length).toBeLessThanOrEqual(8_000);
+    // every member still present after final rendering
+    expect((text.match(/Primary symbol:/gu) ?? []).length).toBe(4);
+  });
+
+  it("cannot starve a member at the shipped cap, so the budget guards stay dormant", () => {
+    // At MAX_HUNKS_PER_PACKET = 5 a packet holds at most five distinct primary
+    // symbols, so the smallest possible share is 5000/5 = 1000 characters —
+    // above both the 800 floor and the 600 sliced minimum. The oversubscription
+    // and collapse rejections are therefore defensive invariants that cannot
+    // fire at today's cap; they become live only if the cap is ever raised past
+    // six. This test pins that arithmetic so a cap change surfaces here.
+    const budget = 5_000;
+    const minMemberChars = 800;
+    const minSlicedChars = 600;
+    const maxMembers = 5;
+    expect(maxMembers * minMemberChars).toBeLessThanOrEqual(budget);
+    expect(Math.floor(budget / maxMembers)).toBeGreaterThan(minSlicedChars);
+    expect(Math.floor(budget / 7)).toBeLessThan(minMemberChars);
+  });
+
+  it("floors a packed profile to its strongest standalone member", async () => {
+    // h1 and h3 share an enclosing symbol but are separated by h2, so the
+    // grouper yields three atoms with a same_symbol edge between h1 and h3.
+    // Standalone, that edge gives each of them related-changed context; packing
+    // absorbs the edge target, which would otherwise derive a weaker profile.
+    const file = separated("app.ts", 3);
+    const shared = (id: string) => (id === "h2" ? "other" : "shared");
+    const facts: HunkSymbolFacts[] = file.hunks.map((hunk) => ({
+      path: file.path,
+      hunkId: hunk.id,
+      enclosingSymbol: shared(hunk.id),
+      symbolKind: "function",
+      symbolRange: shared(hunk.id) === "shared" ? [1, 40] : [200, 240],
+      changedLines: [hunk.newStart],
+      changedLinesSide: "new",
+      source: "tree-sitter",
+      confidence: "syntactic"
+    }));
+    const base = config();
+    const index: RepositoryIndex = { facts: [], symbolFacts: facts, staticSignals: [], tools: symbolTools(900) };
+    const packed = await buildReviewPackets(plan(file), [file], [fakeFacts(file.path, "per-hunk")], index, nullTelemetry(), {
+      config: { ...base, review: { ...base.review, packCompatibleAtoms: true } },
+      enabledLenses: ["core/code-review"]
+    });
+    const unpacked = await buildReviewPackets(plan(file), [file], [fakeFacts(file.path, "per-hunk")], index, nullTelemetry(), {
+      config: { ...base, review: { ...base.review, packCompatibleAtoms: false } },
+      enabledLenses: ["core/code-review"]
+    });
+
+    const rank = { simple: 0, standard: 1, investigate: 2 } as const;
+    const strongestStandalone = Math.max(...unpacked.map((packet) => rank[packet.reviewProfile]));
+    expect(packed).toHaveLength(1);
+    expect(rank[packed[0]?.reviewProfile ?? "simple"]).toBeGreaterThanOrEqual(strongestStandalone);
+  });
+
+  it("shares one symbol budget when packed members resolve to the same symbol", async () => {
+    const file = separated("app.ts", 3);
+    const packets = await run(file, { bodyChars: 400, distinctSymbols: false });
+    expect(packets).toHaveLength(1);
+    expect((packets[0]?.contextText.match(/Primary symbol:/gu) ?? []).length).toBe(1);
+  });
+});

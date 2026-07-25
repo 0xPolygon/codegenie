@@ -157,6 +157,15 @@ const MAX_RELATED_CONTEXT_PATCH_CHARS = 1_500;
 const MAX_RELATIONSHIP_EDGES_PER_HUNK = 8;
 const MAX_RELATIONSHIP_SYMBOL_LOOKUPS = 20;
 const MAX_RELATIONSHIP_MENTION_RESULTS = 40;
+// Plan 103 multi-member symbol context. A packed packet holding several
+// distinct primary symbols must show every member's surrounding source, not
+// just the top-ranked one. Symbol source is rendered at the head of the packet
+// context, and truncateTail() keeps the head, so a symbol budget below
+// MAX_CONTEXT_CHARS survives final rendering by construction — the reserve
+// below is what guarantees outline/tests/hints cannot crowd it out.
+const PACKET_SYMBOL_CONTEXT_BUDGET = 5_000;
+const MIN_MEMBER_SYMBOL_CHARS = 800;
+const MIN_SLICED_MEMBER_CHARS = 600;
 
 export async function buildReviewPackets(
   plan: ReviewPlan,
@@ -209,15 +218,40 @@ export async function buildReviewPackets(
 
     const groups = await groupHunks(includedPlanned, repoIndex, telemetry, { allowWholeFileContext });
     const positionByHunk = new Map(includedPlanned.map((entry, index) => [entry.hunk.id, index]));
-    for (const group of packCompatibleAtoms(groups, effectiveByHunk, positionByHunk, opts.config)) {
-      const first = group.hunks[0];
-      if (!first) {
+    const build = async (
+      group: PacketGroup,
+      sink: TelemetryRecorder,
+      metrics: SymbolContextMetrics,
+      buildMetrics: PacketBuildMetrics,
+      packing?: { members: PlannedHunk[][]; profileFloor?: ReviewProfile }
+    ): Promise<PacketBuildResult> => {
+      const decisions = group.hunks
+        .map((entry) => effectiveByHunk.get(entry.hunk.id))
+        .filter((decision): decision is EffectiveDecision => decision !== undefined)
+        .filter(isNonSkipDecision);
+      return buildPacket(
+        group.hunks,
+        decisions,
+        group,
+        packing === undefined ? relationshipGraph : scratchRelationshipGraph(relationshipGraph),
+        repoIndex,
+        opts.config,
+        sink,
+        opts.reviewContext,
+        metrics,
+        buildMetrics,
+        packing
+      );
+    };
+
+    for (const candidate of packCompatibleAtoms(groups, effectiveByHunk, positionByHunk, opts.config)) {
+      if (candidate.atoms.length <= 1) {
+        const built = await build(candidate.group, telemetry, symbolContextMetrics, packetBuildMetrics);
+        packets.push(built.packet);
         continue;
       }
-      const groupDecisions = group.hunks.map((entry) => effectiveByHunk.get(entry.hunk.id)).filter((decision): decision is EffectiveDecision => decision !== undefined);
-      const includedDecisions = groupDecisions.filter(isNonSkipDecision);
-      const packet = await buildPacket(group.hunks, includedDecisions, group, relationshipGraph, repoIndex, opts.config, telemetry, opts.reviewContext, symbolContextMetrics, packetBuildMetrics);
-      packets.push(packet);
+      const committed = await commitPackedCandidate(candidate, build, telemetry, symbolContextMetrics, packetBuildMetrics);
+      packets.push(...committed);
     }
   }
 
@@ -302,8 +336,9 @@ async function buildPacket(
   telemetry: TelemetryRecorder,
   reviewContext: PacketReviewContext | undefined,
   symbolContextMetrics: SymbolContextMetrics,
-  packetBuildMetrics: PacketBuildMetrics
-): Promise<ReviewPacket> {
+  packetBuildMetrics: PacketBuildMetrics,
+  packing: { members: PlannedHunk[][]; profileFloor?: ReviewProfile } | undefined = undefined
+): Promise<PacketBuildResult> {
   const first = planned[0];
   if (!first) {
     throw new Error("cannot build empty packet");
@@ -327,6 +362,7 @@ async function buildPacket(
   const attentionNoteSelection = mergeAttentionNotes(plannerAttentionNotes, relatedChangedContext);
   const attentionNotes = attentionNoteSelection.notes;
   emitRelationshipAttentionTelemetry(telemetry, first.file.path, attentionNoteSelection);
+  const memberSymbolFacts = (packing?.members ?? [planned]).map((member) => member.flatMap((entry) => entry.symbolFacts));
   const context = await buildContext(repoIndex, first.file, planned.map((entry) => entry.hunk), symbolFacts, telemetry, {
     coverage,
     reviewPriority,
@@ -335,7 +371,7 @@ async function buildPacket(
     lenses: decisions.flatMap((decision) => decision.lenses),
     attentionNotes,
     labels: first.facts.labels
-  }, symbolContextMetrics);
+  }, symbolContextMetrics, memberSymbolFacts);
   const hintContext = await resolvePacketContextHints(repoIndex, first.file, decisions.flatMap((decision) => decision.surroundingContextHints), telemetry);
   const truncationReason = truncationReasons(packetHunks).join("; ");
   const auxiliaryContextText = [context.text, hintContext.text].filter((text) => text.trim().length > 0).join("\n\n");
@@ -403,6 +439,10 @@ async function buildPacket(
       }
     });
   }
+  // Plan 103: the floor is applied before routing, because routedPacketLenses()
+  // prunes core/code-review on a `simple` profile — raising the profile after
+  // routing would leave a lens dropped that the floor was meant to preserve.
+  const effectiveReviewProfile = maxReviewProfile([reviewProfile, ...(packing?.profileFloor !== undefined ? [packing.profileFloor] : [])]);
   const lenses = routedPacketLenses({
     lenses: decisions.flatMap((decision) => decision.lenses),
     language: first.facts.language,
@@ -413,7 +453,7 @@ async function buildPacket(
     attentionNotes,
     coverage,
     reviewPriority,
-    reviewProfile,
+    reviewProfile: effectiveReviewProfile,
     telemetry
   });
   emitPacketContextQuality(telemetry, first.file.path, coverage, reviewPriority, contextQuality, contextDegradationReasons);
@@ -429,7 +469,7 @@ async function buildPacket(
     language: first.facts.language,
     reviewPriority,
     coverage,
-    reviewProfile,
+    reviewProfile: effectiveReviewProfile,
     lenses,
     hunks: packetHunks,
     symbolFacts,
@@ -444,7 +484,7 @@ async function buildPacket(
     labels: first.facts.labels,
     attentionNotes,
     relatedChangedContext,
-    toolBudget: scaleToolBudget(toolBudget(coverage, config.review.depth, reviewProfile), config.review.budgetBoost),
+    toolBudget: scaleToolBudget(toolBudget(coverage, config.review.depth, effectiveReviewProfile), config.review.budgetBoost),
     ...(reviewContext?.intentText !== undefined ? { intentText: reviewContext.intentText } : {}),
     ...(reviewContext?.intentSignals !== undefined ? { intentSignals: reviewContext.intentSignals } : {}),
     ...(context.degradation !== undefined || truncationReason.length > 0 || contextDropReason !== undefined || contextTruncationReason !== undefined || group.degradationReason !== undefined
@@ -456,7 +496,44 @@ async function buildPacket(
         ? { fileContext: { mode: "file-diff", reason: "grouped file hunks" } }
         : {})
   };
-  return packet;
+  // Rule 7: a member counts only for the source that survives final rendering.
+  const survivingMemberChars = context.memberChars.map((member) =>
+    member.header.length === 0 || renderedContext.text.includes(member.header)
+      ? member
+      : { ...member, chars: 0, complete: false }
+  );
+  return {
+    packet,
+    routedLenses: lenses,
+    attentionNotes,
+    reviewProfile: effectiveReviewProfile,
+    derivedReviewProfile: reviewProfile,
+    contextQuality,
+    memberChars: survivingMemberChars,
+    symbolBudgetOverSubscribed: context.symbolBudgetOverSubscribed
+  };
+}
+
+// Plan 103: what a candidate build has to expose so the packing pass can
+// compare it against its members' standalone builds before committing.
+type PacketBuildResult = {
+  packet: ReviewPacket;
+  routedLenses: string[];
+  attentionNotes: string[];
+  reviewProfile: ReviewProfile;
+  derivedReviewProfile: ReviewProfile;
+  contextQuality: PacketContextQuality;
+  memberChars: Array<{ identity: string; header: string; chars: number; complete: boolean }>;
+  symbolBudgetOverSubscribed: boolean;
+};
+
+const REVIEW_PROFILE_RANK: Record<ReviewProfile, number> = { simple: 0, standard: 1, investigate: 2 };
+
+function maxReviewProfile(profiles: ReviewProfile[]): ReviewProfile {
+  return profiles.reduce<ReviewProfile>(
+    (best, profile) => (REVIEW_PROFILE_RANK[profile] > REVIEW_PROFILE_RANK[best] ? profile : best),
+    "simple"
+  );
 }
 
 const DOCS_CONFIG_EXTENSIONS = new Set([".md", ".yml", ".yaml", ".toml", ".conf", ".sample", ".txt"]);
@@ -1308,9 +1385,9 @@ function packCompatibleAtoms(
   effectiveByHunk: Map<string, EffectiveDecision>,
   positionByHunk: Map<string, number>,
   config: CodegenieConfig
-): PacketGroup[] {
+): PackCandidate[] {
   if (!config.review.packCompatibleAtoms || !groups.every((group) => group.origin === "hunk-first")) {
-    return groups;
+    return groups.map((group) => ({ group, atoms: [] }));
   }
 
   const partitions = new Map<string, PacketAtom[]>();
@@ -1348,7 +1425,123 @@ function packCompatibleAtoms(
 
   return packed
     .sort((a, b) => (a[0]?.sourcePos ?? 0) - (b[0]?.sourcePos ?? 0))
-    .map(combinePacketAtoms);
+    .map((atoms) => ({ group: combinePacketAtoms(atoms), atoms }));
+}
+
+type PackCandidate = { group: PacketGroup; atoms: PacketAtom[] };
+
+// Plan 103: a candidate is dry-built against an isolated relationship
+// accumulator and a suppressed telemetry sink. Nothing reaches the real graph,
+// artifacts, or event stream until the candidate passes every check.
+function scratchRelationshipGraph(graph: HunkRelationshipGraph): HunkRelationshipGraph {
+  return { ...graph, relatedContextAttached: [], relatedContextOmitted: [] };
+}
+
+const QUIET_TELEMETRY = { event: () => undefined } as unknown as TelemetryRecorder;
+
+const CONTEXT_QUALITY_RANK: Record<PacketContextQuality, number> = {
+  path_only: 0,
+  outline_only: 1,
+  sliced: 2,
+  full: 3
+};
+
+type BuildFn = (
+  group: PacketGroup,
+  sink: TelemetryRecorder,
+  metrics: SymbolContextMetrics,
+  buildMetrics: PacketBuildMetrics,
+  packing?: { members: PlannedHunk[][]; profileFloor?: ReviewProfile }
+) => Promise<PacketBuildResult>;
+
+async function commitPackedCandidate(
+  candidate: PackCandidate,
+  build: BuildFn,
+  telemetry: TelemetryRecorder,
+  symbolContextMetrics: SymbolContextMetrics,
+  packetBuildMetrics: PacketBuildMetrics
+): Promise<ReviewPacket[]> {
+  const scratchMetrics = emptySymbolContextMetrics();
+  const scratchBuildMetrics: PacketBuildMetrics = {
+    relatedContextBudgetNudges: 0,
+    relatedContextBudgetNudgeSources: new Set()
+  };
+
+  const standalone = [];
+  for (const atom of candidate.atoms) {
+    standalone.push(await build(atom.group, QUIET_TELEMETRY, scratchMetrics, scratchBuildMetrics, { members: [atom.hunks] }));
+  }
+
+  const members = candidate.atoms.map((atom) => atom.hunks);
+  const profileFloor = maxReviewProfile(standalone.map((result) => result.reviewProfile));
+  const packed = await build(candidate.group, QUIET_TELEMETRY, scratchMetrics, scratchBuildMetrics, { members, profileFloor });
+  const rejection = packedCandidateRejection(packed, standalone, candidate);
+
+  if (rejection === undefined) {
+    const committed = await build(candidate.group, telemetry, symbolContextMetrics, packetBuildMetrics, { members, profileFloor });
+    return [committed.packet];
+  }
+
+  telemetry.event({
+    stage: 6,
+    level: "info",
+    message: "packed_candidate_abandoned",
+    file: candidate.group.hunks[0]?.file.path ?? "",
+    data: {
+      reason: rejection,
+      atomIds: candidate.atoms.map((atom) => atom.id),
+      hunkIds: candidate.group.hunks.map((entry) => entry.hunk.id)
+    }
+  });
+
+  const separate: ReviewPacket[] = [];
+  for (const atom of candidate.atoms) {
+    const built = await build(atom.group, telemetry, symbolContextMetrics, packetBuildMetrics);
+    separate.push(built.packet);
+  }
+  return separate;
+}
+
+// The abandonment contract: a packed packet may never lose a lens a member
+// routed alone, never drop a high-priority planner focus note, never leave a
+// symbol-bearing member without usable source, and never fall below the
+// maximum standalone member profile.
+function packedCandidateRejection(
+  packed: PacketBuildResult,
+  standalone: PacketBuildResult[],
+  candidate: PackCandidate
+): string | undefined {
+  const routed = new Set(packed.routedLenses);
+  if (standalone.some((member) => member.routedLenses.some((lens) => !routed.has(lens)))) {
+    return "routed_lens_lost";
+  }
+
+  const priority = candidate.group.hunks[0]?.facts.reviewPriority;
+  if (priority === "high" || priority === "critical") {
+    const notes = new Set(packed.attentionNotes);
+    if (standalone.some((member) => member.attentionNotes.some((note) => !notes.has(note)))) {
+      return "high_priority_focus_note_lost";
+    }
+  }
+
+  if (packed.symbolBudgetOverSubscribed) {
+    return "member_symbol_budget_oversubscribed";
+  }
+  // A short symbol is fully represented even below the floor; only a member
+  // whose source was cut below the usable minimum has actually lost context.
+  if (packed.memberChars.some((member) => !member.complete && member.chars < MIN_SLICED_MEMBER_CHARS)) {
+    return "member_symbol_context_collapsed";
+  }
+
+  const worstStandalone = Math.min(...standalone.map((member) => CONTEXT_QUALITY_RANK[member.contextQuality]));
+  if (CONTEXT_QUALITY_RANK[packed.contextQuality] < worstStandalone) {
+    return "member_context_quality_degraded";
+  }
+
+  if (REVIEW_PROFILE_RANK[packed.reviewProfile] < REVIEW_PROFILE_RANK[maxReviewProfile(standalone.map((member) => member.reviewProfile))]) {
+    return "effective_profile_downgraded";
+  }
+  return undefined;
 }
 
 function packetAtom(
@@ -1698,6 +1891,8 @@ type PacketContextBuildResult = {
   contextQuality: PacketContextQuality;
   contextDegradationReasons: string[];
   packetSymbols: SymbolInfo[];
+  memberChars: Array<{ identity: string; header: string; chars: number; complete: boolean }>;
+  symbolBudgetOverSubscribed: boolean;
   degradation?: string;
 };
 
@@ -1774,7 +1969,8 @@ async function buildContext(
   symbolFacts: HunkSymbolFacts[],
   telemetry: TelemetryRecorder,
   symbolContextInput: PacketSymbolContextInput,
-  symbolContextMetrics: SymbolContextMetrics
+  symbolContextMetrics: SymbolContextMetrics,
+  memberSymbolFacts: HunkSymbolFacts[][] = [symbolFacts]
 ): Promise<PacketContextBuildResult> {
   if (!isToolsHost(repoIndex.tools)) {
     symbolContextMetrics.outlineOnly += 1;
@@ -1784,12 +1980,14 @@ async function buildContext(
       relevantTests: [],
       contextQuality: "path_only",
       contextDegradationReasons: ["repository tools do not provide packet context"],
-      packetSymbols: []
+      packetSymbols: [],
+      memberChars: [],
+      symbolBudgetOverSubscribed: false
     };
   }
   try {
     const result = await repoIndex.tools.buildPacketContext(file, hunks, symbolFacts);
-    const symbolSource = await readEnclosingSymbolSource(repoIndex, file, symbolFacts, telemetry, symbolContextInput, symbolContextMetrics);
+    const symbolSource = await readMemberSymbolSources(repoIndex, file, memberSymbolFacts, telemetry, symbolContextInput, symbolContextMetrics);
     const contextText = renderContext(result, symbolSource.text);
     const reasons = [
       ...(result.degradation !== undefined ? [result.degradation] : []),
@@ -1804,6 +2002,8 @@ async function buildContext(
       contextQuality: contextQualityFor(result, symbolSource, contextText),
       contextDegradationReasons: reasons,
       packetSymbols: result.packetSymbols ?? (result.primarySymbol !== undefined ? [result.primarySymbol] : []),
+      memberChars: symbolSource.memberChars,
+      symbolBudgetOverSubscribed: symbolSource.overSubscribed,
       ...(degradation.length > 0 ? { degradation } : {})
     };
   } catch (error) {
@@ -1817,9 +2017,158 @@ async function buildContext(
       contextQuality: "path_only",
       contextDegradationReasons: [message],
       packetSymbols: [],
+      memberChars: [],
+      symbolBudgetOverSubscribed: false,
       degradation: message
     };
   }
+}
+
+type MemberSymbolSource = SymbolSourceContext & {
+  memberChars: Array<{ identity: string; header: string; chars: number; complete: boolean }>;
+  overSubscribed: boolean;
+};
+
+// Reads enclosing-symbol source for every distinct primary symbol in a packed
+// packet. A single-symbol packet delegates to the unchanged single-symbol path,
+// so flag-off behaviour and artifacts are untouched.
+async function readMemberSymbolSources(
+  repoIndex: RepositoryIndex,
+  file: DiffFile,
+  memberSymbolFacts: HunkSymbolFacts[][],
+  telemetry: TelemetryRecorder,
+  symbolContextInput: PacketSymbolContextInput,
+  symbolContextMetrics: SymbolContextMetrics
+): Promise<MemberSymbolSource> {
+  const participants: Array<{ identity: string; fact: HunkSymbolFacts }> = [];
+  const seen = new Set<string>();
+  for (const facts of memberSymbolFacts) {
+    const fact = primarySymbolFactWithMergedChanges(facts);
+    if (fact === undefined || symbolSourceSelector(fact) === undefined) {
+      continue;
+    }
+    const identity = symbolFactIdentity(fact);
+    if (seen.has(identity)) {
+      continue;
+    }
+    seen.add(identity);
+    participants.push({ identity, fact });
+  }
+
+  if (participants.length <= 1) {
+    const single = await readEnclosingSymbolSource(
+      repoIndex,
+      file,
+      memberSymbolFacts.flat(),
+      telemetry,
+      symbolContextInput,
+      symbolContextMetrics
+    );
+    return {
+      ...single,
+      memberChars: participants.length === 1 && participants[0] !== undefined
+        ? [{ identity: participants[0].identity, header: "", chars: single.text.length, complete: true }]
+        : [],
+      overSubscribed: false
+    };
+  }
+
+  // Rule 4: a packet that cannot give every symbol-bearing member its floor
+  // cannot represent its members, so the candidate is abandoned upstream.
+  if (participants.length * MIN_MEMBER_SYMBOL_CHARS > PACKET_SYMBOL_CONTEXT_BUDGET) {
+    return { text: "", reasons: ["member_symbol_budget_oversubscribed"], memberChars: [], overSubscribed: true };
+  }
+
+  const blocks: Array<{ identity: string; header: string; text: string; wanted: number }> = [];
+  const reasons: string[] = [];
+  let anySliced = false;
+  for (const participant of participants) {
+    const selector = symbolSourceSelector(participant.fact);
+    if (selector === undefined) {
+      continue;
+    }
+    const source = participant.fact.changedLinesSide === "old" ? { kind: "base" as const } : { kind: "head" as const };
+    const readPath = participant.fact.changedLinesSide === "old" ? file.oldPath ?? file.path : file.path;
+    try {
+      const result = await withRepositoryToolCallContext(
+        repoIndex.tools,
+        { stage: 6, initiator: "harness" },
+        () => repoIndex.tools.readSymbol(readPath, selector, source)
+      );
+      if (result.text === undefined || result.text.trim().length === 0) {
+        reasons.push(`member_symbol_source_empty: ${participant.identity}`);
+        continue;
+      }
+      const label = result.symbol?.name ?? participant.fact.enclosingSymbol ?? `line ${String(selector.line ?? "")}`.trim();
+      const rendered = renderFullSymbolContext(readPath, label, participant.fact, result.text);
+      blocks.push({ identity: participant.identity, header: `Primary symbol: ${readPath}:${label}`, text: rendered, wanted: rendered.length });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      telemetry.event({
+        stage: 6,
+        level: "warn",
+        message: "packet_member_symbol_source_unavailable",
+        file: file.path,
+        data: { identity: participant.identity, path: readPath, error: message }
+      });
+      reasons.push(`member_symbol_source_unavailable: ${participant.identity}`);
+    }
+  }
+
+  if (blocks.length === 0) {
+    return { text: "", reasons: reasons.length > 0 ? reasons : ["no_primary_symbol"], memberChars: [], overSubscribed: false };
+  }
+
+  // Rules 3 and 5: equal shares, then one redistribution pass in source order
+  // handing surplus from members that need less to members that need more.
+  const share = Math.floor(PACKET_SYMBOL_CONTEXT_BUDGET / blocks.length);
+  const allowances = blocks.map((block) => Math.min(block.wanted, share));
+  let surplus = allowances.reduce((sum, allowance) => sum + (share - allowance), 0);
+  for (const [index, block] of blocks.entries()) {
+    if (surplus <= 0) {
+      break;
+    }
+    const current = allowances[index] ?? 0;
+    if (block.wanted <= current) {
+      continue;
+    }
+    const extra = Math.min(surplus, block.wanted - current);
+    allowances[index] = current + extra;
+    surplus -= extra;
+  }
+
+  const emitted = blocks.map((block, index) => {
+    const allowance = Math.max(allowances[index] ?? 0, 0);
+    if (block.wanted <= allowance) {
+      return { ...block, complete: true };
+    }
+    anySliced = true;
+    return { ...block, text: truncateToBudget(block.text, allowance), complete: false };
+  });
+
+  symbolContextMetrics.materialOmission += anySliced ? 1 : 0;
+  telemetry.event({
+    stage: 6,
+    level: "debug",
+    message: "packet_member_symbol_context",
+    file: file.path,
+    data: {
+      members: emitted.length,
+      share,
+      budget: PACKET_SYMBOL_CONTEXT_BUDGET,
+      emittedChars: emitted.map((block) => block.text.length),
+      sliced: anySliced
+    }
+  });
+
+  return {
+    text: emitted.map((block) => block.text).join("\n\n"),
+    quality: anySliced ? "sliced" : "full",
+    reasons,
+    ...(anySliced ? { degradation: "member symbol source sliced to share packet context budget" } : {}),
+    memberChars: emitted.map((block) => ({ identity: block.identity, header: block.header, chars: block.text.length, complete: block.complete })),
+    overSubscribed: false
+  };
 }
 
 async function readEnclosingSymbolSource(
