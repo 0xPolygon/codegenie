@@ -54,6 +54,13 @@ export type CodegenieConfig = {
     // evidence (concrete hint/uncertainty, silent-with-signal, low-confidence
     // only) earn one additional independent review pass. Off by default.
     adaptiveSecondPass?: boolean;
+    // Plan 103 (experiment-only, removed at teardown): pack compatible
+    // same-file atoms into fewer packets, and the hunk cap the recall curve
+    // varies. Deliberately absent from rawConfigSchema and repo-safe
+    // filtering — no codegenie.toml may set either, and neither is a
+    // supported user surface. Eval cases set them; nothing else can.
+    packCompatibleAtoms: boolean;
+    packMaxHunks: number;
   };
   github: {
     summaryWhenNoFindings: boolean;
@@ -1012,6 +1019,10 @@ export type EvalCase = {
     maxBudgetTokens?: number;
     deepEnsemblePasses?: number;
     adaptiveSecondPass?: boolean;
+    // Plan 103 (experiment-only): eval cases are the only surface that may set
+    // these; removed at teardown.
+    packCompatibleAtoms?: boolean;
+    packMaxHunks?: number;
     verify?: boolean;
     cache?: boolean;
     cacheDir?: string;

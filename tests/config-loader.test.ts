@@ -5,9 +5,13 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   MAX_DEEP_ENSEMBLE_PASSES,
+  MAX_PACK_HUNKS,
   MAX_REVIEW_TIME_MINUTES,
+  codegenieConfigSchema,
+  defaultConfig,
   rawConfigSchema
 } from "../src/config/schema.js";
+import type { CodegenieConfig } from "../src/types.js";
 import { ensureCodegenieHome, getCodegeniePaths } from "../src/config/paths.js";
 import { loadConfig } from "../src/config/config-loader.js";
 import { loadProviderSettings, saveProviderSettings } from "../src/provider/provider-settings.js";
@@ -325,3 +329,38 @@ describe("deepEnsemblePasses cap (plan 84)", () => {
 function tempDir(): string {
   return mkdtempSync(path.join(tmpdir(), "codegenie-"));
 }
+
+describe("plan 103 packing settings", () => {
+  it("defaults to dark packing at the shipped cap", () => {
+    const loaded = loadConfig({ repoRoot: tempDir(), homeOverride: tempDir() });
+    expect(loaded.config.review.packCompatibleAtoms).toBe(false);
+    expect(loaded.config.review.packMaxHunks).toBe(MAX_PACK_HUNKS);
+    expect(MAX_PACK_HUNKS).toBe(5);
+  });
+
+  it("refuses both settings from every config file surface", () => {
+    // Plan 103 keeps these eval-only: no codegenie.toml and no user config may
+    // reach them, so strict parsing must reject rather than silently filter.
+    expect(rawConfigSchema.safeParse({ review: { packCompatibleAtoms: true } }).success).toBe(false);
+    expect(rawConfigSchema.safeParse({ review: { packMaxHunks: 3 } }).success).toBe(false);
+
+    const repoRoot = tempDir();
+    const home = tempDir();
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\npackCompatibleAtoms = true\n");
+    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(/invalid config file/);
+
+    const userHome = tempDir();
+    writeFileSync(path.join(userHome, "config.toml"), "[review]\npackMaxHunks = 2\n");
+    expect(() => loadConfig({ repoRoot: tempDir(), homeOverride: userHome })).toThrow(/invalid config file/);
+  });
+
+  it("bounds packMaxHunks by the shipped packet cap in the resolved schema", () => {
+    const base = structuredClone(defaultConfig) as CodegenieConfig;
+    for (const value of [1, 3, MAX_PACK_HUNKS]) {
+      expect(codegenieConfigSchema.safeParse({ ...base, review: { ...base.review, packMaxHunks: value } }).success).toBe(true);
+    }
+    for (const value of [0, -1, MAX_PACK_HUNKS + 1]) {
+      expect(codegenieConfigSchema.safeParse({ ...base, review: { ...base.review, packMaxHunks: value } }).success).toBe(false);
+    }
+  });
+});

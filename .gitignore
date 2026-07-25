@@ -4,3 +4,5 @@ reviews/
 evals/fixtures/logs/
 node_modules/
 dist/
+evals/packet-dilution/logs/
+evals/skill-semantics/logs/

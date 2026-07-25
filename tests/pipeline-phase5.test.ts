@@ -13680,3 +13680,140 @@ function languageProjectionSkill(id: string, languages: string[], marker: string
     sections: { checks: marker, falsePositives: marker }
   };
 }
+
+describe("plan 103 compatible-atom packing", () => {
+  // Hunks spaced far beyond NEARBY_GAP_LINES with no shared enclosing symbol,
+  // so today's grouper yields exactly one atom per hunk.
+  function separatedFile(pathName: string, count: number, gap = 100): DiffFile {
+    return {
+      path: pathName,
+      status: "modified",
+      language: "typescript",
+      hunks: Array.from({ length: count }, (_, index) => {
+        const line = 1 + index * gap;
+        return {
+          id: `h${index + 1}`,
+          hunkHash: String(index + 1).repeat(64).slice(0, 64),
+          path: pathName,
+          oldStart: line,
+          oldLines: 1,
+          newStart: line,
+          newLines: 1,
+          header: `@@ -${line} +${line} @@`,
+          lines: [{ kind: "add" as const, content: `const v${index + 1} = ${index + 1};`, newLineNumber: line }]
+        };
+      })
+    };
+  }
+
+  function planFor(file: DiffFile, overrides: Record<string, { coverage?: string; lenses?: string[] }> = {}): ReviewPlan {
+    return {
+      diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
+      coverage: file.hunks.map((hunk) => ({
+        hunkId: hunk.id,
+        path: file.path,
+        coverage: (overrides[hunk.id]?.coverage ?? "normal") as "deep" | "normal" | "light",
+        lenses: overrides[hunk.id]?.lenses ?? ["core/code-review"],
+        surroundingContextHints: [],
+        reason: "test"
+      }))
+    };
+  }
+
+  async function pack(file: DiffFile, plan: ReviewPlan, review: Partial<CodegenieConfig["review"]> = {}) {
+    const base = config();
+    return buildReviewPackets(
+      plan,
+      [file],
+      [fakeFacts(file.path, "per-hunk")],
+      fakeRepositoryIndex(fakeTools()),
+      nullTelemetry(),
+      { config: { ...base, review: { ...base.review, ...review } }, enabledLenses: ["core/code-review"] }
+    );
+  }
+
+  const hunkIdsOf = (packets: Awaited<ReturnType<typeof pack>>) => packets.map((packet) => packet.hunks.map((hunk) => hunk.hunkId));
+
+  it("packs compatible same-file atoms into fewer packets", async () => {
+    const file = separatedFile("app.ts", 6);
+    const plan = planFor(file);
+
+    const off = await pack(file, plan);
+    expect(off).toHaveLength(6);
+
+    const on = await pack(file, plan, { packCompatibleAtoms: true });
+    expect(hunkIdsOf(on)).toEqual([["h1", "h2", "h3", "h4", "h5"], ["h6"]]);
+  });
+
+  it("is a no-op at a one-hunk cap, matching flag-off artifacts exactly", async () => {
+    const file = separatedFile("app.ts", 5);
+    const plan = planFor(file);
+    const off = await pack(file, plan);
+    const capOne = await pack(file, plan, { packCompatibleAtoms: true, packMaxHunks: 1 });
+    expect(JSON.stringify(capOne)).toBe(JSON.stringify(off));
+  });
+
+  it("never packs across effective coverage or requested lens boundaries", async () => {
+    const file = separatedFile("app.ts", 4);
+
+    const mixedCoverage = await pack(file, planFor(file, { h2: { coverage: "deep" } }), { packCompatibleAtoms: true });
+    expect(hunkIdsOf(mixedCoverage)).toEqual([["h1", "h3", "h4"], ["h2"]]);
+    expect(mixedCoverage.map((packet) => packet.coverage).sort()).toEqual(["deep", "normal"]);
+
+    const mixedLenses = await pack(file, planFor(file, { h3: { lenses: ["core/tests"] } }), { packCompatibleAtoms: true });
+    expect(hunkIdsOf(mixedLenses)).toEqual([["h1", "h2", "h4"], ["h3"]]);
+  });
+
+  it("assigns every reviewable hunk exactly once, in source order", async () => {
+    const file = separatedFile("app.ts", 9);
+    const packets = await pack(file, planFor(file), { packCompatibleAtoms: true });
+    const flattened = packets.flatMap((packet) => packet.hunks.map((hunk) => hunk.hunkId));
+    expect(new Set(flattened).size).toBe(9);
+    for (const packet of packets) {
+      const starts = packet.hunks.map((hunk) => hunk.newStart);
+      expect([...starts].sort((a, b) => a - b)).toEqual(starts);
+    }
+    expect(packets[0]?.hunks[0]?.hunkId).toBe("h1");
+  });
+
+  it("never splits an atom, even when the atom alone exceeds the cap", async () => {
+    // h1 and h2 sit within NEARBY_GAP_LINES, so the grouper makes them one atom.
+    const file = separatedFile("app.ts", 3, 10);
+    const packets = await pack(file, planFor(file), { packCompatibleAtoms: true, packMaxHunks: 1 });
+    expect(hunkIdsOf(packets)).toEqual([["h1", "h2", "h3"]]);
+  });
+
+  it("leaves whole-file groups out of the packer", async () => {
+    const file = separatedFile("app.ts", 2);
+    const packets = await buildReviewPackets(
+      planFor(file),
+      [file],
+      [fakeFacts(file.path, "whole-file")],
+      fakeRepositoryIndex(fakeTools("export const value = 1;\n")),
+      nullTelemetry(),
+      {
+        config: { ...config(), review: { ...config().review, packCompatibleAtoms: true } },
+        enabledLenses: ["core/code-review"]
+      }
+    );
+    expect(packets).toHaveLength(1);
+    expect(packets[0]).toMatchObject({ kind: "whole-file", fileContext: { mode: "whole-file" } });
+  });
+
+  it("recomputes dispatch rank from the combined packet's changed lines", async () => {
+    const file = separatedFile("app.ts", 5);
+    const packets = await pack(file, planFor(file), { packCompatibleAtoms: true });
+    expect(packets).toHaveLength(1);
+    expect(packets[0]?.dispatchRank).toEqual(packetDispatchRank("app.ts", { testStatus: "source" }, 5));
+  });
+
+  it("parameterizes packet shape by packMaxHunks for the recall curve", async () => {
+    const file = separatedFile("app.ts", 15);
+    const plan = planFor(file);
+    for (const [cap, expected] of [[1, 15], [3, 5], [5, 3]] as const) {
+      const packets = await pack(file, plan, { packCompatibleAtoms: true, packMaxHunks: cap });
+      expect(packets).toHaveLength(expected);
+      expect(packets.every((packet) => packet.hunks.length <= cap)).toBe(true);
+    }
+  });
+});

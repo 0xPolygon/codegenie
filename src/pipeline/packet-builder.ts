@@ -59,9 +59,26 @@ type PlannedHunk = {
 type PacketGroup = {
   hunks: PlannedHunk[];
   kind: ReviewPacket["kind"];
+  // Plan 103: only `hunk-first` groups are eligible for compatible-atom
+  // packing. The direct whole-file and content-probed file-diff returns from
+  // groupHunks() carry their own file context and must bypass the packer.
+  origin: "hunk-first" | "direct";
   fileContext?: ReviewPacket["fileContext"];
   wholeFileText?: string;
   degradationReason?: string;
+};
+
+// Plan 103: a semantic atom is one group returned by hunkFirstGroups(). Atoms
+// are indivisible — packing combines them but never splits or reorders one.
+type PacketAtom = {
+  id: string;
+  group: PacketGroup;
+  hunks: PlannedHunk[];
+  hunkCount: number;
+  patchChars: number;
+  sourcePos: number;
+  coverage: Exclude<CoverageLevel, "skip">;
+  lensSignature: string;
 };
 
 type HunkRelationshipSource = "same_symbol" | "symbol_mention" | "planner_hint";
@@ -190,7 +207,9 @@ export async function buildReviewPackets(
     }
     const allowWholeFileContext = includedPlanned.length === planned.length;
 
-    for (const group of await groupHunks(includedPlanned, repoIndex, telemetry, { allowWholeFileContext })) {
+    const groups = await groupHunks(includedPlanned, repoIndex, telemetry, { allowWholeFileContext });
+    const positionByHunk = new Map(includedPlanned.map((entry, index) => [entry.hunk.id, index]));
+    for (const group of packCompatibleAtoms(groups, effectiveByHunk, positionByHunk, opts.config)) {
       const first = group.hunks[0];
       if (!first) {
         continue;
@@ -248,6 +267,7 @@ async function groupHunks(
         return [{
           hunks: planned,
           kind: "whole-file",
+          origin: "direct",
           fileContext: { mode: "whole-file", reason: wholeFileReason },
           wholeFileText: content.text
         }];
@@ -255,6 +275,7 @@ async function groupHunks(
       return [{
         hunks: planned,
         kind: "file-diff",
+        origin: "direct",
         fileContext: { mode: "file-diff", reason: content.reason }
       }];
     }
@@ -1274,7 +1295,102 @@ function packetGroup(hunks: PlannedHunk[], degradationReason?: string): PacketGr
       : hunks.length > 1
         ? "coalesced-hunks"
         : "hunk";
-  return { hunks, kind, ...(degradationReason !== undefined ? { degradationReason } : {}) };
+  return { hunks, kind, origin: "hunk-first", ...(degradationReason !== undefined ? { degradationReason } : {}) };
+}
+
+// Plan 103: Plan 102's compatibility predicate. Atoms combine only inside one
+// file when they share the planner's effective coverage and its requested lens
+// set, so packing introduces no coverage promotion and cannot silently reroute
+// a hunk to different expertise. Returns the original groups untouched when
+// packing is off or when any group bypassed hunkFirstGroups().
+function packCompatibleAtoms(
+  groups: PacketGroup[],
+  effectiveByHunk: Map<string, EffectiveDecision>,
+  positionByHunk: Map<string, number>,
+  config: CodegenieConfig
+): PacketGroup[] {
+  if (!config.review.packCompatibleAtoms || !groups.every((group) => group.origin === "hunk-first")) {
+    return groups;
+  }
+
+  const partitions = new Map<string, PacketAtom[]>();
+  for (const group of groups) {
+    const atom = packetAtom(group, effectiveByHunk, positionByHunk);
+    const key = `${atom.coverage}\u0000${atom.lensSignature}`;
+    partitions.set(key, [...(partitions.get(key) ?? []), atom]);
+  }
+
+  const packed: PacketAtom[][] = [];
+  for (const partition of partitions.values()) {
+    let current: PacketAtom[] = [];
+    let hunkCount = 0;
+    let patchChars = 0;
+    for (const atom of partition) {
+      const exceedsCaps =
+        hunkCount + atom.hunkCount > config.review.packMaxHunks ||
+        patchChars + atom.patchChars > MAX_PATCH_CHARS;
+      // An atom that alone exceeds a cap still becomes its own packet: atoms
+      // are indivisible, so a cap can never split one.
+      if (current.length > 0 && exceedsCaps) {
+        packed.push(current);
+        current = [];
+        hunkCount = 0;
+        patchChars = 0;
+      }
+      current.push(atom);
+      hunkCount += atom.hunkCount;
+      patchChars += atom.patchChars;
+    }
+    if (current.length > 0) {
+      packed.push(current);
+    }
+  }
+
+  return packed
+    .sort((a, b) => (a[0]?.sourcePos ?? 0) - (b[0]?.sourcePos ?? 0))
+    .map(combinePacketAtoms);
+}
+
+function packetAtom(
+  group: PacketGroup,
+  effectiveByHunk: Map<string, EffectiveDecision>,
+  positionByHunk: Map<string, number>
+): PacketAtom {
+  const hunkIds = group.hunks.map((entry) => entry.hunk.id);
+  const decisions = group.hunks
+    .flatMap((entry) => effectiveByHunk.get(entry.hunk.id) ?? [])
+    .filter(isNonSkipDecision);
+  return {
+    id: sha256Hex(hunkIds.join("\n")),
+    group,
+    hunks: group.hunks,
+    hunkCount: group.hunks.length,
+    patchChars: combinedPatchChars(group.hunks),
+    sourcePos: Math.min(...hunkIds.map((id) => positionByHunk.get(id) ?? Number.MAX_SAFE_INTEGER)),
+    coverage: maxCoverage(decisions.map((decision) => decision.coverage)),
+    lensSignature: normalizedLensSignature(decisions)
+  };
+}
+
+// The compatibility key: the stable serialization of the sorted, deduplicated
+// union of the atom's planner-requested lenses.
+function normalizedLensSignature(decisions: NonSkipDecision[]): string {
+  return cleanStrings(decisions.flatMap((decision) => decision.lenses)).join(",");
+}
+
+function combinePacketAtoms(atoms: PacketAtom[]): PacketGroup {
+  const first = atoms[0];
+  if (first === undefined) {
+    throw new Error("cannot combine zero atoms");
+  }
+  if (atoms.length === 1) {
+    return first.group;
+  }
+  const reasons = cleanStrings(atoms.flatMap((atom) => atom.group.degradationReason ?? []));
+  return packetGroup(
+    atoms.flatMap((atom) => atom.hunks),
+    reasons.length > 0 ? reasons.join("; ") : undefined
+  );
 }
 
 function packetKind(group: PacketGroup, planned: PlannedHunk[], file: DiffFile): ReviewPacket["kind"] {
