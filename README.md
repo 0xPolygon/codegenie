@@ -23,7 +23,7 @@ codegenie provider login openai-codex          # ChatGPT plan (browser OAuth)
 codegenie provider login openai --api-key      # OpenAI API key
 
 # 2. Pick your default model (fuzzy-matched)
-codegenie provider use opus       # -> anthropic/claude-opus-4-8
+codegenie provider use opus       # -> anthropic/claude-opus-5
 codegenie provider use gpt-5.5    # -> openai-codex/gpt-5.5
 
 # 3. Review your current branch
@@ -57,7 +57,7 @@ Common options:
 ```bash
 codegenie review --depth light|normal|deep         # review budget & planner bias
 codegenie review --lens lang/go --lens core/tests  # restrict lenses for this run
-codegenie review --provider anthropic --model claude-opus-4-8   # one-run model override
+codegenie review --provider anthropic --model claude-opus-5   # one-run model override
 codegenie review --reasoning high                  # low | medium | high | xhigh | auto
 codegenie review --format json                     # machine-readable review object
 codegenie review --pr 123 --post-github-comments   # publish inline comments (explicit flag, never config)
@@ -91,9 +91,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}  # trusted base; PR head is fetched as review data
           fetch-depth: 0
-      - uses: 0xPolygon/codegenie@v0.4.2
+      - uses: 0xPolygon/codegenie@v0.5.0
         with:
-          model: "anthropic/claude-opus-4-8:high"
+          model: "anthropic/claude-opus-5:high"
           llm-api-key: ${{ secrets.LLM_API_KEY }}
 ```
 

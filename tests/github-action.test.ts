@@ -888,7 +888,7 @@ describe("github-action entrypoint", () => {
   it("expands the model spec into the synthesized review argv", async () => {
     const fake = createFakeComments();
     let reviewArgv: string[] = [];
-    await executeGitHubActionCommand(["--model", "anthropic/claude-opus-4-8:xhigh"], {
+    await executeGitHubActionCommand(["--model", "anthropic/claude-opus-5:xhigh"], {
       env: actionEnv(issueCommentPayload(), "issue_comment"),
       issueComments: fake.client,
       minEditIntervalMs: 0,
@@ -900,7 +900,7 @@ describe("github-action entrypoint", () => {
     });
     expect(reviewArgv).toEqual([
       "review", "--pr", "7", "--ci", "--post-github-comments",
-      "--provider", "anthropic", "--model", "claude-opus-4-8", "--reasoning", "xhigh"
+      "--provider", "anthropic", "--model", "claude-opus-5", "--reasoning", "xhigh"
     ]);
   });
 

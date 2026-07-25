@@ -295,7 +295,7 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
 }
 
 // One model spec instead of separate provider/model/reasoning inputs:
-// `provider/model[:reasoning]`, e.g. `anthropic/claude-opus-4-8:xhigh`.
+// `provider/model[:reasoning]`, e.g. `anthropic/claude-opus-5:xhigh`.
 // Reasoning defaults to "high" — Action reviews are unattended, so the
 // action's posture favors quality over the CLI's interactive default. A
 // `:suffix` that is not a reasoning level stays part of the model id
@@ -332,7 +332,7 @@ export function applyGenericApiKey(env: NodeJS.ProcessEnv, model: ModelSpec | un
   if (model?.provider === undefined) {
     throw new CodegenieError(
       "invalid_args",
-      "LLM_API_KEY requires a model input with a provider prefix (e.g. anthropic/claude-opus-4-8) so the key can be routed"
+      "LLM_API_KEY requires a model input with a provider prefix (e.g. anthropic/claude-opus-5) so the key can be routed"
     );
   }
   const envVarName = getPiApiKeyEnvVarName(model.provider);
