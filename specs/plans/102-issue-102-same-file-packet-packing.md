@@ -63,6 +63,51 @@ That validator observed zero model calls and passed exact hunk/atom order and bi
 
 One-repeat recall from the invalid cohort is retained only as measurement: consistency A/B each hit the final expectation while C did not; dilution A hit candidate/final, B missed before candidate generation despite reviewing the target packet, and C generated a candidate that was rejected at verification. These samples do not select B or C and do not decide rollout. Plan 102 steps 8–12 are `not_run` because the cohort is treatment-invalid, not because packing has received a rollout verdict. No case was changed to repeat 10, no later paid suite ran, no arm was selected, and no experiment flag or product path was torn down.
 
+### Phase 4 repaired one-repeat retry and failed gate (2026-07-25)
+
+Phase 4 retried Plan 102 step 7 exactly once and stopped at the failed report gate. The runtime was exact clean commit `bb96fd3439c715130756a93efd8e679772f81a9b` on branch `next`, with `git status --porcelain=v1` empty, Node `v26.5.0`, pnpm `11.15.1`, and launch preflight timestamp `2026-07-25T13:06:52Z`. The draft phase note was stashed before launch and restored only after the paid process and report completed. The documented `pnpm dev -- eval ...` spelling passed a literal `--` through pnpm 11 and was rejected by Commander before suite allocation; it created no invocation, run directory, model call, or spend. The one actual invocation used the equivalent pnpm-11 spelling `pnpm dev eval --eval-dir /home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/recall --no-cache`.
+
+Immediately before the paid call, the repaired suite strictly parsed as six cases with `repeat: 1`, cache disabled, `lang/go` as the only lens, and the exact Phase 3 provider/model/reasoning/concurrency/depth/time/token/cost settings. Within each family, structural comparison found only the case-name suffix and the two permitted A/B/C review-field differences. The declaration SHA-256 values were:
+
+| Case | SHA-256 |
+| --- | --- |
+| `consistency-a.yml` | `15702c3e5c8c2d97845b39ff04618d26966174934ad1afe9765bdb7710bde590` |
+| `consistency-b.yml` | `5b0e093db08b9cee8837d04d5236ceabd30727903ef18e13c74208022bca05bb` |
+| `consistency-c.yml` | `69130fa21479fe25acd881bff1fc9e914ff470cb5efb70e89c1e70bb5f4e01c3` |
+| `dilution-a.yml` | `fe2802d21333f6650fe4c4fc1a5685574638fe6036f19b6d8bfbcad088fbb871` |
+| `dilution-b.yml` | `00a8d51ea6aee14c9ef39105c3bd7514ba6167ac642b35dc9b45114f67bdd757` |
+| `dilution-c.yml` | `87883f0210d92551da43b860f47b98a169609ff902102b21b28f853039be12ef` |
+
+The six fixture source files had aggregate SHA-256 `d486e2601a1ea05f0872794be71f409b5296b78c2998ef39e973eedb57061da4`. Both materialized base and feature revisions passed `go test ./...`. The no-model validator observed exactly zero model calls and no failures. With normal coverage and the declared `lang/go` route, it reproduced consistency A `5` packets/one target atom versus B/C `1` packet/five target atoms, and dilution A `4`/one versus B/C `1`/four. Exact hunk/atom order and bijection, five-hunk/12K caps, coverage, requested/routed lenses, standalone/effective profile floors, base/effective budgets, target membership, and dispatch ranks all passed. This reconfirmed only deterministic fixture eligibility; it did not predict independently sampled Stage-5 plans.
+
+The sole live retry invocation was `5bd80f2c-865e-40f0-a605-07387138b904`, started `2026-07-25T13:10:14.113Z` and completed `2026-07-25T13:26:22.430Z`. Its exact log root is `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/recall/logs`. It completed all six cache-off executions with zero provider/configuration errors, zero incomplete reviews, zero budget violations, and 71 model calls:
+
+| Run | Case | Review run ID | Eval score | Model calls | Actual cost USD |
+| ---: | --- | --- | --- | ---: | ---: |
+| 7 | `consistency-a` | `20260725-131014-ff7643a9` | fail, 0/2 expectations | 13 | 0.669039 |
+| 8 | `consistency-b` | `20260725-131217-78051528` | fail, 0/2 expectations | 11 | 0.564235 |
+| 9 | `consistency-c` | `20260725-131407-46ee2073` | fail, 0/2 expectations | 11 | 0.618305 |
+| 10 | `dilution-a` | `20260725-131627-fd970500` | fail, 1/2 expectations | 12 | 0.614135 |
+| 11 | `dilution-b` | `20260725-131904-9623b816` | pass, 2/2 expectations | 13 | 0.713651 |
+| 12 | `dilution-c` | `20260725-132212-896d115e` | fail, 1/2 expectations | 11 | 0.806856 |
+
+The exact report command selected that invocation UUID, not `latest`: `pnpm exec tsx scripts/packet-packing-report.ts eval --logs /home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/recall/logs --cohort 5bd80f2c-865e-40f0-a605-07387138b904 --expected-repeats 1 --output /tmp/plan102-eval-preflight.json`. It exited `1` with exactly six failures: consistency B and C were each treated `0/1`, and one B plus one C packet in each family failed the composite `treatment_invariant`. There were no other report failure codes.
+
+The treatment diagnosis is exact:
+
+- Consistency A produced five packets: one normal/investigate atom, three light/simple atoms, and the target `HandleWire` deep/investigate atom. B and C packed only the three non-target light atoms, reducing five packets to three, while the target stayed a one-atom deep packet. Both target treatments are therefore invalid at `0/1`. On the packed non-target packet `e33a8a1d...`, the independent B/C planner hints made all three standalone profiles `investigate`; the corresponding A atoms were `simple`. The event's profile-floor fields consequently could not exactly reconcile to the A atoms, producing one composite invariant failure in each packed arm.
+- Dilution A produced deep/investigate, normal/investigate, light/simple, and deep/investigate atoms. B and C validly combined the target first deep atom with the last deep atom, reduced four packets to three, and treated the target at `1/1` with two source atoms. A separate one-atom light packet `3989cd85...` nevertheless changed from A `simple`/zero-tool to a B/C `investigate` standalone profile due independently sampled planner hints. Its event profile-floor fields likewise could not exactly reconcile to A, producing one composite invariant failure per packed arm.
+
+Thus caps, hunk/atom joins, coverage, requested/routed lenses, effective profiles/budgets, dispatch ranks, artifact lineage, summary reconciliation, and spend evidence produced no separate failures; the gate failed specifically on the two missing consistency target treatments and cross-arm standalone-profile reconciliation. No report check was waived. The failure is not a rollout verdict from recall, and there will be no third paid one-repeat invocation.
+
+One-repeat recall remains measurement only. All three consistency executions generated and published the missing-wire-validation finding as category `security`, while the declared expectation required `correctness`, so each recorded candidate/final partial matches rather than a hit. Dilution A and C hit the candidate expectation but were rejected at verification; dilution B hit both candidate and final expectations. These six samples do not select B or C and do not establish packing safety or harm.
+
+The report's authoritative reconstructed `retryPreflightCostUSD` is `$3.986221`; the unrounded sum of its 71 model-call records is `$3.986220`, with the `$0.000001` difference coming from the report's per-run six-decimal reconciliation. Cumulative `actualValidationCostUSD` is `$5.207657 + $3.986221 = $9.193878`. Because the retry is not valid, `validPreflightCostUSD` and therefore the required `10 * validPreflightCostUSD` repeat-10 projection are **not established** and cannot authorize step 8. For comparison only, `10 * retryPreflightCostUSD = $39.862210`; including the known later `$95` production-pair reservation would give `$9.193878 + $39.862210 + $95 = $144.056088`. The conservative Phase 3 placeholder remains `$52.076570`, yielding known projected remaining spend of `$147.076570` and cumulative actual plus projection of `$156.270448 <= approvedValidationCostUSD: $500`, leaving `$343.729552` before deferred real-model collateral. Fake-provider collateral remains `$0`. None of these accounting projections authorize a later paid phase after the failed gate.
+
+The failed retry report is preserved byte-for-byte at `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/reports/plan102-eval-preflight-retry-invalid-5bd80f2c.json`, SHA-256 `650113d24d092e6fd712303e1828b297010c76f672d7efb799f5081f79635517`. The new run/manifests aggregate SHA-256 is `dabb5d4700a0fe559490216da73d335bd9f28cec6d3c004d8b41b4cb7c77c3c1`. The original runs 1–6 plus manifest retain aggregate SHA-256 `2a3232651752a4f3652334d5126e2eebca6169da658e854214b6f98a158eb750`, and the original invalid report remains SHA-256 `3368178d57d6c4c46865fccb52b8aa160d1f9acf3536be9e1cde4d05d52c50ab`. No historical log, manifest, or report was edited or deleted.
+
+Plan 102 steps 8–11 are `not_run` because the repaired retry gate failed. Step 12's failure teardown is also `not_run` in Phase 4 and is reserved for the next separately reviewed phase; no case was changed to repeat 10, no arm was selected, no collateral or production suite ran, no rollout verdict was made, and no experiment code or evidence was torn down in this phase.
+
 ## Phase 2 deterministic reconciliation (2026-07-24)
 
 Step 6's exact four-run command completed with exit `0`, `noModelCalls: true`, four explicit `modelCallsObserved: 0` row proofs, and no report failures. The frozen output is `/tmp/plan102-packet-shape.json` (SHA-256 `77af0c38937bd6957806f05ad201cbad32461414c1d667824096208473c276fa`). The authoritative motivating count is **75**: the real `combinedPatchChars()` builder produced 96→75, so the bounded 74/76 reconciliation was not used. The report's diagnostic reapplication of the old `contentWithLineNumbers` proxy produces 76 for the current atom stream while the real measurement produces 75; this does not change the golden because the authoritative builder result itself matches the plan's historical 75 target. The frozen hash was refreshed after the verifier stopped trusting serialized cap telemetry and independently rendered the source diff for every packet that actually combines multiple atoms.
