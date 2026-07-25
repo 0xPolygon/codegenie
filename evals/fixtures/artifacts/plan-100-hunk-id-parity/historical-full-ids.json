@@ -1,0 +1,97 @@
+{
+  "metadata": {
+    "caseName": "fixture-typescript-lens",
+    "caseHash": "f230c86c0d7f3ef02efe258874fb552079e61f69c77fa849741a4a3ed62b1800",
+    "sourceRun": 57,
+    "runId": "20260724-011208-be974fe9",
+    "status": "pass",
+    "idFormat": "full"
+  },
+  "diff": [
+    {
+      "id": "23f8be3083a3148b33f450c52f71391f6c02d0a7e9ef4ae4cc59be4f5ae44d3b",
+      "path": "src/app.ts",
+      "oldStart": 0,
+      "oldLines": 0,
+      "newStart": 1,
+      "newLines": 1,
+      "header": "",
+      "changedNewLineNumbers": [1],
+      "changedOldLineNumbers": [],
+      "changedLines": ["+export const value: string = \"CODEGENIE_FAKE_FINDING\";"]
+    }
+  ],
+  "planCoverage": [
+    {
+      "hunkId": "23f8be3083a3148b33f450c52f71391f6c02d0a7e9ef4ae4cc59be4f5ae44d3b",
+      "path": "src/app.ts",
+      "coverage": "normal",
+      "lenses": ["lang/typescript"],
+      "reason": "fake planner default coverage"
+    }
+  ],
+  "packets": [
+    {
+      "id": "4b2ae58107769b3fcc4422bba7d53be7c862dd8c05dead0f15854ec9f1bfd7e5",
+      "path": "src/app.ts",
+      "kind": "whole-file",
+      "coverage": "normal",
+      "lenses": ["lang/typescript"],
+      "hunkIds": ["23f8be3083a3148b33f450c52f71391f6c02d0a7e9ef4ae4cc59be4f5ae44d3b"]
+    }
+  ],
+  "candidates": [
+    {
+      "id": "4b2ae581-f1",
+      "path": "src/app.ts",
+      "title": "Fake finding in src/app.ts",
+      "category": "correctness",
+      "severity": "medium",
+      "confidence": "medium",
+      "anchor": {
+        "hunkId": "23f8be3083a3148b33f450c52f71391f6c02d0a7e9ef4ae4cc59be4f5ae44d3b",
+        "path": "src/app.ts",
+        "line": 1,
+        "side": "RIGHT"
+      },
+      "packetId": "4b2ae58107769b3fcc4422bba7d53be7c862dd8c05dead0f15854ec9f1bfd7e5"
+    }
+  ],
+  "verdicts": [
+    {
+      "candidateId": "4b2ae581-f1",
+      "gate": "passed",
+      "verdict": "keep",
+      "reason": "fake verifier kept the deterministic candidate"
+    }
+  ],
+  "coverageRecords": [
+    {
+      "hunkId": "23f8be3083a3148b33f450c52f71391f6c02d0a7e9ef4ae4cc59be4f5ae44d3b",
+      "path": "src/app.ts",
+      "coverage": "normal",
+      "source": "planner",
+      "status": "reviewed"
+    }
+  ],
+  "finalFindings": [
+    {
+      "id": "4b2ae581-f1",
+      "path": "src/app.ts",
+      "title": "Fake finding in src/app.ts",
+      "category": "correctness",
+      "severity": "medium",
+      "confidence": "medium",
+      "anchor": {
+        "hunkId": "23f8be3083a3148b33f450c52f71391f6c02d0a7e9ef4ae4cc59be4f5ae44d3b",
+        "path": "src/app.ts",
+        "line": 1,
+        "side": "RIGHT"
+      },
+      "packetId": "4b2ae58107769b3fcc4422bba7d53be7c862dd8c05dead0f15854ec9f1bfd7e5",
+      "mergedCandidateIds": ["4b2ae581-f1"],
+      "publication": "inline",
+      "fingerprint": "42b3293a4070968cb596df489b39c23154fe1b2f8057732cce49ef94c8fc925e"
+    }
+  ]
+}

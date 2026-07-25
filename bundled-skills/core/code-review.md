@@ -29,7 +29,7 @@ Find correctness, security, lifecycle, and design problems that would matter to 
 - Do not flag a missing check when the same invariant is enforced by a nearby typed contract, validation chokepoint, or deterministic caller guarantee.
 - Do not treat every theoretical exception as a bug; require a concrete path where the change makes behavior worse.
 - Do not prefer a different architecture unless the current change creates a specific maintenance, correctness, or security failure mode.
-- Do not report unavoidable precision dust when the caller-visible output is derived from the same transformed value; trace which value actually flows to the caller before applying this guard.
+- Do not report unavoidable precision dust when the caller-visible output is derived from the same transformed value; trace which value reaches the caller before treating precision loss as a finding.
 - Calibrate severity for guarantee or contract violations by reachability and magnitude. Sub-unit, pathological-input-only, or author-confirmation-dependent violations are usually low or medium, not high.
 
 # Safe Patterns

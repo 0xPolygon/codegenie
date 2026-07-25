@@ -20,10 +20,10 @@ export async function findLikelyTestsForInput(
   }
   const containedSubjectPath = containPath(resolver.repoRoot, subjectPath);
   const allPaths = await resolver.listFiles(undefined, source);
-  const candidates = candidateTestPaths(containedSubjectPath, allPaths);
-  const tests: SymbolRef[] = [];
+  const language = registry.languageForPath(containedSubjectPath);
+  const candidates = candidateTestPaths(containedSubjectPath, allPaths, language);
+  const discoveredTests: SymbolRef[] = [];
   let parsedAny = false;
-  let omittedCount = 0;
 
   for (const candidate of candidates) {
     const content = await resolver.readFile(candidate, source);
@@ -61,10 +61,12 @@ export async function findLikelyTestsForInput(
               }
             ]
           : [];
-    const remaining = Math.max(0, MAX_TESTS - tests.length);
-    tests.push(...discovered.slice(0, remaining));
-    omittedCount += Math.max(0, discovered.length - remaining);
+    discoveredTests.push(...discovered);
   }
+
+  const uniqueTests = dedupeAndSortTests(discoveredTests);
+  const tests = uniqueTests.slice(0, MAX_TESTS);
+  const omittedCount = Math.max(0, uniqueTests.length - tests.length);
 
   return {
     tests,
@@ -73,10 +75,41 @@ export async function findLikelyTestsForInput(
   };
 }
 
-function candidateTestPaths(subjectPath: string, allPaths: string[]): string[] {
+export function candidateTestPaths(subjectPath: string, allPaths: string[], language: string): string[] {
   const dir = path.posix.dirname(subjectPath);
   const prefix = dir === "." ? "" : `${dir}/`;
   const stem = fileStem(subjectPath);
+  const allPathSet = new Set(allPaths);
+  const candidates = new Set<string>();
+
+  if (language === "rust") {
+    candidates.add(`${prefix}${stem}_test.rs`);
+    const packageRoot = nearestPackageRoot(subjectPath, allPathSet, ["Cargo.toml"]);
+    if (packageRoot !== undefined) {
+      candidates.add(joinRoot(packageRoot, `tests/${stem}.rs`));
+    }
+    return presentSorted(candidates, allPathSet);
+  }
+
+  if (language === "python") {
+    candidates.add(`${prefix}test_${stem}.py`);
+    candidates.add(`${prefix}${stem}_test.py`);
+    const packageRoot = nearestPackageRoot(subjectPath, allPathSet, ["pyproject.toml", "setup.py", "setup.cfg"]) ?? ".";
+    candidates.add(joinRoot(packageRoot, `tests/test_${stem}.py`));
+    candidates.add(joinRoot(packageRoot, `tests/${stem}_test.py`));
+    return presentSorted(candidates, allPathSet);
+  }
+
+  if (language === "solidity") {
+    const packageRoot = nearestPackageRoot(subjectPath, allPathSet, ["foundry.toml"]);
+    if (packageRoot === undefined) {
+      return [];
+    }
+    candidates.add(joinRoot(packageRoot, `test/${stem}.t.sol`));
+    candidates.add(joinRoot(packageRoot, `test/${stem}Test.t.sol`));
+    return presentSorted(candidates, allPathSet);
+  }
+
   const sameDirGo = `${prefix}${stem}_test.go`;
   const tsNames = new Set([
     `${prefix}${stem}.test.ts`,
@@ -108,9 +141,9 @@ function candidateTestPaths(subjectPath: string, allPaths: string[]): string[] {
     `tests/${stem}.test.ts`,
     `tests/${stem}.spec.ts`
   ]);
-  const candidates = new Set<string>();
   for (const filePath of allPaths) {
-    if (filePath === sameDirGo || tsNames.has(filePath)) {
+    if ((language === "go" && filePath === sameDirGo) ||
+        ((language === "typescript" || language === "tsx" || language === "javascript") && tsNames.has(filePath))) {
       candidates.add(filePath);
       continue;
     }
@@ -119,6 +152,49 @@ function candidateTestPaths(subjectPath: string, allPaths: string[]): string[] {
     }
   }
   return [...candidates].sort();
+}
+
+function nearestPackageRoot(subjectPath: string, allPaths: Set<string>, markers: string[]): string | undefined {
+  let current = path.posix.dirname(subjectPath);
+  if (current === ".") {
+    current = "";
+  }
+  for (;;) {
+    if (markers.some((marker) => allPaths.has(current.length === 0 ? marker : `${current}/${marker}`))) {
+      return current.length === 0 ? "." : current;
+    }
+    if (current.length === 0) {
+      return undefined;
+    }
+    const parent = path.posix.dirname(current);
+    current = parent === "." ? "" : parent;
+  }
+}
+
+function joinRoot(root: string, child: string): string {
+  return root === "." ? child : `${root}/${child}`;
+}
+
+function presentSorted(candidates: Set<string>, allPaths: Set<string>): string[] {
+  return [...candidates].filter((candidate) => allPaths.has(candidate)).sort();
+}
+
+function dedupeAndSortTests(tests: SymbolRef[]): SymbolRef[] {
+  const byIdentity = new Map<string, SymbolRef>();
+  for (const test of tests) {
+    const identity = `${test.path}\0${test.kind}\0${test.nativeKind ?? ""}\0${test.name}\0${test.lineRange[0]}\0${test.lineRange[1]}`;
+    byIdentity.set(identity, test);
+  }
+  return [...byIdentity.values()].sort((a, b) =>
+    compareStrings(a.path, b.path) ||
+    a.lineRange[0] - b.lineRange[0] ||
+    a.lineRange[1] - b.lineRange[1] ||
+    compareStrings(a.name, b.name)
+  );
+}
+
+function compareStrings(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
 }
 
 function isTestSymbol(filePath: string, symbol: SymbolInfo): boolean {

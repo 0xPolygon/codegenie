@@ -53,7 +53,8 @@ function packetResultWithHint(): PacketReviewResult {
       symbols: ["strictParse"],
       suggestedLenses: [],
       reason: "The changed parser hard-fails on malformed numerics that were previously tolerated.",
-      confidence: "medium"
+      confidence: "medium",
+      projectedSkillIds: ["core/code-review"]
     }],
     uncertainties: [],
     status: "completed"

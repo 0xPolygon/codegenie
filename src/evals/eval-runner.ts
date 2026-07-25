@@ -8,6 +8,7 @@ import {
   MAX_DEEP_ENSEMBLE_PASSES,
   reasoningLevelSchema,
   reviewDepthSchema,
+  reviewMaxTimeMinutesSchema,
   severitySchema
 } from "../config/schema.js";
 import { createGitClient } from "../git/git-client.js";
@@ -133,7 +134,7 @@ const caseSchema = z
         maxFindings: positiveIntSchema.optional(),
         concurrency: positiveIntSchema.optional(),
         budgetBoost: positiveNumberSchema.optional(),
-        maxTimeMinutes: positiveNumberSchema.optional(),
+        maxTimeMinutes: reviewMaxTimeMinutesSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
         deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
         adaptiveSecondPass: z.boolean().optional(),
@@ -813,7 +814,7 @@ function applyCaseReviewConfig(
     config.review.budgetBoost = review.budgetBoost;
   }
   if (review?.maxTimeMinutes !== undefined) {
-    config.review.timeoutMs = Math.round(review.maxTimeMinutes * 60_000);
+    config.review.maxTimeMs = Math.round(review.maxTimeMinutes * 60_000);
   }
   if (review?.maxBudgetTokens !== undefined) {
     config.review.maxBudgetTokens = review.maxBudgetTokens;
@@ -864,7 +865,7 @@ function evalEffectiveConfig(config: CodegenieConfig): NonNullable<EvalRunInfo["
   return {
     review: {
       concurrency: config.review.concurrency,
-      timeoutMs: config.review.timeoutMs,
+      timeoutMs: config.review.maxTimeMs,
       ...(config.review.maxBudgetTokens !== undefined ? { maxBudgetTokens: config.review.maxBudgetTokens } : {})
     },
     llm: {

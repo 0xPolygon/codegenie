@@ -1,0 +1,26 @@
+name: skill-semantics-solidity-oracle-freshness
+repeat: 3
+repo:
+  fixture: repos/solidity
+command:
+  branch: feature
+  base: main
+review:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  reasoning: high
+  depth: deep
+  verify: true
+  cache: false
+  concurrency: 1
+  lenses:
+    - lang/solidity
+should_find:
+  - id: solidity-stale-oracle-accepted
+    path: src/PriceConsumer.sol
+    category: correctness
+    titlePattern: stale|fresh|oracle
+    failureModePattern: stale|updatedAt|maxAge
+should_not_find:
+  - id: solidity-oracle-validation-control
+    path: src/SafePriceConsumer.sol

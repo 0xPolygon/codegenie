@@ -261,8 +261,11 @@ eval case files.</li>
 <li><code>picomatch</code> for path-rule and tool globs.</li>
 <li><code>execa</code> or Node subprocess APIs for <code>git</code> and
 <code>gh</code>.</li>
-<li><code>web-tree-sitter</code> plus Go and TypeScript/JavaScript
-grammars for v1 syntax parsing.
+<li><code>web-tree-sitter</code> plus Go, TypeScript/TSX, JavaScript,
+Rust, Python, and Solidity grammars for syntax parsing. TypeScript/TSX
+and JavaScript share an ECMAScript adapter implementation but retain
+distinct language identities and skills; Rust, Python, and Solidity have
+dedicated semantic adapters.
 <ul>
 <li><code>tree-sitter-go</code> for Go</li>
 <li><code>tree-sitter-typescript</code> for Typescript:
@@ -271,6 +274,11 @@ route to the typescript grammar; <code>.tsx</code> routes to the tsx
 grammar</li>
 <li><code>tree-sitter-javascript</code> for Javascript:
 <code>.js</code>/<code>.jsx</code>/<code>.mjs</code>/<code>.cjs</code></li>
+<li><code>tree-sitter-rust</code> for Rust: <code>.rs</code></li>
+<li><code>tree-sitter-python</code> for Python: <code>.py</code>
+(<code>.pyi</code> remains unknown/generic)</li>
+<li><code>tree-sitter-solidity</code> for Solidity:
+<code>.sol</code></li>
 <li>Tree-sitter runs entirely via WASM: the <code>web-tree-sitter</code>
 runtime (<code>tree-sitter.wasm</code>) plus one <code>.wasm</code>
 grammar per language, all shipped inside their npm tarballs.</li>
@@ -281,9 +289,20 @@ via <code>createRequire</code> under ESM); no copy step into an
 <code>assets/</code> folder is needed because codegenie is distributed
 as a normal npm package. An asset-copy step becomes necessary only if
 single-file bundling is introduced, which is out of scope for v1.</li>
-<li><code>web-tree-sitter</code> and the three grammar packages are
-pinned together; ABI compatibility is enforced at
+<li><code>web-tree-sitter</code> and the six grammar packages are pinned
+together; ABI compatibility is enforced at
 <code>Language.load</code>.</li>
+<li><code>tree-sitter-solidity@1.2.13</code> publishes the required WASM
+but also declares an unused native install script and a misspelled
+optional-peer metadata key. Pnpm 11’s canonical <code>allowBuilds</code>
+policy approves only <code>esbuild</code> and explicitly denies every
+unused grammar/provider/protobuf/yarn build; equivalent legacy keys
+remain for pnpm 10 compatibility. CI and the packed-consumer gate
+explicitly force and verify <code>ignore-scripts=false</code>, apply
+those per-dependency decisions, resolve the published WASM from the
+consumer dependency tree, and parse through the production adapter.
+Because fresh and packed supported installs succeed without claiming a
+native grammar build, the vendored-WASM stop path is not active.</li>
 </ul></li>
 </ul>
 <p>Exact dependency versions are pinned via the pnpm lockfile;
@@ -519,22 +538,23 @@ task.</p>
 <span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a>}</span>
 <span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb7-17"><a href="#cb7-17" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> DiffHunk <span class="op">=</span> {</span>
-<span id="cb7-18"><a href="#cb7-18" aria-hidden="true" tabindex="-1"></a>  id<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb7-19"><a href="#cb7-19" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb7-20"><a href="#cb7-20" aria-hidden="true" tabindex="-1"></a>  oldStart<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb7-21"><a href="#cb7-21" aria-hidden="true" tabindex="-1"></a>  oldLines<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb7-22"><a href="#cb7-22" aria-hidden="true" tabindex="-1"></a>  newStart<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb7-23"><a href="#cb7-23" aria-hidden="true" tabindex="-1"></a>  newLines<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb7-24"><a href="#cb7-24" aria-hidden="true" tabindex="-1"></a>  header<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb7-25"><a href="#cb7-25" aria-hidden="true" tabindex="-1"></a>  lines<span class="op">:</span> DiffLine[]</span>
-<span id="cb7-26"><a href="#cb7-26" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb7-27"><a href="#cb7-27" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb7-28"><a href="#cb7-28" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> DiffLine <span class="op">=</span> {</span>
-<span id="cb7-29"><a href="#cb7-29" aria-hidden="true" tabindex="-1"></a>  kind<span class="op">:</span> <span class="st">&quot;context&quot;</span> <span class="op">|</span> <span class="st">&quot;add&quot;</span> <span class="op">|</span> <span class="st">&quot;delete&quot;</span></span>
-<span id="cb7-30"><a href="#cb7-30" aria-hidden="true" tabindex="-1"></a>  content<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb7-31"><a href="#cb7-31" aria-hidden="true" tabindex="-1"></a>  oldLineNumber<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb7-32"><a href="#cb7-32" aria-hidden="true" tabindex="-1"></a>  newLineNumber<span class="op">?:</span> <span class="dt">number</span></span>
-<span id="cb7-33"><a href="#cb7-33" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<span id="cb7-18"><a href="#cb7-18" aria-hidden="true" tabindex="-1"></a>  id<span class="op">:</span> <span class="dt">string</span>       <span class="co">// shortest unique 8/12/.../64-character prefix within this parsed diff</span></span>
+<span id="cb7-19"><a href="#cb7-19" aria-hidden="true" tabindex="-1"></a>  hunkHash<span class="op">:</span> <span class="dt">string</span> <span class="co">// full 64-character coordinate digest; serialized only in stage-2 diff.json</span></span>
+<span id="cb7-20"><a href="#cb7-20" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb7-21"><a href="#cb7-21" aria-hidden="true" tabindex="-1"></a>  oldStart<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb7-22"><a href="#cb7-22" aria-hidden="true" tabindex="-1"></a>  oldLines<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb7-23"><a href="#cb7-23" aria-hidden="true" tabindex="-1"></a>  newStart<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb7-24"><a href="#cb7-24" aria-hidden="true" tabindex="-1"></a>  newLines<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb7-25"><a href="#cb7-25" aria-hidden="true" tabindex="-1"></a>  header<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb7-26"><a href="#cb7-26" aria-hidden="true" tabindex="-1"></a>  lines<span class="op">:</span> DiffLine[]</span>
+<span id="cb7-27"><a href="#cb7-27" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb7-28"><a href="#cb7-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-29"><a href="#cb7-29" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> DiffLine <span class="op">=</span> {</span>
+<span id="cb7-30"><a href="#cb7-30" aria-hidden="true" tabindex="-1"></a>  kind<span class="op">:</span> <span class="st">&quot;context&quot;</span> <span class="op">|</span> <span class="st">&quot;add&quot;</span> <span class="op">|</span> <span class="st">&quot;delete&quot;</span></span>
+<span id="cb7-31"><a href="#cb7-31" aria-hidden="true" tabindex="-1"></a>  content<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb7-32"><a href="#cb7-32" aria-hidden="true" tabindex="-1"></a>  oldLineNumber<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb7-33"><a href="#cb7-33" aria-hidden="true" tabindex="-1"></a>  newLineNumber<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb7-34"><a href="#cb7-34" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Every review packet must include absolute line numbers for hunk
 lines. Added and context lines use new-file line numbers. Deleted lines
 use old-file line numbers. GitHub inline publishing is only allowed for
@@ -546,11 +566,11 @@ anchors validated against the PR diff.</p>
 <span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> SymbolKind <span class="op">=</span></span>
 <span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;function&quot;</span>   <span class="co">// free-standing callables</span></span>
 <span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;method&quot;</span>     <span class="co">// callables attached to a type: Go receiver funcs, Rust impl fns, class members, constructors, accessors</span></span>
-<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;type&quot;</span>       <span class="co">// concrete type definitions: class, struct, enum, type alias, Solidity contract/event/error</span></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;type&quot;</span>       <span class="co">// concrete type definitions: class, struct, enum, type alias, Solidity contract/library</span></span>
 <span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;interface&quot;</span>  <span class="co">// contract-defining types: interface, trait, protocol</span></span>
 <span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;value&quot;</span>      <span class="co">// const, var, let, static, Solidity state variables</span></span>
-<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;container&quot;</span>  <span class="co">// module, namespace, package, Rust mod/impl block, Swift extension, Solidity library</span></span>
-<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;other&quot;</span>      <span class="co">// macros, Solidity modifiers, anything unmapped</span></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;container&quot;</span>  <span class="co">// module, namespace, package, Rust mod, Swift extension (Rust impl is ownership context, not a symbol)</span></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>  <span class="op">|</span> <span class="st">&quot;other&quot;</span>      <span class="co">// macros, Solidity events/errors, anything unmapped</span></span>
 <span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> SymbolRef <span class="op">=</span> {</span>
 <span id="cb8-14"><a href="#cb8-14" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
@@ -811,72 +831,75 @@ must report coverage counts.</p>
 <span id="cb11-30"><a href="#cb11-30" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb11-31"><a href="#cb11-31" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReviewPacket <span class="op">=</span> {</span>
 <span id="cb11-32"><a href="#cb11-32" aria-hidden="true" tabindex="-1"></a>  id<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-33"><a href="#cb11-33" aria-hidden="true" tabindex="-1"></a>  kind<span class="op">:</span> PacketKind</span>
-<span id="cb11-34"><a href="#cb11-34" aria-hidden="true" tabindex="-1"></a>  prSummary<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-35"><a href="#cb11-35" aria-hidden="true" tabindex="-1"></a>  intentText<span class="op">?:</span> <span class="dt">string</span> <span class="co">// the dossier&#39;s already-fenced declared-intent projection (PR title/body extract), capped at ~1000 chars</span></span>
-<span id="cb11-36"><a href="#cb11-36" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-37"><a href="#cb11-37" aria-hidden="true" tabindex="-1"></a>  fileStatus<span class="op">:</span> DiffFile[<span class="st">&quot;status&quot;</span>]</span>
-<span id="cb11-38"><a href="#cb11-38" aria-hidden="true" tabindex="-1"></a>  isDeletedContent<span class="op">:</span> <span class="dt">boolean</span> <span class="co">// true for deletion-only packets; reviewers and anchor validation must treat content as old-side</span></span>
-<span id="cb11-39"><a href="#cb11-39" aria-hidden="true" tabindex="-1"></a>  language<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-40"><a href="#cb11-40" aria-hidden="true" tabindex="-1"></a>  coverage<span class="op">:</span> <span class="bu">Exclude</span><span class="op">&lt;</span>CoverageLevel<span class="op">,</span> <span class="st">&quot;skip&quot;</span><span class="op">&gt;</span></span>
-<span id="cb11-41"><a href="#cb11-41" aria-hidden="true" tabindex="-1"></a>  reviewProfile<span class="op">:</span> ReviewProfile <span class="co">// execution/cost profile derived deterministically from coverage, priority, hints, and mechanical-change signals</span></span>
-<span id="cb11-42"><a href="#cb11-42" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-43"><a href="#cb11-43" aria-hidden="true" tabindex="-1"></a>  hunks<span class="op">:</span> PacketHunk[]</span>
-<span id="cb11-44"><a href="#cb11-44" aria-hidden="true" tabindex="-1"></a>  symbolFacts<span class="op">:</span> HunkSymbolFacts[]</span>
-<span id="cb11-45"><a href="#cb11-45" aria-hidden="true" tabindex="-1"></a>  context<span class="op">:</span> PacketContext</span>
-<span id="cb11-46"><a href="#cb11-46" aria-hidden="true" tabindex="-1"></a>  contextText<span class="op">:</span> <span class="dt">string</span> <span class="co">// rendered deterministic context (enclosing-symbol source, file outline, likely-tests list) assembled by the packet builder within maxContextChars</span></span>
-<span id="cb11-47"><a href="#cb11-47" aria-hidden="true" tabindex="-1"></a>  relevantTests<span class="op">:</span> SymbolInfo[]</span>
-<span id="cb11-48"><a href="#cb11-48" aria-hidden="true" tabindex="-1"></a>  surroundingContextHints<span class="op">:</span> SurroundingContextHint[]</span>
-<span id="cb11-49"><a href="#cb11-49" aria-hidden="true" tabindex="-1"></a>  labels<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-50"><a href="#cb11-50" aria-hidden="true" tabindex="-1"></a>  attentionNotes<span class="op">:</span> <span class="dt">string</span>[] <span class="co">// advisory hunk-scoped Stage 5 notes; not proof obligations</span></span>
-<span id="cb11-51"><a href="#cb11-51" aria-hidden="true" tabindex="-1"></a>  relatedChangedContext<span class="op">:</span> RelatedChangedContext[] <span class="co">// bounded snippets from mechanically related changed hunks/symbols</span></span>
-<span id="cb11-52"><a href="#cb11-52" aria-hidden="true" tabindex="-1"></a>  toolBudget<span class="op">:</span> ToolBudget</span>
-<span id="cb11-53"><a href="#cb11-53" aria-hidden="true" tabindex="-1"></a>  degraded<span class="op">?:</span> { reason<span class="op">:</span> <span class="dt">string</span> } <span class="co">// disclosed in the coverage summary</span></span>
-<span id="cb11-54"><a href="#cb11-54" aria-hidden="true" tabindex="-1"></a>  fileContext<span class="op">?:</span> {</span>
-<span id="cb11-55"><a href="#cb11-55" aria-hidden="true" tabindex="-1"></a>    mode<span class="op">:</span> <span class="st">&quot;file-diff&quot;</span> <span class="op">|</span> <span class="st">&quot;whole-file&quot;</span></span>
-<span id="cb11-56"><a href="#cb11-56" aria-hidden="true" tabindex="-1"></a>    reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-57"><a href="#cb11-57" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb11-58"><a href="#cb11-58" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb11-59"><a href="#cb11-59" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-60"><a href="#cb11-60" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> RelatedChangedContext <span class="op">=</span> {</span>
-<span id="cb11-61"><a href="#cb11-61" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-62"><a href="#cb11-62" aria-hidden="true" tabindex="-1"></a>  hunkId<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb11-63"><a href="#cb11-63" aria-hidden="true" tabindex="-1"></a>  symbol<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb11-64"><a href="#cb11-64" aria-hidden="true" tabindex="-1"></a>  lineRange<span class="op">?:</span> [<span class="dt">number</span><span class="op">,</span> <span class="dt">number</span>]</span>
-<span id="cb11-65"><a href="#cb11-65" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-66"><a href="#cb11-66" aria-hidden="true" tabindex="-1"></a>  sourceSnippet<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb11-67"><a href="#cb11-67" aria-hidden="true" tabindex="-1"></a>  patchExcerpt<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb11-68"><a href="#cb11-68" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb11-69"><a href="#cb11-69" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-70"><a href="#cb11-70" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketContext <span class="op">=</span> {</span>
-<span id="cb11-71"><a href="#cb11-71" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-72"><a href="#cb11-72" aria-hidden="true" tabindex="-1"></a>  packageName<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb11-73"><a href="#cb11-73" aria-hidden="true" tabindex="-1"></a>  enclosingFunction<span class="op">?:</span> SymbolInfo</span>
-<span id="cb11-74"><a href="#cb11-74" aria-hidden="true" tabindex="-1"></a>  enclosingType<span class="op">?:</span> SymbolInfo</span>
-<span id="cb11-75"><a href="#cb11-75" aria-hidden="true" tabindex="-1"></a>  enclosingMethod<span class="op">?:</span> SymbolInfo</span>
-<span id="cb11-76"><a href="#cb11-76" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb11-77"><a href="#cb11-77" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-78"><a href="#cb11-78" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketReviewResult <span class="op">=</span> {</span>
-<span id="cb11-79"><a href="#cb11-79" aria-hidden="true" tabindex="-1"></a>  packetId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-80"><a href="#cb11-80" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-81"><a href="#cb11-81" aria-hidden="true" tabindex="-1"></a>  findings<span class="op">:</span> CandidateFinding[]</span>
-<span id="cb11-82"><a href="#cb11-82" aria-hidden="true" tabindex="-1"></a>  followUpHints<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{</span>
-<span id="cb11-83"><a href="#cb11-83" aria-hidden="true" tabindex="-1"></a>    question<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-84"><a href="#cb11-84" aria-hidden="true" tabindex="-1"></a>    files<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-85"><a href="#cb11-85" aria-hidden="true" tabindex="-1"></a>    symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-86"><a href="#cb11-86" aria-hidden="true" tabindex="-1"></a>    suggestedLenses<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-87"><a href="#cb11-87" aria-hidden="true" tabindex="-1"></a>    reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-88"><a href="#cb11-88" aria-hidden="true" tabindex="-1"></a>    confidence<span class="op">:</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;low&quot;</span></span>
-<span id="cb11-89"><a href="#cb11-89" aria-hidden="true" tabindex="-1"></a>  }<span class="op">&gt;</span></span>
-<span id="cb11-90"><a href="#cb11-90" aria-hidden="true" tabindex="-1"></a>  uncertainties<span class="op">:</span> StructuredUncertainty[]</span>
-<span id="cb11-91"><a href="#cb11-91" aria-hidden="true" tabindex="-1"></a>  status<span class="op">:</span> <span class="st">&quot;completed&quot;</span> <span class="op">|</span> <span class="st">&quot;incomplete&quot;</span> <span class="op">|</span> <span class="st">&quot;failed&quot;</span> <span class="op">|</span> <span class="st">&quot;skipped&quot;</span></span>
-<span id="cb11-92"><a href="#cb11-92" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb11-93"><a href="#cb11-93" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb11-94"><a href="#cb11-94" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> StructuredUncertainty <span class="op">=</span> {</span>
-<span id="cb11-95"><a href="#cb11-95" aria-hidden="true" tabindex="-1"></a>  question<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb11-96"><a href="#cb11-96" aria-hidden="true" tabindex="-1"></a>  files<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-97"><a href="#cb11-97" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb11-98"><a href="#cb11-98" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<span id="cb11-33"><a href="#cb11-33" aria-hidden="true" tabindex="-1"></a>  dispatchRank<span class="op">:</span> [<span class="dt">number</span><span class="op">,</span> <span class="dt">number</span>] <span class="co">// Stage-7 tie-break: [file class, negative packet changed lines]</span></span>
+<span id="cb11-34"><a href="#cb11-34" aria-hidden="true" tabindex="-1"></a>  kind<span class="op">:</span> PacketKind</span>
+<span id="cb11-35"><a href="#cb11-35" aria-hidden="true" tabindex="-1"></a>  prSummary<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-36"><a href="#cb11-36" aria-hidden="true" tabindex="-1"></a>  intentText<span class="op">?:</span> <span class="dt">string</span> <span class="co">// the dossier&#39;s already-fenced declared-intent projection (PR title/body extract), capped at ~1000 chars</span></span>
+<span id="cb11-37"><a href="#cb11-37" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-38"><a href="#cb11-38" aria-hidden="true" tabindex="-1"></a>  fileStatus<span class="op">:</span> DiffFile[<span class="st">&quot;status&quot;</span>]</span>
+<span id="cb11-39"><a href="#cb11-39" aria-hidden="true" tabindex="-1"></a>  isDeletedContent<span class="op">:</span> <span class="dt">boolean</span> <span class="co">// true for deletion-only packets; reviewers and anchor validation must treat content as old-side</span></span>
+<span id="cb11-40"><a href="#cb11-40" aria-hidden="true" tabindex="-1"></a>  language<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-41"><a href="#cb11-41" aria-hidden="true" tabindex="-1"></a>  coverage<span class="op">:</span> <span class="bu">Exclude</span><span class="op">&lt;</span>CoverageLevel<span class="op">,</span> <span class="st">&quot;skip&quot;</span><span class="op">&gt;</span></span>
+<span id="cb11-42"><a href="#cb11-42" aria-hidden="true" tabindex="-1"></a>  reviewProfile<span class="op">:</span> ReviewProfile <span class="co">// execution/cost profile derived deterministically from coverage, priority, hints, and mechanical-change signals</span></span>
+<span id="cb11-43"><a href="#cb11-43" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-44"><a href="#cb11-44" aria-hidden="true" tabindex="-1"></a>  hunks<span class="op">:</span> PacketHunk[]</span>
+<span id="cb11-45"><a href="#cb11-45" aria-hidden="true" tabindex="-1"></a>  symbolFacts<span class="op">:</span> HunkSymbolFacts[]</span>
+<span id="cb11-46"><a href="#cb11-46" aria-hidden="true" tabindex="-1"></a>  context<span class="op">:</span> PacketContext</span>
+<span id="cb11-47"><a href="#cb11-47" aria-hidden="true" tabindex="-1"></a>  contextText<span class="op">:</span> <span class="dt">string</span> <span class="co">// rendered deterministic context (enclosing-symbol source, file outline, likely-tests list) assembled by the packet builder within maxContextChars</span></span>
+<span id="cb11-48"><a href="#cb11-48" aria-hidden="true" tabindex="-1"></a>  relevantTests<span class="op">:</span> SymbolInfo[]</span>
+<span id="cb11-49"><a href="#cb11-49" aria-hidden="true" tabindex="-1"></a>  surroundingContextHints<span class="op">:</span> SurroundingContextHint[]</span>
+<span id="cb11-50"><a href="#cb11-50" aria-hidden="true" tabindex="-1"></a>  labels<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-51"><a href="#cb11-51" aria-hidden="true" tabindex="-1"></a>  attentionNotes<span class="op">:</span> <span class="dt">string</span>[] <span class="co">// advisory hunk-scoped Stage 5 notes; not proof obligations</span></span>
+<span id="cb11-52"><a href="#cb11-52" aria-hidden="true" tabindex="-1"></a>  relatedChangedContext<span class="op">:</span> RelatedChangedContext[] <span class="co">// bounded snippets from mechanically related changed hunks/symbols</span></span>
+<span id="cb11-53"><a href="#cb11-53" aria-hidden="true" tabindex="-1"></a>  toolBudget<span class="op">:</span> ToolBudget</span>
+<span id="cb11-54"><a href="#cb11-54" aria-hidden="true" tabindex="-1"></a>  degraded<span class="op">?:</span> { reason<span class="op">:</span> <span class="dt">string</span> } <span class="co">// disclosed in the coverage summary</span></span>
+<span id="cb11-55"><a href="#cb11-55" aria-hidden="true" tabindex="-1"></a>  fileContext<span class="op">?:</span> {</span>
+<span id="cb11-56"><a href="#cb11-56" aria-hidden="true" tabindex="-1"></a>    mode<span class="op">:</span> <span class="st">&quot;file-diff&quot;</span> <span class="op">|</span> <span class="st">&quot;whole-file&quot;</span></span>
+<span id="cb11-57"><a href="#cb11-57" aria-hidden="true" tabindex="-1"></a>    reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-58"><a href="#cb11-58" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb11-59"><a href="#cb11-59" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb11-60"><a href="#cb11-60" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-61"><a href="#cb11-61" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> RelatedChangedContext <span class="op">=</span> {</span>
+<span id="cb11-62"><a href="#cb11-62" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-63"><a href="#cb11-63" aria-hidden="true" tabindex="-1"></a>  hunkId<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb11-64"><a href="#cb11-64" aria-hidden="true" tabindex="-1"></a>  symbol<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb11-65"><a href="#cb11-65" aria-hidden="true" tabindex="-1"></a>  lineRange<span class="op">?:</span> [<span class="dt">number</span><span class="op">,</span> <span class="dt">number</span>]</span>
+<span id="cb11-66"><a href="#cb11-66" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-67"><a href="#cb11-67" aria-hidden="true" tabindex="-1"></a>  sourceSnippet<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb11-68"><a href="#cb11-68" aria-hidden="true" tabindex="-1"></a>  patchExcerpt<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb11-69"><a href="#cb11-69" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb11-70"><a href="#cb11-70" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-71"><a href="#cb11-71" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketContext <span class="op">=</span> {</span>
+<span id="cb11-72"><a href="#cb11-72" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-73"><a href="#cb11-73" aria-hidden="true" tabindex="-1"></a>  packageName<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb11-74"><a href="#cb11-74" aria-hidden="true" tabindex="-1"></a>  enclosingFunction<span class="op">?:</span> SymbolInfo</span>
+<span id="cb11-75"><a href="#cb11-75" aria-hidden="true" tabindex="-1"></a>  enclosingType<span class="op">?:</span> SymbolInfo</span>
+<span id="cb11-76"><a href="#cb11-76" aria-hidden="true" tabindex="-1"></a>  enclosingMethod<span class="op">?:</span> SymbolInfo</span>
+<span id="cb11-77"><a href="#cb11-77" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb11-78"><a href="#cb11-78" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-79"><a href="#cb11-79" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PacketReviewResult <span class="op">=</span> {</span>
+<span id="cb11-80"><a href="#cb11-80" aria-hidden="true" tabindex="-1"></a>  packetId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-81"><a href="#cb11-81" aria-hidden="true" tabindex="-1"></a>  lenses<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-82"><a href="#cb11-82" aria-hidden="true" tabindex="-1"></a>  findings<span class="op">:</span> CandidateFinding[]</span>
+<span id="cb11-83"><a href="#cb11-83" aria-hidden="true" tabindex="-1"></a>  followUpHints<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{</span>
+<span id="cb11-84"><a href="#cb11-84" aria-hidden="true" tabindex="-1"></a>    question<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-85"><a href="#cb11-85" aria-hidden="true" tabindex="-1"></a>    files<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-86"><a href="#cb11-86" aria-hidden="true" tabindex="-1"></a>    symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-87"><a href="#cb11-87" aria-hidden="true" tabindex="-1"></a>    suggestedLenses<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-88"><a href="#cb11-88" aria-hidden="true" tabindex="-1"></a>    reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-89"><a href="#cb11-89" aria-hidden="true" tabindex="-1"></a>    confidence<span class="op">:</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;low&quot;</span></span>
+<span id="cb11-90"><a href="#cb11-90" aria-hidden="true" tabindex="-1"></a>    projectedSkillIds<span class="op">:</span> <span class="dt">string</span>[] <span class="co">// pipeline-stamped from this producing pass</span></span>
+<span id="cb11-91"><a href="#cb11-91" aria-hidden="true" tabindex="-1"></a>  }<span class="op">&gt;</span></span>
+<span id="cb11-92"><a href="#cb11-92" aria-hidden="true" tabindex="-1"></a>  uncertainties<span class="op">:</span> StructuredUncertainty[]</span>
+<span id="cb11-93"><a href="#cb11-93" aria-hidden="true" tabindex="-1"></a>  status<span class="op">:</span> <span class="st">&quot;completed&quot;</span> <span class="op">|</span> <span class="st">&quot;incomplete&quot;</span> <span class="op">|</span> <span class="st">&quot;failed&quot;</span> <span class="op">|</span> <span class="st">&quot;skipped&quot;</span></span>
+<span id="cb11-94"><a href="#cb11-94" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb11-95"><a href="#cb11-95" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-96"><a href="#cb11-96" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> StructuredUncertainty <span class="op">=</span> {</span>
+<span id="cb11-97"><a href="#cb11-97" aria-hidden="true" tabindex="-1"></a>  question<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb11-98"><a href="#cb11-98" aria-hidden="true" tabindex="-1"></a>  files<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-99"><a href="#cb11-99" aria-hidden="true" tabindex="-1"></a>  symbols<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb11-100"><a href="#cb11-100" aria-hidden="true" tabindex="-1"></a>  projectedSkillIds<span class="op">:</span> <span class="dt">string</span>[] <span class="co">// pipeline-stamped from this producing pass</span></span>
+<span id="cb11-101"><a href="#cb11-101" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p><code>PacketReviewResult</code> does not duplicate worker tool usage:
 tool calls and files read live in <code>tool-calls.jsonl</code>, and
 readers join on <code>workerId</code>.</p>
@@ -964,56 +987,59 @@ final list.</li>
 <span id="cb12-21"><a href="#cb12-21" aria-hidden="true" tabindex="-1"></a>}</span>
 <span id="cb12-22"><a href="#cb12-22" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb12-23"><a href="#cb12-23" aria-hidden="true" tabindex="-1"></a><span class="co">// V1 findings are always packet-produced; static signals are prompt hints only.</span></span>
-<span id="cb12-24"><a href="#cb12-24" aria-hidden="true" tabindex="-1"></a><span class="co">// producedBy.lensId is stamped deterministically by Stage 7 validation as the</span></span>
-<span id="cb12-25"><a href="#cb12-25" aria-hidden="true" tabindex="-1"></a><span class="co">// packet&#39;s first (primary) lens; the model does not claim lenses.</span></span>
-<span id="cb12-26"><a href="#cb12-26" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> FindingProducer <span class="op">=</span> { kind<span class="op">:</span> <span class="st">&quot;packet&quot;</span><span class="op">;</span> stage<span class="op">:</span> ReviewStage<span class="op">;</span> packetId<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> lensId<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> skillIds<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> workerId<span class="op">?:</span> <span class="dt">string</span> }</span>
-<span id="cb12-27"><a href="#cb12-27" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-28"><a href="#cb12-28" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> CandidateFinding <span class="op">=</span> {</span>
-<span id="cb12-29"><a href="#cb12-29" aria-hidden="true" tabindex="-1"></a>  id<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb12-30"><a href="#cb12-30" aria-hidden="true" tabindex="-1"></a>  title<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb12-31"><a href="#cb12-31" aria-hidden="true" tabindex="-1"></a>  severity<span class="op">:</span> Severity</span>
-<span id="cb12-32"><a href="#cb12-32" aria-hidden="true" tabindex="-1"></a>  confidence<span class="op">:</span> Confidence</span>
-<span id="cb12-33"><a href="#cb12-33" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb12-34"><a href="#cb12-34" aria-hidden="true" tabindex="-1"></a>  anchor<span class="op">?:</span> DiffAnchor <span class="co">// required for inline-intended candidates; unanchored candidates are summary-only</span></span>
-<span id="cb12-35"><a href="#cb12-35" aria-hidden="true" tabindex="-1"></a>  changedLine<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb12-36"><a href="#cb12-36" aria-hidden="true" tabindex="-1"></a>  category<span class="op">:</span> FindingCategory</span>
-<span id="cb12-37"><a href="#cb12-37" aria-hidden="true" tabindex="-1"></a>  evidence<span class="op">:</span> {</span>
-<span id="cb12-38"><a href="#cb12-38" aria-hidden="true" tabindex="-1"></a>    changedCode<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb12-39"><a href="#cb12-39" aria-hidden="true" tabindex="-1"></a>    relatedCode<span class="op">?:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ path<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> lines<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> whyRelevant<span class="op">:</span> <span class="dt">string</span> }<span class="op">&gt;</span></span>
-<span id="cb12-40"><a href="#cb12-40" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb12-41"><a href="#cb12-41" aria-hidden="true" tabindex="-1"></a>  failureMode<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb12-42"><a href="#cb12-42" aria-hidden="true" tabindex="-1"></a>  whyThisMatters<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb12-43"><a href="#cb12-43" aria-hidden="true" tabindex="-1"></a>  suggestedFix<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb12-44"><a href="#cb12-44" aria-hidden="true" tabindex="-1"></a>  suggestedTest<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb12-45"><a href="#cb12-45" aria-hidden="true" tabindex="-1"></a>  verification<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb12-46"><a href="#cb12-46" aria-hidden="true" tabindex="-1"></a>  producedBy<span class="op">:</span> FindingProducer</span>
-<span id="cb12-47"><a href="#cb12-47" aria-hidden="true" tabindex="-1"></a>  clusterId<span class="op">?:</span> <span class="dt">string</span> <span class="co">// Stage 9 pre-cluster lineage</span></span>
-<span id="cb12-48"><a href="#cb12-48" aria-hidden="true" tabindex="-1"></a>  duplicateOf<span class="op">?:</span> <span class="dt">string</span></span>
-<span id="cb12-49"><a href="#cb12-49" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb12-50"><a href="#cb12-50" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-51"><a href="#cb12-51" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> VerificationVerdict <span class="op">=</span> {</span>
-<span id="cb12-52"><a href="#cb12-52" aria-hidden="true" tabindex="-1"></a>  candidateId<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb12-53"><a href="#cb12-53" aria-hidden="true" tabindex="-1"></a>  verdict<span class="op">:</span> <span class="st">&quot;keep&quot;</span> <span class="op">|</span> <span class="st">&quot;reject&quot;</span> <span class="op">|</span> <span class="st">&quot;revise&quot;</span></span>
-<span id="cb12-54"><a href="#cb12-54" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb12-55"><a href="#cb12-55" aria-hidden="true" tabindex="-1"></a>  requiredEvidencePresent<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb12-56"><a href="#cb12-56" aria-hidden="true" tabindex="-1"></a>  falsePositiveRisk<span class="op">:</span> <span class="st">&quot;low&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;high&quot;</span></span>
-<span id="cb12-57"><a href="#cb12-57" aria-hidden="true" tabindex="-1"></a>  finalFinding<span class="op">?:</span> CandidateFinding <span class="co">// finalFinding.id must equal the original candidate id; revisions preserve identity</span></span>
-<span id="cb12-58"><a href="#cb12-58" aria-hidden="true" tabindex="-1"></a>  revisedAnchor<span class="op">?:</span> DiffAnchor</span>
-<span id="cb12-59"><a href="#cb12-59" aria-hidden="true" tabindex="-1"></a>  verificationIncomplete<span class="op">?:</span> <span class="dt">boolean</span></span>
-<span id="cb12-60"><a href="#cb12-60" aria-hidden="true" tabindex="-1"></a>}</span>
-<span id="cb12-61"><a href="#cb12-61" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb12-62"><a href="#cb12-62" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> FinalFinding <span class="op">=</span> CandidateFinding <span class="op">&amp;</span> {</span>
-<span id="cb12-63"><a href="#cb12-63" aria-hidden="true" tabindex="-1"></a>  fingerprint<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb12-64"><a href="#cb12-64" aria-hidden="true" tabindex="-1"></a>  finalBody<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb12-65"><a href="#cb12-65" aria-hidden="true" tabindex="-1"></a>  publication<span class="op">:</span> <span class="st">&quot;inline&quot;</span> <span class="op">|</span> <span class="st">&quot;summary-only&quot;</span> <span class="op">|</span> <span class="st">&quot;suppressed&quot;</span></span>
-<span id="cb12-66"><a href="#cb12-66" aria-hidden="true" tabindex="-1"></a>  mergedCandidateIds<span class="op">:</span> <span class="dt">string</span>[]</span>
-<span id="cb12-67"><a href="#cb12-67" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<span id="cb12-24"><a href="#cb12-24" aria-hidden="true" tabindex="-1"></a><span class="co">// producedBy.lensId is attribution only. skillIds is the ordered, deduplicated</span></span>
+<span id="cb12-25"><a href="#cb12-25" aria-hidden="true" tabindex="-1"></a><span class="co">// set that contributed non-omitted guidance to the producing prompt. Both are</span></span>
+<span id="cb12-26"><a href="#cb12-26" aria-hidden="true" tabindex="-1"></a><span class="co">// pipeline-stamped; the model does not claim lenses or skill provenance.</span></span>
+<span id="cb12-27"><a href="#cb12-27" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> FindingProducer <span class="op">=</span> { kind<span class="op">:</span> <span class="st">&quot;packet&quot;</span><span class="op">;</span> stage<span class="op">:</span> ReviewStage<span class="op">;</span> packetId<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> lensId<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> skillIds<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> workerId<span class="op">?:</span> <span class="dt">string</span> }</span>
+<span id="cb12-28"><a href="#cb12-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-29"><a href="#cb12-29" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> CandidateFinding <span class="op">=</span> {</span>
+<span id="cb12-30"><a href="#cb12-30" aria-hidden="true" tabindex="-1"></a>  id<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb12-31"><a href="#cb12-31" aria-hidden="true" tabindex="-1"></a>  title<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb12-32"><a href="#cb12-32" aria-hidden="true" tabindex="-1"></a>  severity<span class="op">:</span> Severity</span>
+<span id="cb12-33"><a href="#cb12-33" aria-hidden="true" tabindex="-1"></a>  confidence<span class="op">:</span> Confidence</span>
+<span id="cb12-34"><a href="#cb12-34" aria-hidden="true" tabindex="-1"></a>  path<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb12-35"><a href="#cb12-35" aria-hidden="true" tabindex="-1"></a>  anchor<span class="op">?:</span> DiffAnchor <span class="co">// required for inline-intended candidates; unanchored candidates are summary-only</span></span>
+<span id="cb12-36"><a href="#cb12-36" aria-hidden="true" tabindex="-1"></a>  changedLine<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb12-37"><a href="#cb12-37" aria-hidden="true" tabindex="-1"></a>  category<span class="op">:</span> FindingCategory</span>
+<span id="cb12-38"><a href="#cb12-38" aria-hidden="true" tabindex="-1"></a>  evidence<span class="op">:</span> {</span>
+<span id="cb12-39"><a href="#cb12-39" aria-hidden="true" tabindex="-1"></a>    changedCode<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb12-40"><a href="#cb12-40" aria-hidden="true" tabindex="-1"></a>    relatedCode<span class="op">?:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ path<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> lines<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> whyRelevant<span class="op">:</span> <span class="dt">string</span> }<span class="op">&gt;</span></span>
+<span id="cb12-41"><a href="#cb12-41" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb12-42"><a href="#cb12-42" aria-hidden="true" tabindex="-1"></a>  failureMode<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb12-43"><a href="#cb12-43" aria-hidden="true" tabindex="-1"></a>  whyThisMatters<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb12-44"><a href="#cb12-44" aria-hidden="true" tabindex="-1"></a>  suggestedFix<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb12-45"><a href="#cb12-45" aria-hidden="true" tabindex="-1"></a>  suggestedTest<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb12-46"><a href="#cb12-46" aria-hidden="true" tabindex="-1"></a>  verification<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb12-47"><a href="#cb12-47" aria-hidden="true" tabindex="-1"></a>  producedBy<span class="op">:</span> FindingProducer</span>
+<span id="cb12-48"><a href="#cb12-48" aria-hidden="true" tabindex="-1"></a>  clusterId<span class="op">?:</span> <span class="dt">string</span> <span class="co">// Stage 9 pre-cluster lineage</span></span>
+<span id="cb12-49"><a href="#cb12-49" aria-hidden="true" tabindex="-1"></a>  duplicateOf<span class="op">?:</span> <span class="dt">string</span></span>
+<span id="cb12-50"><a href="#cb12-50" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb12-51"><a href="#cb12-51" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-52"><a href="#cb12-52" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> VerificationVerdict <span class="op">=</span> {</span>
+<span id="cb12-53"><a href="#cb12-53" aria-hidden="true" tabindex="-1"></a>  candidateId<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb12-54"><a href="#cb12-54" aria-hidden="true" tabindex="-1"></a>  verdict<span class="op">:</span> <span class="st">&quot;keep&quot;</span> <span class="op">|</span> <span class="st">&quot;reject&quot;</span> <span class="op">|</span> <span class="st">&quot;revise&quot;</span></span>
+<span id="cb12-55"><a href="#cb12-55" aria-hidden="true" tabindex="-1"></a>  reason<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb12-56"><a href="#cb12-56" aria-hidden="true" tabindex="-1"></a>  requiredEvidencePresent<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb12-57"><a href="#cb12-57" aria-hidden="true" tabindex="-1"></a>  falsePositiveRisk<span class="op">:</span> <span class="st">&quot;low&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> <span class="op">|</span> <span class="st">&quot;high&quot;</span></span>
+<span id="cb12-58"><a href="#cb12-58" aria-hidden="true" tabindex="-1"></a>  finalFinding<span class="op">?:</span> CandidateFinding <span class="co">// finalFinding.id must equal the original candidate id; revisions preserve identity</span></span>
+<span id="cb12-59"><a href="#cb12-59" aria-hidden="true" tabindex="-1"></a>  revisedAnchor<span class="op">?:</span> DiffAnchor</span>
+<span id="cb12-60"><a href="#cb12-60" aria-hidden="true" tabindex="-1"></a>  verificationIncomplete<span class="op">?:</span> <span class="dt">boolean</span></span>
+<span id="cb12-61"><a href="#cb12-61" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb12-62"><a href="#cb12-62" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb12-63"><a href="#cb12-63" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> FinalFinding <span class="op">=</span> CandidateFinding <span class="op">&amp;</span> {</span>
+<span id="cb12-64"><a href="#cb12-64" aria-hidden="true" tabindex="-1"></a>  fingerprint<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb12-65"><a href="#cb12-65" aria-hidden="true" tabindex="-1"></a>  finalBody<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb12-66"><a href="#cb12-66" aria-hidden="true" tabindex="-1"></a>  publication<span class="op">:</span> <span class="st">&quot;inline&quot;</span> <span class="op">|</span> <span class="st">&quot;summary-only&quot;</span> <span class="op">|</span> <span class="st">&quot;suppressed&quot;</span></span>
+<span id="cb12-67"><a href="#cb12-67" aria-hidden="true" tabindex="-1"></a>  mergedCandidateIds<span class="op">:</span> <span class="dt">string</span>[]</span>
+<span id="cb12-68"><a href="#cb12-68" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Path semantics: for deleted files, <code>DiffFile.path</code> and
 <code>FileFacts.path</code> carry the old path; for renames,
 <code>path</code> is the new path and <code>oldPath</code> the old.
 <code>DiffAnchor.path</code> must use the side-appropriate path (LEFT
-anchors → old path, RIGHT anchors → new path). Hunk ids hash the same
-path the <code>DiffFile</code> carries.</p>
+anchors → old path, RIGHT anchors → new path).
+<code>DiffHunk.hunkHash</code> hashes the same final path the
+<code>DiffFile</code> carries; <code>DiffHunk.id</code> is its allocated
+short prefix.</p>
 <p>Candidate findings are invalid unless they include evidence and a
 concrete failure mode. Pre-verification gates require an anchor only for
 inline-intended candidates; unanchored candidates are summary-only
@@ -1134,9 +1160,9 @@ table):</p>
 <tr>
 <td><code>review.depth</code>, <code>review.maxFindings</code>,
 <code>review.softCommentCap</code>, <code>review.budgetBoost</code>,
-<code>git.baseBranch</code>, <code>lenses.enabled</code> /
-<code>lenses.disabled</code>, <code>classification.pathRules</code>
-(incl. labels)</td>
+<code>review.maxTime</code>, <code>git.baseBranch</code>,
+<code>lenses.enabled</code> / <code>lenses.disabled</code>,
+<code>classification.pathRules</code> (incl. labels)</td>
 <td>Repo <code>codegenie.toml</code>, user-scoped config, or CLI</td>
 </tr>
 <tr>
@@ -1146,7 +1172,7 @@ table):</p>
 <tr>
 <td><code>review.verify</code>, <code>review.minSeverity</code>,
 <code>review.minConfidence</code>,
-<code>review.minInlineConfidence</code>, <code>review.timeoutMs</code>,
+<code>review.minInlineConfidence</code>,
 <code>review.perPassTimeoutMs</code>,
 <code>review.maxBudgetTokens</code>, <code>review.maxModelCalls</code>,
 <code>review.concurrency</code>, <code>llm.*</code>,
@@ -1160,6 +1186,15 @@ table):</p>
 </table>
 <p>The loader enforces this via per-key source tracking; repo values for
 user-scope keys are ignored with a warning.</p>
+<p>The public TOML key <code>review.maxTime</code> is a positive finite
+number of minutes, capped at
+<code>Number.MAX_SAFE_INTEGER / 120_000</code> so both the resolved soft
+limit and its 2x hard deadline remain finite and safely representable in
+milliseconds. It is deliberately repo-settable, defaults to 30 when
+omitted, and is overridden by <code>--max-time &lt;minutes&gt;</code>.
+The loader tracks its source as <code>review.maxTime</code> and converts
+it once to the resolved internal <code>review.maxTimeMs</code>;
+<code>review.timeoutMs</code> is not a public config key.</p>
 <p>All merging happens once, in the config loader, which tracks per-key
 sources to enforce the trust partition and produces the single resolved
 <code>CodegenieConfig</code>. Downstream components — including the LLM
@@ -1186,7 +1221,7 @@ directly.</p>
 <span id="cb17-18"><a href="#cb17-18" aria-hidden="true" tabindex="-1"></a>    minConfidence<span class="op">:</span> Confidence</span>
 <span id="cb17-19"><a href="#cb17-19" aria-hidden="true" tabindex="-1"></a>    minInlineConfidence<span class="op">:</span> Confidence</span>
 <span id="cb17-20"><a href="#cb17-20" aria-hidden="true" tabindex="-1"></a>    concurrency<span class="op">:</span> <span class="dt">number</span></span>
-<span id="cb17-21"><a href="#cb17-21" aria-hidden="true" tabindex="-1"></a>    timeoutMs<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb17-21"><a href="#cb17-21" aria-hidden="true" tabindex="-1"></a>    maxTimeMs<span class="op">:</span> <span class="dt">number</span></span>
 <span id="cb17-22"><a href="#cb17-22" aria-hidden="true" tabindex="-1"></a>    perPassTimeoutMs<span class="op">:</span> <span class="dt">number</span></span>
 <span id="cb17-23"><a href="#cb17-23" aria-hidden="true" tabindex="-1"></a>    maxBudgetTokens<span class="op">?:</span> <span class="dt">number</span></span>
 <span id="cb17-24"><a href="#cb17-24" aria-hidden="true" tabindex="-1"></a>    maxModelCalls<span class="op">?:</span> <span class="dt">number</span></span>
@@ -1244,13 +1279,14 @@ another user-scoped config source.</p>
 <li><code>review.verify = true</code></li>
 <li><code>review.maxFindings = 25</code> (report cap)</li>
 <li><code>review.softCommentCap = 7</code> (inline target)</li>
-<li><code>review.concurrency = 4</code></li>
-<li><code>llm.maxConcurrentCalls = 4</code></li>
+<li><code>review.concurrency = 6</code></li>
+<li><code>llm.maxConcurrentCalls = 6</code></li>
 <li><code>llm.forceSubmitToolChoice = true</code> (plan 86 step 3:
 Anthropic finalize/repair/no-tool calls run with thinking disabled and
 genuinely forced submit tool choice; <code>false</code> restores the
 legacy silent downgrade to <code>auto</code>)</li>
-<li><code>review.timeoutMs = 30 * 60 * 1000</code></li>
+<li><code>review.maxTimeMs = 30 * 60 * 1000</code> (resolved from public
+<code>review.maxTime</code>, whose built-in default is 30 minutes)</li>
 <li><code>review.perPassTimeoutMs = 8 * 60 * 1000</code> (per model
 task/worker, not per stage)</li>
 <li><code>review.minConfidence = &quot;medium&quot;</code></li>
@@ -1281,7 +1317,18 @@ user-level config; unresolved reasoning falls back to the built-in
 <li><code>telemetry.runDir = &quot;.codegenie/runs&quot;</code></li>
 <li><code>telemetry.retainRuns = 20</code></li>
 <li><code>eval.logsDir = &quot;logs&quot;</code></li>
-<li>Default-enabled lens set = all four bundled lenses.</li>
+<li>Default-enabled lens set = all eight currently bundled lenses
+(<code>core/code-review</code>, <code>core/tests</code>,
+<code>lang/go</code>, <code>lang/javascript</code>,
+<code>lang/python</code>, <code>lang/rust</code>,
+<code>lang/solidity</code>, <code>lang/typescript</code>). The three
+Phase 1-4 Plan 98 skills established one external Stage-5
+inventory/registry/cache boundary at <code>eb20533</code>; Phase 5 did
+not change it. The atomic Phase-6 JavaScript skill plus TypeScript
+narrowing establish a second boundary at the revision where that
+complete unit first becomes externally visible. Measurements across
+either boundary are non-comparable prompt/cache regimes; branch
+visibility remains distinct from tag/npm/GitHub release state.</li>
 </ul>
 <p>Neither <code>review.maxFindings</code> nor
 <code>review.softCommentCap</code> suppresses verified critical/high
@@ -1481,7 +1528,21 @@ here next to the hunk-id formula):</p>
 <p>V1 language adapters:</p>
 <ul>
 <li>Go.</li>
-<li>TypeScript/JavaScript.</li>
+<li>TypeScript and TSX.</li>
+<li>JavaScript (<code>.js</code>, <code>.jsx</code>, <code>.mjs</code>,
+<code>.cjs</code>) through the shared ECMAScript adapter implementation
+but distinct language identity and guidance.</li>
+<li>Rust, with attribute-aware declarations, trait/impl ownership
+context, nominal impl owners (or <code>impl target</code> for
+non-nominal blanket targets), stable imports, and deterministic
+declaration identity.</li>
+<li>Python, with decorator-aware ranges/signatures, direct class
+ownership, nested-local ownership reset, stable module imports, and
+deterministic declaration identity. Only <code>.py</code> is supported;
+<code>.pyi</code> remains generic.</li>
+<li>Solidity, with contract/member ownership, minimal state-value
+symbols, source imports, overload-safe identity, and default Foundry
+test conventions.</li>
 <li>Generic fallback for unsupported files.</li>
 </ul>
 <p>Language adapter interface:</p>
@@ -1495,8 +1556,23 @@ here next to the hunk-id formula):</p>
 <span id="cb22-8"><a href="#cb22-8" aria-hidden="true" tabindex="-1"></a>  <span class="fu">getImports</span>(file<span class="op">:</span> ParsedFile)<span class="op">:</span> <span class="dt">string</span>[]</span>
 <span id="cb22-9"><a href="#cb22-9" aria-hidden="true" tabindex="-1"></a>  <span class="fu">getChangedSymbols</span>(file<span class="op">:</span> ParsedFile<span class="op">,</span> hunk<span class="op">:</span> DiffHunk)<span class="op">:</span> ChangedSymbol[]</span>
 <span id="cb22-10"><a href="#cb22-10" aria-hidden="true" tabindex="-1"></a>  getStaticSignals<span class="op">?</span>(file<span class="op">:</span> ParsedFile<span class="op">,</span> hunk<span class="op">:</span> DiffHunk)<span class="op">:</span> StaticSignal[]</span>
-<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a>  findLikelyTests<span class="op">?</span>(symbol<span class="op">:</span> SymbolInfo<span class="op">,</span> index<span class="op">:</span> RepositoryIndex)<span class="op">:</span> SymbolInfo[]</span>
-<span id="cb22-12"><a href="#cb22-12" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<span id="cb22-11"><a href="#cb22-11" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<p>Likely-test discovery is owned once by
+<code>src/repo/likely-tests.ts</code>, not by an adapter hook. Rust
+candidates are sibling <code>&lt;stem&gt;_test.rs</code> and nearest
+Cargo-package <code>tests/&lt;stem&gt;.rs</code>; supported attributed
+test functions are returned in deterministic path/range/name order.
+Python candidates are sibling
+<code>test_&lt;stem&gt;.py</code>/<code>&lt;stem&gt;_test.py</code> plus
+nearest-package <code>tests/</code> variants; only top-level
+<code>test_*</code> functions and direct <code>test_*</code> methods
+under <code>Test*</code> classes are test cases. For subjects outside
+the explicit language conventions, the generic fallback accepts exact
+stem matches only under <code>test</code>, <code>tests</code>, or
+<code>__tests__</code>; Go/TS/JS sibling patterns do not leak across
+subject languages. Same-file Rust discovery, arbitrary Rust integration
+scanning, and custom pytest collection configuration are explicit
+deferrals.</p>
 <p>Repository tool interface:</p>
 <div class="sourceCode" id="cb23"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb23-1"><a href="#cb23-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ToolBackend <span class="op">=</span> <span class="st">&quot;tree-sitter&quot;</span> <span class="op">|</span> <span class="st">&quot;text&quot;</span> <span class="op">|</span> <span class="st">&quot;language-analyzer&quot;</span></span>
 <span id="cb23-2"><a href="#cb23-2" aria-hidden="true" tabindex="-1"></a></span>
@@ -1627,13 +1703,23 @@ stages.</li>
 <span id="cb24-15"><a href="#cb24-15" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb24-16"><a href="#cb24-16" aria-hidden="true" tabindex="-1"></a><span class="fu"># Safe Patterns</span></span>
 <span id="cb24-17"><a href="#cb24-17" aria-hidden="true" tabindex="-1"></a></span>
-<span id="cb24-18"><a href="#cb24-18" aria-hidden="true" tabindex="-1"></a><span class="fu"># Examples</span></span></code></pre></div>
+<span id="cb24-18"><a href="#cb24-18" aria-hidden="true" tabindex="-1"></a><span class="fu"># Examples (optional)</span></span></code></pre></div>
+<p><code>Examples</code> is a supported optional section for distinct
+worked cases, not a required ritual. A narrowly owned check may instead
+carry its unsafe and safe examples inline; bundled language skills use
+that owner-matrix form and omit a redundant Examples section. Core
+skills may retain Examples when they add scenarios not already encoded
+by the checks.</p>
 <p>Bundled v1 lenses:</p>
 <ul>
 <li><code>core/code-review</code> (absorbs logic-bug and architecture
 review as sections of one skill)</li>
 <li><code>core/tests</code></li>
 <li><code>lang/go</code></li>
+<li><code>lang/javascript</code></li>
+<li><code>lang/python</code></li>
+<li><code>lang/rust</code></li>
+<li><code>lang/solidity</code></li>
 <li><code>lang/typescript</code></li>
 </ul>
 <p>Additional domain lenses can be added after the core pipeline
@@ -1788,15 +1874,28 @@ shape:</p>
 <div class="sourceCode" id="cb27"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb27-1"><a href="#cb27-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> ReviewResult <span class="op">=</span> {</span>
 <span id="cb27-2"><a href="#cb27-2" aria-hidden="true" tabindex="-1"></a>  summary<span class="op">:</span> <span class="dt">string</span></span>
 <span id="cb27-3"><a href="#cb27-3" aria-hidden="true" tabindex="-1"></a>  coverage<span class="op">:</span> RunCoverageStatus</span>
-<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a>  findings<span class="op">:</span> FinalFinding[] <span class="co">// publication &quot;inline&quot; only; suppressed findings are artifact-only (final-findings.json / final-selection.json)</span></span>
-<span id="cb27-5"><a href="#cb27-5" aria-hidden="true" tabindex="-1"></a>  summaryOnlyFindings<span class="op">:</span> FinalFinding[] <span class="co">// publication &quot;summary-only&quot;</span></span>
-<span id="cb27-6"><a href="#cb27-6" aria-hidden="true" tabindex="-1"></a>  needsHumanAttention<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ question<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> files<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> symbols<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> reason<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> confidence<span class="op">:</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> }<span class="op">&gt;</span> <span class="co">// code-assembled notes from medium/high-confidence follow-up hints</span></span>
-<span id="cb27-7"><a href="#cb27-7" aria-hidden="true" tabindex="-1"></a>  noFindings<span class="op">:</span> <span class="dt">boolean</span></span>
-<span id="cb27-8"><a href="#cb27-8" aria-hidden="true" tabindex="-1"></a>  postingPlan<span class="op">?:</span> { <span class="co">// present only when --post-github-comments was passed</span></span>
-<span id="cb27-9"><a href="#cb27-9" aria-hidden="true" tabindex="-1"></a>    inline<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ findingId<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> anchor<span class="op">:</span> DiffAnchor }<span class="op">&gt;</span></span>
-<span id="cb27-10"><a href="#cb27-10" aria-hidden="true" tabindex="-1"></a>    reviewBody<span class="op">:</span> <span class="dt">string</span></span>
-<span id="cb27-11"><a href="#cb27-11" aria-hidden="true" tabindex="-1"></a>  }</span>
-<span id="cb27-12"><a href="#cb27-12" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
+<span id="cb27-4"><a href="#cb27-4" aria-hidden="true" tabindex="-1"></a>  runStats<span class="op">?:</span> {</span>
+<span id="cb27-5"><a href="#cb27-5" aria-hidden="true" tabindex="-1"></a>    model<span class="op">?:</span> { provider<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> id<span class="op">?:</span> <span class="dt">string</span><span class="op">;</span> reasoning<span class="op">?:</span> ReasoningLevel }</span>
+<span id="cb27-6"><a href="#cb27-6" aria-hidden="true" tabindex="-1"></a>    elapsedMs<span class="op">?:</span> <span class="dt">number</span></span>
+<span id="cb27-7"><a href="#cb27-7" aria-hidden="true" tabindex="-1"></a>    git<span class="op">?:</span> { repo<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> base<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> head<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> headSha<span class="op">?:</span> <span class="dt">string</span> }</span>
+<span id="cb27-8"><a href="#cb27-8" aria-hidden="true" tabindex="-1"></a>    plannerCoverage<span class="op">?:</span> PlannerCoverageStats</span>
+<span id="cb27-9"><a href="#cb27-9" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb27-10"><a href="#cb27-10" aria-hidden="true" tabindex="-1"></a>  findings<span class="op">:</span> FinalFinding[] <span class="co">// publication &quot;inline&quot; only; suppressed findings are artifact-only (final-findings.json / final-selection.json)</span></span>
+<span id="cb27-11"><a href="#cb27-11" aria-hidden="true" tabindex="-1"></a>  summaryOnlyFindings<span class="op">:</span> FinalFinding[] <span class="co">// publication &quot;summary-only&quot;</span></span>
+<span id="cb27-12"><a href="#cb27-12" aria-hidden="true" tabindex="-1"></a>  needsHumanAttention<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ question<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> files<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> symbols<span class="op">:</span> <span class="dt">string</span>[]<span class="op">;</span> reason<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> confidence<span class="op">:</span> <span class="st">&quot;high&quot;</span> <span class="op">|</span> <span class="st">&quot;medium&quot;</span> }<span class="op">&gt;</span> <span class="co">// code-assembled notes from medium/high-confidence follow-up hints</span></span>
+<span id="cb27-13"><a href="#cb27-13" aria-hidden="true" tabindex="-1"></a>  noFindings<span class="op">:</span> <span class="dt">boolean</span></span>
+<span id="cb27-14"><a href="#cb27-14" aria-hidden="true" tabindex="-1"></a>  postingPlan<span class="op">?:</span> { <span class="co">// present only when --post-github-comments was passed</span></span>
+<span id="cb27-15"><a href="#cb27-15" aria-hidden="true" tabindex="-1"></a>    inline<span class="op">:</span> <span class="bu">Array</span><span class="op">&lt;</span>{ findingId<span class="op">:</span> <span class="dt">string</span><span class="op">;</span> anchor<span class="op">:</span> DiffAnchor }<span class="op">&gt;</span></span>
+<span id="cb27-16"><a href="#cb27-16" aria-hidden="true" tabindex="-1"></a>    reviewBody<span class="op">:</span> <span class="dt">string</span></span>
+<span id="cb27-17"><a href="#cb27-17" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb27-18"><a href="#cb27-18" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb27-19"><a href="#cb27-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb27-20"><a href="#cb27-20" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> PlannerCoverageStats <span class="op">=</span> {</span>
+<span id="cb27-21"><a href="#cb27-21" aria-hidden="true" tabindex="-1"></a>  submittedEntries<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-22"><a href="#cb27-22" aria-hidden="true" tabindex="-1"></a>  acceptedEntries<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-23"><a href="#cb27-23" aria-hidden="true" tabindex="-1"></a>  acceptedUniqueHunks<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-24"><a href="#cb27-24" aria-hidden="true" tabindex="-1"></a>  rejectedUnknownHunk<span class="op">:</span> <span class="dt">number</span></span>
+<span id="cb27-25"><a href="#cb27-25" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div>
 <p>Detection (generated/vendor/lock/binary) is a single shared
 deterministic detector library. The pipeline order matches the stage
 numbering: parse → Stage 2 filter (run the detectors the skip policy
@@ -1837,14 +1936,22 @@ mutate the repository.</li>
 <li>Run one composite model task per scheduled packet, with the selected
 lenses projected into that task.</li>
 <li>Do not run one model call per lens by default.</li>
-<li>Project and cap skill prompt sections for the review stage so large
-skill files do not dominate every packet prompt. Packet review prompts
-receive the skill’s Checks, False Positives, and Examples sections;
-verifier prompts receive False Positives and Safe Patterns; the planner
-receives one-line skill/lens summaries only; the composer receives none.
-A per-skill projection cap and a total skill-content cap per prompt
-apply, with truncation recorded in telemetry. Defaults: 4000 chars per
-skill projection, 12000 chars total per prompt.</li>
+<li>Project and cap skill prompt sections so large skill files do not
+dominate prompts. Packet review receives Checks, False Positives, and
+optional Examples; targeted Stage 8 review receives Checks, False
+Positives, and Safe Patterns; verification receives False Positives and
+Safe Patterns; the planner receives one-line summaries only; the
+composer receives none. A per-skill projection cap and a total
+skill-content cap per prompt apply, with truncation recorded in
+telemetry. Defaults: 4000 chars per skill projection, 12000 chars total
+per prompt.</li>
+<li>Derive every produced item’s ordered skill provenance from its
+actual prompt projection. Direct Stage-7/8 findings store it in
+<code>producedBy.skillIds</code>; Stage-7 hints and uncertainties store
+it in <code>projectedSkillIds</code>, and promotions inherit the
+selected source item’s list. Stage 9 resolves only those recorded ids,
+drops unknown or language-incompatible ids, and never infers guidance
+from <code>lensId</code>.</li>
 <li>Use coverage-aware execution profiles:
 <ul>
 <li><code>simple</code>: one structured call with no repository tools;
@@ -1896,7 +2003,7 @@ was skipped.</li>
 <li>Authentication or provider-wide failures at any stage fail the
 run.</li>
 </ul></li>
-<li>Budgets (<code>timeoutMs</code>, <code>maxBudgetTokens</code>,
+<li>Budgets (<code>maxTimeMs</code>, <code>maxBudgetTokens</code>,
 <code>maxModelCalls</code>) are checked before each new model call or
 worker dispatch. On exhaustion: stop scheduling new packet reviews →
 verify already-produced candidates using a reserved budget slice →
@@ -1993,7 +2100,8 @@ classification, package-root hints, test-file detection, configured
 labels/priorities, absolute hunk line numbers, and seed context
 retrieval.</li>
 <li>Strongly preferred for v1: tree-sitter enclosing symbol and
-changed-symbol extraction for Go and TypeScript/JavaScript.</li>
+changed-symbol extraction for Go, TypeScript/TSX, JavaScript, Rust,
+Python, and Solidity.</li>
 <li>Deferred to Future Considerations: symbol edges, caller/test
 relationship graphs, and semantic analyzer integrations.</li>
 </ul>
@@ -2047,10 +2155,13 @@ only.</li>
 <p>LLM verification is enabled by default and runs one candidate at a
 time with bounded concurrency. The verifier receives the candidate,
 originating packet context, relevant changed hunk(s), cited evidence,
-active lens criteria, and read-only semantic tools. It may inspect
-surrounding code only to validate the candidate’s specific claim. It
-must verify, revise, or reject the candidate; it must not search for new
-issues or introduce unrelated findings.</p>
+the False Positives/Safe Patterns guidance selected only by the
+producing item’s recorded skill ids, and read-only semantic tools.
+Unknown or language-incompatible ids are dropped; primary-lens
+membership is never a fallback. It may inspect surrounding code only to
+validate the candidate’s specific claim. It must verify, revise, or
+reject the candidate; it must not search for new issues or introduce
+unrelated findings.</p>
 <p>Verifier pre-clustering is not final deduplication. It may avoid
 repeated checks for identical or near-identical candidate copies, but
 semantic deduplication, same-root-cause grouping, comment-cap handling,
@@ -2527,7 +2638,8 @@ validated against <code>git check-ref-format</code> rules and rejected
 if option-like (leading <code>-</code>).</p>
 <p>Config trust partitioning: the per-key config-source table in CLI And
 Config is normative. Repo <code>codegenie.toml</code> may set only the
-repo-settable safe keys listed there; every other key takes effect only
+repo-settable safe keys listed there, including the positive-minute
+<code>review.maxTime</code> run bound; every other key takes effect only
 with user-level opt-in — a CLI flag,
 <code>~/.codegenie/settings.json</code>, or the user-scoped config file
 <code>~/.codegenie/config.toml</code> (all under
@@ -2569,7 +2681,8 @@ artifacts, cache entries, debug traces, or error context.</p>
 <p>Fixture tests:</p>
 <ul>
 <li>Go changed-function extraction.</li>
-<li>TypeScript/JavaScript changed-function extraction.</li>
+<li>TypeScript/TSX and JavaScript changed-function extraction with
+distinct canonical language identity.</li>
 <li>Review packet construction with absolute line numbers.</li>
 <li>Static signal extraction for the two core cross-language rules.</li>
 <li>Unsupported language fallback.</li>

@@ -8,6 +8,68 @@ import { resolveReviewInput } from "../src/git/review-input-resolver.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 
 describe("file filtering and classification", () => {
+  it("classifies Rust, Python, and Solidity path roles without ambiguous directory skips", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "README.md", "base\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    const languageFiles: Array<[string, string]> = [
+      ["src/lib.rs", "pub fn value() {}\n"],
+      ["src/inline.rs", "pub fn value() {}\n\n#[cfg(test)]\nmod tests { #[test] fn value_works() {} }\n"],
+      ["src/lib_test.rs", "#[test] fn value() {}\n"],
+      ["crates/payments/tests/transfer.rs", "#[test] fn transfer() {}\n"],
+      ["pkg/service.py", "def value(): return 1\n"],
+      ["pkg/test_service.py", "def test_value(): pass\n"],
+      ["pkg/service_test.py", "def test_value(): pass\n"],
+      ["contracts/Vault.sol", "contract Vault {}\n"],
+      ["Vault.t.sol", "contract VaultTest {}\n"],
+      ["test/VaultTest.t.sol", "contract VaultTest {}\n"],
+      ["Cargo.lock", "version = 4\n"],
+      ["poetry.lock", "# lock\n"],
+      ["uv.lock", "version = 1\n"],
+      ["Pipfile.lock", "{}\n"]
+    ];
+    for (const [filePath, content] of languageFiles) {
+      writeRepoFile(repo, filePath, content);
+    }
+    commitAll(repo, "language paths");
+
+    const resolved = await resolveReviewInput(
+      { mode: "branch", branchName: "feature" },
+      defaultConfig,
+      nullTelemetry(),
+      { repoRoot: repo }
+    );
+    const diff = parseDiff(resolved.rawDiff);
+    const { kept, decisions } = await filterDiffFiles(resolved, diff, defaultConfig, nullTelemetry());
+    const facts = await classifyChangedFiles(resolved, kept, decisions, defaultConfig, nullTelemetry());
+
+    const byPath = new Map(facts.map((fact) => [fact.path, fact]));
+    const expectedTests: Array<[string, string]> = [
+      ["src/lib_test.rs", "rust"],
+      ["crates/payments/tests/transfer.rs", "rust"],
+      ["pkg/test_service.py", "python"],
+      ["pkg/service_test.py", "python"],
+      ["Vault.t.sol", "solidity"],
+      ["test/VaultTest.t.sol", "solidity"]
+    ];
+    for (const [filePath, language] of expectedTests) {
+      expect(byPath.get(filePath)).toMatchObject({ language, testStatus: "test" });
+    }
+    const expectedSources: Array<[string, string]> = [
+      ["src/lib.rs", "rust"],
+      ["src/inline.rs", "rust"],
+      ["pkg/service.py", "python"],
+      ["contracts/Vault.sol", "solidity"]
+    ];
+    for (const [filePath, language] of expectedSources) {
+      expect(byPath.get(filePath)).toMatchObject({ language, testStatus: "source" });
+    }
+    for (const lockfile of ["Cargo.lock", "poetry.lock", "uv.lock", "Pipfile.lock"]) {
+      expect(decisions).toContainEqual(expect.objectContaining({ path: lockfile, action: "skip", reason: "lockfile" }));
+    }
+  });
+
   it("records deterministic skip decisions and kept-file facts from detectors and path rules", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "go.mod", "module example.com/repo\n");
@@ -384,6 +446,7 @@ describe("file filtering and classification", () => {
           hunks: [
             {
               id: "h1",
+              hunkHash: "0000000000000000000000000000000000000000000000000000000000000000",
               path: "src/deleted.ts",
               oldStart: 1,
               oldLines: 1,

@@ -32,7 +32,7 @@ type MutableFile = {
   inBinaryPatch?: boolean;
 };
 
-type MutableHunk = Omit<DiffHunk, "id"> & {
+type MutableHunk = Omit<DiffHunk, "id" | "hunkHash"> & {
   oldConsumed: number;
   newConsumed: number;
 };
@@ -94,7 +94,7 @@ export function parseDiff(rawDiff: string): UnifiedDiff {
   currentHunk = finishHunk(currentFile, currentHunk, lines.length + 1);
   void currentHunk;
   finishFile(files, currentFile);
-  return { files };
+  return allocateShortHunkIds({ files });
 }
 
 export function buildDiffAnchorIndex(diff: UnifiedDiff): DiffAnchorIndex {
@@ -342,6 +342,7 @@ function finishHunk(
   }
   file.hunks.push({
     id: hunkId(hunk),
+    hunkHash: hunkId(hunk),
     path: hunk.path,
     oldStart: hunk.oldStart,
     oldLines: hunk.oldLines,
@@ -385,7 +386,10 @@ function finishFile(files: DiffFile[], file: MutableFile | undefined): void {
     path: file.path,
     status: file.status,
     language: languageFromPath(file.path),
-    hunks: file.hunks.map((hunk) => ({ ...hunk, path: file.path, id: hunkIdFor(file.path, hunk) }))
+    hunks: file.hunks.map((hunk) => {
+      const hunkHash = hunkIdFor(file.path, hunk);
+      return { ...hunk, path: file.path, id: hunkHash, hunkHash };
+    })
   };
   if (file.oldPath !== undefined) {
     output.oldPath = file.oldPath;
@@ -421,6 +425,48 @@ function hunkIdFor(path: string, hunk: Pick<DiffHunk, "oldStart" | "newStart" | 
   return sha256Hex(
     `${path}\0${hunk.oldStart}\0${hunk.newStart}\0${hunk.header}\0add:${added};del:${deleted}`
   );
+}
+
+const HUNK_ID_PREFIX_LENGTHS = [8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64] as const;
+
+export function allocateShortHunkIds(diff: UnifiedDiff): UnifiedDiff {
+  const hunks = diff.files.flatMap((file) => file.hunks);
+  const byHash = new Map<string, DiffHunk[]>();
+  for (const hunk of hunks) {
+    const group = byHash.get(hunk.hunkHash) ?? [];
+    group.push(hunk);
+    byHash.set(hunk.hunkHash, group);
+  }
+  const duplicate = [...byHash.entries()].find(([, group]) => group.length > 1);
+  if (duplicate !== undefined) {
+    throw new CodegenieError(
+      "diff_parse_failed",
+      `duplicate hunk digest produced while parsing diff: ${duplicate[0]}`,
+      { context: { hunkHash: duplicate[0], occurrences: duplicate[1].length } }
+    );
+  }
+
+  const prefixCounts = new Map<number, Map<string, number>>();
+  for (const length of HUNK_ID_PREFIX_LENGTHS) {
+    const counts = new Map<string, number>();
+    for (const hunk of hunks) {
+      const prefix = hunk.hunkHash.slice(0, length);
+      counts.set(prefix, (counts.get(prefix) ?? 0) + 1);
+    }
+    prefixCounts.set(length, counts);
+  }
+
+  return {
+    files: diff.files.map((file) => ({
+      ...file,
+      hunks: file.hunks.map((hunk) => {
+        const length = HUNK_ID_PREFIX_LENGTHS.find(
+          (candidate) => prefixCounts.get(candidate)?.get(hunk.hunkHash.slice(0, candidate)) === 1
+        ) ?? 64;
+        return { ...hunk, id: hunk.hunkHash.slice(0, length) };
+      })
+    }))
+  };
 }
 
 function setChangedLine(
@@ -603,6 +649,15 @@ function languageFromPath(filePath: string): string {
   }
   if (/\.(?:js|jsx|mjs|cjs)$/u.test(filePath)) {
     return "javascript";
+  }
+  if (filePath.endsWith(".rs")) {
+    return "rust";
+  }
+  if (filePath.endsWith(".py")) {
+    return "python";
+  }
+  if (filePath.endsWith(".sol")) {
+    return "solidity";
   }
   if (filePath.endsWith(".json")) {
     return "json";

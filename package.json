@@ -1,6 +1,6 @@
 {
   "name": "@0xsequence/codegenie",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "High-signal AI code review agent",
   "type": "module",
   "bin": {
@@ -26,14 +26,17 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.81.1",
+    "@earendil-works/pi-ai": "^0.82.0",
     "commander": "15.0.0",
     "execa": "10.0.0",
-    "p-limit": "7.3.0",
+    "p-limit": "7.3.1",
     "picomatch": "4.0.5",
     "smol-toml": "1.7.0",
     "tree-sitter-go": "0.25.0",
     "tree-sitter-javascript": "0.25.0",
+    "tree-sitter-python": "0.25.0",
+    "tree-sitter-rust": "0.24.0",
+    "tree-sitter-solidity": "1.2.13",
     "tree-sitter-typescript": "0.23.2",
     "web-tree-sitter": "0.26.11",
     "yaml": "2.9.0",

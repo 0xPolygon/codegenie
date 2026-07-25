@@ -140,16 +140,18 @@ and other meaningful problems. The review output should avoid fluff and
 nitpicks.</p>
 <p>The system will include bundled skills and user-facing review lenses.
 A skill is the review knowledge unit: a Markdown file of concrete
-checks, false-positive rules, safe patterns, examples, and severity
-guidance tied to impact; the harness owns prompts, tools, and output
-schemas. A lens is the review perspective exposed to users, such as Go
-correctness, TypeScript correctness, security, API design, performance,
-architecture, database, concurrency, or tests. A lens may map to one or
-more skills. Skills should not be mostly persona; the best skills encode
-concrete checks rather than character description. Developers can add
-their own repo-local Markdown skills to give the reviewer additional
-expertise, with executable skill packages as a possible future
-extension.</p>
+checks, false-positive rules, safe patterns, optional distinct examples,
+and severity guidance tied to impact; the harness owns prompts, tools,
+and output schemas. Language checks should name the observable failure,
+materiality, unsafe and contract-preserving safe cases, and mitigation
+inline; a redundant <code># Examples</code> ritual adds no value. A lens
+is the review perspective exposed to users, such as Go correctness,
+TypeScript correctness, security, API design, performance, architecture,
+database, concurrency, or tests. A lens may map to one or more skills.
+Skills should not be mostly persona; the best skills encode concrete
+checks rather than character description. Developers can add their own
+repo-local Markdown skills to give the reviewer additional expertise,
+with executable skill packages as a possible future extension.</p>
 <p>codegenie should be built in TypeScript and run as a CLI.</p>
 <p>codegenie should focus on reviewing any git repository. It should
 also support referencing a GitHub pull request by PR number, but GitLab
@@ -170,7 +172,10 @@ swappable underneath them.</p>
 publicly, it must treat reviewed content as data rather than
 instructions, contain repository tools to the repository root, and never
 let repo-resident configuration enable command execution or posting on
-its own.</p>
+its own. The GitHub Action trigger extends the same rule to comment
+text: a trigger phrase is matched exactly, never interpreted, and never
+parsed into review options — review knobs come only from workflow
+inputs, which repo admins control.</p>
 <p>A successful review finds real correctness, security, and design
 issues; explains the impact; cites the relevant code; and avoids style
 nits unless they hide meaningful risk. By default, codegenie should
@@ -218,8 +223,9 @@ follow-up questions from packet reviewers. The broad system pass that
 proactively inspects interactions across changed files, call sites,
 interfaces, migrations, tests, and architecture is deferred; the shipped
 stage only runs when repeated hints justify it.</li>
-<li>Verifier/deduper pass: reject speculative comments, merge
-duplicates, and publish only high-signal findings.</li>
+<li>Verifier/deduper pass: reject speculative comments using the exact
+skill guidance recorded by the producing review item, merge duplicates,
+and publish only high-signal findings.</li>
 </ol>
 <p>The unit of review should be the changed hunk, but the unit of
 understanding should be the affected system. The review flow should look

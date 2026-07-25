@@ -473,7 +473,7 @@ After each hunk the parser asserts consumed counts equal the header counts (else
 The architecture formula `sha256(path + oldStart + newStart + normalizedHunkHeader + changedLineNumbers)` is pinned to this canonical byte serialization (UTF-8, `\x00` separators):
 
 ```text
-hunkId = sha256Hex(
+hunkHash = sha256Hex(
   path                       // the same path the DiffFile carries
   + "\x00" + String(oldStart)
   + "\x00" + String(newStart)
@@ -489,7 +489,7 @@ changedLineNumbers   = "add:" + comma-joined newLineNumbers of add lines
                        (each in file order; empty lists allowed)
 ```
 
-Ids are stable across reruns of the same diff and intentionally change when the hunk's position or changed-line set shifts. Packet ids (`sha256(path + sorted hunkIds + kind)`) are computed by the packet builder in Stage 6 (`components/review_pipeline.md`).
+The parser first computes every full `hunkHash` after rename/copy/path resolution. A second pass over the complete `UnifiedDiff` assigns `DiffHunk.id` as the shortest unique hexadecimal prefix, trying lengths 8, 12, 16, and so on through 64. Identical full digests are a parser defect and fail parsing with `diff_parse_failed`; they are never disambiguated by position. The short ids are stable across repeated parses of the same diff and intentionally change when coordinates or changed-line sets shift. The full digest remains available on the operational `DiffHunk` and in `diff.json` for forensics, but downstream projections carry only the opaque short `id`. Packet ids (`sha256(path + sorted hunkIds + kind)`) are computed by the packet builder in Stage 6 (`components/review_pipeline.md`).
 
 #### Anchor Index
 
@@ -518,8 +518,8 @@ Content source rule: detectors that read file content read it at the reviewed re
 - Binary detector: `DiffFile.isBinary` from diff metadata only. Provenance source `diff`, confidence `high`.
 - Ignored detector: `checkIgnored` (`git check-ignore`) against the trusted local checkout; hits are rare since tracked files in git-produced diffs are normally not ignored. Provenance source `git`.
 - Package-root detector: nearest ancestor directory (walking from the file's directory up to the repo root) containing one of `go.mod`, `package.json`, `Cargo.toml`, `pyproject.toml`, `setup.py`, `setup.cfg`, `pom.xml`, `build.gradle`, `build.gradle.kts`, `composer.json`, `Gemfile`, `mix.exs`. The ancestor scan runs in memory against a single cached `lsTree(headRef)` listing. Provenance source `path`.
-- Test-status detector, from established conventions only: Go `*_test.go`; TS/JS `*.test.*`, `*.spec.*`, `__tests__/` segment; Python `test_*.py`, `*_test.py`, `tests/` segment; Rust `tests/` top-level segment; generic `test/` or `tests/` path segment. Match → `"test"`; no match with a known language → `"source"`; unknown language or binary → `"unknown"`.
-- Language detector: extension map (representative: `.go`→`go`; `.ts/.mts/.cts/.tsx`→`typescript`; `.js/.jsx/.mjs/.cjs`→`javascript`; `.rs`→`rust`; `.sol`→`solidity`; `.md`→`markdown`; plus one entry each for `.py`, `.rb`, `.java`, `.kt`, `.swift`, `.c/.h`, `.cpp`, `.cs`, `.sql`, `.sh`, `.yaml/.yml`, `.json`, `.toml`) and known basenames (`Dockerfile`, `Makefile`, `go.mod`, `go.sum`). Fallback `"unknown"`. Provenance source `extension` or `filename`.
+- Test-status detector, from established conventions only: Go `*_test.go`; TS/JS `*.test.*`, `*.spec.*`, `__tests__/` segment; Python `test_*.py`, `*_test.py`, `tests/` segment; Rust `*_test.rs` or a `tests/` segment; Solidity `*.t.sol` or a `test/` segment; generic `test/` or `tests/` path segment. Match → `"test"`; no match with a known language → `"source"`; unknown language or binary → `"unknown"`. Rust inline discovery, Python custom collection, custom Foundry test directories, and Hardhat TypeScript linking are deferred; classifier roles remain convention-only.
+- Language detector: extension map (representative: `.go`→`go`; `.ts/.mts/.cts/.tsx`→`typescript`; `.js/.jsx/.mjs/.cjs`→`javascript`; `.rs`→`rust`; `.py`→`python`; `.sol`→`solidity`; `.md`→`markdown`; plus one entry each for `.rb`, `.java`, `.kt`, `.swift`, `.c/.h`, `.cpp`, `.cs`, `.sql`, `.sh`, `.yaml/.yml`, `.json`, `.toml`) and known basenames (`Dockerfile`, `Makefile`, `go.mod`, `go.sum`). `.pyi` is explicitly `"unknown"` in v1. Fallback `"unknown"`. Provenance source `extension` or `filename`.
 - Submodule detector: consumes the parser-populated `DiffFile.isSubmodule` (content pattern / `160000` mode headers). Provenance source `diff`.
 - Symlink detector: consumes the parser-populated `DiffFile.isSymlink`; when mode headers were absent, backfills the field via `lsTreeEntry` mode `120000` at head (base for deletions). Provenance source `diff` (parser-populated) or `git` (ls-tree backfill).
 
@@ -782,7 +782,7 @@ Vitest, per the architecture testing strategy: unit tests with fixtures for pure
 - `detect.generated-deleted-base-read` — deleted generated file detected from base content.
 - `detect.vendor-lockfile-binary` — detector lists honored with correct provenance sources.
 - `classify.package-root-nearest` — nested `package.json` under a `go.mod` repo resolves the nearest marker from the head tree listing.
-- `classify.test-conventions` — `_test.go`, `*.spec.ts`, `__tests__/`, `test_*.py` → `"test"`; non-test source with known language → `"source"`; unknown language → `"unknown"`.
+- `classify.test-conventions` — `_test.go`, `*.spec.ts`, `__tests__/`, `test_*.py`, `*_test.py`, `tests/*.py`, `*_test.rs`, `tests/*.rs`, and `*.t.sol` → `"test"`; ordinary Rust source (including inline tests) and other non-test source with known language → `"source"`; unknown language (including `.pyi`) → `"unknown"`.
 - `classify.small-added-whole-file` — added file with ≤ 100 lines → `whole-file`; 101 lines → `per-hunk`.
 - `classify.path-rules-precedence` — overlapping rules: last-match scalar wins, labels union, per-rule provenance recorded.
 - `classify.policy-change-label` — diff touching `codegenie.toml` / `.codegenie/skills/x.md` → label `policy-change`.

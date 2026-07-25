@@ -69,12 +69,14 @@ function packetResult(packetId: string, findings: CandidateFinding[], hints = 0,
       symbols: [],
       suggestedLenses: [],
       reason: "r",
-      confidence: "medium" as const
+      confidence: "medium" as const,
+      projectedSkillIds: []
     })),
     uncertainties: Array.from({ length: uncertainties }, (_v, index) => ({
       question: `uncertainty ${index} for ${packetId}`,
       files: ["src/a.ts"],
-      symbols: []
+      symbols: [],
+      projectedSkillIds: []
     })),
     status: "completed"
   };

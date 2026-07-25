@@ -46,6 +46,12 @@ codegenie review abc1234 def5678            # a commit range
 
 A single positional target is branch-first: if it resolves as a branch, codegenie reviews it against its base; otherwise it is treated as a single commit.
 
+First-class syntax context and default language guidance currently cover Go, TypeScript, JavaScript, Rust, Python, and Solidity. JavaScript has its own `lang/javascript` guidance for runtime semantics; `.js`, `.jsx`, `.mjs`, and `.cjs` share the proven ECMAScript adapter implementation without inheriting TypeScript-only checks. JavaScript CommonJS export inference, Flow/JSDoc semantic typing, unsupported proposal syntax, and framework/bundler semantics remain deferred. Solidity packets include contract-owned methods/types/events/errors/state values, source-only imports, overload-safe declaration identity, and deterministic default Foundry test links only when a nearest `foundry.toml` exists. File-level constants are not value symbols. Solidity storage-layout, generated-getter, ABI/export analysis, custom Foundry directories, and Hardhat TypeScript linking remain deferred; Solidity symbols intentionally leave `exported` unset. Python `.pyi` stubs/custom collection and Rust same-file/arbitrary integration-test discovery also remain deferred.
+
+Rust, Python, and Solidity form one language-inventory unit. Their three default-enabled skills intentionally change the global Stage-5 skill inventory, registry hash, and model-call cache identity. That single external measurement boundary occurred when the complete Phase 1-4 inventory reached `origin/next` at `eb20533`; measurements from before and after that revision are not comparable as the same cache/prompt regime. The later Phase-5 gate at `40b87b0` changes validation, packaging policy, fixtures, tests, and documentation but not the bundled-skill inventory or registry hash. A branch push is not an npm/tagged release: `master`, the latest tag, and npm `latest` remain at `v0.4.2` until an explicit release occurs.
+
+The dedicated JavaScript skill and narrowed TypeScript skill create a second intentional Stage-5 inventory/registry/cache boundary at the revision where this complete Phase-6 unit first becomes externally visible. Measurements across that landing are non-comparable prompt/cache regimes. A local implementation or branch push remains distinct from a master merge, tag, npm publication, or GitHub release.
+
 Common options:
 
 ```bash
@@ -118,6 +124,7 @@ baseBranch = "main"
 
 [review]
 depth = "normal"
+maxTime = 60        # positive number of minutes; --max-time overrides this per run
 budgetBoost = 1.0   # scales per-packet review budgets; does not change finding caps
 
 [telemetry]
@@ -135,7 +142,7 @@ processingMode = "skip"
 
 - **Telemetry is off by default.** Repo config may only set `telemetry.enabled`; user-level `~/.codegenie/config.toml` can also set run directory, log level, and retention.
 - **Skills travel with the repo.** Teams can version project-specific review expertise as Markdown skills in `.codegenie/skills/` — concrete checks, false-positive rules, and safe patterns.
-- **Budgets are dispatch controls, not mid-call interrupts.** Crossing a soft cap lets in-flight work finish, records the overrun, and stops dispatching non-essential work.
+- **Budgets are dispatch controls, not mid-call interrupts.** `review.maxTime` defaults to 30 minutes and may be set in repo or user config; `--max-time <minutes>` is the final per-run override. Crossing a soft cap lets in-flight work finish, records the overrun, and stops dispatching non-essential work.
 
 ## How a review runs
 

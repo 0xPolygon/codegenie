@@ -1,0 +1,26 @@
+name: skill-semantics-python-mutable-default
+repeat: 3
+repo:
+  fixture: repos/python
+command:
+  branch: feature
+  base: main
+review:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  reasoning: high
+  depth: deep
+  verify: true
+  cache: false
+  concurrency: 1
+  lenses:
+    - lang/python
+should_find:
+  - id: python-mutable-default-state-leak
+    path: src/collector.py
+    category: correctness
+    titlePattern: default|state|calls
+    failureModePattern: retain|leak|call
+should_not_find:
+  - id: python-none-default-control
+    path: src/safe_collector.py

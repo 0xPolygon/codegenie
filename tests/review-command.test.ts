@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CliDisplayExit, parseReviewCommand } from "../src/cli/review-command.js";
+import { MAX_REVIEW_TIME_MINUTES } from "../src/config/schema.js";
 import { CodegenieError } from "../src/util/errors.js";
 
 describe("review command", () => {
@@ -89,10 +90,15 @@ describe("review command", () => {
     );
   });
 
-  it("applies --max-time in minutes as the review timeout override", () => {
-    const parsed = parseReviewCommand(["review", "feature", "--max-time", "60"], testContext());
-    expect(parsed.config.review.timeoutMs).toBe(60 * 60 * 1000);
-    expect(parsed.configSources["review.timeoutMs"]).toBe("cli");
+  it("applies --max-time in minutes as the highest-precedence max time override", () => {
+    const ctx = testContext();
+    writeFileSync(path.join(ctx.homeOverride, "config.toml"), "[review]\nmaxTime = 45\n");
+    writeFileSync(path.join(ctx.repoRoot, "codegenie.toml"), "[review]\nmaxTime = 60\n");
+
+    const parsed = parseReviewCommand(["review", "feature", "--max-time", "75.5"], ctx);
+
+    expect(parsed.config.review.maxTimeMs).toBe(75.5 * 60 * 1000);
+    expect(parsed.configSources["review.maxTime"]).toBe("cli");
   });
 
   it("rejects a non-positive or non-numeric --max-time", () => {
@@ -102,6 +108,18 @@ describe("review command", () => {
     expect(() => parseReviewCommand(["review", "feature", "--max-time", "abc"], testContext())).toThrow(
       /--max-time must be a positive number of minutes/
     );
+    expect(() =>
+      parseReviewCommand(
+        ["review", "feature", "--max-time", String(MAX_REVIEW_TIME_MINUTES * 2)],
+        testContext()
+      )
+    ).toThrow(/exceeds the supported maximum/);
+
+    const maximum = parseReviewCommand(
+      ["review", "feature", "--max-time", String(MAX_REVIEW_TIME_MINUTES)],
+      testContext()
+    );
+    expect(Number.isSafeInteger(maximum.config.review.maxTimeMs * 2)).toBe(true);
   });
 
   it("enables progress by default and disables it for CI-friendly output", () => {

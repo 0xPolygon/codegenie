@@ -60,6 +60,7 @@ import { renderReviewForStdout, renderPostingSummaryForStdout } from "../output/
 import { isDisclosableCoverageReason, uniqueDisclosableCoverageReasons } from "../util/coverage-reasons.js";
 import { sha256Hex } from "../util/hashing.js";
 import { scaleOptionalBudgetValue } from "../util/budget.js";
+import { scheduleLongTimeout } from "../util/long-timeout.js";
 
 type RunReviewOverrides = {
   repoRoot?: string;
@@ -358,7 +359,7 @@ export async function runReview(
         }
       });
     }
-    finalReview.runStats = buildRunStats(config, resolved, run);
+    finalReview.runStats = buildRunStats(config, resolved, run, plannerResult.plannerCoverage);
     await renderOutputs(finalReview, overrides, run.telemetry);
     await run.finalize({
       status: finalReview.coverage.partial ? "completed_partial" : "completed_full",
@@ -439,12 +440,11 @@ async function startRun(
   emitConcurrencyTuningEvent(config, telemetry);
   const budget = new BudgetLedger(config, telemetry);
   const abort = new AbortController();
-  const hardTimeoutMs = config.review.timeoutMs * 2;
-  const hardKillTimer = setTimeout(
+  const hardTimeoutMs = config.review.maxTimeMs * 2;
+  const hardKillTimer = scheduleLongTimeout(
     () => abort.abort(new CodegenieError("timeout", "review run exceeded hard timeout")),
     hardTimeoutMs
   );
-  hardKillTimer.unref?.();
   const cleanupTasks: Array<() => Promise<void>> = [];
   let finalized = false;
   return {
@@ -459,7 +459,7 @@ async function startRun(
     finalize: async (outcome) => {
       if (!finalized) {
         finalized = true;
-        clearTimeout(hardKillTimer);
+        hardKillTimer.cancel();
         await runCleanupTasks(cleanupTasks, run.recorder);
       }
       await run.finalize(outcome);
@@ -1330,11 +1330,17 @@ function summarizeResolvedInput(resolved: ResolvedReviewInput): Omit<ResolvedRev
   };
 }
 
-function buildRunStats(config: CodegenieConfig, resolved: ResolvedReviewInput, run: RunContext): ReviewRunStats {
+function buildRunStats(
+  config: CodegenieConfig,
+  resolved: ResolvedReviewInput,
+  run: RunContext,
+  plannerCoverage?: ReviewRunStats["plannerCoverage"]
+): ReviewRunStats {
   const model = modelStats(config);
   return {
     ...(model !== undefined ? { model } : {}),
     elapsedMs: run.budget.elapsedMs(),
+    ...(plannerCoverage !== undefined ? { plannerCoverage } : {}),
     git: {
       repo: resolved.pr ? `${resolved.pr.owner}/${resolved.pr.repo}` : path.basename(resolved.repoRoot),
       base: resolved.baseRefName ?? shortRef(resolved.baseRef ?? resolved.mergeBase ?? "unknown"),
@@ -1424,7 +1430,7 @@ export class BudgetLedger {
 
   checkpoint(stage: number): "ok" | "exhausted" {
     const elapsed = Date.now() - this.startedAt;
-    if (elapsed >= this.config.review.timeoutMs * 2) {
+    if (elapsed >= this.config.review.maxTimeMs * 2) {
       this.markDispatchBlocked("hard_timeout", stage, elapsed);
       throw new CodegenieError("timeout", "review run exceeded hard timeout");
     }
@@ -1451,7 +1457,7 @@ export class BudgetLedger {
   reserve(stage: number, estimatedTokens = 0, estimatedModelCalls = 1): "ok" | "exhausted" {
     const elapsed = Date.now() - this.startedAt;
     const reservedCalls = Math.max(0, Math.ceil(estimatedModelCalls));
-    if (elapsed >= this.config.review.timeoutMs * 2) {
+    if (elapsed >= this.config.review.maxTimeMs * 2) {
       this.markDispatchBlocked("hard_timeout", stage, elapsed, estimatedTokens, reservedCalls);
       throw new CodegenieError("timeout", "review run exceeded hard timeout");
     }
@@ -1491,12 +1497,12 @@ export class BudgetLedger {
       partialReasons: coverage?.partial === true ? [...coverage.reasons] : [],
       multiplier: this.config.review.budgetBoost,
       configured: {
-        timeoutMs: this.config.review.timeoutMs,
+        timeoutMs: this.config.review.maxTimeMs,
         ...(this.config.review.maxModelCalls !== undefined ? { maxModelCalls: this.config.review.maxModelCalls } : {}),
         ...(this.config.review.maxBudgetTokens !== undefined ? { maxBudgetTokens: this.config.review.maxBudgetTokens } : {})
       },
       effective: {
-        timeoutMs: this.config.review.timeoutMs,
+        timeoutMs: this.config.review.maxTimeMs,
         ...(this.effectiveMaxModelCalls !== undefined ? { maxModelCalls: this.effectiveMaxModelCalls } : {}),
         ...(this.effectiveMaxBudgetTokens !== undefined ? { maxBudgetTokens: this.effectiveMaxBudgetTokens } : {})
       },
@@ -1579,7 +1585,7 @@ export class BudgetLedger {
     additionalReservedCalls = 0,
     includeInFlight = true
   ): BudgetStop {
-    const timeoutMs = this.config.review.timeoutMs;
+    const timeoutMs = this.config.review.maxTimeMs;
     const hardTimeoutMs = timeoutMs * 2;
     const snapshotInFlightModelCalls = includeInFlight ? this.inFlightModelCalls : 0;
     const snapshotInFlightTokens = includeInFlight ? this.inFlightTokens : 0;
@@ -1659,7 +1665,7 @@ export class BudgetLedger {
       ? this.effectiveMaxModelCalls ?? 0
       : reason === "max_budget_tokens"
         ? this.effectiveMaxBudgetTokens ?? 0
-        : this.config.review.timeoutMs;
+        : this.config.review.maxTimeMs;
     const actual = reason === "max_model_calls"
       ? projectedModelCalls
       : reason === "max_budget_tokens"
@@ -1679,7 +1685,7 @@ export class BudgetLedger {
   }
 
   private runtimeExhausted(elapsed: number, reserveStage: boolean): boolean {
-    const limit = reserveStage ? this.config.review.timeoutMs : this.config.review.timeoutMs - runtimeReserveMs(this.config.review.timeoutMs);
+    const limit = reserveStage ? this.config.review.maxTimeMs : this.config.review.maxTimeMs - runtimeReserveMs(this.config.review.maxTimeMs);
     return elapsed > Math.max(0, limit);
   }
 

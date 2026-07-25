@@ -21,6 +21,10 @@ import type {
 import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
 import { CodegenieError } from "../src/util/errors.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
+import {
+  normalizeCrossVersionHunkIds,
+  type HunkIdParityFixture
+} from "./helpers/hunk-id-parity.js";
 
 describe("eval suite validation", () => {
   it("rejects unknown keys, duplicate expectation ids, and invalid source shapes", async () => {
@@ -1142,7 +1146,7 @@ describe("eval artifacts", () => {
   it("loads packet ids from top-level hint telemetry events", async () => {
     const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-hints-"));
     writeArtifactSet(telemetry, [], []);
-    writeFileSync(path.join(telemetry, "events.jsonl"), `${JSON.stringify({
+    const hintEvent = {
       runId: "run",
       eventId: "ev-1",
       timestamp: "2026-01-01T00:00:00.000Z",
@@ -1154,13 +1158,36 @@ describe("eval artifacts", () => {
         question: "Check this path",
         files: ["src/app.ts"],
         symbols: [],
-        confidence: "medium"
+        confidence: "medium",
+        projectedSkillIds: ["lang/typescript", "core/code-review"]
       }
-    })}\n`);
+    };
+    const uncertaintyEvent = {
+      ...hintEvent,
+      eventId: "ev-2",
+      message: "uncertainty",
+      data: {
+        ...hintEvent.data,
+        question: "Can malformed config reach connect?",
+        projectedSkillIds: ["lang/typescript", "core/tests"]
+      }
+    };
+    writeFileSync(
+      path.join(telemetry, "events.jsonl"),
+      `${JSON.stringify(hintEvent)}\n${JSON.stringify(uncertaintyEvent)}\n`
+    );
 
     const artifacts = await loadEvalArtifacts(telemetry);
 
-    expect(artifacts.hintEvents[0]).toMatchObject({ packetId: "packet-top-level" });
+    expect(artifacts.hintEvents[0]).toMatchObject({
+      packetId: "packet-top-level",
+      projectedSkillIds: ["lang/typescript", "core/code-review"]
+    });
+    expect(artifacts.hintEvents[1]).toMatchObject({
+      packetId: "packet-top-level",
+      question: "Can malformed config reach connect?",
+      projectedSkillIds: ["lang/typescript", "core/tests"]
+    });
   });
 
   it("loads pre-layout-v2 artifacts stored at the telemetry root", async () => {
@@ -1287,7 +1314,7 @@ describe("artifact replay", () => {
     const evalCase: EvalCase = {
       name: "replay-case",
       artifacts: { path: "logs/1" },
-      should_find: [{ id: "reported", path: "src/app.ts", titlePattern: "Fake" }]
+      should_find: [{ id: "reported", path: "src/app.ts", lineRange: [3, 3], titlePattern: "Fake" }]
     };
     writeFileSync(path.join(suiteDir, "case.yml"), [
       "name: replay-case",
@@ -1296,9 +1323,40 @@ describe("artifact replay", () => {
       "should_find:",
       "  - id: reported",
       "    path: src/app.ts",
+      "    lineRange: [3, 3]",
       "    titlePattern: Fake"
     ].join("\n"));
-    writeArtifactSet(telemetry, [candidate("cand-1", "src/app.ts", 3)], [finalFinding("final-1", "src/app.ts", 3)]);
+    const historicalHunkId = "a".repeat(64);
+    const recordedSkillIds = ["lang/typescript", "core/code-review", "core/tests"];
+    writeArtifactSet(
+      telemetry,
+      [candidate("cand-1", "src/app.ts", 3, {
+        anchor: { path: "src/app.ts", line: 3, side: "RIGHT", hunkId: historicalHunkId },
+        producedBy: {
+          kind: "packet",
+          stage: 7,
+          packetId: "historical-packet",
+          lensId: "lang/typescript",
+          skillIds: recordedSkillIds
+        }
+      })],
+      [finalFinding("final-1", "src/app.ts", 3, { anchor: { path: "src/app.ts", line: 3, side: "RIGHT", hunkId: historicalHunkId } })]
+    );
+    writeTelemetryArtifact(telemetry, "review-plan.json", {
+      diffUnderstanding: { declaredIntent: "historical", inferredBehavior: "historical" },
+      coverage: [{ hunkId: historicalHunkId, path: "src/app.ts", coverage: "normal", lenses: [], reason: "historical" }]
+    });
+    writeTelemetryArtifact(telemetry, "coverage.json", {
+      status: { totalHunks: 1, reviewedHunks: 1 },
+      records: [{ hunkId: historicalHunkId, path: "src/app.ts", coverage: "normal", status: "reviewed" }]
+    });
+    writeTelemetryArtifact(telemetry, "packets/packet-1.json", {
+      id: "historical-packet",
+      path: "src/app.ts",
+      coverage: "normal",
+      lenses: ["core/code-review"],
+      hunks: [{ hunkId: historicalHunkId, changedNewLineNumbers: [3], changedOldLineNumbers: [] }]
+    });
     const sourceInfo: EvalRunInfo = {
       runNumber: 1,
       caseName: "replay-case",
@@ -1321,6 +1379,41 @@ describe("artifact replay", () => {
     expect(existsSync(path.join(logsDir, "2", "compare-to-previous.json"))).toBe(true);
     const info = JSON.parse(readFileSync(path.join(logsDir, "2", "info.json"), "utf8")) as EvalRunInfo;
     expect(info.score.expectationResults[0]).toMatchObject({ status: "pass", fromReplayedArtifacts: true });
+    const loaded = await loadEvalArtifacts(telemetry);
+    expect(loaded.candidates[0]?.producedBy.skillIds).toEqual(recordedSkillIds);
+    const replayed = await loadEvalArtifacts(path.join(logsDir, "2", "telemetry"));
+    expect(replayed.candidates[0]?.producedBy.skillIds).toEqual(recordedSkillIds);
+    expect(loaded.reviewPlan?.coverage[0]?.hunkId).toBe(historicalHunkId);
+    expect(loaded.coverage?.hunks).toEqual([expect.objectContaining({ hunkId: historicalHunkId })]);
+    expect(loaded.packets[0]?.hunks[0]?.hunkId).toBe(historicalHunkId);
+  });
+
+  it("proves bijective semantic parity between recorded full-id and post-change short-id runs", () => {
+    const fixtureRoot = path.join(process.cwd(), "evals", "fixtures", "artifacts", "plan-100-hunk-id-parity");
+    const baseline = JSON.parse(readFileSync(path.join(fixtureRoot, "historical-full-ids.json"), "utf8")) as HunkIdParityFixture;
+    const current = JSON.parse(readFileSync(path.join(fixtureRoot, "post-change-short-ids.json"), "utf8")) as HunkIdParityFixture;
+
+    expect(current.metadata).toMatchObject({
+      caseName: baseline.metadata.caseName,
+      caseHash: baseline.metadata.caseHash,
+      status: "pass",
+      idFormat: "short"
+    });
+    expect(baseline.diff[0]?.id).toMatch(/^[0-9a-f]{64}$/u);
+    expect(current.diff[0]).toMatchObject({
+      id: baseline.diff[0]?.id.slice(0, 8),
+      hunkHash: baseline.diff[0]?.id
+    });
+
+    const parity = normalizeCrossVersionHunkIds(baseline, current);
+    expect([...parity.hunkBijection.entries()]).toEqual([[baseline.diff[0]?.id, current.diff[0]?.id]]);
+    expect([...parity.packetBijection.entries()]).toEqual([[baseline.packets[0]?.id, current.packets[0]?.id]]);
+    expect([...parity.candidateBijection.entries()]).toEqual([[baseline.candidates[0]?.id, current.candidates[0]?.id]]);
+    expect(parity.current).toEqual(parity.baseline);
+
+    const broken = structuredClone(current);
+    broken.coverageRecords[0]!.hunkId = "unknown-short-id";
+    expect(() => normalizeCrossVersionHunkIds(baseline, broken)).toThrow(/coverage record hunk references unknown id/u);
   });
 
   it("errors --from-artifacts replay for old root-level artifact layouts", async () => {
@@ -1477,6 +1570,10 @@ describe("eval command fixture suite", () => {
     expect(suite.cases.map((entry) => entry.evalCase.name).sort()).toEqual([
       "fixture-core-lens",
       "fixture-go-lens",
+      "fixture-javascript-lens",
+      "fixture-python-lens",
+      "fixture-rust-lens",
+      "fixture-solidity-lens",
       "fixture-tests-lens",
       "fixture-typescript-lens"
     ]);
@@ -1485,6 +1582,18 @@ describe("eval command fixture suite", () => {
       expect(entry.evalCase.repo?.fixture).toMatch(/^repos\//u);
       expect(entry.evalCase.review).toMatchObject({ provider: "fake", model: "fake-model" });
     }
+    expect(suite.cases.find((entry) => entry.evalCase.name === "fixture-rust-lens")?.evalCase.should_not_find).toEqual([
+      expect.objectContaining({ id: "rust-marker-free-negative-control", path: "src/negative.rs" })
+    ]);
+    expect(suite.cases.find((entry) => entry.evalCase.name === "fixture-python-lens")?.evalCase.should_not_find).toEqual([
+      expect.objectContaining({ id: "python-marker-free-negative-control", path: "src/negative.py" })
+    ]);
+    expect(suite.cases.find((entry) => entry.evalCase.name === "fixture-solidity-lens")?.evalCase.should_not_find).toEqual([
+      expect.objectContaining({ id: "solidity-marker-free-negative-control", path: "contracts/Negative.sol" })
+    ]);
+    expect(suite.cases.find((entry) => entry.evalCase.name === "fixture-javascript-lens")?.evalCase.should_not_find).toEqual([
+      expect.objectContaining({ id: "javascript-marker-free-negative-control", path: "src/negative.js" })
+    ]);
     expect(findNestedGitDirs(path.join(process.cwd(), "evals", "fixtures", "repos"))).toEqual([]);
   });
 
@@ -1508,7 +1617,7 @@ describe("eval command fixture suite", () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(output).toContain("Suite: 4 passed, 0 failed, 0 errored");
+    expect(output).toContain("Suite: 8 passed, 0 failed, 0 errored");
     expect(existsSync(path.join(suiteDir, "logs", "1", "fixture-repo", ".git"))).toBe(true);
   }, 60_000);
 

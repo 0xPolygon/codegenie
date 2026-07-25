@@ -12,6 +12,8 @@ export type LensDescriptor = {
   enabledByDefault: boolean;
   enabled: boolean;
   languages: string[];
+  /** At least one skill on this lens is language-neutral. */
+  languageNeutral?: boolean;
 };
 
 export interface LensRegistry {
@@ -21,6 +23,11 @@ export interface LensRegistry {
   skillsForLens(id: string): Skill[];
   skillsById(ids: string[]): Skill[];
   registryHash(): string;
+}
+
+export function skillsCompatibleWithLanguage(skills: Skill[], language?: string): Skill[] {
+  return skills.filter((skill) => skill.languages.length === 0 ||
+    (language !== undefined && skill.languages.includes(language)));
 }
 
 // Lenses declared only by skills that failed to load (no surviving skill
@@ -53,13 +60,20 @@ export function buildLensRegistry(
   }
 
   const skillsById = new Map(skills.map((skill) => [skill.id, skill]));
-  const byLens = new Map<string, { firstSkill: Skill; skillIds: string[]; enabledByDefault: boolean; languages: Set<string> }>();
+  const byLens = new Map<string, {
+    firstSkill: Skill;
+    skillIds: string[];
+    enabledByDefault: boolean;
+    languages: Set<string>;
+    languageNeutral: boolean;
+  }>();
   for (const skill of skills) {
     for (const lensId of skill.lenses) {
       const existing = byLens.get(lensId);
       if (existing) {
         existing.skillIds.push(skill.id);
         existing.enabledByDefault ||= skill.enabledByDefault;
+        existing.languageNeutral ||= skill.languages.length === 0;
         for (const language of skill.languages) {
           existing.languages.add(language);
         }
@@ -68,7 +82,8 @@ export function buildLensRegistry(
           firstSkill: skill,
           skillIds: [skill.id],
           enabledByDefault: skill.enabledByDefault,
-          languages: new Set(skill.languages)
+          languages: new Set(skill.languages),
+          languageNeutral: skill.languages.length === 0
         });
       }
     }
@@ -137,7 +152,8 @@ export function buildLensRegistry(
       skillIds: [...entry.skillIds],
       enabledByDefault: defaultEnabled,
       enabled,
-      languages: [...entry.languages].sort()
+      languages: [...entry.languages].sort(),
+      languageNeutral: entry.languageNeutral
     };
   });
 

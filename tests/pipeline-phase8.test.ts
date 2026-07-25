@@ -156,6 +156,22 @@ describe("phase 8 targeted system review", () => {
   });
 
   it("passes Stage 8 candidate findings into normal verification", async () => {
+    const systemPromptBuilder = {
+      ...fakePromptBuilder(),
+      buildSystemReviewPrompt: () => ({
+        prompt: "",
+        templateVersion: "test",
+        untrustedBlockCount: 0,
+        projection: {
+          text: "core and tests",
+          totalChars: 14,
+          perSkill: [
+            { skillId: "core/code-review", includedSections: ["checks" as const], chars: 4, truncatedChars: 0, omitted: false },
+            { skillId: "core/tests", includedSections: ["checks" as const], chars: 5, truncatedChars: 0, omitted: false }
+          ]
+        }
+      })
+    };
     const systemReview = await runTargetedSystemReviews(
       {
         packetResults: [
@@ -190,14 +206,14 @@ describe("phase 8 targeted system review", () => {
               resolvedHints: []
             }) as T
         },
-        promptBuilder: fakePromptBuilder(),
+        promptBuilder: systemPromptBuilder,
         lensRegistry: fakeLensRegistry(),
         diff: fakeDiff()
       }
     );
     const candidate = systemReview.packetResults[0]?.findings[0];
     expect(candidate).toMatchObject({
-      producedBy: { stage: 8 },
+      producedBy: { stage: 8, skillIds: ["core/code-review", "core/tests"] },
       title: "Callers can now pass zero count"
     });
 
@@ -242,7 +258,8 @@ function hint(
     symbols,
     suggestedLenses: ["core/code-review"],
     reason: "Repeated question from packet review.",
-    confidence
+    confidence,
+    projectedSkillIds: ["core/code-review"]
   };
 }
 
@@ -278,6 +295,7 @@ function fakeCandidate(packetId: string): CandidateFinding {
 function fakePacket(id: string, path: string, symbol = "divide"): ReviewPacket {
   return {
     id,
+    dispatchRank: [0, -1],
     kind: "hunk",
     prSummary: "test",
     path,

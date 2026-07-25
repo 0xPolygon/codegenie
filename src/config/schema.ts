@@ -10,6 +10,9 @@ export const logLevelSchema = z.enum(["debug", "info", "warn", "error"]);
 const positiveIntSchema = z.number().int().positive();
 const nonNegativeIntSchema = z.number().int().nonnegative();
 const positiveFiniteNumberSchema = z.number().positive().finite();
+export const MAX_REVIEW_TIME_MINUTES = Number.MAX_SAFE_INTEGER / 120_000;
+export const MAX_REVIEW_TIME_MS = MAX_REVIEW_TIME_MINUTES * 60_000;
+export const reviewMaxTimeMinutesSchema = positiveFiniteNumberSchema.max(MAX_REVIEW_TIME_MINUTES);
 // Plan 84 guardrail: ensemble cost scales linearly with passes × deep
 // packets; beyond 3 the marginal recall of another draw is negligible while
 // cost keeps climbing. Hard cap, not a default.
@@ -45,7 +48,7 @@ export const rawConfigSchema = z
         minConfidence: confidenceSchema.optional(),
         minInlineConfidence: confidenceSchema.optional(),
         concurrency: positiveIntSchema.optional(),
-        timeoutMs: positiveIntSchema.optional(),
+        maxTime: reviewMaxTimeMinutesSchema.optional(),
         perPassTimeoutMs: positiveIntSchema.optional(),
         budgetBoost: positiveFiniteNumberSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
@@ -132,7 +135,7 @@ export const codegenieConfigSchema = z
         minConfidence: confidenceSchema,
         minInlineConfidence: confidenceSchema,
         concurrency: positiveIntSchema,
-        timeoutMs: positiveIntSchema,
+        maxTimeMs: positiveFiniteNumberSchema.max(MAX_REVIEW_TIME_MS),
         perPassTimeoutMs: positiveIntSchema,
         budgetBoost: positiveFiniteNumberSchema,
         maxBudgetTokens: positiveIntSchema.optional(),
@@ -202,8 +205,8 @@ export const defaultConfig: CodegenieConfig = {
     softCommentCap: 7,
     minConfidence: "medium",
     minInlineConfidence: "medium",
-    concurrency: 4,
-    timeoutMs: 30 * 60 * 1000,
+    concurrency: 6,
+    maxTimeMs: 30 * 60 * 1000,
     perPassTimeoutMs: 8 * 60 * 1000,
     budgetBoost: 1,
     // Primary coverage budget (plan 90): work-denominated so provider latency
@@ -223,7 +226,7 @@ export const defaultConfig: CodegenieConfig = {
     pathRules: []
   },
   llm: {
-    maxConcurrentCalls: 4,
+    maxConcurrentCalls: 6,
     forceSubmitToolChoice: true
   },
   cache: {

@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import { parseDiff } from "../src/git/diff-parser.js";
-import type { LlmRunner } from "../src/llm/llm-runner.js";
+import type { LlmRunner, LlmStructuredRequest } from "../src/llm/llm-runner.js";
 import { verifyFindings } from "../src/pipeline/verifier.js";
 import { inferAnchorFromChangedCode, representativeAnchorFromPacket } from "../src/pipeline/pipeline-utils.js";
 import { createPromptBuilder } from "../src/skills/prompt-builder.js";
+import type { Skill } from "../src/skills/skill-loader.js";
 import type {
   CandidateFinding,
   CodegenieConfig,
@@ -20,6 +21,347 @@ import { scoreEvalRun } from "../src/evals/eval-scoring.js";
 import { nullTelemetry } from "./helpers/git.js";
 
 describe("stage 9 evidence-aware verification", () => {
+  it("projects only neutral and packet-compatible skills into Stage 9", async () => {
+    const fixture = reviewFixture(["src/lib.rs"]);
+    const packet: ReviewPacket = {
+      ...fixture.packets[0]!,
+      language: "rust",
+      lenses: ["shared/review"]
+    };
+    const finding = candidate("rust-projection", packet, {
+      producedBy: {
+        kind: "packet",
+        stage: 7,
+        packetId: packet.id,
+        lensId: "shared/review",
+        skillIds: ["projection/neutral", "projection/rust", "projection/python"]
+      }
+    });
+    const skills = [
+      projectionSkill("neutral", [], "VERIFIER_NEUTRAL_MARKER"),
+      projectionSkill("rust", ["rust"], "VERIFIER_RUST_MARKER"),
+      projectionSkill("python", ["python"], "VERIFIER_PYTHON_MARKER")
+    ];
+    const registry = registryWithSkills(skills);
+    let prompt = "";
+
+    await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: [packet] },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+            prompt = request.prompt;
+            return {
+              verdict: "keep",
+              reason: "The changed branch is reachable.",
+              requiredEvidencePresent: true,
+              falsePositiveRisk: "low"
+            } as T;
+          }
+        },
+        promptBuilder: createPromptBuilder(registry),
+        lensRegistry: registry,
+        diff: fixture.diff
+      }
+    );
+
+    expect(prompt).toContain("VERIFIER_NEUTRAL_MARKER");
+    expect(prompt).toContain("VERIFIER_RUST_MARKER");
+    expect(prompt).not.toContain("VERIFIER_PYTHON_MARKER");
+  });
+
+  it("derives Stage 8 candidate language from the diff before Stage 9 projection", async () => {
+    const fixture = reviewFixture(["src/lib.rs"]);
+    const originPacket = fixture.packets[0]!;
+    const finding = candidate("stage8-rust-projection", originPacket, {
+      producedBy: {
+        kind: "packet",
+        stage: 8,
+        packetId: "system-task-not-a-packet",
+        lensId: "shared/review",
+        skillIds: ["projection/neutral", "projection/rust", "projection/python", "projection/solidity"]
+      }
+    });
+    const skills = [
+      projectionSkill("neutral", [], "STAGE8_NEUTRAL_MARKER"),
+      projectionSkill("rust", ["rust"], "STAGE8_RUST_MARKER"),
+      projectionSkill("python", ["python"], "STAGE8_PYTHON_MARKER"),
+      projectionSkill("solidity", ["solidity"], "STAGE8_SOLIDITY_MARKER")
+    ];
+    const registry = registryWithSkills(skills);
+    let prompt = "";
+
+    await verifyFindings(
+      { packetResults: [packetResult("system-task-not-a-packet", [finding])], packets: [originPacket] },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+            prompt = request.prompt;
+            return {
+              verdict: "keep",
+              reason: "The system finding is supported by the changed Rust file.",
+              requiredEvidencePresent: true,
+              falsePositiveRisk: "low"
+            } as T;
+          }
+        },
+        promptBuilder: createPromptBuilder(registry),
+        lensRegistry: registry,
+        diff: fixture.diff
+      }
+    );
+
+    expect(prompt).toContain("STAGE8_NEUTRAL_MARKER");
+    expect(prompt).toContain("STAGE8_RUST_MARKER");
+    expect(prompt).not.toContain("STAGE8_PYTHON_MARKER");
+    expect(prompt).not.toContain("STAGE8_SOLIDITY_MARKER");
+  });
+
+  it("projects only neutral skills when a packetless candidate path is language-ambiguous", async () => {
+    const fixture = reviewFixture(["src/lib.rs", "src/lib.py"]);
+    const originPacket = fixture.packets.find((packet) => packet.path === "src/lib.rs")!;
+    const finding = candidate("stage8-ambiguous-projection", originPacket, {
+      producedBy: {
+        kind: "packet",
+        stage: 8,
+        packetId: "system-task-not-a-packet",
+        lensId: "shared/review",
+        skillIds: ["projection/neutral", "projection/rust", "projection/python"]
+      }
+    });
+    const pythonFile = fixture.diff.files.find((file) => file.path === "src/lib.py")!;
+    const ambiguousDiff: UnifiedDiff = {
+      ...fixture.diff,
+      files: fixture.diff.files.map((file) => file === pythonFile ? { ...file, oldPath: "src/lib.rs" } : file)
+    };
+    const skills = [
+      projectionSkill("neutral", [], "AMBIGUOUS_NEUTRAL_MARKER"),
+      projectionSkill("rust", ["rust"], "AMBIGUOUS_RUST_MARKER"),
+      projectionSkill("python", ["python"], "AMBIGUOUS_PYTHON_MARKER")
+    ];
+    const registry = registryWithSkills(skills);
+    let prompt = "";
+
+    await verifyFindings(
+      { packetResults: [packetResult("system-task-not-a-packet", [finding])], packets: [originPacket] },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+            prompt = request.prompt;
+            return {
+              verdict: "keep",
+              reason: "The ambiguous system finding retains neutral guidance only.",
+              requiredEvidencePresent: true,
+              falsePositiveRisk: "low"
+            } as T;
+          }
+        },
+        promptBuilder: createPromptBuilder(registry),
+        lensRegistry: registry,
+        diff: ambiguousDiff
+      }
+    );
+
+    expect(prompt).toContain("AMBIGUOUS_NEUTRAL_MARKER");
+    expect(prompt).not.toContain("AMBIGUOUS_RUST_MARKER");
+    expect(prompt).not.toContain("AMBIGUOUS_PYTHON_MARKER");
+  });
+
+  it("keeps Go and TypeScript Stage 9 prompts isolated from new language skills", async () => {
+    for (const { path, language, compatibleMarker } of [
+      { path: "pkg/service.go", language: "go", compatibleMarker: "VERIFIER_GO_MARKER" },
+      { path: "src/service.ts", language: "typescript", compatibleMarker: "VERIFIER_TYPESCRIPT_MARKER" }
+    ]) {
+      const fixture = reviewFixture([path]);
+      const packet: ReviewPacket = {
+        ...fixture.packets[0]!,
+        language,
+        lenses: ["shared/review"]
+      };
+      const finding = candidate(`${language}-projection`, packet, {
+        producedBy: {
+          kind: "packet",
+          stage: 7,
+          packetId: packet.id,
+          lensId: "shared/review",
+          skillIds: [
+            "projection/neutral",
+            "projection/go",
+            "projection/typescript",
+            "projection/rust",
+            "projection/python",
+            "projection/solidity"
+          ]
+        }
+      });
+      const skills = [
+        projectionSkill("neutral", [], "VERIFIER_EXISTING_NEUTRAL"),
+        projectionSkill("go", ["go"], "VERIFIER_GO_MARKER"),
+        projectionSkill("typescript", ["typescript"], "VERIFIER_TYPESCRIPT_MARKER"),
+        projectionSkill("rust", ["rust"], "VERIFIER_NEW_RUST"),
+        projectionSkill("python", ["python"], "VERIFIER_NEW_PYTHON"),
+        projectionSkill("solidity", ["solidity"], "VERIFIER_NEW_SOLIDITY")
+      ];
+      const registry = registryWithSkills(skills);
+      let prompt = "";
+
+      await verifyFindings(
+        { packetResults: [packetResult(packet.id, [finding])], packets: [packet] },
+        fakeTools(),
+        config(),
+        nullTelemetry(),
+        {
+          runner: {
+            runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+              prompt = request.prompt;
+              return {
+                verdict: "keep",
+                reason: "The existing-language candidate is supported.",
+                requiredEvidencePresent: true,
+                falsePositiveRisk: "low"
+              } as T;
+            }
+          },
+          promptBuilder: createPromptBuilder(registry),
+          lensRegistry: registry,
+          diff: fixture.diff
+        }
+      );
+
+      expect(prompt).toContain("VERIFIER_EXISTING_NEUTRAL");
+      expect(prompt).toContain(compatibleMarker);
+      expect(prompt).not.toContain("VERIFIER_NEW_RUST");
+      expect(prompt).not.toContain("VERIFIER_NEW_PYTHON");
+      expect(prompt).not.toContain("VERIFIER_NEW_SOLIDITY");
+    }
+  });
+
+  it("treats empty provenance as authoritative and omits the empty guidance block", async () => {
+    const fixture = reviewFixture(["src/service.ts"]);
+    const packet = { ...fixture.packets[0]!, language: "typescript", lenses: ["shared/review"] };
+    const finding = candidate("empty-provenance", packet, {
+      producedBy: { kind: "packet", stage: 7, packetId: packet.id, lensId: "shared/review", skillIds: [] }
+    });
+    const addedLater = projectionSkill("added-later", ["typescript"], "MUST_NOT_APPEAR");
+    const registry = registryWithSkills([addedLater]);
+    let prompt = "";
+
+    await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: [packet] },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+            prompt = request.prompt;
+            return { verdict: "reject", reason: "not supported", requiredEvidencePresent: false, falsePositiveRisk: "high" } as T;
+          }
+        },
+        promptBuilder: createPromptBuilder(registry),
+        lensRegistry: registry,
+        diff: fixture.diff
+      }
+    );
+
+    expect(prompt).not.toContain("MUST_NOT_APPEAR");
+    expect(prompt).not.toContain("## Skill:");
+    expect(prompt).not.toContain("Skill false-positive guidance:");
+  });
+
+  it("drops unknown and language-incompatible recorded ids without lens fallback", async () => {
+    const fixture = reviewFixture(["src/service.ts"]);
+    const packet = { ...fixture.packets[0]!, language: "typescript", lenses: ["shared/review"] };
+    const finding = candidate("strict-provenance", packet, {
+      producedBy: {
+        kind: "packet",
+        stage: 7,
+        packetId: packet.id,
+        lensId: "shared/review",
+        skillIds: ["projection/neutral", "projection/python", "projection/stale"]
+      }
+    });
+    const neutral = projectionSkill("neutral", [], "STRICT_NEUTRAL");
+    const python = projectionSkill("python", ["python"], "STRICT_PYTHON");
+    const addedLater = projectionSkill("added-later", ["typescript"], "STRICT_ADDED_LATER");
+    const registry = registryWithSkills([neutral, python, addedLater]);
+    const telemetry = captureTelemetry();
+    let prompt = "";
+
+    await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: [packet] },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: {
+          runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+            prompt = request.prompt;
+            return { verdict: "reject", reason: "not supported", requiredEvidencePresent: false, falsePositiveRisk: "high" } as T;
+          }
+        },
+        promptBuilder: createPromptBuilder(registry),
+        lensRegistry: registry,
+        diff: fixture.diff
+      }
+    );
+
+    expect(prompt).toContain("STRICT_NEUTRAL");
+    expect(prompt).not.toContain("STRICT_PYTHON");
+    expect(prompt).not.toContain("STRICT_ADDED_LATER");
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      stage: 9,
+      message: "verifier_skill_provenance",
+      data: expect.objectContaining({
+        requestedSkillIds: ["projection/neutral", "projection/python", "projection/stale"],
+        resolvedSkillIds: ["projection/neutral"],
+        droppedSkillIds: ["projection/python", "projection/stale"],
+        unknownSkillIds: ["projection/stale"],
+        languageIncompatibleSkillIds: ["projection/python"]
+      })
+    }));
+  });
+
+  it("rejects runtime-missing skill provenance instead of inferring it", async () => {
+    const fixture = reviewFixture(["src/service.ts"]);
+    const packet = fixture.packets[0]!;
+    const malformed = candidate("missing-provenance", packet) as CandidateFinding & {
+      producedBy: Omit<CandidateFinding["producedBy"], "skillIds"> & { skillIds?: string[] };
+    };
+    delete (malformed.producedBy as { skillIds?: string[] }).skillIds;
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [malformed as CandidateFinding])], packets: [packet] },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: verifierRunner(() => ({ verdict: "reject", reason: "unused", requiredEvidencePresent: false, falsePositiveRisk: "high" })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+    expect(result).toMatchObject({
+      verified: [],
+      incompleteCount: 1,
+      verdicts: [{
+        candidateId: "missing-provenance",
+        verdict: "incomplete",
+        reason: expect.stringContaining("malformed skill provenance")
+      }]
+    });
+  });
+
   it("schedules evidence-backed low-confidence correctness candidates for verification", async () => {
     const fixture = reviewFixture(["src/app.ts"]);
     const finding = candidate("low-evidence", fixture.packets[0]!, {
@@ -413,6 +755,7 @@ index 1111111..2222222 100644
 function fakePacket(packetId: string, filePath: string, hunkId = "h1", symbol = "changed"): ReviewPacket {
   return {
     id: packetId,
+    dispatchRank: [0, -1],
     kind: "hunk",
     prSummary: "test",
     path: filePath,
@@ -532,6 +875,34 @@ function fakeLensRegistry() {
     skillsForLens: () => [],
     skillsById: () => [],
     registryHash: () => "fake"
+  };
+}
+
+function registryWithSkills(skills: Skill[]) {
+  const byId = new Map(skills.map((skill) => [skill.id, skill]));
+  return {
+    ...fakeLensRegistry(),
+    skillsForLens: () => skills,
+    skillsById: (ids: string[]) => ids.flatMap((id) => {
+      const skill = byId.get(id);
+      return skill === undefined ? [] : [skill];
+    })
+  };
+}
+
+function projectionSkill(id: string, languages: string[], marker: string): Skill {
+  return {
+    id: `projection/${id}`,
+    title: `Projection ${id}`,
+    lenses: ["shared/review"],
+    languages,
+    categories: ["correctness"],
+    enabledByDefault: true,
+    source: "bundled",
+    filePath: `bundled-skills/projection/${id}.md`,
+    contentSha: id,
+    summaryLine: marker,
+    sections: { checks: marker, falsePositives: marker }
   };
 }
 

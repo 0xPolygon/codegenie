@@ -137,11 +137,13 @@ type SkillProjection = {
 type BuiltPrompt = {
   prompt: string                             // the complete LlmStructuredRequest.prompt payload
   templateVersion: string                    // per-stage template version, cache-key input
-  projection?: SkillProjection               // present for stages 5, 7, 9
+  projection?: SkillProjection               // present for stages 5, 7, 8, 9
   untrustedBlockCount: number                // number of fenced untrusted blocks rendered
 }
 
 function projectSkills(skills: Skill[], stage: ReviewStage): SkillProjection
+
+function projectedSkillIds(projection: SkillProjection | undefined): string[]
 
 function fenceUntrusted(content: string, label: string): string
 
@@ -153,6 +155,7 @@ interface PromptBuilder {
   renderDossier(dossier: PlannerDossier): string
   buildPlannerPrompt(input: { dossier: PlannerDossier; lenses: LensDescriptor[]; skills: Skill[] }): BuiltPrompt
   buildPacketReviewPrompt(input: { packet: ReviewPacket; skills: Skill[] }): BuiltPrompt
+  buildSystemReviewPrompt(input: { task: SystemReviewTask; skills: Skill[] }): BuiltPrompt
   buildVerifierPrompt(input: {
     candidate: CandidateFinding
     originContext: string                    // packet context rendering, pipeline-supplied
@@ -172,6 +175,7 @@ function createPromptBuilder(registry: LensRegistry): PromptBuilder
 ```
 
 - All functions are pure and deterministic given their inputs: identical inputs must produce byte-identical prompts, because the model-call cache keys on prompt content. No randomness, timestamps, or run ids may enter prompt text.
+- `projectedSkillIds` returns the first-projection-order, unique ids whose entries are not omitted and contribute at least one character. A partially truncated non-empty entry counts; a total-cap-omitted or empty entry does not. Producing stages stamp this list after prompt construction.
 - Which dossier fields, packet fields, and context selections feed each prompt is the calling stage's contract (`components/review_pipeline.md`); this component owns the rendering, ordering, fencing, instruction text, and projection caps. Dossier fencing lives in `renderDossier`: the pipeline hands over the `PlannerDossier` object, never pre-rendered text, and reuses the same renderer for compaction size estimation.
 - `fenceUntrusted` never throws; it must safely fence any string, including content containing backtick fences (see Untrusted-Content Delimiting).
 
@@ -534,8 +538,10 @@ enabledByDefault: true
 
 # Safe Patterns
 
-# Examples
+# Examples (optional)
 ```
+
+`Examples` is optional. Use it only for distinct worked cases; do not repeat an unsafe/safe pair already owned inline by a narrow check. Bundled language checks use the inline Failure / Materiality / Unsafe / Safe / Mitigation matrix and therefore omit a redundant Examples section. Core and repo-local skills may retain Examples when the section adds decision information.
 
 Frontmatter validation:
 
@@ -560,7 +566,7 @@ Body parsing:
 
 ### Skill Loading And Trust
 
-- Bundled skills resolve relative to the installed package: the loader walks `bundled-skills/**/*.md` from a directory resolved via `import.meta.url`, consistent with how grammar wasm files resolve from `node_modules` (`architecture.md`, Technology Choices). The v1 bundled inventory is one skill per bundled lens — four files: `core/code-review.md` (absorbing logic-bug and architecture guidance as sections of the one core skill) and `core/tests.md` under `bundled-skills/core/`, and `go.md`, `typescript.md` under `bundled-skills/lang/` (the TypeScript skill declares `languages: ["typescript", "tsx", "javascript"]`). `bundled-skills/domain/` ships empty in v1. A bundled skill failing validation is still recoverable `skill_invalid` (warn, skip, disclose) — a packaging bug must not brick review.
+- Bundled skills resolve relative to the installed package: the loader walks `bundled-skills/**/*.md` from a directory resolved via `import.meta.url`, consistent with how grammar wasm files resolve from `node_modules` (`architecture.md`, Technology Choices). The current bundled inventory is eight files: `core/code-review.md` and `core/tests.md` under `bundled-skills/core/`, plus `go.md`, `javascript.md`, `python.md`, `rust.md`, `solidity.md`, and `typescript.md` under `bundled-skills/lang/`. JavaScript, Python, Rust, and Solidity each declare only their canonical language; TypeScript declares `languages: ["typescript", "tsx"]`. `bundled-skills/domain/` ships empty. A bundled skill failing validation is still recoverable `skill_invalid` (warn, skip, disclose) — a packaging bug must not brick review.
 - Repo-local skills are `.codegenie/skills/**/*.md` read from the working copy. Per the policy-load-revision rule in Trust Boundaries, the loader never resolves these through git at the reviewed head; if the PR under review modifies `.codegenie/skills/` or `codegenie.toml`, surfacing that as a planner risk signal is the dossier's job (`components/review_pipeline.md`) — the loader's only obligation is to read the trusted checkout.
 - `extraSkillPaths` entries are files or directories; directories are walked for `*.md`. The config loader has already enforced trust partitioning (repo-config values outside the repo root were ignored with a warning); the loader re-checks repo-sourced entries against `repoRoot` containment as defense in depth.
 - Discovery order within each source is deterministic: lexicographic by repo-relative (or absolute) path. The resulting `skills` array order is the registry's load order and the tiebreaker for duplicate-id handling.
@@ -568,7 +574,7 @@ Body parsing:
 
 ### Bundled Skill Content Outlines
 
-Loader, registry, and projection machinery do not make reviews good — skill content does, and bundled skill content is the day-one review-quality gap this component must close. The four bundled skills ship with at least checklist-level content; the outlines below are the normative minimum for each skill's `Checks` section, with 5-8 concrete check areas per skill:
+Loader, registry, and projection machinery do not make reviews good — skill content does, and bundled skill content is the day-one review-quality gap this component must close. The eight bundled skills ship with evidence-driven content; the outlines below are the normative minimum for each skill's `Checks` section:
 
 - `core/code-review`:
   - Logic/correctness: boundary conditions, off-by-one errors, inverted conditions.
@@ -581,9 +587,13 @@ Loader, registry, and projection machinery do not make reviews good — skill co
   - Plus substantive `False Positives` and `Safe Patterns` themes alongside the checks.
 - `core/tests`: missing coverage for changed behavior, deleted or weakened tests, assertion quality, flaky patterns (timing/order dependence), test-only code leaking into production.
 - `lang/go`: goroutine leaks, context misuse/replacement, defer-in-loop, nil map/pointer writes, error shadowing (`:=`), channel deadlocks, slice aliasing/append sharing, missing mutex on mixed access.
+- `lang/javascript`: reachable floating-promise/order failures, concrete ESM/CommonJS runtime mismatches, lost receivers, coercion/truthiness collapse, unsafe property/prototype handling, unvalidated runtime boundaries, shared alias mutation, and leaked lifecycle work. Required safe cases include internally handled detachment, deliberate dual-package exports, lexical arrows, exact nullish checks, own-property-safe containers, validated values, immutable copies, and idempotent cleanup; TypeScript-only compile-time guidance is excluded.
+- `lang/python`: cross-call mutable defaults, materially broad/bare exception handling, caller-visible `None` violations, floats violating named exact-unit contracts, event-loop blocking, concrete eval/shell/subprocess injection, exploitable/correctness-relevant TOCTOU file races, and sequence mutation with named skipped/duplicated elements. Required safe cases include `shell=False` argv, cleanup that re-raises, integer minor units, iteration over a copy, and immutable/never-mutated defaults.
+- `lang/rust`: reachable production panics, actually narrowing casts, materially ignored `Result`, executor-blocking work, concrete range/slice boundary failures, violated unsafe invariants, and runtime synchronization or unsafe/manual trait behavior across `.await`. Compiler-rejected lifetime/`Send` claims, widening/nonnumeric casts, explicit best-effort results, test-only panics, and bare `unsafe` syntax are required false positives.
+- `lang/solidity`: concrete reentrancy before invariant security, unchecked `send`/low-level calls, named unit mismatches, missing access control for privileged effects, actual narrowing/truncation, repeated full `msg.value`, delegatecall storage-context violations, invalid oracle data, and event omissions only where an external correctness/audit contract requires them. CEI/guards, checked calls, typed reverting calls, explicit units, deliberate permissionless effects, compatible documented layouts, validated oracle data, and optional events are required safe cases.
 - `lang/typescript`: floating promises, `any`-casts erasing type safety, non-null assertions, missing exhaustiveness checks, async error handling (unawaited rejections), equality/coercion pitfalls, mutation of shared references.
 
-Phase 4 authors the four skill files against these outlines; the outlines are the minimum bar, not the ceiling.
+Every retained language check must name an observable failure, a reachability/materiality and severity rule, a concrete unsafe example, a contract-preserving safe counterexample, and a mitigation. Syntax alone is evidence, not a finding. `False Positives` and `Safe Patterns` must read standalone because Stage 9 does not receive Checks. `BUNDLED_SKILL_WHY_LEDGER` carries evidence-bearing entries for every materially revised bundled language surface. Every matrix field is independently asserted per check. Each bundled skill, and each canonical language-plus-core composite, must project without truncation and within the 4000-character per-skill / 12000-character total caps at Stages 7, 8, and 9. Arbitrary many-lens combinations retain the deterministic, telemetry-visible total-cap degradation path.
 
 ### Lens Resolution Algorithm
 
@@ -603,6 +613,7 @@ Projection selects which skill sections each stage's prompt receives, per `archi
 | --- | --- |
 | 5 planner | One-line summaries only: `- <skill id> (lenses: <ids>): <summaryLine>` per skill of the enabled lenses; no section content |
 | 7 packet review | `Checks` + `False Positives` + `Examples` |
+| 8 targeted system review | `Checks` + `False Positives` + `Safe Patterns` |
 | 9 verifier | `False Positives` + `Safe Patterns` |
 | 10 composer | None — `buildComposerPrompt` performs no projection |
 
@@ -645,7 +656,7 @@ End of <label> data block.
 - Labels are fixed per template (`pr-metadata`, `commit-messages`, `diff-hunks`, `packet-context`, `candidate-evidence`, ...), never derived from untrusted content.
 - Tool results injected during the agent loop are repository tool results — enumerated as untrusted inputs by Trust Boundaries — so the loop wraps each tool-result message with the same fencing and one-line framing (see The Agent Loop).
 
-Template versions: `prompt-builder.ts` exports `PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 9 | 10, string>` (e.g. `"p7.3"`), bumped on any template wording change. `BuiltPrompt.templateVersion` flows into every call record and cache key, so template edits invalidate cached calls. The runner's own mechanical message templates (repair, nudge, finalize — below) carry a single `RUNNER_MESSAGE_VERSION` constant folded into the cache key the same way.
+Template versions: `prompt-builder.ts` exports `PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string>` (e.g. `"p7.3"`), bumped on any provider-facing template construction or wording change. `p9.6` conditionally omits the entire `Skill false-positive guidance:` block when no recorded skill projects content; corrected dynamic skill selection alone does not require a template bump. `BuiltPrompt.templateVersion` flows into every call record and cache key, so template edits invalidate cached calls. The runner's own mechanical message templates (repair, nudge, finalize — below) carry a single `RUNNER_MESSAGE_VERSION` constant folded into the cache key the same way.
 
 ### Submit-Tool Schemas
 
@@ -660,7 +671,7 @@ Stage-to-submit-tool mapping (the tool name the model must call; the schema trav
 | 9 | `submit_verdict` | `SubmitVerdictSchema` | `VerificationVerdict` minus `candidateId` and `verificationIncomplete`; `finalFinding`, when present, uses the `SubmittedFinding` shape |
 | 10 | `submit_composition` | `SubmitCompositionSchema` | `{ summary: string; composedFindings: Array<{ findingIds: string[]; finalBody: string; publication: "inline" \| "summary-only" }> }` per the Stage 10 composer contract |
 
-`SubmittedFinding` is the model-facing projection of `CandidateFinding`: it excludes the pipeline-stamped fields `id`, `producedBy`, `clusterId`, `duplicateOf`, and `changedLine` (assigned, stamped, and computed by pipeline validation respectively) and includes everything else — `title`, `severity`, `confidence`, `path`, `anchor?`, `category`, `evidence`, `failureMode`, `whyThisMatters`, `suggestedFix?`, `suggestedTest?`, `verification`. The schemas mirror the law types field-for-field with TypeBox string-enum unions for the closed enums; they must not invent fields, defaults, or relaxations beyond the exclusions named here. `SubmittedFinding` is deliberately lens-free: producer and lens attribution is deterministic — Stage 7 validation stamps `producedBy` with the packet's primary (first) lens and that lens's skill ids; the model never claims a lens. Mapping submissions back into law types (id assignment, deterministic `producedBy` stamping, anchor validation) is stage logic in `components/review_pipeline.md`.
+`SubmittedFinding` is the model-facing projection of `CandidateFinding`: it excludes the pipeline-stamped fields `id`, `producedBy`, `clusterId`, `duplicateOf`, and `changedLine` (assigned, stamped, and computed by pipeline validation respectively) and includes everything else — `title`, `severity`, `confidence`, `path`, `anchor?`, `category`, `evidence`, `failureMode`, `whyThisMatters`, `suggestedFix?`, `suggestedTest?`, `verification`. The schemas mirror the law types field-for-field with TypeBox string-enum unions for the closed enums; they must not invent fields, defaults, or relaxations beyond the exclusions named here. `SubmittedFinding` is deliberately lens- and provenance-free: Stage 7/8 pipeline code stamps primary-lens attribution and the exact ordered, non-omitted ids from the actual producing prompt projection. The model-facing hint and uncertainty schemas likewise exclude `projectedSkillIds`; normalization stamps them after validation. Mapping submissions back into law types (id assignment, deterministic provenance stamping, anchor validation) is stage logic in `components/review_pipeline.md`.
 
 Schema authoring rules:
 
@@ -703,7 +714,7 @@ Loop invariants:
 
 Model resolution, once per run: `llm.model ?? Pi/provider default`, scoped by `llm.provider` when present — the resolved config already carries CLI/environment/user-level defaults merged by the config loader; the runner never reads `ProviderSettings` directly. One model serves all roles; per-role tiering (`llm.roleModels`/`llm.roleReasoning`) is deferred to Future Considerations — see architecture.md. At `createPiRunner` time the runner resolves the model eagerly; if it resolves to nothing, or the chosen provider has no usable auth, construction throws `config_error` naming the missing provider/model/auth and suggesting `codegenie provider login <provider>`. Reasoning resolution is `llm.reasoning ?? "high"` (the built-in default), one level for the whole run. The single resolved provider, model, and reasoning settings are folded into the cache key's llm-settings hash.
 
-Concurrency: a single `p-limit` semaphore of `llm.maxConcurrentCalls` (default 4) wraps each individual provider `complete()` call — not the whole `runStructured` invocation, since a tool-using task holds its loop across many provider calls and wrapping the loop would deadlock the run under low limits. Cache hits bypass the semaphore (no provider work). The pipeline's `review.concurrency` worker bound stacks on top of this limit, per `architecture.md`.
+Concurrency: a single `p-limit` semaphore of `llm.maxConcurrentCalls` (default 6) wraps each individual provider `complete()` call — not the whole `runStructured` invocation, since a tool-using task holds its loop across many provider calls and wrapping the loop would deadlock the run under low limits. Cache hits bypass the semaphore (no provider work). The pipeline's `review.concurrency` worker bound stacks on top of this limit, per `architecture.md`.
 
 Provider retry policy (429 and transient 5xx, plus network-level connection failures):
 
@@ -847,7 +858,7 @@ All tests use Vitest. LLM tests use a fake pi-ai adapter returning scripted comp
 
 Skill loader:
 
-- `skills_load_bundled_inventory`: loading with no repo skills returns the four bundled skills with correct ids, sources, lens declarations, and non-empty `Checks` sections; load order is deterministic.
+- `skills_load_bundled_inventory`: loading with no repo skills returns the eight bundled skills with correct ids, sources, lens declarations, and non-empty `Checks` sections; load order is deterministic.
 - `skills_frontmatter_validation_failures`: fixtures missing `id`, missing `lenses`, with a malformed id, with an empty title, and over 256KB each produce one `SkillLoadFailure` with a `warn` log and `skill_invalid` telemetry; valid siblings still load.
 - `skills_section_parsing`: a skill with all five sections, lower-level headings inside sections, content before the first H1, an unknown H1, and duplicate `# Checks` headings parses into the expected `sections` map (duplicates concatenated, preamble and unknown sections excluded).
 - `skills_guidance_required`: a Purpose-only skill is `skill_invalid`; a skill with only `False Positives` loads with a missing-Checks warning.
@@ -870,6 +881,9 @@ Lens registry:
 Prompt builder and projection:
 
 - `projection_stage_maps`: for one skill with all five sections, the stage 7 projection contains Checks + False Positives + Examples only; stage 9 contains False Positives + Safe Patterns only; stage 5 yields summary lines without section content; stage 10 performs no projection.
+- `projection_stage8_map`: targeted system review contains Checks + False Positives + Safe Patterns, with no Examples.
+- `bundled_examples_optional_owner_matrix`: bundled language skills omit Examples and every numbered check has the five owner fields; distinct core Examples remain.
+- `bundled_projection_budgets_and_stage9_self_containment`: every bundled skill and canonical language-plus-core composite is untruncated at Stages 7/8/9, Solidity Stage 8 stays at or below 3800 characters, and rendered Stage-9 sections contain no known dangling cross-reference.
 - `projection_per_skill_cap_4000`: an oversized skill truncates at a section boundary with the truncation marker, `truncatedChars` set, and a `skill_projection_truncated` telemetry event.
 - `projection_total_cap_12000_omits_tail`: four 4000-char skills project three; the fourth is `omitted: true` with telemetry; remainders below the minimum-fragment threshold never produce fragments.
 - `projection_dedupes_shared_skill`: a skill mapped from two selected lenses projects once.

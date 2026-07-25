@@ -4,7 +4,29 @@ import type { TelemetryRecorder } from "../../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../../util/hashing.js";
 import { Parser, Language, type Tree } from "web-tree-sitter";
 
-export type GrammarId = "go" | "typescript" | "tsx" | "javascript";
+export const GRAMMAR_IDS = ["go", "typescript", "tsx", "javascript", "rust", "python", "solidity"] as const;
+export type GrammarId = (typeof GRAMMAR_IDS)[number];
+
+type ParserLike = {
+  setLanguage(language: Language): void;
+  parse(
+    content: string,
+    oldTree: null,
+    options: { progressCallback: () => boolean }
+  ): Tree | null;
+  delete(): void;
+};
+
+export type TreeSitterServiceOptions = {
+  telemetry?: TelemetryRecorder;
+  initialize?: () => Promise<void>;
+  resolveGrammarWasm?: (grammarId: GrammarId) => string;
+  loadLanguage?: (wasmPath: string) => Promise<Language>;
+  createParser?: () => ParserLike;
+  now?: () => number;
+  maxParseBytes?: number;
+  parseTimeoutMs?: number;
+};
 
 type CachedParse = {
   key: string;
@@ -22,7 +44,10 @@ const GRAMMAR_WASM: Record<GrammarId, string> = {
   go: "tree-sitter-go/tree-sitter-go.wasm",
   typescript: "tree-sitter-typescript/tree-sitter-typescript.wasm",
   tsx: "tree-sitter-typescript/tree-sitter-tsx.wasm",
-  javascript: "tree-sitter-javascript/tree-sitter-javascript.wasm"
+  javascript: "tree-sitter-javascript/tree-sitter-javascript.wasm",
+  rust: "tree-sitter-rust/tree-sitter-rust.wasm",
+  python: "tree-sitter-python/tree-sitter-python.wasm",
+  solidity: "tree-sitter-solidity/tree-sitter-solidity.wasm"
 };
 
 export class TreeSitterService {
@@ -32,8 +57,10 @@ export class TreeSitterService {
   private readonly unavailable = new Set<GrammarId>();
   private readonly cache = new Map<string, CachedParse>();
   private readonly inflight = new Map<string, Promise<ParsedFile>>();
+  private readonly opts: TreeSitterServiceOptions;
 
-  constructor(opts: { telemetry?: TelemetryRecorder } = {}) {
+  constructor(opts: TreeSitterServiceOptions = {}) {
+    this.opts = opts;
     this.telemetry = opts.telemetry;
   }
 
@@ -50,6 +77,15 @@ export class TreeSitterService {
     if (/\.(?:js|jsx|mjs|cjs)$/u.test(filePath)) {
       return "javascript";
     }
+    if (filePath.endsWith(".rs")) {
+      return "rust";
+    }
+    if (filePath.endsWith(".py")) {
+      return "python";
+    }
+    if (filePath.endsWith(".sol")) {
+      return "solidity";
+    }
     return undefined;
   }
 
@@ -59,11 +95,14 @@ export class TreeSitterService {
 
   async parse(input: ParseInput): Promise<ParsedFile> {
     const grammarId = isGrammarId(input.language) ? input.language : this.routePath(input.path);
-    if (grammarId === undefined || this.unavailable.has(grammarId)) {
+    if (grammarId === undefined) {
       return genericParsed(input, false);
     }
-    if (Buffer.byteLength(input.content, "utf8") > MAX_PARSE_BYTES) {
-      return { ...genericParsed(input, true), adapterId: grammarId };
+    if (this.unavailable.has(grammarId)) {
+      return unavailableParsed(input, grammarId);
+    }
+    if (Buffer.byteLength(input.content, "utf8") > (this.opts.maxParseBytes ?? MAX_PARSE_BYTES)) {
+      return unavailableParsed(input, grammarId);
     }
 
     const cacheKey = cacheKeyFor(input, grammarId);
@@ -89,17 +128,18 @@ export class TreeSitterService {
   private async parseUncached(input: ParseInput, grammarId: GrammarId, cacheKey: string): Promise<ParsedFile> {
     const language = await this.loadLanguage(grammarId);
     if (language === undefined) {
-      return { ...genericParsed(input, true), adapterId: grammarId };
+      return unavailableParsed(input, grammarId);
     }
 
-    const parser = new Parser();
+    const parser = this.opts.createParser?.() ?? new Parser();
     try {
       parser.setLanguage(language);
-      const startedAt = Date.now();
+      const now = this.opts.now ?? Date.now;
+      const startedAt = now();
       let timedOut = false;
       const tree = parser.parse(input.content, null, {
         progressCallback: () => {
-          timedOut = Date.now() - startedAt > PARSE_TIMEOUT_MS;
+          timedOut = now() - startedAt > (this.opts.parseTimeoutMs ?? PARSE_TIMEOUT_MS);
           return timedOut;
         }
       });
@@ -117,7 +157,7 @@ export class TreeSitterService {
       this.remember(cached);
       return parsedFromCache(input, cached);
     } catch {
-      return { ...genericParsed(input, true), adapterId: grammarId };
+      return unavailableParsed(input, grammarId);
     } finally {
       parser.delete();
     }
@@ -138,7 +178,8 @@ export class TreeSitterService {
   private async loadLanguageUncached(grammarId: GrammarId): Promise<Language | undefined> {
     try {
       await this.init();
-      return await Language.load(require.resolve(GRAMMAR_WASM[grammarId]));
+      const wasmPath = this.opts.resolveGrammarWasm?.(grammarId) ?? require.resolve(GRAMMAR_WASM[grammarId]);
+      return await (this.opts.loadLanguage?.(wasmPath) ?? Language.load(wasmPath));
     } catch (error) {
       this.unavailable.add(grammarId);
       this.telemetry?.event({
@@ -155,13 +196,10 @@ export class TreeSitterService {
   }
 
   private async init(): Promise<void> {
-    this.initPromise ??= Parser.init({
-      locateFile: (filename: string) => {
-        if (filename.endsWith(".wasm")) {
-          return require.resolve("web-tree-sitter/web-tree-sitter.wasm");
-        }
-        return filename;
-      }
+    this.initPromise ??= this.opts.initialize?.() ?? Parser.init({
+      locateFile: (filename: string) => filename.endsWith(".wasm")
+        ? require.resolve("web-tree-sitter/web-tree-sitter.wasm")
+        : filename
     });
     await this.initPromise;
   }
@@ -204,7 +242,7 @@ export function languageFromPath(filePath: string): string {
 }
 
 export function isGrammarId(language: string): language is GrammarId {
-  return language === "go" || language === "typescript" || language === "tsx" || language === "javascript";
+  return (GRAMMAR_IDS as readonly string[]).includes(language);
 }
 
 function genericParsed(input: ParseInput, hasErrors: boolean): ParsedFile {
@@ -219,7 +257,18 @@ function genericParsed(input: ParseInput, hasErrors: boolean): ParsedFile {
   };
 }
 
+function unavailableParsed(input: ParseInput, grammarId: GrammarId): ParsedFile {
+  return {
+    ...genericParsed(input, true),
+    language: grammarId,
+    adapterId: grammarId
+  };
+}
+
 function fallbackLanguageFromPath(filePath: string): string {
+  if (filePath.endsWith(".pyi")) {
+    return "unknown";
+  }
   const match = /\.([^.\\/]+)$/u.exec(filePath);
   return match?.[1]?.toLowerCase() ?? "text";
 }

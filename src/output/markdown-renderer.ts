@@ -85,7 +85,17 @@ function renderRunStatLines(stats: ReviewRunStats | undefined): string[] {
   if (stats.git !== undefined) {
     lines.push(`Git: ${stats.git.repo} from ${stats.git.base} to ${renderGitHead(stats.git)}`);
   }
+  if (stats.plannerCoverage !== undefined && stats.plannerCoverage.rejectedUnknownHunk > 0) {
+    const coverage = stats.plannerCoverage;
+    lines.push(
+      `Planner coverage: submitted ${coverage.submittedEntries}, accepted ${coverage.acceptedEntries} ${plural(coverage.acceptedEntries, "entry", "entries")} / ${coverage.acceptedUniqueHunks} unique ${plural(coverage.acceptedUniqueHunks, "hunk", "hunks")}, rejected ${coverage.rejectedUnknownHunk} unknown ${plural(coverage.rejectedUnknownHunk, "hunk", "hunks")}`
+    );
+  }
   return lines;
+}
+
+function plural(count: number, singular: string, pluralValue: string): string {
+  return count === 1 ? singular : pluralValue;
 }
 
 function renderGitHead(git: NonNullable<ReviewRunStats["git"]>): string {

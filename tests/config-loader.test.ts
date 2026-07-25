@@ -3,13 +3,63 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { MAX_DEEP_ENSEMBLE_PASSES, rawConfigSchema } from "../src/config/schema.js";
+import {
+  MAX_DEEP_ENSEMBLE_PASSES,
+  MAX_REVIEW_TIME_MINUTES,
+  rawConfigSchema
+} from "../src/config/schema.js";
 import { ensureCodegenieHome, getCodegeniePaths } from "../src/config/paths.js";
 import { loadConfig } from "../src/config/config-loader.js";
 import { loadProviderSettings, saveProviderSettings } from "../src/provider/provider-settings.js";
 import { CodegenieError } from "../src/util/errors.js";
 
 describe("config loader", () => {
+  it("resolves maxTime minutes from defaults, user config, repo config, and CLI in precedence order", () => {
+    const repoRoot = tempDir();
+    const home = tempDir();
+
+    const defaults = loadConfig({ repoRoot, homeOverride: home });
+    expect(defaults.config.review.maxTimeMs).toBe(30 * 60 * 1000);
+    expect(defaults.sources["review.maxTime"]).toBe("defaults");
+
+    writeFileSync(path.join(home, "config.toml"), "[review]\nmaxTime = 45.5\n");
+    const userConfigured = loadConfig({ repoRoot, homeOverride: home });
+    expect(userConfigured.config.review.maxTimeMs).toBe(45.5 * 60 * 1000);
+    expect(userConfigured.sources["review.maxTime"]).toBe("user-config");
+
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\nmaxTime = 60\n");
+    const repoConfigured = loadConfig({ repoRoot, homeOverride: home });
+    expect(repoConfigured.config.review.maxTimeMs).toBe(60 * 60 * 1000);
+    expect(repoConfigured.sources["review.maxTime"]).toBe("repo-config");
+    expect(repoConfigured.warnings).toEqual([]);
+
+    const cliConfigured = loadConfig({
+      repoRoot,
+      homeOverride: home,
+      cli: { maxTimeMs: 75 * 60 * 1000 }
+    });
+    expect(cliConfigured.config.review.maxTimeMs).toBe(75 * 60 * 1000);
+    expect(cliConfigured.sources["review.maxTime"]).toBe("cli");
+  });
+
+  it("accepts review.maxTime only within the representable hard-timeout range and rejects timeoutMs", () => {
+    expect(rawConfigSchema.safeParse({ review: { maxTime: 0.5 } }).success).toBe(true);
+    expect(rawConfigSchema.safeParse({ review: { maxTime: MAX_REVIEW_TIME_MINUTES } }).success).toBe(true);
+    expect(rawConfigSchema.safeParse({ review: { maxTime: 0 } }).success).toBe(false);
+    expect(rawConfigSchema.safeParse({ review: { maxTime: Number.POSITIVE_INFINITY } }).success).toBe(false);
+    expect(rawConfigSchema.safeParse({ review: { maxTime: MAX_REVIEW_TIME_MINUTES * 2 } }).success).toBe(false);
+    expect(rawConfigSchema.safeParse({ review: { timeoutMs: 60_000 } }).success).toBe(false);
+
+    const repoRoot = tempDir();
+    const home = tempDir();
+    writeFileSync(path.join(home, "config.toml"), `[review]\nmaxTime = ${MAX_REVIEW_TIME_MINUTES}\n`);
+    const maximum = loadConfig({ repoRoot, homeOverride: home });
+    expect(Number.isSafeInteger(maximum.config.review.maxTimeMs * 2)).toBe(true);
+
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\nmaxTime = 2e303\n");
+    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(/invalid config file/);
+  });
+
   it("merges safe and user-scoped layers with the required precedence", () => {
     const repoRoot = tempDir();
     const home = tempDir();

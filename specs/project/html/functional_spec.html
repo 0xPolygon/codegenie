@@ -393,6 +393,65 @@ commit or range as planner input.</li>
 <li>Do not attempt to post GitHub comments in v1 from commit or
 commit-range mode.</li>
 </ul>
+<h2 id="github-action-mode">GitHub Action Mode</h2>
+<p><code>codegenie github-action</code> is the entrypoint the bundled
+composite action (<code>action.yml</code>) invokes inside GitHub Actions
+runners; it is not intended for interactive use. It reads the standard
+Actions environment (<code>GITHUB_EVENT_NAME</code>,
+<code>GITHUB_EVENT_PATH</code>, <code>GITHUB_REPOSITORY</code>,
+<code>GITHUB_RUN_ID</code>), decides whether the event should trigger a
+review, and when it should, runs the ordinary <code>--pr</code> review
+with a live status comment on the PR (see
+<code>components/repository_and_github.md</code>, GitHub Action
+Adapter). With <code>preflight-only: true</code>, it performs the same
+trigger and live-permission checks without claiming a comment or
+starting a review, and returns
+<code>should-run</code>/<code>pr-number</code> Action outputs.</p>
+<ul>
+<li>Trigger lanes: <code>pull_request</code>
+(opened/synchronize/ready_for_review; drafts and fork heads skip) and
+<code>issue_comment</code> (created, on an open PR; the trimmed comment
+must equal the configured trigger phrase, default
+<code>codegenie review</code>, or start with it followed by whitespace —
+trailing text is ignored and never parsed into options).</li>
+<li>Authorization: payload author association must be in the allowlist
+(default OWNER/MEMBER/COLLABORATOR) and a live collaborator-permission
+check must report write or admin; <code>allowed-users</code> bypasses
+both explicitly. Bot actors are ignored unless allowlisted.
+Authorization logic lives only in the binary — payload-only YAML
+approximations are forbidden. Workflow templates are single-job with
+per-PR <code>concurrency</code> and uniform
+<code>cancel-in-progress: true</code> (newest event wins); the accepted
+residual is that a comment can supersede its own PR’s in-flight run
+before the skip decision. <code>preflight-only: true</code> remains
+available for a stricter two-job pattern: it runs the same gate without
+claiming a comment or reviewing, returning
+<code>should-run</code>/<code>pr-number</code> outputs.</li>
+<li>Comment-author identity resolves as <code>bot-login</code> input →
+<code>/user</code> lookup → <code>github-actions[bot]</code>;
+status-comment reclaim requires an exact case-insensitive author match
+against it.</li>
+<li>A non-triggering event is a skip: exit <code>0</code>, one-line
+stdout reason, nothing posted. Review and posting failures keep their
+existing nonzero exit semantics.</li>
+<li>Inline posting maps to the existing
+<code>--post-github-comments</code> flag; the status comment is enabled
+only by this entrypoint. Repo-resident config can enable neither.</li>
+<li>Model selection is a single spec input,
+<code>provider/model[:reasoning]</code> (reasoning defaults to
+<code>high</code> in action context; a <code>:suffix</code> that is not
+a reasoning level stays part of the model id). A generic
+<code>LLM_API_KEY</code> env var/input is routed to the env variable the
+named provider reads (via the provider registry’s env-var map);
+provider-native env vars keep working and are never overwritten.</li>
+<li>Telemetry remains disabled by default. Gate decisions and bounded
+terminal lifecycle/status counters are logged in CI. Terminal
+pre/post-cap body sizes are UTF-8 byte counts over the complete
+attempted payload including the status marker. The same terminal
+lifecycle object is persisted as <code>github-action.json</code> only
+when telemetry is enabled and the review exposes a run directory;
+preflight/skips are log-only because no review run exists.</li>
+</ul>
 <h2 id="provider-and-model-cli">Provider And Model CLI</h2>
 <p>codegenie should expose a provider command namespace for LLM provider
 setup, backed by Pi’s provider/model registry and auth storage:</p>
@@ -508,9 +567,9 @@ run every lens on every hunk by default.</p>
 incomplete. Basic diff parsing, file filtering, file classification,
 seed context, selected lenses, structured findings, verification,
 deduplication, and telemetry are required. Tree-sitter changed-symbol
-extraction for Go and TypeScript/JavaScript should improve packet
-quality, but parser gaps should degrade gracefully rather than block
-review.</p>
+extraction for Go, TypeScript/TSX, JavaScript, Rust, Python, and
+Solidity should improve packet quality, but parser gaps should degrade
+gracefully rather than block review.</p>
 <h2 id="stage-1-diff-parsing-and-change-inventory">Stage 1: Diff Parsing
 And Change Inventory</h2>
 <p>Stage 1 resolves the requested review target into a deterministic
@@ -634,6 +693,55 @@ improve review targeting, not to perform semantic proof.</p>
 back to simple line or regex-based detection when parsing is
 unavailable. Parser gaps should degrade the quality of packet context,
 not block the review.</p>
+<p>Rust extraction is declaration-aware: outer attributes belong to the
+decorated declaration; trait and impl functions are methods with the
+nominal trait/target owner when resolvable, while a blanket target that
+is only a type parameter uses <code>impl target</code>; impl blocks
+provide ownership context but are not standalone symbols; same-named
+trait/impl declarations remain distinct by declaration range and
+contextual signature. Rust symbols leave <code>exported</code> unset, so
+the cross-language exported-API signal is not activated for Rust in this
+slice.</p>
+<p>Python extraction is decorator-aware and never uses brace-based
+signature logic: decorators extend function/class ranges, multiline
+headers use node-relative JavaScript string slicing in web-tree-sitter’s
+UTF-16 coordinate space and end at the suite colon, and signatures are
+capped independently of body size. Direct class functions are methods
+with their immediate class owner; nested local functions reset class
+ownership; nested classes record their immediate class context. Python
+symbols leave <code>exported</code> unset. Only <code>.py</code> is
+supported; <code>.pyi</code> is unknown/generic.</p>
+<p>Solidity extraction maps contracts, abstract contracts, and libraries
+to <code>type</code>; interfaces to <code>interface</code>; direct
+contract callables, constructors, fallback/receive handlers, and
+modifiers to owner-qualified <code>method</code>; free functions to
+<code>function</code>; immediately contract-owned state
+variables/constants to minimal <code>value</code> (file-level constants
+are excluded); nested/file-level structs, enums, and user-defined value
+types to <code>type</code>; and events/custom errors to
+<code>other</code> with explicit native kinds. Enclosing lookup selects
+the smallest direct member before its contract, bounded signatures stop
+before bodies, and declaration identity includes
+path/kind/owner/name/range/signature so overloads do not collapse.
+Imports contain only unquoted source paths. All Solidity symbols leave
+<code>exported</code> unset; storage layout, generated getters,
+ABI/export signals, and upgrade compatibility remain deferred.</p>
+<p>JavaScript extraction retains canonical <code>javascript</code> for
+<code>.js</code>, <code>.jsx</code>, <code>.mjs</code>, and
+<code>.cjs</code> while sharing the ECMAScript adapter implementation
+with TypeScript. Functions/generators, callable bindings, classes and
+class expressions, callable fields, methods, and top-level values
+receive bounded symbols; enclosing lookup selects the smallest
+callable/member. Static imports, side-effect imports, re-exports, and
+literal <code>require()</code> sources are returned in source order with
+deduplication. Likely-test discovery covers sibling
+<code>*.test.*</code>/<code>*.spec.*</code>, <code>__tests__/</code>,
+<code>test/</code>, and <code>tests/</code> conventions and returns
+supported <code>describe</code>/<code>it</code>/<code>test</code> cases
+including <code>.only</code>, <code>.skip</code>, and
+<code>.each</code>. JavaScript packets project only
+<code>lang/javascript</code>; CommonJS export inference and
+TypeScript-only semantics are not guessed.</p>
 <p><code>HunkSymbolFacts</code> is the compact per-hunk metadata
 produced by changed-symbol extraction. It includes the hunk id, path,
 changed lines, enclosing symbol name/kind/range, signature when
@@ -792,8 +900,9 @@ skipped.</li>
 <li>Authentication or provider-wide failures at any stage fail the
 run.</li>
 </ul>
-<p>Budget exhaustion ladder, applying to <code>timeoutMs</code>,
-<code>maxBudgetTokens</code>, and <code>maxModelCalls</code>:</p>
+<p>Budget exhaustion ladder, applying to resolved
+<code>maxTimeMs</code>, <code>maxBudgetTokens</code>, and
+<code>maxModelCalls</code>:</p>
 <ul>
 <li>Budgets are checked before each new model call or worker
 dispatch.</li>
@@ -832,10 +941,12 @@ reduce review quality.</p>
 <p>V1 should support bounded concurrency for independent hunk/file
 review packets. Packets are independent by construction in v1 — workers
 have isolated context and packets never span files — so all packets may
-run concurrently up to the configured limit. Scheduling order is
-per-packet priority derived from coverage level and configured priority;
-under budget pressure, higher-priority packets are dispatched first. The
-planner does not emit scheduling groups in v1 (see Future
+run concurrently up to the configured limit. Stage 7 scheduling orders
+configured priority, then coverage, then a deterministic
+product-source/test/docs/snapshot class rank and larger packet-local
+changed-line count; stable input order breaks final ties. This rank is
+Stage-7-only, so verification and system-review ordering is unchanged.
+The planner does not emit scheduling groups in v1 (see Future
 Considerations).</p>
 <p>Parallel execution rules:</p>
 <ul>
@@ -1112,10 +1223,15 @@ verifier by default. Verification may be disabled only through explicit
 configuration for faster local experimentation, not as the default v1
 behavior.</p>
 <p>The verifier receives one candidate at a time, its originating packet
-context, the relevant changed hunk(s), cited evidence, active lens
-criteria, and the read-only semantic tool suite. The verifier should use
-tools only to prove, narrow, or reject the candidate. It must not search
-for new issues.</p>
+context, the relevant changed hunk(s), cited evidence, and the False
+Positives/Safe Patterns guidance from the exact ordered skill ids
+recorded by the producing Stage-7/8 item. These ids are pipeline-derived
+from the actual producing prompt projection. Stage 9 drops unknown or
+language-incompatible ids and never substitutes current primary-lens
+membership. An authoritative empty list emits no skill sections, skill
+headers, or empty guidance label. The verifier also receives the
+read-only semantic tool suite and should use it only to prove, narrow,
+or reject the candidate; it must not search for new issues.</p>
 <p>The verifier may inspect surrounding code, but only to validate the
 candidate’s specific claim. It should not expand into a new review pass
 or introduce unrelated findings.</p>
@@ -1160,9 +1276,10 @@ default.</li>
 affects review coverage or suppressed high-severity candidates.</li>
 </ul>
 <p>Verification should run with bounded concurrency and record telemetry
-for every candidate: pre-gate decision, verifier prompt size, tool
-calls, token usage, runtime, verdict, revision details, rejection
-reason, and incomplete-verification reason.</p>
+for every candidate: pre-gate decision, verifier prompt size,
+requested/resolved/dropped skill ids, tool calls, token usage, runtime,
+verdict, revision details, rejection reason, and incomplete-verification
+reason.</p>
 <p>The output of this stage is a set of verified, rejected, revised, or
 incomplete findings with traceable lineage. Stage 9 does not decide the
 final review shape.</p>
@@ -1234,7 +1351,30 @@ resolution unless a language analyzer backend explicitly marks the
 result as semantic or exact.</li>
 <li><code>find_likely_tests</code> combines test filename conventions
 with symbol extraction when available and filename/path heuristics
-otherwise.</li>
+otherwise. JavaScript uses sibling
+<code>*.test.*</code>/<code>*.spec.*</code>, <code>__tests__/</code>,
+and matching <code>test/</code>/<code>tests/</code> paths across
+<code>.js</code>, <code>.jsx</code>, <code>.mjs</code>, and
+<code>.cjs</code>, returning supported
+<code>describe</code>/<code>it</code>/<code>test</code> call sites. Rust
+v1 uses sibling <code>&lt;stem&gt;_test.rs</code> and nearest
+Cargo-package <code>tests/&lt;stem&gt;.rs</code>, returning supported
+<code>#[test]</code>/async-test functions as test cases; same-file
+<code>#[cfg(test)]</code> and arbitrary-name integration scanning are
+deferred. Python uses sibling
+<code>test_&lt;stem&gt;.py</code>/<code>&lt;stem&gt;_test.py</code> and
+nearest-package <code>tests/</code> variants, returning top-level
+<code>test_*</code> functions and direct <code>test_*</code> methods
+under <code>Test*</code> classes; custom pytest collection configuration
+is deferred. Solidity requires a nearest <code>foundry.toml</code> and
+uses that package’s default <code>test/&lt;Stem&gt;.t.sol</code> and
+<code>test/&lt;Stem&gt;Test.t.sol</code>, returning direct contract
+methods beginning <code>test</code> or <code>invariant</code> and
+excluding setup/helpers; custom Foundry directories and Hardhat
+TypeScript links are deferred. Subjects outside those explicit language
+contracts use exact stem matches under <code>test</code>,
+<code>tests</code>, or <code>__tests__</code>; language-specific sibling
+names never apply cross-language.</li>
 <li><code>list_files</code> uses filesystem/git listing and does not
 require tree-sitter.</li>
 </ul>
@@ -1441,7 +1581,11 @@ or more skills.</p>
 architecture/design guidance as sections of one strong core skill.</li>
 <li>Tests.</li>
 <li>Go.</li>
-<li>TypeScript/JavaScript.</li>
+<li>TypeScript/TSX.</li>
+<li>JavaScript.</li>
+<li>Rust.</li>
+<li>Python.</li>
+<li>Solidity.</li>
 </ul>
 <p>Logic-bugs and architecture exist as sections of the
 <code>core</code> skill, not separate lenses, because v1 runs one
@@ -1451,7 +1595,7 @@ runs.</p>
 security-correctness checks — injection, authorization gaps, secret
 handling, unsafe deserialization — in v1; dedicated security/domain
 lenses remain post-v1.</p>
-<p>Additional language and domain lenses, such as security, database,
+<p>Additional language and domain lenses, including security, database,
 performance, and concurrency, may be added as bundled skills after
 v1.</p>
 <p>Style, formatting, naming, and lint-like lenses are disabled by
@@ -1829,6 +1973,18 @@ data.</li>
 TypeScript compiler API, Rust Analyzer) behind the same repository tool
 contract, already anticipated by the tool layer’s backend and precision
 metadata.</li>
+<li>Richer Rust test discovery. Same-file <code>#[cfg(test)]</code>
+modules and arbitrary-name Cargo integration-test scanning remain
+deferred; v1 deliberately links only the deterministic sibling and
+stem-matched package conventions.</li>
+<li>Richer Python support. <code>.pyi</code> stubs and custom pytest
+collection configuration remain deferred; v1 deliberately supports
+<code>.py</code> and deterministic conventional test paths only.</li>
+<li>Richer Solidity support. Storage-layout/generated-getter/upgrade/ABI
+analysis, custom Foundry test directories, Hardhat TypeScript links, and
+<code>exported</code> inference remain deferred; v1 supplies syntax
+context, minimal state-variable symbols, and default Foundry conventions
+only.</li>
 <li>Diff-file review mode (<code>--diff &lt;path&gt;</code>). Reviewing
 a loose unified diff file with the worktree treated as head for source
 reads, per-hunk staleness validation of context lines against the

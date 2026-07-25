@@ -39,11 +39,11 @@ export function renderBudgetStopNotice(coverage: RunCoverageStatus): string {
     return "";
   }
   if (stop.reason === "runtime_reserved_tail" || stop.reason === "hard_timeout") {
-    const minutes = Math.round(stop.timeoutMs / 60_000);
+    const minutes = stop.timeoutMs / 60_000;
     return (
       `> **Sorry, this review is incomplete.** The allotted max time of ${minutes} minutes was reached ` +
       "and the review has been degraded. Re-run with `--max-time <minutes>` " +
-      "(config `review.timeoutMs`, or `review.maxTimeMinutes` in eval cases) for a higher time allotment."
+      "(config `review.maxTime`, or `review.maxTimeMinutes` in eval cases) for a higher time allotment."
     );
   }
   const limit = stop.reason === "max_model_calls"

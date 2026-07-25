@@ -7,6 +7,7 @@ export type WorkerTask<T> = {
   stage: ReviewStage;
   priority: ReviewPriority;
   coverage?: Exclude<CoverageLevel, "skip">;
+  dispatchRank?: number[];
   packetId?: string;
   candidateId?: string;
   // Which ensemble pass this task represents (plan 84). Outcomes are
@@ -71,6 +72,7 @@ export function createWorkerRunner(opts: WorkerRunnerOptions): WorkerRunner {
         .sort((a, b) =>
           PRIORITY_ORDER[a.task.priority] - PRIORITY_ORDER[b.task.priority] ||
           coverageRank(a.task.coverage) - coverageRank(b.task.coverage) ||
+          compareDispatchRanks(a.task.dispatchRank, b.task.dispatchRank) ||
           a.index - b.index
         )
         .map(({ task }, dispatchIndex) => ({ task: assignWorkerId(task, dispatchIndex + 1) }));
@@ -104,6 +106,20 @@ function assignWorkerId<T>(task: WorkerTask<T>, dispatchNumber: number): Assigne
 
 function coverageRank(coverage: Exclude<CoverageLevel, "skip"> | undefined): number {
   return coverage === undefined ? COVERAGE_ORDER.normal : COVERAGE_ORDER[coverage];
+}
+
+function compareDispatchRanks(a: number[] | undefined, b: number[] | undefined): number {
+  if (a === undefined || b === undefined) {
+    return 0;
+  }
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) {
+      return difference;
+    }
+  }
+  return 0;
 }
 
 async function runTask<T>(

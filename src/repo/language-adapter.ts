@@ -11,6 +11,9 @@ import { TreeSitterService, isGrammarId, languageFromPath } from "./tree-sitter/
 import { GenericAdapter } from "./tree-sitter/generic-adapter.js";
 import { GoAdapter } from "./tree-sitter/go-adapter.js";
 import { TypeScriptAdapter } from "./tree-sitter/typescript-adapter.js";
+import { RustAdapter } from "./tree-sitter/rust-adapter.js";
+import { PythonAdapter } from "./tree-sitter/python-adapter.js";
+import { SolidityAdapter } from "./tree-sitter/solidity-adapter.js";
 
 export class LanguageAdapterRegistry {
   private readonly generic: GenericAdapter;
@@ -22,7 +25,10 @@ export class LanguageAdapterRegistry {
     const ts = new TypeScriptAdapter(service, "typescript");
     const tsx = new TypeScriptAdapter(service, "tsx");
     const js = new TypeScriptAdapter(service, "javascript");
-    for (const adapter of [go, ts, tsx, js]) {
+    const rust = new RustAdapter(service);
+    const python = new PythonAdapter(service);
+    const solidity = new SolidityAdapter(service);
+    for (const adapter of [go, ts, tsx, js, rust, python, solidity]) {
       this.adapters.set(adapter.id, adapter);
     }
   }
@@ -107,7 +113,8 @@ export function changedSymbolsFromEnclosing(
   file: ParsedFile,
   hunk: DiffHunk,
   getEnclosing: (line: number) => SymbolInfo | undefined,
-  side: "old" | "new"
+  side: "old" | "new",
+  identity: (symbol: SymbolInfo) => string = qualifiedSymbolName
 ): ChangedSymbol[] {
   const byKey = new Map<string, ChangedSymbol>();
   for (const line of changedLinesForHunk(hunk, side)) {
@@ -115,7 +122,7 @@ export function changedSymbolsFromEnclosing(
     if (!symbol) {
       continue;
     }
-    const key = qualifiedSymbolName(symbol);
+    const key = identity(symbol);
     const existing = byKey.get(key);
     if (existing) {
       existing.changedLines.push(line);
@@ -134,9 +141,10 @@ export function qualifiedSymbolName(symbol: SymbolInfo): string {
 }
 
 export function importLikeScan(content: string): string[] {
-  const imports = new Set<string>();
+  const matches: Array<{ value: string; index: number }> = [];
   const patterns = [
     /\bimport\s+(?:[^'"]+\s+from\s+)?["']([^"']+)["']/gu,
+    /\bexport\s+(?:\*(?:\s+as\s+[$\w]+)?|\{[^}]*\})\s+from\s+["']([^"']+)["']/gu,
     /\brequire\(\s*["']([^"']+)["']\s*\)/gu,
     /^\s*from\s+([^\s]+)\s+import\b/gmu
   ];
@@ -144,11 +152,12 @@ export function importLikeScan(content: string): string[] {
     for (const match of content.matchAll(pattern)) {
       const value = match[1];
       if (value !== undefined) {
-        imports.add(value);
+        matches.push({ value, index: match.index });
       }
     }
   }
-  return [...imports];
+  matches.sort((a, b) => a.index - b.index);
+  return [...new Set(matches.map((match) => match.value))];
 }
 
 export function fileStem(filePath: string): string {

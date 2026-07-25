@@ -26,7 +26,7 @@ type RawPathRule = NonNullable<NonNullable<RawCodegenieConfig["classification"]>
 export type CliConfigOverrides = {
   depth?: ReviewDepth;
   budgetBoost?: number;
-  timeoutMs?: number;
+  maxTimeMs?: number;
   lenses?: string[];
   provider?: string;
   model?: string;
@@ -61,7 +61,7 @@ const DEFAULT_SOURCE_PATHS = [
   "review.minConfidence",
   "review.minInlineConfidence",
   "review.concurrency",
-  "review.timeoutMs",
+  "review.maxTime",
   "review.perPassTimeoutMs",
   "review.budgetBoost",
   "review.maxBudgetTokens",
@@ -79,7 +79,7 @@ const DEFAULT_SOURCE_PATHS = [
   "eval.logsDir"
 ];
 
-const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap", "budgetBoost"]);
+const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap", "budgetBoost", "maxTime"]);
 const CREDENTIAL_KEY_PATTERN = /(?:api[_-]?key|apikey|secret|token|password|passwd|authorization|credentials|auth)/i;
 
 export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
@@ -242,9 +242,9 @@ function applyRawConfig(
     config.review.concurrency = raw.review.concurrency;
     sources["review.concurrency"] = source;
   }
-  if (raw.review?.timeoutMs !== undefined) {
-    config.review.timeoutMs = raw.review.timeoutMs;
-    sources["review.timeoutMs"] = source;
+  if (raw.review?.maxTime !== undefined) {
+    config.review.maxTimeMs = raw.review.maxTime * 60_000;
+    sources["review.maxTime"] = source;
   }
   if (raw.review?.perPassTimeoutMs !== undefined) {
     config.review.perPassTimeoutMs = raw.review.perPassTimeoutMs;
@@ -365,6 +365,9 @@ function filterRepoConfig(raw: RawCodegenieConfig, warnings: ConfigWarning[]): R
     if (raw.review.budgetBoost !== undefined) {
       safe.review.budgetBoost = raw.review.budgetBoost;
     }
+    if (raw.review.maxTime !== undefined) {
+      safe.review.maxTime = raw.review.maxTime;
+    }
   }
 
   if (raw.git?.baseBranch !== undefined) {
@@ -470,9 +473,9 @@ function applyCliOverrides(
     config.review.budgetBoost = cli.budgetBoost;
     sources["review.budgetBoost"] = "cli";
   }
-  if (cli.timeoutMs !== undefined) {
-    config.review.timeoutMs = cli.timeoutMs;
-    sources["review.timeoutMs"] = "cli";
+  if (cli.maxTimeMs !== undefined) {
+    config.review.maxTimeMs = cli.maxTimeMs;
+    sources["review.maxTime"] = "cli";
   }
   if (cli.lenses !== undefined) {
     config.lenses.restrictTo = [...cli.lenses];

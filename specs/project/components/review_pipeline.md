@@ -297,6 +297,12 @@ type PlannerDossier = {
   // Changed paths matching codegenie.toml or .codegenie/skills/** — a planner risk signal
   // per the Trust Boundaries policy-load rule.
   policyFilesChanged: string[]
+  hunkIndex: Array<{
+    path: string
+    oldPath?: string
+    language: string
+    hunkIds: string[]
+  }>
   files: DossierFileEntry[]
   directories: DossierDirectoryRollup[]        // non-empty only when compaction collapsed file detail
   filterSummary: {
@@ -356,7 +362,6 @@ type DossierDirectoryRollup = {
   maxReviewPriority: ReviewPriority
   testFileCount: number
   representativePaths: string[]     // first 5 paths, lexicographic
-  hunkIds: string[]                 // every hunk id in the rollup — planner overrides may target any of these hunks
 }
 
 type DossierCompaction = {
@@ -376,6 +381,7 @@ Construction rules:
 - `policyFilesChanged` is computed from the pre-filter change inventory (`codegenie.toml`, any path under `.codegenie/skills/`), regardless of filter decisions.
 - `lenses` lists the run's enabled lens set (after `--lens` overrides) with one-line summaries from the lens registry; the planner receives one-line summaries only, never skill bodies.
 - The dossier includes hunk detail only for kept files; filtered files appear solely in `filterSummary`.
+- `hunkIndex` is the mandatory path-associated identifier inventory. It contains every kept changed file and all of its hunk ids, includes `oldPath` for renames/copies, and is immutable through every compaction level. Each chunk carries only the index entries for that chunk's files.
 
 ### Dossier Compaction
 
@@ -383,7 +389,7 @@ The rendered dossier prompt has a deterministic budget: `maxDossierPromptChars =
 
 1. Drop `excerpt` from all hunks (`what: "hunk excerpts"`).
 2. Reduce `staticSignals` per hunk from 5 to 1, keeping the highest-confidence signal (`what: "static signals"`).
-3. Collapse per-hunk detail into per-file summaries (clear `hunks`, keep `DossierFileEntry` scalar facts) in ascending `reviewPriority` order (`low` first, `critical` last), lexicographic within a priority tier, stopping as soon as the dossier fits. Collapsed files' hunk ids are listed in a `DossierDirectoryRollup` for their root so every hunk id remains visible to the planner (`what: "per-hunk detail"`).
+3. Collapse per-hunk detail into per-file summaries (clear `hunks`, keep `DossierFileEntry` scalar facts) in ascending `reviewPriority` order (`low` first, `critical` last), lexicographic within a priority tier, stopping as soon as the dossier fits. The immutable `hunkIndex` keeps every path-to-id association visible (`what: "per-hunk detail"`).
 4. Collapse per-file entries into `DossierDirectoryRollup`s, same ordering, stopping as soon as the dossier fits (`what: "per-file detail"`).
 
 `compaction.level` is `"full"` when no reduction ran and `"compacted"` otherwise. The full deterministic inventory is always complete on disk regardless of compaction; only the planner's view is reduced.
@@ -393,7 +399,7 @@ The rendered dossier prompt has a deterministic budget: `maxDossierPromptChars =
 If the dossier still exceeds the budget after step 4, planning chunks deterministically:
 
 - Partition kept files by `packageRoot`, falling back to the top-level directory when no package root is known. Sort roots lexicographically and greedily pack them, in order, into chunks whose rendered size (chunk files at full detail plus the shared preamble) fits the budget. A single root that alone exceeds the budget is split further by subdirectory, then by file; a single file that alone exceeds the budget enters its own chunk with compaction steps 1-3 applied to that chunk only.
-- Each chunk dossier carries the shared global sections (`pr`, `commits`, `policyFilesChanged`, `filterSummary`, `lenses`, `totals`) plus only its chunk's `files`, with `compaction = { level: "chunked", chunkCount, chunkIndex, chunkRoot }`.
+- Each chunk dossier carries the shared global sections (`pr`, `commits`, `policyFilesChanged`, `filterSummary`, `lenses`, `totals`) plus only its chunk's `files` and matching `hunkIndex` slice, with `compaction = { level: "chunked", chunkCount, chunkIndex, chunkRoot }`.
 - The same planner prompt runs once per chunk. Chunk calls may run concurrently, bounded by `llm.maxConcurrentCalls`. There is no meta-planner and no model-driven grouping in v1; hierarchical planning is deferred (Future Considerations).
 
 Mechanical concatenation of per-chunk `ReviewPlan`s, in chunk-index order:
@@ -410,21 +416,24 @@ The planner call is one `LlmRunner.runStructured` per dossier (or per chunk) wit
 
 Semantic validation runs in pipeline code on every schema-valid plan, before the plan is persisted:
 
-- Coverage decisions referencing unknown or filtered `hunkId`s are dropped with telemetry (`planner_unknown_hunk`).
+- Validation derives known ids, hunk languages, and current/old known paths exclusively from `hunkIndex`, so the accepted identifier set is definitionally the set displayed to the planner. Coverage decisions referencing unknown or filtered `hunkId`s are dropped with telemetry (`planner_unknown_hunk`).
 - A `skip` decision with an empty (after trimming) `reason` is invalid; it is recorded (`planner_invalid_skip`) and the hunk is treated as having no decision. The packet builder applies the `normal` fallback.
 - Lens names not in the run's enabled lens set are dropped from each decision (`planner_unknown_lens`); a decision left with zero lenses is treated as having an empty lens set, which the packet builder fills with the default lens set.
+- Enabled language-specific lenses whose `languages` do not include the hunk's canonical language are removed with dedicated incompatibility telemetry. If nothing survives, the same deterministic core plus exact-language defaults apply; TypeScript/TSX use `lang/typescript`, while JavaScript uses `lang/javascript`.
 - Coverage `focusNotes`, `relatedSymbols`, and `relatedFiles` are normalized and capped per hunk. They are advisory context only.
 - `surroundingContextHints` with paths outside the kept change set and no symbol are kept but marked tool-lookup-only; path containment itself is enforced at the repository tool chokepoint (`components/context_and_tools.md`).
 - Hunks with no surviving decision are left undecided; the packet builder owns the `normal` fallback so that later stages do not become independent risk classifiers.
 
 Validation never re-invokes the model. The persisted `review-plan.json` is the post-validation plan.
 
+Every validation also returns `PlannerCoverageStats`: submitted entries, accepted entries, accepted unique hunk ids, and unknown-id rejections. Known duplicate entries count as accepted entries even when the plan later merges them. Partial loss emits `planner_coverage_lost` at warn level; total loss emits it at error level, with a chunk root on chunked calls. Deterministic fallback coverage contributes zero submitted entries. Chunked planning sums entry counts and unions accepted model-submitted ids. The aggregate is copied to `ReviewRunStats.plannerCoverage`; when unknown ids were rejected, the Markdown Stats block renders the loss counts.
+
 ### Degraded-Planning Default Plan
 
 On terminal planner failure (schema-invalid after repair, transient failure after `LlmRunner` retries, or per-pass timeout — anything except authentication/provider-wide failure, which is fatal), `runPlanner` returns the deterministic default plan:
 
 - `coverage`: every reviewable hunk of every kept file at `normal`, `reason: "degraded planning: deterministic default"`, `surroundingContextHints: []`.
-- Per-hunk `lenses`: the default lens set — enabled lenses whose ids begin with `core/`, plus the enabled language lens matching `FileFacts.language` for that file (`lang/go` for `go`, `lang/typescript` for TypeScript/JavaScript), in registry order.
+- Per-hunk `lenses`: the default lens set — enabled lenses whose ids begin with `core/`, plus the enabled exact `lang/${FileFacts.language}` lens, with TypeScript/TSX using `lang/typescript` and JavaScript using `lang/javascript`, in registry order.
 - `diffUnderstanding`: `declaredIntent` is the PR title or first commit title (truncated, template-framed); `inferredBehavior: "unavailable (degraded planning)"`.
 - `partialReview` unset — the default plan covers all hunks; degradation is disclosed through `RunCoverageStatus.degradedPlanning` and a `reasons` entry, not through partial coverage.
 
@@ -485,6 +494,7 @@ Step 10 — packet lenses and review profile. `lenses` = the deduplicated union 
 Packet assembly details:
 
 - `id = sha256(path + sorted hunkIds + kind)` per `architecture.md`; stable across reruns of the same diff.
+- `dispatchRank = [fileClassRank, -packetChangedLines]`, where changed lines are counted from the source `DiffHunk`s before packet rendering or truncation. File class uses first-match precedence: snapshot/fixture (3), docs/config (2), test source (1), product source (0).
 - `prSummary`: deterministic one-paragraph projection of dossier metadata (PR title or first commit title plus totals), capped 500 chars; it is data framing, not model output.
 - `PacketHunk` line data is copied from the parsed diff with absolute old/new numbers preserved exactly; `changedNewLineNumbers` (add lines) and `changedOldLineNumbers` (delete lines) are derived from `DiffLine` kinds.
 - `toolBudget` is assigned from the review-profile/coverage/depth table below.
@@ -510,7 +520,7 @@ The worker runner (`src/pipeline/worker-runner.ts`) is the shared execution subs
 
 Scheduling:
 
-- A priority queue ordered by: task priority (`critical > high > normal > low`), then coverage level for packet tasks (`deep > normal > light`), then stable insertion order (packet path, first hunk position for packet tasks; candidate id for verifier tasks). Packet task priority derives from the packet's max configured `reviewPriority` across its hunks' files.
+- A priority queue ordered by: task priority (`critical > high > normal > low`), then coverage level for packet tasks (`deep > normal > light`), then lexicographic `dispatchRank` when both tasks carry one, then stable insertion order. Both initial and adaptive Stage-7 packet tasks copy the packet rank. Stage 8 and Stage 9 tasks omit it and therefore retain their previous byte-identical ordering. Packet task priority derives from the packet's max configured `reviewPriority` across its hunks' files.
 - Bounded concurrency via `p-limit` at `review.concurrency`; LLM provider calls are additionally capped by `llm.maxConcurrentCalls` inside the LLM runner.
 - Before each dispatch, the runner calls the budget ledger checkpoint. On exhaustion it stops dispatching: remaining queued tasks settle as `not_dispatched` and the stage records them per the budget ladder (Stage 7: hunks not reviewed, partial disclosure; Stage 9: reserved-slice rules apply).
 - Under budget pressure, higher-priority tasks dispatch first — this is the priority queue's only job in v1; there are no planner scheduling groups (Future Considerations).
@@ -547,6 +557,7 @@ Outcome handling:
 Execution rules:
 
 - One composite model task per packet. All selected lenses are projected into that single task; there is never one model call per lens. Skill projection for the review stage includes only Checks, False Positives, and Examples sections, capped at 4000 chars per skill and 12000 chars total per prompt, with truncation recorded in telemetry (projection mechanics owned by `components/skills_llm_telemetry.md`).
+- Before Stage 7 projection, skills are defensively filtered to language-neutral skills or skills whose `languages` contains the packet's canonical language. Stage 9 reapplies the same rule to the recorded producing skills using the candidate packet/diff language, preventing JavaScript/TypeScript/Rust/Python/Solidity content from entering one another's verifier prompts or Go prompts. A targeted Stage-8 task may deliberately span languages; it records the exact skills its task prompt actually projected, and Stage 9 performs the candidate-specific filter.
 - Coverage-aware execution profiles:
   - `light`: one structured call; tiny optional read-only tool budget (table above); compact prompting biased toward submitting immediately.
   - `normal`: one structured, tool-capable task; real read-only tool access; focused review instructions; bounded investigation.
@@ -557,11 +568,11 @@ Execution rules:
 Result validation, applied in pipeline code to each schema-valid `PacketReviewResult` before anything reaches Stage 9:
 
 - Candidate ids are assigned deterministically by the pipeline — `"<packetId first 8 chars>-f<seq>"` in submission order — replacing any model-supplied ids; lineage uses these ids everywhere.
-- `producedBy` is stamped deterministically by the runner: `{ kind: "packet", stage: 7, packetId, lensId, skillIds, workerId }`, with `lensId` set to the packet's primary (first) lens and `skillIds` to that lens's skills. The model never claims a lens — `SubmittedFinding` carries no lens field (`components/skills_llm_telemetry.md`).
+- `producedBy` is stamped deterministically by the runner: `{ kind: "packet", stage: 7, packetId, lensId, skillIds, workerId }`. `lensId` is the packet's primary (first) lens and remains attribution only. `skillIds` is the ordered, deduplicated set of non-omitted skills that contributed characters to that specific producing pass's built prompt. It is derived from `BuiltPrompt.projection`, never from current primary-lens membership. The model claims neither field (`components/skills_llm_telemetry.md`).
 - Anchor validation: an inline-intended candidate's `anchor` must reference the packet's path (side-appropriate for renames/deletions per the `DiffAnchor` path semantics) and a changed line of the packet's hunks — `RIGHT` against `changedNewLineNumbers`, `LEFT` against `changedOldLineNumbers`, with `hunkId` matching the containing hunk. Failing anchors are removed (`out_of_hunk_anchor` telemetry); the candidate continues as a summary-only candidate with `changedLine: false` unless the result itself re-anchored it to a changed line with concrete evidence.
 - Missing `evidence.changedCode` or missing `failureMode` is recorded now (`missing_evidence`, `missing_failure_mode`) and enforced by the Stage 9 gates; low-confidence candidates are recorded and left for gate suppression so telemetry can attribute the loss stage precisely.
 - `followUpHints` are validated for pointer-richness: a hint with an empty `question` or with no `files` and no `symbols` is dropped (`vague_hint`).
-- Each surviving `followUpHint` and each `uncertainty` is emitted as a telemetry event (`event: "follow_up_hint"` / `"uncertainty"`, stage-attributed) carrying `{ packetId, question, files, symbols, reason, confidence }` in `data` (uncertainty events omit `reason`/`confidence`) — the hint-event reader contract consumed by `components/evals.md`. Hints are never promoted into new review tasks in v1: medium- and high-confidence hints are additionally collected for Stage 10's "needs human attention" report notes; low-confidence hints are telemetry-only.
+- Each surviving `followUpHint` and each `uncertainty` receives required pipeline-stamped `projectedSkillIds` from its specific producing pass, after model-schema validation. Ensemble/adaptive pooling and question deduplication preserve the selected item's list without equality requirements, unioning, or a packet-level approximation; an uncertainty-promotion candidate inherits only its selected source item's list. Telemetry events (`event: "follow_up_hint"` / `"uncertainty"`) persist that ordered list with the existing pointer-rich data — the hint-event reader contract consumed by `components/evals.md`.
 - Prompt size, token usage, runtime, and `status` are recorded per worker. `PacketReviewResult` carries no tool-usage data: tool calls and files read live in the always-on `tool-calls.jsonl` `ToolCallRecord`s, and readers join them on `workerId`.
 
 All candidates (pre-gate) are persisted to `candidate-findings.json`.
@@ -579,7 +590,7 @@ Behavior:
 - Stage 8 builds at most a few tasks per run and schedules them through the shared worker runner.
 - Each task carries the repeated question, involved packets, concrete files/symbols, suggested lenses, representative findings, and a tight repository-tool budget.
 - Stage 8 may return candidate findings, resolved hint notes, or no output.
-- Candidate findings produced by Stage 8 are appended to the candidate pool and pass through normal Stage 9 verification.
+- Candidate findings produced by Stage 8 are stamped with the exact ordered, non-omitted ids from the Stage-8 prompt projection, appended to the candidate pool, and pass through normal Stage 9 verification. Resolved hints do not become candidates and need no provenance carrier.
 - Resolved hints suppress duplicate human-attention notes for the same scoped question.
 - Hints that are not scheduled or not resolved still surface as "needs human attention" notes in the composed report.
 
@@ -596,7 +607,7 @@ Deterministic pre-verification gates, in order, each recording the candidate id 
 5. Confidence gate — `confidence` below `review.minConfidence` (default suppresses `low`) → suppress (`gate_low_confidence`); recorded, not verified, not published. Exception: critical and high severity candidates are never gate-suppressed for low confidence — they proceed to LLM verification, which is the right place to resolve uncertain-but-critical claims.
 6. Pre-clustering — verifier scheduling optimization only, never semantic grouping: candidates cluster when they share path, category, and anchor (same line and side), or share path, category, and enclosing symbol when both are unanchored, and additionally have equal normalized titles or equal normalized `evidence.changedCode` (lowercased, whitespace-collapsed). The representative is the highest confidence, then highest severity, then lowest id. Members get `clusterId` = representative id and `duplicateOf` = representative id; only the representative is verified. The representative's verdict applies to the cluster; member lineage is preserved for Stage 10's `mergedCandidateIds`. No ranking, cap enforcement, or wording happens here.
 
-Verifier dispatch: one candidate per call through the worker runner (stage 9, `review.perPassTimeoutMs`, bounded by `review.concurrency` and `llm.maxConcurrentCalls`); the verifier is an independent call with fresh context, using the run's single resolved model. Verifier `ToolBudget` default: `{ maxToolCalls: 6, maxInvestigationRounds: 2, maxResultChars: 12000 }` (implementation constant). The verifier receives the candidate, its originating packet context, the relevant changed hunk(s), cited evidence, active lens criteria (False Positives and Safe Patterns projections), and the read-only tool suite — for proving, narrowing, or rejecting the specific claim only; it must not search for new issues, and verifier-introduced unrelated findings are dropped in validation with telemetry.
+Verifier dispatch: one candidate per call through the worker runner (stage 9, `review.perPassTimeoutMs`, bounded by `review.concurrency` and `llm.maxConcurrentCalls`); the verifier is an independent call with fresh context, using the run's single resolved model. Verifier `ToolBudget` default: `{ maxToolCalls: 6, maxInvestigationRounds: 2, maxResultChars: 12000 }` (implementation constant). Guidance is resolved only through `skillsById(candidate.producedBy.skillIds)`, then defensively filtered for the candidate packet's canonical language. Unknown and language-incompatible ids are dropped and reported; `lensId` is never a selection input, and an empty authoritative list produces no skill header or guidance label. The verifier receives the candidate, originating packet context, relevant hunks, cited evidence, those exact False Positives/Safe Patterns projections, and the read-only tool suite — for proving, narrowing, or rejecting the specific claim only; it must not search for new issues, and verifier-introduced unrelated findings are dropped in validation with telemetry.
 
 Verdict handling (`VerificationVerdict` per candidate):
 
@@ -609,7 +620,7 @@ Failure rules: authentication or provider-wide failures fail the run or mark the
 
 BehaviorChange severity contract (plan 82): findings and verdicts may carry `behaviorChange: "accidental_regression" | "intentional_needs_confirmation" | "specified_change" | "unknown"`. Only `intentional_needs_confirmation` caps severity (critical/high → medium) — a deliberate-change callout reads differently from a regression. `"unknown"` and an omitted field are equivalent and never demote (punishing honest uncertainty taught models to omit the field). When the cap fires, the pre-cap severity is preserved as `severityBeforeCap`, and every never-hide-critical/high guarantee (composer pre-trim, soft comment cap, report cap) consults `max(severity, severityBeforeCap)` so a capped critical cannot be silently suppressed at composition.
 
-Telemetry per candidate: pre-gate decision, verifier prompt size, tool calls, token usage, runtime, verdict, revision details, rejection reason, incomplete reason. `verification.json` persists one record per candidate: gate-rejected/suppressed candidates record `{ candidateId, gate: "suppressed", gateReason }`, and verified candidates record `{ candidateId, gate: "passed", verdict: VerificationVerdict }` (revised findings carry `verdict.finalFinding`). Pre-clustered duplicate members carry no record of their own — readers resolve them through `duplicateOf` to the representative's verdict. This is the reader contract consumed by `components/evals.md`. Stage 9 does not decide the final review shape.
+Telemetry per candidate: pre-gate decision, verifier prompt size, tool calls, token usage, runtime, verdict, revision details, rejection reason, incomplete reason, plus `verifier_skill_provenance` with requested/resolved/dropped/unknown/language-incompatible ids and no repository content. `verification.json` persists one record per candidate: gate-rejected/suppressed candidates record `{ candidateId, gate: "suppressed", gateReason }`, and verified candidates record `{ candidateId, gate: "passed", verdict: VerificationVerdict }` (revised findings carry `verdict.finalFinding`). Pre-clustered duplicate members carry no record of their own — readers resolve them through `duplicateOf` to the representative's verdict. This is the reader contract consumed by `components/evals.md`. Stage 9 does not decide the final review shape.
 
 ### Run Coverage Aggregation
 
@@ -660,9 +671,9 @@ Composer terminal failure (after one repair retry, non-auth): deterministic fall
 
 ### Failure And Budget Semantics
 
-The budget ledger tracks, per run: elapsed wall-clock time against `review.timeoutMs`, total tokens against `review.maxBudgetTokens`, and model-call count against `review.maxModelCalls`. There is no cost budget in v1 (cost-based run budgets are deferred — see architecture.md Future Considerations); cost is observability only, disclosed through `cost-profile.json`. The LLM runner reports usage per call; the ledger is updated synchronously after every call.
+The budget ledger tracks, per run: elapsed wall-clock time against resolved `review.maxTimeMs`, total tokens against `review.maxBudgetTokens`, and model-call count against `review.maxModelCalls`. There is no cost budget in v1 (cost-based run budgets are deferred — see architecture.md Future Considerations); cost is observability only, disclosed through `cost-profile.json`. The LLM runner reports usage per call; the ledger is updated synchronously after every call.
 
-Reservation: at run start the ledger reserves approximately 15% of the configured token and model-call budgets (when set) and a runtime tail of `max(60s, 10% of review.timeoutMs)` for stages 9-10, so completed review work is never lost to exhaustion. Stages 1-7 draw from the remainder; stages 9-10 may draw from both the remainder and the reserve.
+Reservation: at run start the ledger reserves approximately 15% of the configured token and model-call budgets (when set) and a runtime tail of `max(60s, 10% of review.maxTimeMs)` for stages 9-10, so completed review work is never lost to exhaustion. Stages 1-7 draw from the remainder; stages 9-10 may draw from both the remainder and the reserve.
 
 Checkpoints: `budget.checkpoint(stage)` is evaluated before every new model call and every worker dispatch. It returns exhausted when any unreserved dimension is depleted for stages 1-7, or any total dimension is depleted for stages 9-10. Checkpoints never cancel in-flight work.
 
@@ -674,7 +685,7 @@ Exhaustion ladder, in order:
 
 Run outcome: full successful reviews finalize as `completed_full`; partial successful reviews finalize as `completed_partial` with exit code 0 by default; fatal runs finalize as `failed`. `run.json`, `telemetry.json`, `coverage.json`, and final Markdown all carry the budget-stop reason when budget exhaustion caused the partial review.
 
-Hard kill: at 2x `review.timeoutMs` the run aborts fatally (`timeout`): the root `AbortController` cancels all in-flight work, and codegenie attempts to write telemetry artifacts before exiting nonzero.
+Hard kill: at 2x `review.maxTimeMs` the run aborts fatally (`timeout`): the root `AbortController` cancels all in-flight work, and codegenie attempts to write telemetry artifacts before exiting nonzero.
 
 Per-stage terminal policies, budget interplay, and the recoverable/fatal split are as defined in the Error Conditions Summary table; `budget_exhausted` is the recoverable signal driving this ladder and never escapes the pipeline. Provider rate limiting (429/transient 5xx, 3 retries with exponential backoff) is implemented in the LLM runner; retries count against this ledger.
 
@@ -716,7 +727,7 @@ Planner dossier and planning:
 - `dossier_full_fidelity_small_pr`: under budget, `compaction.level === "full"`, per-hunk entries carry symbol facts, top-5 capped static signals, and 400-char excerpts; byte-identical JSON across two builds.
 - `dossier_untrusted_truncation`: oversized PR body and commit bodies truncate to their caps.
 - `dossier_policy_files_risk_signal`: a diff touching `codegenie.toml` and `.codegenie/skills/x.md` populates `policyFilesChanged` even when those files are filtered.
-- `dossier_compaction_ordered_reductions`: an oversized dossier drops excerpts first, then trims signals, then collapses files by ascending priority into rollups whose `hunkIds` remain complete; every reduction appears in `compaction.omitted`.
+- `dossier_compaction_ordered_reductions`: an oversized dossier drops excerpts first, then trims signals, then collapses files by ascending priority while `hunkIndex` remains complete and path-associated; directory rollups contain no bare id pools; every reduction appears in `compaction.omitted`.
 - `planner_chunking_deterministic_merge`: a dossier exceeding the budget after compaction chunks by package root; per-chunk plans concatenate mechanically (coverage concat, dedup of lists, chunk-1 `declaredIntent`); identical chunking across reruns.
 - `planner_chunk_partial_failure`: one chunk fails terminally; only its hunks get default-plan coverage; `degradedPlanning: true` with the chunk root named in reasons.
 - `planner_validation_rules`: unknown-hunk decisions dropped; empty-reason skip treated as missing; unknown lenses dropped and empty lens sets flagged — each with its telemetry code.
@@ -738,7 +749,7 @@ Packet builder:
 
 Worker runner and lens execution:
 
-- `workers_respect_concurrency_and_priority`: with `review.concurrency = 2` and mixed priorities, at most two tasks run concurrently and dispatch follows priority then coverage then stable order.
+- `workers_respect_concurrency_and_priority`: with `review.concurrency = 2` and mixed priorities, at most two tasks run concurrently and Stage 7 dispatch follows priority, coverage, packet rank, then stable order; unranked Stage 8/9 tasks retain stable order.
 - `workers_isolated_context`: two packet workers' prompts share no conversation state; each result carries its own `workerId`/`packetId`.
 - `workers_stage7_single_retry`: a transient packet failure re-dispatches once; a second failure yields `status: "failed"` and `review_failed` coverage records for all packet hunks.
 - `workers_timeout_and_cancellation`: `perPassTimeoutMs` is a soft deadline — after it, the pass dispatches no further investigation calls and is routed to one forced finalize; the worker is aborted as terminal only at the hard deadline (`perPassTimeoutMs + finalizeGraceMs`, plan 85). The 2x run-level hard kill cancels in-flight workers immediately and still writes telemetry. Timed-out passes are not re-dispatched.
@@ -775,7 +786,7 @@ Stage 10:
 
 Budget and coverage:
 
-- `budget_reservation_math`: with `maxBudgetTokens = 100000`, stages 1-7 exhaust at 85000 while stages 9-10 may spend the reserve; the runtime tail is `max(60s, 10% of timeoutMs)`.
+- `budget_reservation_math`: with `maxBudgetTokens = 100000`, stages 1-7 exhaust at 85000 while stages 9-10 may spend the reserve; the runtime tail is `max(60s, 10% of maxTimeMs)`.
 - `budget_ladder_order`: exhaustion during Stage 7 stops new packet dispatch, verifies existing candidates from the reserve, and still composes; `budgetStopped: true` with reasons.
 - `budget_each_dimension_triggers`: time, token, and model-call budgets each independently trigger the ladder at their checkpoint.
 - `coverage_aggregation_matrix`: fixtures combining filtered files, planner skips, completed packets, failed packets, undispatched packets, degraded planning, and incomplete verification produce the expected `RunCoverageStatus` counts, `coverageByLevel`, `partial` flag, and reasons; `coverage.json` includes every hunk exactly once.

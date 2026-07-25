@@ -41,7 +41,7 @@ export type CodegenieConfig = {
     minConfidence: Confidence;
     minInlineConfidence: Confidence;
     concurrency: number;
-    timeoutMs: number;
+    maxTimeMs: number;
     perPassTimeoutMs: number;
     budgetBoost: number;
     maxBudgetTokens?: number;
@@ -224,6 +224,7 @@ export type DiffFile = {
 
 export type DiffHunk = {
   id: string;
+  hunkHash: string;
   path: string;
   oldStart: number;
   oldLines: number;
@@ -426,7 +427,6 @@ export interface LanguageAdapter {
   getImports(file: ParsedFile): string[];
   getChangedSymbols(file: ParsedFile, hunk: DiffHunk): ChangedSymbol[];
   getStaticSignals?(file: ParsedFile, hunk: DiffHunk): StaticSignal[];
-  findLikelyTests?(symbol: SymbolInfo, index: RepositoryIndex): SymbolInfo[];
 }
 
 export type PacketLine = {
@@ -548,6 +548,7 @@ export type TestCoverageDelta = {
 
 export type ReviewPacket = {
   id: string;
+  dispatchRank: [number, number];
   kind: PacketKind;
   coverageEscalation?: CoverageEscalation;
   prSummary: string;
@@ -821,6 +822,7 @@ export type StructuredUncertainty = {
   question: string;
   files: string[];
   symbols: string[];
+  projectedSkillIds: string[];
 };
 
 export type PacketReviewResult = {
@@ -836,6 +838,7 @@ export type PacketReviewResult = {
     suggestedLenses: string[];
     reason: string;
     confidence: Confidence;
+    projectedSkillIds: string[];
   }>;
   uncertainties: StructuredUncertainty[];
   status: "completed" | "incomplete" | "failed" | "skipped";
@@ -942,6 +945,14 @@ export type ReviewRunStats = {
     head: string;
     headSha?: string;
   };
+  plannerCoverage?: PlannerCoverageStats;
+};
+
+export type PlannerCoverageStats = {
+  submittedEntries: number;
+  acceptedEntries: number;
+  acceptedUniqueHunks: number;
+  rejectedUnknownHunk: number;
 };
 
 export type ReviewResult = {
@@ -1308,6 +1319,7 @@ export type EvalHintEvent = {
   question: string;
   files: string[];
   symbols: string[];
+  projectedSkillIds: string[];
   reason?: string;
   confidence: Confidence;
 };
@@ -1457,8 +1469,13 @@ export type DossierDirectoryRollup = {
   maxReviewPriority: ReviewPriority;
   testFileCount: number;
   representativePaths: string[];
+};
+
+export type DossierHunkIndexEntry = {
+  path: string;
+  oldPath?: string;
+  language: string;
   hunkIds: string[];
-  hunkLanguages: Record<string, string>;
 };
 
 export type DossierCompaction = {
@@ -1489,6 +1506,7 @@ export type PlannerDossier = {
   commits: Array<{ sha: string; title: string; body: string }>;
   intentSignals?: IntentSignals;
   policyFilesChanged: string[];
+  hunkIndex: DossierHunkIndexEntry[];
   files: DossierFileEntry[];
   directories: DossierDirectoryRollup[];
   filterSummary: {

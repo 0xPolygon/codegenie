@@ -56,6 +56,7 @@ type PromotionSource = {
   question: string;
   files: string[];
   symbols: string[];
+  projectedSkillIds: string[];
   reason: string;
   confidence?: Confidence;
 };
@@ -162,6 +163,7 @@ function promotionSources(result: PacketReviewResult, packetsById: Map<string, R
       question: uncertainty.question,
       files: cleanStrings(uncertainty.files),
       symbols: cleanStrings(uncertainty.symbols),
+      projectedSkillIds: [...uncertainty.projectedSkillIds],
       reason: "packet reviewer reported an unresolved uncertainty"
     })),
     ...result.followUpHints.map((hint): PromotionSource => ({
@@ -171,6 +173,7 @@ function promotionSources(result: PacketReviewResult, packetsById: Map<string, R
       question: hint.question,
       files: cleanStrings(hint.files),
       symbols: cleanStrings(hint.symbols),
+      projectedSkillIds: [...hint.projectedSkillIds],
       reason: hint.reason,
       confidence: hint.confidence
     }))
@@ -288,7 +291,7 @@ function promotedCandidate(source: PromotionSource, index: number): CandidateFin
       stage: 9,
       packetId: source.packet.id,
       lensId: source.packet.lenses[0] ?? "core/code-review",
-      skillIds: []
+      skillIds: [...source.projectedSkillIds]
     },
     provenance: {
       source: "uncertainty_promotion",

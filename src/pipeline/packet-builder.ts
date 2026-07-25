@@ -288,6 +288,10 @@ async function buildPacket(
     throw new Error("cannot build empty packet");
   }
   const hunkIds = planned.map((entry) => entry.hunk.id);
+  const packetChangedLines = planned.reduce(
+    (sum, entry) => sum + entry.hunk.lines.filter((line) => line.kind === "add" || line.kind === "delete").length,
+    0
+  );
   const kind = packetKind(group, planned, first.file);
   const coverage = maxCoverage(decisions.map((decision) => decision.coverage));
   const reviewPriority = maxReviewPriority(planned.map((entry) => entry.facts.reviewPriority));
@@ -394,6 +398,7 @@ async function buildPacket(
   emitPacketContextQuality(telemetry, first.file.path, coverage, reviewPriority, contextQuality, contextDegradationReasons);
   const packet: ReviewPacket = {
     id: sha256Hex(`${first.file.path}\n${[...hunkIds].sort().join("\n")}\n${kind}`),
+    dispatchRank: packetDispatchRank(first.file.path, first.facts, packetChangedLines),
     kind,
     prSummary: (reviewContext?.prSummary ?? "Review local diff.").slice(0, 500),
     path: first.file.path,
@@ -431,6 +436,28 @@ async function buildPacket(
         : {})
   };
   return packet;
+}
+
+const DOCS_CONFIG_EXTENSIONS = new Set([".md", ".yml", ".yaml", ".toml", ".conf", ".sample", ".txt"]);
+
+export function packetDispatchRank(
+  filePath: string,
+  facts: Pick<FileFacts, "testStatus">,
+  packetChangedLines: number
+): [number, number] {
+  const normalized = filePath.replace(/\\/gu, "/");
+  const segments = normalized.split("/").filter((segment) => segment.length > 0);
+  const basename = segments.at(-1) ?? normalized;
+  const lowerSegments = segments.map((segment) => segment.toLowerCase());
+  const lowerBasename = basename.toLowerCase();
+  const dot = lowerBasename.lastIndexOf(".");
+  const extension = dot <= 0 ? "" : lowerBasename.slice(dot);
+  const snapshotOrFixture = lowerSegments.some(
+    (segment) => segment === "__snapshots__" || segment === "fixture" || segment === "fixtures"
+  ) || lowerBasename.includes(".snap.");
+  const docsOrConfig = DOCS_CONFIG_EXTENSIONS.has(extension) || basename.startsWith(".") || basename === "Makefile";
+  const fileClassRank = snapshotOrFixture ? 3 : docsOrConfig ? 2 : facts.testStatus === "test" ? 1 : 0;
+  return [fileClassRank, -packetChangedLines];
 }
 
 export function packetReviewContextFromDossier(dossier: PlannerDossier): PacketReviewContext {
@@ -2858,7 +2885,7 @@ function primaryLanguageLens(language: string, lenses: string[]): string | undef
   if (language === "go" && lenses.includes("lang/go")) {
     return "lang/go";
   }
-  if (["typescript", "javascript", "ts", "js", "tsx", "jsx"].includes(language) && lenses.includes("lang/typescript")) {
+  if (["typescript", "ts", "tsx"].includes(language) && lenses.includes("lang/typescript")) {
     return "lang/typescript";
   }
   const exact = `lang/${language}`;
@@ -2870,8 +2897,10 @@ function defaultLensesForLanguage(facts: FileFacts, enabled: string[]): string[]
   const language = facts.language;
   if (language === "go" && enabled.includes("lang/go")) {
     selected.push("lang/go");
-  } else if (["typescript", "javascript", "ts", "js", "tsx", "jsx"].includes(language) && enabled.includes("lang/typescript")) {
+  } else if (["typescript", "ts", "tsx"].includes(language) && enabled.includes("lang/typescript")) {
     selected.push("lang/typescript");
+  } else if (enabled.includes(`lang/${language}`)) {
+    selected.push(`lang/${language}`);
   }
   if (facts.testStatus === "test" && enabled.includes("core/tests")) {
     selected.push("core/tests");

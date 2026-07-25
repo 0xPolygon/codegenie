@@ -2,7 +2,7 @@ import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmRunner } from "../llm/llm-runner.js";
 import { SubmitSystemReviewSchema, type SubmitSystemReview } from "../llm/schemas.js";
 import type { LensRegistry } from "../skills/lens-registry.js";
-import type { PromptBuilder } from "../skills/prompt-builder.js";
+import { projectedSkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
   CandidateFinding,
@@ -263,6 +263,7 @@ async function runSystemReviewTask(
 ): Promise<SystemTaskReview> {
   const skills = task.suggestedLenses.flatMap((lensId) => opts.lensRegistry.skillsForLens(lensId));
   const prompt = opts.promptBuilder.buildSystemReviewPrompt({ task, skills });
+  const taskSkillIds = projectedSkillIds(prompt.projection);
   const submitted = await opts.runner.runStructured<SubmitSystemReview>({
     stage: 8,
     prompt: prompt.prompt,
@@ -275,7 +276,7 @@ async function runSystemReviewTask(
   });
   const findings = submitted.findings
     .slice(0, MAX_FINDINGS_PER_TASK)
-    .map((finding, index) => stampSystemFinding(task, finding, index, workerId, opts.diff));
+    .map((finding, index) => stampSystemFinding(task, finding, index, taskSkillIds, workerId, opts.diff));
   const resolvedHints = submitted.resolvedHints.flatMap((hint): ResolvedFollowUpHint[] => {
     const resolution = hint.resolution.trim();
     if (resolution.length === 0) {
@@ -317,6 +318,7 @@ function stampSystemFinding(
   task: SystemReviewTask,
   submitted: SubmitSystemReview["findings"][number],
   index: number,
+  taskSkillIds: readonly string[],
   workerId: string,
   diff: UnifiedDiff | undefined
 ): CandidateFinding {
@@ -344,7 +346,7 @@ function stampSystemFinding(
       stage: 8,
       packetId: task.id,
       lensId: task.suggestedLenses[0] ?? "core/code-review",
-      skillIds: [],
+      skillIds: [...taskSkillIds],
       workerId
     }
   };

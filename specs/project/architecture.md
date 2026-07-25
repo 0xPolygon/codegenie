@@ -51,13 +51,17 @@ Core dependencies:
 - A TOML parser for `codegenie.toml` and a YAML parser for eval case files.
 - `picomatch` for path-rule and tool globs.
 - `execa` or Node subprocess APIs for `git` and `gh`.
-- `web-tree-sitter` plus Go and TypeScript/JavaScript grammars for v1 syntax parsing.
+- `web-tree-sitter` plus Go, TypeScript/TSX, JavaScript, Rust, Python, and Solidity grammars for syntax parsing. TypeScript/TSX and JavaScript share an ECMAScript adapter implementation but retain distinct language identities and skills; Rust, Python, and Solidity have dedicated semantic adapters.
   - `tree-sitter-go` for Go
   - `tree-sitter-typescript` for Typescript: `.ts`/`.mts`/`.cts`/`.d.ts` route to the typescript grammar; `.tsx` routes to the tsx grammar
   - `tree-sitter-javascript` for Javascript: `.js`/`.jsx`/`.mjs`/`.cjs`
+  - `tree-sitter-rust` for Rust: `.rs`
+  - `tree-sitter-python` for Python: `.py` (`.pyi` remains unknown/generic)
+  - `tree-sitter-solidity` for Solidity: `.sol`
   - Tree-sitter runs entirely via WASM: the `web-tree-sitter` runtime (`tree-sitter.wasm`) plus one `.wasm` grammar per language, all shipped inside their npm tarballs.
   - Grammar files are referenced directly from `node_modules` at runtime (e.g. `require.resolve("tree-sitter-go/tree-sitter-go.wasm")` via `createRequire` under ESM); no copy step into an `assets/` folder is needed because codegenie is distributed as a normal npm package. An asset-copy step becomes necessary only if single-file bundling is introduced, which is out of scope for v1.
-  - `web-tree-sitter` and the three grammar packages are pinned together; ABI compatibility is enforced at `Language.load`.
+  - `web-tree-sitter` and the six grammar packages are pinned together; ABI compatibility is enforced at `Language.load`.
+  - `tree-sitter-solidity@1.2.13` publishes the required WASM but also declares an unused native install script and a misspelled optional-peer metadata key. Pnpm 11's canonical `allowBuilds` policy approves only `esbuild` and explicitly denies every unused grammar/provider/protobuf/yarn build; equivalent legacy keys remain for pnpm 10 compatibility. CI and the packed-consumer gate explicitly force and verify `ignore-scripts=false`, apply those per-dependency decisions, resolve the published WASM from the consumer dependency tree, and parse through the production adapter. Because fresh and packed supported installs succeed without claiming a native grammar build, the vendored-WASM stop path is not active.
 
 Exact dependency versions are pinned via the pnpm lockfile; tree-sitter grammar wasm artifacts ship inside their npm tarballs (no postinstall downloads permitted).
 
@@ -295,7 +299,8 @@ type DiffFile = {
 }
 
 type DiffHunk = {
-  id: string
+  id: string       // shortest unique 8/12/.../64-character prefix within this parsed diff
+  hunkHash: string // full 64-character coordinate digest; serialized only in stage-2 diff.json
   path: string
   oldStart: number
   oldLines: number
@@ -324,11 +329,11 @@ Every review packet must include absolute line numbers for hunk lines. Added and
 type SymbolKind =
   | "function"   // free-standing callables
   | "method"     // callables attached to a type: Go receiver funcs, Rust impl fns, class members, constructors, accessors
-  | "type"       // concrete type definitions: class, struct, enum, type alias, Solidity contract/event/error
+  | "type"       // concrete type definitions: class, struct, enum, type alias, Solidity contract/library
   | "interface"  // contract-defining types: interface, trait, protocol
   | "value"      // const, var, let, static, Solidity state variables
-  | "container"  // module, namespace, package, Rust mod/impl block, Swift extension, Solidity library
-  | "other"      // macros, Solidity modifiers, anything unmapped
+  | "container"  // module, namespace, package, Rust mod, Swift extension (Rust impl is ownership context, not a symbol)
+  | "other"      // macros, Solidity events/errors, anything unmapped
 
 type SymbolRef = {
   path: string
@@ -542,6 +547,7 @@ type ReviewProfile = "simple" | "standard" | "investigate"
 
 type ReviewPacket = {
   id: string
+  dispatchRank: [number, number] // Stage-7 tie-break: [file class, negative packet changed lines]
   kind: PacketKind
   prSummary: string
   intentText?: string // the dossier's already-fenced declared-intent projection (PR title/body extract), capped at ~1000 chars
@@ -598,6 +604,7 @@ type PacketReviewResult = {
     suggestedLenses: string[]
     reason: string
     confidence: "high" | "medium" | "low"
+    projectedSkillIds: string[] // pipeline-stamped from this producing pass
   }>
   uncertainties: StructuredUncertainty[]
   status: "completed" | "incomplete" | "failed" | "skipped"
@@ -607,6 +614,7 @@ type StructuredUncertainty = {
   question: string
   files: string[]
   symbols: string[]
+  projectedSkillIds: string[] // pipeline-stamped from this producing pass
 }
 ```
 
@@ -656,8 +664,9 @@ type DiffAnchor = {
 }
 
 // V1 findings are always packet-produced; static signals are prompt hints only.
-// producedBy.lensId is stamped deterministically by Stage 7 validation as the
-// packet's first (primary) lens; the model does not claim lenses.
+// producedBy.lensId is attribution only. skillIds is the ordered, deduplicated
+// set that contributed non-omitted guidance to the producing prompt. Both are
+// pipeline-stamped; the model does not claim lenses or skill provenance.
 type FindingProducer = { kind: "packet"; stage: ReviewStage; packetId: string; lensId: string; skillIds: string[]; workerId?: string }
 
 type CandidateFinding = {
@@ -702,7 +711,7 @@ type FinalFinding = CandidateFinding & {
 }
 ```
 
-Path semantics: for deleted files, `DiffFile.path` and `FileFacts.path` carry the old path; for renames, `path` is the new path and `oldPath` the old. `DiffAnchor.path` must use the side-appropriate path (LEFT anchors → old path, RIGHT anchors → new path). Hunk ids hash the same path the `DiffFile` carries.
+Path semantics: for deleted files, `DiffFile.path` and `FileFacts.path` carry the old path; for renames, `path` is the new path and `oldPath` the old. `DiffAnchor.path` must use the side-appropriate path (LEFT anchors → old path, RIGHT anchors → new path). `DiffHunk.hunkHash` hashes the same final path the `DiffFile` carries; `DiffHunk.id` is its allocated short prefix.
 
 Candidate findings are invalid unless they include evidence and a concrete failure mode. Pre-verification gates require an anchor only for inline-intended candidates; unanchored candidates are summary-only candidates. Inline GitHub publishing also requires a valid changed-line anchor.
 
@@ -786,11 +795,13 @@ Per-key config sources (normative; Trust Boundaries defers to this table):
 
 | Keys | Allowed sources |
 | --- | --- |
-| `review.depth`, `review.maxFindings`, `review.softCommentCap`, `review.budgetBoost`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codegenie.toml`, user-scoped config, or CLI |
+| `review.depth`, `review.maxFindings`, `review.softCommentCap`, `review.budgetBoost`, `review.maxTime`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codegenie.toml`, user-scoped config, or CLI |
 | `telemetry.enabled` | Repo `codegenie.toml` or user-scoped config |
-| `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.timeoutMs`, `review.perPassTimeoutMs`, `review.maxBudgetTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
+| `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.perPassTimeoutMs`, `review.maxBudgetTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
 
 The loader enforces this via per-key source tracking; repo values for user-scope keys are ignored with a warning.
+
+The public TOML key `review.maxTime` is a positive finite number of minutes, capped at `Number.MAX_SAFE_INTEGER / 120_000` so both the resolved soft limit and its 2x hard deadline remain finite and safely representable in milliseconds. It is deliberately repo-settable, defaults to 30 when omitted, and is overridden by `--max-time <minutes>`. The loader tracks its source as `review.maxTime` and converts it once to the resolved internal `review.maxTimeMs`; `review.timeoutMs` is not a public config key.
 
 All merging happens once, in the config loader, which tracks per-key sources to enforce the trust partition and produces the single resolved `CodegenieConfig`. Downstream components — including the LLM runner — consume the resolved config only and never read user state directly.
 
@@ -817,7 +828,7 @@ type CodegenieConfig = {
     minConfidence: Confidence
     minInlineConfidence: Confidence
     concurrency: number
-    timeoutMs: number
+    maxTimeMs: number
     perPassTimeoutMs: number
     maxBudgetTokens?: number
     maxModelCalls?: number
@@ -871,10 +882,10 @@ Chosen defaults:
 - `review.verify = true`
 - `review.maxFindings = 25` (report cap)
 - `review.softCommentCap = 7` (inline target)
-- `review.concurrency = 4`
-- `llm.maxConcurrentCalls = 4`
+- `review.concurrency = 6`
+- `llm.maxConcurrentCalls = 6`
 - `llm.forceSubmitToolChoice = true` (plan 86 step 3: Anthropic finalize/repair/no-tool calls run with thinking disabled and genuinely forced submit tool choice; `false` restores the legacy silent downgrade to `auto`)
-- `review.timeoutMs = 30 * 60 * 1000`
+- `review.maxTimeMs = 30 * 60 * 1000` (resolved from public `review.maxTime`, whose built-in default is 30 minutes)
 - `review.perPassTimeoutMs = 8 * 60 * 1000` (per model task/worker, not per stage)
 - `review.minConfidence = "medium"`
 - `review.minInlineConfidence = "medium"`
@@ -892,7 +903,7 @@ Chosen defaults:
 - `telemetry.runDir = ".codegenie/runs"`
 - `telemetry.retainRuns = 20`
 - `eval.logsDir = "logs"`
-- Default-enabled lens set = all four bundled lenses.
+- Default-enabled lens set = all eight currently bundled lenses (`core/code-review`, `core/tests`, `lang/go`, `lang/javascript`, `lang/python`, `lang/rust`, `lang/solidity`, `lang/typescript`). The three Phase 1-4 Plan 98 skills established one external Stage-5 inventory/registry/cache boundary at `eb20533`; Phase 5 did not change it. The atomic Phase-6 JavaScript skill plus TypeScript narrowing establish a second boundary at the revision where that complete unit first becomes externally visible. Measurements across either boundary are non-comparable prompt/cache regimes; branch visibility remains distinct from tag/npm/GitHub release state.
 
 Neither `review.maxFindings` nor `review.softCommentCap` suppresses verified critical/high findings.
 
@@ -1043,7 +1054,11 @@ Responsibilities:
 V1 language adapters:
 
 - Go.
-- TypeScript/JavaScript.
+- TypeScript and TSX.
+- JavaScript (`.js`, `.jsx`, `.mjs`, `.cjs`) through the shared ECMAScript adapter implementation but distinct language identity and guidance.
+- Rust, with attribute-aware declarations, trait/impl ownership context, nominal impl owners (or `impl target` for non-nominal blanket targets), stable imports, and deterministic declaration identity.
+- Python, with decorator-aware ranges/signatures, direct class ownership, nested-local ownership reset, stable module imports, and deterministic declaration identity. Only `.py` is supported; `.pyi` remains generic.
+- Solidity, with contract/member ownership, minimal state-value symbols, source imports, overload-safe identity, and default Foundry test conventions.
 - Generic fallback for unsupported files.
 
 Language adapter interface:
@@ -1059,9 +1074,10 @@ interface LanguageAdapter {
   getImports(file: ParsedFile): string[]
   getChangedSymbols(file: ParsedFile, hunk: DiffHunk): ChangedSymbol[]
   getStaticSignals?(file: ParsedFile, hunk: DiffHunk): StaticSignal[]
-  findLikelyTests?(symbol: SymbolInfo, index: RepositoryIndex): SymbolInfo[]
 }
 ```
+
+Likely-test discovery is owned once by `src/repo/likely-tests.ts`, not by an adapter hook. Rust candidates are sibling `<stem>_test.rs` and nearest Cargo-package `tests/<stem>.rs`; supported attributed test functions are returned in deterministic path/range/name order. Python candidates are sibling `test_<stem>.py`/`<stem>_test.py` plus nearest-package `tests/` variants; only top-level `test_*` functions and direct `test_*` methods under `Test*` classes are test cases. For subjects outside the explicit language conventions, the generic fallback accepts exact stem matches only under `test`, `tests`, or `__tests__`; Go/TS/JS sibling patterns do not leak across subject languages. Same-file Rust discovery, arbitrary Rust integration scanning, and custom pytest collection configuration are explicit deferrals.
 
 Repository tool interface:
 
@@ -1157,14 +1173,20 @@ enabledByDefault: true
 
 # Safe Patterns
 
-# Examples
+# Examples (optional)
 ```
+
+`Examples` is a supported optional section for distinct worked cases, not a required ritual. A narrowly owned check may instead carry its unsafe and safe examples inline; bundled language skills use that owner-matrix form and omit a redundant Examples section. Core skills may retain Examples when they add scenarios not already encoded by the checks.
 
 Bundled v1 lenses:
 
 - `core/code-review` (absorbs logic-bug and architecture review as sections of one skill)
 - `core/tests`
 - `lang/go`
+- `lang/javascript`
+- `lang/python`
+- `lang/rust`
+- `lang/solidity`
 - `lang/typescript`
 
 Additional domain lenses can be added after the core pipeline works.
@@ -1282,6 +1304,12 @@ async function runReview(input: ReviewInput, config: CodegenieConfig): Promise<R
 type ReviewResult = {
   summary: string
   coverage: RunCoverageStatus
+  runStats?: {
+    model?: { provider?: string; id?: string; reasoning?: ReasoningLevel }
+    elapsedMs?: number
+    git?: { repo: string; base: string; head: string; headSha?: string }
+    plannerCoverage?: PlannerCoverageStats
+  }
   findings: FinalFinding[] // publication "inline" only; suppressed findings are artifact-only (final-findings.json / final-selection.json)
   summaryOnlyFindings: FinalFinding[] // publication "summary-only"
   needsHumanAttention: Array<{ question: string; files: string[]; symbols: string[]; reason: string; confidence: "high" | "medium" }> // code-assembled notes from medium/high-confidence follow-up hints
@@ -1290,6 +1318,13 @@ type ReviewResult = {
     inline: Array<{ findingId: string; anchor: DiffAnchor }>
     reviewBody: string
   }
+}
+
+type PlannerCoverageStats = {
+  submittedEntries: number
+  acceptedEntries: number
+  acceptedUniqueHunks: number
+  rejectedUnknownHunk: number
 }
 ```
 
@@ -1316,7 +1351,8 @@ Lens execution rules:
 
 - Run one composite model task per scheduled packet, with the selected lenses projected into that task.
 - Do not run one model call per lens by default.
-- Project and cap skill prompt sections for the review stage so large skill files do not dominate every packet prompt. Packet review prompts receive the skill's Checks, False Positives, and Examples sections; verifier prompts receive False Positives and Safe Patterns; the planner receives one-line skill/lens summaries only; the composer receives none. A per-skill projection cap and a total skill-content cap per prompt apply, with truncation recorded in telemetry. Defaults: 4000 chars per skill projection, 12000 chars total per prompt.
+- Project and cap skill prompt sections so large skill files do not dominate prompts. Packet review receives Checks, False Positives, and optional Examples; targeted Stage 8 review receives Checks, False Positives, and Safe Patterns; verification receives False Positives and Safe Patterns; the planner receives one-line summaries only; the composer receives none. A per-skill projection cap and a total skill-content cap per prompt apply, with truncation recorded in telemetry. Defaults: 4000 chars per skill projection, 12000 chars total per prompt.
+- Derive every produced item's ordered skill provenance from its actual prompt projection. Direct Stage-7/8 findings store it in `producedBy.skillIds`; Stage-7 hints and uncertainties store it in `projectedSkillIds`, and promotions inherit the selected source item's list. Stage 9 resolves only those recorded ids, drops unknown or language-incompatible ids, and never infers guidance from `lensId`.
 - Use coverage-aware execution profiles:
   - `simple`: one structured call with no repository tools; used for light or obvious mechanical packets.
   - `standard`: one structured/tool-capable task with focused review instructions and a reduced normal-mode tool budget.
@@ -1335,7 +1371,7 @@ Failure and budget handling:
   - Stage 9 → existing verification failure rules unchanged.
   - Stage 10 composer → one repair retry; terminal failure triggers a deterministic fallback composition (verified findings rendered with template wording, fingerprint-level grouping only, ranked by severity/confidence) with a disclosure note that semantic composition was skipped.
   - Authentication or provider-wide failures at any stage fail the run.
-- Budgets (`timeoutMs`, `maxBudgetTokens`, `maxModelCalls`) are checked before each new model call or worker dispatch. On exhaustion: stop scheduling new packet reviews → verify already-produced candidates using a reserved budget slice → always run composition and emit a partial-review disclosure.
+- Budgets (`maxTimeMs`, `maxBudgetTokens`, `maxModelCalls`) are checked before each new model call or worker dispatch. On exhaustion: stop scheduling new packet reviews → verify already-produced candidates using a reserved budget slice → always run composition and emit a partial-review disclosure.
 - Approximately 15% of the configured token and model-call budgets (and a fixed tail of the runtime budget) is reserved for Stages 9-10 so completed review work is never lost to exhaustion. A hard kill at 2x the configured runtime budget is fatal; even then codegenie attempts to write telemetry artifacts before exiting.
 - Provider 429 and transient 5xx responses get up to 3 retries with exponential backoff; retries count against budgets.
 - The run-level coverage status is owned by the orchestrator, which aggregates plan-time coverage, runtime failures, budget stops, and verification incompleteness into the final coverage summary (run-level, not only `ReviewPlan.partialReview`):
@@ -1401,7 +1437,7 @@ Planner dossier construction:
 V1 repository intelligence can be incremental:
 
 - Required for v1: diff parsing, filtering, simple file classification, package-root hints, test-file detection, configured labels/priorities, absolute hunk line numbers, and seed context retrieval.
-- Strongly preferred for v1: tree-sitter enclosing symbol and changed-symbol extraction for Go and TypeScript/JavaScript.
+- Strongly preferred for v1: tree-sitter enclosing symbol and changed-symbol extraction for Go, TypeScript/TSX, JavaScript, Rust, Python, and Solidity.
 - Deferred to Future Considerations: symbol edges, caller/test relationship graphs, and semantic analyzer integrations.
 
 ### Verifier, Deduper, Composer
@@ -1439,7 +1475,7 @@ Pre-verification gates run before LLM verification to avoid wasting calls on inv
 - Low-confidence suppression by default, except critical/high severity candidates, which proceed to LLM verification instead.
 - Exact or obvious duplicate pre-clustering for verifier scheduling only.
 
-LLM verification is enabled by default and runs one candidate at a time with bounded concurrency. The verifier receives the candidate, originating packet context, relevant changed hunk(s), cited evidence, active lens criteria, and read-only semantic tools. It may inspect surrounding code only to validate the candidate's specific claim. It must verify, revise, or reject the candidate; it must not search for new issues or introduce unrelated findings.
+LLM verification is enabled by default and runs one candidate at a time with bounded concurrency. The verifier receives the candidate, originating packet context, relevant changed hunk(s), cited evidence, the False Positives/Safe Patterns guidance selected only by the producing item's recorded skill ids, and read-only semantic tools. Unknown or language-incompatible ids are dropped; primary-lens membership is never a fallback. It may inspect surrounding code only to validate the candidate's specific claim. It must verify, revise, or reject the candidate; it must not search for new issues or introduce unrelated findings.
 
 Verifier pre-clustering is not final deduplication. It may avoid repeated checks for identical or near-identical candidate copies, but semantic deduplication, same-root-cause grouping, comment-cap handling, ranking, and final wording happen only after verification.
 
@@ -1858,7 +1894,7 @@ Output channel control: everything posted to GitHub passes deterministic sanitiz
 
 Repository tools path containment (single chokepoint in the RepositoryTools layer): all paths are canonicalized as repository-relative tree paths; absolute paths and `..` traversal are rejected with a typed error (`path_outside_repo`); git-plumbing reads are inherently contained to repository object paths; refs are harness-resolved only (model-facing source selectors expose `head`/`base`), and harness-side ref values are validated against `git check-ref-format` rules and rejected if option-like (leading `-`).
 
-Config trust partitioning: the per-key config-source table in CLI And Config is normative. Repo `codegenie.toml` may set only the repo-settable safe keys listed there; every other key takes effect only with user-level opt-in — a CLI flag, `~/.codegenie/settings.json`, or the user-scoped config file `~/.codegenie/config.toml` (all under `CODEGENIE_HOME`) — and repo-config values for user-scope keys are ignored with a warning. Repo-config-relative paths are constrained to the repo root.
+Config trust partitioning: the per-key config-source table in CLI And Config is normative. Repo `codegenie.toml` may set only the repo-settable safe keys listed there, including the positive-minute `review.maxTime` run bound; every other key takes effect only with user-level opt-in — a CLI flag, `~/.codegenie/settings.json`, or the user-scoped config file `~/.codegenie/config.toml` (all under `CODEGENIE_HOME`) — and repo-config values for user-scope keys are ignored with a warning. Repo-config-relative paths are constrained to the repo root.
 
 Policy load revision: `codegenie.toml` and `.codegenie/skills/` always load from the trusted local checkout (the user's working copy), never from the PR head revision. If the PR under review modifies policy files (config or skills), that is surfaced to the planner as a risk signal and noted in the report.
 
@@ -1885,7 +1921,7 @@ Unit tests:
 Fixture tests:
 
 - Go changed-function extraction.
-- TypeScript/JavaScript changed-function extraction.
+- TypeScript/TSX and JavaScript changed-function extraction with distinct canonical language identity.
 - Review packet construction with absolute line numbers.
 - Static signal extraction for the two core cross-language rules.
 - Unsupported language fallback.

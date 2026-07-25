@@ -220,7 +220,7 @@ The unit of candidate review is the changed hunk or file. The unit of understand
 
 The planner should choose coverage and lenses based on language, changed symbols, touched subsystems, tests touched or missing, configured labels/priorities, and the actual diff content. It should not run every lens on every hunk by default.
 
-The v1 pipeline should remain useful even when syntax intelligence is incomplete. Basic diff parsing, file filtering, file classification, seed context, selected lenses, structured findings, verification, deduplication, and telemetry are required. Tree-sitter changed-symbol extraction for Go and TypeScript/JavaScript should improve packet quality, but parser gaps should degrade gracefully rather than block review.
+The v1 pipeline should remain useful even when syntax intelligence is incomplete. Basic diff parsing, file filtering, file classification, seed context, selected lenses, structured findings, verification, deduplication, and telemetry are required. Tree-sitter changed-symbol extraction for Go, TypeScript/TSX, JavaScript, Rust, Python, and Solidity should improve packet quality, but parser gaps should degrade gracefully rather than block review.
 
 ## Stage 1: Diff Parsing And Change Inventory
 
@@ -294,6 +294,14 @@ The core classifier should not ship with hardcoded domain/risk keyword lists suc
 Changed-symbol extraction must be deterministic in v1. It should not call the LLM. It parses changed files locally, maps changed hunk lines to enclosing symbols, and emits compact per-hunk metadata for the planner and packet builder. The goal is to reduce token waste and improve review targeting, not to perform semantic proof.
 
 Stage 4 should use tree-sitter where a grammar is available and fall back to simple line or regex-based detection when parsing is unavailable. Parser gaps should degrade the quality of packet context, not block the review.
+
+Rust extraction is declaration-aware: outer attributes belong to the decorated declaration; trait and impl functions are methods with the nominal trait/target owner when resolvable, while a blanket target that is only a type parameter uses `impl target`; impl blocks provide ownership context but are not standalone symbols; same-named trait/impl declarations remain distinct by declaration range and contextual signature. Rust symbols leave `exported` unset, so the cross-language exported-API signal is not activated for Rust in this slice.
+
+Python extraction is decorator-aware and never uses brace-based signature logic: decorators extend function/class ranges, multiline headers use node-relative JavaScript string slicing in web-tree-sitter's UTF-16 coordinate space and end at the suite colon, and signatures are capped independently of body size. Direct class functions are methods with their immediate class owner; nested local functions reset class ownership; nested classes record their immediate class context. Python symbols leave `exported` unset. Only `.py` is supported; `.pyi` is unknown/generic.
+
+Solidity extraction maps contracts, abstract contracts, and libraries to `type`; interfaces to `interface`; direct contract callables, constructors, fallback/receive handlers, and modifiers to owner-qualified `method`; free functions to `function`; immediately contract-owned state variables/constants to minimal `value` (file-level constants are excluded); nested/file-level structs, enums, and user-defined value types to `type`; and events/custom errors to `other` with explicit native kinds. Enclosing lookup selects the smallest direct member before its contract, bounded signatures stop before bodies, and declaration identity includes path/kind/owner/name/range/signature so overloads do not collapse. Imports contain only unquoted source paths. All Solidity symbols leave `exported` unset; storage layout, generated getters, ABI/export signals, and upgrade compatibility remain deferred.
+
+JavaScript extraction retains canonical `javascript` for `.js`, `.jsx`, `.mjs`, and `.cjs` while sharing the ECMAScript adapter implementation with TypeScript. Functions/generators, callable bindings, classes and class expressions, callable fields, methods, and top-level values receive bounded symbols; enclosing lookup selects the smallest callable/member. Static imports, side-effect imports, re-exports, and literal `require()` sources are returned in source order with deduplication. Likely-test discovery covers sibling `*.test.*`/`*.spec.*`, `__tests__/`, `test/`, and `tests/` conventions and returns supported `describe`/`it`/`test` cases including `.only`, `.skip`, and `.each`. JavaScript packets project only `lang/javascript`; CommonJS export inference and TypeScript-only semantics are not guessed.
 
 `HunkSymbolFacts` is the compact per-hunk metadata produced by changed-symbol extraction. It includes the hunk id, path, changed lines, enclosing symbol name/kind/range, signature when available, and whether the facts came from tree-sitter or fallback detection. The full TypeScript schema is defined in `architecture.md`.
 
@@ -396,7 +404,7 @@ Per-stage LLM failure policy:
 - Stage 10 composer: one repair retry. Terminal failure triggers a deterministic fallback composition — verified findings rendered with template wording, fingerprint-level grouping only, ranked by severity and confidence — with a disclosure note that semantic composition was skipped.
 - Authentication or provider-wide failures at any stage fail the run.
 
-Budget exhaustion ladder, applying to `timeoutMs`, `maxBudgetTokens`, and `maxModelCalls`:
+Budget exhaustion ladder, applying to resolved `maxTimeMs`, `maxBudgetTokens`, and `maxModelCalls`:
 
 - Budgets are checked before each new model call or worker dispatch.
 - On exhaustion: stop scheduling new packet reviews, then verify already-produced candidates using the reserved budget slice, and always run composition and emit a partial-review disclosure.
@@ -413,7 +421,7 @@ Zero-work path: if the resolved diff is empty, or every changed file is filtered
 
 codegenie should parallelize review work when doing so does not reduce review quality.
 
-V1 should support bounded concurrency for independent hunk/file review packets. Packets are independent by construction in v1 — workers have isolated context and packets never span files — so all packets may run concurrently up to the configured limit. Scheduling order is per-packet priority derived from coverage level and configured priority; under budget pressure, higher-priority packets are dispatched first. The planner does not emit scheduling groups in v1 (see Future Considerations).
+V1 should support bounded concurrency for independent hunk/file review packets. Packets are independent by construction in v1 — workers have isolated context and packets never span files — so all packets may run concurrently up to the configured limit. Stage 7 scheduling orders configured priority, then coverage, then a deterministic product-source/test/docs/snapshot class rank and larger packet-local changed-line count; stable input order breaks final ties. This rank is Stage-7-only, so verification and system-review ordering is unchanged. The planner does not emit scheduling groups in v1 (see Future Considerations).
 
 Parallel execution rules:
 
@@ -576,7 +584,7 @@ Pre-clustering in this stage is a verifier scheduling optimization, not final de
 
 Every surviving candidate should be verified by an independent LLM verifier by default. Verification may be disabled only through explicit configuration for faster local experimentation, not as the default v1 behavior.
 
-The verifier receives one candidate at a time, its originating packet context, the relevant changed hunk(s), cited evidence, active lens criteria, and the read-only semantic tool suite. The verifier should use tools only to prove, narrow, or reject the candidate. It must not search for new issues.
+The verifier receives one candidate at a time, its originating packet context, the relevant changed hunk(s), cited evidence, and the False Positives/Safe Patterns guidance from the exact ordered skill ids recorded by the producing Stage-7/8 item. These ids are pipeline-derived from the actual producing prompt projection. Stage 9 drops unknown or language-incompatible ids and never substitutes current primary-lens membership. An authoritative empty list emits no skill sections, skill headers, or empty guidance label. The verifier also receives the read-only semantic tool suite and should use it only to prove, narrow, or reject the candidate; it must not search for new issues.
 
 The verifier may inspect surrounding code, but only to validate the candidate's specific claim. It should not expand into a new review pass or introduce unrelated findings.
 
@@ -611,7 +619,7 @@ Verification failure should be conservative:
 - Candidates that remain unverified after retry should be marked `verificationIncomplete` and suppressed from publication by default.
 - The final report should disclose verification incompleteness when it affects review coverage or suppressed high-severity candidates.
 
-Verification should run with bounded concurrency and record telemetry for every candidate: pre-gate decision, verifier prompt size, tool calls, token usage, runtime, verdict, revision details, rejection reason, and incomplete-verification reason.
+Verification should run with bounded concurrency and record telemetry for every candidate: pre-gate decision, verifier prompt size, requested/resolved/dropped skill ids, tool calls, token usage, runtime, verdict, revision details, rejection reason, and incomplete-verification reason.
 
 The output of this stage is a set of verified, rejected, revised, or incomplete findings with traceable lineage. Stage 9 does not decide the final review shape.
 
@@ -650,7 +658,7 @@ Expected backend behavior:
 - `read_diff_blocks` uses parsed diff data and does not require tree-sitter.
 - `search_files` uses `git grep` at the reviewed revision for discovery, then may enrich matches with tree-sitter enclosing symbols when `contextMode` asks for semantic context.
 - `find_symbol_mentions` uses syntax-aware identifier matching when available and `git grep` at the reviewed revision otherwise. It does not claim compiler-grade reference resolution unless a language analyzer backend explicitly marks the result as semantic or exact.
-- `find_likely_tests` combines test filename conventions with symbol extraction when available and filename/path heuristics otherwise.
+- `find_likely_tests` combines test filename conventions with symbol extraction when available and filename/path heuristics otherwise. JavaScript uses sibling `*.test.*`/`*.spec.*`, `__tests__/`, and matching `test/`/`tests/` paths across `.js`, `.jsx`, `.mjs`, and `.cjs`, returning supported `describe`/`it`/`test` call sites. Rust v1 uses sibling `<stem>_test.rs` and nearest Cargo-package `tests/<stem>.rs`, returning supported `#[test]`/async-test functions as test cases; same-file `#[cfg(test)]` and arbitrary-name integration scanning are deferred. Python uses sibling `test_<stem>.py`/`<stem>_test.py` and nearest-package `tests/` variants, returning top-level `test_*` functions and direct `test_*` methods under `Test*` classes; custom pytest collection configuration is deferred. Solidity requires a nearest `foundry.toml` and uses that package's default `test/<Stem>.t.sol` and `test/<Stem>Test.t.sol`, returning direct contract methods beginning `test` or `invariant` and excluding setup/helpers; custom Foundry directories and Hardhat TypeScript links are deferred. Subjects outside those explicit language contracts use exact stem matches under `test`, `tests`, or `__tests__`; language-specific sibling names never apply cross-language.
 - `list_files` uses filesystem/git listing and does not require tree-sitter.
 
 Source-reading tools should read from the resolved head revision through git by default, and support base-revision reads when the review target has a base revision. The checked-out worktree must not be trusted as review content. Base reads are required for reviewing deleted files and removed-line context when local git can provide the content.
@@ -796,13 +804,17 @@ Bundled v1 lenses should include:
 - Core code review, which absorbs logic/correctness and architecture/design guidance as sections of one strong core skill.
 - Tests.
 - Go.
-- TypeScript/JavaScript.
+- TypeScript/TSX.
+- JavaScript.
+- Rust.
+- Python.
+- Solidity.
 
 Logic-bugs and architecture exist as sections of the `core` skill, not separate lenses, because v1 runs one composite review task per packet; separate lenses would not change what runs.
 
 `core/code-review` explicitly includes security-correctness checks — injection, authorization gaps, secret handling, unsafe deserialization — in v1; dedicated security/domain lenses remain post-v1.
 
-Additional language and domain lenses, such as security, database, performance, and concurrency, may be added as bundled skills after v1.
+Additional language and domain lenses, including security, database, performance, and concurrency, may be added as bundled skills after v1.
 
 Style, formatting, naming, and lint-like lenses are disabled by default.
 
@@ -1048,6 +1060,9 @@ These designs are deliberately deferred from v1. They are recorded as target sha
 - Planner scheduling groups. Planner-emitted hunk groups carrying parallelism and ordering intent. V1 packets are independent by construction and scheduling is priority-only; groups become meaningful only if cross-packet context sharing or dependent review ordering is introduced.
 - Changed-symbol graph edges. Caller, implements, imports, and test relationships between changed symbols (`SymbolEdge`, `ChangedSymbolGraph`). V1 ships `HunkSymbolFacts` and file outlines only; reviewers answer relationship questions on demand with `find_symbol_mentions` and `find_likely_tests`. Build when evals show reviewer or verifier misses attributable to missing precomputed relationship data.
 - Language analyzer backends. Optional semantic enrichment (gopls, TypeScript compiler API, Rust Analyzer) behind the same repository tool contract, already anticipated by the tool layer's backend and precision metadata.
+- Richer Rust test discovery. Same-file `#[cfg(test)]` modules and arbitrary-name Cargo integration-test scanning remain deferred; v1 deliberately links only the deterministic sibling and stem-matched package conventions.
+- Richer Python support. `.pyi` stubs and custom pytest collection configuration remain deferred; v1 deliberately supports `.py` and deterministic conventional test paths only.
+- Richer Solidity support. Storage-layout/generated-getter/upgrade/ABI analysis, custom Foundry test directories, Hardhat TypeScript links, and `exported` inference remain deferred; v1 supplies syntax context, minimal state-variable symbols, and default Foundry conventions only.
 - Diff-file review mode (`--diff <path>`). Reviewing a loose unified diff file with the worktree treated as head for source reads, per-hunk staleness validation of context lines against the worktree, and degraded-coverage disclosure for non-matching files. Build when a real consumer needs loose-patch review that `git apply` to a branch cannot serve.
 - Spec/doc discovery and spec alignment. Deterministic discovery of repo-resident specs through configured `specs.paths` globs (path proximity to changed package roots, then filename/title keyword overlap; top 5 docs as capped snippets), plus `relevantSpecs` and `specAlignmentQuestions` on the planner's diff understanding, with spec-alignment findings citing both the spec evidence and the changed-code behavior. V1 compares declared intent against inferred behavior only. Build when evals show intent-only alignment missing real spec violations.
 - Human-thread awareness. Fetching existing PR review comments and threads, passing deterministically extracted and truncated summaries to the planner as hints (never findings), and composer acknowledgment of overlap with existing threads — without dropping verified findings or adopting an existing comment without codegenie's own evidence and verification. V1 lists only codegenie's own prior comments, for rerun duplicate avoidance. Build when codegenie is observed re-raising points humans already made on the thread.
