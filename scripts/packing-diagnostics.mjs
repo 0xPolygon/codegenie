@@ -16,9 +16,11 @@
 //      length. The builder uses combinedPatchChars() over raw diff lines.
 //      Plan 102 documented the two differing by about one packet per run.
 //   2. Container identity is recovered by splitting the owner prefix out of
-//      the recorded `enclosingSymbol` display string ("(*T).Method" -> "T").
-//      Plan 103 specifies a structural ownerKey resolved from symbol ranges,
-//      which does not collide across duplicate or nested same-named owners.
+//      the recorded `enclosingSymbol` display string ("(*T).Method" -> "T"),
+//      which collides across duplicate or nested same-named owners. Only the
+//      `related` predicate uses it, and that predicate was measured and
+//      rejected — Plan 103 ships neither container identity nor relationship
+//      ordering. This mode exists to reproduce that rejection.
 //   3. Planner lens signatures are only known for hunks the planner issued a
 //      coverage entry for. Undeclared hunks fall back to
 //      defaultLensesForLanguage(), which is constant within a file, so they
@@ -113,7 +115,8 @@ function loadRun(runDir) {
 }
 
 // Packing-affinity adjacency between atoms: strong recorded edges plus shared
-// container. Mirrors Plan 103's derived/structural split.
+// container. Used only by the `pairs` and `related` analyses, which exist to
+// reproduce why Plan 103 rejected relationship-based packing.
 function affinity(run) {
   const byId = new Map(run.atoms.map((atom) => [atom.id, atom]));
   const adjacency = new Map(run.atoms.map((atom) => [atom.id, new Set()]));
