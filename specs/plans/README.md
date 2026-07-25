@@ -106,4 +106,4 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 100 | COMPLETE | Issue 100: Short Hunk IDs — Planner Coverage Survival and Dispatch Resilience |
 | 101 | IN PROGRESS (paid semantic A/B pending) | Issue 101: Exact Skill Provenance and Evidence-Gated Bundled-Skill Revision |
 | 102 | COMPLETE (failed gate; baseline restored) | Issue 102: Same-File Packet Packing |
-| 103 | PENDING | Issue 103: Compatible-Atom Packing with Relationship-Ordered Composition |
+| 103 | PENDING | Issue 103: Compatible-Atom Packet Packing and the Packet-Size Recall Curve |
