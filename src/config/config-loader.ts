@@ -32,6 +32,7 @@ export type CliConfigOverrides = {
   model?: string;
   reasoning?: ReasoningLevel | "auto";
   cacheEnabled?: boolean;
+  packRelatedHunks?: boolean;
 };
 
 export type LoadConfigOptions = {
@@ -64,6 +65,7 @@ const DEFAULT_SOURCE_PATHS = [
   "review.maxTime",
   "review.perPassTimeoutMs",
   "review.budgetBoost",
+  "review.packRelatedHunks",
   "review.maxBudgetTokens",
   "github.summaryWhenNoFindings",
   "classification.pathRules",
@@ -468,6 +470,10 @@ function applyCliOverrides(
   if (cli.depth !== undefined) {
     config.review.depth = cli.depth;
     sources["review.depth"] = "cli";
+  }
+  if (cli.packRelatedHunks !== undefined) {
+    config.review.packRelatedHunks = cli.packRelatedHunks;
+    sources["review.packRelatedHunks"] = "cli";
   }
   if (cli.budgetBoost !== undefined) {
     config.review.budgetBoost = cli.budgetBoost;

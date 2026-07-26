@@ -1,17 +1,160 @@
 # Issue 102: Same-File Packet Packing
 
-Status: PENDING
+Status: COMPLETE — failed treatment gate; baseline restored
 Related: Plan 100 (COMPLETE; dispatch rank), Plans 40/44 (recall calibration), Plan 79 (repeat/recall harness)
 Planned from: production run `.codegenie/runs/20260724-184952-dca8d870` against `0xsequence/trails-api` PR 846 (88 files, 217 hunks, `--max-time 60`, concurrency 4), plus retained runs `740d73f2`, `fe1548ae`, and `81f806a6`, 2026-07-24
 Production replay refs: base/merge-base `d1c49bdf6a8002ec2ec27faac94a932d736532b2`; head `fbb5f8761c2c296e115af17e919a7c35d9de8373`
 Planned at: commit `6909e1a` (branch `next`)
-Recommended priority: next throughput plan. Plan 100 is complete, and run `dca8d870` is the clean planner-survival/dispatch-order baseline: 32/32 planner entries survived and all 19 deep hunks were dispatched. Its dependency is satisfied.
+Final outcome: the repaired one-repeat treatment gate failed, so same-file packet packing did not roll out. Step 12 restored the baseline packet path and removed the experiment; the immutable reports and paid logs retain the rejected design's measurement record.
 
 > Executor instructions: preserve the output of today's semantic hunk grouper as indivisible **atoms**. Do not replace `canJoinGroup` with an affinity sort: proximity is not transitive, and a sort cannot preserve its semantics. Never combine atoms with different effective coverage levels. Preserve each atom's standalone review profile as a monotonic floor when packing internalizes relationship context. Keep source order, `MAX_HUNKS_PER_PACKET = 5`, and `MAX_PATCH_CHARS = 12_000`. Land packing dark, validate deterministic packet shape before spending model calls, then record treatment for every paid execution and require at least 8/10 treated B/C executions per arm/case. Use paired repeated A/B/C evals to select the production behavior and tool-budget calculation, preserve the paid evidence, then remove every experiment-only flag and alternate path in the dedicated teardown step.
 >
 > Drift check: `git diff --stat 6909e1a..HEAD -- src/pipeline/packet-builder.ts src/config/schema.ts src/config/config-loader.ts src/types.ts src/evals/eval-runner.ts scripts/packet-packing-report.ts tests/fixtures/packet-packing-golden.json tests/pipeline-phase5.test.ts tests/config-loader.test.ts tests/evals.test.ts tests/packet-packing-report.test.ts`
 > Working-tree check: `git status --short -- src/pipeline/packet-builder.ts src/config/schema.ts src/config/config-loader.ts src/types.ts src/evals/eval-runner.ts scripts/packet-packing-report.ts tests/fixtures/packet-packing-golden.json tests/pipeline-phase5.test.ts tests/config-loader.test.ts tests/evals.test.ts tests/packet-packing-report.test.ts`
 > If the drift check reports committed changes, reconcile the current-state claims below. If the working-tree check reports changes owned by another task, stop and wait for that work to land or move this plan to an isolated worktree; do not overwrite it.
+
+## Phase 3 paid-validation authorization (2026-07-25; before first paid call)
+
+The owner supplied `approvedValidationCostUSD: $500`, which is the active total validation ceiling and supersedes the earlier `$200` authorization communicated for this phase. Before the one-repeat step-7 preflight, `actualValidationCostUSD = $0.00` and `projectedRemainingCostUSD = $60.00`, so `actualValidationCostUSD + projectedRemainingCostUSD = $60.00 <= $500.00`. The `$60.00` preflight reservation assumes six paid A/B/C executions capped at `expect.maxCostUSD: 10` each; the fixture cases use the same explicit provider/model/reasoning/concurrency/depth/lens/time/token configuration and run with cache disabled. Authorization in this phase is limited to this one-repeat suite. Repeat-10, collateral, production-capacity, arm selection, rollout, and teardown remain `not_run` and are not authorized by this phase.
+
+After the preflight, replace the reservation with reconstructed cohort spend, set the repeat-10 projection to exactly `10 * preflightCostUSD`, and record cumulative actual plus projected spend. The later production phase continues to reserve `$95` only when reached and separately authorized; real-model collateral selected-side cost remains deferred until its A-side measurement, as required by this plan.
+
+### Phase 3 one-repeat invalid cohort, diagnosis, and deterministic repair (2026-07-25)
+
+The private suite was created at `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/recall/` with materializable `dilution-control` and `cross-atom-consistency` Go fixtures plus `dilution-{a,b,c}.yml` and `consistency-{a,b,c}.yml`. All six cases remain at `repeat: 1`. Within each family the current definitions are identical except for the arm name suffix and the two permitted review settings: A is packing off/base, B is packing on/base, and C is packing on/atom-scaled. They use Anthropic `claude-opus-4-8`, reasoning `high`, normal depth, concurrency/provider concurrency 1, a 20-minute case limit, a 1,000,000-token budget, `expect.maxCostUSD: 10`, and cache disabled.
+
+The first paid cohort used the original three-lens configuration (`core/code-review`, `core/tests`, and `lang/go`). Its cache-off invocation was `ace65769-3a68-4bd1-bd36-662fa6827dc6`, started `2026-07-25T12:02:33.511Z` and completed `2026-07-25T12:23:15.259Z`. Its exact log root is `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/recall/logs`; the same ID is the selected cohort. It completed six live executions with zero eval/provider/configuration errors and 84 model calls:
+
+| Run | Case | Review run ID | Eval score | Actual cost USD |
+| ---: | --- | --- | --- | ---: |
+| 1 | `consistency-a` | `20260725-120233-6c490c44` | fail, 1/2 expectations | 1.270413 |
+| 2 | `consistency-b` | `20260725-120706-36842f4b` | fail, 1/2 expectations | 0.901080 |
+| 3 | `consistency-c` | `20260725-121006-87a8ed77` | fail, 0/2 expectations | 0.519151 |
+| 4 | `dilution-a` | `20260725-121205-5a020015` | pass, 2/2 expectations | 1.102087 |
+| 5 | `dilution-b` | `20260725-121737-6249976f` | fail, 0/2 expectations | 0.539328 |
+| 6 | `dilution-c` | `20260725-121917-4c7e8289` | fail, 1/2 expectations | 0.875598 |
+
+The exact required report command selected that cohort and failed closed. The original invalid report is preserved immutably at `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/reports/plan102-eval-preflight-invalid-ace65769.json`, SHA-256 `3368178d57d6c4c46865fccb52b8aa160d1f9acf3536be9e1cde4d05d52c50ab`. Its authoritative reconstructed `preflightCostUSD` and cumulative `actualValidationCostUSD` are `$5.207657`; the unrounded sum of the 84 model-call records is `$5.207655`, with the `$0.000002` difference coming from summing the report's per-run six-decimal values.
+
+The invalid cohort's exact additional repeat-10 planning projection is `10 * preflightCostUSD = $52.076570`. Because a corrected repeat-one retry is now pending, reserve at most another `$60` before that retry and replace the repeat-10 estimate with `10 * correctedPreflightCostUSD` only after a valid retry. The currently known accounting projection is therefore `$60 + $52.076570 + $95 = $207.076570` (retry cap, placeholder repeat-10 estimate, and production-pair reservation), with fake-provider collateral `$0` and real-model collateral still deferred until its A-side measurement. Cumulative actual plus this known projection is `$212.284227 <= approvedValidationCostUSD: $500`, leaving `$287.715773` before deferred collateral. This is accounting only: Phase 3 does not authorize or start the retry.
+
+Paid target treatment was invalid in every packed arm/case: consistency B `0/1`, consistency C `0/1`, dilution B `0/1`, and dilution C `0/1`. Each consistency target remained a one-atom deep packet with the same requested/routed lenses as A while non-target atoms packed, reducing file packets from 5 to 3. Each dilution target likewise remained a one-atom deep packet; B emitted only one-atom events and stayed at 3 packets, while C packed two non-target light hunks and also stayed at 3. The target comparisons themselves did not change path, coverage, or requested lenses.
+
+The failed report had three independent artifact-contract defects, now fixed with focused regressions:
+
+- `paid_summary_reconciliation` failed six times because attention records were compared to filename-sorted packet artifacts by array index. Reconciliation now requires unique IDs and joins by `packetId`, so producer order is irrelevant but duplicates/missing packets still fail.
+- `paid_evidence_relations` failed twice because the verifier admitted only Stage 7/8 producers even though real uncertainty promotions are intentionally produced at Stage 9. Stage 9 is now admitted only when `provenance.source === "uncertainty_promotion"`; an arbitrary Stage 9 candidate still fails.
+- `a_lens_route_join` failed twice because it treated intentional Stage-6 pruning from the A planner request as packing loss. The actual packing contract remains strict: event requested signatures must join the Stage-5 decisions, and B/C routed lenses must exactly equal the union of their A source atoms' already-routed lenses.
+
+Re-running the report locally over the immutable cohort after those fixes removes all ten artifact-contract failures and leaves 17 treatment failures: four `requested_lens_join`, three `treatment_invariant`, two `effective_profile_downgrade`, one `routed_lens_join`, four `insufficient_treatment`, and one each of `hunk_bijection`, `unknown_source_atom`, and `atom_bijection`. These are not waived. The consistency planners varied the non-target coverage, requested lenses, and relationship hints across A/B/C, changing an A atom from normal to light and A standalone profiles from investigate to simple in packed arms. Dilution C changed an A-skipped hunk to light and changed the normal hunk's requested lenses, so its atom universe could not join A. Those are real independent Stage-5 samples. The four target-treatment misses also exposed a fixture/config defect: an obvious target regression was predictably assigned deep/tests attention while safe mechanical siblings were assigned normal/light attention, but packing correctly requires identical coverage and requested-lens signatures.
+
+That 17-failure diagnostic rerun occurred before changing the declared case files. After the deterministic fixture repair below, the historical CLI now stops earlier with `declared_case_join`, as designed, because the current YAML hashes no longer match invocation `ace65769...` and its persisted snapshots. Do not edit the old manifest or logs to bypass that provenance check; the immutable original report and case snapshots remain the authority for the invalid cohort, and the pending retry will create a new invocation with the repaired declarations.
+
+The deterministic repair keeps both required failure classes while reducing those avoidable compatibility axes. All six current cases enable only `lang/go`. In `cross-atom-consistency`, every separated sibling now contains the same safe `Amount == 0` to `Amount <= 0` boundary hardening while four also add the shared validation veto and `HandleWire` still omits it. In `dilution-control`, all four separated hunks are comparator-boundary changes: the target retains the inclusive-limit regression, while the attempt normalization, integer-equivalent retry guard, and equality-equivalent shard cap remain safe sibling changes. The original paid case snapshots/logs are untouched.
+
+The repaired suite passes strict six-case parsing and arm-structure comparison. Both fixture bases and both materialized main/feature repositories pass `go test ./...`. A no-model scripted normal-coverage validation proves:
+
+| Case | A packets / target atoms | B packets / target atoms | C packets / target atoms | Routed lens | Profile | B base budget | C effective budget |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `cross-atom-consistency` | 5 / 1 | 1 / 5 | 1 / 5 | `lang/go` | `standard` | 4 calls, 2 rounds, 10,000 chars | 7 calls, 2 rounds, 17,500 chars |
+| `dilution-control` | 4 / 1 | 1 / 4 | 1 / 4 | `lang/go` | `standard` | 4 calls, 2 rounds, 10,000 chars | 7 calls, 2 rounds, 16,000 chars |
+
+That validator observed zero model calls and passed exact hunk/atom order and bijection, five-hunk/12K caps, normal coverage, requested/routed lens, standalone/effective profile floor, base/effective budget, target membership, and dispatch-rank checks. It proves the repaired deterministic preconditions, not real-planner treatment. A second paid repeat-one cohort is still required and remains pending outside Phase 3.
+
+One-repeat recall from the invalid cohort is retained only as measurement: consistency A/B each hit the final expectation while C did not; dilution A hit candidate/final, B missed before candidate generation despite reviewing the target packet, and C generated a candidate that was rejected at verification. These samples do not select B or C and do not decide rollout. Plan 102 steps 8–12 are `not_run` because the cohort is treatment-invalid, not because packing has received a rollout verdict. No case was changed to repeat 10, no later paid suite ran, no arm was selected, and no experiment flag or product path was torn down.
+
+### Phase 4 repaired one-repeat retry and failed gate (2026-07-25)
+
+Phase 4 retried Plan 102 step 7 exactly once and stopped at the failed report gate. The runtime was exact clean commit `bb96fd3439c715130756a93efd8e679772f81a9b` on branch `next`, with `git status --porcelain=v1` empty, Node `v26.5.0`, pnpm `11.15.1`, and launch preflight timestamp `2026-07-25T13:06:52Z`. The draft phase note was stashed before launch and restored only after the paid process and report completed. The documented `pnpm dev -- eval ...` spelling passed a literal `--` through pnpm 11 and was rejected by Commander before suite allocation; it created no invocation, run directory, model call, or spend. The one actual invocation used the equivalent pnpm-11 spelling `pnpm dev eval --eval-dir /home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/recall --no-cache`.
+
+Immediately before the paid call, the repaired suite strictly parsed as six cases with `repeat: 1`, cache disabled, `lang/go` as the only lens, and the exact Phase 3 provider/model/reasoning/concurrency/depth/time/token/cost settings. Within each family, structural comparison found only the case-name suffix and the two permitted A/B/C review-field differences. The declaration SHA-256 values were:
+
+| Case | SHA-256 |
+| --- | --- |
+| `consistency-a.yml` | `15702c3e5c8c2d97845b39ff04618d26966174934ad1afe9765bdb7710bde590` |
+| `consistency-b.yml` | `5b0e093db08b9cee8837d04d5236ceabd30727903ef18e13c74208022bca05bb` |
+| `consistency-c.yml` | `69130fa21479fe25acd881bff1fc9e914ff470cb5efb70e89c1e70bb5f4e01c3` |
+| `dilution-a.yml` | `fe2802d21333f6650fe4c4fc1a5685574638fe6036f19b6d8bfbcad088fbb871` |
+| `dilution-b.yml` | `00a8d51ea6aee14c9ef39105c3bd7514ba6167ac642b35dc9b45114f67bdd757` |
+| `dilution-c.yml` | `87883f0210d92551da43b860f47b98a169609ff902102b21b28f853039be12ef` |
+
+The six fixture source files had aggregate SHA-256 `d486e2601a1ea05f0872794be71f409b5296b78c2998ef39e973eedb57061da4`. Both materialized base and feature revisions passed `go test ./...`. The no-model validator observed exactly zero model calls and no failures. With normal coverage and the declared `lang/go` route, it reproduced consistency A `5` packets/one target atom versus B/C `1` packet/five target atoms, and dilution A `4`/one versus B/C `1`/four. Exact hunk/atom order and bijection, five-hunk/12K caps, coverage, requested/routed lenses, standalone/effective profile floors, base/effective budgets, target membership, and dispatch ranks all passed. This reconfirmed only deterministic fixture eligibility; it did not predict independently sampled Stage-5 plans.
+
+The sole live retry invocation was `5bd80f2c-865e-40f0-a605-07387138b904`, started `2026-07-25T13:10:14.113Z` and completed `2026-07-25T13:26:22.430Z`. Its exact log root is `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/recall/logs`. It completed all six cache-off executions with zero provider/configuration errors, zero incomplete reviews, zero budget violations, and 71 model calls:
+
+| Run | Case | Review run ID | Eval score | Model calls | Actual cost USD |
+| ---: | --- | --- | --- | ---: | ---: |
+| 7 | `consistency-a` | `20260725-131014-ff7643a9` | fail, 0/2 expectations | 13 | 0.669039 |
+| 8 | `consistency-b` | `20260725-131217-78051528` | fail, 0/2 expectations | 11 | 0.564235 |
+| 9 | `consistency-c` | `20260725-131407-46ee2073` | fail, 0/2 expectations | 11 | 0.618305 |
+| 10 | `dilution-a` | `20260725-131627-fd970500` | fail, 1/2 expectations | 12 | 0.614135 |
+| 11 | `dilution-b` | `20260725-131904-9623b816` | pass, 2/2 expectations | 13 | 0.713651 |
+| 12 | `dilution-c` | `20260725-132212-896d115e` | fail, 1/2 expectations | 11 | 0.806856 |
+
+The exact report command selected that invocation UUID, not `latest`: `pnpm exec tsx scripts/packet-packing-report.ts eval --logs /home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/recall/logs --cohort 5bd80f2c-865e-40f0-a605-07387138b904 --expected-repeats 1 --output /tmp/plan102-eval-preflight.json`. It exited `1` with exactly six failures: consistency B and C were each treated `0/1`, and one B plus one C packet in each family failed the composite `treatment_invariant`. There were no other report failure codes.
+
+The treatment diagnosis is exact:
+
+- Consistency A produced five packets: one normal/investigate atom, three light/simple atoms, and the target `HandleWire` deep/investigate atom. B and C packed only the three non-target light atoms, reducing five packets to three, while the target stayed a one-atom deep packet. Both target treatments are therefore invalid at `0/1`. On the packed non-target packet `e33a8a1d...`, the independent B/C planner hints made all three standalone profiles `investigate`; the corresponding A atoms were `simple`. The event's profile-floor fields consequently could not exactly reconcile to the A atoms, producing one composite invariant failure in each packed arm.
+- Dilution A produced deep/investigate, normal/investigate, light/simple, and deep/investigate atoms. B and C validly combined the target first deep atom with the last deep atom, reduced four packets to three, and treated the target at `1/1` with two source atoms. A separate one-atom light packet `3989cd85...` nevertheless changed from A `simple`/zero-tool to a B/C `investigate` standalone profile due independently sampled planner hints. Its event profile-floor fields likewise could not exactly reconcile to A, producing one composite invariant failure per packed arm.
+
+Thus caps, hunk/atom joins, coverage, requested/routed lenses, effective profiles/budgets, dispatch ranks, artifact lineage, summary reconciliation, and spend evidence produced no separate failures; the gate failed specifically on the two missing consistency target treatments and cross-arm standalone-profile reconciliation. No report check was waived. The failure is not a rollout verdict from recall, and there will be no third paid one-repeat invocation.
+
+One-repeat recall remains measurement only. All three consistency executions generated and published the missing-wire-validation finding as category `security`, while the declared expectation required `correctness`, so each recorded candidate/final partial matches rather than a hit. Dilution A and C hit the candidate expectation but were rejected at verification; dilution B hit both candidate and final expectations. These six samples do not select B or C and do not establish packing safety or harm.
+
+The report's authoritative reconstructed `retryPreflightCostUSD` is `$3.986221`; the unrounded sum of its 71 model-call records is `$3.986220`, with the `$0.000001` difference coming from the report's per-run six-decimal reconciliation. Cumulative `actualValidationCostUSD` is `$5.207657 + $3.986221 = $9.193878`. Because the retry is not valid, `validPreflightCostUSD` and therefore the required `10 * validPreflightCostUSD` repeat-10 projection are **not established** and cannot authorize step 8. For comparison only, `10 * retryPreflightCostUSD = $39.862210`; including the known later `$95` production-pair reservation would give `$9.193878 + $39.862210 + $95 = $144.056088`. The conservative Phase 3 placeholder remains `$52.076570`, yielding known projected remaining spend of `$147.076570` and cumulative actual plus projection of `$156.270448 <= approvedValidationCostUSD: $500`, leaving `$343.729552` before deferred real-model collateral. Fake-provider collateral remains `$0`. None of these accounting projections authorize a later paid phase after the failed gate.
+
+The failed retry report is preserved byte-for-byte at `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/reports/plan102-eval-preflight-retry-invalid-5bd80f2c.json`, SHA-256 `650113d24d092e6fd712303e1828b297010c76f672d7efb799f5081f79635517`. The new run/manifests aggregate SHA-256 is `dabb5d4700a0fe559490216da73d335bd9f28cec6d3c004d8b41b4cb7c77c3c1`. The original runs 1–6 plus manifest retain aggregate SHA-256 `2a3232651752a4f3652334d5126e2eebca6169da658e854214b6f98a158eb750`, and the original invalid report remains SHA-256 `3368178d57d6c4c46865fccb52b8aa160d1f9acf3536be9e1cde4d05d52c50ab`. No historical log, manifest, or report was edited or deleted.
+
+Plan 102 steps 8–11 are `not_run` because the repaired retry gate failed. Step 12's failure teardown is also `not_run` in Phase 4 and is reserved for the next separately reviewed phase; no case was changed to repeat 10, no arm was selected, no collateral or production suite ran, no rollout verdict was made, and no experiment code or evidence was torn down in this phase.
+
+### Phase 5 failed-outcome teardown and final gate (2026-07-25)
+
+Plan 102 is complete through the explicit failed-outcome branch, not through rollout. The repaired retry never established a valid preflight: consistency B/C each treated the target `0/1`, and independently sampled planner hints prevented exact A-to-B/C standalone-profile reconciliation in both case families. No report condition was waived and no third paid attempt was made. The product decision is therefore to reject this packing design for this iteration and restore the original baseline path.
+
+Before teardown, every JSON report actually produced by the completed phases was preserved under `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/reports/`:
+
+| Preserved report | SHA-256 |
+| --- | --- |
+| `plan102-packet-shape.json` | `77af0c38937bd6957806f05ad201cbad32461414c1d667824096208473c276fa` |
+| `plan102-eval-preflight-invalid-ace65769.json` | `3368178d57d6c4c46865fccb52b8aa160d1f9acf3536be9e1cde4d05d52c50ab` |
+| `plan102-eval-preflight-retry-invalid-5bd80f2c.json` | `650113d24d092e6fd712303e1828b297010c76f672d7efb799f5081f79635517` |
+
+`reports/manifest.sha256`, itself SHA-256 `7c6a1dfb923aea7a36986e50c40068eb878688611f22bc31e4c3c20128970667`, covers exactly those three report basenames. `sha256sum -c manifest.sha256` passes for all three. The deterministic replay was copied byte-for-byte from `/tmp/plan102-packet-shape.json`; the two existing invalid-preflight reports were hash-verified and never rewritten. No repeat-10, collateral, or production-capacity report exists because those phases were not reached.
+
+Both paid invocations use the immutable log root `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/packet-packing/recall/logs` and retain their invocation manifests and run artifacts unchanged:
+
+| Invocation UUID | Eval runs | Review run IDs | Authoritative cost USD |
+| --- | --- | --- | ---: |
+| `ace65769-3a68-4bd1-bd36-662fa6827dc6` | 1–6 | `20260725-120233-6c490c44`, `20260725-120706-36842f4b`, `20260725-121006-87a8ed77`, `20260725-121205-5a020015`, `20260725-121737-6249976f`, `20260725-121917-4c7e8289` | 5.207657 |
+| `5bd80f2c-865e-40f0-a605-07387138b904` | 7–12 | `20260725-131014-ff7643a9`, `20260725-131217-78051528`, `20260725-131407-46ee2073`, `20260725-131627-fd970500`, `20260725-131904-9623b816`, `20260725-132212-896d115e` | 3.986221 |
+
+Final cumulative `actualValidationCostUSD` is `$9.193878`, below the owner-approved `approvedValidationCostUSD: $500`. There is no projected remaining validation spend: step 8 (repeat-10 recall), step 9 (deterministic and real-model collateral), step 10 (production-capacity pair), and step 11 (arm selection and rollout documentation) are all `not_run` because the repaired step-7 treatment gate failed. Their absent reports and `$0` later-phase spend are intentional, not missing evidence. No paid model call occurred during teardown or the final repository gate.
+
+Step 12 completed through the failure branch. The same-file packing pass, atom-scaled and base experiment modes, both temporary config fields and eval/config plumbing, experiment-only atom wrappers/IDs/provenance/profile floor/telemetry, report script and tests, and dead artifact-reconstruction exports/metadata were removed. `scripts/`, `src/`, and `tests/` now match the pre-experiment product baseline at commit `5aca256` for every Plan 102 code path, restoring the original `hunkFirstGroups()` packet behavior and ordinary packet tool budget rather than retaining a dark alternate path. No golden packet-packing fixture was created.
+
+The private active suite no longer contains A/B/C case YAMLs. B/C declarations were retired with the experiment. `consistency-a` was also removed because its repaired baseline run met `0/2` declared expectations, and `dilution-a` was removed because it met only `1/2`; neither satisfied the suite's existing all-expectations-pass policy. Both fixture repositories under `recall/repos/`, all twelve run directories, both invocation manifests, and every log/report artifact remain unchanged. No production or collateral case was created merely for teardown.
+
+The exact step-12 evidence, retired-field grep, report-absence, strict-suite no-model parse, and focused baseline tests pass. Step 13's complete `pnpm run check`, `pnpm test`, and `pnpm build` gate plus `git diff --check` also pass. This completed status records a failed experiment with verified baseline restoration; it does not claim rollout, recall safety, throughput gain, or production economics.
+
+## Phase 2 deterministic reconciliation (2026-07-24)
+
+Step 6's exact four-run command completed with exit `0`, `noModelCalls: true`, four explicit `modelCallsObserved: 0` row proofs, and no report failures. The frozen output is `/tmp/plan102-packet-shape.json` (SHA-256 `77af0c38937bd6957806f05ad201cbad32461414c1d667824096208473c276fa`). The authoritative motivating count is **75**: the real `combinedPatchChars()` builder produced 96→75, so the bounded 74/76 reconciliation was not used. The report's diagnostic reapplication of the old `contentWithLineNumbers` proxy produces 76 for the current atom stream while the real measurement produces 75; this does not change the golden because the authoritative builder result itself matches the plan's historical 75 target. The frozen hash was refreshed after the verifier stopped trusting serialized cap telemetry and independently rendered the source diff for every packet that actually combines multiple atoms.
+
+| Retained run | Packets off→on | Reduction | Hunks | Multi-atom packets | Hunk distribution off→on (1/2/3/4/5) | Atoms per on-packet (1/2/3/4) |
+| --- | ---: | ---: | ---: | ---: | --- | --- |
+| `740d73f2` | 109→85 | 22.018% | 153 | 16 | 86/12/5/2/4 → 54/13/6/5/7 | 69/9/6/1 |
+| `fe1548ae` | 109→85 | 22.018% | 153 | 16 | 86/12/5/2/4 → 54/13/6/5/7 | 69/9/6/1 |
+| `81f806a6` | 93→68 | 26.882% | 136 | 17 | 71/11/5/2/4 → 38/12/6/4/8 | 51/10/6/1 |
+| `dca8d870` | 96→75 | 21.875% | 142 | 14 | 73/11/5/3/4 → 46/12/4/5/8 | 61/8/5/1 |
+
+All four rows have zero hunk/atom bijection failures, atom splits or reorderings, new coverage promotions, cap violations, planner-lens drops, high/critical focus omissions, deep-context downgrades, derived/effective profile downgrades, effective base-budget downgrades, and invalid dispatch ranks. The largest eligible packet has five hunks; independently rendered raw-diff patch use for every multi-atom packet is at most 11,755 characters in each run. Oversized single-hunk packets are intentionally windowed and are not atom-combination cap candidates. Flag-off and flag-on context truncation counts are identical (13/13, 13/13, 13/13, and 15/15). Each run internalizes two related-context excerpts because their target hunk is now in the same packet. Six standalone note strings per run are absent after the unchanged bounded note merge, but none belongs to a high/critical atom; this remains an explicit paid-recall concern rather than being hidden as deterministic parity. Lens omissions are zero. All treatment packets use the `base` budget and the eight direct file/whole-file bypass packets per run retain their baseline budget.
+
+Packing changes the complete scheduling position of 129, 129, 129, and 117 hunks respectively, while every recomputed rank satisfies the unchanged `[fileClassRank, -changedLines]` formula. The motivating row's 75 packets at concurrency 6 versus 96 at concurrency 4 gives a capacity multiplier of `(96 / 75) * (6 / 4) = 1.92×`. Its completion projection is `52.7 * (75 / 57) * (4 / 6) = 46.23` minutes.
+
+The motivating run has byte-identical flag-off artifacts after applying the same credential stripping used by artifact serialization. The three older retained artifacts predate Plan 100 and omit `dispatchRank`; the replay applies an explicit run-ID-pinned compatibility view that removes only that absent serialized field after validating every current rank. Those same three recorded diffs predate persisted `hunkHash` and the current derived hunk ID. Their versioned diff parity requires every hunk to use the old schema, then compares every other parsed field exactly against fresh `parseDiff(rawDiff)` output; partial migration or any semantic diff drift fails closed. The oldest clean artifact also predates the self-test context filter, so 16 exact redundant `path:path` test lines are removed in that compatibility view. Any other field drift still fails closed, and the current packing-off implementation remains covered by the packet-builder golden parity tests.
+
+Paid validation was not authorized or run in this phase: `actualValidationCostUSD = $0`; steps 7–12 are `not_run` pending an owner-supplied `approvedValidationCostUSD`. No paid model call may begin until that ceiling and the next-phase projection are recorded.
 
 ## Decision
 
@@ -202,7 +345,7 @@ Use staged measurements instead of guessing the final bill:
 3. The two production cases run as one paired suite, so approve that phase before launching either case. Run D cost `$25.2852` in total: `$22.8517` in Stage 7 across 57 dispatched packets (`$0.4009` per dispatched packet) plus `$2.4335` outside Stage 7. For frozen packed count `P`, forecast a complete pair as `2 * $2.4335 + (96 + P) * $0.4009`, or `$73.02–$73.82` for `P in {74, 75, 76}`. Applying 25% contingency yields `$91.28–$92.28`; round upward and reserve **`$95`**. This budgets all 96 baseline packets plus all packed packets even if the 60-minute baseline later truncates. Replace the reservation with actual paired cost afterward.
 4. Before starting any next phase, require `actualValidationCostUSD + projectedRemainingCostUSD <= approvedValidationCostUSD`. If it does not hold, stop for explicit owner approval rather than dropping recall or deterministic gates to save money.
 
-The report script must aggregate cohort cost from `score.metrics.costUSD`, falling back to the actual value of the `maxCostUSD` budget result when necessary. It emits cohort `actualCostUSD`; the executor records cumulative actual/projected/approved amounts in the reconciliation note using the formulas above.
+The report script must reconstruct cohort cost from every recorded model call and require the per-repeat and aggregate score cost/count fields to match that evidence. Candidate, verification, final-selection, and final artifacts must also form an exact lineage before any paid score is accepted. It emits cohort `actualCostUSD`; the executor records cumulative actual/projected/approved amounts in the reconciliation note using the formulas above.
 
 Normalize production payback to equivalent reviewed work because the baseline may truncate while the selected arm completes. For the pinned diff, set `equivalentTargetHunks = 142` and compute:
 
@@ -270,7 +413,7 @@ Author six case files (`dilution-{a,b,c}.yml`, `consistency-{a,b,c}.yml`) with `
 | B — isolate shape | on | base |
 | C — shape + capacity | on | atom-scaled |
 
-Run the one-repeat treatment preflight, then use `scripts/packet-packing-report.ts eval` on the suite logs. For both cases it must prove:
+Run the one-repeat treatment preflight, then use `scripts/packet-packing-report.ts eval` on the suite logs. Preflight proves treatment and economics only and must not select a rollout arm. Invocation manifests record each run's exact owning log root/path so a suite may span roots without ambiguous numeric run IDs. For both cases it must prove:
 
 - A's target packet has one source atom;
 - B and C put the target hunk in a packet with at least two source atoms;
@@ -302,7 +445,7 @@ Define Stage-7 tool-pressure rate per arm as:
 rejectionRate = rejected repository-tool attempts / reviewed pre-existing source atoms
 ```
 
-Report the rejection cause/limit when telemetry supplies it, result characters, used calls, continuations, and model-service time per reviewed atom. C qualifies as a budget fix only when `rejectionRate(C) <= rejectionRate(B)` and it either strictly reduces rejection rate or improves candidate/final recall. If C and B have equal recall and pressure, choose B. If the selected packed arm exceeds A by more than `0.10` rejected attempts per reviewed atom without higher candidate recall, stop and keep packing dark.
+Report the rejection cause/limit when telemetry supplies it, result characters, used calls, continuations, and model-service time per reviewed atom. C qualifies as a budget fix only when `rejectionRate(C) <= rejectionRate(B)` and it either strictly reduces rejection rate or improves candidate/final recall. If C and B have equal recall and pressure, choose B. If B fails and C passes, C must retain at least 85% of the model-service saving implied by its packet-count reduction. If the selected packed arm exceeds A by more than `0.10` rejected attempts per reviewed atom without higher candidate recall, stop and keep packing dark.
 
 ### C. Existing-suite collateral regression checks
 
@@ -313,7 +456,7 @@ After the repeated packing-sensitive gate selects B or C, run two broader suites
 
 Materialize A and selected copies in disposable directories, copying the complete suite including `repos/`, and change only `repeat`, `review.packSameFileHunks`, and `review.packedToolBudgetMode`. The report must verify those are the only YAML differences, that the selected setting reached resolved config, and how many selected executions actually packed multiple atoms. Untreated cases remain valid collateral checks for flag/config parity but are explicitly not evidence about packing recall.
 
-Add a `regression` mode to `scripts/packet-packing-report.ts` that compares the two explicit log roots and reports eval errors, expectation transitions, packet/hunk/cap/profile invariants, treatment counts, tool pressure, and dispatch-order changes. It must not merge these one-repeat outcomes into the repeated packing-sensitive recall gate.
+Add a `regression` mode to `scripts/packet-packing-report.ts` that compares the two explicit log roots and reports eval errors, expectation transitions, packet/hunk/cap/profile invariants, treatment counts, tool pressure, and dispatch-order changes. Each baseline and selected cohort must independently pass every required positive/negative expectation even when both fail identically. It must not merge these one-repeat outcomes into the repeated packing-sensitive recall gate.
 
 ### D. One production-shaped capacity confirmation
 
@@ -323,7 +466,7 @@ Confirm:
 
 - at least the same hunk set is reviewed, with the target being all 142 reviewable hunks;
 - accepted/candidate findings and known cross-hunk observations are not lost;
-- total model-service time, total tokens, cost per reviewed hunk, and wall time improve;
+- total model-service time, total/reasoning tokens, cost per reviewed hunk, and wall time improve, with totals covering planner, reviewer, verifier, composer, repair, and every other recorded call rather than Stage 7 alone;
 - raw arm costs/reviewed-hunk counts and 142-hunk equivalent costs are reported, with truncation extrapolations labeled and positive equivalent-review savings required;
 - context/tool pressure stays within the offline and eval gates;
 - profile floors hold, and dispatch-order plus reviewed-hunk-set changes are reported so a Plan-100 ordering interaction cannot masquerade as a packing-quality result.

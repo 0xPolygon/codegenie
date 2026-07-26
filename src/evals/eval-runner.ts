@@ -6,6 +6,7 @@ import { z } from "zod";
 import { applyRepoConfigLayer } from "../config/config-loader.js";
 import {
   MAX_DEEP_ENSEMBLE_PASSES,
+  MAX_PACK_HUNKS,
   reasoningLevelSchema,
   reviewDepthSchema,
   reviewMaxTimeMinutesSchema,
@@ -138,6 +139,11 @@ const caseSchema = z
         maxBudgetTokens: positiveIntSchema.optional(),
         deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
         adaptiveSecondPass: z.boolean().optional(),
+        // Plan 103 (experiment-only): eval cases are the only surface that can
+        // set these. No codegenie.toml may.
+        packRelatedHunks: z.boolean().optional(),
+        packMaxHunks: positiveIntSchema.max(MAX_PACK_HUNKS).optional(),
+        pinnedPlanPath: z.string().min(1).optional(),
         verify: z.boolean().optional(),
         cache: z.boolean().optional(),
         cacheDir: z.string().min(1).optional(),
@@ -824,6 +830,15 @@ function applyCaseReviewConfig(
   }
   if (review?.adaptiveSecondPass !== undefined) {
     config.review.adaptiveSecondPass = review.adaptiveSecondPass;
+  }
+  if (review?.packRelatedHunks !== undefined) {
+    config.review.packRelatedHunks = review.packRelatedHunks;
+  }
+  if (review?.packMaxHunks !== undefined) {
+    config.review.packMaxHunks = review.packMaxHunks;
+  }
+  if (review?.pinnedPlanPath !== undefined) {
+    config.review.pinnedPlanPath = review.pinnedPlanPath;
   }
   if (review?.verify !== undefined) {
     config.review.verify = review.verify;

@@ -48,6 +48,8 @@ import type {
 import { CodegenieError, errorExitCode, isCodegenieError } from "../util/errors.js";
 import { buildPlannerDossier, runPlanner } from "./planner.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
+import { loadPinnedPlan, planSha256 } from "./pinned-plan.js";
+import type { PlannerRunResult } from "./planner.js";
 import { ensemblePassesForPacket, runLensPackets } from "./lens-runner.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "./attention.js";
 import { applyCoverageEscalations } from "./coverage-escalation.js";
@@ -202,12 +204,58 @@ export async function runReview(
       lenses: services.lenses,
       allFiles: diff.files
     });
-    const plannerResult = await runPlanner(dossier, config, run.telemetry, {
-      runner: services.runner,
-      promptBuilder: services.promptBuilder,
-      lenses: services.lenses,
-      skills: services.skills
-    });
+    // Plan 103 eval-only seam: a pinned plan replaces the Stage-5 draw so
+    // several arms can consume byte-identical planner output. Validation fails
+    // closed; there is no user-facing path that reaches this.
+    const pinnedPlanPath = config.review.pinnedPlanPath;
+    let plannerResult: PlannerRunResult;
+    if (pinnedPlanPath !== undefined) {
+      const baseSha = resolved.mergeBase ?? resolved.baseRef;
+      const pinnedPlan = loadPinnedPlan(pinnedPlanPath, {
+        ...(baseSha !== undefined ? { baseSha } : {}),
+        ...(resolved.headSha !== undefined ? { headSha: resolved.headSha } : {}),
+        diff
+      });
+      // Stage 5 never runs, so nothing else writes review-plan.json. Without
+      // this the run cannot describe which plan produced its packets, and the
+      // artifacts stop being self-contained the moment the external file moves.
+      await run.telemetry.writeArtifact("review-plan.json", pinnedPlan);
+      await run.telemetry.writeArtifact("pinned-plan-source.json", {
+        path: pinnedPlanPath,
+        planSha256: planSha256(pinnedPlan),
+        coverageEntries: pinnedPlan.coverage.length,
+        ...(baseSha !== undefined ? { baseSha } : {}),
+        ...(resolved.headSha !== undefined ? { headSha: resolved.headSha } : {})
+      });
+      run.telemetry.event({
+        stage: 5,
+        level: "info",
+        message: "planner_plan_pinned",
+        data: {
+          path: pinnedPlanPath,
+          planSha256: planSha256(pinnedPlan),
+          coverageEntries: pinnedPlan.coverage.length
+        }
+      });
+      plannerResult = {
+        plan: pinnedPlan,
+        plannerCoverage: {
+          submittedEntries: pinnedPlan.coverage.length,
+          acceptedEntries: pinnedPlan.coverage.length,
+          acceptedUniqueHunks: new Set(pinnedPlan.coverage.map((entry) => entry.hunkId)).size,
+          rejectedUnknownHunk: 0
+        },
+        degradedPlanning: false,
+        chunked: false
+      };
+    } else {
+      plannerResult = await runPlanner(dossier, config, run.telemetry, {
+        runner: services.runner,
+        promptBuilder: services.promptBuilder,
+        lenses: services.lenses,
+        skills: services.skills
+      });
+    }
     throwIfHardAborted(run);
     const packets = applyCoverageEscalations(
       await buildReviewPackets(plannerResult.plan, kept, fileFacts, repoIndex, run.telemetry, {

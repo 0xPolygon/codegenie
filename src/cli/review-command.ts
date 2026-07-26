@@ -54,6 +54,7 @@ type CommanderReviewOptions = {
   cache?: boolean;
   ci?: boolean;
   progress?: boolean;
+  packRelatedHunks?: boolean;
 };
 
 export function parseReviewCommand(
@@ -97,6 +98,10 @@ export function parseReviewCommand(
     .option("--no-progress", "disable the interactive progress spinner")
     .option("--cache", "enable local model-call cache for this run; provider prompt caching is reported separately")
     .option("--no-cache", "disable local model-call cache for this run; provider prompt caching is reported separately")
+    // Plan 103: per-run toggle for the packing A/B. Deliberately CLI-only —
+    // no codegenie.toml or user config may set it, so a repository cannot
+    // enable experimental packing for everyone who reviews it.
+    .option("--pack-related-hunks", "experimental: pack related same-file hunks into fewer review packets")
     .action((commitArgs: string[], options: CommanderReviewOptions) => {
       commits = commitArgs;
       commandOptions = options;
@@ -284,6 +289,9 @@ function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides 
   const cli: CliConfigOverrides = {};
   if (options.depth !== undefined) {
     cli.depth = parseDepth(options.depth);
+  }
+  if (options.packRelatedHunks !== undefined) {
+    cli.packRelatedHunks = options.packRelatedHunks;
   }
   if (options.budgetBoost !== undefined) {
     cli.budgetBoost = parseBudgetBoost(options.budgetBoost);

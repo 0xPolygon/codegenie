@@ -8,6 +8,7 @@ import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "../src/evals/eval-compare.js";
 import { executeEvalCommand, renderCaseResult, runEvalCommand } from "../src/evals/eval-command.js";
 import { loadEvalSuite, replayFromArtifacts, runEvalCase } from "../src/evals/eval-runner.js";
+import { MAX_PACK_HUNKS } from "../src/config/schema.js";
 import { aggregateRepeatScores, assignExpectations, matchExpectation, scoreEvalRun } from "../src/evals/eval-scoring.js";
 import type {
   CandidateFinding,
@@ -2295,3 +2296,36 @@ function findNestedGitDirs(root: string): string[] {
   }
   return found;
 }
+
+describe("plan 103 packing eval surface", () => {
+  it("applies both packing settings from an eval case and bounds the cap", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-packing-"));
+    writeFileSync(path.join(suiteDir, "packing.yml"), [
+      "name: packing-case",
+      "repo:",
+      "  fixture: repo",
+      "review:",
+      "  packRelatedHunks: true",
+      "  packMaxHunks: 3",
+      "should_find:",
+      "  - id: expected",
+      "    path: src/app.ts"
+    ].join("\n"));
+
+    const suite = await loadEvalSuite(suiteDir);
+    expect(suite.cases[0]?.evalCase.review).toMatchObject({ packRelatedHunks: true, packMaxHunks: 3 });
+
+    const overCap = mkdtempSync(path.join(tmpdir(), "codegenie-eval-packing-cap-"));
+    writeFileSync(path.join(overCap, "packing.yml"), [
+      "name: packing-over-cap",
+      "repo:",
+      "  fixture: repo",
+      "review:",
+      `  packMaxHunks: ${MAX_PACK_HUNKS + 1}`,
+      "should_find:",
+      "  - id: expected",
+      "    path: src/app.ts"
+    ].join("\n"));
+    await expect(loadEvalSuite(overCap)).rejects.toMatchObject({ code: "config_error" });
+  });
+});

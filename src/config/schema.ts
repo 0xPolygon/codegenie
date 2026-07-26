@@ -17,6 +17,12 @@ export const reviewMaxTimeMinutesSchema = positiveFiniteNumberSchema.max(MAX_REV
 // packets; beyond 3 the marginal recall of another draw is negligible while
 // cost keeps climbing. Hard cap, not a default.
 export const MAX_DEEP_ENSEMBLE_PASSES = 3;
+// Plan 103 (experiment-only): upper bound for review.packMaxHunks. Must equal
+// MAX_HUNKS_PER_PACKET in packet-builder.ts — duplicated rather than imported
+// so the config schema stays free of pipeline dependencies; a focused test
+// asserts the two agree. The recall curve varies packMaxHunks below this
+// bound; nothing may raise packing above today's shipped cap.
+export const MAX_PACK_HUNKS = 5;
 
 export const pathRuleSchema = z
   .object({
@@ -141,7 +147,10 @@ export const codegenieConfigSchema = z
         maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional(),
         deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
-        adaptiveSecondPass: z.boolean().optional()
+        adaptiveSecondPass: z.boolean().optional(),
+        packRelatedHunks: z.boolean(),
+        packMaxHunks: positiveIntSchema.max(MAX_PACK_HUNKS),
+        pinnedPlanPath: z.string().min(1).optional()
       })
       .strict(),
     github: z
@@ -216,7 +225,10 @@ export const defaultConfig: CodegenieConfig = {
     // soft-stop and went partial); 8M puts the soft-stop at 6.8M, ~15% above
     // the largest observed legitimate run. A protective ceiling, not a
     // target.
-    maxBudgetTokens: 8_000_000
+    maxBudgetTokens: 8_000_000,
+    // Plan 103: dark until the packet-size recall curve clears its gate.
+    packRelatedHunks: false,
+    packMaxHunks: MAX_PACK_HUNKS
   },
   github: {
     summaryWhenNoFindings: false

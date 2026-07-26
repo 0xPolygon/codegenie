@@ -1,0 +1,164 @@
+{
+  "schemaVersion": 1,
+  "baseSha": "*",
+  "headSha": "*",
+  "planSha256": "52e62561b47bfa7ea5cdb59c7bf8a193a9183b01109c7ea644394f2d1f704dda",
+  "plan": {
+    "diffUnderstanding": {
+      "declaredIntent": "authored pinned plan for the packet-size recall curve",
+      "inferredBehavior": "uniform coverage so packet size is the only variable across arms"
+    },
+    "coverage": [
+      {
+        "hunkId": "d6df72ba",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "175c79f4",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "68109ebd",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "1ff3f41e",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "a8071418",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "53cf00c2",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "ffd09816",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "c9acf88b",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "18197703",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "bbacb370",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "a0be9fac",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "6ae88c80",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "b6e69463",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "d726dbb6",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      },
+      {
+        "hunkId": "fdc5646d",
+        "path": "limits/limits.go",
+        "coverage": "normal",
+        "lenses": [
+          "lang/go"
+        ],
+        "surroundingContextHints": [],
+        "reason": "authored uniform coverage"
+      }
+    ]
+  }
+}

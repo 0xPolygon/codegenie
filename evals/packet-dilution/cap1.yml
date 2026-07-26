@@ -1,0 +1,40 @@
+name: packet-dilution-cap1
+repeat: 6
+repo:
+  fixture: repos/settlement
+command:
+  branch: feature
+  base: main
+review:
+  provider: anthropic
+  model: claude-opus-4-8
+  reasoning: high
+  depth: normal
+  verify: true
+  cache: false
+  concurrency: 1
+  maxTimeMinutes: 20
+  lenses:
+    - lang/go
+  packRelatedHunks: true
+  packMaxHunks: 1
+  pinnedPlanPath: evals/packet-dilution/plans/frozen.json
+expect:
+  maxCostUSD: 3
+should_find:
+  - id: dilution-split-remainder
+    path: settlement/fees.go
+    failureModePattern: remainder|dust|lost|unallocated|sum|drop
+    titlePattern: split|fee|remainder|share
+  - id: dilution-cut-order
+    path: settlement/fees.go
+    failureModePattern: cap|order|before|under|rate|incorrect
+    titlePattern: platform|cut|cap|rate
+  - id: dilution-refund-gross
+    path: settlement/fees.go
+    failureModePattern: refund|gross|net|fee|over.?pay|double
+    titlePattern: refund|gross|net
+should_not_find:
+  - id: dilution-rate-guard-control
+    path: settlement/fees.go
+    titlePattern: Rule[0-9]+
