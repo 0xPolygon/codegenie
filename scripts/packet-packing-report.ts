@@ -82,7 +82,7 @@ function packingConfig(repoRoot: string, on: boolean): CodegenieConfig {
   const base = structuredClone(defaultConfig) as CodegenieConfig;
   base.telemetry.enabled = false;
   const config = applyRepoConfigLayer(base, repoRoot).config;
-  config.review.packCompatibleAtoms = on;
+  config.review.packRelatedHunks = on;
   return config;
 }
 

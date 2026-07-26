@@ -333,7 +333,7 @@ function tempDir(): string {
 describe("plan 103 packing settings", () => {
   it("defaults to dark packing at the shipped cap", () => {
     const loaded = loadConfig({ repoRoot: tempDir(), homeOverride: tempDir() });
-    expect(loaded.config.review.packCompatibleAtoms).toBe(false);
+    expect(loaded.config.review.packRelatedHunks).toBe(false);
     expect(loaded.config.review.packMaxHunks).toBe(MAX_PACK_HUNKS);
     expect(MAX_PACK_HUNKS).toBe(5);
   });
@@ -341,17 +341,35 @@ describe("plan 103 packing settings", () => {
   it("refuses both settings from every config file surface", () => {
     // Plan 103 keeps these eval-only: no codegenie.toml and no user config may
     // reach them, so strict parsing must reject rather than silently filter.
-    expect(rawConfigSchema.safeParse({ review: { packCompatibleAtoms: true } }).success).toBe(false);
+    expect(rawConfigSchema.safeParse({ review: { packRelatedHunks: true } }).success).toBe(false);
     expect(rawConfigSchema.safeParse({ review: { packMaxHunks: 3 } }).success).toBe(false);
 
     const repoRoot = tempDir();
     const home = tempDir();
-    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\npackCompatibleAtoms = true\n");
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\npackRelatedHunks = true\n");
     expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(/invalid config file/);
 
     const userHome = tempDir();
     writeFileSync(path.join(userHome, "config.toml"), "[review]\npackMaxHunks = 2\n");
     expect(() => loadConfig({ repoRoot: tempDir(), homeOverride: userHome })).toThrow(/invalid config file/);
+  });
+
+  it("toggles packing per run from the CLI only", () => {
+    const repoRoot = tempDir();
+    const home = tempDir();
+    expect(loadConfig({ repoRoot, homeOverride: home }).config.review.packRelatedHunks).toBe(false);
+
+    const on = loadConfig({ repoRoot, homeOverride: home, cli: { packRelatedHunks: true } });
+    expect(on.config.review.packRelatedHunks).toBe(true);
+    expect(on.sources["review.packRelatedHunks"]).toBe("cli");
+
+    // A repository must not be able to enable experimental packing for
+    // everyone who reviews it; only an explicit per-run CLI flag can.
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\npackRelatedHunks = true\n");
+    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(/invalid config file/);
+
+    const off = loadConfig({ repoRoot: tempDir(), homeOverride: tempDir(), cli: { packRelatedHunks: false } });
+    expect(off.config.review.packRelatedHunks).toBe(false);
   });
 
   it("bounds packMaxHunks by the shipped packet cap in the resolved schema", () => {

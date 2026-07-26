@@ -2305,7 +2305,7 @@ describe("plan 103 packing eval surface", () => {
       "repo:",
       "  fixture: repo",
       "review:",
-      "  packCompatibleAtoms: true",
+      "  packRelatedHunks: true",
       "  packMaxHunks: 3",
       "should_find:",
       "  - id: expected",
@@ -2313,7 +2313,7 @@ describe("plan 103 packing eval surface", () => {
     ].join("\n"));
 
     const suite = await loadEvalSuite(suiteDir);
-    expect(suite.cases[0]?.evalCase.review).toMatchObject({ packCompatibleAtoms: true, packMaxHunks: 3 });
+    expect(suite.cases[0]?.evalCase.review).toMatchObject({ packRelatedHunks: true, packMaxHunks: 3 });
 
     const overCap = mkdtempSync(path.join(tmpdir(), "codegenie-eval-packing-cap-"));
     writeFileSync(path.join(overCap, "packing.yml"), [

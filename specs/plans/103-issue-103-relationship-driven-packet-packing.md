@@ -19,7 +19,7 @@ Status: **implemented and shipped dark; synthetic recall curve abandoned on stru
 
 **Owner decision, 2026-07-25: ship behind the flag and A/B on real pull requests instead.** This is a deliberate, recorded exception to this plan's teardown rule that no dark path survives the decision, taken because real PRs contain the population synthetic fixtures cannot: hunks the planner grades ordinarily that nonetheless contain defects. That population is where packing's benefit comes from — on the motivating run the planner issued coverage for 32 of 142 hunks, so the 21.9% reduction is overwhelmingly the packing of default-`normal` atoms the planner never singled out. A production A/B observes the treated population directly rather than by construction.
 
-**Conditions attached to the exception.** `review.packCompatibleAtoms` stays `false` by default and eval-only — no `codegenie.toml` and no user config can reach it. It is not a supported product surface, and the plan's Non-Goals still forbid it becoming one. **Review date: the flag is either promoted to unconditional behaviour or deleted once the production A/B reports; it does not persist unreviewed.** If it is deleted, the teardown branch of step 9 applies unchanged.
+**Conditions attached to the exception.** `review.packRelatedHunks` stays `false` by default. It is reachable from exactly two places: an eval case, and the per-run CLI flag `--pack-related-hunks` / `--no-pack-related-hunks` added for this A/B. It remains absent from `rawConfigSchema` and repo-safe filtering, so **no `codegenie.toml` and no user `config.toml` can set it** — a repository cannot enable experimental packing for everyone who reviews it. Adding the CLI flag brings `src/cli/` into scope, which this plan originally excluded; that exclusion was written when the setting had no product consumer, and the approved production A/B is one. It is not a supported product surface, and the plan's Non-Goals still forbid it becoming one. **Review date: the flag is either promoted to unconditional behaviour or deleted once the production A/B reports; it does not persist unreviewed.** If it is deleted, the teardown branch of step 9 applies unchanged.
 
 **Paid validation: `$5.3850`** of an owner-approved `$300` ceiling. Measured cost was `$1.5154` per execution against `$0.78` projected. Steps 8–11 are `not_run`: step 8 abandoned for the reason above, steps 9–11 never authorized because the gate preceding them never passed.
 
@@ -217,7 +217,7 @@ Plan 102's floor verbatim: `max(derivedPackedProfile, max(standalone member prof
 
 ```ts
 // CodegenieConfig["review"], resolved schema and defaults only
-packCompatibleAtoms: boolean;  // default false
+packRelatedHunks: boolean;  // default false
 packMaxHunks: number;          // default 5, never exceeds MAX_HUNKS_PER_PACKET in shipped behavior
 ```
 
@@ -415,7 +415,7 @@ The two reserved contingencies are the *only* reruns this plan authorizes; a sec
 
    A *first* Void or a *first* monotone decline does not reach this step: each authorizes exactly one bounded rerun under phase B's preregistered limits, and only its result reaches teardown.
 
-   **Verify:** `rg -n "packCompatibleAtoms|packMaxHunks" src scripts tests evals` → exit 1; both manifests verify; the note records the decision, actual spend, and the resolution limit of 18 observations per arm.
+   **Verify:** `rg -n "packRelatedHunks|packMaxHunks" src scripts tests evals` → exit 1; both manifests verify; the note records the decision, actual spend, and the resolution limit of 18 observations per arm.
 10. Run the complete repository gate.
 
     **Verify:** `pnpm run check && pnpm test && pnpm build` → exit 0.

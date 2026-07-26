@@ -244,7 +244,7 @@ export async function buildReviewPackets(
       );
     };
 
-    for (const candidate of packCompatibleAtoms(groups, effectiveByHunk, positionByHunk, opts.config)) {
+    for (const candidate of packRelatedHunks(groups, effectiveByHunk, positionByHunk, opts.config)) {
       if (candidate.atoms.length <= 1) {
         const built = await build(candidate.group, telemetry, symbolContextMetrics, packetBuildMetrics);
         packets.push(built.packet);
@@ -1380,13 +1380,13 @@ function packetGroup(hunks: PlannedHunk[], degradationReason?: string): PacketGr
 // set, so packing introduces no coverage promotion and cannot silently reroute
 // a hunk to different expertise. Returns the original groups untouched when
 // packing is off or when any group bypassed hunkFirstGroups().
-function packCompatibleAtoms(
+function packRelatedHunks(
   groups: PacketGroup[],
   effectiveByHunk: Map<string, EffectiveDecision>,
   positionByHunk: Map<string, number>,
   config: CodegenieConfig
 ): PackCandidate[] {
-  if (!config.review.packCompatibleAtoms || !groups.every((group) => group.origin === "hunk-first")) {
+  if (!config.review.packRelatedHunks || !groups.every((group) => group.origin === "hunk-first")) {
     return groups.map((group) => ({ group, atoms: [] }));
   }
 

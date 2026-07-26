@@ -141,7 +141,7 @@ const caseSchema = z
         adaptiveSecondPass: z.boolean().optional(),
         // Plan 103 (experiment-only): eval cases are the only surface that can
         // set these. No codegenie.toml may.
-        packCompatibleAtoms: z.boolean().optional(),
+        packRelatedHunks: z.boolean().optional(),
         packMaxHunks: positiveIntSchema.max(MAX_PACK_HUNKS).optional(),
         pinnedPlanPath: z.string().min(1).optional(),
         verify: z.boolean().optional(),
@@ -831,8 +831,8 @@ function applyCaseReviewConfig(
   if (review?.adaptiveSecondPass !== undefined) {
     config.review.adaptiveSecondPass = review.adaptiveSecondPass;
   }
-  if (review?.packCompatibleAtoms !== undefined) {
-    config.review.packCompatibleAtoms = review.packCompatibleAtoms;
+  if (review?.packRelatedHunks !== undefined) {
+    config.review.packRelatedHunks = review.packRelatedHunks;
   }
   if (review?.packMaxHunks !== undefined) {
     config.review.packMaxHunks = review.packMaxHunks;

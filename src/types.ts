@@ -59,7 +59,7 @@ export type CodegenieConfig = {
     // varies. Deliberately absent from rawConfigSchema and repo-safe
     // filtering — no codegenie.toml may set either, and neither is a
     // supported user surface. Eval cases set them; nothing else can.
-    packCompatibleAtoms: boolean;
+    packRelatedHunks: boolean;
     packMaxHunks: number;
     // Plan 103 eval-only: replay one recorded Stage-5 plan across arms so
     // packet size is the only difference between them.
@@ -1024,7 +1024,7 @@ export type EvalCase = {
     adaptiveSecondPass?: boolean;
     // Plan 103 (experiment-only): eval cases are the only surface that may set
     // these; removed at teardown.
-    packCompatibleAtoms?: boolean;
+    packRelatedHunks?: boolean;
     packMaxHunks?: number;
     pinnedPlanPath?: string;
     verify?: boolean;

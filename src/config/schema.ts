@@ -148,7 +148,7 @@ export const codegenieConfigSchema = z
         maxModelCalls: positiveIntSchema.optional(),
         deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
         adaptiveSecondPass: z.boolean().optional(),
-        packCompatibleAtoms: z.boolean(),
+        packRelatedHunks: z.boolean(),
         packMaxHunks: positiveIntSchema.max(MAX_PACK_HUNKS),
         pinnedPlanPath: z.string().min(1).optional()
       })
@@ -227,7 +227,7 @@ export const defaultConfig: CodegenieConfig = {
     // target.
     maxBudgetTokens: 8_000_000,
     // Plan 103: dark until the packet-size recall curve clears its gate.
-    packCompatibleAtoms: false,
+    packRelatedHunks: false,
     packMaxHunks: MAX_PACK_HUNKS
   },
   github: {

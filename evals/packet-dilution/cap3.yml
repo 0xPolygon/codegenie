@@ -16,7 +16,7 @@ review:
   maxTimeMinutes: 20
   lenses:
     - lang/go
-  packCompatibleAtoms: true
+  packRelatedHunks: true
   packMaxHunks: 3
   pinnedPlanPath: evals/packet-dilution/plans/frozen.json
 expect:
