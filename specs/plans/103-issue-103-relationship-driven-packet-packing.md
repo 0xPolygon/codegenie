@@ -567,3 +567,94 @@ Note the `pnpm dev eval` spelling: under pnpm 11 a literal `--` reaches Commande
 - Plan 102's preserved reports and paid logs under `codegenie-private-evals/trails-api/packet-packing/` record its failed fixture design and must not be edited. This plan's evidence lives under `packet-dilution/reports/` with its own manifest.
 - Reviewers should scrutinize per-member context after final rendering, abandonment reasons, fixed-slot yield, and treatment proof — not packet count, which is Plan 102's already-validated result.
 - Commit hashes here are rebase-unstable; locate referenced work by commit subject when a hash does not resolve.
+
+## Production A/B Post-Mortem — Runs 67 and 68 (2026-07-26)
+
+### Decision
+
+**Skip Plan 103 for now. Do not promote `packRelatedHunks` as a product feature on the evidence from this pair.** Packing worked mechanically and showed a real constrained-capacity benefit, but it did not achieve the combined product goal: materially lower end-to-end cost or elapsed time while maintaining equivalent finding and report quality.
+
+This is a negative product decision, not a claim that the implementation did nothing. The experiment established useful properties of the treatment, recorded below, but the observed whole-review outcome is not strong enough to justify retaining or shipping the current policy. No further paid validation or promotion is authorized by this report; any retry should be proposed as a new, bounded experiment with fresh gates.
+
+### Compared runs and control quality
+
+Evidence is under `/home/peter/Dev/0xPolygon/codegenie-private-evals/trails-api/0c4d5213/logs/`:
+
+- **Run 67:** `packRelatedHunks: true`
+- **Run 68:** `packRelatedHunks: false`
+
+Both runs reviewed the same base/head diff, used the same model and budgets, and consumed the same pinned Stage-5 plan. The canonical hashes of their `review-plan.json` artifacts match. Both reviewed all 131 hunks with identical coverage totals: 13 deep, 112 normal, 6 light, and 0 skipped. This makes the pair substantially better controlled than earlier planner-variable comparisons, although Stage 7 and verification remain nondeterministic model executions.
+
+### End-to-end results
+
+| Metric | Run 67: packed | Run 68: unpacked | Packed delta |
+| --- | ---: | ---: | ---: |
+| Generated/reviewed packets | 62 | 73 | -11 (-15.1%) |
+| Hunks reviewed | 131 | 131 | no change |
+| Hunks reached in the first 56 packet slots | 121 | 106 | +15 (+14.2%) |
+| Elapsed time | 2,710.767 s (45m 10.8s) | 2,885.696 s (48m 05.7s) | -174.929 s (-6.1%) |
+| Model calls | 211 | 239 | -28 (-11.7%) |
+| Tokens | 4,861,061 | 5,074,177 | -213,116 (-4.2%) |
+| Cost | $21.7162 | $22.0228 | -$0.3066 (-1.4%) |
+| Candidate findings | 12 | 15 | -3 |
+| Published findings | 3 | 4 | -1 |
+
+The capacity result is real: if both reviews had stopped after 56 packet conversations, the packed run would have covered 121 rather than 106 hunks (92.4% rather than 80.9% of the diff). That supports packing as a possible capacity mechanism for reviews that would otherwise time out.
+
+It does **not** establish the desired full-review product win. Both arms completed, and the user-visible improvement was approximately three minutes and thirty-one cents on a roughly 48-minute, $22 review. Packet reduction was 15.1%, below this plan's 20% gate; the fixed-slot improvement was 14.2%, slightly below the stated 15% target. The end-to-end cost and time deltas are too small and too exposed to normal model variance to justify the quality risk.
+
+### What packing actually treated
+
+Run 67 accepted nine merges, combining 20 source atoms containing 29 hunks into nine packets. This removed 11 conversations. There were no abandoned candidates, coverage changes, lens losses, hunk losses, duplicate hunks, or cap breaches. All treated packets were normal coverage and remained under the 5-hunk / 12,000-character caps.
+
+The treatment-local economics were materially stronger than the whole-run totals:
+
+| Treated work only | Packed | Corresponding unpacked packets | Reduction |
+| --- | ---: | ---: | ---: |
+| Stage-7 calls | 29 | 52 | 44.2% |
+| Tokens | 699,190 | 965,424 | 27.6% |
+| Cost | $3.2833 | $4.4453 | 26.1% |
+| Cumulative model-call time | 1,424.6 s | 1,924.6 s | 26.0% |
+| Agent repository-tool calls | 35 | 60 | 41.7% |
+| Initial prompt characters | 579,165 | 859,791 | 32.6% |
+| Packet context characters | 35,311 | 43,613 | 19.0% |
+
+However, a packed treatment conversation was not approximately equal in cost to a standalone one. Per conversation it used about 61% more tokens, cost about 64% more, and consumed about 64% more cumulative call time. Packing saved resources only because one larger conversation replaced an average of 2.22 smaller conversations. Across the complete review, unchanged work and model/verification variance absorbed most of that local saving.
+
+The run also did not demonstrate relationship-driven selection. Only two of the nine merges joined source atoms connected by strong edges in the retained relationship graph; those accounted for three of the eleven removed packets. The other seven merges, accounting for eight removed packets, came from same-file compatibility and source-order filling. Manual inspection found that many were reasonably related refactor changes (for example, an added helper import beside the implementation using it), but that relationship was not what authorized the merge. The current treatment therefore remains opportunistic compatible-atom batching rather than a proven tree-sitter/relationship-driven policy.
+
+### Finding and report quality
+
+Run 67 formally failed its eval because `minFindings` required four and it published three; run 68 published four and passed. Both runs nevertheless passed every required semantic expectation:
+
+- explicit-preference routing fallback behavior was found by both;
+- the zero-decimal `AmountFromUSD` behavior change was found by both;
+- the ERC20 balance test-coverage candidate was generated by both; and
+- the LiFi false-positive control passed in both.
+
+Run 67 additionally published the optional relay-decimals narrowing issue. Run 68 generated the same candidate but rejected it during verification. Conversely, run 68 published two findings absent from run 67:
+
+- the ZeroEx transaction-value parsing finding came from an unchanged packet and therefore cannot be attributed to packing; and
+- the `directEdgeOriginTokenAmount` parsing finding came from an atom included in a three-atom packed packet and is the one plausible treatment-side miss.
+
+The latter describes a real parser-domain change, but its defect value is weak and conditional: the removed dependency helper permissively extracted decimal digits from malformed strings, while the new path rejects them and returns `nil`, which may be safer for malformed provider data. Even so, the burden is on packing to demonstrate non-inferiority. One pair in which the final findings and report differ does not meet that burden. Required-target parity is encouraging, but it is not equivalent to maintaining the same overall quality.
+
+The pair also demonstrates why exact single-run finding equality cannot by itself isolate packing: an unchanged packet produced the ZeroEx finding in only one arm, and the same relay candidate received opposite verification outcomes. Repeated unpacked controls would be required to quantify this background variance. That uncertainty is a reason not to ship, not a reason to waive the quality requirement.
+
+### Telemetry observations
+
+- Run 67 recorded 91 `build_packet_context` operations while producing 62 final packets. The count reconciles as 73 standalone builds plus nine dry candidate builds plus nine committed packed builds. The dry builds were intended to use a suppressed telemetry sink, so they remain visible when they should not be.
+- This local Stage-6 accounting makes total tool calls misleading: the packed run reports 584 total tool calls versus 555 unpacked, while actual Stage-7 plus Stage-9 agent tool use fell from 275 to 244.
+- `packet_member_symbol_context` events did not carry a packet ID, complicating per-packet auditing.
+- The core relationship graph remained stable across arms at 131 nodes and 298 edges. Related-context attachment records changed because relationships internal to a packed packet no longer needed separate excerpts.
+- Run 67 had one invalid Stage-7 schema response that was repaired successfully; it did not lose a packet or required finding.
+
+These issues do not explain the product decision, but they should be fixed before any future packing experiment relies on telemetry totals as gates.
+
+### Product conclusion
+
+Plan 103 demonstrated that compatible-atom packing can reduce conversation count and can review more hunks before a fixed packet cutoff. It did not demonstrate a material end-to-end cost or latency improvement after the whole pipeline completed, and it did not establish equivalent finding/report quality. The observed 1.4% cost reduction and 6.1% elapsed-time reduction are insufficient compensation for an unresolved quality difference.
+
+The product goal was not "some packets were combined." It was lower cost and/or meaningfully lower completion time **while maintaining review quality**. Runs 67 and 68 do not satisfy that conjunction. Plan 103 is therefore skipped for now and must not be presented as a successful production optimization.
+
+If revisited, it should be a new plan rather than an extension that renegotiates these results. At minimum, a successor must pre-register meaningful end-to-end cost/time thresholds, adjudicated material-finding non-inferiority, repeated pinned-plan pairs plus unpacked controls, explicit per-pack relationship provenance, per-member assessments, and automatic teardown on failure.
