@@ -250,7 +250,7 @@ export async function buildReviewPackets(
         packets.push(built.packet);
         continue;
       }
-      const committed = await commitPackedCandidate(candidate, build, telemetry, symbolContextMetrics, packetBuildMetrics);
+      const committed = await commitPackedCandidate(candidate, build, telemetry, symbolContextMetrics, packetBuildMetrics, opts.config);
       packets.push(...committed);
     }
   }
@@ -1459,7 +1459,8 @@ async function commitPackedCandidate(
   build: BuildFn,
   telemetry: TelemetryRecorder,
   symbolContextMetrics: SymbolContextMetrics,
-  packetBuildMetrics: PacketBuildMetrics
+  packetBuildMetrics: PacketBuildMetrics,
+  config: CodegenieConfig
 ): Promise<ReviewPacket[]> {
   const scratchMetrics = emptySymbolContextMetrics();
   const scratchBuildMetrics: PacketBuildMetrics = {
@@ -1479,6 +1480,39 @@ async function commitPackedCandidate(
 
   if (rejection === undefined) {
     const committed = await build(candidate.group, telemetry, symbolContextMetrics, packetBuildMetrics, { members, profileFloor });
+    // Artifact-only provenance: without this a multi-hunk packet is
+    // indistinguishable from one today's grouper produced on its own, so a
+    // packing A/B cannot tell treated packets from untreated ones. Kept out of
+    // the reviewer prompt and out of the packet ID.
+    const patchChars = candidate.atoms.reduce((sum, atom) => sum + atom.patchChars, 0);
+    telemetry.event({
+      stage: 6,
+      level: "info",
+      message: "same_file_atoms_packed",
+      packetId: committed.packet.id,
+      file: committed.packet.path,
+      data: {
+        sourceAtomIds: candidate.atoms.map((atom) => atom.id),
+        sourceAtomCount: candidate.atoms.length,
+        sourceAtomHunkCounts: candidate.atoms.map((atom) => atom.hunkCount),
+        hunkCount: committed.packet.hunks.length,
+        hunkIds: committed.packet.hunks.map((hunk) => hunk.hunkId),
+        coverage: committed.packet.coverage,
+        lensSignature: candidate.atoms[0]?.lensSignature ?? "",
+        routedLenses: committed.routedLenses,
+        standaloneProfiles: standalone.map((member) => member.reviewProfile),
+        derivedProfile: committed.derivedReviewProfile,
+        effectiveProfile: committed.reviewProfile,
+        profileFloorApplied:
+          REVIEW_PROFILE_RANK[committed.reviewProfile] > REVIEW_PROFILE_RANK[committed.derivedReviewProfile],
+        capUsage: {
+          hunks: committed.packet.hunks.length,
+          maxHunks: config.review.packMaxHunks,
+          patchChars,
+          maxPatchChars: MAX_PATCH_CHARS
+        }
+      }
+    });
     return [committed.packet];
   }
 

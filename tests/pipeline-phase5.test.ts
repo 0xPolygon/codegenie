@@ -13807,6 +13807,49 @@ describe("plan 103 compatible-atom packing", () => {
     expect(packets[0]?.dispatchRank).toEqual(packetDispatchRank("app.ts", { testStatus: "source" }, 5));
   });
 
+  it("records packing provenance so treated packets are identifiable", async () => {
+    const file = separatedFile("app.ts", 6);
+    const plan = planFor(file);
+    const events: Array<{ message?: string; packetId?: string; data?: Record<string, unknown> }> = [];
+    const recorder = {
+      event: (entry: unknown) => events.push(entry as { message?: string }),
+      writeArtifact: async () => undefined
+    } as unknown as ReturnType<typeof nullTelemetry>;
+    const base = config();
+    const packets = await buildReviewPackets(plan, [file], [fakeFacts(file.path, "per-hunk")], fakeRepositoryIndex(fakeTools()), recorder, {
+      config: { ...base, review: { ...base.review, packRelatedHunks: true } },
+      enabledLenses: ["core/code-review"]
+    });
+
+    const packed = events.filter((entry) => entry.message === "same_file_atoms_packed");
+    // Six atoms at a five-hunk cap: one packed packet of five, one lone atom.
+    expect(packed).toHaveLength(1);
+    expect(packets).toHaveLength(2);
+    const data = packed[0]?.data as Record<string, unknown>;
+    expect(data.sourceAtomCount).toBe(5);
+    expect(data.hunkCount).toBe(5);
+    expect(data.hunkIds).toEqual(["h1", "h2", "h3", "h4", "h5"]);
+    expect((data.sourceAtomIds as string[])).toHaveLength(5);
+    expect(packed[0]?.packetId).toBe(packets[0]?.id);
+    expect(data.capUsage).toMatchObject({ hunks: 5, maxHunks: 5 });
+    expect(data.profileFloorApplied).toBe(false);
+  });
+
+  it("records no packing provenance when packing is off", async () => {
+    const file = separatedFile("app.ts", 6);
+    const events: Array<{ message?: string }> = [];
+    const recorder = {
+      event: (entry: unknown) => events.push(entry as { message?: string }),
+      writeArtifact: async () => undefined
+    } as unknown as ReturnType<typeof nullTelemetry>;
+    const base = config();
+    await buildReviewPackets(planFor(file), [file], [fakeFacts(file.path, "per-hunk")], fakeRepositoryIndex(fakeTools()), recorder, {
+      config: { ...base, review: { ...base.review, packRelatedHunks: false } },
+      enabledLenses: ["core/code-review"]
+    });
+    expect(events.filter((entry) => entry.message === "same_file_atoms_packed")).toHaveLength(0);
+  });
+
   it("parameterizes packet shape by packMaxHunks for the recall curve", async () => {
     const file = separatedFile("app.ts", 15);
     const plan = planFor(file);
