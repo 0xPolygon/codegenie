@@ -102,7 +102,6 @@ export function parseReviewCommand(
     // no codegenie.toml or user config may set it, so a repository cannot
     // enable experimental packing for everyone who reviews it.
     .option("--pack-related-hunks", "experimental: pack related same-file hunks into fewer review packets")
-    .option("--no-pack-related-hunks", "experimental: force related-hunk packing off for this run")
     .action((commitArgs: string[], options: CommanderReviewOptions) => {
       commits = commitArgs;
       commandOptions = options;

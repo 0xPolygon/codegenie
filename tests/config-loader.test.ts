@@ -368,8 +368,11 @@ describe("plan 103 packing settings", () => {
     writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\npackRelatedHunks = true\n");
     expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(/invalid config file/);
 
-    const off = loadConfig({ repoRoot: tempDir(), homeOverride: tempDir(), cli: { packRelatedHunks: false } });
-    expect(off.config.review.packRelatedHunks).toBe(false);
+    // Omitting the flag leaves the default in place; there is no --no- form
+    // because off is already the default.
+    const omitted = loadConfig({ repoRoot: tempDir(), homeOverride: tempDir(), cli: {} });
+    expect(omitted.config.review.packRelatedHunks).toBe(false);
+    expect(omitted.sources["review.packRelatedHunks"]).toBe("defaults");
   });
 
   it("bounds packMaxHunks by the shipped packet cap in the resolved schema", () => {
