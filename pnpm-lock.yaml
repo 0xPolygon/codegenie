@@ -26,6 +26,22 @@ importers:
       smol-toml:
         specifier: 1.7.0
         version: 1.7.0
+      web-tree-sitter:
+        specifier: 0.26.11
+        version: 0.26.11
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
+      zod:
+        specifier: 4.4.3
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: 26.1.1
+        version: 26.1.1
+      '@types/picomatch':
+        specifier: 4.0.3
+        version: 4.0.3
       tree-sitter-go:
         specifier: 0.25.0
         version: 0.25.0
@@ -44,22 +60,6 @@ importers:
       tree-sitter-typescript:
         specifier: 0.23.2
         version: 0.23.2
-      web-tree-sitter:
-        specifier: 0.26.11
-        version: 0.26.11
-      yaml:
-        specifier: 2.9.0
-        version: 2.9.0
-      zod:
-        specifier: 4.4.3
-        version: 4.4.3
-    devDependencies:
-      '@types/node':
-        specifier: 26.1.1
-        version: 26.1.1
-      '@types/picomatch':
-        specifier: 4.0.3
-        version: 4.0.3
       tsx:
         specifier: 4.23.1
         version: 4.23.1

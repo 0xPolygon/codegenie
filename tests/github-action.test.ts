@@ -1054,6 +1054,25 @@ describe("GitHub Action and workflow contracts", () => {
     expect(commentReviewStep?.with?.["trigger-phrase"]).toBe("codegenie review");
   });
 
+  // The action installs the npm version read from its own package.json, so a
+  // documented tag that lags the package ships a codegenie nobody released.
+  it("pins every documented action reference to the current package version", () => {
+    const { version } = JSON.parse(readFileSync("package.json", "utf8")) as { version: string };
+    // Only real step references — the dogfood workflow mentions the tag in prose
+    // to explain why it builds from source instead.
+    const documented = [...workflowPaths, "README.md"]
+      .flatMap((filePath) => readFileSync(path.resolve(filePath), "utf8")
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => /^-?\s*uses:\s*0xPolygon\/codegenie@/u.test(line))
+        .map((line) => [filePath, line] as const));
+
+    expect(documented.length).toBeGreaterThan(0);
+    for (const [filePath, line] of documented) {
+      expect(line, filePath).toContain(`0xPolygon/codegenie@v${version}`);
+    }
+  });
+
   it("pins pull-request jobs to the base SHA and leaves comment jobs on the default branch", () => {
     const dogfood = parseYaml(readFileSync(path.resolve(workflowPaths[0] ?? ""), "utf8")) as WorkflowDocument;
     const prExample = parseYaml(readFileSync(path.resolve(workflowPaths[2] ?? ""), "utf8")) as WorkflowDocument;

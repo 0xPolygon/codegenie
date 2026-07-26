@@ -64,4 +64,4 @@ models-list: build
 	pnpm run models-list
 
 clean:
-	rm -rf dist/
+	rm -rf dist/ bundled-grammars/
