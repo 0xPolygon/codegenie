@@ -1,5 +1,5 @@
 ---
-status: in progress (preconditions complete; no paid call yet)
+status: complete (synthetic curve abandoned; see outcome)
 ---
 
 # Phase 4: Paid Validation
@@ -77,7 +77,51 @@ Option 2 is the most faithful to what the plan is trying to establish, and it is
 
 The three unpinned draws are real cap-5 recall samples under a live planner: two found all three bugs, one lost the retry bug at verification (`lost-at-verification=1`, zero missed before candidate generation). The pinned cap-1 smoke run found all three. Nine of ten target opportunities were hit across four paid executions. This is not a controlled comparison and decides nothing, but nothing so far suggests packing is harmful.
 
-## Superseded plan
+## Second fixture, same wall — synthetic measurement abandoned
+
+The money-path redesign tested a real hypothesis: that the planner's coverage decision tracks **risk surface** rather than **detected defects**, so a file where every function handles money in minor units would be graded uniformly. Fifteen fee/settlement functions, three carrying money-semantic defects (a dropped division remainder in `SplitFee`, a cap applied before the rate in `PlatformCut`, a refund on gross rather than net in `RefundAmount`) at atoms 1, 7 and 13 — spacing that keeps targets in separate packets at every cap, which the previous layout only managed at caps 1 and 3.
+
+The model-free proof passed: 15/5/3 packets, three distinct target packets at each cap. The realism gate then failed identically to the first fixture:
+
+```
+draw 1   packet deep    3h  starts: 63, 462, 861     <- the three defects, one packet
+         packet light   2h  starts: 130, 995
+         packet normal  5h  starts: 197,264,331,398,529
+         packet normal  5h  starts: 596,663,730,797,928
+```
+
+Planner entries `deep:3, light:2`. It located precisely the three defective functions. Making every function money-critical did not disguise them; it grouped them more cleanly.
+
+**The hypothesis is falsified.** Coverage tracks detected defects, not just risk surface.
+
+### The obstacle is structural
+
+Four fixture designs across two plans have now failed the same way:
+
+| Fixture | Design | Outcome |
+| --- | --- | --- |
+| 102 `cross-atom-consistency` | missing guard among siblings | target `deep`, siblings `light`; 0/1 treated |
+| 102 `dilution-control` | boundary bug among safe changes | planner variance invalidated the comparison |
+| 103 `limits` | comparator flips among range guards | three bugs, one `deep` packet; 0/3 |
+| 103 `settlement` | money-semantic bugs in a uniformly money-critical file | three bugs, one `deep` packet; gate failed |
+
+A synthetic fixture cannot produce the condition the curve requires — a defect packed alongside safe siblings at equal coverage — because the compatibility predicate separates them by construction. Any bug made findable enough to measure is also visible enough to be graded `deep`. This is the harness working correctly, and it is not solvable by better fixture craft.
+
+**Step 8's synthetic recall curve is `not_run`, by design rather than by omission.** The four-fixture record is the finding: the curve is the wrong instrument for this question.
+
+## Outcome
+
+Preconditions complete, infrastructure shipped and tested, synthetic curve abandoned on structural grounds.
+
+**Total paid validation: `$5.3850`** of the `$300` ceiling — one calibration smoke run (`$1.5154`), three first-fixture realism draws (`$2.8480`), one second-fixture realism draw (`$1.0216`). Nothing spent on the curve.
+
+Phases 8 through 11 of the plan are `not_run`. Steps 9 (collateral) and 10 (production capacity pair) were never reached because the gate that authorizes them never passed.
+
+### What the paid runs did establish
+
+Four executions produced findings against these fixtures, and nine of ten target opportunities were hit — three of three at cap 1 pinned, three of three and two of three and three of three across the unpinned cap-5 draws — with the single loss occurring at verification rather than before candidate generation, and `partial-match=0` throughout. This is not a controlled comparison and decides nothing about dilution. It does mean nothing observed suggests packing is harmful.
+
+The pinned-plan seam was also confirmed live: `planner_plan_pinned` fired, Stage 5 made no planner call, and Stage 6 produced exactly the treatment-proof shape.
 
 **The smoke run replaced the planned fake-provider validation.** The fake runner emits a generic trigger-based finding, so it can only exercise wiring, not matcher semantics — and matcher semantics is exactly what killed three of Plan 102's executions. One real cap-1 execution answered the real question instead: all three bugs found, the `AtCapacity` control correctly not flagged, `missed-before-candidate-generation=0`, `lost-at-verification=0`, `partial-match=0`. No matcher calibration was needed.
 

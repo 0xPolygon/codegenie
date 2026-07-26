@@ -7,6 +7,24 @@ Production replay refs: base/merge-base `d1c49bdf6a8002ec2ec27faac94a932d736532b
 Planned at: commit `32d7b83` (branch `next`)
 Recommended priority: after Plan 101's paid A/B settles.
 
+## Reconciliation (2026-07-25)
+
+Status: **implemented and shipped dark; synthetic recall curve abandoned on structural grounds; production A/B authorized in its place.**
+
+**What passed.** Phases 1–3 are complete and committed. The free replay gate cleared every pre-registered threshold on real production diffs, with zero model calls: `dca8d870` 96→75 packets (21.9%), fixed-slot hunk yield 89→**109** at 56 slots against a ≥102 bar, estimator reconciling at exactly 89, deviation from Plan 102's frozen counts of **0**, and zero coverage changes, profile or budget downgrades, lens drops, cap breaches or hunk loss. `81f806a6` and `740d73f2` reduce 26.9% and 25.8%. Report preserved at `packet-dilution/reports/plan103-replay.json`.
+
+**What did not.** Step 8's synthetic recall curve never ran. Its realism gate failed on two independent fixture designs, and Plan 102 failed the same way on two more. In all four the planner graded the seeded defects `deep` and their safe siblings `normal`/`light`, partitioning the targets away from the hunks they were meant to pack with.
+
+**The conclusion is structural, not a fixture-craft failure.** The compatibility predicate separates atoms by coverage; the planner assigns coverage by detected defect. A synthetic fixture therefore cannot manufacture "a defect packed among safe siblings at equal coverage" — any bug findable enough to measure recall against is also visible enough to be graded `deep`. Making the second fixture uniformly money-critical tested and falsified the alternative hypothesis that coverage tracks risk surface rather than detected defects.
+
+**Owner decision, 2026-07-25: ship behind the flag and A/B on real pull requests instead.** This is a deliberate, recorded exception to this plan's teardown rule that no dark path survives the decision, taken because real PRs contain the population synthetic fixtures cannot: hunks the planner grades ordinarily that nonetheless contain defects. That population is where packing's benefit comes from — on the motivating run the planner issued coverage for 32 of 142 hunks, so the 21.9% reduction is overwhelmingly the packing of default-`normal` atoms the planner never singled out. A production A/B observes the treated population directly rather than by construction.
+
+**Conditions attached to the exception.** `review.packCompatibleAtoms` stays `false` by default and eval-only — no `codegenie.toml` and no user config can reach it. It is not a supported product surface, and the plan's Non-Goals still forbid it becoming one. **Review date: the flag is either promoted to unconditional behaviour or deleted once the production A/B reports; it does not persist unreviewed.** If it is deleted, the teardown branch of step 9 applies unchanged.
+
+**Paid validation: `$5.3850`** of an owner-approved `$300` ceiling. Measured cost was `$1.5154` per execution against `$0.78` projected. Steps 8–11 are `not_run`: step 8 abandoned for the reason above, steps 9–11 never authorized because the gate preceding them never passed.
+
+**Preserved evidence**, `packet-dilution/reports/`: `plan103-replay.json`, `plan103-treatment-proof.json`, `plan103-affinity-pairs.json`, `plan103-cap-sweep.json`, `plan103-ordering-comparison.json`, each hashed in `manifest.sha256`. Plan 102's manifest is unmodified. Both fixture repositories are retained under `evals/packet-dilution/repos/` as the record of why synthetic measurement was abandoned.
+
 ## Introduction and TL;DR
 
 ### The problem

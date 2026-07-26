@@ -1,7 +1,7 @@
 name: packet-dilution-cap1
 repeat: 6
 repo:
-  fixture: repos/dilution
+  fixture: repos/settlement
 command:
   branch: feature
   base: main
@@ -22,19 +22,19 @@ review:
 expect:
   maxCostUSD: 3
 should_find:
-  - id: dilution-transfer-limit
-    path: limits/limits.go
-    failureModePattern: limit|boundary|exclusive|reject|equal
-    titlePattern: limit|transfer|boundary|compar
-  - id: dilution-retry-off-by-one
-    path: limits/limits.go
-    failureModePattern: retry|attempt|off.by.one|extra|exceed
-    titlePattern: retry|attempt|maximum
-  - id: dilution-shard-range
-    path: limits/limits.go
-    failureModePattern: shard|range|index|modulo|out of
-    titlePattern: shard|index|range
+  - id: dilution-split-remainder
+    path: settlement/fees.go
+    failureModePattern: remainder|dust|lost|unallocated|sum|drop
+    titlePattern: split|fee|remainder|share
+  - id: dilution-cut-order
+    path: settlement/fees.go
+    failureModePattern: cap|order|before|under|rate|incorrect
+    titlePattern: platform|cut|cap|rate
+  - id: dilution-refund-gross
+    path: settlement/fees.go
+    failureModePattern: refund|gross|net|fee|over.?pay|double
+    titlePattern: refund|gross|net
 should_not_find:
-  - id: dilution-capacity-control
-    path: limits/limits.go
-    titlePattern: AtCapacity
+  - id: dilution-rate-guard-control
+    path: settlement/fees.go
+    titlePattern: Rule[0-9]+
