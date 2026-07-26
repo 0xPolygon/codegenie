@@ -4,3 +4,4 @@ reviews/
 evals/fixtures/logs/
 node_modules/
 dist/
+bundled-grammars/

@@ -1,4 +1,7 @@
+import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ParseInput, ParsedFile } from "../../types.js";
 import type { TelemetryRecorder } from "../../telemetry/telemetry-recorder.js";
 import { sha256Hex } from "../../util/hashing.js";
@@ -40,15 +43,30 @@ const MAX_PARSE_BYTES = 1_500_000;
 const PARSE_TIMEOUT_MS = 1_000;
 const MAX_CACHE_ENTRIES = 128;
 
-const GRAMMAR_WASM: Record<GrammarId, string> = {
-  go: "tree-sitter-go/tree-sitter-go.wasm",
-  typescript: "tree-sitter-typescript/tree-sitter-typescript.wasm",
-  tsx: "tree-sitter-typescript/tree-sitter-tsx.wasm",
-  javascript: "tree-sitter-javascript/tree-sitter-javascript.wasm",
-  rust: "tree-sitter-rust/tree-sitter-rust.wasm",
-  python: "tree-sitter-python/tree-sitter-python.wasm",
-  solidity: "tree-sitter-solidity/tree-sitter-solidity.wasm"
+// The grammar packages are devDependencies: they are native-build packages, and
+// tree-sitter-solidity misspells its optional-peer key as `tree_sitter`, so npm
+// treats native tree-sitter as a required peer and compiles it from source. The
+// build copies their WASM into bundled-grammars/ (scripts/copy-grammars.mjs),
+// which ships in the package, leaving an installed codegenie native-free.
+export const GRAMMAR_WASM: Record<GrammarId, { package: string; file: string }> = {
+  go: { package: "tree-sitter-go", file: "tree-sitter-go.wasm" },
+  typescript: { package: "tree-sitter-typescript", file: "tree-sitter-typescript.wasm" },
+  tsx: { package: "tree-sitter-typescript", file: "tree-sitter-tsx.wasm" },
+  javascript: { package: "tree-sitter-javascript", file: "tree-sitter-javascript.wasm" },
+  rust: { package: "tree-sitter-rust", file: "tree-sitter-rust.wasm" },
+  python: { package: "tree-sitter-python", file: "tree-sitter-python.wasm" },
+  solidity: { package: "tree-sitter-solidity", file: "tree-sitter-solidity.wasm" }
 };
+
+const BUNDLED_GRAMMAR_DIRECTORY = fileURLToPath(new URL("../../../bundled-grammars/", import.meta.url));
+
+// Prefers the bundled copy an installed package ships; falls back to the
+// devDependency so a fresh checkout parses before its first build.
+function resolveBundledGrammarWasm(grammarId: GrammarId): string {
+  const { package: packageName, file } = GRAMMAR_WASM[grammarId];
+  const bundled = path.join(BUNDLED_GRAMMAR_DIRECTORY, file);
+  return existsSync(bundled) ? bundled : require.resolve(`${packageName}/${file}`);
+}
 
 export class TreeSitterService {
   private readonly telemetry: TelemetryRecorder | undefined;
@@ -178,7 +196,7 @@ export class TreeSitterService {
   private async loadLanguageUncached(grammarId: GrammarId): Promise<Language | undefined> {
     try {
       await this.init();
-      const wasmPath = this.opts.resolveGrammarWasm?.(grammarId) ?? require.resolve(GRAMMAR_WASM[grammarId]);
+      const wasmPath = this.opts.resolveGrammarWasm?.(grammarId) ?? resolveBundledGrammarWasm(grammarId);
       return await (this.opts.loadLanguage?.(wasmPath) ?? Language.load(wasmPath));
     } catch (error) {
       this.unavailable.add(grammarId);

@@ -2,8 +2,12 @@ minimumReleaseAgeExclude:
   - '@earendil-works/pi-ai'
 
 # tree-sitter-solidity mis-spells its optional-peer metadata key as
-# `tree_sitter`. codegenie resolves only its published WASM through
-# web-tree-sitter, so installing the native tree-sitter peer is unnecessary.
+# `tree_sitter`, so npm reads `tree-sitter` as a *required* peer, installs the
+# native package, and compiles it from source — which fails against Node >= 23
+# V8 headers. codegenie resolves only published WASM through web-tree-sitter, so
+# the grammar packages are devDependencies whose WASM the build vendors into
+# bundled-grammars/ (scripts/copy-grammars.mjs). An installed codegenie has no
+# native dependency; these rules keep contributor installs equally native-free.
 peerDependencyRules:
   ignoreMissing:
     - tree-sitter

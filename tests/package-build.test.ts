@@ -5,6 +5,9 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { renderVersion } from "../src/cli/version.js";
+import { GRAMMAR_IDS, GRAMMAR_WASM } from "../src/repo/tree-sitter/tree-sitter-service.js";
+
+type DependencyTree = Record<string, { version: string; path?: string; dependencies?: DependencyTree }>;
 
 const APPROVED_DEPENDENCY_BUILDS = ["esbuild"];
 const DENIED_DEPENDENCY_BUILDS = [
@@ -25,7 +28,9 @@ describe("package build scaffold", () => {
     const buildConfig = JSON.parse(readFileSync("tsconfig.build.json", "utf8"));
 
     expect(packageJson.bin.codegenie).toBe("./dist/cli/main.js");
-    expect(packageJson.scripts.build).toBe("tsc -p tsconfig.build.json && node scripts/write-version.mjs");
+    expect(packageJson.scripts.build).toBe(
+      "tsc -p tsconfig.build.json && node scripts/write-version.mjs && node scripts/copy-grammars.mjs"
+    );
     expect(buildConfig.compilerOptions.rootDir).toBe("src");
     expect(buildConfig.compilerOptions.outDir).toBe("dist");
     expect(buildConfig.include).toEqual(["src/**/*.ts"]);
@@ -52,9 +57,19 @@ describe("package build scaffold", () => {
     ];
 
     for (const [packageName, version, wasm] of grammars) {
-      expect(packageJson.dependencies[packageName]).toBe(version);
+      // Grammar packages are native-build packages, so they stay out of the
+      // installed dependency tree: the build vendors their WASM instead.
+      expect(packageJson.devDependencies[packageName]).toBe(version);
+      expect(packageJson.dependencies[packageName]).toBeUndefined();
       expect(workspacePolicy).toContain(`  - ${packageName}`);
       expect(existsSync(`node_modules/${packageName}/${wasm}`)).toBe(true);
+    }
+    // Every routed grammar must be vendorable from a declared devDependency,
+    // so scripts/copy-grammars.mjs cannot silently drop one.
+    for (const grammarId of GRAMMAR_IDS) {
+      const { package: packageName, file } = GRAMMAR_WASM[grammarId];
+      expect(packageJson.devDependencies[packageName]).toBeDefined();
+      expect(existsSync(`node_modules/${packageName}/${file}`)).toBe(true);
     }
     expect(workspacePolicy).toContain("peerDependencyRules:");
     expect(workspacePolicy).toContain("  ignoreMissing:\n    - tree-sitter");
@@ -64,6 +79,73 @@ describe("package build scaffold", () => {
     ]));
     expect(parsedPolicy.onlyBuiltDependencies).toEqual(APPROVED_DEPENDENCY_BUILDS);
     expect(parsedPolicy.ignoredBuiltDependencies).toEqual(DENIED_DEPENDENCY_BUILDS);
+  });
+
+  // `npm install -g @0xsequence/codegenie` must never need a C++ toolchain. It
+  // once did: tree-sitter-solidity misspells its optional-peer key as
+  // `tree_sitter`, so npm read `tree-sitter` as a required peer, installed the
+  // native package, and compiled it from source — which fails against Node >= 23
+  // V8 headers. pnpm's install policy hid that from this repo, so assert the
+  // shipped closure directly instead of trusting the policy.
+  it("ships a dependency closure that needs no native toolchain", () => {
+    const listed = JSON.parse(execFileSync("pnpm", [
+      "list",
+      "--prod",
+      "--depth",
+      "Infinity",
+      "--json"
+    ], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })) as Array<{
+      dependencies?: DependencyTree;
+    }>;
+    const closure = new Map<string, string>();
+    const collect = (dependencies: DependencyTree | undefined): void => {
+      for (const [name, node] of Object.entries(dependencies ?? {})) {
+        const id = `${name}@${node.version}`;
+        if (typeof node.path !== "string" || closure.has(id)) {
+          continue;
+        }
+        closure.set(id, node.path);
+        collect(node.dependencies);
+      }
+    };
+    collect(listed[0]?.dependencies);
+    const installedNames = new Set([...closure.keys()].map((id) => id.slice(0, id.lastIndexOf("@"))));
+
+    expect(closure.size).toBeGreaterThan(0);
+    expect(installedNames.has("web-tree-sitter")).toBe(true);
+    for (const nativeName of ["tree-sitter", "node-gyp-build", "node-addon-api", "yarn"]) {
+      expect(installedNames.has(nativeName)).toBe(false);
+    }
+    expect([...installedNames].filter((name) => name.startsWith("tree-sitter-"))).toEqual([]);
+
+    const nativeBuilds: string[] = [];
+    const unsatisfiedPeers: string[] = [];
+    for (const [id, directory] of closure) {
+      const manifest = JSON.parse(readFileSync(path.join(directory, "package.json"), "utf8")) as {
+        scripts?: Record<string, string>;
+        peerDependencies?: Record<string, string>;
+        peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+      };
+      for (const hook of ["preinstall", "install", "postinstall"]) {
+        const script = manifest.scripts?.[hook];
+        if (script !== undefined && /node-gyp|node-pre-gyp|prebuild-install|cmake-js/u.test(script)) {
+          nativeBuilds.push(`${id}: ${hook}: ${script}`);
+        }
+      }
+      if (existsSync(path.join(directory, "binding.gyp"))) {
+        nativeBuilds.push(`${id}: ships binding.gyp`);
+      }
+      // A peer npm considers required gets installed whether we want it or not,
+      // so every declared peer must be correctly marked optional or already here.
+      for (const peer of Object.keys(manifest.peerDependencies ?? {})) {
+        if (manifest.peerDependenciesMeta?.[peer]?.optional !== true && !installedNames.has(peer)) {
+          unsatisfiedPeers.push(`${id} requires peer ${peer}`);
+        }
+      }
+    }
+
+    expect(nativeBuilds).toEqual([]);
+    expect(unsatisfiedPeers).toEqual([]);
   });
 
   it("loads all skills and grammars under an explicit consumer build-script policy", () => {
@@ -91,32 +173,10 @@ describe("package build scaffold", () => {
         "dist/repo/tree-sitter/python-adapter.js",
         "dist/repo/tree-sitter/rust-adapter.js",
         "dist/repo/tree-sitter/solidity-adapter.js",
-        "package.json"
+        "package.json",
+        ...GRAMMAR_IDS.map((grammarId) => `bundled-grammars/${GRAMMAR_WASM[grammarId].file}`)
       ]));
       const tarballPath = path.join(packageDirectory, artifact!.filename);
-      const parserPackages = new Set([
-        "tree-sitter-go",
-        "tree-sitter-javascript",
-        "tree-sitter-python",
-        "tree-sitter-rust",
-        "tree-sitter-solidity",
-        "tree-sitter-typescript",
-        "web-tree-sitter"
-      ]);
-      const parserTarballs = new Map([...parserPackages].map((packageName) => {
-        // These are already-published package contents. Repacking them must not run
-        // source-repository prepack hooks; the consumer install below still runs
-        // dependency lifecycle scripts under its explicit allowBuilds policy.
-        const dependencyPack = JSON.parse(execFileSync("npm", [
-          "pack",
-          "--ignore-scripts",
-          path.resolve(`node_modules/${packageName}`),
-          "--json",
-          "--pack-destination",
-          packageDirectory
-        ], { encoding: "utf8" })) as Array<{ filename: string }>;
-        return [packageName, path.join(packageDirectory, dependencyPack[0]!.filename)] as const;
-      }));
       writeFileSync(path.join(consumerDirectory, "package.json"), JSON.stringify({
         private: true,
         type: "module",
@@ -126,19 +186,13 @@ describe("package build scaffold", () => {
       }));
       const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as { dependencies: Record<string, string> };
       const locallyLinkedDependencies = Object.keys(packageJson.dependencies)
-        .filter((name) => !parserPackages.has(name))
         .sort()
         .map((name) => `  '${name}': 'link:${path.resolve(`node_modules/${name}`)}'`);
-      const parserOverrides = [...parserTarballs]
-        .map(([name, tarball]) => `  '${name}': 'file:${tarball}'`);
-      // Keep unrelated product dependencies offline while installing packed parser dependencies into the consumer.
+      // Keeps the consumer install offline. Every product dependency is pure
+      // JavaScript now, so nothing here needs a packed native tarball.
       const consumerWorkspacePolicy = [
         "overrides:",
         ...locallyLinkedDependencies,
-        ...parserOverrides,
-        `  'node-addon-api': 'link:${path.resolve("node_modules/node-addon-api")}'`,
-        `  'node-gyp-build': 'link:${path.resolve("node_modules/node-gyp-build")}'`,
-        `  'yarn': 'link:${path.resolve("node_modules/yarn")}'`,
         "onlyBuiltDependencies:",
         ...APPROVED_DEPENDENCY_BUILDS.map((name) => `  - '${name}'`),
         "ignoredBuiltDependencies:",
@@ -210,6 +264,9 @@ describe("package build scaffold", () => {
         cwd: consumerDirectory,
         stdio: "pipe"
       });
+      // The native tree-sitter binding is what broke `npm install -g` on Node 26.
+      // An installed codegenie must not pull it in through any path.
+      expect(existsSync(path.join(consumerDirectory, "node_modules", "tree-sitter"))).toBe(false);
 
       const smokePath = path.join(consumerDirectory, "smoke.mjs");
       writeFileSync(smokePath, `
@@ -240,13 +297,14 @@ if (!javascript) throw new Error("installed JavaScript skill is missing");
 
 const serviceUrl = import.meta.resolve("@0xsequence/codegenie/dist/repo/tree-sitter/tree-sitter-service.js");
 const installedRequire = createRequire(serviceUrl);
-const goGrammarPath = installedRequire.resolve("tree-sitter-go/tree-sitter-go.wasm");
-const typescriptGrammarPath = installedRequire.resolve("tree-sitter-typescript/tree-sitter-typescript.wasm");
-const tsxGrammarPath = installedRequire.resolve("tree-sitter-typescript/tree-sitter-tsx.wasm");
-const javascriptGrammarPath = installedRequire.resolve("tree-sitter-javascript/tree-sitter-javascript.wasm");
-const rustGrammarPath = installedRequire.resolve("tree-sitter-rust/tree-sitter-rust.wasm");
-const pythonGrammarPath = installedRequire.resolve("tree-sitter-python/tree-sitter-python.wasm");
-const solidityGrammarPath = installedRequire.resolve("tree-sitter-solidity/tree-sitter-solidity.wasm");
+const bundled = (file) => installedRequire.resolve("@0xsequence/codegenie/bundled-grammars/" + file);
+const goGrammarPath = bundled("tree-sitter-go.wasm");
+const typescriptGrammarPath = bundled("tree-sitter-typescript.wasm");
+const tsxGrammarPath = bundled("tree-sitter-tsx.wasm");
+const javascriptGrammarPath = bundled("tree-sitter-javascript.wasm");
+const rustGrammarPath = bundled("tree-sitter-rust.wasm");
+const pythonGrammarPath = bundled("tree-sitter-python.wasm");
+const solidityGrammarPath = bundled("tree-sitter-solidity.wasm");
 const service = new TreeSitterService();
 const grammarInputs = [
   ["go", "package fixture\\nfunc value() int { return 1 }"],
