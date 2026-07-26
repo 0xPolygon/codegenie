@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -75,5 +75,21 @@ describe("pinned plan artifact", () => {
 
     const badPath = path.join(mkdtempSync(path.join(tmpdir(), "pinned-plan-")), "missing.json");
     expect(() => loadPinnedPlan(badPath, {})).toThrow(/readable JSON/);
+  });
+});
+
+describe("pinned plan run artifacts", () => {
+  it("keeps the artifact path map and the seam in agreement", async () => {
+    // The seam writes both names; if either loses its stage mapping the run
+    // stops being self-describing, which is the failure this guards.
+    const runArtifacts = await import("../src/telemetry/run-artifacts.js");
+    const source = readFileSync(new URL("../src/telemetry/run-artifacts.ts", import.meta.url), "utf8");
+    expect(source).toContain('"review-plan.json": "stages/05-planner/review-plan.json"');
+    expect(source).toContain('"pinned-plan-source.json": "stages/05-planner/pinned-plan-source.json"');
+    expect(runArtifacts).toBeDefined();
+
+    const runner = readFileSync(new URL("../src/pipeline/review-runner.ts", import.meta.url), "utf8");
+    expect(runner).toContain('writeArtifact("review-plan.json", pinnedPlan)');
+    expect(runner).toContain('writeArtifact("pinned-plan-source.json"');
   });
 });
