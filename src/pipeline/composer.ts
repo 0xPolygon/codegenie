@@ -79,12 +79,13 @@ const CROSS_FILE_EVIDENCE_LINK_SIMILARITY = 0.42;
 export async function dedupeRankAndComposeReview(
   verified: { verified: CandidateFinding[]; verdicts: VerificationVerdict[] },
   plan: ReviewPlan,
-  _resolved: ResolvedReviewInput,
+  resolved: ResolvedReviewInput,
   coverage: RunCoverageStatus,
   config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: ComposeOptions
 ): Promise<ReviewResult> {
+  const link = evidenceLinker(resolved);
   telemetry.event({ stage: 10, level: "info", message: "stage_started", data: { verified: verified.verified.length } });
   const packetsById = new Map((opts.packets ?? []).map((packet) => [packet.id, packet]));
   const publishable = verified.verified.map((candidate) => withholdRepresentativeAnchor(candidate, telemetry));
@@ -136,7 +137,7 @@ export async function dedupeRankAndComposeReview(
       data: composerFallbackTelemetry(error, groups, fallbackReason, fallbackMode)
     });
     coverage.reasons.push(fallbackReason);
-    return fallbackComposition(groups);
+    return fallbackComposition(groups, link);
   });
 
   const known = new Map(pretrim.kept.map((finding) => [finding.id, finding]));
@@ -145,7 +146,7 @@ export async function dedupeRankAndComposeReview(
   const confidenceSelections = new Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>();
   const finalFindings: FinalFinding[] = pretrim.suppressed.map((finding) => {
     const requestedPublication = "suppressed" as const;
-    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections);
+    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding, [finding], link), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections, link);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     return final;
   });
@@ -176,7 +177,7 @@ export async function dedupeRankAndComposeReview(
     const mergedFindings = ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined);
     const representative = canonicalMergedRepresentative(mergedFindings, opts.diff);
     const fingerprint = fingerprintFinding(representative, packetsById);
-    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections);
+    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections, link);
     recordAnchorDowngrade(final, composed.publication, anchorDowngradeReasons);
     finalFindings.push(final);
     used.add(representative.id);
@@ -193,7 +194,7 @@ export async function dedupeRankAndComposeReview(
     }
     const fingerprint = fingerprintFinding(finding, packetsById);
     const requestedPublication = finding.anchor ? "inline" : "summary-only";
-    const final = toFinalFinding(finding, fingerprint, templateBody(finding), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections);
+    const final = toFinalFinding(finding, fingerprint, templateBody(finding, [finding], link), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections, link);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     finalFindings.push(final);
     baseSelection.set(finding.id, { findingId: finding.id, decision: "published", reason: "composer_omitted_finding" });
@@ -686,12 +687,12 @@ function composerFailureTelemetry(error: unknown, groups: FindingGroup[]): Recor
   };
 }
 
-function fallbackComposition(groups: FindingGroup[]): SubmitComposition {
+function fallbackComposition(groups: FindingGroup[], link?: EvidenceLinker): SubmitComposition {
   return {
     summary: groups.length === 0 ? "No credible findings." : `Found ${groups.length} verified issue${groups.length === 1 ? "" : "s"}.`,
     composedFindings: groups.map((group) => ({
       findingIds: group.findings.map((finding) => finding.id),
-      finalBody: templateBody(group.representative, group.findings),
+      finalBody: templateBody(group.representative, group.findings, link),
       publication: group.representative.anchor ? "inline" : "summary-only"
     }))
   };
@@ -765,11 +766,12 @@ function toFinalFinding(
   mergedFindings: CandidateFinding[],
   diff: UnifiedDiff | undefined,
   publicationAnchorDecisions?: Map<string, PublicationAnchorDecision>,
-  confidenceSelections?: Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>
+  confidenceSelections?: Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>,
+  link?: EvidenceLinker
 ): FinalFinding {
   const { anchor: _unvalidatedAnchor, anchorSource: _staleAnchorSource, ...findingWithoutAnchor } = finding;
   const publicationAnchor = selectPublicationAnchor(finding, mergedFindings, diff);
-  const normalizedFinalBody = normalizeFinalBodyForRendering(finalBody, finding) || templateBody(finding);
+  const normalizedFinalBody = normalizeFinalBodyForRendering(finalBody, finding) || templateBody(finding, [finding], link);
   const normalizedTitle = normalizeFinalFindingTitle(finding, mergedFindings, normalizedFinalBody);
   const mergedCandidateIds = uniqueStrings(mergedFindings.map((item) => item.id));
   const mergedAnchors = dedupeAnchors(mergedFindings.flatMap((item) => item.anchor === undefined ? [] : [item.anchor]));
@@ -1693,8 +1695,26 @@ function normalizeBodyPrefix(text: string): string {
     .toLowerCase();
 }
 
-function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding]): string {
-  const evidenceBlocks = mergedEvidenceBlocks(finding, groupedFindings);
+// Builds GitHub blob links for evidence file mentions; only PR reviews know
+// the owner/repo slug and head SHA, so other modes render no links.
+type EvidenceLinker = (path: string, line?: number) => string | undefined;
+
+function evidenceLinker(resolved: ResolvedReviewInput): EvidenceLinker {
+  const pr = resolved.pr;
+  const sha = pr?.headSha?.trim();
+  if (pr === undefined || sha === undefined || sha.length === 0) {
+    return () => undefined;
+  }
+  return (path, line) => `https://github.com/${pr.owner}/${pr.repo}/blob/${sha}/${path}${line !== undefined ? `#L${line}` : ""}`;
+}
+
+function evidenceLinkSuffix(link: EvidenceLinker | undefined, path: string, line?: number): string {
+  const url = link?.(path, line);
+  return url === undefined ? "" : ` [↗](${url})`;
+}
+
+function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding], link?: EvidenceLinker): string {
+  const evidenceBlocks = mergedEvidenceBlocks(finding, groupedFindings, link);
   return [
     [`**Impact:** ${finding.failureMode}`, finding.whyThisMatters].filter((line) => line.length > 0).join("\n"),
     `**Evidence:**\n\n${evidenceBlocks.join("\n\n")}`,
@@ -1705,7 +1725,7 @@ function templateBody(finding: CandidateFinding, groupedFindings: CandidateFindi
     .join("\n\n");
 }
 
-function mergedEvidenceBlocks(representative: CandidateFinding, groupedFindings: CandidateFinding[]): string[] {
+function mergedEvidenceBlocks(representative: CandidateFinding, groupedFindings: CandidateFinding[], link?: EvidenceLinker): string[] {
   const blocks: string[] = [];
   const seen = new Set<string>();
   const add = (label: string, code: string, path: string) => {
@@ -1722,15 +1742,15 @@ function mergedEvidenceBlocks(representative: CandidateFinding, groupedFindings:
   };
   add("Changed code:", representative.evidence.changedCode, representative.anchor?.path ?? representative.path);
   for (const related of representative.evidence.relatedCode ?? []) {
-    add(`${inlineCode(related.path)} (${related.whyRelevant}):`, related.lines, related.path);
+    add(`${inlineCode(related.path)}${evidenceLinkSuffix(link, related.path)} (${related.whyRelevant}):`, related.lines, related.path);
   }
   for (const finding of groupedFindings) {
     if (finding.id === representative.id) {
       continue;
     }
-    add(`Also reported in ${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)}:`, finding.evidence.changedCode, finding.path);
+    add(`Also reported in ${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)}${evidenceLinkSuffix(link, finding.path, finding.anchor?.line)}:`, finding.evidence.changedCode, finding.path);
     for (const related of finding.evidence.relatedCode ?? []) {
-      add(`${inlineCode(related.path)} (${related.whyRelevant}):`, related.lines, related.path);
+      add(`${inlineCode(related.path)}${evidenceLinkSuffix(link, related.path)} (${related.whyRelevant}):`, related.lines, related.path);
     }
   }
   return blocks.length > 0 ? blocks : ["Evidence was present in the reviewed diff."];

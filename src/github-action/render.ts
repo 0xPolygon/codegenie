@@ -43,8 +43,14 @@ export function applyStageEvent(checklist: StageChecklist, message: string, stag
 export function renderProgressBody(checklist: StageChecklist, runUrl: string | undefined): string {
   const lines = CHECKLIST_STAGES.map((definition) => {
     const state = checklist.get(definition.stage) ?? "pending";
-    const glyph = state === "done" ? "☑" : state === "active" ? "▸" : "☐";
-    return `${glyph} ${definition.label}`;
+    const label = `${definition.label.charAt(0).toUpperCase()}${definition.label.slice(1)}`;
+    if (state === "done") {
+      return `- [x] ${label}`;
+    }
+    if (state === "active") {
+      return `- [ ] **${label}** ⏳`;
+    }
+    return `- [ ] ${label}`;
   });
   return [
     "**🧞 Codegenie** is reviewing this pull request ...",
@@ -95,5 +101,5 @@ function renderRunLinkFooter(runUrl: string | undefined): string[] {
   if (runUrl === undefined || runUrl === "") {
     return [];
   }
-  return [`— [View Workflow Run](${runUrl})`];
+  return [`— [View Workflow Job](${runUrl})`];
 }
