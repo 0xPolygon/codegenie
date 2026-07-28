@@ -40,20 +40,28 @@ export function applyStageEvent(checklist: StageChecklist, message: string, stag
   return false;
 }
 
+// GitHub-hosted spinner GIF; comments render animated images, so the active
+// stage shows a live loading indicator while the review runs.
+const SPINNER = '<img src="https://github.githubassets.com/images/spinners/octocat-spinner-128.gif" width="14" height="14" alt="" />';
+
+function stageDisplayLabel(label: string): string {
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}`.replace(/^Github\b/u, "GitHub");
+}
+
 export function renderProgressBody(checklist: StageChecklist, runUrl: string | undefined): string {
   const lines = CHECKLIST_STAGES.map((definition) => {
     const state = checklist.get(definition.stage) ?? "pending";
-    const label = `${definition.label.charAt(0).toUpperCase()}${definition.label.slice(1)}`;
+    const label = stageDisplayLabel(definition.label);
     if (state === "done") {
       return `- [x] ${label}`;
     }
     if (state === "active") {
-      return `- [ ] **${label}** ⏳`;
+      return `- [ ] **${label}** ${SPINNER}`;
     }
     return `- [ ] ${label}`;
   });
   return [
-    "**🧞 Codegenie** is reviewing this pull request ...",
+    `**🧞 Codegenie** is reviewing this pull request ... ${SPINNER}`,
     "",
     ...lines,
     "",

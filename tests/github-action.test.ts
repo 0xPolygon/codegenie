@@ -267,7 +267,7 @@ describe("status comment controller", () => {
       const updates = fake.calls.filter((call) => call.kind === "update") as Array<{ body: string }>;
       expect(updates).toHaveLength(1);
       expect(updates[0]?.body).toContain("- [x] Resolving input");
-      expect(updates[0]?.body).toContain("- [ ] **Planning review** ⏳");
+      expect(updates[0]?.body).toContain("- [ ] **Planning review**");
       expect(updates[0]?.body).toContain("- [ ] Verifying findings");
       expect(controller.stats().editCount).toBe(1);
     } finally {
@@ -312,7 +312,7 @@ describe("status comment controller", () => {
       await vi.advanceTimersByTimeAsync(50);
       const updates = fake.calls.filter((call) => call.kind === "update") as Array<{ body: string }>;
       expect(updates).toHaveLength(2);
-      expect(updates[1]?.body).toContain("- [ ] **Parsing diff** ⏳");
+      expect(updates[1]?.body).toContain("- [ ] **Parsing diff**");
     } finally {
       vi.useRealTimers();
     }
