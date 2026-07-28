@@ -21,6 +21,7 @@ import type {
   VerificationVerdict
 } from "../types.js";
 import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
+import { inlineCode } from "../util/markdown.js";
 import { sha256Hex } from "../util/hashing.js";
 import { isCompositionTestPath, isDocsPath } from "../util/path-roles.js";
 import { normalizedTerms, tokenJaccard } from "../util/text-similarity.js";
@@ -1561,17 +1562,17 @@ function renderReviewBody(
   const lines = [summary || "codegenie review completed.", "", ...renderCoverageSummaryLines(coverage).slice(0, 2)];
   const coverageDisclosures = coverageDisclosureLines(coverage);
   if (coverageDisclosures.length > 0) {
-    lines.push("", "Coverage disclosure:", ...coverageDisclosures);
+    lines.push("", "**Coverage disclosure:**", ...coverageDisclosures);
   }
   if (summaryOnly.length > 0) {
-    lines.push("", "Summary-only findings:");
+    lines.push("", "**Summary-only findings:**");
     for (const finding of summaryOnly) {
-      lines.push("", `- ${finding.title} (${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""})`);
+      lines.push("", `- **${finding.title}** (${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)})`);
       lines.push(indentBlock(finding.finalBody.trim() || finding.failureMode));
     }
   }
   if (notes.length > 0) {
-    lines.push("", "Needs human attention:");
+    lines.push("", "**Needs human attention:**");
     for (const note of notes) {
       lines.push(`- ${note.question}`);
     }
@@ -1695,14 +1696,14 @@ function normalizeBodyPrefix(text: string): string {
 function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding]): string {
   const evidenceLines = mergedEvidenceLines(finding, groupedFindings);
   return [
-    `Impact: ${finding.failureMode}`,
+    `**Impact:** ${finding.failureMode}`,
     finding.whyThisMatters,
     "",
-    "Evidence:",
+    "**Evidence:**",
     ...evidenceLines,
     finding.suggestedFix ? "" : undefined,
-    finding.suggestedFix ? `Suggested fix: ${finding.suggestedFix}` : undefined,
-    finding.suggestedTest ? `Suggested test: ${finding.suggestedTest}` : undefined
+    finding.suggestedFix ? `**Suggested fix:** ${finding.suggestedFix}` : undefined,
+    finding.suggestedTest ? `**Suggested test:** ${finding.suggestedTest}` : undefined
   ]
     .filter((line): line is string => line !== undefined && line.length > 0)
     .join("\n");
@@ -1719,17 +1720,17 @@ function mergedEvidenceLines(representative: CandidateFinding, groupedFindings: 
     seen.add(normalized);
     lines.push(`- ${line}`);
   };
-  add(`Changed code: ${compactEvidence(representative.evidence.changedCode)}`);
+  add(`Changed code: ${inlineCode(compactEvidence(representative.evidence.changedCode))}`);
   for (const related of representative.evidence.relatedCode ?? []) {
-    add(`${related.path}: ${compactEvidence(related.lines)} (${related.whyRelevant})`);
+    add(`${inlineCode(related.path)}: ${inlineCode(compactEvidence(related.lines))} (${related.whyRelevant})`);
   }
   for (const finding of groupedFindings) {
     if (finding.id === representative.id) {
       continue;
     }
-    add(`Also reported in ${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}: ${compactEvidence(finding.evidence.changedCode)}`);
+    add(`Also reported in ${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)}: ${inlineCode(compactEvidence(finding.evidence.changedCode))}`);
     for (const related of finding.evidence.relatedCode ?? []) {
-      add(`${related.path}: ${compactEvidence(related.lines)} (${related.whyRelevant})`);
+      add(`${inlineCode(related.path)}: ${inlineCode(compactEvidence(related.lines))} (${related.whyRelevant})`);
     }
   }
   return lines.length > 0 ? lines : ["- Evidence was present in the reviewed diff."];
