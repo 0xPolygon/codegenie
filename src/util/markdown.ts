@@ -70,8 +70,8 @@ export function fenceLanguageForPath(filePath: string): string {
 const SEVERITY_EMOJI: Record<Severity, string> = {
   critical: "🔴",
   high: "🟠",
-  medium: "🟡",
-  low: "🔵"
+  medium: "🔵",
+  low: "⚪"
 };
 
 /** Emoji-plus-title-case severity label, e.g. "🟡 Medium". */

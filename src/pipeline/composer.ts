@@ -552,7 +552,7 @@ function buildComposerSchemaRepairPrompt(input: LlmSchemaRepairInput, groups: Fi
     "- Do not invent, remove, or re-review findings.",
     "- Do not output XML.",
     "- Do not write `<parameter>` tags.",
-    "- Do not use Markdown code fences.",
+    "- Do not wrap the tool call or its JSON arguments in Markdown code fences (fences are allowed inside finalBody string values).",
     "- Do not answer in prose outside the tool call.",
     "- Do not ask for repository tools or more context.",
     "",
@@ -1040,7 +1040,7 @@ function recordAnchorDowngrade(
 }
 
 function fallbackSummary(publishableCount: number): string {
-  return publishableCount === 0 ? "No credible findings." : `Found ${publishableCount} verified issue${publishableCount === 1 ? "" : "s"}.`;
+  return publishableCount === 0 ? "✅ No credible findings." : `⚠️ Found ${publishableCount} verified issue${publishableCount === 1 ? "" : "s"}.`;
 }
 
 function summaryCountConflicts(summary: string | undefined, publishableCount: number): boolean {

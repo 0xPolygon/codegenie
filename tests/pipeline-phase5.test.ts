@@ -11477,7 +11477,7 @@ describe("phase 5 pipeline regressions", () => {
 
     const selection = artifacts.get("final-selection.json") as { records: Array<{ findingId: string; decision: string; reason: string }> };
     expect(result.noFindings).toBe(true);
-    expect(result.summary).toBe("No credible findings.");
+    expect(result.summary).toBe("✅ No credible findings.");
     expect(selection.records).toEqual([
       expect.objectContaining({ findingId: "finding-1", decision: "suppressed", reason: "severity-threshold" })
     ]);
@@ -11521,7 +11521,7 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(result.noFindings).toBe(true);
-    expect(result.summary).toBe("No credible findings.");
+    expect(result.summary).toBe("✅ No credible findings.");
     expect(result.findings).toEqual([]);
     expect(result.summaryOnlyFindings).toEqual([]);
   });
@@ -11671,7 +11671,7 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(result.findings).toHaveLength(1);
-    expect(result.summary).toBe("Found 1 verified issue.");
+    expect(result.summary).toBe("⚠️ Found 1 verified issue.");
   });
 
   it("normalizes word-form composer summary counts to published findings", async () => {
@@ -11701,7 +11701,7 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect([...result.findings, ...result.summaryOnlyFindings]).toHaveLength(7);
-    expect(result.summary).toBe("Found 7 verified issues.");
+    expect(result.summary).toBe("⚠️ Found 7 verified issues.");
   });
 
   it("normalizes no-finding composer summaries when omitted verified findings are reinserted", async () => {
@@ -11742,7 +11742,7 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(result.noFindings).toBe(false);
-    expect(result.summary).toBe("Found 1 verified issue.");
+    expect(result.summary).toBe("⚠️ Found 1 verified issue.");
     expect([...result.findings, ...result.summaryOnlyFindings]).toHaveLength(1);
   });
 
@@ -11786,7 +11786,7 @@ describe("phase 5 pipeline regressions", () => {
       }
     );
 
-    expect(result.summary).toBe("Found 1 verified issue.");
+    expect(result.summary).toBe("⚠️ Found 1 verified issue.");
     expect([...result.findings, ...result.summaryOnlyFindings]).toHaveLength(1);
   });
 
@@ -11936,7 +11936,7 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(result.summaryOnlyFindings).toHaveLength(1);
-    expect(result.postingPlan?.reviewBody).toContain("- 🟡 Medium: **finding** (`app.ts`)");
+    expect(result.postingPlan?.reviewBody).toContain("- 🔵 Medium: **finding** (`app.ts`)");
     expect(result.postingPlan?.reviewBody).toContain("  Full failure mode and concrete fix details.");
   });
 

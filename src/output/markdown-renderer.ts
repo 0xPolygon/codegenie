@@ -10,11 +10,11 @@ export function renderMarkdownReview(result: ReviewResult): string {
     result.summary.trim() || "Review completed.",
     "",
     renderCoverage(result.coverage),
-    renderFindings("Findings", result.findings),
-    renderFindings("Summary-Only Findings", result.summaryOnlyFindings),
+    renderFindings("⚠️ Findings", result.findings, result.runStats?.git),
+    renderFindings("Summary-Only Findings", result.summaryOnlyFindings, result.runStats?.git),
     renderNeedsHumanAttention(result),
     renderStats(result.runStats, result.budgetSummary),
-    result.noFindings ? "## No Findings\n\nNo credible findings were found." : ""
+    result.noFindings ? "## ✅ No Findings\n\nNo credible findings were found. Everything looks good." : ""
   ].filter((section) => section.trim().length > 0);
 
   return `${sections.join("\n\n")}\n`;
@@ -24,15 +24,16 @@ function renderCoverage(coverage: RunCoverageStatus): string {
   return ["## Coverage", "", ...renderCoverageSummaryLines(coverage)].join("\n");
 }
 
-function renderFindings(title: string, findings: FinalFinding[]): string {
+function renderFindings(title: string, findings: FinalFinding[], git?: ReviewRunStats["git"]): string {
   if (findings.length === 0) {
     return "";
   }
 
   const lines = [`## ${title}`];
   for (const finding of findings) {
+    const link = githubFileLink(git, finding.path, finding.anchor?.line);
     lines.push("", `### ${severityBadge(finding.severity)}: ${finding.title}`);
-    lines.push(`**File:** ${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)}`);
+    lines.push(`**File:** ${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)}${link !== undefined ? ` [↗](${link})` : ""}`);
     lines.push(`**Confidence:** ${finding.confidence}`);
     lines.push("", finding.finalBody.trim() || finding.failureMode);
   }
@@ -97,6 +98,14 @@ function renderRunStatLines(stats: ReviewRunStats | undefined): string[] {
 
 function plural(count: number, singular: string, pluralValue: string): string {
   return count === 1 ? singular : pluralValue;
+}
+
+function githubFileLink(git: ReviewRunStats["git"] | undefined, path: string, line?: number): string | undefined {
+  const sha = git?.headSha?.trim();
+  if (git === undefined || sha === undefined || sha.length === 0 || !git.repo.includes("/")) {
+    return undefined;
+  }
+  return `https://github.com/${git.repo}/blob/${sha}/${path}${line !== undefined ? `#L${line}` : ""}`;
 }
 
 function renderGitHead(git: NonNullable<ReviewRunStats["git"]>): string {
