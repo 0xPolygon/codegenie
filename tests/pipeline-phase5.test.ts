@@ -5443,7 +5443,7 @@ describe("phase 5 pipeline regressions", () => {
       expect.objectContaining({ reason: "tool_call_budget_exhausted", count: expect.any(Number) })
     );
     const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
-    expect(finalReview).toContain("Local context pressure:");
+    expect(finalReview).toContain("**Local context pressure:**");
     expect(finalReview).toContain("tool-budget rejection");
   });
 
@@ -6604,7 +6604,7 @@ describe("phase 5 pipeline regressions", () => {
       summaryOnlyFindings: [],
       needsHumanAttention: [],
       noFindings: true
-    })).toContain("Partial review: 1 hunk did not complete review.");
+    })).toContain("**Partial review:** 1 hunk did not complete review.");
   });
 
   it("attaches left-side static signals to old-side dossier hunks", async () => {
@@ -10952,7 +10952,7 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(result.findings[0]?.finalBody).toBe("The new retry path swaps the request context for a background context, so cancellation no longer stops the worker.");
     expect(markdown.match(/Canceled context keeps retrying/gu)).toHaveLength(1);
-    expect(markdown.match(/Confidence: high/gu)).toHaveLength(1);
+    expect(markdown.match(/\*\*Confidence:\*\* high/gu)).toHaveLength(1);
     expect(markdown).not.toContain("Category: correctness");
     expect(markdown).not.toContain("File: app.ts:1\n\nThe new retry path");
   });
@@ -11100,8 +11100,8 @@ describe("phase 5 pipeline regressions", () => {
     expect(coverage.unreviewedHunksByPath).toEqual([
       expect.objectContaining({ path: "app.ts", hunks: 2, reason: expect.stringContaining("multiple reasons") })
     ]);
-    expect(markdown).toContain("Partial review: 2 hunks were not reviewed because budget was exhausted before dispatch.");
-    expect(markdown).toContain("- app.ts: 2 hunks (multiple reasons:");
+    expect(markdown).toContain("**Partial review:** 2 hunks were not reviewed because budget was exhausted before dispatch.");
+    expect(markdown).toContain("- `app.ts`: 2 hunks (multiple reasons:");
     expect(markdown).toContain("Verification incomplete for 1 candidate.");
     expect(markdown).not.toContain("planner_missing_coverage");
     expect(markdown).not.toContain("default_coverage");
@@ -11166,14 +11166,14 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(output).toContain("## Stats");
     expect(output).not.toContain("## Budget");
-    expect(output).toContain("Model: anthropic claude-opus-4-8 xhigh");
-    expect(output).toContain("Elapsed time: 7m 30s");
-    expect(output).toContain("Git: codegenie from master to feature/stats (abcdef0123)");
-    expect(output).toContain("Planner coverage: submitted 15, accepted 1 entry / 1 unique hunk, rejected 14 unknown hunks");
-    expect(output).toContain("Review completeness: complete.");
-    expect(output).toContain("Usage: model calls 5, tokens 225, cost $0.1234.");
-    expect(output).toContain("Effective caps: model calls 4 (configured 2, multiplier 2), tokens 200 (configured 100, multiplier 2).");
-    expect(output).toContain("Budget overruns: stage 7 tokens 225/200.");
+    expect(output).toContain("🤖 **Model:** anthropic claude-opus-4-8 xhigh");
+    expect(output).toContain("**Elapsed time:** 7m 30s");
+    expect(output).toContain("**Git:** `codegenie` from `master` to `feature/stats` (`abcdef0123`)");
+    expect(output).toContain("**Planner coverage:** submitted 15, accepted 1 entry / 1 unique hunk, rejected 14 unknown hunks");
+    expect(output).toContain("**Review completeness:** complete.");
+    expect(output).toContain("**Usage:** model calls 5, tokens 225, cost $0.1234.");
+    expect(output).toContain("**Effective caps:** model calls 4 (configured 2, multiplier 2), tokens 200 (configured 100, multiplier 2).");
+    expect(output).toContain("**Budget overruns:** stage 7 tokens 225/200.");
   });
 
   it("renders local context pressure without marking the review partial", () => {
@@ -11216,8 +11216,8 @@ describe("phase 5 pipeline regressions", () => {
       noFindings: true
     });
 
-    expect(output).toContain("Review completeness: complete.");
-    expect(output).toContain("Local context pressure: 23 tool-budget rejections, 4 degraded tool results, 77 degraded hunks, 50 unresolved notes suppressed.");
+    expect(output).toContain("**Review completeness:** complete.");
+    expect(output).toContain("**Local context pressure:** 23 tool-budget rejections, 4 degraded tool results, 77 degraded hunks, 50 unresolved notes suppressed.");
   });
 
   it("omits local context pressure when all pressure counts are zero", () => {
@@ -11936,7 +11936,7 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(result.summaryOnlyFindings).toHaveLength(1);
-    expect(result.postingPlan?.reviewBody).toContain("- **finding** (`app.ts`)");
+    expect(result.postingPlan?.reviewBody).toContain("- 🟡 Medium: **finding** (`app.ts`)");
     expect(result.postingPlan?.reviewBody).toContain("  Full failure mode and concrete fix details.");
   });
 
@@ -11973,7 +11973,7 @@ describe("phase 5 pipeline regressions", () => {
       }
     );
 
-    expect(result.postingPlan?.reviewBody).toContain("Partial review: 2 hunks were not reviewed because budget was exhausted before dispatch.");
+    expect(result.postingPlan?.reviewBody).toContain("**Partial review:** 2 hunks were not reviewed because budget was exhausted before dispatch.");
     expect(result.postingPlan?.reviewBody).toContain("Reviewed 1/3 hunks before stopping.");
     expect(result.postingPlan?.reviewBody).toContain("Coverage disclosure:");
     expect(result.postingPlan?.reviewBody).toContain("Budget stopped review work.");
@@ -13037,7 +13037,7 @@ describe("phase 5 pipeline regressions", () => {
       noFindings: true
     });
 
-    expect(output).toContain("## Needs Human Attention");
+    expect(output).toContain("## 🙋 Needs Human Attention");
     expect(output).toContain("Additional unresolved notes suppressed: 3.");
   });
 });

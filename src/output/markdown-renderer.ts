@@ -1,9 +1,10 @@
 import type { BudgetLimitEvent, BudgetSummary, FinalFinding, ReviewResult, ReviewRunStats, RunCoverageStatus } from "../types.js";
 import { renderBudgetStopNotice, renderCoverageSummaryLines } from "../util/coverage-summary.js";
+import { inlineCode, severityBadge } from "../util/markdown.js";
 
 export function renderMarkdownReview(result: ReviewResult): string {
   const sections = [
-    "# codegenie review",
+    "# 🧞 Codegenie Review",
     "",
     renderBudgetStopNotice(result.coverage),
     result.summary.trim() || "Review completed.",
@@ -30,9 +31,9 @@ function renderFindings(title: string, findings: FinalFinding[]): string {
 
   const lines = [`## ${title}`];
   for (const finding of findings) {
-    lines.push("", `### ${finding.severity.toUpperCase()}: ${finding.title}`);
-    lines.push(`File: ${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`);
-    lines.push(`Confidence: ${finding.confidence}`);
+    lines.push("", `### ${severityBadge(finding.severity)}: ${finding.title}`);
+    lines.push(`**File:** ${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)}`);
+    lines.push(`**Confidence:** ${finding.confidence}`);
     lines.push("", finding.finalBody.trim() || finding.failureMode);
   }
   return lines.join("\n");
@@ -44,14 +45,14 @@ function renderNeedsHumanAttention(result: ReviewResult): string {
     return "";
   }
 
-  const lines = ["## Needs Human Attention"];
+  const lines = ["## 🙋 Needs Human Attention"];
   for (const note of result.needsHumanAttention) {
     lines.push("", `- ${note.question}`);
-    lines.push(`  Files: ${note.files.join(", ") || "n/a"}`);
+    lines.push(`  - **Files:** ${note.files.length > 0 ? note.files.map((file) => inlineCode(file)).join(", ") : "n/a"}`);
     if (note.symbols.length > 0) {
-      lines.push(`  Symbols: ${note.symbols.join(", ")}`);
+      lines.push(`  - **Symbols:** ${note.symbols.map((symbol) => inlineCode(symbol)).join(", ")}`);
     }
-    lines.push(`  Reason: ${note.reason}`);
+    lines.push(`  - **Reason:** ${note.reason}`);
   }
   if (omittedCount > 0) {
     lines.push("", `Additional unresolved notes suppressed: ${omittedCount}.`);
@@ -77,18 +78,18 @@ function renderRunStatLines(stats: ReviewRunStats | undefined): string[] {
   const lines: string[] = [];
   const model = renderModel(stats.model);
   if (model !== undefined) {
-    lines.push(`Model: ${model}`);
+    lines.push(`- 🤖 **Model:** ${model}`);
   }
   if (stats.elapsedMs !== undefined) {
-    lines.push(`Elapsed time: ${formatElapsed(stats.elapsedMs)}`);
+    lines.push(`- **Elapsed time:** ${formatElapsed(stats.elapsedMs)}`);
   }
   if (stats.git !== undefined) {
-    lines.push(`Git: ${stats.git.repo} from ${stats.git.base} to ${renderGitHead(stats.git)}`);
+    lines.push(`- **Git:** ${inlineCode(stats.git.repo)} from ${inlineCode(stats.git.base)} to ${renderGitHead(stats.git)}`);
   }
   if (stats.plannerCoverage !== undefined && stats.plannerCoverage.rejectedUnknownHunk > 0) {
     const coverage = stats.plannerCoverage;
     lines.push(
-      `Planner coverage: submitted ${coverage.submittedEntries}, accepted ${coverage.acceptedEntries} ${plural(coverage.acceptedEntries, "entry", "entries")} / ${coverage.acceptedUniqueHunks} unique ${plural(coverage.acceptedUniqueHunks, "hunk", "hunks")}, rejected ${coverage.rejectedUnknownHunk} unknown ${plural(coverage.rejectedUnknownHunk, "hunk", "hunks")}`
+      `- **Planner coverage:** submitted ${coverage.submittedEntries}, accepted ${coverage.acceptedEntries} ${plural(coverage.acceptedEntries, "entry", "entries")} / ${coverage.acceptedUniqueHunks} unique ${plural(coverage.acceptedUniqueHunks, "hunk", "hunks")}, rejected ${coverage.rejectedUnknownHunk} unknown ${plural(coverage.rejectedUnknownHunk, "hunk", "hunks")}`
     );
   }
   return lines;
@@ -101,9 +102,9 @@ function plural(count: number, singular: string, pluralValue: string): string {
 function renderGitHead(git: NonNullable<ReviewRunStats["git"]>): string {
   const shortHash = shortHashForDisplay(git.headSha);
   if (shortHash === undefined || git.head.startsWith(shortHash)) {
-    return git.head;
+    return inlineCode(git.head);
   }
-  return `${git.head} (${shortHash})`;
+  return `${inlineCode(git.head)} (${inlineCode(shortHash)})`;
 }
 
 function shortHashForDisplay(sha: string | undefined): string | undefined {
@@ -117,25 +118,25 @@ function renderBudgetSummaryLines(summary: BudgetSummary | undefined): string[] 
   }
 
   const lines: string[] = [];
-  lines.push(`Review completeness: ${summary.completeness}.`);
+  lines.push(`- **Review completeness:** ${summary.completeness}.`);
   const pressure = renderContextPressure(summary);
   const usage = [`model calls ${summary.usage.modelCalls}`, `tokens ${summary.usage.totalTokens}`];
   if (summary.usage.costUSD !== undefined) {
     usage.push(`cost $${summary.usage.costUSD.toFixed(4)}`);
   }
-  lines.push(`Usage: ${usage.join(", ")}.`);
+  lines.push(`- **Usage:** ${usage.join(", ")}.`);
   const caps = budgetCapParts(summary);
   if (caps.length > 0) {
-    lines.push(`Effective caps: ${caps.join(", ")}.`);
+    lines.push(`- **Effective caps:** ${caps.join(", ")}.`);
   }
   if (summary.overruns.length > 0) {
-    lines.push(`Budget overruns: ${summary.overruns.map(renderBudgetEvent).join("; ")}.`);
+    lines.push(`- **Budget overruns:** ${summary.overruns.map(renderBudgetEvent).join("; ")}.`);
   }
   if (summary.dispatchBlocks.length > 0) {
-    lines.push(`Budget dispatch blocks: ${summary.dispatchBlocks.map(renderBudgetEvent).join("; ")}.`);
+    lines.push(`- **Budget dispatch blocks:** ${summary.dispatchBlocks.map(renderBudgetEvent).join("; ")}.`);
   }
   if (pressure.length > 0) {
-    lines.push(`Local context pressure: ${pressure.join(", ")}.`);
+    lines.push(`- **Local context pressure:** ${pressure.join(", ")}.`);
   }
   return lines;
 }

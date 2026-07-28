@@ -859,7 +859,7 @@ describe("github-action entrypoint", () => {
     };
 
     const result = toRunReviewResult({ runId: "r1", runDir: "", review });
-    expect(result.reportMarkdown).toContain("# codegenie review");
+    expect(result.reportMarkdown).toContain("# 🧞 Codegenie Review");
     expect(result.reportMarkdown).toContain("## Coverage");
     expect(result.reportMarkdown).toContain("## No Findings");
     expect(result.reportMarkdown).not.toContain("super-secret-value");

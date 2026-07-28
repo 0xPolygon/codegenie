@@ -47,7 +47,7 @@ export function renderProgressBody(checklist: StageChecklist, runUrl: string | u
     return `${glyph} ${definition.label}`;
   });
   return [
-    "**codegenie** is reviewing this pull request ...",
+    "**🧞 Codegenie** is reviewing this pull request ...",
     "",
     ...lines,
     "",
@@ -57,7 +57,7 @@ export function renderProgressBody(checklist: StageChecklist, runUrl: string | u
 
 export function renderFailureBody(errorCode: string, runUrl: string | undefined): string {
   return [
-    `**codegenie** review failed (\`${errorCode}\`).`,
+    `**🧞 Codegenie** review failed (\`${errorCode}\`).`,
     "",
     ...renderRunLinkFooter(runUrl)
   ].join("\n");
@@ -95,5 +95,5 @@ function renderRunLinkFooter(runUrl: string | undefined): string[] {
   if (runUrl === undefined || runUrl === "") {
     return [];
   }
-  return [`— [workflow run](${runUrl})`];
+  return [`— [View Workflow Run](${runUrl})`];
 }

@@ -21,7 +21,7 @@ import type {
   VerificationVerdict
 } from "../types.js";
 import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
-import { codeBlock, fenceLanguageForPath, inlineCode } from "../util/markdown.js";
+import { codeBlock, fenceLanguageForPath, inlineCode, severityBadge } from "../util/markdown.js";
 import { sha256Hex } from "../util/hashing.js";
 import { isCompositionTestPath, isDocsPath } from "../util/path-roles.js";
 import { normalizedTerms, tokenJaccard } from "../util/text-similarity.js";
@@ -1567,12 +1567,12 @@ function renderReviewBody(
   if (summaryOnly.length > 0) {
     lines.push("", "**Summary-only findings:**");
     for (const finding of summaryOnly) {
-      lines.push("", `- **${finding.title}** (${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)})`);
+      lines.push("", `- ${severityBadge(finding.severity)}: **${finding.title}** (${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)})`);
       lines.push(indentBlock(finding.finalBody.trim() || finding.failureMode));
     }
   }
   if (notes.length > 0) {
-    lines.push("", "**Needs human attention:**");
+    lines.push("", "**🙋 Needs human attention:**");
     for (const note of notes) {
       lines.push(`- ${note.question}`);
     }

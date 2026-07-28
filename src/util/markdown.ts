@@ -1,3 +1,5 @@
+import type { Severity } from "../types.js";
+
 /** Wrap text in a GitHub-flavored Markdown inline code span, using a backtick
  * fence longer than any run inside the text so embedded backticks render. */
 export function inlineCode(text: string): string {
@@ -63,4 +65,16 @@ const FENCE_LANGUAGE_BY_EXTENSION: Record<string, string> = {
 export function fenceLanguageForPath(filePath: string): string {
   const extension = /\.([^.\\/]+)$/u.exec(filePath)?.[1]?.toLowerCase() ?? "";
   return FENCE_LANGUAGE_BY_EXTENSION[extension] ?? "";
+}
+
+const SEVERITY_EMOJI: Record<Severity, string> = {
+  critical: "🔴",
+  high: "🟠",
+  medium: "🟡",
+  low: "🔵"
+};
+
+/** Emoji-plus-title-case severity label, e.g. "🟡 Medium". */
+export function severityBadge(severity: Severity): string {
+  return `${SEVERITY_EMOJI[severity]} ${severity.charAt(0).toUpperCase()}${severity.slice(1)}`;
 }

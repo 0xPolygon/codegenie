@@ -83,7 +83,7 @@ describe("phase 6 live review path", () => {
       });
       expect(result.needsHumanAttention).toEqual([]);
       expect(output.join("\n")).toContain("Live review found one issue.");
-      expect(output.join("\n")).not.toContain("## Needs Human Attention");
+      expect(output.join("\n")).not.toContain("Needs Human Attention");
       expect(output.join("\n")).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
       expect(output.join("\n")).toContain("[redacted:");
       expect(adapter.callsByPrompt).toMatchObject({
@@ -190,7 +190,7 @@ describe("phase 6 live review path", () => {
     expect(result.coverage.unreviewedHunksByPath).toHaveLength(3);
 
     const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
-    expect(finalReview).toContain("Partial review: 3 hunks were not reviewed because budget was exhausted before dispatch.");
+    expect(finalReview).toContain("**Partial review:** 3 hunks were not reviewed because budget was exhausted before dispatch.");
     expect(finalReview).toContain("Unreviewed hunks by file:");
     expect(finalReview).toContain("budget stopped before dispatch");
 
