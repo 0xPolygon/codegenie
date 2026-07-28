@@ -1,5 +1,6 @@
 import type { RunCoverageStatus } from "../types.js";
 import { isDisclosableCoverageReason } from "./coverage-reasons.js";
+import { inlineCode } from "./markdown.js";
 
 export function renderCoverageSummaryLines(coverage: RunCoverageStatus): string[] {
   const lines = [coverageHeadline(coverage)];
@@ -10,7 +11,7 @@ export function renderCoverageSummaryLines(coverage: RunCoverageStatus): string[
   if (statusLine !== undefined) {
     lines.push(statusLine);
   }
-  lines.push(`Coverage levels: deep ${coverage.coverageByLevel.deep}, normal ${coverage.coverageByLevel.normal}, light ${coverage.coverageByLevel.light}, skip ${coverage.coverageByLevel.skip}.`);
+  lines.push(`**Coverage levels:** deep ${coverage.coverageByLevel.deep}, normal ${coverage.coverageByLevel.normal}, light ${coverage.coverageByLevel.light}, skip ${coverage.coverageByLevel.skip}.`);
   if (coverage.degradedPlanning) {
     lines.push("Planning was degraded and deterministic fallbacks were used.");
   }
@@ -18,9 +19,9 @@ export function renderCoverageSummaryLines(coverage: RunCoverageStatus): string[
     lines.push("Verification was skipped by configuration.");
   }
   if (coverage.unreviewedHunksByPath && coverage.unreviewedHunksByPath.length > 0) {
-    lines.push("Unreviewed hunks by file:");
+    lines.push("**Unreviewed hunks by file:**");
     for (const gap of coverage.unreviewedHunksByPath.slice(0, 12)) {
-      lines.push(`- ${gap.path}: ${gap.hunks} hunk${gap.hunks === 1 ? "" : "s"} (${humanizeCoverageReason(gap.reason)})`);
+      lines.push(`- ${inlineCode(gap.path)}: ${gap.hunks} hunk${gap.hunks === 1 ? "" : "s"} (${humanizeCoverageReason(gap.reason)})`);
     }
     const omitted = coverage.unreviewedHunksByPath.length - 12;
     if (omitted > 0) {
@@ -78,10 +79,10 @@ function coverageHeadline(coverage: RunCoverageStatus): string {
   }
   const unreviewed = unreviewedHunkCount(coverage);
   if (coverage.budgetStopped && unreviewed > 0) {
-    return `Partial review: ${unreviewed} ${hunkNoun(unreviewed)} ${unreviewed === 1 ? "was" : "were"} not reviewed because budget was exhausted before dispatch.`;
+    return `**Partial review:** ${unreviewed} ${hunkNoun(unreviewed)} ${unreviewed === 1 ? "was" : "were"} not reviewed because budget was exhausted before dispatch.`;
   }
   if (coverage.budgetStopped) {
-    return "Partial review: budget was exhausted after dispatched review work completed.";
+    return "**Partial review:** budget was exhausted after dispatched review work completed.";
   }
   if (unreviewed === 0 && coverage.verificationIncompleteCount > 0) {
     return `Review completed with incomplete verification for ${coverage.verificationIncompleteCount} candidate${coverage.verificationIncompleteCount === 1 ? "" : "s"}.`;
@@ -89,7 +90,7 @@ function coverageHeadline(coverage: RunCoverageStatus): string {
   if (unreviewed === 0 && coverage.degradedPlanning) {
     return "Review completed with degraded planning.";
   }
-  return `Partial review: ${unreviewed} ${hunkNoun(unreviewed)} did not complete review.`;
+  return `**Partial review:** ${unreviewed} ${hunkNoun(unreviewed)} did not complete review.`;
 }
 
 function hunkNoun(count: number): string {
@@ -107,7 +108,7 @@ function coverageStatusLine(coverage: RunCoverageStatus): string | undefined {
   if (coverage.verificationIncompleteCount > 0) {
     parts.push(`verification incomplete ${coverage.verificationIncompleteCount}`);
   }
-  return parts.length > 0 ? `Incomplete work: ${parts.join(", ")}.` : undefined;
+  return parts.length > 0 ? `**Incomplete work:** ${parts.join(", ")}.` : undefined;
 }
 
 function unreviewedHunkCount(coverage: RunCoverageStatus): number {

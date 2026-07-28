@@ -74,7 +74,7 @@ export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
   7: "p7.10",
   8: "p8.2",
   9: "p9.6",
-  10: "p10.1"
+  10: "p10.2"
 };
 
 type PromptLedgerEntry = {
@@ -123,6 +123,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
   10: [
     { surface: "composedFindings.findingIds", reason: "Final composition must preserve verified finding identity and grouping provenance.", evidence: "Plan 83 fingerprints and run-53 near-duplicate Stage-10 merge fix" },
     { surface: "composedFindings.finalBody", reason: "Final body rules prevent duplicated headings, metadata dumps, and task-shaped titles in user-facing output.", evidence: "Plan 81 output-quality slice" },
+    { surface: "finalBody GitHub-flavored Markdown", reason: "Bodies posted to GitHub rendered code, paths, and commands as plain prose without backticks or code fences, making comments hard to read.", evidence: "Run 20260728-185740 unformatted cache-verify comment" },
     { surface: "composedFindings.publication", reason: "Publication mode lets the publisher choose inline vs summary-only without losing coverage disclosure.", evidence: "Plan 88 summary-only 422 fallback" },
     { surface: "behavior-change wording guidance", reason: "Composition must not overstate accidental regressions when findings are marked specified or confirmation-needed.", evidence: "Plan 74 and Plan 82 behavior-change calibration" },
     { surface: "strict submit_composition closeout", reason: "Composer XML parameter bleed salvage remains live, so final composition stays schema-forced.", evidence: "Plan 95 census: run 31 composer salvage recovered" }
@@ -331,6 +332,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Compose the final review from verified findings only. Do not invent new findings. Keep wording direct, specific, and actionable.",
         "Final finding titles must be concrete issue statements. Do not preserve task-shaped titles that start with Verify, Check, Confirm, Investigate, Does, Can, Could, or Should, or titles phrased as questions; use the verified behavior delta or failure mode instead.",
         "For each finalBody, do not include a Markdown heading, repeated title, severity/confidence/category/file metadata, or generic report labels. Start with the concrete issue, impact, evidence, or fix.",
+        "Write each finalBody as GitHub-flavored Markdown. Wrap file paths, symbols, identifiers, and short code fragments in backticks; put code excerpts, evidence snippets, and shell commands inside fenced code blocks tagged with the file's language (ts, go, bash, ...) rather than inline prose; bold inline labels such as **Impact:** or **Suggested fix:** are allowed. Fences belong only inside finalBody string values, never around the tool call or its JSON arguments. Never leave code, paths, or shell commands unformatted as plain prose.",
         "For behavior changes, match the wording to structured behaviorChange/intentEvidence. Do not say accidentally, silently, or contradicts intent unless a finding is marked accidental_regression or cites direct intent evidence for that claim. With mixed intent, say the contract changes and ask for caller/spec confirmation instead of assuming a bug.",
         ...blocks,
         "Finish by calling submit_composition with schema-valid arguments. Do not answer in plain text."

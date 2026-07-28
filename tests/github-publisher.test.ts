@@ -767,7 +767,7 @@ describe("GitHub publisher", () => {
     expect(record?.status).toBe("posted");
     expect(createdBodies[0]).toContain("Sorry, this review is incomplete.");
     expect(createdBodies[0]).toContain("## Coverage");
-    expect(createdBodies[0]).toContain("Partial review: 2 hunks were not reviewed because budget was exhausted before dispatch.");
+    expect(createdBodies[0]).toContain("**Partial review:** 2 hunks were not reviewed because budget was exhausted before dispatch.");
     expect(createdBodies[0]).toContain("Reviewed 1/3 hunks before stopping.");
     expect(createdBodies[0]).toContain("Verification incomplete for 1 candidate.");
     expect(createdBodies[0]).toContain("semantic composition skipped; deterministic fallback used");

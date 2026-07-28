@@ -13,6 +13,7 @@ import type {
 } from "../types.js";
 import { renderBudgetStopNotice, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
+import { inlineCode, severityBadge } from "../util/markdown.js";
 import { sanitizeGitHubCommentBody } from "./comment-sanitizer.js";
 import { createGitHubClient } from "./github-client.js";
 import { detectDuplicateFindings, formatCodegenieMarker } from "./duplicate-detector.js";
@@ -338,9 +339,9 @@ function appendDemotedFindings(body: string, findings: FinalFinding[]): string {
   if (findings.length === 0) {
     return body;
   }
-  const lines = [body.trim(), "", "Inline findings included in the review body:"].filter((line) => line.length > 0);
+  const lines = [body.trim(), "", "**Inline findings included in the review body:**"].filter((line) => line.length > 0);
   for (const finding of findings) {
-    lines.push("", `- ${finding.title} (${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""})`);
+    lines.push("", `- ${severityBadge(finding.severity)}: **${finding.title}** (${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)})`);
     lines.push(indent(finding.finalBody.trim() || finding.failureMode));
   }
   return lines.join("\n");

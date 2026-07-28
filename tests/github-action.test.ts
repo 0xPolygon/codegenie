@@ -266,9 +266,9 @@ describe("status comment controller", () => {
       await vi.advanceTimersByTimeAsync(10_100);
       const updates = fake.calls.filter((call) => call.kind === "update") as Array<{ body: string }>;
       expect(updates).toHaveLength(1);
-      expect(updates[0]?.body).toContain("☑ resolving input");
-      expect(updates[0]?.body).toContain("▸ planning review");
-      expect(updates[0]?.body).toContain("☐ verifying findings");
+      expect(updates[0]?.body).toContain("- [x] Resolving input");
+      expect(updates[0]?.body).toContain("- [ ] **Planning review**");
+      expect(updates[0]?.body).toContain("- [ ] Verifying findings");
       expect(controller.stats().editCount).toBe(1);
     } finally {
       vi.useRealTimers();
@@ -312,7 +312,7 @@ describe("status comment controller", () => {
       await vi.advanceTimersByTimeAsync(50);
       const updates = fake.calls.filter((call) => call.kind === "update") as Array<{ body: string }>;
       expect(updates).toHaveLength(2);
-      expect(updates[1]?.body).toContain("▸ parsing diff");
+      expect(updates[1]?.body).toContain("- [ ] **Parsing diff**");
     } finally {
       vi.useRealTimers();
     }
@@ -859,9 +859,9 @@ describe("github-action entrypoint", () => {
     };
 
     const result = toRunReviewResult({ runId: "r1", runDir: "", review });
-    expect(result.reportMarkdown).toContain("# codegenie review");
+    expect(result.reportMarkdown).toContain("# 🧞 Codegenie Review");
     expect(result.reportMarkdown).toContain("## Coverage");
-    expect(result.reportMarkdown).toContain("## No Findings");
+    expect(result.reportMarkdown).toContain("## ✅ No Findings");
     expect(result.reportMarkdown).not.toContain("super-secret-value");
     expect(result.reportMarkdown).toContain("[redacted:secret]");
     expect(result.reportMarkdown).not.toContain("concise posting summary");

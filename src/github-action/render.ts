@@ -40,14 +40,26 @@ export function applyStageEvent(checklist: StageChecklist, message: string, stag
   return false;
 }
 
+const SPINNER = "⏳";
+
+function stageDisplayLabel(label: string): string {
+  return `${label.charAt(0).toUpperCase()}${label.slice(1)}`.replace(/^Github\b/u, "GitHub");
+}
+
 export function renderProgressBody(checklist: StageChecklist, runUrl: string | undefined): string {
   const lines = CHECKLIST_STAGES.map((definition) => {
     const state = checklist.get(definition.stage) ?? "pending";
-    const glyph = state === "done" ? "☑" : state === "active" ? "▸" : "☐";
-    return `${glyph} ${definition.label}`;
+    const label = stageDisplayLabel(definition.label);
+    if (state === "done") {
+      return `- [x] ${label}`;
+    }
+    if (state === "active") {
+      return `- [ ] **${label}** ${SPINNER}`;
+    }
+    return `- [ ] ${label}`;
   });
   return [
-    "**codegenie** is reviewing this pull request ...",
+    `**🧞 Codegenie** is reviewing this pull request ... ${SPINNER}`,
     "",
     ...lines,
     "",
@@ -57,7 +69,7 @@ export function renderProgressBody(checklist: StageChecklist, runUrl: string | u
 
 export function renderFailureBody(errorCode: string, runUrl: string | undefined): string {
   return [
-    `**codegenie** review failed (\`${errorCode}\`).`,
+    `**🧞 Codegenie** review failed (\`${errorCode}\`).`,
     "",
     ...renderRunLinkFooter(runUrl)
   ].join("\n");
@@ -95,5 +107,5 @@ function renderRunLinkFooter(runUrl: string | undefined): string[] {
   if (runUrl === undefined || runUrl === "") {
     return [];
   }
-  return [`— [workflow run](${runUrl})`];
+  return [`— [View Workflow Job](${runUrl})`];
 }
