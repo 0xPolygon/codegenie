@@ -40,9 +40,7 @@ export function applyStageEvent(checklist: StageChecklist, message: string, stag
   return false;
 }
 
-// GitHub-hosted spinner GIF; comments render animated images, so the active
-// stage shows a live loading indicator while the review runs.
-const SPINNER = '<img src="https://github.githubassets.com/images/spinners/octocat-spinner-128.gif" width="14" height="14" alt="" />';
+const SPINNER = "⏳";
 
 function stageDisplayLabel(label: string): string {
   return `${label.charAt(0).toUpperCase()}${label.slice(1)}`.replace(/^Github\b/u, "GitHub");
