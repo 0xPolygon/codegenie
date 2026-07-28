@@ -1,4 +1,4 @@
-import { inlineCode } from "../util/markdown.js";
+import { codeBlock } from "../util/markdown.js";
 import type { LlmRunner, LlmStructuredRequest } from "./llm-runner.js";
 import type {
   CandidateFinding,
@@ -169,7 +169,7 @@ function fakeComposition(prompt: string): unknown {
       finalBody: [
         finding.failureMode,
         "",
-        `**Evidence:** ${inlineCode(finding.evidence.changedCode)}`,
+        `**Evidence:**\n${codeBlock(finding.evidence.changedCode)}`,
         finding.suggestedFix ? `**Suggested fix:** ${finding.suggestedFix}` : ""
       ]
         .filter(Boolean)

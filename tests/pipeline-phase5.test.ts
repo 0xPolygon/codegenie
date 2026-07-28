@@ -9891,7 +9891,7 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0]?.mergedCandidateIds).toEqual(["finding-1"]);
-    expect(result.findings[0]?.finalBody).toContain("Changed code: `bad`");
+    expect(result.findings[0]?.finalBody).toContain("Changed code:\n```\nbad\n```");
     expect(result.findings[0]?.finalBody).not.toContain("invented wording");
     expect(events).toContainEqual(expect.objectContaining({
       stage: 10,

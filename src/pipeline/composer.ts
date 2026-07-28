@@ -21,7 +21,7 @@ import type {
   VerificationVerdict
 } from "../types.js";
 import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
-import { inlineCode } from "../util/markdown.js";
+import { codeBlock, inlineCode } from "../util/markdown.js";
 import { sha256Hex } from "../util/hashing.js";
 import { isCompositionTestPath, isDocsPath } from "../util/path-roles.js";
 import { normalizedTerms, tokenJaccard } from "../util/text-similarity.js";
@@ -1694,55 +1694,61 @@ function normalizeBodyPrefix(text: string): string {
 }
 
 function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding]): string {
-  const evidenceLines = mergedEvidenceLines(finding, groupedFindings);
+  const evidenceBlocks = mergedEvidenceBlocks(finding, groupedFindings);
   return [
-    `**Impact:** ${finding.failureMode}`,
-    finding.whyThisMatters,
-    "",
-    "**Evidence:**",
-    ...evidenceLines,
-    finding.suggestedFix ? "" : undefined,
+    [`**Impact:** ${finding.failureMode}`, finding.whyThisMatters].filter((line) => line.length > 0).join("\n"),
+    `**Evidence:**\n\n${evidenceBlocks.join("\n\n")}`,
     finding.suggestedFix ? `**Suggested fix:** ${finding.suggestedFix}` : undefined,
     finding.suggestedTest ? `**Suggested test:** ${finding.suggestedTest}` : undefined
   ]
-    .filter((line): line is string => line !== undefined && line.length > 0)
-    .join("\n");
+    .filter((section): section is string => section !== undefined && section.length > 0)
+    .join("\n\n");
 }
 
-function mergedEvidenceLines(representative: CandidateFinding, groupedFindings: CandidateFinding[]): string[] {
-  const lines: string[] = [];
+function mergedEvidenceBlocks(representative: CandidateFinding, groupedFindings: CandidateFinding[]): string[] {
+  const blocks: string[] = [];
   const seen = new Set<string>();
-  const add = (line: string) => {
-    const normalized = normalizeSnippet(line);
-    if (normalized.length === 0 || seen.has(normalized)) {
+  const add = (label: string, code: string) => {
+    const compacted = compactEvidence(code);
+    if (normalizeSnippet(compacted).length === 0) {
       return;
     }
-    seen.add(normalized);
-    lines.push(`- ${line}`);
+    const key = normalizeSnippet(`${label}\n${compacted}`);
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    blocks.push(`${label}\n${codeBlock(compacted)}`);
   };
-  add(`Changed code: ${inlineCode(compactEvidence(representative.evidence.changedCode))}`);
+  add("Changed code:", representative.evidence.changedCode);
   for (const related of representative.evidence.relatedCode ?? []) {
-    add(`${inlineCode(related.path)}: ${inlineCode(compactEvidence(related.lines))} (${related.whyRelevant})`);
+    add(`${inlineCode(related.path)} (${related.whyRelevant}):`, related.lines);
   }
   for (const finding of groupedFindings) {
     if (finding.id === representative.id) {
       continue;
     }
-    add(`Also reported in ${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)}: ${inlineCode(compactEvidence(finding.evidence.changedCode))}`);
+    add(`Also reported in ${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)}:`, finding.evidence.changedCode);
     for (const related of finding.evidence.relatedCode ?? []) {
-      add(`${inlineCode(related.path)}: ${inlineCode(compactEvidence(related.lines))} (${related.whyRelevant})`);
+      add(`${inlineCode(related.path)} (${related.whyRelevant}):`, related.lines);
     }
   }
-  return lines.length > 0 ? lines : ["- Evidence was present in the reviewed diff."];
+  return blocks.length > 0 ? blocks : ["Evidence was present in the reviewed diff."];
 }
 
+const MAX_EVIDENCE_LINES = 12;
+const MAX_EVIDENCE_CHARS = 600;
+
 function compactEvidence(text: string): string {
-  const compact = text
+  const lines = text
     .split(/\r?\n/u)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join(" ");
-  return compact.length > 240 ? `${compact.slice(0, 237)}...` : compact;
+    .map((line) => line.replace(/\s+$/u, ""))
+    .filter((line) => line.trim().length > 0);
+  const block = lines.slice(0, MAX_EVIDENCE_LINES).join("\n");
+  if (block.length > MAX_EVIDENCE_CHARS) {
+    return `${block.slice(0, MAX_EVIDENCE_CHARS - 3)}...`;
+  }
+  return lines.length > MAX_EVIDENCE_LINES ? `${block}\n...` : block;
 }
 
 function fingerprintFinding(finding: CandidateFinding, packetsById: Map<string, ReviewPacket> = new Map()): string {
