@@ -21,7 +21,7 @@ import type {
   VerificationVerdict
 } from "../types.js";
 import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
-import { codeBlock, inlineCode } from "../util/markdown.js";
+import { codeBlock, fenceLanguageForPath, inlineCode } from "../util/markdown.js";
 import { sha256Hex } from "../util/hashing.js";
 import { isCompositionTestPath, isDocsPath } from "../util/path-roles.js";
 import { normalizedTerms, tokenJaccard } from "../util/text-similarity.js";
@@ -1708,7 +1708,7 @@ function templateBody(finding: CandidateFinding, groupedFindings: CandidateFindi
 function mergedEvidenceBlocks(representative: CandidateFinding, groupedFindings: CandidateFinding[]): string[] {
   const blocks: string[] = [];
   const seen = new Set<string>();
-  const add = (label: string, code: string) => {
+  const add = (label: string, code: string, path: string) => {
     const compacted = compactEvidence(code);
     if (normalizeSnippet(compacted).length === 0) {
       return;
@@ -1718,19 +1718,19 @@ function mergedEvidenceBlocks(representative: CandidateFinding, groupedFindings:
       return;
     }
     seen.add(key);
-    blocks.push(`${label}\n${codeBlock(compacted)}`);
+    blocks.push(`${label}\n${codeBlock(compacted, fenceLanguageForPath(path))}`);
   };
-  add("Changed code:", representative.evidence.changedCode);
+  add("Changed code:", representative.evidence.changedCode, representative.anchor?.path ?? representative.path);
   for (const related of representative.evidence.relatedCode ?? []) {
-    add(`${inlineCode(related.path)} (${related.whyRelevant}):`, related.lines);
+    add(`${inlineCode(related.path)} (${related.whyRelevant}):`, related.lines, related.path);
   }
   for (const finding of groupedFindings) {
     if (finding.id === representative.id) {
       continue;
     }
-    add(`Also reported in ${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)}:`, finding.evidence.changedCode);
+    add(`Also reported in ${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)}:`, finding.evidence.changedCode, finding.path);
     for (const related of finding.evidence.relatedCode ?? []) {
-      add(`${inlineCode(related.path)} (${related.whyRelevant}):`, related.lines);
+      add(`${inlineCode(related.path)} (${related.whyRelevant}):`, related.lines, related.path);
     }
   }
   return blocks.length > 0 ? blocks : ["Evidence was present in the reviewed diff."];
