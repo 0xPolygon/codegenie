@@ -1340,7 +1340,7 @@ function buildRunStats(
 ): ReviewRunStats {
   const model = modelStats(config);
   const stageTimings = (run.telemetry.snapshotStageTimings?.() ?? [])
-    .map((timing) => ({ ...timing, label: STAGE_LABELS[timing.stage] ?? `stage ${timing.stage}` }));
+    .map((timing) => ({ ...timing, label: (STAGE_LABELS as Record<number, string | undefined>)[timing.stage] ?? `stage ${timing.stage}` }));
   return {
     ...(model !== undefined ? { model } : {}),
     elapsedMs: run.budget.elapsedMs(),
