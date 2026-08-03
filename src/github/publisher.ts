@@ -14,6 +14,7 @@ import type {
 import { renderBudgetStopNotice, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { inlineCode, severityBadge } from "../util/markdown.js";
+import { codegenieVersionInfo, workflowRunUrl } from "../util/version-info.js";
 import { sanitizeGitHubCommentBody } from "./comment-sanitizer.js";
 import { createGitHubClient } from "./github-client.js";
 import { detectDuplicateFindings, formatCodegenieMarker } from "./duplicate-detector.js";
@@ -314,7 +315,20 @@ function buildPostingBody(
     return "";
   }
   const body = appendPostingCoverageDisclosure(finalReview.postingPlan?.reviewBody ?? finalReview.summary, finalReview.coverage);
-  return appendDemotedFindings(body, demoted);
+  return appendReviewBodyFooter(appendDemotedFindings(body, demoted));
+}
+
+// Self-identifies the PR-review surface: which codegenie build produced it
+// and, in Actions, which workflow run — the status comment carries the full
+// stats, but the review body is what reviewers see inline.
+function appendReviewBodyFooter(body: string): string {
+  if (body.trim().length === 0) {
+    return body;
+  }
+  const info = codegenieVersionInfo();
+  const runUrl = workflowRunUrl();
+  const provenance = `codegenie v${info.version}${info.commit !== undefined ? ` (${inlineCode(info.commit.slice(0, 10))})` : ""}`;
+  return `${body.trim()}\n\n— ${provenance}${runUrl !== undefined ? ` · [View Workflow Job](${runUrl})` : ""}`;
 }
 
 function appendPostingCoverageDisclosure(body: string, coverage: ReviewResult["coverage"]): string {

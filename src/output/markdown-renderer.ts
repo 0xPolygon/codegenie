@@ -81,6 +81,9 @@ function renderRunStatLines(stats: ReviewRunStats | undefined): string[] {
   if (model !== undefined) {
     lines.push(`- 🤖 **Model:** ${model}`);
   }
+  if (stats.codegenie !== undefined) {
+    lines.push(`- 🧞 **Codegenie:** v${stats.codegenie.version}${stats.codegenie.commit !== undefined ? ` (${inlineCode(stats.codegenie.commit.slice(0, 10))})` : ""}`);
+  }
   if (stats.elapsedMs !== undefined) {
     lines.push(`- **Elapsed time:** ${formatElapsed(stats.elapsedMs)}`);
   }

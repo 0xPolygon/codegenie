@@ -61,6 +61,7 @@ import { isDisclosableCoverageReason, uniqueDisclosableCoverageReasons } from ".
 import { sha256Hex } from "../util/hashing.js";
 import { scaleOptionalBudgetValue } from "../util/budget.js";
 import { scheduleLongTimeout } from "../util/long-timeout.js";
+import { codegenieVersionInfo } from "../util/version-info.js";
 
 type RunReviewOverrides = {
   repoRoot?: string;
@@ -1340,6 +1341,7 @@ function buildRunStats(
   return {
     ...(model !== undefined ? { model } : {}),
     elapsedMs: run.budget.elapsedMs(),
+    codegenie: codegenieVersionInfo(),
     ...(plannerCoverage !== undefined ? { plannerCoverage } : {}),
     git: {
       repo: resolved.pr ? `${resolved.pr.owner}/${resolved.pr.repo}` : path.basename(resolved.repoRoot),

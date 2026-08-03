@@ -87,7 +87,8 @@ describe("GitHub publisher", () => {
     expect(result.posting?.status).toBe("posted");
     expect(created).toHaveLength(1);
     expect(created[0]?.comments).toHaveLength(1);
-    expect(created[0]?.body).toBe("Found issues.");
+    expect(created[0]?.body).toContain("Found issues.");
+    expect(created[0]?.body).toContain("— codegenie v");
     expect(created[0]?.comments[0]?.body).toContain("`@team`");
     expect(created[0]?.comments[0]?.body).not.toContain("<!--bad-->");
     expect(created[0]?.comments[0]?.body).toContain("<!-- codegenie:fingerprint=");
@@ -186,7 +187,7 @@ describe("GitHub publisher", () => {
 
     expect(record?.status).toBe("posted");
     expect(record?.inlinePosted).toBe(0);
-    expect(created).toEqual([expect.objectContaining({ comments: [], body: "Found issues.", event: "COMMENT" })]);
+    expect(created).toEqual([expect.objectContaining({ comments: [], body: expect.stringContaining("Found issues."), event: "COMMENT" })]);
   });
 
   it("caps oversized inline and review bodies before posting", async () => {

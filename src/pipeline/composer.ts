@@ -1561,7 +1561,7 @@ function renderReviewBody(
   coverage: RunCoverageStatus,
   omittedNoteCount = 0
 ): string {
-  const lines = [summary || "codegenie review completed.", "", ...renderCoverageSummaryLines(coverage).slice(0, 2)];
+  const lines = ["### 🧞 Codegenie Review", "", summary || "Review completed.", "", ...renderCoverageSummaryLines(coverage).slice(0, 2)];
   const coverageDisclosures = coverageDisclosureLines(coverage);
   if (coverageDisclosures.length > 0) {
     lines.push("", "**Coverage disclosure:**", ...coverageDisclosures);
