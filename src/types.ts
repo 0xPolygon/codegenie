@@ -949,6 +949,11 @@ export type ReviewRunStats = {
     version: string;
     commit?: string;
   };
+  stageTimings?: Array<{
+    stage: number;
+    label: string;
+    runtimeMs: number;
+  }>;
   plannerCoverage?: PlannerCoverageStats;
 };
 

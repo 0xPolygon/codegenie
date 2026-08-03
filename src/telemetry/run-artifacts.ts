@@ -465,6 +465,7 @@ class RunTelemetryImpl {
       event: (event) => this.recordEvent(event),
       recordModelCall: (record) => this.recordModelCall(record),
       recordToolCall: (record) => this.recordToolCall(record),
+      snapshotStageTimings: () => this.snapshotStageTimings(),
       snapshotContextPressure: () => this.snapshotContextPressure(),
       writeArtifact: async (relPath, data) => {
         this.writeArtifact(relPath, data);
@@ -953,6 +954,13 @@ class RunTelemetryImpl {
         addStageCount(this.contextPressure.toolBudgetExtensions.deniedByStage, event.stage, 1);
       }
     }
+  }
+
+  private snapshotStageTimings(): Array<{ stage: number; runtimeMs: number }> {
+    return Object.entries(this.telemetrySummary.byStage)
+      .map(([stage, bucket]) => ({ stage: Number(stage), runtimeMs: bucket.runtimeMs }))
+      .filter((entry) => Number.isInteger(entry.stage) && entry.stage > 0 && entry.runtimeMs > 0)
+      .sort((left, right) => left.stage - right.stage);
   }
 
   private snapshotContextPressure(): Pick<

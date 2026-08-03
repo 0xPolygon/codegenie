@@ -67,6 +67,7 @@ export interface TelemetryRecorder {
   event(e: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">): void;
   recordModelCall(record: Omit<LlmCallRecord, "runId">): void;
   recordToolCall(record: Omit<ToolCallRecord, "runId" | "toolCallId" | "timestamp">): string;
+  snapshotStageTimings?(): Array<{ stage: number; runtimeMs: number }>;
   snapshotContextPressure?(): Pick<
     ContextPressureSummary,
     | "toolBudgetRejections"

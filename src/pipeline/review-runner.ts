@@ -62,6 +62,7 @@ import { sha256Hex } from "../util/hashing.js";
 import { scaleOptionalBudgetValue } from "../util/budget.js";
 import { scheduleLongTimeout } from "../util/long-timeout.js";
 import { codegenieVersionInfo } from "../util/version-info.js";
+import { STAGE_LABELS } from "../review-stages.js";
 
 type RunReviewOverrides = {
   repoRoot?: string;
@@ -1338,10 +1339,13 @@ function buildRunStats(
   plannerCoverage?: ReviewRunStats["plannerCoverage"]
 ): ReviewRunStats {
   const model = modelStats(config);
+  const stageTimings = (run.telemetry.snapshotStageTimings?.() ?? [])
+    .map((timing) => ({ ...timing, label: STAGE_LABELS[timing.stage] ?? `stage ${timing.stage}` }));
   return {
     ...(model !== undefined ? { model } : {}),
     elapsedMs: run.budget.elapsedMs(),
     codegenie: codegenieVersionInfo(),
+    ...(stageTimings.length > 0 ? { stageTimings } : {}),
     ...(plannerCoverage !== undefined ? { plannerCoverage } : {}),
     git: {
       repo: resolved.pr ? `${resolved.pr.owner}/${resolved.pr.repo}` : path.basename(resolved.repoRoot),
