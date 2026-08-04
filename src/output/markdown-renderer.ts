@@ -1,4 +1,4 @@
-import type { BudgetLimitEvent, BudgetSummary, FinalFinding, ReviewResult, ReviewRunStats, RunCoverageStatus } from "../types.js";
+import type { BudgetLimitEvent, BudgetSummary, FinalFinding, ReviewResult, ReviewRunStats, RunCoverageStatus, RunPostingRecord } from "../types.js";
 import { renderBudgetStopNotice, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { inlineCode, severityBadge } from "../util/markdown.js";
 
@@ -13,7 +13,7 @@ export function renderMarkdownReview(result: ReviewResult): string {
     renderFindings("⚠️ Findings", result.findings, result.runStats?.git),
     renderFindings("Summary-Only Findings", result.summaryOnlyFindings, result.runStats?.git),
     renderNeedsHumanAttention(result),
-    renderStats(result.runStats, result.budgetSummary),
+    renderStats(result.runStats, result.budgetSummary, result.posting),
     result.noFindings ? "## ✅ No Findings\n\nNo credible findings were found. Everything looks good." : ""
   ].filter((section) => section.trim().length > 0);
 
@@ -61,14 +61,30 @@ function renderNeedsHumanAttention(result: ReviewResult): string {
   return lines.join("\n");
 }
 
-function renderStats(stats: ReviewRunStats | undefined, summary: BudgetSummary | undefined): string {
+function renderStats(stats: ReviewRunStats | undefined, summary: BudgetSummary | undefined, posting?: RunPostingRecord): string {
   const statLines = renderRunStatLines(stats);
   const budgetLines = renderBudgetSummaryLines(summary);
-  if (statLines.length === 0 && budgetLines.length === 0) {
+  const postingLines = renderPostingLines(posting);
+  if (statLines.length === 0 && budgetLines.length === 0 && postingLines.length === 0) {
     return "";
   }
 
-  return ["## Stats", "", ...statLines, ...budgetLines].join("\n");
+  return ["## Stats", "", ...statLines, ...postingLines, ...budgetLines].join("\n");
+}
+
+function renderPostingLines(posting: RunPostingRecord | undefined): string[] {
+  if (posting === undefined || !posting.attempted) {
+    return [];
+  }
+  const parts = [`${posting.inlinePosted} inline`];
+  if (posting.demotedToBody > 0) {
+    parts.push(`${posting.demotedToBody} demoted to review body`);
+  }
+  if (posting.skippedDuplicates > 0) {
+    parts.push(`${posting.skippedDuplicates} duplicate${posting.skippedDuplicates === 1 ? "" : "s"} skipped`);
+  }
+  const status = posting.status === "posted" ? "" : ` (${posting.status.replaceAll("_", " ")})`;
+  return [`- **Posting:** ${parts.join(" · ")}${status}`];
 }
 
 function renderRunStatLines(stats: ReviewRunStats | undefined): string[] {
@@ -81,8 +97,14 @@ function renderRunStatLines(stats: ReviewRunStats | undefined): string[] {
   if (model !== undefined) {
     lines.push(`- 🤖 **Model:** ${model}`);
   }
+  if (stats.codegenie !== undefined) {
+    lines.push(`- 🧞 **Codegenie:** v${stats.codegenie.version}${stats.codegenie.commit !== undefined ? ` (${inlineCode(stats.codegenie.commit.slice(0, 10))})` : ""}`);
+  }
   if (stats.elapsedMs !== undefined) {
     lines.push(`- **Elapsed time:** ${formatElapsed(stats.elapsedMs)}`);
+  }
+  if (stats.stageTimings !== undefined && stats.stageTimings.length > 0) {
+    lines.push(`- **Stage timings:** ${stats.stageTimings.map((timing) => `${timing.label} ${formatElapsed(timing.runtimeMs)}`).join(" · ")}`);
   }
   if (stats.git !== undefined) {
     lines.push(`- **Git:** ${inlineCode(stats.git.repo)} from ${inlineCode(stats.git.base)} to ${renderGitHead(stats.git)}`);

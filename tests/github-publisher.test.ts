@@ -80,14 +80,19 @@ describe("GitHub publisher", () => {
     });
     const result = reviewResult(finding);
 
-    const record = await maybePublishToGitHub(result, resolved(), defaultConfig, nullTelemetry(), { github, diff });
+    const record = await maybePublishToGitHub(result, resolved(), defaultConfig, nullTelemetry(), {
+      github,
+      diff,
+      provenance: { version: "9.9.9", commit: "abcdef012345", runUrl: "https://github.com/acme/repo/actions/runs/123" }
+    });
 
     expect(record?.status).toBe("posted");
     expect(record?.inlinePosted).toBe(1);
     expect(result.posting?.status).toBe("posted");
     expect(created).toHaveLength(1);
     expect(created[0]?.comments).toHaveLength(1);
-    expect(created[0]?.body).toBe("Found issues.");
+    expect(created[0]?.body).toContain("Found issues.");
+    expect(created[0]?.body?.endsWith("\n\n— codegenie v9.9.9 (`abcdef0123`) · [View Workflow Job](https://github.com/acme/repo/actions/runs/123)")).toBe(true);
     expect(created[0]?.comments[0]?.body).toContain("`@team`");
     expect(created[0]?.comments[0]?.body).not.toContain("<!--bad-->");
     expect(created[0]?.comments[0]?.body).toContain("<!-- codegenie:fingerprint=");
@@ -186,7 +191,7 @@ describe("GitHub publisher", () => {
 
     expect(record?.status).toBe("posted");
     expect(record?.inlinePosted).toBe(0);
-    expect(created).toEqual([expect.objectContaining({ comments: [], body: "Found issues.", event: "COMMENT" })]);
+    expect(created).toEqual([expect.objectContaining({ comments: [], body: expect.stringMatching(/^Found issues\.\n\n— codegenie v\S+( \(`[0-9a-f]{1,10}`\))?( · \[View Workflow Job\]\(.+\))?$/u), event: "COMMENT" })]);
   });
 
   it("caps oversized inline and review bodies before posting", async () => {
@@ -263,9 +268,11 @@ describe("GitHub publisher", () => {
     const first = finalFinding({ id: "f1", hunkId: hunk.id, line: 1 });
     const second = finalFinding({ id: "f2", hunkId: hunk.id, line: 1, fingerprint: "b".repeat(64) });
     const commentCounts: number[] = [];
+    const bodies: string[] = [];
     const github = fakeGithub({
       createReview: async (_number, review) => {
         commentCounts.push(review.comments.length);
+        bodies.push(review.body);
         if (commentCounts.length === 1) {
           throw github422({ errors: [{ index: 0 }] });
         }
@@ -274,10 +281,17 @@ describe("GitHub publisher", () => {
 
     const record = await maybePublishToGitHub(reviewResult(first, second), resolved(), defaultConfig, nullTelemetry(), {
       github,
-      diff
+      diff,
+      provenance: { version: "9.9.9", commit: "abcdef012345", runUrl: "https://github.com/acme/repo/actions/runs/123" }
     });
 
     expect(commentCounts).toEqual([2, 1]);
+    // The provenance footer stays the last line even after the 422 retry
+    // demotes a finding into the body, and it never duplicates.
+    const retriedBody = bodies[1] ?? "";
+    expect(retriedBody.endsWith("\n\n— codegenie v9.9.9 (`abcdef0123`) · [View Workflow Job](https://github.com/acme/repo/actions/runs/123)")).toBe(true);
+    expect(retriedBody.match(/— codegenie v/gu)).toHaveLength(1);
+    expect(retriedBody).toContain("Inline findings included in the review body");
     expect(record?.status).toBe("posted");
     expect(record?.inlinePosted).toBe(1);
     expect(record?.demotedToBody).toBe(1);

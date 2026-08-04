@@ -14,6 +14,7 @@ import type {
 import { renderBudgetStopNotice, renderCoverageSummaryLines } from "../util/coverage-summary.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { inlineCode, severityBadge } from "../util/markdown.js";
+import { codegenieVersionInfo, workflowRunUrl } from "../util/version-info.js";
 import { sanitizeGitHubCommentBody } from "./comment-sanitizer.js";
 import { createGitHubClient } from "./github-client.js";
 import { detectDuplicateFindings, formatCodegenieMarker } from "./duplicate-detector.js";
@@ -21,6 +22,13 @@ import { detectDuplicateFindings, formatCodegenieMarker } from "./duplicate-dete
 type PublishOptions = {
   github?: GitHubClient;
   diff?: UnifiedDiff;
+  provenance?: ReviewBodyProvenance;
+};
+
+type ReviewBodyProvenance = {
+  version: string;
+  commit?: string;
+  runUrl?: string;
 };
 
 type PreparedInlineComment = {
@@ -134,9 +142,11 @@ export async function maybePublishToGitHub(
   }
 
   record.attempted = true;
-  const body = prepareReviewBody(reviewBody);
+  const provenance = resolveReviewBodyProvenance(opts);
+  const finalize = (input: string): string => finalizeReviewBody(input, provenance);
+  const body = finalize(reviewBody);
   try {
-    const result = await postWithRecovery(github, resolved.pr.number, body, prepared, record);
+    const result = await postWithRecovery(github, resolved.pr.number, body, prepared, record, finalize);
     record.status = result.summaryOnly ? "summary_only_fallback" : "posted";
     record.inlinePosted = result.inlinePosted;
     await persistPostingRecord(record, telemetry);
@@ -169,7 +179,8 @@ async function postWithRecovery(
   prNumber: number,
   body: string,
   initialComments: PreparedInlineComment[],
-  record: RunPostingRecord
+  record: RunPostingRecord,
+  finalize: (input: string) => string
 ): Promise<{ inlinePosted: number; summaryOnly: boolean }> {
   let comments = [...initialComments];
   let currentBody = body;
@@ -200,16 +211,16 @@ async function postWithRecovery(
       if (rejectedIndexes.length > 0) {
         const rejected = new Set(rejectedIndexes);
         const demoted = comments.filter((_comment, index) => rejected.has(index));
-        currentBody = demoteCommentsIntoBody(currentBody, demoted, record);
+        currentBody = demoteCommentsIntoBody(currentBody, demoted, record, finalize);
         comments = comments.filter((_comment, index) => !rejected.has(index));
       } else {
         const localSuspects = nextLocal422SuspectClass(comments);
         if (localSuspects.length > 0) {
           const demoted = new Set(localSuspects);
-          currentBody = demoteCommentsIntoBody(currentBody, localSuspects, record);
+          currentBody = demoteCommentsIntoBody(currentBody, localSuspects, record, finalize);
           comments = comments.filter((comment) => !demoted.has(comment));
         } else {
-          currentBody = demoteCommentsIntoBody(currentBody, comments, record);
+          currentBody = demoteCommentsIntoBody(currentBody, comments, record, finalize);
           comments = [];
           summaryOnly = true;
         }
@@ -218,12 +229,12 @@ async function postWithRecovery(
         summaryOnly = true;
       }
       if (comments.length === before && !summaryOnly) {
-        currentBody = demoteCommentsIntoBody(currentBody, comments, record);
+        currentBody = demoteCommentsIntoBody(currentBody, comments, record, finalize);
         comments = [];
         summaryOnly = true;
       }
       if (attempt === 3) {
-        currentBody = demoteCommentsIntoBody(currentBody, comments, record);
+        currentBody = demoteCommentsIntoBody(currentBody, comments, record, finalize);
         comments = [];
         summaryOnly = true;
       }
@@ -282,20 +293,19 @@ function prepareInlineComment(
   return { finding, anchor, input, deletedFileAnchor };
 }
 
-function prepareReviewBody(body: string): string {
-  return capBody(sanitizeGitHubCommentBody(body), REVIEW_BODY_CAP);
-}
-
 function demoteCommentsIntoBody(
   body: string,
   comments: PreparedInlineComment[],
-  record: RunPostingRecord
+  record: RunPostingRecord,
+  finalize: (input: string) => string
 ): string {
   if (comments.length === 0) {
     return body;
   }
   record.demotedToBody += comments.length;
-  return prepareReviewBody(appendDemotedFindings(body, comments.map((comment) => comment.finding)));
+  // Strip the footer before appending so demoted findings never land after
+  // it; finalize re-appends the footer as the last line.
+  return finalize(appendDemotedFindings(stripReviewBodyFooter(body), comments.map((comment) => comment.finding)));
 }
 
 function buildPostingBody(
@@ -315,6 +325,40 @@ function buildPostingBody(
   }
   const body = appendPostingCoverageDisclosure(finalReview.postingPlan?.reviewBody ?? finalReview.summary, finalReview.coverage);
   return appendDemotedFindings(body, demoted);
+}
+
+// Self-identifies the PR-review surface: which codegenie build produced it
+// and, in Actions, which workflow run — the status comment carries the full
+// stats, but the review body is what reviewers see inline. Applied as the
+// LAST body transform (after demotions and capping) so the footer is always
+// the final line: it strips any footer a prior pass appended, and the cap
+// reserves room for it so truncation cannot drop it.
+function finalizeReviewBody(body: string, provenance: ReviewBodyProvenance): string {
+  const stripped = stripReviewBodyFooter(body);
+  if (stripped.trim().length === 0) {
+    return stripped.trim();
+  }
+  const footer = reviewBodyFooter(provenance);
+  const capped = capBody(sanitizeGitHubCommentBody(stripped), REVIEW_BODY_CAP - footer.length - 2);
+  return `${capped.trimEnd()}\n\n${footer}`;
+}
+
+function reviewBodyFooter(provenance: ReviewBodyProvenance): string {
+  const build = `codegenie v${provenance.version}${provenance.commit !== undefined ? ` (${inlineCode(provenance.commit.slice(0, 10))})` : ""}`;
+  return `— ${build}${provenance.runUrl !== undefined ? ` · [View Workflow Job](${provenance.runUrl})` : ""}`;
+}
+
+function stripReviewBodyFooter(body: string): string {
+  return body.replace(/\n+— codegenie v[^\n]*$/u, "");
+}
+
+function resolveReviewBodyProvenance(opts: PublishOptions): ReviewBodyProvenance {
+  if (opts.provenance !== undefined) {
+    return opts.provenance;
+  }
+  const info = codegenieVersionInfo();
+  const runUrl = workflowRunUrl();
+  return { ...info, ...(runUrl !== undefined ? { runUrl } : {}) };
 }
 
 function appendPostingCoverageDisclosure(body: string, coverage: ReviewResult["coverage"]): string {

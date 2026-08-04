@@ -68,7 +68,7 @@ describe("phase 7 GitHub pipeline integration", () => {
 
     expect(result.noFindings).toBe(true);
     expect(result.posting).toMatchObject({ status: "posted", inlinePosted: 0 });
-    expect(posted).toEqual([{ comments: [], body: "Nothing to review." }]);
+    expect(posted).toEqual([{ comments: [], body: expect.stringMatching(/^Nothing to review\.\n\n— codegenie v\S+( \(`[0-9a-f]{1,10}`\))?( · \[View Workflow Job\]\(.+\))?$/u) }]);
     expect(output.join("\n")).toContain("Status: posted");
     expect(readFileSync(runFilePath(runArtifactDir, "github-posting.json"), "utf8")).toContain("\"inlinePosted\": 0");
   });

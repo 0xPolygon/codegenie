@@ -465,6 +465,7 @@ class RunTelemetryImpl {
       event: (event) => this.recordEvent(event),
       recordModelCall: (record) => this.recordModelCall(record),
       recordToolCall: (record) => this.recordToolCall(record),
+      snapshotStageTimings: () => this.snapshotStageTimings(),
       snapshotContextPressure: () => this.snapshotContextPressure(),
       writeArtifact: async (relPath, data) => {
         this.writeArtifact(relPath, data);
@@ -953,6 +954,22 @@ class RunTelemetryImpl {
         addStageCount(this.contextPressure.toolBudgetExtensions.deniedByStage, event.stage, 1);
       }
     }
+  }
+
+  // A stage still executing at snapshot time (run cut short by a budget or
+  // time stop) reports its elapsed-so-far runtime instead of being dropped —
+  // the interrupted stage is exactly the one a timing reader is looking for.
+  private snapshotStageTimings(): Array<{ stage: number; runtimeMs: number }> {
+    const now = this.clock().toISOString();
+    return Object.entries(this.telemetrySummary.byStage)
+      .map(([stage, bucket]) => ({
+        stage: Number(stage),
+        runtimeMs: bucket.startedAt !== undefined && bucket.completedAt === undefined
+          ? bucket.runtimeMs + durationBetween(bucket.startedAt, now)
+          : bucket.runtimeMs
+      }))
+      .filter((entry) => Number.isInteger(entry.stage) && entry.stage > 0 && entry.runtimeMs > 0)
+      .sort((left, right) => left.stage - right.stage);
   }
 
   private snapshotContextPressure(): Pick<

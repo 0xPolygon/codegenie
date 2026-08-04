@@ -945,6 +945,15 @@ export type ReviewRunStats = {
     head: string;
     headSha?: string;
   };
+  codegenie?: {
+    version: string;
+    commit?: string;
+  };
+  stageTimings?: Array<{
+    stage: number;
+    label: string;
+    runtimeMs: number;
+  }>;
   plannerCoverage?: PlannerCoverageStats;
 };
 
