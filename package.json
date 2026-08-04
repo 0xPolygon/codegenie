@@ -27,18 +27,18 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.82.1",
+    "@earendil-works/pi-ai": "^0.83.0",
     "commander": "15.0.0",
-    "execa": "10.0.0",
+    "execa": "10.0.1",
     "p-limit": "7.3.1",
     "picomatch": "4.0.5",
-    "smol-toml": "1.7.0",
+    "smol-toml": "1.7.1",
     "web-tree-sitter": "0.26.11",
     "yaml": "2.9.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/node": "26.1.1",
+    "@types/node": "26.1.2",
     "@types/picomatch": "4.0.3",
     "tree-sitter-go": "0.25.0",
     "tree-sitter-javascript": "0.25.0",

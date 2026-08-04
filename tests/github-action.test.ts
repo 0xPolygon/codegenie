@@ -1093,9 +1093,9 @@ describe("GitHub Action and workflow contracts", () => {
 
     const checkoutIndex = steps.findIndex((step) => step.uses === "actions/checkout@v7");
     const nodeIndex = steps.findIndex((step) => step.uses === "actions/setup-node@v7");
-    const pnpmIndex = steps.findIndex((step) => step.uses === "pnpm/action-setup@v4");
+    const pnpmIndex = steps.findIndex((step) => step.uses === "pnpm/action-setup@v6");
     const foundryIndex = steps.findIndex((step) => (
-      step.uses === "foundry-rs/foundry-toolchain@b00af27efadbc7b4ca8b82abbd903b17cc874d2a"
+      step.uses === "foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09"
     ));
     const actionlintIndex = steps.findIndex((step) => step.name === "Install actionlint");
     const installIndex = steps.findIndex((step) => (
