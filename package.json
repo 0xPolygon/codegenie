@@ -1,6 +1,6 @@
 {
   "name": "@0xsequence/codegenie",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "High-signal AI code review agent",
   "type": "module",
   "bin": {
