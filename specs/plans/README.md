@@ -115,6 +115,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 110 | COMPLETE | Issue 110: Make Note Fallback Publication-Aware and Score Rendered Notes |
 | 111 | IMPLEMENTED (dogfood pending) | Issue 111: Fix Observed Structured-Submit Failures and Preserve Safe Diagnostics |
 | 112 | IMPLEMENTED (measuring) | Issue 112: Enforce Final Structured-Submit Provenance from Pi Events |
+| 113 | BACKLOG (measurement gate not met) | Issue 113: Measure Direct-Reject Note Contradictions Before Adding Suppression |
 
 ## Recommended order for 106-110
 
@@ -136,3 +137,13 @@ to `IMPLEMENTED (measuring)`. The 2,500-submit corpus is post-land, not a reason
 to hold the PR open; move the row to `COMPLETE` after the corpus and
 human-reviewed outcome. Do not implement conditional parser work unless Plan
 112's written evidence gate fires.
+
+## Recommended disposition for 113
+
+Do not hold 0.5.5 for Plan 113. Run 72 is the sole confirmed stale-note
+incident; run 73 is a negative control in which the same candidate/note shape
+was correctly reconciled by the existing evidence-backed path. The current
+high-risk-reject tuple is also ambiguous with evidence-unavailable rejects, so
+same-packet fuzzy suppression is not authorized. Reopen design only after the
+plan's repeated-evidence or production-evidence gate fires; until then, leave
+113 in BACKLOG and make no source changes.
