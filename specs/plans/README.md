@@ -116,6 +116,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 111 | IMPLEMENTED (dogfood pending) | Issue 111: Fix Observed Structured-Submit Failures and Preserve Safe Diagnostics |
 | 112 | IMPLEMENTED (measuring) | Issue 112: Enforce Final Structured-Submit Provenance from Pi Events |
 | 113 | BACKLOG (measurement gate not met) | Issue 113: Measure Direct-Reject Note Contradictions Before Adding Suppression |
+| 114 | PENDING | Issue 114: Re-execute Untrusted Structured Submits From Trusted Context |
 
 ## Recommended order for 106-110
 
@@ -147,3 +148,16 @@ high-risk-reject tuple is also ambiguous with evidence-unavailable rejects, so
 same-packet fuzzy suppression is not authorized. Reopen design only after the
 plan's repeated-evidence or production-evidence gate fires; until then, leave
 113 in BACKLOG and make no source changes.
+
+## Recommended order for 114
+
+Implement **114 before releasing 0.5.5**. Plans 111 and 112 remain its landed
+dependencies: 111 owns stage-local terminal disposition and bounded Action
+diagnostics; 112 owns strict final-argument provenance and the non-executable
+untrusted-call representation. Plan 114 does not weaken either contract. It
+corrects the continuation after an untrusted submit by retaining the trusted
+pre-response conversation for the existing one retry. It also includes the
+already-confirmed cache-aggregate and bounded Action identity fixes plus four
+direct contract-test corrections; each is local and adds no new mechanism.
+New telemetry fields, stage-specific test matrices, and Plan 113 remain
+independent and must not be pulled into the 0.5.5 release.
