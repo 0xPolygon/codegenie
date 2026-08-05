@@ -156,6 +156,7 @@ function createFakeComments(opts: {
   existing?: IssueComment[];
   permission?: string;
   failUpdates?: boolean;
+  failUpdateError?: unknown;
   viewerLogin?: string;
 } = {}): { client: IssueCommentClient; calls: FakeCommentCall[] } {
   const calls: FakeCommentCall[] = [];
@@ -172,6 +173,9 @@ function createFakeComments(opts: {
     },
     async updateComment(commentId, body) {
       calls.push({ kind: "update", commentId, body });
+      if (opts.failUpdateError !== undefined) {
+        throw opts.failUpdateError;
+      }
       if (opts.failUpdates === true) {
         throw new CodegenieError("github_post_failed", "boom");
       }
@@ -724,6 +728,110 @@ describe("github-action entrypoint", () => {
     expect(output).toContain('"outcome":"review_failed"');
   });
 
+  it("always writes scrubbed failure artifacts and bounded schema identity without telemetry", async () => {
+    const fake = createFakeComments();
+    const reportPath = path.join(scratch, "schema-failure-report.md");
+    const failurePath = path.join(scratch, "schema-failure.json");
+    const summaryPath = path.join(scratch, "schema-failure-summary.md");
+    const secret = "sk-action-secret-must-not-surface";
+    const repositoryText = "PRIVATE_REPOSITORY_SNIPPET_MUST_NOT_SURFACE";
+    let output = "";
+    const error = new CodegenieError(
+      "llm_schema_invalid",
+      `validator payload ${secret} ${repositoryText}`,
+      {
+        context: {
+          structuredSubmitFailure: {
+            schemaVersion: 1,
+            stage: 5,
+            role: "planner",
+            submitTool: "submit_plan",
+            submitSchemaVersion: 5,
+            attempt: "repair",
+            classification: "schema_invalid",
+            issues: [
+              { path: "coverage", rule: "required" },
+              { path: `${repositoryText}.private`, rule: "attacker-controlled-rule", expectedLimit: -7 },
+              ...Array.from({ length: 20 }, (_, index) => ({ path: `unsafe-${index}`, rule: "type" }))
+            ]
+          },
+          unsafe: `${secret} ${repositoryText}`
+        }
+      }
+    );
+
+    await expect(executeGitHubActionCommand([], {
+      env: actionEnv(pullRequestPayload(), "pull_request", {
+        CODEGENIE_REPORT_PATH: reportPath,
+        CODEGENIE_FAILURE_PATH: failurePath,
+        GITHUB_STEP_SUMMARY: summaryPath
+      }),
+      issueComments: fake.client,
+      minEditIntervalMs: 0,
+      writeOutput: (text) => {
+        output += text;
+      },
+      runReview: async () => {
+        throw error;
+      }
+    })).rejects.toBe(error);
+
+    const artifactSurfaces = [
+      readFileSync(reportPath, "utf8"),
+      readFileSync(failurePath, "utf8"),
+      readFileSync(summaryPath, "utf8"),
+      output,
+      (fake.calls.at(-1) as { body: string }).body
+    ];
+    for (const surface of artifactSurfaces) {
+      expect(surface).not.toContain(secret);
+      expect(surface).not.toContain(repositoryText);
+    }
+    expect(JSON.parse(artifactSurfaces[1] ?? "{}")).toMatchObject({
+      schemaVersion: 1,
+      lane: "pull_request",
+      prNumber: 7,
+      errorCode: "llm_schema_invalid",
+      structuredSubmitFailure: {
+        stage: 5,
+        submitTool: "submit_plan",
+        attempt: "repair",
+        classification: "schema_invalid",
+        issues: expect.arrayContaining([
+          { path: "coverage", rule: "required" },
+          { path: "root", rule: "schema" }
+        ])
+      }
+    });
+    expect((JSON.parse(artifactSurfaces[1] ?? "{}") as { structuredSubmitFailure: { issues: unknown[] } })
+      .structuredSubmitFailure.issues).toHaveLength(12);
+    expect(Buffer.byteLength(artifactSurfaces[0] ?? "", "utf8")).toBeLessThanOrEqual(4 * 1024);
+    expect(Buffer.byteLength(artifactSurfaces[1] ?? "", "utf8")).toBeLessThanOrEqual(16 * 1024);
+  });
+
+  it("keeps unknown failures bounded and preserves the original error when artifact paths are unwritable", async () => {
+    const fake = createFakeComments();
+    const secret = "UNKNOWN_FAILURE_PRIVATE_REPOSITORY_TEXT";
+    const original = new Error(`unexpected ${secret}`);
+    await expect(executeGitHubActionCommand([], {
+      env: actionEnv(pullRequestPayload(), "pull_request", {
+        CODEGENIE_REPORT_PATH: scratch,
+        CODEGENIE_FAILURE_PATH: scratch,
+        GITHUB_STEP_SUMMARY: scratch
+      }),
+      issueComments: fake.client,
+      minEditIntervalMs: 0,
+      writeOutput: (text) => {
+        expect(text).not.toContain(secret);
+      },
+      runReview: async () => {
+        throw original;
+      }
+    })).rejects.toBe(original);
+    expect((fake.calls.at(-1) as { body: string }).body).toContain("`unknown_error`");
+    expect((fake.calls.at(-1) as { body: string }).body).not.toContain(secret);
+  });
+
   it("disables inline posting when post-inline-comments is false", async () => {
     const fake = createFakeComments();
     let reviewArgv: string[] = [];
@@ -774,6 +882,31 @@ describe("github-action entrypoint", () => {
         finalBodyBytesBeforeCap: expect.any(Number)
       }
     });
+  });
+
+  it("uses the bounded unknown_error code when a terminal edit throws an untyped error", async () => {
+    const secret = "terminal-update-private-message";
+    const terminalError = new TypeError(secret);
+    const fake = createFakeComments({ failUpdateError: terminalError });
+    const runDir = mkdtempSync(path.join(scratch, "post-unknown-failed-run-"));
+    const output: string[] = [];
+
+    await expect(
+      executeGitHubActionCommand([], {
+        env: actionEnv(issueCommentPayload(), "issue_comment"),
+        issueComments: fake.client,
+        writeOutput: (text) => output.push(text),
+        runReview: async () => ({ runId: "r1", runDir, reportMarkdown: "# fallback report" })
+      })
+    ).rejects.toBe(terminalError);
+
+    expect(JSON.parse(readFileSync(path.join(runDir, "github-action.json"), "utf8"))).toMatchObject({
+      outcome: "terminal_post_failed",
+      errorCode: "unknown_error"
+    });
+    expect(output.join("\n")).toContain('"errorCode":"unknown_error"');
+    expect(output.join("\n")).not.toContain(secret);
+    expect(output.join("\n")).not.toContain("TypeError");
   });
 
   it("resolves identity via viewer login (PATs) or the bot-login input, and reclaims only exact matches", async () => {
@@ -991,6 +1124,7 @@ describe("issue comment client", () => {
 type WorkflowStep = {
   env?: Record<string, string>;
   id?: string;
+  if?: string;
   name?: string;
   uses?: string;
   run?: string;
@@ -1032,6 +1166,12 @@ describe("GitHub Action and workflow contracts", () => {
     const runStep = action.runs.steps.find((step) => step.id === "run");
     expect(runStep?.run).toContain('args+=(--bot-login "$INPUT_BOT_LOGIN")');
     expect(runStep?.run).toContain('args+=(--preflight-only "$INPUT_PREFLIGHT_ONLY")');
+    const failurePath = runStep?.env?.CODEGENIE_FAILURE_PATH;
+    expect(failurePath).toBe("${{ runner.temp }}/codegenie-failure.json");
+    const uploadStep = action.runs.steps.find((step) => step.name === "Upload review report");
+    expect(uploadStep?.uses).toBe("actions/upload-artifact@v7");
+    expect(uploadStep?.if).toContain("always()");
+    expect(uploadStep?.with?.path).toContain(failurePath);
   });
 
   it("keeps authorization in the binary and one newest-event-wins concurrency policy", () => {

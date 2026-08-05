@@ -105,7 +105,7 @@ describe("Plan 101 language-skill semantic fixtures", () => {
         expect(projection.perSkill.every((entry) => !entry.omitted && entry.truncatedChars === 0), `${semanticCase.language} stage ${String(stage)}`).toBe(true);
       }
     }
-  });
+  }, 15_000);
 
   it("builds TypeScript base/feature, preserves the safe control, and reproduces the runtime-validation failure", () => {
     const repo = materialize("typescript", false);

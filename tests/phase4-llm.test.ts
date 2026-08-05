@@ -2,14 +2,16 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { Type, validateToolCall } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, Type, validateToolCall } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import type {
   LlmCallUsage,
   PiAiAdapter,
   PiAssistantMessage,
+  PiInvalidToolCall,
   PiToolCall,
+  PiUntrustedArgumentParse,
   StoredProviderResponse
 } from "../src/llm/llm-runner.js";
 import {
@@ -25,6 +27,8 @@ import {
   type SubmitPacketReview,
   SubmitPacketReviewSchema,
   SubmitPlanSchema,
+  SubmitSystemReviewSchema,
+  type SubmitVerificationVerdict,
   SubmitVerificationVerdictSchema,
   submitToolNameForStage
 } from "../src/llm/schemas.js";
@@ -38,10 +42,14 @@ import type { ToolDefinition } from "../src/llm/llm-runner.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../src/provider/provider-services.js";
 import { CodegenieError } from "../src/util/errors.js";
 import { scaleToolBudget } from "../src/util/budget.js";
+import {
+  buildStructuredSubmitFailureDiagnostic,
+  structuredSubmitFailureDiagnosticFromError
+} from "../src/llm/schema-diagnostics.js";
 
 type RealPiAiAdapterDepsForTest = NonNullable<Parameters<typeof createRealPiAiAdapter>[0]>;
-type PiCompleteForTest = NonNullable<RealPiAiAdapterDepsForTest["complete"]>;
-type PiCompleteSimpleForTest = NonNullable<RealPiAiAdapterDepsForTest["completeSimple"]>;
+type PiStreamForTest = NonNullable<RealPiAiAdapterDepsForTest["stream"]>;
+type PiStreamSimpleForTest = NonNullable<RealPiAiAdapterDepsForTest["streamSimple"]>;
 
 describe("Phase 4 schemas and repository tool definitions", () => {
   it("redacts shared object references without mistaking them for cycles", () => {
@@ -63,10 +71,11 @@ describe("Phase 4 schemas and repository tool definitions", () => {
   it("rejects hallucinated fields and exposes stage submit tool names", () => {
     expect(submitToolNameForStage(5)).toBe("submit_plan");
     expect(submitToolNameForStage(7)).toBe("submit_review");
+    expect(submitToolNameForStage(8)).toBe("submit_system_review");
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
     expect(SCHEMA_VERSIONS.submit_plan).toBe(5);
-    expect(SCHEMA_VERSIONS.submit_verdict).toBe(3);
+    expect(SCHEMA_VERSIONS.submit_verdict).toBe(4);
 
     const valid = {
       diffUnderstanding: { declaredIntent: "Small change", inferredBehavior: "The diff makes a small change." },
@@ -97,6 +106,113 @@ describe("Phase 4 schemas and repository tool definitions", () => {
         arguments: { ...valid, diffUnderstanding: { summary: "old", intent: "old" } }
       })
     ).toThrow();
+  });
+
+  it("keeps a 2,000-character verifier target with a 4,000-character hard schema buffer", () => {
+    const tool = { name: "submit_verdict", description: "submit", parameters: SubmitVerificationVerdictSchema };
+    const verdict = (length: number): PiToolCall => ({
+      type: "toolCall",
+      id: `verdict-${length}`,
+      name: "submit_verdict",
+      arguments: {
+        verdict: "reject",
+        reason: "r".repeat(length),
+        requiredEvidencePresent: false,
+        falsePositiveRisk: "high"
+      }
+    });
+    for (const length of [2_000, 2_001, 2_102, 2_285, 2_327, 2_984, 4_000]) {
+      expect(() => validateToolCall([tool], verdict(length))).not.toThrow();
+    }
+    expect(() => validateToolCall([tool], verdict(4_001))).toThrow();
+  });
+
+  it("extracts only schema-owned paths and rules before Pi's received-arguments delimiter", () => {
+    const secret = "sk-seeded-secret-that-must-never-surface";
+    let validationMessage = "";
+    try {
+      validateToolCall(
+        [{ name: "submit_verdict", description: "submit", parameters: SubmitVerificationVerdictSchema }],
+        {
+          type: "toolCall",
+          id: "bad-verdict",
+          name: "submit_verdict",
+          arguments: {
+            verdict: "reject",
+            reason: `${"x".repeat(4_001)}${secret}`,
+            requiredEvidencePresent: false,
+            falsePositiveRisk: "high"
+          }
+        }
+      );
+    } catch (error) {
+      validationMessage = error instanceof Error ? error.message : String(error);
+    }
+    const diagnostic = buildStructuredSubmitFailureDiagnostic({
+      stage: 9,
+      role: "verifier",
+      submitTool: "submit_verdict",
+      submitSchemaVersion: 4,
+      attempt: "repair",
+      classification: "schema_invalid",
+      schema: SubmitVerificationVerdictSchema,
+      validationMessage
+    });
+    expect(diagnostic.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "reason", rule: "maxLength" })
+    ]));
+    expect(JSON.stringify(diagnostic)).not.toContain(secret);
+
+    const malformed = buildStructuredSubmitFailureDiagnostic({
+      stage: 9,
+      role: "verifier",
+      submitTool: "submit_verdict",
+      submitSchemaVersion: 4,
+      attempt: "repair",
+      schema: SubmitVerificationVerdictSchema,
+      validationMessage: `  - attacker.path: required property\n${secret}`
+    });
+    expect(malformed.issues).toEqual([]);
+    expect(JSON.stringify(malformed)).not.toContain(secret);
+
+    const manyIssues = buildStructuredSubmitFailureDiagnostic({
+      stage: 9,
+      role: "verifier",
+      submitTool: "submit_verdict",
+      submitSchemaVersion: 4,
+      attempt: "repair",
+      classification: "final_arguments_invalid",
+      schema: SubmitVerificationVerdictSchema,
+      validationMessage: `${[
+        "  - attacker.path: arbitrary prose",
+        ...Array.from({ length: 20 }, () => "  - reason: must not have more than 4000 characters")
+      ].join("\n")}\n\nReceived arguments:\n${secret}`
+    });
+    expect(manyIssues.classification).toBe("final_arguments_invalid");
+    expect(manyIssues.issues).toHaveLength(12);
+    expect(manyIssues.issues[0]).toEqual({ path: "root", rule: "schema" });
+    expect(JSON.stringify(manyIssues)).not.toContain(secret);
+  });
+
+  it("extracts Stage 8 diagnostics and rejects mismatched stage/role identities", () => {
+    const diagnostic = buildStructuredSubmitFailureDiagnostic({
+      stage: 8,
+      role: "systemReview",
+      submitTool: "submit_system_review",
+      submitSchemaVersion: 1,
+      attempt: "repair",
+      schema: SubmitSystemReviewSchema,
+      validationMessage: "  - findings: required property\n\nReceived arguments:\n{}"
+    });
+    const wrapped = (structuredSubmitFailure: unknown) => new CodegenieError(
+      "llm_schema_invalid",
+      "bounded terminal failure",
+      { context: { structuredSubmitFailure } }
+    );
+
+    expect(structuredSubmitFailureDiagnosticFromError(wrapped(diagnostic))).toEqual(diagnostic);
+    expect(structuredSubmitFailureDiagnosticFromError(wrapped({ ...diagnostic, role: "planner" }))).toBeUndefined();
+    expect(structuredSubmitFailureDiagnosticFromError(wrapped({ ...diagnostic, stage: 7 }))).toBeUndefined();
   });
 
   it("exposes model-facing submit schemas without pipeline-owned fields", () => {
@@ -1545,7 +1661,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
     expect(telemetry.modelCalls.map((call) => call.cacheStatus)).toEqual(["miss", "write"]);
     expect(cache.put).toHaveBeenCalledTimes(1);
-    expect(cache.put.mock.calls[0]?.[1].message.content).toEqual([validSubmitReviewCall("submit-repair")]);
+    expect(cache.put.mock.calls[0]?.[1].message.content).toEqual([trustedSubmitCall(validSubmitReviewCall("submit-repair"))]);
   });
 
   it("requires planner responses to submit exactly one plan and repairs with replacement context", async () => {
@@ -1605,7 +1721,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.contexts[1]).toContain("compact planner repair");
     expect(adapter.contexts[1]).not.toContain(originalPromptMarker);
     expect(cache.put).toHaveBeenCalledTimes(1);
-    expect(cache.put.mock.calls[0]?.[1].message.content).toEqual([validSubmitPlanCall("submit-plan-repaired")]);
+    expect(cache.put.mock.calls[0]?.[1].message.content).toEqual([trustedSubmitCall(validSubmitPlanCall("submit-plan-repaired"))]);
   });
 
   it("repairs planner responses that omit submit_plan without generic finalization nudges", async () => {
@@ -1685,6 +1801,47 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     expect(adapter.complete).toHaveBeenCalledTimes(2);
     expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "schema_invalid"]);
+    expect(telemetry.modelCalls.map((call) => call.finalArgumentState)).toEqual([undefined, undefined]);
+  });
+
+  it("keeps twice-invalid planner schema failure recoverable for deterministic fallback", async () => {
+    const adapter = scriptedAdapter([
+      assistant([validSubmitPlanCall("submit-plan-a"), validSubmitPlanCall("submit-plan-b")]),
+      assistant([validSubmitPlanCall("submit-plan-c"), validSubmitPlanCall("submit-plan-d")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured({
+      stage: 5,
+      prompt: "planner",
+      schema: SubmitPlanSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1_000,
+      schemaRepair: {
+        replaceConversation: true,
+        failAfterRepair: false,
+        buildPrompt: () => "compact planner repair"
+      }
+    })).rejects.toMatchObject({
+      code: "llm_schema_invalid",
+      recoverable: true,
+      context: {
+        structuredSubmitFailure: expect.objectContaining({
+          stage: 5,
+          submitTool: "submit_plan",
+          attempt: "repair",
+          classification: "multiple_submits"
+        })
+      }
+    });
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
   });
 
   it("repairs verifier schema-invalid submits with replacement context and submit-only tools", async () => {
@@ -1753,6 +1910,395 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
   });
 
+  it("routes semantic empty-revise submits through the existing single repair and cache gate", async () => {
+    const telemetry = fakeTelemetry();
+    const cache = {
+      get: vi.fn(async () => ({ status: "miss" as const, reason: "not_found" as const })),
+      put: vi.fn(async () => ({ status: "write" as const }))
+    };
+    const emptyRevise = (id: string): PiToolCall => ({
+      type: "toolCall",
+      id,
+      name: "submit_verdict",
+      arguments: {
+        verdict: "revise",
+        reason: "The issue needs a correction.",
+        requiredEvidencePresent: true,
+        falsePositiveRisk: "low"
+      }
+    });
+    const adapter = scriptedAdapter([
+      assistant([emptyRevise("empty-primary")]),
+      assistant([validSubmitVerdictCall("valid-repair")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      cache,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured<SubmitVerificationVerdict>({
+      stage: 9,
+      prompt: "verify",
+      schema: SubmitVerificationVerdictSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1_000,
+      validateSubmit: (value) => value.verdict === "revise" && value.finalFinding === undefined && value.revisedAnchor === undefined
+        ? { ok: false, classification: "revise_without_revision_payload" }
+        : { ok: true },
+      schemaRepair: {
+        replaceConversation: true,
+        failAfterRepair: false,
+        buildPrompt: (input) => {
+          expect(input.classification).toBe("revise_without_revision_payload");
+          return "repair the empty revision with a payload";
+        }
+      }
+    })).resolves.toMatchObject({ verdict: "reject" });
+
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(telemetry.modelCalls.map((call) => call.schemaValid)).toEqual([false, true]);
+    expect(cache.put).toHaveBeenCalledTimes(1);
+    const putCalls = cache.put.mock.calls as unknown as Array<[unknown, StoredProviderResponse]>;
+    const cachedResponse = putCalls[0]?.[1];
+    expect(cachedResponse?.message.content).toEqual([trustedSubmitCall(validSubmitVerdictCall("valid-repair"))]);
+  });
+
+  it("rejects a semantic-invalid deterministic recovery and exposes only bounded terminal identity", async () => {
+    const secret = "sk-semantic-payload-must-not-survive";
+    const emptyRevise = (id: string): PiToolCall => ({
+      type: "toolCall",
+      id,
+      name: "submit_verdict",
+      arguments: {
+        verdict: "revise",
+        reason: `The issue needs a correction. ${secret}`,
+        requiredEvidencePresent: true,
+        falsePositiveRisk: "low"
+      }
+    });
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "schema-invalid-primary",
+        name: "submit_verdict",
+        arguments: {}
+      }]),
+      assistant([emptyRevise("empty-repair")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    let caught: unknown;
+    try {
+      await runner.runStructured<SubmitVerificationVerdict>({
+        stage: 9,
+        prompt: "verify",
+        schema: SubmitVerificationVerdictSchema,
+        templateVersion: "test-template",
+        timeoutMs: 1_000,
+        validateSubmit: (value) => value.verdict === "revise" && value.finalFinding === undefined && value.revisedAnchor === undefined
+          ? { ok: false, classification: "revise_without_revision_payload" }
+          : { ok: true },
+        schemaRepair: {
+          replaceConversation: true,
+          failAfterRepair: false,
+          recoverInvalidSubmit: () => ({
+            verdict: "revise",
+            reason: `Recovered without a payload ${secret}`,
+            requiredEvidencePresent: true,
+            falsePositiveRisk: "low"
+          }),
+          buildPrompt: (input) => {
+            expect(input.classification).toBe("revise_without_revision_payload");
+            return "repair the semantic omission";
+          }
+        }
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({
+      code: "llm_schema_invalid",
+      recoverable: true,
+      context: {
+        structuredSubmitFailure: expect.objectContaining({
+          classification: "revise_without_revision_payload",
+          attempt: "repair",
+          issues: [{ path: "root", rule: "semantic" }]
+        })
+      }
+    });
+    expect(JSON.stringify(caught)).not.toContain(secret);
+    expect((caught as Error & { cause?: unknown }).cause).toBeUndefined();
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { state: "length_stopped" } as const,
+    { state: "partial", errorKind: "unexpected_end" } as const,
+    { state: "invalid", errorKind: "invalid_syntax" } as const,
+    { state: "event_capture_missing" } as const,
+    { state: "event_final_mismatch" } as const
+  ])("routes primary $state final arguments through one context-preserving repair", async (argumentParse) => {
+    const telemetry = fakeTelemetry();
+    const cache = {
+      get: vi.fn(async () => ({ status: "miss" as const, reason: "not_found" as const })),
+      put: vi.fn(async () => ({ status: "write" as const }))
+    };
+    const invalid = invalidSubmitCall("untrusted-primary", "submit_review", argumentParse);
+    const primary = { ...assistant([invalid]), stopReason: "toolUse" };
+    const adapter = scriptedAdapter([primary, assistant([validSubmitReviewCall("trusted-repair")])]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      cache,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured<SubmitPacketReview>({
+      stage: 7,
+      prompt: "review ORIGINAL_STAGE7_PACKET_CONTEXT",
+      schema: SubmitPacketReviewSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1_000,
+      schemaRepair: {
+        replaceConversation: true,
+        failAfterRepair: false,
+        buildPrompt: (input) => {
+          expect(input.submitCalls).toEqual([]);
+          expect(input.untrustedSubmitCalls).toEqual([expect.objectContaining({
+            id: "untrusted-primary",
+            name: "submit_review",
+            state: argumentParse.state
+          })]);
+          return `retry bounded state ${argumentParse.state}`;
+        }
+      }
+    })).resolves.toMatchObject({ findings: [] });
+
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(adapter.contexts[1]).toContain(`retry bounded state ${argumentParse.state}`);
+    expect(adapter.contexts[1]).toContain("ORIGINAL_STAGE7_PACKET_CONTEXT");
+    expect(adapter.contexts[1]).not.toContain("invalidToolCall");
+    expect(cache.put).toHaveBeenCalledTimes(1);
+    expect(telemetry.modelCalls.map((call) => call.finalArgumentState)).toEqual([argumentParse.state, "strict"]);
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "final_arguments_rejected",
+        data: expect.objectContaining({ state: argumentParse.state, schemaRepairUsed: false })
+      }),
+      expect.objectContaining({
+        message: "schema_repair_scheduled",
+        data: expect.objectContaining({ replaceConversation: false })
+      }),
+      expect.objectContaining({
+        message: "final_argument_repair_outcome",
+        data: expect.objectContaining({ outcome: "recovered" })
+      })
+    ]));
+  });
+
+  it("does not execute or orphan a valid repository tool beside an invalid submit", async () => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async () => ({
+      text: "must not execute",
+      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+    }));
+    const readRange: ToolDefinition = {
+      name: "read_range",
+      description: "read range",
+      parameters: Type.Object({ path: Type.String() }, { additionalProperties: false }),
+      execute
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "read-beside-invalid-submit", name: "read_range", arguments: { path: "src/a.ts" } },
+        invalidSubmitCall("invalid-submit", "submit_review", { state: "event_capture_missing" })
+      ]),
+      assistant([validSubmitReviewCall("trusted-repair")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured<SubmitPacketReview>({
+      stage: 7,
+      prompt: "review ORIGINAL_MIXED_PACKET_CONTEXT",
+      schema: SubmitPacketReviewSchema,
+      templateVersion: "test-template",
+      tools: [readRange],
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 1_000 },
+      timeoutMs: 1_000,
+      schemaRepair: {
+        replaceConversation: true,
+        failAfterRepair: false,
+        buildPrompt: () => "retry invalid submit only"
+      }
+    })).resolves.toMatchObject({ findings: [] });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(telemetry.toolCalls).toEqual([]);
+    expect(adapter.contexts[1]).toContain("ORIGINAL_MIXED_PACKET_CONTEXT");
+    expect(adapter.contexts[1]).toContain("retry invalid submit only");
+    expect(adapter.contexts[1]).not.toContain("read-beside-invalid-submit");
+    expect(adapter.contexts[1]).not.toContain("toolResult");
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "schema_repair_scheduled",
+      data: expect.objectContaining({ replaceConversation: false, extraToolNames: ["read_range"] })
+    }));
+  });
+
+  it("records not_dispatched when budget exhaustion prevents the final-argument repair call", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      { ...assistant([invalidSubmitCall("invalid-primary", "submit_review", { state: "invalid", errorKind: "invalid_syntax" })]), stopReason: "toolUse" }
+    ]);
+    let checkpoints = 0;
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: {
+        checkpoint: () => ++checkpoints === 1 ? "ok" : "exhausted",
+        onUsage: vi.fn()
+      }
+    });
+
+    await expect(runner.runStructured<SubmitPacketReview>({
+      stage: 7,
+      prompt: "review",
+      schema: SubmitPacketReviewSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1_000,
+      schemaRepair: { replaceConversation: true, failAfterRepair: false, buildPrompt: () => "retry safely" }
+    })).rejects.toMatchObject({
+      code: "llm_call_failed",
+      context: expect.objectContaining({ reason: "budget_exhausted" })
+    });
+
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "final_argument_repair_outcome",
+      data: expect.objectContaining({ outcome: "not_dispatched" })
+    }));
+  });
+
+  it.each([
+    { state: "length_stopped" } as const,
+    { state: "partial", errorKind: "unterminated" } as const,
+    { state: "invalid", errorKind: "non_object_root" } as const,
+    { state: "event_capture_missing" } as const,
+    { state: "event_final_mismatch" } as const
+  ])("fails closed when repaired submit remains $state", async (argumentParse) => {
+    const telemetry = fakeTelemetry();
+    const cache = {
+      get: vi.fn(async () => ({ status: "miss" as const, reason: "not_found" as const })),
+      put: vi.fn(async () => ({ status: "write" as const }))
+    };
+    const adapter = scriptedAdapter([
+      { ...assistant([invalidSubmitCall("invalid-primary", "submit_review", argumentParse)]), stopReason: "toolUse" },
+      { ...assistant([invalidSubmitCall("invalid-repair", "submit_review", argumentParse)]), stopReason: "toolUse" }
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      cache,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured<SubmitPacketReview>({
+      stage: 7,
+      prompt: "review",
+      schema: SubmitPacketReviewSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1_000,
+      schemaRepair: { replaceConversation: true, failAfterRepair: false, buildPrompt: () => "retry safely" }
+    })).rejects.toMatchObject({
+      code: "llm_schema_invalid",
+      recoverable: true,
+      context: {
+        structuredSubmitFailure: expect.objectContaining({
+          attempt: "repair",
+          classification: provenanceClassification(argumentParse)
+        })
+      }
+    });
+
+    expect(cache.put).not.toHaveBeenCalled();
+    expect(telemetry.modelCalls.map((call) => call.finalArgumentState)).toEqual([argumentParse.state, argumentParse.state]);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "final_argument_repair_outcome",
+      data: expect.objectContaining({ outcome: "terminal_invalid" })
+    }));
+  });
+
+  it("removes provenance-less submit arguments before telemetry, repair history, and cache", async () => {
+    const secret = "sk-provenance-less-argument-secret";
+    const telemetry = fakeTelemetry();
+    const provenanceLess = assistant([validSubmitReviewCall("missing-provenance")]);
+    provenanceLess.content = [{
+      type: "toolCall",
+      id: "missing-provenance",
+      name: "submit_review",
+      arguments: { findings: [], followUpHints: [], uncertainties: [], secret }
+    }];
+    const adapter = scriptedAdapter([provenanceLess, assistant([validSubmitReviewCall("trusted-repair")])]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured<SubmitPacketReview>({
+      stage: 7,
+      prompt: "review",
+      schema: SubmitPacketReviewSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1_000,
+      schemaRepair: { replaceConversation: true, failAfterRepair: false, buildPrompt: () => "bounded retry" }
+    })).resolves.toMatchObject({ findings: [] });
+
+    const publicRecords = JSON.stringify({
+      modelCalls: telemetry.modelCalls,
+      events: telemetry.events,
+      debugWrites: telemetry.debugWrites,
+      contexts: adapter.contexts
+    });
+    expect(publicRecords).not.toContain(secret);
+    expect(telemetry.modelCalls[0]).toMatchObject({
+      finalArgumentState: "event_capture_missing",
+      schemaValid: false
+    });
+  });
+
   it("lets stages recover invalid submit arguments before model schema repair", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
@@ -1808,6 +2354,64 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         data: expect.objectContaining({ submitTool: "submit_composition" })
       })
     ]));
+  });
+
+  it("preserves an explicit append override returned by invalid-submit recovery", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-composition-invalid",
+        name: "submit_composition",
+        arguments: { summary: "missing composed findings" }
+      }]),
+      assistant([{
+        type: "toolCall",
+        id: "submit-composition-repaired",
+        name: "submit_composition",
+        arguments: {
+          summary: "Recovered composition.",
+          composedFindings: [{ findingIds: ["finding-1"], finalBody: "Recovered body.", publication: "inline" }]
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured({
+      stage: 10,
+      prompt: "ORIGINAL_RECOVERY_CONTEXT compose",
+      schema: SubmitCompositionSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1_000,
+      schemaRepair: {
+        replaceConversation: true,
+        buildPrompt: () => "retry composition with complete fields",
+        recoverInvalidSubmit: () => ({
+          kind: "recovery",
+          replaceConversationOverride: false
+        })
+      }
+    })).resolves.toMatchObject({
+      summary: "Recovered composition.",
+      composedFindings: [{ findingIds: ["finding-1"] }]
+    });
+
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(adapter.contexts[1]).toContain("ORIGINAL_RECOVERY_CONTEXT");
+    expect(adapter.contexts[1]).toContain("retry composition with complete fields");
+    expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      stage: 10,
+      message: "schema_repair_scheduled",
+      data: expect.objectContaining({ replaceConversation: false })
+    }));
   });
 
   it("repairs composer responses that omit submit_composition with replacement context", async () => {
@@ -1936,7 +2540,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
     expect(adapter.complete).toHaveBeenCalledTimes(2);
     expect(cache.put).toHaveBeenCalledTimes(1);
-    expect(cache.put.mock.calls[0]?.[1].message.content).toEqual([validSubmitReviewCall("must-not-run")]);
+    expect(cache.put.mock.calls[0]?.[1].message.content).toEqual([trustedSubmitCall(validSubmitReviewCall("must-not-run"))]);
   });
 
   it("includes tool budget in model-call cache keys", async () => {
@@ -3812,7 +4416,13 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ).rejects.toMatchObject({
       code: "llm_schema_invalid",
       recoverable: true,
-      context: { submitTool: "submit_review", kind: "finalize" }
+      context: {
+        structuredSubmitFailure: expect.objectContaining({
+          submitTool: "submit_review",
+          classification: "missing_submit",
+          attempt: "primary"
+        })
+      }
     });
     expect(adapter.complete).toHaveBeenCalledTimes(3);
   });
@@ -4239,18 +4849,18 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
-  it("uses Pi completeSimple so resolved reasoning is provider-mapped", async () => {
+  it("uses Pi streamSimple so resolved reasoning is provider-mapped", async () => {
     const optionsSeen: Record<string, unknown>[] = [];
-    const completeSimple = (async (_model, _context, options) => {
+    const streamSimple = ((_model, _context, options) => {
       optionsSeen.push(options as Record<string, unknown>);
-      return assistant([validSubmitReviewCall("submit-simple-reasoning")]);
-    }) as PiCompleteSimpleForTest;
-    const adapter = createRealPiAiAdapter({ completeSimple });
+      return streamForMessage(assistant([validSubmitReviewCall("submit-simple-reasoning")]));
+    }) as PiStreamSimpleForTest;
+    const adapter = createRealPiAiAdapter({ streamSimple });
 
     await adapter.complete(
       { provider: "fake", id: "fake-model", raw: { id: "fake-model" }, apiKey: "fake-api-key" },
       { messages: [], tools: [] },
-      { reasoning: "xhigh", maxRetries: 0 }
+      { reasoning: "xhigh", maxRetries: 0, submitToolName: "submit_review" }
     );
 
     expect(optionsSeen).toEqual([
@@ -4259,16 +4869,17 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         reasoning: "xhigh"
       })
     ]);
+    expect(optionsSeen[0]).not.toHaveProperty("submitToolName");
   });
 
   it("maps forced submit calls to raw Pi provider reasoning and tool choice options", async () => {
     const rawOptionsSeen: Record<string, unknown>[] = [];
-    const complete = (async (_model, _context, options) => {
+    const stream = ((_model, _context, options) => {
       rawOptionsSeen.push(options as Record<string, unknown>);
-      return assistant([validSubmitReviewCall("submit-raw-forced")]);
-    }) as PiCompleteForTest;
-    const completeSimple = vi.fn(async () => assistant([validSubmitReviewCall("must-not-use-simple")])) as unknown as PiCompleteSimpleForTest;
-    const adapter = createRealPiAiAdapter({ complete, completeSimple });
+      return streamForMessage(assistant([validSubmitReviewCall("submit-raw-forced")]));
+    }) as PiStreamForTest;
+    const streamSimple = vi.fn(() => streamForMessage(assistant([validSubmitReviewCall("must-not-use-simple")]))) as unknown as PiStreamSimpleForTest;
+    const adapter = createRealPiAiAdapter({ stream, streamSimple });
 
     await adapter.complete(
       {
@@ -4278,10 +4889,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         apiKey: "fake-api-key"
       },
       { messages: [], tools: [] },
-      { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0 }
+      { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, submitToolName: "submit_review" }
     );
 
-    expect(completeSimple).not.toHaveBeenCalled();
+    expect(streamSimple).not.toHaveBeenCalled();
     expect(rawOptionsSeen).toEqual([
       expect.objectContaining({
         apiKey: "fake-api-key",
@@ -4294,12 +4905,12 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
   it("disables Anthropic thinking and applies real forced tool choice for submit turns (plan 86 step 3)", async () => {
     const rawOptionsSeen: Record<string, unknown>[] = [];
-    const complete = (async (_model, _context, options) => {
+    const stream = ((_model, _context, options) => {
       rawOptionsSeen.push(options as Record<string, unknown>);
-      return assistant([validSubmitReviewCall("submit-anthropic-forced")]);
-    }) as PiCompleteForTest;
-    const completeSimple = vi.fn(async () => assistant([validSubmitReviewCall("must-not-use-simple")])) as unknown as PiCompleteSimpleForTest;
-    const adapter = createRealPiAiAdapter({ complete, completeSimple });
+      return streamForMessage(assistant([validSubmitReviewCall("submit-anthropic-forced")]));
+    }) as PiStreamForTest;
+    const streamSimple = vi.fn(() => streamForMessage(assistant([validSubmitReviewCall("must-not-use-simple")]))) as unknown as PiStreamSimpleForTest;
+    const adapter = createRealPiAiAdapter({ stream, streamSimple });
 
     await adapter.complete(
       {
@@ -4309,10 +4920,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         apiKey: "fake-api-key"
       },
       { messages: [], tools: [] },
-      { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0 }
+      { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, submitToolName: "submit_review" }
     );
 
-    expect(completeSimple).not.toHaveBeenCalled();
+    expect(streamSimple).not.toHaveBeenCalled();
     expect(rawOptionsSeen).toEqual([
       expect.objectContaining({
         apiKey: "fake-api-key",
@@ -4327,11 +4938,11 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
   it("keeps the legacy Anthropic downgrade when forceSubmitToolChoice is disabled", async () => {
     const rawOptionsSeen: Record<string, unknown>[] = [];
-    const complete = (async (_model, _context, options) => {
+    const stream = ((_model, _context, options) => {
       rawOptionsSeen.push(options as Record<string, unknown>);
-      return assistant([validSubmitReviewCall("submit-anthropic-downgraded")]);
-    }) as PiCompleteForTest;
-    const adapter = createRealPiAiAdapter({ complete });
+      return streamForMessage(assistant([validSubmitReviewCall("submit-anthropic-downgraded")]));
+    }) as PiStreamForTest;
+    const adapter = createRealPiAiAdapter({ stream });
 
     await adapter.complete(
       {
@@ -4341,7 +4952,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         apiKey: "fake-api-key"
       },
       { messages: [], tools: [] },
-      { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, forceSubmitToolChoice: false } as never
+      { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, forceSubmitToolChoice: false, submitToolName: "submit_review" }
     );
 
     expect(rawOptionsSeen).toEqual([
@@ -4372,20 +4983,20 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       clear: () => entries.clear()
     };
     const optionsSeen: Record<string, unknown>[] = [];
-    const completeSimple = (async (_model, _context, options) => {
+    const streamSimple = ((_model, _context, options) => {
       optionsSeen.push(options as Record<string, unknown>);
-      return assistant([validSubmitReviewCall("submit-oauth-refresh")]);
-    }) as PiCompleteSimpleForTest;
+      return streamForMessage(assistant([validSubmitReviewCall("submit-oauth-refresh")]));
+    }) as PiStreamSimpleForTest;
     const getOAuthApiKey = vi.fn(async (_provider: string, credentials: Record<string, typeof oldCredentials>) => {
       expect(credentials["github-copilot"]).toEqual(oldCredentials);
       return { newCredentials, apiKey: "new-oauth-api-key" };
     }) as NonNullable<RealPiAiAdapterDepsForTest["getOAuthApiKey"]>;
-    const adapter = createRealPiAiAdapter({ authStorage, completeSimple, getOAuthApiKey });
+    const adapter = createRealPiAiAdapter({ authStorage, streamSimple, getOAuthApiKey });
 
     await adapter.complete(
       { provider: "github-copilot", id: "fake-model", raw: { id: "fake-model" }, oauthProvider: "github-copilot" },
       { messages: [], tools: [] },
-      { maxRetries: 0 }
+      { maxRetries: 0, submitToolName: "submit_review" }
     );
 
     expect(getOAuthApiKey).toHaveBeenCalledTimes(1);
@@ -4602,20 +5213,56 @@ function scriptedAdapter(messages: PiAssistantMessage[]): PiAiAdapter & { contex
 }
 
 function assistant(content: PiAssistantMessage["content"]): PiAssistantMessage {
+  const contentWithProvenance = content.map((block) =>
+    (block as { type?: unknown; name?: unknown }).type === "toolCall" &&
+    typeof (block as { name?: unknown }).name === "string" &&
+    String((block as { name: string }).name).startsWith("submit_")
+      ? { ...block, argumentParse: { state: "strict" as const } }
+      : block
+  );
   return {
     role: "assistant",
     provider: "fake",
     model: "fake-model",
-    content,
+    content: contentWithProvenance,
     usage: {
       input: 10,
       output: 5,
       totalTokens: 15,
       cost: { total: 0.01 }
     },
-    stopReason: content.some((block) => (block as PiToolCall).type === "toolCall") ? "toolUse" : "stop",
+    stopReason: contentWithProvenance.some((block) => (block as PiToolCall).type === "toolCall") ? "toolUse" : "stop",
     timestamp: 0
   };
+}
+
+function streamForMessage(message: PiAssistantMessage) {
+  const stream = createAssistantMessageEventStream();
+  stream.push({ type: "start", partial: message as never });
+  message.content.forEach((block, contentIndex) => {
+    if ((block as { type?: unknown }).type !== "toolCall") {
+      return;
+    }
+    const call = block as PiToolCall;
+    stream.push({ type: "toolcall_start", contentIndex, partial: message as never });
+    stream.push({
+      type: "toolcall_delta",
+      contentIndex,
+      delta: JSON.stringify(call.arguments),
+      partial: message as never
+    });
+    stream.push({ type: "toolcall_end", contentIndex, toolCall: call as never, partial: message as never });
+  });
+  if (message.stopReason === "error" || message.stopReason === "aborted") {
+    stream.push({ type: "error", reason: message.stopReason, error: message as never });
+  } else {
+    stream.push({
+      type: "done",
+      reason: message.stopReason === "length" ? "length" : message.stopReason === "toolUse" ? "toolUse" : "stop",
+      message: message as never
+    });
+  }
+  return stream;
 }
 
 function assistantError(errorMessage: string): PiAssistantMessage {
@@ -4647,6 +5294,21 @@ function validSubmitReviewCall(id: string): PiToolCall {
       uncertainties: []
     }
   };
+}
+
+function trustedSubmitCall(call: PiToolCall): PiToolCall {
+  return { ...call, argumentParse: { state: "strict" } };
+}
+
+function invalidSubmitCall(id: string, name: string, argumentParse: PiUntrustedArgumentParse): PiInvalidToolCall {
+  return { type: "invalidToolCall", id, name, argumentParse };
+}
+
+function provenanceClassification(parse: PiUntrustedArgumentParse): string {
+  if (parse.state === "length_stopped") return "length_stopped";
+  if (parse.state === "partial") return "final_arguments_partial";
+  if (parse.state === "invalid") return "final_arguments_invalid";
+  return parse.state;
 }
 
 function validCandidateSubmitReviewCall(id: string): PiToolCall {

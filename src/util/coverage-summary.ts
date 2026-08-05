@@ -2,6 +2,27 @@ import type { RunCoverageStatus } from "../types.js";
 import { isDisclosableCoverageReason } from "./coverage-reasons.js";
 import { inlineCode } from "./markdown.js";
 
+export function renderCoverageTrustBanner(coverage: RunCoverageStatus): string {
+  if (coverage.partial) {
+    const planning = coverage.degradedPlanning
+      ? " Planning also fell back to deterministic default coverage."
+      : "";
+    return (
+      "> [!WARNING]\n" +
+      `> **Review incomplete.** Some review or verification work did not complete.${planning} ` +
+      "Treat the results below as partial and consider rerunning."
+    );
+  }
+  if (coverage.degradedPlanning) {
+    return (
+      "> [!WARNING]\n" +
+      "> **Degraded run: planner fallback.** The planner failed, so deterministic default coverage was used. " +
+      "Downstream review completed, but consider rerunning."
+    );
+  }
+  return "";
+}
+
 export function renderCoverageSummaryLines(coverage: RunCoverageStatus): string[] {
   const lines = [coverageHeadline(coverage)];
   if (coverage.partial) {

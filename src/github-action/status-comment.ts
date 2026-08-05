@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import type { TelemetryEvent } from "../types.js";
+import type { StructuredSubmitFailureDiagnostic } from "../llm/schema-diagnostics.js";
 import { sanitizeGitHubCommentBody } from "../github/comment-sanitizer.js";
 import { CodegenieError } from "../util/errors.js";
 import type { IssueComment, IssueCommentClient } from "./issue-comments.js";
@@ -30,7 +31,7 @@ export type StatusCommentController = {
   claim(): Promise<{ commentId: number; author: string }>;
   onTelemetryEvent(event: ProgressEvent): void;
   finalizeSuccess(reportMarkdown: string): Promise<void>;
-  finalizeFailure(errorCode: string): Promise<boolean>;
+  finalizeFailure(errorCode: string, diagnostic?: StructuredSubmitFailureDiagnostic): Promise<boolean>;
   settle(): Promise<void>;
   stats(): StatusCommentStats;
 };
@@ -220,13 +221,13 @@ export function createStatusCommentController(options: StatusCommentOptions): St
     stats.editCount += 1;
   }
 
-  async function finalizeFailure(errorCode: string): Promise<boolean> {
+  async function finalizeFailure(errorCode: string, diagnostic?: StructuredSubmitFailureDiagnostic): Promise<boolean> {
     if (commentId === undefined) {
       return false;
     }
     terminal = true;
     await settle();
-    const body = appendStatusCommentMarker(renderFailureBody(errorCode, options.runUrl));
+    const body = appendStatusCommentMarker(renderFailureBody(errorCode, options.runUrl, diagnostic));
     stats.terminalState = "failure";
     const bodyBytes = Buffer.byteLength(body, "utf8");
     stats.finalBodyBytes = bodyBytes;

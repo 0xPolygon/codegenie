@@ -98,7 +98,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 92 | IMPLEMENTED (measuring) | Issue 92: Planner Coverage Calibration and the Adaptive Second Pass |
 | 93 | PENDING | Issue 93: Delete the Dead Ripgrep Fast Path (D9) |
 | 94 | PENDING | Issue 94: One Shared Similarity/Util Module |
-| 95 | PENDING | Issue 95: One Shared Submit/Salvage Layer + Prompt "Why" Ledger |
+| 95 | COMPLETE | Issue 95: One Shared Submit/Salvage Layer + Prompt "Why" Ledger |
 | 96 | PENDING | Issue 96: Fixed Stage-6 Symbol-Context Budget |
 | 97 | IMPLEMENTED (dogfood pending) | Issue 97: GitHub Action Integration (comment-triggered PR review + live status comment) |
 | 98 | COMPLETE | Issue 98: Language Support — Rust, Python, Solidity, JavaScript (tree-sitter adapters + bundled skills) |
@@ -113,6 +113,10 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 108 | COMPLETE | Issue 108: Add a Verifier Severity Rubric and Revision Telemetry |
 | 109 | COMPLETE | Issue 109: Restore Summary-Only Publication for Verified Low-Confidence Deltas |
 | 110 | COMPLETE | Issue 110: Make Note Fallback Publication-Aware and Score Rendered Notes |
+| 111 | IMPLEMENTED (dogfood pending) | Issue 111: Fix Observed Structured-Submit Failures and Preserve Safe Diagnostics |
+| 112 | IMPLEMENTED (measuring) | Issue 112: Enforce Final Structured-Submit Provenance from Pi Events |
+| 113 | BACKLOG (measurement gate not met) | Issue 113: Measure Direct-Reject Note Contradictions Before Adding Suppression |
+| 114 | COMPLETE | Issue 114: Re-execute Untrusted Structured Submits From Trusted Context |
 
 ## Recommended order for 106-110
 
@@ -120,3 +124,40 @@ Land the terminal visibility chain first: **106 -> 109 -> 110**. Plans 107 and
 108 are lower-risk supporting improvements; both follow 106 and may land after
 the visibility chain. Plan 108 must rebase its Stage-9 prompt version onto the
 landed 106 version.
+
+## Recommended order for 111-112
+
+Implement **111 first**: it contains the observed production/eval fixes and has
+no Pi release dependency. Implement **112 second**: it consumes Pi's public
+event stream inside Codegenie's existing adapter, strictly verifies final
+arguments, and measures whether any broader lossless syntax repair or upstream
+Pi change deserves a new plan. Its implementation gate uses generic event-shape
+tests plus only the existing Anthropic/OpenAI Responses smokes; do not create an
+every-provider fixture matrix without evidence. After that gate, move its row
+to `IMPLEMENTED (measuring)`. The 2,500-submit corpus is post-land, not a reason
+to hold the PR open; move the row to `COMPLETE` after the corpus and
+human-reviewed outcome. Do not implement conditional parser work unless Plan
+112's written evidence gate fires.
+
+## Recommended disposition for 113
+
+Do not hold 0.5.5 for Plan 113. Run 72 is the sole confirmed stale-note
+incident; run 73 is a negative control in which the same candidate/note shape
+was correctly reconciled by the existing evidence-backed path. The current
+high-risk-reject tuple is also ambiguous with evidence-unavailable rejects, so
+same-packet fuzzy suppression is not authorized. Reopen design only after the
+plan's repeated-evidence or production-evidence gate fires; until then, leave
+113 in BACKLOG and make no source changes.
+
+## Recommended order for 114
+
+Implement **114 before releasing 0.5.5**. Plans 111 and 112 remain its landed
+dependencies: 111 owns stage-local terminal disposition and bounded Action
+diagnostics; 112 owns strict final-argument provenance and the non-executable
+untrusted-call representation. Plan 114 does not weaken either contract. It
+corrects the continuation after an untrusted submit by retaining the trusted
+pre-response conversation for the existing one retry. It also includes the
+already-confirmed cache-aggregate and bounded Action identity fixes plus four
+direct contract-test corrections; each is local and adds no new mechanism.
+New telemetry fields, stage-specific test matrices, and Plan 113 remain
+independent and must not be pulled into the 0.5.5 release.

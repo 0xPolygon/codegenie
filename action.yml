@@ -77,6 +77,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         CODEGENIE_REPORT_PATH: ${{ runner.temp }}/codegenie-report.md
+        CODEGENIE_FAILURE_PATH: ${{ runner.temp }}/codegenie-failure.json
         INPUT_TRIGGER_PHRASE: ${{ inputs.trigger-phrase }}
         INPUT_ON_PULL_REQUEST: ${{ inputs.on-pull-request }}
         INPUT_ALLOWED_ASSOCIATIONS: ${{ inputs.allowed-associations }}
@@ -117,5 +118,7 @@ runs:
       uses: actions/upload-artifact@v7
       with:
         name: codegenie-report
-        path: ${{ runner.temp }}/codegenie-report.md
+        path: |
+          ${{ runner.temp }}/codegenie-report.md
+          ${{ runner.temp }}/codegenie-failure.json
         if-no-files-found: ignore

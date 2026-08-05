@@ -324,7 +324,7 @@ async function runPlannerCall(
     timeoutMs: config.review.perPassTimeoutMs,
     schemaRepair: {
       replaceConversation: true,
-      failAfterRepair: true,
+      failAfterRepair: false,
       recoverInvalidSubmit: (input) => recoverPlannerInvalidSubmit(input, telemetry, recovery),
       buildPrompt: (input) => buildPlannerSchemaRepairPrompt(dossier, opts.lenses, input)
     }

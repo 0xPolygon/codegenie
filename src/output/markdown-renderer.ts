@@ -1,11 +1,12 @@
 import type { BudgetLimitEvent, BudgetSummary, FinalFinding, ReviewResult, ReviewRunStats, RunCoverageStatus, RunPostingRecord } from "../types.js";
-import { renderBudgetStopNotice, renderCoverageSummaryLines } from "../util/coverage-summary.js";
+import { renderBudgetStopNotice, renderCoverageSummaryLines, renderCoverageTrustBanner } from "../util/coverage-summary.js";
 import { inlineCode, severityBadge } from "../util/markdown.js";
 
 export function renderMarkdownReview(result: ReviewResult): string {
   const sections = [
     "# 🧞 Codegenie Review",
     "",
+    renderCoverageTrustBanner(result.coverage),
     renderBudgetStopNotice(result.coverage),
     result.summary.trim() || "Review completed.",
     "",
@@ -14,10 +15,23 @@ export function renderMarkdownReview(result: ReviewResult): string {
     renderFindings("Summary-Only Findings", result.summaryOnlyFindings, result.runStats?.git),
     renderNeedsHumanAttention(result),
     renderStats(result.runStats, result.budgetSummary, result.posting),
-    result.noFindings ? "## ✅ No Findings\n\nNo credible findings were found. Everything looks good." : ""
+    renderNoFindings(result)
   ].filter((section) => section.trim().length > 0);
 
   return `${sections.join("\n\n")}\n`;
+}
+
+function renderNoFindings(result: ReviewResult): string {
+  if (!result.noFindings) {
+    return "";
+  }
+  if (result.coverage.partial) {
+    return (
+      "## ⚠️ Review Incomplete\n\n" +
+      "Completed review work produced no credible verified findings, but incomplete coverage or verification prevents a clean conclusion."
+    );
+  }
+  return "## ✅ No Findings\n\nNo credible findings were found. Everything looks good.";
 }
 
 function renderCoverage(coverage: RunCoverageStatus): string {

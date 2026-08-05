@@ -20,7 +20,7 @@ import type {
   UnifiedDiff,
   VerificationVerdict
 } from "../types.js";
-import { coverageDisclosureLines, renderCoverageSummaryLines } from "../util/coverage-summary.js";
+import { coverageDisclosureLines, renderCoverageSummaryLines, renderCoverageTrustBanner } from "../util/coverage-summary.js";
 import { codeBlock, fenceLanguageForPath, inlineCode, severityBadge } from "../util/markdown.js";
 import { sha256Hex } from "../util/hashing.js";
 import { isCompositionTestPath, isDocsPath } from "../util/path-roles.js";
@@ -225,7 +225,9 @@ export async function dedupeRankAndComposeReview(
     telemetry
   );
   const summary = publishableCount === 0
-    ? fallbackSummary(0)
+    ? coverage.partial
+      ? "Review incomplete: completed work produced no credible verified findings, but incomplete coverage or verification prevents a clean conclusion."
+      : fallbackSummary(0)
     : fallbackUsed || compositionDegraded || isNoFindingsSummary(composition.summary) || summaryCountConflicts(composition.summary, publishableCount)
       ? fallbackSummary(publishableCount)
       : composition.summary || fallbackSummary(publishableCount);
@@ -1586,7 +1588,15 @@ function renderReviewBody(
   coverage: RunCoverageStatus,
   omittedNoteCount = 0
 ): string {
-  const lines = ["### 🧞 Codegenie Review", "", summary || "Review completed.", "", ...renderCoverageSummaryLines(coverage).slice(0, 2)];
+  const trustBanner = renderCoverageTrustBanner(coverage);
+  const lines = [
+    "### 🧞 Codegenie Review",
+    "",
+    ...(trustBanner.length > 0 ? [trustBanner, ""] : []),
+    summary || "Review completed.",
+    "",
+    ...renderCoverageSummaryLines(coverage).slice(0, 2)
+  ];
   const coverageDisclosures = coverageDisclosureLines(coverage);
   if (coverageDisclosures.length > 0) {
     lines.push("", "**Coverage disclosure:**", ...coverageDisclosures);

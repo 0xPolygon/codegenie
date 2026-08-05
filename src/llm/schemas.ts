@@ -247,8 +247,11 @@ export const SubmitSystemReviewSchema = Type.Object(
   { additionalProperties: false }
 );
 
+export const VERIFIER_REASON_TARGET_CHARS = 2_000;
+export const VERIFIER_REASON_HARD_MAX_CHARS = 4_000;
+
 const VerificationVerdictSharedProperties = {
-  reason: Type.String({ minLength: 1, maxLength: 2000 }),
+  reason: Type.String({ minLength: 1, maxLength: VERIFIER_REASON_HARD_MAX_CHARS }),
   requiredEvidencePresent: Type.Boolean(),
   falsePositiveRisk: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")]),
   behaviorChange: Type.Optional(BehaviorChangeAssessmentSchema),
@@ -296,7 +299,7 @@ export const SCHEMA_VERSIONS = {
   submit_plan: 5,
   submit_review: 4,
   submit_system_review: 1,
-  submit_verdict: 3,
+  submit_verdict: 4,
   submit_composition: 1
 } as const;
 

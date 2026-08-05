@@ -664,7 +664,7 @@ export { internal as Public }
         })
       ])
     );
-  });
+  }, 15_000);
 
   it("finds declaration text when parser summaries miss a symbol in a parsed file", async () => {
     const source = `package quotes

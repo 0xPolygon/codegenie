@@ -1,4 +1,5 @@
 import { STAGES, type ReviewStageNumber } from "../review-stages.js";
+import type { StructuredSubmitFailureDiagnostic } from "../llm/schema-diagnostics.js";
 
 export type StageState = "pending" | "active" | "done";
 
@@ -67,12 +68,23 @@ export function renderProgressBody(checklist: StageChecklist, runUrl: string | u
   ].join("\n");
 }
 
-export function renderFailureBody(errorCode: string, runUrl: string | undefined): string {
+export function renderFailureBody(
+  errorCode: string,
+  runUrl: string | undefined,
+  diagnostic?: StructuredSubmitFailureDiagnostic
+): string {
   return [
     `**🧞 Codegenie** review failed (\`${errorCode}\`).`,
+    ...(diagnostic !== undefined ? ["", renderStructuredSubmitFailure(diagnostic)] : []),
     "",
     ...renderRunLinkFooter(runUrl)
   ].join("\n");
+}
+
+export function renderStructuredSubmitFailure(diagnostic: StructuredSubmitFailureDiagnostic): string {
+  const issue = diagnostic.issues[0];
+  const issueText = issue !== undefined ? ` (\`${issue.path}\`: ${issue.rule})` : "";
+  return `Stage ${diagnostic.stage} \`${diagnostic.submitTool}\` ${diagnostic.attempt} remained invalid (${diagnostic.classification})${issueText}.`;
 }
 
 export type CappedTerminalBody = {

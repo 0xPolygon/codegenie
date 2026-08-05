@@ -1083,7 +1083,7 @@ describe("plan 106 verifier revision semantics", () => {
       data: {
         candidateId: finding.id,
         submitTool: "submit_verdict",
-        schemaVersion: 3,
+        schemaVersion: 4,
         argumentsNonEmpty: true,
         schemaRepairUsed: false
       }
