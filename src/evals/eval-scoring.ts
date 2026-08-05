@@ -9,6 +9,7 @@ import type {
   EvalExpectationResult,
   EvalFindingExpectation,
   EvalHintEvent,
+  EvalHumanAttentionNote,
   EvalLossDetail,
   EvalLossLabel,
   EvalMatchOutcome,
@@ -337,8 +338,13 @@ function scorePositiveList(
     const loss = list === "should_find"
       ? attributeLoss(expectation, artifacts)
       : attributeCandidateLoss(expectation, artifacts);
-    if (list === "should_find" && expectationMatchesNote(expectation, artifacts)) {
-      loss.surfacedAsNote = true;
+    if (list === "should_find") {
+      if (expectationMatchesNoteCollection(expectation, artifacts.humanAttentionNotes ?? [])) {
+        loss.noteGroupExisted = true;
+      }
+      if (expectationMatchesNote(expectation, artifacts)) {
+        loss.surfacedAsNote = true;
+      }
     }
     return {
       expectationId: expectation.id,
@@ -547,7 +553,11 @@ function sumStageLossCounts(counts: Array<Record<EvalLossLabel, number> | undefi
 // the expectation's path glob against note files and its regex patterns
 // against the note's question and reasons.
 export function expectationMatchesNote(expectation: EvalFindingExpectation, artifacts: EvalArtifacts): boolean {
-  const notes = artifacts.humanAttentionNotes ?? [];
+  const notes = artifacts.humanAttentionOutputNotes ?? artifacts.humanAttentionNotes ?? [];
+  return expectationMatchesNoteCollection(expectation, notes);
+}
+
+function expectationMatchesNoteCollection(expectation: EvalFindingExpectation, notes: EvalHumanAttentionNote[]): boolean {
   if (notes.length === 0) {
     return false;
   }
@@ -1093,7 +1103,10 @@ function verificationOutcome(
     return { subReason: normalizeGateReason(record.gateReason), outcome: `pre-gate=${record.gateReason}${duplicateSuffix}` };
   }
   if (record.verdict.verificationIncomplete === true) {
-    return { subReason: "verification-incomplete", outcome: `outcome=incomplete${duplicateSuffix} reason=${record.verdict.reason}` };
+    const subReason = record.verdict.reason.includes("revise_without_revision_payload")
+      ? "empty-revision"
+      : "verification-incomplete";
+    return { subReason, outcome: `outcome=incomplete${duplicateSuffix} reason=${record.verdict.reason}` };
   }
   if (record.verdict.verdict === "reject") {
     return { subReason: "verifier-rejected", outcome: `verdict=reject${duplicateSuffix} reason=${record.verdict.reason}` };

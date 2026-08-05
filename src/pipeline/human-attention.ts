@@ -102,6 +102,12 @@ type VerificationSuppressionRecord = {
   };
 };
 
+type PublicationFallbackRecord = {
+  groupKey: string;
+  candidateId: string;
+  verdict: VerificationResolution["verdict"];
+};
+
 export type HumanAttentionOutput = {
   notes: NeedsHumanAttentionNote[];
   omittedCount: number;
@@ -110,6 +116,9 @@ export type HumanAttentionOutput = {
   suppressedByVerification: VerificationSuppressionRecord[];
   keptGroups: AttentionHintGroup[];
   selectedGroups: AttentionHintGroup[];
+  publicationFallbacks: PublicationFallbackRecord[];
+  fallbackGroupCount: number;
+  omittedFallbackCount: number;
 };
 
 export function buildHumanAttentionNotes(
@@ -239,8 +248,29 @@ export function selectHumanAttentionForOutput(
   const availableAfterFindings = groups.filter((group) => !findings.some((finding) => attentionGroupCoveredByFinding(group, finding, packetsById)));
   const suppressedByFindingGroups = groups.filter((group) => !availableAfterFindings.includes(group));
   const suppressedByFindings = suppressedByFindingGroups.map(toAttentionNote);
-  const verificationSuppression = suppressAttentionGroupsResolvedByVerification(availableAfterFindings, verificationResolutions);
-  const selected = selectHumanAttentionGroups(verificationSuppression.available);
+  const publishedCandidateIds = new Set(findings.flatMap((finding) => [finding.id, ...finding.mergedCandidateIds]));
+  const activeResolutions = verificationResolutions.filter((resolution) =>
+    resolution.verdict === "reject" || publishedCandidateIds.has(resolution.candidateId)
+  );
+  const fallbackResolutions = verificationResolutions.filter((resolution) =>
+    (resolution.verdict === "keep" || resolution.verdict === "revise") &&
+    !publishedCandidateIds.has(resolution.candidateId)
+  );
+  const verificationSuppression = suppressAttentionGroupsResolvedByVerification(availableAfterFindings, activeResolutions);
+  const publicationFallbacks = verificationSuppression.available.flatMap((group): PublicationFallbackRecord[] => {
+    const match = firstVerificationResolutionMatch(group, fallbackResolutions);
+    return match === undefined ? [] : [{
+      groupKey: group.key,
+      candidateId: match.resolution.candidateId,
+      verdict: match.resolution.verdict
+    }];
+  });
+  const fallbackGroupKeys = new Set(publicationFallbacks.map((fallback) => fallback.groupKey));
+  const fallbackGroups = verificationSuppression.available.filter((group) => fallbackGroupKeys.has(group.key));
+  const ordinaryGroups = verificationSuppression.available.filter((group) => !fallbackGroupKeys.has(group.key));
+  const selected = selectHumanAttentionGroups([...fallbackGroups, ...ordinaryGroups]);
+  const selectedGroupKeys = new Set(selected.groups.map((group) => group.key));
+  const omittedFallbackCount = fallbackGroups.filter((group) => !selectedGroupKeys.has(group.key)).length;
 
   if (suppressedByFindings.length > 0) {
     telemetry?.event({
@@ -278,6 +308,22 @@ export function selectHumanAttentionForOutput(
       }
     });
   }
+  if (fallbackResolutions.length > 0) {
+    telemetry?.event({
+      stage: 10,
+      level: "info",
+      message: "human_attention_publication_fallback",
+      data: {
+        fallbackResolutionCount: fallbackResolutions.length,
+        fallbackCandidateIds: capStrings(fallbackResolutions.map((resolution) => resolution.candidateId)),
+        fallbackGroupCount: fallbackGroups.length,
+        fallbackGroupIds: capStrings(fallbackGroups.map((group) => group.key)),
+        selectedFallbackGroupIds: capStrings(fallbackGroups.filter((group) => selectedGroupKeys.has(group.key)).map((group) => group.key)),
+        omittedFallbackCount,
+        maxHumanAttentionNotes: MAX_HUMAN_ATTENTION_NOTES
+      }
+    });
+  }
 
   return {
     notes: selected.notes,
@@ -286,7 +332,10 @@ export function selectHumanAttentionForOutput(
     suppressedByFindingGroups,
     suppressedByVerification: verificationSuppression.suppressed,
     keptGroups: verificationSuppression.available,
-    selectedGroups: selected.groups
+    selectedGroups: selected.groups,
+    publicationFallbacks: publicationFallbacks.slice(0, HUMAN_ATTENTION_LOCATION_CAP),
+    fallbackGroupCount: fallbackGroups.length,
+    omittedFallbackCount
   };
 }
 
@@ -395,6 +444,10 @@ export function humanAttentionArtifact(
     outputGroupIds: output.selectedGroups.map((group) => group.key),
     outputNotes: output.notes,
     omittedCount: output.omittedCount,
+    publicationFallbacks: output.publicationFallbacks,
+    fallbackGroupIds: output.publicationFallbacks.map((fallback) => fallback.groupKey),
+    fallbackGroupCount: output.fallbackGroupCount,
+    omittedFallbackCount: output.omittedFallbackCount,
     suppressedByFindings: output.suppressedByFindingGroups.map((group) => ({
       groupKey: group.key,
       noteIds: [...group.rawNoteIds].sort()

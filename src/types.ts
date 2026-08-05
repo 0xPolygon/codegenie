@@ -769,6 +769,14 @@ export type CandidateFindingProvenance = {
   files: string[];
   symbols: string[];
   reason: string;
+  relatedSignals?: Array<{
+    packetId: string;
+    sourceKind: "uncertainty" | "follow_up_hint";
+    question: string;
+    files: string[];
+    symbols: string[];
+  }>;
+  crossPacketRelatedCount?: number;
 };
 
 // Anchor provenance (plan 76). Publication trusts only "model",
@@ -888,6 +896,12 @@ export type VerificationVerdict = {
   verificationIncomplete?: boolean;
   behaviorChange?: BehaviorChangeAssessment;
   intentEvidence?: string[];
+  severityRevision?: {
+    original: Severity;
+    submitted: Severity;
+    applied: Severity;
+    deltaLevels: number;
+  };
 };
 
 export type FinalFinding = CandidateFinding & {
@@ -1109,6 +1123,9 @@ export type EvalLossDetail = {
   // The lost expectation resurfaced as a published Needs Human Attention note
   // (plan 79) — the NOTE outcome, a less-bad loss than a silent miss.
   surfacedAsNote?: boolean;
+  // The predicate existed in an internal attention group even if output
+  // selection did not render it (plan 110 diagnostic only).
+  noteGroupExisted?: boolean;
 };
 
 export type EvalExpectationResult = {
@@ -1349,8 +1366,10 @@ export type EvalArtifacts = {
   // crashing and destroying the run's data point (plan 89 A1).
   missingArtifacts?: string[];
   // Published Needs Human Attention notes (plan 79): lets scoring distinguish
-  // a finding that resurfaced as a note (NOTE) from a silent miss (MISS).
+  // historical internal groups from a silent miss. New artifacts additionally
+  // carry the actually rendered output notes below (plan 110).
   humanAttentionNotes?: EvalHumanAttentionNote[];
+  humanAttentionOutputNotes?: EvalHumanAttentionNote[];
   reviewPlan?: ReviewPlan;
   // Plan 92 Layer 1 attention records (attention.json); absent on runs
   // predating the instrument.

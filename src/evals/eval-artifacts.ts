@@ -48,6 +48,7 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
   const coverageRaw = await readOptionalArtifact<unknown>(dir, "coverage.json");
   const reviewPlan = await readOptionalArtifact<ReviewPlan>(dir, "review-plan.json");
   const attention = await readOptionalArtifact<AttentionRecord[]>(dir, "attention.json");
+  const humanAttention = await readOptionalArtifact<unknown>(dir, "human-attention-notes.json");
   const coverage = normalizeCoverage(coverageRaw);
   const metricsSources: EvalArtifacts["metricsSources"] = {};
   const costProfile = await readOptionalArtifact<unknown>(dir, "cost-profile.json");
@@ -88,11 +89,15 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
     finalSelection: normalizeSelection(selectionRaw),
     finalFindings: Array.isArray(finalFindings) ? finalFindings : [],
     missingArtifacts,
-    humanAttentionNotes: normalizeHumanAttentionNotes(await readOptionalArtifact<unknown>(dir, "human-attention-notes.json")),
+    humanAttentionNotes: normalizeHumanAttentionNotes(humanAttention),
     packets: await loadPackets(path.join(dir, "stages", "06-packets", "packets")),
     hintEvents: await loadHintEvents(path.join(dir, "events.jsonl")),
     metricsSources
   };
+  const humanAttentionOutputNotes = normalizeHumanAttentionOutputNotes(humanAttention);
+  if (humanAttentionOutputNotes !== undefined) {
+    artifacts.humanAttentionOutputNotes = humanAttentionOutputNotes;
+  }
   if (attention !== undefined && Array.isArray(attention)) {
     artifacts.attention = attention;
   }
@@ -205,6 +210,13 @@ function normalizeHumanAttentionNotes(raw: unknown): EvalHumanAttentionNote[] {
         : [];
     return [{ question, files, reasons }];
   });
+}
+
+function normalizeHumanAttentionOutputNotes(raw: unknown): EvalHumanAttentionNote[] | undefined {
+  if (!isRecord(raw) || !("outputNotes" in raw)) {
+    return undefined;
+  }
+  return normalizeHumanAttentionNotes(raw.outputNotes);
 }
 
 // Optional artifact read with the same pre-layout-v2 root fallback as

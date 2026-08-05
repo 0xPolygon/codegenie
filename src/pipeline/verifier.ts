@@ -11,6 +11,7 @@ import type {
   RepositoryTools,
   ReviewPacket,
   ReviewStage,
+  Severity,
   UnifiedDiff,
   VerificationVerdict
 } from "../types.js";
@@ -118,6 +119,7 @@ type VerificationRuntimeStats = {
 
 type VerifierSchemaInvalidKind =
   | "xml_parameter_bleed"
+  | "revise_without_revision_payload"
   | "missing_submit_tool"
   | "invalid_tool_arguments"
   | "extra_tool_calls"
@@ -601,12 +603,13 @@ async function verifyCandidate(
   });
   const submitted = await runVerifierStructured(candidate, prompt, tools, config, opts, workerId, telemetry, runtimeStats);
   const normalized = normalizeSubmittedVerdict(candidate, submitted, telemetry);
-  const revised = normalized.finalFinding !== undefined
-    ? revisedFinding(candidate, normalized.finalFinding, packet, opts.diff)
+  const submittedFinalFinding = normalized.finalFinding;
+  const revised = submittedFinalFinding !== undefined
+    ? revisedFinding(candidate, submittedFinalFinding, packet, opts.diff)
     : undefined;
   const revisedAnchor = normalizeAnchor(normalized.revisedAnchor, packet, opts.diff);
   const verificationIncomplete = normalized.reason.startsWith("verification incomplete:");
-  return {
+  const verdict: VerificationVerdict = {
     candidateId: candidate.id,
     verdict: verificationIncomplete ? "incomplete" : normalized.verdict,
     reason: normalized.reason,
@@ -617,6 +620,45 @@ async function verifyCandidate(
     ...(verificationIncomplete ? { verificationIncomplete: true } : {}),
     ...(normalized.behaviorChange !== undefined ? { behaviorChange: normalized.behaviorChange } : {}),
     ...(normalized.intentEvidence !== undefined ? { intentEvidence: normalized.intentEvidence } : {})
+  };
+  if (verdict.verdict === "revise" && revised !== undefined && submittedFinalFinding !== undefined) {
+    // Derive the audit from the same fully policy-applied candidate that enters
+    // the verified set, including any verdict-level behavior assessment.
+    const policyAppliedRevision = applyVerificationVerdict(candidate, verdict);
+    const severityRevision = buildSeverityRevision(
+      candidate.severity,
+      submittedFinalFinding.severity,
+      policyAppliedRevision.severity
+    );
+    telemetry.event({
+      stage: 9,
+      level: severityRevision.deltaLevels >= 2 ? "info" : "debug",
+      message: "verification_severity_revision",
+      file: candidate.path,
+      data: {
+        candidateId: candidate.id,
+        category: policyAppliedRevision.category,
+        behaviorChange: policyAppliedRevision.behaviorChange,
+        ...severityRevision
+      }
+    });
+    return { ...verdict, severityRevision };
+  }
+  return verdict;
+}
+
+const SEVERITY_RANK: Record<Severity, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+
+function buildSeverityRevision(
+  original: Severity,
+  submitted: Severity,
+  applied: Severity
+): NonNullable<VerificationVerdict["severityRevision"]> {
+  return {
+    original,
+    submitted,
+    applied,
+    deltaLevels: SEVERITY_RANK[submitted] - SEVERITY_RANK[original]
   };
 }
 
@@ -643,8 +685,48 @@ function normalizeSubmittedVerdict(
   submitted: SubmitVerificationVerdict,
   telemetry: TelemetryRecorder
 ): SubmitVerificationVerdict {
-  if (submitted.verdict === "reject" || submitted.requiredEvidencePresent === true) {
-    return submitted;
+  // Schema-valid adapters never return null payloads, but normalize them away
+  // defensively before applying the same semantic checks to every verdict.
+  const {
+    finalFinding: rawFinalFinding,
+    revisedAnchor: rawRevisedAnchor,
+    ...submittedWithoutPayloads
+  } = submitted;
+  const finalFinding = rawFinalFinding ?? undefined;
+  const revisedAnchor = rawRevisedAnchor ?? undefined;
+  let normalized = {
+    ...submittedWithoutPayloads,
+    ...(finalFinding !== undefined ? { finalFinding } : {}),
+    ...(revisedAnchor !== undefined ? { revisedAnchor } : {})
+  } as SubmitVerificationVerdict;
+
+  if (normalized.verdict === "keep" && (finalFinding !== undefined || revisedAnchor !== undefined)) {
+    const payloadKinds = [
+      ...(finalFinding !== undefined ? ["finalFinding"] : []),
+      ...(revisedAnchor !== undefined ? ["revisedAnchor"] : [])
+    ];
+    telemetry.event({
+      stage: 9,
+      level: "warn",
+      message: "verification_keep_payload_canonicalized",
+      file: candidate.path,
+      data: { candidateId: candidate.id, payloadKinds }
+    });
+    normalized = { ...normalized, verdict: "revise" } as SubmitVerificationVerdict;
+  }
+  if (normalized.verdict === "revise" && finalFinding === undefined && revisedAnchor === undefined) {
+    const reason = "revise_without_revision_payload";
+    telemetry.event({
+      stage: 9,
+      level: "warn",
+      message: "verification_semantic_invalid",
+      file: candidate.path,
+      data: { candidateId: candidate.id, reason }
+    });
+    return incompleteSubmittedVerdict(reason);
+  }
+  if (normalized.verdict === "reject" || normalized.requiredEvidencePresent === true) {
+    return normalized;
   }
   telemetry.event({
     stage: 9,
@@ -654,12 +736,12 @@ function normalizeSubmittedVerdict(
     data: {
       candidateId: candidate.id,
       originalVerdict: submitted.verdict,
-      falsePositiveRisk: submitted.falsePositiveRisk
+      falsePositiveRisk: normalized.falsePositiveRisk
     }
   });
   return {
     verdict: "reject",
-    reason: `required evidence missing; original ${submitted.verdict} verdict rejected: ${submitted.reason}`,
+    reason: `required evidence missing; original ${submitted.verdict} verdict rejected: ${normalized.reason}`,
     requiredEvidencePresent: false,
     falsePositiveRisk: "high"
   };
@@ -822,7 +904,7 @@ function buildVerifierSchemaRepairPrompt(
     "",
     "Verdict reminder:",
     "- keep only if the candidate is proven by concrete evidence.",
-    "- revise only when the same issue is real but the evidence, wording, or anchor needs correction.",
+    "- revise only when the same issue is real but the evidence, wording, or anchor needs correction; include finalFinding or revisedAnchor.",
     "- reject when required evidence is missing, the claim is speculative, or false-positive risk is high.",
     "- If rejecting because verification cannot be completed, set requiredEvidencePresent=false and falsePositiveRisk=high."
   ].join("\n");
@@ -836,6 +918,15 @@ function classifyVerifierSchemaInvalid(input: LlmSchemaRepairInput | string): Ve
   const text = `${errorText}\n${serializedSubmitArgs}`.toLowerCase();
   if (/<\/?\s*parameter\b/u.test(text) || /&lt;\/?\s*parameter\b/u.test(text)) {
     return "xml_parameter_bleed";
+  }
+  if (typeof input !== "string" && input.submitCalls.some((call) => {
+    const argumentsValue = call.arguments;
+    return typeof argumentsValue === "object" && argumentsValue !== null &&
+      "verdict" in argumentsValue && argumentsValue.verdict === "revise" &&
+      (!("finalFinding" in argumentsValue) || argumentsValue.finalFinding == null) &&
+      (!("revisedAnchor" in argumentsValue) || argumentsValue.revisedAnchor == null);
+  })) {
+    return "revise_without_revision_payload";
   }
   if (typeof input !== "string" && input.extraToolNames.length > 0) {
     return "extra_tool_calls";

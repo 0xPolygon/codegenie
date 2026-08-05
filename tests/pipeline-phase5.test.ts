@@ -45,7 +45,8 @@ import type {
   StaticSignal,
   SymbolMentionOptions,
   TelemetryEvent,
-  UnifiedDiff
+  UnifiedDiff,
+  VerificationVerdict
 } from "../src/types.js";
 import { CodegenieError } from "../src/util/errors.js";
 import { sha256Hex } from "../src/util/hashing.js";
@@ -8377,7 +8378,69 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("marks verifier schema-invalid after compact repair incomplete with classification", async () => {
+  it("repairs an empty revise with a required structured payload", async () => {
+    let repairPrompt = "";
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
+          stage: 9,
+          submitTool: "submit_verdict",
+          error: "schema-invalid arguments: revise requires a revision payload",
+          submitCalls: [{
+            id: "submit-verdict-empty-revise",
+            arguments: {
+              verdict: "revise",
+              reason: "The issue is real but needs changes.",
+              requiredEvidencePresent: true,
+              falsePositiveRisk: "low"
+            }
+          }],
+          extraToolNames: []
+        }) ?? "";
+        return {
+          verdict: "revise",
+          reason: "The issue is real and the exact changed line is proven.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low",
+          revisedAnchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" }
+        } as T;
+      }
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        }
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff(),
+        checkpoint: () => "ok"
+      }
+    );
+
+    expect(repairPrompt).toContain("- class: revise_without_revision_payload");
+    expect(repairPrompt).toContain("include finalFinding or revisedAnchor");
+    expect(verified.verdicts[0]).toMatchObject({ verdict: "revise", revisedAnchor: { path: "app.ts", line: 1 } });
+    expect(verified.verified).toHaveLength(1);
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "verification_schema_repair_attempted",
+      data: expect.objectContaining({ classification: "revise_without_revision_payload" })
+    }));
+  });
+
+  it("marks an empty revise incomplete when its compact repair also fails", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const artifacts = new Map<string, unknown>();
     const runner: LlmRunner = {
@@ -8385,8 +8448,11 @@ describe("phase 5 pipeline regressions", () => {
         request.schemaRepair?.buildPrompt?.({
           stage: 9,
           submitTool: "submit_verdict",
-          error: "schema-invalid arguments: <parameter>BAD_PRIOR_XML_BODY</parameter>",
-          submitCalls: [{ id: "submit-verdict-bad", arguments: { parameter: "<parameter>BAD_PRIOR_XML_BODY</parameter>" } }],
+          error: "schema-invalid arguments: revise requires a revision payload",
+          submitCalls: [{
+            id: "submit-verdict-bad",
+            arguments: { verdict: "revise", reason: "prose-only revision", requiredEvidencePresent: true, falsePositiveRisk: "low" }
+          }],
           extraToolNames: []
         });
         throw new CodegenieError("llm_schema_invalid", "bad verifier schema after repair", {
@@ -8430,7 +8496,7 @@ describe("phase 5 pipeline regressions", () => {
         incompleteReason: "schema_invalid",
         verdict: expect.objectContaining({
           verificationIncomplete: true,
-          reason: expect.stringContaining("schema_invalid_after_repair: xml_parameter_bleed")
+          reason: expect.stringContaining("schema_invalid_after_repair: revise_without_revision_payload")
         })
       })
     ]);
@@ -8440,7 +8506,7 @@ describe("phase 5 pipeline regressions", () => {
       message: "verification_schema_repair_failed",
       data: expect.objectContaining({
         candidateId: "finding-1",
-        classification: "xml_parameter_bleed"
+        classification: "revise_without_revision_payload"
       })
     }));
     expect(events).toContainEqual(expect.objectContaining({
@@ -8456,7 +8522,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("marks schema-invalid verifier output incomplete when repair cannot be dispatched", async () => {
+  it("marks an empty revise incomplete when budget prevents repair dispatch", async () => {
     let calls = 0;
     const artifacts = new Map<string, unknown>();
     const runner: LlmRunner = {
@@ -8465,8 +8531,11 @@ describe("phase 5 pipeline regressions", () => {
         request.schemaRepair?.buildPrompt?.({
           stage: 9,
           submitTool: "submit_verdict",
-          error: "missing required property verdict",
-          submitCalls: [{ id: "submit-verdict-bad", arguments: { reason: "missing verdict" } }],
+          error: "schema-invalid arguments: revise requires a revision payload",
+          submitCalls: [{
+            id: "submit-verdict-bad",
+            arguments: { verdict: "revise", reason: "prose-only revision", requiredEvidencePresent: true, falsePositiveRisk: "low" }
+          }],
           extraToolNames: []
         });
         throw new CodegenieError("budget_exhausted", "budget exhausted before repair dispatch", {
@@ -8508,7 +8577,7 @@ describe("phase 5 pipeline regressions", () => {
         incompleteReason: "schema_invalid",
         verdict: expect.objectContaining({
           verificationIncomplete: true,
-          reason: expect.stringContaining("repair not dispatched")
+          reason: expect.stringContaining("repair not dispatched because budget was exhausted: revise_without_revision_payload")
         })
       })
     ]);
@@ -11584,8 +11653,186 @@ describe("phase 5 pipeline regressions", () => {
       stage: 10,
       message: "low_confidence_verified_delta_published",
       file: finding.path,
-      data: expect.objectContaining({ findingId: finding.id })
+      data: expect.objectContaining({ findingId: finding.id, anchorless: false, publication: "inline" })
     }));
+  });
+
+  it("publishes a qualified promotion after withholding its gate-only anchor as summary-only", async () => {
+    const finding = lowConfidenceDeltaFinding("promotion-anchorless", {
+      anchorSource: "backfill_packet_representative",
+      provenance: {
+        source: "uncertainty_promotion",
+        sourceKind: "follow_up_hint",
+        sourcePacketId: "packet-1",
+        question: "Does the scaled amount remain deliverable?",
+        files: ["app.ts"],
+        symbols: ["calculateAmountFromUSD"],
+        reason: "The changed conversion may overstate a caller-visible bound."
+      }
+    });
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const artifacts = new Map<string, unknown>();
+
+    const result = await dedupeRankAndComposeReview(
+      {
+        verified: [finding],
+        verdicts: [qualifiedLowConfidenceVerdict(finding.id)]
+      },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event) => {
+          events.push(event);
+        },
+        writeArtifact: async (name, data) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            summary: "Found 1 verified issue.",
+            composedFindings: [{ findingIds: [finding.id], finalBody: "The changed conversion can overstate the deliverable amount.", publication: "inline" }]
+          }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.noFindings).toBe(false);
+    expect(result.findings).toEqual([]);
+    expect(result.summaryOnlyFindings).toEqual([
+      expect.objectContaining({ id: finding.id, publication: "summary-only", changedLine: false })
+    ]);
+    expect(result.summaryOnlyFindings[0]?.anchor).toBeUndefined();
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "representative_anchor_withheld", data: expect.objectContaining({ candidateId: finding.id }) }),
+      expect.objectContaining({
+        message: "low_confidence_verified_delta_published",
+        data: expect.objectContaining({ findingId: finding.id, anchorless: true, publication: "summary-only" })
+      })
+    ]));
+    expect(artifacts.get("final-selection.json")).toMatchObject({
+      records: [expect.objectContaining({ findingId: finding.id, decision: "published", reason: "low-confidence-anchorless" })]
+    });
+  });
+
+  it("requires complete evidence-backed non-high-risk keep or revise verdicts for the low-confidence hatch", async () => {
+    const finding = lowConfidenceDeltaFinding();
+    const cases: Array<{ name: string; verdict: VerificationVerdict; published: boolean }> = [
+      { name: "keep", verdict: qualifiedLowConfidenceVerdict(finding.id), published: true },
+      { name: "revise", verdict: { ...qualifiedLowConfidenceVerdict(finding.id), verdict: "revise" }, published: true },
+      { name: "missing evidence", verdict: { ...qualifiedLowConfidenceVerdict(finding.id), requiredEvidencePresent: false }, published: false },
+      { name: "high risk", verdict: { ...qualifiedLowConfidenceVerdict(finding.id), falsePositiveRisk: "high" }, published: false },
+      { name: "incomplete", verdict: { ...qualifiedLowConfidenceVerdict(finding.id), verificationIncomplete: true }, published: false },
+      { name: "reject", verdict: { ...qualifiedLowConfidenceVerdict(finding.id), verdict: "reject" }, published: false }
+    ];
+
+    for (const testCase of cases) {
+      const result = await dedupeRankAndComposeReview(
+        { verified: [finding], verdicts: [testCase.verdict] },
+        fakePlan(),
+        { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+        fakeCoverage(),
+        config(),
+        nullTelemetry(),
+        {
+          runner: { runStructured: async () => { throw composerTransientError(); } },
+          promptBuilder: fakePromptBuilder(),
+          diff: fakeDiff()
+        }
+      );
+
+      expect(result.noFindings, testCase.name).toBe(!testCase.published);
+      expect(result.findings, testCase.name).toHaveLength(testCase.published ? 1 : 0);
+    }
+  });
+
+  it("uses only the final representative verdict when merged members disagree on hatch qualification", async () => {
+    const representative = lowConfidenceDeltaFinding("a-representative");
+    const sibling = lowConfidenceDeltaFinding("z-sibling");
+    for (const { name, representativeVerdict, siblingVerdict, published } of [
+      {
+        name: "qualifying sibling cannot lend eligibility",
+        representativeVerdict: { ...qualifiedLowConfidenceVerdict(representative.id), requiredEvidencePresent: false },
+        siblingVerdict: qualifiedLowConfidenceVerdict(sibling.id),
+        published: false
+      },
+      {
+        name: "non-qualifying sibling cannot revoke eligibility",
+        representativeVerdict: qualifiedLowConfidenceVerdict(representative.id),
+        siblingVerdict: { ...qualifiedLowConfidenceVerdict(sibling.id), falsePositiveRisk: "high" as const },
+        published: true
+      }
+    ]) {
+      const result = await dedupeRankAndComposeReview(
+        { verified: [representative, sibling], verdicts: [representativeVerdict, siblingVerdict] },
+        fakePlan(),
+        { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+        fakeCoverage(),
+        config(),
+        nullTelemetry(),
+        {
+          runner: { runStructured: async () => { throw composerTransientError(); } },
+          promptBuilder: fakePromptBuilder(),
+          diff: fakeDiff()
+        }
+      );
+
+      expect(result.noFindings, name).toBe(!published);
+      expect(result.findings, name).toEqual(published
+        ? [expect.objectContaining({ id: representative.id, mergedCandidateIds: expect.arrayContaining([representative.id, sibling.id]) })]
+        : []);
+    }
+  });
+
+  it("still applies the ordinary report cap after the low-confidence hatch", async () => {
+    const first = lowConfidenceDeltaFinding("a-first");
+    const second = lowConfidenceDeltaFinding("z-second", {
+      path: "second.ts",
+      anchor: { path: "second.ts", line: 1, side: "RIGHT", hunkId: "h2" },
+      category: "security",
+      evidence: {
+        changedCode: "+ return calculateSecondAmount(price, decimals)",
+        relatedCode: [{ path: "src/second-caller.ts", lines: "17: calculateSecondAmount(price, decimals)", whyRelevant: "A second caller reaches this changed conversion." }]
+      }
+    });
+    const artifacts = new Map<string, unknown>();
+    const result = await dedupeRankAndComposeReview(
+      {
+        verified: [first, second],
+        verdicts: [qualifiedLowConfidenceVerdict(first.id), qualifiedLowConfidenceVerdict(second.id)]
+      },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      { ...config(), review: { ...config().review, maxFindings: 1, softCommentCap: 100 } },
+      {
+        ...nullTelemetry(),
+        writeArtifact: async (name, data) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner: { runStructured: async () => { throw composerTransientError(); } },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeChangedLineDiff([
+          { path: "app.ts", hunkId: "h1", line: 1, content: "return calculateAmountFromUSD(price, decimals)" },
+          { path: "second.ts", hunkId: "h2", line: 1, content: "return calculateSecondAmount(price, decimals)" }
+        ])
+      }
+    );
+
+    expect(result.findings).toEqual([expect.objectContaining({ id: first.id, publication: "inline" })]);
+    expect(artifacts.get("final-selection.json")).toMatchObject({
+      records: expect.arrayContaining([
+        expect.objectContaining({ findingId: second.id, decision: "suppressed", reason: "report-cap" })
+      ])
+    });
   });
 
   it("continues suppressing broad low-confidence findings even after verification", async () => {
@@ -12650,6 +12897,138 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.needsHumanAttention).toEqual([]);
   });
 
+  it("renders the matching fallback note when a completed keep is suppressed by publication quality", async () => {
+    const base = verifierResolutionCandidate();
+    const candidate: CandidateFinding = {
+      ...base,
+      confidence: "low",
+      anchorSource: "backfill_packet_representative",
+      failureMode: "Maybe this path changes.",
+      whyThisMatters: "A caller-visible fee may be wrong.",
+      suggestedTest: "Confirm the zero-price fee case."
+    };
+    const artifacts = new Map<string, unknown>();
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const result = await dedupeRankAndComposeReview(
+      {
+        verified: [candidate],
+        verdicts: [{
+          candidateId: candidate.id,
+          verdict: "keep",
+          reason: "The predicate is confirmed, but the retained wording is still broad.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "medium"
+        }]
+      },
+      fakePlan("billing/fee.ts"),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event) => events.push(event),
+        writeArtifact: async (name, data) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            summary: "Found one issue.",
+            composedFindings: [{ findingIds: [candidate.id], finalBody: "The fee predicate remains broad.", publication: "inline" }]
+          }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packets: [verifierResolutionPacket()],
+        packetResults: [packetResultWithFindingAndHint(candidate, "billing/fee.ts")],
+        diff: fakeChangedLineDiff([{ path: "billing/fee.ts", hunkId: "h1", line: 12, content: "return calculateFee(input)" }])
+      }
+    );
+
+    expect(result.findings).toEqual([]);
+    expect(result.summaryOnlyFindings).toEqual([]);
+    expect(result.needsHumanAttention).toEqual([
+      expect.objectContaining({
+        question: "Check whether normalizeAmount rejects zero prices before fee calculation.",
+        files: ["billing/fee.ts"]
+      })
+    ]);
+    expect(artifacts.get("final-selection.json")).toMatchObject({
+      records: [expect.objectContaining({ findingId: candidate.id, decision: "suppressed", reason: "confidence-threshold" })]
+    });
+    expect(artifacts.get("human-attention-notes.json")).toMatchObject({
+      outputNotes: [expect.objectContaining({ question: "Check whether normalizeAmount rejects zero prices before fee calculation." })],
+      fallbackGroupCount: 1,
+      omittedFallbackCount: 0,
+      publicationFallbacks: [expect.objectContaining({ candidateId: candidate.id, verdict: "keep" })]
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "human_attention_publication_fallback",
+      data: expect.objectContaining({ fallbackCandidateIds: [candidate.id], fallbackGroupCount: 1, omittedFallbackCount: 0 })
+    }));
+  });
+
+  it("publishes a fully concrete completed keep summary-only and suppresses its redundant note", async () => {
+    const base = verifierResolutionCandidate();
+    const candidate: CandidateFinding = {
+      ...base,
+      confidence: "low",
+      anchorSource: "backfill_packet_representative",
+      failureMode: "The changed fee path accepts a zero price and produces an incorrect caller-visible fee instead of rejecting input.",
+      whyThisMatters: "A reachable billing caller can receive an invalid fee for a zero-price quote.",
+      suggestedTest: "Add a regression test that confirms zero-price input is rejected before fee calculation.",
+      verification: "Verifier confirmed the changed calculateFee path and the related normalizeAmount behavior."
+    };
+    const artifacts = new Map<string, unknown>();
+    const result = await dedupeRankAndComposeReview(
+      {
+        verified: [candidate],
+        verdicts: [{
+          candidateId: candidate.id,
+          verdict: "keep",
+          reason: "The concrete behavior delta and caller path are confirmed.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "medium"
+        }]
+      },
+      fakePlan("billing/fee.ts"),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      {
+        ...nullTelemetry(),
+        writeArtifact: async (name, data) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            summary: "Found one issue.",
+            composedFindings: [{ findingIds: [candidate.id], finalBody: "The zero-price fee path remains reachable.", publication: "inline" }]
+          }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        packets: [verifierResolutionPacket()],
+        packetResults: [packetResultWithFindingAndHint(candidate, "billing/fee.ts")],
+        diff: fakeChangedLineDiff([{ path: "billing/fee.ts", hunkId: "h1", line: 12, content: "return calculateFee(input)" }])
+      }
+    );
+
+    expect(result.summaryOnlyFindings).toEqual([
+      expect.objectContaining({ id: candidate.id, publication: "summary-only", changedLine: false })
+    ]);
+    expect(result.needsHumanAttention).toEqual([]);
+    expect(artifacts.get("final-selection.json")).toMatchObject({
+      records: [expect.objectContaining({ findingId: candidate.id, decision: "published", reason: "low-confidence-anchorless" })]
+    });
+    expect(artifacts.get("human-attention-notes.json")).toMatchObject({
+      outputNotes: [],
+      fallbackGroupCount: 0,
+      omittedFallbackCount: 0
+    });
+  });
+
   it("suppresses human-attention notes resolved by verifier rejection with evidence", async () => {
     const artifacts = new Map<string, unknown>();
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
@@ -13524,6 +13903,39 @@ function fakeFinding(): CandidateFinding {
     whyThisMatters: "matters",
     verification: "verified",
     producedBy: { kind: "packet", stage: 7, packetId: "packet-1", lensId: "core/code-review", skillIds: [] }
+  };
+}
+
+function lowConfidenceDeltaFinding(id = "finding-1", overrides: Partial<CandidateFinding> = {}): CandidateFinding {
+  return {
+    ...fakeFinding(),
+    id,
+    confidence: "low",
+    anchorSource: "model",
+    category: "correctness",
+    evidence: {
+      changedCode: "+ return calculateAmountFromUSD(price, decimals)",
+      relatedCode: [{
+        path: "src/caller.ts",
+        lines: "42: calculateAmountFromUSD(price, decimals)",
+        whyRelevant: "The caller still reaches the changed conversion path."
+      }]
+    },
+    failureMode: "The changed conversion path rejects a concrete token-decimal case that the previous implementation accepted.",
+    whyThisMatters: "A reachable caller can now fail a request that previously succeeded.",
+    suggestedTest: "Add a regression test for the changed conversion path with the affected decimal case.",
+    verification: "Verifier confirmed the changed line and related caller path; reproduce the affected case.",
+    ...overrides
+  };
+}
+
+function qualifiedLowConfidenceVerdict(candidateId: string): VerificationVerdict {
+  return {
+    candidateId,
+    verdict: "keep",
+    reason: "The decisive behavior delta is verified.",
+    requiredEvidencePresent: true,
+    falsePositiveRisk: "medium"
   };
 }
 

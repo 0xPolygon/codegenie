@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+  type AttentionHintGroup,
   buildHumanAttentionNotes,
   buildVerificationResolutionIndex,
+  selectHumanAttentionForOutput,
+  type VerificationResolution,
   suppressAttentionGroupsResolvedByVerification
 } from "../src/pipeline/human-attention.js";
 import type {
   CandidateFinding,
+  FinalFinding,
   PacketReviewResult,
   ReviewPacket,
   RunCoverageStatus,
@@ -165,3 +169,164 @@ describe("plan 75 step 1: adjudicated-reject note suppression", () => {
     expect(suppressed).toHaveLength(0);
   });
 });
+
+describe("plan 110 publication-aware note fallback", () => {
+  it("keeps unpublished keep/revise resolutions as fallbacks while published resolutions and rejects stay active", () => {
+    const group = attentionGroup(1);
+    const keep = fallbackResolution(group, "candidate-keep", "keep");
+
+    const unpublished = selectHumanAttentionForOutput([group], [], new Map(), [keep]);
+    expect(unpublished.notes).toHaveLength(1);
+    expect(unpublished.suppressedByVerification).toEqual([]);
+    expect(unpublished.publicationFallbacks).toEqual([
+      { groupKey: group.key, candidateId: "candidate-keep", verdict: "keep" }
+    ]);
+
+    const published = selectHumanAttentionForOutput(
+      [group],
+      [publishedFinding("candidate-keep")],
+      new Map(),
+      [keep]
+    );
+    expect(published.notes).toEqual([]);
+    expect(published.suppressedByVerification).toEqual([
+      expect.objectContaining({ candidateId: "candidate-keep", verdict: "keep" })
+    ]);
+
+    const reject = selectHumanAttentionForOutput(
+      [group],
+      [],
+      new Map(),
+      [fallbackResolution(group, "candidate-reject", "reject")]
+    );
+    expect(reject.notes).toEqual([]);
+    expect(reject.suppressedByVerification).toEqual([
+      expect.objectContaining({ candidateId: "candidate-reject", verdict: "reject" })
+    ]);
+  });
+
+  it("prioritizes a sixth-ranked publication fallback inside the unchanged five-note cap", () => {
+    const groups = Array.from({ length: 6 }, (_, index) => attentionGroup(index + 1));
+    const fallback = fallbackResolution(groups[5]!, "candidate-sixth", "keep");
+    const events: Array<{ message: string; data?: Record<string, unknown> }> = [];
+
+    const output = selectHumanAttentionForOutput(
+      groups,
+      [],
+      new Map(),
+      [fallback],
+      { ...nullTelemetry(), event: (event) => events.push(event as never) }
+    );
+
+    expect(output.selectedGroups.map((group) => group.key)).toEqual([
+      groups[5]!.key,
+      groups[0]!.key,
+      groups[1]!.key,
+      groups[2]!.key,
+      groups[3]!.key
+    ]);
+    expect(output.notes).toHaveLength(5);
+    expect(output.omittedCount).toBe(1);
+    expect(output.fallbackGroupCount).toBe(1);
+    expect(output.omittedFallbackCount).toBe(0);
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "human_attention_publication_fallback",
+      data: expect.objectContaining({
+        fallbackGroupCount: 1,
+        fallbackGroupIds: [groups[5]!.key],
+        omittedFallbackCount: 0,
+        maxHumanAttentionNotes: 5
+      })
+    }));
+  });
+
+  it("renders the highest-ranked five when publication fallbacks overflow the cap", () => {
+    const groups = Array.from({ length: 6 }, (_, index) => attentionGroup(index + 1));
+    const output = selectHumanAttentionForOutput(
+      groups,
+      [],
+      new Map(),
+      groups.map((group, index) => fallbackResolution(group, `candidate-${String(index + 1)}`, "revise"))
+    );
+
+    expect(output.selectedGroups.map((group) => group.key)).toEqual(groups.slice(0, 5).map((group) => group.key));
+    expect(output.fallbackGroupCount).toBe(6);
+    expect(output.omittedFallbackCount).toBe(1);
+    expect(output.publicationFallbacks).toHaveLength(6);
+  });
+});
+
+function attentionGroup(index: number): AttentionHintGroup {
+  const packetId = `packet-${String(index)}`;
+  const question = `Does fallback predicate ${String(index)} remain valid?`;
+  const file = `src/file-${String(index)}.ts`;
+  const symbol = `predicate${String(index)}`;
+  return {
+    key: `group-${String(index)}`,
+    representative: {
+      id: `note-${String(index)}`,
+      source: "follow_up_hint",
+      question,
+      files: [file],
+      originalFiles: [file],
+      droppedPaths: [],
+      symbols: [symbol],
+      suggestedLenses: [],
+      reason: `Predicate ${String(index)} needs verification.`,
+      confidence: "medium",
+      packetId
+    },
+    files: [file],
+    symbols: [symbol],
+    reasons: [`Predicate ${String(index)} needs verification.`],
+    rawNoteIds: new Set([`note-${String(index)}`]),
+    droppedPaths: [],
+    invalidPathCount: 0,
+    packetIds: new Set([packetId]),
+    sources: new Set(["follow_up_hint"]),
+    count: 1
+  };
+}
+
+function fallbackResolution(
+  group: AttentionHintGroup,
+  candidateId: string,
+  verdict: VerificationResolution["verdict"]
+): VerificationResolution {
+  return {
+    source: "stage9_verified_predicate",
+    candidateId,
+    verdict,
+    reason: "The predicate was adjudicated.",
+    files: group.files,
+    symbols: group.symbols,
+    terms: new Set(),
+    questionKeys: new Set(),
+    provenance: {
+      source: "uncertainty_promotion",
+      sourceKind: "follow_up_hint",
+      sourcePacketId: group.representative.packetId,
+      question: group.representative.question,
+      files: group.files,
+      symbols: group.symbols,
+      reason: "promoted fallback predicate"
+    }
+  };
+}
+
+function publishedFinding(candidateId: string): FinalFinding {
+  return {
+    ...promotedCandidate(),
+    id: "published-final",
+    path: "src/unrelated.ts",
+    producedBy: { kind: "packet", stage: 7, packetId: "unrelated", lensId: "core/code-review", skillIds: [] },
+    fingerprint: "published-fingerprint",
+    finalBody: "Published body.",
+    publication: "summary-only",
+    mergedCandidateIds: [candidateId],
+    mergedCategories: ["correctness"],
+    mergedSeverities: ["medium"],
+    mergedPaths: ["src/unrelated.ts"],
+    mergedTitles: ["Published final"]
+  };
+}

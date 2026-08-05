@@ -171,6 +171,37 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     ).toThrow();
   });
 
+  it("requires every revise verdict to carry a structured revision payload", () => {
+    const tool = { name: "submit_verdict", description: "submit", parameters: SubmitVerificationVerdictSchema };
+    const common = {
+      reason: "decisive evidence supports this verdict",
+      requiredEvidencePresent: true,
+      falsePositiveRisk: "low"
+    };
+    const finalFinding = validCandidateReviewFinding();
+    const revisedAnchor = { path: "src/a.ts", line: 4, side: "RIGHT", hunkId: "hunk-1" };
+    const validate = (argumentsValue: Record<string, unknown>) => validateToolCall([tool], {
+      type: "toolCall",
+      id: "submit-verdict-contract",
+      name: "submit_verdict",
+      arguments: argumentsValue
+    });
+
+    expect(validate({ verdict: "keep", ...common })).toEqual({ verdict: "keep", ...common });
+    expect(validate({ verdict: "reject", ...common })).toEqual({ verdict: "reject", ...common });
+    expect(validate({ verdict: "keep", ...common, finalFinding })).toEqual({ verdict: "keep", ...common, finalFinding });
+    expect(validate({ verdict: "revise", ...common, finalFinding })).toEqual({ verdict: "revise", ...common, finalFinding });
+    expect(validate({ verdict: "revise", ...common, revisedAnchor })).toEqual({ verdict: "revise", ...common, revisedAnchor });
+    expect(validate({ verdict: "revise", ...common, finalFinding, revisedAnchor })).toEqual({
+      verdict: "revise",
+      ...common,
+      finalFinding,
+      revisedAnchor
+    });
+    expect(() => validate({ verdict: "revise", ...common })).toThrow();
+    expect(() => validate({ verdict: "revise", ...common, finalFinding, extra: true })).toThrow();
+  });
+
   it("defines all nine repository tools and renders tool failures as model-visible errors", async () => {
     const defs = buildRepositoryToolDefinitions(fakeRepositoryTools());
     expect(defs.map((tool) => tool.name)).toEqual([

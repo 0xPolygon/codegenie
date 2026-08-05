@@ -100,6 +100,11 @@ describe("shared utility helpers", () => {
         expect(entry.evidence.trim()).not.toBe("");
       }
     }
+    expect(PROMPT_TEMPLATE_WHY_LEDGER[9]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ evidence: expect.stringContaining("run 57 empty revise") }),
+      expect.objectContaining({ evidence: expect.stringContaining("run 55 secondary-budget cap") }),
+      expect.objectContaining({ evidence: expect.stringContaining("run 56 low-to-high inconsistency") })
+    ]));
   });
 });
 

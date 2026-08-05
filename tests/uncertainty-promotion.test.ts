@@ -757,7 +757,157 @@ describe("uncertainty promotion", () => {
     expect(carried.length).toBeLessThanOrEqual(3);
     expect(new Set(carried.map((entry) => entry.path)).size).toBe(carried.length);
   });
+
+  it("retains run-57-shaped related output signals without changing selected candidates", async () => {
+    const fixture = relatedPromotionFixture(3, true);
+    const baseline = await promoteUncertaintiesForVerification({
+      packets: fixture.packets.slice(0, 2),
+      packetResults: fixture.packetResults.slice(0, 2)
+    }, captureTelemetry().recorder);
+    const telemetry = captureTelemetry();
+    const result = await promoteUncertaintiesForVerification(fixture, telemetry.recorder);
+
+    const baselineCandidates = baseline.packetResults.flatMap((packetResult) => packetResult.findings);
+    const candidates = result.packetResults.flatMap((packetResult) => packetResult.findings);
+    expect(result.summary.promotedCandidateIds).toEqual(baseline.summary.promotedCandidateIds);
+    expect(candidates.map((candidate) => candidate.id)).toEqual(baselineCandidates.map((candidate) => candidate.id));
+    expect(result.summary).toMatchObject({
+      promoted: 2,
+      representedRelatedSignals: 3,
+      laneLimited: 1,
+      unrepresentedLaneLimited: 1
+    });
+
+    const inputCandidate = candidates.find((candidate) => candidate.provenance?.question.includes("unauthorized token input"));
+    const outputCandidate = candidates.find((candidate) => candidate.provenance?.question.includes("exact output amount"));
+    const baselineOutputCandidate = baselineCandidates.find((candidate) => candidate.provenance?.question.includes("exact output amount"));
+    expect(inputCandidate?.provenance?.relatedSignals).toBeUndefined();
+    expect(outputCandidate).toBeDefined();
+    expect(outputCandidate?.confidence).toBe(baselineOutputCandidate?.confidence);
+    expect(outputCandidate?.evidence).toEqual(baselineOutputCandidate?.evidence);
+    expect(outputCandidate?.provenance).toMatchObject({
+      question: "Verify whether scaleExactOutput now truncates the exact output amount and under-delivers the caller contract.",
+      crossPacketRelatedCount: 3,
+      relatedSignals: fixture.relatedQuestions.map((question, index) => expect.objectContaining({
+        packetId: `packet-output-related-${String(index + 1)}`,
+        sourceKind: "follow_up_hint",
+        question,
+        files: ["src/amount.ts"],
+        symbols: ["scaleExactOutput"]
+      }))
+    });
+    expect(outputCandidate?.provenance?.relatedSignals?.some((signal) => signal.question.includes("unauthorized token input"))).toBe(false);
+    expect(result.summary.decisions.filter((decision) => decision.reason === "represented_as_related_signal")).toHaveLength(3);
+    expect(result.summary.decisions.filter((decision) => decision.reason === "promotion_lane_limited")).toEqual([
+      expect.objectContaining({ packetId: "packet-unmatched" })
+    ]);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "uncertainty_promotion",
+      data: expect.objectContaining({
+        promoted: 2,
+        representedRelatedSignals: 3,
+        unrepresentedLaneLimited: 1
+      })
+    }));
+  });
+
+  it("bounds related promotion provenance at eight and leaves overflow lane-limited", async () => {
+    const fixture = relatedPromotionFixture(10, false);
+    const result = await promoteUncertaintiesForVerification(fixture, captureTelemetry().recorder);
+    const outputCandidate = result.packetResults
+      .flatMap((packetResult) => packetResult.findings)
+      .find((candidate) => candidate.provenance?.question.includes("exact output amount"));
+
+    expect(outputCandidate?.provenance?.relatedSignals).toHaveLength(8);
+    expect(outputCandidate?.provenance?.crossPacketRelatedCount).toBe(8);
+    expect(result.summary).toMatchObject({
+      promoted: 2,
+      representedRelatedSignals: 8,
+      laneLimited: 2,
+      unrepresentedLaneLimited: 2
+    });
+  });
 });
+
+function relatedPromotionFixture(
+  relatedCount: number,
+  includeUnmatched: boolean
+): { packets: ReviewPacket[]; packetResults: PacketReviewResult[]; relatedQuestions: string[] } {
+  const exactInput = fakePacket("packet-exact-input", "src/input.ts", {
+    symbol: "decodeExactInput",
+    line: "+ return decodeExactInputStrict(value)"
+  });
+  const exactOutput = fakePacket("packet-exact-output", "src/amount.ts", {
+    symbol: "scaleExactOutput",
+    line: "+ return Math.floor(scaleExactOutput(value))"
+  });
+  const relatedPackets = Array.from({ length: relatedCount }, (_, index) => fakePacket(
+    `packet-output-related-${String(index + 1)}`,
+    "src/amount.ts",
+    { symbol: "scaleExactOutput", line: "+ return Math.floor(scaleExactOutput(value))" }
+  ));
+  const unmatched = fakePacket("packet-unmatched", "src/retry.ts", {
+    symbol: "retryRequest",
+    line: "+ return retryRequest(value)"
+  });
+  const relatedQuestions = relatedPackets.map((_packet, index) =>
+    `Confirm whether scaleExactOutput now truncates exact output amount framing ${String(index + 1)} and under-delivers the caller contract.`
+  );
+  const packets = [exactInput, exactOutput, ...relatedPackets, ...(includeUnmatched ? [unmatched] : [])];
+  const packetResults: PacketReviewResult[] = [
+    promotionPacketResult(
+      exactInput,
+      "Verify whether decodeExactInput now allows unauthorized token input when the signature is missing.",
+      "The changed authorization validation contract can expose production callers.",
+      "high"
+    ),
+    promotionPacketResult(
+      exactOutput,
+      "Verify whether scaleExactOutput now truncates the exact output amount and under-delivers the caller contract.",
+      "The changed conversion precision can under-deliver the exact output promised to callers.",
+      "high"
+    ),
+    ...relatedPackets.map((packet, index) => promotionPacketResult(
+      packet,
+      relatedQuestions[index]!,
+      "The changed conversion truncation can under-deliver the exact output promised to callers.",
+      "medium"
+    )),
+    ...(includeUnmatched
+      ? [promotionPacketResult(
+          unmatched,
+          "Verify whether retryRequest now loses the timeout fallback and breaks the caller contract.",
+          "The changed retry fallback can fail production callers.",
+          "medium"
+        )]
+      : [])
+  ];
+  return { packets, packetResults, relatedQuestions };
+}
+
+function promotionPacketResult(
+  packet: ReviewPacket,
+  question: string,
+  reason: string,
+  confidence: "medium" | "high"
+): PacketReviewResult {
+  return {
+    packetId: packet.id,
+    lenses: ["core/code-review"],
+    findings: [],
+    followUpHints: [{
+      question,
+      files: [packet.path],
+      symbols: [packet.symbolFacts[0]!.enclosingSymbol!],
+      suggestedLenses: ["core/code-review"],
+      reason,
+      confidence,
+      projectedSkillIds: ["core/code-review"]
+    }],
+    uncertainties: [],
+    status: "completed"
+  };
+}
 
 function fakePacket(
   id: string,

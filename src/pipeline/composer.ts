@@ -1397,6 +1397,8 @@ type ApplyCapsOptions = {
   telemetry: TelemetryRecorder;
 };
 
+type LowConfidenceBehaviorDeltaOutcome = "publish" | "publish_summary_only" | "suppress";
+
 function applyCaps(
   findings: FinalFinding[],
   config: CodegenieConfig,
@@ -1411,7 +1413,14 @@ function applyCaps(
       return { ...finding, publication: "suppressed" as const };
     }
     if (belowConfidence(finding.confidence, config.review.minConfidence)) {
-      if (isPublishableLowConfidenceBehaviorDelta(finding, opts.lowConfidencePublishableIds)) {
+      const outcome = lowConfidenceBehaviorDeltaOutcome(finding, opts.lowConfidencePublishableIds);
+      if (outcome !== "suppress") {
+        const published = outcome === "publish_summary_only"
+          ? { ...finding, publication: "summary-only" as const }
+          : finding;
+        if (outcome === "publish_summary_only") {
+          downgradeReasons.set(finding.id, "low-confidence-anchorless");
+        }
         opts.telemetry.event({
           stage: 10,
           level: "info",
@@ -1422,10 +1431,12 @@ function applyCaps(
             mergedCandidateIds: finding.mergedCandidateIds,
             category: finding.category,
             confidence: finding.confidence,
-            severity: finding.severity
+            severity: finding.severity,
+            anchorless: outcome === "publish_summary_only",
+            publication: published.publication
           }
         });
-        return finding;
+        return published;
       }
       suppressedReasons.set(finding.id, "confidence-threshold");
       return { ...finding, publication: "suppressed" as const };
@@ -1467,33 +1478,47 @@ function applyCaps(
 
 function lowConfidencePublishableCandidateIds(verdicts: VerificationVerdict[]): Set<string> {
   return new Set(verdicts
-    .filter((verdict) => verdict.verdict === "keep" || verdict.verdict === "revise")
+    .filter((verdict) =>
+      (verdict.verdict === "keep" || verdict.verdict === "revise") &&
+      verdict.requiredEvidencePresent === true &&
+      verdict.falsePositiveRisk !== "high" &&
+      verdict.verificationIncomplete !== true
+    )
     .map((verdict) => verdict.candidateId));
 }
 
-function isPublishableLowConfidenceBehaviorDelta(
+function lowConfidenceBehaviorDeltaOutcome(
   finding: FinalFinding,
   verifiedPublishableIds: Set<string>
-): boolean {
+): LowConfidenceBehaviorDeltaOutcome {
   if (finding.confidence !== "low") {
-    return false;
+    return "suppress";
   }
-  if (!finding.mergedCandidateIds.some((id) => verifiedPublishableIds.has(id))) {
-    return false;
+  if (!verifiedPublishableIds.has(finding.id)) {
+    return "suppress";
   }
-  if (finding.publication === "suppressed" || finding.anchor === undefined || finding.changedLine !== true) {
-    return false;
+  if (finding.publication === "suppressed") {
+    return "suppress";
   }
   if (!isBehaviorDeltaCategory(finding.category)) {
-    return false;
+    return "suppress";
   }
   if (!hasConcreteText(finding.evidence.changedCode, 12) || (finding.evidence.relatedCode ?? []).length === 0) {
-    return false;
+    return "suppress";
   }
   if (!hasConcreteText(finding.failureMode, 36) || !hasConcreteText(finding.whyThisMatters, 24)) {
-    return false;
+    return "suppress";
   }
-  return hasConfirmationPath(finding);
+  if (!hasConfirmationPath(finding)) {
+    return "suppress";
+  }
+  if (finding.anchor !== undefined && finding.changedLine === true) {
+    return "publish";
+  }
+  if (finding.anchor === undefined && finding.changedLine === false) {
+    return "publish_summary_only";
+  }
+  return "suppress";
 }
 
 function isBehaviorDeltaCategory(category: CandidateFinding["category"]): boolean {
