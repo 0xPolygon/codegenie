@@ -113,6 +113,8 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 108 | COMPLETE | Issue 108: Add a Verifier Severity Rubric and Revision Telemetry |
 | 109 | COMPLETE | Issue 109: Restore Summary-Only Publication for Verified Low-Confidence Deltas |
 | 110 | COMPLETE | Issue 110: Make Note Fallback Publication-Aware and Score Rendered Notes |
+| 111 | PENDING | Issue 111: Fix Observed Structured-Submit Failures and Preserve Safe Diagnostics |
+| 112 | PENDING | Issue 112: Enforce Final Structured-Submit Provenance from Pi Events |
 
 ## Recommended order for 106-110
 
@@ -120,3 +122,17 @@ Land the terminal visibility chain first: **106 -> 109 -> 110**. Plans 107 and
 108 are lower-risk supporting improvements; both follow 106 and may land after
 the visibility chain. Plan 108 must rebase its Stage-9 prompt version onto the
 landed 106 version.
+
+## Recommended order for 111-112
+
+Implement **111 first**: it contains the observed production/eval fixes and has
+no Pi release dependency. Implement **112 second**: it consumes Pi's public
+event stream inside Codegenie's existing adapter, strictly verifies final
+arguments, and measures whether any broader lossless syntax repair or upstream
+Pi change deserves a new plan. Its implementation gate uses generic event-shape
+tests plus only the existing Anthropic/OpenAI Responses smokes; do not create an
+every-provider fixture matrix without evidence. After that gate, move its row
+to `IMPLEMENTED (measuring)`. The 2,500-submit corpus is post-land, not a reason
+to hold the PR open; move the row to `COMPLETE` after the corpus and
+human-reviewed outcome. Do not implement conditional parser work unless Plan
+112's written evidence gate fires.
