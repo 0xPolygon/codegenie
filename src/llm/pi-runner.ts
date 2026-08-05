@@ -299,7 +299,9 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             error: repair.error,
             schemaRepairUsed,
             ...(repair.repairClassification !== undefined ? { repairClassification: repair.repairClassification } : {}),
-            ...(repair.replaceConversationOverride === true ? { replaceConversationOverride: true } : {}),
+            ...(repair.replaceConversationOverride !== undefined
+              ? { replaceConversationOverride: repair.replaceConversationOverride }
+              : {}),
             ...(repair.cause !== undefined ? { cause: repair.cause } : {})
           });
         } catch (cause) {
@@ -444,7 +446,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 extraToolNames: toolCalls.map((toolCall) => toolCall.name),
                 error: `The ${submitTool.name} final arguments were not trusted: ${classification}.`,
                 repairClassification: classification,
-                replaceConversationOverride: true
+                replaceConversationOverride: false
               });
               continue;
             }
@@ -536,7 +538,9 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 extraToolNames: toolCalls.map((toolCall) => toolCall.name),
                 error: submitError,
                 ...(repairClassification !== undefined ? { repairClassification } : {}),
-                ...(recovery.replaceConversationOverride === true ? { replaceConversationOverride: true } : {}),
+                ...(recovery.replaceConversationOverride !== undefined
+                  ? { replaceConversationOverride: recovery.replaceConversationOverride }
+                  : {}),
                 cause
               });
               continue;

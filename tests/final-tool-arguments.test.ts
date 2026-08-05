@@ -81,13 +81,24 @@ describe("final tool argument provenance", () => {
     });
   });
 
-  it("rejects event/final value divergence including non-suffix final replacement", async () => {
-    const final = message(call("submit-1", SUBMIT, { complete: true }));
+  it("rejects toolcall-end arguments that diverge from the captured event value", async () => {
+    const final = message(call("submit-1", SUBMIT, { complete: false }));
     const result = await consumeFinalToolArguments(
       sequence(final, ['{"complete":false}'], { endArguments: { complete: true } }),
       SUBMIT
     );
     expect(result.content[0]).toMatchObject({ argumentParse: { state: "event_final_mismatch" } });
+    expect(result.content[0]).not.toHaveProperty("arguments");
+  });
+
+  it("rejects final-message substitution when event and toolcall-end arguments agree", async () => {
+    const final = message(call("submit-1", SUBMIT, { complete: true }));
+    const result = await consumeFinalToolArguments(
+      sequence(final, ['{"complete":false}'], { endArguments: { complete: false } }),
+      SUBMIT
+    );
+    expect(result.content[0]).toMatchObject({ argumentParse: { state: "event_final_mismatch" } });
+    expect(result.content[0]).not.toHaveProperty("arguments");
   });
 
   it("gives normalized length stop precedence over valid JSON", async () => {

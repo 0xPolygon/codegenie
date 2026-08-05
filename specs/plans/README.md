@@ -116,7 +116,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 111 | IMPLEMENTED (dogfood pending) | Issue 111: Fix Observed Structured-Submit Failures and Preserve Safe Diagnostics |
 | 112 | IMPLEMENTED (measuring) | Issue 112: Enforce Final Structured-Submit Provenance from Pi Events |
 | 113 | BACKLOG (measurement gate not met) | Issue 113: Measure Direct-Reject Note Contradictions Before Adding Suppression |
-| 114 | PENDING | Issue 114: Re-execute Untrusted Structured Submits From Trusted Context |
+| 114 | COMPLETE | Issue 114: Re-execute Untrusted Structured Submits From Trusted Context |
 
 ## Recommended order for 106-110
 

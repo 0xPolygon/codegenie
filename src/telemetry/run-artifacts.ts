@@ -861,10 +861,10 @@ class RunTelemetryImpl {
     this.modelSummary.retryAttempts += providerCallCount > 0 && record.attempt > 1 ? 1 : 0;
     this.modelSummary.repairCalls += record.kind === "repair" ? 1 : 0;
     this.modelSummary.schemaInvalidCalls += record.status === "schema_invalid" ? 1 : 0;
-    if (record.finalArgumentState !== undefined) {
+    if (providerCallCount > 0 && record.finalArgumentState !== undefined) {
       this.modelSummary.finalArgumentStates[record.finalArgumentState] += 1;
     }
-    if (record.finalArgumentErrorKind !== undefined) {
+    if (providerCallCount > 0 && record.finalArgumentErrorKind !== undefined) {
       this.modelSummary.finalArgumentErrorKinds[record.finalArgumentErrorKind] += 1;
     }
     this.modelSummary.toolChoiceDowngradedCalls += providerCallCount > 0 && record.toolChoiceDowngraded === true ? 1 : 0;

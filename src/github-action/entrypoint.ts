@@ -228,7 +228,7 @@ export async function executeGitHubActionCommand(
   try {
     await controller.finalizeSuccess(runResult.reportMarkdown);
   } catch (error) {
-    const code = error instanceof CodegenieError ? error.code : error instanceof Error ? error.name : "unknown_error";
+    const code = actionErrorCode(error);
     emitActionRecord(runResult.runDir, eventName, authorized, "terminal_post_failed", controller.stats(), env, write, code);
     throw error;
   }

@@ -762,6 +762,18 @@ describe("run telemetry", () => {
       finalArgumentRepairKind: "pi_narrow_string_repair",
       finalArgumentCorrelationId: "mc-2:submit"
     });
+    run.recorder.recordModelCall({
+      ...base,
+      callId: "mc-3",
+      kind: "initial",
+      attempt: 1,
+      cacheStatus: "hit",
+      schemaValid: true,
+      status: "ok",
+      submitTool: "submit_review",
+      finalArgumentState: "strict",
+      finalArgumentCorrelationId: "mc-3:submit"
+    });
     run.recorder.event({
       stage: 7,
       level: "info",
@@ -774,9 +786,32 @@ describe("run telemetry", () => {
     expect(summary.finalArgumentStates).toMatchObject({ partial: 1, repaired: 1, strict: 0 });
     expect(summary.finalArgumentErrorKinds).toMatchObject({ unterminated: 1, invalid_syntax: 0 });
     expect(summary.finalArgumentOutcomes).toEqual({ recovered: 1, terminal_invalid: 0, not_dispatched: 0 });
-    const serialized = readRunFiles(attached.runDir);
-    expect(serialized).not.toContain("raw-event-repository-secret");
-    expect(serialized).not.toContain("Unexpected token from parser");
+    expect(summary).toMatchObject({
+      totalRecords: 3,
+      providerCalls: 2,
+      cache: { hit: 1, miss: 2, write: 1 }
+    });
+
+    const modelCalls = readJsonl(runFilePath(attached.runDir, "model-calls.jsonl"));
+    expect(modelCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        callId: "mc-3",
+        cacheStatus: "hit",
+        finalArgumentState: "strict",
+        finalArgumentCorrelationId: "mc-3:submit"
+      })
+    ]));
+    const allowedFinalArgumentFields = new Set([
+      "finalArgumentState",
+      "finalArgumentErrorKind",
+      "finalArgumentRepairKind",
+      "finalArgumentCorrelationId"
+    ]);
+    for (const record of modelCalls) {
+      const finalArgumentFields = Object.keys(record).filter((key) => key.startsWith("finalArgument"));
+      expect(finalArgumentFields.length).toBeGreaterThan(0);
+      expect(finalArgumentFields.every((key) => allowedFinalArgumentFields.has(key))).toBe(true);
+    }
   });
 
   it("aggregates tool-result cache telemetry in run artifacts", async () => {

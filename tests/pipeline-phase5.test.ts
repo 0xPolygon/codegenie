@@ -6642,7 +6642,11 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(markdown).toContain("**Degraded run: planner fallback.**");
     expect(markdown.indexOf("**Degraded run: planner fallback.**")).toBeLessThan(markdown.indexOf("Review completed."));
-    expect(coverage.partial).toBe(false);
+    expect(markdown).toContain("## ✅ No Findings");
+    expect(markdown).toContain("Everything looks good");
+    expect(markdown).not.toContain("**Review incomplete.**");
+    expect(markdown).not.toContain("## ⚠️ Review Incomplete");
+    expect(markdown).not.toContain("**Partial review:**");
   });
 
   it("attaches left-side static signals to old-side dossier hunks", async () => {

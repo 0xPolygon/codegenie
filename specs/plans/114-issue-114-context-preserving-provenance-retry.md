@@ -1,6 +1,6 @@
 # Issue 114: Re-execute Untrusted Structured Submits From Trusted Context
 
-Status: PENDING
+Status: COMPLETE
 Planned from: Codegenie self-review GitHub Actions run `31021166634`
 (Codegenie v0.5.4 reviewing `ae1bb70..803bf6f`) and cold source/spec
 validation at current branch HEAD, 2026-08-05
@@ -450,30 +450,54 @@ credentials or the private eval repository are unavailable, leave Plan 114
 `PENDING (owner smoke required)` after local checks and report the external
 gate.
 
+### Implementation evidence (2026-08-05)
+
+- The runner change preserves explicit `false` through both repair-forwarding
+  layers and selects append mode only for an untrusted final submit. The
+  invalid assistant turn remains discarded before repository-tool execution,
+  validation, history, and cache.
+- The five focused files pass 451 tests. The parameterized runner regression
+  covers every untrusted provenance state with a stage-level replacement
+  policy enabled, and the mixed-turn negative control proves that a repository
+  call beside an invalid submit is neither executed nor orphaned.
+- Cache-hit provenance remains in `model-calls.jsonl` and cache counts while
+  provider-call state/error histograms exclude it. Both Action terminal paths
+  use the bounded error-code helper, and the Action YAML, divergence, bounded
+  telemetry shape, and degraded-rendering contracts have structural tests.
+- `pnpm run check`, the full 843-test suite, `pnpm build`, and
+  `git diff --check` pass.
+- Owner eval `49f4645b` run 65 passed 1/1 required expectations with one inline
+  finding, complete coverage, zero budget overruns, and zero loss before
+  candidate generation, verification, or composition. It recorded 12 strict
+  final submits, zero schema-invalid calls, and zero repair calls, so no
+  malformed submit occurred naturally. Relative to run 64 it used 28 provider
+  calls instead of 38 and 61 tool calls instead of 69; deterministic tests,
+  not this stochastic delta, prove the repaired path.
+
 ## Done criteria
 
-- [ ] An untrusted selected submit remains argument-less, non-executable,
+- [x] An untrusted selected submit remains argument-less, non-executable,
       uncached, and absent from provider history.
-- [ ] Its one retry retains the valid pre-response conversation and appends
+- [x] Its one retry retains the valid pre-response conversation and appends
       only the existing bounded stage repair instruction.
-- [ ] Explicit `replaceConversationOverride: false` survives both forwarding
+- [x] Explicit `replaceConversationOverride: false` survives both forwarding
       layers and overrides stage-level `replaceConversation: true`.
-- [ ] A mixed invalid-submit/repository-tool response executes no repository
+- [x] A mixed invalid-submit/repository-tool response executes no repository
       call and produces no orphaned result.
-- [ ] All five provenance-invalid states, repaired-submit failure, cache
+- [x] All five provenance-invalid states, repaired-submit failure, cache
       rejection, and normal trusted submit paths pass focused tests.
-- [ ] Trusted Stage-7 compact repair, stage builders, candidate tracking,
+- [x] Trusted Stage-7 compact repair, stage builders, candidate tracking,
       retry count, schemas, prompt/cache versions, provider behavior, and
       terminal policies remain unchanged.
-- [ ] Cache-hit provenance remains in raw records/cache counts but is excluded
+- [x] Cache-hit provenance remains in raw records/cache counts but is excluded
       from aggregate final-argument state/error histograms.
-- [ ] Both Action failure paths use the bounded error-code vocabulary.
-- [ ] Action upload, divergence, telemetry-shape, and degraded-rendering tests
+- [x] Both Action failure paths use the bounded error-code vocabulary.
+- [x] Action upload, divergence, telemetry-shape, and degraded-rendering tests
       assert their real contracts without changing correct production code.
-- [ ] Plan 112 and standing architecture docs describe context-preserving clean
+- [x] Plan 112 and standing architecture docs describe context-preserving clean
       re-execution without weakening the invalid-data boundary.
-- [ ] `pnpm run check`, `pnpm test`, `pnpm build`, and `git diff --check` pass.
-- [ ] One no-cache `49f4645b` owner smoke passes its required and coverage
+- [x] `pnpm run check`, `pnpm test`, `pnpm build`, and `git diff --check` pass.
+- [x] One no-cache `49f4645b` owner smoke passes its required and coverage
       gates, or Plan 114 remains explicitly pending that smoke.
 
 ## STOP conditions

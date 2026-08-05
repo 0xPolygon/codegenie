@@ -398,10 +398,12 @@ Wire the runner with these rules:
    terminal disposition. Never dispatch a second repair.
 5. Do not append an assistant message containing `invalidToolCall` to the Pi
    provider conversation. Route an untrusted submit through the existing
-   stateless/replace-conversation repair seam using only bounded id/name/state
-   metadata and the submit schema. The invalid assistant payload and event text
-   are discarded before the next provider call, so Pi never has to serialize a
-   Codegenie-local content variant.
+   one-repair seam using only bounded id/name/state metadata and the submit
+   schema. Issue 114 supersedes the original replace-conversation behavior:
+   discard the invalid assistant payload and event text, retain the independently
+   constructed conversation that preceded it, append the bounded repair
+   instruction, and perform one clean re-execution. Pi therefore never has to
+   serialize a Codegenie-local content variant or rejected arguments.
 6. Apply the same submit provenance gate inside
    `schemaValidityForResponse`. A selected untrusted/provenance-less submit is
    invalid and not cacheable.
@@ -423,8 +425,9 @@ Precedence is explicit:
 - repair remains capped at one.
 
 Tests must cover every state on primary and repaired submits, schema failure
-after strict provenance, semantic failure after strict provenance, stateless
-repair history that contains neither the invalid local call nor its arguments,
+after strict provenance, semantic failure after strict provenance,
+context-preserving repair history that contains neither the invalid local call
+nor its arguments,
 every stage-local terminal disposition, no cache write for untrusted responses,
 old-cache miss, unchanged repository-tool behavior, and preservation of
 duplicate-submit behavior.
@@ -473,8 +476,11 @@ Document these invariants:
   complete public event representation;
 - public event representations may be raw fragments or provider-neutral
   canonical JSON; Codegenie never parses provider wire formats;
-- untrusted submits are non-executable, use the existing stateless submit
-  repair, and are never cached;
+- untrusted submits are non-executable, use one context-preserving clean
+  re-execution after discarding the invalid assistant response, and are never
+  cached;
+- the rare clean re-execution can resend more trusted input context; existing
+  per-call token telemetry measures that cost without a new mechanism;
 - normalized length stop wins, but Codegenie does not reinterpret
   provider-specific raw stop reasons;
 - no accumulated event text crosses into telemetry, cache, artifacts, or logs;
@@ -573,7 +579,7 @@ and contains no payload examples.
 - Owner validation `49f4645b` run 63 passed its required finding and complete-
   coverage gates. It recorded 11 strict selected submits and two complete
   `invalid_syntax` Stage-9 submits; both invalid values were non-executable,
-  each used the existing single stateless repair, and both recovered. No
+  each used the existing single repair, and both recovered. No
   capture-missing, mismatch, partial, length-stopped, terminal-invalid, or
   not-dispatched outcome occurred. This pre-land validation is evidence for
   the boundary but does not count toward the post-land corpus denominator.
@@ -581,7 +587,7 @@ and contains no payload examples.
   completeness, and budget gates. It recorded 96 strict selected submits and
   one complete `invalid_syntax` Stage-9 submit. The invalid call retained the
   explicit `final_arguments_invalid` classification through verifier
-  adjudication, used one stateless repair, and recovered. No capture-missing,
+  adjudication, used one repair, and recovered. No capture-missing,
   mismatch, partial, length-stopped, terminal-invalid, or not-dispatched
   outcome occurred. This pre-land validation also does not count toward the
   post-land corpus.
@@ -623,7 +629,7 @@ the Codegenie accumulator in the same migration; do not retain two authorities.
   narrow parsing, equality, mismatch/missing, length, error parity, cleanup,
   and payload absence.
 - `tests/phase4-llm.test.ts`: production stream selection/parity, trusted and
-  non-executable submit routing, stateless one repair, cache protection,
+  non-executable submit routing, one context-preserving repair, cache protection,
   unchanged repository-tool behavior, and stage-local terminal behavior.
 - `tests/telemetry.test.ts`: bounded states/outcomes and strict absence of event
   text/values.

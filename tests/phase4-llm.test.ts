@@ -2051,7 +2051,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     { state: "invalid", errorKind: "invalid_syntax" } as const,
     { state: "event_capture_missing" } as const,
     { state: "event_final_mismatch" } as const
-  ])("routes primary $state final arguments through one stateless repair", async (argumentParse) => {
+  ])("routes primary $state final arguments through one context-preserving repair", async (argumentParse) => {
     const telemetry = fakeTelemetry();
     const cache = {
       get: vi.fn(async () => ({ status: "miss" as const, reason: "not_found" as const })),
@@ -2072,7 +2072,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(runner.runStructured<SubmitPacketReview>({
       stage: 7,
-      prompt: "review repository-secret-never-in-repair-history",
+      prompt: "review ORIGINAL_STAGE7_PACKET_CONTEXT",
       schema: SubmitPacketReviewSchema,
       templateVersion: "test-template",
       timeoutMs: 1_000,
@@ -2093,7 +2093,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     expect(adapter.complete).toHaveBeenCalledTimes(2);
     expect(adapter.contexts[1]).toContain(`retry bounded state ${argumentParse.state}`);
-    expect(adapter.contexts[1]).not.toContain("repository-secret-never-in-repair-history");
+    expect(adapter.contexts[1]).toContain("ORIGINAL_STAGE7_PACKET_CONTEXT");
     expect(adapter.contexts[1]).not.toContain("invalidToolCall");
     expect(cache.put).toHaveBeenCalledTimes(1);
     expect(telemetry.modelCalls.map((call) => call.finalArgumentState)).toEqual([argumentParse.state, "strict"]);
@@ -2103,10 +2103,69 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         data: expect.objectContaining({ state: argumentParse.state, schemaRepairUsed: false })
       }),
       expect.objectContaining({
+        message: "schema_repair_scheduled",
+        data: expect.objectContaining({ replaceConversation: false })
+      }),
+      expect.objectContaining({
         message: "final_argument_repair_outcome",
         data: expect.objectContaining({ outcome: "recovered" })
       })
     ]));
+  });
+
+  it("does not execute or orphan a valid repository tool beside an invalid submit", async () => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async () => ({
+      text: "must not execute",
+      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+    }));
+    const readRange: ToolDefinition = {
+      name: "read_range",
+      description: "read range",
+      parameters: Type.Object({ path: Type.String() }, { additionalProperties: false }),
+      execute
+    };
+    const adapter = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "read-beside-invalid-submit", name: "read_range", arguments: { path: "src/a.ts" } },
+        invalidSubmitCall("invalid-submit", "submit_review", { state: "event_capture_missing" })
+      ]),
+      assistant([validSubmitReviewCall("trusted-repair")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured<SubmitPacketReview>({
+      stage: 7,
+      prompt: "review ORIGINAL_MIXED_PACKET_CONTEXT",
+      schema: SubmitPacketReviewSchema,
+      templateVersion: "test-template",
+      tools: [readRange],
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 1_000 },
+      timeoutMs: 1_000,
+      schemaRepair: {
+        replaceConversation: true,
+        failAfterRepair: false,
+        buildPrompt: () => "retry invalid submit only"
+      }
+    })).resolves.toMatchObject({ findings: [] });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(telemetry.toolCalls).toEqual([]);
+    expect(adapter.contexts[1]).toContain("ORIGINAL_MIXED_PACKET_CONTEXT");
+    expect(adapter.contexts[1]).toContain("retry invalid submit only");
+    expect(adapter.contexts[1]).not.toContain("read-beside-invalid-submit");
+    expect(adapter.contexts[1]).not.toContain("toolResult");
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "schema_repair_scheduled",
+      data: expect.objectContaining({ replaceConversation: false, extraToolNames: ["read_range"] })
+    }));
   });
 
   it("records not_dispatched when budget exhaustion prevents the final-argument repair call", async () => {
@@ -2295,6 +2354,64 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         data: expect.objectContaining({ submitTool: "submit_composition" })
       })
     ]));
+  });
+
+  it("preserves an explicit append override returned by invalid-submit recovery", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{
+        type: "toolCall",
+        id: "submit-composition-invalid",
+        name: "submit_composition",
+        arguments: { summary: "missing composed findings" }
+      }]),
+      assistant([{
+        type: "toolCall",
+        id: "submit-composition-repaired",
+        name: "submit_composition",
+        arguments: {
+          summary: "Recovered composition.",
+          composedFindings: [{ findingIds: ["finding-1"], finalBody: "Recovered body.", publication: "inline" }]
+        }
+      }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured({
+      stage: 10,
+      prompt: "ORIGINAL_RECOVERY_CONTEXT compose",
+      schema: SubmitCompositionSchema,
+      templateVersion: "test-template",
+      timeoutMs: 1_000,
+      schemaRepair: {
+        replaceConversation: true,
+        buildPrompt: () => "retry composition with complete fields",
+        recoverInvalidSubmit: () => ({
+          kind: "recovery",
+          replaceConversationOverride: false
+        })
+      }
+    })).resolves.toMatchObject({
+      summary: "Recovered composition.",
+      composedFindings: [{ findingIds: ["finding-1"] }]
+    });
+
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(adapter.contexts[1]).toContain("ORIGINAL_RECOVERY_CONTEXT");
+    expect(adapter.contexts[1]).toContain("retry composition with complete fields");
+    expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      stage: 10,
+      message: "schema_repair_scheduled",
+      data: expect.objectContaining({ replaceConversation: false })
+    }));
   });
 
   it("repairs composer responses that omit submit_composition with replacement context", async () => {

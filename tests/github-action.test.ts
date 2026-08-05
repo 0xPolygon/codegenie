@@ -156,6 +156,7 @@ function createFakeComments(opts: {
   existing?: IssueComment[];
   permission?: string;
   failUpdates?: boolean;
+  failUpdateError?: unknown;
   viewerLogin?: string;
 } = {}): { client: IssueCommentClient; calls: FakeCommentCall[] } {
   const calls: FakeCommentCall[] = [];
@@ -172,6 +173,9 @@ function createFakeComments(opts: {
     },
     async updateComment(commentId, body) {
       calls.push({ kind: "update", commentId, body });
+      if (opts.failUpdateError !== undefined) {
+        throw opts.failUpdateError;
+      }
       if (opts.failUpdates === true) {
         throw new CodegenieError("github_post_failed", "boom");
       }
@@ -880,6 +884,31 @@ describe("github-action entrypoint", () => {
     });
   });
 
+  it("uses the bounded unknown_error code when a terminal edit throws an untyped error", async () => {
+    const secret = "terminal-update-private-message";
+    const terminalError = new TypeError(secret);
+    const fake = createFakeComments({ failUpdateError: terminalError });
+    const runDir = mkdtempSync(path.join(scratch, "post-unknown-failed-run-"));
+    const output: string[] = [];
+
+    await expect(
+      executeGitHubActionCommand([], {
+        env: actionEnv(issueCommentPayload(), "issue_comment"),
+        issueComments: fake.client,
+        writeOutput: (text) => output.push(text),
+        runReview: async () => ({ runId: "r1", runDir, reportMarkdown: "# fallback report" })
+      })
+    ).rejects.toBe(terminalError);
+
+    expect(JSON.parse(readFileSync(path.join(runDir, "github-action.json"), "utf8"))).toMatchObject({
+      outcome: "terminal_post_failed",
+      errorCode: "unknown_error"
+    });
+    expect(output.join("\n")).toContain('"errorCode":"unknown_error"');
+    expect(output.join("\n")).not.toContain(secret);
+    expect(output.join("\n")).not.toContain("TypeError");
+  });
+
   it("resolves identity via viewer login (PATs) or the bot-login input, and reclaims only exact matches", async () => {
     // PAT: /user resolves → own prior comment reclaimed
     const pat = createFakeComments({
@@ -1095,6 +1124,7 @@ describe("issue comment client", () => {
 type WorkflowStep = {
   env?: Record<string, string>;
   id?: string;
+  if?: string;
   name?: string;
   uses?: string;
   run?: string;
@@ -1136,9 +1166,12 @@ describe("GitHub Action and workflow contracts", () => {
     const runStep = action.runs.steps.find((step) => step.id === "run");
     expect(runStep?.run).toContain('args+=(--bot-login "$INPUT_BOT_LOGIN")');
     expect(runStep?.run).toContain('args+=(--preflight-only "$INPUT_PREFLIGHT_ONLY")');
-    expect(raw).toContain("CODEGENIE_FAILURE_PATH:");
-    expect(raw).toContain("codegenie-failure.json");
-    expect(raw).toContain("if: ${{ always()");
+    const failurePath = runStep?.env?.CODEGENIE_FAILURE_PATH;
+    expect(failurePath).toBe("${{ runner.temp }}/codegenie-failure.json");
+    const uploadStep = action.runs.steps.find((step) => step.name === "Upload review report");
+    expect(uploadStep?.uses).toBe("actions/upload-artifact@v7");
+    expect(uploadStep?.if).toContain("always()");
+    expect(uploadStep?.with?.path).toContain(failurePath);
   });
 
   it("keeps authorization in the binary and one newest-event-wins concurrency policy", () => {
