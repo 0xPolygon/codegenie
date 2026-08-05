@@ -34,7 +34,7 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
 
-      - uses: 0xPolygon/codegenie@v0.5.3
+      - uses: 0xPolygon/codegenie@v0.5.4
         with:
           model: "anthropic/claude-opus-5:high"
           llm-api-key: ${{ secrets.LLM_API_KEY }}
