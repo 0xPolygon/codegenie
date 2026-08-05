@@ -73,7 +73,7 @@ export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
   5: "p5.6",
   7: "p7.10",
   8: "p8.2",
-  9: "p9.6",
+  9: "p9.8",
   10: "p10.2"
 };
 
@@ -114,10 +114,14 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
   9: [
     { surface: "verdict/requiredEvidencePresent/falsePositiveRisk", reason: "Separates truth decision, evidence sufficiency, and residual risk for final selection.", evidence: "Plan 74 merged-confidence calibration and Plan 87 exact duplicate policy" },
     { surface: "finalFinding/revisedAnchor", reason: "Allows revise-with-evidence without letting gate-only or stale anchors create identity.", evidence: "Plan 76 anchor rescue and Plan 87 identity hardening" },
+    { surface: "non-empty revision payload", reason: "Keeps structured revisions from completing without an actual finding or anchor change.", evidence: "Plan 106 / eval 49f4645b run 57 empty revise" },
+    { surface: "decisive-evidence confidence calibration", reason: "Confidence follows the proven failure predicate rather than pressure from an unresolved secondary lookup.", evidence: "Plan 106 / eval 49f4645b run 55 secondary-budget cap" },
+    { surface: "magnitude/reach severity rubric", reason: "Keeps severity proportional to concrete impact rather than the mere presence of a correctness invariant violation.", evidence: "Plan 108 / eval 49f4645b run 56 low-to-high inconsistency" },
     { surface: "promoted predicate guidance", reason: "Promotion/adaptive candidates must be judged on the preserved predicate, not rejected for their original hint wording.", evidence: "Plan 81 and Plan 92 adaptive-vs-promotion measurement" },
     { surface: "helper/callee complete-branch guidance", reason: "Prevents keeping helper-dependent claims from truncated or partial source reads.", evidence: "Fable review verifier false-positive class" },
     { surface: "testing candidate guidance", reason: "Keeps real test-boundary regressions while rejecting generic add-more-tests comments.", evidence: "Plan 92 E1 escalator and Plan 75 suppression" },
     { surface: "conditional skill guidance block", reason: "An empty authoritative provenance list must not leave a provider-facing label that implies verifier guidance was supplied.", evidence: "Plan 101 exact skill provenance" },
+    { surface: "bounded verifier repair candidate evidence", reason: "Stateless replacement repair needs the candidate's claim and evidence without replaying contaminated output or discarded repository-tool state.", evidence: "Private eval 49f4645b runs 58-60; run 60 evidence-starved empty-submit repairs" },
     { surface: "strict submit_verdict closeout", reason: "Verifier model repair is still live and successful, so the structured closeout remains load-bearing.", evidence: "Plan 95 census: 3 Stage-9 schema repairs, all recovered" }
   ],
   10: [
@@ -302,7 +306,9 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
       return buildPrompt(9, [
         reviewerFrame("verification"),
         injectionInstruction(),
-        "Verify whether the candidate is a real, actionable finding. Reject false positives. Revise only when the same issue is real but the evidence or anchor needs correction.",
+        "Verify whether the candidate is a real, actionable finding. Reject false positives. A bare keep means the candidate's confidence, severity, evidence, wording, and placement are publishable unchanged. Use revise for every structured change; a revision must include finalFinding or revisedAnchor because prose in reason does not change the candidate.",
+        "When a low-confidence promoted predicate is confirmed, revise with a complete finalFinding whose confidence and evidence reflect the decisive changed-code proof. Add revisedAnchor only when exact changed-line placement is proven. Medium confidence is appropriate when decisive changed-code evidence and the failure mode are confirmed even if one narrow secondary check remains unresolved. Tool refusal, truncation, or budget pressure on a secondary check must not keep confidence low. If the decisive predicate is unconfirmed, reject or set requiredEvidencePresent=false. Reserve low confidence for speculative reachability, ambiguous intent, or weak path matching.",
+        "Severity calibration: low means bounded or localized impact; medium means material but limited impact; high means broad or serious user/system impact; critical means catastrophic impact or compromise of a security boundary. Measure magnitude and reach, not merely whether a correctness invariant is technically violated. When changing severity by more than one level from the input candidate, quantify the concrete impact bound in finalFinding.verification.",
         "For candidates promoted from a follow-up hint or uncertainty, verify the concrete predicate preserved in provenance, failureMode, and verification text. Do not reject a runtime/design/correctness predicate solely because the original question also mentioned tests or coverage.",
         "For promoted lossy-transform predicates, verify that caller-visible outputs or bounds remain deliverable/satisfiable; before rejecting as immaterial precision loss, trace whether the visible output is derived from the transformed value or from the original source value. Documented or deliberate transformation intent can explain why the conversion exists, but it is not evidence that an overstated caller-visible guarantee is safe.",
         "Commit titles, PR text, and intent signals are context, not proof. Refactor-like or behavior-preserving intent can guide framing, but it is not evidence against a behavior-bearing correctness, security, design, or testing candidate. Source behavior and changed diff evidence control the verdict.",

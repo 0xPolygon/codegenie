@@ -11,12 +11,14 @@ import { sha256Hex } from "../util/hashing.js";
 import { scaleBudgetValue } from "../util/budget.js";
 import { isPromotionTestPath } from "../util/path-roles.js";
 import { escapeRegExp } from "../util/regex.js";
+import { normalizeFollowUpQuestion, normalizedAttentionTerms, tokenJaccard } from "../util/text-similarity.js";
 
 const MAX_PROMOTIONS = 4;
 const MIN_PROMOTIONS_WHEN_AVAILABLE = 2;
 const MAX_EVIDENCE_CHARS = 2400;
 const MAX_RELATED_CONTEXT_EVIDENCE = 3;
 const MAX_RELATED_CONTEXT_EVIDENCE_CHARS = 1200;
+const MAX_RELATED_PROMOTION_SIGNALS = 8;
 
 type PromotionInput = {
   packetResults: PacketReviewResult[];
@@ -28,6 +30,8 @@ export type UncertaintyPromotionSummary = {
   considered: number;
   promoted: number;
   laneLimited: number;
+  representedRelatedSignals: number;
+  unrepresentedLaneLimited: number;
   notPromoted: Record<string, number>;
   promotedCandidateIds: string[];
   decisions: PromotionDecision[];
@@ -71,6 +75,15 @@ type RankedPromotionSource = {
   localityScore: number;
 };
 type SelectedPromotionSource = RankedPromotionSource & { selectedBy: PromotionSelectionReason };
+type RelatedPromotionSignal = NonNullable<NonNullable<CandidateFinding["provenance"]>["relatedSignals"]>[number];
+type RelatedPromotionAssociation = {
+  source: RankedPromotionSource;
+  selected: SelectedPromotionSource;
+  selectedIndex: number;
+  exactQuestion: boolean;
+  sharedTerms: number;
+  similarity: number;
+};
 
 export async function promoteUncertaintiesForVerification(
   input: PromotionInput,
@@ -95,14 +108,23 @@ export async function promoteUncertaintiesForVerification(
 
   const selected = selectPromotionSources(eligible, maxPromotions);
   const selectedSet = new Set(selected.map((item) => item.source));
-  const laneLimited = eligible.filter((item) => !selectedSet.has(item.source));
-  for (const limited of laneLimited) {
-    decisions.push(baseDecision(limited.source, false, "promotion_lane_limited", promotionDecisionMetadata(limited)));
+  const unselected = eligible.filter((item) => !selectedSet.has(item.source));
+  const relatedAssociations = associateRelatedPromotionSignals(unselected, selected);
+  const laneLimited = unselected.filter((item) => !relatedAssociations.has(item.source));
+  for (const unselectedItem of unselected) {
+    const association = relatedAssociations.get(unselectedItem.source);
+    decisions.push(association === undefined
+      ? baseDecision(unselectedItem.source, false, "promotion_lane_limited", promotionDecisionMetadata(unselectedItem))
+      : {
+          ...baseDecision(unselectedItem.source, false, "represented_as_related_signal", promotionDecisionMetadata(unselectedItem)),
+          candidateId: promotedCandidateId(association.selected.source, association.selectedIndex)
+        });
   }
 
   selected.forEach((selectedItem, index) => {
     const { source } = selectedItem;
-    const candidate = promotedCandidate(source, index);
+    const relatedSignals = relatedSignalsForSelected(index, relatedAssociations);
+    const candidate = promotedCandidate(source, index, relatedSignals);
     const existing = promotedByPacket.get(source.packet.id) ?? [];
     existing.push(candidate);
     promotedByPacket.set(source.packet.id, existing);
@@ -124,6 +146,8 @@ export async function promoteUncertaintiesForVerification(
     considered: sources.length,
     promoted: selected.length,
     laneLimited: laneLimited.length,
+    representedRelatedSignals: relatedAssociations.size,
+    unrepresentedLaneLimited: laneLimited.length,
     notPromoted,
     promotedCandidateIds: selected.map(({ source }, index) => promotedCandidateId(source, index)),
     decisions
@@ -138,6 +162,8 @@ export async function promoteUncertaintiesForVerification(
       considered: summary.considered,
       promoted: summary.promoted,
       laneLimited: summary.laneLimited,
+      representedRelatedSignals: summary.representedRelatedSignals,
+      unrepresentedLaneLimited: summary.unrepresentedLaneLimited,
       maxPromotions,
       notPromoted: summary.notPromoted,
       promotedCandidateIds: summary.promotedCandidateIds
@@ -259,7 +285,11 @@ function pointsAtDistinctScope(source: PromotionSource): boolean {
   ));
 }
 
-function promotedCandidate(source: PromotionSource, index: number): CandidateFinding {
+function promotedCandidate(
+  source: PromotionSource,
+  index: number,
+  relatedSignals: RelatedPromotionSignal[]
+): CandidateFinding {
   const risk = riskProfile(source);
   const confidence = promotedConfidence(source, risk.category);
   const relatedCode = relatedEvidence(source);
@@ -300,9 +330,115 @@ function promotedCandidate(source: PromotionSource, index: number): CandidateFin
       question: source.question.trim(),
       files: source.files,
       symbols: source.symbols,
-      reason: source.reason.trim() || "promoted unresolved predicate for verification"
+      reason: source.reason.trim() || "promoted unresolved predicate for verification",
+      ...(relatedSignals.length > 0
+        ? {
+            relatedSignals,
+            crossPacketRelatedCount: new Set(relatedSignals
+              .filter((signal) => signal.packetId !== source.packet.id)
+              .map((signal) => signal.packetId)).size
+          }
+        : {})
     }
   };
+}
+
+function associateRelatedPromotionSignals(
+  unselected: RankedPromotionSource[],
+  selected: SelectedPromotionSource[]
+): Map<PromotionSource, RelatedPromotionAssociation> {
+  const proposed = unselected.flatMap((source): RelatedPromotionAssociation[] => {
+    const matches = selected.flatMap((selectedItem, selectedIndex): RelatedPromotionAssociation[] => {
+      const match = relatedPromotionAssociation(source, selectedItem, selectedIndex);
+      return match === undefined ? [] : [match];
+    }).sort(compareRelatedPromotionAssociations);
+    return matches[0] === undefined ? [] : [matches[0]];
+  });
+  const accepted = new Map<PromotionSource, RelatedPromotionAssociation>();
+  for (let selectedIndex = 0; selectedIndex < selected.length; selectedIndex += 1) {
+    const forSelected = proposed
+      .filter((association) => association.selectedIndex === selectedIndex)
+      .sort(compareRelatedPromotionSignals)
+      .slice(0, MAX_RELATED_PROMOTION_SIGNALS);
+    for (const association of forSelected) {
+      accepted.set(association.source.source, association);
+    }
+  }
+  return accepted;
+}
+
+function relatedPromotionAssociation(
+  source: RankedPromotionSource,
+  selected: SelectedPromotionSource,
+  selectedIndex: number
+): RelatedPromotionAssociation | undefined {
+  if (riskProfile(source.source).category !== riskProfile(selected.source).category ||
+      source.promotionClass !== selected.promotionClass ||
+      !normalizedValuesOverlap(source.source.files, selected.source.files) ||
+      !normalizedValuesOverlap(source.source.symbols, selected.source.symbols)) {
+    return undefined;
+  }
+  const sourceQuestion = normalizeFollowUpQuestion(source.source.question);
+  const selectedQuestion = normalizeFollowUpQuestion(selected.source.question);
+  const exactQuestion = sourceQuestion === selectedQuestion;
+  const sourceTerms = normalizedAttentionTerms(sourceQuestion);
+  const selectedTerms = normalizedAttentionTerms(selectedQuestion);
+  const sharedTerms = setIntersectionCount(sourceTerms, selectedTerms);
+  const similarity = tokenJaccard(sourceTerms, selectedTerms);
+  if (!exactQuestion && sharedTerms < 3 && similarity < 0.24) {
+    return undefined;
+  }
+  return { source, selected, selectedIndex, exactQuestion, sharedTerms, similarity };
+}
+
+function compareRelatedPromotionAssociations(a: RelatedPromotionAssociation, b: RelatedPromotionAssociation): number {
+  return Number(b.exactQuestion) - Number(a.exactQuestion) ||
+    b.sharedTerms - a.sharedTerms ||
+    b.similarity - a.similarity ||
+    b.selected.rank - a.selected.rank ||
+    a.selected.source.question.localeCompare(b.selected.source.question) ||
+    a.selected.source.packet.id.localeCompare(b.selected.source.packet.id) ||
+    a.selectedIndex - b.selectedIndex;
+}
+
+function compareRelatedPromotionSignals(a: RelatedPromotionAssociation, b: RelatedPromotionAssociation): number {
+  return Number(b.exactQuestion) - Number(a.exactQuestion) ||
+    b.sharedTerms - a.sharedTerms ||
+    b.similarity - a.similarity ||
+    a.source.source.question.localeCompare(b.source.source.question) ||
+    a.source.source.packet.id.localeCompare(b.source.source.packet.id) ||
+    a.source.source.sourceKind.localeCompare(b.source.source.sourceKind);
+}
+
+function relatedSignalsForSelected(
+  selectedIndex: number,
+  associations: Map<PromotionSource, RelatedPromotionAssociation>
+): RelatedPromotionSignal[] {
+  return [...associations.values()]
+    .filter((association) => association.selectedIndex === selectedIndex)
+    .sort(compareRelatedPromotionSignals)
+    .map(({ source: { source } }) => ({
+      packetId: source.packet.id,
+      sourceKind: source.sourceKind,
+      question: source.question.trim(),
+      files: source.files,
+      symbols: source.symbols
+    }));
+}
+
+function normalizedValuesOverlap(left: string[], right: string[]): boolean {
+  const leftValues = new Set(left.map(normalize).filter(Boolean));
+  return right.some((value) => leftValues.has(normalize(value)));
+}
+
+function setIntersectionCount(left: Set<string>, right: Set<string>): number {
+  let count = 0;
+  for (const value of left) {
+    if (right.has(value)) {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 function promotedCandidateId(source: PromotionSource, index: number): string {

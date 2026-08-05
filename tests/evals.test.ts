@@ -404,6 +404,61 @@ describe("eval scoring", () => {
     expect(score.budgetResults.every((result) => result.status === "pass")).toBe(true);
   });
 
+  it("distinguishes empty verifier revisions from other incomplete verification losses", () => {
+    const emptyRevision = candidate("cand-empty-revision", "src/empty.ts", 4);
+    const timedOut = candidate("cand-timeout", "src/timeout.ts", 8);
+    const score = scoreEvalRun({
+      name: "incomplete-verification-reasons",
+      artifacts: { path: "unused" },
+      should_find: [
+        { id: "empty-revision", path: "src/empty.ts" },
+        { id: "other-incomplete", path: "src/timeout.ts" }
+      ]
+    }, {
+      candidates: [emptyRevision, timedOut],
+      verification: [
+        {
+          candidateId: emptyRevision.id,
+          gate: "passed",
+          verdict: {
+            candidateId: emptyRevision.id,
+            verdict: "incomplete",
+            reason: "verification incomplete: schema_invalid_after_repair: revise_without_revision_payload",
+            requiredEvidencePresent: false,
+            falsePositiveRisk: "high",
+            verificationIncomplete: true
+          }
+        },
+        {
+          candidateId: timedOut.id,
+          gate: "passed",
+          verdict: {
+            candidateId: timedOut.id,
+            verdict: "incomplete",
+            reason: "verification incomplete: worker_timed_out",
+            requiredEvidencePresent: false,
+            falsePositiveRisk: "high",
+            verificationIncomplete: true
+          }
+        }
+      ],
+      finalSelection: [],
+      finalFindings: [],
+      packets: [],
+      hintEvents: [],
+      metricsSources: {}
+    }, "live");
+
+    expect(score.expectationResults.find((result) => result.expectationId === "empty-revision")?.loss).toMatchObject({
+      label: "lost-at-verification",
+      subReason: "empty-revision"
+    });
+    expect(score.expectationResults.find((result) => result.expectationId === "other-incomplete")?.loss).toMatchObject({
+      label: "lost-at-verification",
+      subReason: "verification-incomplete"
+    });
+  });
+
   it("renders minimum and maximum budget failures with the correct comparison direction", () => {
     const score = scoreEvalRun({
       name: "budget-direction",
@@ -1143,6 +1198,25 @@ describe("eval compare", () => {
 });
 
 describe("eval artifacts", () => {
+  it("loads internal human-attention groups and rendered output notes separately", async () => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-rendered-notes-"));
+    writeArtifactSet(telemetry, [], []);
+    writeTelemetryArtifact(telemetry, "human-attention-notes.json", {
+      schemaVersion: 2,
+      groups: [{ question: "Internal predicate", files: ["src/internal.ts"], reasons: ["internal only"] }],
+      outputNotes: [{ question: "Rendered predicate", files: ["src/rendered.ts"], reason: "visible to the user" }]
+    });
+
+    const artifacts = await loadEvalArtifacts(telemetry);
+
+    expect(artifacts.humanAttentionNotes).toEqual([
+      { question: "Internal predicate", files: ["src/internal.ts"], reasons: ["internal only"] }
+    ]);
+    expect(artifacts.humanAttentionOutputNotes).toEqual([
+      { question: "Rendered predicate", files: ["src/rendered.ts"], reasons: ["visible to the user"] }
+    ]);
+  });
+
   it("loads packet ids from top-level hint telemetry events", async () => {
     const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-hints-"));
     writeArtifactSet(telemetry, [], []);
@@ -1204,6 +1278,7 @@ describe("eval artifacts", () => {
     expect(artifacts.candidates).toHaveLength(1);
     expect(artifacts.finalFindings).toHaveLength(1);
     expect(artifacts.missingArtifacts).toEqual([]);
+    expect(artifacts.humanAttentionOutputNotes).toBeUndefined();
   });
 
   it("discloses unreadable previous findings in compare reports", () => {
@@ -2135,6 +2210,40 @@ describe("eval repeats (plan 79)", () => {
     const result = score.expectationResults.find((entry) => entry.expectationId === "wc");
     expect(result?.status).toBe("fail");
     expect(result?.loss?.surfacedAsNote).toBe(true);
+    expect(result?.loss?.noteGroupExisted).toBe(true);
+  });
+
+  it("scores only rendered notes while retaining internal-group and legacy diagnostics", () => {
+    const evalCase: EvalCase = {
+      name: "truthful-note-case",
+      repo: { external: "/tmp/unused" },
+      should_find: [{ id: "wc", path: "src/app.ts", titlePattern: "stale value" }]
+    };
+    const note = { question: "Is a stale value served here?", files: ["src/app.ts"], reasons: ["stale value risk"] };
+
+    const internalOnly = scoreEvalRun(evalCase, emptyArtifacts({
+      humanAttentionNotes: [note],
+      humanAttentionOutputNotes: []
+    }), "live").expectationResults[0]?.loss;
+    expect(internalOnly).toMatchObject({ noteGroupExisted: true });
+    expect(internalOnly?.surfacedAsNote).toBeUndefined();
+
+    const rendered = scoreEvalRun(evalCase, emptyArtifacts({
+      humanAttentionNotes: [note],
+      humanAttentionOutputNotes: [note]
+    }), "live").expectationResults[0]?.loss;
+    expect(rendered).toMatchObject({ noteGroupExisted: true, surfacedAsNote: true });
+
+    const explicitEmptyWithoutInternalMatch = scoreEvalRun(evalCase, emptyArtifacts({
+      humanAttentionNotes: [{ question: "Different predicate", files: ["src/other.ts"], reasons: [] }],
+      humanAttentionOutputNotes: []
+    }), "live").expectationResults[0]?.loss;
+    expect(explicitEmptyWithoutInternalMatch?.noteGroupExisted).toBeUndefined();
+    expect(explicitEmptyWithoutInternalMatch?.surfacedAsNote).toBeUndefined();
+
+    const legacy = scoreEvalRun(evalCase, emptyArtifacts({ humanAttentionNotes: [note] }), "replay")
+      .expectationResults[0]?.loss;
+    expect(legacy).toMatchObject({ noteGroupExisted: true, surfacedAsNote: true });
   });
 
   it("isolates the relay wrong-chain bug from the zero-guard and duration look-alikes", () => {

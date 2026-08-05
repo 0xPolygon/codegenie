@@ -106,3 +106,17 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 100 | COMPLETE | Issue 100: Short Hunk IDs — Planner Coverage Survival and Dispatch Resilience |
 | 101 | IN PROGRESS (paid semantic A/B pending) | Issue 101: Exact Skill Provenance and Evidence-Gated Bundled-Skill Revision |
 | 102 | PENDING | Issue 102: Same-File Packet Packing |
+| 104 | PENDING | Issue 104: Delegate Mode — Run the Harness Without a Provider API Key |
+| 105 | PENDING | Issue 105: Competitive Benchmark — Measuring codegenie Against Other Review Harnesses |
+| 106 | COMPLETE | Issue 106: Enforce Meaningful Verifier Revisions and Calibrate Confidence |
+| 107 | COMPLETE | Issue 107: Carry Related Promotion Signals Without Changing Selection |
+| 108 | COMPLETE | Issue 108: Add a Verifier Severity Rubric and Revision Telemetry |
+| 109 | COMPLETE | Issue 109: Restore Summary-Only Publication for Verified Low-Confidence Deltas |
+| 110 | COMPLETE | Issue 110: Make Note Fallback Publication-Aware and Score Rendered Notes |
+
+## Recommended order for 106-110
+
+Land the terminal visibility chain first: **106 -> 109 -> 110**. Plans 107 and
+108 are lower-risk supporting improvements; both follow 106 and may land after
+the visibility chain. Plan 108 must rebase its Stage-9 prompt version onto the
+landed 106 version.

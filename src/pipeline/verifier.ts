@@ -1,6 +1,6 @@
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmRunner, LlmSchemaRepairInput } from "../llm/llm-runner.js";
-import { SubmitVerificationVerdictSchema, type SubmitVerificationVerdict } from "../llm/schemas.js";
+import { SCHEMA_VERSIONS, SubmitVerificationVerdictSchema, type SubmitVerificationVerdict } from "../llm/schemas.js";
 import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-registry.js";
 import { fenceUntrusted, stableJson, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
@@ -11,6 +11,7 @@ import type {
   RepositoryTools,
   ReviewPacket,
   ReviewStage,
+  Severity,
   UnifiedDiff,
   VerificationVerdict
 } from "../types.js";
@@ -118,6 +119,8 @@ type VerificationRuntimeStats = {
 
 type VerifierSchemaInvalidKind =
   | "xml_parameter_bleed"
+  | "empty_submit_object"
+  | "revise_without_revision_payload"
   | "missing_submit_tool"
   | "invalid_tool_arguments"
   | "extra_tool_calls"
@@ -601,12 +604,13 @@ async function verifyCandidate(
   });
   const submitted = await runVerifierStructured(candidate, prompt, tools, config, opts, workerId, telemetry, runtimeStats);
   const normalized = normalizeSubmittedVerdict(candidate, submitted, telemetry);
-  const revised = normalized.finalFinding !== undefined
-    ? revisedFinding(candidate, normalized.finalFinding, packet, opts.diff)
+  const submittedFinalFinding = normalized.finalFinding;
+  const revised = submittedFinalFinding !== undefined
+    ? revisedFinding(candidate, submittedFinalFinding, packet, opts.diff)
     : undefined;
   const revisedAnchor = normalizeAnchor(normalized.revisedAnchor, packet, opts.diff);
   const verificationIncomplete = normalized.reason.startsWith("verification incomplete:");
-  return {
+  const verdict: VerificationVerdict = {
     candidateId: candidate.id,
     verdict: verificationIncomplete ? "incomplete" : normalized.verdict,
     reason: normalized.reason,
@@ -617,6 +621,45 @@ async function verifyCandidate(
     ...(verificationIncomplete ? { verificationIncomplete: true } : {}),
     ...(normalized.behaviorChange !== undefined ? { behaviorChange: normalized.behaviorChange } : {}),
     ...(normalized.intentEvidence !== undefined ? { intentEvidence: normalized.intentEvidence } : {})
+  };
+  if (verdict.verdict === "revise" && revised !== undefined && submittedFinalFinding !== undefined) {
+    // Derive the audit from the same fully policy-applied candidate that enters
+    // the verified set, including any verdict-level behavior assessment.
+    const policyAppliedRevision = applyVerificationVerdict(candidate, verdict);
+    const severityRevision = buildSeverityRevision(
+      candidate.severity,
+      submittedFinalFinding.severity,
+      policyAppliedRevision.severity
+    );
+    telemetry.event({
+      stage: 9,
+      level: severityRevision.deltaLevels >= 2 ? "info" : "debug",
+      message: "verification_severity_revision",
+      file: candidate.path,
+      data: {
+        candidateId: candidate.id,
+        category: policyAppliedRevision.category,
+        behaviorChange: policyAppliedRevision.behaviorChange,
+        ...severityRevision
+      }
+    });
+    return { ...verdict, severityRevision };
+  }
+  return verdict;
+}
+
+const SEVERITY_RANK: Record<Severity, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+
+function buildSeverityRevision(
+  original: Severity,
+  submitted: Severity,
+  applied: Severity
+): NonNullable<VerificationVerdict["severityRevision"]> {
+  return {
+    original,
+    submitted,
+    applied,
+    deltaLevels: SEVERITY_RANK[submitted] - SEVERITY_RANK[original]
   };
 }
 
@@ -643,8 +686,48 @@ function normalizeSubmittedVerdict(
   submitted: SubmitVerificationVerdict,
   telemetry: TelemetryRecorder
 ): SubmitVerificationVerdict {
-  if (submitted.verdict === "reject" || submitted.requiredEvidencePresent === true) {
-    return submitted;
+  // Schema-valid adapters never return null payloads, but normalize them away
+  // defensively before applying the same semantic checks to every verdict.
+  const {
+    finalFinding: rawFinalFinding,
+    revisedAnchor: rawRevisedAnchor,
+    ...submittedWithoutPayloads
+  } = submitted;
+  const finalFinding = rawFinalFinding ?? undefined;
+  const revisedAnchor = rawRevisedAnchor ?? undefined;
+  let normalized = {
+    ...submittedWithoutPayloads,
+    ...(finalFinding !== undefined ? { finalFinding } : {}),
+    ...(revisedAnchor !== undefined ? { revisedAnchor } : {})
+  } as SubmitVerificationVerdict;
+
+  if (normalized.verdict === "keep" && (finalFinding !== undefined || revisedAnchor !== undefined)) {
+    const payloadKinds = [
+      ...(finalFinding !== undefined ? ["finalFinding"] : []),
+      ...(revisedAnchor !== undefined ? ["revisedAnchor"] : [])
+    ];
+    telemetry.event({
+      stage: 9,
+      level: "warn",
+      message: "verification_keep_payload_canonicalized",
+      file: candidate.path,
+      data: { candidateId: candidate.id, payloadKinds }
+    });
+    normalized = { ...normalized, verdict: "revise" } as SubmitVerificationVerdict;
+  }
+  if (normalized.verdict === "revise" && finalFinding === undefined && revisedAnchor === undefined) {
+    const reason = "revise_without_revision_payload";
+    telemetry.event({
+      stage: 9,
+      level: "warn",
+      message: "verification_semantic_invalid",
+      file: candidate.path,
+      data: { candidateId: candidate.id, reason }
+    });
+    return incompleteSubmittedVerdict(reason);
+  }
+  if (normalized.verdict === "reject" || normalized.requiredEvidencePresent === true) {
+    return normalized;
   }
   telemetry.event({
     stage: 9,
@@ -654,12 +737,12 @@ function normalizeSubmittedVerdict(
     data: {
       candidateId: candidate.id,
       originalVerdict: submitted.verdict,
-      falsePositiveRisk: submitted.falsePositiveRisk
+      falsePositiveRisk: normalized.falsePositiveRisk
     }
   });
   return {
     verdict: "reject",
-    reason: `required evidence missing; original ${submitted.verdict} verdict rejected: ${submitted.reason}`,
+    reason: `required evidence missing; original ${submitted.verdict} verdict rejected: ${normalized.reason}`,
     requiredEvidencePresent: false,
     falsePositiveRisk: "high"
   };
@@ -697,6 +780,43 @@ async function runVerifierStructured(
     });
     if (repairAttempt !== undefined) {
       runtimeStats.repairSucceeded += 1;
+      if (repairAttempt.classification === "empty_submit_object") {
+        telemetry.event({
+          stage: 9,
+          level: "warn",
+          message: "verification_empty_submit_repair_discarded",
+          file: candidate.path,
+          data: {
+            candidateId: candidate.id,
+            classification: repairAttempt.classification,
+            repairedVerdict: result.verdict
+          }
+        });
+        return incompleteSubmittedVerdict("schema_invalid_after_repair: empty_submit_object");
+      }
+    } else if (isPrimaryVerifierSubmitAccepted(result)) {
+      telemetry.event({
+        stage: 9,
+        level: "info",
+        message: "verification_primary_submit_accepted",
+        file: candidate.path,
+        data: {
+          candidateId: candidate.id,
+          submitTool: "submit_verdict",
+          schemaVersion: SCHEMA_VERSIONS.submit_verdict,
+          argumentsNonEmpty: true,
+          schemaRepairUsed: false
+        }
+      });
+    } else if (isEmptySubmitObject(result)) {
+      recordVerifierSchemaInvalid(
+        candidate,
+        "submit_verdict returned an empty object",
+        "empty_submit_object",
+        telemetry,
+        runtimeStats
+      );
+      return incompleteSubmittedVerdict("schema_invalid: empty_submit_object");
     }
     return result;
   } catch (error) {
@@ -793,15 +913,7 @@ function buildVerifierSchemaRepairPrompt(
   input: LlmSchemaRepairInput,
   attempt: VerifierRepairAttempt
 ): string {
-  const anchor = candidate.anchor
-    ? `${candidate.anchor.path}:${String(candidate.anchor.line)} ${candidate.anchor.side}`
-    : `${candidate.path}:unanchored`;
-  const candidateSummary = fenceUntrusted(stableJson({
-    id: candidate.id,
-    title: candidate.title,
-    path: candidate.path,
-    anchor
-  }), "verifier-repair-candidate-summary");
+  const candidateSummary = fenceUntrusted(stableJson(verifierRepairCandidateProjection(candidate)), "verifier-repair-candidate-summary");
   return [
     "Repair the Stage 9 verifier response for codegenie.",
     "",
@@ -821,14 +933,18 @@ function buildVerifierSchemaRepairPrompt(
     "- Do not call repository tools or ask for more context.",
     "",
     "Verdict reminder:",
+    "- Judge only the bounded candidate evidence above. It preserves the candidate claim, not repository-tool results from the discarded response.",
     "- keep only if the candidate is proven by concrete evidence.",
-    "- revise only when the same issue is real but the evidence, wording, or anchor needs correction.",
+    "- revise only when the same issue is real but the evidence, wording, or anchor needs correction; include finalFinding or revisedAnchor.",
     "- reject when required evidence is missing, the claim is speculative, or false-positive risk is high.",
     "- If rejecting because verification cannot be completed, set requiredEvidencePresent=false and falsePositiveRisk=high."
   ].join("\n");
 }
 
 function classifyVerifierSchemaInvalid(input: LlmSchemaRepairInput | string): VerifierSchemaInvalidKind {
+  if (typeof input !== "string" && isEmptySubmitObject(input.submitCalls[0]?.arguments)) {
+    return "empty_submit_object";
+  }
   const errorText = typeof input === "string" ? input : input.error;
   const serializedSubmitArgs = typeof input === "string"
     ? ""
@@ -836,6 +952,15 @@ function classifyVerifierSchemaInvalid(input: LlmSchemaRepairInput | string): Ve
   const text = `${errorText}\n${serializedSubmitArgs}`.toLowerCase();
   if (/<\/?\s*parameter\b/u.test(text) || /&lt;\/?\s*parameter\b/u.test(text)) {
     return "xml_parameter_bleed";
+  }
+  if (typeof input !== "string" && input.submitCalls.some((call) => {
+    const argumentsValue = call.arguments;
+    return typeof argumentsValue === "object" && argumentsValue !== null &&
+      "verdict" in argumentsValue && argumentsValue.verdict === "revise" &&
+      (!("finalFinding" in argumentsValue) || argumentsValue.finalFinding == null) &&
+      (!("revisedAnchor" in argumentsValue) || argumentsValue.revisedAnchor == null);
+  })) {
+    return "revise_without_revision_payload";
   }
   if (typeof input !== "string" && input.extraToolNames.length > 0) {
     return "extra_tool_calls";
@@ -853,6 +978,90 @@ function classifyVerifierSchemaInvalid(input: LlmSchemaRepairInput | string): Ve
     return "invalid_tool_arguments";
   }
   return "unknown";
+}
+
+function verifierRepairCandidateProjection(candidate: CandidateFinding): Record<string, unknown> {
+  const relatedCode = (candidate.evidence.relatedCode ?? []).slice(0, 3).map((entry) => ({
+    path: boundedVerifierRepairText(entry.path, 500),
+    lines: boundedVerifierRepairText(entry.lines, 1200),
+    whyRelevant: boundedVerifierRepairText(entry.whyRelevant, 500)
+  }));
+  return {
+    id: boundedVerifierRepairText(candidate.id, 200),
+    title: boundedVerifierRepairText(candidate.title, 240),
+    severity: candidate.severity,
+    confidence: candidate.confidence,
+    category: candidate.category,
+    path: boundedVerifierRepairText(candidate.path, 500),
+    changedLine: candidate.changedLine,
+    ...(candidate.anchor !== undefined
+      ? {
+          anchor: {
+            path: boundedVerifierRepairText(candidate.anchor.path, 500),
+            line: candidate.anchor.line,
+            side: candidate.anchor.side,
+            hunkId: boundedVerifierRepairText(candidate.anchor.hunkId, 200),
+            ...(candidate.anchor.startLine !== undefined ? { startLine: candidate.anchor.startLine } : {}),
+            ...(candidate.anchor.startSide !== undefined ? { startSide: candidate.anchor.startSide } : {}),
+            ...(candidate.anchor.commitSha !== undefined
+              ? { commitSha: boundedVerifierRepairText(candidate.anchor.commitSha, 80) }
+              : {})
+          }
+        }
+      : {}),
+    evidence: {
+      changedCode: boundedVerifierRepairText(candidate.evidence.changedCode, 2400),
+      relatedCode,
+      relatedCodeOmitted: Math.max(0, (candidate.evidence.relatedCode?.length ?? 0) - relatedCode.length)
+    },
+    failureMode: boundedVerifierRepairText(candidate.failureMode, 1400),
+    whyThisMatters: boundedVerifierRepairText(candidate.whyThisMatters, 1000),
+    verification: boundedVerifierRepairText(candidate.verification, 1200),
+    ...(candidate.suggestedFix !== undefined ? { suggestedFix: boundedVerifierRepairText(candidate.suggestedFix, 1200) } : {}),
+    ...(candidate.suggestedTest !== undefined ? { suggestedTest: boundedVerifierRepairText(candidate.suggestedTest, 800) } : {}),
+    ...(candidate.behaviorChange !== undefined ? { behaviorChange: candidate.behaviorChange } : {}),
+    ...(candidate.intentEvidence !== undefined
+      ? { intentEvidence: candidate.intentEvidence.slice(0, 8).map((entry) => boundedVerifierRepairText(entry, 500)) }
+      : {}),
+    ...(candidate.provenance !== undefined
+      ? {
+          provenance: {
+            source: candidate.provenance.source,
+            sourceKind: candidate.provenance.sourceKind,
+            question: boundedVerifierRepairText(candidate.provenance.question, 700),
+            reason: boundedVerifierRepairText(candidate.provenance.reason, 700),
+            files: candidate.provenance.files.slice(0, 8).map((entry) => boundedVerifierRepairText(entry, 500)),
+            symbols: candidate.provenance.symbols.slice(0, 8).map((entry) => boundedVerifierRepairText(entry, 200))
+          }
+        }
+      : {})
+  };
+}
+
+function boundedVerifierRepairText(input: string, maxChars: number): string {
+  const escaped = input.trim().replaceAll("<", "\\u003c").replaceAll(">", "\\u003e");
+  return escaped.length <= maxChars ? escaped : `${escaped.slice(0, maxChars - 3).trimEnd()}...`;
+}
+
+function isEmptySubmitObject(input: unknown): boolean {
+  return typeof input === "object" && input !== null && !Array.isArray(input) && Object.keys(input).length === 0;
+}
+
+function isPrimaryVerifierSubmitAccepted(input: unknown): input is SubmitVerificationVerdict {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    return false;
+  }
+  const verdict = input as Partial<SubmitVerificationVerdict>;
+  const sharedFieldsValid = typeof verdict.reason === "string" && verdict.reason.length > 0 &&
+    typeof verdict.requiredEvidencePresent === "boolean" &&
+    (verdict.falsePositiveRisk === "low" || verdict.falsePositiveRisk === "medium" || verdict.falsePositiveRisk === "high");
+  if (!sharedFieldsValid) {
+    return false;
+  }
+  if (verdict.verdict === "keep" || verdict.verdict === "reject") {
+    return true;
+  }
+  return verdict.verdict === "revise" && (verdict.finalFinding != null || verdict.revisedAnchor != null);
 }
 
 function sanitizeVerifierSchemaError(error: string): string {

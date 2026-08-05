@@ -725,6 +725,13 @@ describe("stage 9 eval diagnostics and prompts", () => {
     expect(verifierPrompt).toContain("caller-visible");
     expect(verifierPrompt).toContain("transformed value");
     expect(verifierPrompt).toContain("original source value");
+    expect(verifierPrompt).toContain("A bare keep means");
+    expect(verifierPrompt).toContain("a revision must include finalFinding or revisedAnchor");
+    expect(verifierPrompt).toContain("Tool refusal, truncation, or budget pressure on a secondary check must not keep confidence low");
+    expect(verifierPrompt).toContain("Reserve low confidence for speculative reachability, ambiguous intent, or weak path matching");
+    expect(verifierPrompt).toContain("low means bounded or localized impact");
+    expect(verifierPrompt).toContain("Measure magnitude and reach");
+    expect(verifierPrompt).toContain("changing severity by more than one level");
   });
 });
 
@@ -938,6 +945,481 @@ function captureTelemetry(): {
   };
 }
 
+describe("plan 106 verifier revision semantics", () => {
+  it("canonicalizes legacy keep payloads to revise while preserving both payload kinds", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("legacy-keep-payload", packet);
+    const telemetry = captureTelemetry();
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict: "keep",
+          reason: "Legacy provider changed the finding while saying keep.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low",
+          finalFinding: {
+            title: "Calibrated legacy finding",
+            severity: "medium",
+            confidence: "medium",
+            path: packet.path,
+            category: "correctness",
+            evidence: { changedCode: "+ return route(provider);" },
+            failureMode: finding.failureMode,
+            whyThisMatters: finding.whyThisMatters,
+            verification: "The decisive changed branch confirms the failure mode."
+          },
+          revisedAnchor: { path: packet.path, line: 2, side: "RIGHT", hunkId: packet.hunks[0]!.hunkId }
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(result.verdicts[0]).toMatchObject({ verdict: "revise", finalFinding: { title: "Calibrated legacy finding" } });
+    expect(result.verified[0]).toMatchObject({ title: "Calibrated legacy finding", confidence: "medium", anchorSource: "verifier_revised" });
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "verification_keep_payload_canonicalized",
+      data: { candidateId: finding.id, payloadKinds: ["finalFinding", "revisedAnchor"] }
+    }));
+  });
+
+  it("rejects a canonicalized keep payload when required evidence is missing", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("legacy-keep-missing-evidence", packet);
+    const telemetry = captureTelemetry();
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict: "keep",
+          reason: "Legacy payload is not backed by required evidence.",
+          requiredEvidencePresent: false,
+          falsePositiveRisk: "high",
+          finalFinding: {
+            title: "Unsupported legacy revision",
+            severity: "medium",
+            confidence: "medium",
+            path: packet.path,
+            category: "correctness",
+            evidence: { changedCode: "+ return route(provider);" },
+            failureMode: finding.failureMode,
+            whyThisMatters: finding.whyThisMatters,
+            verification: "The decisive predicate was not confirmed."
+          }
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(result.verified).toEqual([]);
+    expect(result.verdicts[0]).toMatchObject({
+      verdict: "reject",
+      requiredEvidencePresent: false,
+      falsePositiveRisk: "high",
+      reason: expect.stringContaining("required evidence missing; original keep verdict rejected")
+    });
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "verification_keep_payload_canonicalized",
+        data: { candidateId: finding.id, payloadKinds: ["finalFinding"] }
+      }),
+      expect.objectContaining({
+        message: "verification_missing_evidence_normalized_to_reject",
+        data: expect.objectContaining({ candidateId: finding.id, originalVerdict: "keep" })
+      })
+    ]));
+    expect(telemetry.events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "verification_severity_revision" })
+    ]));
+  });
+
+  it("leaves a bare keep unchanged", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("bare-keep", packet);
+    const telemetry = captureTelemetry();
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict: "keep",
+          reason: "The candidate is publishable unchanged.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(result.verdicts[0]?.verdict).toBe("keep");
+    expect(result.verdicts[0]?.severityRevision).toBeUndefined();
+    expect(result.verified[0]?.title).toBe(finding.title);
+    expect(telemetry.events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "verification_keep_payload_canonicalized" }),
+      expect.objectContaining({ message: "verification_severity_revision" })
+    ]));
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "verification_primary_submit_accepted",
+      data: {
+        candidateId: finding.id,
+        submitTool: "submit_verdict",
+        schemaVersion: 3,
+        argumentsNonEmpty: true,
+        schemaRepairUsed: false
+      }
+    }));
+  });
+
+  it("treats null keep payloads from a non-validating adapter as absent", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("null-keep-payloads", packet);
+    const telemetry = captureTelemetry();
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict: "keep",
+          reason: "The unchanged candidate is supported.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low",
+          finalFinding: null,
+          revisedAnchor: null
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(result.verdicts[0]).toMatchObject({ verdict: "keep" });
+    expect(result.verified).toEqual([finding]);
+    expect(telemetry.events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "verification_keep_payload_canonicalized" }),
+      expect.objectContaining({ message: "verification_semantic_invalid" })
+    ]));
+  });
+
+  it("persists an empty revise from a non-validating adapter as incomplete", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("empty-revise-defense", packet);
+    const telemetry = captureTelemetry();
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict: "revise",
+          reason: "Changed only in prose.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(result.verified).toEqual([]);
+    expect(result.incompleteCount).toBe(1);
+    expect(result.verdicts[0]).toMatchObject({
+      verdict: "incomplete",
+      verificationIncomplete: true,
+      reason: "verification incomplete: revise_without_revision_payload"
+    });
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "verification_semantic_invalid",
+      data: { candidateId: finding.id, reason: "revise_without_revision_payload" }
+    }));
+    expect(telemetry.events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "verification_primary_submit_accepted" })
+    ]));
+  });
+
+  it("treats null revise payloads from a non-validating adapter as empty", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("null-revise-payloads", packet);
+    const telemetry = captureTelemetry();
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict: "revise",
+          reason: "No structured revision was actually supplied.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low",
+          finalFinding: null,
+          revisedAnchor: null
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(result.verified).toEqual([]);
+    expect(result.verdicts[0]).toMatchObject({
+      verdict: "incomplete",
+      verificationIncomplete: true,
+      reason: "verification incomplete: revise_without_revision_payload"
+    });
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "verification_semantic_invalid",
+      data: { candidateId: finding.id, reason: "revise_without_revision_payload" }
+    }));
+  });
+});
+
+describe("plan 108 verifier severity revision observability", () => {
+  const cases = [
+    { name: "decrease", original: "high", submitted: "medium", applied: "medium", deltaLevels: -1, level: "debug" },
+    { name: "unchanged", original: "medium", submitted: "medium", applied: "medium", deltaLevels: 0, level: "debug" },
+    { name: "one-level increase", original: "low", submitted: "medium", applied: "medium", deltaLevels: 1, level: "debug" },
+    { name: "two-level increase", original: "low", submitted: "high", applied: "high", deltaLevels: 2, level: "info" },
+    {
+      name: "behavior-change cap",
+      original: "medium",
+      submitted: "high",
+      applied: "medium",
+      deltaLevels: 1,
+      level: "debug",
+      behaviorChange: "intentional_needs_confirmation"
+    }
+  ] as const;
+
+  for (const testCase of cases) {
+    it(`persists and emits a ${testCase.name}`, async () => {
+      const fixture = reviewFixture(["src/severity.ts"]);
+      const packet = fixture.packets[0]!;
+      const finding = candidate(`severity-${testCase.name.replaceAll(" ", "-")}`, packet, {
+        severity: testCase.original
+      });
+      const telemetry = captureTelemetry();
+
+      const result = await verifyFindings(
+        { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+        fakeTools(),
+        config(),
+        telemetry.recorder,
+        {
+          runner: verifierRunner(() => ({
+            verdict: "revise",
+            reason: "The issue is real with calibrated impact.",
+            requiredEvidencePresent: true,
+            falsePositiveRisk: "low",
+            ...("behaviorChange" in testCase ? { behaviorChange: testCase.behaviorChange } : {}),
+            finalFinding: {
+              title: "Calibrated severity finding",
+              severity: testCase.submitted,
+              confidence: "high",
+              path: packet.path,
+              category: "correctness",
+              evidence: { changedCode: "+ return route(provider);" },
+              failureMode: finding.failureMode,
+              whyThisMatters: finding.whyThisMatters,
+              verification: "The concrete impact is bounded to callers of this changed route."
+            }
+          })),
+          promptBuilder: createPromptBuilder(fakeLensRegistry()),
+          lensRegistry: fakeLensRegistry(),
+          diff: fixture.diff
+        }
+      );
+
+      const expectedRevision = {
+        original: testCase.original,
+        submitted: testCase.submitted,
+        applied: testCase.applied,
+        deltaLevels: testCase.deltaLevels
+      };
+      expect(result.verdicts[0]?.severityRevision).toEqual(expectedRevision);
+      expect(result.verified[0]?.severity).toBe(testCase.applied);
+      expect(telemetry.events).toContainEqual(expect.objectContaining({
+        stage: 9,
+        level: testCase.level,
+        message: "verification_severity_revision",
+        data: expect.objectContaining({
+          candidateId: finding.id,
+          category: "correctness",
+          ...expectedRevision,
+          ...("behaviorChange" in testCase ? { behaviorChange: testCase.behaviorChange } : {})
+        })
+      }));
+
+      const records = telemetry.artifacts.get("verification.json") as EvalVerificationRecord[];
+      expect(records[0]).toMatchObject({
+        candidateId: finding.id,
+        verdict: { severityRevision: expectedRevision }
+      });
+      if ("behaviorChange" in testCase) {
+        expect(result.verified[0]).toMatchObject({
+          behaviorChange: "intentional_needs_confirmation",
+          severity: "medium",
+          severityBeforeCap: "high"
+        });
+      } else {
+        expect(result.verified[0]?.severityBeforeCap).toBeUndefined();
+      }
+    });
+  }
+
+  it("does not record severity revision telemetry for reject compatibility payloads", async () => {
+    const fixture = reviewFixture(["src/severity.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("reject-severity-payload", packet, { severity: "low" });
+    const telemetry = captureTelemetry();
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict: "reject",
+          reason: "The candidate is unsupported despite the compatibility payload.",
+          requiredEvidencePresent: false,
+          falsePositiveRisk: "high",
+          finalFinding: {
+            title: "Rejected compatibility payload",
+            severity: "high",
+            confidence: "medium",
+            path: packet.path,
+            category: "correctness",
+            evidence: { changedCode: "+ return route(provider);" },
+            failureMode: finding.failureMode,
+            whyThisMatters: finding.whyThisMatters,
+            verification: "The decisive predicate was not confirmed."
+          }
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(result.verified).toEqual([]);
+    expect(result.verdicts[0]).toMatchObject({ verdict: "reject" });
+    expect(result.verdicts[0]?.severityRevision).toBeUndefined();
+    expect(telemetry.events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "verification_severity_revision" })
+    ]));
+    const records = telemetry.artifacts.get("verification.json") as EvalVerificationRecord[];
+    expect(records[0]).toMatchObject({ candidateId: finding.id, verdict: { verdict: "reject" } });
+    expect((records[0] as Extract<EvalVerificationRecord, { verdict: unknown }>).verdict).not.toHaveProperty("severityRevision");
+  });
+});
+
+describe("plan 107 related promotion signal handoff", () => {
+  it("keeps related signals inside candidate provenance without changing verifier resources or primary provenance", async () => {
+    const fixture = reviewFixture(["src/amount.ts"]);
+    const packet = fixture.packets[0]!;
+    const primaryQuestion = "Verify whether scaleExactOutput now truncates the exact output amount.";
+    const relatedQuestion = "Confirm whether the exact output amount can under-deliver the caller contract.";
+    const finding = candidate("related-signal-handoff", packet, {
+      producedBy: {
+        kind: "packet",
+        stage: 9,
+        packetId: packet.id,
+        lensId: "shared/review",
+        skillIds: ["projection/neutral"]
+      },
+      provenance: {
+        source: "uncertainty_promotion",
+        sourceKind: "follow_up_hint",
+        sourcePacketId: packet.id,
+        question: primaryQuestion,
+        files: [packet.path],
+        symbols: ["scaleExactOutput"],
+        reason: "Primary promoted predicate.",
+        relatedSignals: [{
+          packetId: "packet-related",
+          sourceKind: "follow_up_hint",
+          question: relatedQuestion,
+          files: [packet.path],
+          symbols: ["scaleExactOutput"]
+        }],
+        crossPacketRelatedCount: 1
+      }
+    });
+    const registry = registryWithSkills([projectionSkill("neutral", [], "RELATED_SIGNAL_SKILL_MARKER")]);
+    let request: LlmStructuredRequest<unknown> | undefined;
+
+    await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      captureTelemetry().recorder,
+      {
+        runner: {
+          runStructured: async <T>(input: LlmStructuredRequest<T>) => {
+            request = input;
+            return {
+              verdict: "keep",
+              reason: "The primary predicate is confirmed unchanged.",
+              requiredEvidencePresent: true,
+              falsePositiveRisk: "low"
+            } as T;
+          }
+        },
+        promptBuilder: createPromptBuilder(registry),
+        lensRegistry: registry,
+        diff: fixture.diff
+      }
+    );
+
+    expect(request?.toolBudget).toEqual({
+      maxToolCalls: 8,
+      maxInvestigationRounds: 3,
+      maxResultChars: 16_000,
+      maxSingleToolResultChars: 6_000,
+      reservedSourceResultChars: 4_000,
+      sourceExtension: { maxToolCalls: 2, maxResultChars: 8_000 }
+    });
+    expect(request?.prompt).toContain("RELATED_SIGNAL_SKILL_MARKER");
+    expect(request?.prompt).toContain(`\"question\": \"${primaryQuestion}\"`);
+    expect(request?.prompt).toContain("\"relatedSignals\"");
+    expect(request?.prompt).toContain("\"crossPacketRelatedCount\": 1");
+    expect(request?.prompt?.split(relatedQuestion)).toHaveLength(2);
+    const candidateBlock = /untrusted-data label=candidate-finding\n(?<body>[\s\S]*?)\n`{4,}/u.exec(request?.prompt ?? "")?.groups?.body;
+    expect(candidateBlock).toContain(relatedQuestion);
+    expect(candidateBlock).toContain(primaryQuestion);
+  });
+});
+
 describe("plan 76 anchor reconstruction", () => {
   it("tier 1: reconstructs a precise anchor from quoted changed code with whitespace variance", () => {
     const fixture = reviewFixture(["src/app.ts"]);
@@ -1127,7 +1609,7 @@ describe("plan 76 anchor reconstruction", () => {
       captureTelemetry().recorder,
       {
         runner: verifierRunner(() => ({
-          verdict: "keep",
+          verdict: "revise",
           reason: "Confirmed; anchor refined to the changed line.",
           requiredEvidencePresent: true,
           falsePositiveRisk: "low",
