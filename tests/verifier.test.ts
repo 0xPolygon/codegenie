@@ -1078,6 +1078,16 @@ describe("plan 106 verifier revision semantics", () => {
       expect.objectContaining({ message: "verification_keep_payload_canonicalized" }),
       expect.objectContaining({ message: "verification_severity_revision" })
     ]));
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "verification_primary_submit_accepted",
+      data: {
+        candidateId: finding.id,
+        submitTool: "submit_verdict",
+        schemaVersion: 3,
+        argumentsNonEmpty: true,
+        schemaRepairUsed: false
+      }
+    }));
   });
 
   it("treats null keep payloads from a non-validating adapter as absent", async () => {
@@ -1149,6 +1159,9 @@ describe("plan 106 verifier revision semantics", () => {
       message: "verification_semantic_invalid",
       data: { candidateId: finding.id, reason: "revise_without_revision_payload" }
     }));
+    expect(telemetry.events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "verification_primary_submit_accepted" })
+    ]));
   });
 
   it("treats null revise payloads from a non-validating adapter as empty", async () => {

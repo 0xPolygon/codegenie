@@ -121,6 +121,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
     { surface: "helper/callee complete-branch guidance", reason: "Prevents keeping helper-dependent claims from truncated or partial source reads.", evidence: "Fable review verifier false-positive class" },
     { surface: "testing candidate guidance", reason: "Keeps real test-boundary regressions while rejecting generic add-more-tests comments.", evidence: "Plan 92 E1 escalator and Plan 75 suppression" },
     { surface: "conditional skill guidance block", reason: "An empty authoritative provenance list must not leave a provider-facing label that implies verifier guidance was supplied.", evidence: "Plan 101 exact skill provenance" },
+    { surface: "bounded verifier repair candidate evidence", reason: "Stateless replacement repair needs the candidate's claim and evidence without replaying contaminated output or discarded repository-tool state.", evidence: "Private eval 49f4645b runs 58-60; run 60 evidence-starved empty-submit repairs" },
     { surface: "strict submit_verdict closeout", reason: "Verifier model repair is still live and successful, so the structured closeout remains load-bearing.", evidence: "Plan 95 census: 3 Stage-9 schema repairs, all recovered" }
   ],
   10: [

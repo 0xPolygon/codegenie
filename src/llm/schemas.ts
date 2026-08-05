@@ -255,35 +255,18 @@ const VerificationVerdictSharedProperties = {
   intentEvidence: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 8 }))
 };
 
-export const SubmitVerificationVerdictSchema = Type.Union([
-  Type.Object(
-    {
-      verdict: Type.Union([Type.Literal("keep"), Type.Literal("reject")]),
-      ...VerificationVerdictSharedProperties,
-      finalFinding: Type.Optional(SubmittedFindingSchema),
-      revisedAnchor: Type.Optional(DiffAnchorSchema)
-    },
-    { additionalProperties: false }
-  ),
-  Type.Object(
-    {
-      verdict: Type.Literal("revise"),
-      ...VerificationVerdictSharedProperties,
-      finalFinding: SubmittedFindingSchema,
-      revisedAnchor: Type.Optional(DiffAnchorSchema)
-    },
-    { additionalProperties: false }
-  ),
-  Type.Object(
-    {
-      verdict: Type.Literal("revise"),
-      ...VerificationVerdictSharedProperties,
-      finalFinding: Type.Optional(SubmittedFindingSchema),
-      revisedAnchor: DiffAnchorSchema
-    },
-    { additionalProperties: false }
-  )
-]);
+export const SubmitVerificationVerdictSchema = Type.Object(
+  {
+    verdict: Type.Union([Type.Literal("keep"), Type.Literal("reject"), Type.Literal("revise")]),
+    ...VerificationVerdictSharedProperties,
+    finalFinding: Type.Optional(SubmittedFindingSchema),
+    revisedAnchor: Type.Optional(DiffAnchorSchema)
+  },
+  {
+    additionalProperties: false,
+    description: "Submit one verifier verdict. A revise verdict must include finalFinding or revisedAnchor; this semantic requirement is enforced after provider-safe schema validation."
+  }
+);
 
 export const SubmitCompositionSchema = Type.Object(
   {
@@ -313,7 +296,7 @@ export const SCHEMA_VERSIONS = {
   submit_plan: 5,
   submit_review: 4,
   submit_system_review: 1,
-  submit_verdict: 2,
+  submit_verdict: 3,
   submit_composition: 1
 } as const;
 

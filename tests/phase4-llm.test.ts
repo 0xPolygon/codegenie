@@ -66,6 +66,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
     expect(SCHEMA_VERSIONS.submit_plan).toBe(5);
+    expect(SCHEMA_VERSIONS.submit_verdict).toBe(3);
 
     const valid = {
       diffUnderstanding: { declaredIntent: "Small change", inferredBehavior: "The diff makes a small change." },
@@ -171,7 +172,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     ).toThrow();
   });
 
-  it("requires every revise verdict to carry a structured revision payload", () => {
+  it("exposes a provider-safe flat verdict schema while leaving revise payload semantics to runtime", () => {
     const tool = { name: "submit_verdict", description: "submit", parameters: SubmitVerificationVerdictSchema };
     const common = {
       reason: "decisive evidence supports this verdict",
@@ -186,6 +187,24 @@ describe("Phase 4 schemas and repository tool definitions", () => {
       name: "submit_verdict",
       arguments: argumentsValue
     });
+    const rootSchema = SubmitVerificationVerdictSchema as {
+      type?: string;
+      anyOf?: unknown;
+      required?: string[];
+      properties?: Record<string, unknown>;
+    };
+
+    expect(rootSchema.type).toBe("object");
+    expect(rootSchema.anyOf).toBeUndefined();
+    expect(rootSchema.required).toEqual(expect.arrayContaining([
+      "verdict",
+      "reason",
+      "requiredEvidencePresent",
+      "falsePositiveRisk"
+    ]));
+    expect(rootSchema.required).not.toContain("finalFinding");
+    expect(rootSchema.required).not.toContain("revisedAnchor");
+    expect(rootSchema.properties).toHaveProperty("verdict");
 
     expect(validate({ verdict: "keep", ...common })).toEqual({ verdict: "keep", ...common });
     expect(validate({ verdict: "reject", ...common })).toEqual({ verdict: "reject", ...common });
@@ -198,7 +217,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
       finalFinding,
       revisedAnchor
     });
-    expect(() => validate({ verdict: "revise", ...common })).toThrow();
+    expect(validate({ verdict: "revise", ...common })).toEqual({ verdict: "revise", ...common });
     expect(() => validate({ verdict: "revise", ...common, finalFinding, extra: true })).toThrow();
   });
 

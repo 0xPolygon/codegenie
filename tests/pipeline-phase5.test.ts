@@ -8339,6 +8339,10 @@ describe("phase 5 pipeline regressions", () => {
     expect(calls).toBe(1);
     expect(repairPrompt).toContain("untrusted-data label=verifier-repair-candidate-summary");
     expect(repairPrompt).toContain("\"id\": \"finding-1\"");
+    expect(repairPrompt).toContain("\"changedCode\": \"bad\"");
+    expect(repairPrompt).toContain("\"failureMode\": \"bad\"");
+    expect(repairPrompt).toContain("\"whyThisMatters\": \"matters\"");
+    expect(repairPrompt).toContain("\"verification\": \"verified\"");
     expect(repairPrompt).toContain("- class: xml_parameter_bleed");
     expect(repairPrompt).toContain("Do not output XML.");
     expect(repairPrompt).toContain("Do not write `<parameter>` tags.");
@@ -8376,6 +8380,120 @@ describe("phase 5 pipeline regressions", () => {
         })
       })
     }));
+    expect(events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "verification_primary_submit_accepted" })
+    ]));
+  });
+
+  it("fails closed when an empty authoritative Stage 9 submit precedes later XML", async () => {
+    let repairPrompt = "";
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const artifacts = new Map<string, unknown>();
+    const finding: CandidateFinding = {
+      ...fakeFinding(),
+      title: "EXACT_OUTPUT cross-decimal quote overstates the deliverable amount",
+      evidence: {
+        changedCode: "+ transferAmount = scaleAmount(amountBig, destinationDecimals, originDecimals)",
+        relatedCode: [{
+          path: "process_quote.go",
+          lines: "ToAmountMin: destinationAmount",
+          whyRelevant: "The published minimum uses the unrounded destination amount."
+        }]
+      },
+      failureMode: "Integer division truncates the packed transfer amount while ToAmountMin retains the larger requested destination amount.",
+      whyThisMatters: "The quote can promise a minimum output that the packed transfer cannot deliver.",
+      verification: `The changed scaling branch and the ToAmountMin assignment establish the concrete mismatch. <parameter>CANDIDATE_XML</parameter> ${"bounded ".repeat(250)}OMITTED_TAIL`
+    };
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
+          stage: 9,
+          submitTool: "submit_verdict",
+          error: "submit_verdict arguments were schema-invalid: missing required fields; later call contained <parameter>BAD_LATER_XML</parameter>",
+          submitCalls: [
+            { id: "submit-verdict-empty", arguments: {} },
+            { id: "submit-verdict-later-xml", arguments: { parameter: "<parameter>BAD_LATER_XML</parameter>" } }
+          ],
+          extraToolNames: []
+        }) ?? "";
+        return {
+          verdict: "keep",
+          reason: "The bounded candidate evidence supports the finding.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        } as T;
+      }
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [finding], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
+          events.push(event);
+        },
+        writeArtifact: async (name: string, data: unknown) => {
+          artifacts.set(name, data);
+        }
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff(),
+        checkpoint: () => "ok"
+      }
+    );
+
+    expect(repairPrompt.length).toBeLessThan(15_000);
+    expect(repairPrompt).toContain("- class: empty_submit_object");
+    expect(repairPrompt).not.toContain("BAD_LATER_XML");
+    expect(repairPrompt).toContain("\"title\": \"EXACT_OUTPUT cross-decimal quote overstates the deliverable amount\"");
+    expect(repairPrompt).toContain("\"changedCode\": \"+ transferAmount = scaleAmount");
+    expect(repairPrompt).toContain("\"relatedCode\": [");
+    expect(repairPrompt).toContain("\"failureMode\": \"Integer division truncates");
+    expect(repairPrompt).toContain("\"whyThisMatters\": \"The quote can promise");
+    expect(repairPrompt).toContain("\"verification\": \"The changed scaling branch");
+    expect(repairPrompt).toContain("\\\\u003cparameter\\\\u003eCANDIDATE_XML");
+    expect(repairPrompt).not.toContain("<parameter>CANDIDATE_XML</parameter>");
+    expect(repairPrompt).not.toContain("OMITTED_TAIL");
+    expect(repairPrompt).toContain("Judge only the bounded candidate evidence above");
+    expect(verified.verified).toEqual([]);
+    expect(verified.incompleteCount).toBe(1);
+    expect(verified.verdicts[0]).toMatchObject({
+      verdict: "incomplete",
+      verificationIncomplete: true,
+      reason: "verification incomplete: schema_invalid_after_repair: empty_submit_object"
+    });
+    expect(artifacts.get("verification.json")).toEqual([
+      expect.objectContaining({
+        candidateId: finding.id,
+        verificationStatus: "incomplete",
+        incompleteReason: "schema_invalid"
+      })
+    ]);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "verification_schema_invalid",
+        data: expect.objectContaining({ candidateId: finding.id, classification: "empty_submit_object" })
+      }),
+      expect.objectContaining({
+        message: "verification_schema_repair_attempted",
+        data: expect.objectContaining({ candidateId: finding.id, classification: "empty_submit_object" })
+      }),
+      expect.objectContaining({
+        message: "verification_empty_submit_repair_discarded",
+        data: expect.objectContaining({ candidateId: finding.id, repairedVerdict: "keep" })
+      })
+    ]));
+    expect(events).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: "verification_primary_submit_accepted" })
+    ]));
   });
 
   it("repairs an empty revise with a required structured payload", async () => {
