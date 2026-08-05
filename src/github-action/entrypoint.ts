@@ -5,7 +5,11 @@ import { getPiApiKeyEnvVarName } from "../provider/pi-ai-models.js";
 import { renderMarkdownReview } from "../output/markdown-renderer.js";
 import { sanitizeGitHubCommentBody, scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import type { ReviewResult, TelemetryEvent } from "../types.js";
-import { CodegenieError, isCodegenieError } from "../util/errors.js";
+import { CodegenieError, isCodegenieError, type CodegenieErrorCode } from "../util/errors.js";
+import {
+  structuredSubmitFailureDiagnosticFromError,
+  type StructuredSubmitFailureDiagnostic
+} from "../llm/schema-diagnostics.js";
 import {
   DEFAULT_ALLOWED_ASSOCIATIONS,
   DEFAULT_TRIGGER_PHRASE,
@@ -15,6 +19,7 @@ import {
 } from "./event-gate.js";
 import { createIssueCommentClient, type IssueCommentClient } from "./issue-comments.js";
 import { createStatusCommentController } from "./status-comment.js";
+import { renderStructuredSubmitFailure } from "./render.js";
 
 type ProgressEvent = Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">;
 
@@ -202,9 +207,18 @@ export async function executeGitHubActionCommand(
       writeOutput: write
     });
   } catch (error) {
-    const code = error instanceof CodegenieError ? error.code : error instanceof Error ? error.name : "unknown_error";
-    await controller.finalizeFailure(code);
+    const code = actionErrorCode(error);
+    const diagnostic = structuredSubmitFailureDiagnosticFromError(error);
+    publishFailureFiles({
+      errorCode: code,
+      decision: authorized,
+      env,
+      ...(diagnostic !== undefined ? { diagnostic } : {}),
+      ...(runUrl !== undefined ? { runUrl } : {})
+    });
+    await controller.finalizeFailure(code, diagnostic);
     emitActionRecord(attachment?.runDir, eventName, authorized, "review_failed", controller.stats(), env, write, code);
+    write(`github-action: review failed — ${diagnostic !== undefined ? renderStructuredSubmitFailure(diagnostic) : code}\n`);
     throw error;
   }
 
@@ -405,6 +419,93 @@ function publishReportFiles(report: string, env: NodeJS.ProcessEnv): void {
     } catch {
       // ignore
     }
+  }
+}
+
+type ActionFailureRecord = {
+  schemaVersion: 1;
+  lane: AuthorizedDecision["lane"];
+  prNumber: number;
+  errorCode: CodegenieErrorCode | "unknown_error";
+  runUrl?: string;
+  runId?: string;
+  structuredSubmitFailure?: StructuredSubmitFailureDiagnostic;
+};
+
+const FAILURE_JSON_MAX_BYTES = 16 * 1024;
+const FAILURE_MARKDOWN_MAX_BYTES = 4 * 1024;
+
+function actionErrorCode(error: unknown): CodegenieErrorCode | "unknown_error" {
+  return error instanceof CodegenieError ? error.code : "unknown_error";
+}
+
+function publishFailureFiles(input: {
+  errorCode: CodegenieErrorCode | "unknown_error";
+  diagnostic?: StructuredSubmitFailureDiagnostic;
+  decision: AuthorizedDecision;
+  runUrl?: string;
+  env: NodeJS.ProcessEnv;
+}): void {
+  const runId = input.env.GITHUB_RUN_ID;
+  const record: ActionFailureRecord = {
+    schemaVersion: 1,
+    lane: input.decision.lane,
+    prNumber: input.decision.prNumber,
+    errorCode: input.errorCode,
+    ...(input.runUrl !== undefined ? { runUrl: input.runUrl } : {}),
+    ...(runId !== undefined && /^\d+$/u.test(runId) ? { runId } : {}),
+    ...(input.diagnostic !== undefined ? { structuredSubmitFailure: input.diagnostic } : {})
+  };
+  const json = fitFailureJson(record);
+  const markdown = fitFailureMarkdown([
+    "# 🧞 Codegenie Review Failed",
+    "",
+    `Error code: \`${input.errorCode}\``,
+    ...(input.diagnostic !== undefined ? ["", renderStructuredSubmitFailure(input.diagnostic)] : []),
+    ...(input.runUrl !== undefined ? ["", `See the [workflow job](${input.runUrl}) and the failure JSON artifact.`] : [])
+  ].join("\n"));
+  writeFailureFile(input.env.CODEGENIE_FAILURE_PATH, json);
+  writeFailureFile(input.env.CODEGENIE_REPORT_PATH, markdown);
+  const stepSummary = input.env.GITHUB_STEP_SUMMARY;
+  if (stepSummary !== undefined && stepSummary !== "") {
+    try {
+      appendFileSync(stepSummary, `${sanitizeGitHubCommentBody(markdown).trimEnd()}\n`);
+    } catch {
+      // The original review failure remains authoritative.
+    }
+  }
+}
+
+function fitFailureJson(record: ActionFailureRecord): string {
+  let candidate = record;
+  let serialized = `${JSON.stringify(candidate, null, 2)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") <= FAILURE_JSON_MAX_BYTES) {
+    return serialized;
+  }
+  candidate = { ...record, ...(record.structuredSubmitFailure !== undefined
+    ? { structuredSubmitFailure: { ...record.structuredSubmitFailure, issues: [] } }
+    : {}) };
+  serialized = `${JSON.stringify(candidate, null, 2)}\n`;
+  return Buffer.byteLength(serialized, "utf8") <= FAILURE_JSON_MAX_BYTES
+    ? serialized
+    : `${JSON.stringify({ schemaVersion: 1, lane: record.lane, prNumber: record.prNumber, errorCode: record.errorCode }, null, 2)}\n`;
+}
+
+function fitFailureMarkdown(markdown: string): string {
+  if (Buffer.byteLength(markdown, "utf8") <= FAILURE_MARKDOWN_MAX_BYTES) {
+    return `${markdown.trimEnd()}\n`;
+  }
+  return `${Buffer.from(markdown, "utf8").subarray(0, FAILURE_MARKDOWN_MAX_BYTES - 64).toString("utf8").trimEnd()}\n\n[Failure report truncated.]\n`;
+}
+
+function writeFailureFile(filePath: string | undefined, contents: string): void {
+  if (filePath === undefined || filePath === "") {
+    return;
+  }
+  try {
+    writeFileSync(filePath, contents);
+  } catch {
+    // The original review failure remains authoritative.
   }
 }
 

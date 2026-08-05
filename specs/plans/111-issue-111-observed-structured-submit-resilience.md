@@ -1,10 +1,11 @@
 # Issue 111: Fix Observed Structured-Submit Failures and Preserve Safe Diagnostics
 
-Status: PENDING
+Status: IMPLEMENTED (dogfood pending)
 Planned from: GitHub Action run `30998651040` / job `92281793676`,
 trails-api eval `49f4645b` runs 61-62, and `0c4d5213` run 69,
 2026-08-05
-Planned at: commit `07434ba` (branch `plans`)
+Planned at: commit `ae1bb70` (branch `llm-repair`; tree-identical to the
+original planning SHA `07434ba` on the retired `plans` branch)
 Recommended priority: immediate. This plan fixes the observed production
 failure and measured Stage-9 friction without waiting for an upstream Pi
 release or building a speculative general JSON-repair layer.
@@ -16,7 +17,7 @@ release or building a speculative general JSON-repair layer.
 > plan's row in `specs/plans/README.md` when complete.
 >
 > **Drift check (run first)**:
-> `git diff --stat 07434ba..HEAD -- src/llm/llm-runner.ts src/llm/pi-runner.ts src/llm/schema-diagnostics.ts src/llm/schemas.ts src/pipeline/planner.ts src/pipeline/verifier.ts src/pipeline/composer.ts src/skills/prompt-builder.ts src/output/markdown-renderer.ts src/util/coverage-summary.ts src/github-action/entrypoint.ts src/github-action/render.ts action.yml .github/workflows/codegenie-review.yml tests/phase4-llm.test.ts tests/pipeline-phase5.test.ts tests/github-action.test.ts tests/shared-utils.test.ts specs/project/architecture.md specs/project/components/skills_llm_telemetry.md specs/project/components/review_pipeline.md specs/project/components/repository_and_github.md`
+> `git diff --stat ae1bb70..HEAD -- src/llm/llm-runner.ts src/llm/pi-runner.ts src/llm/schema-diagnostics.ts src/llm/schemas.ts src/pipeline/planner.ts src/pipeline/verifier.ts src/pipeline/composer.ts src/skills/prompt-builder.ts src/output/markdown-renderer.ts src/util/coverage-summary.ts src/github-action/entrypoint.ts src/github-action/render.ts action.yml .github/workflows/codegenie-review.yml tests/phase4-llm.test.ts tests/pipeline-phase5.test.ts tests/github-action.test.ts tests/shared-utils.test.ts specs/project/architecture.md specs/project/components/skills_llm_telemetry.md specs/project/components/review_pipeline.md specs/project/components/repository_and_github.md`
 > If an in-scope path changed, reconcile every Current state statement against
 > live code. STOP if the one-model-repair scheduler, planner fallback,
 > verifier incomplete behavior, coverage aggregation, or Action status-comment
@@ -32,7 +33,7 @@ release or building a speculative general JSON-repair layer.
   (COMPLETE). The shared Plan-95 submit/retry seam is already implemented at
   the planned SHA; no pending Plan-95 work blocks this plan.
 - **Category**: bug / resilience / diagnostics
-- **Planned at**: commit `07434ba`, 2026-08-05
+- **Planned at**: commit `ae1bb70`, 2026-08-05
 
 ## Why this matters
 
@@ -492,6 +493,39 @@ contains approval wording, a second repair occurs, or an owner eval regresses.
 **Verify**: Action/provider smoke and all three owner cases satisfy every
 listed invariant.
 
+### Implementation evidence (2026-08-05)
+
+- Focused runner/schema, pipeline/output, verifier, telemetry, and Action
+  regressions pass. `pnpm install --frozen-lockfile`, `pnpm run check`,
+  `pnpm build`, and `git diff --check` pass.
+- Boundary tests pin the 2,000/2,001/4,000/4,001 reason lengths and all four
+  historical 2,102/2,285/2,327/2,984 lengths. Values through 4,000 are
+  preserved unchanged; 4,001 still enters the existing one repair.
+- Integration tests exercise semantic empty-revise on primary, repair,
+  deterministic-recovery, and cache-validity paths; twice-invalid planner
+  fallback; degraded/partial banners; truthful partial no-findings; and
+  telemetry-disabled Action failure files with seeded secret/repository text,
+  malformed diagnostics, issue caps, unknown errors, and unwritable paths.
+- The direct Anthropic Messages and OpenAI Codex Responses configured-provider
+  smokes each accepted a strict schema-valid submit without model repair.
+- Owner eval `49f4645b` run 63 passed 1/1 required expectations with complete
+  coverage and no verification/composition loss. Its Stage-5 primary submit
+  was schema-invalid and recovered through exactly one repair; the required
+  finding remained published. No raw event value crossed the new bounded
+  provenance telemetry.
+- Owner eval `0c4d5213` run 71 passed all 4/4 required expectations, the
+  required candidate expectation, and the `should_not_find` guard, with six
+  published findings, complete coverage, and no stage loss. A 2,031-character
+  verifier reason was accepted unchanged on the primary call and emitted only
+  `verification_reason_target_exceeded`. Its three invalid submits all
+  recovered through the existing bounded paths: one Stage-7 schema repair,
+  one Stage-9 final-argument repair, and one deterministic Stage-10 recovery.
+
+The remaining dogfood gate is recording the `relay-wc` owner suite and a live
+Action-path observation. The implementation is complete, but this plan stays
+`IMPLEMENTED (dogfood pending)` until that external validation record is
+closed rather than claiming `COMPLETE` early.
+
 ## Test plan summary
 
 - `tests/phase4-llm.test.ts`: semantic hook on primary/repair/cache paths,
@@ -505,26 +539,26 @@ listed invariant.
 
 ## Done criteria
 
-- [ ] The four historical 2,100-2,984-character reasons pass on the primary
+- [x] The four historical 2,100-2,984-character reasons pass on the primary
       call unchanged; 2,001-4,000 emits target-exceeded telemetry and 4,001+
       uses exactly one model repair.
-- [ ] Schema-valid empty revise enters the real one-repair path, is not cached
+- [x] Schema-valid empty revise enters the real one-repair path, is not cached
       as valid, and remains incomplete if repair cannot produce a payload.
-- [ ] Twice-invalid planner output is discarded and deterministic planning
+- [x] Twice-invalid planner output is discarded and deterministic planning
       continues; auth/provider-wide/fatal-class failures remain fatal.
-- [ ] Complete degraded and partial reviews show a prominent pre-summary
+- [x] Complete degraded and partial reviews show a prominent pre-summary
       banner; partial no-findings never says “Everything looks good.”
-- [ ] One safe schema-diagnostic helper records only allowlisted bounded
+- [x] One safe schema-diagnostic helper records only allowlisted bounded
       metadata and terminal schema errors no longer expose raw validation
       arguments through their context.
-- [ ] Action failure always leaves scrubbed Markdown (at most 4 KiB) and JSON
+- [x] Action failure always leaves scrubbed Markdown (at most 4 KiB) and JSON
       (at most 16 KiB), including with telemetry disabled and no run attachment.
-- [ ] Existing one-repair, stage-local degradation, cache, finding publication,
+- [x] Existing one-repair, stage-local degradation, cache, finding publication,
       and partial-exit-code contracts remain intact.
-- [ ] `pnpm run check`, `pnpm test`, `pnpm build`, and `git diff --check` pass.
+- [x] `pnpm run check`, `pnpm test`, `pnpm build`, and `git diff --check` pass.
 - [ ] Configured-provider and all three owner-eval gates pass without
       expectation weakening.
-- [ ] Architecture/component specs and the README status row are updated.
+- [x] Architecture/component specs and the README status row are updated.
 
 ## STOP conditions
 

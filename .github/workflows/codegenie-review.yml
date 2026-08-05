@@ -63,6 +63,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           CODEGENIE_REPORT_PATH: ${{ runner.temp }}/codegenie-report.md
+          CODEGENIE_FAILURE_PATH: ${{ runner.temp }}/codegenie-failure.json
         # Bootstrap guard: the trusted-base checkout builds the BASE branch's
         # codegenie, so a PR whose base predates the github-action adapter
         # cannot run it — skip cleanly instead of failing. Once the adapter is
@@ -79,5 +80,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: codegenie-report
-          path: ${{ runner.temp }}/codegenie-report.md
+          path: |
+            ${{ runner.temp }}/codegenie-report.md
+            ${{ runner.temp }}/codegenie-failure.json
           if-no-files-found: ignore

@@ -98,7 +98,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 92 | IMPLEMENTED (measuring) | Issue 92: Planner Coverage Calibration and the Adaptive Second Pass |
 | 93 | PENDING | Issue 93: Delete the Dead Ripgrep Fast Path (D9) |
 | 94 | PENDING | Issue 94: One Shared Similarity/Util Module |
-| 95 | PENDING | Issue 95: One Shared Submit/Salvage Layer + Prompt "Why" Ledger |
+| 95 | COMPLETE | Issue 95: One Shared Submit/Salvage Layer + Prompt "Why" Ledger |
 | 96 | PENDING | Issue 96: Fixed Stage-6 Symbol-Context Budget |
 | 97 | IMPLEMENTED (dogfood pending) | Issue 97: GitHub Action Integration (comment-triggered PR review + live status comment) |
 | 98 | COMPLETE | Issue 98: Language Support — Rust, Python, Solidity, JavaScript (tree-sitter adapters + bundled skills) |
@@ -113,8 +113,8 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 108 | COMPLETE | Issue 108: Add a Verifier Severity Rubric and Revision Telemetry |
 | 109 | COMPLETE | Issue 109: Restore Summary-Only Publication for Verified Low-Confidence Deltas |
 | 110 | COMPLETE | Issue 110: Make Note Fallback Publication-Aware and Score Rendered Notes |
-| 111 | PENDING | Issue 111: Fix Observed Structured-Submit Failures and Preserve Safe Diagnostics |
-| 112 | PENDING | Issue 112: Enforce Final Structured-Submit Provenance from Pi Events |
+| 111 | IMPLEMENTED (dogfood pending) | Issue 111: Fix Observed Structured-Submit Failures and Preserve Safe Diagnostics |
+| 112 | IMPLEMENTED (measuring) | Issue 112: Enforce Final Structured-Submit Provenance from Pi Events |
 
 ## Recommended order for 106-110
 

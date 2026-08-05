@@ -446,7 +446,8 @@ function toolCall(id: string, name: string, args: Record<string, unknown>): PiTo
     type: "toolCall",
     id,
     name,
-    arguments: args
+    arguments: args,
+    ...(name.startsWith("submit_") ? { argumentParse: { state: "strict" as const } } : {})
   };
 }
 

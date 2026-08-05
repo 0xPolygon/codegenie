@@ -1,6 +1,12 @@
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
-import type { LlmRunner, LlmSchemaRepairInput } from "../llm/llm-runner.js";
-import { SCHEMA_VERSIONS, SubmitVerificationVerdictSchema, type SubmitVerificationVerdict } from "../llm/schemas.js";
+import type { LlmRunner, LlmSchemaRepairInput, LlmSubmitFailureClassification } from "../llm/llm-runner.js";
+import {
+  SCHEMA_VERSIONS,
+  SubmitVerificationVerdictSchema,
+  VERIFIER_REASON_HARD_MAX_CHARS,
+  VERIFIER_REASON_TARGET_CHARS,
+  type SubmitVerificationVerdict
+} from "../llm/schemas.js";
 import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-registry.js";
 import { fenceUntrusted, stableJson, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
@@ -117,6 +123,15 @@ type VerificationRuntimeStats = {
   repairFailed: number;
 };
 
+type FinalArgumentFailureClassification = Extract<
+  LlmSubmitFailureClassification,
+  | "length_stopped"
+  | "final_arguments_partial"
+  | "final_arguments_invalid"
+  | "event_capture_missing"
+  | "event_final_mismatch"
+>;
+
 type VerifierSchemaInvalidKind =
   | "xml_parameter_bleed"
   | "empty_submit_object"
@@ -124,6 +139,7 @@ type VerifierSchemaInvalidKind =
   | "missing_submit_tool"
   | "invalid_tool_arguments"
   | "extra_tool_calls"
+  | FinalArgumentFailureClassification
   | "unknown";
 
 type VerifierRepairAttempt = {
@@ -769,6 +785,9 @@ async function runVerifierStructured(
       toolBudget: scaleToolBudget(VERIFIER_TOOL_BUDGET, config.review.budgetBoost),
       timeoutMs: config.review.perPassTimeoutMs,
       telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId },
+      validateSubmit: (value) => value.verdict === "revise" && value.finalFinding === undefined && value.revisedAnchor === undefined
+        ? { ok: false, classification: "revise_without_revision_payload" }
+        : { ok: true },
       schemaRepair: {
         replaceConversation: true,
         failAfterRepair: false,
@@ -778,6 +797,21 @@ async function runVerifierStructured(
         }
       }
     });
+    if (result.reason.length > VERIFIER_REASON_TARGET_CHARS) {
+      telemetry.event({
+        stage: 9,
+        level: "info",
+        message: "verification_reason_target_exceeded",
+        file: candidate.path,
+        data: {
+          candidateId: candidate.id,
+          actualLength: result.reason.length,
+          target: VERIFIER_REASON_TARGET_CHARS,
+          hardMaximum: VERIFIER_REASON_HARD_MAX_CHARS,
+          followedModelRepair: repairAttempt !== undefined
+        }
+      });
+    }
     if (repairAttempt !== undefined) {
       runtimeStats.repairSucceeded += 1;
       if (repairAttempt.classification === "empty_submit_object") {
@@ -936,12 +970,19 @@ function buildVerifierSchemaRepairPrompt(
     "- Judge only the bounded candidate evidence above. It preserves the candidate claim, not repository-tool results from the discarded response.",
     "- keep only if the candidate is proven by concrete evidence.",
     "- revise only when the same issue is real but the evidence, wording, or anchor needs correction; include finalFinding or revisedAnchor.",
+    `- Keep reason concise and at most ${VERIFIER_REASON_TARGET_CHARS.toLocaleString("en-US")} characters.`,
     "- reject when required evidence is missing, the claim is speculative, or false-positive risk is high.",
     "- If rejecting because verification cannot be completed, set requiredEvidencePresent=false and falsePositiveRisk=high."
   ].join("\n");
 }
 
 function classifyVerifierSchemaInvalid(input: LlmSchemaRepairInput | string): VerifierSchemaInvalidKind {
+  if (typeof input !== "string") {
+    const explicit = explicitVerifierFailureClassification(input.classification);
+    if (explicit !== undefined) {
+      return explicit;
+    }
+  }
   if (typeof input !== "string" && isEmptySubmitObject(input.submitCalls[0]?.arguments)) {
     return "empty_submit_object";
   }
@@ -978,6 +1019,22 @@ function classifyVerifierSchemaInvalid(input: LlmSchemaRepairInput | string): Ve
     return "invalid_tool_arguments";
   }
   return "unknown";
+}
+
+function explicitVerifierFailureClassification(
+  classification: LlmSubmitFailureClassification | undefined
+): FinalArgumentFailureClassification | "revise_without_revision_payload" | undefined {
+  switch (classification) {
+    case "length_stopped":
+    case "final_arguments_partial":
+    case "final_arguments_invalid":
+    case "event_capture_missing":
+    case "event_final_mismatch":
+    case "revise_without_revision_payload":
+      return classification;
+    default:
+      return undefined;
+  }
 }
 
 function verifierRepairCandidateProjection(candidate: CandidateFinding): Record<string, unknown> {

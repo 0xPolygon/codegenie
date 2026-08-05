@@ -3,6 +3,15 @@ import type { CodegenieErrorCode } from "../util/errors.js";
 
 export type LlmRole = "planner" | "packetReview" | "systemReview" | "verifier" | "composer";
 
+export type LlmFinalArgumentState =
+  | "strict"
+  | "repaired"
+  | "partial"
+  | "invalid"
+  | "length_stopped"
+  | "event_capture_missing"
+  | "event_final_mismatch";
+
 export type LlmCallRecord = {
   callId: string;
   runId: string;
@@ -51,6 +60,11 @@ export type LlmCallRecord = {
   durationMs: number;
   cacheStatus: "hit" | "miss" | "disabled" | "write";
   schemaValid?: boolean;
+  submitTool?: string;
+  finalArgumentState?: LlmFinalArgumentState;
+  finalArgumentErrorKind?: "unexpected_end" | "unterminated" | "invalid_syntax" | "non_object_root";
+  finalArgumentRepairKind?: "pi_narrow_string_repair";
+  finalArgumentCorrelationId?: string;
   stopReason: "submit" | "tool_calls" | "text" | "error";
   status: "ok" | "schema_invalid" | "transient_error" | "auth_error" | "timeout" | "aborted";
   errorCode?: CodegenieErrorCode;

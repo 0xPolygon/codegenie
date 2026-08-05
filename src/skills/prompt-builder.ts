@@ -11,6 +11,7 @@ import type { Skill, SkillSectionName } from "./skill-loader.js";
 import type { LensDescriptor, LensRegistry } from "./lens-registry.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { prettyStableJson as stableJson } from "../util/json.js";
+import { VERIFIER_REASON_TARGET_CHARS } from "../llm/schemas.js";
 
 export { stableJson };
 
@@ -73,7 +74,7 @@ export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
   5: "p5.6",
   7: "p7.10",
   8: "p8.2",
-  9: "p9.8",
+  9: "p9.9",
   10: "p10.2"
 };
 
@@ -122,6 +123,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
     { surface: "testing candidate guidance", reason: "Keeps real test-boundary regressions while rejecting generic add-more-tests comments.", evidence: "Plan 92 E1 escalator and Plan 75 suppression" },
     { surface: "conditional skill guidance block", reason: "An empty authoritative provenance list must not leave a provider-facing label that implies verifier guidance was supplied.", evidence: "Plan 101 exact skill provenance" },
     { surface: "bounded verifier repair candidate evidence", reason: "Stateless replacement repair needs the candidate's claim and evidence without replaying contaminated output or discarded repository-tool state.", evidence: "Private eval 49f4645b runs 58-60; run 60 evidence-starved empty-submit repairs" },
+    { surface: "verifier reason target", reason: "Keeps normal verdicts concise while the schema retains measured headroom for complete evidence-backed explanations.", evidence: "Owner evals observed four valid Stage-9 reasons between 2,100 and 2,984 characters" },
     { surface: "strict submit_verdict closeout", reason: "Verifier model repair is still live and successful, so the structured closeout remains load-bearing.", evidence: "Plan 95 census: 3 Stage-9 schema repairs, all recovered" }
   ],
   10: [
@@ -319,6 +321,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         "Same-PR tests that assert new behavior prove the behavior changed; they do not by themselves prove the behavior is safe or intended. If intent signals are refactor-like or behavior-preserving without explicit behavior-change intent, compare base versus head behavior and keep or revise material semantic regressions that can break callers. If intent signals are mixed, frame the issue as intentional_needs_confirmation unless evidence proves accidental regression. Reject accidental-regression framing when PR text/spec clearly requires the behavior change and caller impact is covered.",
         "Examples of refactor-like or behavior-preserving intent include refactor, cleanup, consolidation, behavior-preserving, no behavior change, and equivalent behavior.",
         "When revising or keeping a behavior-change finding, preserve or set behaviorChange and intentEvidence. Do not use accidental-regression framing without behavior-preserving/refactor evidence and a concrete caller-visible regression.",
+        `Keep the verdict reason concise and at most ${VERIFIER_REASON_TARGET_CHARS.toLocaleString("en-US")} characters.`,
         skillGuidance,
         ...blocks,
         "Finish by calling submit_verdict with schema-valid arguments. Do not answer in plain text."

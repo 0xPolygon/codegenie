@@ -1,6 +1,6 @@
 {
   "name": "@0xsequence/codegenie",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "High-signal AI code review agent",
   "type": "module",
   "bin": {
@@ -46,7 +46,7 @@
     "tree-sitter-rust": "0.24.0",
     "tree-sitter-solidity": "1.2.13",
     "tree-sitter-typescript": "0.23.2",
-    "tsx": "4.23.1",
+    "tsx": "4.23.4",
     "typescript": "7.0.2",
     "vitest": "4.1.10"
   }

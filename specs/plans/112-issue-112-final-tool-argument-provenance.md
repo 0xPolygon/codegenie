@@ -1,9 +1,10 @@
 # Issue 112: Enforce Final Structured-Submit Provenance from Pi Events
 
-Status: PENDING
+Status: IMPLEMENTED (measuring)
 Planned from: audit of `@earendil-works/pi-ai` 0.83.0 final tool-call parsing
 and its public `AssistantMessageEventStream`, 2026-08-05
-Planned at: commit `07434ba` (branch `plans`)
+Planned at: commit `ae1bb70` (branch `llm-repair`; tree-identical to the
+original planning SHA `07434ba` on the retired `plans` branch)
 Recommended priority: after Issue 111. This establishes a fail-closed final
 argument boundary using Pi's existing public stream, then measures whether any
 larger loss-aware syntax repair or upstream Pi change is justified.
@@ -19,7 +20,7 @@ larger loss-aware syntax repair or upstream Pi change is justified.
 > wire parsing. Update the README row at both status transitions.
 >
 > **Drift check (run first)**:
-> `git diff --stat 07434ba..HEAD -- src/llm/llm-runner.ts src/llm/pi-runner.ts src/llm/final-tool-arguments.ts src/llm/model-call-cache.ts src/telemetry/telemetry-recorder.ts src/telemetry/run-artifacts.ts tests/final-tool-arguments.test.ts tests/phase4-llm.test.ts tests/telemetry.test.ts specs/project/architecture.md specs/project/components/skills_llm_telemetry.md specs/project/components/review_pipeline.md`
+> `git diff --stat ae1bb70..HEAD -- src/llm/llm-runner.ts src/llm/pi-runner.ts src/llm/final-tool-arguments.ts src/llm/model-call-cache.ts src/llm/schema-diagnostics.ts src/telemetry/telemetry-recorder.ts src/telemetry/run-artifacts.ts tests/final-tool-arguments.test.ts tests/phase4-llm.test.ts tests/telemetry.test.ts specs/project/architecture.md specs/project/components/skills_llm_telemetry.md specs/project/components/review_pipeline.md`
 > Reconcile changed paths against Current state. STOP if Issue 111 has not
 > landed, Pi's public stream/event shape no longer matches Current state, or
 > the one-repair/cache boundaries changed semantically.
@@ -35,7 +36,7 @@ larger loss-aware syntax repair or upstream Pi change is justified.
 - **Depends on**:
   `specs/plans/111-issue-111-observed-structured-submit-resilience.md`
 - **Category**: correctness / observability
-- **Planned at**: commit `07434ba`, 2026-08-05
+- **Planned at**: commit `ae1bb70`, 2026-08-05
 
 ## Why this matters
 
@@ -172,6 +173,8 @@ incorrect normalized length behavior, STOP and report the narrow Pi issue.
   cannot bypass the boundary.
 - Existing telemetry/model-call/run-artifact types only as needed for bounded
   state counts and repair outcomes.
+- Issue 111's `src/llm/schema-diagnostics.ts` closed classification allowlist,
+  only to admit this plan's five bounded provenance failure classifications.
 - New focused `tests/final-tool-arguments.test.ts`, existing
   `tests/phase4-llm.test.ts`, `tests/telemetry.test.ts`, and architecture /
   LLM-telemetry / review-pipeline specs.
@@ -484,7 +487,7 @@ Run full Codegenie checks. Then run only these configured-provider smokes:
 
 For each, a normal structured submit must produce complete framing,
 `strict` or current narrow `repaired` provenance, deep equality, unchanged
-usage/stop reason, and zero extra calls. Synthetic stream tests—not live fault
+usage/stop reason, and zero extra calls or model-repair request. Synthetic stream tests—not live fault
 requests—cover missing/mismatched/partial/length cases.
 
 Do not add live or copied fixtures for Google, Mistral, Bedrock, OpenAI
@@ -494,7 +497,8 @@ fail-closed; add one only after evidence identifies a distinct gap.
 The implementation gate is:
 
 - all generic event-shape and stream/completion parity tests pass;
-- both live normal-provider smokes are trusted without repair;
+- both live normal-provider smokes are trusted without a model-repair request
+  (Pi's bounded `pi_narrow_string_repair` provenance remains acceptable);
 - zero accepted untrusted or provenance-less submits;
 - zero extra provider calls on trusted finals;
 - zero raw/value-bearing telemetry or artifacts.
@@ -555,6 +559,39 @@ plan.
 contains no synthetic/repair submits, records a human-reviewed gate outcome,
 and contains no payload examples.
 
+### Implementation evidence (2026-08-05)
+
+- The generic public-event, runner/cache, telemetry, and stage-disposition
+  regressions pass. `pnpm install --frozen-lockfile`, `pnpm run check`,
+  `pnpm build`, and `git diff --check` also pass.
+- A direct Anthropic Messages smoke with `claude-haiku-4-5` completed one
+  provider call as `strict`, with a schema-valid submit, unchanged terminal
+  behavior, and no model repair.
+- An OpenAI Codex Responses smoke with `gpt-5.4-mini` completed one provider
+  call as `strict`, with a schema-valid submit, unchanged terminal behavior,
+  and no model repair.
+- Owner validation `49f4645b` run 63 passed its required finding and complete-
+  coverage gates. It recorded 11 strict selected submits and two complete
+  `invalid_syntax` Stage-9 submits; both invalid values were non-executable,
+  each used the existing single stateless repair, and both recovered. No
+  capture-missing, mismatch, partial, length-stopped, terminal-invalid, or
+  not-dispatched outcome occurred. This pre-land validation is evidence for
+  the boundary but does not count toward the post-land corpus denominator.
+- Owner validation `0c4d5213` run 71 passed all required, candidate, negative,
+  completeness, and budget gates. It recorded 96 strict selected submits and
+  one complete `invalid_syntax` Stage-9 submit. The invalid call retained the
+  explicit `final_arguments_invalid` classification through verifier
+  adjudication, used one stateless repair, and recovered. No capture-missing,
+  mismatch, partial, length-stopped, terminal-invalid, or not-dispatched
+  outcome occurred. This pre-land validation also does not count toward the
+  post-land corpus.
+- No provider-specific fixture, provider-wire parser, Pi patch/fork, broad
+  syntax repair, or second repair loop was added.
+
+The implementation gate is closed. The post-land corpus and human-reviewed
+classifier gate remain intentionally open, so the status is
+`IMPLEMENTED (measuring)` rather than `COMPLETE`.
+
 ## Conditional future design — not authorized by this plan
 
 If and only if the classifier/remeasurement follow-up identifies a refined
@@ -596,30 +633,30 @@ the Codegenie accumulator in the same migration; do not retain two authorities.
 
 ## Done criteria
 
-- [ ] The production adapter consumes Pi's public stream while preserving the
+- [x] The production adapter consumes Pi's public stream while preserving the
       existing completion request/options/result/error semantics.
-- [ ] Final accepted submit arguments come only from strict JSON or Pi's public
+- [x] Final accepted submit arguments come only from strict JSON or Pi's public
       narrow repair, require one object root, and deep-equal Pi's final
       arguments.
-- [ ] Missing/divergent/partial/invalid/normalized-length-stopped calls are
+- [x] Missing/divergent/partial/invalid/normalized-length-stopped calls are
       represented as local submit calls without `arguments` and cannot enter
       submit validation.
-- [ ] Untrusted submits consume at most the existing one repair and then use
+- [x] Untrusted submits consume at most the existing one repair and then use
       Issue 111's stage-local disposition; invalid assistant data is not sent
       back to Pi in repair history.
-- [ ] Untrusted/provenance-less responses are never cached and the cache schema
+- [x] Untrusted/provenance-less responses are never cached and the cache schema
       version is bumped.
-- [ ] Telemetry records only bounded states/counts/outcomes and no accumulated
+- [x] Telemetry records only bounded states/counts/outcomes and no accumulated
       text, parser messages, values, or value hashes.
-- [ ] Generic event-shape/parity tests and the two required provider smokes
+- [x] Generic event-shape/parity tests and the two required provider smokes
       pass; no every-provider fixture matrix was added.
-- [ ] Full checks/tests/build pass and the README row moves to
+- [x] Full checks/tests/build pass and the README row moves to
       `IMPLEMENTED (measuring)` without waiting for the corpus.
 - [ ] Post-land, the minimum corpus and human-reviewed gate outcome are
       recorded; the README row then moves to `COMPLETE`.
-- [ ] No Pi change, broad parser, provider-wire parser, duplicate-submit
+- [x] No Pi change, broad parser, provider-wire parser, duplicate-submit
       change, second model repair, or generic repair-prompt redesign landed.
-- [ ] Specs and README status are updated.
+- [x] Specs and README status are updated.
 
 ## STOP conditions
 

@@ -6,6 +6,7 @@ import type {
   LlmSchemaInvalidSubmitRecoveryInput,
   LlmSchemaRepairInput,
   LlmStructuredRequest,
+  LlmSubmitFailureClassification,
   PiToolCall
 } from "./llm-runner.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
@@ -22,7 +23,7 @@ export type Stage7SubmitRepairDecision = {
   truncatedNoFindingReason?: boolean;
 };
 
-export type Stage7SchemaInvalidKind =
+export type Stage7SchemaInvalidKind = Extract<LlmSubmitFailureClassification,
   | "xml_parameter_bleed"
   | "extra_finding_properties"
   | "extra_top_level_properties"
@@ -31,7 +32,23 @@ export type Stage7SchemaInvalidKind =
   | "string_too_long"
   | "empty_no_findings_missing_fields"
   | "unsafe_candidate_like_payload"
-  | "invalid_tool_arguments";
+  | "invalid_tool_arguments">;
+
+const STAGE7_SCHEMA_INVALID_KINDS: ReadonlySet<LlmSubmitFailureClassification> = new Set([
+  "xml_parameter_bleed",
+  "extra_finding_properties",
+  "extra_top_level_properties",
+  "missing_required_finding_fields",
+  "invalid_enum_value",
+  "string_too_long",
+  "empty_no_findings_missing_fields",
+  "unsafe_candidate_like_payload",
+  "invalid_tool_arguments"
+]);
+
+export function isStage7SchemaInvalidKind(value: LlmSubmitFailureClassification | undefined): value is Stage7SchemaInvalidKind {
+  return value !== undefined && STAGE7_SCHEMA_INVALID_KINDS.has(value);
+}
 
 type Stage7CandidateCleanup =
   | { status: "not_applicable" }

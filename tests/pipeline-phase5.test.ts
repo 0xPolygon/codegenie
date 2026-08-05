@@ -4719,7 +4719,7 @@ describe("phase 5 pipeline regressions", () => {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         expect(request.stage).toBe(5);
         expect(request.schemaRepair?.replaceConversation).toBe(true);
-        expect(request.schemaRepair?.failAfterRepair).toBe(true);
+        expect(request.schemaRepair?.failAfterRepair).toBe(false);
         repairPrompt = request.schemaRepair?.buildPrompt?.({
           stage: 5,
           submitTool: "submit_plan",
@@ -6547,6 +6547,12 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(result.postingPlan?.reviewBody).toContain("Coverage disclosure:");
     expect(result.postingPlan?.reviewBody).toContain(partialReason);
+    expect(result.postingPlan?.reviewBody).toContain("**Review incomplete.**");
+    expect(result.postingPlan?.reviewBody).toContain("incomplete coverage or verification prevents a clean conclusion");
+    expect(result.postingPlan?.reviewBody).not.toContain("Everything looks good");
+    expect(result.postingPlan?.reviewBody.indexOf("**Review incomplete.**")).toBeLessThan(
+      result.postingPlan?.reviewBody.indexOf("Review incomplete: completed work") ?? Number.MAX_SAFE_INTEGER
+    );
   });
 
   it("does not disclose deterministic default coverage as a planner fallback", () => {
@@ -6598,14 +6604,45 @@ describe("phase 5 pipeline regressions", () => {
     expect(coverage.failedHunks).toBe(1);
     expect(coverage.partial).toBe(true);
     expect(coverage.reasons).toContain("1 hunk(s) could not be reviewed");
-    expect(renderMarkdownReview({
+    const markdown = renderMarkdownReview({
       summary: "Review completed.",
       coverage,
       findings: [],
       summaryOnlyFindings: [],
       needsHumanAttention: [],
       noFindings: true
-    })).toContain("**Partial review:** 1 hunk did not complete review.");
+    });
+    expect(markdown).toContain("**Partial review:** 1 hunk did not complete review.");
+    expect(markdown).toContain("## ⚠️ Review Incomplete");
+    expect(markdown).not.toContain("Everything looks good");
+    expect(markdown.indexOf("**Review incomplete.**")).toBeLessThan(markdown.indexOf("Review completed."));
+  });
+
+  it("renders planner degradation prominently without inventing partial coverage", () => {
+    const coverage: RunCoverageStatus = {
+      totalHunks: 1,
+      reviewedHunks: 1,
+      skippedHunks: 0,
+      failedHunks: 0,
+      coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+      degradedPlanning: true,
+      budgetStopped: false,
+      verificationIncompleteCount: 0,
+      partial: false,
+      reasons: []
+    };
+    const markdown = renderMarkdownReview({
+      summary: "Review completed.",
+      coverage,
+      findings: [],
+      summaryOnlyFindings: [],
+      needsHumanAttention: [],
+      noFindings: true
+    });
+
+    expect(markdown).toContain("**Degraded run: planner fallback.**");
+    expect(markdown.indexOf("**Degraded run: planner fallback.**")).toBeLessThan(markdown.indexOf("Review completed."));
+    expect(coverage.partial).toBe(false);
   });
 
   it("attaches left-side static signals to old-side dossier hunks", async () => {
@@ -8385,6 +8422,69 @@ describe("phase 5 pipeline regressions", () => {
     ]));
   });
 
+  it("preserves the explicit final-argument failure classification in verifier repair", async () => {
+    let repairPrompt = "";
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
+          stage: 9,
+          submitTool: "submit_verdict",
+          error: "The submit_verdict final arguments were not trusted: final_arguments_invalid.",
+          submitCalls: [],
+          untrustedSubmitCalls: [{
+            id: "invalid-verdict",
+            name: "submit_verdict",
+            state: "invalid",
+            errorKind: "invalid_syntax"
+          }],
+          extraToolNames: [],
+          classification: "final_arguments_invalid"
+        }) ?? "";
+        return {
+          verdict: "keep",
+          reason: "The bounded candidate evidence proves the issue after one stateless repair.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        } as T;
+      }
+    };
+
+    const verified = await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => events.push(event)
+      },
+      {
+        runner,
+        promptBuilder: fakePromptBuilder(),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff(),
+        checkpoint: () => "ok"
+      }
+    );
+
+    expect(repairPrompt).toContain("- class: final_arguments_invalid");
+    expect(repairPrompt).not.toContain("- class: missing_submit_tool");
+    expect(verified.verified).toHaveLength(1);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        message: "verification_schema_invalid",
+        data: expect.objectContaining({ classification: "final_arguments_invalid" })
+      }),
+      expect.objectContaining({
+        message: "verification_schema_repair_attempted",
+        data: expect.objectContaining({ classification: "final_arguments_invalid" })
+      })
+    ]));
+  });
+
   it("fails closed when an empty authoritative Stage 9 submit precedes later XML", async () => {
     let repairPrompt = "";
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
@@ -8406,6 +8506,12 @@ describe("phase 5 pipeline regressions", () => {
     };
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        expect(request.validateSubmit?.({
+          verdict: "revise",
+          reason: "prose-only revision",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "low"
+        } as T)).toEqual({ ok: false, classification: "revise_without_revision_payload" });
         repairPrompt = request.schemaRepair?.buildPrompt?.({
           stage: 9,
           submitTool: "submit_verdict",
@@ -8550,11 +8656,55 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(repairPrompt).toContain("- class: revise_without_revision_payload");
     expect(repairPrompt).toContain("include finalFinding or revisedAnchor");
+    expect(repairPrompt).toContain("at most 2,000 characters");
     expect(verified.verdicts[0]).toMatchObject({ verdict: "revise", revisedAnchor: { path: "app.ts", line: 1 } });
     expect(verified.verified).toHaveLength(1);
     expect(events).toContainEqual(expect.objectContaining({
       message: "verification_schema_repair_attempted",
       data: expect.objectContaining({ classification: "revise_without_revision_payload" })
+    }));
+  });
+
+  it("accepts an evidence-backed verifier reason inside the hard buffer unchanged and records target friction", async () => {
+    const reason = "r".repeat(2_327);
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const verified = await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      {
+        ...nullTelemetry(),
+        event: (event) => events.push(event)
+      },
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            verdict: "keep",
+            reason,
+            requiredEvidencePresent: true,
+            falsePositiveRisk: "low"
+          }) as T
+        },
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fakeDiff(),
+        checkpoint: () => "ok"
+      }
+    );
+
+    expect(verified.verdicts[0]?.reason).toBe(reason);
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 9,
+      message: "verification_reason_target_exceeded",
+      data: expect.objectContaining({
+        actualLength: 2_327,
+        target: 2_000,
+        hardMaximum: 4_000,
+        followedModelRepair: false
+      })
     }));
   });
 
@@ -13580,7 +13730,8 @@ function toolCall(id: string, name: string, args: Record<string, unknown>): PiTo
     type: "toolCall",
     id,
     name,
-    arguments: args
+    arguments: args,
+    ...(name.startsWith("submit_") ? { argumentParse: { state: "strict" as const } } : {})
   };
 }
 

@@ -99,6 +99,7 @@ export type LlmStructuredRequest<T> = {
     packetId?: string;
     candidateId?: string;
   };
+  validateSubmit?(value: T): LlmSubmitSemanticValidation;
   schemaRepair?: {
     replaceConversation?: boolean;
     failAfterRepair?: boolean;
@@ -115,12 +116,44 @@ export interface LlmRunner {
   runStructured<T>(request: LlmStructuredRequest<T>): Promise<T>;
 }
 
+export type LlmSubmitFailureClassification =
+  | "schema_invalid"
+  | "missing_submit"
+  | "multiple_submits"
+  | "revise_without_revision_payload"
+  | "length_stopped"
+  | "final_arguments_partial"
+  | "final_arguments_invalid"
+  | "event_capture_missing"
+  | "event_final_mismatch"
+  | "xml_parameter_bleed"
+  | "extra_finding_properties"
+  | "extra_top_level_properties"
+  | "missing_required_finding_fields"
+  | "invalid_enum_value"
+  | "string_too_long"
+  | "empty_no_findings_missing_fields"
+  | "unsafe_candidate_like_payload"
+  | "invalid_tool_arguments"
+  | "unknown";
+
+export type LlmSubmitSemanticValidation =
+  | { ok: true }
+  | { ok: false; classification: LlmSubmitFailureClassification };
+
 export type LlmSchemaRepairInput = {
   stage: ReviewStage;
   submitTool: string;
   error: string;
   submitCalls: Array<{ id: string; arguments: Record<string, unknown> }>;
+  untrustedSubmitCalls?: Array<{
+    id: string;
+    name: string;
+    state: PiUntrustedArgumentParse["state"];
+    errorKind?: "unexpected_end" | "unterminated" | "invalid_syntax" | "non_object_root";
+  }>;
   extraToolNames: string[];
+  classification?: LlmSubmitFailureClassification;
 };
 
 export type LlmSchemaInvalidSubmitRecoveryInput = LlmSchemaRepairInput & {
@@ -145,7 +178,7 @@ export type LlmInvalidSubmitRecovery = {
   recoveredCallId?: string;
   onRecovered?(recoveredCallId: string): void;
   onRejected?(error: string): void;
-  repairClassification?: string;
+  repairClassification?: LlmSubmitFailureClassification;
   replaceConversationOverride?: boolean;
 };
 
@@ -172,7 +205,29 @@ export type PiToolCall = {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+  /** Present only on stage submit calls finalized by Codegenie's stream boundary. */
+  argumentParse?: PiTrustedArgumentParse;
 };
+
+export type PiTrustedArgumentParse =
+  | { state: "strict" }
+  | { state: "repaired"; repairs: ["pi_narrow_string_repair"] };
+
+export type PiUntrustedArgumentParse =
+  | { state: "length_stopped" }
+  | { state: "partial"; errorKind: "unexpected_end" | "unterminated" }
+  | { state: "invalid"; errorKind: "invalid_syntax" | "non_object_root" }
+  | { state: "event_capture_missing" }
+  | { state: "event_final_mismatch" };
+
+export type PiInvalidToolCall = {
+  type: "invalidToolCall";
+  id: string;
+  name: string;
+  argumentParse: PiUntrustedArgumentParse;
+};
+
+export type PiSubmitCall = PiToolCall | PiInvalidToolCall;
 
 export type PiTextContent = {
   type: "text";
@@ -181,7 +236,7 @@ export type PiTextContent = {
 
 export type PiAssistantMessage = {
   role: "assistant";
-  content: Array<PiToolCall | PiTextContent | Record<string, unknown>>;
+  content: Array<PiToolCall | PiInvalidToolCall | PiTextContent | Record<string, unknown>>;
   provider: string;
   model: string;
   usage?: {
@@ -216,7 +271,7 @@ export interface PiAiAdapter {
   complete(
     model: PiModelRef,
     context: { messages: unknown[]; tools: Array<{ name: string; description: string; parameters: TSchema }> },
-    options: Record<string, unknown>
+    options: Record<string, unknown> & { submitToolName: string }
   ): Promise<PiAssistantMessage>;
   validateToolCall(tools: Array<{ name: string; description: string; parameters: TSchema }>, toolCall: PiToolCall): unknown;
 }

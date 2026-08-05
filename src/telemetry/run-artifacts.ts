@@ -94,6 +94,9 @@ const CANONICAL_ARTIFACT_PATHS: ReadonlySet<string> = new Set(Object.values(ARTI
 
 type CacheCounts = Record<"hit" | "miss" | "disabled" | "write", number>;
 type ModelStatusCounts = Record<LlmCallRecord["status"], number>;
+type FinalArgumentStateCounts = Record<NonNullable<LlmCallRecord["finalArgumentState"]>, number>;
+type FinalArgumentErrorKindCounts = Record<NonNullable<LlmCallRecord["finalArgumentErrorKind"]>, number>;
+type FinalArgumentOutcomeCounts = Record<"recovered" | "terminal_invalid" | "not_dispatched", number>;
 type ProviderPromptCacheSummary = {
   readTokens: number;
   writeTokens: number;
@@ -404,6 +407,9 @@ class RunTelemetryImpl {
     retryAttempts: 0,
     repairCalls: 0,
     schemaInvalidCalls: 0,
+    finalArgumentStates: emptyFinalArgumentStateCounts(),
+    finalArgumentErrorKinds: emptyFinalArgumentErrorKindCounts(),
+    finalArgumentOutcomes: { recovered: 0, terminal_invalid: 0, not_dispatched: 0 } as FinalArgumentOutcomeCounts,
     toolChoiceDowngradedCalls: 0,
     finalize: emptyModelFinalizeSummary(),
     byStage: {} as Record<string, ModelStageSummary>
@@ -617,6 +623,7 @@ class RunTelemetryImpl {
     this.updateContextPressureFromEvent(capped);
     this.updateSchemaRecoveryFromEvent(capped);
     this.updateStage7SchemaRepairSummaryFromEvent(capped);
+    this.updateFinalArgumentOutcomeFromEvent(capped);
     this.mirrorTelemetryEventToRunLog(capped);
     if (this.runDirectory) {
       this.appendJsonl("events.jsonl", capped);
@@ -854,6 +861,12 @@ class RunTelemetryImpl {
     this.modelSummary.retryAttempts += providerCallCount > 0 && record.attempt > 1 ? 1 : 0;
     this.modelSummary.repairCalls += record.kind === "repair" ? 1 : 0;
     this.modelSummary.schemaInvalidCalls += record.status === "schema_invalid" ? 1 : 0;
+    if (record.finalArgumentState !== undefined) {
+      this.modelSummary.finalArgumentStates[record.finalArgumentState] += 1;
+    }
+    if (record.finalArgumentErrorKind !== undefined) {
+      this.modelSummary.finalArgumentErrorKinds[record.finalArgumentErrorKind] += 1;
+    }
     this.modelSummary.toolChoiceDowngradedCalls += providerCallCount > 0 && record.toolChoiceDowngraded === true ? 1 : 0;
     this.updateSchemaRecoveryFromModelCall(record);
     this.updateStage7SchemaRepairSummaryFromModelCall(record);
@@ -1093,6 +1106,16 @@ class RunTelemetryImpl {
       if (bucket.startedAt !== undefined) {
         bucket.runtimeMs += durationBetween(bucket.startedAt, event.timestamp);
       }
+    }
+  }
+
+  private updateFinalArgumentOutcomeFromEvent(event: TelemetryEvent): void {
+    if (event.message !== "final_argument_repair_outcome" || event.data === undefined) {
+      return;
+    }
+    const outcome = event.data.outcome;
+    if (outcome === "recovered" || outcome === "terminal_invalid" || outcome === "not_dispatched") {
+      this.modelSummary.finalArgumentOutcomes[outcome] += 1;
     }
   }
 
@@ -1485,6 +1508,27 @@ function emptyModelStatusCounts(): ModelStatusCounts {
     auth_error: 0,
     timeout: 0,
     aborted: 0
+  };
+}
+
+function emptyFinalArgumentStateCounts(): FinalArgumentStateCounts {
+  return {
+    strict: 0,
+    repaired: 0,
+    partial: 0,
+    invalid: 0,
+    length_stopped: 0,
+    event_capture_missing: 0,
+    event_final_mismatch: 0
+  };
+}
+
+function emptyFinalArgumentErrorKindCounts(): FinalArgumentErrorKindCounts {
+  return {
+    unexpected_end: 0,
+    unterminated: 0,
+    invalid_syntax: 0,
+    non_object_root: 0
   };
 }
 

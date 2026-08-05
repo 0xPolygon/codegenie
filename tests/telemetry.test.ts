@@ -717,6 +717,68 @@ describe("run telemetry", () => {
     });
   });
 
+  it("summarizes only bounded final-argument provenance and repair outcomes", async () => {
+    const repoRoot = tempDir();
+    const run = createRunTelemetry({
+      telemetryConfig: { ...defaultConfig.telemetry, enabled: true, logLevel: "debug" },
+      idFactory: () => "20260805-final-argument-provenance"
+    });
+    const attached = await run.attachRunDirectory(repoRoot);
+    const base = {
+      stage: 7 as const,
+      role: "packetReview" as const,
+      model: "model",
+      provider: "provider",
+      promptChars: 12,
+      promptHash: "prompt",
+      outputChars: 0,
+      outputHash: "bounded-output-hash",
+      durationMs: 10,
+      stopReason: "submit" as const
+    };
+    run.recorder.recordModelCall({
+      ...base,
+      callId: "mc-1",
+      kind: "initial",
+      attempt: 1,
+      cacheStatus: "miss",
+      schemaValid: false,
+      status: "schema_invalid",
+      submitTool: "submit_review",
+      finalArgumentState: "partial",
+      finalArgumentErrorKind: "unterminated",
+      finalArgumentCorrelationId: "mc-1:submit"
+    });
+    run.recorder.recordModelCall({
+      ...base,
+      callId: "mc-2",
+      kind: "repair",
+      attempt: 1,
+      cacheStatus: "write",
+      schemaValid: true,
+      status: "ok",
+      submitTool: "submit_review",
+      finalArgumentState: "repaired",
+      finalArgumentRepairKind: "pi_narrow_string_repair",
+      finalArgumentCorrelationId: "mc-2:submit"
+    });
+    run.recorder.event({
+      stage: 7,
+      level: "info",
+      message: "final_argument_repair_outcome",
+      data: { correlationId: "mc-1:submit", outcome: "recovered" }
+    });
+    await run.finalize({ status: "completed_full", exitCode: 0 });
+
+    const summary = readJson(runFilePath(attached.runDir, "model-calls-summary.json"));
+    expect(summary.finalArgumentStates).toMatchObject({ partial: 1, repaired: 1, strict: 0 });
+    expect(summary.finalArgumentErrorKinds).toMatchObject({ unterminated: 1, invalid_syntax: 0 });
+    expect(summary.finalArgumentOutcomes).toEqual({ recovered: 1, terminal_invalid: 0, not_dispatched: 0 });
+    const serialized = readRunFiles(attached.runDir);
+    expect(serialized).not.toContain("raw-event-repository-secret");
+    expect(serialized).not.toContain("Unexpected token from parser");
+  });
+
   it("aggregates tool-result cache telemetry in run artifacts", async () => {
     const repoRoot = tempDir();
     const run = createRunTelemetry({

@@ -10,7 +10,7 @@ import type { Logger, ReviewStage } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type { ModelCallCache, PiAssistantMessage, StoredProviderResponse } from "./llm-runner.js";
 
-export const MODEL_CALL_CACHE_SCHEMA_VERSION = 1;
+export const MODEL_CALL_CACHE_SCHEMA_VERSION = 2;
 
 type CreateModelCallCacheOptions = {
   dir: string;
