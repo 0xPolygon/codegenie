@@ -4983,12 +4983,18 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       clear: () => entries.clear()
     };
     const optionsSeen: Record<string, unknown>[] = [];
+    const requestController = new AbortController();
     const streamSimple = ((_model, _context, options) => {
       optionsSeen.push(options as Record<string, unknown>);
       return streamForMessage(assistant([validSubmitReviewCall("submit-oauth-refresh")]));
     }) as PiStreamSimpleForTest;
-    const getOAuthApiKey = vi.fn(async (_provider: string, credentials: Record<string, typeof oldCredentials>) => {
+    const getOAuthApiKey = vi.fn(async (
+      _provider: string,
+      credentials: Record<string, typeof oldCredentials>,
+      signal: AbortSignal
+    ) => {
       expect(credentials["github-copilot"]).toEqual(oldCredentials);
+      expect(signal).toBe(requestController.signal);
       return { newCredentials, apiKey: "new-oauth-api-key" };
     }) as NonNullable<RealPiAiAdapterDepsForTest["getOAuthApiKey"]>;
     const adapter = createRealPiAiAdapter({ authStorage, streamSimple, getOAuthApiKey });
@@ -4996,7 +5002,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await adapter.complete(
       { provider: "github-copilot", id: "fake-model", raw: { id: "fake-model" }, oauthProvider: "github-copilot" },
       { messages: [], tools: [] },
-      { maxRetries: 0, submitToolName: "submit_review" }
+      { maxRetries: 0, signal: requestController.signal, submitToolName: "submit_review" }
     );
 
     expect(getOAuthApiKey).toHaveBeenCalledTimes(1);
