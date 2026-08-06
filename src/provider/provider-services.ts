@@ -296,9 +296,11 @@ async function commandLogin(
   const oauthAuth = services.oauthAuth(provider);
   if (oauthAuth && !apiKeyLogin) {
     let authUrl: string | undefined;
+    const loginController = new AbortController();
     const devicePromptControllers: AbortController[] = [];
     try {
       const credentials = await withOAuthFetchConnectionClose(() => oauthAuth.login({
+        signal: loginController.signal,
         prompt: (prompt) => handleOAuthPrompt(prompt, authUrl, opts),
         notify: (event) => {
           authUrl = handleOAuthEvent(event, authUrl, opts, devicePromptControllers);
@@ -315,6 +317,7 @@ async function commandLogin(
         preferredDefault: applyPreferredDefaultAfterLogin(provider, services)
       };
     } finally {
+      loginController.abort();
       devicePromptControllers.forEach((controller) => controller.abort());
     }
   }
