@@ -109,6 +109,19 @@ describe("github-action event gate", () => {
     });
   });
 
+  it("allows CONTRIBUTOR and FIRST_TIME_CONTRIBUTOR by default", () => {
+    expect(
+      decideTrigger("pull_request", pullRequestPayload({ author_association: "CONTRIBUTOR" }), RULES)
+    ).toMatchObject({ run: true, association: "CONTRIBUTOR" });
+    expect(
+      decideTrigger(
+        "pull_request",
+        pullRequestPayload({ author_association: "FIRST_TIME_CONTRIBUTOR" }),
+        RULES
+      )
+    ).toMatchObject({ run: true, association: "FIRST_TIME_CONTRIBUTOR" });
+  });
+
   it("gates by association with an allowed-users override that skips the live check", () => {
     const outsider = pullRequestPayload({ author_association: "NONE", user: { login: "mallory", type: "User" } });
     expect(decideTrigger("pull_request", outsider, RULES)).toMatchObject({ run: false });
@@ -1153,10 +1166,11 @@ describe("GitHub Action and workflow contracts", () => {
   it("forwards preflight and bot identity inputs through the composite action", () => {
     const raw = readFileSync(path.resolve("action.yml"), "utf8");
     const action = parseYaml(raw) as {
-      inputs: Record<string, { description?: string }>;
+      inputs: Record<string, { description?: string; default?: string }>;
       outputs: Record<string, { value?: string }>;
       runs: { steps: WorkflowStep[] };
     };
+    expect(action.inputs["allowed-associations"]?.default).toBe(DEFAULT_ALLOWED_ASSOCIATIONS.join(","));
     expect(action.inputs["on-pull-request"]?.description).toContain("ready_for_review");
     expect(action.inputs["bot-login"]).toBeDefined();
     expect(action.inputs["preflight-only"]).toBeDefined();
