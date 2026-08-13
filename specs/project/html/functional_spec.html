@@ -415,9 +415,12 @@ must equal the configured trigger phrase, default
 <code>codegenie review</code>, or start with it followed by whitespace —
 trailing text is ignored and never parsed into options).</li>
 <li>Authorization: payload author association must be in the allowlist
-(default OWNER/MEMBER/COLLABORATOR) and a live collaborator-permission
+(default OWNER/MEMBER/COLLABORATOR/CONTRIBUTOR/FIRST_TIME_CONTRIBUTOR) and a live collaborator-permission
 check must report write or admin; <code>allowed-users</code> bypasses
 both explicitly. Bot actors are ignored unless allowlisted.
+CONTRIBUTOR and FIRST_TIME_CONTRIBUTOR are included because GitHub
+uses those labels for some write-access org teammates (private
+membership, and some org-repo permission shapes) instead of MEMBER.
 Authorization logic lives only in the binary — payload-only YAML
 approximations are forbidden. Workflow templates are single-job with
 per-PR <code>concurrency</code> and uniform

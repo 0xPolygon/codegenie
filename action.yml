@@ -21,7 +21,7 @@ inputs:
     default: "true"
   allowed-associations:
     description: "Comma-separated author associations allowed to trigger (payload check; a live write-permission check also applies)."
-    default: "OWNER,MEMBER,COLLABORATOR"
+    default: "OWNER,MEMBER,COLLABORATOR,CONTRIBUTOR,FIRST_TIME_CONTRIBUTOR"
   allowed-users:
     description: "Comma-separated logins allowed to trigger regardless of association. Widening this is a deliberate security decision."
     default: ""

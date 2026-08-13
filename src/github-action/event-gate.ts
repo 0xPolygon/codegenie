@@ -5,7 +5,16 @@
 // review knobs come exclusively from workflow inputs.
 
 export const DEFAULT_TRIGGER_PHRASE = "codegenie review";
-export const DEFAULT_ALLOWED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR"];
+// GitHub reports some write-access teammates as CONTRIBUTOR /
+// FIRST_TIME_CONTRIBUTOR instead of MEMBER (private org membership, and
+// some org-repo permission shapes). The live write check is still required.
+export const DEFAULT_ALLOWED_ASSOCIATIONS = [
+  "OWNER",
+  "MEMBER",
+  "COLLABORATOR",
+  "CONTRIBUTOR",
+  "FIRST_TIME_CONTRIBUTOR"
+];
 // ready_for_review completes the draft story: drafts skip, so the moment a
 // draft is marked ready must itself trigger the review.
 const PULL_REQUEST_ACTIONS = new Set(["opened", "synchronize", "ready_for_review"]);
