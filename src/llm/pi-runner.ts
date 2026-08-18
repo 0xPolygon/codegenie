@@ -206,7 +206,11 @@ type OAuthApiKeyResult = {
   baseUrl?: string;
   headers?: ProviderHeaders;
 };
-type GetOAuthApiKey = (provider: string, credentials: Record<string, OAuthCredentials>) => Promise<OAuthApiKeyResult | undefined>;
+type GetOAuthApiKey = (
+  provider: string,
+  credentials: Record<string, OAuthCredentials>,
+  signal: AbortSignal
+) => Promise<OAuthApiKeyResult | undefined>;
 
 export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
   const adapter = opts.adapter ?? createRealPiAiAdapter();
@@ -3769,7 +3773,7 @@ async function prepareInjectedCompletion(
   deps: RealPiAiAdapterDeps,
   models: Pick<Models, "getProvider">
 ): Promise<{ model: Model<Api>; options: SimpleStreamOptions & Record<string, unknown> }> {
-  const auth = await resolveModelAuth(model, deps, models);
+  const auth = await resolveModelAuth(model, deps, models, options.signal ?? new AbortController().signal);
   const rawModel = auth.baseUrl === undefined
     ? model.raw as Model<Api>
     : { ...model.raw as Model<Api>, baseUrl: auth.baseUrl };
@@ -3785,7 +3789,8 @@ async function prepareInjectedCompletion(
 async function resolveModelAuth(
   model: PiModelRef,
   deps: RealPiAiAdapterDeps,
-  models: Pick<Models, "getProvider">
+  models: Pick<Models, "getProvider">,
+  signal: AbortSignal
 ): Promise<ModelAuth> {
   if (model.apiKey) {
     return { apiKey: model.apiKey };
@@ -3800,10 +3805,11 @@ async function resolveModelAuth(
     return {};
   }
 
-  const getOAuthApiKey = deps.getOAuthApiKey ?? ((provider, credentials) => getOAuthApiKeyFromProvider(provider, credentials, models));
+  const getOAuthApiKey = deps.getOAuthApiKey
+    ?? ((provider, credentials, refreshSignal) => getOAuthApiKeyFromProvider(provider, credentials, models, refreshSignal));
   const result = await getOAuthApiKey(model.oauthProvider, {
     [model.oauthProvider]: stored.credentials
-  });
+  }, signal);
   if (!result) {
     return {};
   }
@@ -3825,7 +3831,8 @@ async function resolveModelAuth(
 async function getOAuthApiKeyFromProvider(
   provider: string,
   credentials: Record<string, OAuthCredentials>,
-  models: Pick<Models, "getProvider">
+  models: Pick<Models, "getProvider">,
+  signal: AbortSignal
 ): Promise<OAuthApiKeyResult | undefined> {
   const oauthAuth = models.getProvider(provider)?.auth.oauth;
   const stored = credentials[provider];
@@ -3835,7 +3842,7 @@ async function getOAuthApiKeyFromProvider(
 
   let credential: OAuthCredential = { ...stored, type: "oauth" };
   if (Date.now() >= credential.expires) {
-    credential = await oauthAuth.refresh(credential);
+    credential = await oauthAuth.refresh(credential, signal);
   }
   const auth = await oauthAuth.toAuth(credential);
   if (auth.apiKey === undefined) {

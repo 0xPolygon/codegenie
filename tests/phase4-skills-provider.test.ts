@@ -2,7 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AuthInteraction, OAuthAuth, OAuthCredential } from "@earendil-works/pi-ai";
+import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { executeProviderCommand, parseProviderCommand } from "../src/cli/provider-command.js";
 import { getCodegeniePaths } from "../src/config/paths.js";
@@ -709,8 +709,11 @@ describe("Phase 4 provider commands", () => {
     const output: string[] = [];
     const prompts: string[] = [];
     const opened: string[] = [];
+    let loginSignal: AbortSignal | undefined;
     const manualController = new AbortController();
     const oauthAuth = testOAuthAuth(async (interaction) => {
+      loginSignal = interaction.signal;
+      expect(loginSignal.aborted).toBe(false);
       interaction.notify({ type: "auth_url", url: authUrl, instructions: "old provider instruction" });
       void interaction.prompt({ type: "manual_code", message: "Paste redirect URL", signal: manualController.signal });
       await new Promise((resolve) => setImmediate(resolve));
@@ -738,6 +741,7 @@ describe("Phase 4 provider commands", () => {
     expect(prompts).toEqual(["> "]);
     expect(output.join("")).toContain(`${authUrl}\n\n⭐ 🧞 Press enter to open the URL above in your local browser.`);
     expect(output.join("")).not.toContain("old provider instruction");
+    expect(loginSignal?.aborted).toBe(true);
     expect(services.authStorage.get(providerId)).toMatchObject({
       type: "oauth",
       credentials: {
@@ -1129,7 +1133,7 @@ function testSkill(input: { id: string; checks: string; falsePositives?: string;
 }
 
 function testOAuthAuth(
-  login: (interaction: AuthInteraction) => Promise<OAuthCredential>
+  login: (interaction: ProviderAuthInteraction) => Promise<OAuthCredential>
 ): OAuthAuth {
   return {
     name: "Test OAuth",
