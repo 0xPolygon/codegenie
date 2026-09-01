@@ -9371,7 +9371,7 @@ describe("phase 5 pipeline regressions", () => {
       };
       expect(errorJson).toMatchObject({
         errorCode: "llm_call_failed",
-        error: "LLM provider call failed",
+        error: expect.stringMatching(/LLM provider call failed:.*\b503\b.*provider unavailable/i),
         context: { reason: "transient_error" }
       });
       const runLog = readFileSync(path.join(runArtifactDir, "run.log"), "utf8");

@@ -31,7 +31,11 @@ export type StatusCommentController = {
   claim(): Promise<{ commentId: number; author: string }>;
   onTelemetryEvent(event: ProgressEvent): void;
   finalizeSuccess(reportMarkdown: string): Promise<void>;
-  finalizeFailure(errorCode: string, diagnostic?: StructuredSubmitFailureDiagnostic): Promise<boolean>;
+  finalizeFailure(
+    errorCode: string,
+    diagnostic?: StructuredSubmitFailureDiagnostic,
+    errorMessage?: string
+  ): Promise<boolean>;
   settle(): Promise<void>;
   stats(): StatusCommentStats;
 };
@@ -221,13 +225,17 @@ export function createStatusCommentController(options: StatusCommentOptions): St
     stats.editCount += 1;
   }
 
-  async function finalizeFailure(errorCode: string, diagnostic?: StructuredSubmitFailureDiagnostic): Promise<boolean> {
+  async function finalizeFailure(
+    errorCode: string,
+    diagnostic?: StructuredSubmitFailureDiagnostic,
+    errorMessage?: string
+  ): Promise<boolean> {
     if (commentId === undefined) {
       return false;
     }
     terminal = true;
     await settle();
-    const body = appendStatusCommentMarker(renderFailureBody(errorCode, options.runUrl, diagnostic));
+    const body = appendStatusCommentMarker(renderFailureBody(errorCode, options.runUrl, diagnostic, errorMessage));
     stats.terminalState = "failure";
     const bodyBytes = Buffer.byteLength(body, "utf8");
     stats.finalBodyBytes = bodyBytes;

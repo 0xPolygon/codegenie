@@ -21,7 +21,7 @@ import type { IssueComment, IssueCommentClient } from "../src/github-action/issu
 import { createIssueCommentClient } from "../src/github-action/issue-comments.js";
 import { appendStatusCommentMarker, STATUS_COMMENT_MARKER } from "../src/github-action/marker.js";
 import { createStatusCommentController } from "../src/github-action/status-comment.js";
-import { ISSUE_COMMENT_MAX_CHARS, TRUNCATION_DISCLOSURE } from "../src/github-action/render.js";
+import { ISSUE_COMMENT_MAX_CHARS, TRUNCATION_DISCLOSURE, renderFailureBody } from "../src/github-action/render.js";
 import { createGitHubClient } from "../src/github/github-client.js";
 import type { runGh } from "../src/git/subprocess.js";
 import type { ReviewResult } from "../src/types.js";
@@ -222,6 +222,15 @@ function deferred<T = void>(): { promise: Promise<T>; resolve(value: T): void; r
 }
 
 describe("status comment controller", () => {
+  it("includes the provider error on llm_call_failed comments", () => {
+    expect(renderFailureBody(
+      "llm_call_failed",
+      "https://github.com/acme/widgets/actions/runs/42",
+      undefined,
+      "LLM provider call failed: HTTP 400 model claude-opus-5 does not exist"
+    )).toContain("HTTP 400 model claude-opus-5 does not exist");
+  });
+
   it("creates the comment when none exists and reclaims its own marker comment on rerun", async () => {
     const fresh = createFakeComments();
     const controller = createStatusCommentController({ comments: fresh.client, prNumber: 7, ownLogin: BOT });
@@ -729,6 +738,7 @@ describe("github-action entrypoint", () => {
     const terminal = fake.calls.at(-1) as { kind: string; body: string };
     expect(terminal.kind).toBe("update");
     expect(terminal.body).toContain("`llm_call_failed`");
+    expect(terminal.body).toContain("provider down");
     expect(JSON.parse(readFileSync(path.join(runDir, "github-action.json"), "utf8"))).toMatchObject({
       outcome: "review_failed",
       errorCode: "llm_call_failed",
@@ -739,6 +749,46 @@ describe("github-action entrypoint", () => {
       }
     });
     expect(output).toContain('"outcome":"review_failed"');
+  });
+
+  it("writes the llm_call_failed provider message to failure artifacts and redacts secrets", async () => {
+    const fake = createFakeComments();
+    const reportPath = path.join(scratch, "llm-failure-report.md");
+    const failurePath = path.join(scratch, "llm-failure.json");
+    const summaryPath = path.join(scratch, "llm-failure-summary.md");
+    const secret = "sk-action-secret-must-not-surface";
+    await expect(executeGitHubActionCommand([], {
+      env: actionEnv(pullRequestPayload(), "pull_request", {
+        CODEGENIE_REPORT_PATH: reportPath,
+        CODEGENIE_FAILURE_PATH: failurePath,
+        GITHUB_STEP_SUMMARY: summaryPath
+      }),
+      issueComments: fake.client,
+      minEditIntervalMs: 0,
+      writeOutput: () => undefined,
+      runReview: async () => {
+        throw new CodegenieError(
+          "llm_call_failed",
+          `LLM provider call failed: HTTP 400 model claude-opus-5 does not exist api_key=${secret}`
+        );
+      }
+    })).rejects.toMatchObject({ code: "llm_call_failed" });
+
+    const surfaces = [
+      readFileSync(reportPath, "utf8"),
+      readFileSync(failurePath, "utf8"),
+      readFileSync(summaryPath, "utf8"),
+      (fake.calls.at(-1) as { body: string }).body
+    ];
+    for (const surface of surfaces) {
+      expect(surface).toContain("HTTP 400 model claude-opus-5 does not exist");
+      expect(surface).not.toContain(secret);
+    }
+    expect(JSON.parse(surfaces[1] ?? "{}")).toMatchObject({
+      schemaVersion: 1,
+      errorCode: "llm_call_failed",
+      error: expect.stringContaining("HTTP 400 model claude-opus-5 does not exist")
+    });
   });
 
   it("always writes scrubbed failure artifacts and bounded schema identity without telemetry", async () => {

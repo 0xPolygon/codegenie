@@ -3382,20 +3382,53 @@ function toLlmError(
   status: "transient_error" | "auth_error" | "timeout" | "aborted",
   timedOut: boolean
 ): CodegenieError {
+  const detail = llmFailureDetail(cause);
   if (status === "auth_error") {
-    return new CodegenieError("llm_call_failed", "LLM provider authentication failed", {
+    return new CodegenieError("llm_call_failed", llmFailureMessage("LLM provider authentication failed", detail), {
       recoverable: false,
-      context: { reason: "auth" },
+      context: definedRecord({ reason: "auth", providerMessage: detail }) as Record<string, unknown>,
       cause
     });
   }
   const reason = timedOut ? "timeout" : requestErrorReason(cause, status);
   const retry = status === "transient_error" ? classifyProviderRetry(cause, MAX_PROVIDER_ATTEMPTS) : undefined;
-  return new CodegenieError("llm_call_failed", timedOut ? "LLM provider call timed out" : "LLM provider call failed", {
+  const headline = timedOut
+    ? "LLM provider call timed out"
+    : status === "aborted"
+      ? "LLM provider call aborted"
+      : "LLM provider call failed";
+  return new CodegenieError("llm_call_failed", llmFailureMessage(headline, timedOut ? undefined : detail), {
     recoverable: true,
-    context: definedRecord({ reason, retryReason: retry?.reason }) as Record<string, unknown>,
+    context: definedRecord({ reason, retryReason: retry?.reason, providerMessage: detail }) as Record<string, unknown>,
     cause
   });
+}
+
+function llmFailureMessage(headline: string, detail: string | undefined): string {
+  if (detail === undefined || detail.length === 0 || headline.includes(detail)) {
+    return headline;
+  }
+  return `${headline}: ${detail}`;
+}
+
+function llmFailureDetail(cause: unknown): string | undefined {
+  const parts = [...new Set(
+    stripCredentials(providerErrorText(cause))
+      .split(/\n+/u)
+      .map((part) => part.replace(/\s+/gu, " ").trim())
+      .filter((part) => part.length > 0)
+  )];
+  const raw = parts.join(" ").trim();
+  const status = errorHttpStatus(cause);
+  const withStatus = status !== undefined && raw.length > 0 && !new RegExp(`\\b${status}\\b`, "u").test(raw)
+    ? `HTTP ${status}: ${raw}`
+    : status !== undefined && raw.length === 0
+      ? `HTTP ${status}`
+      : raw;
+  if (withStatus.length === 0) {
+    return undefined;
+  }
+  return truncateDiagnostic(withStatus);
 }
 
 function requestErrorReason(cause: unknown, status: "transient_error" | "auth_error" | "timeout" | "aborted"): string {

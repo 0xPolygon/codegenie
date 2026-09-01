@@ -71,10 +71,13 @@ export function renderProgressBody(checklist: StageChecklist, runUrl: string | u
 export function renderFailureBody(
   errorCode: string,
   runUrl: string | undefined,
-  diagnostic?: StructuredSubmitFailureDiagnostic
+  diagnostic?: StructuredSubmitFailureDiagnostic,
+  errorMessage?: string
 ): string {
+  const detail = errorMessage?.trim();
   return [
     `**🧞 Codegenie** review failed (\`${errorCode}\`).`,
+    ...(detail !== undefined && detail.length > 0 ? ["", detail] : []),
     ...(diagnostic !== undefined ? ["", renderStructuredSubmitFailure(diagnostic)] : []),
     "",
     ...renderRunLinkFooter(runUrl)

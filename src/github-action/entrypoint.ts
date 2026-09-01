@@ -209,14 +209,16 @@ export async function executeGitHubActionCommand(
   } catch (error) {
     const code = actionErrorCode(error);
     const diagnostic = structuredSubmitFailureDiagnosticFromError(error);
+    const errorMessage = publicLlmFailureMessage(error);
     publishFailureFiles({
       errorCode: code,
       decision: authorized,
       env,
       ...(diagnostic !== undefined ? { diagnostic } : {}),
+      ...(errorMessage !== undefined ? { errorMessage } : {}),
       ...(runUrl !== undefined ? { runUrl } : {})
     });
-    await controller.finalizeFailure(code, diagnostic);
+    await controller.finalizeFailure(code, diagnostic, errorMessage);
     emitActionRecord(attachment?.runDir, eventName, authorized, "review_failed", controller.stats(), env, write, code);
     write(`github-action: review failed — ${diagnostic !== undefined ? renderStructuredSubmitFailure(diagnostic) : code}\n`);
     throw error;
@@ -427,10 +429,26 @@ type ActionFailureRecord = {
   lane: AuthorizedDecision["lane"];
   prNumber: number;
   errorCode: CodegenieErrorCode | "unknown_error";
+  error?: string;
   runUrl?: string;
   runId?: string;
   structuredSubmitFailure?: StructuredSubmitFailureDiagnostic;
 };
+
+const PUBLIC_LLM_FAILURE_MESSAGE_MAX_CHARS = 400;
+
+function publicLlmFailureMessage(error: unknown): string | undefined {
+  if (!(error instanceof CodegenieError) || error.code !== "llm_call_failed") {
+    return undefined;
+  }
+  const scrubbed = scrubGitHubSecrets(error.message).trim();
+  if (scrubbed.length === 0) {
+    return undefined;
+  }
+  return scrubbed.length > PUBLIC_LLM_FAILURE_MESSAGE_MAX_CHARS
+    ? `${scrubbed.slice(0, PUBLIC_LLM_FAILURE_MESSAGE_MAX_CHARS).trimEnd()}…`
+    : scrubbed;
+}
 
 const FAILURE_JSON_MAX_BYTES = 16 * 1024;
 const FAILURE_MARKDOWN_MAX_BYTES = 4 * 1024;
@@ -441,6 +459,7 @@ function actionErrorCode(error: unknown): CodegenieErrorCode | "unknown_error" {
 
 function publishFailureFiles(input: {
   errorCode: CodegenieErrorCode | "unknown_error";
+  errorMessage?: string;
   diagnostic?: StructuredSubmitFailureDiagnostic;
   decision: AuthorizedDecision;
   runUrl?: string;
@@ -452,6 +471,7 @@ function publishFailureFiles(input: {
     lane: input.decision.lane,
     prNumber: input.decision.prNumber,
     errorCode: input.errorCode,
+    ...(input.errorMessage !== undefined ? { error: input.errorMessage } : {}),
     ...(input.runUrl !== undefined ? { runUrl: input.runUrl } : {}),
     ...(runId !== undefined && /^\d+$/u.test(runId) ? { runId } : {}),
     ...(input.diagnostic !== undefined ? { structuredSubmitFailure: input.diagnostic } : {})
@@ -461,6 +481,7 @@ function publishFailureFiles(input: {
     "# 🧞 Codegenie Review Failed",
     "",
     `Error code: \`${input.errorCode}\``,
+    ...(input.errorMessage !== undefined ? ["", input.errorMessage] : []),
     ...(input.diagnostic !== undefined ? ["", renderStructuredSubmitFailure(input.diagnostic)] : []),
     ...(input.runUrl !== undefined ? ["", `See the [workflow job](${input.runUrl}) and the failure JSON artifact.`] : [])
   ].join("\n"));

@@ -4560,6 +4560,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await expect(runner.runStructured(submitReviewRequest("packet-400"))).rejects.toMatchObject({
       code: "llm_call_failed",
       recoverable: true,
+      message: expect.stringMatching(/LLM provider call failed:.*\b400\b.*bad request/i),
       context: { reason: "request_error" }
     });
     expect(adapter.complete).toHaveBeenCalledTimes(1);
@@ -4587,6 +4588,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await expect(runner.runStructured(submitReviewRequest("packet-auth"))).rejects.toMatchObject({
       code: "llm_call_failed",
       recoverable: false,
+      message: expect.stringMatching(/LLM provider authentication failed:.*unauthorized api key/i),
       context: { reason: "auth" }
     });
     expect(adapter.complete).toHaveBeenCalledTimes(1);
@@ -4622,6 +4624,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     await expect(runner.runStructured(submitReviewRequest("packet-provider-message-error"))).rejects.toMatchObject({
       code: "llm_call_failed",
+      message: expect.stringContaining("HTTP status 400 model claude-opus-4-8 does not exist"),
       context: { reason: "request_error" }
     });
 
@@ -4755,6 +4758,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       await expect(runner.runStructured(submitReviewRequest("packet-provider-down"))).rejects.toMatchObject({
         code: "llm_call_failed",
         recoverable: true,
+        message: expect.stringMatching(/LLM provider call failed:.*\b503\b.*provider unavailable/i),
         context: { reason: "transient_error" }
       });
       expect(adapter.complete).toHaveBeenCalledTimes(4);
