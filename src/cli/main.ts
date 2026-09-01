@@ -6,6 +6,7 @@ import { executeGitHubActionCommand } from "../github-action/entrypoint.js";
 import { executeEvalCommand } from "../evals/eval-command.js";
 import { stripCredentials } from "../telemetry/redaction.js";
 import { errorExitCode, isCodegenieError } from "../util/errors.js";
+import { renderCodegenieError } from "./render-error.js";
 import { renderVersion } from "./version.js";
 
 async function main(): Promise<void> {
@@ -74,15 +75,6 @@ async function closeProviderTransports(): Promise<void> {
   } catch {
     // Transport teardown must never mask the command's own outcome.
   }
-}
-
-function renderCodegenieError(error: { code: string; message: string; context?: Record<string, unknown> }): string {
-  const helpText = typeof error.context?.helpText === "string" ? error.context.helpText.trimEnd() : undefined;
-  const hint = typeof error.context?.hint === "string" ? error.context.hint : undefined;
-  if (helpText !== undefined) {
-    return `${error.message}\n\n${helpText}${hint !== undefined ? `\n\n${hint}` : ""}\n`;
-  }
-  return `${error.code}: ${error.message}\n`;
 }
 
 await main().finally(closeProviderTransports);

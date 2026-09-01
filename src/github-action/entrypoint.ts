@@ -19,7 +19,7 @@ import {
 } from "./event-gate.js";
 import { createIssueCommentClient, type IssueCommentClient } from "./issue-comments.js";
 import { createStatusCommentController } from "./status-comment.js";
-import { renderStructuredSubmitFailure } from "./render.js";
+import { renderProviderMessage, renderStructuredSubmitFailure } from "./render.js";
 
 type ProgressEvent = Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">;
 
@@ -209,16 +209,21 @@ export async function executeGitHubActionCommand(
   } catch (error) {
     const code = actionErrorCode(error);
     const diagnostic = structuredSubmitFailureDiagnosticFromError(error);
+    const providerMessage = providerMessageFromError(error);
     publishFailureFiles({
       errorCode: code,
       decision: authorized,
       env,
       ...(diagnostic !== undefined ? { diagnostic } : {}),
+      ...(providerMessage !== undefined ? { providerMessage } : {}),
       ...(runUrl !== undefined ? { runUrl } : {})
     });
-    await controller.finalizeFailure(code, diagnostic);
+    await controller.finalizeFailure(code, diagnostic, providerMessage);
     emitActionRecord(attachment?.runDir, eventName, authorized, "review_failed", controller.stats(), env, write, code);
-    write(`github-action: review failed — ${diagnostic !== undefined ? renderStructuredSubmitFailure(diagnostic) : code}\n`);
+    const detail = diagnostic !== undefined ? renderStructuredSubmitFailure(diagnostic) : code;
+    write(
+      `github-action: review failed — ${detail}${providerMessage !== undefined ? `: ${providerMessage}` : ""}\n`
+    );
     throw error;
   }
 
@@ -430,7 +435,33 @@ type ActionFailureRecord = {
   runUrl?: string;
   runId?: string;
   structuredSubmitFailure?: StructuredSubmitFailureDiagnostic;
+  providerMessage?: string;
 };
+
+const PROVIDER_MESSAGE_MAX_CHARS = 300;
+
+// The provider's explanation rides on the error context set by the LLM layer;
+// without lifting it here the artifact and PR comment carry only an error code.
+//
+// The context was already credential-stripped by the CodegenieError
+// constructor, but these surfaces are world-readable, so scrub a second time
+// against the Actions secrets before publishing.
+function providerMessageFromError(error: unknown): string | undefined {
+  if (!(error instanceof CodegenieError)) {
+    return undefined;
+  }
+  const value = error.context?.providerMessage;
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const collapsed = scrubGitHubSecrets(value).replace(/\s+/gu, " ").trim();
+  if (collapsed.length === 0) {
+    return undefined;
+  }
+  return collapsed.length <= PROVIDER_MESSAGE_MAX_CHARS
+    ? collapsed
+    : `${collapsed.slice(0, PROVIDER_MESSAGE_MAX_CHARS - 1).trimEnd()}…`;
+}
 
 const FAILURE_JSON_MAX_BYTES = 16 * 1024;
 const FAILURE_MARKDOWN_MAX_BYTES = 4 * 1024;
@@ -442,6 +473,7 @@ function actionErrorCode(error: unknown): CodegenieErrorCode | "unknown_error" {
 function publishFailureFiles(input: {
   errorCode: CodegenieErrorCode | "unknown_error";
   diagnostic?: StructuredSubmitFailureDiagnostic;
+  providerMessage?: string;
   decision: AuthorizedDecision;
   runUrl?: string;
   env: NodeJS.ProcessEnv;
@@ -454,7 +486,8 @@ function publishFailureFiles(input: {
     errorCode: input.errorCode,
     ...(input.runUrl !== undefined ? { runUrl: input.runUrl } : {}),
     ...(runId !== undefined && /^\d+$/u.test(runId) ? { runId } : {}),
-    ...(input.diagnostic !== undefined ? { structuredSubmitFailure: input.diagnostic } : {})
+    ...(input.diagnostic !== undefined ? { structuredSubmitFailure: input.diagnostic } : {}),
+    ...(input.providerMessage !== undefined ? { providerMessage: input.providerMessage } : {})
   };
   const json = fitFailureJson(record);
   const markdown = fitFailureMarkdown([
@@ -462,6 +495,7 @@ function publishFailureFiles(input: {
     "",
     `Error code: \`${input.errorCode}\``,
     ...(input.diagnostic !== undefined ? ["", renderStructuredSubmitFailure(input.diagnostic)] : []),
+    ...(input.providerMessage !== undefined ? ["", renderProviderMessage(input.providerMessage)] : []),
     ...(input.runUrl !== undefined ? ["", `See the [workflow job](${input.runUrl}) and the failure JSON artifact.`] : [])
   ].join("\n"));
   writeFailureFile(input.env.CODEGENIE_FAILURE_PATH, json);

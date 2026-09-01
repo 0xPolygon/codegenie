@@ -741,6 +741,59 @@ describe("github-action entrypoint", () => {
     expect(output).toContain('"outcome":"review_failed"');
   });
 
+  it("surfaces the provider explanation in the comment, artifacts and log on a billing failure", async () => {
+    const fake = createFakeComments();
+    const runDir = mkdtempSync(path.join(scratch, "usage-limit-run-"));
+    const failurePath = path.join(scratch, "usage-limit-failure.json");
+    const reportPath = path.join(scratch, "usage-limit-report.md");
+    const summaryPath = path.join(scratch, "usage-limit-summary.md");
+    const secret = "sk-ant-api03-MUSTNOTSURFACE1234567890";
+    const providerMessage =
+      "HTTP 400: You have reached your specified API usage limits. You will regain access on 2026-09-01 at 00:00 UTC.";
+    let output = "";
+    await expect(
+      executeGitHubActionCommand([], {
+        env: actionEnv(pullRequestPayload(), "pull_request", {
+          CODEGENIE_FAILURE_PATH: failurePath,
+          CODEGENIE_REPORT_PATH: reportPath,
+          GITHUB_STEP_SUMMARY: summaryPath
+        }),
+        issueComments: fake.client,
+        minEditIntervalMs: 0,
+        writeOutput: (text) => {
+          output += text;
+        },
+        runReview: async (_argv, hooks) => {
+          hooks.onRunStart({ runId: "usage-limit", runDir });
+          throw new CodegenieError("llm_call_failed", "LLM provider usage limit reached", {
+            recoverable: false,
+            // The key rides along as a provider would echo it, to prove the
+            // publish-time scrub holds on every world-readable surface.
+            context: { reason: "usage_limit", providerMessage: `${providerMessage} x-api-key: ${secret}` }
+          });
+        }
+      })
+    ).rejects.toMatchObject({ code: "llm_call_failed" });
+
+    // The operator must learn it is billing without opening run artifacts.
+    const terminal = fake.calls.at(-1) as { kind: string; body: string };
+    expect(terminal.body).toContain("`llm_call_failed`");
+    for (const surface of [
+      terminal.body,
+      readFileSync(failurePath, "utf8"),
+      readFileSync(reportPath, "utf8"),
+      readFileSync(summaryPath, "utf8"),
+      output
+    ]) {
+      expect(surface).toContain(providerMessage);
+      expect(surface).not.toContain(secret);
+    }
+    expect(JSON.parse(readFileSync(failurePath, "utf8"))).toMatchObject({
+      errorCode: "llm_call_failed",
+      providerMessage: expect.stringContaining(providerMessage)
+    });
+  });
+
   it("always writes scrubbed failure artifacts and bounded schema identity without telemetry", async () => {
     const fake = createFakeComments();
     const reportPath = path.join(scratch, "schema-failure-report.md");

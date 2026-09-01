@@ -4606,6 +4606,71 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ].map((input) => __piRunnerTestHooks.parseHttpStatus(input))).toEqual([undefined, undefined, undefined]);
   });
 
+  it("parses the status a provider prefixes onto the raw body", () => {
+    expect([
+      '400 {"type":"error","error":{"type":"invalid_request_error","message":"nope"}}',
+      "429: slow down",
+      "503 Service Unavailable"
+    ].map((input) => __piRunnerTestHooks.parseHttpStatus(input))).toEqual([400, 429, 503]);
+  });
+
+  it("reports a usage-limit rejection as terminal without retrying", async () => {
+    const body =
+      '400 {"type":"error","error":{"type":"invalid_request_error","message":"You have reached your specified API usage limits. You will regain access on 2026-09-01 at 00:00 UTC."},"request_id":"req_011"}';
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async () => {
+        throw new Error(body);
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured(submitReviewRequest("packet-usage-limit"))).rejects.toMatchObject({
+      code: "llm_call_failed",
+      message: "LLM provider usage limit reached",
+      recoverable: false,
+      context: {
+        reason: "usage_limit",
+        providerMessage:
+          "HTTP 400: You have reached your specified API usage limits. You will regain access on 2026-09-01 at 00:00 UTC."
+      }
+    });
+    // A billing wall is not transient: one call, no backoff burn.
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("carries the provider explanation on ordinary request failures too", async () => {
+    const adapter: PiAiAdapter = {
+      resolveModel: () => ({ provider: "fake", id: "fake-model", raw: { id: "fake-model" } }),
+      complete: vi.fn(async () => {
+        throw new Error('400 {"type":"error","error":{"type":"invalid_request_error","message":"max_tokens too large"}}');
+      }),
+      validateToolCall: (tools, toolCall) => validateToolCall(tools, toolCall)
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await expect(runner.runStructured(submitReviewRequest("packet-request-error"))).rejects.toMatchObject({
+      code: "llm_call_failed",
+      context: { reason: "request_error", providerMessage: "HTTP 400: max_tokens too large" }
+    });
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+  });
+
   it("treats Pi stopReason error messages as provider failures instead of schema failures", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
