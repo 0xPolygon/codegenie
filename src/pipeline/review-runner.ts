@@ -375,7 +375,11 @@ export async function runReview(
       runId: run.runId,
       stage: 0,
       event: "review_pipeline_failed",
-      message: "review pipeline failed",
+      // Carry the code and message inline so run.log states the cause without
+      // a reader having to open the failure record beside it.
+      message: isCodegenieError(error)
+        ? `review pipeline failed: ${error.code}: ${error.message}`
+        : "review pipeline failed",
       data: failure
     });
     run.telemetry.event({

@@ -71,14 +71,23 @@ export function renderProgressBody(checklist: StageChecklist, runUrl: string | u
 export function renderFailureBody(
   errorCode: string,
   runUrl: string | undefined,
-  diagnostic?: StructuredSubmitFailureDiagnostic
+  diagnostic?: StructuredSubmitFailureDiagnostic,
+  providerMessage?: string
 ): string {
   return [
     `**🧞 Codegenie** review failed (\`${errorCode}\`).`,
     ...(diagnostic !== undefined ? ["", renderStructuredSubmitFailure(diagnostic)] : []),
+    ...(providerMessage !== undefined ? ["", renderProviderMessage(providerMessage)] : []),
     "",
     ...renderRunLinkFooter(runUrl)
   ].join("\n");
+}
+
+// Provider prose is untrusted text landing in a public comment: quote it so it
+// cannot forge structure, and keep it on one line.
+export function renderProviderMessage(providerMessage: string): string {
+  const collapsed = providerMessage.replace(/\s+/gu, " ").trim();
+  return `> ${collapsed}`;
 }
 
 export function renderStructuredSubmitFailure(diagnostic: StructuredSubmitFailureDiagnostic): string {

@@ -1493,7 +1493,10 @@ function anthropicForcedSubmitCall(model: PiModelRef, toolChoice: ToolChoiceMode
 }
 
 function mapProviderOptions(model: Model<Api>, options: SimpleStreamOptions & Record<string, unknown>): Record<string, unknown> {
-  const mapped = { ...options };
+  // Provider-specific bag: pi's SimpleStreamOptions.toolChoice is the neutral
+  // "auto" | "none", while the mapped value is whatever the target API expects
+  // (e.g. anthropic's { type: "tool", name }), so this is not a SimpleStreamOptions.
+  const mapped: Record<string, unknown> = { ...options };
   const reasoning = typeof options.reasoning === "string" ? options.reasoning : undefined;
   const forceSubmit = options.forceSubmitToolChoice !== false;
   const toolChoice = mapProviderToolChoice(model, options.toolChoice, forceSubmit);
@@ -3352,6 +3355,11 @@ function classifyProviderRetry(cause: unknown, attempt: number): ProviderRetryCl
   if (isAbortError(cause)) {
     return { retryable: false, reason: "aborted" };
   }
+  // Ahead of the auth check: a 403 spend-cap rejection is a billing problem,
+  // not a credential problem, and the operator fix differs.
+  if (isUsageLimitError(cause)) {
+    return { retryable: false, reason: "usage_limit" };
+  }
   if (errorStatus(cause) === "auth_error") {
     return { retryable: false, reason: "auth_error" };
   }
@@ -3382,18 +3390,31 @@ function toLlmError(
   status: "transient_error" | "auth_error" | "timeout" | "aborted",
   timedOut: boolean
 ): CodegenieError {
+  const providerMessage = providerFailureSummary(cause);
+  if (!timedOut && status !== "aborted" && isUsageLimitError(cause)) {
+    return new CodegenieError("llm_call_failed", "LLM provider usage limit reached", {
+      recoverable: false,
+      context: definedRecord({ reason: "usage_limit", providerMessage }) as Record<string, unknown>,
+      cause
+    });
+  }
   if (status === "auth_error") {
     return new CodegenieError("llm_call_failed", "LLM provider authentication failed", {
       recoverable: false,
-      context: { reason: "auth" },
+      context: definedRecord({ reason: "auth", providerMessage }) as Record<string, unknown>,
       cause
     });
   }
   const reason = timedOut ? "timeout" : requestErrorReason(cause, status);
   const retry = status === "transient_error" ? classifyProviderRetry(cause, MAX_PROVIDER_ATTEMPTS) : undefined;
-  return new CodegenieError("llm_call_failed", timedOut ? "LLM provider call timed out" : "LLM provider call failed", {
+  const headline = timedOut
+    ? "LLM provider call timed out"
+    : status === "aborted"
+      ? "LLM provider call aborted"
+      : "LLM provider call failed";
+  return new CodegenieError("llm_call_failed", headline, {
     recoverable: true,
-    context: definedRecord({ reason, retryReason: retry?.reason }) as Record<string, unknown>,
+    context: definedRecord({ reason, retryReason: retry?.reason, providerMessage }) as Record<string, unknown>,
     cause
   });
 }
@@ -3431,7 +3452,9 @@ function providerErrorText(cause: unknown): string {
     const parts = [cause.message];
     const record = cause as unknown as Record<string, unknown>;
     collectProviderErrorText(record, parts);
-    return parts.filter((part) => part.trim().length > 0).join("\n");
+    // collectProviderErrorText re-reads `message`, so an Error always yields a
+    // duplicate of its own text; dedupe keeps the summary readable.
+    return [...new Set(parts.filter((part) => part.trim().length > 0))].join("\n");
   }
   if (!cause || typeof cause !== "object") {
     return String(cause ?? "");
@@ -3464,13 +3487,23 @@ function errorHttpStatus(cause: unknown): number | undefined {
     return status;
   }
   if (typeof status === "string") {
-    return parseHttpStatus(status);
+    const parsed = parseHttpStatus(status);
+    if (parsed !== undefined) {
+      return parsed;
+    }
   }
-  return undefined;
+  // Some provider SDKs throw with the status only in the message text; without
+  // this a hard 4xx reads as an unknown transient error and gets retried.
+  return cause instanceof Error ? parseHttpStatus(cause.message) : undefined;
 }
 
 function parseHttpStatus(input: string): number | undefined {
-  const exact = /^\s*([45]\d\d)\s*$/u.exec(input);
+  // Providers commonly prefix the raw body with the status: pi-ai surfaces
+  // Anthropic failures as `400 {"type":"error",...}`, others as `429: ...`.
+  // Without this the status never reaches classifyProviderRetry and a hard
+  // 4xx (billing, bad request) is retried as an unknown transient error.
+  const leading = /^\s*([45]\d\d)(?=[\s:]|$)/u.exec(input);
+  const exact = leading ?? /^\s*([45]\d\d)\s*$/u.exec(input);
   const match = exact
     ?? /\b(?:http(?:\s+status)?|status(?:\s*code)?|code)\D{0,12}([45]\d\d)\b/iu.exec(input)
     ?? /\b([45]\d\d)\s+(?:http\s+)?(?:status|response|error)\b/iu.exec(input);
@@ -3483,6 +3516,111 @@ function parseHttpStatus(input: string): number | undefined {
 
 function errorMessageMatches(cause: unknown, pattern: RegExp): boolean {
   return cause instanceof Error && pattern.test(cause.message);
+}
+
+// Billing/quota rejections are terminal: the account, not the request, is out
+// of room, so retrying burns calls against a wall. Providers signal them as a
+// plain 4xx with the reason only in prose, hence the message match.
+const USAGE_LIMIT_PATTERN =
+  /credit balance is too low|usage limits?|spend(?:ing)? limits?|quota (?:exceeded|reached)|billing|insufficient (?:credits?|funds|quota|balance)|payment required|purchase credits/iu;
+
+const USAGE_LIMIT_STATUSES: ReadonlySet<number> = new Set([400, 402, 403, 429]);
+
+function isUsageLimitError(cause: unknown): boolean {
+  const status = errorHttpStatus(cause);
+  if (status === 402) {
+    return true;
+  }
+  if (status !== undefined && !USAGE_LIMIT_STATUSES.has(status)) {
+    return false;
+  }
+  return USAGE_LIMIT_PATTERN.test(providerErrorText(cause));
+}
+
+const PROVIDER_MESSAGE_MAX_CHARS = 300;
+
+// The provider's own prose is the only thing that explains *why* a call failed.
+// It is buried in the raw body, so lift it out for the log line, the failure
+// artifact and the PR comment. Provider-authored text only — never request
+// content — and capped so it cannot dominate a status comment.
+function providerFailureSummary(cause: unknown): string | undefined {
+  const raw = providerErrorText(cause).trim();
+  const status = errorHttpStatus(cause);
+  if (raw.length === 0) {
+    return status !== undefined ? `HTTP ${status}` : undefined;
+  }
+  const summary = providerMessageFromBody(raw) ?? raw;
+  const collapsed = summary.replace(/\s+/gu, " ").trim();
+  if (collapsed.length === 0) {
+    return status !== undefined ? `HTTP ${status}` : undefined;
+  }
+  // Lifting the message out of the body drops the status with it; operators
+  // need both to tell a billing 400 from a model-not-found 404.
+  const withStatus =
+    status !== undefined && !new RegExp(`\\b${status}\\b`, "u").test(collapsed)
+      ? `HTTP ${status}: ${collapsed}`
+      : collapsed;
+  return truncateDiagnosticPart(withStatus, PROVIDER_MESSAGE_MAX_CHARS);
+}
+
+function providerMessageFromBody(raw: string): string | undefined {
+  const body = firstJsonObject(raw);
+  if (body === undefined) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (!isRecord(parsed)) {
+      return undefined;
+    }
+    const error = parsed.error;
+    const message = isRecord(error) ? error.message : parsed.message;
+    return typeof message === "string" && message.trim().length > 0 ? message.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// The body is embedded in a larger string (`400 {…}`, sometimes repeated), so
+// slicing to end-of-string would not parse. Take the first balanced object.
+function firstJsonObject(raw: string): string | undefined {
+  const start = raw.indexOf("{");
+  if (start === -1) {
+    return undefined;
+  }
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (inString) {
+      if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+    } else if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return raw.slice(start, index + 1);
+      }
+    }
+  }
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function isAbortError(cause: unknown): boolean {
