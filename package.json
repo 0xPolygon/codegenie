@@ -21,7 +21,7 @@
     "test:watch": "vitest",
     "models-list": "node scripts/write-models-md.mjs",
     "dev": "tsx src/cli/main.ts",
-    "publish": "pnpm login && pnpm publish --access public --no-git-checks"
+    "publish-release": "pnpm login && pnpm publish --access public --no-git-checks"
   },
   "engines": {
     "node": ">=22.19.0"
