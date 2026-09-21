@@ -75,6 +75,25 @@ describe("review command", () => {
     expect(parsed.config.cache.enabled).toBe(true);
   });
 
+  it("accepts a :reasoning suffix on --model and rejects combining it with --reasoning", () => {
+    const parsed = parseReviewCommand(["review", "feature", "--model", "deepseek/deepseek-v4.1-flash:max"], testContext());
+    expect(parsed.config.llm.model).toBe("deepseek/deepseek-v4.1-flash");
+    expect(parsed.config.llm.reasoning).toBe("max");
+    expect(parsed.configSources["llm.reasoning"]).toBe("cli");
+
+    // a non-level suffix stays part of the model id
+    const ollama = parseReviewCommand(["review", "feature", "--model", "ollama/llama3:8b"], testContext());
+    expect(ollama.config.llm.model).toBe("ollama/llama3:8b");
+    expect(ollama.configSources["llm.reasoning"]).toBeUndefined();
+
+    expect(() =>
+      parseReviewCommand(["review", "feature", "--model", "claude-opus-5:max", "--reasoning", "low"], testContext())
+    ).toThrow("pass reasoning as either --model <model>:<reasoning> or --reasoning, not both");
+    expect(() => parseReviewCommand(["review", "feature", "--reasoning", "ultra"], testContext())).toThrow(
+      "--reasoning must be one of: low, medium, high, xhigh, max, auto"
+    );
+  });
+
   it("applies --budget-boost as a review budget override", () => {
     const parsed = parseReviewCommand(["review", "feature", "--budget-boost", "2"], testContext());
     expect(parsed.config.review.budgetBoost).toBe(2);

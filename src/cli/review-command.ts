@@ -3,10 +3,10 @@ import path from "node:path";
 import { Command, CommanderError } from "commander";
 import { loadConfig, type CliConfigOverrides, type LoadConfigOptions } from "../config/config-loader.js";
 import { MAX_REVIEW_TIME_MINUTES } from "../config/schema.js";
+import { REASONING_USAGE, parseReasoningLevel, splitReasoningSuffix } from "../provider/reasoning.js";
 import type {
   OutputFormat,
   ParsedReviewCommand,
-  ReasoningLevel,
   ReviewCommandTarget,
   ReviewDepth,
   ReviewResult,
@@ -89,8 +89,8 @@ export function parseReviewCommand(
     .option("--max-time <minutes>", "override review.maxTime in minutes for this run (default 30)")
     .option("--lens <lens>", "review lens to enable for this run", collect, [])
     .option("--provider <provider>", "provider override")
-    .option("--model <model>", "model override")
-    .option("--reasoning <level>", "reasoning level: low, medium, high, xhigh, or auto")
+    .option("--model <model>", "model override, optionally with a :reasoning suffix (e.g. claude-opus-5:max)")
+    .option("--reasoning <level>", "reasoning level: low, medium, high, xhigh, max, or auto")
     .option("--format <format>", "output format: markdown or json", "markdown")
     .option("--post-github-comments", "post inline comments to GitHub for --pr runs")
     .option("--ci", "disable interactive progress output for CI-friendly logs")
@@ -116,7 +116,7 @@ export function parseReviewCommand(
   providerConfig.command("set-provider").argument("<provider>");
   providerConfig.command("set-model").argument("<provider>").argument("<model>");
   providerConfig.command("set-depth").argument("<light|normal|deep>");
-  providerConfig.command("set-reasoning").argument("<low|medium|high|xhigh|auto>");
+  providerConfig.command("set-reasoning").argument(REASONING_USAGE);
   program.command("version").description("show codegenie version");
   program.command("eval").description("run codegenie eval suites");
 
@@ -298,10 +298,17 @@ function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides 
     cli.provider = requireNonEmpty(options.provider, "--provider");
   }
   if (options.model !== undefined) {
-    cli.model = requireNonEmpty(options.model, "--model");
+    const spec = splitReasoningSuffix(requireNonEmpty(options.model, "--model"));
+    cli.model = requireNonEmpty(spec.model, "--model");
+    if (spec.reasoning !== undefined) {
+      if (options.reasoning !== undefined) {
+        throw new CodegenieError("invalid_args", "pass reasoning as either --model <model>:<reasoning> or --reasoning, not both");
+      }
+      cli.reasoning = spec.reasoning;
+    }
   }
   if (options.reasoning !== undefined) {
-    cli.reasoning = parseReasoning(options.reasoning);
+    cli.reasoning = parseReasoningLevel(options.reasoning, "--reasoning");
   }
   if (options.cache !== undefined) {
     cli.cacheEnabled = options.cache;
@@ -375,16 +382,6 @@ function parseMaxTime(value: string): number {
     );
   }
   return parsed * 60_000;
-}
-
-function parseReasoning(value: string): ReasoningLevel | "auto" {
-  if (value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "auto") {
-    return value;
-  }
-  throw new CodegenieError(
-    "invalid_args",
-    "--reasoning must be one of: low, medium, high, xhigh, auto"
-  );
 }
 
 function parseFormat(value: string): OutputFormat {

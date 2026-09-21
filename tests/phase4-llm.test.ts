@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import type {
   LlmCallUsage,
+  LlmRunner,
   PiAiAdapter,
   PiAssistantMessage,
   PiInvalidToolCall,
@@ -484,6 +485,28 @@ describe("Phase 4 schemas and repository tool definitions", () => {
 });
 
 describe("Phase 4 Pi runner and model-call cache", () => {
+  it("rejects a configured reasoning level the resolved model does not advertise", () => {
+    const build = (reasoning: "high" | "xhigh", raw: Record<string, unknown>): LlmRunner =>
+      createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", reasoning, maxConcurrentCalls: 1 },
+        telemetry: fakeTelemetry().recorder,
+        logger: fakeLogger(),
+        runSignal: new AbortController().signal,
+        adapter: { resolveModel: () => ({ provider: "fake", id: "fake-model", raw }), complete: vi.fn() }
+      });
+
+    // pi advertises minimal/low/medium/high unless the model maps xhigh/max
+    expect(() => build("xhigh", { id: "fake-model", reasoning: true })).toThrow(
+      expect.objectContaining({
+        code: "config_error",
+        message: "fake/fake-model does not support reasoning xhigh; supported levels: minimal, low, medium, high"
+      })
+    );
+    expect(() => build("xhigh", { id: "fake-model", reasoning: true, thinkingLevelMap: { xhigh: "xhigh" } })).not.toThrow();
+    // models without reasoning (and bare test fakes) ignore the level
+    expect(() => build("xhigh", { id: "fake-model" })).not.toThrow();
+  });
+
   it("runs a tool round, fences tool output, validates submit payload, and records telemetry", async () => {
     const telemetry = fakeTelemetry();
     const usage: LlmCallUsage[] = [];

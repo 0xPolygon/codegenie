@@ -1,7 +1,7 @@
 export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
 
 export type ReviewDepth = "light" | "normal" | "deep";
-export type ReasoningLevel = "low" | "medium" | "high" | "xhigh";
+export type ReasoningLevel = "low" | "medium" | "high" | "xhigh" | "max";
 export type Severity = "critical" | "high" | "medium" | "low";
 export type Confidence = "high" | "medium" | "low";
 export type ProcessingMode = "per-hunk" | "whole-file" | "skip";

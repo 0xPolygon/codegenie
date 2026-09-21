@@ -34,8 +34,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: 0xPolygon/codegenie@v0.5.7
+      - uses: 0xPolygon/codegenie@v0.5.8
         with:
-          model: "anthropic/claude-opus-5:high"
+          model: "openrouter/deepseek/deepseek-v4.1-flash:max"
+          # model: "openrouter/z-ai/glm-5.3-flash"
+          # model: "anthropic/claude-opus-5:high"
           llm-api-key: ${{ secrets.LLM_API_KEY }}
           trigger-phrase: "codegenie review"

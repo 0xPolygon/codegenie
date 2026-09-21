@@ -2,6 +2,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { ensureCodegenieHome, getCodegeniePaths } from "../config/paths.js";
+import { reasoningLevelSchema } from "../config/schema.js";
 import type { CodegeniePaths, ProviderSettings } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 
@@ -10,7 +11,7 @@ const providerSettingsSchema = z
     defaultProvider: z.string().min(1).optional(),
     defaultModel: z.string().min(1).optional(),
     defaultDepth: z.enum(["light", "normal", "deep"]).optional(),
-    defaultReasoning: z.enum(["low", "medium", "high", "xhigh"]).optional()
+    defaultReasoning: reasoningLevelSchema.optional()
   })
   .strict();
 

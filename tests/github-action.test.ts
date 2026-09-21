@@ -1028,6 +1028,12 @@ describe("github-action entrypoint", () => {
       reasoning: "high"
     });
     expect(parseModelSpec("openai/gpt-5.5:xhigh")).toEqual({ provider: "openai", model: "gpt-5.5", reasoning: "xhigh" });
+    expect(parseModelSpec("openrouter/deepseek/deepseek-v4.1-flash:max")).toEqual({
+      provider: "openrouter",
+      model: "deepseek/deepseek-v4.1-flash",
+      reasoning: "max"
+    });
+    expect(parseModelSpec("anthropic/claude-opus-5:auto")).toEqual({ provider: "anthropic", model: "claude-opus-5", reasoning: "auto" });
     expect(parseModelSpec("opus")).toEqual({ model: "opus", reasoning: "high" });
     // a :suffix that is not a reasoning level stays part of the model id
     expect(parseModelSpec("ollama/llama3:8b")).toEqual({ provider: "ollama", model: "llama3:8b", reasoning: "high" });

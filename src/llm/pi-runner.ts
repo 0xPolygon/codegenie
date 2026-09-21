@@ -18,6 +18,7 @@ import pLimit from "p-limit";
 import { createFileAuthStorage, createPiCredentialStore } from "../provider/provider-services.js";
 import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../provider/model-policy.js";
 import { getCodegeniePiModels, getPiEnvApiKey } from "../provider/pi-ai-models.js";
+import { assertReasoningSupported, modelThinkingLevels } from "../provider/reasoning.js";
 import { getCodegeniePaths } from "../config/paths.js";
 import { registerSecret, stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
@@ -228,6 +229,11 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       }
     });
   }
+  assertReasoningSupported(
+    { provider: model.provider, id: model.id, thinkingLevels: modelThinkingLevels(model.raw) },
+    opts.llmConfig.reasoning ?? "high",
+    "config_error"
+  );
 
   let modelCallSeq = 0;
   const nextModelCallId = (): string => `mc-${String(++modelCallSeq).padStart(6, "0")}`;

@@ -21,10 +21,14 @@ Or run without installing: `npx @0xsequence/codegenie --help`
 codegenie provider login anthropic --api-key   # Anthropic API key
 codegenie provider login openai-codex          # ChatGPT plan (browser OAuth)
 codegenie provider login openai --api-key      # OpenAI API key
+codegenie provider login openrouter --api-key  # OpenRouter API key setup
 
 # 2. Pick your default model (fuzzy-matched)
-codegenie provider use opus       # -> anthropic/claude-opus-5
-codegenie provider use gpt-5.5    # -> openai-codex/gpt-5.5
+codegenie provider use opus                      # -> anthropic/claude-opus-5
+codegenie provider use gpt-5.5                   # -> openai-codex/gpt-5.5
+codegenie provider use deepseek-v4.1-flash:max   # -> openrouter/deepseek/deepseek-v4.1-flash
+codegenie provider use glm-5.3-flash:max         # -> openrouter/z-ai/glm-5.3-flash
+
 
 # 3. Review your current branch
 codegenie review
@@ -58,7 +62,8 @@ Common options:
 codegenie review --depth light|normal|deep         # review budget & planner bias
 codegenie review --lens lang/go --lens core/tests  # restrict lenses for this run
 codegenie review --provider anthropic --model claude-opus-5   # one-run model override
-codegenie review --reasoning high                  # low | medium | high | xhigh | auto
+codegenie review --model claude-opus-5:max         # model[:reasoning] shorthand
+codegenie review --reasoning high                  # low | medium | high | xhigh | max | auto
 codegenie review --format json                     # machine-readable review object
 codegenie review --pr 123 --post-github-comments   # publish inline comments (explicit flag, never config)
 ```
@@ -91,9 +96,16 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}  # trusted base; PR head is fetched as review data
           fetch-depth: 0
-      - uses: 0xPolygon/codegenie@v0.5.7
+      - uses: 0xPolygon/codegenie@v0.5.8
         with:
-          model: "anthropic/claude-opus-5:high"
+          # Works with any model!
+          model: "openrouter/deepseek/deepseek-v4.1-flash:max"
+          # model: "openrouter/z-ai/glm-5.3-flash"
+          # model: "anthropic/claude-opus-5:high"
+
+          # Set the llm-api-key to the api key for the respective model provider.
+          # for example, for Claude, pass an Anthropic key, for OpenRouter models
+          # pass the OpenRouter API Key.
           llm-api-key: ${{ secrets.LLM_API_KEY }}
 ```
 
@@ -108,11 +120,12 @@ codegenie provider list                  # known providers and auth status
 codegenie provider login <provider>      # OAuth by default; --api-key to store a key
 codegenie provider models [query]        # list available models (e.g. `models gpt`)
 codegenie provider use <model>           # set the default by fuzzy model id
+codegenie provider use <model>:<level>   # ...and its reasoning level (e.g. opus:max)
 ```
 
 The full list of supported models — every provider, model id, context window, and reasoning levels — lives in [models.md](./models.md) (generated from the [models.dev](https://models.dev) registry; regenerate with `make models-list`).
 
-`provider use` fuzzy-matches: `use opus`, `use sonnet`, `use gpt-5.5` all resolve to a concrete provider/model pair and print what they picked. Credentials and defaults live under `~/.codegenie/`, never in the repository. Supported lanes include Anthropic (API key) and OpenAI via both the API and ChatGPT-plan Codex OAuth — all on each provider's current APIs.
+`provider use` fuzzy-matches: `use opus`, `use sonnet`, `use gpt-5.5` all resolve to a concrete provider/model pair and print what they picked (exact id first, then prefix, then whole-name tail, then substring; ties go to the later-listed id). A `:reasoning` suffix sets the level in the same step (`use deepseek-v4.1-flash:max`); a level the model does not advertise is rejected with the levels it does, and `:auto` clears the stored level. Credentials and defaults live under `~/.codegenie/`, never in the repository. Supported lanes include Anthropic (API key) and OpenAI via both the API and ChatGPT-plan Codex OAuth — all on each provider's current APIs.
 
 ## Configuration
 

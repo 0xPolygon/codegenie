@@ -460,6 +460,36 @@ describe("Phase 4 provider commands", () => {
     );
   });
 
+  it("finds models across providers even when the query is an unauthenticated provider ID", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: ["deepseek", "openrouter"],
+      envConfiguredProviders: ["openrouter"],
+      modelsByProvider: {
+        deepseek: [fakeModel("deepseek", "deepseek-direct", "DeepSeek direct")],
+        openrouter: [
+          fakeModel("openrouter", "deepseek/hosted", "DeepSeek hosted"),
+          fakeModel("openrouter", "unrelated", "Unrelated model")
+        ]
+      }
+    });
+    for (const query of ["deepseek", "DeepSeek"]) {
+      const output: string[] = [];
+      await runProviderCommand(["provider", "models", query], {
+        services, writeOut: (text) => output.push(text)
+      });
+      expect(output.join("")).toContain("deepseek/hosted");
+      expect(output.join("")).not.toContain("deepseek-direct");
+      expect(output.join("")).not.toContain("Unrelated model");
+    }
+    const output: string[] = [];
+    await runProviderCommand(["provider", "models", "--all", "deepseek"], {
+      services, writeOut: (text) => output.push(text)
+    });
+    expect(output.join("")).toContain("deepseek/hosted");
+    expect(output.join("")).toContain("deepseek-direct");
+    expect(output.join("")).not.toContain("Unrelated model");
+  });
+
   it("prints provider models for all providers when requested", async () => {
     const services = fakeProviderServices(tempDir());
     const output: string[] = [];
@@ -512,6 +542,70 @@ describe("Phase 4 provider commands", () => {
       defaultModel: "fake-large",
       defaultReasoning: "high"
     });
+  });
+
+  it("stores the :reasoning suffix from provider use and clears it with :auto", async () => {
+    const services = fakeProviderServices(tempDir());
+    services.authStorage.set("fake", { type: "api_key", apiKey: "fake-secret", createdAt: new Date(0).toISOString() });
+    const output: string[] = [];
+    const writeOut = (text: string): void => {
+      output.push(text);
+    };
+
+    await runProviderCommand(["provider", "use", "fake-large:medium"], { services, writeOut });
+    expect(output.at(-1)).toBe("default model set to fake/fake-large (fake large); reasoning set to medium\n");
+    expect(loadProviderSettings(services.paths)).toMatchObject({ defaultModel: "fake-large", defaultReasoning: "medium" });
+
+    await runProviderCommand(["provider", "use", "fake-large:auto"], { services, writeOut });
+    expect(output.at(-1)).toBe("default model set to fake/fake-large (fake large); reasoning override cleared\n");
+    expect(loadProviderSettings(services.paths)).toEqual({ defaultProvider: "fake", defaultModel: "fake-large" });
+  });
+
+  it("rejects a reasoning level the matched model does not advertise, naming the supported ones", async () => {
+    const services = fakeProviderServices(tempDir());
+    services.authStorage.set("fake", { type: "api_key", apiKey: "fake-secret", createdAt: new Date(0).toISOString() });
+
+    await expect(runProviderCommand(["provider", "use", "fake-large:xhigh"], { services })).rejects.toThrow(
+      "fake/fake-large does not support reasoning xhigh; supported levels: low, medium, high"
+    );
+    expect(loadProviderSettings(services.paths)).toEqual({});
+
+    // a made-up suffix on a real model is a level typo, answered with that model's levels
+    await expect(runProviderCommand(["provider", "use", "fake-large:mmm"], { services })).rejects.toThrow(
+      "unknown reasoning level mmm for fake/fake-large; supported levels: low, medium, high"
+    );
+    await expect(runProviderCommand(["provider", "use", "no-such-model:mmm"], { services })).rejects.toThrow(
+      "sorry cannot find model no-such-model:mmm."
+    );
+
+    // set-reasoning checks the same set against the stored default model
+    await runProviderCommand(["provider", "use", "fake-large"], { services, writeOut: () => {} });
+    await expect(runProviderCommand(["provider", "config", "set-reasoning", "max"], { services })).rejects.toThrow(
+      "fake/fake-large does not support reasoning max; supported levels: low, medium, high"
+    );
+    await expect(runProviderCommand(["provider", "config", "set-reasoning", "ultra"], { services })).rejects.toThrow(
+      "reasoning must be one of: low, medium, high, xhigh, max, auto"
+    );
+    expect(loadProviderSettings(services.paths)).toMatchObject({ defaultReasoning: "high" });
+  });
+
+  it("prefers the model whose whole tail matches over a longer name that merely contains the query", async () => {
+    const services = fakeProviderServices(tempDir(), {
+      modelsByProvider: {
+        fake: [
+          fakeModel("fake", "z-ai/glm-5.3-flash", "GLM 5.3 Flash"),
+          fakeModel("fake", "z-ai/glm-5.3-flashx", "GLM 5.3 FlashX")
+        ]
+      }
+    });
+    services.authStorage.set("fake", { type: "api_key", apiKey: "fake-secret", createdAt: new Date(0).toISOString() });
+    const output: string[] = [];
+
+    await runProviderCommand(["provider", "use", "glm-5.3-flash:high"], { services, writeOut: (text) => output.push(text) });
+    expect(output.join("")).toBe("default model set to fake/z-ai/glm-5.3-flash (GLM 5.3 Flash); reasoning set to high\n");
+
+    await runProviderCommand(["provider", "use", "flashx"], { services, writeOut: (text) => output.push(text) });
+    expect(output.at(-1)).toContain("fake/z-ai/glm-5.3-flashx");
   });
 
   it("matches provider use queries after removing dashes and dots", async () => {
@@ -894,18 +988,18 @@ describe("Phase 4 provider commands", () => {
     await runProviderCommand(["provider", "models", "--all"], { services, writeOut });
     await runProviderCommand(["provider", "config", "set-model", "fake", "fake-large"], { services, writeOut });
     await runProviderCommand(["provider", "config", "set-depth", "deep"], { services, writeOut });
-    await runProviderCommand(["provider", "config", "set-reasoning", "xhigh"], { services, writeOut });
+    await runProviderCommand(["provider", "config", "set-reasoning", "medium"], { services, writeOut });
     await runProviderCommand(["provider", "config"], { services, writeOut });
     await runProviderCommand(["provider", "config", "set-reasoning", "auto"], { services, writeOut });
 
     const printed = output.join("");
     expect(printed).toContain("stored credentials for fake");
-    expect(printed).toContain("⭐ 🧞 You're using fake fake-large xhigh\n\nProvider configuration:");
+    expect(printed).toContain("⭐ 🧞 You're using fake fake-large medium\n\nProvider configuration:");
     expect(printed).toContain("Provider configuration:");
     expect(printed).toMatch(/provider\s+fake \(settings\)/u);
     expect(printed).toMatch(/model\s+fake-large \(settings\)/u);
-    expect(printed).toMatch(/reasoning\s+xhigh \(settings\)/u);
-    expect(printed).toContain("codegenie provider config set-reasoning <low|medium|high|xhigh|auto>");
+    expect(printed).toMatch(/reasoning\s+medium \(settings\)/u);
+    expect(printed).toContain("codegenie provider config set-reasoning <low|medium|high|xhigh|max|auto>");
     expect(printed).toMatch(/\* fake large\s+fake-large\s+100k context\s+low, medium, high/u);
     expect(printed).not.toContain("super-secret-provider-key");
     expect(loadProviderSettings(services.paths)).toEqual({

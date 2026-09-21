@@ -5,6 +5,7 @@ import {
   codegenieConfigSchema,
   defaultConfig,
   rawConfigSchema,
+  REASONING_LEVELS,
   reasoningLevelSchema,
   type RawCodegenieConfig
 } from "./schema.js";
@@ -451,7 +452,7 @@ function applyEnvironment(
         context: {
           key: "CODEGENIE_REASONING",
           value: env.CODEGENIE_REASONING,
-          allowed: ["low", "medium", "high", "xhigh"]
+          allowed: [...REASONING_LEVELS]
         }
       });
     }
