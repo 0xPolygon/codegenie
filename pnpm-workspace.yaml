@@ -1,5 +1,6 @@
 minimumReleaseAgeExclude:
   - '@earendil-works/pi-ai'
+  - '@earendil-works/pi-telemetry@0.86.1'
 
 # tree-sitter-solidity mis-spells its optional-peer metadata key as
 # `tree_sitter`, so npm reads `tree-sitter` as a *required* peer, installs the
