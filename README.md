@@ -4,6 +4,8 @@
 
 It is not a chatbot pointed at a diff. It is a multi-staged code review harness: a staged pipeline where deterministic code owns the guarantees (coverage, anchoring, verification, dedup, budgets, telemetry) and LLM agents do the judgment work inside each stage. codegenie is built on pi AI library and tree-sitter language parser to offer the harness more powerful tools to traverse code more efficiently.
 
+The public site source is in [`site/`](./site). GitHub Pages publishes it to https://0xpolygon.github.io/codegenie/.
+
 ## Install
 
 ```bash
