@@ -384,6 +384,9 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             ? { type: "tool" as const, name: submitTool.name }
             : "auto";
           let providerResult: ProviderCallResult;
+          const investigationTimeout = !forceFinalize && repositoryTools.length > 0
+            ? timeoutSignal(taskTimeout.signal, Math.max(0, softDeadlineAt - Date.now()))
+            : undefined;
           try {
             providerResult = await completeWithCache({
               opts: runOpts,
@@ -396,8 +399,9 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               toolChoice,
               providerLimit,
               nextModelCallId,
-              taskSignal: taskTimeout.signal,
-              taskTimedOut: taskTimeout.timedOut,
+              taskSignal: investigationTimeout?.signal ?? taskTimeout.signal,
+              taskTimedOut: () => taskTimeout.timedOut() || investigationTimeout?.timedOut() === true,
+              deadlineSource: investigationTimeout ? "investigation_soft_deadline" : "investigation_finalization",
               providerPromptCache,
               budgetExempt: budgetForceFinalize,
               finalizeMode,
@@ -406,6 +410,19 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               compositionAttempts
             });
           } catch (cause) {
+            if (investigationTimeout?.timedOut() && !taskTimeout.signal.aborted && !runOpts.runSignal.aborted) {
+              forceFinalize = true;
+              softDeadlineFinalize = true;
+              opts.telemetry.event({
+                stage: request.stage, level: "info", message: "investigation_deadline_handoff",
+                data: { ...request.telemetryContext, interruptedKind: kind,
+                  retainedMessages: messages.length, finalizationGraceMs: graceMs,
+                  partialOutputDiscarded: true, reasoning: opts.llmConfig.reasoning ?? "high" }
+              });
+              queueForcedFinalizePrompt({ opts, request, messages, submitToolName: submitTool.name,
+                reason: "soft_deadline", candidateDrafted });
+              continue;
+            }
             if (!forceFinalize && isBudgetExhaustedError(cause) && messages.length > 1) {
               forceFinalize = true;
               budgetForceFinalize = true;
@@ -421,6 +438,8 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             }
             recordFinalArgumentRepairOutcome("not_dispatched");
             throw cause;
+          } finally {
+            investigationTimeout?.cleanup();
           }
           const message = providerResult.message;
           const candidateDraftedBeforeSubmit = candidateDrafted;
@@ -567,7 +586,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           }
 
           if (forceFinalize) {
-            if (!schemaRepairUsed && !finalizeSubmitRetryUsed) {
+            if (!schemaRepairUsed && !finalizeSubmitRetryUsed && !softDeadlineFinalize) {
               finalizeSubmitRetryUsed = true;
               recordFinalizeMissingSubmitRetry(opts, request, submitTool.name, kind, toolCalls);
               messages.push({
@@ -798,7 +817,7 @@ function queueForcedFinalizePrompt(input: {
     : input.reason === "tool_budget_exhausted"
       ? `Tool budget is exhausted. Call ${input.submitToolName} now with the best schema-valid result supported by the evidence already gathered. ${noResultInstruction(input.request)}`
       : input.reason === "soft_deadline"
-        ? `The review pass time budget is exhausted. Call ${input.submitToolName} now with the best schema-valid result supported by the evidence already gathered. Do not request more repository tools. ${noResultInstruction(input.request)}`
+        ? `The investigation time budget is exhausted. Any unfinished streamed response was discarded and is not evidence. Use only the supplied context and completed investigation results. Call ${input.submitToolName} now with the best schema-valid result supported by the evidence already gathered. Do not request more repository tools. ${noResultInstruction(input.request)}`
         : `Finish now by calling ${input.submitToolName} with schema-valid arguments. Do not answer in plain text or call other tools. ${noResultInstruction(input.request)}`;
   input.messages.push({ role: "user", content, timestamp: 0 });
   recordFinalizeStart(
@@ -990,6 +1009,7 @@ type CompleteWithCacheInput = {
   finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
   protocolFlags?: { providerProtocolRecorded: boolean; downgradeWarned: boolean };
   compositionAttempts: { used: number };
+  deadlineSource?: string;
 };
 
 const COMPOSITION_ATTEMPT_TIMEOUT_MS = 180_000;
@@ -1004,7 +1024,7 @@ async function completeWithCache(input: CompleteWithCacheInput): Promise<Provide
       return await completeWithCacheAttempt(input);
     } catch (cause) {
       if (input.taskTimedOut() || input.opts.runSignal.aborted) {
-        recordDeadline(input, input.opts.runSignal.aborted ? "overall_review_or_cancellation" : "investigation_finalization");
+        recordDeadline(input, input.opts.runSignal.aborted ? "overall_review_or_cancellation" : input.deadlineSource ?? "investigation_finalization");
       }
       throw cause;
     }
@@ -1320,7 +1340,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       const durationMs = Date.now() - startedAt;
       const providerFailure = providerFailureFromMessage(message, taskTimedOut());
       if (providerFailure) {
-        const retry = classifyProviderRetry(providerFailure.cause, attempt);
+        const retry = taskTimedOut()
+          ? { retryable: false, reason: "task_deadline_exhausted" }
+          : classifyProviderRetry(providerFailure.cause, attempt);
         recordModelCall(opts, request, model, message, {
           callId,
           protocol,
@@ -1409,7 +1431,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       reportAttemptUsage(opts, request.stage);
       lastError = cause;
       const status = taskTimedOut() ? "timeout" : errorStatus(cause);
-      const retry = classifyProviderRetry(cause, attempt);
+      const retry = taskTimedOut()
+        ? { retryable: false, reason: "task_deadline_exhausted" }
+        : classifyProviderRetry(cause, attempt);
       recordErroredModelCall(opts, request, model, {
         callId,
         protocol,

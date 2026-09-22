@@ -1,7 +1,32 @@
+import { CodegenieError } from "../src/util/errors.js";
+import { isRecoverableWorkerError } from "../src/pipeline/pipeline-utils.js";
 import { describe, expect, it, vi } from "vitest";
 import { createWorkerRunner } from "../src/pipeline/worker-runner.js";
 
 describe("worker repair allowance and cancellation cleanup", () => {
+  it.each(["timeout", "llm_schema_invalid"] as const)("records the scheduler decision for %s", async (failure) => {
+    const event = vi.fn();
+    const runner = createWorkerRunner({ concurrency: 1, telemetry: { event }, isRetriableError: isRecoverableWorkerError });
+    let calls = 0;
+    const result = await runner.schedule([{
+      stage: 7, priority: "normal", timeoutMs: 1000, retryOnTransient: true,
+      run: async () => {
+        if (++calls === 1) throw new CodegenieError(failure === "timeout" ? "llm_call_failed" : failure,
+          "failed", { recoverable: true, context: { reason: failure } });
+        return "recovered";
+      }
+    }]);
+    expect(calls).toBe(failure === "timeout" ? 1 : 2);
+    expect(event).toHaveBeenCalledWith(expect.objectContaining({
+      message: "worker_retry_decision", data: expect.objectContaining({
+        retry: failure !== "timeout", scope: "full_worker",
+        reason: failure === "timeout" ? "pass_deadline_exhausted" : "restart_after_schema_failure"
+      })
+    }));
+    expect(result[0]?.outcome).toBe(failure === "timeout" ? "failed" : "completed");
+    if (failure !== "timeout") expect(event).toHaveBeenCalledWith(expect.objectContaining({ message: "worker_retry_recovered" }));
+  });
+
   it("allows repair past the investigation deadline without timing out the worker", async () => {
     vi.useFakeTimers();
     try {

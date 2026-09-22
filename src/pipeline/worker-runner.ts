@@ -1,3 +1,5 @@
+import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
+import { isCodegenieError } from "../util/errors.js";
 import pLimit from "p-limit";
 import type { CoverageLevel, ReviewPriority, ReviewStage } from "../types.js";
 import { finalizeGraceMs } from "../util/budget.js";
@@ -39,6 +41,7 @@ export interface WorkerRunner {
 }
 
 type WorkerRunnerOptions = {
+  telemetry?: Pick<TelemetryRecorder, "event">;
   concurrency: number;
   checkpoint?: (stage: ReviewStage) => "ok" | "exhausted";
   signal?: AbortSignal | undefined;
@@ -91,7 +94,7 @@ export function createWorkerRunner(opts: WorkerRunnerOptions): WorkerRunner {
               exhausted = true;
               return { task, outcome: "not_dispatched", attempts: 0 };
             }
-            return runTask(task, root.signal, opts.isRetriableError ?? (() => false), opts.checkpoint);
+            return runTask(task, root.signal, opts.isRetriableError ?? (() => false), opts.checkpoint, opts.telemetry);
           })
         )
       );
@@ -130,22 +133,39 @@ async function runTask<T>(
   task: AssignedWorkerTask<T>,
   rootSignal: AbortSignal,
   isRetriableError: (error: unknown) => boolean,
-  checkpoint: ((stage: ReviewStage) => "ok" | "exhausted") | undefined
+  checkpoint: ((stage: ReviewStage) => "ok" | "exhausted") | undefined,
+  telemetry: WorkerRunnerOptions["telemetry"]
 ): Promise<WorkerOutcome<T>> {
   const maxAttempts = task.retryOnTransient ? 2 : 1;
   let lastOutcome: WorkerOutcome<T> | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (attempt > 1 && checkpoint?.(task.stage) === "exhausted") {
+      telemetry?.event({ stage: task.stage, level: "info", message: "worker_retry_decision",
+        data: { workerId: task.workerId, packetId: task.packetId, candidateId: task.candidateId,
+          scope: "full_worker", attempt, maxAttempts, retry: false, reason: "budget_exhausted_before_retry" } });
       return { task, outcome: "not_dispatched", attempts: attempt - 1, error: lastOutcome?.error };
     }
     const outcome = await runTaskOnce(task, rootSignal, attempt);
     if (outcome.outcome === "completed") {
+      if (attempt > 1) telemetry?.event({ stage: task.stage, level: "info", message: "worker_retry_recovered",
+        data: { workerId: task.workerId, packetId: task.packetId, candidateId: task.candidateId, attempt, scope: "full_worker" } });
       return outcome;
     }
     lastOutcome = outcome;
-    if (!task.retryOnTransient || outcome.outcome !== "failed" || !isRetriableError(outcome.error)) {
-      return outcome;
-    }
+    const error = isCodegenieError(outcome.error) ? outcome.error : undefined;
+    const retry = task.retryOnTransient && outcome.outcome === "failed"
+      && isRetriableError(outcome.error) && attempt < maxAttempts;
+    const reason = outcome.outcome === "timed_out" || error?.context?.reason === "timeout"
+      ? "pass_deadline_exhausted"
+      : outcome.outcome === "cancelled" ? "cancelled"
+      : !task.retryOnTransient ? "retry_disabled"
+      : attempt >= maxAttempts ? "attempts_exhausted"
+      : retry ? error?.code === "llm_schema_invalid" ? "restart_after_schema_failure" : "restart_after_transient_failure"
+      : "non_retryable_failure";
+    telemetry?.event({ stage: task.stage, level: "info", message: "worker_retry_decision",
+      data: { workerId: task.workerId, packetId: task.packetId, candidateId: task.candidateId,
+        scope: "full_worker", attempt, maxAttempts, retry, reason, outcome: outcome.outcome } });
+    if (!retry) return outcome;
   }
   if (lastOutcome) {
     return lastOutcome;

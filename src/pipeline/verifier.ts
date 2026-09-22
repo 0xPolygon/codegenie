@@ -302,6 +302,7 @@ export async function verifyFindings(
     repairFailed: 0
   };
   const workerRunner = createWorkerRunner({
+    telemetry,
     concurrency: config.review.concurrency,
     signal: opts.signal,
     isRetriableError: isRecoverableWorkerError,

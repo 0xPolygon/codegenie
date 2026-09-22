@@ -920,7 +920,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     clearRegisteredSecretsForTests();
   });
 
-  it("uses one timeout signal across provider and repository tool steps", async () => {
+  it("uses a separate investigation signal while tools and finalization share the hard deadline", async () => {
     const providerSignals: AbortSignal[] = [];
     const toolSignals: AbortSignal[] = [];
     const tool: ToolDefinition = {
@@ -971,8 +971,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
 
     expect(providerSignals).toHaveLength(2);
-    expect(new Set(providerSignals).size).toBe(1);
-    expect(toolSignals).toEqual([providerSignals[0]]);
+    expect(new Set(providerSignals).size).toBe(2);
+    expect(toolSignals).toEqual([providerSignals[1]]);
   });
 
   it("times out provider calls even when the adapter ignores the abort signal", async () => {
@@ -1043,8 +1043,11 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       complete: vi.fn(async (model, context, options) => {
         if (firstCall) {
           firstCall = false;
-          // Push past the 150ms soft deadline while staying inside soft+grace.
+          // Consume the scripted response before delaying; its late tool call
+          // must be discarded when the investigation is cancelled at 150ms.
+          const late = await baseComplete(model, context, options);
           await new Promise((resolve) => setTimeout(resolve, 200));
+          return late;
         }
         return baseComplete(model, context, options);
       })
@@ -1902,6 +1905,56 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it.each(["success", "finalize-timeout", "cancel"] as const)("hands a long investigation to bounded finalization: %s", async (mode) => {
+    vi.useFakeTimers();
+    try {
+      const telemetry = fakeTelemetry();
+      const worker = new AbortController();
+      const adapter = scriptedAdapter([]);
+      let calls = 0;
+      let investigationSignal: AbortSignal | undefined;
+      let finalContext = "";
+      adapter.complete = vi.fn(async (_model, context, options) => {
+        calls++;
+        if (calls === 1) return assistant([{ type: "toolCall", id: "read", name: "read_range",
+          arguments: { path: "src/a.ts", startLine: 1, endLine: 3 } }]);
+        if (calls === 2) {
+          investigationSignal = options.signal;
+          return new Promise<PiAssistantMessage>(() => {});
+        }
+        finalContext = JSON.stringify(context.messages);
+        expect((context.tools as Array<{ name: string }>).map((tool) => tool.name)).toEqual(["submit_review"]);
+        if (mode === "finalize-timeout") return new Promise<PiAssistantMessage>(() => {});
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        return assistant([validSubmitReviewCall("final")]);
+      });
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      const result = runner.runStructured({ ...submitReviewRequest("handoff"), timeoutMs: 1000,
+        signal: worker.signal,
+        tools: buildRepositoryToolDefinitions({ ...fakeRepositoryTools(), readRange: async () => ({ text: "COMPLETED_EVIDENCE", meta: { backend: "text", precision: "exact", degraded: false } }) }),
+        toolBudget: { maxToolCalls: 10, maxInvestigationRounds: 10, maxResultChars: 10000 }
+      });
+      const checked = mode === "success" ? expect(result).resolves.toHaveProperty("findings")
+        : expect(result).rejects.toMatchObject({ code: "llm_call_failed" });
+      await vi.advanceTimersByTimeAsync(mode === "cancel" ? 500 : 1000);
+      if (mode === "cancel") worker.abort();
+      else {
+        expect(investigationSignal?.aborted).toBe(true);
+        expect(finalContext).toContain("COMPLETED_EVIDENCE");
+        expect(finalContext).toContain("unfinished streamed response was discarded");
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+      await checked;
+      expect(calls).toBe(mode === "cancel" ? 2 : 3);
+      expect(telemetry.events.filter((event) => event.message === "investigation_deadline_handoff"))
+        .toHaveLength(mode === "cancel" ? 0 : 1);
+    } finally { vi.useRealTimers(); }
   });
 
   it("propagates worker cancellation into a repair and ignores late provider results", async () => {

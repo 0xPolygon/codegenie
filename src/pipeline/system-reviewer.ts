@@ -124,6 +124,7 @@ export async function runTargetedSystemReviews(
     }
   });
   const workerRunner = createWorkerRunner({
+    telemetry,
     concurrency: Math.min(config.review.concurrency, MAX_SYSTEM_REVIEW_TASKS),
     signal: opts.signal,
     isRetriableError: isRecoverableWorkerError,

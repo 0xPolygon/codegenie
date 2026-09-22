@@ -81,6 +81,7 @@ export async function runLensPackets(
 ): Promise<PacketReviewResult[]> {
   telemetry.event({ stage: 7, level: "info", message: "stage_started", data: { packets: packets.length } });
   const workerRunner = createWorkerRunner({
+    telemetry,
     concurrency: config.review.concurrency,
     signal: opts.signal,
     isRetriableError: isRecoverableWorkerError,
