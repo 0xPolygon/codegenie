@@ -1,21 +1,25 @@
 import type { Api, Model, OpenAICompletionsCompat, OpenRouterRouting } from "@earendil-works/pi-ai";
 
-// Pin the DeepSeek model family on OpenRouter. Preserve Pi's catalog
+// Apply family-specific upstream routing on OpenRouter. Preserve Pi's catalog
 // capabilities, prices, and reasoning mappings.
 export function applyModelOverrides(model: Model<Api>): Model<Api> {
-  if (model.provider !== "openrouter" || !model.id.startsWith("deepseek/") || model.api !== "openai-completions") {
+  if (model.provider !== "openrouter" || model.api !== "openai-completions") {
     return model;
   }
+  const deepseek = model.id.startsWith("deepseek/");
+  const upstreams = deepseek ? ["deepseek"]
+    : model.id.startsWith("z-ai/") ? ["together", "fireworks", "cloudflare"] : undefined;
+  if (!upstreams) return model;
   const compat = model.compat as OpenAICompletionsCompat | undefined;
   return {
     ...model,
     compat: {
       ...compat,
-      thinkingFormat: "openrouter",
+      ...(deepseek ? { thinkingFormat: "openrouter" as const } : {}),
       openRouterRouting: {
         ...compat?.openRouterRouting,
-        only: ["deepseek"],
-        order: ["deepseek"],
+        only: [...upstreams],
+        order: [...upstreams],
         allow_fallbacks: false
       }
     }

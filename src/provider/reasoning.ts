@@ -3,7 +3,7 @@ import { REASONING_LEVELS } from "../config/schema.js";
 import type { ReasoningLevel } from "../types.js";
 import { CodegenieError, type CodegenieErrorCode } from "../util/errors.js";
 
-// `<low|medium|high|xhigh|max|auto>` — the one usage string every reasoning
+// `<minimal|low|medium|high|xhigh|max|auto>` — the one usage string every reasoning
 // argument prints, so help text cannot drift from the schema.
 export const REASONING_USAGE = `<${[...REASONING_LEVELS, "auto"].join("|")}>`;
 
@@ -55,6 +55,22 @@ export function assertReasoningSupported(
     `${model.provider}/${model.id} does not support reasoning ${reasoning}; supported levels: ${model.thinkingLevels.join(", ")}`,
     { context: { provider: model.provider, model: model.id, reasoning, supported: [...model.thinkingLevels] } }
   );
+}
+
+// CLI selection preserves native levels and normalizes only unsupported ones.
+// This is separate from Pi's thinkingLevelMap: it selects a supported public
+// level without changing the provider's wire representation or capabilities.
+const REASONING_ALIASES: Record<ReasoningLevel, ReasoningLevel> = {
+  minimal: "low", low: "low", medium: "high", high: "high", xhigh: "max", max: "max"
+};
+
+export function normalizeReasoningLevel(requested: ReasoningLevel, supported: readonly string[]): ReasoningLevel {
+  if (supported.includes(requested)) return requested;
+  const levels = REASONING_LEVELS.filter(level => supported.includes(level));
+  if (levels.length === 0) return requested;
+  const preferred = REASONING_ALIASES[requested];
+  const index = REASONING_LEVELS.indexOf(preferred);
+  return levels.find(level => REASONING_LEVELS.indexOf(level) >= index) ?? levels[levels.length - 1]!;
 }
 
 export type ReasoningPolicy = "configured" | "one_level_lower" | "lowest_supported";

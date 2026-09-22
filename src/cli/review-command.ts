@@ -90,7 +90,7 @@ export function parseReviewCommand(
     .option("--lens <lens>", "review lens to enable for this run", collect, [])
     .option("--provider <provider>", "provider override")
     .option("--model <model>", "model override, optionally with a :reasoning suffix (e.g. claude-opus-5:max)")
-    .option("--reasoning <level>", "reasoning level: low, medium, high, xhigh, max, or auto")
+    .option("--reasoning <level>", "reasoning level: minimal, low, medium, high, xhigh, max, or auto")
     .option("--format <format>", "output format: markdown or json", "markdown")
     .option("--post-github-comments", "post inline comments to GitHub for --pr runs")
     .option("--ci", "disable interactive progress output for CI-friendly logs")

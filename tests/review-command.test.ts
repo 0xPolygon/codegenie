@@ -90,7 +90,7 @@ describe("review command", () => {
       parseReviewCommand(["review", "feature", "--model", "claude-opus-5:max", "--reasoning", "low"], testContext())
     ).toThrow("pass reasoning as either --model <model>:<reasoning> or --reasoning, not both");
     expect(() => parseReviewCommand(["review", "feature", "--reasoning", "ultra"], testContext())).toThrow(
-      "--reasoning must be one of: low, medium, high, xhigh, max, auto"
+      "--reasoning must be one of: minimal, low, medium, high, xhigh, max, auto"
     );
   });
 

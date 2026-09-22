@@ -25,7 +25,9 @@ describe("model routing overrides", () => {
     { provider: "deepseek" },
     { id: "other/deepseek-v4.1-flash" },
     { id: "deepseek-other/model" },
-    { id: "z-ai/glm-5.3" },
+    { id: "z-ai-other/glm-5.3" },
+    { id: "anthropic/claude-opus-4" },
+    { provider: "zai", id: "z-ai/glm-5.3-flash" },
     { api: "openai-responses" as const }
   ])("leaves unmatched models alone: %j", (change) => {
     const model = { ...catalogModel(), ...change };
@@ -41,13 +43,31 @@ describe("model routing overrides", () => {
     expect(result.thinkingLevelMap).toEqual(original.thinkingLevelMap);
   });
 
-  it.each([false, true])("serializes routing in the actual Pi request body (forced submit: %s)", async (forced) => {
+  it.each(["z-ai/glm-5.3-flash", "z-ai/glm-5.3", "z-ai/future-model:free"])("routes OpenRouter Z.AI models without changing capabilities: %s", id => {
+    const original: Model<"openai-completions"> = { ...catalogModel(), api: "openai-completions", id,
+      compat: { supportsDeveloperRole: false, thinkingFormat: "openrouter", openRouterRouting: { data_collection: "deny", only: ["old"], allow_fallbacks: true } } };
+    const before = structuredClone(original);
+    const result = applyModelOverrides(original);
+    expect(modelProviderRouting(result)).toEqual({ only: ["together", "fireworks", "cloudflare"], order: ["together", "fireworks", "cloudflare"], allow_fallbacks: false, data_collection: "deny" });
+    expect(result).toEqual({ ...before, compat: { ...before.compat, openRouterRouting: modelProviderRouting(result) } });
+    expect(original).toEqual(before);
+    expect(applyModelOverrides(result)).toEqual(result);
+    expect(requiresAutomaticSubmitToolChoice(result)).toBe(false);
+  });
+
+  it.each([
+    ["deepseek/deepseek-v4.1-flash", false], ["deepseek/deepseek-v4.1-flash", true],
+    ["z-ai/glm-5.3-flash", false], ["z-ai/glm-5.3-flash", true]
+  ] as const)("serializes %s routing in the actual Pi request body (forced submit: %s)", async (modelId, forced) => {
+    const expectedRouting = modelId.startsWith("deepseek/") ? routing : {
+      only: ["together", "fireworks", "cloudflare"], order: ["together", "fireworks", "cloudflare"], allow_fallbacks: false
+    };
     vi.stubEnv("OPENROUTER_API_KEY", "test-only-key");
     try {
-      const catalogBefore = structuredClone(catalogModel());
+      const catalogBefore = structuredClone(getCodegeniePiModels().getModel("openrouter", modelId));
       const adapter = createRealPiAiAdapter();
-      const model = adapter.resolveModel({ provider: "openrouter", model: "deepseek/deepseek-v4.1-flash" })!;
-      expect(modelProviderRouting(model.raw)).toMatchObject(routing);
+      const model = adapter.resolveModel({ provider: "openrouter", model: modelId })!;
+      expect(modelProviderRouting(model.raw)).toEqual(expectedRouting);
       let payload: unknown;
       // Inspect Pi's serialized request before transport; never send a paid call.
       await adapter.complete(model, { messages: [{ role: "user", content: "test", timestamp: 0 }], tools: [{ name: "submit_review", description: "Submit", parameters: { type: "object", properties: {} } }] }, {
@@ -55,9 +75,9 @@ describe("model routing overrides", () => {
         ...(forced ? { toolChoice: { type: "tool", name: "submit_review" } } : {}),
         onPayload: (body: unknown) => { payload = body; throw new Error("stop before network"); }
       });
-      expect(payload).toMatchObject({ model: model.id, provider: routing, stream: true, reasoning: { effort: "low" } });
+      expect(payload).toMatchObject({ model: model.id, provider: expectedRouting, stream: true, reasoning: { effort: "low" } });
       expect((payload as { provider: object }).provider).not.toHaveProperty("require_parameters");
-      if (forced) expect(payload).toMatchObject({ tool_choice: "auto" });
+      if (forced) expect(payload).toMatchObject({ tool_choice: modelId.startsWith("deepseek/") ? "auto" : { type: "function", function: { name: "submit_review" } } });
       expect((payload as { tools: unknown[] }).tools).toHaveLength(1);
       expect(getCodegeniePiModels().getModel(model.provider, model.id)).toEqual(catalogBefore);
     } finally {

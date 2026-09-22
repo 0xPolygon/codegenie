@@ -36,6 +36,8 @@ codegenie review
 
 Codegenie's built-in model overrides pin all OpenRouter models with IDs starting with `deepseek/` to the `deepseek` upstream with `only`/`order` and `allow_fallbacks: false`. For this pinned model family, submit calls expose only the submit tool and use `tool_choice: "auto"`, to accommodate the named forced-tool rejection observed on DeepSeek V4.1 Flash. Returned submissions still undergo strict validation, and missing submissions have bounded retries. These [OpenRouter routing preferences](https://openrouter.ai/docs/guides/routing/provider-selection) apply to every stage, including repairs; Codegenie's stage-specific reasoning levels still apply. Requests cannot fall back to another upstream if DeepSeek is unavailable. Routing is included in debug request traces and local model-call cache keys. The overrides live in `src/provider/models-override.ts`.
 
+OpenRouter models with IDs starting with `z-ai/` use `only: ["together", "fireworks", "cloudflare"]`, `order: ["together", "fireworks", "cloudflare"]`, and `allow_fallbacks: false`. This routing override applies across stages, including repairs, and preserves the model's reasoning and tool-choice behavior. It does not add `require_parameters`.
+
 In our trails-api eval, pinning OpenRouter to DeepSeek's own upstream together with the automatic submit-tool compatibility setting produced significantly better completion and performance: DeepSeek V4.1 Flash at `max` finished run 79 in **8m23s**, reviewed all **10/10 hunks**, found the expected bug, and passed with **zero timeouts**. Before these changes, run 77 took **42m19s** and failed completeness with seven unreviewed hunks. Composition dropped from almost six minutes (including a timed-out attempt) to **20 seconds**. Recorded cost rose from about **$0.14 to $0.26**; timed-out calls in run 77 had incomplete usage reporting. This is one eval comparison, not a guarantee for every DeepSeek model or workload: run 79 also used the fallback planner with normal coverage rather than run 77's mostly deep coverage, and still needed schema repairs. The override targets the `deepseek/` model namespace on OpenRouter; it does not call DeepSeek's API directly or change other model families.
 
 The report prints to stdout as Markdown. A review with findings is a *successful* review: the exit code is `0` either way.
@@ -67,7 +69,7 @@ codegenie review --depth light|normal|deep         # review budget & planner bia
 codegenie review --lens lang/go --lens core/tests  # restrict lenses for this run
 codegenie review --provider anthropic --model claude-opus-5   # one-run model override
 codegenie review --model claude-opus-5:max         # model[:reasoning] shorthand
-codegenie review --reasoning high                  # low | medium | high | xhigh | max | auto
+codegenie review --reasoning high                  # minimal | low | medium | high | xhigh | max | auto
 codegenie review --format json                     # machine-readable review object
 codegenie review --pr 123 --post-github-comments   # publish inline comments (explicit flag, never config)
 ```
@@ -129,7 +131,7 @@ codegenie provider use <model>:<level>   # ...and its reasoning level (e.g. opus
 
 The full list of supported models — every provider, model id, context window, and reasoning levels — lives in [models.md](./models.md) (generated from the [models.dev](https://models.dev) registry; regenerate with `make models-list`).
 
-`provider use` fuzzy-matches: `use opus`, `use sonnet`, `use gpt-5.5` all resolve to a concrete provider/model pair and print what they picked (exact id first, then prefix, then whole-name tail, then substring; ties go to the later-listed id). A `:reasoning` suffix sets the level in the same step (`use deepseek-v4.1-flash:max`); a level the model does not advertise is rejected with the levels it does, and `:auto` clears the stored level. Credentials and defaults live under `~/.codegenie/`, never in the repository. Supported lanes include Anthropic (API key) and OpenAI via both the API and ChatGPT-plan Codex OAuth — all on each provider's current APIs.
+`provider use` fuzzy-matches: `use opus`, `use sonnet`, `use gpt-5.5` all resolve to a concrete provider/model pair and print what they picked (exact id first, then prefix, then whole-name tail, then substring; ties go to the later-listed id). A `:reasoning` suffix sets the level in the same step (`use deepseek-v4.1-flash:max`); an unsupported level is normalized to a supported one and the command prints and saves the effective level. Exact supported levels are preserved. Fallback preferences are `minimal → low`, `medium → high`, and `xhigh → max`; if that target is unavailable, choose the next supported level above it, or the highest available. This also applies to `provider config set-reasoning`; `:auto` clears the stored level. Models with no advertised reasoning levels retain the existing behavior. Credentials and defaults live under `~/.codegenie/`, never in the repository. Supported lanes include Anthropic (API key) and OpenAI via both the API and ChatGPT-plan Codex OAuth — all on each provider's current APIs.
 
 ## Configuration
 

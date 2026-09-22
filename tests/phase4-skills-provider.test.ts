@@ -561,14 +561,16 @@ describe("Phase 4 provider commands", () => {
     expect(loadProviderSettings(services.paths)).toEqual({ defaultProvider: "fake", defaultModel: "fake-large" });
   });
 
-  it("rejects a reasoning level the matched model does not advertise, naming the supported ones", async () => {
+  it("normalizes unsupported reasoning levels but rejects unknown suffixes", async () => {
     const services = fakeProviderServices(tempDir());
     services.authStorage.set("fake", { type: "api_key", apiKey: "fake-secret", createdAt: new Date(0).toISOString() });
 
-    await expect(runProviderCommand(["provider", "use", "fake-large:xhigh"], { services })).rejects.toThrow(
-      "fake/fake-large does not support reasoning xhigh; supported levels: low, medium, high"
-    );
-    expect(loadProviderSettings(services.paths)).toEqual({});
+    const output: string[] = [];
+    await runProviderCommand(["provider", "use", "fake-large:xhigh"], { services, writeOut: text => output.push(text) });
+    expect(output.join("")).toContain("reasoning set to high (normalized from xhigh)");
+    expect(loadProviderSettings(services.paths)).toMatchObject({ defaultReasoning: "high" });
+    await runProviderCommand(["provider", "use", "fake-large:minimal"], { services, writeOut: () => {} });
+    expect(loadProviderSettings(services.paths)).toMatchObject({ defaultReasoning: "low" });
 
     // a made-up suffix on a real model is a level typo, answered with that model's levels
     await expect(runProviderCommand(["provider", "use", "fake-large:mmm"], { services })).rejects.toThrow(
@@ -580,11 +582,10 @@ describe("Phase 4 provider commands", () => {
 
     // set-reasoning checks the same set against the stored default model
     await runProviderCommand(["provider", "use", "fake-large"], { services, writeOut: () => {} });
-    await expect(runProviderCommand(["provider", "config", "set-reasoning", "max"], { services })).rejects.toThrow(
-      "fake/fake-large does not support reasoning max; supported levels: low, medium, high"
-    );
+    await runProviderCommand(["provider", "config", "set-reasoning", "max"], { services, writeOut: text => output.push(text) });
+    expect(output.at(-1)).toContain("default reasoning set to high (normalized from max)");
     await expect(runProviderCommand(["provider", "config", "set-reasoning", "ultra"], { services })).rejects.toThrow(
-      "reasoning must be one of: low, medium, high, xhigh, max, auto"
+      "reasoning must be one of: minimal, low, medium, high, xhigh, max, auto"
     );
     expect(loadProviderSettings(services.paths)).toMatchObject({ defaultReasoning: "high" });
   });
@@ -999,7 +1000,7 @@ describe("Phase 4 provider commands", () => {
     expect(printed).toMatch(/provider\s+fake \(settings\)/u);
     expect(printed).toMatch(/model\s+fake-large \(settings\)/u);
     expect(printed).toMatch(/reasoning\s+medium \(settings\)/u);
-    expect(printed).toContain("codegenie provider config set-reasoning <low|medium|high|xhigh|max|auto>");
+    expect(printed).toContain("codegenie provider config set-reasoning <minimal|low|medium|high|xhigh|max|auto>");
     expect(printed).toMatch(/\* fake large\s+fake-large\s+100k context\s+low, medium, high/u);
     expect(printed).not.toContain("super-secret-provider-key");
     expect(loadProviderSettings(services.paths)).toEqual({

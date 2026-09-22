@@ -24,7 +24,7 @@ import { getCodegeniePiModels, getPiEnvApiKey } from "./pi-ai-models.js";
 import { loadProviderSettings, saveProviderSettings } from "./provider-settings.js";
 import {
   REASONING_USAGE,
-  assertReasoningSupported,
+  normalizeReasoningLevel,
   modelThinkingLevels,
   parseReasoningLevel,
   splitReasoningSuffix
@@ -412,19 +412,19 @@ function commandUse(args: string[], services: ProviderServices, writeOut: (text:
   if (!match) {
     throw unknownModelError(query, services);
   }
-  const reasoning = spec.reasoning ?? "high";
+  const requested = spec.reasoning ?? "high";
+  const reasoning = requested === "auto" ? "auto" : normalizeReasoningLevel(requested, match.thinkingLevels);
   const settings = loadProviderSettings(services.paths);
   const next: ProviderSettings = { ...settings, defaultProvider: match.provider, defaultModel: match.id };
   if (reasoning === "auto") {
     delete next.defaultReasoning;
   } else {
-    assertReasoningSupported(match, reasoning);
     next.defaultReasoning = reasoning;
   }
   saveProviderSettings(next, services.paths);
   writeOut(
     `default model set to ${match.provider}/${match.id} (${match.name}); ` +
-    `${reasoning === "auto" ? "reasoning override cleared" : `reasoning set to ${reasoning}`}\n`
+    `${reasoning === "auto" ? "reasoning override cleared" : `reasoning set to ${reasoning}${reasoning !== requested ? ` (normalized from ${requested})` : ""}`}\n`
   );
 }
 
@@ -582,11 +582,9 @@ async function commandConfig(
       const current = settings.defaultProvider !== undefined && settings.defaultModel !== undefined
         ? services.modelRegistry.listModels(settings.defaultProvider).find((model) => model.id === settings.defaultModel)
         : undefined;
-      if (current !== undefined) {
-        assertReasoningSupported(current, reasoning);
-      }
-      saveProviderSettings({ ...settings, defaultReasoning: reasoning }, services.paths);
-      writeOut(`default reasoning set to ${reasoning}\n`);
+      const effective = normalizeReasoningLevel(reasoning, current?.thinkingLevels ?? []);
+      saveProviderSettings({ ...settings, defaultReasoning: effective }, services.paths);
+      writeOut(`default reasoning set to ${effective}${effective !== reasoning ? ` (normalized from ${reasoning})` : ""}\n`);
       return;
     }
     default:
