@@ -56,3 +56,21 @@ export function assertReasoningSupported(
     { context: { provider: model.provider, model: model.id, reasoning, supported: [...model.thinkingLevels] } }
   );
 }
+
+export type ReasoningPolicy = "configured" | "one_level_lower" | "lowest_supported";
+const ORDERED_REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+// Relative positions are model-local; they do not imply equal capability or
+// token budgets across providers. Unknown capabilities retain configuration.
+export function selectReasoningEffort(
+  configured: string,
+  supported: readonly string[],
+  policy: ReasoningPolicy
+): string {
+  if (policy === "configured") return configured;
+  const levels = ORDERED_REASONING_LEVELS.filter((level) => supported.includes(level));
+  if (levels.length === 0) return configured;
+  if (policy === "lowest_supported") return levels[0]!;
+  const index = levels.findIndex((level) => level === configured);
+  return index < 0 ? configured : levels[Math.max(0, index - 1)]!;
+}

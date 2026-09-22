@@ -37,6 +37,7 @@ import { buildRepositoryToolDefinitions } from "../src/llm/tool-definitions.js";
 import type { Logger, LogEvent, RepositoryTools, TelemetryEvent, ToolCallRecord } from "../src/types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
 import { stage7RecoverInvalidSubmit } from "../src/llm/stage7-submit-repair.js";
+import { recoverStringWrappedVerifierFinding, VERIFIER_SUBMIT_EXAMPLE } from "../src/llm/verifier-submit-repair.js";
 import type { LlmSchemaInvalidSubmitRecoveryInput } from "../src/llm/llm-runner.js";
 import { clearRegisteredSecretsForTests, registerSecret, stripCredentials } from "../src/telemetry/redaction.js";
 import type { ToolDefinition } from "../src/llm/llm-runner.js";
@@ -75,8 +76,8 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(submitToolNameForStage(8)).toBe("submit_system_review");
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
-    expect(SCHEMA_VERSIONS.submit_plan).toBe(5);
-    expect(SCHEMA_VERSIONS.submit_verdict).toBe(4);
+    expect(SCHEMA_VERSIONS.submit_plan).toBe(6);
+    expect(SCHEMA_VERSIONS.submit_verdict).toBe(6);
 
     const valid = {
       diffUnderstanding: { declaredIntent: "Small change", inferredBehavior: "The diff makes a small change." },
@@ -661,7 +662,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         runnerMessageVersion: "pi-runner-loop-v3",
         promptTemplateVersion: "debug-template",
         schemaName: "submit_review",
-        schemaVersion: 4,
+        schemaVersion: 5,
         toolChoice: "auto",
         messageCount: 1
       },
@@ -1791,6 +1792,294 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ]));
   });
 
+  it.each([true, false])("uses the lowest supported non-off effort for repairs (%s)", async (supportsLow) => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([validSubmitPlanCall("a"), validSubmitPlanCall("b")]),
+      assistant([validSubmitPlanCall("fixed")])
+    ]);
+    adapter.resolveModel = () => ({ provider: "fake", id: "fake-model", raw: {
+      id: "fake-model", api: "openai-completions", reasoning: true,
+      thinkingLevelMap: supportsLow ? { minimal: null } : { low: null }
+    } });
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    await runner.runStructured({ stage: 5, prompt: "planner", schema: SubmitPlanSchema, templateVersion: "test", timeoutMs: 600_000 });
+    expect(adapter.options.map((options) => options.reasoning)).toEqual(["high", supportsLow ? "low" : "minimal"]);
+    expect(telemetry.modelCalls.map((call) => call.reasoningRequested)).toEqual(["high", supportsLow ? "low" : "minimal"]);
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["timeout", "double-timeout", "repair-timeout", "transient", "invalid", "retry-invalid", "auth", "cancel"] as const)(
+    "bounds composition recovery with relative reasoning: %s", async (mode) => {
+      vi.useFakeTimers();
+      try {
+        const telemetry = fakeTelemetry();
+        const abort = new AbortController();
+        const valid = assistant([{ type: "toolCall", id: "composition", name: "submit_composition",
+          arguments: { summary: "Done", composedFindings: [] } }]);
+        const invalid = assistant([{ type: "toolCall", id: "invalid", name: "submit_composition",
+          arguments: { summary: 42 } }]);
+        const adapter = scriptedAdapter([]);
+        adapter.resolveModel = () => ({ provider: "fake", id: "fake-model", raw: {
+          id: "fake-model", api: "openai-completions", reasoning: true, thinkingLevelMap: { max: "max" }
+        } });
+        const efforts: unknown[] = [];
+        let calls = 0;
+        adapter.complete = vi.fn(async (_model, _context, options) => {
+          efforts.push(options.reasoning);
+          calls++;
+          if (calls === 1) {
+            if (mode === "timeout" || mode === "double-timeout" || mode === "cancel") return new Promise<PiAssistantMessage>(() => {});
+            if (mode === "auth") throw Object.assign(new Error("unauthorized"), { status: 401 });
+            if (mode === "transient" || mode === "retry-invalid") throw Object.assign(new Error("service unavailable"), { status: 503 });
+            return invalid;
+          }
+          if (mode === "double-timeout" || mode === "repair-timeout") return new Promise<PiAssistantMessage>(() => {});
+          return mode === "retry-invalid" ? invalid : valid;
+        });
+        const runner = createPiRunner({
+          llmConfig: { provider: "fake", model: "fake-model", reasoning: "max", maxConcurrentCalls: 1 },
+          telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: abort.signal,
+          adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+        });
+        const result = runner.runStructured({ stage: 10, prompt: "compose", schema: SubmitCompositionSchema,
+          templateVersion: "test", timeoutMs: 600_000 });
+        const fails = ["retry-invalid", "auth", "cancel", "double-timeout", "repair-timeout"].includes(mode);
+        const checked = fails ? expect(result).rejects.toBeInstanceOf(CodegenieError)
+          : expect(result).resolves.toMatchObject({ summary: "Done" });
+        await vi.advanceTimersByTimeAsync(0);
+        if (mode === "cancel") abort.abort();
+        if (mode === "timeout" || mode === "repair-timeout") await vi.advanceTimersByTimeAsync(180_000);
+        if (mode === "double-timeout") await vi.advanceTimersByTimeAsync(360_000);
+        await checked;
+        expect(calls).toBe(mode === "auth" || mode === "cancel" ? 1 : 2);
+        expect(efforts[0]).toBe("high");
+        if (calls === 2) expect(efforts[1]).toBe(
+          mode === "invalid" || mode === "repair-timeout" ? "minimal" : "high"
+        );
+        expect(telemetry.modelCalls[0]).toMatchObject({
+          reasoningConfigured: "max", reasoningSelected: "high", reasoningPolicy: "one_level_lower"
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it.each([false, true])("gives repair a fresh allowance while respecting cancellation (%s)", async (cancel) => {
+    vi.useFakeTimers();
+    try {
+      const telemetry = fakeTelemetry();
+      const abort = new AbortController();
+      const adapter = scriptedAdapter([]);
+      let calls = 0;
+      adapter.complete = vi.fn(async () => {
+        calls++;
+        await new Promise((resolve) => setTimeout(resolve, calls === 1 ? 1900 : 500));
+        return calls === 1
+          ? assistant([validSubmitPlanCall("a"), validSubmitPlanCall("b")])
+          : assistant([validSubmitPlanCall("fixed")]);
+      });
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: abort.signal,
+        adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      // Investigation hard deadline is 2s. Repair finishes successfully at 2.4s.
+      const result = runner.runStructured({ stage: 5, prompt: "plan", schema: SubmitPlanSchema,
+        templateVersion: "test", timeoutMs: 1000 });
+      const checked = cancel ? expect(result).rejects.toMatchObject({ code: "llm_call_failed" })
+        : expect(result).resolves.toHaveProperty("coverage");
+      await vi.advanceTimersByTimeAsync(1900);
+      if (cancel) abort.abort();
+      await vi.advanceTimersByTimeAsync(500);
+      await checked;
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("propagates worker cancellation into a repair and ignores late provider results", async () => {
+    vi.useFakeTimers();
+    try {
+      const worker = new AbortController();
+      const telemetry = fakeTelemetry();
+      const adapter = scriptedAdapter([assistant([validSubmitPlanCall("a"), validSubmitPlanCall("b")])]);
+      const originalComplete = adapter.complete;
+      let repairSignal: AbortSignal | undefined;
+      let finish: ((value: PiAssistantMessage) => void) | undefined;
+      adapter.complete = vi.fn(async (model, context, options) => {
+        if (context.messages.length > 1) {
+          repairSignal = options.signal;
+          return new Promise<PiAssistantMessage>((resolve) => { finish = resolve; });
+        }
+        return originalComplete(model, context, options);
+      });
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      const result = runner.runStructured({ stage: 5, prompt: "planner", schema: SubmitPlanSchema,
+        templateVersion: "test", timeoutMs: 1000, signal: worker.signal });
+      const checked = expect(result).rejects.toMatchObject({ code: "llm_call_failed" });
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(repairSignal?.aborted).toBe(false);
+      worker.abort();
+      await checked;
+      expect(repairSignal?.aborted).toBe(true);
+      const recordedCalls = telemetry.modelCalls.length;
+      const recordedEvents = telemetry.events.length;
+      finish?.(assistant([validSubmitPlanCall("too-late")]));
+      await vi.advanceTimersByTimeAsync(180_000);
+      expect(telemetry.modelCalls).toHaveLength(recordedCalls);
+      expect(telemetry.events).toHaveLength(recordedEvents);
+      expect(adapter.complete).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("aborts a nonresponsive repair after 180 seconds without another attempt", async () => {
+    vi.useFakeTimers();
+    try {
+      const telemetry = fakeTelemetry();
+      const adapter = scriptedAdapter([assistant([validSubmitPlanCall("a"), validSubmitPlanCall("b")])]);
+      const originalComplete = adapter.complete;
+      let repairSignal: AbortSignal | undefined;
+      adapter.complete = vi.fn(async (model, context, options) => {
+        if (!repairSignal && context.messages.length > 1) {
+          repairSignal = options.signal;
+          (options.onStreamEvent as ((event: unknown) => void) | undefined)?.({ type: "thinking_delta", delta: "progress" });
+          return new Promise<PiAssistantMessage>(() => {}); // Provider ignores cancellation.
+        }
+        return originalComplete(model, context, options);
+      });
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      const result = runner.runStructured({ stage: 5, prompt: "planner", schema: SubmitPlanSchema, templateVersion: "test", timeoutMs: 600_000 });
+      const rejected = expect(result).rejects.toMatchObject({ code: "llm_call_failed" });
+      await vi.advanceTimersByTimeAsync(179_999);
+      expect(repairSignal?.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+      expect(repairSignal?.aborted).toBe(true);
+      expect(adapter.complete).toHaveBeenCalledTimes(2);
+      expect(telemetry.modelCalls.at(-1)).toMatchObject({
+        kind: "repair", status: "timeout", durationMs: 180_000,
+        streamProgress: { thinkingChunks: 1, thinkingChars: 8, contentIdleMs: 180_000 }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("expires a repair while queued without dispatching it later", async () => {
+    vi.useFakeTimers();
+    const abort = new AbortController();
+    try {
+      const telemetry = fakeTelemetry();
+      const adapter = scriptedAdapter([]);
+      let finishFirst: ((message: PiAssistantMessage) => void) | undefined;
+      adapter.complete = vi.fn(async () => new Promise<PiAssistantMessage>((resolve) => {
+        finishFirst ??= resolve;
+      }));
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: abort.signal,
+        adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      const request = { stage: 5 as const, prompt: "planner", schema: SubmitPlanSchema, templateVersion: "test", timeoutMs: 600_000 };
+      const first = runner.runStructured(request);
+      const firstRejected = expect(first).rejects.toMatchObject({ code: "llm_call_failed" });
+      await vi.advanceTimersByTimeAsync(0);
+      const second = runner.runStructured(request);
+      const secondRejected = expect(second).rejects.toMatchObject({ code: "llm_call_failed" });
+      finishFirst!(assistant([validSubmitPlanCall("a"), validSubmitPlanCall("b")]));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(adapter.complete).toHaveBeenCalledTimes(2); // The other investigation owns the slot.
+      await vi.advanceTimersByTimeAsync(180_000);
+      await firstRejected;
+      expect(telemetry.modelCalls.at(-1)).toMatchObject({ kind: "repair", status: "timeout" });
+      abort.abort();
+      await secondRejected;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(adapter.complete).toHaveBeenCalledTimes(2); // Expired repair never reaches the provider.
+    } finally {
+      abort.abort();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["plain-text", "transient-error"])("does not retry a repair returning %s", async (failure) => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "bad", name: "submit_review", arguments: { findings: "invalid" } }]),
+      assistant([{ type: "text", text: "Here is my answer" }])
+    ]);
+    if (failure === "transient-error") {
+      const originalComplete = adapter.complete;
+      let calls = 0;
+      adapter.complete = vi.fn(async (model, context, options) => {
+        if (++calls === 2) throw Object.assign(new Error("service unavailable"), { status: 503 });
+        return originalComplete(model, context, options);
+      });
+    }
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    await expect(runner.runStructured({ stage: 7, prompt: "review", schema: SubmitPacketReviewSchema, templateVersion: "test", timeoutMs: 600_000 })).rejects.toMatchObject({
+      code: failure === "plain-text" ? "llm_schema_invalid" : "llm_call_failed"
+    });
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+    expect(telemetry.modelCalls.filter((call) => call.kind === "repair")).toHaveLength(1);
+  });
+
+  it("decodes a complete string-wrapped verifier finding without a model repair", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([assistant([{
+      type: "toolCall", id: "wrapped", name: "submit_verdict",
+      arguments: { ...VERIFIER_SUBMIT_EXAMPLE, finalFinding: JSON.stringify(VERIFIER_SUBMIT_EXAMPLE.finalFinding) }
+    }])]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const result = await runner.runStructured({
+      stage: 9, prompt: "verifier", schema: SubmitVerificationVerdictSchema, templateVersion: "test", timeoutMs: 1000,
+      schemaRepair: { recoverInvalidSubmit: recoverStringWrappedVerifierFinding }
+    });
+    expect(result).toEqual(VERIFIER_SUBMIT_EXAMPLE);
+    expect(adapter.complete).toHaveBeenCalledTimes(1);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "schema_invalid_submit_recovered" }));
+  });
+
+  it.each(['{"title":"unfinished', '[]', 'null', '{"title":"missing required evidence"}'])("does not accept an invalid string-wrapped verifier finding: %s", async (finalFinding) => {
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "bad", name: "submit_verdict", arguments: { ...VERIFIER_SUBMIT_EXAMPLE, finalFinding } }]),
+      assistant([{ type: "toolCall", id: "still-bad", name: "submit_verdict", arguments: { ...VERIFIER_SUBMIT_EXAMPLE, finalFinding } }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    await expect(runner.runStructured({
+      stage: 9, prompt: "verifier", schema: SubmitVerificationVerdictSchema, templateVersion: "test", timeoutMs: 1000,
+      schemaRepair: { recoverInvalidSubmit: recoverStringWrappedVerifierFinding, replaceConversation: false }
+    })).rejects.toMatchObject({ code: "llm_schema_invalid" });
+    expect(adapter.complete).toHaveBeenCalledTimes(2);
+  });
+
   it("can fail fast when planner schema repair is invalid twice", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
@@ -1931,6 +2220,34 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.contexts[1]).not.toContain("BAD_PRIOR_XML_BODY");
     expect(telemetry.modelCalls.map((call) => call.kind)).toEqual(["initial", "repair"]);
     expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
+  });
+
+  it("retains inspected source and the failed verifier verdict in submit-only repair", async () => {
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "read", name: "read_range", arguments: { path: "example.ts" } }]),
+      assistant([{ type: "toolCall", id: "bad", name: "submit_verdict", arguments: {
+        ...VERIFIER_SUBMIT_EXAMPLE, finalFinding: '{"title":"unfinished'
+      } }]),
+      assistant([{ type: "toolCall", id: "fixed", name: "submit_verdict", arguments: VERIFIER_SUBMIT_EXAMPLE }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    await runner.runStructured({
+      stage: 9, prompt: "original verifier context", schema: SubmitVerificationVerdictSchema,
+      templateVersion: "test", timeoutMs: 1000,
+      tools: [{ name: "read_range", description: "read", parameters: Type.Object({ path: Type.String() }),
+        execute: async () => ({ text: "UNIQUE_INSPECTED_SOURCE: return items[0].id;" }) }],
+      toolBudget: { maxToolCalls: 3, maxInvestigationRounds: 3, maxResultChars: 10_000 },
+      schemaRepair: { replaceConversation: false, buildPrompt: () => "Repair shape only; preserve the verdict." }
+    });
+    expect(adapter.contexts[2]).toContain("UNIQUE_INSPECTED_SOURCE");
+    expect(adapter.contexts[2]).toContain("original verifier context");
+    expect(adapter.contexts[2]).toContain("unfinished");
+    expect(adapter.contexts[2]).toContain("Repair shape only");
+    expect(adapter.toolNames[2]).toEqual(["submit_verdict"]);
   });
 
   it("routes semantic empty-revise submits through the existing single repair and cache gate", async () => {

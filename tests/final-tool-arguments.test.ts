@@ -15,7 +15,9 @@ describe("final tool argument provenance", () => {
     ["canonical", ['{"findings":[]}']]
   ])("accepts a %s strict object", async (_label, deltas) => {
     const final = message(call("submit-1", SUBMIT, { findings: [] }));
-    const result = await consumeFinalToolArguments(sequence(final, deltas), SUBMIT);
+    const onEvent = vi.fn();
+    const result = await consumeFinalToolArguments(sequence(final, deltas), SUBMIT, { onEvent });
+    expect(onEvent.mock.calls.some(([event]) => event.type === "toolcall_delta")).toBe(true);
     expect(result).toEqual({
       ...final,
       content: [{ ...call("submit-1", SUBMIT, { findings: [] }), argumentParse: { state: "strict" } }]

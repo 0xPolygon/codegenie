@@ -1,51 +1,24 @@
-import { Type, type Static } from "@earendil-works/pi-ai";
+import { StringEnum, Type, type Static } from "@earendil-works/pi-ai";
 import type { ReviewStage } from "../types.js";
 
-const SeveritySchema = Type.Union([
-  Type.Literal("critical"),
-  Type.Literal("high"),
-  Type.Literal("medium"),
-  Type.Literal("low")
-]);
+const SeveritySchema = StringEnum(["critical", "high", "medium", "low"] as const);
 
-const ConfidenceSchema = Type.Union([
-  Type.Literal("high"),
-  Type.Literal("medium"),
-  Type.Literal("low")
-]);
+const ConfidenceSchema = StringEnum(["high", "medium", "low"] as const);
 
-const CoverageSchema = Type.Union([
-  Type.Literal("deep"),
-  Type.Literal("normal"),
-  Type.Literal("light"),
-  Type.Literal("skip")
-]);
+const CoverageSchema = StringEnum(["deep", "normal", "light", "skip"] as const);
 
-const FindingCategorySchema = Type.Union([
-  Type.Literal("logic_bug"),
-  Type.Literal("correctness"),
-  Type.Literal("security"),
-  Type.Literal("performance"),
-  Type.Literal("architecture"),
-  Type.Literal("testing"),
-  Type.Literal("maintainability")
-]);
+const FindingCategorySchema = StringEnum(["logic_bug", "correctness", "security", "performance", "architecture", "testing", "maintainability"] as const);
 
-const BehaviorChangeAssessmentSchema = Type.Union([
-  Type.Literal("accidental_regression"),
-  Type.Literal("intentional_needs_confirmation"),
-  Type.Literal("specified_change"),
-  Type.Literal("unknown")
-]);
+const BehaviorChangeAssessmentSchema = StringEnum(["accidental_regression", "intentional_needs_confirmation", "specified_change", "unknown"] as const);
 
 const DiffAnchorSchema = Type.Object(
   {
     path: Type.String({ minLength: 1, maxLength: 500 }),
     line: Type.Integer({ minimum: 1 }),
-    side: Type.Union([Type.Literal("RIGHT"), Type.Literal("LEFT")]),
+    side: StringEnum(["RIGHT", "LEFT"] as const),
     hunkId: Type.String({ minLength: 1, maxLength: 200 }),
     startLine: Type.Optional(Type.Integer({ minimum: 1 })),
-    startSide: Type.Optional(Type.Union([Type.Literal("RIGHT"), Type.Literal("LEFT")])),
+    startSide: Type.Optional(StringEnum(["RIGHT", "LEFT"] as const)),
     commitSha: Type.Optional(Type.String({ minLength: 1, maxLength: 80 }))
   },
   { additionalProperties: false }
@@ -53,13 +26,7 @@ const DiffAnchorSchema = Type.Object(
 
 const SurroundingContextHintSchema = Type.Object(
   {
-    kind: Type.Union([
-      Type.Literal("enclosing_symbol"),
-      Type.Literal("call_site"),
-      Type.Literal("test"),
-      Type.Literal("line_range"),
-      Type.Literal("other")
-    ], {
+    kind: StringEnum(["enclosing_symbol", "call_site", "test", "line_range", "other"] as const, {
       description: "Mechanical context retrieval mode: `enclosing_symbol` reads the named body, `call_site` finds caller/usage bodies for the named callee/helper, `test` targets tests, `line_range` targets explicit lines. Put semantic intent in reason."
     }),
     path: Type.Optional(Type.String({
@@ -76,7 +43,7 @@ const SurroundingContextHintSchema = Type.Object(
       description: "Explicit inclusive line range to include when line-based context is more precise than a symbol hint."
     })),
     reason: Type.String({ minLength: 1, maxLength: 1000 }),
-    expectedUse: Type.Union([Type.Literal("packet_context"), Type.Literal("tool_lookup")], {
+    expectedUse: StringEnum(["packet_context", "tool_lookup"] as const, {
       description: "Use packet_context for context Stage 6 should attach now; use tool_lookup for guidance the reviewer can inspect later."
     })
   },
@@ -139,7 +106,7 @@ export const SubmitPlanSchema = Type.Object(
   { additionalProperties: false }
 );
 
-const SubmittedFindingSchema = Type.Object(
+export const SubmittedFindingSchema = Type.Object(
   {
     title: Type.String({ minLength: 1, maxLength: 200 }),
     severity: SeveritySchema,
@@ -204,14 +171,10 @@ const StructuredUncertaintySchema = Type.Object(
 
 export const SubmitPacketReviewSchema = Type.Object(
   {
-    reviewStatus: Type.Optional(Type.Union([
-      Type.Literal("findings"),
-      Type.Literal("no_findings"),
-      Type.Literal("incomplete")
-    ], {
+    reviewStatus: Type.Optional(StringEnum(["findings", "no_findings", "incomplete"] as const, {
       description: "Use findings when findings are present, no_findings only after concrete local risk is resolved, and incomplete when bounded review could not finish."
     })),
-    findings: Type.Array(SubmittedFindingSchema, { maxItems: 20 }),
+    findings: Type.Array(SubmittedFindingSchema, { maxItems: 20, description: "Array of finding objects, never JSON-encoded strings or fragments. Use [] when there are no findings." }),
     followUpHints: Type.Array(FollowUpHintSchema, {
       maxItems: 20,
       description: "Concrete unresolved predicates only. Do not use broad reminders or essay-style notes."
@@ -253,21 +216,28 @@ export const VERIFIER_REASON_HARD_MAX_CHARS = 4_000;
 const VerificationVerdictSharedProperties = {
   reason: Type.String({ minLength: 1, maxLength: VERIFIER_REASON_HARD_MAX_CHARS }),
   requiredEvidencePresent: Type.Boolean(),
-  falsePositiveRisk: Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high")]),
+  falsePositiveRisk: StringEnum(["low", "medium", "high"] as const),
   behaviorChange: Type.Optional(BehaviorChangeAssessmentSchema),
   intentEvidence: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 8 }))
 };
 
+export const FindingUpdatesSchema = Type.Partial(
+  Type.Omit(SubmittedFindingSchema, ["path", "anchor"]),
+  { additionalProperties: false, minProperties: 1,
+    description: "Only changed finding fields. Omitted fields stay unchanged. Nested evidence is replaced as a whole. Use revisedAnchor for placement." }
+);
+
 export const SubmitVerificationVerdictSchema = Type.Object(
   {
-    verdict: Type.Union([Type.Literal("keep"), Type.Literal("reject"), Type.Literal("revise")]),
+    verdict: StringEnum(["keep", "reject", "revise"] as const),
     ...VerificationVerdictSharedProperties,
+    findingUpdates: Type.Optional(FindingUpdatesSchema),
     finalFinding: Type.Optional(SubmittedFindingSchema),
     revisedAnchor: Type.Optional(DiffAnchorSchema)
   },
   {
     additionalProperties: false,
-    description: "Submit one verifier verdict. A revise verdict must include finalFinding or revisedAnchor; this semantic requirement is enforced after provider-safe schema validation."
+    description: "Submit one verifier verdict. Prefer findingUpdates containing only changed fields, plus revisedAnchor for placement. Do not combine findingUpdates with finalFinding. A revise verdict must include findingUpdates, revisedAnchor, or a legacy complete finalFinding; this semantic requirement is enforced after provider-safe schema validation."
   }
 );
 
@@ -279,7 +249,7 @@ export const SubmitCompositionSchema = Type.Object(
         {
           findingIds: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 100 }),
           finalBody: Type.String({ minLength: 1, maxLength: 20000 }),
-          publication: Type.Union([Type.Literal("inline"), Type.Literal("summary-only")])
+          publication: StringEnum(["inline", "summary-only"] as const)
         },
         { additionalProperties: false }
       ),
@@ -296,11 +266,11 @@ export type SubmitVerificationVerdict = Static<typeof SubmitVerificationVerdictS
 export type SubmitComposition = Static<typeof SubmitCompositionSchema>;
 
 export const SCHEMA_VERSIONS = {
-  submit_plan: 5,
-  submit_review: 4,
-  submit_system_review: 1,
-  submit_verdict: 4,
-  submit_composition: 1
+  submit_plan: 6,
+  submit_review: 5,
+  submit_system_review: 2,
+  submit_verdict: 6,
+  submit_composition: 2
 } as const;
 
 export function submitToolNameForStage(stage: ReviewStage): keyof typeof SCHEMA_VERSIONS {

@@ -1,4 +1,7 @@
+import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
+import { expandVerifierRevision } from "../llm/verifier-revision.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
+import { recoverStringWrappedVerifierFinding, VERIFIER_SUBMIT_SHAPE_GUIDANCE } from "../llm/verifier-submit-repair.js";
 import type { LlmRunner, LlmSchemaRepairInput, LlmSubmitFailureClassification } from "../llm/llm-runner.js";
 import {
   SCHEMA_VERSIONS,
@@ -309,10 +312,12 @@ export async function verifyFindings(
     priority: candidate.severity === "critical" ? "critical" : candidate.severity === "high" ? "high" : "normal",
     candidateId: candidate.id,
     timeoutMs: config.review.perPassTimeoutMs,
+    repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
+    awaitCancellation: true,
     retryOnTransient: false,
-    run: async (_signal, task) => {
+    run: async (signal, task) => {
       releaseVerifierReservation(scheduling.reservations.get(candidate.id), opts);
-      return verifyCandidate(candidate, packetsById.get(candidate.producedBy.packetId), tools, config, opts, task.workerId, telemetry, runtimeStats);
+      return verifyCandidate(candidate, packetsById.get(candidate.producedBy.packetId), tools, config, { ...opts, signal }, task.workerId, telemetry, runtimeStats);
     }
   }));
   const outcomes = await workerRunner.schedule(tasks);
@@ -702,6 +707,18 @@ function normalizeSubmittedVerdict(
   submitted: SubmitVerificationVerdict,
   telemetry: TelemetryRecorder
 ): SubmitVerificationVerdict {
+  try {
+    const updates = submitted.findingUpdates;
+    submitted = expandVerifierRevision(candidate, submitted);
+    if (updates !== undefined) {
+      telemetry.event({ stage: 9, level: "info", message: "verification_finding_updates_applied",
+        data: { candidateId: candidate.id, changedFields: Object.keys(updates) } });
+    }
+  } catch {
+    telemetry.event({ stage: 9, level: "warn", message: "verification_semantic_invalid",
+      data: { candidateId: candidate.id, reason: "invalid_finding_updates" } });
+    return incompleteSubmittedVerdict("invalid_finding_updates");
+  }
   // Schema-valid adapters never return null payloads, but normalize them away
   // defensively before applying the same semantic checks to every verdict.
   const {
@@ -775,22 +792,59 @@ async function runVerifierStructured(
   runtimeStats: VerificationRuntimeStats
 ): Promise<SubmitVerificationVerdict> {
   let repairAttempt: VerifierRepairAttempt | undefined;
+  let deterministicRecovered = false;
   try {
     const result = await opts.runner.runStructured<SubmitVerificationVerdict>({
       stage: 9,
       prompt: prompt.prompt,
       schema: SubmitVerificationVerdictSchema,
+      ...(opts.signal ? { signal: opts.signal } : {}),
       templateVersion: prompt.templateVersion,
       tools: buildRepositoryToolDefinitions(tools, { includeLikelyTests: candidate.category === "testing" }),
       toolBudget: scaleToolBudget(VERIFIER_TOOL_BUDGET, config.review.budgetBoost),
       timeoutMs: config.review.perPassTimeoutMs,
       telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId },
-      validateSubmit: (value) => value.verdict === "revise" && value.finalFinding === undefined && value.revisedAnchor === undefined
-        ? { ok: false, classification: "revise_without_revision_payload" }
-        : { ok: true },
+      validateSubmit: (value) => {
+        try {
+          const expanded = expandVerifierRevision(candidate, value);
+          return expanded.verdict === "revise" && expanded.finalFinding === undefined && expanded.revisedAnchor === undefined
+            ? { ok: false, classification: "revise_without_revision_payload" }
+            : { ok: true };
+        } catch {
+          return { ok: false, classification: "invalid_tool_arguments" };
+        }
+      },
       schemaRepair: {
-        replaceConversation: true,
+        // Preserve the verifier's own investigation and failed verdict. Repair
+        // must not rejudge a weaker projection of the original candidate.
+        replaceConversation: false,
         failAfterRepair: false,
+        recoverInvalidSubmit: (input) => {
+          const recovered = recoverStringWrappedVerifierFinding(input);
+          if (recovered === undefined) return undefined;
+          return {
+            kind: "recovery",
+            arguments: recovered,
+            onRecovered: () => {
+              deterministicRecovered = true;
+              if (repairAttempt === undefined) runtimeStats.schemaInvalid += 1;
+              telemetry.event({
+                stage: 9,
+                level: "info",
+                message: "schema_invalid_submit_recovered",
+                workerId,
+                packetId: candidate.producedBy.packetId,
+                data: {
+                  candidateId: candidate.id,
+                  submitTool: "submit_verdict",
+                  invalidSubmitCallCount: input.submitCalls.length,
+                  schemaRepairUsed: input.schemaRepairUsed,
+                  recovery: "decoded_final_finding_object"
+                }
+              });
+            }
+          };
+        },
         buildPrompt: (input) => {
           repairAttempt = recordVerifierSchemaRepairAttempt(candidate, input, telemetry, runtimeStats);
           return buildVerifierSchemaRepairPrompt(candidate, input, repairAttempt);
@@ -828,7 +882,7 @@ async function runVerifierStructured(
         });
         return incompleteSubmittedVerdict("schema_invalid_after_repair: empty_submit_object");
       }
-    } else if (isPrimaryVerifierSubmitAccepted(result)) {
+    } else if (!deterministicRecovered && isPrimaryVerifierSubmitAccepted(result, candidate)) {
       telemetry.event({
         stage: 9,
         level: "info",
@@ -949,7 +1003,7 @@ function buildVerifierSchemaRepairPrompt(
 ): string {
   const candidateSummary = fenceUntrusted(stableJson(verifierRepairCandidateProjection(candidate)), "verifier-repair-candidate-summary");
   return [
-    "Repair the Stage 9 verifier response for codegenie.",
+    "Repair only the structured shape of the Stage 9 verifier response for codegenie.",
     "",
     candidateSummary,
     "",
@@ -966,13 +1020,14 @@ function buildVerifierSchemaRepairPrompt(
     "- Do not answer in plain text.",
     "- Do not call repository tools or ask for more context.",
     "",
-    "Verdict reminder:",
-    "- Judge only the bounded candidate evidence above. It preserves the candidate claim, not repository-tool results from the discarded response.",
-    "- keep only if the candidate is proven by concrete evidence.",
-    "- revise only when the same issue is real but the evidence, wording, or anchor needs correction; include finalFinding or revisedAnchor.",
+    "Repair constraints:",
+    "- The earlier verifier conversation, repository-tool evidence, and failed submission are retained. The candidate summary above is a reference, not a replacement for that evidence.",
+    "- Preserve the verdict and substantive conclusions of the failed submission. Do not reopen the investigation or downgrade a confirmed result because evidence is absent from the candidate summary.",
+    "- Correct serialization and schema shape only. Never invent missing evidence, severity, confidence, locations, or conclusions. Recover unfinished fields only when their content is explicitly present in the retained conversation.",
+    "- Prefer a small findingUpdates object with only changed fields; use revisedAnchor for placement. Never encode an object as a JSON string. Do not repeat unchanged evidence. Do not combine findingUpdates and finalFinding.",
     `- Keep reason concise and at most ${VERIFIER_REASON_TARGET_CHARS.toLocaleString("en-US")} characters.`,
-    "- reject when required evidence is missing, the claim is speculative, or false-positive risk is high.",
-    "- If rejecting because verification cannot be completed, set requiredEvidencePresent=false and falsePositiveRisk=high."
+    "- If missing substantive content cannot be recovered from the retained evidence, do not manufacture a valid verdict; report that repair is impossible. The harness will mark verification incomplete.",
+    VERIFIER_SUBMIT_SHAPE_GUIDANCE
   ].join("\n");
 }
 
@@ -1104,11 +1159,16 @@ function isEmptySubmitObject(input: unknown): boolean {
   return typeof input === "object" && input !== null && !Array.isArray(input) && Object.keys(input).length === 0;
 }
 
-function isPrimaryVerifierSubmitAccepted(input: unknown): input is SubmitVerificationVerdict {
+function isPrimaryVerifierSubmitAccepted(input: unknown, candidate: CandidateFinding): input is SubmitVerificationVerdict {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return false;
   }
   const verdict = input as Partial<SubmitVerificationVerdict>;
+  try {
+    expandVerifierRevision(candidate, input as SubmitVerificationVerdict);
+  } catch {
+    return false;
+  }
   const sharedFieldsValid = typeof verdict.reason === "string" && verdict.reason.length > 0 &&
     typeof verdict.requiredEvidencePresent === "boolean" &&
     (verdict.falsePositiveRisk === "low" || verdict.falsePositiveRisk === "medium" || verdict.falsePositiveRisk === "high");
@@ -1118,7 +1178,7 @@ function isPrimaryVerifierSubmitAccepted(input: unknown): input is SubmitVerific
   if (verdict.verdict === "keep" || verdict.verdict === "reject") {
     return true;
   }
-  return verdict.verdict === "revise" && (verdict.finalFinding != null || verdict.revisedAnchor != null);
+  return verdict.verdict === "revise" && (verdict.finalFinding != null || verdict.findingUpdates != null || verdict.revisedAnchor != null);
 }
 
 function sanitizeVerifierSchemaError(error: string): string {

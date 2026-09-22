@@ -1,5 +1,7 @@
 import type { ToolBudget } from "../types.js";
 
+export const SCHEMA_REPAIR_TIMEOUT_MS = 180_000;
+
 // Grace window appended to a per-pass soft deadline so a pass whose
 // investigation is complete can finish its finalize/submit call instead of
 // being killed at the boundary (plan 85). Floor of 120s covers slow-provider

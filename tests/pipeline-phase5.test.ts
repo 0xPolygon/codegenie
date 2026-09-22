@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
-import type { LlmRunner, LlmStructuredRequest, PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
+import type { LlmInvalidSubmitRecovery, LlmRunner, LlmStructuredRequest, PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
 import { parseDiff } from "../src/git/diff-parser.js";
 import { createPiRunner } from "../src/llm/pi-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
@@ -8327,14 +8327,43 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("uses compact verifier schema repair and records XML classification", async () => {
+  it("reports a decoded verifier finding as recovered rather than primary", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        const recovery = request.schemaRepair?.recoverInvalidSubmit?.({
+          stage: 9, submitTool: "submit_verdict", error: "finalFinding must be object",
+          submitCalls: [{ id: "wrapped", arguments: {
+            verdict: "revise", reason: "confirmed", requiredEvidencePresent: true,
+            falsePositiveRisk: "low", finalFinding: JSON.stringify(fakeFinding())
+          } }], extraToolNames: [], schemaRepairUsed: false
+        }) as LlmInvalidSubmitRecovery;
+        expect(recovery.kind).toBe("recovery");
+        // The runner invokes this only after full schema/semantic validation.
+        recovery.onRecovered?.("wrapped");
+        return recovery.arguments as T;
+      }
+    };
+    await verifyFindings(
+      { packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }], packets: [fakePacket()] },
+      fakeTools(), config(), { ...nullTelemetry(), event: (event) => { events.push(event); } },
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff(), checkpoint: () => "ok" }
+    );
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "schema_invalid_submit_recovered", data: expect.objectContaining({ recovery: "decoded_final_finding_object", schemaRepairUsed: false })
+    }));
+    expect(events.some((event) => event.message === "verification_primary_submit_accepted")).toBe(false);
+    expect(events.some((event) => event.message === "verification_schema_repair_attempted")).toBe(false);
+  });
+
+  it("preserves verifier context during schema repair and records XML classification", async () => {
     let calls = 0;
     let repairPrompt = "";
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
         calls += 1;
-        expect(request.schemaRepair?.replaceConversation).toBe(true);
+        expect(request.schemaRepair?.replaceConversation).toBe(false);
         expect(request.schemaRepair?.failAfterRepair).toBe(false);
         repairPrompt = request.schemaRepair?.buildPrompt?.({
           stage: 9,
@@ -8572,7 +8601,8 @@ describe("phase 5 pipeline regressions", () => {
     expect(repairPrompt).toContain("\\\\u003cparameter\\\\u003eCANDIDATE_XML");
     expect(repairPrompt).not.toContain("<parameter>CANDIDATE_XML</parameter>");
     expect(repairPrompt).not.toContain("OMITTED_TAIL");
-    expect(repairPrompt).toContain("Judge only the bounded candidate evidence above");
+    expect(repairPrompt).toContain("repository-tool evidence, and failed submission are retained");
+    expect(repairPrompt).toContain("Preserve the verdict and substantive conclusions");
     expect(verified.verified).toEqual([]);
     expect(verified.incompleteCount).toBe(1);
     expect(verified.verdicts[0]).toMatchObject({
@@ -8659,7 +8689,7 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(repairPrompt).toContain("- class: revise_without_revision_payload");
-    expect(repairPrompt).toContain("include finalFinding or revisedAnchor");
+    expect(repairPrompt).toContain("Prefer a small findingUpdates object");
     expect(repairPrompt).toContain("at most 2,000 characters");
     expect(verified.verdicts[0]).toMatchObject({ verdict: "revise", revisedAnchor: { path: "app.ts", line: 1 } });
     expect(verified.verified).toHaveLength(1);

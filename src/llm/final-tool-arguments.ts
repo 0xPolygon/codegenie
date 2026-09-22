@@ -20,6 +20,7 @@ type Capture = {
 };
 
 export type FinalToolArgumentTestHooks = {
+  onEvent?(event: AssistantMessageEvent): void;
   onBuffersCleared?(remainingChars: number): void;
 };
 
@@ -38,6 +39,7 @@ export async function consumeFinalToolArguments(
 
   try {
     for await (const event of stream) {
+      hooks.onEvent?.(event);
       if (event.type === "toolcall_start") {
         const existing = captures.get(event.contentIndex);
         if (existing !== undefined) {

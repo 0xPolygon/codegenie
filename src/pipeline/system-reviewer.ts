@@ -1,3 +1,4 @@
+import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmRunner } from "../llm/llm-runner.js";
 import { SubmitSystemReviewSchema, type SubmitSystemReview } from "../llm/schemas.js";
@@ -133,8 +134,10 @@ export async function runTargetedSystemReviews(
     priority: task.confidence === "high" ? "high" : "normal",
     packetId: task.id,
     timeoutMs: config.review.perPassTimeoutMs,
+    repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
+    awaitCancellation: true,
     retryOnTransient: true,
-    run: async (_signal, assigned) => runSystemReviewTask(task, tools, config, telemetry, opts, assigned.workerId)
+    run: async (signal, assigned) => runSystemReviewTask(task, tools, config, telemetry, { ...opts, signal }, assigned.workerId)
   }));
   const outcomes = await workerRunner.schedule(workerTasks);
   const completed = outcomes.flatMap((outcome) => {
@@ -268,6 +271,7 @@ async function runSystemReviewTask(
     stage: 8,
     prompt: prompt.prompt,
     schema: SubmitSystemReviewSchema,
+    ...(opts.signal ? { signal: opts.signal } : {}),
     templateVersion: prompt.templateVersion,
     tools: buildRepositoryToolDefinitions(tools),
     toolBudget: scaleToolBudget(SYSTEM_REVIEW_TOOL_BUDGET, config.review.budgetBoost),

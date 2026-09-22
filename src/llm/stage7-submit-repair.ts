@@ -1,6 +1,7 @@
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import { truncateDiagnostic } from "../util/errors.js";
 import { stableJson } from "../util/json.js";
+import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "./submit-review-guidance.js";
 import type {
   LlmInvalidSubmitRecovery,
   LlmSchemaInvalidSubmitRecoveryInput,
@@ -264,7 +265,8 @@ export function stage7CompactSchemaRepairPrompt(
     "- Do not output XML.",
     "- Do not write `<parameter>` tags.",
     "- Do not describe the schema.",
-    "- Do not answer in plain text."
+    "- Do not answer in plain text.",
+    SUBMIT_REVIEW_SHAPE_GUIDANCE
   ].join("\n");
 }
 

@@ -1,3 +1,4 @@
+import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmPostToolNudgeInput, LlmRunner } from "../llm/llm-runner.js";
 import { SubmitPacketReviewSchema, type SubmitPacketReview } from "../llm/schemas.js";
@@ -118,6 +119,8 @@ export async function runLensPackets(
     packetId: packet.id,
     ensemblePass: pass,
     timeoutMs: config.review.perPassTimeoutMs,
+    repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
+    awaitCancellation: true,
     retryOnTransient: true,
     run: async (signal, task) => runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, passes > 1 ? { pass, passes } : undefined)
   }));
@@ -297,6 +300,8 @@ async function runAdaptiveSecondWave(
     packetId: packet.id,
     ensemblePass: 2,
     timeoutMs: config.review.perPassTimeoutMs,
+    repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
+    awaitCancellation: true,
     retryOnTransient: true,
     run: async (signal, task) => runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, { pass: 2, passes: 2, adaptive: true })
   }));
@@ -452,7 +457,7 @@ async function runPacket(
   opts: LensRunnerOptions,
   telemetry: TelemetryRecorder,
   workerId: string,
-  _signal: AbortSignal,
+  signal: AbortSignal,
   ensemble?: { pass: number; passes: number; adaptive?: boolean }
 ): Promise<PacketReviewResult> {
   const skills = skillsCompatibleWithLanguage(
@@ -468,6 +473,7 @@ async function runPacket(
     stage: 7,
     prompt: prompt.prompt,
     schema: SubmitPacketReviewSchema,
+    signal,
     templateVersion: prompt.templateVersion,
     tools: repositoryTools,
     toolBudget: packet.toolBudget,

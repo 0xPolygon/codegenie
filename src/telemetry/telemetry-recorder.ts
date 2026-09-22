@@ -1,3 +1,4 @@
+import type { StreamProgress } from "../llm/stream-progress.js";
 import type { ContextPressureSummary, ReviewStage, TelemetryEvent, ToolCallRecord } from "../types.js";
 import type { CodegenieErrorCode } from "../util/errors.js";
 
@@ -30,11 +31,14 @@ export type LlmCallRecord = {
   toolChoiceRequested?: string;
   toolChoiceEffective?: string;
   toolChoiceDowngraded?: boolean;
+  reasoningConfigured?: string;
+  reasoningSelected?: string;
+  reasoningPolicy?: "configured" | "one_level_lower" | "lowest_supported";
   reasoningRequested?: string;
   reasoningMechanism?: string;
   reasoningLevelEffective?: string;
-  // Slowness diagnostics: time-to-first-byte (queue + prefill; decode window
-  // is durationMs - ttfbMs) and the provider's rate-limit headers per call.
+  // Headers can arrive before any model output; streamProgress measures Pi events.
+  streamProgress?: StreamProgress;
   ttfbMs?: number;
   providerHttpStatus?: number;
   providerRequestId?: string;

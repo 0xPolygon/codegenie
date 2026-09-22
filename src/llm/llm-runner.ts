@@ -85,6 +85,8 @@ export type ToolDefinition = {
 };
 
 export type LlmStructuredRequest<T> = {
+  /** Worker cancellation, combined with the overall run signal, including repairs. */
+  signal?: AbortSignal;
   /** Type-only link between the request and the expected submit payload. */
   readonly responseType?: T;
   stage: ReviewStage;

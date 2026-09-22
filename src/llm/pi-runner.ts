@@ -1,3 +1,4 @@
+import { createStreamProgress, type StreamProgress } from "./stream-progress.js";
 import {
   validateToolCall,
   type Api,
@@ -18,7 +19,7 @@ import pLimit from "p-limit";
 import { createFileAuthStorage, createPiCredentialStore } from "../provider/provider-services.js";
 import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../provider/model-policy.js";
 import { getCodegeniePiModels, getPiEnvApiKey } from "../provider/pi-ai-models.js";
-import { assertReasoningSupported, modelThinkingLevels } from "../provider/reasoning.js";
+import { assertReasoningSupported, modelThinkingLevels, selectReasoningEffort, type ReasoningPolicy } from "../provider/reasoning.js";
 import { getCodegeniePaths } from "../config/paths.js";
 import { registerSecret, stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
@@ -26,7 +27,7 @@ import type { ReviewStage, ToolBudget, ToolBudgetState, ToolCallRecord, ToolResu
 import type { PiAuthStorage, ProviderAuthEntry } from "../provider/provider-services.js";
 import { sha256Hex } from "../util/hashing.js";
 import { stableJson } from "../util/json.js";
-import { finalizeGraceMs } from "../util/budget.js";
+import { finalizeGraceMs, SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { CodegenieError, truncateDiagnostic, type CodegenieErrorCode } from "../util/errors.js";
 import {
   roleForStage,
@@ -242,6 +243,10 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
 
   return {
     runStructured: async <T>(request: LlmStructuredRequest<T>): Promise<T> => {
+      const runOpts = request.signal
+        ? { ...opts, runSignal: AbortSignal.any([opts.runSignal, request.signal]) }
+        : opts;
+      throwIfTaskAborted(runOpts.runSignal, () => false);
       const submitTool = buildSubmitTool(request);
       const repositoryTools = request.tools ?? [];
       const allTools = [...repositoryTools, submitTool];
@@ -250,10 +255,12 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       recordProviderPromptCacheStrategy(opts, request, providerPromptCache, recordedPromptCacheStages);
       if (!protocolFlags.providerProtocolRecorded) {
         protocolFlags.providerProtocolRecorded = true;
+        const initialReasoning = selectReasoningEffort(opts.llmConfig.reasoning ?? "high",
+          modelThinkingLevels(model.raw), request.stage === 10 ? "one_level_lower" : "configured");
         const forcedProbe = describeProviderProtocol(
           model,
           { type: "tool", name: submitTool.name },
-          opts.llmConfig.reasoning ?? "high",
+          initialReasoning,
           opts.llmConfig.forceSubmitToolChoice !== false
         );
         opts.telemetry.event({
@@ -352,7 +359,8 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       const graceMs = finalizeGraceMs(request.timeoutMs);
       const softDeadlineAt = Date.now() + request.timeoutMs;
       let softDeadlineFinalize = false;
-      const taskTimeout = timeoutSignal(opts.runSignal, request.timeoutMs + graceMs);
+      const taskTimeout = timeoutSignal(runOpts.runSignal, request.stage === 10 ? COMPOSITION_TOTAL_TIMEOUT_MS : request.timeoutMs + graceMs);
+      const compositionAttempts = { used: 0 };
 
       try {
         for (;;) {
@@ -378,7 +386,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           let providerResult: ProviderCallResult;
           try {
             providerResult = await completeWithCache({
-              opts,
+              opts: runOpts,
               adapter,
               request,
               model,
@@ -394,7 +402,8 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               budgetExempt: budgetForceFinalize,
               finalizeMode,
               finalizeTarget,
-              protocolFlags
+              protocolFlags,
+              compositionAttempts
             });
           } catch (cause) {
             if (!forceFinalize && isBudgetExhaustedError(cause) && messages.length > 1) {
@@ -558,7 +567,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           }
 
           if (forceFinalize) {
-            if (!finalizeSubmitRetryUsed) {
+            if (!schemaRepairUsed && !finalizeSubmitRetryUsed) {
               finalizeSubmitRetryUsed = true;
               recordFinalizeMissingSubmitRetry(opts, request, submitTool.name, kind, toolCalls);
               messages.push({
@@ -737,7 +746,10 @@ export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): PiAiAdapt
   return {
     resolveModel: ({ provider, model }) => resolveRealModel(provider, model, authStorage, models),
     complete: async (model, context, options) => {
-      const { submitToolName, ...providerOptions } = options;
+      const { submitToolName, onStreamEvent, ...providerOptions } = options;
+      const streamHooks = typeof onStreamEvent === "function"
+        ? { onEvent: onStreamEvent as (event: import("@earendil-works/pi-ai").AssistantMessageEvent) => void }
+        : {};
       const completeOptions = { ...providerOptions } as SimpleStreamOptions & Record<string, unknown>;
       if (isForcedToolChoice(completeOptions.toolChoice)) {
         if (deps.stream !== undefined) {
@@ -747,26 +759,26 @@ export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): PiAiAdapt
             context as Context,
             mapProviderOptions(prepared.model, prepared.options)
           );
-          return consumeFinalToolArguments(stream, submitToolName);
+          return consumeFinalToolArguments(stream, submitToolName, streamHooks);
         }
         const stream = models.stream(
           model.raw as Model<Api>,
           context as Context,
           mapProviderOptions(model.raw as Model<Api>, completeOptions)
         );
-        return consumeFinalToolArguments(stream, submitToolName);
+        return consumeFinalToolArguments(stream, submitToolName, streamHooks);
       }
       delete completeOptions.forceSubmitToolChoice;
       if (deps.streamSimple !== undefined) {
         const prepared = await prepareInjectedCompletion(model, completeOptions, deps, models);
         return consumeFinalToolArguments(
           deps.streamSimple(prepared.model, context as Context, prepared.options),
-          submitToolName
+          submitToolName, streamHooks
         );
       }
       return consumeFinalToolArguments(
         models.streamSimple(model.raw as Model<Api>, context as Context, completeOptions),
-        submitToolName
+        submitToolName, streamHooks
       );
     },
     validateToolCall: (tools, toolCall) => validateToolCall(tools as Tool[], toolCall as ToolCall)
@@ -959,7 +971,7 @@ function truncateDiagnosticPart(text: string, maxChars: number): string {
   return text.length <= maxChars ? text : `${text.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
-async function completeWithCache(input: {
+type CompleteWithCacheInput = {
   opts: CreateRunnerOptions;
   adapter: PiAiAdapter;
   request: LlmStructuredRequest<unknown>;
@@ -977,7 +989,75 @@ async function completeWithCache(input: {
   finalizeMode?: "compact" | "full" | undefined;
   finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
   protocolFlags?: { providerProtocolRecorded: boolean; downgradeWarned: boolean };
-}): Promise<ProviderCallResult> {
+  compositionAttempts: { used: number };
+};
+
+const COMPOSITION_ATTEMPT_TIMEOUT_MS = 180_000;
+const COMPOSITION_MAX_CALLS = 2;
+const COMPOSITION_TOTAL_TIMEOUT_MS = COMPOSITION_ATTEMPT_TIMEOUT_MS * COMPOSITION_MAX_CALLS;
+
+async function completeWithCache(input: CompleteWithCacheInput): Promise<ProviderCallResult> {
+  const composition = input.request.stage === 10;
+  const repair = input.kind === "repair";
+  if (!repair && !composition) {
+    try {
+      return await completeWithCacheAttempt(input);
+    } catch (cause) {
+      if (input.taskTimedOut() || input.opts.runSignal.aborted) {
+        recordDeadline(input, input.opts.runSignal.aborted ? "overall_review_or_cancellation" : "investigation_finalization");
+      }
+      throw cause;
+    }
+  }
+  if (composition && input.compositionAttempts.used >= COMPOSITION_MAX_CALLS) {
+    throw new CodegenieError("llm_call_failed", "Composition exhausted its two-call allowance");
+  }
+  if (composition) input.compositionAttempts.used += 1;
+  // A repair gets a fresh allowance, but never escapes overall cancellation.
+  // Composition also retains its six-minute total deadline.
+  const deadline = timeoutSignal(
+    composition ? input.taskSignal : input.opts.runSignal,
+    composition ? COMPOSITION_ATTEMPT_TIMEOUT_MS : SCHEMA_REPAIR_TIMEOUT_MS
+  );
+  try {
+    return await completeWithCacheAttempt({
+      ...input,
+      taskSignal: deadline.signal,
+      taskTimedOut: () => deadline.timedOut() || (composition && input.taskTimedOut())
+    });
+  } catch (cause) {
+    if (deadline.timedOut() || input.opts.runSignal.aborted || (composition && input.taskTimedOut())) {
+      recordDeadline(input, input.opts.runSignal.aborted ? "overall_review_or_cancellation"
+        : composition && input.taskTimedOut() ? "composition_total"
+        : repair ? "schema_repair" : "composition_attempt");
+    }
+    const retryable = deadline.timedOut() || (
+      cause instanceof CodegenieError && cause.code === "llm_call_failed"
+      && classifyProviderRetry(cause, 1).retryable
+    );
+    if (composition && !repair && retryable && input.compositionAttempts.used < COMPOSITION_MAX_CALLS
+      && !input.taskSignal.aborted && !input.opts.runSignal.aborted) {
+      deadline.cleanup();
+      input.opts.telemetry.event({
+        stage: input.request.stage, level: "warn", message: "composition_retry_scheduled",
+        data: { reason: deadline.timedOut() ? "timeout" : "transient_provider_failure", nextAttempt: 2 }
+      });
+      return await completeWithCache(input);
+    }
+    throw cause;
+  } finally {
+    deadline.cleanup();
+  }
+}
+
+function recordDeadline(input: CompleteWithCacheInput, source: string): void {
+  input.opts.telemetry.event({
+    stage: input.request.stage, level: "warn", message: "model_task_deadline_reached",
+    data: { source, kind: input.kind, ...input.request.telemetryContext }
+  });
+}
+
+async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<ProviderCallResult> {
   const {
     opts,
     adapter,
@@ -996,14 +1076,18 @@ async function completeWithCache(input: {
     finalizeMode,
     finalizeTarget
   } = input;
+  const reasoningConfigured = opts.llmConfig.reasoning ?? "high";
+  const reasoningPolicy: ReasoningPolicy = kind === "repair" ? "lowest_supported"
+    : request.stage === 10 ? "one_level_lower" : "configured";
+  const reasoning = selectReasoningEffort(reasoningConfigured, modelThinkingLevels(model.raw), reasoningPolicy);
   const forceSubmit = opts.llmConfig.forceSubmitToolChoice !== false;
   const forcedSubmitThinkingOff = anthropicForcedSubmitCall(model, toolChoice, forceSubmit);
-  const protocol = describeProviderProtocol(
+  const protocol = { ...describeProviderProtocol(
     model,
     toolChoice,
-    forcedSubmitThinkingOff ? undefined : opts.llmConfig.reasoning ?? "high",
+    forcedSubmitThinkingOff ? undefined : reasoning,
     forceSubmit
-  );
+  ), reasoningConfigured, reasoningSelected: reasoning, reasoningPolicy };
   if (protocol.toolChoiceDowngraded && input.protocolFlags !== undefined && !input.protocolFlags.downgradeWarned) {
     input.protocolFlags.downgradeWarned = true;
     opts.telemetry.event({
@@ -1027,7 +1111,7 @@ async function completeWithCache(input: {
     // Cache-key honesty: Anthropic forced-submit calls run with thinking
     // disabled (plan 86 step 3), which is a different request than the same
     // messages at the configured reasoning level.
-    reasoning: forcedSubmitThinkingOff ? "forced-submit-no-thinking" : opts.llmConfig.reasoning ?? "high",
+    reasoning: forcedSubmitThinkingOff ? "forced-submit-no-thinking" : reasoning,
     stage: request.stage,
     templateVersion: request.templateVersion,
     schemaName: submitToolNameForStage(request.stage),
@@ -1110,7 +1194,8 @@ async function completeWithCache(input: {
   }
 
   let lastError: unknown;
-  for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt += 1) {
+  const maxAttempts = kind === "repair" || request.stage === 10 ? 1 : MAX_PROVIDER_ATTEMPTS;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     throwIfTaskAborted(taskSignal, taskTimedOut);
     let estimatedTokens = 0;
     let reservationActive = false;
@@ -1162,7 +1247,7 @@ async function completeWithCache(input: {
         message: "model_call_queued",
         toolNames: tools.map((tool) => tool.name)
       });
-      const rawMessage = await providerLimit(() => {
+      const rawMessage = await awaitProviderCall(() => providerLimit(() => {
         throwIfTaskAborted(taskSignal, taskTimedOut);
         recordModelCallEvent(opts, request, model, {
           callId,
@@ -1175,24 +1260,36 @@ async function completeWithCache(input: {
           toolNames: tools.map((tool) => tool.name)
         });
         const callStartedAt = Date.now();
+        const progress = createStreamProgress((streamProgress) => {
+          if (taskSignal.aborted) return;
+          opts.telemetry.event({
+            stage: request.stage, level: "debug", message: "model_stream_progress",
+            data: { callId, kind, attempt, ...request.telemetryContext, streamProgress }
+          });
+        });
+        Object.defineProperty(responseCapture, "streamProgress", {
+          enumerable: true, get: () => progress.snapshot()
+        });
         return awaitProviderCall(
           () => adapter.complete(
             model,
             { messages, tools: tools.map(providerToolSpec) },
             {
               signal: taskSignal,
+              onStreamEvent: (event: import("@earendil-works/pi-ai").AssistantMessageEvent) => {
+                if (!taskSignal.aborted) progress.observe(event);
+              },
               maxRetries: 0,
               ...(anthropicForcedSubmitCall(model, toolChoice, opts.llmConfig.forceSubmitToolChoice !== false)
                 ? {}
-                : { reasoning: opts.llmConfig.reasoning ?? "high" }),
+                : { reasoning: reasoning }),
               forceSubmitToolChoice: opts.llmConfig.forceSubmitToolChoice !== false,
               submitToolName: submitToolNameForStage(request.stage),
               toolChoice,
               sessionId: providerPromptCache.sessionId,
               cacheRetention: providerPromptCache.cacheRetention,
-              // Slowness diagnostics: headers arrive before the body streams,
-              // so this timestamps time-to-first-byte (queue + prefill) and
-              // captures the provider's rate-limit posture per call.
+              // Response headers do not prove model output has started.
+              // Track headers separately from the Pi stream events above.
               onResponse: (response: { status: number; headers: Record<string, string> }) => {
                 responseCapture.ttfbMs = Date.now() - callStartedAt;
                 responseCapture.providerHttpStatus = response.status;
@@ -1215,7 +1312,7 @@ async function completeWithCache(input: {
           taskSignal,
           taskTimedOut
         );
-      });
+      }), taskSignal, taskTimedOut);
       const message = removeProvenanceLessSubmitArguments(
         scrubAssistantMessage(rawMessage),
         submitToolNameForStage(request.stage)
@@ -1240,18 +1337,18 @@ async function completeWithCache(input: {
           errorMessage: providerFailure.message,
           retryable: retry.retryable,
           retryReason: retry.reason,
-          maxAttempts: MAX_PROVIDER_ATTEMPTS,
-          retryExhausted: retry.retryable && attempt >= MAX_PROVIDER_ATTEMPTS
+          maxAttempts,
+          retryExhausted: retry.retryable && attempt >= maxAttempts
         });
         releaseReservation();
         reportUsage(opts, request.stage, message);
         lastError = providerFailure.cause;
-        if (providerFailure.status === "transient_error" && retry.retryable && attempt < MAX_PROVIDER_ATTEMPTS) {
+        if (providerFailure.status === "transient_error" && retry.retryable && attempt < maxAttempts) {
           const delayMs = retryDelayMs(providerFailure.cause, attempt);
           recordProviderRetryEvent(opts, request, {
             callId,
             attempt,
-            maxAttempts: MAX_PROVIDER_ATTEMPTS,
+            maxAttempts,
             reason: retry.reason,
             nextDelayMs: delayMs
           });
@@ -1262,7 +1359,7 @@ async function completeWithCache(input: {
           recordProviderRetryExhaustedEvent(opts, request, {
             callId,
             attempt,
-            maxAttempts: MAX_PROVIDER_ATTEMPTS,
+            maxAttempts,
             reason: retry.reason
           });
         }
@@ -1329,15 +1426,15 @@ async function completeWithCache(input: {
         errorMessage: cause instanceof Error ? truncateDiagnostic(cause.message) : truncateDiagnostic(String(cause)),
         retryable: retry.retryable,
         retryReason: retry.reason,
-        maxAttempts: MAX_PROVIDER_ATTEMPTS,
-        retryExhausted: retry.retryable && attempt >= MAX_PROVIDER_ATTEMPTS
+        maxAttempts,
+        retryExhausted: retry.retryable && attempt >= maxAttempts
       });
-      if (status === "transient_error" && retry.retryable && attempt < MAX_PROVIDER_ATTEMPTS) {
+      if (status === "transient_error" && retry.retryable && attempt < maxAttempts) {
         const delayMs = retryDelayMs(cause, attempt);
         recordProviderRetryEvent(opts, request, {
           callId,
           attempt,
-          maxAttempts: MAX_PROVIDER_ATTEMPTS,
+          maxAttempts,
           reason: retry.reason,
           nextDelayMs: delayMs
         });
@@ -1348,7 +1445,7 @@ async function completeWithCache(input: {
         recordProviderRetryExhaustedEvent(opts, request, {
           callId,
           attempt,
-          maxAttempts: MAX_PROVIDER_ATTEMPTS,
+          maxAttempts,
           reason: retry.reason
         });
       }
@@ -1553,6 +1650,7 @@ function mapReasoningOptions(model: Model<Api>, reasoning: string | undefined): 
 
 function googleThinkingLevel(reasoning: string): "LOW" | "MEDIUM" | "HIGH" {
   switch (reasoning) {
+    case "minimal":
     case "low":
       return "LOW";
     case "medium":
@@ -1595,11 +1693,12 @@ function mapProviderToolChoice(model: Model<Api>, choice: unknown, forceSubmit =
 }
 
 // Per-call provider response diagnostics (slowness debugging): ttfbMs is
-// measured from dispatch to response headers (queue + prefill), so
-// durationMs - ttfbMs approximates the decode window. rateLimit carries any
+// measured from dispatch to response headers, not to the first model token.
+// Streaming progress distinguishes observed content from a quiet connection. rateLimit carries any
 // header naming a rate limit (anthropic-ratelimit-*, x-ratelimit-*) plus
 // retry-after verbatim, provider-agnostic for the cross-provider studies.
 type ProviderResponseCapture = {
+  streamProgress?: StreamProgress;
   ttfbMs?: number;
   providerHttpStatus?: number;
   providerRequestId?: string;
@@ -1607,6 +1706,9 @@ type ProviderResponseCapture = {
 };
 
 type ProviderProtocolFields = {
+  reasoningConfigured?: string;
+  reasoningSelected?: string;
+  reasoningPolicy?: ReasoningPolicy;
   toolChoiceRequested: string;
   toolChoiceEffective: string;
   toolChoiceDowngraded: boolean;
@@ -1775,16 +1877,16 @@ async function executeToolCall(
       try {
         const cacheLookup = toolResultCache === undefined
           ? {
-              result: await tool.execute(args, taskSignal),
+              result: await awaitProviderCall(() => tool.execute(args, taskSignal), taskSignal, taskTimedOut),
               status: "disabled" as const,
               backendExecuted: true
             }
-          : await toolResultCache.execute({
+          : await awaitProviderCall(() => toolResultCache.execute({
               toolName: tool.name,
               args,
               signal: taskSignal,
               run: () => tool.execute(args, taskSignal)
-            });
+            }), taskSignal, taskTimedOut);
         const result = cacheLookup.result;
         return {
           result,
@@ -1798,7 +1900,7 @@ async function executeToolCall(
           ...(cacheLookup.evictedEntries !== undefined ? { cacheEvictedEntries: cacheLookup.evictedEntries } : {})
         };
       } catch (cause) {
-        if (taskSignal.aborted && isAbortError(cause)) {
+        if (taskSignal.aborted) {
           throw taskAbortError(taskTimedOut());
         }
         return toolExecutionErrorOutcome(cause, args, Date.now() - startedAt, true, "miss");
@@ -1807,7 +1909,7 @@ async function executeToolCall(
       if (taskSignal.aborted && cause instanceof CodegenieError && cause.code === "llm_call_failed") {
         throw cause;
       }
-      if (taskSignal.aborted && isAbortError(cause)) {
+      if (taskSignal.aborted) {
         throw taskAbortError(taskTimedOut());
       }
       return toolExecutionErrorOutcome(cause, toolCall.arguments, Date.now() - startedAt, false, "disabled");
@@ -2713,7 +2815,9 @@ function writeModelCallRequestDebug(
     provider: {
       provider: model.provider,
       model: model.id,
-      reasoning: opts.llmConfig.reasoning ?? "high"
+      reasoning: selectReasoningEffort(opts.llmConfig.reasoning ?? "high", modelThinkingLevels(model.raw),
+        meta.kind === "repair" ? "lowest_supported" : request.stage === 10 ? "one_level_lower" : "configured"),
+      reasoningConfigured: opts.llmConfig.reasoning ?? "high"
     },
     cache: definedRecord({
       enabled: Boolean(opts.cache),

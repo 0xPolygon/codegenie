@@ -27,7 +27,7 @@ codegenie provider login openrouter --api-key  # OpenRouter API key setup
 codegenie provider use opus                      # -> anthropic/claude-opus-5
 codegenie provider use gpt-5.5                   # -> openai-codex/gpt-5.5
 codegenie provider use deepseek-v4.1-flash:max   # -> openrouter/deepseek/deepseek-v4.1-flash
-codegenie provider use glm-5.3-flash:max         # -> openrouter/z-ai/glm-5.3-flash
+codegenie provider use glm-5.3:max               # -> openrouter/z-ai/glm-5.3
 
 
 # 3. Review your current branch
@@ -100,7 +100,7 @@ jobs:
         with:
           # Works with any model!
           model: "openrouter/deepseek/deepseek-v4.1-flash:max"
-          # model: "openrouter/z-ai/glm-5.3-flash"
+          # model: "openrouter/z-ai/glm-5.3:max"
           # model: "anthropic/claude-opus-5:high"
 
           # Set the llm-api-key to the api key for the respective model provider.

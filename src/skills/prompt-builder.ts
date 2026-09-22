@@ -12,6 +12,8 @@ import type { LensDescriptor, LensRegistry } from "./lens-registry.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { prettyStableJson as stableJson } from "../util/json.js";
 import { VERIFIER_REASON_TARGET_CHARS } from "../llm/schemas.js";
+import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "../llm/submit-review-guidance.js";
+import { VERIFIER_SUBMIT_SHAPE_GUIDANCE } from "../llm/verifier-submit-repair.js";
 
 export { stableJson };
 
@@ -72,10 +74,10 @@ export type PromptBuilder = {
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
   5: "p5.6",
-  7: "p7.10",
+  7: "p7.11",
   8: "p8.2",
-  9: "p9.9",
-  10: "p10.2"
+  9: "p9.11",
+  10: "p10.3"
 };
 
 type PromptLedgerEntry = {
@@ -99,6 +101,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
   ],
   7: [
     { surface: "findings", reason: "Candidate findings carry concrete changed-line failure modes for verifier filtering instead of hiding plausible issues in no_findings.", evidence: "Plans 81, 84, and 92 rescue findings" },
+    { surface: "submit_review shape example", reason: "Demonstrates object-valued findings and required arrays in both initial and repair prompts without relaxing validation.", evidence: "Run 68 calls mc-000020 and mc-000023 submitted JSON fragments as strings and omitted required arrays; bounded model repairs recovered both" },
     { surface: "followUpHints", reason: "Pointer-rich unresolved predicates feed human attention and system follow-up without publishing speculation.", evidence: "Plan 92 attention records and run 50 near-miss" },
     { surface: "uncertainties", reason: "Structured uncertainty gives promotion/adaptive passes a bounded predicate shape rather than free-form review notes.", evidence: "Plan 81 promotion lane retained by 2026-07-04 decision record" },
     { surface: "noFindingReason", reason: "Short no-finding conclusions avoid the essay payloads that created malformed or oversized submits.", evidence: "Plan 95 census: Stage-7 schema friction remains live" },
@@ -114,7 +117,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
   ],
   9: [
     { surface: "verdict/requiredEvidencePresent/falsePositiveRisk", reason: "Separates truth decision, evidence sufficiency, and residual risk for final selection.", evidence: "Plan 74 merged-confidence calibration and Plan 87 exact duplicate policy" },
-    { surface: "finalFinding/revisedAnchor", reason: "Allows revise-with-evidence without letting gate-only or stale anchors create identity.", evidence: "Plan 76 anchor rescue and Plan 87 identity hardening" },
+    { surface: "finalFinding/revisedAnchor", reason: "Compact findingUpdates preserve unchanged fields; revisedAnchor retains placement provenance checks. Legacy finalFinding remains accepted.", evidence: "Plans 76/87 and eval run 74 truncated string-wrapped full revisions" },
     { surface: "non-empty revision payload", reason: "Keeps structured revisions from completing without an actual finding or anchor change.", evidence: "Plan 106 / eval 49f4645b run 57 empty revise" },
     { surface: "decisive-evidence confidence calibration", reason: "Confidence follows the proven failure predicate rather than pressure from an unresolved secondary lookup.", evidence: "Plan 106 / eval 49f4645b run 55 secondary-budget cap" },
     { surface: "magnitude/reach severity rubric", reason: "Keeps severity proportional to concrete impact rather than the mere presence of a correctness invariant violation.", evidence: "Plan 108 / eval 49f4645b run 56 low-to-high inconsistency" },
@@ -122,7 +125,7 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
     { surface: "helper/callee complete-branch guidance", reason: "Prevents keeping helper-dependent claims from truncated or partial source reads.", evidence: "Fable review verifier false-positive class" },
     { surface: "testing candidate guidance", reason: "Keeps real test-boundary regressions while rejecting generic add-more-tests comments.", evidence: "Plan 92 E1 escalator and Plan 75 suppression" },
     { surface: "conditional skill guidance block", reason: "An empty authoritative provenance list must not leave a provider-facing label that implies verifier guidance was supplied.", evidence: "Plan 101 exact skill provenance" },
-    { surface: "bounded verifier repair candidate evidence", reason: "Stateless replacement repair needs the candidate's claim and evidence without replaying contaminated output or discarded repository-tool state.", evidence: "Private eval 49f4645b runs 58-60; run 60 evidence-starved empty-submit repairs" },
+    { surface: "bounded verifier repair candidate evidence", reason: "Keep the candidate summary bounded while retaining the verifier conversation; shape repair must not lose already-inspected evidence.", evidence: "Private eval 49f4645b runs 58-60 and run 71: replacement repair lost inspected helper evidence; string-wrapped finalFinding failed twice" },
     { surface: "verifier reason target", reason: "Keeps normal verdicts concise while the schema retains measured headroom for complete evidence-backed explanations.", evidence: "Owner evals observed four valid Stage-9 reasons between 2,100 and 2,984 characters" },
     { surface: "strict submit_verdict closeout", reason: "Verifier model repair is still live and successful, so the structured closeout remains load-bearing.", evidence: "Plan 95 census: 3 Stage-9 schema repairs, all recovered" }
   ],
@@ -277,7 +280,8 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         depthCloseGuidance(packet),
         "Skill guidance:\n" + projection.text,
         ...blocks,
-        "Finish by calling submit_review with schema-valid arguments only. Do not include extra properties, XML tags, <parameter> blocks, or markdown wrappers."
+        "Finish by calling submit_review with schema-valid arguments only. Do not include extra properties, XML tags, <parameter> blocks, or markdown wrappers.",
+        SUBMIT_REVIEW_SHAPE_GUIDANCE
       ], projection, blocks.length);
     },
     buildSystemReviewPrompt: ({ task, skills }) => {
@@ -308,9 +312,9 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
       return buildPrompt(9, [
         reviewerFrame("verification"),
         injectionInstruction(),
-        "Verify whether the candidate is a real, actionable finding. Reject false positives. A bare keep means the candidate's confidence, severity, evidence, wording, and placement are publishable unchanged. Use revise for every structured change; a revision must include finalFinding or revisedAnchor because prose in reason does not change the candidate.",
-        "When a low-confidence promoted predicate is confirmed, revise with a complete finalFinding whose confidence and evidence reflect the decisive changed-code proof. Add revisedAnchor only when exact changed-line placement is proven. Medium confidence is appropriate when decisive changed-code evidence and the failure mode are confirmed even if one narrow secondary check remains unresolved. Tool refusal, truncation, or budget pressure on a secondary check must not keep confidence low. If the decisive predicate is unconfirmed, reject or set requiredEvidencePresent=false. Reserve low confidence for speculative reachability, ambiguous intent, or weak path matching.",
-        "Severity calibration: low means bounded or localized impact; medium means material but limited impact; high means broad or serious user/system impact; critical means catastrophic impact or compromise of a security boundary. Measure magnitude and reach, not merely whether a correctness invariant is technically violated. When changing severity by more than one level from the input candidate, quantify the concrete impact bound in finalFinding.verification.",
+        "Verify whether the candidate is a real, actionable finding. Reject false positives. A bare keep means the candidate's confidence, severity, evidence, wording, and placement are publishable unchanged. Use revise for every structured change; a revision must include findingUpdates or revisedAnchor (legacy complete finalFinding is also accepted) because prose in reason does not change the candidate.",
+        "When a low-confidence promoted predicate is confirmed, revise with findingUpdates containing only changed confidence, evidence, and verification fields that reflect the decisive changed-code proof. Add revisedAnchor only when exact changed-line placement is proven. Medium confidence is appropriate when decisive changed-code evidence and the failure mode are confirmed even if one narrow secondary check remains unresolved. Tool refusal, truncation, or budget pressure on a secondary check must not keep confidence low. If the decisive predicate is unconfirmed, reject or set requiredEvidencePresent=false. Reserve low confidence for speculative reachability, ambiguous intent, or weak path matching.",
+        "Severity calibration: low means bounded or localized impact; medium means material but limited impact; high means broad or serious user/system impact; critical means catastrophic impact or compromise of a security boundary. Measure magnitude and reach, not merely whether a correctness invariant is technically violated. When changing severity by more than one level from the input candidate, quantify the concrete impact bound in findingUpdates.verification.",
         "For candidates promoted from a follow-up hint or uncertainty, verify the concrete predicate preserved in provenance, failureMode, and verification text. Do not reject a runtime/design/correctness predicate solely because the original question also mentioned tests or coverage.",
         "For promoted lossy-transform predicates, verify that caller-visible outputs or bounds remain deliverable/satisfiable; before rejecting as immaterial precision loss, trace whether the visible output is derived from the transformed value or from the original source value. Documented or deliberate transformation intent can explain why the conversion exists, but it is not evidence that an overstated caller-visible guarantee is safe.",
         "Commit titles, PR text, and intent signals are context, not proof. Refactor-like or behavior-preserving intent can guide framing, but it is not evidence against a behavior-bearing correctness, security, design, or testing candidate. Source behavior and changed diff evidence control the verdict.",
@@ -324,7 +328,8 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         `Keep the verdict reason concise and at most ${VERIFIER_REASON_TARGET_CHARS.toLocaleString("en-US")} characters.`,
         skillGuidance,
         ...blocks,
-        "Finish by calling submit_verdict with schema-valid arguments. Do not answer in plain text."
+        "Finish by calling submit_verdict with schema-valid arguments. Do not answer in plain text.",
+        VERIFIER_SUBMIT_SHAPE_GUIDANCE
       ], projection, blocks.length);
     },
     buildComposerPrompt: ({ groupedFindingsJson, intent, coverage, followUpHintNotes }) => {
@@ -339,6 +344,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
       return buildPrompt(10, [
         reviewerFrame("composition"),
         "Compose the final review from verified findings only. Do not invent new findings. Keep wording direct, specific, and actionable.",
+        "Preserve verified conclusions, evidence, severity, confidence, and uncertainty. Combine wording only when findings describe the same issue; do not reopen the investigation or strengthen claims beyond the supplied evidence.",
         "Final finding titles must be concrete issue statements. Do not preserve task-shaped titles that start with Verify, Check, Confirm, Investigate, Does, Can, Could, or Should, or titles phrased as questions; use the verified behavior delta or failure mode instead.",
         "For each finalBody, do not include a Markdown heading, repeated title, severity/confidence/category/file metadata, or generic report labels. Start with the concrete issue, impact, evidence, or fix.",
         "Write each finalBody as GitHub-flavored Markdown. Wrap file paths, symbols, identifiers, and short code fragments in backticks; put code excerpts, evidence snippets, and shell commands inside fenced code blocks tagged with the file's language (ts, go, bash, ...) rather than inline prose; bold inline labels such as **Impact:** or **Suggested fix:** are allowed. Fences belong only inside finalBody string values, never around the tool call or its JSON arguments. Never leave code, paths, or shell commands unformatted as plain prose.",

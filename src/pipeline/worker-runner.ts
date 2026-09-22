@@ -15,6 +15,10 @@ export type WorkerTask<T> = {
   // order, so pass identity must ride on the task itself.
   ensemblePass?: number;
   timeoutMs: number;
+  /** Additional hard-deadline allowance; does not extend investigation. */
+  repairAllowanceMs?: number;
+  /** Only for tasks whose implementation guarantees prompt abort settlement. */
+  awaitCancellation?: boolean;
   retryOnTransient: boolean;
   run: (signal: AbortSignal, task: AssignedWorkerTask<T>) => Promise<T>;
 };
@@ -161,15 +165,19 @@ async function runTaskOnce<T>(task: AssignedWorkerTask<T>, rootSignal: AbortSign
   // (no new investigation calls after it); this timer is the backstop.
   const timeout = setTimeout(
     () => controller.abort(new Error("worker timed out")),
-    task.timeoutMs + finalizeGraceMs(task.timeoutMs)
+    task.timeoutMs + finalizeGraceMs(task.timeoutMs) + (task.repairAllowanceMs ?? 0)
   );
   const abortWaiter = abortPromise(controller.signal);
 
+  const running = Promise.resolve().then(() => task.run(controller.signal, task));
   try {
-    const value = await Promise.race([task.run(controller.signal, task), abortWaiter.promise]);
+    const value = await Promise.race([running, abortWaiter.promise]);
     return { task, outcome: "completed", value, attempts: attempt };
   } catch (error) {
     if (controller.signal.aborted) {
+      // Drain cooperative cleanup/telemetry before the scheduler closes the
+      // stage or reuses this worker slot.
+      if (task.awaitCancellation) await running.catch(() => undefined);
       return {
         task,
         outcome: rootSignal.aborted ? "cancelled" : "timed_out",

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import { parseDiff } from "../src/git/diff-parser.js";
 import type { LlmRunner, LlmStructuredRequest } from "../src/llm/llm-runner.js";
+import { SCHEMA_VERSIONS } from "../src/llm/schemas.js";
 import { verifyFindings } from "../src/pipeline/verifier.js";
 import { inferAnchorFromChangedCode, representativeAnchorFromPacket } from "../src/pipeline/pipeline-utils.js";
 import { createPromptBuilder } from "../src/skills/prompt-builder.js";
@@ -726,7 +727,7 @@ describe("stage 9 eval diagnostics and prompts", () => {
     expect(verifierPrompt).toContain("transformed value");
     expect(verifierPrompt).toContain("original source value");
     expect(verifierPrompt).toContain("A bare keep means");
-    expect(verifierPrompt).toContain("a revision must include finalFinding or revisedAnchor");
+    expect(verifierPrompt).toContain("a revision must include findingUpdates or revisedAnchor");
     expect(verifierPrompt).toContain("Tool refusal, truncation, or budget pressure on a secondary check must not keep confidence low");
     expect(verifierPrompt).toContain("Reserve low confidence for speculative reachability, ambiguous intent, or weak path matching");
     expect(verifierPrompt).toContain("low means bounded or localized impact");
@@ -1047,6 +1048,59 @@ describe("plan 106 verifier revision semantics", () => {
     ]));
   });
 
+  it("applies compact updates while preserving evidence, identity, and anchor provenance", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("compact-update", packet, {
+      anchorSource: "model", suggestedFix: "Preserve the old route."
+    });
+    const telemetry = captureTelemetry();
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(), config(), telemetry.recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict: "revise", reason: "Clarify the confirmed trigger.",
+          requiredEvidencePresent: true, falsePositiveRisk: "low",
+          findingUpdates: { title: "Changed branch returns an incompatible route", confidence: "medium" }
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      }
+    );
+    expect(result.verified).toHaveLength(1);
+    expect(result.verified[0]).toMatchObject({
+      id: finding.id, title: "Changed branch returns an incompatible route", confidence: "medium",
+      evidence: finding.evidence, failureMode: finding.failureMode, verification: finding.verification,
+      suggestedFix: finding.suggestedFix, producedBy: finding.producedBy,
+      anchor: finding.anchor, anchorSource: finding.anchorSource
+    });
+    expect(finding.title).toBe("Candidate compact-update");
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "verification_primary_submit_accepted" }));
+  });
+
+  it.each([{}, { id: "replacement" }, { confidence: "certain" }, { evidence: {} }, '{"title":"string"}'])(
+    "records invalid compact updates as incomplete: %j", async (findingUpdates) => {
+      const fixture = reviewFixture(["src/app.ts"]);
+      const packet = fixture.packets[0]!;
+      const finding = candidate("invalid-update", packet);
+      const result = await verifyFindings(
+        { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+        fakeTools(), config(), captureTelemetry().recorder,
+        {
+          runner: verifierRunner(() => ({
+            verdict: "revise", reason: "Update", requiredEvidencePresent: true,
+            falsePositiveRisk: "low", findingUpdates
+          })),
+          promptBuilder: createPromptBuilder(fakeLensRegistry()),
+          lensRegistry: fakeLensRegistry(), diff: fixture.diff
+        }
+      );
+      expect(result.verified).toEqual([]);
+      expect(result.verdicts[0]).toMatchObject({ verdict: "incomplete", verificationIncomplete: true });
+    }
+  );
+
   it("leaves a bare keep unchanged", async () => {
     const fixture = reviewFixture(["src/app.ts"]);
     const packet = fixture.packets[0]!;
@@ -1083,7 +1137,7 @@ describe("plan 106 verifier revision semantics", () => {
       data: {
         candidateId: finding.id,
         submitTool: "submit_verdict",
-        schemaVersion: 4,
+        schemaVersion: SCHEMA_VERSIONS.submit_verdict,
         argumentsNonEmpty: true,
         schemaRepairUsed: false
       }
