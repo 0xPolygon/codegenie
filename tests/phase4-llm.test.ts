@@ -2,8 +2,9 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createAssistantMessageEventStream, Type, validateToolCall } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, Type } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
+import { validateToolCall } from "./helpers/pi-validation.js";
 import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import type {
   LlmCallUsage,
@@ -493,7 +494,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         telemetry: fakeTelemetry().recorder,
         logger: fakeLogger(),
         runSignal: new AbortController().signal,
-        adapter: { resolveModel: () => ({ provider: "fake", id: "fake-model", raw }), complete: vi.fn() }
+        adapter: { resolveModel: () => ({ provider: "fake", id: "fake-model", raw }), complete: vi.fn(), validateToolCall },
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
       });
 
     // pi advertises minimal/low/medium/high unless the model maps xhigh/max

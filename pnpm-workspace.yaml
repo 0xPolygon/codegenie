@@ -21,6 +21,7 @@ allowBuilds:
   esbuild: true
   '@google/genai': false
   protobufjs: false
+  tree-sitter: false
   tree-sitter-go: false
   tree-sitter-javascript: false
   tree-sitter-python: false
@@ -37,6 +38,7 @@ onlyBuiltDependencies:
 ignoredBuiltDependencies:
   - '@google/genai'
   - protobufjs
+  - tree-sitter
   - tree-sitter-go
   - tree-sitter-javascript
   - tree-sitter-python

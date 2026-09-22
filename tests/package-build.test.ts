@@ -13,6 +13,7 @@ const APPROVED_DEPENDENCY_BUILDS = ["esbuild"];
 const DENIED_DEPENDENCY_BUILDS = [
   "@google/genai",
   "protobufjs",
+  "tree-sitter",
   "tree-sitter-go",
   "tree-sitter-javascript",
   "tree-sitter-python",
