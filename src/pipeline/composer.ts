@@ -1,3 +1,4 @@
+import { compositionSources, renderCompositionSections } from "./composition-content.js";
 import type { LlmRunner } from "../llm/llm-runner.js";
 import { SubmitCompositionSchema, type SubmitComposition } from "../llm/schemas.js";
 import type { PromptBuilder } from "../skills/prompt-builder.js";
@@ -177,7 +178,24 @@ export async function dedupeRankAndComposeReview(
     const mergedFindings = ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined);
     const representative = canonicalMergedRepresentative(mergedFindings, opts.diff);
     const fingerprint = fingerprintFinding(representative, packetsById);
-    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections, link);
+    let body = composed.finalBody;
+    let attributed = false;
+    if (composed.sections !== undefined || composed.evidenceRefs !== undefined) {
+      try {
+        body = renderCompositionSections(mergedFindings, (composed.sections ?? []).map(section => ({ ...section, text: normalizeFinalBodyForRendering(section.text, representative) })), composed.evidenceRefs ?? []);
+        attributed = true;
+        telemetry.event({ stage: 10, level: "info", message: "composition_sources_accounted", data: { findingIds: ids, sections: composed.sections, evidenceRefs: composed.evidenceRefs, semanticPreservation: "not_machine_proven" } });
+      } catch (error) {
+        compositionDegraded = true;
+        body = templateBody(representative, mergedFindings, link);
+        telemetry.event({ stage: 10, level: "warn", message: "composition_source_validation_failed", data: { findingIds: ids, error: String(error) } });
+      }
+    } else {
+      // Legacy outputs remain readable, but lack component-level attribution.
+      compositionDegraded = true;
+      telemetry.event({ stage: 10, level: "warn", message: "composition_legacy_content_fallback", data: { findingIds: ids } });
+    }
+    const final = toFinalFinding(representative, fingerprint, body, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections, link, attributed);
     recordAnchorDowngrade(final, composed.publication, anchorDowngradeReasons);
     finalFindings.push(final);
     used.add(representative.id);
@@ -250,6 +268,14 @@ export async function dedupeRankAndComposeReview(
       : {})
   };
 
+  await telemetry.writeArtifact("composition-sources.json", scrubGitHubSecrets({
+    schemaVersion: 1,
+    mode: compositionMode,
+    semanticPreservation: "not_machine_proven",
+    sourceComponents: compositionSources(pretrim.kept),
+    proposals: composition.composedFindings,
+    dispositions: selection
+  }));
   await telemetry.writeArtifact("final-selection.json", {
     composition: {
       mode: compositionMode,
@@ -305,7 +331,7 @@ async function runComposer(
   notes: NeedsHumanAttentionNote[]
 ): Promise<SubmitComposition> {
   const prompt = opts.promptBuilder.buildComposerPrompt({
-    groupedFindingsJson: JSON.stringify(groups, null, 2),
+    groupedFindingsJson: JSON.stringify(groups.map(group => ({ fingerprint: group.fingerprint, representativeId: group.representative.id, findings: group.findings.map(({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence }) => ({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence })), sourceComponents: compositionSources(group.findings) })), null, 2),
     intent: `Declared intent: ${plan.diffUnderstanding.declaredIntent}\nInferred behavior: ${plan.diffUnderstanding.inferredBehavior}\n${summarizeIntentSignals(plan.intentSignals)}`,
     coverage,
     followUpHintNotes: notes.map((note) => `${note.question} (${note.files.join(", ")})`)
@@ -437,7 +463,7 @@ function recoverComposerInvalidSubmit(
   telemetry.event({
     stage: 10,
     level: "info",
-    message: "composer_payload_salvage_succeeded",
+    message: "composer_payload_salvage_proposed",
     data: {
       schemaInvalidKind: classification,
       composedFindings: Array.isArray(composedFindings) ? composedFindings.length : 0,
@@ -561,7 +587,7 @@ function buildComposerSchemaRepairPrompt(input: LlmSchemaRepairInput, groups: Fi
     "",
     "Schema constraints:",
     "- summary: string, 4000 characters or fewer.",
-    "- composedFindings: array of objects { findingIds, finalBody, publication }.",
+    "- composedFindings: array of objects { findingIds, finalBody, sections, evidenceRefs, publication }.",
     "- findingIds: non-empty array of known finding IDs.",
     "- finalBody: non-empty string.",
     "- publication: \"inline\" or \"summary-only\".",
@@ -582,16 +608,12 @@ function compactComposerRepairGroups(groups: FindingGroup[]): unknown[] {
       path: group.representative.path,
       anchorLine: group.representative.anchor?.line,
       category: group.representative.category,
-      failureMode: truncateComposerRepairText(group.representative.failureMode, 700),
-      whyThisMatters: truncateComposerRepairText(group.representative.whyThisMatters, 700)
+      failureMode: group.representative.failureMode,
+      whyThisMatters: group.representative.whyThisMatters
     },
     defaultPublication: group.representative.anchor ? "inline" : "summary-only",
-    defaultBody: truncateComposerRepairText(templateBody(group.representative, group.findings), 2400)
+    sourceComponents: compositionSources(group.findings)
   }));
-}
-
-function truncateComposerRepairText(input: string, maxChars: number): string {
-  return input.length <= maxChars ? input : `${input.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
 function safeComposerJson(input: unknown): string {
@@ -769,11 +791,14 @@ function toFinalFinding(
   diff: UnifiedDiff | undefined,
   publicationAnchorDecisions?: Map<string, PublicationAnchorDecision>,
   confidenceSelections?: Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>,
-  link?: EvidenceLinker
+  link?: EvidenceLinker,
+  attributed = false
 ): FinalFinding {
   const { anchor: _unvalidatedAnchor, anchorSource: _staleAnchorSource, ...findingWithoutAnchor } = finding;
   const publicationAnchor = selectPublicationAnchor(finding, mergedFindings, diff);
-  const normalizedFinalBody = normalizeFinalBodyForRendering(finalBody, finding) || templateBody(finding, [finding], link);
+  // Only attributed output can replace verified prose. Legacy or invalid output
+  // uses one deterministic rendering, never narrative plus every source section.
+  const normalizedFinalBody = attributed ? finalBody : templateBody(finding, mergedFindings, link);
   const normalizedTitle = normalizeFinalFindingTitle(finding, mergedFindings, normalizedFinalBody);
   const mergedCandidateIds = uniqueStrings(mergedFindings.map((item) => item.id));
   const mergedAnchors = dedupeAnchors(mergedFindings.flatMap((item) => item.anchor === undefined ? [] : [item.anchor]));
@@ -1749,61 +1774,39 @@ function evidenceLinkSuffix(link: EvidenceLinker | undefined, path: string, line
 }
 
 function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding], link?: EvidenceLinker): string {
-  const evidenceBlocks = mergedEvidenceBlocks(finding, groupedFindings, link);
-  return [
-    [`**Impact:** ${finding.failureMode}`, finding.whyThisMatters].filter((line) => line.length > 0).join("\n"),
-    `**Evidence:**\n\n${evidenceBlocks.join("\n\n")}`,
-    finding.suggestedFix ? `**Suggested fix:** ${finding.suggestedFix}` : undefined,
-    finding.suggestedTest ? `**Suggested test:** ${finding.suggestedTest}` : undefined
-  ]
-    .filter((section): section is string => section !== undefined && section.length > 0)
-    .join("\n\n");
+  return verifiedBodySections(finding, groupedFindings, link).join("\n\n");
+}
+
+function verifiedBodySections(finding: CandidateFinding, groupedFindings: CandidateFinding[], link?: EvidenceLinker): string[] {
+  const members = [finding, ...groupedFindings.filter((member) => member.id !== finding.id)];
+  const sections = members.flatMap((member) => [
+    [`**Impact:** ${member.failureMode}`, member.whyThisMatters].filter(Boolean).join("\n"),
+    member.verification ? `**Verification:** ${member.verification}` : undefined,
+    member.suggestedFix ? `**Suggested fix:** ${member.suggestedFix}` : undefined,
+    member.suggestedTest ? `**Suggested test:** ${member.suggestedTest}` : undefined
+  ]).map(section => section === undefined ? undefined : normalizeUnsupportedIntentFraming(section, finding));
+  sections.splice(1, 0, `**Evidence:**\n\n${mergedEvidenceBlocks(finding, groupedFindings, link).join("\n\n")}`);
+  return [...new Set(sections.filter((section): section is string => section !== undefined && section.length > 0))];
 }
 
 function mergedEvidenceBlocks(representative: CandidateFinding, groupedFindings: CandidateFinding[], link?: EvidenceLinker): string[] {
-  const blocks: string[] = [];
-  const seen = new Set<string>();
+  const evidence = new Map<string, { code: string; path: string; labels: Set<string> }>();
   const add = (label: string, code: string, path: string) => {
-    const compacted = compactEvidence(code);
-    if (normalizeSnippet(compacted).length === 0) {
-      return;
-    }
-    const key = normalizeSnippet(`${label}\n${compacted}`);
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    blocks.push(`${label}\n${codeBlock(compacted, fenceLanguageForPath(path))}`);
+    if (!code.trim()) return;
+    const normalized = code.replace(/\r\n/g, "\n").split("\n").map(line => line.trimEnd()).join("\n");
+    const key = JSON.stringify([path, normalized]);
+    const entry = evidence.get(key) ?? { code, path, labels: new Set<string>() };
+    entry.labels.add(label);
+    evidence.set(key, entry);
   };
-  add("Changed code:", representative.evidence.changedCode, representative.anchor?.path ?? representative.path);
-  for (const related of representative.evidence.relatedCode ?? []) {
-    add(`${inlineCode(related.path)}${evidenceLinkSuffix(link, related.path)} (${related.whyRelevant}):`, related.lines, related.path);
-  }
-  for (const finding of groupedFindings) {
-    if (finding.id === representative.id) {
-      continue;
-    }
-    add(`Also reported in ${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)}${evidenceLinkSuffix(link, finding.path, finding.anchor?.line)}:`, finding.evidence.changedCode, finding.path);
+  for (const finding of [representative, ...groupedFindings.filter(member => member.id !== representative.id)]) {
+    add(`Changed code in ${inlineCode(finding.path)}${evidenceLinkSuffix(link, finding.path, finding.anchor?.line)}:`, finding.evidence.changedCode, finding.path);
     for (const related of finding.evidence.relatedCode ?? []) {
       add(`${inlineCode(related.path)}${evidenceLinkSuffix(link, related.path)} (${related.whyRelevant}):`, related.lines, related.path);
     }
   }
-  return blocks.length > 0 ? blocks : ["Evidence was present in the reviewed diff."];
-}
-
-const MAX_EVIDENCE_LINES = 12;
-const MAX_EVIDENCE_CHARS = 600;
-
-function compactEvidence(text: string): string {
-  const lines = text
-    .split(/\r?\n/u)
-    .map((line) => line.replace(/\s+$/u, ""))
-    .filter((line) => line.trim().length > 0);
-  const block = lines.slice(0, MAX_EVIDENCE_LINES).join("\n");
-  if (block.length > MAX_EVIDENCE_CHARS) {
-    return `${block.slice(0, MAX_EVIDENCE_CHARS - 3)}...`;
-  }
-  return lines.length > MAX_EVIDENCE_LINES ? `${block}\n...` : block;
+  return [...evidence.values()].map(({ code, path, labels }) =>
+    `${[...labels].join("\n")}\n${/^\d+(?:\s*[-–,:]\s*\d+)*$/u.test(code) ? `Lines ${code}` : codeBlock(code, fenceLanguageForPath(path))}`);
 }
 
 function fingerprintFinding(finding: CandidateFinding, packetsById: Map<string, ReviewPacket> = new Map()): string {

@@ -1,3 +1,5 @@
+import { clarifyFindingLocations } from "../src/pipeline/finding-location.js";
+import { compositionSources } from "../src/pipeline/composition-content.js";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,7 +11,7 @@ import { createPiRunner } from "../src/llm/pi-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier } from "../src/pipeline/packet-builder.js";
 import { runLensPackets } from "../src/pipeline/lens-runner.js";
-import { buildPlannerDossier, compactPlannerDossier, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
+import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
 import { dedupeRankAndComposeReview } from "../src/pipeline/composer.js";
 import { applySeverityPolicy, capSeverityForBehaviorChange, guaranteeSeverity, hasCriticalOrHighGuarantee } from "../src/pipeline/severity-policy.js";
 import { aggregateRunCoverage, BudgetLedger, runReview } from "../src/pipeline/review-runner.js";
@@ -53,6 +55,14 @@ import { sha256Hex } from "../src/util/hashing.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 
 describe("phase 5 pipeline regressions", () => {
+  it("keeps fallback risk from classification without escalating every file", () => {
+    const dossier = fakeDossier(["auth.ts", "routine.ts"]);
+    dossier.files[0]!.reviewPriority = "critical";
+    const fallback = defaultPlan(dossier, [], "planner failed");
+    expect(fallback.coverage.map(entry => entry.coverage)).toEqual(["deep", "normal"]);
+    expect(fallback.diffUnderstanding.inferredBehavior).toContain("degraded");
+  });
+
   it("rethrows fatal provider errors from Stage 7 workers", async () => {
     const packet = fakePacket();
     const runner: LlmRunner = {
@@ -717,7 +727,7 @@ describe("phase 5 pipeline regressions", () => {
               confidence: "medium",
               path: "app.ts",
               category: "correctness",
-              evidence: { changedCode: "+ return computeRoute(provider)" },
+              evidence: { changedCode: "1    1  + return computeRoute(provider);" },
               failureMode: "The changed routing call can drop the provider preference.",
               whyThisMatters: "Callers relying on the preference get the wrong route.",
               verification: "test"
@@ -739,7 +749,7 @@ describe("phase 5 pipeline regressions", () => {
           events.push(event);
         }
       },
-      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: { files: [fakeDiffFile("app.ts", "return computeRoute(provider);")] } }
     );
 
     expect(result?.findings[0]).toMatchObject({
@@ -859,6 +869,7 @@ describe("phase 5 pipeline regressions", () => {
         summary: "Found 1 verified issue.",
         composedFindings: [{
           findingIds: [finding.id],
+          ...attributedSources([finding], "The transfer amount is truncated before scaling, so callers receive less than the quoted amount."),
           finalBody: "The transfer amount is truncated before scaling, so callers receive less than the quoted amount.",
           publication: "inline"
         }]
@@ -899,6 +910,9 @@ describe("phase 5 pipeline regressions", () => {
       severity: "medium",
       confidence: "low",
       producedBy: { ...anchorless.producedBy, packetId: "packet-promoted", stage: 9 },
+      suggestedFix: "Derive the published minimum from the deliverable amount.",
+      suggestedTest: "Check a value with a nonzero discarded remainder.",
+      verification: "The bound mismatch is confirmed; downstream rejection remains unverified.",
       failureMode: "Does scaleAmount truncate the deliverable amount below ToAmountMin?",
       provenance: {
         source: "uncertainty_promotion",
@@ -938,11 +952,18 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     const [published] = result.findings;
+    for (const member of [direct, promoted]) {
+      expect(published?.finalBody).toContain(member.failureMode);
+      expect(published?.finalBody).toContain(member.evidence.changedCode);
+      if (member.suggestedFix) expect(published?.finalBody).toContain(member.suggestedFix);
+      if (member.suggestedTest) expect(published?.finalBody).toContain(member.suggestedTest);
+      if (member.verification) expect(published?.finalBody).toContain(member.verification);
+    }
     expect(published).toMatchObject({
       id: direct.id,
       title: direct.title,
       severity: "low",
-      finalBody,
+      finalBody: expect.stringContaining(direct.failureMode),
       mergedCandidateIds: [direct.id, promoted.id]
     });
     expect(published?.fingerprint).toBe(sha256Hex([
@@ -4511,16 +4532,13 @@ describe("phase 5 pipeline regressions", () => {
       { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
     );
 
-    // Plan 76: the unanchored candidate received a gate-only representative
-    // anchor before verification; the revision keeps the original path and
-    // the representative anchor stays gate-scoped (withheld at composition).
+    // A wording revision retains the original path without fabricated coordinates.
     expect(verified.verified[0]).toMatchObject({
       id: "finding-1",
       path: "app.ts",
-      changedLine: true,
-      anchorSource: "backfill_packet_representative"
+      changedLine: false
     });
-    expect(verified.verified[0]?.anchor).toEqual({ path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" });
+    expect(verified.verified[0]?.anchor).toBeUndefined();
   });
 
   it("lets Stage 9 use reserved model-call budget after Stage 7 exhausts unreserved calls", () => {
@@ -7085,6 +7103,7 @@ describe("phase 5 pipeline regressions", () => {
         summary: "Found 1 verified issue.",
         composedFindings: [{
           findingIds: [finding.id],
+          ...attributedSources([finding], "This accidentally contradicts intent and silently changes the routing fallback contract."),
           finalBody: "This accidentally contradicts intent and silently changes the routing fallback contract.",
           publication: "inline"
         }]
@@ -7140,6 +7159,7 @@ describe("phase 5 pipeline regressions", () => {
         summary: "Found 1 verified issue.",
         composedFindings: [{
           findingIds: [finding.id],
+          ...attributedSources([finding], "This silently ignores the write error, so callers can observe a successful response even though persistence failed."),
           finalBody: "This silently ignores the write error, so callers can observe a successful response even though persistence failed.",
           publication: "inline"
         }]
@@ -7832,11 +7852,10 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     const records = artifacts.get("verification.json") as Array<{ candidateId: string; gate: string; verdict?: { verdict: string } }>;
-    // Plan 76: the invalid model anchor is stripped, then a gate-only
-    // representative anchor is backfilled from the packet.
-    expect(verifierCandidate).toMatchObject({ id: "finding-1", changedLine: true, anchorSource: "backfill_packet_representative" });
-    expect(verifierCandidate?.anchor).toEqual({ path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" });
-    expect(verified.verified[0]).toMatchObject({ id: "finding-1", changedLine: true, anchorSource: "backfill_packet_representative" });
+    // Invalid coordinates stay absent through verification.
+    expect(verifierCandidate).toMatchObject({ id: "finding-1", changedLine: false });
+    expect(verifierCandidate?.anchor).toBeUndefined();
+    expect(verified.verified[0]).toMatchObject({ id: "finding-1", changedLine: false });
     expect(records).toEqual([
       expect.objectContaining({
         candidateId: "finding-1",
@@ -9230,11 +9249,12 @@ describe("phase 5 pipeline regressions", () => {
       { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
     );
 
-    expect(result.findings[0]?.finalBody).toContain("Recovered final body.");
+    expect(result.findings[0]?.finalBody).toContain(finding.failureMode);
+    expect(result.findings[0]?.finalBody).not.toContain("Recovered final body.");
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         stage: 10,
-        message: "composer_payload_salvage_succeeded",
+        message: "composer_payload_salvage_proposed",
         data: expect.objectContaining({ schemaInvalidKind: "xml_parameter_bleed", composedFindings: 1 })
       })
     ]));
@@ -9292,7 +9312,8 @@ describe("phase 5 pipeline regressions", () => {
       { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
     );
 
-    expect(result.findings[0]?.finalBody).toContain("Repaired final body.");
+    expect(result.findings[0]?.finalBody).toContain(finding.failureMode);
+    expect(result.findings[0]?.finalBody).not.toContain("Repaired final body.");
     expect(events).toEqual(expect.arrayContaining([
       expect.objectContaining({
         stage: 10,
@@ -9352,7 +9373,8 @@ describe("phase 5 pipeline regressions", () => {
       { runner, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
     );
 
-    expect(result.findings[0]?.finalBody).toContain("Compact repaired body.");
+    expect(result.findings[0]?.finalBody).toContain(finding.failureMode);
+    expect(result.findings[0]?.finalBody).not.toContain("Compact repaired body.");
   });
 
   it("fails the run on persistent provider-wide non-auth failures and writes failure logs", async () => {
@@ -10262,7 +10284,7 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(result.findings).toHaveLength(1);
     expect(result.findings[0]?.mergedCandidateIds).toEqual(["finding-1"]);
-    expect(result.findings[0]?.finalBody).toContain("Changed code:\n```ts\nbad\n```");
+    expect(result.findings[0]?.finalBody).toContain("```ts\nbad\n```");
     expect(result.findings[0]?.finalBody).not.toContain("invented wording");
     expect(events).toContainEqual(expect.objectContaining({
       stage: 10,
@@ -10567,7 +10589,7 @@ describe("phase 5 pipeline regressions", () => {
       publication: "inline",
       mergedCandidateIds: expect.arrayContaining(["finding-1", "finding-2"])
     });
-    expect(result.findings[0]?.finalBody).toContain("Also reported in `app.ts");
+    expect(result.findings[0]?.finalBody).toContain("Changed code in `app.ts");
   });
 
   it("merges cross-file helper and caller root-cause duplicates in deterministic fallback", async () => {
@@ -10669,8 +10691,8 @@ describe("phase 5 pipeline regressions", () => {
       mergedCandidateIds: expect.arrayContaining(["routing-helper", "routing-v1", "routing-v15"])
     });
     expect(result.findings[0]?.mergedCandidateIds).toHaveLength(3);
-    expect(result.findings[0]?.finalBody).toContain(`Also reported in \`${v1Path}:459\``);
-    expect(result.findings[0]?.finalBody).toContain(`Also reported in \`${v15Path}:458\``);
+    expect(result.findings[0]?.finalBody).toContain(`Changed code in \`${v1Path}\``);
+    expect(result.findings[0]?.finalBody).toContain(`Changed code in \`${v15Path}\``);
   });
 
   it("does not merge unrelated cross-file findings just because they cite the same helper path", async () => {
@@ -11304,6 +11326,13 @@ describe("phase 5 pipeline regressions", () => {
               summary: "one issue",
               composedFindings: [{
                 findingIds: ["finding-1"],
+                ...attributedSources([finding], [
+                  "### HIGH: Canceled context keeps retrying",
+                  "Severity: high · Confidence: high · Category: correctness",
+                  "File: app.ts:1",
+                  "",
+                  "The new retry path swaps the request context for a background context, so cancellation no longer stops the worker."
+                ].join("\n")),
                 finalBody: [
                   "### HIGH: Canceled context keeps retrying",
                   "Severity: high · Confidence: high · Category: correctness",
@@ -11321,7 +11350,7 @@ describe("phase 5 pipeline regressions", () => {
     );
     const markdown = renderMarkdownReview(result);
 
-    expect(result.findings[0]?.finalBody).toBe("The new retry path swaps the request context for a background context, so cancellation no longer stops the worker.");
+    expect(result.findings[0]?.finalBody?.includes("The new retry path swaps the request context for a background context, so cancellation no longer stops the worker.")).toBe(true);
     expect(markdown.match(/Canceled context keeps retrying/gu)).toHaveLength(1);
     expect(markdown.match(/\*\*Confidence:\*\* high/gu)).toHaveLength(1);
     expect(markdown).not.toContain("Category: correctness");
@@ -11359,6 +11388,7 @@ describe("phase 5 pipeline regressions", () => {
               summary: "one issue",
               composedFindings: [{
                 findingIds: ["finding-1"],
+                ...attributedSources([fakeFinding()], "The finding is that the changed branch skips cleanup before returning.\nThat can leave stale state for the next request."),
                 finalBody: "The finding is that the changed branch skips cleanup before returning.\nThat can leave stale state for the next request.",
                 publication: "inline"
               }]
@@ -11369,7 +11399,7 @@ describe("phase 5 pipeline regressions", () => {
       }
     );
 
-    expect(result.findings[0]?.finalBody).toBe("The finding is that the changed branch skips cleanup before returning.\nThat can leave stale state for the next request.");
+    expect(result.findings[0]?.finalBody?.includes("The finding is that the changed branch skips cleanup before returning.\nThat can leave stale state for the next request.")).toBe(true);
   });
 
   it("does not strip useful opening sentences that start with File", async () => {
@@ -11403,6 +11433,7 @@ describe("phase 5 pipeline regressions", () => {
               summary: "one issue",
               composedFindings: [{
                 findingIds: ["finding-1"],
+                ...attributedSources([fakeFinding()], "File: descriptors remain open when the new early return runs.\nClose them before returning."),
                 finalBody: "File: descriptors remain open when the new early return runs.\nClose them before returning.",
                 publication: "inline"
               }]
@@ -11413,7 +11444,7 @@ describe("phase 5 pipeline regressions", () => {
       }
     );
 
-    expect(result.findings[0]?.finalBody).toBe("File: descriptors remain open when the new early return runs.\nClose them before returning.");
+    expect(result.findings[0]?.finalBody?.includes("File: descriptors remain open when the new early return runs.\nClose them before returning.")).toBe(true);
   });
 
   it("groups unreviewed partial coverage by file and suppresses default planner reasons", () => {
@@ -12369,7 +12400,8 @@ describe("phase 5 pipeline regressions", () => {
           runStructured: async <T>() =>
             ({
               summary: "No security issues, but one correctness bug remains.",
-              composedFindings: [{ findingIds: [finding.id], finalBody: "Grouped body", publication: "inline" }]
+              composedFindings: [{ findingIds: [finding.id], ...attributedSources([finding], "Grouped body"),
+          finalBody: "Grouped body", publication: "inline" }]
             }) as T
         },
         promptBuilder: fakePromptBuilder(),
@@ -12474,6 +12506,7 @@ describe("phase 5 pipeline regressions", () => {
               summary: "one broad issue",
               composedFindings: [{
                 findingIds: ["finding-1"],
+                ...attributedSources([fakeFinding()], "Full failure mode and concrete fix details."),
                 finalBody: "Full failure mode and concrete fix details.",
                 publication: "summary-only"
               }]
@@ -12486,7 +12519,7 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(result.summaryOnlyFindings).toHaveLength(1);
     expect(result.postingPlan?.reviewBody).toContain("- 🔵 Medium: **finding** (`app.ts`)");
-    expect(result.postingPlan?.reviewBody).toContain("  Full failure mode and concrete fix details.");
+    expect(result.postingPlan?.reviewBody).toContain("Full failure mode and concrete fix details.");
   });
 
   it("includes partial coverage disclosure in GitHub posting review body", async () => {
@@ -14395,3 +14428,99 @@ function languageProjectionSkill(id: string, languages: string[], marker: string
     sections: { checks: marker, falsePositives: marker }
   };
 }
+
+function attributedSources(findings: CandidateFinding[], body: string) {
+  const sources = compositionSources(findings);
+  return {
+    sections: [
+      { kind: "impact", text: body, sourceRefs: sources.filter(source => source.kind === "impact").map(source => source.id) },
+      ...sources.filter(source => source.kind !== "evidence" && source.kind !== "impact").map(source => ({ kind: source.kind, text: source.text, sourceRefs: [source.id] }))
+    ],
+    evidenceRefs: sources.filter(source => source.kind === "evidence").map(source => source.id)
+  };
+}
+describe("full-diff finding locations", () => {
+  it.each([true, false])("retains cross-packet anchors without clarification (submitted=%s)", async (submittedAnchor) => {
+    const anchor = { path: "production.ts", line: 1, side: "RIGHT" as const, hunkId: "h1" };
+    let calls = 0;
+    const finding = { ...fakeFinding(), anchor, evidence: { changedCode: "return productionConversion(amount);" } };
+    const { anchor: _anchor, ...unanchored } = finding;
+    const diff = { files: [fakeDiffFile("app.ts"), fakeDiffFile("production.ts", finding.evidence.changedCode)] };
+    const results = await runLensPackets(fakePlan(), [fakePacket()], fakeTools(), config(), nullTelemetry(), {
+      runner: { runStructured: async <T>() => {
+        calls++;
+        return { findings: [submittedAnchor ? finding : unanchored], followUpHints: [], uncertainties: [] } as T;
+      } }, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff
+    });
+    expect(calls).toBe(1);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.packetId).toBe("packet-1");
+    expect(results[0]?.findings[0]).toMatchObject({ path: "production.ts", anchor, producedBy: { packetId: "packet-1" } });
+    let verifierInput: unknown;
+    const verified = await verifyFindings({ packetResults: results, packets: [fakePacket()] }, fakeTools(), config(), nullTelemetry(), {
+      runner: { runStructured: async <T>() => ({ verdict: "keep", reason: "Confirmed", requiredEvidencePresent: true, falsePositiveRisk: "low" }) as T },
+      promptBuilder: { ...fakePromptBuilder(), buildVerifierPrompt: (input) => {
+        verifierInput = input;
+        return { prompt: "verify", templateVersion: "test", untrustedBlockCount: 0 };
+      } }, lensRegistry: fakeLensRegistry(), diff
+    });
+    expect(verified.verified[0]?.anchor).toEqual(anchor);
+    expect(verifierInput).toMatchObject({ hunksText: expect.stringContaining("return productionConversion(amount);"), originContext: expect.stringContaining("Discovery packet packet-1 (app.ts)") });
+  });
+
+  it.each(["located", "unavailable"] as const)("preserves cross-file path without an anchor through clarification: %s", async (mode) => {
+    const { anchor: _anchor, ...original } = fakeFinding();
+    const submitted = { ...original, path: "production.ts", evidence: { changedCode: "return sharedConversion(amount);" } };
+    const diff = { files: [fakeDiffFile("app.ts"), fakeDiffFile("production.ts", submitted.evidence.changedCode), fakeDiffFile("other.ts", submitted.evidence.changedCode)] };
+    const requests: LlmStructuredRequest<unknown>[] = [];
+    const [result] = await runLensPackets(fakePlan(), [fakePacket()], fakeTools(), config(), nullTelemetry(), {
+      runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        requests.push(request);
+        return (request.purpose === "location_clarification"
+          ? { status: mode, ...(mode === "located" ? { anchor: { path: "production.ts", line: 1, side: "RIGHT", hunkId: "h1" } } : {}) }
+          : { findings: [submitted], followUpHints: [], uncertainties: [] }) as T;
+      } }, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff
+    });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]?.prompt).toContain("File: production.ts");
+    expect(result?.packetId).toBe("packet-1");
+    expect(result?.findings[0]).toMatchObject({ path: "production.ts", evidence: submitted.evidence, producedBy: { packetId: "packet-1" } });
+    expect(result?.findings[0]?.anchor !== undefined).toBe(mode === "located");
+  });
+
+  it("propagates cancellation without retrying or changing finding content", async () => {
+    const { anchor: _anchor, ...original } = fakeFinding();
+    const finding: CandidateFinding = { ...original, changedLine: false, locationResolution: { status: "unresolved" } };
+    const abort = new AbortController();
+    let calls = 0;
+    await expect(clarifyFindingLocations([finding], config(), nullTelemetry(), {
+      diff: fakeDiff(), signal: abort.signal,
+      runner: { runStructured: async () => { calls++; abort.abort(); throw abort.signal.reason; } }
+    })).rejects.toBeDefined();
+    expect(calls).toBe(1);
+    expect(finding.evidence).toEqual(original.evidence);
+    expect(finding.anchor).toBeUndefined();
+  });
+
+  it.each(["located", "unavailable", "invalid", "failure", "budget"] as const)("bounds placement clarification and retains evidence: %s", async (mode) => {
+    const { anchor: _anchor, ...original } = fakeFinding();
+    const finding: CandidateFinding = { ...original, changedLine: false, locationResolution: { status: "unresolved" } };
+    const before = structuredClone(finding);
+    const requests: LlmStructuredRequest<unknown>[] = [];
+    await clarifyFindingLocations([finding], config(), nullTelemetry(), {
+      diff: fakeDiff(), checkpoint: () => mode === "budget" ? "exhausted" : "ok",
+      runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        requests.push(request);
+        if (mode === "failure") throw new CodegenieError("llm_call_failed", "timed out", { recoverable: true });
+        return { status: mode === "unavailable" ? "unavailable" : "located", ...(mode !== "unavailable" ? { anchor: { path: "app.ts", line: mode === "invalid" ? 99 : 1, side: "RIGHT", hunkId: "h1" } } : {}) } as T;
+      } }
+    });
+    expect(requests).toHaveLength(mode === "budget" ? 0 : 1);
+    if (requests[0]) expect(requests[0]).toMatchObject({ purpose: "location_clarification", timeoutMs: 180_000, tools: [] });
+    expect(finding.evidence).toEqual(before.evidence);
+    expect(finding.producedBy).toEqual(before.producedBy);
+    expect(finding.title).toBe(before.title);
+    expect(finding.anchor !== undefined).toBe(mode === "located");
+    expect(finding.locationResolution?.status).toBe(mode === "located" ? "clarified" : "unavailable");
+  });
+});

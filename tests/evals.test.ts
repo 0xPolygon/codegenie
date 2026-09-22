@@ -104,6 +104,8 @@ describe("eval suite validation", () => {
       "  maxTimeMinutes: 60",
       "expect:",
       "  reviewCompleteness: complete",
+      "  planningQuality: non-degraded",
+      "  recoveryFidelity: preserved",
       "  maxBudgetOverruns: 0",
       "  maxToolBudgetRejections: 0",
       "  maxDegradedHunks: 0",
@@ -338,6 +340,29 @@ describe("eval suite validation", () => {
 });
 
 describe("eval scoring", () => {
+  it("requires non-degraded planning and complete, reconciled recovery evidence when opted in", () => {
+    const evalCase: EvalCase = { name: "fidelity", artifacts: { path: "unused" }, expect: { planningQuality: "non-degraded", recoveryFidelity: "preserved" } };
+    const events = [
+      { message: "recovery_fidelity_started", data: { version: 1 } },
+      { message: "recovery_obligation_opened", data: { obligationId: "a" } },
+      { message: "recovery_preservation_rejected", data: { obligationId: "a" } },
+      { message: "recovery_obligation_resolved", data: { obligationId: "a" } },
+      { message: "stage_completed", stage: 10 }
+    ].map((event, index) => ({ ...event, eventId: `ev-${String(index + 1).padStart(6, "0")}` }));
+    const artifacts: EvalArtifacts = { candidates: [], verification: [], finalSelection: [], finalFindings: [], packets: [], hintEvents: [],
+      coverage: { totalHunks: 1, reviewedHunks: 1, skippedHunks: 0, failedHunks: 0, coverageByLevel: { deep: 1, normal: 0, light: 0, skip: 0 }, degradedPlanning: false, budgetStopped: false, verificationIncompleteCount: 0, partial: false, reasons: [] },
+      metricsSources: { recoveryEvents: events, runJson: { totals: { events: events.length } } } };
+    expect(scoreEvalRun(evalCase, artifacts, "replay").budgetResults.map(result => result.status)).toEqual(["pass", "pass"]);
+    artifacts.coverage!.degradedPlanning = true;
+    expect(scoreEvalRun(evalCase, artifacts, "replay").budgetResults.find(result => result.check === "planningQuality")?.status).toBe("fail");
+    artifacts.metricsSources.recoveryEvents = events.map(event => event.message === "recovery_obligation_resolved" ? { ...event, message: "unrelated" } : event);
+    expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unresolved");
+    artifacts.metricsSources.recoveryEvents = events.slice(1);
+    expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
+    artifacts.metricsSources = {};
+    expect(scoreEvalRun(evalCase, artifacts, "replay").budgetResults.find(result => result.check === "recoveryFidelity")?.status).toBe("fail");
+  });
+
   it("matches fields, assigns deterministically, attributes losses, and scores budgets", () => {
     const finding = finalFinding("final-1", "src/app.ts", 12, {
       title: "Fake finding in src/app.ts",

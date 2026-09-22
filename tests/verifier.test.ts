@@ -1478,14 +1478,14 @@ describe("plan 76 anchor reconstruction", () => {
   it("tier 1: reconstructs a precise anchor from quoted changed code with whitespace variance", () => {
     const fixture = reviewFixture(["src/app.ts"]);
     const packet = fixture.packets[0]!;
-    const anchor = inferAnchorFromChangedCode(packet, "+   return route(provider);");
+    const anchor = inferAnchorFromChangedCode(packet, "   2    2  +   return route(provider);");
     expect(anchor).toEqual({ path: packet.path, line: 2, side: "RIGHT", hunkId: packet.hunks[0]!.hunkId });
   });
 
-  it("tier 1: tolerates truncated quotes via containment", () => {
+  it("tier 1: refuses truncated substring quotes", () => {
     const fixture = reviewFixture(["src/app.ts"]);
     const packet = fixture.packets[0]!;
-    expect(inferAnchorFromChangedCode(packet, "return route(provider)")?.line).toBe(2);
+    expect(inferAnchorFromChangedCode(packet, "return route(provider)")).toBeUndefined();
   });
 
   it("tier 1: strips line-number columns quoted from contentWithLineNumbers", () => {
@@ -1527,8 +1527,50 @@ describe("plan 76 anchor reconstruction", () => {
         changedOldLineNumbers: [2]
       }]
     };
-    const anchor = inferAnchorFromChangedCode(packet, "- return previous(provider);");
+    const anchor = inferAnchorFromChangedCode(packet, "```diff\n- return previous(provider);\n```");
     expect(anchor).toEqual({ path: packet.path, line: 2, side: "LEFT", hunkId: hunk.hunkId });
+  });
+
+  it("does not conflate internal literal whitespace, unary operators, or contradictory quote locations", () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const file = fixture.diff.files[0]!;
+    const hunk = file.hunks[0]!;
+    const diff: UnifiedDiff = { files: [{ ...file, hunks: [{ ...hunk, lines: [
+      { kind: "add", content: 'return "a  b";', newLineNumber: 2 },
+      { kind: "add", content: '-longVariable;', newLineNumber: 3 }
+    ] }] }] };
+    expect(inferAnchorFromChangedCode(diff, 'return "a b";')).toBeUndefined();
+    expect(inferAnchorFromChangedCode(diff, 'longVariable;')).toBeUndefined();
+    expect(inferAnchorFromChangedCode(diff, '```diff\n+ -longVariable;\n```')?.line).toBe(3);
+    const other = { ...file, path: "src/other.ts", hunks: [{ ...hunk, lines: [{ kind: "add" as const, content: 'return elsewhere();', newLineNumber: 2 }] }] };
+    diff.files.push(other);
+    expect(inferAnchorFromChangedCode(diff, 'return "a  b";\nreturn elsewhere();')).toBeUndefined();
+    other.hunks[0]!.lines[0]!.content = 'return "a  b";';
+    expect(inferAnchorFromChangedCode(diff, 'return "a  b";')).toBeUndefined();
+  });
+
+  it("preserves bare unary plus/minus and strips prefixes only in explicit diff notation", () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const diff = fixture.diff;
+    diff.files[0]!.hunks[0]!.lines = [{ kind: "add", content: "charge(amount);", newLineNumber: 2 }];
+    expect(inferAnchorFromChangedCode(diff, "-charge(amount);")).toBeUndefined();
+    expect(inferAnchorFromChangedCode(diff, "+charge(amount);")).toBeUndefined();
+    expect(inferAnchorFromChangedCode(diff, "- charge(amount);")).toBeUndefined();
+    expect(inferAnchorFromChangedCode(diff, "```diff\n-charge(amount);\n```")).toBeUndefined();
+    expect(inferAnchorFromChangedCode(diff, "2    2  +charge(amount);")?.line).toBe(2);
+    expect(inferAnchorFromChangedCode(diff, "```diff\n+charge(amount);\n```")?.line).toBe(2);
+    expect(inferAnchorFromChangedCode(diff, "@@ -1 +1 @@\n+charge(amount);")?.line).toBe(2);
+  });
+
+  it.each(["+", "-"] as const)("explicit %s diff markers are never alternative source operators", (prefix) => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const diff = fixture.diff;
+    diff.files[0]!.hunks[0]!.lines = [{ kind: prefix === "+" ? "add" : "delete", content: `${prefix}charge(amount);`, oldLineNumber: 2, newLineNumber: 2 }];
+    for (const format of [(text: string) => `\`\`\`diff\n${text}\n\`\`\``, (text: string) => `2    2  ${text}`]) {
+      expect(inferAnchorFromChangedCode(diff, format(`${prefix}charge(amount);`))).toBeUndefined();
+      expect(inferAnchorFromChangedCode(diff, format(`${prefix}${prefix}charge(amount);`))).toMatchObject({ line: 2, side: prefix === "+" ? "RIGHT" : "LEFT" });
+    }
+    expect(inferAnchorFromChangedCode(diff, `${prefix}charge(amount);`)).toMatchObject({ line: 2, side: prefix === "+" ? "RIGHT" : "LEFT" });
   });
 
   it("tier 2: representative anchor prefers the first RIGHT changed line", () => {
@@ -1550,7 +1592,7 @@ describe("plan 76 anchor reconstruction", () => {
     expect(representativeAnchorFromPacket(unchanged)).toBeUndefined();
   });
 
-  it("rescues an anchorless evidence-backed low-confidence candidate via a gate-only representative anchor", async () => {
+  it("verifies anchorless evidence-backed low-confidence candidates without inventing coordinates", async () => {
     const fixture = reviewFixture(["src/app.ts"]);
     const packet = fixture.packets[0]!;
     const { anchor: _anchor, ...anchorless } = candidate("run36-shape", packet, {
@@ -1594,19 +1636,18 @@ describe("plan 76 anchor reconstruction", () => {
 
     expect(calls).toBe(1);
     expect(result.verified[0]?.id).toBe("run36-shape");
-    expect(result.verified[0]?.anchorSource).toBe("backfill_packet_representative");
+    expect(result.verified[0]?.anchor).toBeUndefined();
     expect(telemetry.artifacts.get("verification.json")).toEqual([
       expect.objectContaining({
         candidateId: "run36-shape",
         gateReason: "low_confidence_evidence_backed",
         gateFacts: expect.objectContaining({
           modelAnchorSubmitted: false,
-          validAnchorPresent: true,
-          anchorSource: "backfill_packet_representative"
+          validAnchorPresent: false
         })
       })
     ]);
-    expect(telemetry.events).toEqual(expect.arrayContaining([
+    expect(telemetry.events).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ stage: 9, message: "anchor_representative", data: expect.objectContaining({ candidateId: "run36-shape" }) })
     ]));
   });

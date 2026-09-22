@@ -73,6 +73,7 @@ export const ARTIFACT_LOCATION = {
   "attention.json": "stages/10-composition/attention.json",
   "coverage.json": "stages/10-composition/coverage.json",
   "budget-summary.json": "stages/10-composition/budget-summary.json",
+  "composition-sources.json": "stages/10-composition/composition-sources.json",
   "final-selection.json": "stages/10-composition/final-selection.json",
   "human-attention-notes.json": "stages/10-composition/human-attention-notes.json",
   "final-findings.json": "stages/10-composition/final-findings.json",
@@ -453,10 +454,12 @@ class RunTelemetryImpl {
 
   readonly recorder: TelemetryRecorder;
 
+  private readonly codegenieRuntime = resolveCodegenieRuntimeProvenance();
+
   constructor(opts: CreateRunTelemetryOptions) {
     this.clock = opts.clock ?? (() => new Date());
     this.config = opts.telemetryConfig;
-    this.metadata = opts.runMetadata ?? {};
+    this.metadata = structuredClone(opts.runMetadata ?? {});
     this.runId = opts.idFactory?.() ?? createRunId(this.clock());
     this.directoryName = opts.directoryNameFactory?.() ?? this.runId;
     this.startedAt = this.clock().toISOString();
@@ -518,7 +521,7 @@ class RunTelemetryImpl {
     const durationMs = durationBetween(this.startedAt, finishedAt);
     const totals = this.runTotals();
     const normalizedOutcome = normalizeOutcome(outcome);
-    const codegenieRuntime = resolveCodegenieRuntimeProvenance();
+    const codegenieRuntime = this.codegenieRuntime;
     this.writeArtifactJson("run.json", {
       schemaVersion: 1,
       runId: this.runId,

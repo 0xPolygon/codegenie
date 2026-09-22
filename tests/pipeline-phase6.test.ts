@@ -73,19 +73,19 @@ describe("phase 6 live review path", () => {
         }
       );
 
-      expect(result.summary).toBe("Live review found one issue.");
+      expect(result.summary).toBe("⚠️ Found 1 verified issue.");
       expect(result.findings).toHaveLength(1);
       expect(result.findings[0]).toMatchObject({
         title: "Division by zero guard was removed",
         path: "app.ts",
         publication: "inline",
-        finalBody: expect.stringContaining("Restoring the guard")
+        finalBody: expect.stringContaining("Restore the guard")
       });
       expect(result.needsHumanAttention).toEqual([]);
-      expect(output.join("\n")).toContain("Live review found one issue.");
+      expect(output.join("\n")).toContain("Found 1 verified issue.");
       expect(output.join("\n")).not.toContain("Needs Human Attention");
       expect(output.join("\n")).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
-      expect(output.join("\n")).toContain("[redacted:");
+      expect(output.join("\n")).not.toContain("Diagnostic token:");
       expect(adapter.callsByPrompt).toMatchObject({
         planner: 1,
         packetReview: 2,
@@ -124,9 +124,12 @@ describe("phase 6 live review path", () => {
       expect(deferredStage8Artifacts(runArtifactDir)).toEqual([]);
       expect(existsSync(path.join(runArtifactDir, "final-review.md"))).toBe(true);
       const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
-      expect(finalReview).toContain("Restoring the guard");
+      expect(finalReview).toContain("Restore the guard");
       expect(finalReview).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
-      expect(finalReview).toContain("[redacted:");
+      expect(finalReview).not.toContain("Diagnostic token:");
+      const compositionSources = readFileSync(path.join(runArtifactDir, "stages/10-composition/composition-sources.json"), "utf8");
+      expect(compositionSources).toContain("[redacted:");
+      expect(compositionSources).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
       const runJson = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8")) as {
         totals: { packets: number; candidates: number; verified: number; finalFindings: number };
       };
@@ -257,7 +260,7 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
       if (prompt.includes("packet review")) {
         callsByPrompt.packetReview += 1;
         if (callsByPrompt.packetReview === 1) {
-          return assistant([toolCall("submit-review-invalid", "submit_review", { packetId: "model-owned-field" })]);
+          return assistant([toolCall("submit-review-invalid", "submit_review", {})]);
         }
         const packet = extractPromptJson<ReviewPacket>(prompt, "review-packet");
         if (!packet) {
@@ -267,8 +270,8 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
       }
       if (prompt.includes("composition")) {
         callsByPrompt.composer += 1;
-        const groups = extractPromptJson<Array<{ representative?: { id?: string } }>>(prompt, "grouped-findings") ?? [];
-        const findingId = groups[0]?.representative?.id;
+        const groups = extractPromptJson<Array<{ representativeId?: string; representative?: { id?: string } }>>(prompt, "grouped-findings") ?? [];
+        const findingId = groups[0]?.representativeId ?? groups[0]?.representative?.id;
         if (!findingId) {
           throw new Error("composer prompt did not include a finding id");
         }

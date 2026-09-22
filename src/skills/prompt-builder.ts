@@ -73,11 +73,11 @@ export type PromptBuilder = {
 };
 
 export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
-  5: "p5.6",
-  7: "p7.11",
+  5: "p5.7",
+  7: "p7.13",
   8: "p8.2",
-  9: "p9.11",
-  10: "p10.3"
+  9: "p9.14",
+  10: "p10.5"
 };
 
 type PromptLedgerEntry = {
@@ -91,8 +91,22 @@ type PromptLedgerEntry = {
 // evidence here. New surfaces need a ledger entry to land; a paragraph dies
 // when its motivating case passes without it. This turns future "can we
 // delete this?" from archaeology into a lookup.
+const SHARED_SUBMIT_KEY_CHECK: PromptLedgerEntry = {
+  surface: "shared submit-tool description: schema key check",
+  reason: "Reminds every stage, including replacement repair and finalization calls, to match nested key spelling/case, include required fields, and avoid extra keys or leaked schema metadata. Defined once in the runner's submit-tool description.",
+  evidence: "Run 80: evidence.maxItems and falsePositivesRisk caused avoidable schema failures; Plan 116 follow-up"
+};
+
+const SHARED_FOCUSED_REPAIR: PromptLedgerEntry = {
+  surface: "shared schema repair: focused diagnostics and retained original",
+  reason: "Names missing/invalid schema-defined paths and retains discarded unexpected values as diagnostic context for spelling or placement; valid schema-defined evidence and decisions stay protected and the whole original remains fenced.",
+  evidence: "Plan 116 follow-up after run 81: user authorized deleting all unexpected keys, while missing required fields must still receive focused repair."
+};
+
 export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedgerEntry[]> = {
   5: [
+    SHARED_SUBMIT_KEY_CHECK,
+    SHARED_FOCUSED_REPAIR,
     { surface: "diffUnderstanding", reason: "Keeps declared intent and inferred behavior separate so later stages can frame refactor-vs-contract changes.", evidence: "Plan 82 / Wave-2 severity calibration" },
     { surface: "coverage", reason: "Primary scheduling output; omitted hunks still receive normal default review, so only non-default hunk decisions need to be emitted.", evidence: "Plan 79 baseline and Plan 90 budget posture" },
     { surface: "surroundingContextHints", reason: "Mechanical retrieval hints let Stage 6 attach context without turning planner prose into semantic obligations.", evidence: "Plan 12 seed-context direction and Plan 95 prompt-sediment audit" },
@@ -100,6 +114,9 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
     { surface: "strict submit_plan closeout", reason: "Prevents string-wrapped, root-wrapped, split, or plain-text plans that previously required repair.", evidence: "Plan 59 and Plan 95 census: 1 planner schema repair in runs 46-54 / 29-33" }
   ],
   7: [
+    SHARED_SUBMIT_KEY_CHECK,
+    SHARED_FOCUSED_REPAIR,
+    { surface: "cross-packet placement", reason: "Discovery assignment does not constrain valid PR-diff coordinates; unknown placement must not be fabricated.", evidence: "Run 81 test packet discovered valid hyperlane.go:220 anchor" },
     { surface: "findings", reason: "Candidate findings carry concrete changed-line failure modes for verifier filtering instead of hiding plausible issues in no_findings.", evidence: "Plans 81, 84, and 92 rescue findings" },
     { surface: "submit_review shape example", reason: "Demonstrates object-valued findings and required arrays in both initial and repair prompts without relaxing validation.", evidence: "Run 68 calls mc-000020 and mc-000023 submitted JSON fragments as strings and omitted required arrays; bounded model repairs recovered both" },
     { surface: "followUpHints", reason: "Pointer-rich unresolved predicates feed human attention and system follow-up without publishing speculation.", evidence: "Plan 92 attention records and run 50 near-miss" },
@@ -111,11 +128,16 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
     { surface: "strict submit_review closeout", reason: "Provider/tool dialect drift still produces extra fields and XML wrappers, so closeout remains load-bearing.", evidence: "Plan 95 census: 5 Stage-7 schema-invalid calls, 4 deterministic recoveries" }
   ],
   8: [
+    SHARED_SUBMIT_KEY_CHECK,
+    SHARED_FOCUSED_REPAIR,
     { surface: "targeted repeated predicate", reason: "System review should resolve only repeated concrete follow-up predicates, not reopen general review.", evidence: "Plan 75 human-attention suppression and Plan 92 attention groups" },
     { surface: "resolvedHints", reason: "Resolution records let Stage 10 suppress covered attention notes by exact predicate scope.", evidence: "Plan 75 step 1 adjudicated-reject suppression" },
     { surface: "strict submit_system_review closeout", reason: "Keeps the follow-up lane structured and prevents plain-text system-review answers.", evidence: "Plan 95 no schema friction observed, retained as standing structured-call contract" }
   ],
   9: [
+    SHARED_SUBMIT_KEY_CHECK,
+    SHARED_FOCUSED_REPAIR,
+    { surface: "location versus discovery context", reason: "Verification follows the actual anchored hunk, preserves originating evidence, and checks semantic placement independently of coordinate validity.", evidence: "Run 81 cross-packet anchor diagnosis" },
     { surface: "verdict/requiredEvidencePresent/falsePositiveRisk", reason: "Separates truth decision, evidence sufficiency, and residual risk for final selection.", evidence: "Plan 74 merged-confidence calibration and Plan 87 exact duplicate policy" },
     { surface: "finalFinding/revisedAnchor", reason: "Compact findingUpdates preserve unchanged fields; revisedAnchor retains placement provenance checks. Legacy finalFinding remains accepted.", evidence: "Plans 76/87 and eval run 74 truncated string-wrapped full revisions" },
     { surface: "non-empty revision payload", reason: "Keeps structured revisions from completing without an actual finding or anchor change.", evidence: "Plan 106 / eval 49f4645b run 57 empty revise" },
@@ -130,6 +152,9 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
     { surface: "strict submit_verdict closeout", reason: "Verifier model repair is still live and successful, so the structured closeout remains load-bearing.", evidence: "Plan 95 census: 3 Stage-9 schema repairs, all recovered" }
   ],
   10: [
+    SHARED_SUBMIT_KEY_CHECK,
+    SHARED_FOCUSED_REPAIR,
+    { surface: "sections/sourceRefs/evidenceRefs", reason: "Account for every verified contribution, render immutable evidence and verification, and avoid narrative plus appended member duplication. References prove attribution, not semantic equivalence.", evidence: "Plan 115 / run 79: 624 model words expanded to 3,085 harness words; five merged rounding reports" },
     { surface: "composedFindings.findingIds", reason: "Final composition must preserve verified finding identity and grouping provenance.", evidence: "Plan 83 fingerprints and run-53 near-duplicate Stage-10 merge fix" },
     { surface: "composedFindings.finalBody", reason: "Final body rules prevent duplicated headings, metadata dumps, and task-shaped titles in user-facing output.", evidence: "Plan 81 output-quality slice" },
     { surface: "finalBody GitHub-flavored Markdown", reason: "Bodies posted to GitHub rendered code, paths, and commands as plain prose without backticks or code fences, making comments hard to read.", evidence: "Run 20260728-185740 unformatted cache-verify comment" },
@@ -257,6 +282,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("packet review"),
         injectionInstruction(),
         "Review the packet for real defects only. Use repository tools when needed to verify nearby code, definitions, or tests. Return no findings when there is no concrete failure mode.",
+        "A finding may point to another changed file or hunk in this PR when investigation supports it. Use exact file, side, line, and hunk coordinates from inspected diff evidence; do not move a finding onto the assigned packet merely for placement. Omit an anchor you cannot establish.",
         "Raise candidate findings for concrete changed-line failure modes. If the evidence shows a plausible changed-line correctness, security, performance, architecture, or testing risk but one narrow predicate still needs confirmation, surface it as a candidate finding or a pointer-rich followUpHint/uncertainty for the verifier instead of suppressing it.",
         "A later verification stage filters false positives. Do not publish speculation as a finding, but do not hide a plausible verifier-resolvable concern behind reviewStatus:\"no_findings\". No-findings is appropriate only after the changed-line risk has been checked and no concrete failure mode or pointer-rich unresolved predicate remains.",
         "reviewStatus:\"incomplete\" means the review was cut off before the changed lines could be evaluated (tool or budget exhaustion mid-investigation). If you evaluated the changed lines and no provable defect remains, report no_findings even when narrower questions stay open — record those as followUpHints or uncertainties, not as an incomplete review. An incomplete review is counted as unreviewed coverage; do not use it to hedge a no-finding conclusion.",
@@ -312,8 +338,10 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
       return buildPrompt(9, [
         reviewerFrame("verification"),
         injectionInstruction(),
-        "Verify whether the candidate is a real, actionable finding. Reject false positives. A bare keep means the candidate's confidence, severity, evidence, wording, and placement are publishable unchanged. Use revise for every structured change; a revision must include findingUpdates or revisedAnchor (legacy complete finalFinding is also accepted) because prose in reason does not change the candidate.",
+        "Verify whether the candidate is a real, actionable finding. Reject false positives. A bare keep means the candidate's confidence, severity, evidence, wording, and placement are publishable unchanged. Use revise for changes to finding content or placement; top-level behaviorChange and intentEvidence are applied automatically even with keep; a revision must include findingUpdates or revisedAnchor (legacy complete finalFinding is also accepted) because prose in reason does not change the candidate.",
+        "The diff-hunks block follows the candidate location; origin-context records the discovering packet and may concern another file. A valid coordinate proves only placement, not the claimed defect: verify that the anchored code supports the failure mode. Without a proven inline location, a confirmed finding may remain summary-only.",
         "When a low-confidence promoted predicate is confirmed, revise with findingUpdates containing only changed confidence, evidence, and verification fields that reflect the decisive changed-code proof. Add revisedAnchor only when exact changed-line placement is proven. Medium confidence is appropriate when decisive changed-code evidence and the failure mode are confirmed even if one narrow secondary check remains unresolved. Tool refusal, truncation, or budget pressure on a secondary check must not keep confidence low. If the decisive predicate is unconfirmed, reject or set requiredEvidencePresent=false. Reserve low confidence for speculative reachability, ambiguous intent, or weak path matching.",
+        "Stop once the decisive failure predicate and its reachable impact are confirmed or ruled out. Submit that verdict now; preserve narrow secondary uncertainty in verification/reason instead of reopening settled severity, wording, or intent questions. This does not waive missing decisive evidence: reject or set requiredEvidencePresent=false when it remains unconfirmed.",
         "Severity calibration: low means bounded or localized impact; medium means material but limited impact; high means broad or serious user/system impact; critical means catastrophic impact or compromise of a security boundary. Measure magnitude and reach, not merely whether a correctness invariant is technically violated. When changing severity by more than one level from the input candidate, quantify the concrete impact bound in findingUpdates.verification.",
         "For candidates promoted from a follow-up hint or uncertainty, verify the concrete predicate preserved in provenance, failureMode, and verification text. Do not reject a runtime/design/correctness predicate solely because the original question also mentioned tests or coverage.",
         "For promoted lossy-transform predicates, verify that caller-visible outputs or bounds remain deliverable/satisfiable; before rejecting as immaterial precision loss, trace whether the visible output is derived from the transformed value or from the original source value. Documented or deliberate transformation intent can explain why the conversion exists, but it is not evidence that an overstated caller-visible guarantee is safe.",
@@ -345,6 +373,7 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         reviewerFrame("composition"),
         "Compose the final review from verified findings only. Do not invent new findings. Keep wording direct, specific, and actionable.",
         "Preserve verified conclusions, evidence, severity, confidence, and uncertainty. Combine wording only when findings describe the same issue; do not reopen the investigation or strengthen claims beyond the supplied evidence.",
+        "For every composed finding, supply sections [{kind: impact|verification|fix|test, text, sourceRefs}] and evidenceRefs, using sourceComponents IDs from the grouped findings. Every component of every merged finding must be referenced exactly once, in its matching kind; evidence components go only in evidenceRefs. Combine paraphrases into one section while retaining unique conditions and uncertainty. Do not copy all member prose. The harness renders evidence and verification/caveats verbatim from the referenced inputs. finalBody is a short legacy summary. Do not repeat member severity judgments in sections; preserve real caveats and disagreements. Keep independently actionable testing issues separate from production defects.",
         "Final finding titles must be concrete issue statements. Do not preserve task-shaped titles that start with Verify, Check, Confirm, Investigate, Does, Can, Could, or Should, or titles phrased as questions; use the verified behavior delta or failure mode instead.",
         "For each finalBody, do not include a Markdown heading, repeated title, severity/confidence/category/file metadata, or generic report labels. Start with the concrete issue, impact, evidence, or fix.",
         "Write each finalBody as GitHub-flavored Markdown. Wrap file paths, symbols, identifiers, and short code fragments in backticks; put code excerpts, evidence snippets, and shell commands inside fenced code blocks tagged with the file's language (ts, go, bash, ...) rather than inline prose; bold inline labels such as **Impact:** or **Suggested fix:** are allowed. Fences belong only inside finalBody string values, never around the tool call or its JSON arguments. Never leave code, paths, or shell commands unformatted as plain prose.",

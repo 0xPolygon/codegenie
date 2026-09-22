@@ -90,6 +90,8 @@ export type LlmStructuredRequest<T> = {
   /** Type-only link between the request and the expected submit payload. */
   readonly responseType?: T;
   stage: ReviewStage;
+  /** Optional placement repair: lowest reasoning, one provider attempt, no follow-up loop. */
+  purpose?: "location_clarification";
   prompt: string;
   schema: TSchema;
   templateVersion: string;
@@ -120,6 +122,8 @@ export interface LlmRunner {
 
 export type LlmSubmitFailureClassification =
   | "schema_invalid"
+  | "recovery_content_changed"
+  | "review_status_findings_mismatch"
   | "missing_submit"
   | "multiple_submits"
   | "revise_without_revision_payload"

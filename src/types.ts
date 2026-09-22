@@ -807,6 +807,11 @@ export type CandidateFinding = {
   // distinguishes "model never anchored" from "model anchor was invalid"
   // after reconstruction has run.
   modelAnchorSubmitted?: boolean;
+  locationResolution?: {
+    status: "unresolved" | "clarified" | "unavailable";
+    rejectedAnchor?: DiffAnchor;
+    reason?: string;
+  };
   changedLine: boolean;
   category: FindingCategory;
   evidence: {
@@ -1065,6 +1070,8 @@ export type EvalCase = {
     maxToolCalls?: number;
     maxPromptCharsByStage?: Partial<Record<ReviewStage | string, number>>;
     reviewCompleteness?: "complete" | "partial";
+    planningQuality?: "non-degraded";
+    recoveryFidelity?: "preserved";
     maxBudgetOverruns?: number;
     maxToolBudgetRejections?: number;
     maxDegradedHunks?: number;
@@ -1157,6 +1164,8 @@ export type EvalBudgetResult = {
     | "maxToolCalls"
     | "maxPromptCharsByStage"
     | "reviewCompleteness"
+    | "planningQuality"
+    | "recoveryFidelity"
     | "maxBudgetOverruns"
     | "maxToolBudgetRejections"
     | "maxDegradedHunks"
@@ -1217,6 +1226,8 @@ export type EvalRunMetrics = {
   missingArtifacts?: string[];
   maxPromptCharsByStage?: Partial<Record<ReviewStage, number>>;
   reviewCompleteness?: "complete" | "partial";
+  planningQuality?: "non-degraded" | "degraded" | "unknown";
+  recoveryFidelity?: "preserved" | "unresolved" | "unknown";
   budgetOverruns?: number;
   toolBudgetRejections?: number;
   toolBudgetExtensions?: number;
@@ -1384,6 +1395,7 @@ export type EvalArtifacts = {
     budgetSummary?: BudgetSummary;
     runJson?: unknown;
     telemetry?: unknown;
+    recoveryEvents?: unknown[];
     modelCalls?: unknown[];
     toolCalls?: unknown[];
   };

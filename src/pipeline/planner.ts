@@ -1,3 +1,4 @@
+import { normalizePlannerBookkeeping } from "../llm/submit-preservation.js";
 import type { LlmRunner, LlmSchemaInvalidSubmitRecoveryInput, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import { SubmitPlanSchema, type SubmitPlan } from "../llm/schemas.js";
 import type { LensDescriptor } from "../skills/lens-registry.js";
@@ -325,7 +326,18 @@ async function runPlannerCall(
     schemaRepair: {
       replaceConversation: true,
       failAfterRepair: false,
-      recoverInvalidSubmit: (input) => recoverPlannerInvalidSubmit(input, telemetry, recovery),
+      recoverInvalidSubmit: (input) => {
+        if (input.submitCalls.length === 1) {
+          const original = input.submitCalls[0]!.arguments;
+          const normalized = normalizePlannerBookkeeping(original);
+          if (stableJson(original) !== stableJson(normalized)) {
+            recovery.usedDeterministicRecovery = true;
+            telemetry.event({ stage: 5, level: "info", message: "planner_bookkeeping_normalized", data: { coverageEntries: Array.isArray(normalized.coverage) ? normalized.coverage.length : 0 } });
+            return normalized;
+          }
+        }
+        return recoverPlannerInvalidSubmit(input, telemetry, recovery);
+      },
       buildPrompt: (input) => buildPlannerSchemaRepairPrompt(dossier, opts.lenses, input)
     }
   });
@@ -684,7 +696,7 @@ function buildPlannerSchemaRepairPrompt(
   }));
   const repairDossier = plannerRepairDossierSummary(dossier, lenses);
   return [
-    "Repair the Stage 5 review plan output.",
+    "Repair the Stage 5 review plan output. Return the full object: {diffUnderstanding: {declaredIntent, inferredBehavior}, coverage: [...], partialReview?: ...}. Preserve every coverage entry, depth, lens, and focus note. Never return diffUnderstanding alone.",
     `Validation error: ${input.error}`,
     "You must call submit_plan exactly once with object arguments matching the ReviewPlan schema.",
     "Do not pass a JSON string, do not wrap the object in a plan field, do not split the plan across multiple submit_plan calls, and do not answer in plain text.",
@@ -692,7 +704,7 @@ function buildPlannerSchemaRepairPrompt(
     input.extraToolNames.length > 0
       ? `The invalid response also called non-submit tools, which are ignored in Stage 5 repair: ${input.extraToolNames.join(", ")}.`
       : "No repository tools are available in Stage 5 repair.",
-    fenceUntrusted(truncate(stableJson(invalidSubmissions), 50_000), "invalid-submit-plan-calls"),
+    fenceUntrusted(stableJson(invalidSubmissions), "invalid-submit-plan-calls"),
     fenceUntrusted(truncate(stableJson(repairDossier), 60_000), "planner-repair-dossier"),
     "Finish now by calling submit_plan exactly once."
   ].join("\n\n");
@@ -1289,6 +1301,7 @@ export function defaultPlan(
   lenses: LensDescriptor[],
   reason: string
 ): ReviewPlan {
+  const priorityByPath = new Map(dossier.files.map(file => [file.path, file.reviewPriority]));
   return {
     diffUnderstanding: {
       declaredIntent: deterministicDeclaredIntent(dossier),
@@ -1299,7 +1312,7 @@ export function defaultPlan(
       file.hunkIds.map((hunkId) => ({
         hunkId,
         path: file.path,
-        coverage: "normal" as CoverageLevel,
+        coverage: (["critical", "high"].includes(priorityByPath.get(file.path) ?? "normal") ? "deep" : "normal") as CoverageLevel,
         lenses: defaultLensesForFile(file.language, lenses),
         surroundingContextHints: [],
         reason

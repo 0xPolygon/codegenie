@@ -77,7 +77,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
     expect(SCHEMA_VERSIONS.submit_plan).toBe(6);
-    expect(SCHEMA_VERSIONS.submit_verdict).toBe(6);
+    expect(SCHEMA_VERSIONS.submit_verdict).toBe(7);
 
     const valid = {
       diffUnderstanding: { declaredIntent: "Small change", inferredBehavior: "The diff makes a small change." },
@@ -659,7 +659,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       packetId: "packet-debug",
       provider: { provider: "fake", model: "fake-model", reasoning: "high" },
       request: {
-        runnerMessageVersion: "pi-runner-loop-v3",
+        runnerMessageVersion: "pi-runner-loop-v9",
         promptTemplateVersion: "debug-template",
         schemaName: "submit_review",
         schemaVersion: 5,
@@ -1648,6 +1648,126 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.toolCalls.map((call) => call.cacheStatus)).toEqual(["write", "write"]);
   });
 
+  it.each(["metadata", "side", "empty", "alias", "run81-note"])("locally corrects run-80 %s in one call and replays raw cached arguments", async kind => {
+    const telemetry = fakeTelemetry();
+    const call = kind === "alias" ? validSubmitVerdictCall("local") : validCandidateSubmitReviewCall("local");
+    const expected = structuredClone(call.arguments);
+    if (kind === "alias") {
+      call.arguments.falsePositivesRisk = call.arguments.falsePositiveRisk;
+      delete call.arguments.falsePositiveRisk;
+    } else {
+      const finding = (call.arguments.findings as Record<string, unknown>[])[0]!;
+      const expectedFinding = (expected.findings as Record<string, unknown>[])[0]!;
+      finding.anchor = expectedFinding.anchor = { path: "src/a.ts", line: 1, side: "RIGHT", hunkId: "h1" };
+      Object.assign(finding.evidence as object, kind === "metadata" ? { maxItems: 10 } : kind === "side" ? { changedCodeSide: "new" } : { changedCodeNote: kind === "run81-note" ? "The changed conversion truncates the output amount before rescaling." : "" });
+    }
+    const raw = structuredClone(call.arguments);
+    let entry: StoredProviderResponse | undefined;
+    const cache = {
+      get: vi.fn(async (_key: string) => entry ? { status: "hit" as const, response: entry } : { status: "miss" as const, reason: "not_found" as const }),
+      put: vi.fn(async (_key: string, response: StoredProviderResponse) => { entry = response; return { status: "write" as const }; })
+    };
+    const adapter = scriptedAdapter([assistant([call])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 }, telemetry: telemetry.recorder,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const request = kind === "alias" ? { stage: 9 as const, schema: SubmitVerificationVerdictSchema, prompt: "verify", templateVersion: "test", timeoutMs: 1000 } : submitReviewRequest("run80");
+    await expect(runner.runStructured(request)).resolves.toEqual(expected);
+    await expect(runner.runStructured(request)).resolves.toEqual(expected);
+    expect(adapter.contexts).toHaveLength(1);
+    expect(call.arguments).toEqual(raw);
+    expect(entry?.message.content).toEqual([trustedSubmitCall(call)]);
+    expect(telemetry.events.filter(event => event.message === "submit_shape_correction_accepted")).toHaveLength(2);
+    expect(telemetry.events.filter(event => event.message === "recovery_obligation_opened")).toHaveLength(0);
+  });
+
+  it.each(["findings", "no_findings"])("run-82 repair optional status %s must agree with retained findings", async status => {
+    const telemetry = fakeTelemetry();
+    const repaired = validCandidateSubmitReviewCall("repaired");
+    repaired.arguments.reviewStatus = status;
+    const original = { ...repaired, id: "original", arguments: { findings: structuredClone(repaired.arguments.findings) } };
+    const cache = {
+      get: vi.fn(async () => ({ status: "miss" as const, reason: "not_found" as const })),
+      put: vi.fn(async () => ({ status: "write" as const }))
+    };
+    const adapter = scriptedAdapter([assistant([original]), assistant([repaired])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 }, telemetry: telemetry.recorder,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const result = runner.runStructured(submitReviewRequest("run82"));
+    if (status === "findings") {
+      await expect(result).resolves.toEqual(repaired.arguments);
+      expect(cache.put).toHaveBeenCalledTimes(1);
+      expect(telemetry.events.filter(event => event.message === "recovery_obligation_resolved")).toHaveLength(1);
+    } else {
+      await expect(result).rejects.toMatchObject({ code: "llm_schema_invalid" });
+      expect(cache.put).not.toHaveBeenCalled();
+      expect(telemetry.events.filter(event => event.message === "recovery_obligation_resolved")).toHaveLength(0);
+    }
+    expect(adapter.contexts).toHaveLength(2);
+    expect(repaired.arguments.findings).toEqual(original.arguments.findings);
+  });
+
+  it("focuses the existing single repair on an unfamiliar typo and retains original values", async () => {
+    const telemetry = fakeTelemetry();
+    const fixed = validSubmitVerdictCall("fixed");
+    const original = structuredClone(fixed);
+    original.arguments.falsePostiveRisk = original.arguments.falsePositiveRisk;
+    delete original.arguments.falsePositiveRisk;
+    original.arguments.emptyNote = "Unexpected substantive diagnostic retained for repair.";
+    const adapter = scriptedAdapter([assistant([original]), assistant([fixed])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 }, telemetry: telemetry.recorder,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await expect(runner.runStructured({ stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify", templateVersion: "test", timeoutMs: 1000 })).resolves.toEqual(fixed.arguments);
+    expect(adapter.contexts).toHaveLength(2);
+    for (const marker of ["repair-field-diagnostics", "original-complete-submission", "falsePostiveRisk", "falsePositiveRisk", "originalValue", "missing", "spelling and case", "emptyNote"]) expect(adapter.contexts[1]).toContain(marker);
+    expect(adapter.contexts[1]).toContain("Unexpected substantive diagnostic retained for repair.");
+    expect(adapter.contexts[1]).toContain("removedUnexpectedFields");
+    expect(telemetry.events.filter(event => event.message === "recovery_obligation_resolved")).toHaveLength(1);
+  });
+
+  it("does not accept missing required fields after discarding extras on both attempts", async () => {
+    const telemetry = fakeTelemetry();
+    const missing = validSubmitVerdictCall("missing");
+    delete missing.arguments.falsePositiveRisk;
+    missing.arguments.note = "This unknown note is disposable, not a required risk value.";
+    const adapter = scriptedAdapter([assistant([missing]), assistant([missing])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 }, telemetry: telemetry.recorder,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await expect(runner.runStructured({ stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify", templateVersion: "test", timeoutMs: 1000 })).rejects.toMatchObject({ code: "llm_schema_invalid" });
+    expect(adapter.contexts).toHaveLength(2);
+    expect(adapter.contexts[1]).toContain("falsePositiveRisk");
+    expect(adapter.contexts[1]).toContain("missing");
+    expect(adapter.contexts[1]).toContain("This unknown note is disposable");
+    expect(telemetry.events.some(event => event.message === "recovery_obligation_resolved")).toBe(false);
+  });
+
+  it("carries five unresolved run-79 items across worker restart and never caches destructive repair", async () => {
+    const draft = {
+      reviewStatus: "no_findings", findings: [], noFindingReason: "Predicates remain recorded below.",
+      followUpHints: ["zero rejection", "caller scaling", "truncation tests"].map(question => ({ question, files: ["amount.go"], symbols: [], reason: "Unresolved predicate", confidence: "medium" })),
+      uncertainties: ["contract", "caller"].map(question => ({ question, files: ["amount.go"], symbols: [] }))
+    };
+    const fixed = { ...draft, followUpHints: draft.followUpHints.map(hint => ({ ...hint, suggestedLenses: ["core/code-review"] })) };
+    const erased = { ...draft, followUpHints: [], uncertainties: [] };
+    const submit = (arguments_: typeof draft | typeof fixed) => assistant([{ type: "toolCall" as const, id: "submit", name: "submit_review", arguments: arguments_ }]);
+    const telemetry = fakeTelemetry();
+    const cache = { get: vi.fn(async () => ({ status: "miss" as const, reason: "not_found" as const })), put: vi.fn(async () => ({ status: "write" as const })) };
+    const adapter = scriptedAdapter([submit(draft), submit(erased), assistant([validSubmitReviewCall("other-worker")]), submit(fixed)]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 }, telemetry: telemetry.recorder,
+      logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const request = submitReviewRequest("run79-preservation", telemetry.recorder);
+    await expect(runner.runStructured(request)).rejects.toMatchObject({ code: "llm_schema_invalid" });
+    expect(cache.put).not.toHaveBeenCalled();
+    expect(telemetry.events).not.toContainEqual(expect.objectContaining({ message: "recovery_obligation_resolved" }));
+    // The same packet/prompt in an independent ensemble worker is not a restart.
+    await expect(runner.runStructured({ ...request, telemetryContext: { packetId: "run79-preservation", workerId: "independent" } })).resolves.toMatchObject({ findings: [] });
+    await expect(runner.runStructured(request)).resolves.toEqual(fixed);
+    expect(adapter.contexts[3]).toContain("previous attempt");
+    expect(adapter.contexts[3]).toContain("truncation tests");
+    expect(cache.put).toHaveBeenCalledTimes(2);
+    expect(telemetry.events.filter(event => event.message === "recovery_obligation_opened")).toHaveLength(1);
+    expect(telemetry.events.filter(event => event.message === "recovery_obligation_resolved")).toHaveLength(1);
+  });
+
   it("records schema-invalid submits and does not cache them before repair", async () => {
     const telemetry = fakeTelemetry();
     const cache = {
@@ -1660,7 +1780,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           type: "toolCall",
           id: "submit-invalid",
           name: "submit_review",
-          arguments: { packetId: "packet-1" }
+          arguments: {}
         }
       ]),
       assistant([validSubmitReviewCall("submit-repair")])
@@ -1825,7 +1945,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         const valid = assistant([{ type: "toolCall", id: "composition", name: "submit_composition",
           arguments: { summary: "Done", composedFindings: [] } }]);
         const invalid = assistant([{ type: "toolCall", id: "invalid", name: "submit_composition",
-          arguments: { summary: 42 } }]);
+          arguments: {} }]);
         const adapter = scriptedAdapter([]);
         adapter.resolveModel = () => ({ provider: "fake", id: "fake-model", raw: {
           id: "fake-model", api: "openai-completions", reasoning: true, thinkingLevelMap: { max: "max" }
@@ -1872,6 +1992,37 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       }
     }
   );
+
+  it.each(["valid", "invalid", "missing", "transient", "timeout"] as const)("uses one lowest-reasoning attempt for location clarification: %s", async (mode) => {
+    vi.useFakeTimers();
+    try {
+      const telemetry = fakeTelemetry();
+      const adapter = scriptedAdapter([]);
+      adapter.resolveModel = () => ({ provider: "fake", id: "fake-model", raw: {
+        id: "fake-model", api: "openai-completions", reasoning: true, thinkingLevelMap: { max: "max" }
+      } });
+      const efforts: unknown[] = [];
+      adapter.complete = vi.fn(async (_model, _context, options) => {
+        efforts.push(options.reasoning);
+        if (mode === "timeout") return new Promise<PiAssistantMessage>(() => {});
+        if (mode === "transient") throw Object.assign(new Error("unavailable"), { status: 503 });
+        return assistant(mode === "missing" ? [] : [{ type: "toolCall", id: "location", name: "submit_review", arguments: mode === "invalid" ? {} : { status: "unavailable" } }]);
+      });
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", reasoning: "max", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+        adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+      const result = runner.runStructured({ stage: 7, purpose: "location_clarification", prompt: "locate",
+        schema: Type.Object({ status: Type.Literal("unavailable") }, { additionalProperties: false }), templateVersion: "test-location", timeoutMs: 180_000 });
+      const checked = mode === "valid" ? expect(result).resolves.toEqual({ status: "unavailable" }) : expect(result).rejects.toBeInstanceOf(CodegenieError);
+      await vi.advanceTimersByTimeAsync(mode === "timeout" ? 180_000 : 0);
+      await checked;
+      expect(adapter.complete).toHaveBeenCalledTimes(1);
+      expect(efforts).toEqual(["minimal"]);
+      expect(telemetry.events.some((event) => event.message === "recovery_obligation_opened")).toBe(false);
+    } finally { vi.useRealTimers(); }
+  });
 
   it.each([false, true])("gives repair a fresh allowance while respecting cancellation (%s)", async (cancel) => {
     vi.useFakeTimers();
@@ -2216,9 +2367,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         type: "toolCall",
         id: "submit-verdict-xml",
         name: "submit_verdict",
-        arguments: { parameter: "<parameter>BAD_PRIOR_XML_BODY</parameter>" }
+        arguments: { reason: "BAD_PRIOR_XML_BODY" }
       }]),
-      assistant([validSubmitVerdictCall("submit-verdict-repaired")])
+      assistant([{ ...validSubmitVerdictCall("submit-verdict-repaired"), arguments: { ...validSubmitVerdictCall("submit-verdict-repaired").arguments, reason: "BAD_PRIOR_XML_BODY" } }])
     ]);
     const readRange: ToolDefinition = {
       name: "read_range",
@@ -2270,7 +2421,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.contexts[1]).toContain("compact verifier repair");
     expect(adapter.contexts[1]).toContain("Do not write `<parameter>` tags.");
     expect(adapter.contexts[1]).not.toContain(originalPromptMarker);
-    expect(adapter.contexts[1]).not.toContain("BAD_PRIOR_XML_BODY");
+    expect(adapter.contexts[1]).toContain("BAD_PRIOR_XML_BODY");
     expect(telemetry.modelCalls.map((call) => call.kind)).toEqual(["initial", "repair"]);
     expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
   });
@@ -2279,9 +2430,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const adapter = scriptedAdapter([
       assistant([{ type: "toolCall", id: "read", name: "read_range", arguments: { path: "example.ts" } }]),
       assistant([{ type: "toolCall", id: "bad", name: "submit_verdict", arguments: {
-        ...VERIFIER_SUBMIT_EXAMPLE, finalFinding: '{"title":"unfinished'
+        ...VERIFIER_SUBMIT_EXAMPLE, finalFinding: JSON.stringify(validCandidateReviewFinding())
       } }]),
-      assistant([{ type: "toolCall", id: "fixed", name: "submit_verdict", arguments: VERIFIER_SUBMIT_EXAMPLE }])
+      assistant([{ type: "toolCall", id: "fixed", name: "submit_verdict", arguments: { ...VERIFIER_SUBMIT_EXAMPLE, finalFinding: validCandidateReviewFinding() } }])
     ]);
     const runner = createPiRunner({
       llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
@@ -2298,7 +2449,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
     expect(adapter.contexts[2]).toContain("UNIQUE_INSPECTED_SOURCE");
     expect(adapter.contexts[2]).toContain("original verifier context");
-    expect(adapter.contexts[2]).toContain("unfinished");
+    expect(adapter.contexts[2]).toContain("Candidate finding");
     expect(adapter.contexts[2]).toContain("Repair shape only");
     expect(adapter.toolNames[2]).toEqual(["submit_verdict"]);
   });
@@ -2320,9 +2471,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         falsePositiveRisk: "low"
       }
     });
+    const repaired = { ...emptyRevise("valid-repair"), arguments: { ...emptyRevise("valid-repair").arguments, revisedAnchor: { path: "src/a.ts", line: 12, side: "RIGHT", hunkId: "hunk-a" } } };
     const adapter = scriptedAdapter([
       assistant([emptyRevise("empty-primary")]),
-      assistant([validSubmitVerdictCall("valid-repair")])
+      assistant([repaired])
     ]);
     const runner = createPiRunner({
       llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
@@ -2351,14 +2503,14 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           return "repair the empty revision with a payload";
         }
       }
-    })).resolves.toMatchObject({ verdict: "reject" });
+    })).resolves.toMatchObject({ verdict: "revise" });
 
     expect(adapter.complete).toHaveBeenCalledTimes(2);
     expect(telemetry.modelCalls.map((call) => call.schemaValid)).toEqual([false, true]);
     expect(cache.put).toHaveBeenCalledTimes(1);
     const putCalls = cache.put.mock.calls as unknown as Array<[unknown, StoredProviderResponse]>;
     const cachedResponse = putCalls[0]?.[1];
-    expect(cachedResponse?.message.content).toEqual([trustedSubmitCall(validSubmitVerdictCall("valid-repair"))]);
+    expect(cachedResponse?.message.content).toEqual([trustedSubmitCall(repaired)]);
   });
 
   it("rejects a semantic-invalid deterministic recovery and exposes only bounded terminal identity", async () => {
@@ -2700,7 +2852,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         id: "submit-composition-xml",
         name: "submit_composition",
         arguments: {
-          summary: "summary</parameter><parameter name=\"composedFindings\">[]</parameter>"
+          summary: "Recovered summary."
         }
       }])
     ]);
@@ -2756,7 +2908,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         type: "toolCall",
         id: "submit-composition-invalid",
         name: "submit_composition",
-        arguments: { summary: "missing composed findings" }
+        arguments: { summary: "Recovered composition." }
       }]),
       assistant([{
         type: "toolCall",
@@ -3342,7 +3494,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
   });
 
-  it("salvages Stage 7 XML-bleed no-finding submits without failing the packet", async () => {
+  it("rejects lossy repair: salvages Stage 7 XML-bleed no-finding submits without failing the packet", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
       assistant([{
@@ -3353,7 +3505,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           reviewStatus: "no_findings",
           noFindingReason: "Reviewed the packet and found no concrete failure mode.</noFindingReason>\n<parameter name=\"findings\">[]"
         }
-      }])
+      }]),
+      assistant([validSubmitReviewCall("destructive-repair")])
     ]);
     const runner = createPiRunner({
       llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
@@ -3364,33 +3517,11 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
     });
 
-    await expect(
-      runner.runStructured({
-        ...submitReviewRequest("packet-xml-no-findings", telemetry.recorder),
-        telemetryContext: { packetId: "packet-xml-no-findings" }
-      })
-    ).resolves.toMatchObject({
-      reviewStatus: "no_findings",
-      findings: [],
-      followUpHints: [],
-      uncertainties: [],
-      noFindingReason: expect.stringContaining("Reviewed the packet")
-    });
-    expect(adapter.contexts).toHaveLength(1);
-    expect(telemetry.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 7,
-        message: "stage7_schema_repair_attempted",
-        packetId: "packet-xml-no-findings",
-        data: expect.objectContaining({ classification: "xml_parameter_bleed" })
-      }),
-      expect.objectContaining({
-        stage: 7,
-        message: "stage7_schema_repair_recovered",
-        packetId: "packet-xml-no-findings",
-        data: expect.objectContaining({ classification: "xml_parameter_bleed" })
-      })
-    ]));
+    await expect(runner.runStructured(submitReviewRequest("packet-xml-no-findings", telemetry.recorder)))
+      .rejects.toMatchObject({ code: "llm_schema_invalid" });
+    expect(adapter.contexts).toHaveLength(2);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "recovery_preservation_rejected" }));
+    expect(telemetry.events).not.toContainEqual(expect.objectContaining({ message: "recovery_obligation_resolved" }));
   });
 
   it("strips harmless extra candidate fields before model repair", async () => {
@@ -3426,31 +3557,13 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       findings: [expect.objectContaining({ title: candidate.title })]
     });
     expect(adapter.contexts).toHaveLength(1);
-    expect(telemetry.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 7,
-        message: "stage7_schema_cleanup_attempted",
-        packetId: "packet-candidate-cleanup",
-        data: expect.objectContaining({
-          cleanupKind: "candidate_payload",
-          classification: "extra_finding_properties",
-          strippedKeys: ["findings.0.category_note"]
-        })
-      }),
-      expect.objectContaining({
-        stage: 7,
-        message: "stage7_schema_cleanup_recovered",
-        packetId: "packet-candidate-cleanup",
-        data: expect.objectContaining({
-          cleanupKind: "candidate_payload",
-          classification: "extra_finding_properties",
-          strippedKeys: ["findings.0.category_note"]
-        })
-      })
-    ]));
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "submit_shape_correction_accepted",
+      data: expect.objectContaining({ localEdits: [{ path: "findings.0.category_note", rule: "unknown_property" }] })
+    }));
   });
 
-  it("truncates overlong Stage 7 no-finding reasons before model repair", async () => {
+  it("rejects lossy repair: truncates overlong Stage 7 no-finding reasons before model repair", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
       assistant([{
@@ -3471,7 +3584,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           uncertainties: [],
           noFindingReason: `No concrete issue found. ${"detail ".repeat(260)}`
         }
-      }])
+      }]),
+      assistant([validSubmitReviewCall("destructive-repair")])
     ]);
     const runner = createPiRunner({
       llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
@@ -3482,34 +3596,11 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
     });
 
-    const result = (await runner.runStructured({
-      ...submitReviewRequest("packet-long-no-findings", telemetry.recorder),
-      telemetryContext: { packetId: "packet-long-no-findings" }
-    })) as SubmitPacketReview;
-
-    expect(result).toMatchObject({ reviewStatus: "no_findings", findings: [] });
-    expect(result.followUpHints).toEqual([
-      expect.objectContaining({
-        question: "Does any caller rely on the old edge behavior?",
-        confidence: "medium"
-      })
-    ]);
-    expect(result.noFindingReason).toHaveLength(1000);
-    expect(result.noFindingReason).toContain("[truncated by codegenie]");
-    expect(adapter.contexts).toHaveLength(1);
-    expect(telemetry.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 7,
-        message: "stage7_schema_cleanup_recovered",
-        packetId: "packet-long-no-findings",
-        data: expect.objectContaining({ cleanupKind: "no_finding_reason_truncated" })
-      }),
-      expect.objectContaining({
-        stage: 7,
-        message: "stage7_no_finding_reason_truncated",
-        packetId: "packet-long-no-findings"
-      })
-    ]));
+    await expect(runner.runStructured(submitReviewRequest("packet-long-no-findings", telemetry.recorder)))
+      .rejects.toMatchObject({ code: "llm_schema_invalid" });
+    expect(adapter.contexts).toHaveLength(2);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "recovery_preservation_rejected" }));
+    expect(telemetry.events).not.toContainEqual(expect.objectContaining({ message: "recovery_obligation_resolved" }));
   });
 
   it("strips redundant candidate anchor fields before model repair", async () => {
@@ -3552,26 +3643,13 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       findings: [expect.objectContaining({ title: "Candidate finding" })]
     });
     expect(adapter.contexts).toHaveLength(1);
-    expect(telemetry.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 7,
-        message: "stage7_schema_cleanup_recovered",
-        packetId: "packet-candidate-anchor-cleanup",
-        data: expect.objectContaining({
-          cleanupKind: "candidate_payload",
-          classification: "extra_finding_properties",
-          strippedKeys: [
-            "findings.0.changedLine",
-            "findings.0.filePath",
-            "findings.0.hunkId",
-            "findings.0.line"
-          ]
-        })
-      })
-    ]));
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      message: "submit_shape_correction_accepted",
+      data: expect.objectContaining({ localEdits: expect.arrayContaining(["changedLine", "filePath", "hunkId", "line"].map(key => ({ path: `findings.0.${key}`, rule: "unknown_property" }))) })
+    }));
   });
 
-  it("salvages a no-findings packet whose prose mentions candidate/title without misrouting to candidate repair", async () => {
+  it("rejects lossy repair: salvages a no-findings packet whose prose mentions candidate/title without misrouting to candidate repair", async () => {
     // Regression guard for the run-24 misclassification: a no_findings payload whose prose
     // happens to contain words like "candidate" or "title" must NOT be treated as a candidate
     // submission. It should be salvaged deterministically as no_findings (no model re-prompt),
@@ -3596,7 +3674,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           uncertainties: [],
           noFindingReason: `This could be a candidate for a future refactor, and the function title changed, but no concrete failure mode exists. ${"detail ".repeat(200)}`
         }
-      }])
+      }]),
+      assistant([validSubmitReviewCall("destructive-repair")])
     ]);
     const runner = createPiRunner({
       llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
@@ -3607,20 +3686,11 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
     });
 
-    const result = (await runner.runStructured({
-      ...submitReviewRequest("packet-prose-no-findings", telemetry.recorder),
-      telemetryContext: { packetId: "packet-prose-no-findings" }
-    })) as SubmitPacketReview;
-
-    expect(result).toMatchObject({ reviewStatus: "no_findings", findings: [] });
-    // Deterministic salvage: no second model call (would-be candidate repair re-prompts).
-    expect(adapter.contexts).toHaveLength(1);
-    expect(result.followUpHints).toEqual([
-      expect.objectContaining({ question: "Does any caller depend on the old fallback?", confidence: "medium" })
-    ]);
-    // Prose preserved as the no-finding reason rather than stripped as a candidate payload.
-    expect(result.noFindingReason).toContain("candidate");
-    expect(result.noFindingReason).toHaveLength(1000);
+    await expect(runner.runStructured(submitReviewRequest("packet-prose-no-findings", telemetry.recorder)))
+      .rejects.toMatchObject({ code: "llm_schema_invalid" });
+    expect(adapter.contexts).toHaveLength(2);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "recovery_preservation_rejected" }));
+    expect(telemetry.events).not.toContainEqual(expect.objectContaining({ message: "recovery_obligation_resolved" }));
   });
 
   it("repairs candidate-shaped invalid submissions with compact replacement context", async () => {
@@ -3631,7 +3701,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         id: "submit-invalid-candidate",
         name: "submit_review",
         arguments: {
-          findings: [{ title: "candidate was drafted" }],
+          findings: [{ title: "Candidate finding" }],
           followUpHints: [],
           uncertainties: []
         }
@@ -3681,7 +3751,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ]));
   });
 
-  it("does not strip substantive unknown candidate fields before compact repair", async () => {
+  it("strips substantive unexpected candidate fields without a repair", async () => {
     const telemetry = fakeTelemetry();
     const candidate = validCandidateReviewFinding();
     const adapter = scriptedAdapter([
@@ -3711,28 +3781,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         ...submitReviewRequest("packet-candidate-substantive-extra", telemetry.recorder),
         telemetryContext: { packetId: "packet-candidate-substantive-extra" }
       })
-    ).resolves.toMatchObject({ findings: [expect.objectContaining({ title: "Candidate finding" })] });
-
-    expect(adapter.contexts).toHaveLength(2);
-    expect(adapter.contexts[1]).toContain("category_note");
-    expect(adapter.contexts[1]).not.toContain("review packet-candidate-substantive-extra");
-    expect(telemetry.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 7,
-        message: "stage7_schema_cleanup_rejected",
-        packetId: "packet-candidate-substantive-extra",
-        data: expect.objectContaining({
-          classification: "extra_finding_properties",
-          rejectReason: expect.stringContaining("unsafe_unknown_fields")
-        })
-      }),
-      expect.objectContaining({
-        stage: 7,
-        message: "stage7_schema_compact_repair_scheduled",
-        packetId: "packet-candidate-substantive-extra",
-        data: expect.objectContaining({ replaceConversation: true })
-      })
-    ]));
+    ).resolves.toMatchObject({ findings: [candidate] });
+    expect(adapter.contexts).toHaveLength(1);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "submit_shape_correction_accepted", data: expect.objectContaining({ localEdits: [{ path: "findings.0.category_note", rule: "unknown_property" }] }) }));
   });
 
   it("does not guess invalid candidate enum values locally", async () => {
@@ -3783,7 +3834,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       id,
       name: "submit_review",
       arguments: {
-        findings: [{ title: "candidate was drafted" }],
+        findings: [{ title: "Candidate finding" }],
         followUpHints: [],
         uncertainties: []
       }
@@ -3825,7 +3876,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         id: "submit-invalid-candidate",
         name: "submit_review",
         arguments: {
-          findings: [{ title: "candidate was drafted" }],
+          findings: [{ title: "Candidate finding" }],
           followUpHints: [],
           uncertainties: []
         }
@@ -3847,14 +3898,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         telemetryContext: { packetId: "packet-candidate-not-no-findings" }
       })
     ).rejects.toMatchObject({ code: "llm_schema_invalid" });
-    expect(telemetry.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        stage: 7,
-        message: "stage7_schema_repair_failed",
-        packetId: "packet-candidate-not-no-findings",
-        data: expect.objectContaining({ classification: "unsafe_candidate_like_payload" })
-      })
-    ]));
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "recovery_preservation_rejected", data: expect.objectContaining({ paths: expect.arrayContaining(["findings"]) }) }));
   });
 
   it("does not salvage no-findings after a prior candidate-shaped Stage 7 submit", async () => {
@@ -3865,7 +3909,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         id: "submit-invalid-candidate",
         name: "submit_review",
         arguments: {
-          findings: [{ title: "candidate was drafted" }],
+          findings: [{ title: "Candidate finding" }],
           followUpHints: [],
           uncertainties: []
         }
@@ -4673,7 +4717,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           type: "toolCall",
           id: "submit-invalid-after-nudge",
           name: "submit_review",
-          arguments: { packetId: "packet-plain" }
+          arguments: {}
         }
       ]),
       assistant([validSubmitReviewCall("submit-valid-after-repair")])

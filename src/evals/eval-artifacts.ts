@@ -57,6 +57,8 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
   const budgetSummary = await readOptionalArtifact<BudgetSummary>(dir, "budget-summary.json");
   const runJson = await readOptionalJson<unknown>(dir, "run.json");
   const telemetry = await readOptionalJson<unknown>(dir, "telemetry.json");
+  const recoveryEvents = await readOptionalJsonl(path.join(dir, "events.jsonl"));
+  if (recoveryEvents !== undefined) metricsSources.recoveryEvents = recoveryEvents;
   const modelCalls = await readOptionalJsonl(path.join(dir, "model-calls.jsonl"));
   const toolCalls = await readOptionalJsonl(path.join(dir, "tool-calls.jsonl"));
   if (costProfile !== undefined) {

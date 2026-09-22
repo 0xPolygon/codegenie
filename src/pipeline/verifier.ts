@@ -28,9 +28,8 @@ import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
 import {
   isRunFatalLlmError,
   isRecoverableWorkerError,
-  representativeAnchorFromPacket,
-  validateAnchorForDiff,
-  validateAnchorForPacket
+  findingDiffContext,
+  validateAnchorForDiff
 } from "./pipeline-utils.js";
 import { applySeverityPolicy } from "./severity-policy.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
@@ -438,7 +437,7 @@ function preGateAnchor(
   telemetry: TelemetryRecorder
 ): { candidate: CandidateFinding; anchorStripped: boolean } {
   if (!candidate.anchor) {
-    return { candidate: backfillRepresentativeAnchor(candidate, packet, diff, telemetry), anchorStripped: false };
+    return { candidate: candidate, anchorStripped: false };
   }
   const anchor = normalizeAnchor(candidate.anchor, packet, diff);
   if (!anchor) {
@@ -451,7 +450,7 @@ function preGateAnchor(
       data: { candidateId: candidate.id, anchor: candidate.anchor }
     });
     const stripped: CandidateFinding = { ...withoutAnchor, changedLine: false };
-    return { candidate: backfillRepresentativeAnchor(stripped, packet, diff, telemetry), anchorStripped: true };
+    return { candidate: stripped, anchorStripped: true };
   }
   return {
     candidate: {
@@ -461,42 +460,6 @@ function preGateAnchor(
       changedLine: true
     },
     anchorStripped: false
-  };
-}
-
-// Tier 2 anchor reconstruction (plan 76): an anchorless candidate whose
-// evidence quotes changed code is on-diff even though Stage 7 gave the gate
-// no placement to prove it with. The packet's first changed line proves
-// relevance for gating; it is NOT a publishable location (anchorSource
-// "backfill_packet_representative" is withheld at composition).
-function backfillRepresentativeAnchor(
-  candidate: CandidateFinding,
-  packet: ReviewPacket | undefined,
-  diff: UnifiedDiff | undefined,
-  telemetry: TelemetryRecorder
-): CandidateFinding {
-  if (candidate.anchor !== undefined || packet === undefined) {
-    return candidate;
-  }
-  if (candidate.evidence.changedCode.trim().length === 0) {
-    return candidate;
-  }
-  const representative = normalizeAnchor(representativeAnchorFromPacket(packet), packet, diff);
-  if (representative === undefined) {
-    return candidate;
-  }
-  telemetry.event({
-    stage: 9,
-    level: "info",
-    message: "anchor_representative",
-    file: candidate.path,
-    data: { candidateId: candidate.id, hunkId: representative.hunkId, line: representative.line, side: representative.side }
-  });
-  return {
-    ...candidate,
-    anchor: representative,
-    anchorSource: "backfill_packet_representative",
-    changedLine: true
   };
 }
 
@@ -620,7 +583,7 @@ async function verifyCandidate(
   const prompt = opts.promptBuilder.buildVerifierPrompt({
     candidate,
     originContext: verificationOriginContext(candidate, packet),
-    hunksText: packet?.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n") ?? "",
+    hunksText: findingDiffContext(opts.diff, [candidate.anchor?.path ?? candidate.path], candidate.anchor?.hunkId) || packet?.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n") || "",
     ...(packet?.intentSignals !== undefined ? { intentSignals: packet.intentSignals } : {}),
     skills
   });
@@ -700,7 +663,7 @@ function verificationOriginContext(candidate: CandidateFinding, packet: ReviewPa
   if (!packet) {
     return "";
   }
-  return packet.contextText;
+  return `${packet.contextText}\n\nDiscovery packet ${packet.id} (${packet.path}); this is origin evidence, not a finding location.\n${packet.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n")}`;
 }
 
 function normalizeSubmittedVerdict(
@@ -1249,6 +1212,9 @@ function revisedFinding(
   if (anchorSource !== undefined) {
     revised.anchorSource = anchorSource;
   }
+  if (original.locationResolution !== undefined) {
+    revised.locationResolution = original.locationResolution;
+  }
   if (original.modelAnchorSubmitted !== undefined) {
     revised.modelAnchorSubmitted = original.modelAnchorSubmitted;
   }
@@ -1273,8 +1239,7 @@ function normalizeAnchor(
   packet: ReviewPacket | undefined,
   diff: UnifiedDiff | undefined
 ): CandidateFinding["anchor"] {
-  const packetValid = packet ? validateAnchorForPacket(anchor, packet) : anchor;
-  return validateAnchorForDiff(packetValid, diff);
+  return validateAnchorForDiff(anchor, diff);
 }
 
 function gateCandidate(candidate: CandidateFinding, config: CodegenieConfig): CandidateGateDecision {
@@ -1315,15 +1280,14 @@ function candidateGateFacts(candidate: CandidateFinding): VerificationGateFacts 
     failureModeConcrete: failureMode.length >= 24,
     relatedEvidenceCount,
     modelAnchorSubmitted: candidate.modelAnchorSubmitted === true,
-    modelAnchorValid: candidate.anchorSource === "model",
+    modelAnchorValid: candidate.anchorSource === "model" && candidate.locationResolution?.status !== "clarified",
     validAnchorPresent,
     ...(candidate.anchorSource !== undefined ? { anchorSource: candidate.anchorSource } : {})
   };
 }
 
 function isEvidenceBackedLowConfidenceCandidate(facts: VerificationGateFacts): boolean {
-  return facts.changedLine &&
-    facts.hasChangedCode &&
+  return facts.hasChangedCode &&
     facts.hasFailureMode &&
     facts.failureModeConcrete &&
     facts.relatedEvidenceCount > 0 &&
@@ -1336,9 +1300,6 @@ function lowConfidenceGateReason(facts: VerificationGateFacts): string {
   }
   if (!(facts.category === "logic_bug" || facts.category === "correctness" || facts.category === "security")) {
     return "low_confidence_unsupported_category";
-  }
-  if (!facts.changedLine) {
-    return "low_confidence_no_changed_line_anchor";
   }
   if (facts.relatedEvidenceCount === 0) {
     return "low_confidence_no_related_evidence";

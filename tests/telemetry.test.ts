@@ -17,6 +17,24 @@ import { ARTIFACT_LOCATION, KNOWN_ARTIFACTS, canonicalArtifactPath, createRunTel
 import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
 
 describe("run telemetry", () => {
+  it("records startup provenance even when the checkout/build changes before finalization", async () => {
+    vi.stubEnv("CODEGENIE_BUILD_COMMIT", "startup-commit");
+    vi.stubEnv("CODEGENIE_BUILD_VERSION", "startup-version");
+    vi.stubEnv("CODEGENIE_BUILD_DIRTY", "true");
+    try {
+      const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true } });
+      const attached = await run.attachRunDirectory(tempDir());
+      vi.stubEnv("CODEGENIE_BUILD_COMMIT", "later-commit");
+      vi.stubEnv("CODEGENIE_BUILD_VERSION", "later-version");
+      vi.stubEnv("CODEGENIE_BUILD_DIRTY", "false");
+      await run.finalize({ status: "completed_full", exitCode: 0 });
+      const artifact = JSON.parse(readFileSync(path.join(attached.runDir, "run.json"), "utf8"));
+      expect(artifact.codegenieRuntime).toMatchObject({ commit: "startup-commit", packageVersion: "startup-version", dirty: true });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("redacts mirrored warn and error messages before stderr", () => {
     clearRegisteredSecretsForTests();
     registerSecret("stderr-secret-token");

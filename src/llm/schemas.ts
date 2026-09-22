@@ -11,7 +11,7 @@ const FindingCategorySchema = StringEnum(["logic_bug", "correctness", "security"
 
 const BehaviorChangeAssessmentSchema = StringEnum(["accidental_regression", "intentional_needs_confirmation", "specified_change", "unknown"] as const);
 
-const DiffAnchorSchema = Type.Object(
+export const DiffAnchorSchema = Type.Object(
   {
     path: Type.String({ minLength: 1, maxLength: 500 }),
     line: Type.Integer({ minimum: 1 }),
@@ -222,7 +222,7 @@ const VerificationVerdictSharedProperties = {
 };
 
 export const FindingUpdatesSchema = Type.Partial(
-  Type.Omit(SubmittedFindingSchema, ["path", "anchor"]),
+  Type.Omit(SubmittedFindingSchema, ["path", "anchor", "behaviorChange", "intentEvidence"]),
   { additionalProperties: false, minProperties: 1,
     description: "Only changed finding fields. Omitted fields stay unchanged. Nested evidence is replaced as a whole. Use revisedAnchor for placement." }
 );
@@ -249,6 +249,12 @@ export const SubmitCompositionSchema = Type.Object(
         {
           findingIds: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 100 }),
           finalBody: Type.String({ minLength: 1, maxLength: 20000 }),
+          sections: Type.Optional(Type.Array(Type.Object({
+            kind: StringEnum(["impact", "verification", "fix", "test"] as const),
+            text: Type.String({ minLength: 1, maxLength: 12000 }),
+            sourceRefs: Type.Array(Type.String({ minLength: 1, maxLength: 300 }), { minItems: 1, maxItems: 500 })
+          }, { additionalProperties: false }), { minItems: 1, maxItems: 100 })),
+          evidenceRefs: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 300 }), { maxItems: 1000 })),
           publication: StringEnum(["inline", "summary-only"] as const)
         },
         { additionalProperties: false }
@@ -269,8 +275,8 @@ export const SCHEMA_VERSIONS = {
   submit_plan: 6,
   submit_review: 5,
   submit_system_review: 2,
-  submit_verdict: 6,
-  submit_composition: 2
+  submit_verdict: 7,
+  submit_composition: 3
 } as const;
 
 export function submitToolNameForStage(stage: ReviewStage): keyof typeof SCHEMA_VERSIONS {

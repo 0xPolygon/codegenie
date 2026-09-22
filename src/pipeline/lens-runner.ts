@@ -1,3 +1,4 @@
+import { clarifyFindingLocations } from "./finding-location.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmPostToolNudgeInput, LlmRunner } from "../llm/llm-runner.js";
@@ -21,7 +22,7 @@ import type {
 } from "../types.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
 import { isExactDuplicateCandidate } from "./verifier.js";
-import { inferAnchorFromChangedCode, isBudgetExhaustedError, isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff, validateAnchorForPacket } from "./pipeline-utils.js";
+import { inferAnchorFromChangedCode, isBudgetExhaustedError, isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
 import { isCodegenieError } from "../util/errors.js";
 import { applySeverityPolicy } from "./severity-policy.js";
 import { isAdaptiveNearMissSignal } from "./uncertainty-promotion.js";
@@ -177,6 +178,7 @@ export async function runLensPackets(
     return poolEnsemblePassResults(packet, passes, telemetry);
   });
   results = await runAdaptiveSecondWave(results, packets, workerRunner, tools, config, telemetry, opts);
+  await clarifyFindingLocations(results.flatMap((result) => result.findings), config, telemetry, { ...opts, packets });
   telemetry.event({
     stage: 7,
     level: "info",
@@ -868,7 +870,7 @@ function stampFinding(
   let anchor = modelAnchor;
   let anchorSource: AnchorSource | undefined = modelAnchor !== undefined ? "model" : undefined;
   if (anchor === undefined && submitted.evidence.changedCode.trim().length > 0) {
-    const inferred = normalizeAnchor(inferAnchorFromChangedCode(packet, submitted.evidence.changedCode), packet, diff);
+    const inferred = normalizeAnchor(inferAnchorFromChangedCode(diff ?? packet, submitted.evidence.changedCode), packet, diff);
     if (inferred !== undefined) {
       anchor = inferred;
       anchorSource = "backfill_changed_code";
@@ -899,7 +901,7 @@ function stampFinding(
     });
   }
   const changedLine = anchor !== undefined;
-  const path = anchor?.path ?? packet.path;
+  const path = anchor?.path ?? submitted.path ?? submitted.anchor?.path ?? packet.path;
   const primaryLens = packet.lenses[0] ?? "core/code-review";
   return {
     id: candidateId,
@@ -910,6 +912,7 @@ function stampFinding(
     ...(anchor !== undefined ? { anchor } : {}),
     ...(anchorSource !== undefined ? { anchorSource } : {}),
     modelAnchorSubmitted: submitted.anchor !== undefined,
+    ...(anchor === undefined ? { locationResolution: { status: "unresolved" as const, ...(submitted.anchor ? { rejectedAnchor: submitted.anchor } : {}) } } : {}),
     changedLine,
     category: submitted.category,
     evidence: submitted.evidence,
@@ -937,7 +940,7 @@ function normalizeAnchor(
   packet: ReviewPacket,
   diff: UnifiedDiff | undefined
 ): DiffAnchor | undefined {
-  return validateAnchorForDiff(validateAnchorForPacket(anchor, packet), diff);
+  return validateAnchorForDiff(anchor, diff);
 }
 
 function packetPriority(packet: ReviewPacket): ReviewPriority {

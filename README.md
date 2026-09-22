@@ -34,6 +34,10 @@ codegenie provider use glm-5.3:max               # -> openrouter/z-ai/glm-5.3
 codegenie review
 ```
 
+Codegenie's built-in model overrides pin all OpenRouter models with IDs starting with `deepseek/` to the `deepseek` upstream with `only`/`order` and `allow_fallbacks: false`. For this pinned model family, submit calls expose only the submit tool and use `tool_choice: "auto"`, to accommodate the named forced-tool rejection observed on DeepSeek V4.1 Flash. Returned submissions still undergo strict validation, and missing submissions have bounded retries. These [OpenRouter routing preferences](https://openrouter.ai/docs/guides/routing/provider-selection) apply to every stage, including repairs; Codegenie's stage-specific reasoning levels still apply. Requests cannot fall back to another upstream if DeepSeek is unavailable. Routing is included in debug request traces and local model-call cache keys. The overrides live in `src/provider/models-override.ts`.
+
+In our trails-api eval, pinning OpenRouter to DeepSeek's own upstream together with the automatic submit-tool compatibility setting produced significantly better completion and performance: DeepSeek V4.1 Flash at `max` finished run 79 in **8m23s**, reviewed all **10/10 hunks**, found the expected bug, and passed with **zero timeouts**. Before these changes, run 77 took **42m19s** and failed completeness with seven unreviewed hunks. Composition dropped from almost six minutes (including a timed-out attempt) to **20 seconds**. Recorded cost rose from about **$0.14 to $0.26**; timed-out calls in run 77 had incomplete usage reporting. This is one eval comparison, not a guarantee for every DeepSeek model or workload: run 79 also used the fallback planner with normal coverage rather than run 77's mostly deep coverage, and still needed schema repairs. The override targets the `deepseek/` model namespace on OpenRouter; it does not call DeepSeek's API directly or change other model families.
+
 The report prints to stdout as Markdown. A review with findings is a *successful* review: the exit code is `0` either way.
 
 ## Reviewing
@@ -224,6 +228,16 @@ Autonomy still lives where it earns its keep — *inside* the stages, where revi
 **Fail honestly, degrade predictably.** A failed planner falls back to a deterministic plan; a failed packet marks its hunks in coverage; budget exhaustion stops future dispatch without discarding completed work. Partial reviews exit `0` and *say they're partial*.
 
 **Build when evidence demands it.** Richer designs (hierarchical planning, per-role model tiering, cross-packet indexes) are specified but deferred behind written triggers — machinery is added when telemetry shows it improves review quality, never speculatively.
+
+Eval cases can opt into stricter reliability checks:
+
+```yaml
+expect:
+  planningQuality: non-degraded
+  recoveryFidelity: preserved
+```
+
+The planning check rejects fallback/degraded plans even when every hunk was reviewed. The recovery check requires complete telemetry and no unresolved structured-output obligations; historical runs without that evidence fail the enabled check as `unknown`. Repairs preserve complete drafts across retries and reject deleted items or changed judgments. Composition accounts for verified source components, renders evidence and verification verbatim, and uses a conservative deterministic body when attribution is invalid. `stages/10-composition/composition-sources.json` records those inputs and dispositions; references establish attribution, not proof that composed prose preserves every nuance.
 
 ## Development
 

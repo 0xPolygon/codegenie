@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
+import { applyModelOverrides, modelProviderRouting, requiresAutomaticSubmitToolChoice } from "../provider/models-override.js";
 import { createStreamProgress, type StreamProgress } from "./stream-progress.js";
 import {
   validateToolCall,
@@ -187,7 +190,7 @@ const NO_REPOSITORY_TOOL_BUDGET = {
 const MAX_PROVIDER_ATTEMPTS = 4;
 const BASE_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30_000;
-const RUNNER_MESSAGE_VERSION = "pi-runner-loop-v3";
+const RUNNER_MESSAGE_VERSION = "pi-runner-loop-v9";
 const DEBUG_ARTIFACT_SCHEMA_VERSION = 1;
 const MAX_DEBUG_ARTIFACT_CHARS = 1_500_000;
 const RECORDED_PROVIDER_FAILURE = Symbol("recordedProviderFailure");
@@ -216,6 +219,10 @@ type GetOAuthApiKey = (
 
 export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
   const adapter = opts.adapter ?? createRealPiAiAdapter();
+  const recoveryObligations = new Map<string, { original: Record<string, unknown>; id: string }>();
+  let obligationSequence = 0;
+  const recoveryNamespace = randomUUID();
+  opts.telemetry.event({ stage: 0, level: "info", message: "recovery_fidelity_started", data: { version: 1 } });
   const providerLimit = pLimit(Math.max(1, opts.llmConfig.maxConcurrentCalls));
   const model = adapter.resolveModel(definedRecord({ provider: opts.llmConfig.provider, model: opts.llmConfig.model }) as {
     provider?: string;
@@ -256,7 +263,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       if (!protocolFlags.providerProtocolRecorded) {
         protocolFlags.providerProtocolRecorded = true;
         const initialReasoning = selectReasoningEffort(opts.llmConfig.reasoning ?? "high",
-          modelThinkingLevels(model.raw), request.stage === 10 ? "one_level_lower" : "configured");
+          modelThinkingLevels(model.raw), request.purpose === "location_clarification" ? "lowest_supported" : request.stage === 10 ? "one_level_lower" : "configured");
         const forcedProbe = describeProviderProtocol(
           model,
           { type: "tool", name: submitTool.name },
@@ -284,6 +291,38 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       const messages: ConversationMessage[] = [
         { role: "user", content: request.prompt, timestamp: 0 }
       ];
+      const obligationKey = `${request.stage}:${request.telemetryContext?.workerId ?? ""}:${request.telemetryContext?.packetId ?? ""}:${request.telemetryContext?.candidateId ?? ""}:${sha256Hex(request.prompt)}`;
+      const recordFidelity = (message: string, data: Record<string, unknown>) => opts.telemetry.event({
+        stage: request.stage, level: message.endsWith("rejected") ? "warn" : "info", message,
+        data: { ...data, packetId: request.telemetryContext?.packetId, candidateId: request.telemetryContext?.candidateId }
+      });
+      const checkPreservation = (result: unknown) => {
+        const obligation = recoveryObligations.get(obligationKey);
+        if (!obligation) return;
+        const paths = preservationViolations(request.schema, obligation.original, result);
+        if (paths.length) {
+          recordFidelity("recovery_preservation_rejected", { obligationId: obligation.id, paths });
+          throw new CodegenieError("llm_schema_invalid", `Repair must preserve original content at: ${paths.join(", ")}`, { recoverable: true });
+        }
+      };
+      const providerRequest: LlmStructuredRequest<T> = { ...request, validateSubmit: (value) => {
+        const obligation = recoveryObligations.get(obligationKey);
+        if (obligation && preservationViolations(request.schema, obligation.original, value).length) {
+          return { ok: false, classification: "recovery_content_changed" };
+        }
+        return request.validateSubmit?.(value) ?? { ok: true };
+      } };
+      const resolveObligation = (method: "model_repair" | "deterministic_correction") => {
+        const obligation = recoveryObligations.get(obligationKey);
+        if (obligation) {
+          recordFidelity("recovery_obligation_resolved", { obligationId: obligation.id, method,
+            workerRestart: previousObligation !== undefined, preservedItems: submissionItemCounts(obligation.original) });
+          recoveryObligations.delete(obligationKey);
+        }
+      };
+      const previousObligation = recoveryObligations.get(obligationKey);
+      if (previousObligation) messages.push({ role: "user", timestamp: 0, content:
+        `A previous attempt left this complete but schema-invalid submission unresolved. Preserve its items and valid fields; correct only invalid shape. It is advisory, not accepted evidence.\n${fenceUntrusted(stableJson(previousObligation.original), "unresolved-submission")}` });
       let toolCallsUsed = 0;
       let investigationRounds = 0;
       let resultCharsUsed = 0;
@@ -305,6 +344,9 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
         replaceConversationOverride?: boolean;
         cause?: unknown;
       }): void => {
+        if (request.purpose === "location_clarification") {
+          throw new CodegenieError("llm_schema_invalid", "Location clarification did not return a valid submission", { recoverable: true });
+        }
         try {
           queueSchemaRepair({
             opts,
@@ -325,6 +367,9 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           recordFinalArgumentRepairOutcome(schemaRepairUsed ? "terminal_invalid" : "not_dispatched");
           throw cause;
         }
+        const obligation = recoveryObligations.get(obligationKey);
+        if (obligation) messages.push({ role: "user", timestamp: 0, content:
+          `Schema-only repair: preserve every schema-defined existing item, array order, and valid field exactly. Omit unexpected keys; they have been discarded locally. Supply all missing required fields and correct remaining invalid fields; do not summarize, delete schema-defined evidence, or change existing decisions. Return the WHOLE submission, not a fragment.\nCheck spelling and case against the exact schema keys. Removed unexpected values are retained below as diagnostic context: check whether a misspelled or misplaced key supplies a missing required value. Do not reintroduce unsupported keys. Return complete schema-valid data; missing required fields cannot be omitted.\n${fenceUntrusted(stableJson(focusedRepairDiagnostics(request.schema, obligation.original)), "repair-field-diagnostics")}\n${fenceUntrusted(stableJson(obligation.original), "original-complete-submission")}` });
         schemaRepairUsed = true;
         forceFinalize = true;
         budgetForceFinalize = false;
@@ -356,7 +401,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       // investigation calls and routes the pass to finalize; the hard deadline
       // (soft + grace) aborts. A pass that finished investigating is never
       // killed mid-finalize by the soft budget alone.
-      const graceMs = finalizeGraceMs(request.timeoutMs);
+      const graceMs = request.purpose === "location_clarification" ? 0 : finalizeGraceMs(request.timeoutMs);
       const softDeadlineAt = Date.now() + request.timeoutMs;
       let softDeadlineFinalize = false;
       const taskTimeout = timeoutSignal(runOpts.runSignal, request.stage === 10 ? COMPOSITION_TOTAL_TIMEOUT_MS : request.timeoutMs + graceMs);
@@ -391,7 +436,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             providerResult = await completeWithCache({
               opts: runOpts,
               adapter,
-              request,
+              request: providerRequest,
               model,
               messages,
               tools: activeTools,
@@ -490,6 +535,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             }
             try {
               const validated = validateSubmitCall(adapter, request, submitTool, submitCall);
+              checkPreservation(validated);
               if (request.stage === 7 && schemaRepairUsed) {
                 if (candidateDrafted && !submitCallHasFindings(submitCall)) {
                   const error = "Stage 7 candidate schema repair returned no findings; codegenie will not silently downgrade malformed findings to no-findings.";
@@ -537,8 +583,31 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               if (schemaRepairUsed) {
                 recordFinalArgumentRepairOutcome("recovered");
               }
+              const localEdits = cleanupSubmitShape(request.schema, submitCall.arguments).edits;
+              if (localEdits.length) recordFidelity("submit_shape_correction_accepted", {
+                callId: providerResult.callId, localEdits,
+                ...(recoveryObligations.has(obligationKey) ? { obligationId: recoveryObligations.get(obligationKey)!.id } : {}),
+                items: submissionItemCounts(submitCall.arguments), validation: "schema_semantics_preservation_passed"
+              });
+              resolveObligation(localEdits.length && !schemaRepairUsed ? "deterministic_correction" : "model_repair");
               return validated as T;
             } catch (cause) {
+              if (request.purpose === "location_clarification") {
+                throw new CodegenieError("llm_schema_invalid", "Location clarification failed validation", { recoverable: true, cause });
+              }
+              if (!recoveryObligations.has(obligationKey)) {
+                const id = `${recoveryNamespace}-${++obligationSequence}`;
+                recordFidelity("recovery_obligation_opened", { obligationId: id, issues: submissionIssues(request.schema, submitCall.arguments), originalItems: submissionItemCounts(submitCall.arguments) });
+                if (recoveryObligations.size >= 128 || stableJson(submitCall.arguments).length > 200_000) {
+                  throw new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
+                }
+                recoveryObligations.set(obligationKey, { original: structuredClone(submitCall.arguments), id });
+              }
+              const localEdits = cleanupSubmitShape(request.schema, submitCall.arguments).edits;
+              if (localEdits.length) recordFidelity("submit_shape_correction_rejected", {
+                callId: providerResult.callId, localEdits, obligationId: recoveryObligations.get(obligationKey)?.id,
+                validation: "remaining_schema_semantic_or_preservation_failure"
+              });
               const semanticClassification = cause instanceof SubmitSemanticValidationError
                 ? cause.classification
                 : undefined;
@@ -564,9 +633,11 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 request,
                 submitTool,
                 repairInput,
-                cause
+                cause,
+                checkPreservation
               });
               if (recovery.validated !== undefined) {
+                resolveObligation("deterministic_correction");
                 return recovery.validated as T;
               }
               const repairClassification = recovery.repairClassification ?? semanticClassification;
@@ -585,6 +656,9 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             }
           }
 
+          if (request.purpose === "location_clarification") {
+            throw new CodegenieError("llm_schema_invalid", "Location clarification did not submit coordinates", { recoverable: true });
+          }
           if (forceFinalize) {
             if (!schemaRepairUsed && !finalizeSubmitRetryUsed && !softDeadlineFinalize) {
               finalizeSubmitRetryUsed = true;
@@ -1098,7 +1172,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
   } = input;
   const reasoningConfigured = opts.llmConfig.reasoning ?? "high";
   const reasoningPolicy: ReasoningPolicy = kind === "repair" ? "lowest_supported"
-    : request.stage === 10 ? "one_level_lower" : "configured";
+    : request.purpose === "location_clarification" ? "lowest_supported" : request.stage === 10 ? "one_level_lower" : "configured";
   const reasoning = selectReasoningEffort(reasoningConfigured, modelThinkingLevels(model.raw), reasoningPolicy);
   const forceSubmit = opts.llmConfig.forceSubmitToolChoice !== false;
   const forcedSubmitThinkingOff = anthropicForcedSubmitCall(model, toolChoice, forceSubmit);
@@ -1128,6 +1202,8 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     runnerMessageVersion: RUNNER_MESSAGE_VERSION,
     provider: model.provider,
     model: model.id,
+    providerRouting: modelProviderRouting(model.raw),
+    effectiveToolChoice: protocol.toolChoiceDowngraded ? protocol.toolChoiceEffective : undefined,
     // Cache-key honesty: Anthropic forced-submit calls run with thinking
     // disabled (plan 86 step 3), which is a different request than the same
     // messages at the configured reasoning level.
@@ -1214,7 +1290,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
   }
 
   let lastError: unknown;
-  const maxAttempts = kind === "repair" || request.stage === 10 ? 1 : MAX_PROVIDER_ATTEMPTS;
+  const maxAttempts = kind === "repair" || request.stage === 10 || request.purpose === "location_clarification" ? 1 : MAX_PROVIDER_ATTEMPTS;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     throwIfTaskAborted(taskSignal, taskTimedOut);
     let estimatedTokens = 0;
@@ -1484,7 +1560,7 @@ function buildSubmitTool<T>(request: LlmStructuredRequest<T>): ToolDefinition {
   const name = submitToolNameForStage(request.stage);
   return {
     name,
-    description: `Submit the final structured result for stage ${request.stage}.`,
+    description: `Submit the final structured result for stage ${request.stage}. Before submitting, check that every key, including nested keys, matches the provided schema exactly in spelling and case. Include all required fields. Do not invent additional keys or copy schema keywords such as maxItems into the payload.`,
     parameters: request.schema,
     execute: async () => ({ text: "submit tool is handled by codegenie" })
   };
@@ -1527,6 +1603,8 @@ async function modelCallCacheWriteStatus(
 }
 
 function canonicalModelRequest(input: {
+  effectiveToolChoice?: string | undefined;
+  providerRouting?: ReturnType<typeof modelProviderRouting>;
   cacheSchemaVersion: number;
   runFingerprint: string | null;
   runnerMessageVersion: string;
@@ -1551,6 +1629,7 @@ function canonicalModelRequest(input: {
     runnerMessageVersion: input.runnerMessageVersion,
     provider: input.provider,
     model: input.model,
+    ...(input.providerRouting !== undefined ? { providerRouting: input.providerRouting } : {}),
     reasoning: input.reasoning,
     stage: input.stage,
     templateVersion: input.templateVersion,
@@ -1561,6 +1640,7 @@ function canonicalModelRequest(input: {
     finalizeMode: input.finalizeMode,
     finalizeTarget: input.finalizeTarget,
     toolChoice: input.toolChoice,
+    ...(input.effectiveToolChoice !== undefined ? { effectiveToolChoice: input.effectiveToolChoice } : {}),
     messages: input.messages,
     tools: input.tools
       .map((tool) => {
@@ -1691,6 +1771,7 @@ function mapProviderToolChoice(model: Model<Api>, choice: unknown, forceSubmit =
   if (!isForcedToolChoice(choice)) {
     return undefined;
   }
+  if (requiresAutomaticSubmitToolChoice(model)) return "auto";
   switch (model.api) {
     case "anthropic-messages":
       // Forced tool_choice conflicts with extended thinking on the Anthropic
@@ -2505,7 +2586,20 @@ function validateSubmitCall<T>(
   submitTool: ToolDefinition,
   submitCall: PiToolCall
 ): T {
-  const validated = adapter.validateToolCall([toolSpec(submitTool)], submitCall) as T;
+  const cleaned = cleanupSubmitShape(request.schema, submitCall.arguments);
+  const validated = adapter.validateToolCall([toolSpec(submitTool)], {
+    ...submitCall, arguments: cleaned.arguments as Record<string, unknown>
+  }) as T;
+  // Packet status must agree with the finding list, including optional status
+  // supplied during repair. This shared gate also protects cache acceptance.
+  if (request.stage === 7 && submitTool.name === "submit_review") {
+    const review = validated as { reviewStatus?: string; findings?: unknown[] };
+    if (Array.isArray(review.findings)
+      && ((review.reviewStatus === "no_findings" && review.findings.length > 0)
+        || (review.reviewStatus === "findings" && review.findings.length === 0))) {
+      throw new SubmitSemanticValidationError("review_status_findings_mismatch");
+    }
+  }
   const semantic = request.validateSubmit?.(validated);
   if (semantic !== undefined && !semantic.ok) {
     throw new SubmitSemanticValidationError(semantic.classification);
@@ -2520,6 +2614,7 @@ function tryRecoverInvalidSubmit(input: {
   submitTool: ToolDefinition;
   repairInput: LlmSchemaInvalidSubmitRecoveryInput;
   cause: unknown;
+  checkPreservation?(result: unknown): void;
 }): { validated?: unknown; repairClassification?: LlmSubmitFailureClassification; replaceConversationOverride?: boolean } {
   const result = input.request.schemaRepair?.recoverInvalidSubmit?.(input.repairInput);
   if (result === undefined) {
@@ -2541,6 +2636,7 @@ function tryRecoverInvalidSubmit(input: {
       name: input.repairInput.submitTool,
       arguments: recovery.arguments
     });
+    input.checkPreservation?.(validated);
     if (recovery.onRecovered !== undefined) {
       recovery.onRecovered(recoveredCallId);
     } else {
@@ -2839,8 +2935,9 @@ function writeModelCallRequestDebug(
     provider: {
       provider: model.provider,
       model: model.id,
+      routing: modelProviderRouting(model.raw),
       reasoning: selectReasoningEffort(opts.llmConfig.reasoning ?? "high", modelThinkingLevels(model.raw),
-        meta.kind === "repair" ? "lowest_supported" : request.stage === 10 ? "one_level_lower" : "configured"),
+        meta.kind === "repair" ? "lowest_supported" : request.purpose === "location_clarification" ? "lowest_supported" : request.stage === 10 ? "one_level_lower" : "configured"),
       reasoningConfigured: opts.llmConfig.reasoning ?? "high"
     },
     cache: definedRecord({
@@ -3973,7 +4070,7 @@ function resolveRealModel(
         return undefined;
       }
       const auth = resolveProviderAuth(resolvedProvider, authStorage, models);
-      return auth ? { provider: resolvedProvider, id: resolvedModel, raw, ...auth } : undefined;
+      return auth ? { provider: resolvedProvider, id: resolvedModel, raw: applyModelOverrides(raw), ...auth } : undefined;
     } catch {
       return undefined;
     }
@@ -3986,7 +4083,7 @@ function resolveRealModel(
     }
     const providerModels = filterDeprecatedProviderModels([...models.getModels(resolvedProvider)]);
     const first = providerModels[0];
-    return first ? { provider: resolvedProvider, id: first.id, raw: first, ...auth } : undefined;
+    return first ? { provider: resolvedProvider, id: first.id, raw: applyModelOverrides(first), ...auth } : undefined;
   }
 
   for (const provider of models.getProviders()) {
@@ -3998,7 +4095,7 @@ function resolveRealModel(
     const providerModels = filterDeprecatedProviderModels([...models.getModels(providerId)]);
     const match = resolvedModel ? providerModels.find((candidate) => candidate.id === resolvedModel) : providerModels[0];
     if (match) {
-      return { provider: providerId, id: match.id, raw: match, ...auth };
+      return { provider: providerId, id: match.id, raw: applyModelOverrides(match), ...auth };
     }
   }
   return undefined;
@@ -4155,3 +4252,8 @@ function definedRecord<T extends Record<string, unknown>>(input: T): T {
 export const __piRunnerTestHooks = {
   parseHttpStatus
 };
+
+function submissionItemCounts(value: Record<string, unknown>): Record<string, number> {
+  return Object.fromEntries(["findings", "followUpHints", "uncertainties", "coverage", "composedFindings"].flatMap(key =>
+    Array.isArray(value[key]) ? [[key, value[key].length]] : []));
+}

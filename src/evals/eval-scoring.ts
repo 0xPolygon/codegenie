@@ -713,6 +713,11 @@ function scoreBudgets(
     const actual = metrics.maxPromptCharsByStage?.[stage];
     results.push(metricBudgetResult("maxPromptCharsByStage", limit, actual, replaySkip, stage));
   }
+  for (const check of ["planningQuality", "recoveryFidelity"] as const) {
+    const expected = expect[check];
+    if (expected !== undefined) results.push({ check, expected, actualText: metrics[check] ?? "unknown",
+      status: metrics[check] === expected ? "pass" : "fail", direction: "equals" });
+  }
   if (expect.reviewCompleteness !== undefined) {
     results.push(completenessBudgetResult(expect.reviewCompleteness, metrics.reviewCompleteness));
   }
@@ -838,6 +843,26 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   } else if (artifacts.coverage !== undefined) {
     metrics.reviewCompleteness = artifacts.coverage.partial ? "partial" : "complete";
   }
+  metrics.planningQuality = artifacts.coverage?.degradedPlanning === undefined ? "unknown"
+    : artifacts.coverage.degradedPlanning ? "degraded" : "non-degraded";
+  const recoveryEvents = artifacts.metricsSources.recoveryEvents ?? [];
+  const openObligations = new Set<string>();
+  let fidelityStarted = false;
+  let runFinished = false;
+  const expectedEvents = numberPath(artifacts.metricsSources.runJson, ["totals", "events"]);
+  const completeEvents = expectedEvents !== undefined && expectedEvents === recoveryEvents.length
+    && recoveryEvents.every((raw, index) => isRecord(raw) && raw.eventId === `ev-${String(index + 1).padStart(6, "0")}`);
+  for (const raw of recoveryEvents) {
+    if (raw === null || typeof raw !== "object") continue;
+    const event = raw as { message?: string; stage?: number; data?: { obligationId?: string; version?: number } };
+    if (event.message === "recovery_fidelity_started" && event.data?.version === 1) fidelityStarted = true;
+    if (event.message === "stage_completed" && event.stage === 10) runFinished = true;
+    if (event.data?.obligationId) {
+      if (event.message === "recovery_obligation_opened") openObligations.add(event.data.obligationId);
+      if (event.message === "recovery_obligation_resolved") openObligations.delete(event.data.obligationId);
+    }
+  }
+  metrics.recoveryFidelity = !fidelityStarted || !runFinished || !completeEvents ? "unknown" : openObligations.size ? "unresolved" : "preserved";
   const costUSD = numberPath(artifacts.metricsSources.costProfile, ["totalCostUSD"]);
   if (costUSD !== undefined) {
     metrics.costUSD = costUSD;

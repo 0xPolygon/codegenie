@@ -1,6 +1,6 @@
 # Plans
 
-This directory tracks implementation plans for confirmed improvements. Status values are `PENDING`, `BACKLOG`, `COMPLETE`, `REVERTED`, `IN PROGRESS`, and `BLOCKED`.
+This directory tracks implementation plans for confirmed improvements. Status values are `PENDING`, `BACKLOG`, `COMPLETE`, `REVERTED`, `IN PROGRESS`, `IMPLEMENTED (measuring)`, and `BLOCKED`.
 
 | Plan | Status | Topic |
 | --- | --- | --- |
@@ -117,6 +117,8 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 112 | IMPLEMENTED (measuring) | Issue 112: Enforce Final Structured-Submit Provenance from Pi Events |
 | 113 | BACKLOG (measurement gate not met) | Issue 113: Measure Direct-Reject Note Contradictions Before Adding Suppression |
 | 114 | COMPLETE | Issue 114: Re-execute Untrusted Structured Submits From Trusted Context |
+| 115 | IMPLEMENTED (measuring) | [Issue 115: Lossless Submit Recovery, Planning Fidelity, and Faithful Composition](115-issue-115-lossless-submit-recovery-and-faithful-composition.md) |
+| 116 | IMPLEMENTED (measuring) | [Issue 116: Local Submit Shape Cleanup](116-issue-116-local-submit-shape-cleanup.md) |
 
 ## Recommended order for 106-110
 
@@ -161,3 +163,17 @@ already-confirmed cache-aggregate and bounded Action identity fixes plus four
 direct contract-test corrections; each is local and adds no new mechanism.
 New telemetry fields, stage-specific test matrices, and Plan 113 remain
 independent and must not be pulled into the 0.5.5 release.
+
+
+## Recommended order for 115
+
+Fix the reproduced Stage-7 hint/uncertainty deletion first, then preserve planner
+coverage through repair, consolidate composition without losing distinct issues,
+and add strict planning-quality/recovery-fidelity eval gates. Plan 115 was
+implemented and regression-tested on 2026-09-22, with the controlled eval gate pending; its clarified
+contracts cover protected-field comparison, obligations across worker restarts,
+and conservative composition fallback. Preserve Plans
+112/114 final-argument provenance and bounded retry contracts. Run 79 passing
+its existing eval is not sufficient evidence of lossless recovery: it discarded
+five unresolved items and used a degraded all-normal plan. Keep provider routing
+and reasoning settings fixed while measuring this work.

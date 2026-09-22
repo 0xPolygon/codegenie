@@ -25,11 +25,17 @@ describe("compact verifier revision expansion", () => {
       ...verdict({ title: "Updated" }), finalFinding: VERIFIER_SUBMIT_EXAMPLE.finalFinding
     })).toThrow("mutually exclusive");
   });
-  it.each([{ path: "other.ts" }, { anchor: original.anchor }, { producedBy: {} }, null])(
+  it.each([{ path: "other.ts" }, { anchor: original.anchor }, { producedBy: {} }, { behaviorChange: "unknown" }, { intentEvidence: ["refactor"] }, null])(
     "rejects identity/placement changes and null updates: %j", (updates) => {
       expect(() => expandVerifierRevision(original, verdict(updates))).toThrow();
     }
   );
+  it("preserves top-level assessment alongside a compact revision", () => {
+    const result = expandVerifierRevision(original, {
+      ...verdict({ title: "Updated" }), behaviorChange: "intentional_needs_confirmation", intentEvidence: ["Change contract"]
+    });
+    expect(result).toMatchObject({ behaviorChange: "intentional_needs_confirmation", intentEvidence: ["Change contract"], finalFinding: { title: "Updated" } });
+  });
   it("replaces evidence as a whole without merging stale related evidence", () => {
     const source = { ...original, evidence: { ...original.evidence, relatedCode: [
       { path: "old.ts", lines: "old()", whyRelevant: "Old proof" }

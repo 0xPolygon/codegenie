@@ -86,10 +86,7 @@ export function validateAnchorForDiff(anchor: DiffAnchor | undefined, diff: Unif
 }
 
 // ---------------------------------------------------------------------------
-// Anchor reconstruction (plan 76). Tier 1 is precise and publishable: match
-// the model's quoted changedCode against the packet's changed lines. Tier 2
-// is coarse and gate-only: any changed line proves the packet is on-diff but
-// says nothing about placement.
+// Recover coordinates only from exact changed-line quotes, never semantic guesses.
 
 type ChangedLineTarget = {
   normalized: string;
@@ -102,10 +99,8 @@ type ChangedLineTarget = {
 const MIN_MATCHABLE_SNIPPET_CHARS = 8;
 
 function normalizeCodeLine(line: string): string {
-  return line
-    .replace(/^\s*[+-]\s?/, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  // Preserve internal whitespace: it may be part of a string literal.
+  return line.trim();
 }
 
 // Models sometimes quote code copied from contentWithLineNumbers, which
@@ -119,18 +114,6 @@ function isTrivialSnippet(normalized: string): boolean {
     return true;
   }
   return /^[{}()[\];,.:\s]*$/.test(normalized);
-}
-
-function snippetMatchesTarget(snippet: string, target: string): boolean {
-  if (snippet === target) {
-    return true;
-  }
-  // Tolerate truncation/reflow in either direction, but only on substantial
-  // lines — containment on short fragments would match everywhere.
-  if (snippet.length >= MIN_MATCHABLE_SNIPPET_CHARS && target.length >= MIN_MATCHABLE_SNIPPET_CHARS) {
-    return target.includes(snippet) || snippet.includes(target);
-  }
-  return false;
 }
 
 function changedLineTargets(packet: ReviewPacket): ChangedLineTarget[] {
@@ -147,37 +130,49 @@ function changedLineTargets(packet: ReviewPacket): ChangedLineTarget[] {
   return targets;
 }
 
-/**
- * Tier 1: reconstruct a precise, publishable anchor by matching the model's
- * quoted changedCode against the packet's changed lines. Conservative by
- * design: ambiguous snippets (matching more than one location) contribute
- * nothing, and reconstruction fails unless the uniquely-matched lines agree
- * on a single hunk. Failure is an expected path — that is what Tier 2 is for.
+/** Exact quote recovery across the full diff (or a packet for standalone consumers).
+ * Ambiguous matches and matches spanning files, sides, or hunks remain unresolved.
  */
-export function inferAnchorFromChangedCode(packet: ReviewPacket, changedCode: string): DiffAnchor | undefined {
-  const targets = changedLineTargets(packet).filter((target) => !isTrivialSnippet(target.normalized));
+export function inferAnchorFromChangedCode(packet: ReviewPacket | UnifiedDiff, changedCode: string): DiffAnchor | undefined {
+  const targets = ("files" in packet ? packet.files.flatMap((file) => file.hunks.flatMap((hunk) => hunk.lines.flatMap((line): ChangedLineTarget[] => {
+    const side = line.kind === "add" ? "RIGHT" : line.kind === "delete" ? "LEFT" : undefined;
+    const number = side === "RIGHT" ? line.newLineNumber : line.oldLineNumber;
+    return side && number !== undefined ? [{ normalized: normalizeCodeLine(line.content), path: side === "LEFT" ? file.oldPath ?? file.path : file.path, line: number, side, hunkId: hunk.id }] : [];
+  }))) : changedLineTargets(packet)).filter((target) => !isTrivialSnippet(target.normalized));
   if (targets.length === 0) {
     return undefined;
   }
   const uniqueMatches: ChangedLineTarget[] = [];
+  let explicitDiff = false;
   for (const rawLine of changedCode.split("\n")) {
-    const variants = new Set([normalizeCodeLine(rawLine), normalizeCodeLine(stripLineNumberColumns(rawLine))]);
-    for (const snippet of variants) {
-      if (isTrivialSnippet(snippet)) {
-        continue;
-      }
-      const matches = targets.filter((target) => snippetMatchesTarget(snippet, target.normalized));
-      const distinct = new Set(matches.map((match) => `${match.side}:${match.line}:${match.hunkId}`));
-      if (distinct.size === 1) {
-        uniqueMatches.push(matches[0]!);
-        break;
-      }
+    if (/^\s*(?:```|~~~)diff\s*$/i.test(rawLine) || /^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(rawLine)) {
+      explicitDiff = true;
+      continue;
     }
+    if (/^\s*(?:```|~~~)\s*$/.test(rawLine)) {
+      explicitDiff = false;
+      continue;
+    }
+    const numbered = stripLineNumberColumns(rawLine);
+    // A bare leading +/- may be a unary operator. Only displayed line
+    // columns or explicit diff notation justify removing a diff prefix.
+    const variants = new Set([rawLine, numbered].map(normalizeCodeLine));
+    const diffPrefix = explicitDiff || numbered !== rawLine ? /^\s*([+-])/.exec(numbered)?.[1] : undefined;
+    if (diffPrefix !== undefined) {
+      variants.clear();
+      variants.add(normalizeCodeLine(numbered.replace(/^\s*[+-] ?/, "")));
+    }
+    const expectedSide = diffPrefix === "+" ? "RIGHT" : diffPrefix === "-" ? "LEFT" : undefined;
+    const matches = targets.filter((target) => variants.has(target.normalized) && (expectedSide === undefined || target.side === expectedSide));
+    const distinct = new Set(matches.map((match) => `${match.path}:${match.side}:${match.line}:${match.hunkId}`));
+    if (distinct.size > 1) return undefined;
+    if (distinct.size === 1) uniqueMatches.push(matches[0]!);
   }
+
   if (uniqueMatches.length === 0) {
     return undefined;
   }
-  const hunkIds = new Set(uniqueMatches.map((match) => match.hunkId));
+  const hunkIds = new Set(uniqueMatches.map((match) => `${match.path}:${match.side}:${match.hunkId}`));
   if (hunkIds.size > 1) {
     return undefined;
   }
@@ -205,4 +200,12 @@ export function representativeAnchorFromPacket(packet: ReviewPacket): DiffAnchor
     }
   }
   return undefined;
+}
+
+/** Numbered diff context follows the finding location, independently of discovery. */
+export function findingDiffContext(diff: UnifiedDiff | undefined, paths: readonly string[], hunkId?: string): string {
+  return diff?.files.filter((file) => paths.includes(file.path) || (file.oldPath !== undefined && paths.includes(file.oldPath)))
+    .flatMap((file) => file.hunks.filter((hunk) => hunkId === undefined || hunk.id === hunkId).map((hunk) =>
+      `File: ${file.path}${file.oldPath ? ` (old: ${file.oldPath})` : ""}\nHunk: ${hunk.id}\n${hunk.lines.map((line) =>
+        `${line.oldLineNumber ?? "-"} ${line.newLineNumber ?? "-"} ${line.kind === "add" ? "+" : line.kind === "delete" ? "-" : " "}${line.content}`).join("\n")}`)).join("\n\n") ?? "";
 }

@@ -147,6 +147,8 @@ export function renderCaseResult(result: EvalCaseResult): string {
   if (metrics.reviewCompleteness !== undefined) {
     parts.push(`${metrics.reviewCompleteness} review`);
   }
+  if (metrics.planningQuality !== undefined) parts.push(`${metrics.planningQuality} planning`);
+  if (metrics.recoveryFidelity !== undefined) parts.push(`recovery fidelity ${metrics.recoveryFidelity}`);
   if (metrics.budgetOverruns !== undefined) {
     parts.push(`${metrics.budgetOverruns} budget overruns`);
   }
