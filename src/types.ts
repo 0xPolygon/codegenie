@@ -790,6 +790,17 @@ export type AnchorSource =
   | "backfill_packet_representative"
   | "verifier_revised";
 
+export type SuggestionAssessment = {
+  status: "supported" | "incompatible" | "unverified";
+  suggestionText: string;
+  rationale: string;
+  evidence: Array<{ path: string; lines: string; whyRelevant: string }>;
+};
+export type SuggestionAssessments = {
+  suggestedFix?: SuggestionAssessment;
+  suggestedTest?: SuggestionAssessment;
+};
+
 export type CandidateFinding = {
   id: string;
   title: string;
@@ -822,6 +833,8 @@ export type CandidateFinding = {
   whyThisMatters: string;
   suggestedFix?: string;
   suggestedTest?: string;
+  suggestionAssessments?: SuggestionAssessments;
+  proofAssessment?: VerificationVerdict["proofAssessment"];
   verification: string;
   behaviorChange?: BehaviorChangeAssessment;
   intentEvidence?: string[];
@@ -890,6 +903,7 @@ export type SystemReviewResult = {
 
 export type VerificationVerdict = {
   candidateId: string;
+  suggestionAssessments?: SuggestionAssessments;
   proofAssessment?: { status: "established" | "refuted" | "unresolved"; evidence: string; assumptions: Array<{ question: string; essential: boolean }> };
   unresolvedConcern?: NeedsHumanAttentionNote;
   // "incomplete" is runner-assigned only (timeout/budget/schema loss before a

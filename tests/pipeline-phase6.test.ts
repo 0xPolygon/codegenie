@@ -85,7 +85,7 @@ describe("phase 6 live review path", () => {
       expect(output.join("\n")).toContain("Found 1 verified issue.");
       expect(output.join("\n")).not.toContain("Needs Human Attention");
       expect(output.join("\n")).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
-      expect(output.join("\n")).not.toContain("Diagnostic token:");
+      expect(output.join("\n")).toContain("Diagnostic token: [redacted:");
       expect(adapter.callsByPrompt).toMatchObject({
         planner: 1,
         packetReview: 2,
@@ -126,7 +126,7 @@ describe("phase 6 live review path", () => {
       const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
       expect(finalReview).toContain("Restore the guard");
       expect(finalReview).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
-      expect(finalReview).not.toContain("Diagnostic token:");
+      expect(finalReview).toContain("Diagnostic token: [redacted:");
       const compositionSources = readFileSync(path.join(runArtifactDir, "stages/10-composition/composition-sources.json"), "utf8");
       expect(compositionSources).toContain("[redacted:");
       expect(compositionSources).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
@@ -290,7 +290,7 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
                   expect(JSON.stringify(context)).toContain("semantic-validation-error");
                   expect(JSON.stringify(context)).toContain("Invalid or duplicate composition source");
                 }
-                return sources.length ? [{ kind, text: sources.map(source => source.text).join("\n"), sourceRefs: refs }] : [];
+                return sources.length ? [{ kind, text: sources.map(source => source.text).join("\n") + (kind === "impact" ? " Diagnostic token: ghp_abcdefghijklmnopqrstuvwxyz1234567890." : ""), sourceRefs: refs }] : [];
               }),
               evidenceRefs: groups.flatMap(group => group.sourceComponents).filter(source => source.kind === "evidence").map(source => source.id),
               finalBody:

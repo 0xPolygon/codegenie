@@ -10590,7 +10590,7 @@ describe("phase 5 pipeline regressions", () => {
       publication: "inline",
       mergedCandidateIds: expect.arrayContaining(["finding-1", "finding-2"])
     });
-    expect(result.findings[0]?.finalBody).toContain("Changed code in `app.ts");
+    expect(result.findings[0]?.finalBody).toContain("`app.ts`");
   });
 
   it("merges cross-file helper and caller root-cause duplicates in deterministic fallback", async () => {
@@ -10692,8 +10692,8 @@ describe("phase 5 pipeline regressions", () => {
       mergedCandidateIds: expect.arrayContaining(["routing-helper", "routing-v1", "routing-v15"])
     });
     expect(result.findings[0]?.mergedCandidateIds).toHaveLength(3);
-    expect(result.findings[0]?.finalBody).toContain(`Changed code in \`${v1Path}\``);
-    expect(result.findings[0]?.finalBody).toContain(`Changed code in \`${v15Path}\``);
+    expect(result.findings[0]?.finalBody).toContain(`\`${v1Path}\``);
+    expect(result.findings[0]?.finalBody).toContain(`\`${v15Path}\``);
   });
 
   it("does not merge unrelated cross-file findings just because they cite the same helper path", async () => {
@@ -11283,9 +11283,9 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(markdown).not.toContain("Failure mode:");
     expect(markdown).not.toContain("Why it matters:");
-    expect(markdown.match(/A canceled request can keep retrying after the worker is stopped\./gu)).toHaveLength(1);
-    expect(markdown).toContain("**Suggested fix:** Thread the original context into the retry loop.");
-    expect(markdown).toContain("**Suggested test:** Cancel the context before the second retry and assert the worker exits.");
+    expect(markdown.split("<details>")[0]!.match(/A canceled request can keep retrying after the worker is stopped\./gu)).toHaveLength(1);
+    expect(markdown).toContain("**Suggested fix (unverified):** Caller-contract compatibility has not been established. Thread the original context into the retry loop.");
+    expect(markdown).toContain("**Suggested test (unverified):** Caller-contract compatibility has not been established. Cancel the context before the second retry and assert the worker exits.");
   });
 
   it("cleans duplicate composer titles and metadata before rendering", async () => {

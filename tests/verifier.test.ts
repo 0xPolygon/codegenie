@@ -1106,6 +1106,44 @@ describe("plan 106 verifier revision semantics", () => {
     expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "verification_primary_submit_accepted" }));
   });
 
+  it.each([true, false])("binds remedy assessments after compact expansion (matching=%s)", async matching => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("assessed-revision", packet, {
+      suggestedFix: "Lower the promised output.", suggestedTest: "Assert the lower output."
+    });
+    const updatedFix = "Round up to satisfy the caller minimum.";
+    const telemetry = captureTelemetry();
+    let calls = 0;
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(), config(), telemetry.recorder,
+      {
+        runner: verifierRunner(() => {
+          calls++;
+          return {
+            verdict: "revise", reason: "The caller requires the original minimum.", requiredEvidencePresent: true, falsePositiveRisk: "low",
+            findingUpdates: { suggestedFix: updatedFix },
+            proofAssessment: { status: "established", evidence: "Changed code floors the requested transfer.", assumptions: [] },
+            suggestionAssessments: { suggestedFix: {
+              status: "supported", suggestionText: matching ? updatedFix : finding.suggestedFix!,
+              rationale: "Preserves the caller minimum.", evidence: [{ path: "caller.ts", lines: "10-12", whyRelevant: "Rejects amounts below the request." }]
+            } }
+          };
+        }),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      }
+    );
+    expect(calls).toBe(1);
+    expect(result.verified).toHaveLength(1);
+    expect(result.verified[0]).toMatchObject({ suggestedFix: updatedFix, proofAssessment: { status: "established" }, suggestionAssessments: {
+      suggestedFix: { status: matching ? "supported" : "unverified", suggestionText: updatedFix },
+      suggestedTest: { status: "unverified", suggestionText: finding.suggestedTest }
+    } });
+    expect(result.verdicts[0]?.suggestionAssessments).toEqual(result.verified[0]?.suggestionAssessments);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "verification_suggestion_assessments" }));
+  });
+
   it.each([{}, { id: "replacement" }, { confidence: "certain" }, { evidence: {} }, '{"title":"string"}'])(
     "records invalid compact updates as incomplete: %j", async (findingUpdates) => {
       const fixture = reviewFixture(["src/app.ts"]);

@@ -119,6 +119,8 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 114 | COMPLETE | Issue 114: Re-execute Untrusted Structured Submits From Trusted Context |
 | 115 | IMPLEMENTED (measuring) | [Issue 115: Lossless Submit Recovery, Planning Fidelity, and Faithful Composition](115-issue-115-lossless-submit-recovery-and-faithful-composition.md) |
 | 116 | IMPLEMENTED (measuring) | [Issue 116: Local Submit Shape Cleanup](116-issue-116-local-submit-shape-cleanup.md) |
+| 117 | IMPLEMENTED (measuring) | [Issue 117: Concise Reports and Contract-Aware Fix Verification](117-issue-117-concise-reports-and-contract-aware-fix-verification.md) |
+| 118 | PENDING | [Issue 118: Report Synthesis and Recommendation Contracts](118-issue-118-report-synthesis-and-recommendation-contracts.md) |
 
 ## Recommended order for 106-110
 

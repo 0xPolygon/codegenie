@@ -236,11 +236,26 @@ export const ProofAssessmentSchema = Type.Object({
   }, { additionalProperties: false }), { maxItems: 8 })
 }, { additionalProperties: false });
 
+export const SuggestionAssessmentSchema = Type.Object({
+  status: StringEnum(["supported", "incompatible", "unverified"] as const),
+  suggestionText: Type.String({ minLength: 1, maxLength: 4000, description: "Exact final suggestedFix or suggestedTest text assessed, after any findingUpdates. Changed text invalidates this assessment." }),
+  rationale: Type.String({ minLength: 1, maxLength: 2000 }),
+  evidence: Type.Array(Type.Object({
+    path: Type.String({ minLength: 1, maxLength: 500 }),
+    lines: Type.String({ minLength: 1, maxLength: 2000 }),
+    whyRelevant: Type.String({ minLength: 1, maxLength: 2000 })
+  }, { additionalProperties: false }), { maxItems: 8 })
+}, { additionalProperties: false });
+
 export const SubmitVerificationVerdictSchema = Type.Object(
   {
     verdict: StringEnum(["keep", "reject", "revise"] as const),
     ...VerificationVerdictSharedProperties,
     proofAssessment: Type.Optional(ProofAssessmentSchema),
+    suggestionAssessments: Type.Optional(Type.Object({
+      suggestedFix: Type.Optional(SuggestionAssessmentSchema),
+      suggestedTest: Type.Optional(SuggestionAssessmentSchema)
+    }, { additionalProperties: false })),
     findingUpdates: Type.Optional(FindingUpdatesSchema),
     finalFinding: Type.Optional(SubmittedFindingSchema),
     revisedAnchor: Type.Optional(DiffAnchorSchema)
@@ -258,13 +273,21 @@ export const SubmitCompositionSchema = Type.Object(
       Type.Object(
         {
           findingIds: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 100 }),
-          finalBody: Type.String({ minLength: 1, maxLength: 20000 }),
+          finalBody: Type.Optional(Type.String({ minLength: 1, maxLength: 20000, description: "Legacy artifact field; live composition uses sections." })),
           sections: Type.Optional(Type.Array(Type.Object({
             kind: StringEnum(["impact", "verification", "fix", "test"] as const),
             text: Type.String({ minLength: 1, maxLength: 12000 }),
             sourceRefs: Type.Array(Type.String({ minLength: 1, maxLength: 300 }), { minItems: 1, maxItems: 500 })
           }, { additionalProperties: false }), { minItems: 1, maxItems: 100 })),
           evidenceRefs: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 300 }), { maxItems: 1000 })),
+          retainedSourceRefs: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 300 }), { maxItems: 1000 })),
+          primaryEvidenceRefs: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 300 }), { maxItems: 3 })),
+          reconciliations: Type.Optional(Type.Array(Type.Object({
+            sourceRefs: Type.Array(Type.String({ minLength: 1, maxLength: 300 }), { minItems: 1, maxItems: 100 }),
+            supportingRefs: Type.Array(Type.String({ minLength: 1, maxLength: 300 }), { maxItems: 100 }),
+            disposition: StringEnum(["superseded", "unresolved"] as const),
+            rationale: Type.String({ minLength: 1, maxLength: 2000 })
+          }, { additionalProperties: false }), { maxItems: 100 })),
           publication: StringEnum(["inline", "summary-only"] as const)
         },
         { additionalProperties: false }
@@ -285,8 +308,8 @@ export const SCHEMA_VERSIONS = {
   submit_plan: 6,
   submit_review: 5,
   submit_system_review: 2,
-  submit_verdict: 8,
-  submit_composition: 4
+  submit_verdict: 9,
+  submit_composition: 5
 } as const;
 
 export function submitToolNameForStage(stage: ReviewStage): keyof typeof SCHEMA_VERSIONS {

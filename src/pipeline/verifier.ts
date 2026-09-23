@@ -1,3 +1,4 @@
+import { assessFinalSuggestions } from "./suggestion-assessment.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { expandVerifierRevision } from "../llm/verifier-revision.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
@@ -480,7 +481,12 @@ function applyVerificationVerdict(candidate: CandidateFinding, verdict: Verifica
   const revised = verdict.finalFinding !== undefined
     ? applyFindingRevision(candidate, verdict.finalFinding)
     : candidate;
-  return applyVerdictIntentAssessment(applyVerdictAnchor(revised, verdict), verdict);
+  const assessed = {
+    ...revised,
+    ...((revised.suggestedFix || revised.suggestedTest) ? { suggestionAssessments: assessFinalSuggestions(revised, verdict.suggestionAssessments) } : {}),
+    ...(verdict.proofAssessment ? { proofAssessment: verdict.proofAssessment } : {})
+  };
+  return applyVerdictIntentAssessment(applyVerdictAnchor(assessed, verdict), verdict);
 }
 
 function applyFindingRevision(candidate: CandidateFinding, revision: CandidateFinding): CandidateFinding {
@@ -597,6 +603,7 @@ async function verifyCandidate(
   const verificationIncomplete = normalized.reason.startsWith("verification incomplete:");
   const verdict: VerificationVerdict = {
     candidateId: candidate.id,
+    suggestionAssessments: assessFinalSuggestions(revised ?? candidate, normalized.suggestionAssessments),
     ...(normalized.proofAssessment ? { proofAssessment: normalized.proofAssessment } : {}),
     ...(normalized.proofAssessment && (normalized.proofAssessment.status === "unresolved" || normalized.proofAssessment.assumptions.some(a => a.essential))
       ? { unresolvedConcern: { question: normalized.proofAssessment.assumptions.filter(a => a.essential).map(a => a.question).join("; ") || normalized.proofAssessment.evidence,
@@ -612,6 +619,8 @@ async function verifyCandidate(
     ...(normalized.behaviorChange !== undefined ? { behaviorChange: normalized.behaviorChange } : {}),
     ...(normalized.intentEvidence !== undefined ? { intentEvidence: normalized.intentEvidence } : {})
   };
+  telemetry.event({ stage: 9, level: "info", message: "verification_suggestion_assessments",
+    data: { candidateId: candidate.id, assessments: verdict.suggestionAssessments } });
   if (verdict.verdict === "revise" && revised !== undefined && submittedFinalFinding !== undefined) {
     // Derive the audit from the same fully policy-applied candidate that enters
     // the verified set, including any verdict-level behavior assessment.

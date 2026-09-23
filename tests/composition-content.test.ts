@@ -22,11 +22,12 @@ describe("attributed composition", () => {
   it("renders the rounding chain once, retaining zero rejection and contract uncertainty", () => {
     const findings = Array.from({ length: 5 }, (_, index) => finding(`f${index}`));
     const proposal = composed(findings);
-    const body = renderCompositionSections(findings, proposal.sections, proposal.evidenceRefs);
+    const full = renderCompositionSections(findings, proposal.sections, proposal.evidenceRefs);
+    const body = full.split("\n\n<details>")[0]!;
     for (const text of [findings[0]!.failureMode, findings[0]!.suggestedFix!, findings[0]!.suggestedTest!, findings[0]!.verification, "amount.Div(amount, factor)"]) expect(body.split(text)).toHaveLength(2);
-    expect(body).toContain("Lines 591-602");
+    expect(full).toContain("591-602");
     expect(body).not.toContain("```go\n591-602");
-    expect(body).toContain("Zero is rejected downstream.");
+    expect(full).toContain("Zero is rejected downstream.");
     expect(body.match(/\*\*Impact:/g)).toHaveLength(1);
   });
 
@@ -60,7 +61,7 @@ describe("attributed composition", () => {
     second.evidence.relatedCode![0]!.whyRelevant = "A different explanation of the same source location.";
     const body = renderRetainedComposition([first, second]);
     expect(body.match(/\*\*Impact:/g)).toHaveLength(1);
-    expect(body.match(/Lines 591-602/g)).toHaveLength(1);
+    expect(body).toContain("591-602");
     for (const text of [first.verification, second.verification, second.failureMode, second.evidence.relatedCode![0]!.whyRelevant]) expect(body).toContain(text);
     expect(body).toContain("<details>");
     expect(body).toContain("may overlap or disagree");
