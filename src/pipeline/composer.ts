@@ -1815,7 +1815,16 @@ function fingerprintFinding(finding: CandidateFinding, packetsById: Map<string, 
   ].join("\0"));
 }
 
+// Hunk and packet ids are hashes of diff geometry, so any later push re-keys
+// an unchanged finding and its posted marker stops matching. Code carries its
+// enclosing symbol through that; prose has no symbol table, so the file is the
+// finest locator that survives an edit elsewhere in it.
+const FILE_SCOPE_IDENTITY = "<file>";
+
 function fingerprintLocationIdentity(finding: CandidateFinding, packetsById: Map<string, ReviewPacket>): string {
+  if (isDocsPath(finding.path)) {
+    return FILE_SCOPE_IDENTITY;
+  }
   const packet = packetsById.get(finding.producedBy.packetId);
   const hunkId = finding.anchor?.hunkId ?? inferredHunkId(finding, packet);
   const symbol = hunkId !== undefined ? symbolForHunk(packet, hunkId) : uniquePacketSymbol(packet);

@@ -10107,6 +10107,77 @@ describe("phase 5 pipeline regressions", () => {
     expect(secondFinal?.fingerprint).toBe(expected);
   });
 
+  it("keeps docs fingerprints stable when a later push shifts the hunk", async () => {
+    const docsPath = "docs/plans/service-rollout/design.md";
+    const tableRow = "| `POST /widgets` | write | `widgetCreated` |";
+    const docsPacket = (hunkId: string, line: number): ReviewPacket => ({
+      ...fakePacket({ path: docsPath }),
+      id: `packet-${hunkId}`,
+      language: "markdown",
+      hunks: [
+        {
+          hunkId,
+          oldStart: line,
+          oldLines: 1,
+          newStart: line,
+          newLines: 1,
+          contentWithLineNumbers: `  ${line}   ${line} +${tableRow}`,
+          lines: [{ kind: "add", content: tableRow, newLine: line }],
+          changedNewLineNumbers: [line],
+          changedOldLineNumbers: []
+        }
+      ]
+    });
+    const docsFinding = (hunkId: string, line: number): CandidateFinding => ({
+      ...fakeFinding(),
+      path: docsPath,
+      anchor: { path: docsPath, line, side: "RIGHT", hunkId },
+      evidence: { changedCode: tableRow },
+      producedBy: { ...fakeFinding().producedBy, packetId: `packet-${hunkId}` }
+    });
+    const compose = async (hunkId: string, line: number) => dedupeRankAndComposeReview(
+      { verified: [docsFinding(hunkId, line)], verdicts: [] },
+      fakePlanForHunks([hunkId], docsPath),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async () => {
+            throw composerTransientError();
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        packets: [docsPacket(hunkId, line)]
+      }
+    );
+
+    const beforePush = await compose("hunk-at-81", 81);
+    const afterPush = await compose("hunk-at-74", 74);
+    const expected = sha256Hex([docsPath, "<file>", "correctness", "core/code-review"].join("\0"));
+    const [before] = [...beforePush.findings, ...beforePush.summaryOnlyFindings];
+    const [after] = [...afterPush.findings, ...afterPush.summaryOnlyFindings];
+    expect(before?.fingerprint).toBe(after?.fingerprint);
+    expect(before?.fingerprint).toBe(expected);
+  });
+
   it("does not merge unanchored findings from different hunks in one coalesced packet", async () => {
     const coalescedPacket: ReviewPacket = {
       ...fakePacket(),
@@ -10185,6 +10256,78 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.findings).toHaveLength(0);
     expect(result.summaryOnlyFindings).toHaveLength(2);
     expect(result.summaryOnlyFindings.map((finding) => finding.mergedCandidateIds)).toEqual([["finding-1"], ["finding-2"]]);
+  });
+
+  it("merges same-category docs findings from one file onto a single thread", async () => {
+    const docsPath = "docs/design.md";
+    const docsPacket: ReviewPacket = {
+      ...fakePacket({ path: docsPath }),
+      kind: "coalesced-hunks",
+      language: "markdown",
+      hunks: [
+        {
+          hunkId: "h1",
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          contentWithLineNumbers: "   1    1 +alpha claim",
+          lines: [{ kind: "add", content: "alpha claim", newLine: 1 }],
+          changedNewLineNumbers: [1],
+          changedOldLineNumbers: []
+        },
+        {
+          hunkId: "h2",
+          oldStart: 20,
+          oldLines: 1,
+          newStart: 20,
+          newLines: 1,
+          contentWithLineNumbers: "  20   20 +beta claim",
+          lines: [{ kind: "add", content: "beta claim", newLine: 20 }],
+          changedNewLineNumbers: [20],
+          changedOldLineNumbers: []
+        }
+      ]
+    };
+    const { anchor: _anchor, ...base } = fakeFinding();
+    const first = { ...base, path: docsPath, changedLine: false, evidence: { changedCode: "alpha claim" } };
+    const second = { ...first, id: "finding-2", title: "second docs claim", evidence: { changedCode: "beta claim" } };
+    const result = await dedupeRankAndComposeReview(
+      { verified: [first, second], verdicts: [] },
+      fakePlanForHunks(["h1", "h2"], docsPath),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 2,
+        reviewedHunks: 2,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 2, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async () => {
+            throw composerTransientError();
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        packets: [docsPacket]
+      }
+    );
+
+    expect(result.summaryOnlyFindings).toHaveLength(1);
+    expect(result.summaryOnlyFindings[0]?.mergedCandidateIds).toEqual(["finding-1", "finding-2"]);
   });
 
   it("drops composed groups when any referenced finding id is unknown", async () => {
