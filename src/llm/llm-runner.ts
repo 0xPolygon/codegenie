@@ -105,6 +105,8 @@ export type LlmStructuredRequest<T> = {
   };
   validateSubmit?(value: T): LlmSubmitSemanticValidation;
   schemaRepair?: {
+    /** Top-level alternative encodings: explicitly supplying one replaces retained siblings. */
+    replacementGroups?: readonly (readonly string[])[];
     replaceConversation?: boolean;
     failAfterRepair?: boolean;
     recoverInvalidSubmit?(input: LlmSchemaInvalidSubmitRecoveryInput): Record<string, unknown> | LlmInvalidSubmitRecovery | undefined;
@@ -145,7 +147,7 @@ export type LlmSubmitFailureClassification =
 
 export type LlmSubmitSemanticValidation =
   | { ok: true }
-  | { ok: false; classification: LlmSubmitFailureClassification };
+  | { ok: false; classification: LlmSubmitFailureClassification; details?: string };
 
 export type LlmSchemaRepairInput = {
   stage: ReviewStage;

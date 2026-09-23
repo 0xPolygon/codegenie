@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compositionSources, renderCompositionSections, type CompositionSection } from "../src/pipeline/composition-content.js";
+import { compositionSources, renderCompositionSections, renderRetainedComposition, validateCompositionSubmission, type CompositionSection } from "../src/pipeline/composition-content.js";
 import type { CandidateFinding } from "../src/types.js";
 
 // Minimal sanitized run-79 rounding/zero/caller chain plus the independently
@@ -28,6 +28,42 @@ describe("attributed composition", () => {
     expect(body).not.toContain("```go\n591-602");
     expect(body).toContain("Zero is rejected downstream.");
     expect(body.match(/\*\*Impact:/g)).toHaveLength(1);
+  });
+
+  it("rejects the run-87 nonexistent optional source before accepting composition", () => {
+    const input = finding("db6512fa-a2f1");
+    delete input.suggestedTest;
+    const proposal = composed([input]);
+    proposal.sections = proposal.sections.filter(section => section.sourceRefs.length);
+    proposal.sections.push({ kind: "test", text: "Invented test attribution", sourceRefs: ["db6512fa-a2f1/suggestedTest"] });
+    const omitted = proposal.evidenceRefs.pop()!;
+    let diagnostic = "";
+    try { validateCompositionSubmission({ composedFindings: [{ findingIds: [input.id], ...proposal }] }, [input]); } catch (error) { diagnostic = String(error); }
+    expect(diagnostic).toContain("absent optional fields");
+    expect(diagnostic).toContain("db6512fa-a2f1/suggestedTest");
+    expect(diagnostic).toContain(omitted);
+    proposal.evidenceRefs.push(omitted);
+    proposal.sections.pop();
+    expect(() => validateCompositionSubmission({ composedFindings: [{ findingIds: [input.id], ...proposal }] }, [input])).not.toThrow();
+    expect(() => validateCompositionSubmission({ composedFindings: [] }, [input])).toThrow(/omitted findings/);
+    expect(() => validateCompositionSubmission({ composedFindings: [
+      { findingIds: [input.id], ...proposal }, { findingIds: [input.id], ...proposal }
+    ] }, [input])).toThrow(/repeated finding/);
+  });
+
+  it("organizes retained disagreements and evidence without deleting contributions", () => {
+    const first = finding("first");
+    const second = finding("second");
+    first.verification = "No cross-decimal tests were found in the inspected excerpt.";
+    second.verification = "The full source has cross-decimal tests, but only divisible amounts.";
+    second.failureMode = "Additional condition: the requested amount has a remainder.";
+    second.evidence.relatedCode![0]!.whyRelevant = "A different explanation of the same source location.";
+    const body = renderRetainedComposition([first, second]);
+    expect(body.match(/\*\*Impact:/g)).toHaveLength(1);
+    expect(body.match(/Lines 591-602/g)).toHaveLength(1);
+    for (const text of [first.verification, second.verification, second.failureMode, second.evidence.relatedCode![0]!.whyRelevant]) expect(body).toContain(text);
+    expect(body).toContain("<details>");
+    expect(body).toContain("may overlap or disagree");
   });
 
   it("rejects omitted, invented, duplicate, and wrong-kind source references", () => {

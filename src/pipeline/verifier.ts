@@ -597,6 +597,11 @@ async function verifyCandidate(
   const verificationIncomplete = normalized.reason.startsWith("verification incomplete:");
   const verdict: VerificationVerdict = {
     candidateId: candidate.id,
+    ...(normalized.proofAssessment ? { proofAssessment: normalized.proofAssessment } : {}),
+    ...(normalized.proofAssessment && (normalized.proofAssessment.status === "unresolved" || normalized.proofAssessment.assumptions.some(a => a.essential))
+      ? { unresolvedConcern: { question: normalized.proofAssessment.assumptions.filter(a => a.essential).map(a => a.question).join("; ") || normalized.proofAssessment.evidence,
+          files: [candidate.path], symbols: [], reason: "The defect depends on evidence that verification could not establish.", confidence: "medium" as const,
+          sourcePacketIds: [candidate.producedBy.packetId] } } : {}),
     verdict: verificationIncomplete ? "incomplete" : normalized.verdict,
     reason: normalized.reason,
     requiredEvidencePresent: normalized.requiredEvidencePresent,
@@ -723,6 +728,12 @@ function normalizeSubmittedVerdict(
     });
     return incompleteSubmittedVerdict(reason);
   }
+  if (normalized.proofAssessment && (normalized.proofAssessment.status !== "established" ||
+      normalized.proofAssessment.assumptions.some(assumption => assumption.essential))) {
+    telemetry.event({ stage: 9, level: "info", message: "verification_proof_not_established",
+      data: { candidateId: candidate.id, proofAssessment: normalized.proofAssessment } });
+    return { ...normalized, verdict: "reject", requiredEvidencePresent: false };
+  }
   if (normalized.verdict === "reject" || normalized.requiredEvidencePresent === true) {
     return normalized;
   }
@@ -761,7 +772,8 @@ async function runVerifierStructured(
     const result = await opts.runner.runStructured<SubmitVerificationVerdict>({
       stage: 9,
       prompt: prompt.prompt,
-      schema: SubmitVerificationVerdictSchema,
+      schema: { ...SubmitVerificationVerdictSchema,
+        required: [...SubmitVerificationVerdictSchema.required, "proofAssessment"] },
       ...(opts.signal ? { signal: opts.signal } : {}),
       templateVersion: prompt.templateVersion,
       tools: buildRepositoryToolDefinitions(tools, { includeLikelyTests: candidate.category === "testing" }),
@@ -770,15 +782,22 @@ async function runVerifierStructured(
       telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId },
       validateSubmit: (value) => {
         try {
+          const proof = value.proofAssessment;
+          if (!proof) return { ok: false, classification: "schema_invalid", details: "Supply proofAssessment: status, concrete evidence, and unresolved assumptions with essential flags." };
+          if ((value.verdict === "keep" || value.verdict === "revise") &&
+              (proof.status !== "established" || proof.assumptions.some(assumption => assumption.essential) || !value.requiredEvidencePresent)) {
+            return { ok: false, classification: "schema_invalid", details: "A publishable verdict requires established proof and no unresolved essential assumption. If the defect's existence remains conditional, return reject with proofAssessment.status=unresolved and retain the open questions. Secondary uncertainty about magnitude alone does not require rejection." };
+          }
           const expanded = expandVerifierRevision(candidate, value);
           return expanded.verdict === "revise" && expanded.finalFinding === undefined && expanded.revisedAnchor === undefined
             ? { ok: false, classification: "revise_without_revision_payload" }
             : { ok: true };
-        } catch {
-          return { ok: false, classification: "invalid_tool_arguments" };
+        } catch (error) {
+          return { ok: false, classification: "invalid_tool_arguments", details: error instanceof Error ? error.message : String(error) };
         }
       },
       schemaRepair: {
+        replacementGroups: [["finalFinding", "findingUpdates"]],
         // Preserve the verifier's own investigation and failed verdict. Repair
         // must not rejudge a weaker projection of the original candidate.
         replaceConversation: false,

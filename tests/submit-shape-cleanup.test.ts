@@ -7,6 +7,47 @@ const review = (extra: Record<string, unknown>, side = "RIGHT") => ({ findings: 
 const risk = { verdict: "keep", reason: "Caller proves reachability", requiredEvidencePresent: true, falsePositiveRisk: "low" };
 
 describe("local submit shape cleanup", () => {
+  it("reconstructs complete misplaced sibling envelopes without losing items or mutating input", () => {
+    const schema = Type.Object({ findings: Type.Array(Type.Object({ proof: Type.String() }, { additionalProperties: false })), hints: Type.Array(Type.String()) }, { additionalProperties: false });
+    const expected = { findings: [{ proof: "first" }, { proof: "second" }], hints: ["check caller"] };
+    const raw = { findings: JSON.stringify(expected).slice('{"findings":'.length) };
+    const snapshot = structuredClone(raw);
+    const fixed = cleanupSubmitShape(schema, raw);
+    expect(fixed.arguments).toEqual(expected);
+    expect(fixed.edits).toEqual([{ path: "findings", rule: "misplaced_sibling_envelope" }]);
+    expect(fixed.unusablePaths).toEqual([]);
+    expect(raw).toEqual(snapshot);
+    expect(preservationViolations(schema, raw, expected)).toEqual([]);
+    expect(preservationViolations(schema, raw, { ...expected, findings: [] })).toContain("findings");
+    expect(cleanupSubmitShape(schema, { ...raw, hints: expected.hints }).arguments).toEqual(expected);
+    expect(cleanupSubmitShape(schema, { ...raw, hints: ["conflict"] }).unusablePaths).toEqual(["findings"]);
+  });
+
+  it.each([
+    '[{"proof":"first","proof":"second"}],"hints":[]}',
+    '[{"proof":"first","pr\\u006fof":"second"}],"hints":[]}',
+    '[{"proof":"first"}],"hints":[],"hints":["conflict"]}',
+    '[{"proof":"first"}],"hints":[',
+    '[{"proof":"first"}],"hints":[]} trailing',
+    '[{"proof":"first"}] trailing',
+    '[{"proof":"first","proof":"second"}]'
+  ])("rejects ambiguous or incomplete structured text: %s", findings => {
+    const schema = Type.Object({ findings: Type.Array(Type.Object({ proof: Type.String() })), hints: Type.Array(Type.String()) }, { additionalProperties: false });
+    const raw = { findings };
+    expect(cleanupSubmitShape(schema, raw).arguments).toEqual(raw);
+    expect(cleanupSubmitShape(schema, raw).unusablePaths).toEqual(["findings"]);
+    expect(preservationViolations(schema, raw, { findings: [{ proof: "second" }], hints: [] })).toContain("findings");
+  });
+
+  it("unwraps nested complete containers and leaves schema strings literal", () => {
+    const schema = Type.Object({ rows: Type.Array(Type.Object({ proof: Type.String() }, { additionalProperties: false })), text: Type.String() });
+    const raw = { rows: [JSON.stringify({ proof: 'Literal \"key\": [}]', extra: 1 })], text: '{"literal":true}' };
+    const result = cleanupSubmitShape(schema, raw);
+    expect(result.arguments).toEqual({ rows: [{ proof: 'Literal \"key\": [}]' }], text: raw.text });
+    expect(result.unusablePaths).toEqual([]);
+    expect(result.edits.map(edit => edit.rule)).toEqual(["complete_json_string", "unknown_property"]);
+  });
+
   it.each([{ maxItems: 10 }, { changedCodeSide: "new" }, { changedCodeNote: "" }])("accounts for run-80 evidence correction %j without mutating the source", extra => {
     const original = review(extra), snapshot = structuredClone(original);
     const result = cleanupSubmitShape(SubmitPacketReviewSchema, original);
@@ -53,7 +94,7 @@ describe("local submit shape cleanup", () => {
     expect(cleaned).toEqual({ items: [{ text: "first", note: "known optional" }, { text: "second" }], open: original.open });
     expect(preservationViolations(schema, original, cleaned)).toEqual([]);
     expect(preservationViolations(schema, original, { items: [], open: original.open })).toContain("items");
-    expect(preservationViolations(schema, original, { items: [{ text: "first" }, { text: "second" }], open: original.open })).toContain("items.0.note");
+    expect(preservationViolations(schema, original, { items: [{ text: "first" }, { text: "second" }], open: original.open })).toEqual([]);
     const pattern = Type.Object({}, { patternProperties: { "^allowed": Type.String() }, additionalProperties: false });
     expect(cleanupSubmitShape(pattern, { allowedKey: "retain", extra: "do not guess schema" }).edits).toEqual([]);
   });

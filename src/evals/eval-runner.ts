@@ -181,6 +181,7 @@ const caseSchema = z
         maxPromptCharsByStage: z.record(z.string(), positiveIntSchema).optional(),
         reviewCompleteness: z.enum(["complete", "partial"]).optional(),
         planningQuality: z.literal("non-degraded").optional(),
+        compositionQuality: z.literal("non-degraded").optional(),
         recoveryFidelity: z.literal("preserved").optional(),
         maxBudgetOverruns: z.number().int().nonnegative().optional(),
         maxToolBudgetRejections: z.number().int().nonnegative().optional(),

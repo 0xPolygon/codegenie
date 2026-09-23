@@ -102,7 +102,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}  # trusted base; PR head is fetched as review data
           fetch-depth: 0
-      - uses: 0xPolygon/codegenie@v0.5.8
+      - uses: 0xPolygon/codegenie@v0.6.0
         with:
           # Works with any model!
           model: "openrouter/deepseek/deepseek-v4.1-flash:max"
@@ -236,10 +236,13 @@ Eval cases can opt into stricter reliability checks:
 ```yaml
 expect:
   planningQuality: non-degraded
+  compositionQuality: non-degraded
   recoveryFidelity: preserved
 ```
 
-The planning check rejects fallback/degraded plans even when every hunk was reviewed. The recovery check requires complete telemetry and no unresolved structured-output obligations; historical runs without that evidence fail the enabled check as `unknown`. Repairs preserve complete drafts across retries and reject deleted items or changed judgments. Composition accounts for verified source components, renders evidence and verification verbatim, and uses a conservative deterministic body when attribution is invalid. `stages/10-composition/composition-sources.json` records those inputs and dispositions; references establish attribution, not proof that composed prose preserves every nuance.
+The planning check rejects degraded plans even when every hunk was reviewed. The composition check rejects degraded report synthesis separately from coverage completeness. The recovery check requires complete telemetry, no unresolved structured-output obligations, and demonstrated preservation; regenerated or revised content is reported as `unknown`, not assumed preserved. Repairs retain draft progress across retries and validate the whole merged submission.
+
+Composition validates source references before acceptance so invalid attribution can receive a bounded repair. Reports consolidate identical evidence and keep additional verbatim evidence and caveats in expandable sections. If synthesis fails, the report identifies its source-based presentation and retains distinct contributions. `stages/10-composition/composition-sources.json` records all inputs and dispositions; references establish attribution, not proof of semantic equivalence. Verification distinguishes essential missing proof from secondary uncertainty: unresolved hypotheses remain visible under human attention, while established defects may still have uncertainty about severity.
 
 ## Development
 

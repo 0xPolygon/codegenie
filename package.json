@@ -1,6 +1,6 @@
 {
   "name": "@0xsequence/codegenie",
-  "version": "0.5.8",
+  "version": "0.6.0",
   "description": "High-signal AI code review agent",
   "type": "module",
   "bin": {
@@ -28,7 +28,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.87.0",
+    "@earendil-works/pi-ai": "^0.87.1",
     "commander": "15.0.0",
     "execa": "10.0.1",
     "p-limit": "7.3.3",

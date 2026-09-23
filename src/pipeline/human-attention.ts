@@ -950,6 +950,7 @@ function verdictIsAdjudicatedPromotionReject(
   original: CandidateFinding | undefined
 ): boolean {
   return verdict.verdict === "reject" &&
+    verdict.unresolvedConcern === undefined &&
     verdict.verificationIncomplete !== true &&
     verdict.falsePositiveRisk === "high" &&
     original?.provenance?.source === "uncertainty_promotion";

@@ -90,7 +90,7 @@ describe("phase 6 live review path", () => {
         planner: 1,
         packetReview: 2,
         verifier: 2,
-        composer: 1
+        composer: 2
       });
 
       const modelCalls = readJsonl<{ stage: number; role: string; kind: string; status: string; attempt: number; errorCode?: string }>(
@@ -103,7 +103,7 @@ describe("phase 6 live review path", () => {
         expect.objectContaining({ stage: 7, role: "packetReview", kind: "repair", status: "ok" }),
         expect.objectContaining({ stage: 9, role: "verifier", status: "transient_error", attempt: 1 }),
         expect.objectContaining({ stage: 9, role: "verifier", status: "ok", attempt: 2 }),
-        expect.objectContaining({ stage: 10, role: "composer", status: "ok" })
+        expect.objectContaining({ stage: 10, role: "composer", kind: "repair", status: "ok" })
       ]));
 
       const events = readJsonl<{ stage: number; message: string; data?: Record<string, unknown> }>(path.join(runArtifactDir, "events.jsonl"));
@@ -270,16 +270,29 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
       }
       if (prompt.includes("composition")) {
         callsByPrompt.composer += 1;
-        const groups = extractPromptJson<Array<{ representativeId?: string; representative?: { id?: string } }>>(prompt, "grouped-findings") ?? [];
+        const groups = extractPromptJson<Array<{ representativeId?: string; representative?: { id?: string }; sourceComponents: Array<{ id: string; kind: string; text: string }> }>>(prompt, "grouped-findings") ?? [];
         const findingId = groups[0]?.representativeId ?? groups[0]?.representative?.id;
         if (!findingId) {
           throw new Error("composer prompt did not include a finding id");
         }
         return assistant([toolCall("submit-composition-live", "submit_composition", {
-          summary: "Live review found one issue.",
+          summary: "⚠️ Found 1 verified issue.",
           composedFindings: [
             {
               findingIds: [findingId],
+              sections: ["impact", "verification", "fix", "test"].flatMap(kind => {
+                const sources = groups.flatMap(group => group.sourceComponents).filter(source => source.kind === kind);
+                const refs = sources.map(source => source.id);
+                // Schema-valid but semantically wrong-kind reference: this
+                // must repair before response acceptance or report fallback.
+                if (callsByPrompt.composer === 1 && kind === "impact") refs.push(groups.flatMap(group => group.sourceComponents).find(source => source.kind === "verification")!.id);
+                if (callsByPrompt.composer === 2) {
+                  expect(JSON.stringify(context)).toContain("semantic-validation-error");
+                  expect(JSON.stringify(context)).toContain("Invalid or duplicate composition source");
+                }
+                return sources.length ? [{ kind, text: sources.map(source => source.text).join("\n"), sourceRefs: refs }] : [];
+              }),
+              evidenceRefs: groups.flatMap(group => group.sourceComponents).filter(source => source.kind === "evidence").map(source => source.id),
               finalBody:
                 "Restoring the guard preserves the previous behavior when count is zero. Diagnostic token: ghp_abcdefghijklmnopqrstuvwxyz1234567890.",
               publication: "inline"
@@ -298,6 +311,7 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
         return assistant([toolCall("submit-verdict-live", "submit_verdict", {
           verdict: "keep",
           reason: "The changed code divides by an unguarded parameter.",
+          proofAssessment: { status: "established", evidence: "The divisor guard was removed.", assumptions: [] },
           requiredEvidencePresent: true,
           falsePositiveRisk: "low"
         })]);

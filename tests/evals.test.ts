@@ -340,6 +340,15 @@ describe("eval suite validation", () => {
 });
 
 describe("eval scoring", () => {
+  it.each(["llm", "llm_degraded", "deterministic_fallback", "schema_repair_fallback", undefined])("scores composition quality separately for %s", mode => {
+    const evalCase: EvalCase = { name: "composition", artifacts: { path: "unused" }, expect: { compositionQuality: "non-degraded" } };
+    const artifacts: EvalArtifacts = { candidates: [], verification: [], finalSelection: [], finalFindings: [], packets: [], hintEvents: [],
+      metricsSources: { recoveryEvents: [{ message: "stage_completed", stage: 10, data: { compositionMode: mode } }] } };
+    const score = scoreEvalRun(evalCase, artifacts, "replay");
+    expect(score.metrics.compositionQuality).toBe(mode === "llm" ? "non-degraded" : mode ? "degraded" : "unknown");
+    expect(score.budgetResults.find(result => result.check === "compositionQuality")?.status).toBe(mode === "llm" ? "pass" : "fail");
+  });
+
   it("requires non-degraded planning and complete, reconciled recovery evidence when opted in", () => {
     const evalCase: EvalCase = { name: "fidelity", artifacts: { path: "unused" }, expect: { planningQuality: "non-degraded", recoveryFidelity: "preserved" } };
     const events = [
@@ -357,6 +366,11 @@ describe("eval scoring", () => {
     expect(scoreEvalRun(evalCase, artifacts, "replay").budgetResults.find(result => result.check === "planningQuality")?.status).toBe("fail");
     artifacts.metricsSources.recoveryEvents = events.map(event => event.message === "recovery_obligation_resolved" ? { ...event, message: "unrelated" } : event);
     expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unresolved");
+    artifacts.metricsSources.recoveryEvents = events.map(event => event.message === "recovery_preservation_rejected" ? { ...event, message: "recovery_unusable_submission" } : event);
+    expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
+    expect(scoreEvalRun(evalCase, artifacts, "replay").budgetResults.find(result => result.check === "recoveryFidelity")?.status).toBe("fail");
+    artifacts.metricsSources.recoveryEvents = events.map(event => event.message === "recovery_preservation_rejected" ? { ...event, message: "recovery_content_revised" } : event);
+    expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
     artifacts.metricsSources.recoveryEvents = events.slice(1);
     expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
     artifacts.metricsSources = {};

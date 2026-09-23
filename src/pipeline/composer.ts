@@ -1,4 +1,4 @@
-import { compositionSources, renderCompositionSections } from "./composition-content.js";
+import { compositionSources, renderCompositionSections, validateCompositionSubmission, renderRetainedComposition } from "./composition-content.js";
 import type { LlmRunner } from "../llm/llm-runner.js";
 import { SubmitCompositionSchema, type SubmitComposition } from "../llm/schemas.js";
 import type { PromptBuilder } from "../skills/prompt-builder.js";
@@ -100,7 +100,7 @@ export async function dedupeRankAndComposeReview(
   const verificationResolutions = buildVerificationResolutionIndex(verified.verdicts, opts.packetResults ?? [], verified.verified, packetsById, coverage);
   const preComposerAttentionGroups = suppressAttentionGroupsResolvedByVerification(
     attention.groups,
-    verificationResolutions.filter((resolution) => resolution.verdict === "reject")
+    verificationResolutions.filter((resolution) => resolution.verdict === "reject" && !verified.verdicts.some(verdict => verdict.candidateId === resolution.candidateId && verdict.unresolvedConcern))
   ).available;
   const composerPromptSelection = selectHumanAttentionGroups(preComposerAttentionGroups);
   const composerPromptNotes = composerPromptSelection.notes;
@@ -242,6 +242,11 @@ export async function dedupeRankAndComposeReview(
     verificationResolutions,
     telemetry
   );
+  for (const verdict of verified.verdicts) {
+    if (verdict.unresolvedConcern && !humanAttention.notes.some(note => note.question === verdict.unresolvedConcern!.question)) {
+      humanAttention.notes.push(verdict.unresolvedConcern);
+    }
+  }
   const summary = publishableCount === 0
     ? coverage.partial
       ? "Review incomplete: completed work produced no credible verified findings, but incomplete coverage or verification prevents a clean conclusion."
@@ -339,17 +344,41 @@ async function runComposer(
   const submitted = await opts.runner.runStructured<SubmitComposition>({
     stage: 10,
     prompt: prompt.prompt,
-    schema: SubmitCompositionSchema,
+    schema: composerSubmissionSchema(groups),
+    validateSubmit: value => {
+      try {
+        validateCompositionSubmission(value, groups.flatMap(group => group.findings));
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, classification: "schema_invalid", details: String(error) };
+      }
+    },
     templateVersion: prompt.templateVersion,
     timeoutMs: config.review.perPassTimeoutMs,
     schemaRepair: {
-      replaceConversation: true,
+      // Source IDs alone cannot establish their meaning. Keep the immutable
+      // source inventory available during the bounded semantic repair.
+      replaceConversation: false,
       recoverInvalidSubmit: (input) => recoverComposerInvalidSubmit(input, groups, telemetry),
       buildPrompt: (input) => buildComposerSchemaRepairPrompt(input, groups)
     }
   });
   telemetry.event({ stage: 10, level: "info", message: "composer_completed", data: { composed: submitted.composedFindings.length } });
   return submitted;
+}
+
+function composerSubmissionSchema(groups: FindingGroup[]) {
+  const schema = structuredClone(SubmitCompositionSchema);
+  const sources = compositionSources(groups.flatMap(group => group.findings));
+  if (!sources.length) return schema;
+  const item = schema.properties.composedFindings.items;
+  Object.assign(item, { required: [...new Set([...(item.required ?? []), "sections", "evidenceRefs"])] });
+  // Providers receive the exact inventory; semantic validation also checks
+  // membership, kinds, duplicates and coverage across the selected groups.
+  Object.assign(item.properties.findingIds.items, { enum: groups.flatMap(group => group.findings.map(finding => finding.id)) });
+  Object.assign(item.properties.sections.items.properties.sourceRefs.items, { enum: sources.filter(source => source.kind !== "evidence").map(source => source.id) });
+  Object.assign(item.properties.evidenceRefs.items, { enum: sources.filter(source => source.kind === "evidence").map(source => source.id) });
+  return schema;
 }
 
 type ComposerSchemaInvalidKind =
@@ -1768,45 +1797,8 @@ function evidenceLinker(resolved: ResolvedReviewInput): EvidenceLinker {
   return (path, line) => `https://github.com/${pr.owner}/${pr.repo}/blob/${sha}/${path}${line !== undefined ? `#L${line}` : ""}`;
 }
 
-function evidenceLinkSuffix(link: EvidenceLinker | undefined, path: string, line?: number): string {
-  const url = link?.(path, line);
-  return url === undefined ? "" : ` [↗](${url})`;
-}
-
 function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding], link?: EvidenceLinker): string {
-  return verifiedBodySections(finding, groupedFindings, link).join("\n\n");
-}
-
-function verifiedBodySections(finding: CandidateFinding, groupedFindings: CandidateFinding[], link?: EvidenceLinker): string[] {
-  const members = [finding, ...groupedFindings.filter((member) => member.id !== finding.id)];
-  const sections = members.flatMap((member) => [
-    [`**Impact:** ${member.failureMode}`, member.whyThisMatters].filter(Boolean).join("\n"),
-    member.verification ? `**Verification:** ${member.verification}` : undefined,
-    member.suggestedFix ? `**Suggested fix:** ${member.suggestedFix}` : undefined,
-    member.suggestedTest ? `**Suggested test:** ${member.suggestedTest}` : undefined
-  ]).map(section => section === undefined ? undefined : normalizeUnsupportedIntentFraming(section, finding));
-  sections.splice(1, 0, `**Evidence:**\n\n${mergedEvidenceBlocks(finding, groupedFindings, link).join("\n\n")}`);
-  return [...new Set(sections.filter((section): section is string => section !== undefined && section.length > 0))];
-}
-
-function mergedEvidenceBlocks(representative: CandidateFinding, groupedFindings: CandidateFinding[], link?: EvidenceLinker): string[] {
-  const evidence = new Map<string, { code: string; path: string; labels: Set<string> }>();
-  const add = (label: string, code: string, path: string) => {
-    if (!code.trim()) return;
-    const normalized = code.replace(/\r\n/g, "\n").split("\n").map(line => line.trimEnd()).join("\n");
-    const key = JSON.stringify([path, normalized]);
-    const entry = evidence.get(key) ?? { code, path, labels: new Set<string>() };
-    entry.labels.add(label);
-    evidence.set(key, entry);
-  };
-  for (const finding of [representative, ...groupedFindings.filter(member => member.id !== representative.id)]) {
-    add(`Changed code in ${inlineCode(finding.path)}${evidenceLinkSuffix(link, finding.path, finding.anchor?.line)}:`, finding.evidence.changedCode, finding.path);
-    for (const related of finding.evidence.relatedCode ?? []) {
-      add(`${inlineCode(related.path)}${evidenceLinkSuffix(link, related.path)} (${related.whyRelevant}):`, related.lines, related.path);
-    }
-  }
-  return [...evidence.values()].map(({ code, path, labels }) =>
-    `${[...labels].join("\n")}\n${/^\d+(?:\s*[-–,:]\s*\d+)*$/u.test(code) ? `Lines ${code}` : codeBlock(code, fenceLanguageForPath(path))}`);
+  return renderRetainedComposition([finding, ...groupedFindings.filter(member => member.id !== finding.id)], link, text => normalizeUnsupportedIntentFraming(text, finding));
 }
 
 function fingerprintFinding(finding: CandidateFinding, packetsById: Map<string, ReviewPacket> = new Map()): string {

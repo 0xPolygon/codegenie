@@ -1,3 +1,4 @@
+import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
 import { randomUUID } from "node:crypto";
 import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
 import { applyModelOverrides, modelProviderRouting, requiresAutomaticSubmitToolChoice } from "../provider/models-override.js";
@@ -74,8 +75,8 @@ type ConversationMessage = Record<string, unknown>;
 class SubmitSemanticValidationError extends Error {
   readonly classification: LlmSubmitFailureClassification;
 
-  constructor(classification: LlmSubmitFailureClassification) {
-    super(`Submit semantic validation failed: ${classification}`);
+  constructor(classification: LlmSubmitFailureClassification, details?: string) {
+    super(`Submit semantic validation failed: ${classification}${details ? `: ${details}` : ""}`);
     this.name = "SubmitSemanticValidationError";
     this.classification = classification;
   }
@@ -190,7 +191,8 @@ const NO_REPOSITORY_TOOL_BUDGET = {
 const MAX_PROVIDER_ATTEMPTS = 4;
 const BASE_RETRY_DELAY_MS = 1000;
 const MAX_RETRY_DELAY_MS = 30_000;
-const RUNNER_MESSAGE_VERSION = "pi-runner-loop-v9";
+const RUNNER_MESSAGE_VERSION = "pi-runner-loop-v16";
+const MAX_SCHEMA_REPAIR_ATTEMPTS = 3;
 const DEBUG_ARTIFACT_SCHEMA_VERSION = 1;
 const MAX_DEBUG_ARTIFACT_CHARS = 1_500_000;
 const RECORDED_PROVIDER_FAILURE = Symbol("recordedProviderFailure");
@@ -219,7 +221,7 @@ type GetOAuthApiKey = (
 
 export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
   const adapter = opts.adapter ?? createRealPiAiAdapter();
-  const recoveryObligations = new Map<string, { original: Record<string, unknown>; id: string }>();
+  const recoveryObligations = new Map<string, { original: Record<string, unknown>; id: string; removedUnexpectedFields?: ReturnType<typeof focusedRepairDiagnostics>["removedUnexpectedFields"] }>();
   let obligationSequence = 0;
   const recoveryNamespace = randomUUID();
   opts.telemetry.event({ stage: 0, level: "info", message: "recovery_fidelity_started", data: { version: 1 } });
@@ -296,9 +298,28 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
         stage: request.stage, level: message.endsWith("rejected") ? "warn" : "info", message,
         data: { ...data, packetId: request.telemetryContext?.packetId, candidateId: request.telemetryContext?.candidateId }
       });
-      const checkPreservation = (result: unknown) => {
+      let fieldRepair: FieldRepair | undefined;
+      // Retain readable progress, but never accept it without complete validation.
+      const retainRecoveryProgress = (incoming: Record<string, unknown>) => {
         const obligation = recoveryObligations.get(obligationKey);
         if (!obligation) return;
+        const cleaned = cleanupSubmitShape(request.schema, incoming);
+        if (cleaned.unusablePaths.length) return;
+        const previous = cleanupSubmitShape(request.schema, obligation.original).arguments;
+        const merged = mergeRepairDraft(previous as Record<string, unknown>, cleaned.arguments as Record<string, unknown>, request.schemaRepair?.replacementGroups);
+        if (stableJson(merged).length > 200_000 || stableJson(incoming).length > 200_000) {
+          throw new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
+        }
+        const changedPaths = preservationViolations(request.schema, previous, merged);
+        if (changedPaths.length) recordFidelity("recovery_content_revised", { paths: changedPaths, obligationId: obligation.id });
+        obligation.original = merged;
+        obligation.removedUnexpectedFields = cleaned.removedUnexpectedFields;
+        recordFidelity("recovery_draft_updated", { obligationId: obligation.id,
+          issues: submissionIssues(request.schema, merged), retainedItems: submissionItemCounts(merged) });
+      };
+      const checkPreservation = (result: unknown) => {
+        const obligation = recoveryObligations.get(obligationKey);
+        if (!obligation || fieldRepair) return;
         const paths = preservationViolations(request.schema, obligation.original, result);
         if (paths.length) {
           recordFidelity("recovery_preservation_rejected", { obligationId: obligation.id, paths });
@@ -307,7 +328,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       };
       const providerRequest: LlmStructuredRequest<T> = { ...request, validateSubmit: (value) => {
         const obligation = recoveryObligations.get(obligationKey);
-        if (obligation && preservationViolations(request.schema, obligation.original, value).length) {
+        if (obligation && !fieldRepair && preservationViolations(request.schema, obligation.original, value).length) {
           return { ok: false, classification: "recovery_content_changed" };
         }
         return request.validateSubmit?.(value) ?? { ok: true };
@@ -322,19 +343,18 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
       };
       const previousObligation = recoveryObligations.get(obligationKey);
       if (previousObligation) messages.push({ role: "user", timestamp: 0, content:
-        `A previous attempt left this complete but schema-invalid submission unresolved. Preserve its items and valid fields; correct only invalid shape. It is advisory, not accepted evidence.\n${fenceUntrusted(stableJson(previousObligation.original), "unresolved-submission")}` });
+        `A previous attempt left this complete but schema-invalid submission unresolved. Retain omitted items and fields; supplied valid updates may revise earlier values. It is advisory, not accepted evidence.\n${fenceUntrusted(stableJson(cleanupSubmitShape(request.schema, previousObligation.original).arguments), "unresolved-submission")}` });
       let toolCallsUsed = 0;
       let investigationRounds = 0;
       let resultCharsUsed = 0;
       const sourceExtensionState: ToolBudgetExtensionState = { toolCallsUsed: 0, resultCharsUsed: 0 };
       let schemaRepairUsed = false;
+      let schemaRepairAttempts = 0;
+      let repairDeadlineAt: number | undefined;
       let pendingFinalArgumentRecovery: { correlationId: string } | undefined;
       let finalizeNudgeUsed = false;
-      // Plan 95: the single model-repair scheduler. Every schema-repair retry
-      // (discipline errors and schema-invalid submits alike) books the one
-      // repair attempt and routes the pass to finalize through this closure;
-      // queueSchemaRepair enforces the budget and fails the call when the
-      // attempt is already spent.
+      // Up to three repairs share one deadline; repeated validation errors
+      // do not require progress to qualify for another attempt.
       const scheduleModelRepair = (repair: {
         submitToolName: string;
         submitCalls: PiSubmitCall[];
@@ -347,6 +367,17 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
         if (request.purpose === "location_clarification") {
           throw new CodegenieError("llm_schema_invalid", "Location clarification did not return a valid submission", { recoverable: true });
         }
+        const obligation = recoveryObligations.get(obligationKey);
+        const retryAvailable = schemaRepairAttempts < MAX_SCHEMA_REPAIR_ATTEMPTS
+          && (repairDeadlineAt === undefined || Date.now() < repairDeadlineAt);
+        const nextFieldRepair = retryAvailable && obligation && repair.submitCalls.length === 1
+          && repair.submitCalls.every(call => isTrustedSubmitCall(call))
+          ? createFieldRepair(request.schema, obligation.original, true, request.schemaRepair?.replacementGroups) : undefined;
+        if (nextFieldRepair && obligation?.removedUnexpectedFields?.length) {
+          nextFieldRepair.diagnostics.removedUnexpectedFields.push(...obligation.removedUnexpectedFields);
+        }
+        const semanticRepairDetails = repair.cause instanceof SubmitSemanticValidationError ? fenceUntrusted(repair.cause.message, "semantic-validation-error") : "";
+        const fieldPrompt = nextFieldRepair ? `Call ${submitTool.name} exactly once to supply the missing or invalid field values listed below. You may return a nested partial update, the literal field-path keys shown in the diagnostics, or the full object. Prefer only the needed updates. Supplied values replace older overlapping values; omitted fields and existing object-array items are retained. Array object updates address the original indices; do not reorder or delete items. Optional schema fields remain optional and may be included if useful. Required fields must exist in the final merged submission; fields already retained need not be repeated. Newly created objects and new array entries must include every required field. The tool schema describes an update, while each diagnostic describes the required final field shape. Alternative representation groups: ${stableJson(request.schemaRepair?.replacementGroups ?? [])}. Supplying exactly one member replaces any retained alternative; omit all to retain the existing representation. Check spelling, case and types. Do not call repository tools. Validation category: ${repair.repairClassification ?? "schema_invalid"}. ${semanticRepairDetails}\n${fenceUntrusted(stableJson(nextFieldRepair.diagnostics), "repair-field-diagnostics")}\n${fenceUntrusted(stableJson(nextFieldRepair.baseline), "retained-submission")}` : undefined;
         try {
           queueSchemaRepair({
             opts,
@@ -356,7 +387,8 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             submitCalls: repair.submitCalls,
             extraToolNames: repair.extraToolNames,
             error: repair.error,
-            schemaRepairUsed,
+            repairBudgetExhausted: !retryAvailable,
+            ...(fieldPrompt !== undefined ? { promptOverride: fieldPrompt } : {}),
             ...(repair.repairClassification !== undefined ? { repairClassification: repair.repairClassification } : {}),
             ...(repair.replaceConversationOverride !== undefined
               ? { replaceConversationOverride: repair.replaceConversationOverride }
@@ -367,9 +399,16 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           recordFinalArgumentRepairOutcome(schemaRepairUsed ? "terminal_invalid" : "not_dispatched");
           throw cause;
         }
-        const obligation = recoveryObligations.get(obligationKey);
-        if (obligation) messages.push({ role: "user", timestamp: 0, content:
-          `Schema-only repair: preserve every schema-defined existing item, array order, and valid field exactly. Omit unexpected keys; they have been discarded locally. Supply all missing required fields and correct remaining invalid fields; do not summarize, delete schema-defined evidence, or change existing decisions. Return the WHOLE submission, not a fragment.\nCheck spelling and case against the exact schema keys. Removed unexpected values are retained below as diagnostic context: check whether a misspelled or misplaced key supplies a missing required value. Do not reintroduce unsupported keys. Return complete schema-valid data; missing required fields cannot be omitted.\n${fenceUntrusted(stableJson(focusedRepairDiagnostics(request.schema, obligation.original)), "repair-field-diagnostics")}\n${fenceUntrusted(stableJson(obligation.original), "original-complete-submission")}` });
+        fieldRepair = nextFieldRepair;
+        if (fieldRepair) recordFidelity("field_repair_scheduled", { paths: fieldRepair.paths, obligationId: obligation!.id });
+        if (obligation && !fieldRepair) messages.push({ role: "user", timestamp: 0, content:
+          `Schema-only repair: preserve every schema-defined existing item, array order, and valid field exactly. Omit unexpected keys; they have been discarded locally. Supply all missing required fields and correct remaining invalid fields; do not summarize, delete schema-defined evidence, or change existing decisions. Return the WHOLE submission, not a fragment.\nCheck spelling and case against the exact schema keys. Removed unexpected values are retained below as diagnostic context: check whether a misspelled or misplaced key supplies a missing required value. Do not reintroduce unsupported keys. Return complete schema-valid data; missing required fields cannot be omitted.\n${fenceUntrusted(stableJson(focusedRepairDiagnostics(request.schema, obligation.original)), "repair-field-diagnostics")}\n${fenceUntrusted(stableJson(cleanupSubmitShape(request.schema, obligation.original).arguments), "original-complete-submission")}` });
+        schemaRepairAttempts += 1;
+        repairDeadlineAt ??= Date.now() + SCHEMA_REPAIR_TIMEOUT_MS;
+        if (schemaRepairAttempts > 1) recordFidelity("schema_repair_retry_scheduled", {
+          attempt: schemaRepairAttempts, maxAttempts: MAX_SCHEMA_REPAIR_ATTEMPTS, remainingPaths: fieldRepair?.paths ?? [],
+          remainingTimeMs: Math.max(0, repairDeadlineAt - Date.now()), obligationId: obligation?.id
+        });
         schemaRepairUsed = true;
         forceFinalize = true;
         budgetForceFinalize = false;
@@ -421,7 +460,17 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               candidateDrafted
             });
           }
-          const activeTools = forceFinalize ? [submitTool] : allTools;
+          const activeSubmitTool = fieldRepair ? { ...submitTool, parameters: fieldRepair.schema,
+            description: "Update the retained submission. Return missing/invalid fields as nested partial objects, literal field-path keys, or a full object. Optional fields are optional; final required fields are validated after merging." } : submitTool;
+          const activeTools = forceFinalize ? [activeSubmitTool] : allTools;
+          const activeRequest: LlmStructuredRequest<unknown> = fieldRepair ? { ...providerRequest, schema: fieldRepair.schema,
+            validateSubmit: values => {
+              try {
+                const merged = fieldRepair!.merge(values as Record<string, unknown>);
+                validateSubmitCall(adapter, providerRequest, submitTool, { type: "toolCall", id: "field-repair-validation", name: submitTool.name, arguments: merged });
+                return { ok: true };
+              } catch (cause) { return { ok: false, classification: cause instanceof SubmitSemanticValidationError ? cause.classification : "schema_invalid" }; }
+            } } : providerRequest;
           const kind = forceFinalize ? schemaRepairUsed ? "repair" : "finalize" : messages.length === 1 ? "initial" : "tool-continuation";
           const finalizeMode = forceFinalize ? "full" : undefined;
           const finalizeTarget = forceFinalize ? candidateDrafted ? "candidate_or_unknown" : "no_findings" : undefined;
@@ -436,7 +485,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             providerResult = await completeWithCache({
               opts: runOpts,
               adapter,
-              request: providerRequest,
+              request: activeRequest,
               model,
               messages,
               tools: activeTools,
@@ -452,7 +501,8 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               finalizeMode,
               finalizeTarget,
               protocolFlags,
-              compositionAttempts
+              compositionAttempts,
+              ...(repairDeadlineAt !== undefined ? { repairDeadlineAt } : {})
             });
           } catch (cause) {
             if (investigationTimeout?.timedOut() && !taskTimeout.signal.aborted && !runOpts.runSignal.aborted) {
@@ -534,10 +584,15 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               continue;
             }
             try {
-              const validated = validateSubmitCall(adapter, request, submitTool, submitCall);
+              let effectiveSubmitCall = submitCall;
+              if (fieldRepair) {
+                validateSubmitCall(adapter, activeRequest, activeSubmitTool, submitCall);
+                effectiveSubmitCall = { ...submitCall, arguments: fieldRepair.merge(submitCall.arguments) };
+              }
+              const validated = validateSubmitCall(adapter, request, submitTool, effectiveSubmitCall);
               checkPreservation(validated);
               if (request.stage === 7 && schemaRepairUsed) {
-                if (candidateDrafted && !submitCallHasFindings(submitCall)) {
+                if (candidateDrafted && !submitCallHasFindings(effectiveSubmitCall)) {
                   const error = "Stage 7 candidate schema repair returned no findings; codegenie will not silently downgrade malformed findings to no-findings.";
                   recordStage7SchemaRepairEvent({
                     opts,
@@ -583,25 +638,60 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               if (schemaRepairUsed) {
                 recordFinalArgumentRepairOutcome("recovered");
               }
-              const localEdits = cleanupSubmitShape(request.schema, submitCall.arguments).edits;
+              const localEdits = cleanupSubmitShape(request.schema, effectiveSubmitCall.arguments).edits;
               if (localEdits.length) recordFidelity("submit_shape_correction_accepted", {
                 callId: providerResult.callId, localEdits,
                 ...(recoveryObligations.has(obligationKey) ? { obligationId: recoveryObligations.get(obligationKey)!.id } : {}),
                 items: submissionItemCounts(submitCall.arguments), validation: "schema_semantics_preservation_passed"
               });
+              if (fieldRepair) {
+                const changedPaths = preservationViolations(request.schema, fieldRepair.baseline, validated);
+                if (changedPaths.length) recordFidelity("recovery_content_revised", { paths: changedPaths, obligationId: recoveryObligations.get(obligationKey)?.id });
+                recordFidelity("field_repair_accepted", { paths: fieldRepair.paths,
+                  obligationId: recoveryObligations.get(obligationKey)?.id, validation: "complete_schema_and_semantics_passed" });
+              }
               resolveObligation(localEdits.length && !schemaRepairUsed ? "deterministic_correction" : "model_repair");
               return validated as T;
             } catch (cause) {
+              if (fieldRepair) {
+                // A well-typed patch may still leave required fields missing.
+                // Retain progress for the next repair or worker retry.
+                let progress: Record<string, unknown> | undefined;
+                try { progress = fieldRepair.merge(submitCall.arguments); } catch { /* Invalid patches cannot update the draft. */ }
+                if (progress) retainRecoveryProgress(progress);
+                recordFidelity("field_repair_rejected", { paths: fieldRepair.paths,
+                  obligationId: recoveryObligations.get(obligationKey)?.id });
+                scheduleModelRepair({ submitToolName: submitTool.name, submitCalls,
+                  extraToolNames: toolCalls.map(call => call.name), error: "Field repair failed complete submission validation",
+                  ...(cause instanceof SubmitSemanticValidationError ? { repairClassification: cause.classification } : {}), cause });
+                continue;
+              }
               if (request.purpose === "location_clarification") {
                 throw new CodegenieError("llm_schema_invalid", "Location clarification failed validation", { recoverable: true, cause });
               }
+              const draft = cleanupSubmitShape(request.schema, submitCall.arguments);
+              if (draft.unusablePaths.length) {
+                // Re-execute from retained evidence within the bounded repair allowance. Never claim an opaque draft was preserved.
+                // Readable obligations from earlier attempts still apply.
+                recordFidelity("recovery_unusable_submission", { callId: providerResult.callId,
+                  paths: draft.unusablePaths, nextAction: schemaRepairAttempts >= MAX_SCHEMA_REPAIR_ATTEMPTS || (repairDeadlineAt !== undefined && Date.now() >= repairDeadlineAt) ? "repair_budget_exhausted" : "bounded_submit_regeneration", preservation: "unproven" });
+                const regenerationInstruction = `The structured fields at ${draft.unusablePaths.join(", ")} cannot be reconstructed unambiguously. Do not extract partial JSON or choose between duplicate keys. Generate a new complete submission from the original task and retained source evidence, using exactly the provided schema. This is a new submission, not a claim that the unreadable draft was preserved. If an earlier readable submission is retained, use the repair update schema: omitted fields and items are retained and supplied values replace earlier values.`;
+                scheduleModelRepair({ submitToolName: submitTool.name, submitCalls,
+                  extraToolNames: toolCalls.map(toolCall => toolCall.name), error: regenerationInstruction,
+                  replaceConversationOverride: false, cause });
+                // Custom stage repair prompts may omit the error diagnostic.
+                messages.push({ role: "user", timestamp: 0, content: regenerationInstruction });
+                continue;
+              }
               if (!recoveryObligations.has(obligationKey)) {
                 const id = `${recoveryNamespace}-${++obligationSequence}`;
-                recordFidelity("recovery_obligation_opened", { obligationId: id, issues: submissionIssues(request.schema, submitCall.arguments), originalItems: submissionItemCounts(submitCall.arguments) });
+                recordFidelity("recovery_obligation_opened", { obligationId: id, issues: submissionIssues(request.schema, draft.arguments), originalItems: submissionItemCounts(draft.arguments as Record<string, unknown>) });
                 if (recoveryObligations.size >= 128 || stableJson(submitCall.arguments).length > 200_000) {
                   throw new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
                 }
                 recoveryObligations.set(obligationKey, { original: structuredClone(submitCall.arguments), id });
+              } else {
+                retainRecoveryProgress(submitCall.arguments);
               }
               const localEdits = cleanupSubmitShape(request.schema, submitCall.arguments).edits;
               if (localEdits.length) recordFidelity("submit_shape_correction_rejected", {
@@ -612,7 +702,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 ? cause.classification
                 : undefined;
               const submitError = semanticClassification !== undefined
-                ? `The ${submitTool.name} arguments were semantically invalid: ${semanticClassification}`
+                ? `The ${submitTool.name} arguments were semantically invalid: ${cause instanceof Error ? cause.message : semanticClassification}`
                 : `The ${submitTool.name} arguments were schema-invalid: ${truncateDiagnostic(cause instanceof Error ? cause.message : String(cause))}`;
               const repairInput: LlmSchemaInvalidSubmitRecoveryInput = {
                 ...schemaRepairInput({
@@ -1084,6 +1174,7 @@ type CompleteWithCacheInput = {
   protocolFlags?: { providerProtocolRecorded: boolean; downgradeWarned: boolean };
   compositionAttempts: { used: number };
   deadlineSource?: string;
+  repairDeadlineAt?: number;
 };
 
 const COMPOSITION_ATTEMPT_TIMEOUT_MS = 180_000;
@@ -1103,15 +1194,15 @@ async function completeWithCache(input: CompleteWithCacheInput): Promise<Provide
       throw cause;
     }
   }
-  if (composition && input.compositionAttempts.used >= COMPOSITION_MAX_CALLS) {
-    throw new CodegenieError("llm_call_failed", "Composition exhausted its two-call allowance");
+  if (composition && !repair && input.compositionAttempts.used >= COMPOSITION_MAX_CALLS) {
+    throw new CodegenieError("llm_call_failed", "Composition exhausted its two primary-call allowance");
   }
-  if (composition) input.compositionAttempts.used += 1;
-  // A repair gets a fresh allowance, but never escapes overall cancellation.
+  if (composition && !repair) input.compositionAttempts.used += 1;
+  // Field repair follow-ups share the first repair deadline and cancellation.
   // Composition also retains its six-minute total deadline.
   const deadline = timeoutSignal(
     composition ? input.taskSignal : input.opts.runSignal,
-    composition ? COMPOSITION_ATTEMPT_TIMEOUT_MS : SCHEMA_REPAIR_TIMEOUT_MS
+    repair ? Math.max(0, (input.repairDeadlineAt ?? Date.now() + SCHEMA_REPAIR_TIMEOUT_MS) - Date.now()) : COMPOSITION_ATTEMPT_TIMEOUT_MS
   );
   try {
     return await completeWithCacheAttempt({
@@ -2602,7 +2693,7 @@ function validateSubmitCall<T>(
   }
   const semantic = request.validateSubmit?.(validated);
   if (semantic !== undefined && !semantic.ok) {
-    throw new SubmitSemanticValidationError(semantic.classification);
+    throw new SubmitSemanticValidationError(semantic.classification, semantic.details);
   }
   return validated;
 }
@@ -2697,13 +2788,14 @@ function queueSchemaRepair(input: {
   submitCalls: PiSubmitCall[];
   extraToolNames: string[];
   error: string;
-  schemaRepairUsed: boolean;
+  repairBudgetExhausted: boolean;
+  promptOverride?: string;
   repairClassification?: LlmSubmitFailureClassification;
   replaceConversationOverride?: boolean;
   cause?: unknown;
 }): void {
   const error = truncateDiagnostic(input.error);
-  if (input.schemaRepairUsed) {
+  if (input.repairBudgetExhausted) {
     if (input.request.stage === 7) {
       const classification = isStage7SchemaInvalidKind(input.repairClassification)
         ? input.repairClassification
@@ -2751,10 +2843,10 @@ function queueSchemaRepair(input: {
   const stage7CompactRepair = input.request.stage === 7 &&
     input.replaceConversationOverride === true &&
     isStage7SchemaInvalidKind(input.repairClassification);
-  const content = stage7CompactRepair
+  const content = input.promptOverride ?? (stage7CompactRepair
     ? stage7CompactSchemaRepairPrompt(input.submitToolName, error, stage7Classification, repairInput)
     : input.request.schemaRepair?.buildPrompt?.(repairInput) ??
-      defaultSchemaRepairPrompt(input.request, input.submitToolName, error);
+      defaultSchemaRepairPrompt(input.request, input.submitToolName, error));
   const replaceConversation = input.replaceConversationOverride ?? (input.request.schemaRepair?.replaceConversation === true);
   const repairMessage = {
     role: "user",

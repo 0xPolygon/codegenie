@@ -227,10 +227,20 @@ export const FindingUpdatesSchema = Type.Partial(
     description: "Only changed finding fields. Omitted fields stay unchanged. Nested evidence is replaced as a whole. Use revisedAnchor for placement." }
 );
 
+export const ProofAssessmentSchema = Type.Object({
+  status: StringEnum(["established", "refuted", "unresolved"] as const),
+  evidence: Type.String({ minLength: 1, maxLength: 4000, description: "Concrete source evidence establishing or refuting the failure predicate, or what remains missing." }),
+  assumptions: Type.Array(Type.Object({
+    question: Type.String({ minLength: 1, maxLength: 1000 }),
+    essential: Type.Boolean({ description: "True when the defect exists only if this unresolved assumption holds; false for uncertainty limited to magnitude or secondary reach." })
+  }, { additionalProperties: false }), { maxItems: 8 })
+}, { additionalProperties: false });
+
 export const SubmitVerificationVerdictSchema = Type.Object(
   {
     verdict: StringEnum(["keep", "reject", "revise"] as const),
     ...VerificationVerdictSharedProperties,
+    proofAssessment: Type.Optional(ProofAssessmentSchema),
     findingUpdates: Type.Optional(FindingUpdatesSchema),
     finalFinding: Type.Optional(SubmittedFindingSchema),
     revisedAnchor: Type.Optional(DiffAnchorSchema)
@@ -275,8 +285,8 @@ export const SCHEMA_VERSIONS = {
   submit_plan: 6,
   submit_review: 5,
   submit_system_review: 2,
-  submit_verdict: 7,
-  submit_composition: 3
+  submit_verdict: 8,
+  submit_composition: 4
 } as const;
 
 export function submitToolNameForStage(stage: ReviewStage): keyof typeof SCHEMA_VERSIONS {

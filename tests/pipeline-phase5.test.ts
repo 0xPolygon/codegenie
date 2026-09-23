@@ -8561,6 +8561,7 @@ describe("phase 5 pipeline regressions", () => {
         expect(request.validateSubmit?.({
           verdict: "revise",
           reason: "prose-only revision",
+          proofAssessment: { status: "established", evidence: "Concrete proof", assumptions: [] },
           requiredEvidencePresent: true,
           falsePositiveRisk: "low"
         } as T)).toEqual({ ok: false, classification: "revise_without_revision_payload" });
@@ -9323,11 +9324,11 @@ describe("phase 5 pipeline regressions", () => {
     ]));
   });
 
-  it("uses a compact replacement composer repair prompt without raw invalid assistant content", async () => {
+  it("retains composer source context and builds concise repair instructions", async () => {
     const finding = fakeFinding();
     const runner: LlmRunner = {
       runStructured: async <T>(request: LlmStructuredRequest<T>) => {
-        expect(request.schemaRepair?.replaceConversation).toBe(true);
+        expect(request.schemaRepair?.replaceConversation).toBe(false);
         const repairPrompt = request.schemaRepair?.buildPrompt?.({
           stage: 10,
           submitTool: "submit_composition",
@@ -12373,7 +12374,12 @@ describe("phase 5 pipeline regressions", () => {
   it("keeps contrastive composer summaries that mention remaining issues", async () => {
     const finding = fakeFinding();
     const result = await dedupeRankAndComposeReview(
-      { verified: [finding], verdicts: [] },
+      { verified: [finding], verdicts: [{
+        candidateId: "unproven-contract", verdict: "reject", reason: "Contract denomination is unknown.",
+        requiredEvidencePresent: false, falsePositiveRisk: "medium",
+        unresolvedConcern: { question: "Which denomination does the deployed contract expect?", files: [finding.path], symbols: [],
+          reason: "Essential contract assumption remains unresolved.", confidence: "medium" }
+      }] },
       fakePlan(),
       {
         mode: "branch",
@@ -12397,12 +12403,15 @@ describe("phase 5 pipeline regressions", () => {
       nullTelemetry(),
       {
         runner: {
-          runStructured: async <T>() =>
-            ({
-              summary: "No security issues, but one correctness bug remains.",
-              composedFindings: [{ findingIds: [finding.id], ...attributedSources([finding], "Grouped body"),
-          finalBody: "Grouped body", publication: "inline" }]
-            }) as T
+          runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+            const proposal = { summary: "No security issues, but one correctness bug remains.",
+              composedFindings: [{ findingIds: [finding.id], ...attributedSources([finding], "Grouped body"), finalBody: "Grouped body", publication: "inline" }] };
+            expect(request.validateSubmit?.(proposal as T)).toEqual({ ok: true });
+            const invalid = structuredClone(proposal);
+            invalid.composedFindings[0]!.sections[0]!.sourceRefs.push("invented/suggestedTest");
+            expect(request.validateSubmit?.(invalid as T)).toMatchObject({ ok: false, details: expect.stringContaining("invented/suggestedTest") });
+            return proposal as T;
+          }
         },
         promptBuilder: fakePromptBuilder(),
         packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [finding], followUpHints: [], uncertainties: [], status: "completed" }],
@@ -12411,6 +12420,7 @@ describe("phase 5 pipeline regressions", () => {
       }
     );
 
+    expect(result.needsHumanAttention).toContainEqual(expect.objectContaining({ question: "Which denomination does the deployed contract expect?" }));
     expect(result.summary).toBe("No security issues, but one correctness bug remains.");
     expect([...result.findings, ...result.summaryOnlyFindings]).toHaveLength(1);
   });

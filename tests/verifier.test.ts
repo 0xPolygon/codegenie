@@ -608,6 +608,33 @@ describe("stage 9 evidence-aware verification", () => {
     ]));
   });
 
+  it.each([true, false])("retains unresolved essential concerns without publishing them: %s", async essential => {
+    const fixture = reviewFixture(["app.ts"]);
+    const packet = fixture.packets[0]!;
+    const input = candidate("conditional-contract", packet);
+    const assessment = { status: essential ? "unresolved" : "established", evidence: "Changed conversion is visible; the downstream contract determines the impact.",
+      assumptions: [{ question: "Does the deployed contract interpret the amount in destination units?", essential }] };
+    let validation: unknown;
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [input])], packets: [packet] },
+      fakeTools(), config(), nullTelemetry(), {
+        runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+          const value = { verdict: "keep", reason: "The amount conversion changed.", requiredEvidencePresent: true,
+            falsePositiveRisk: "medium", proofAssessment: assessment };
+          expect((request.schema as { required?: string[] }).required).toContain("proofAssessment");
+          validation = request.validateSubmit?.(value as T);
+          return value as T;
+        } },
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      });
+    expect(validation).toMatchObject({ ok: !essential });
+    expect(result.verified).toHaveLength(essential ? 0 : 1);
+    if (essential) {
+      expect(result.verdicts[0]?.unresolvedConcern?.question).toContain("destination units");
+      expect(result.verdicts[0]?.proofAssessment).toEqual(assessment);
+      expect(result.incompleteCount).toBe(0);
+    }
+  });
+
   it("rejects keep verdicts that report required evidence is missing", async () => {
     const fixture = reviewFixture(["src/app.ts"]);
     const finding = candidate("missing-evidence-keep", fixture.packets[0]!);

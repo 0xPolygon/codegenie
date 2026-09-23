@@ -890,6 +890,8 @@ export type SystemReviewResult = {
 
 export type VerificationVerdict = {
   candidateId: string;
+  proofAssessment?: { status: "established" | "refuted" | "unresolved"; evidence: string; assumptions: Array<{ question: string; essential: boolean }> };
+  unresolvedConcern?: NeedsHumanAttentionNote;
   // "incomplete" is runner-assigned only (timeout/budget/schema loss before a
   // real verdict); the model-submitted verdict never carries it.
   verdict: "keep" | "reject" | "revise" | "incomplete";
@@ -1071,6 +1073,7 @@ export type EvalCase = {
     maxPromptCharsByStage?: Partial<Record<ReviewStage | string, number>>;
     reviewCompleteness?: "complete" | "partial";
     planningQuality?: "non-degraded";
+    compositionQuality?: "non-degraded";
     recoveryFidelity?: "preserved";
     maxBudgetOverruns?: number;
     maxToolBudgetRejections?: number;
@@ -1164,6 +1167,7 @@ export type EvalBudgetResult = {
     | "maxToolCalls"
     | "maxPromptCharsByStage"
     | "reviewCompleteness"
+    | "compositionQuality"
     | "planningQuality"
     | "recoveryFidelity"
     | "maxBudgetOverruns"
@@ -1227,6 +1231,7 @@ export type EvalRunMetrics = {
   maxPromptCharsByStage?: Partial<Record<ReviewStage, number>>;
   reviewCompleteness?: "complete" | "partial";
   planningQuality?: "non-degraded" | "degraded" | "unknown";
+  compositionQuality?: "non-degraded" | "degraded" | "unknown";
   recoveryFidelity?: "preserved" | "unresolved" | "unknown";
   budgetOverruns?: number;
   toolBudgetRejections?: number;

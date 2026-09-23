@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { createFieldRepair } from "../src/llm/field-repair.js";
+import { SubmitVerificationVerdictSchema } from "../src/llm/schemas.js";
 import { expandVerifierRevision } from "../src/llm/verifier-revision.js";
 import { VERIFIER_SUBMIT_EXAMPLE } from "../src/llm/verifier-submit-repair.js";
 import type { CandidateFinding } from "../src/types.js";
@@ -24,6 +26,23 @@ describe("compact verifier revision expansion", () => {
     expect(() => expandVerifierRevision(original, {
       ...verdict({ title: "Updated" }), finalFinding: VERIFIER_SUBMIT_EXAMPLE.finalFinding
     })).toThrow("mutually exclusive");
+  });
+  it("collapses redundant full and compact revisions without losing full-only changes", () => {
+    const full = { ...VERIFIER_SUBMIT_EXAMPLE.finalFinding, title: "Full-only revision" };
+    const input = { ...verdict({ verification: full.verification }), finalFinding: full };
+    expect(expandVerifierRevision(original, input)).toEqual({ ...verdict(undefined), finalFinding: full });
+    expect(input.findingUpdates).toEqual({ verification: full.verification });
+  });
+  it.each(["finalFinding", "findingUpdates"] as const)("repair explicitly selects %s without resurrecting its alternative", key => {
+    const input = { ...verdict({ title: "Conflicting title" }), finalFinding: VERIFIER_SUBMIT_EXAMPLE.finalFinding };
+    const repair = createFieldRepair(SubmitVerificationVerdictSchema, input, true, [["finalFinding", "findingUpdates"]])!;
+    expect(() => expandVerifierRevision(original, repair.merge({}) as SubmitVerificationVerdict)).toThrow("conflicting: title");
+    const patch = key === "findingUpdates" ? { findingUpdates: { title: "Resolved title" } } : { finalFinding: input.finalFinding };
+    const merged = repair.merge(patch) as SubmitVerificationVerdict;
+    expect(merged[key === "findingUpdates" ? "finalFinding" : "findingUpdates"]).toBeUndefined();
+    expect(expandVerifierRevision(original, merged).finalFinding?.title).toBe(key === "findingUpdates" ? "Resolved title" : input.finalFinding.title);
+    expect(input.findingUpdates!.title).toBe("Conflicting title");
+    expect(merged.reason).toBe(input.reason);
   });
   it.each([{ path: "other.ts" }, { anchor: original.anchor }, { producedBy: {} }, { behaviorChange: "unknown" }, { intentEvidence: ["refactor"] }, null])(
     "rejects identity/placement changes and null updates: %j", (updates) => {
