@@ -8,6 +8,23 @@ import { MAX_REVIEW_TIME_MINUTES } from "../src/config/schema.js";
 import { CodegenieError } from "../src/util/errors.js";
 
 describe("review command", () => {
+  it.each([
+    [undefined, undefined, false, "defaults"],
+    [true, undefined, true, "repo-config"],
+    [false, undefined, false, "repo-config"],
+    [false, "--composition-reasoning-step-down", true, "cli"],
+    [true, "--no-composition-reasoning-step-down", false, "cli"],
+    [undefined, "--composition-reasoning-step-down", true, "cli"],
+    [undefined, "--no-composition-reasoning-step-down", false, "cli"]
+  ] as const)("resolves composition step-down config=%s flag=%s", (configured, flag, expected, source) => {
+    const ctx = testContext();
+    if (configured !== undefined) writeFileSync(path.join(ctx.repoRoot, "codegenie.toml"), `[review]\ncompositionReasoningStepDown = ${configured}\n`);
+    const parsed = parseReviewCommand(["review", "--branch", "feature", ...(flag ? [flag] : [])], ctx);
+    expect(parsed.config.review.compositionReasoningStepDown).toBe(expected);
+    expect(parsed.configSources["review.compositionReasoningStepDown"]).toBe(source);
+    expect(parsed.warnings).toEqual([]);
+  });
+
   it("treats top-level help as a successful display exit", () => {
     expect(() => parseReviewCommand(["--help"], testContext())).toThrow(CliDisplayExit);
 

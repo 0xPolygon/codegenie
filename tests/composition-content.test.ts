@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compositionSources, renderCompositionSections, renderRetainedComposition, validateCompositionSubmission, type CompositionSection } from "../src/pipeline/composition-content.js";
+import { compositionSources, eligibleCompositionSource, renderCompositionSections, renderRetainedComposition, validateCompositionSubmission, type CompositionSection } from "../src/pipeline/composition-content.js";
 import type { CandidateFinding } from "../src/types.js";
 
 // Minimal sanitized run-79 rounding/zero/caller chain plus the independently
@@ -14,17 +14,26 @@ function finding(id: string): CandidateFinding {
 }
 function composed(findings: CandidateFinding[]) {
   const sources = compositionSources(findings);
-  return { sections: (["impact", "verification", "fix", "test"] as const).map(kind => ({ kind, text: sources.filter(source => source.kind === kind).map(source => source.text).filter((text, index, all) => all.indexOf(text) === index).join("\n"), sourceRefs: sources.filter(source => source.kind === kind).map(source => source.id) })),
-    evidenceRefs: sources.filter(source => source.kind === "evidence").map(source => source.id) };
+  const sections = (["impact", "verification", "fix", "test"] as const).map(kind => {
+    const eligible = sources.filter(source => eligibleCompositionSource(source, kind));
+    return { kind, text: [...new Set(eligible.map(source => source.text))].join("\n"), sourceRefs: eligible.map(source => source.id) };
+  }).filter(section => section.sourceRefs.length);
+  const used = new Set(sections.flatMap(section => section.sourceRefs));
+  return { sections, evidenceRefs: sources.filter(source => source.kind === "evidence").map(source => source.id),
+    retainedSourceRefs: sources.filter(source => source.kind !== "evidence" && !used.has(source.id)).map(source => source.id) };
 }
 
 describe("attributed composition", () => {
   it("renders the rounding chain once, retaining zero rejection and contract uncertainty", () => {
     const findings = Array.from({ length: 5 }, (_, index) => finding(`f${index}`));
     const proposal = composed(findings);
-    const full = renderCompositionSections(findings, proposal.sections, proposal.evidenceRefs);
+    const full = renderCompositionSections(findings, proposal.sections, proposal.evidenceRefs, undefined, proposal);
     const body = full.split("\n\n<details>")[0]!;
-    for (const text of [findings[0]!.failureMode, findings[0]!.suggestedFix!, findings[0]!.suggestedTest!, findings[0]!.verification, "amount.Div(amount, factor)"]) expect(body.split(text)).toHaveLength(2);
+    for (const text of [findings[0]!.failureMode, findings[0]!.verification, "amount.Div(amount, factor)"]) expect(body.split(text)).toHaveLength(2);
+    for (const field of ["suggestedFix", "suggestedTest"] as const) {
+      expect(body).not.toContain(findings[0]![field]);
+      expect(full).toContain(findings[0]![field]);
+    }
     expect(full).toContain("591-602");
     expect(body).not.toContain("```go\n591-602");
     expect(full).toContain("Zero is rejected downstream.");
@@ -70,17 +79,17 @@ describe("attributed composition", () => {
   it("rejects omitted, invented, duplicate, and wrong-kind source references", () => {
     const findings = [finding("one")];
     const { sections, evidenceRefs } = composed(findings);
-    expect(() => renderCompositionSections(findings, sections.slice(1), evidenceRefs)).toThrow(/omitted/);
-    expect(() => renderCompositionSections(findings, sections, [...evidenceRefs, "invented"])).toThrow(/Invalid/);
+    expect(() => renderCompositionSections(findings, sections.slice(1), evidenceRefs)).toThrow(/missing_source/);
+    expect(() => renderCompositionSections(findings, sections, [...evidenceRefs, "invented"])).toThrow(/unknown_source|wrong_section/);
     expect(() => renderCompositionSections(findings, sections, [...evidenceRefs, evidenceRefs[0]!])).toThrow(/duplicate/);
-    expect(() => renderCompositionSections(findings, [{ ...sections[0]!, kind: "test" }, ...sections.slice(1)] as CompositionSection[], evidenceRefs)).toThrow(/Invalid/);
+    expect(() => renderCompositionSections(findings, [{ ...sections[0]!, kind: "test" }, ...sections.slice(1)] as CompositionSection[], evidenceRefs)).toThrow(/unknown_source|wrong_section/);
   });
 
   it("preserves proof and caveats even if composed verification text erases them", () => {
     const findings = [finding("one")];
     const proposal = composed(findings);
     proposal.sections.find(section => section.kind === "verification")!.text = "Always proven.";
-    expect(renderCompositionSections(findings, proposal.sections, proposal.evidenceRefs)).toContain(findings[0]!.verification);
+    expect(renderCompositionSections(findings, proposal.sections, proposal.evidenceRefs, undefined, proposal)).toContain(findings[0]!.verification);
   });
 
   it("preserves distinct evidence branches, explanations, and separate testing obligations", () => {
@@ -92,7 +101,7 @@ describe("attributed composition", () => {
     second.evidence.changedCode = "assert.Equal(want, actual)";
     second.evidence.relatedCode![0]!.whyRelevant = "The new test must account for zero rejection.";
     const proposal = composed([first, second]);
-    const body = renderCompositionSections([first, second], proposal.sections, proposal.evidenceRefs);
+    const body = renderCompositionSections([first, second], proposal.sections, proposal.evidenceRefs, undefined, proposal);
     expect(body).toContain(first.evidence.changedCode);
     expect(body).toContain(second.evidence.changedCode);
     expect(body).toContain(second.failureMode);

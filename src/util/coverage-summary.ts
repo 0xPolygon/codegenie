@@ -79,6 +79,14 @@ export function renderBudgetStopNotice(coverage: RunCoverageStatus): string {
 
 export function coverageDisclosureLines(coverage: RunCoverageStatus): string[] {
   const lines: string[] = [];
+  const adaptive = coverage.adaptiveReviews?.counts;
+  if (adaptive && adaptive.triggered > 0) {
+    const statuses = [
+      [adaptive.incomplete, "incomplete"], [adaptive.failed, "failed"], [adaptive.timedOut, "timed out"],
+      [adaptive.cancelled, "cancelled"], [adaptive.notDispatched, "not dispatched"], [adaptive.capped, "not scheduled (pass cap)"]
+    ].filter(([count]) => Number(count) > 0).map(([count, label]) => `${count} ${label}`);
+    lines.push(`- **Supplemental investigations:** ${adaptive.completed}/${adaptive.scheduled} scheduled passes completed${statuses.length ? `; ${statuses.join(", ")}` : ""}. Baseline hunk coverage is reported separately.`);
+  }
   if (coverage.budgetStopped) {
     lines.push(`- Budget stopped review work${coverage.budgetStop ? ` (${humanizeBudgetReason(coverage.budgetStop.reason)})` : ""}.`);
   }

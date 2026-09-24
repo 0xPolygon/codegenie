@@ -7,6 +7,7 @@ import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-
 import { projectedSkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
+  AdaptiveReviewOutcome,
   AnchorSource,
   CandidateFinding,
   CodegenieConfig,
@@ -30,6 +31,7 @@ import { MAX_DEEP_ENSEMBLE_PASSES } from "../config/schema.js";
 import { isPacketReviewTestPath } from "../util/path-roles.js";
 import { stage7RecoverInvalidSubmit } from "../llm/stage7-submit-repair.js";
 import { cleanStrings } from "../util/text-similarity.js";
+import { summarizeAdaptiveReviews } from "../util/adaptive-review.js";
 
 type LensRunnerOptions = {
   runner: LlmRunner;
@@ -178,6 +180,7 @@ export async function runLensPackets(
     return poolEnsemblePassResults(packet, passes, telemetry);
   });
   results = await runAdaptiveSecondWave(results, packets, workerRunner, tools, config, telemetry, opts);
+  const adaptiveReviews = summarizeAdaptiveReviews(results);
   await clarifyFindingLocations(results.flatMap((result) => result.findings), config, telemetry, { ...opts, packets });
   telemetry.event({
     stage: 7,
@@ -196,7 +199,8 @@ export async function runLensPackets(
       candidates: {
         generated: results.reduce((sum, result) => sum + result.findings.length, 0)
       },
-      generation: summarizeStage7Generation(results)
+      generation: summarizeStage7Generation(results),
+      ...(adaptiveReviews ? { adaptiveReviews: adaptiveReviews.counts } : {})
     }
   });
   telemetry.event({ stage: 7, level: "info", message: "stage_completed", data: { packets: results.length } });
@@ -212,7 +216,7 @@ export function ensemblePassesForPacket(packet: ReviewPacket, config: CodegenieC
   return Math.min(MAX_DEEP_ENSEMBLE_PASSES, Math.max(1, config.review.deepEnsemblePasses ?? 1));
 }
 
-type AdaptiveTrigger = "concrete_hint" | "silent_with_signal" | "low_confidence_only";
+type AdaptiveTrigger = NonNullable<AdaptiveReviewOutcome["trigger"]>;
 
 // Plan 92 layer 3: a single-pass packet whose first pass shows near-miss
 // evidence earns ONE additional independent review pass — a real second draw
@@ -262,6 +266,7 @@ async function runAdaptiveSecondWave(
   if (config.review.adaptiveSecondPass !== true) {
     return results;
   }
+  for (const result of results) result.adaptiveReview = { outcome: "not_triggered", attempts: 0 };
   const packetsById = new Map(packets.map((packet) => [packet.id, packet]));
   const triggered = results.flatMap((result) => {
     const packet = packetsById.get(result.packetId);
@@ -280,6 +285,7 @@ async function runAdaptiveSecondWave(
   const ordered = [...triggered].sort((a, b) => ADAPTIVE_TRIGGER_RANK[a.trigger] - ADAPTIVE_TRIGGER_RANK[b.trigger]);
   const scheduled = ordered.slice(0, cap);
   const capped = ordered.length - scheduled.length;
+  for (const entry of ordered.slice(cap)) entry.result.adaptiveReview = { trigger: entry.trigger, outcome: "capped", attempts: 0 };
   telemetry.event({
     stage: 7,
     level: scheduled.length > 0 ? "info" : "debug",
@@ -310,8 +316,17 @@ async function runAdaptiveSecondWave(
   }));
   const outcomes = await workerRunner.schedule(tasks);
   const adaptiveByPacket = new Map<string, PacketReviewResult>();
+  const statusByPacket = new Map<string, AdaptiveReviewOutcome>();
   outcomes.forEach((outcome) => {
     const packetId = outcome.task.packetId ?? "unknown";
+    const status: AdaptiveReviewOutcome = {
+      outcome: outcome.outcome, attempts: outcome.attempts,
+      ...(outcome.value ? { reviewStatus: outcome.value.status } : {}),
+      ...(isCodegenieError(outcome.error) ? { errorCode: outcome.error.code,
+        ...(outcome.error.code === "timeout" || outcome.error.context?.reason === "timeout" ? { failureReason: "timeout" as const } : {}) } : {})
+    };
+    statusByPacket.set(packetId, status);
+    telemetry.event({ stage: 7, level: "info", message: "adaptive_pass_outcome", packetId, data: status });
     if (outcome.outcome === "completed" && outcome.value) {
       adaptiveByPacket.set(packetId, outcome.value);
       return;
@@ -332,6 +347,9 @@ async function runAdaptiveSecondWave(
     const adaptive = adaptiveByPacket.get(result.packetId);
     const packet = packetsById.get(result.packetId);
     if (adaptive === undefined || packet === undefined) {
+      const status = statusByPacket.get(result.packetId);
+      const trigger = triggerByPacket.get(result.packetId);
+      if (status) result.adaptiveReview = { ...status, ...(trigger ? { trigger } : {}) };
       return result;
     }
     telemetry.event({
@@ -345,7 +363,10 @@ async function runAdaptiveSecondWave(
         firstPassCandidates: result.findings.length
       }
     });
-    return poolEnsemblePassResults(packet, [result, adaptive], telemetry, false);
+    const pooled = poolEnsemblePassResults(packet, [result, adaptive], telemetry, false);
+    const trigger = triggerByPacket.get(result.packetId);
+    pooled.adaptiveReview = { ...statusByPacket.get(result.packetId)!, ...(trigger ? { trigger } : {}) };
+    return pooled;
   });
 }
 

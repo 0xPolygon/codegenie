@@ -116,7 +116,7 @@ export function cleanupSubmitShape(schema: TSchema, input: unknown, rootPath = "
 
 // Expected shapes and unexpected values are data for the repair prompt, not
 // telemetry. The caller must fence them as untrusted and retain the full draft.
-export function focusedRepairDiagnostics(schema: TSchema, original: unknown) {
+export function focusedRepairDiagnostics(schema: TSchema, original: unknown, semanticIssues: readonly ValidationIssue[] = []) {
   const cleaned = cleanupSubmitShape(schema, original);
   const at = (root: unknown, path: string): unknown => path.split(".").filter(Boolean).reduce<unknown>((node, key) =>
     record(node) || Array.isArray(node) ? (node as Record<string, unknown>)[key] : undefined, root);
@@ -125,7 +125,8 @@ export function focusedRepairDiagnostics(schema: TSchema, original: unknown) {
   return {
     localEdits: cleaned.edits,
     removedUnexpectedFields: cleaned.removedUnexpectedFields,
-    issues: submissionIssues(schema, cleaned.arguments).map(issue => {
+    issues: [...new Map([...submissionIssues(schema, cleaned.arguments), ...semanticIssues]
+      .map(issue => [issue.path, issue])).values()].map(issue => {
       const expected = schemaAt(issue.path);
       return { ...issue, ...(expected ? { expected } : {}),
         ...(issue.kind === "unknown" ? { originalValue: at(original, issue.path) } : {}) };

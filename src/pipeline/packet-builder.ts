@@ -2923,7 +2923,7 @@ export function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: Code
     ? {
         light: { maxToolCalls: 2, maxInvestigationRounds: 1, maxResultChars: 4000 },
         normal: { maxToolCalls: 6, maxInvestigationRounds: 2, maxResultChars: 12000 },
-        deep: { maxToolCalls: 15, maxInvestigationRounds: 5, maxResultChars: 32000 }
+        deep: { maxToolCalls: 15, maxInvestigationRounds: 5, maxResultChars: 48000 }
       }
     : {
         light: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 3000 },

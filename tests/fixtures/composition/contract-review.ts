@@ -31,6 +31,7 @@ export function contractReview(): CandidateFinding[] {
     suggestedTest: "Use a non-divisible request and assert delivery meets the original requested minimum."
   };
   corrected.suggestionAssessments = { suggestedFix: {
+    contractCheck: { status: "established", requirement: "Delivery must meet the original requested minimum." },
     status: "supported", suggestionText: corrected.suggestedFix!, rationale: "Ceiling conversion preserves the caller's minimum.",
     evidence: [{ path: "caller.go", lines: "10-12", whyRelevant: "Original requested minimum is required." }]
   } }; // Test support remains independently unverified.
@@ -42,9 +43,8 @@ export function contractComposition() {
   const sources = compositionSources(findings);
   const sections: CompositionSection[] = [
     { kind: "impact", text: findings[0]!.failureMode + " " + findings[0]!.whyThisMatters, sourceRefs: sources.filter(s => s.kind === "impact").map(s => s.id) },
-    { kind: "verification", text: findings[1]!.verification, sourceRefs: ["boundary-tests/verification"] },
-    { kind: "fix", text: findings[1]!.suggestedFix!, sourceRefs: ["boundary-tests/suggestedFix"] },
-    { kind: "test", text: findings[1]!.suggestedTest!, sourceRefs: ["boundary-tests/suggestedTest"] }
+    { kind: "verification", text: findings[1]!.verification + " The size of the loss depends on the decimal pair.", sourceRefs: ["boundary-tests/verification", "rounding/proofAssessment", "boundary-tests/proofAssessment"] },
+    { kind: "fix", text: findings[1]!.suggestedFix!, sourceRefs: ["boundary-tests/suggestedFix"] }
   ];
   const used = new Set(sections.flatMap(s => s.sourceRefs));
   const evidenceRefs = sources.filter(s => s.kind === "evidence").map(s => s.id);

@@ -3,6 +3,8 @@ import {
   type AssistantMessageEvent,
   type AssistantMessageEventStream
 } from "@earendil-works/pi-ai";
+import { createHash } from "node:crypto";
+import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
 import { describe, expect, it, vi } from "vitest";
 import { consumeFinalToolArguments } from "../src/llm/final-tool-arguments.js";
 import type { PiAssistantMessage, PiInvalidToolCall, PiToolCall } from "../src/llm/llm-runner.js";
@@ -65,6 +67,39 @@ describe("final tool argument provenance", () => {
     });
     expect(JSON.stringify(result.content[0])).not.toContain(secret);
     expect(result.content[0]).not.toHaveProperty("arguments");
+  });
+
+  it("keeps bounded, redacted rejected-argument diagnostics separate from trusted arguments", async () => {
+    registerSecret("unique-diagnostic-secret");
+    const onRejectedArguments = vi.fn();
+    const onBuffersCleared = vi.fn();
+    const raw = '{"reason":"' + "x".repeat(8170) + 'unique-diagnostic-secret' + "y".repeat(20_000) + '","verdict":}';
+    try {
+      const final = message(call("submit-bad", SUBMIT, { reason: "partial guess" }));
+      const result = await consumeFinalToolArguments(sequence(final, [raw]), SUBMIT, { onRejectedArguments, onBuffersCleared });
+      expect(result.content[0]).toEqual({ type: "invalidToolCall", id: "submit-bad", name: SUBMIT,
+        argumentParse: { state: "invalid", errorKind: "invalid_syntax" } });
+      expect(onRejectedArguments).toHaveBeenCalledOnce();
+      const diagnostic = onRejectedArguments.mock.calls[0]![0];
+      expect(diagnostic).toMatchObject({ toolCallId: "submit-bad", contentIndex: 0,
+        capturedChars: raw.length, sha256: createHash("sha256").update(raw).digest("hex"),
+        parse: { state: "invalid", errorKind: "invalid_syntax" } });
+      expect(diagnostic.prefix.length + diagnostic.suffix.length).toBe(16_384);
+      expect(diagnostic.omittedChars).toBe(diagnostic.sampleChars - 16_384);
+      expect(diagnostic.prefix).not.toContain("unique-");
+      expect(diagnostic.suffix).toContain('"verdict":}');
+      expect(onBuffersCleared).toHaveBeenCalledWith(0);
+      expect(JSON.stringify(result)).not.toContain("partial guess");
+    } finally { clearRegisteredSecretsForTests(); }
+  });
+
+  it("captures short malformed text completely but produces no diagnostic for valid submissions", async () => {
+    const onRejectedArguments = vi.fn();
+    const raw = '{"verdict":}';
+    await consumeFinalToolArguments(sequence(message(call("bad", SUBMIT, {})), [raw]), SUBMIT, { onRejectedArguments });
+    expect(onRejectedArguments.mock.calls[0]![0]).toMatchObject({ prefix: raw, suffix: "", omittedChars: 0 });
+    await consumeFinalToolArguments(sequence(message(call("good", SUBMIT, { verdict: "keep" })), ['{"verdict":"keep"}']), SUBMIT, { onRejectedArguments });
+    expect(onRejectedArguments).toHaveBeenCalledOnce();
   });
 
   it.each([

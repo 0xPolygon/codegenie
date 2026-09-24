@@ -26,9 +26,9 @@ export const VERIFIER_SUBMIT_EXAMPLE = {
 } satisfies SubmitVerificationVerdict;
 
 export const VERIFIER_SUBMIT_SHAPE_GUIDANCE = [
-  "Prefer findingUpdates: a small JSON object with only changed fields. Omitted fields are preserved from the candidate. Never JSON-encode the object. Replace evidence only when it changed, supplying changedCode and any relatedCode to retain. Keep evidence concise.",
+  "Prefer findingUpdates: a small JSON object with only changed fields, except promoted investigations require explicit final title, failureMode, whyThisMatters, verification, category, severity and confidence. Other omitted fields are preserved from the candidate. Never JSON-encode the object. Replace evidence only when it changed, supplying changedCode and any relatedCode to retain. Keep evidence concise.",
   "Set behaviorChange and intentEvidence only at the verdict top level, never inside findingUpdates. The harness applies them automatically to kept or revised findings; metadata-only updates may use keep.",
   "Shape-only example (replace with actual verified values; do not copy this example as evidence):",
   JSON.stringify({ verdict: "revise", reason: "The empty-input trigger is confirmed; clarify the title.", requiredEvidencePresent: true, falsePositiveRisk: "low", findingUpdates: { title: "Empty input causes an out-of-bounds access" } } satisfies SubmitVerificationVerdict),
-  "For an anchor-only revision, use revisedAnchor as an object containing the verified path, line, side, and hunkId instead of rewriting the finding. Do not combine findingUpdates with finalFinding."
+  "For an ordinary finding's anchor-only revision, use revisedAnchor as an object containing the verified path, line, side, and hunkId instead of rewriting the finding. Placement alone cannot complete a promoted investigation. Do not combine findingUpdates with finalFinding."
 ].join("\n");

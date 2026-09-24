@@ -1,3 +1,5 @@
+import { contractComposition } from "./fixtures/composition/contract-review.js";
+import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { clarifyFindingLocations } from "../src/pipeline/finding-location.js";
 import { compositionSources } from "../src/pipeline/composition-content.js";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
@@ -51,10 +53,133 @@ import type {
   VerificationVerdict
 } from "../src/types.js";
 import { CodegenieError } from "../src/util/errors.js";
+import { renderCoverageSummaryLines } from "../src/util/coverage-summary.js";
+import { summarizeAdaptiveReviews } from "../src/util/adaptive-review.js";
 import { sha256Hex } from "../src/util/hashing.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 
 describe("phase 5 pipeline regressions", () => {
+  it.each(["resolved", "assessment", "narrowed", "unknown", "duplicate", "fallback", "legacy", "no-findings"] as const)("reconciles exact verifier concerns only after valid composition: %s", async mode => {
+    // Supplied semantic decisions exercise plumbing, not model inference.
+    const fixture = authorizationComposition();
+    const finding = fixture.findings[0]!;
+    if (mode === "assessment") finding.suggestionAssessments!.suggestedTest!.evidence = [{ path: "access-policy.ts",
+      lines: "return membership.active", whyRelevant: "Head checks current membership explicitly." }];
+    const firstQuestion = "Does current membership determine document access?";
+    const secondQuestion = "Is this endpoint deployed?";
+    const original = { question: `${firstQuestion}; ${secondQuestion}`, files: ["access-policy.ts"], symbols: [],
+      reason: "Caller policy and deployment need evidence.", confidence: "medium" as const, sourcePacketIds: ["policy-question"] };
+    const verdicts: VerificationVerdict[] = [{ candidateId: finding.id, verdict: "keep", reason: "Read handler violates access policy.",
+      requiredEvidencePresent: true, falsePositiveRisk: "low", proofAssessment: finding.proofAssessment! },
+    { candidateId: "policy-question", verdict: "reject", reason: "Missing evidence.", requiredEvidencePresent: false, falsePositiveRisk: "high",
+      proofAssessment: { status: "unresolved", evidence: "Policy and deployment were not established by this worker.", assumptions: [
+        { question: firstQuestion, essential: true }, { question: secondQuestion, essential: true }
+      ] }, unresolvedConcern: original }];
+    const before = structuredClone(verdicts);
+    const coverage = fakeCoverage();
+    coverage.adaptiveReviews = summarizeAdaptiveReviews([{ packetId: "supplemental", lenses: [], findings: [], followUpHints: [], uncertainties: [],
+      status: "completed", adaptiveReview: { outcome: "timed_out", attempts: 1, trigger: "concrete_hint" } }])!;
+    const artifacts = new Map<string, unknown>();
+    let calls = 0;
+    const proposal = { concernId: "policy-question/assumptions/0", disposition: mode === "narrowed" ? "narrowed" : "resolved",
+      supportingRefs: [mode === "unknown" ? "absent-source" : mode === "assessment" ? "authorization/suggestedTest" : "authorization/evidence/relatedCode/0"],
+      rationale: "Supplied policy makes current membership authoritative; production exposure is separate.",
+      ...(mode === "narrowed" ? { remainingQuestion: "Does the deployed policy match this repository policy?" } : {}) };
+    const promptBuilder = createPromptBuilder(fakeLensRegistry());
+    const result = await dedupeRankAndComposeReview({ verified: mode === "no-findings" ? [] : fixture.findings, verdicts }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "", headSha: "head" }, coverage, config(),
+      { ...nullTelemetry(), writeArtifact: async (name, data) => { artifacts.set(name, data); } }, {
+        postGithubComments: true, promptBuilder,
+        runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+          calls++;
+          expect(request.prompt).toContain("attention-reconciliation");
+          expect(request.prompt).toContain("policy-question/assumptions/0");
+          expect(request.prompt).toContain("Write the diagnosis-only summary from the composed conclusions");
+          expect(request.prompt).toContain("uninspected or truncated scope cannot establish repository-wide absence");
+          expect(request.prompt).toContain("test existence is not deployment");
+          expect(request.prompt).toContain("evidenceContexts, keyed by candidateId");
+          expect(request.prompt).toContain("Incomplete evidence for the whole question can still justify narrowing");
+          expect(request.prompt).toContain("keep all unanswered deployment, configuration, caller-contract or other conditions");
+          expect(request.prompt).toContain("Explanations of guards must agree with their branch conditions");
+          expect(request.prompt).toContain("explicitly scope a remedy-specific test to its assessed alternative");
+          expect(request.prompt).toContain("never invent a replacement test or remedy");
+          if (mode === "assessment") {
+            expect(request.prompt).toContain('"sourceRef":"authorization/suggestedTest"');
+            expect(request.prompt).toContain('"sourceField":"suggestionAssessment"');
+            expect(request.prompt.split("Head checks current membership explicitly.")).toHaveLength(2);
+          }
+          if (mode === "fallback") throw new CodegenieError("llm_call_failed", "timed out", { recoverable: true });
+          const response = { summary: "The document reader violates current-membership policy; deployment remains unconfirmed.",
+            composedFindings: mode === "no-findings" ? [] : [{ findingIds: [finding.id], publication: "summary-only",
+              ...(mode === "legacy" ? { finalBody: "Legacy prose" } : { sections: fixture.sections, evidenceRefs: fixture.evidenceRefs }) }],
+            attentionResolutions: mode === "duplicate" ? [proposal, proposal] : [proposal] };
+          if (mode !== "legacy") expect(request.validateSubmit?.(response as T)).toEqual({ ok: true });
+          return response as T;
+        } }
+      });
+    expect(calls).toBe(1);
+    expect(verdicts).toEqual(before);
+    expect(coverage.partial).toBe(false);
+    const expected = mode === "resolved" || mode === "assessment" ? secondQuestion : mode === "narrowed"
+      ? `Does the deployed policy match this repository policy?; ${secondQuestion}` : original.question;
+    expect(result.needsHumanAttention).toEqual([{ ...original, question: expected }]);
+    if (mode !== "no-findings") {
+      expect(result.postingPlan!.reviewBody).toContain(expected);
+      expect(result.postingPlan!.reviewBody).toContain("Supplemental investigations:** 0/1 scheduled passes completed; 1 timed out");
+    }
+    expect(renderMarkdownReview(result)).toContain(expected);
+    expect(renderMarkdownReview(result)).toContain("Supplemental investigations:** 0/1 scheduled passes completed; 1 timed out");
+    expect(artifacts.get("human-attention-notes.json")).toMatchObject({ schemaVersion: 3,
+      outputNotes: [{ ...original, question: expected }], reconciliation: { outcomes: [{ candidateId: "policy-question", original, remainingQuestion: expected }] } });
+    expect(JSON.stringify(artifacts.get("human-attention-notes.json"))).not.toContain("[redacted:circular]");
+    if (mode !== "fallback" && mode !== "legacy" && mode !== "no-findings") {
+      expect(result.summary).toContain("violates current-membership policy");
+      expect(result.summaryOnlyFindings[0]!.finalBody).toContain(finding.proofAssessment!.evidence);
+      expect(artifacts.get("composition-sources.json")).toMatchObject({ mode: "llm" });
+    }
+  });
+
+  it.each([true, false])("publishes supplied summary conclusions with original disagreement retained, resolved=%s", async resolved => {
+    const fixture = contractComposition();
+    const historical = "Whether caller requirements permit reducing the advertised minimum is unknown.";
+    fixture.findings[0]!.verification = historical;
+    fixture.findings[1]!.verification = resolved
+      ? "The supplied caller rejects any minimum below the original request."
+      : "The supplied caller observations conflict; requirement compatibility remains unresolved.";
+    const section = fixture.sections.find(section => section.kind === "verification")!;
+    section.text = fixture.findings[1]!.verification + " The size of the loss depends on the decimal pair.";
+    if (!resolved) {
+      section.sourceRefs.push("rounding/verification");
+      fixture.presentation.retainedSourceRefs = fixture.presentation.retainedSourceRefs!.filter(ref => ref !== "rounding/verification");
+      fixture.presentation.retainedSourceRefs.push(...fixture.sections.filter(section => section.kind === "fix").flatMap(section => section.sourceRefs));
+      fixture.sections = fixture.sections.filter(section => section.kind !== "fix");
+    }
+    fixture.presentation.reconciliations = [{ sourceRefs: ["rounding/verification"],
+      supportingRefs: ["boundary-tests/verification", "rounding/evidence/relatedCode/0"],
+      disposition: resolved ? "superseded" : "unresolved", rationale: resolved
+        ? "The caller evidence answers the earlier contract question." : "The supplied observations cannot settle this disagreement." }];
+    const summary = resolved
+      ? "Rounding can violate the caller's required minimum. The loss magnitude depends on the decimal pair."
+      : "Rounding changes the quoted guarantee; compatibility with the caller requirement remains unresolved.";
+    const result = await dedupeRankAndComposeReview({ verified: fixture.findings, verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+          expect(request.prompt).toContain("do not still call it an open question");
+          expect(request.prompt).toContain("preserve uncertainty in both summary and findings");
+          const response = { summary, composedFindings: [{ findingIds: fixture.findings.map(finding => finding.id),
+            sections: fixture.sections, evidenceRefs: fixture.evidenceRefs, ...fixture.presentation, publication: "summary-only" }] };
+          expect(request.validateSubmit?.(response as T)).toEqual({ ok: true });
+          return response as T;
+        } }
+      });
+    expect(result.summary).toBe(summary);
+    const body = result.summaryOnlyFindings[0]!.finalBody;
+    expect(body).toContain(historical);
+    expect(body.split("<details>")[0]).toContain(fixture.findings[1]!.verification);
+    expect(body.split("<details>")[0]).not.toContain(historical);
+    if (!resolved) expect(body.split("<details>")[0]).not.toContain("**Suggested fix:**");
+  });
+
   it("keeps fallback risk from classification without escalating every file", () => {
     const dossier = fakeDossier(["auth.ts", "routine.ts"]);
     dossier.files[0]!.reviewPriority = "critical";
@@ -441,6 +566,76 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it.each(["failed", "timeout", "incomplete", "recovered", "not_dispatched", "cancelled", "baseline_failed"] as const)("discloses adaptive %s separately from baseline coverage", async mode => {
+    let calls = 0;
+    const abort = new AbortController();
+    const packet = fakePacket();
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = { runStructured: async <T>() => {
+      calls++;
+      if (mode === "baseline_failed" || mode === "failed" && calls > 1 || mode === "recovered" && calls === 2)
+        throw new CodegenieError("llm_schema_invalid", "Submission failed", { recoverable: true });
+      if (mode === "timeout" && calls > 1)
+        throw new CodegenieError("llm_call_failed", "Pass deadline exhausted", { recoverable: true, context: { reason: "timeout" } });
+      if (calls === 1) {
+        return { findings: [], followUpHints: [{ question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
+          files: [packet.path], symbols: [], suggestedLenses: [], reason: "Changed division has no zero guard", confidence: "medium" }], uncertainties: [] } as T;
+      }
+      return { findings: [], followUpHints: [], uncertainties: [], reviewStatus: mode === "incomplete" ? "incomplete" : "no_findings",
+        noFindingReason: mode === "incomplete" ? "Caller evidence could not be established" : "Inspected caller rejects zero precision before division" } as T;
+    } };
+    // Cancellation of the baseline itself is tested by worker-runner; here the
+    // next scheduling wave sees the signal after a successful first pass.
+    const results = await runLensPackets(fakePlan(), [packet], fakeTools(),
+      { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } },
+      { ...nullTelemetry(), event: event => {
+        events.push(event);
+        if (mode === "cancelled" && event.message === "stage7_adaptive_summary") abort.abort(new Error("cancelled after baseline"));
+      } }, { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(),
+        signal: abort.signal, checkpoint: () => mode === "not_dispatched" && calls > 0 ? "exhausted" : "ok" });
+    const coverage = aggregateRunCoverage(fakePlan(), [], results, { incompleteCount: 0 }, nullTelemetry(), { packets: [packet] });
+    const counts = coverage.adaptiveReviews!.counts;
+    if (mode === "baseline_failed") {
+      expect(coverage.partial).toBe(true);
+      expect(counts.scheduled).toBe(0);
+      expect(coverage.failedHunks).toBe(1);
+      return;
+    }
+    expect(coverage.partial).toBe(false);
+    expect(coverage.reviewedHunks).toBe(1);
+    expect(counts.scheduled).toBe(1);
+    expect(counts.completed).toBe(mode === "recovered" ? 1 : 0);
+    expect(counts.completed + counts.incomplete + counts.failed + counts.timedOut + counts.cancelled + counts.notDispatched).toBe(1);
+    expect(counts).toMatchObject(mode === "recovered" ? { retries: 1 } : mode === "failed" ? { failed: 1, retries: 1 }
+      : mode === "timeout" ? { timedOut: 1, failed: 0, retries: 0 }
+      : mode === "incomplete" ? { incomplete: 1 } : mode === "not_dispatched" ? { notDispatched: 1 } : { cancelled: 1 });
+    const report = renderCoverageSummaryLines(coverage).join("\n");
+    expect(report).toContain(`Supplemental investigations:** ${counts.completed}/1 scheduled passes completed`);
+    expect(report).toContain("Baseline hunk coverage is reported separately");
+    expect(events).toContainEqual(expect.objectContaining({ message: "pipeline_metrics", data: expect.objectContaining({ adaptiveReviews: counts }) }));
+    expect(coverage.adaptiveReviews!.passes[0]).toMatchObject({ packetId: packet.id, trigger: "concrete_hint" });
+    if (mode === "incomplete") expect(coverage.adaptiveReviews!.passes[0]).toMatchObject({ outcome: "completed", reviewStatus: "incomplete" });
+    if (mode === "timeout") {
+      expect(coverage.adaptiveReviews!.passes[0]).toMatchObject({ outcome: "failed", failureReason: "timeout", errorCode: "llm_call_failed" });
+      expect(report).toContain("1 timed out");
+      expect(calls).toBe(2); // First pass plus one adaptive attempt; no timeout retry.
+    }
+  });
+
+  it("records adaptive cap omissions without counting them as dispatched failures", async () => {
+    const packets = Array.from({ length: 5 }, (_, index) => fakePacket({ id: `p${index}` }));
+    const results = await runLensPackets(fakePlan(), packets, fakeTools(),
+      { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } }, nullTelemetry(), {
+        promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), runner: { runStructured: async <T>() => ({ findings: [], uncertainties: [],
+          followUpHints: [{ question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?", files: ["app.ts"], symbols: [],
+            suggestedLenses: [], reason: "Changed division has no guard", confidence: "medium" }] }) as T }
+      });
+    const coverage = aggregateRunCoverage(fakePlan(), [], results, { incompleteCount: 0 }, nullTelemetry(), { packets });
+    expect(coverage.adaptiveReviews!.counts).toMatchObject({ triggered: 5, scheduled: 4, capped: 1, completed: 4, failed: 0 });
+    expect(coverage.adaptiveReviews!.passes.find(pass => pass.outcome === "capped")).toMatchObject({ attempts: 0 });
+    expect(renderCoverageSummaryLines(coverage).join("\n")).toContain("1 not scheduled (pass cap)");
+  });
+
   it("does not run adaptive passes when the flag is off (plan 92 default)", async () => {
     let calls = 0;
     const runner: LlmRunner = {
@@ -764,6 +959,133 @@ describe("phase 5 pipeline regressions", () => {
     expect(events).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ message: "candidate_anchor_summary_only" })
     ]));
+  });
+
+  it.each([true, false])("passes configured composition step-down to the runner (enabled=%s)", async enabled => {
+    const fixture = authorizationComposition();
+    const requests: LlmStructuredRequest<unknown>[] = [];
+    const reviewConfig = config();
+    reviewConfig.review.compositionReasoningStepDown = enabled;
+    await dedupeRankAndComposeReview({ verified: fixture.findings, verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), reviewConfig, nullTelemetry(), {
+        runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+          requests.push(request);
+          return { summary: "Revoked members can read documents.", composedFindings: [{
+            findingIds: fixture.findings.map(finding => finding.id), sections: fixture.sections,
+            evidenceRefs: fixture.evidenceRefs, ...fixture.presentation, publication: "summary-only"
+          }] } as T;
+        } }, promptBuilder: createPromptBuilder(fakeLensRegistry())
+      });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ stage: 10, compositionReasoningStepDown: enabled });
+  });
+
+  it.each(["timeout", "legacy", "invalid-attribution"] as const)("withholds unreconciled fallback advice in both report and structured output (%s)", async mode => {
+    const fixture = authorizationComposition();
+    const second = structuredClone(fixture.findings[0]!);
+    second.id = "alternative";
+    second.suggestedFix = "Revalidate session membership when loading the document.";
+    second.suggestedTest = "Check active access, then revoke the session and check that access is denied.";
+    second.suggestionAssessments!.suggestedFix!.suggestionText = second.suggestedFix;
+    second.suggestionAssessments!.suggestedTest!.suggestionText = second.suggestedTest;
+    const candidates = [...fixture.findings, second];
+    const before = structuredClone(candidates);
+    const result = await dedupeRankAndComposeReview({ verified: candidates, verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+        runner: { runStructured: async <T>() => {
+          if (mode === "timeout") throw new CodegenieError("llm_call_failed", "LLM provider call timed out", { recoverable: true, context: { reason: "timeout" } });
+          return { summary: "Revoked members can read documents.", composedFindings: [{
+            findingIds: candidates.map(f => f.id), publication: "summary-only",
+            ...(mode === "legacy" ? { finalBody: "Legacy prose without source accounting." }
+              : { sections: [{ kind: "impact", text: "The defect is confirmed.", sourceRefs: ["unknown/source"] }], evidenceRefs: [] })
+          }] } as T;
+        } }, promptBuilder: createPromptBuilder(fakeLensRegistry())
+      });
+    expect(result.summaryOnlyFindings).toHaveLength(1);
+    const final = result.summaryOnlyFindings[0]!;
+    const primary = final.finalBody.split("\n\n<details>")[0]!;
+    expect(primary).toContain("Remediation remains unreconciled");
+    expect(primary).toContain("Regression-test guidance remains unreconciled");
+    expect(final.suggestedFix).toBeUndefined();
+    expect(final.suggestedTest).toBeUndefined();
+    expect(final.suggestionAssessments).toBeUndefined();
+    for (const finding of candidates) for (const field of ["suggestedFix", "suggestedTest"] as const) {
+      expect(primary).not.toContain(finding[field]);
+      expect(final.finalBody).toContain(finding[field]);
+      expect(final.finalBody).toContain(finding.id + "/" + field);
+    }
+    expect(candidates).toEqual(before);
+  });
+
+  it.each([true, false])("publishes the same supported-only recommendation policy in structured output (supported=%s)", async supported => {
+    const fixture = authorizationComposition();
+    const finding = fixture.findings[0]!;
+    if (!supported) delete finding.suggestionAssessments;
+    const sections = fixture.sections.filter(section => supported || (section.kind !== "fix" && section.kind !== "test"));
+    const retainedSourceRefs = supported ? [] : [finding.id + "/suggestedFix", finding.id + "/suggestedTest"];
+    const result = await dedupeRankAndComposeReview({ verified: fixture.findings, verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+        runner: { runStructured: async <T>() => ({ summary: "Revoked members can read documents.", composedFindings: [{
+          findingIds: [finding.id], sections, evidenceRefs: fixture.evidenceRefs, retainedSourceRefs, publication: "summary-only"
+        }] }) as T }, promptBuilder: createPromptBuilder(fakeLensRegistry())
+      });
+    const final = result.summaryOnlyFindings[0]!;
+    expect(final).toBeDefined();
+    expect(final.finalBody).toContain(finding.suggestedFix);
+    expect(final.finalBody).toContain(finding.suggestedTest);
+    expect(final.suggestedFix).toBe(supported ? finding.suggestedFix : undefined);
+    expect(final.suggestedTest).toBe(supported ? finding.suggestedTest : undefined);
+    if (supported) expect(final.suggestionAssessments).toMatchObject({ suggestedFix: { status: "supported" }, suggestedTest: { status: "supported" } });
+    else expect(final.finalBody.split("<details>")[0]).not.toContain(finding.suggestedFix);
+    // Source data was not mutated to satisfy the output policy.
+    expect(finding.suggestedFix).toBeDefined();
+  });
+
+  it("composes across initial clusters, retains all sources and selects a valid member anchor", async () => {
+    const helper: CandidateFinding = { ...fakeFinding(), id: "helper", path: "helper.ts", title: "Transformation understates a required bound",
+      confidence: "high", failureMode: "A helper drops required capacity before returning its result.",
+      evidence: { changedCode: "capacity -= reserved" }, proofAssessment: { status: "established", evidence: "UNIQUE_HELPER_PROOF", assumptions: [] } };
+    delete helper.anchor;
+    const caller: CandidateFinding = { ...fakeFinding(), id: "caller", title: "Caller publishes an unsatisfiable guarantee",
+      confidence: "high", failureMode: "The caller promises the original capacity after the helper reduces it.",
+      proofAssessment: { status: "established", evidence: "UNIQUE_CALLER_PROOF", assumptions: [] } };
+    let initialGroups = 0;
+    const base = createPromptBuilder(fakeLensRegistry());
+    const promptBuilder = { ...base, buildComposerPrompt: (input: Parameters<typeof base.buildComposerPrompt>[0]) => {
+      const groups = JSON.parse(input.groupedFindingsJson) as Array<{ findings: Array<{ proofAssessment?: unknown }> }>;
+      initialGroups = groups.length;
+      expect(groups.every(group => group.findings.every(finding => finding.proofAssessment === undefined))).toBe(true);
+      expect(input.groupedFindingsJson.split("UNIQUE_HELPER_PROOF")).toHaveLength(2);
+      const built = base.buildComposerPrompt(input);
+      expect(built.prompt).toContain("summary must be diagnosis-only");
+      expect(built.prompt).toContain("Impact and verification prose must not contain recommendation advice");
+      expect(built.prompt).toContain("Do not invent advice, strengthen a supported proposal");
+      expect(built.prompt).toContain("a caveat cannot authorize disputed advice");
+      expect(built.prompt).toContain("Distinguish counterevidence from missing verification");
+      expect(built.prompt).toContain("do not call differently worded alternatives identical");
+      expect(built.prompt).toContain("identify the conflicting observation and its supporting source");
+      expect(built.prompt).toContain("fix/test refs are not reconciliation targets");
+      expect(built.prompt).toContain("never scaffold values");
+      return built;
+    } };
+    const members = [helper, caller];
+    const sources = compositionSources(members);
+    const result = await dedupeRankAndComposeReview({ verified: members, verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+        runner: { runStructured: async <T>() => ({ summary: "One guarantee is unsatisfiable.", composedFindings: [{
+          findingIds: members.map(finding => finding.id), publication: "inline",
+          sections: (["impact", "verification"] as const).map(kind => ({ kind,
+            text: kind === "impact" ? "The transformation leaves less capacity than the caller guarantees." : "Both helper and caller confirm the same violated requirement.",
+            sourceRefs: sources.filter(source => source.kind === kind).map(source => source.id) })),
+          evidenceRefs: sources.filter(source => source.kind === "evidence").map(source => source.id)
+        }] }) as T }, promptBuilder, packets: [fakePacket()], diff: fakeDiff()
+      });
+    expect(initialGroups).toBe(2);
+    expect(result.findings).toHaveLength(1);
+    expect(result.summaryOnlyFindings).toHaveLength(0);
+    expect(result.findings[0]?.anchor).toEqual(caller.anchor);
+    expect(JSON.stringify(result.findings[0])).toContain("helper/proofAssessment");
+    expect(JSON.stringify(result.findings[0])).toContain("caller/proofAssessment");
   });
 
   it("lifts merged confidence from a compatible same-group candidate without inflation (plan 74)", async () => {
@@ -4211,7 +4533,7 @@ describe("phase 5 pipeline regressions", () => {
     await expect(budgetFor("deep", "light")).resolves.toEqual({
       maxToolCalls: 7,
       maxInvestigationRounds: 2,
-      maxResultChars: 16_000,
+      maxResultChars: 24_000,
       sourceExtension: {
         maxToolCalls: 1,
         maxResultChars: 4_000
@@ -7665,7 +7987,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(verifierBudget).toEqual({
       maxToolCalls: 8,
       maxInvestigationRounds: 3,
-      maxResultChars: 16_000,
+      maxResultChars: 32_000,
       maxSingleToolResultChars: 6_000,
       reservedSourceResultChars: 4_000,
       sourceExtension: {
@@ -8621,7 +8943,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(repairPrompt).toContain("\\\\u003cparameter\\\\u003eCANDIDATE_XML");
     expect(repairPrompt).not.toContain("<parameter>CANDIDATE_XML</parameter>");
     expect(repairPrompt).not.toContain("OMITTED_TAIL");
-    expect(repairPrompt).toContain("repository-tool evidence, and failed submission are retained");
+    expect(repairPrompt).toContain("repository-tool evidence are retained");
     expect(repairPrompt).toContain("Preserve the verdict and substantive conclusions");
     expect(verified.verified).toEqual([]);
     expect(verified.incompleteCount).toBe(1);
@@ -9123,10 +9445,10 @@ describe("phase 5 pipeline regressions", () => {
     ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "auth" } });
   });
 
-  it("uses deterministic fallback for schema-invalid composition failures with verified findings", async () => {
+  it.each(["model did not call submit_composition", "unfinished_section: composedFindings.0.sections.0.text"])("uses deterministic fallback for exhausted composition: %s", async diagnostic => {
     const runner: LlmRunner = {
       runStructured: async () => {
-        throw new CodegenieError("llm_schema_invalid", "model did not call submit_composition", {
+        throw new CodegenieError("llm_schema_invalid", diagnostic, {
           recoverable: true
         });
       }
@@ -9155,6 +9477,8 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.finalBody).toContain(fakeFinding().failureMode);
+    expect(result.findings[0]?.finalBody).not.toContain("**Impact:** placeholder");
     expect(result.coverage.reasons).toContain("semantic composition schema repair failed; deterministic fallback used");
   });
 
@@ -10404,6 +10728,58 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.findings[0]?.title).toBe("The changed branch skips cleanup before returning to callers");
   });
 
+  it.each([true, false])("fallback never derives a title from its own banner (structured title available=%s)", async concrete => {
+    const finding: CandidateFinding = {
+      ...fakeFinding(),
+      title: "Verify cleanup behavior after this change",
+      failureMode: "Does the changed branch skip cleanup?",
+      whyThisMatters: concrete ? "Stale state can be reused by the next request." : "Can stale state be reused?"
+    };
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() =>
+            ({
+              summary: "composer summary",
+              composedFindings: [{
+                findingIds: [finding.id],
+                finalBody: "The changed branch skips cleanup before returning to callers.",
+                publication: "inline"
+              }]
+            }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.findings).toHaveLength(1);
+    expect(result.findings[0]?.title).toBe(concrete ? "Stale state can be reused by the next request" : finding.title);
+    expect(result.findings[0]?.finalBody).toContain("Source-based presentation");
+  });
+
   it("drops overlapping composed groups before publishing duplicate final findings", async () => {
     const artifacts = new Map<string, unknown>();
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
@@ -11284,8 +11660,14 @@ describe("phase 5 pipeline regressions", () => {
     expect(markdown).not.toContain("Failure mode:");
     expect(markdown).not.toContain("Why it matters:");
     expect(markdown.split("<details>")[0]!.match(/A canceled request can keep retrying after the worker is stopped\./gu)).toHaveLength(1);
-    expect(markdown).toContain("**Suggested fix (unverified):** Caller-contract compatibility has not been established. Thread the original context into the retry loop.");
-    expect(markdown).toContain("**Suggested test (unverified):** Caller-contract compatibility has not been established. Cancel the context before the second retry and assert the worker exits.");
+    expect(markdown).toContain("Remediation remains unverified");
+    expect(markdown).toContain("Regression-test guidance remains unverified");
+    expect(markdown.split("<details>")[0]).not.toContain(finding.suggestedFix);
+    expect(markdown.split("<details>")[0]).not.toContain(finding.suggestedTest);
+    expect(markdown).toContain(finding.suggestedFix);
+    expect(markdown).toContain(finding.suggestedTest);
+    expect(result.findings[0]).not.toHaveProperty("suggestedFix");
+    expect(result.findings[0]).not.toHaveProperty("suggestedTest");
   });
 
   it("cleans duplicate composer titles and metadata before rendering", async () => {
@@ -13147,7 +13529,7 @@ describe("phase 5 pipeline regressions", () => {
       })
     ]);
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       notes: [
         expect.objectContaining({
           source: "uncertainty",
@@ -13428,7 +13810,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(composerNotes).toEqual([]);
     expect(result.needsHumanAttention).toEqual([]);
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       suppressedByVerification: [
         expect.objectContaining({
           candidateId: "finding-helper-guard",

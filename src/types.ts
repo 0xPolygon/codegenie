@@ -35,6 +35,7 @@ export type CodegenieConfig = {
   review: {
     depth: ReviewDepth;
     verify: boolean;
+    compositionReasoningStepDown: boolean;
     minSeverity?: Severity;
     maxFindings: number;
     softCommentCap: number;
@@ -791,6 +792,7 @@ export type AnchorSource =
   | "verifier_revised";
 
 export type SuggestionAssessment = {
+  contractCheck?: { status: "established" | "unresolved"; requirement: string };
   status: "supported" | "incompatible" | "unverified";
   suggestionText: string;
   rationale: string;
@@ -834,6 +836,8 @@ export type CandidateFinding = {
   suggestedFix?: string;
   suggestedTest?: string;
   suggestionAssessments?: SuggestionAssessments;
+  // Host-owned, provenance-only original proposals replaced during verification.
+  originalSuggestions?: SuggestionAssessments;
   proofAssessment?: VerificationVerdict["proofAssessment"];
   verification: string;
   behaviorChange?: BehaviorChangeAssessment;
@@ -871,6 +875,36 @@ export type PacketReviewResult = {
   // Total Stage-7 passes that produced this result (planned ensemble +
   // adaptive second pass); absent on stage-8 system results.
   passesRun?: number;
+  /** Supplemental investigation only; never substitutes for baseline coverage. */
+  adaptiveReview?: AdaptiveReviewOutcome;
+};
+
+export type AdaptiveReviewOutcome = {
+  trigger?: "concrete_hint" | "silent_with_signal" | "low_confidence_only";
+  outcome: "not_triggered" | "capped" | "completed" | "failed" | "cancelled" | "timed_out" | "not_dispatched";
+  attempts: number;
+  reviewStatus?: PacketReviewResult["status"];
+  errorCode?: string;
+  /** An explicit cooperative deadline error can have worker outcome=failed. */
+  failureReason?: "timeout";
+};
+
+export type AdaptiveReviewCounts = {
+  triggered: number;
+  scheduled: number;
+  completed: number;
+  incomplete: number;
+  failed: number;
+  timedOut: number;
+  cancelled: number;
+  notDispatched: number;
+  capped: number;
+  retries: number;
+};
+
+export type AdaptiveReviewSummary = {
+  passes: Array<AdaptiveReviewOutcome & { packetId: string }>;
+  counts: AdaptiveReviewCounts;
 };
 
 export type SystemReviewTask = {
@@ -904,6 +938,8 @@ export type SystemReviewResult = {
 export type VerificationVerdict = {
   candidateId: string;
   suggestionAssessments?: SuggestionAssessments;
+  // Host-owned, provenance-only original proposals replaced during verification.
+  originalSuggestions?: SuggestionAssessments;
   proofAssessment?: { status: "established" | "refuted" | "unresolved"; evidence: string; assumptions: Array<{ question: string; essential: boolean }> };
   unresolvedConcern?: NeedsHumanAttentionNote;
   // "incomplete" is runner-assigned only (timeout/budget/schema loss before a
@@ -938,6 +974,8 @@ export type FinalFinding = CandidateFinding & {
 };
 
 export type RunCoverageStatus = {
+  /** Absent in legacy artifacts or when supplemental outcomes were not recorded. */
+  adaptiveReviews?: AdaptiveReviewSummary;
   totalHunks: number;
   reviewedHunks: number;
   skippedHunks: number;
@@ -1030,6 +1068,7 @@ export type EvalFindingExpectation = {
 };
 
 export type EvalCase = {
+  recommendationJudge?: import("./evals/recommendation-judge.js").RecommendationJudgeConfig;
   name: string;
   // Number of independent executions of this case (plan 79). Default 1.
   // repeat > 1 requires caching off and is incompatible with artifact-backed
@@ -1057,6 +1096,7 @@ export type EvalCase = {
     deepEnsemblePasses?: number;
     adaptiveSecondPass?: boolean;
     verify?: boolean;
+    compositionReasoningStepDown?: boolean;
     cache?: boolean;
     cacheDir?: string;
     debug?: boolean;
@@ -1228,6 +1268,7 @@ export type AttentionEfficiency = {
 };
 
 export type EvalRunMetrics = {
+  adaptiveReviews?: AdaptiveReviewCounts;
   reportedFindings: number;
   inlineFindings: number;
   summaryOnlyFindings: number;
@@ -1276,6 +1317,7 @@ export type EvalRunMetrics = {
 };
 
 export type EvalScore = {
+  recommendationQuality?: import("./evals/recommendation-judge.js").RecommendationJudgment;
   status: "pass" | "fail" | "error";
   expectationResults: EvalExpectationResult[];
   budgetResults: EvalBudgetResult[];
@@ -1316,6 +1358,7 @@ export type EvalRunInfo = {
   effectiveConfig?: {
     review: {
       concurrency: number;
+      compositionReasoningStepDown?: boolean;
       timeoutMs: number;
       maxBudgetTokens?: number;
     };

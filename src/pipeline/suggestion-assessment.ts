@@ -12,10 +12,14 @@ export function suggestionAssessment(
   const text = finding[field];
   if (!text) return undefined;
   const supplied = finding.suggestionAssessments?.[field];
-  if (!supplied) return { status: "unverified", suggestionText: text, rationale: "Caller-contract compatibility was not assessed.", evidence: [] };
+  if (!supplied) return { status: "unverified", suggestionText: text, rationale: "Behavioral requirement compatibility was not assessed.", evidence: [] };
   if (supplied.suggestionText !== text) return { status: "unverified", suggestionText: text, rationale: "The suggestion changed after its assessment; compatibility must be checked again.", evidence: [] };
-  if (supplied.status === "supported" && !supplied.evidence.length) {
-    return { ...supplied, status: "unverified", rationale: "The assessment supplied no source evidence. " + supplied.rationale };
+  if (supplied.status === "supported") {
+    const reason = supplied.contractCheck?.status !== "established" ? "The behavioral requirement was not established."
+      : !supplied.contractCheck.requirement.trim() ? "The assessment supplied no behavioral requirement."
+      : !supplied.evidence.some(item => item.path.trim() && item.lines.trim() && item.whyRelevant.trim())
+        ? "The assessment supplied no complete source evidence." : undefined;
+    if (reason) return { ...supplied, status: "unverified", rationale: reason + " " + supplied.rationale };
   }
   return supplied;
 }
@@ -30,4 +34,19 @@ export function assessFinalSuggestions(
     if (assessment) result[field] = assessment;
   }
   return result;
+}
+
+// Exact proposal identity only. An incompatible source remains incompatible;
+// another source cannot make the same proposal unconditionally supported.
+export function conflictingSuggestions(findings: CandidateFinding[]): Set<string> {
+  const statuses = new Map<string, Set<string>>();
+  for (const finding of findings) for (const field of ["suggestedFix", "suggestedTest"] as const) {
+    const assessment = suggestionAssessment(finding, field);
+    if (!assessment) continue;
+    const key = field + "\0" + assessment.suggestionText;
+    const values = statuses.get(key) ?? new Set<string>();
+    values.add(assessment.status);
+    statuses.set(key, values);
+  }
+  return new Set([...statuses].filter(([, values]) => values.has("supported") && values.has("incompatible")).map(([key]) => key));
 }

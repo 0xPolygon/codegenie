@@ -237,13 +237,17 @@ export const ProofAssessmentSchema = Type.Object({
 }, { additionalProperties: false });
 
 export const SuggestionAssessmentSchema = Type.Object({
+  contractCheck: Type.Optional(Type.Object({
+    status: StringEnum(["established", "unresolved"] as const),
+    requirement: Type.String({ maxLength: 2000, description: "Observable behavioral requirement the suggestion must preserve; existing evidence explains its source and relevance." })
+  }, { additionalProperties: false })),
   status: StringEnum(["supported", "incompatible", "unverified"] as const),
   suggestionText: Type.String({ minLength: 1, maxLength: 4000, description: "Exact final suggestedFix or suggestedTest text assessed, after any findingUpdates. Changed text invalidates this assessment." }),
-  rationale: Type.String({ minLength: 1, maxLength: 2000 }),
+  rationale: Type.String({ minLength: 1, maxLength: 2000, description: "Why this exact proposal preserves or violates the established requirement. For tests, explain reachability and before/after expectations without excluding other requirement-preserving implementations." }),
   evidence: Type.Array(Type.Object({
-    path: Type.String({ minLength: 1, maxLength: 500 }),
-    lines: Type.String({ minLength: 1, maxLength: 2000 }),
-    whyRelevant: Type.String({ minLength: 1, maxLength: 2000 })
+    path: Type.String({ maxLength: 500 }),
+    lines: Type.String({ maxLength: 2000 }),
+    whyRelevant: Type.String({ maxLength: 2000 })
   }, { additionalProperties: false }), { maxItems: 8 })
 }, { additionalProperties: false });
 
@@ -255,7 +259,7 @@ export const SubmitVerificationVerdictSchema = Type.Object(
     suggestionAssessments: Type.Optional(Type.Object({
       suggestedFix: Type.Optional(SuggestionAssessmentSchema),
       suggestedTest: Type.Optional(SuggestionAssessmentSchema)
-    }, { additionalProperties: false })),
+    }, { additionalProperties: false, description: "Assess final fix/test suggestions independently when inspected evidence permits. Optional: omission means unverified advice, not a failed defect. Support requires an established contractCheck and relevant evidence." })),
     findingUpdates: Type.Optional(FindingUpdatesSchema),
     finalFinding: Type.Optional(SubmittedFindingSchema),
     revisedAnchor: Type.Optional(DiffAnchorSchema)
@@ -269,6 +273,13 @@ export const SubmitVerificationVerdictSchema = Type.Object(
 export const SubmitCompositionSchema = Type.Object(
   {
     summary: Type.String({ maxLength: 4000 }),
+    attentionResolutions: Type.Optional(Type.Array(Type.Object({
+      concernId: Type.String({ minLength: 1, maxLength: 300 }),
+      disposition: StringEnum(["resolved", "narrowed"] as const),
+      supportingRefs: Type.Array(Type.String({ minLength: 1, maxLength: 300 }), { minItems: 1, maxItems: 20 }),
+      rationale: Type.String({ minLength: 1, maxLength: 2000 }),
+      remainingQuestion: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 }))
+    }, { additionalProperties: false }), { maxItems: 30, description: "Optional resolutions of supplied verifier concerns only. Omission leaves concerns unchanged. Attention-only references cannot account for finding sources." })),
     composedFindings: Type.Array(
       Type.Object(
         {
@@ -308,8 +319,8 @@ export const SCHEMA_VERSIONS = {
   submit_plan: 6,
   submit_review: 5,
   submit_system_review: 2,
-  submit_verdict: 9,
-  submit_composition: 5
+  submit_verdict: 10,
+  submit_composition: 7
 } as const;
 
 export function submitToolNameForStage(stage: ReviewStage): keyof typeof SCHEMA_VERSIONS {

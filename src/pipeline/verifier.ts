@@ -1,6 +1,8 @@
-import { assessFinalSuggestions } from "./suggestion-assessment.js";
+import { assessFinalSuggestions, suggestionAssessment } from "./suggestion-assessment.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
-import { expandVerifierRevision } from "../llm/verifier-revision.js";
+import { canonicalizeVerifierRejection, expandVerifierRevision, promotedCompletionIssues } from "../llm/verifier-revision.js";
+import { createFieldRepair } from "../llm/field-repair.js";
+import { cleanupSubmitShape } from "../llm/submit-preservation.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import { recoverStringWrappedVerifierFinding, VERIFIER_SUBMIT_SHAPE_GUIDANCE } from "../llm/verifier-submit-repair.js";
 import type { LlmRunner, LlmSchemaRepairInput, LlmSubmitFailureClassification } from "../llm/llm-runner.js";
@@ -39,7 +41,7 @@ import { scaleBudgetValue, scaleToolBudget } from "../util/budget.js";
 const VERIFIER_TOOL_BUDGET = {
   maxToolCalls: 8,
   maxInvestigationRounds: 3,
-  maxResultChars: 16_000,
+  maxResultChars: 32_000,
   maxSingleToolResultChars: 6_000,
   reservedSourceResultChars: 4_000,
   sourceExtension: {
@@ -481,8 +483,17 @@ function applyVerificationVerdict(candidate: CandidateFinding, verdict: Verifica
   const revised = verdict.finalFinding !== undefined
     ? applyFindingRevision(candidate, verdict.finalFinding)
     : candidate;
+  const originalSuggestions = { ...candidate.originalSuggestions };
+  for (const field of ["suggestedFix", "suggestedTest"] as const) {
+    if (candidate[field] && candidate[field] !== revised[field] && !originalSuggestions[field]) {
+      const supplied = candidate.suggestionAssessments?.[field];
+      originalSuggestions[field] = supplied?.suggestionText === candidate[field]
+        ? supplied : suggestionAssessment(candidate, field)!;
+    }
+  }
   const assessed = {
     ...revised,
+    ...(Object.keys(originalSuggestions).length ? { originalSuggestions } : {}),
     ...((revised.suggestedFix || revised.suggestedTest) ? { suggestionAssessments: assessFinalSuggestions(revised, verdict.suggestionAssessments) } : {}),
     ...(verdict.proofAssessment ? { proofAssessment: verdict.proofAssessment } : {})
   };
@@ -620,7 +631,15 @@ async function verifyCandidate(
     ...(normalized.intentEvidence !== undefined ? { intentEvidence: normalized.intentEvidence } : {})
   };
   telemetry.event({ stage: 9, level: "info", message: "verification_suggestion_assessments",
-    data: { candidateId: candidate.id, assessments: verdict.suggestionAssessments } });
+    data: { candidateId: candidate.id, suppliedAssessments: normalized.suggestionAssessments ?? {}, assessments: verdict.suggestionAssessments } });
+  for (const field of ["suggestedFix", "suggestedTest"] as const) {
+    const supplied = normalized.suggestionAssessments?.[field];
+    const effective = verdict.suggestionAssessments?.[field];
+    if (supplied?.status === "supported" && effective?.status === "unverified") {
+      telemetry.event({ stage: 9, level: "info", message: "verification_suggestion_support_downgraded",
+        data: { candidateId: candidate.id, field, reason: effective.rationale, submitted: supplied, effective } });
+    }
+  }
   if (verdict.verdict === "revise" && revised !== undefined && submittedFinalFinding !== undefined) {
     // Derive the audit from the same fully policy-applied candidate that enters
     // the verified set, including any verdict-level behavior assessment.
@@ -686,6 +705,13 @@ function normalizeSubmittedVerdict(
   telemetry: TelemetryRecorder
 ): SubmitVerificationVerdict {
   try {
+    const canonicalization = canonicalizeVerifierRejection(submitted);
+    if (canonicalization) {
+      telemetry.event({ stage: 9, level: "info", message: "submit_semantic_canonicalization_accepted",
+        data: { candidateId: candidate.id, removedFields: canonicalization.removedFields,
+          reason: canonicalization.reason, originalArguments: submitted } });
+      submitted = canonicalization.value as SubmitVerificationVerdict;
+    }
     const updates = submitted.findingUpdates;
     submitted = expandVerifierRevision(candidate, submitted);
     if (updates !== undefined) {
@@ -789,6 +815,7 @@ async function runVerifierStructured(
       toolBudget: scaleToolBudget(VERIFIER_TOOL_BUDGET, config.review.budgetBoost),
       timeoutMs: config.review.perPassTimeoutMs,
       telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId },
+      normalizeSubmit: canonicalizeVerifierRejection,
       validateSubmit: (value) => {
         try {
           const proof = value.proofAssessment;
@@ -807,8 +834,10 @@ async function runVerifierStructured(
       },
       schemaRepair: {
         replacementGroups: [["finalFinding", "findingUpdates"]],
-        // Preserve the verifier's own investigation and failed verdict. Repair
-        // must not rejudge a weaker projection of the original candidate.
+        createFieldRepair: (schema, retained) => createFieldRepair(schema, retained, true,
+          [["finalFinding", "findingUpdates"]], promotedCompletionIssues(candidate, cleanupSubmitShape(schema, retained).arguments)),
+        // Retain the investigation and any readable verdict. Unreadable
+        // arguments are diagnosed separately and never treated as evidence.
         replaceConversation: false,
         failAfterRepair: false,
         recoverInvalidSubmit: (input) => {
@@ -994,8 +1023,11 @@ function buildVerifierSchemaRepairPrompt(
   attempt: VerifierRepairAttempt
 ): string {
   const candidateSummary = fenceUntrusted(stableJson(verifierRepairCandidateProjection(candidate)), "verifier-repair-candidate-summary");
+  const unreadable = !input.submitCalls.length || Boolean(input.untrustedSubmitCalls?.length);
   return [
-    "Repair only the structured shape of the Stage 9 verifier response for codegenie.",
+    unreadable
+      ? "Generate a new complete Stage 9 verifier submission from the retained investigation evidence. The previous verdict was unreadable or absent."
+      : "Repair only the structured shape of the Stage 9 verifier response for codegenie.",
     "",
     candidateSummary,
     "",
@@ -1013,9 +1045,14 @@ function buildVerifierSchemaRepairPrompt(
     "- Do not call repository tools or ask for more context.",
     "",
     "Repair constraints:",
-    "- The earlier verifier conversation, repository-tool evidence, and failed submission are retained. The candidate summary above is a reference, not a replacement for that evidence.",
-    "- Preserve the verdict and substantive conclusions of the failed submission. Do not reopen the investigation or downgrade a confirmed result because evidence is absent from the candidate summary.",
-    "- Correct serialization and schema shape only. Never invent missing evidence, severity, confidence, locations, or conclusions. Recover unfinished fields only when their content is explicitly present in the retained conversation.",
+    "- The earlier verifier conversation and repository-tool evidence are retained. The candidate summary above is a reference, not a replacement for that evidence.",
+    ...(unreadable ? [
+      "- The unreadable submission is not available as a trusted verdict. Do not claim to preserve its decisions or reconstruct them from fragments. Produce a complete verdict justified by the retained evidence; this is a new submission whose fidelity to the unreadable draft cannot be established.",
+      "- Do not invent evidence, locations, or conclusions to obtain a valid result. Make required decisions only when supported by the retained investigation."
+    ] : [
+      "- Preserve the verdict and substantive conclusions of the retained readable submission. Do not reopen the investigation or downgrade a confirmed result because evidence is absent from the candidate summary.",
+      "- Correct serialization and schema shape only. Never invent missing evidence, severity, confidence, locations, or conclusions. Recover unfinished fields only when their content is explicitly present in the retained conversation."
+    ]),
     "- Prefer a small findingUpdates object with only changed fields; use revisedAnchor for placement. Never encode an object as a JSON string. Do not repeat unchanged evidence. Do not combine findingUpdates and finalFinding.",
     `- Keep reason concise and at most ${VERIFIER_REASON_TARGET_CHARS.toLocaleString("en-US")} characters.`,
     "- If missing substantive content cannot be recovered from the retained evidence, do not manufacture a valid verdict; report that repair is impossible. The harness will mark verification incomplete.",

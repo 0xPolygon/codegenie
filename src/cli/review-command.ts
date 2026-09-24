@@ -49,6 +49,7 @@ type CommanderReviewOptions = {
   provider?: string;
   model?: string;
   reasoning?: string;
+  compositionReasoningStepDown?: boolean;
   format?: string;
   postGithubComments?: boolean;
   cache?: boolean;
@@ -91,6 +92,8 @@ export function parseReviewCommand(
     .option("--provider <provider>", "provider override")
     .option("--model <model>", "model override, optionally with a :reasoning suffix (e.g. claude-opus-5:max)")
     .option("--reasoning <level>", "reasoning level: minimal, low, medium, high, xhigh, max, or auto")
+    .option("--composition-reasoning-step-down", "use the next lower supported reasoning level for composition only")
+    .option("--no-composition-reasoning-step-down", "use the configured reasoning level for composition")
     .option("--format <format>", "output format: markdown or json", "markdown")
     .option("--post-github-comments", "post inline comments to GitHub for --pr runs")
     .option("--ci", "disable interactive progress output for CI-friendly logs")
@@ -309,6 +312,9 @@ function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides 
   }
   if (options.reasoning !== undefined) {
     cli.reasoning = parseReasoningLevel(options.reasoning, "--reasoning");
+  }
+  if (options.compositionReasoningStepDown !== undefined) {
+    cli.compositionReasoningStepDown = options.compositionReasoningStepDown;
   }
   if (options.cache !== undefined) {
     cli.cacheEnabled = options.cache;

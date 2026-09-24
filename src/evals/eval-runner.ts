@@ -40,6 +40,7 @@ import {
 } from "./eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "./eval-compare.js";
 import { aggregateRepeatScores, scoreEvalRun } from "./eval-scoring.js";
+import { addRecommendationJudgment, recommendationJudgeSchema } from "./recommendation-judge.js";
 
 export type EvalSuite = {
   dir: string;
@@ -47,6 +48,7 @@ export type EvalSuite = {
 };
 
 export type EvalRunOptions = {
+  judgeReplay?: boolean;
   cacheOverride?: boolean;
   config: CodegenieConfig;
 };
@@ -138,6 +140,7 @@ const caseSchema = z
         maxBudgetTokens: positiveIntSchema.optional(),
         deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
         adaptiveSecondPass: z.boolean().optional(),
+        compositionReasoningStepDown: z.boolean().optional(),
         verify: z.boolean().optional(),
         cache: z.boolean().optional(),
         cacheDir: z.string().min(1).optional(),
@@ -190,6 +193,7 @@ const caseSchema = z
       })
       .strict()
       .optional(),
+    recommendationJudge: recommendationJudgeSchema.optional(),
     should_find: z.array(expectationSchema).optional(),
     should_find_candidate: z.array(expectationSchema).optional(),
     should_not_find: z.array(expectationSchema).optional()
@@ -328,6 +332,7 @@ export async function replayFromArtifacts(
     const artifacts = await loadEvalArtifacts(telemetryDir);
     assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(reread.evalCase, artifacts, "replay");
+    await addRecommendationJudgment(reread.evalCase, score, allocated.dir, options.judgeReplay === true);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -414,6 +419,7 @@ async function runArtifactCase(
     const artifacts = await loadEvalArtifacts(telemetryDir);
     assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(entry.evalCase, artifacts, "replay");
+    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, options.judgeReplay === true);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -496,6 +502,7 @@ async function runLiveCase(
     const telemetryDir = path.join(allocated.dir, "telemetry");
     const artifacts = await loadEvalArtifacts(telemetryDir);
     const score = scoreEvalRun(entry.evalCase, artifacts, "live");
+    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, true);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -580,6 +587,7 @@ async function runRepeatedLiveCase(
         }
         const artifacts = await loadEvalArtifacts(path.join(execDir, "telemetry"));
         const score = scoreEvalRun(entry.evalCase, artifacts, "live");
+        await addRecommendationJudgment(entry.evalCase, score, execDir, true);
         await writeFile(path.join(execDir, "score.json"), `${JSON.stringify(score, null, 2)}\n`);
         executions.push({ runDir: execDirName, score, artifacts });
       } catch (error) {
@@ -856,6 +864,9 @@ function applyCaseReviewConfig(
   if (review?.adaptiveSecondPass !== undefined) {
     config.review.adaptiveSecondPass = review.adaptiveSecondPass;
   }
+  if (review?.compositionReasoningStepDown !== undefined) {
+    config.review.compositionReasoningStepDown = review.compositionReasoningStepDown;
+  }
   if (review?.verify !== undefined) {
     config.review.verify = review.verify;
   }
@@ -896,6 +907,7 @@ function evalEffectiveConfig(config: CodegenieConfig): NonNullable<EvalRunInfo["
   return {
     review: {
       concurrency: config.review.concurrency,
+      compositionReasoningStepDown: config.review.compositionReasoningStepDown,
       timeoutMs: config.review.maxTimeMs,
       ...(config.review.maxBudgetTokens !== undefined ? { maxBudgetTokens: config.review.maxBudgetTokens } : {})
     },

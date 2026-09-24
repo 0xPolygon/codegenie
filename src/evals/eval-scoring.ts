@@ -845,6 +845,7 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   }
   metrics.planningQuality = artifacts.coverage?.degradedPlanning === undefined ? "unknown"
     : artifacts.coverage.degradedPlanning ? "degraded" : "non-degraded";
+  if (artifacts.coverage?.adaptiveReviews) metrics.adaptiveReviews = { ...artifacts.coverage.adaptiveReviews.counts };
   const recoveryEvents = artifacts.metricsSources.recoveryEvents ?? [];
   const openObligations = new Set<string>();
   let fidelityStarted = false;
@@ -858,7 +859,8 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
     if (raw === null || typeof raw !== "object") continue;
     const event = raw as { message?: string; stage?: number; data?: { obligationId?: string; version?: number; compositionMode?: string } };
     if (event.message === "recovery_fidelity_started" && event.data?.version === 1) fidelityStarted = true;
-    if (event.message === "recovery_unusable_submission" || event.message === "recovery_content_revised") unprovenFidelity = true;
+    if (event.message === "recovery_unusable_submission" || event.message === "recovery_content_revised"
+      || event.message === "final_arguments_rejected") unprovenFidelity = true;
     if (event.message === "stage_completed" && event.stage === 10) {
       runFinished = true;
       const mode = event.data?.compositionMode;

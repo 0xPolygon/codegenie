@@ -43,6 +43,7 @@ export const rawConfigSchema = z
       .object({
         depth: reviewDepthSchema.optional(),
         verify: z.boolean().optional(),
+        compositionReasoningStepDown: z.boolean().optional(),
         minSeverity: severitySchema.optional(),
         maxFindings: positiveIntSchema.optional(),
         softCommentCap: positiveIntSchema.optional(),
@@ -130,6 +131,7 @@ export const codegenieConfigSchema = z
       .object({
         depth: reviewDepthSchema,
         verify: z.boolean(),
+        compositionReasoningStepDown: z.boolean(),
         minSeverity: severitySchema.optional(),
         maxFindings: positiveIntSchema,
         softCommentCap: positiveIntSchema,
@@ -202,6 +204,7 @@ export const defaultConfig: CodegenieConfig = {
   review: {
     depth: "normal",
     verify: true,
+    compositionReasoningStepDown: false,
     maxFindings: 25,
     softCommentCap: 7,
     minConfidence: "medium",

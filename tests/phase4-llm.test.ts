@@ -1,3 +1,7 @@
+import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
+import { composerSubmissionSchema } from "../src/pipeline/composer.js";
+import { validateCompositionSubmission } from "../src/pipeline/composition-content.js";
+import { createCompositionAttributionRepair, normalizeCompositionReferences } from "../src/pipeline/composition-repair.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,6 +12,7 @@ import { validateToolCall } from "./helpers/pi-validation.js";
 import { __piRunnerTestHooks, createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import type {
   LlmCallUsage,
+  LlmStructuredRequest,
   LlmRunner,
   PiAiAdapter,
   PiAssistantMessage,
@@ -38,7 +43,8 @@ import { buildRepositoryToolDefinitions } from "../src/llm/tool-definitions.js";
 import type { Logger, LogEvent, RepositoryTools, TelemetryEvent, ToolCallRecord } from "../src/types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
 import { stage7RecoverInvalidSubmit } from "../src/llm/stage7-submit-repair.js";
-import { expandVerifierRevision } from "../src/llm/verifier-revision.js";
+import { canonicalizeVerifierRejection, expandVerifierRevision, promotedCompletionIssues } from "../src/llm/verifier-revision.js";
+import { createFieldRepair } from "../src/llm/field-repair.js";
 import type { CandidateFinding } from "../src/types.js";
 import { recoverStringWrappedVerifierFinding, VERIFIER_SUBMIT_EXAMPLE } from "../src/llm/verifier-submit-repair.js";
 import type { LlmSchemaInvalidSubmitRecoveryInput } from "../src/llm/llm-runner.js";
@@ -80,7 +86,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
     expect(SCHEMA_VERSIONS.submit_plan).toBe(6);
-    expect(SCHEMA_VERSIONS.submit_verdict).toBe(9);
+    expect(SCHEMA_VERSIONS.submit_verdict).toBe(10);
 
     const valid = {
       diffUnderstanding: { declaredIntent: "Small change", inferredBehavior: "The diff makes a small change." },
@@ -607,6 +613,41 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(usage).toHaveLength(2);
   });
 
+  it("writes rejected arguments to a separate redacted diagnostic artifact, never the repair conversation", async () => {
+    registerSecret("diagnostic-secret-value");
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([invalidSubmitCall("bad", "submit_review", { state: "invalid", errorKind: "invalid_syntax" })]),
+      assistant([validSubmitReviewCall("repaired")])
+    ]);
+    const complete = adapter.complete;
+    adapter.complete = async (model, context, options) => {
+      if (!adapter.contexts.length) {
+        (options.onRejectedArguments as (value: unknown) => void)({ contentIndex: 0, toolCallId: "bad", name: "submit_review",
+          parse: { state: "invalid", errorKind: "invalid_syntax" }, capturedChars: 70, sha256: "hash",
+          prefix: '{"reason":"diagnostic-secret-value","invalid":}', suffix: "", omittedChars: 0, sampleChars: 70 });
+      }
+      return complete(model, context, options);
+    };
+    try {
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      await runner.runStructured({ ...submitReviewRequest("diagnostic"), schemaRepair: {
+        buildPrompt: () => "Submit a new complete review from retained evidence."
+      } });
+      const diagnostic = telemetry.debugWrites.find(write => write.id.endsWith(".invalid-arguments-0"))!;
+      expect(diagnostic.record).toMatchObject({ artifactKind: "rejected_tool_arguments", diagnosticOnly: true, toolCallId: "bad",
+        redaction: { applied: true } });
+      expect(JSON.stringify(diagnostic.record)).toContain("[redacted:secret]");
+      expect(JSON.stringify(diagnostic.record)).not.toContain("diagnostic-secret-value");
+      expect(adapter.contexts[1]).not.toContain('invalid\":');
+      expect(adapter.contexts[1]).not.toContain("diagnostic-secret-value");
+      expect(adapter.contexts[1]).not.toContain("invalidToolCall");
+      expect(telemetry.events.some(event => event.message === "final_arguments_rejected")).toBe(true);
+    } finally { clearRegisteredSecretsForTests(); }
+  });
+
   it("writes redacted reconstructable model request and response debug artifacts", async () => {
     clearRegisteredSecretsForTests();
     registerSecret("debug-secret-token");
@@ -663,7 +704,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       packetId: "packet-debug",
       provider: { provider: "fake", model: "fake-model", reasoning: "high" },
       request: {
-        runnerMessageVersion: "pi-runner-loop-v17",
+        runnerMessageVersion: "pi-runner-loop-v18",
         promptTemplateVersion: "debug-template",
         schemaName: "submit_review",
         schemaVersion: 5,
@@ -1785,13 +1826,96 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.events.some(event => event.message === "recovery_obligation_opened" || event.message === "recovery_obligation_resolved")).toBe(false);
   });
 
+  it("completes an explicit rejection carrying irrelevant revisions without repair", async () => {
+    const candidate = { ...VERIFIER_SUBMIT_EXAMPLE.finalFinding, id: "candidate", changedLine: true,
+      producedBy: { kind: "packet", stage: 7, packetId: "p", lensId: "core/code-review", skillIds: [] } } as CandidateFinding;
+    const original = { verdict: "reject", reason: "An existing guard disproves the claim.", requiredEvidencePresent: false,
+      falsePositiveRisk: "high", findingUpdates: { confidence: "low" }, finalFinding: { title: "irrelevant partial revision" },
+      revisedAnchor: { path: "irrelevant.ts" }, proofAssessment: { status: "refuted", evidence: "guard.ts:42 rejects unauthorized requests", assumptions: [] } };
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "reject", name: "submit_verdict", arguments: original }])]);
+    const telemetry = fakeTelemetry();
+    let cached: StoredProviderResponse | undefined;
+    const cache = { get: vi.fn(async () => cached ? { status: "hit" as const, response: cached } : { status: "miss" as const, reason: "not_found" as const }),
+      put: vi.fn(async (_key: string, entry: StoredProviderResponse) => { cached = entry; return { status: "write" as const }; }) };
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const request: LlmStructuredRequest<SubmitVerificationVerdict> = { stage: 9, schema: SubmitVerificationVerdictSchema,
+      normalizeSubmit: canonicalizeVerifierRejection,
+      prompt: "verify rejection", templateVersion: "test", timeoutMs: 1000,
+      validateSubmit(value) { try { expandVerifierRevision(candidate, value); return { ok: true }; }
+        catch (error) { return { ok: false, classification: "invalid_tool_arguments", details: String(error) }; } }
+    };
+    const result = await runner.runStructured(request);
+    expect(await runner.runStructured(request)).toEqual(result);
+    expect(telemetry.modelCalls.at(-1)?.cacheStatus).toBe("hit");
+    const { findingUpdates, finalFinding, revisedAnchor, ...expected } = original;
+    expect(result).toEqual(expected);
+    expect(original.findingUpdates).toEqual({ confidence: "low" });
+    expect(adapter.contexts).toHaveLength(1);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "submit_semantic_canonicalization_accepted",
+      data: expect.objectContaining({ removedFields: ["findingUpdates", "finalFinding", "revisedAnchor"], reason: "reject_revision_fields_inapplicable" }) }));
+  });
+
+  it("does not invoke rejection normalization on untrusted final arguments", async () => {
+    const normalize = vi.fn(canonicalizeVerifierRejection);
+    const adapter = scriptedAdapter([assistant([invalidSubmitCall("partial", "submit_verdict", { state: "partial", errorKind: "unexpected_end" })]),
+      assistant([validSubmitVerdictCall("complete")])]);
+    const telemetry = fakeTelemetry();
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await expect(runner.runStructured({ stage: 9, schema: SubmitVerificationVerdictSchema,
+      prompt: "verify", templateVersion: "test", timeoutMs: 1000, normalizeSubmit: normalize })).resolves.toHaveProperty("verdict");
+    expect(adapter.contexts).toHaveLength(2);
+    expect(telemetry.modelCalls[0]?.schemaValid).toBe(false);
+    expect(normalize.mock.calls.every(([value]) => value && typeof value === "object" && "verdict" in value)).toBe(true);
+    expect(telemetry.events.some(event => event.message === "submit_semantic_canonicalization_accepted")).toBe(false);
+  });
+
+  it.each(["omitted", "reject", "keep"] as const)("canonicalizes only the effective repaired rejection: %s", async branch => {
+    const full = VERIFIER_SUBMIT_EXAMPLE.finalFinding;
+    const candidate = { ...full, id: "candidate", changedLine: true,
+      producedBy: { kind: "packet", stage: 7, packetId: "p", lensId: "core/code-review", skillIds: [] } } as CandidateFinding;
+    const original = { verdict: branch === "reject" ? "revise" : "reject", requiredEvidencePresent: false,
+      falsePositiveRisk: "high", findingUpdates: { confidence: "low" },
+      proofAssessment: { status: "refuted", evidence: "The complete guard rejects unauthorized requests.", assumptions: [] } };
+    const patch = { reason: "Existing guard refutes the claim.", ...(branch === "omitted" ? {} : { verdict: branch }),
+      ...(branch === "reject" ? { finalFinding: "inapplicable malformed revision" } : {}) };
+    const submit = (args: Record<string, unknown>) => assistant([{ type: "toolCall" as const, id: "submit", name: "submit_verdict", arguments: args }]);
+    const adapter = scriptedAdapter([submit(original), submit(patch), submit({ verdict: "reject" })]);
+    const telemetry = fakeTelemetry();
+    const cache = { get: vi.fn(async () => ({ status: "miss" as const, reason: "not_found" as const })), put: vi.fn(async () => ({ status: "write" as const })) };
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const result = await runner.runStructured<SubmitVerificationVerdict>({ stage: 9, schema: SubmitVerificationVerdictSchema,
+      prompt: "repair rejection", templateVersion: "test", timeoutMs: 1000, normalizeSubmit: canonicalizeVerifierRejection,
+      schemaRepair: { replacementGroups: [["finalFinding", "findingUpdates"]] },
+      validateSubmit(value) {
+        if (value.verdict !== "reject" && value.proofAssessment?.status !== "established") return {
+          ok: false, classification: "schema_invalid", details: "A publishable verdict requires established proof; the guard refutes this claim." };
+        try { expandVerifierRevision(candidate, value); return { ok: true }; }
+        catch (error) { return { ok: false, classification: "invalid_tool_arguments", details: String(error) }; }
+      }
+    });
+    expect(result).toMatchObject({ verdict: "reject", reason: patch.reason, proofAssessment: original.proofAssessment });
+    expect(result).not.toHaveProperty("findingUpdates");
+    expect(result).not.toHaveProperty("finalFinding");
+    expect(adapter.contexts).toHaveLength(branch === "keep" ? 3 : 2);
+    if (branch === "keep") expect(adapter.contexts[2]).toContain("the guard refutes this claim");
+    expect(cache.put).toHaveBeenCalledTimes(1);
+    expect(telemetry.events.some(event => event.message === "recovery_preservation_rejected")).toBe(false);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "recovery_obligation_resolved" }));
+  });
+
   it("run-88 verifier repair selects a compact revision and caches only the validated result", async () => {
     const full = VERIFIER_SUBMIT_EXAMPLE.finalFinding;
     const candidate = { ...full, id: "candidate", changedLine: true,
       producedBy: { kind: "packet", stage: 7, packetId: "p", lensId: "core/code-review", skillIds: [] } } as CandidateFinding;
     const submit = (arguments_: Record<string, unknown>) => assistant([{ type: "toolCall" as const, id: "submit", name: "submit_verdict", arguments: arguments_ }]);
     const adapter = scriptedAdapter([submit({ ...VERIFIER_SUBMIT_EXAMPLE, findingUpdates: { title: "Conflicting revision" } }),
-      submit({ findingUpdates: { title: "Resolved revision" } })]);
+      submit({}), submit({ findingUpdates: { title: "Resolved revision" } })]);
     const telemetry = fakeTelemetry();
     const cache = { get: vi.fn(async () => ({ status: "miss" as const, reason: "not_found" as const })), put: vi.fn(async () => ({ status: "write" as const })) };
     const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
@@ -1808,8 +1932,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(result.finalFinding).toBeUndefined();
     expect(expandVerifierRevision(candidate, result).finalFinding?.title).toBe("Resolved revision");
     expect(adapter.contexts[1]).toContain("conflicting: title");
+    expect(adapter.contexts[2]).toContain("conflicting: title");
     expect(cache.put).toHaveBeenCalledTimes(1);
-    expect(adapter.contexts).toHaveLength(2);
+    expect(adapter.contexts).toHaveLength(3);
   });
 
   it("run-88 regeneration merges into the retained draft after an unreadable worker retry", async () => {
@@ -1991,6 +2116,101 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.events.filter(event => event.message === "recovery_obligation_resolved")).toHaveLength(1);
   });
 
+  it.each([{ cached: false, exhaust: false }, { cached: true, exhaust: false }, { cached: false, exhaust: true }])("repairs unfinished composition with retained context ($cached / $exhaust)", async ({ cached, exhaust }) => {
+    const { findings, sections, evidenceRefs } = authorizationComposition();
+    const schema = composerSubmissionSchema([{ fingerprint: "auth", representative: findings[0]!, findings }]);
+    const good = { summary: "Authorization regression", composedFindings: [{ findingIds: findings.map(f => f.id), sections, evidenceRefs, publication: "inline" }] };
+    const original = structuredClone(good);
+    original.composedFindings[0]!.sections[0]!.text = "placeholder";
+    original.composedFindings[0]!.sections[1]!.text = "TODO";
+    if (!cached) original.composedFindings[0]!.sections[0]!.sourceRefs.push("unknown/source");
+    const updates = [original, ...(cached ? [original] : []),
+      { composedFindings: [{ sections: [sections[0]] }] },
+      { composedFindings: [{ sections: [{}, { text: exhaust ? "TODO" : sections[1]!.text }] }] },
+      ...(exhaust ? [{ composedFindings: [{ sections: [{}, { text: "TODO" }] }] }] : [])];
+    const adapter = scriptedAdapter(updates.map((arguments_, index) => assistant([{ type: "toolCall", name: "submit_composition", id: `c${index}`, arguments: arguments_ }])));
+    const telemetry = fakeTelemetry();
+    const entries = new Map<string, StoredProviderResponse>();
+    const cache = { get: vi.fn(async (key: string) => entries.has(key) ? { status: "hit" as const, response: entries.get(key)! } : { status: "miss" as const, reason: "not_found" as const }),
+      put: vi.fn(async (key: string, entry: StoredProviderResponse) => { entries.set(key, entry); return { status: "write" as const }; }) };
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    // Seed an older schema-valid response without the new semantic checks.
+    const request = { stage: 10 as const, schema, prompt: "IMMUTABLE_AUTH_SOURCE_INVENTORY", templateVersion: "test", timeoutMs: 10000 };
+    if (cached) await runner.runStructured(request);
+    const result = runner.runStructured({ ...request,
+      validateSubmit(value) { try { validateCompositionSubmission(value as typeof good, findings); return { ok: true }; }
+        catch (error) { return { ok: false, classification: "schema_invalid", details: String(error) }; } },
+      schemaRepair: { createFieldRepair: (schema, retained) => createCompositionAttributionRepair(schema, retained, findings) }
+    });
+    if (exhaust) {
+      await expect(result).rejects.toMatchObject({ code: "llm_schema_invalid" });
+      expect(cache.put).not.toHaveBeenCalled();
+    } else await expect(result).resolves.toEqual(good);
+    expect(adapter.contexts.at(-1)).toContain("IMMUTABLE_AUTH_SOURCE_INVENTORY");
+    expect(adapter.contexts.at(-1)).toContain("composedFindings.0.sections.1.text");
+    expect(telemetry.events.filter(e => e.message === "schema_repair_scheduled")).toHaveLength(exhaust ? 3 : 2);
+    if (cached) expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "model_call_cache_schema_invalid_miss" }));
+  });
+
+  it("repairs missing promoted decisions and rejects an old cached anchor-only verdict", async () => {
+    const candidate: CandidateFinding = { ...VERIFIER_SUBMIT_EXAMPLE.finalFinding, id: "promoted", changedLine: true,
+      producedBy: { kind: "packet", stage: 7, packetId: "p", lensId: "core/code-review", skillIds: [] },
+      provenance: { source: "uncertainty_promotion", sourceKind: "uncertainty", sourcePacketId: "p", files: [], symbols: [], question: "Is access revoked?", reason: "Investigate" } };
+    const original = { verdict: "keep", reason: "Revised to a testing finding", requiredEvidencePresent: true, falsePositiveRisk: "low" };
+    const updates = Object.fromEntries(["title", "failureMode", "whyThisMatters", "verification", "category", "severity", "confidence"].map(key => [key, candidate[key as keyof CandidateFinding]]));
+    const adapter = scriptedAdapter([original, original, { findingUpdates: updates }].map((arguments_, i) =>
+      assistant([{ type: "toolCall", name: "submit_verdict", id: `v${i}`, arguments: arguments_ }])));
+    const telemetry = fakeTelemetry();
+    const entries = new Map<string, StoredProviderResponse>();
+    const cache = { get: vi.fn(async (key: string) => entries.has(key) ? { status: "hit" as const, response: entries.get(key)! } : { status: "miss" as const, reason: "not_found" as const }),
+      put: vi.fn(async (key: string, entry: StoredProviderResponse) => { entries.set(key, entry); return { status: "write" as const }; }) };
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, cache,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const request = { stage: 9 as const, schema: SubmitVerificationVerdictSchema, prompt: "verify promoted", templateVersion: "test", timeoutMs: 10000 };
+    await runner.runStructured(request);
+    const result = await runner.runStructured<SubmitVerificationVerdict>({ ...request,
+      validateSubmit(value) { try { expandVerifierRevision(candidate, value); return { ok: true }; }
+        catch (error) { return { ok: false, classification: "invalid_tool_arguments", details: String(error) }; } },
+      schemaRepair: { replacementGroups: [["finalFinding", "findingUpdates"]] }
+    });
+    expect(expandVerifierRevision(candidate, result).finalFinding).toMatchObject(updates);
+    expect(adapter.contexts.at(-1)).toContain("findingUpdates.whyThisMatters");
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "model_call_cache_schema_invalid_miss" }));
+  });
+
+  it("refreshes semantic repair targets after a sparse promoted-verdict patch without repeating retained evidence", async () => {
+    const candidate: CandidateFinding = { ...VERIFIER_SUBMIT_EXAMPLE.finalFinding, id: "promoted", changedLine: true,
+      producedBy: { kind: "packet", stage: 7, packetId: "p", lensId: "core/code-review", skillIds: [] },
+      provenance: { source: "uncertainty_promotion", sourceKind: "uncertainty", sourcePacketId: "p", files: [], symbols: [], question: "Is access revoked?", reason: "Investigate" } };
+    const findingUpdates = Object.fromEntries(["title", "failureMode", "whyThisMatters", "verification", "category"].map(key => [key, candidate[key as keyof CandidateFinding]]));
+    const initial = { verdict: "revise", reason: "Confirmed", requiredEvidencePresent: true, falsePositiveRisk: "low", findingUpdates };
+    const adapter = scriptedAdapter([initial, { "findingUpdates.severity": "low" }, { findingUpdates: { confidence: "high" } }].map((args, i) =>
+      assistant([{ type: "toolCall", name: "submit_verdict", id: `v${i}`, arguments: args }])));
+    const telemetry = fakeTelemetry();
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const result = await runner.runStructured<SubmitVerificationVerdict>({ stage: 9, schema: SubmitVerificationVerdictSchema,
+      prompt: "verify promoted", templateVersion: "test", timeoutMs: 10000,
+      validateSubmit(value) { try { expandVerifierRevision(candidate, value); return { ok: true }; }
+        catch (error) { return { ok: false, classification: "invalid_tool_arguments", details: String(error) }; } },
+      schemaRepair: { replacementGroups: [["finalFinding", "findingUpdates"]], createFieldRepair: (schema, retained) =>
+        createFieldRepair(schema, retained, true, [["finalFinding", "findingUpdates"]], promotedCompletionIssues(candidate, retained)) }
+    });
+    expect(expandVerifierRevision(candidate, result).finalFinding).toMatchObject({ ...findingUpdates, severity: "low", confidence: "high", evidence: candidate.evidence });
+    expect(adapter.contexts).toHaveLength(3);
+    expect(telemetry.events.filter(event => event.message === "field_repair_scheduled").map(event => event.data?.paths))
+      .toEqual([["findingUpdates.severity", "findingUpdates.confidence"], ["findingUpdates.confidence"]]);
+    expect(adapter.contexts[1]).toContain("unless stage validation conditionally requires them");
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "schema_repair_retry_scheduled",
+      data: expect.objectContaining({ remainingPaths: ["findingUpdates.confidence"] }) }));
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "field_repair_accepted" }));
+    expect(initial.findingUpdates).toEqual(findingUpdates);
+  });
+
   it("records schema-invalid submits and does not cache them before repair", async () => {
     const telemetry = fakeTelemetry();
     const cache = {
@@ -2159,8 +2379,173 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.complete).toHaveBeenCalledTimes(2);
   });
 
+  it.each([false, true])("applies composition step-down to retries but keeps repair policy (enabled=%s)", async enabled => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "invalid", name: "submit_composition", arguments: {} }]),
+      assistant([{ type: "toolCall", id: "fixed", name: "submit_composition", arguments: { summary: "Done", composedFindings: [] } }])
+    ]);
+    adapter.resolveModel = () => ({ provider: "fake", id: "fake-model", raw: {
+      id: "fake-model", api: "openai-completions", reasoning: true,
+      thinkingLevelMap: { minimal: null, medium: null, xhigh: null, max: "max" }
+    } });
+    const complete = adapter.complete;
+    let first = true;
+    adapter.complete = vi.fn(async (...args: Parameters<PiAiAdapter["complete"]>) => {
+      if (first) {
+        first = false;
+        throw Object.assign(new Error("service unavailable"), { status: 503 });
+      }
+      return complete(...args);
+    });
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", reasoning: "max", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    await runner.runStructured({ stage: 10, compositionReasoningStepDown: enabled,
+      prompt: "compose", schema: SubmitCompositionSchema, templateVersion: "test", timeoutMs: 600_000 });
+    const expected = enabled ? "high" : "max";
+    expect(vi.mocked(adapter.complete).mock.calls.map(call => call[2].reasoning)).toEqual([expected, expected, "low"]);
+    expect(telemetry.modelCalls.map(call => call.reasoningSelected)).toEqual([expected, expected, "low"]);
+    expect(telemetry.modelCalls.map(call => call.reasoningPolicy)).toEqual([
+      enabled ? "one_level_lower" : "configured", enabled ? "one_level_lower" : "configured", "lowest_supported"
+    ]);
+    expect(debugRecord(telemetry, "mc-000001.request")).toMatchObject({
+      provider: { reasoningConfigured: "max", reasoning: expected }
+    });
+  });
+
+  it("keeps verification at configured effort even when composition step-down is requested", async () => {
+    const adapter = scriptedAdapter([assistant([validSubmitVerdictCall("verdict")])]);
+    adapter.resolveModel = () => ({ provider: "fake", id: "fake-model", raw: {
+      id: "fake-model", api: "openai-completions", reasoning: true, thinkingLevelMap: { max: "max" }
+    } });
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", reasoning: "max", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    await runner.runStructured({ stage: 9, compositionReasoningStepDown: true,
+      prompt: "verify", schema: SubmitVerificationVerdictSchema, templateVersion: "test", timeoutMs: 600_000 });
+    expect(adapter.options[0]?.reasoning).toBe("max");
+  });
+
+  it("retains omitted composition sources locally, with full validation and no model repair", async () => {
+    const telemetry = fakeTelemetry();
+    const { findings, sections, evidenceRefs, presentation } = authorizationComposition();
+    const omitted = sections[0]!.sourceRefs.pop()!;
+    const original = { summary: "Verified issue", composedFindings: [{ findingIds: findings.map(f => f.id), sections, evidenceRefs, retainedSourceRefs: [] as string[], ...presentation, publication: "inline" }] };
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "compose", name: "submit_composition", arguments: original }])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const result = await runner.runStructured({ stage: 10, prompt: "compose", templateVersion: "test", timeoutMs: 600_000,
+      schema: composerSubmissionSchema([{ fingerprint: "test", representative: findings[0]!, findings }]),
+      normalizeSubmit: value => normalizeCompositionReferences(value, findings),
+      validateSubmit: value => {
+        try { validateCompositionSubmission(value as typeof original, findings); return { ok: true }; }
+        catch (error) { return { ok: false, classification: "schema_invalid", details: String(error) }; }
+      }
+    }) as typeof original;
+    expect(result.composedFindings[0]!.retainedSourceRefs).toContain(omitted);
+    expect(result.composedFindings[0]!.sections).toEqual(sections);
+    expect(adapter.complete).toHaveBeenCalledOnce();
+    expect(telemetry.events.some(event => event.message === "schema_repair_scheduled")).toBe(false);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "submit_semantic_canonicalization_accepted",
+      data: expect.objectContaining({ addedFields: [expect.stringContaining("retainedSourceRefs")], validation: "complete_schema_and_semantics_passed" }) }));
+  });
+
+  it.each([false, true])("repairs attribution in fresh constrained contexts and validates the assembled report (exhaust=%s)", async exhaust => {
+    const telemetry = fakeTelemetry();
+    const { findings, sections, evidenceRefs, presentation } = authorizationComposition();
+    const good = { summary: "Verified issue", composedFindings: [{ findingIds: findings.map(f => f.id), sections, evidenceRefs, ...presentation, publication: "inline" }] };
+    const original = structuredClone(good);
+    const fixIndex = sections.findIndex(section => section.kind === "fix");
+    const testIndex = sections.findIndex(section => section.kind === "test");
+    original.composedFindings[0]!.sections[fixIndex]!.sourceRefs.push("invented/fix");
+    original.composedFindings[0]!.sections[testIndex]!.sourceRefs.push("invented/test");
+    const fixPath = `composedFindings.0.sections.${fixIndex}.sourceRefs`;
+    const testPath = `composedFindings.0.sections.${testIndex}.sourceRefs`;
+    const adapter = scriptedAdapter([]);
+    let calls = 0;
+    adapter.complete = vi.fn(async (_model, context) => {
+      calls++;
+      let arguments_: Record<string, unknown> = original;
+      if (calls > 1) {
+        expect(context.messages).toHaveLength(1);
+        const prompt = JSON.stringify(context.messages);
+        expect(prompt).toContain("attribution-repair-context");
+        expect(prompt).not.toContain("original-composition-marker");
+        expect(prompt).toContain("unknown_source");
+        if (calls > 2) expect(Object.keys(context.tools![0]!.parameters.properties ?? {})).not.toContain(fixPath);
+        arguments_ = calls === 2 ? { [fixPath]: sections[fixIndex]!.sourceRefs } : { [testPath]: exhaust ? ["invented/test"] : sections[testIndex]!.sourceRefs };
+      }
+      return assistant([{ type: "toolCall", id: `c${calls}`, name: "submit_composition", arguments: arguments_ }]);
+    });
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const schema = composerSubmissionSchema([{ fingerprint: "test", representative: findings[0]!, findings }]);
+    const result = runner.runStructured({ stage: 10, prompt: "original-composition-marker", schema, templateVersion: "test", timeoutMs: 600_000,
+      normalizeSubmit: value => normalizeCompositionReferences(value, findings),
+      validateSubmit: value => {
+        try { validateCompositionSubmission(value as typeof good, findings); return { ok: true }; }
+        catch (error) { return { ok: false, classification: "schema_invalid", details: String(error) }; }
+      },
+      schemaRepair: { createFieldRepair: (schema, retained) => createCompositionAttributionRepair(schema, retained, findings) }
+    });
+    if (exhaust) await expect(result).rejects.toMatchObject({ code: "llm_schema_invalid" });
+    else await expect(result).resolves.toEqual(good);
+    expect(calls).toBe(exhaust ? 4 : 3);
+    expect(telemetry.events.filter(event => event.message === "schema_repair_scheduled")).toHaveLength(exhaust ? 3 : 2);
+    expect(telemetry.events.filter(event => event.message === "schema_repair_scheduled").every(event => event.data?.replaceConversation === true)).toBe(true);
+  });
+
+  it("repairs unsupported advice atomically without restoring removed sections on retry", async () => {
+    const telemetry = fakeTelemetry();
+    const { findings, sections, evidenceRefs } = authorizationComposition();
+    delete findings[0]!.suggestionAssessments!.suggestedFix;
+    const original = { summary: "Revocation is bypassed.", composedFindings: [{ findingIds: [findings[0]!.id], sections, evidenceRefs, publication: "inline" }] };
+    const fixedSections = sections.filter(section => section.kind !== "fix");
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "original", name: "submit_composition", arguments: original }]),
+      assistant([{ type: "toolCall", id: "incomplete", name: "submit_composition", arguments: {
+        "composedFindings.0.sections": fixedSections, "composedFindings.0.retainedSourceRefs": []
+      } }]),
+      assistant([{ type: "toolCall", id: "fixed", name: "submit_composition", arguments: {
+        "composedFindings.0.sections": fixedSections, "composedFindings.0.retainedSourceRefs": ["authorization/suggestedFix"]
+      } }])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    const schema = composerSubmissionSchema([{ fingerprint: "test", representative: findings[0]!, findings }]);
+    const result = await runner.runStructured<typeof original>({ stage: 10, prompt: "composition", schema, templateVersion: "test", timeoutMs: 600_000,
+      normalizeSubmit: value => normalizeCompositionReferences(value, findings),
+      validateSubmit: value => {
+        try { validateCompositionSubmission(value, findings); return { ok: true }; }
+        catch (error) { return { ok: false, classification: "schema_invalid", details: String(error) }; }
+      },
+      schemaRepair: { createFieldRepair: (schema, retained) => createCompositionAttributionRepair(schema, retained, findings) }
+    });
+    expect(result.composedFindings[0]!.sections).toEqual(fixedSections);
+    expect(result.composedFindings[0]).toHaveProperty("retainedSourceRefs", ["authorization/suggestedFix"]);
+    const repairTool = vi.mocked(adapter.complete).mock.calls[1]![1].tools![0]!;
+    expect(repairTool.description).toContain("Supplied values replace those paths");
+    expect(repairTool.description).not.toContain("Supplied reference lists");
+    expect(repairTool.parameters).toMatchObject({ properties: { "composedFindings.0.sections": expect.anything() } });
+    expect(adapter.complete).toHaveBeenCalledTimes(3);
+    expect(telemetry.events.filter(event => event.message === "field_repair_accepted")).toHaveLength(1);
+    expect(telemetry.events.filter(event => event.message === "recovery_content_revised")).not.toHaveLength(0);
+  });
+
   it.each(["timeout", "double-timeout", "repair-timeout", "transient", "invalid", "retry-invalid", "auth", "cancel"] as const)(
-    "bounds composition recovery with relative reasoning: %s", async (mode) => {
+    "bounds composition recovery with configured reasoning: %s", async (mode) => {
       vi.useFakeTimers();
       try {
         const telemetry = fakeTelemetry();
@@ -2175,7 +2560,15 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         } });
         const efforts: unknown[] = [];
         let calls = 0;
+        const signals: AbortSignal[] = [];
         adapter.complete = vi.fn(async (_model, _context, options) => {
+          if (mode === "double-timeout") {
+            signals.push(options.signal!);
+            const pulse = () => (options.onStreamEvent as ((event: unknown) => void) | undefined)?.({ type: "thinking_delta", delta: "still reasoning" });
+            pulse();
+            const interval = setInterval(pulse, 10_000);
+            options.signal!.addEventListener("abort", () => clearInterval(interval), { once: true });
+          }
           efforts.push(options.reasoning);
           calls++;
           if (calls === 1) {
@@ -2199,23 +2592,79 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           : expect(result).resolves.toMatchObject({ summary: "Done" });
         await vi.advanceTimersByTimeAsync(0);
         if (mode === "cancel") abort.abort();
-        if (mode === "timeout" || mode === "repair-timeout") await vi.advanceTimersByTimeAsync(180_000);
-        if (mode === "double-timeout") await vi.advanceTimersByTimeAsync(360_000);
+        if (mode === "timeout") await vi.advanceTimersByTimeAsync(300_000);
+        if (mode === "repair-timeout") await vi.advanceTimersByTimeAsync(180_000);
+        if (mode === "double-timeout") await vi.advanceTimersByTimeAsync(600_000);
         await checked;
         expect(calls).toBe(mode === "auth" || mode === "cancel" ? 1 : mode === "retry-invalid" ? 5 : 2);
-        if (mode === "retry-invalid") expect(efforts).toEqual(["high", "high", "minimal", "minimal", "minimal"]);
-        expect(efforts[0]).toBe("high");
+        if (mode === "retry-invalid") expect(efforts).toEqual(["max", "max", "minimal", "minimal", "minimal"]);
+        if (mode === "double-timeout") {
+          expect(signals).toHaveLength(2);
+          expect(signals.every(signal => signal.aborted)).toBe(true);
+          expect(telemetry.modelCalls).toHaveLength(2);
+          for (const call of telemetry.modelCalls) {
+            expect(call).toMatchObject({ status: "timeout", streamProgress: { toolArgumentChars: 0 } });
+            expect(call.streamProgress!.thinkingChars).toBeGreaterThan(0);
+            expect(call.costUSD).toBeUndefined();
+          }
+        }
+        expect(efforts[0]).toBe("max");
         if (calls === 2) expect(efforts[1]).toBe(
-          mode === "invalid" || mode === "repair-timeout" ? "minimal" : "high"
+          mode === "invalid" || mode === "repair-timeout" ? "minimal" : "max"
         );
         expect(telemetry.modelCalls[0]).toMatchObject({
-          reasoningConfigured: "max", reasoningSelected: "high", reasoningPolicy: "one_level_lower"
+          reasoningConfigured: "max", reasoningSelected: "max", reasoningPolicy: "configured"
         });
       } finally {
         vi.useRealTimers();
       }
     }
   );
+
+  it.each(["success", "timeout", "cancel"] as const)("reserves repair time after a late composition retry: %s", async mode => {
+    vi.useFakeTimers();
+    try {
+      const telemetry = fakeTelemetry();
+      const abort = new AbortController();
+      const adapter = scriptedAdapter([]);
+      const signals: AbortSignal[] = [];
+      adapter.complete = vi.fn(async (_model, _context, options) => {
+        signals.push(options.signal!);
+        if (signals.length === 1) return new Promise<PiAssistantMessage>(() => {});
+        if (signals.length === 2) {
+          await new Promise(resolve => setTimeout(resolve, 299_000));
+          return assistant([{ type: "toolCall", id: "invalid", name: "submit_composition", arguments: {} }]);
+        }
+        if (mode !== "success") return new Promise<PiAssistantMessage>(() => {});
+        await new Promise(resolve => setTimeout(resolve, 179_000));
+        return assistant([{ type: "toolCall", id: "repaired", name: "submit_composition", arguments: { summary: "Done", composedFindings: [] } }]);
+      });
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: abort.signal, adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      const result = runner.runStructured({ stage: 10, prompt: "compose", schema: SubmitCompositionSchema,
+        templateVersion: "test", timeoutMs: 600_000 });
+      const checked = mode === "success" ? expect(result).resolves.toMatchObject({ summary: "Done" })
+        : expect(result).rejects.toBeInstanceOf(CodegenieError);
+      await vi.advanceTimersByTimeAsync(299_999);
+      expect(signals).toHaveLength(1);
+      expect(signals[0]!.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(signals[0]!.aborted).toBe(true);
+      expect(signals).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(299_000);
+      expect(signals).toHaveLength(3);
+      // The former 600-second outer limit must not cut off this repair.
+      await vi.advanceTimersByTimeAsync(1_001);
+      expect(signals[2]!.aborted).toBe(false);
+      if (mode === "cancel") abort.abort();
+      else await vi.advanceTimersByTimeAsync(mode === "success" ? 177_999 : 178_999);
+      await checked;
+      expect(signals).toHaveLength(3);
+      expect(telemetry.modelCalls.at(-1)).toMatchObject({ kind: "repair", status: mode === "success" ? "ok" : mode === "timeout" ? "timeout" : "aborted" });
+      if (mode === "timeout") expect(telemetry.modelCalls.at(-1)?.durationMs).toBe(180_000);
+    } finally { vi.useRealTimers(); }
+  });
 
   it.each(["valid", "invalid", "missing", "transient", "timeout"] as const)("uses one lowest-reasoning attempt for location clarification: %s", async (mode) => {
     vi.useFakeTimers();
@@ -4448,8 +4897,14 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         maxResultChars: 0,
         remainingResultChars: 0
       },
-      resultChars: 0
+      deliveryStatus: "budget_rejected",
+      resultChars: expect.any(Number)
     });
+    expect(telemetry.toolCalls[0]?.resultChars).toBeGreaterThan(0);
+    expect(telemetry.toolCalls[0]?.truncated).not.toBe(true);
+    expect(adapter.contexts[1]).toContain("tool result character budget exhausted");
+    expect(adapter.contexts[1]).toContain("This tool call was not executed");
+    expect(adapter.contexts[1]).toContain("not a zero-match result");
     expect(telemetry.toolCalls[0]?.degradationReason).not.toBe("budget_or_tool_rejected");
     expect(telemetry.events).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -4470,6 +4925,69 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         budgetState: expect.objectContaining({ maxResultChars: 0 })
       }
     });
+  });
+
+  it("distinguishes rejected searches from zero matches without consuming the source reserve", async () => {
+    const telemetry = fakeTelemetry();
+    const search = vi.fn(async () => ({ text: "[]" }));
+    const read = vi.fn(async () => ({ text: "source hit" }));
+    const adapter = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "empty-search", name: "search_files", arguments: { query: "absent" } },
+        { type: "toolCall", id: "rejected-search-1", name: "search_files", arguments: { query: "helper" } },
+        { type: "toolCall", id: "rejected-search-2", name: "search_files", arguments: { query: "caller" } },
+        { type: "toolCall", id: "reserved-read", name: "read_range", arguments: { path: "src/a.ts" } }
+      ]),
+      assistant([validSubmitReviewCall("submit-after-reserved-read")])
+    ]);
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured({
+      ...submitReviewRequest("packet-search-status"),
+      tools: [
+        { name: "search_files", description: "search", parameters: Type.Object({ query: Type.String() }), execute: search },
+        { name: "read_range", description: "read", parameters: Type.Object({ path: Type.String() }), execute: read }
+      ],
+      toolBudget: {
+        maxToolCalls: 4, maxInvestigationRounds: 2,
+        maxResultChars: 12, reservedSourceResultChars: 10
+      }
+    });
+
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(read).toHaveBeenCalledTimes(1);
+    const messages = JSON.parse(adapter.contexts[1]!) as Array<{
+      role: string; toolCallId?: string; isError?: boolean; content: Array<{ text: string }>;
+    }>;
+    const results = messages.filter((message) => message.role === "toolResult");
+    expect(results).toHaveLength(4);
+    expect(results[0]).toMatchObject({ toolCallId: "empty-search", isError: false });
+    expect(results[0]?.content[0]?.text).toContain("\n[]\n");
+    expect(results[0]?.content[0]?.text).not.toContain("tool rejected");
+    for (const result of results.slice(1, 3)) {
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain("tool result character budget exhausted");
+      expect(result.content[0]?.text).toContain("This tool call was not executed");
+      expect(result.content[0]?.text).toContain("not a zero-match result");
+    }
+    expect(results[3]).toMatchObject({ toolCallId: "reserved-read", isError: false });
+    expect(results[3]?.content[0]?.text).toContain("source hit");
+    expect(telemetry.toolCalls[3]).toMatchObject({
+      status: "ok", resultChars: 10,
+      budgetState: { toolCallsUsed: 3, resultCharsUsed: 2, remainingResultChars: 10 }
+    });
+    for (const record of telemetry.toolCalls.slice(1, 3)) {
+      expect(record).toMatchObject({ status: "rejected", backendExecuted: false, deliveryStatus: "budget_rejected" });
+      expect(record.truncated).not.toBe(true);
+      expect(record.resultChars).toBeGreaterThan(0);
+    }
   });
 
   it("uses source budget extension for exact reads after result budget exhaustion", async () => {
@@ -4946,7 +5464,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const execute = vi.fn(async (args: Record<string, unknown>) => {
       const symbolName = String(args.symbolName ?? "");
       return {
-        text: symbolName === "LargeCaller" ? "large-caller\n".repeat(120) : "func SmallHelper() { return decisiveBranch }\n",
+        text: symbolName === "LargeCaller" ? "large-caller\n".repeat(120) + "requireActiveMembership(user);\n" : "func SmallHelper() { return decisiveBranch }\n",
         meta: {
           backend: "tree-sitter" as const,
           precision: "syntactic" as const,
@@ -4996,6 +5514,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     expect(execute).toHaveBeenCalledTimes(2);
     expect(adapter.contexts[1]).toContain("[tool result truncated by codegenie tool budget]");
+    expect(adapter.contexts[1]).not.toContain("requireActiveMembership(user)");
     expect(adapter.contexts[2]).toContain("SmallHelper");
     expect(adapter.contexts[2]).toContain("decisiveBranch");
     expect(telemetry.toolCalls[0]).toMatchObject({
@@ -5062,8 +5581,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.toolCalls[0]).toMatchObject({
       status: "rejected",
       degradationReason: "tool_result_budget_exhausted",
-      resultChars: 0
+      deliveryStatus: "budget_rejected",
+      resultChars: expect.any(Number)
     });
+    expect(telemetry.toolCalls[0]?.resultChars).toBeGreaterThan(0);
   });
 
   it("keeps schema repair available after a plain-text finalization nudge", async () => {
@@ -5720,7 +6241,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await adapter.complete(
       { provider: "fake", id: "fake-model", raw: { id: "fake-model" }, apiKey: "fake-api-key" },
       { messages: [], tools: [] },
-      { reasoning: "xhigh", maxRetries: 0, submitToolName: "submit_review" }
+      { reasoning: "xhigh", maxRetries: 0, submitToolName: "submit_review", onRejectedArguments: vi.fn() }
     );
 
     expect(optionsSeen).toEqual([
@@ -5730,6 +6251,25 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       })
     ]);
     expect(optionsSeen[0]).not.toHaveProperty("submitToolName");
+    expect(optionsSeen[0]).not.toHaveProperty("onRejectedArguments");
+  });
+
+  it("delivers rejected-argument diagnostics through both real Pi streaming paths", async () => {
+    for (const toolChoice of ["auto", { type: "tool", name: "submit_review" }]) {
+      const onRejectedArguments = vi.fn();
+      const providerOptions: Record<string, unknown>[] = [];
+      const stream = ((_model: unknown, _context: unknown, options: unknown) => {
+        providerOptions.push(options as Record<string, unknown>);
+        return streamForMessage(assistant([validSubmitReviewCall("malformed")]), '{"findings":');
+      });
+      const adapter = createRealPiAiAdapter({ stream: stream as PiStreamForTest, streamSimple: stream as PiStreamSimpleForTest });
+      const result = await adapter.complete({ provider: "fake", id: "fake-model", raw: { id: "fake-model", api: "openai-completions" }, apiKey: "fake-api-key" },
+        { messages: [], tools: [] }, { toolChoice, submitToolName: "submit_review", onRejectedArguments });
+      expect(onRejectedArguments).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: "malformed", prefix: '{"findings":' }));
+      expect(result.content[0]).toMatchObject({ type: "invalidToolCall" });
+      expect(result.content[0]).not.toHaveProperty("arguments");
+      expect(providerOptions[0]).not.toHaveProperty("onRejectedArguments");
+    }
   });
 
   it("maps forced submit calls to raw Pi provider reasoning and tool choice options", async () => {
@@ -6102,7 +6642,7 @@ function assistant(content: PiAssistantMessage["content"]): PiAssistantMessage {
   };
 }
 
-function streamForMessage(message: PiAssistantMessage) {
+function streamForMessage(message: PiAssistantMessage, rawArguments?: string) {
   const stream = createAssistantMessageEventStream();
   stream.push({ type: "start", partial: message as never });
   message.content.forEach((block, contentIndex) => {
@@ -6114,7 +6654,7 @@ function streamForMessage(message: PiAssistantMessage) {
     stream.push({
       type: "toolcall_delta",
       contentIndex,
-      delta: JSON.stringify(call.arguments),
+      delta: rawArguments ?? JSON.stringify(call.arguments),
       partial: message as never
     });
     stream.push({ type: "toolcall_end", contentIndex, toolCall: call as never, partial: message as never });

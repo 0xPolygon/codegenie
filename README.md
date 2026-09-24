@@ -145,6 +145,7 @@ baseBranch = "main"
 depth = "normal"
 maxTime = 60        # positive number of minutes; --max-time overrides this per run
 budgetBoost = 1.0   # scales per-packet review budgets; does not change finding caps
+compositionReasoningStepDown = false # opt in to one lower supported reasoning level for composition
 
 [telemetry]
 enabled = true      # opt into local run artifacts under .codegenie/runs
@@ -225,6 +226,30 @@ Autonomy still lives where it earns its keep — *inside* the stages, where revi
 
 **Built to be evaluated.** With telemetry enabled, every run writes typed artifacts — plan, packets, candidates, verdicts, selections, budgets, per-call cost. `codegenie eval` replays real repos against expected findings and scores misses *by loss stage*. The eval suite, the skills, and the telemetry are the compounding assets — models swap underneath them.
 
+Eval YAML can also opt into an independent, observational recommendation judge:
+
+```yaml
+recommendationJudge:
+  provider: openai-codex
+  model: gpt-6-astra
+  reasoning: medium
+  checks:
+    - id: preserves-caller-contract
+      rubric: |
+        State the established caller requirement and relevant source evidence.
+        Assess whether the published remedy preserves that requirement.
+        Accept equivalent implementations; distinguish withheld advice from
+        an incorrect recommendation and from rejected historical alternatives.
+```
+
+This makes one additional LLM call after each live review, using the fixed judge above rather than the review model. Results are `correct`, `incorrect`, `withheld`, or `uncertain`, with report quotes and rationale. They appear separately in `info.json` and `recommendation-judge.json`; judge cost is separate from review cost, and neither a negative judgment nor a judge error changes the existing eval pass/fail. The judge sees the published report with the renderer's historical provenance removed and the case rubric; it does not independently inspect the repository. Supply the relevant contract in the rubric and calibrate against saved reports before using judgments as quality evidence. Invalid responses and a 180-second timeout produce an explicit error, with no repair loop.
+
+Artifact rescoring stays offline by default. To explicitly re-judge a saved report against the current case YAML, use `codegenie eval --from-artifacts /path/to/logs/118 --judge`. Replay creates a new run; it does not change the original. Repeated live cases record judgments and separate usage in each repeat's `score.json` and judge artifact.
+
+For optional judge calibration, `scripts/calibrate-recommendations.ts` loads one eval case's rubric and a separate JSON array of `{ id, report, expected, reason }` examples. Run it with `pnpm exec tsx scripts/calibrate-recommendations.ts --eval-dir <suite> --cases <cases.json> --out <new-directory> --repeats 2`; add `--live` to make paid judge calls. Gold labels stay out of the prompt. Every repetition and disagreement is saved, alongside usage and input hashes. This calibration does not change eval pass/fail.
+
+
+
 **Reviewing untrusted code is a security problem.** A PR is attacker-controlled input flowing into tool-equipped LLMs whose output gets posted publicly. Untrusted content is structurally delimited as data-not-instructions; tools enforce repo-root containment; repo config can never enable command execution or posting; comments pass deterministic sanitization before posting.
 
 **Fail honestly, degrade predictably.** A failed planner falls back to a deterministic plan; a failed packet marks its hunks in coverage; budget exhaustion stops future dispatch without discarding completed work. Partial reviews exit `0` and *say they're partial*.
@@ -242,7 +267,11 @@ expect:
 
 The planning check rejects degraded plans even when every hunk was reviewed. The composition check rejects degraded report synthesis separately from coverage completeness. The recovery check requires complete telemetry, no unresolved structured-output obligations, and demonstrated preservation; regenerated or revised content is reported as `unknown`, not assumed preserved. Repairs retain draft progress across retries and validate the whole merged submission.
 
-Composition validates source references before acceptance so invalid attribution can receive a bounded repair. Reports consolidate identical evidence and keep additional verbatim evidence and caveats in expandable sections. If synthesis fails, the report identifies its source-based presentation and retains distinct contributions. `stages/10-composition/composition-sources.json` records all inputs and dispositions; references establish attribution, not proof of semantic equivalence. Verification distinguishes essential missing proof from secondary uncertainty: unresolved hypotheses remain visible under human attention, while established defects may still have uncertainty about severity.
+Composition uses the configured review reasoning level by default, including retries. Set `[review] compositionReasoningStepDown = true` in `codegenie.toml` to use the next lower level supported by the model: for a model supporting `low`, `high`, and `max`, `max` becomes `high`. The lowest supported level stays unchanged; models without advertised reasoning levels retain the configured behavior. Override this per run with `codegenie review --composition-reasoning-step-down` or `--no-composition-reasoning-step-down`. Omitting both flags preserves the configuration, which defaults to `false`. Investigation and verification keep their configured reasoning; traces record configured and selected levels. Structured-output repairs continue to use the model’s lowest supported reasoning level. Each composition attempt has a 300-second deadline, with at most one retry. The outer composition deadline is 780 seconds (two attempts plus the shared 180-second repair allowance); overall review cancellation still takes precedence. Repair attempts share that 180-second allowance, rather than receiving 180 seconds each.
+
+Composition validates source references before acceptance. It locally removes repeated known references and misplaced references already correctly accounted for in the same finding, records those removals, and validates the whole result. Remaining attribution errors receive bounded repairs in a fresh context with exact field paths and source inventories. Attribution patches replace only permitted reference lists; finding order and prose stay intact, and the assembled report must pass full validation. If a recommendation lacks support, a bounded composition repair may instead omit or rewrite that advice section while preserving the diagnosis and retaining its original sources. Reports consolidate identical evidence and keep additional verbatim evidence and caveats in expandable sections. If synthesis fails, the report identifies its source-based presentation and retains distinct contributions. `stages/10-composition/composition-sources.json` records all inputs and dispositions; references establish attribution, not proof of semantic equivalence. Verification distinguishes essential missing proof from secondary uncertainty: unresolved hypotheses remain visible under human attention, while established defects may still have uncertainty about severity.
+
+Verification assesses proposed fixes and tests independently from the defect, using the existing optional assessment fields and investigation budget. Support requires evidence for the observable requirement; tests should reject weakened guarantees without excluding other valid implementations. Prominent fix/test sections and structured recommendation fields contain only supported current proposals. Unverified, incompatible and replaced proposals remain in expandable provenance. The composer is instructed to keep summaries diagnosis-focused and advice out of impact/verification prose; source validation checks attribution and eligibility, not the semantic correctness of arbitrary prose.
 
 ## Development
 

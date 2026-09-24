@@ -1,4 +1,6 @@
-import { type CompositionMetrics, compositionSources, composePresentation, safeReportProse, validateCompositionSubmission, renderRetainedComposition } from "./composition-content.js";
+import { createCompositionAttributionRepair, normalizeCompositionReferences } from "./composition-repair.js";
+import { buildAttentionReconciliation, reconcileAttention, type AttentionReconciliation } from "./attention-reconciliation.js";
+import { type CompositionMetrics, eligibleCompositionSource, compositionSources, composePresentation, safeReportProse, validateCompositionSubmission, renderRetainedComposition } from "./composition-content.js";
 import type { LlmRunner } from "../llm/llm-runner.js";
 import { SubmitCompositionSchema, type SubmitComposition } from "../llm/schemas.js";
 import type { PromptBuilder } from "../skills/prompt-builder.js";
@@ -109,6 +111,7 @@ export async function dedupeRankAndComposeReview(
   ).available;
   const composerPromptSelection = selectHumanAttentionGroups(preComposerAttentionGroups);
   const composerPromptNotes = composerPromptSelection.notes;
+  const attentionReconciliation = buildAttentionReconciliation(verified.verdicts, pretrim.kept, opts.packetResults ?? [], resolved);
   if (pretrim.suppressed.length > 0) {
     const reason = `composer pre-trim suppressed ${pretrim.suppressed.length} verified finding${pretrim.suppressed.length === 1 ? "" : "s"} above the ${MAX_COMPOSER_FINDINGS}-finding composer input cap`;
     coverage.reasons.push(reason);
@@ -123,7 +126,7 @@ export async function dedupeRankAndComposeReview(
   let fallbackReason: string | undefined;
   let fallbackMode: CompositionMode | undefined;
   let compositionDegraded = false;
-  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes).catch((error) => {
+  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes, attentionReconciliation).catch((error) => {
     if (!canUseComposerFallback(error)) {
       telemetry.event({
         stage: 10,
@@ -152,7 +155,7 @@ export async function dedupeRankAndComposeReview(
   const confidenceSelections = new Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>();
   const finalFindings: FinalFinding[] = pretrim.suppressed.map((finding) => {
     const requestedPublication = "suppressed" as const;
-    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding, [finding], link), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections, link, false, metrics => recordPresentation([finding.id], "fallback", metrics));
+    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding, [finding], link), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections, link, false, metrics => recordPresentation([finding.id], "fallback", metrics), pretrim.kept);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     return final;
   });
@@ -187,7 +190,7 @@ export async function dedupeRankAndComposeReview(
     let attributed = false;
     if (composed.sections !== undefined || composed.evidenceRefs !== undefined) {
       try {
-        const presentation = composePresentation(mergedFindings, (composed.sections ?? []).map(section => ({ ...section, text: normalizeFinalBodyForRendering(section.text, representative) })), composed.evidenceRefs ?? [], link, composed);
+        const presentation = composePresentation(mergedFindings, (composed.sections ?? []).map(section => ({ ...section, text: normalizeFinalBodyForRendering(section.text, representative) })), composed.evidenceRefs ?? [], link, composed, pretrim.kept);
         body = presentation.body;
         recordPresentation(ids, "composed", presentation.metrics);
         attributed = true;
@@ -202,7 +205,7 @@ export async function dedupeRankAndComposeReview(
       compositionDegraded = true;
       telemetry.event({ stage: 10, level: "warn", message: "composition_legacy_content_fallback", data: { findingIds: ids } });
     }
-    const final = toFinalFinding(representative, fingerprint, body, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections, link, attributed, metrics => recordPresentation(ids, "fallback", metrics));
+    const final = toFinalFinding(representative, fingerprint, body, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections, link, attributed, metrics => recordPresentation(ids, "fallback", metrics), pretrim.kept);
     recordAnchorDowngrade(final, composed.publication, anchorDowngradeReasons);
     finalFindings.push(final);
     used.add(representative.id);
@@ -219,7 +222,7 @@ export async function dedupeRankAndComposeReview(
     }
     const fingerprint = fingerprintFinding(finding, packetsById);
     const requestedPublication = finding.anchor ? "inline" : "summary-only";
-    const final = toFinalFinding(finding, fingerprint, templateBody(finding, [finding], link), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections, link, false, metrics => recordPresentation([finding.id], "fallback", metrics));
+    const final = toFinalFinding(finding, fingerprint, templateBody(finding, [finding], link), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections, link, false, metrics => recordPresentation([finding.id], "fallback", metrics), pretrim.kept);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     finalFindings.push(final);
     baseSelection.set(finding.id, { findingId: finding.id, decision: "published", reason: "composer_omitted_finding" });
@@ -242,6 +245,8 @@ export async function dedupeRankAndComposeReview(
   const findings = capped.findings.filter((finding) => finding.publication === "inline");
   const summaryOnlyFindings = capped.findings.filter((finding) => finding.publication === "summary-only");
   const publishableCount = findings.length + summaryOnlyFindings.length;
+  const reconciledAttention = reconcileAttention(attentionReconciliation, composition.attentionResolutions,
+    compositionMode === "llm" && publishableCount > 0);
   const humanAttention = selectHumanAttentionForOutput(
     attention.groups,
     capped.findings.filter((finding) => finding.publication !== "suppressed"),
@@ -249,10 +254,25 @@ export async function dedupeRankAndComposeReview(
     verificationResolutions,
     telemetry
   );
-  for (const verdict of verified.verdicts) {
-    if (verdict.unresolvedConcern && !humanAttention.notes.some(note => note.question === verdict.unresolvedConcern!.question)) {
-      humanAttention.notes.push(verdict.unresolvedConcern);
-    }
+  for (const note of reconciledAttention.notes) {
+    if (!humanAttention.notes.some(existing => existing.question === note.question)) humanAttention.notes.push(note);
+  }
+  telemetry.event({ stage: 10, level: "info", message: "human_attention_reconciliation", data: {
+    suppliedConcerns: attentionReconciliation.inventory.concerns.length,
+    suppliedEvidence: attentionReconciliation.inventory.evidence.length,
+    omittedConcerns: attentionReconciliation.omittedConcernIds.length,
+    omittedEvidence: attentionReconciliation.omittedEvidenceIds.length,
+    excludedEvidence: attentionReconciliation.excludedEvidenceIds.length,
+    accepted: reconciledAttention.decisions.filter(decision => decision.accepted).length,
+    rejected: reconciledAttention.decisions.filter(decision => !decision.accepted).length,
+    resolvedConcernIds: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "resolved").map(decision => decision.concernId).slice(0, 30),
+    narrowedConcernIds: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "narrowed").map(decision => decision.concernId).slice(0, 30)
+  } });
+  // Publication policy must not affect defect selection: an unverified proposed
+  // test can still describe a confirmation path used by the existing gates.
+  for (const finding of capped.findings) {
+    const fallbackPresentation = presentationMeasurements.find(record => record.synthesis === "fallback" && record.findingIds.includes(finding.id));
+    publishSupportedSuggestions(finding, pretrim.kept, fallbackPresentation?.metrics.publishedSuggestionSources);
   }
   const summary = publishableCount === 0
     ? coverage.partial
@@ -305,7 +325,11 @@ export async function dedupeRankAndComposeReview(
     }))
   });
   await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets(
-    humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups)
+    { ...humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups),
+      // These records deliberately share original scope/evidence objects.
+      // Serialize to a tree before the scrubber's repeated-object protection
+      // so shared provenance is not mistaken for circular data and redacted.
+      reconciliation: JSON.parse(JSON.stringify({ ...attentionReconciliation, ...reconciledAttention })) }
   ));
   await telemetry.writeArtifact("final-findings.json", scrubGitHubSecrets(capped.findings));
   telemetry.event({
@@ -341,18 +365,22 @@ async function runComposer(
   config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: ComposeOptions,
-  notes: NeedsHumanAttentionNote[]
+  notes: NeedsHumanAttentionNote[],
+  attention: AttentionReconciliation
 ): Promise<SubmitComposition> {
   const prompt = opts.promptBuilder.buildComposerPrompt({
-    groupedFindingsJson: JSON.stringify(groups.map(group => ({ fingerprint: group.fingerprint, representativeId: group.representative.id, findings: group.findings.map(({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence, proofAssessment }) => ({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence, proofAssessment })), sourceComponents: compositionSources(group.findings) })), null, 2),
+    groupedFindingsJson: JSON.stringify(groups.map(group => ({ fingerprint: group.fingerprint, representativeId: group.representative.id, findings: group.findings.map(({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence }) => ({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence })), sourceComponents: compositionSources(group.findings, groups.flatMap(group => group.findings)) })), null, 2),
     intent: `Declared intent: ${plan.diffUnderstanding.declaredIntent}\nInferred behavior: ${plan.diffUnderstanding.inferredBehavior}\n${summarizeIntentSignals(plan.intentSignals)}`,
     coverage,
-    followUpHintNotes: notes.map((note) => `${note.question} (${note.files.join(", ")})`)
+    followUpHintNotes: notes.map((note) => `${note.question} (${note.files.join(", ")})`),
+    ...(attention.inventory.concerns.length ? { attentionReconciliationJson: JSON.stringify(attention.inventory) } : {})
   });
   const submitted = await opts.runner.runStructured<SubmitComposition>({
     stage: 10,
+    compositionReasoningStepDown: config.review.compositionReasoningStepDown,
     prompt: prompt.prompt,
     schema: composerSubmissionSchema(groups),
+    normalizeSubmit: value => normalizeCompositionReferences(value, groups.flatMap(group => group.findings)),
     validateSubmit: value => {
       try {
         validateCompositionSubmission(value, groups.flatMap(group => group.findings));
@@ -364,6 +392,7 @@ async function runComposer(
     templateVersion: prompt.templateVersion,
     timeoutMs: config.review.perPassTimeoutMs,
     schemaRepair: {
+      createFieldRepair: (schema, retained) => createCompositionAttributionRepair(schema, retained, groups.flatMap(group => group.findings)),
       // Source IDs alone cannot establish their meaning. Keep the immutable
       // source inventory available during the bounded semantic repair.
       replaceConversation: false,
@@ -392,7 +421,7 @@ export function composerSubmissionSchema(groups: FindingGroup[]): typeof SubmitC
   // Providers receive the exact inventory; semantic validation also checks
   // membership, kinds, duplicates and coverage across the selected groups.
   restrictToInventory(item.properties.findingIds.items, groups.flatMap(group => group.findings.map(finding => finding.id)));
-  restrictToInventory(item.properties.sections.items.properties.sourceRefs.items, sources.filter(source => source.kind !== "evidence").map(source => source.id));
+  restrictToInventory(item.properties.sections.items.properties.sourceRefs.items, sources.filter(source => source.kind !== "evidence" && eligibleCompositionSource(source, source.kind)).map(source => source.id));
   const evidenceIds = sources.filter(source => source.kind === "evidence").map(source => source.id);
   restrictToInventory(item.properties.evidenceRefs.items, evidenceIds);
   restrictToInventory(item.properties.primaryEvidenceRefs.items, evidenceIds);
@@ -636,10 +665,11 @@ function buildComposerSchemaRepairPrompt(input: LlmSchemaRepairInput, groups: Fi
     "- Do not ask for repository tools or more context.",
     "",
     "Schema constraints:",
-    "- summary: string, 4000 characters or fewer.",
+    "- summary: string, 4000 characters or fewer; diagnosis, scope and uncertainty only, no remedies or test instructions.",
     "- composedFindings: array of objects { findingIds, sections, evidenceRefs, publication }; retainedSourceRefs, primaryEvidenceRefs and reconciliations are optional.",
     "- findingIds: non-empty array of known finding IDs.",
     "- Write one concise current conclusion per section kind. Do not generate legacy finalBody.",
+    "- Fix/test sections require supported current suggestion sources. Retain all other proposals in retainedSourceRefs; do not restate them in summary, impact or verification prose.",
     "- publication: \"inline\" or \"summary-only\".",
     "",
     "Verified finding groups:",
@@ -662,7 +692,7 @@ function compactComposerRepairGroups(groups: FindingGroup[]): unknown[] {
       whyThisMatters: group.representative.whyThisMatters
     },
     defaultPublication: group.representative.anchor ? "inline" : "summary-only",
-    sourceComponents: compositionSources(group.findings)
+    sourceComponents: compositionSources(group.findings, groups.flatMap(group => group.findings))
   }));
 }
 
@@ -766,7 +796,7 @@ function fallbackComposition(groups: FindingGroup[], link?: EvidenceLinker): Sub
     summary: groups.length === 0 ? "No credible findings." : `Found ${groups.length} verified issue${groups.length === 1 ? "" : "s"}.`,
     composedFindings: groups.map((group) => ({
       findingIds: group.findings.map((finding) => finding.id),
-      finalBody: templateBody(group.representative, group.findings, link),
+      finalBody: templateBody(group.representative, group.findings, link, undefined, groups.flatMap(group => group.findings)),
       publication: group.representative.anchor ? "inline" : "summary-only"
     }))
   };
@@ -832,6 +862,21 @@ function liftConfidenceOneStep(confidence: Confidence): Confidence {
   return "high";
 }
 
+function publishSupportedSuggestions(finding: FinalFinding, candidates: CandidateFinding[], publishedSourceRefs?: string[]): void {
+  const memberIds = new Set([finding.id, ...(finding.mergedCandidateIds ?? [])]);
+  const sources = compositionSources(candidates.filter(candidate => memberIds.has(candidate.id)), candidates);
+  delete finding.suggestionAssessments;
+  for (const [field, kind] of [["suggestedFix", "fix"], ["suggestedTest", "test"]] as const) {
+    delete finding[field];
+    const source = sources.find(source => eligibleCompositionSource(source, kind)
+      && (publishedSourceRefs === undefined || publishedSourceRefs.includes(source.id)));
+    if (source) {
+      finding[field] = source.text;
+      (finding.suggestionAssessments ??= {})[field] = source.suggestionAssessment!;
+    }
+  }
+}
+
 function toFinalFinding(
   finding: CandidateFinding,
   fingerprint: string,
@@ -843,14 +888,15 @@ function toFinalFinding(
   confidenceSelections?: Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>,
   link?: EvidenceLinker,
   attributed = false,
-  onFallbackMetrics?: (metrics: CompositionMetrics) => void
+  onFallbackMetrics?: (metrics: CompositionMetrics) => void,
+  assessmentFindings = mergedFindings
 ): FinalFinding {
   const { anchor: _unvalidatedAnchor, anchorSource: _staleAnchorSource, ...findingWithoutAnchor } = finding;
   const publicationAnchor = selectPublicationAnchor(finding, mergedFindings, diff);
   // Only attributed output can replace verified prose. Legacy or invalid output
   // uses one deterministic rendering, never narrative plus every source section.
-  const normalizedFinalBody = attributed ? finalBody : templateBody(finding, mergedFindings, link, onFallbackMetrics);
-  const normalizedTitle = normalizeFinalFindingTitle(finding, mergedFindings, normalizedFinalBody);
+  const normalizedFinalBody = attributed ? finalBody : templateBody(finding, mergedFindings, link, onFallbackMetrics, assessmentFindings);
+  const normalizedTitle = normalizeFinalFindingTitle(finding, mergedFindings, attributed ? normalizedFinalBody : undefined);
   const mergedCandidateIds = uniqueStrings(mergedFindings.map((item) => item.id));
   const mergedAnchors = dedupeAnchors(mergedFindings.flatMap((item) => item.anchor === undefined ? [] : [item.anchor]));
   const mergedCategories = uniqueStrings(mergedFindings.map((item) => item.category)) as Array<CandidateFinding["category"]>;
@@ -1036,7 +1082,7 @@ function publicationAnchorSelectionRecords(
   }).sort((left, right) => left.findingId.localeCompare(right.findingId));
 }
 
-function normalizeFinalFindingTitle(finding: CandidateFinding, mergedFindings: CandidateFinding[], finalBody: string): string {
+function normalizeFinalFindingTitle(finding: CandidateFinding, mergedFindings: CandidateFinding[], finalBody?: string): string {
   if (!isQuestionShapedFindingTitle(finding.title)) {
     return finding.title;
   }
@@ -1051,7 +1097,7 @@ function normalizeFinalFindingTitle(finding: CandidateFinding, mergedFindings: C
   // content — run 31 published exactly that boilerplate as a title.
   const fallback = [
     finding.failureMode,
-    finalBody,
+    ...(finalBody === undefined ? [] : [finalBody]),
     finding.whyThisMatters
   ].map(firstIssueSentence).find((title) => title !== undefined);
   return fallback ?? finding.title;
@@ -1819,8 +1865,8 @@ function evidenceLinker(resolved: ResolvedReviewInput): EvidenceLinker {
   return (path, line) => `https://github.com/${pr.owner}/${pr.repo}/blob/${sha}/${path}${line !== undefined ? `#L${line}` : ""}`;
 }
 
-function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding], link?: EvidenceLinker, onMetrics?: (metrics: CompositionMetrics) => void): string {
-  return renderRetainedComposition([finding, ...groupedFindings.filter(member => member.id !== finding.id)], link, text => normalizeUnsupportedIntentFraming(text, finding), onMetrics);
+function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding], link?: EvidenceLinker, onMetrics?: (metrics: CompositionMetrics) => void, assessmentFindings = groupedFindings): string {
+  return renderRetainedComposition([finding, ...groupedFindings.filter(member => member.id !== finding.id)], link, text => normalizeUnsupportedIntentFraming(text, finding), onMetrics, assessmentFindings);
 }
 
 function fingerprintFinding(finding: CandidateFinding, packetsById: Map<string, ReviewPacket> = new Map()): string {

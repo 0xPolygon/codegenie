@@ -1,5 +1,7 @@
 import { repairJson, type AssistantMessageEvent } from "@earendil-works/pi-ai";
 import { isDeepStrictEqual } from "node:util";
+import { createHash } from "node:crypto";
+import { stripCredentials } from "../telemetry/redaction.js";
 import type {
   PiAssistantMessage,
   PiInvalidToolCall,
@@ -19,20 +21,35 @@ type Capture = {
   endCall?: PiToolCall;
 };
 
-export type FinalToolArgumentTestHooks = {
+export type FinalToolArgumentHooks = {
   onEvent?(event: AssistantMessageEvent): void;
   onBuffersCleared?(remainingChars: number): void;
+  onRejectedArguments?(diagnostic: RejectedArgumentDiagnostic): void;
+};
+
+export type RejectedArgumentDiagnostic = {
+  contentIndex: number;
+  toolCallId: string;
+  name: string;
+  parse: PiUntrustedArgumentParse;
+  capturedChars: number;
+  sha256: string;
+  syntaxErrorOffset?: number;
+  prefix: string;
+  suffix: string;
+  omittedChars: number;
+  sampleChars: number;
 };
 
 /**
  * Consume Pi's public stream and establish final-argument provenance for one
- * named stage submit tool. Argument fragments remain local to this call and
- * are cleared before it returns or throws.
+ * named stage submit tool. Only bounded, redacted diagnostics may leave via
+ * the optional hook. Capture buffers are cleared before returning or throwing.
  */
 export async function consumeFinalToolArguments(
   stream: PublicAssistantEventStream,
   submitToolName: string,
-  hooks: FinalToolArgumentTestHooks = {}
+  hooks: FinalToolArgumentHooks = {}
 ): Promise<PiAssistantMessage> {
   const captures = new Map<number, Capture>();
   let terminal: PiAssistantMessage | undefined;
@@ -77,7 +94,7 @@ export async function consumeFinalToolArguments(
     if (terminal === undefined) {
       throw new Error("Pi stream ended without a terminal event");
     }
-    return finalizeMessage(terminal, submitToolName, captures);
+    return finalizeMessage(terminal, submitToolName, captures, hooks);
   } finally {
     for (const capture of captures.values()) {
       capture.text = "";
@@ -95,7 +112,8 @@ function emptyCapture(started: boolean): Capture {
 function finalizeMessage(
   message: PiAssistantMessage,
   submitToolName: string,
-  captures: ReadonlyMap<number, Capture>
+  captures: ReadonlyMap<number, Capture>,
+  hooks: FinalToolArgumentHooks
 ): PiAssistantMessage {
   const content = message.content.map((block, contentIndex) => {
     if (!isPiToolCall(block) || block.name !== submitToolName) {
@@ -109,6 +127,24 @@ function finalizeMessage(
         ? { state: "strict" }
         : { state: "repaired", repairs: ["pi_narrow_string_repair"] };
       return { ...block, arguments: parse.value, argumentParse } satisfies PiToolCall;
+    }
+    // Diagnostic-only: never attach fragments to usable arguments or the model
+    // conversation. The runner writes these through its redacted debug path.
+    if (hooks.onRejectedArguments) {
+      const raw = captures.get(contentIndex)?.text ?? "";
+      let syntaxErrorOffset: number | undefined;
+      try { JSON.parse(raw); } catch (cause) {
+        const offset = cause instanceof SyntaxError ? cause.message.match(/position (\d+)/u)?.[1] : undefined;
+        if (offset !== undefined) syntaxErrorOffset = Number(offset);
+      }
+      // Redact before slicing so a boundary cannot expose part of a secret.
+      const sample = stripCredentials(raw);
+      const prefix = sample.slice(0, 8192);
+      const suffix = sample.length > prefix.length ? sample.slice(Math.max(prefix.length, sample.length - 8192)) : "";
+      hooks.onRejectedArguments({ contentIndex, toolCallId: block.id, name: block.name, parse,
+        capturedChars: raw.length, sha256: createHash("sha256").update(raw).digest("hex"),
+        ...(syntaxErrorOffset !== undefined ? { syntaxErrorOffset } : {}),
+        prefix, suffix, sampleChars: sample.length, omittedChars: sample.length - prefix.length - suffix.length });
     }
     return {
       type: "invalidToolCall",

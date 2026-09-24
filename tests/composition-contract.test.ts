@@ -22,11 +22,14 @@ describe("contract-aware concise composition", () => {
     expect(primary).not.toContain(findings[0]!.suggestedFix);
     expect(primary).not.toContain(findings[0]!.suggestedTest);
     expect(primary).toContain("**Suggested fix:** Round");
-    expect(primary).toContain("**Suggested test (unverified):**");
+    expect(primary).toContain("Regression-test guidance remains unverified");
+    expect(primary).not.toContain(findings[1]!.suggestedTest);
     expect(primary).toContain("size of the loss depends");
-    expect(primary).toContain("Original severity assessments differ: high, medium");
+    expect(primary).not.toContain("Original severity assessments differ");
+    expect(body).toContain("`rounding`: severity high");
+    expect(body).toContain("`boundary-tests`: severity medium");
     expect(body).toContain("**superseded:**");
-    for (const source of compositionSources(findings)) { expect(body).toContain(source.text); expect(body).toContain(source.id); }
+    for (const source of compositionSources(findings)) { if (!source.id.endsWith("/proofAssessment")) expect(body).toContain(source.text); expect(body).toContain(source.id); }
     expect(metrics.accountedSourceComponents).toBe(compositionSources(findings).length);
     expect(metrics.primaryEvidenceComponents).toBe(1);
     expect(metrics.primaryWords).toBeLessThan(metrics.provenanceWords);
@@ -37,7 +40,7 @@ describe("contract-aware concise composition", () => {
     const { findings, sections, evidenceRefs, presentation } = proposal();
     const render = () => composePresentation(findings, sections, evidenceRefs, undefined, presentation);
     evidenceRefs.pop();
-    expect(render).toThrow(/omitted/);
+    expect(render).toThrow(/missing_source/);
     presentation.retainedSourceRefs!.push("boundary-tests/evidence/relatedCode/1");
     expect(render).not.toThrow();
     presentation.primaryEvidenceRefs = ["boundary-tests/evidence/relatedCode/1"];
@@ -48,7 +51,7 @@ describe("contract-aware concise composition", () => {
     const { findings, sections, evidenceRefs, presentation } = proposal();
     const render = () => composePresentation(findings, sections, evidenceRefs, undefined, presentation);
     sections.push({ kind: "fix", text: "Lower the guarantee", sourceRefs: ["rounding/suggestedFix"] });
-    expect(render).toThrow(/Incompatible/);
+    expect(render).toThrow(/unsupported_suggestion/);
     expect(render).toThrow(/Duplicate section/);
     sections.pop();
     presentation.reconciliations![0]!.supportingRefs = [];
@@ -76,7 +79,7 @@ describe("contract-aware concise composition", () => {
     expect(primary).toContain(findings[0]!.failureMode);
     expect(primary).not.toContain(findings[0]!.suggestedFix);
     expect(primary).toContain(findings[1]!.suggestedFix);
-    expect(primary).toContain("provisional");
+    expect(primary).toContain("synthesis was unavailable");
     expect(body).toContain(findings[0]!.suggestedFix);
     expect(body).toContain("incompatible");
   });

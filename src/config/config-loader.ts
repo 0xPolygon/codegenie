@@ -27,6 +27,7 @@ type RawPathRule = NonNullable<NonNullable<RawCodegenieConfig["classification"]>
 export type CliConfigOverrides = {
   depth?: ReviewDepth;
   budgetBoost?: number;
+  compositionReasoningStepDown?: boolean;
   maxTimeMs?: number;
   lenses?: string[];
   provider?: string;
@@ -57,6 +58,7 @@ const DEFAULT_SOURCE_PATHS = [
   "lenses.extraSkillPaths",
   "review.depth",
   "review.verify",
+  "review.compositionReasoningStepDown",
   "review.maxFindings",
   "review.softCommentCap",
   "review.minConfidence",
@@ -80,7 +82,7 @@ const DEFAULT_SOURCE_PATHS = [
   "eval.logsDir"
 ];
 
-const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap", "budgetBoost", "maxTime"]);
+const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap", "budgetBoost", "maxTime", "compositionReasoningStepDown"]);
 const CREDENTIAL_KEY_PATTERN = /(?:api[_-]?key|apikey|secret|token|password|passwd|authorization|credentials|auth)/i;
 
 export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
@@ -251,6 +253,10 @@ function applyRawConfig(
     config.review.perPassTimeoutMs = raw.review.perPassTimeoutMs;
     sources["review.perPassTimeoutMs"] = source;
   }
+  if (raw.review?.compositionReasoningStepDown !== undefined) {
+    config.review.compositionReasoningStepDown = raw.review.compositionReasoningStepDown;
+    sources["review.compositionReasoningStepDown"] = source;
+  }
   if (raw.review?.budgetBoost !== undefined) {
     config.review.budgetBoost = raw.review.budgetBoost;
     sources["review.budgetBoost"] = source;
@@ -363,6 +369,9 @@ function filterRepoConfig(raw: RawCodegenieConfig, warnings: ConfigWarning[]): R
     if (raw.review.softCommentCap !== undefined) {
       safe.review.softCommentCap = raw.review.softCommentCap;
     }
+    if (raw.review.compositionReasoningStepDown !== undefined) {
+      safe.review.compositionReasoningStepDown = raw.review.compositionReasoningStepDown;
+    }
     if (raw.review.budgetBoost !== undefined) {
       safe.review.budgetBoost = raw.review.budgetBoost;
     }
@@ -469,6 +478,10 @@ function applyCliOverrides(
   if (cli.depth !== undefined) {
     config.review.depth = cli.depth;
     sources["review.depth"] = "cli";
+  }
+  if (cli.compositionReasoningStepDown !== undefined) {
+    config.review.compositionReasoningStepDown = cli.compositionReasoningStepDown;
+    sources["review.compositionReasoningStepDown"] = "cli";
   }
   if (cli.budgetBoost !== undefined) {
     config.review.budgetBoost = cli.budgetBoost;

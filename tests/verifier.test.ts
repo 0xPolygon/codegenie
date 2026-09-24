@@ -4,6 +4,7 @@ import { parseDiff } from "../src/git/diff-parser.js";
 import type { LlmRunner, LlmStructuredRequest } from "../src/llm/llm-runner.js";
 import { SCHEMA_VERSIONS } from "../src/llm/schemas.js";
 import { verifyFindings } from "../src/pipeline/verifier.js";
+import { renderRetainedComposition } from "../src/pipeline/composition-content.js";
 import { inferAnchorFromChangedCode, representativeAnchorFromPacket } from "../src/pipeline/pipeline-utils.js";
 import { createPromptBuilder } from "../src/skills/prompt-builder.js";
 import type { Skill } from "../src/skills/skill-loader.js";
@@ -22,6 +23,29 @@ import { scoreEvalRun } from "../src/evals/eval-scoring.js";
 import { nullTelemetry } from "./helpers/git.js";
 
 describe("stage 9 evidence-aware verification", () => {
+  it.each([
+    { material: true, title: "Recovery instructions disable authorization on a public listener",
+      reason: "The documented public recovery command disables authorization, contradicting the deployment requirement." },
+    { material: false, title: "Incident explanation omits an unrelated refactor",
+      reason: "The incident-specific explanation need not enumerate unrelated implementation changes; no consequential misleading instruction was established." },
+    { material: false, title: "Backup example mixes a rounded duration with an exact duration",
+      reason: "The surrounding example provides the exact duration and correct recovery command. No evidence shows an incorrect retention decision or unsafe action; a possible future misunderstanding alone is not a demonstrated consequence." }
+  ])("respects supplied documentation impact judgments without a documentation blacklist: $title", ({ material, title, reason }) => {
+    // These are supplied verifier decisions, not a keyword-based materiality filter.
+    const fixture = reviewFixture(["docs/operations.md"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("documentation-impact", packet, { category: "maintainability", title });
+    return verifyFindings({ packetResults: [packetResult(packet.id, [finding])], packets: [packet] }, fakeTools(), config(), nullTelemetry(), {
+      runner: verifierRunner(() => ({ verdict: material ? "keep" : "reject", reason, requiredEvidencePresent: material,
+        falsePositiveRisk: material ? "low" : "high", proofAssessment: { status: material ? "established" : "refuted", evidence: reason, assumptions: [] } })),
+      promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+    }).then(result => {
+      expect(result.verified).toHaveLength(material ? 1 : 0);
+      expect(result.verdicts[0]!.verdict).toBe(material ? "keep" : "reject");
+      expect(result.incompleteCount).toBe(0);
+    });
+  });
+
   it("projects only neutral and packet-compatible skills into Stage 9", async () => {
     const fixture = reviewFixture(["src/lib.rs"]);
     const packet: ReviewPacket = {
@@ -540,6 +564,83 @@ describe("stage 9 evidence-aware verification", () => {
     ]));
   });
 
+  it("records an incomplete promoted verdict even when a direct runner bypasses semantic validation", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("promoted-incomplete", packet, { provenance: {
+      source: "uncertainty_promotion", sourceKind: "uncertainty", sourcePacketId: packet.id,
+      question: "Does revocation deny access?", files: [packet.path], symbols: [], reason: "Investigate access"
+    } });
+    let validation: unknown;
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [finding])], packets: [packet] },
+      fakeTools(), config(), nullTelemetry(), {
+        runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+          const value = { verdict: "revise", reason: "Changed classification and severity", revisedAnchor: finding.anchor,
+            requiredEvidencePresent: true, falsePositiveRisk: "low", proofAssessment: { status: "established", evidence: "Read handler omits membership check", assumptions: [] } };
+          validation = request.validateSubmit?.(value as T);
+          return value as T;
+        } },
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      });
+    expect(validation).toMatchObject({ ok: false, details: expect.stringContaining("findingUpdates.title") });
+    expect(result.verified).toEqual([]);
+    expect(result.incompleteCount).toBe(1);
+    expect(result.verdicts[0]).toMatchObject({ verdict: "incomplete", verificationIncomplete: true });
+  });
+
+  it("asks for a new evidence-backed verdict only when the original submission is unreadable", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("repair-instructions", packet);
+    let checked = false;
+    await verifyFindings({ packetResults: [packetResult(packet.id, [finding])], packets: [packet] },
+      fakeTools(), config(), nullTelemetry(), {
+        runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+          const input = { stage: 9 as const, submitTool: "submit_verdict", error: "Invalid JSON", submitCalls: [],
+            untrustedSubmitCalls: [{ id: "bad", name: "submit_verdict", state: "invalid" as const, errorKind: "invalid_syntax" as const }], extraToolNames: [] };
+          const unreadable = request.schemaRepair!.buildPrompt!(input);
+          expect(unreadable).toContain("Generate a new complete Stage 9 verifier submission");
+          expect(unreadable).toContain("not available as a trusted verdict");
+          expect(unreadable).toContain("repository-tool evidence are retained");
+          expect(unreadable).not.toContain("Preserve the verdict and substantive conclusions");
+          const readable = request.schemaRepair!.buildPrompt!({ ...input, untrustedSubmitCalls: [], submitCalls: [{ id: "readable", arguments: { verdict: "keep" } }] });
+          expect(readable).toContain("Preserve the verdict and substantive conclusions of the retained readable submission");
+          expect(readable).not.toContain("Generate a new complete");
+          checked = true;
+          return { verdict: "keep", reason: "Confirmed", requiredEvidencePresent: true, falsePositiveRisk: "low" } as T;
+        } }, promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      });
+    expect(checked).toBe(true);
+  });
+
+  it("supplies precise promoted repair targets through the live verifier request", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("promoted-repair", packet, { provenance: {
+      source: "uncertainty_promotion", sourceKind: "uncertainty", sourcePacketId: packet.id,
+      question: "Does revocation deny access?", files: [packet.path], symbols: [], reason: "Investigate access"
+    } });
+    let repaired = false;
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [finding])], packets: [packet] },
+      fakeTools(), config(), nullTelemetry(), {
+        runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+          const input = { verdict: "revise", reason: "Confirmed the missing permission check", requiredEvidencePresent: true,
+            falsePositiveRisk: "low", proofAssessment: { status: "established", evidence: "Read handler omits membership check", assumptions: [] },
+            findingUpdates: Object.fromEntries(["title", "failureMode", "whyThisMatters", "verification", "category"].map(key => [key, finding[key as keyof CandidateFinding]])) };
+          expect(request.validateSubmit?.(input as T)).toMatchObject({ ok: false });
+          const repair = request.schemaRepair!.createFieldRepair!(request.schema, input)!;
+          expect(repair.paths).toEqual(["findingUpdates.severity", "findingUpdates.confidence"]);
+          const merged = repair.merge({ "findingUpdates.severity": "medium", "findingUpdates.confidence": "high" });
+          expect(request.validateSubmit?.(merged as T)).toEqual({ ok: true });
+          repaired = true;
+          return merged as T;
+        } }, promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      });
+    expect(repaired).toBe(true);
+    expect(result.incompleteCount).toBe(0);
+    expect(result.verified[0]).toMatchObject({ severity: "medium", confidence: "high" });
+  });
+
   it("keeps promoted uncertainty provenance in verification records and metrics", async () => {
     const fixture = reviewFixture(["src/app.ts"]);
     const finding = candidate("promoted-uncertainty", fixture.packets[0]!, {
@@ -574,7 +675,9 @@ describe("stage 9 evidence-aware verification", () => {
           verdict: "keep",
           reason: "The verifier confirmed the promoted predicate.",
           requiredEvidencePresent: true,
-          falsePositiveRisk: "low"
+          falsePositiveRisk: "low",
+          findingUpdates: { title: finding.title, failureMode: finding.failureMode, whyThisMatters: finding.whyThisMatters,
+            verification: finding.verification, category: finding.category, severity: finding.severity, confidence: finding.confidence }
         })),
         promptBuilder: createPromptBuilder(fakeLensRegistry()),
         lensRegistry: fakeLensRegistry(),
@@ -590,7 +693,7 @@ describe("stage 9 evidence-aware verification", () => {
           sourceKind: "uncertainty",
           sourcePacketId: fixture.packets[0]!.id
         }),
-        verdict: expect.objectContaining({ verdict: "keep" })
+        verdict: expect.objectContaining({ verdict: "revise" })
       })
     ]);
     expect(telemetry.events).toEqual(expect.arrayContaining([
@@ -633,6 +736,50 @@ describe("stage 9 evidence-aware verification", () => {
       expect(result.verdicts[0]?.proofAssessment).toEqual(assessment);
       expect(result.incompleteCount).toBe(0);
     }
+  });
+
+  it.each(["truncated", "counterexample", "complete-absence", "secondary"] as const)("propagates supplied absence-claim proof boundaries: %s", async mode => {
+    const fixture = reviewFixture(["app.ts"]);
+    const packet = fixture.packets[0]!;
+    const input = candidate("absence-check", packet);
+    const assessment = {
+      status: mode === "truncated" ? "unresolved" : mode === "counterexample" ? "refuted" : "established",
+      evidence: mode === "truncated" ? "Only the first part of the authorization handler was delivered."
+        : mode === "counterexample" ? "The full handler includes requireActiveMembership after the truncated prefix."
+        : "The complete read handler has no active-membership check and returns private content.",
+      assumptions: mode === "truncated" ? [{ question: "Does the uninspected remainder enforce membership?", essential: true }]
+        : mode === "secondary" ? [{ question: "How many cached sessions remain live?", essential: false }] : []
+    };
+    const shouldKeep = mode === "complete-absence" || mode === "secondary";
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [input])], packets: [packet] },
+      fakeTools(), config(), nullTelemetry(), {
+        runner: verifierRunner(() => ({ verdict: shouldKeep ? "keep" : "reject", reason: assessment.evidence,
+          requiredEvidencePresent: shouldKeep, falsePositiveRisk: shouldKeep ? "low" : "high", proofAssessment: assessment })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      });
+    expect(result.verified).toHaveLength(shouldKeep ? 1 : 0);
+    expect(result.verdicts[0]?.proofAssessment).toEqual(assessment);
+    expect(result.incompleteCount).toBe(0);
+    if (mode === "truncated") expect(result.verdicts[0]?.unresolvedConcern?.question).toContain("uninspected remainder");
+  });
+
+  it("publishes one coherent expanded revision when a broad claim is narrowed", async () => {
+    const fixture = reviewFixture(["app.ts"]);
+    const packet = fixture.packets[0]!;
+    const input = candidate("narrowed", packet, { title: "All requests bypass authorization", whyThisMatters: "Every request leaks data." });
+    const updates = { title: "Revoked members retain read access", failureMode: "The cached-session path omits an active membership check.",
+      whyThisMatters: "Only reads using an existing cached membership leak private content after revocation.",
+      verification: "Fresh sessions are checked. The cached read path is the remaining defect." };
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [input])], packets: [packet] },
+      fakeTools(), config(), nullTelemetry(), {
+        runner: verifierRunner(() => ({ verdict: "revise", reason: "Fresh-session guards refute the broad premise.",
+          requiredEvidencePresent: true, falsePositiveRisk: "low", findingUpdates: updates })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      });
+    expect(result.verified[0]).toMatchObject(updates);
+    expect(result.verdicts[0]?.finalFinding).toMatchObject(updates);
+    expect(result.verified[0]?.evidence).toEqual(input.evidence);
+    expect(result.verified[0]?.whyThisMatters).not.toContain("Every request");
   });
 
   it("rejects keep verdicts that report required evidence is missing", async () => {
@@ -737,6 +884,26 @@ describe("stage 9 eval diagnostics and prompts", () => {
 
     expect(packetPrompt).toContain("do not mark a changed-line correctness/security finding low confidence solely");
     expect(packetPrompt).toContain("verifier-resolvable predicate remains");
+    expect(packetPrompt).toContain("specific instruction or decision the reader would get wrong");
+    expect(packetPrompt).toContain("hypothetical monitoring/implementation mistake alone does not establish material impact");
+    expect(verifierPrompt).toContain("As a final verification decision, assess each final suggestion");
+    expect(verifierPrompt).toContain("accept other requirement-preserving fixes");
+    expect(verifierPrompt).toContain("specific symptom-hiding remedy, and the legitimate remedies");
+    expect(verifierPrompt).toContain("original input and authoritative contract");
+    expect(verifierPrompt).toContain("explain the result in the existing assessment rationale");
+    expect(verifierPrompt).toContain("Checking two values against their separate expected values");
+    expect(verifierPrompt).toContain("A remedy-specific test may cover one explicitly identified alternative");
+    expect(verifierPrompt).toContain("specific instruction or decision the reader would get wrong");
+    expect(verifierPrompt).toContain("hypothetical monitoring/implementation mistake alone does not establish material impact");
+    expect(verifierPrompt).toContain("Read the surrounding example and corrective instructions");
+    expect(verifierPrompt).toContain("do not assert downstream failure without support");
+    expect(verifierPrompt).toContain("A supported fix does not make its test supported");
+    expect(verifierPrompt).toContain("otherwise leave it unverified");
+    expect(verifierPrompt).toContain("Do not invent a tolerance, exception or weaker guarantee");
+    expect(verifierPrompt).toContain("Rejecting an extreme workaround alone is insufficient");
+    expect(verifierPrompt).toContain("test advice in either suggestedFix or suggestedTest");
+    expect(verifierPrompt).toContain("accept rejection as an alternative only when the contract permits it");
+    expect(verifierPrompt).toContain("Source inspection does not mean a test was executed");
     expect(verifierPrompt).toContain("Same-PR tests that assert new behavior prove the behavior changed");
     expect(verifierPrompt).toContain("refactor, cleanup, consolidation, behavior-preserving");
     expect(verifierPrompt).toContain("cite the exact helper/callee branch that proves the failure mode");
@@ -755,8 +922,10 @@ describe("stage 9 eval diagnostics and prompts", () => {
     expect(verifierPrompt).toContain("original source value");
     expect(verifierPrompt).toContain("A bare keep means");
     expect(verifierPrompt).toContain("a revision must include findingUpdates or revisedAnchor");
-    expect(verifierPrompt).toContain("Tool refusal, truncation, or budget pressure on a secondary check must not keep confidence low");
-    expect(verifierPrompt).toContain("Reserve low confidence for speculative reachability, ambiguous intent, or weak path matching");
+    expect(verifierPrompt).toContain("Calibrate confidence from proof, not tool pressure on secondary checks");
+    expect(verifierPrompt).toContain("explicitly supply final title, failureMode, whyThisMatters, verification, category, severity and confidence");
+    expect(verifierPrompt).toContain("weakening the caller's original requirement");
+    expect(verifierPrompt).toContain("plausible answer to an open question eliminates the defect");
     expect(verifierPrompt).toContain("low means bounded or localized impact");
     expect(verifierPrompt).toContain("Measure magnitude and reach");
     expect(verifierPrompt).toContain("changing severity by more than one level");
@@ -1102,6 +1271,7 @@ describe("plan 106 verifier revision semantics", () => {
       suggestedFix: finding.suggestedFix, producedBy: finding.producedBy,
       anchor: finding.anchor, anchorSource: finding.anchorSource
     });
+    expect(result.verified[0]).not.toHaveProperty("originalSuggestions");
     expect(finding.title).toBe("Candidate compact-update");
     expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "verification_primary_submit_accepted" }));
   });
@@ -1126,6 +1296,7 @@ describe("plan 106 verifier revision semantics", () => {
             findingUpdates: { suggestedFix: updatedFix },
             proofAssessment: { status: "established", evidence: "Changed code floors the requested transfer.", assumptions: [] },
             suggestionAssessments: { suggestedFix: {
+              contractCheck: { status: "established", requirement: "Preserve the caller guarantee." },
               status: "supported", suggestionText: matching ? updatedFix : finding.suggestedFix!,
               rationale: "Preserves the caller minimum.", evidence: [{ path: "caller.ts", lines: "10-12", whyRelevant: "Rejects amounts below the request." }]
             } }
@@ -1140,8 +1311,115 @@ describe("plan 106 verifier revision semantics", () => {
       suggestedFix: { status: matching ? "supported" : "unverified", suggestionText: updatedFix },
       suggestedTest: { status: "unverified", suggestionText: finding.suggestedTest }
     } });
+    expect(result.verified[0]?.originalSuggestions).toEqual({ suggestedFix: {
+      status: "unverified", suggestionText: finding.suggestedFix,
+      rationale: "Behavioral requirement compatibility was not assessed.", evidence: []
+    } });
+    expect(finding).not.toHaveProperty("originalSuggestions");
     expect(result.verdicts[0]?.suggestionAssessments).toEqual(result.verified[0]?.suggestionAssessments);
     expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "verification_suggestion_assessments" }));
+  });
+
+  it.each([
+    { field: "suggestedTest" as const, category: "correctness" as const,
+      proposal: "Assert reported retention is at least 7 days and no greater than configured retention.",
+      replacement: "For a requested retention of 30 days, require reported retention of at least 30 days and storage capable of retaining it; accept either valid storage strategy.",
+      requirement: "The caller's requested retention is a minimum, not a best-effort target.",
+      rationale: "The invented 7-day tolerance rejects zero but accepts a 29-day report for a 30-day request. The replacement rejects that specific weaker remedy without constraining storage strategy." },
+    { field: "suggestedFix" as const, category: "testing" as const,
+      proposal: "Add tests requiring owner reads to succeed and unauthenticated reads to fail.",
+      replacement: "Add tests that owners and authorized delegates can read while unauthenticated callers cannot; accept either supported permission backend.",
+      requirement: "Both owners and authorized delegates retain read access.",
+      rationale: "Owner success rejects deny-everyone, but the proposed test still passes if all delegates are denied. The replacement exercises the delegate trigger and rejects that weaker remedy while accepting either backend." }
+  ].flatMap(example => [true, false].map(revised => ({ ...example, revised }))))("checks supplied specific weakening assessments for $field, revised=$revised", async example => {
+    // These are supplied judgments; this test does not measure live semantic accuracy.
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("specific-counterexample", packet, { category: example.category, [example.field]: example.proposal });
+    let calls = 0;
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(), config(), nullTelemetry(), {
+        runner: verifierRunner(() => {
+          calls++;
+          return { verdict: example.revised ? "revise" : "keep", reason: "The defect remains proven; assess its advice separately.",
+            requiredEvidencePresent: true, falsePositiveRisk: "low",
+            proofAssessment: { status: "established", evidence: "The complete changed branch fails the caller's established requirement.", assumptions: [] },
+            ...(example.revised ? { findingUpdates: { [example.field]: example.replacement } } : {}),
+            suggestionAssessments: { [example.field]: {
+              status: example.revised ? "supported" : "incompatible", suggestionText: example.revised ? example.replacement : example.proposal,
+              rationale: example.rationale, contractCheck: { status: "established", requirement: example.requirement },
+              evidence: [{ path: "caller-contract.ts", lines: "The caller supplies the required behavior.", whyRelevant: example.requirement }]
+            } } };
+        }), promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      });
+    expect(calls).toBe(1);
+    expect(result.incompleteCount).toBe(0);
+    const verified = result.verified[0]!;
+    expect(verified.suggestionAssessments![example.field]!.status).toBe(example.revised ? "supported" : "incompatible");
+    const body = renderRetainedComposition([verified]);
+    const primary = body.split("\n\n<details>")[0]!;
+    expect(primary).not.toContain(example.proposal);
+    if (example.revised) {
+      expect(primary).toContain(example.replacement);
+      expect(verified.originalSuggestions?.[example.field]?.suggestionText).toBe(example.proposal);
+    }
+    expect(body).toContain(example.proposal);
+  });
+
+  it.each([true, false])("preserves the defect and supported fix when a weak test is revised or withheld (revised=%s)", async revised => {
+    // Scripted assessments exercise propagation and publication, not model judgment.
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("test-contract", packet, {
+      suggestedFix: "Check current membership before returning a private document.",
+      suggestedTest: "Revoke membership and assert a subsequent read is denied."
+    });
+    const requirement = "Active members can read; revoked members cannot read private documents.";
+    const evidence = [{ path: "access-policy.ts", lines: "10-14", whyRelevant: requirement }];
+    const replacement = "Assert an active member can read the document, then revoke membership and assert no document is disclosed; either permitted denial transport is acceptable.";
+    let calls = 0;
+    const result = await verifyFindings(
+      { packetResults: [packetResult(packet.id, [finding])], packets: fixture.packets },
+      fakeTools(), config(), nullTelemetry(), {
+        runner: verifierRunner(() => {
+          calls++;
+          return {
+            verdict: revised ? "revise" : "keep", reason: "The defect is proven; denial alone also passes a deny-everyone workaround.",
+            requiredEvidencePresent: true, falsePositiveRisk: "low",
+            ...(revised ? { findingUpdates: { suggestedTest: replacement } } : {}),
+            proofAssessment: { status: "established", evidence: "The cached read bypasses current membership checks.", assumptions: [] },
+            suggestionAssessments: {
+              suggestedFix: { status: "supported", suggestionText: finding.suggestedFix!,
+                rationale: "Checks revocation while preserving access for active members.",
+                contractCheck: { status: "established", requirement }, evidence },
+              suggestedTest: { status: revised ? "supported" : "unverified", suggestionText: revised ? replacement : finding.suggestedTest!,
+                rationale: revised
+                  ? "Deny-everyone fails the active-member read assertion; both permitted denial transports pass after revocation."
+                  : "Deny-everyone passes this denial-only assertion while violating active-member access.",
+                contractCheck: { status: "established", requirement }, evidence }
+            }
+          };
+        }),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      }
+    );
+    expect(calls).toBe(1);
+    expect(result.incompleteCount).toBe(0);
+    expect(result.verified).toHaveLength(1);
+    const verified = result.verified[0]!;
+    expect(verified.suggestedFix).toBe(finding.suggestedFix);
+    expect(verified.suggestionAssessments?.suggestedTest?.status).toBe(revised ? "supported" : "unverified");
+    const body = renderRetainedComposition([verified]);
+    const primary = body.split("\n\n<details>")[0]!;
+    expect(primary).toContain(finding.suggestedFix);
+    expect(primary).not.toContain(finding.suggestedTest);
+    expect(primary.includes("**Suggested test:**")).toBe(revised);
+    if (revised) {
+      expect(primary).toContain(replacement);
+      expect(verified.originalSuggestions?.suggestedTest?.suggestionText).toBe(finding.suggestedTest);
+    }
+    expect(body).toContain(finding.suggestedTest);
+    expect(finding.suggestedTest).toBe("Revoke membership and assert a subsequent read is denied.");
   });
 
   it.each([{}, { id: "replacement" }, { confidence: "certain" }, { evidence: {} }, '{"title":"string"}'])(
@@ -1523,7 +1801,7 @@ describe("plan 107 related promotion signal handoff", () => {
     expect(request?.toolBudget).toEqual({
       maxToolCalls: 8,
       maxInvestigationRounds: 3,
-      maxResultChars: 16_000,
+      maxResultChars: 32_000,
       maxSingleToolResultChars: 6_000,
       reservedSourceResultChars: 4_000,
       sourceExtension: { maxToolCalls: 2, maxResultChars: 8_000 }

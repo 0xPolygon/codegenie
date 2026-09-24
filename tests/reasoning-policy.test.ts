@@ -13,7 +13,7 @@ describe("relative reasoning policy", () => {
     ["high", [], "high"],
     ["high", ["off"], "high"],
     ["max", ["low", "high"], "max"]
-  ])("composition steps down %s within %j to %s", (configured, supported, expected) => {
+  ])("relative policy steps down %s within %j to %s", (configured, supported, expected) => {
     expect(selectReasoningEffort(configured, supported, "one_level_lower")).toBe(expected);
     expect(selectReasoningEffort(configured, supported, "configured")).toBe(configured);
   });

@@ -1,3 +1,4 @@
+import type { FieldRepair } from "./field-repair.js";
 import type { TSchema } from "@earendil-works/pi-ai";
 import type { CodegenieConfig, RepositoryTools, ReviewStage, ToolBudget, ToolResultMeta } from "../types.js";
 import type { CodegenieErrorCode } from "../util/errors.js";
@@ -92,6 +93,8 @@ export type LlmStructuredRequest<T> = {
   stage: ReviewStage;
   /** Optional placement repair: lowest reasoning, one provider attempt, no follow-up loop. */
   purpose?: "location_clarification";
+  /** Stage 10 only: step down one supported reasoning level; repairs keep their own policy. */
+  compositionReasoningStepDown?: boolean;
   prompt: string;
   schema: TSchema;
   templateVersion: string;
@@ -103,10 +106,14 @@ export type LlmStructuredRequest<T> = {
     packetId?: string;
     candidateId?: string;
   };
+  /** Pure stage-specific normalization of trusted, assembled arguments. Raw input remains auditable. */
+  normalizeSubmit?(value: unknown): { value: unknown; removedFields: string[]; addedFields?: string[]; reason: string } | undefined;
   validateSubmit?(value: T): LlmSubmitSemanticValidation;
   schemaRepair?: {
     /** Top-level alternative encodings: explicitly supplying one replaces retained siblings. */
     replacementGroups?: readonly (readonly string[])[];
+    /** Optional constrained patch contract; the runner still validates the full merged submission. */
+    createFieldRepair?(schema: TSchema, retained: unknown): FieldRepair | undefined;
     replaceConversation?: boolean;
     failAfterRepair?: boolean;
     recoverInvalidSubmit?(input: LlmSchemaInvalidSubmitRecoveryInput): Record<string, unknown> | LlmInvalidSubmitRecovery | undefined;
