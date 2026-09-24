@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { stripCredentials } from "../telemetry/redaction.js";
 import type {
   PiAssistantMessage,
+  PiArgumentSyntaxDiagnostic,
   PiInvalidToolCall,
   PiToolCall,
   PiTrustedArgumentParse,
@@ -35,6 +36,7 @@ export type RejectedArgumentDiagnostic = {
   capturedChars: number;
   sha256: string;
   syntaxErrorOffset?: number;
+  syntaxDiagnostic?: PiArgumentSyntaxDiagnostic;
   prefix: string;
   suffix: string;
   omittedChars: number;
@@ -128,32 +130,56 @@ function finalizeMessage(
         : { state: "repaired", repairs: ["pi_narrow_string_repair"] };
       return { ...block, arguments: parse.value, argumentParse } satisfies PiToolCall;
     }
-    // Diagnostic-only: never attach fragments to usable arguments or the model
-    // conversation. The runner writes these through its redacted debug path.
+    // Diagnostics never become usable arguments. Only a small syntax excerpt
+    // can enter repair prompts; larger samples stay in redacted debug artifacts.
+    const raw = captures.get(contentIndex)?.text ?? "";
+    const sample = stripCredentials(raw);
+    const syntaxDiagnostic = parse.state === "partial" || parse.state === "invalid" || parse.state === "length_stopped"
+      ? argumentSyntaxDiagnostic(sample) : undefined;
     if (hooks.onRejectedArguments) {
-      const raw = captures.get(contentIndex)?.text ?? "";
       let syntaxErrorOffset: number | undefined;
       try { JSON.parse(raw); } catch (cause) {
         const offset = cause instanceof SyntaxError ? cause.message.match(/position (\d+)/u)?.[1] : undefined;
         if (offset !== undefined) syntaxErrorOffset = Number(offset);
       }
       // Redact before slicing so a boundary cannot expose part of a secret.
-      const sample = stripCredentials(raw);
       const prefix = sample.slice(0, 8192);
       const suffix = sample.length > prefix.length ? sample.slice(Math.max(prefix.length, sample.length - 8192)) : "";
       hooks.onRejectedArguments({ contentIndex, toolCallId: block.id, name: block.name, parse,
         capturedChars: raw.length, sha256: createHash("sha256").update(raw).digest("hex"),
         ...(syntaxErrorOffset !== undefined ? { syntaxErrorOffset } : {}),
+        ...(syntaxDiagnostic ? { syntaxDiagnostic } : {}),
         prefix, suffix, sampleChars: sample.length, omittedChars: sample.length - prefix.length - suffix.length });
     }
     return {
       type: "invalidToolCall",
       id: block.id,
       name: block.name,
-      argumentParse: parse
+      argumentParse: parse,
+      ...(syntaxDiagnostic ? { syntaxDiagnostic } : {})
     } satisfies PiInvalidToolCall;
   });
   return { ...message, content };
+}
+
+// Locate the error after redaction so offsets remain meaningful without
+// slicing through secrets. Parser messages can echo raw input: allow only
+// structural descriptions, never the parser's embedded string preview.
+function argumentSyntaxDiagnostic(sample: string): PiArgumentSyntaxDiagnostic | undefined {
+  try { JSON.parse(sample); return undefined; } catch (cause) {
+    if (!(cause instanceof SyntaxError)) return undefined;
+    const position = cause.message.match(/position (\d+)/u)?.[1];
+    const offset = position !== undefined ? Number(position)
+      : /end of JSON|unterminated/iu.test(cause.message) ? sample.length : undefined;
+    const error = cause.message.match(/^(?:Expected .*? in JSON|Unterminated string in JSON|Unexpected (?:non-whitespace character after JSON|end of JSON input))/u)?.[0] ?? "Invalid JSON syntax";
+    // Some runtimes provide only a quoted preview, not an offset. Locate it
+    // only when it occurs exactly once; never report a guessed error offset.
+    const preview = cause.message.match(/, (?:\.\.\.)?"([\s\S]*)"(?:\.\.\.)? is not valid JSON$/u)?.[1];
+    const previewStart = preview && sample.indexOf(preview) === sample.lastIndexOf(preview) ? sample.indexOf(preview) : -1;
+    const excerptStart = Math.max(0, (offset ?? Math.max(0, previewStart)) - 256);
+    return { error: error.slice(0, 160), ...(offset !== undefined ? { offset } : {}),
+      excerptStart, excerpt: sample.slice(excerptStart, excerptStart + 512) };
+  }
 }
 
 type ParsedCapture =

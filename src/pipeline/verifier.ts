@@ -1,6 +1,6 @@
 import { assessFinalSuggestions, suggestionAssessment } from "./suggestion-assessment.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
-import { canonicalizeVerifierRejection, expandVerifierRevision, promotedCompletionIssues } from "../llm/verifier-revision.js";
+import { normalizeVerifierSubmission, expandVerifierRevision, promotedCompletionIssues } from "../llm/verifier-revision.js";
 import { createFieldRepair } from "../llm/field-repair.js";
 import { cleanupSubmitShape } from "../llm/submit-preservation.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
@@ -614,7 +614,7 @@ async function verifyCandidate(
   const verificationIncomplete = normalized.reason.startsWith("verification incomplete:");
   const verdict: VerificationVerdict = {
     candidateId: candidate.id,
-    suggestionAssessments: assessFinalSuggestions(revised ?? candidate, normalized.suggestionAssessments),
+    suggestionAssessments: assessFinalSuggestions(revised ?? candidate, bindSubmittedAssessments(revised ?? candidate, normalized.suggestionAssessments)),
     ...(normalized.proofAssessment ? { proofAssessment: normalized.proofAssessment } : {}),
     ...(normalized.proofAssessment && (normalized.proofAssessment.status === "unresolved" || normalized.proofAssessment.assumptions.some(a => a.essential))
       ? { unresolvedConcern: { question: normalized.proofAssessment.assumptions.filter(a => a.essential).map(a => a.question).join("; ") || normalized.proofAssessment.evidence,
@@ -699,16 +699,34 @@ function verificationOriginContext(candidate: CandidateFinding, packet: ReviewPa
   return `${packet.contextText}\n\nDiscovery packet ${packet.id} (${packet.path}); this is origin evidence, not a finding location.\n${packet.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n")}`;
 }
 
+// Bind only newly submitted assessments, after applying this verdict's updates.
+// Persisted assessments keep exact text identity; explicit mismatches remain
+// mismatches. This removes the need for the model to retype an unchanged value.
+function bindSubmittedAssessments(
+  finding: CandidateFinding,
+  submitted: SubmitVerificationVerdict["suggestionAssessments"]
+): CandidateFinding["suggestionAssessments"] {
+  if (!submitted) return undefined;
+  const bound: NonNullable<CandidateFinding["suggestionAssessments"]> = {};
+  for (const field of ["suggestedFix", "suggestedTest"] as const) {
+    const assessment = submitted[field];
+    const text = finding[field];
+    if (assessment && text) bound[field] = { ...assessment, suggestionText: assessment.suggestionText ?? text };
+  }
+  return bound;
+}
+
 function normalizeSubmittedVerdict(
   candidate: CandidateFinding,
   submitted: SubmitVerificationVerdict,
   telemetry: TelemetryRecorder
 ): SubmitVerificationVerdict {
   try {
-    const canonicalization = canonicalizeVerifierRejection(submitted);
+    const canonicalization = normalizeVerifierSubmission(candidate, submitted);
     if (canonicalization) {
       telemetry.event({ stage: 9, level: "info", message: "submit_semantic_canonicalization_accepted",
         data: { candidateId: candidate.id, removedFields: canonicalization.removedFields,
+          ...("addedFields" in canonicalization ? { addedFields: canonicalization.addedFields } : {}),
           reason: canonicalization.reason, originalArguments: submitted } });
       submitted = canonicalization.value as SubmitVerificationVerdict;
     }
@@ -815,7 +833,7 @@ async function runVerifierStructured(
       toolBudget: scaleToolBudget(VERIFIER_TOOL_BUDGET, config.review.budgetBoost),
       timeoutMs: config.review.perPassTimeoutMs,
       telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId },
-      normalizeSubmit: canonicalizeVerifierRejection,
+      normalizeSubmit: value => normalizeVerifierSubmission(candidate, value),
       validateSubmit: (value) => {
         try {
           const proof = value.proofAssessment;

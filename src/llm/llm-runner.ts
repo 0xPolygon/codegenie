@@ -166,6 +166,7 @@ export type LlmSchemaRepairInput = {
     name: string;
     state: PiUntrustedArgumentParse["state"];
     errorKind?: "unexpected_end" | "unterminated" | "invalid_syntax" | "non_object_root";
+    syntaxDiagnostic?: PiArgumentSyntaxDiagnostic;
   }>;
   extraToolNames: string[];
   classification?: LlmSubmitFailureClassification;
@@ -235,11 +236,20 @@ export type PiUntrustedArgumentParse =
   | { state: "event_capture_missing" }
   | { state: "event_final_mismatch" };
 
+/** Syntax-only evidence from redacted raw text; never a usable submission. */
+export type PiArgumentSyntaxDiagnostic = {
+  error: string;
+  offset?: number;
+  excerptStart: number;
+  excerpt: string;
+};
+
 export type PiInvalidToolCall = {
   type: "invalidToolCall";
   id: string;
   name: string;
   argumentParse: PiUntrustedArgumentParse;
+  syntaxDiagnostic?: PiArgumentSyntaxDiagnostic;
 };
 
 export type PiSubmitCall = PiToolCall | PiInvalidToolCall;

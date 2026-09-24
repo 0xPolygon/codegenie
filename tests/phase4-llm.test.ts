@@ -1,3 +1,4 @@
+import { assessFinalSuggestions } from "../src/pipeline/suggestion-assessment.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { validateCompositionSubmission } from "../src/pipeline/composition-content.js";
@@ -43,7 +44,7 @@ import { buildRepositoryToolDefinitions } from "../src/llm/tool-definitions.js";
 import type { Logger, LogEvent, RepositoryTools, TelemetryEvent, ToolCallRecord } from "../src/types.js";
 import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetry-recorder.js";
 import { stage7RecoverInvalidSubmit } from "../src/llm/stage7-submit-repair.js";
-import { canonicalizeVerifierRejection, expandVerifierRevision, promotedCompletionIssues } from "../src/llm/verifier-revision.js";
+import { canonicalizeVerifierRejection, normalizeVerifierSubmission, expandVerifierRevision, promotedCompletionIssues } from "../src/llm/verifier-revision.js";
 import { createFieldRepair } from "../src/llm/field-repair.js";
 import type { CandidateFinding } from "../src/types.js";
 import { recoverStringWrappedVerifierFinding, VERIFIER_SUBMIT_EXAMPLE } from "../src/llm/verifier-submit-repair.js";
@@ -86,7 +87,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
     expect(SCHEMA_VERSIONS.submit_plan).toBe(6);
-    expect(SCHEMA_VERSIONS.submit_verdict).toBe(10);
+    expect(SCHEMA_VERSIONS.submit_verdict).toBe(11);
 
     const valid = {
       diffUnderstanding: { declaredIntent: "Small change", inferredBehavior: "The diff makes a small change." },
@@ -645,6 +646,33 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       expect(adapter.contexts[1]).not.toContain("diagnostic-secret-value");
       expect(adapter.contexts[1]).not.toContain("invalidToolCall");
       expect(telemetry.events.some(event => event.message === "final_arguments_rejected")).toBe(true);
+    } finally { clearRegisteredSecretsForTests(); }
+  });
+
+  it.each([false, true])("delivers syntax-only repair feedback with custom prompt=%s", async customPrompt => {
+    registerSecret("repair-diagnostic-secret");
+    const telemetry = fakeTelemetry();
+    const invalid = { ...invalidSubmitCall("bad", "submit_review", { state: "invalid", errorKind: "invalid_syntax" }),
+      syntaxDiagnostic: { error: "Expected ',' or '}' after property value in JSON", offset: 40, excerptStart: 0,
+        excerpt: '{"note":"repair-diagnostic-secret","findings":[]}}' } };
+    const adapter = scriptedAdapter([assistant([invalid]), assistant([validSubmitReviewCall("recovered")])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    try {
+      await expect(runner.runStructured({ ...submitReviewRequest("syntax-feedback"), schemaRepair: {
+        ...(customPrompt ? { buildPrompt: () => "CUSTOM_STAGE_REPAIR" } : {})
+      } })).resolves.toMatchObject({ findings: [] });
+      const prompt = adapter.contexts[1]!;
+      expect(prompt).toContain("rejected-json-syntax");
+      expect(prompt).toContain("Expected ',' or '}' after property value in JSON");
+      expect(prompt).toContain("not a retained submission or evidence");
+      expect(prompt).toContain("complete schema-valid object");
+      expect(prompt).toContain("[redacted:secret]");
+      expect(prompt).not.toContain("repair-diagnostic-secret");
+      expect(prompt).not.toContain("invalidToolCall");
+      if (customPrompt) expect(prompt).toContain("CUSTOM_STAGE_REPAIR");
+      expect(adapter.complete).toHaveBeenCalledTimes(2);
     } finally { clearRegisteredSecretsForTests(); }
   });
 
@@ -1907,6 +1935,40 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(cache.put).toHaveBeenCalledTimes(1);
     expect(telemetry.events.some(event => event.message === "recovery_preservation_rejected")).toBe(false);
     expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "recovery_obligation_resolved" }));
+  });
+
+  it.each(["duplicate", "rejected", "conflicting"])("does not transfer retained assessment support after repairing a %s draft", async kind => {
+    const full = { ...VERIFIER_SUBMIT_EXAMPLE.finalFinding, suggestedFix: "Honor the original retention request." };
+    const candidate = { ...full, id: "candidate", changedLine: true,
+      producedBy: { kind: "packet", stage: 7, packetId: "p", lensId: "core/code-review", skillIds: [] } } as CandidateFinding;
+    const original = { verdict: kind === "rejected" ? "reject" : "revise", requiredEvidencePresent: true, falsePositiveRisk: "low",
+      findingUpdates: { suggestedFix: kind === "conflicting" ? "Discard the retention request." : full.suggestedFix },
+      finalFinding: full,
+      suggestionAssessments: { suggestedFix: { status: "supported", rationale: "Preserves the original retention minimum.",
+        contractCheck: { status: "established", requirement: "Meet the original retention request." },
+        evidence: [{ path: "caller.ts", lines: "5-10", whyRelevant: "Checks the requested minimum." }] } } };
+    // A missing reason triggers repair. The patch changes the remedy without
+    // supplying a new assessment, so the prior support must not follow it.
+    const replacement = kind === "conflicting" ? full.suggestedFix : "Reduce the advertised retention below the request.";
+    const patch = { verdict: "revise", reason: "Revised", findingUpdates: { suggestedFix: replacement } };
+    const submit = (args: Record<string, unknown>) => assistant([{ type: "toolCall" as const, id: "submit", name: "submit_verdict", arguments: args }]);
+    const adapter = scriptedAdapter([submit(original), submit(patch)]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const result = await runner.runStructured<SubmitVerificationVerdict>({ stage: 9, schema: SubmitVerificationVerdictSchema,
+      prompt: "verify retention", templateVersion: "test", timeoutMs: 1000,
+      normalizeSubmit: value => normalizeVerifierSubmission(candidate, value),
+      schemaRepair: { replacementGroups: [["finalFinding", "findingUpdates"]] },
+      validateSubmit(value) {
+        try { expandVerifierRevision(candidate, value); return { ok: true }; }
+        catch (error) { return { ok: false, classification: "invalid_tool_arguments", details: String(error) }; }
+      }
+    });
+    const final = { ...candidate, ...expandVerifierRevision(candidate, result).finalFinding };
+    const assessments = result.suggestionAssessments as CandidateFinding["suggestionAssessments"];
+    expect(assessFinalSuggestions(final, assessments)?.suggestedFix?.status).toBe("unverified");
+    expect(adapter.contexts).toHaveLength(2);
   });
 
   it("run-88 verifier repair selects a compact revision and caches only the validated result", async () => {
@@ -6266,7 +6328,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       const result = await adapter.complete({ provider: "fake", id: "fake-model", raw: { id: "fake-model", api: "openai-completions" }, apiKey: "fake-api-key" },
         { messages: [], tools: [] }, { toolChoice, submitToolName: "submit_review", onRejectedArguments });
       expect(onRejectedArguments).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: "malformed", prefix: '{"findings":' }));
-      expect(result.content[0]).toMatchObject({ type: "invalidToolCall" });
+      expect(result.content[0]).toMatchObject({ type: "invalidToolCall", syntaxDiagnostic: { excerpt: '{"findings":' } });
       expect(result.content[0]).not.toHaveProperty("arguments");
       expect(providerOptions[0]).not.toHaveProperty("onRejectedArguments");
     }

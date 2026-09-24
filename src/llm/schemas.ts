@@ -242,7 +242,7 @@ export const SuggestionAssessmentSchema = Type.Object({
     requirement: Type.String({ maxLength: 2000, description: "Observable behavioral requirement the suggestion must preserve; existing evidence explains its source and relevance." })
   }, { additionalProperties: false })),
   status: StringEnum(["supported", "incompatible", "unverified"] as const),
-  suggestionText: Type.String({ minLength: 1, maxLength: 4000, description: "Exact final suggestedFix or suggestedTest text assessed, after any findingUpdates. Changed text invalidates this assessment." }),
+  suggestionText: Type.Optional(Type.String({ minLength: 1, maxLength: 4000, description: "Omit to assess the named final suggestedFix/suggestedTest after findingUpdates. If supplied, must match that text exactly; this field never revises the suggestion." })),
   rationale: Type.String({ minLength: 1, maxLength: 2000, description: "Why this exact proposal preserves or violates the established requirement. For tests, explain reachability and before/after expectations without excluding other requirement-preserving implementations." }),
   evidence: Type.Array(Type.Object({
     path: Type.String({ maxLength: 500 }),
@@ -319,7 +319,7 @@ export const SCHEMA_VERSIONS = {
   submit_plan: 6,
   submit_review: 5,
   submit_system_review: 2,
-  submit_verdict: 10,
+  submit_verdict: 11,
   submit_composition: 7
 } as const;
 

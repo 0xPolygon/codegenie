@@ -49,6 +49,49 @@ export function canonicalizeVerifierRejection(value: unknown) {
   return { value: effective, removedFields, reason: "reject_revision_fields_inapplicable" };
 }
 
+// Bind omitted assessment text while the trusted draft is first normalized,
+// before retaining it for repair. A later patch changing only the suggestion
+// must not silently transfer an old assessment to the new text.
+export function normalizeVerifierSubmission(candidate: CandidateFinding, value: unknown) {
+  const rejection = canonicalizeVerifierRejection(value);
+  const effective = rejection?.value ?? value;
+  if (!effective || typeof effective !== "object" || Array.isArray(effective)) return rejection;
+  const input = effective as Record<string, unknown>;
+  const revisions = [input.findingUpdates, input.finalFinding].filter(revision => revision !== undefined);
+  const supplied = input.suggestionAssessments;
+  if (!supplied || typeof supplied !== "object" || Array.isArray(supplied)) return rejection;
+  const assessments = { ...supplied } as Record<string, unknown>;
+  const addedFields: string[] = [];
+  let ambiguous = false;
+  for (const field of ["suggestedFix", "suggestedTest"] as const) {
+    const assessment = assessments[field];
+    if (!assessment || typeof assessment !== "object" || Array.isArray(assessment)
+      || Object.hasOwn(assessment, "suggestionText")) continue;
+    const texts = revisions.length ? revisions.map(revision => {
+      if (!revision || typeof revision !== "object" || Array.isArray(revision)) return undefined;
+      return Object.hasOwn(revision, field) ? (revision as Record<string, unknown>)[field] : candidate[field];
+    }) : [candidate[field]];
+    const text = texts[0];
+    if (typeof text === "string" && text && texts.every(value => value === text)) {
+      assessments[field] = { ...assessment, suggestionText: text };
+      addedFields.push(`suggestionAssessments.${field}.suggestionText`);
+    } else if ((assessment as Record<string, unknown>).status === "supported") {
+      // Conflicting/malformed representations do not identify the assessed
+      // text. Preserve the draft but do not let a later repair choose a target
+      // for old support. A newly supplied assessment can establish it again.
+      const rationale = (assessment as Record<string, unknown>).rationale;
+      const explanation = "The original assessment did not identify one unambiguous suggestion; reassessment is required. ";
+      assessments[field] = { ...assessment, status: "unverified",
+        ...(typeof rationale === "string" && rationale.length > 0
+          ? { rationale: explanation + rationale.slice(0, 2000 - explanation.length) } : {}) };
+      ambiguous = true;
+    }
+  }
+  return addedFields.length || ambiguous ? { value: { ...input, suggestionAssessments: assessments },
+    removedFields: rejection?.removedFields ?? [], addedFields,
+    reason: ambiguous ? "verifier_assessment_target_ambiguous" : "verifier_assessment_text_bound" } : rejection;
+}
+
 // Whitelist schema fields so internal identity/provenance can never be patched.
 // Placement goes through the existing revisedAnchor validation instead.
 export function expandVerifierRevision(

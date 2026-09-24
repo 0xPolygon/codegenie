@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { assessFinalSuggestions } from "../src/pipeline/suggestion-assessment.js";
+import { submissionIssues } from "../src/llm/submit-preservation.js";
 import { createFieldRepair } from "../src/llm/field-repair.js";
 import { SubmitVerificationVerdictSchema } from "../src/llm/schemas.js";
-import { expandVerifierRevision, promotedCompletionIssues } from "../src/llm/verifier-revision.js";
+import { expandVerifierRevision, promotedCompletionIssues, normalizeVerifierSubmission } from "../src/llm/verifier-revision.js";
 import { VERIFIER_SUBMIT_EXAMPLE } from "../src/llm/verifier-submit-repair.js";
 import type { CandidateFinding } from "../src/types.js";
 import type { SubmitVerificationVerdict } from "../src/llm/schemas.js";
@@ -151,5 +153,56 @@ describe("compact verifier revision expansion", () => {
     const result = expandVerifierRevision(source, verdict({ evidence: { changedCode: "new()" } }));
     expect(result.finalFinding?.evidence).toEqual({ changedCode: "new()" });
     expect(source.evidence.relatedCode).toHaveLength(1);
+  });
+});
+
+
+describe("verifier assessment identity during repair", () => {
+  it("binds agreeing representations without downgrading their assessment", () => {
+    const candidate = { ...original, suggestedFix: "Keep the caller's original minimum." };
+    const assessment = { status: "supported", rationale: "The caller requires this minimum.", evidence: [] };
+    const input = { verdict: "revise", finalFinding: { ...original, suggestedFix: candidate.suggestedFix },
+      findingUpdates: { suggestedFix: candidate.suggestedFix }, suggestionAssessments: { suggestedFix: assessment } };
+    const normalized = normalizeVerifierSubmission(candidate, input)!;
+    expect(normalized.value).toMatchObject({ suggestionAssessments: { suggestedFix: {
+      status: "supported", suggestionText: candidate.suggestedFix
+    } } });
+    expect(input.suggestionAssessments.suggestedFix).not.toHaveProperty("suggestionText");
+  });
+
+  it("keeps conflicting targets unverified until the model supplies a new assessment", () => {
+    const candidate = { ...original, suggestedFix: "Keep the original request." };
+    const input = { verdict: "revise", findingUpdates: { suggestedFix: "Lower the request." },
+      finalFinding: { ...original, suggestedFix: candidate.suggestedFix }, suggestionAssessments: {
+        suggestedFix: { status: "supported", rationale: "Supported branch.", evidence: [] }
+      } };
+    const normalized = normalizeVerifierSubmission(candidate, input)!;
+    expect(normalized.value).toMatchObject({ suggestionAssessments: { suggestedFix: { status: "unverified" } } });
+    expect(normalized.reason).toBe("verifier_assessment_target_ambiguous");
+    expect(input.suggestionAssessments.suggestedFix.status).toBe("supported");
+    const repair = createFieldRepair(SubmitVerificationVerdictSchema, normalized.value, true, [["findingUpdates", "finalFinding"]])!;
+    const renewed = repair.merge({ findingUpdates: { suggestedFix: candidate.suggestedFix },
+      suggestionAssessments: { suggestedFix: { status: "supported", rationale: "Reassessed the selected original-request remedy." } } });
+    expect(normalizeVerifierSubmission(candidate, renewed)?.value).toMatchObject({ suggestionAssessments: {
+      suggestedFix: { status: "supported", suggestionText: candidate.suggestedFix }
+    } });
+  });
+
+  it("binds an omitted identity before repair so changing a suggestion cannot inherit stale support", () => {
+    const candidate = { ...original, suggestedFix: "Preserve the requested retention." };
+    const submitted = { verdict: "keep", reason: "Confirmed", requiredEvidencePresent: true, falsePositiveRisk: "low",
+      suggestionAssessments: { suggestedFix: { status: "supported", rationale: "Matches the requirement.",
+        contractCheck: { status: "established", requirement: "Retention meets the request." },
+        evidence: [{ path: "caller.ts", lines: "5-10", whyRelevant: "Requires the requested retention." }] } } };
+    expect(submissionIssues(SubmitVerificationVerdictSchema, submitted)).toEqual([]);
+    const normalized = normalizeVerifierSubmission(candidate, submitted)!;
+    expect(normalized).toMatchObject({ addedFields: ["suggestionAssessments.suggestedFix.suggestionText"] });
+    const repair = createFieldRepair(SubmitVerificationVerdictSchema, normalized.value, true)!;
+    const merged = repair.merge({ verdict: "revise", findingUpdates: { suggestedFix: "Lower the requested retention." } });
+    const expanded = expandVerifierRevision(candidate, merged as SubmitVerificationVerdict);
+    const final = { ...candidate, ...expanded.finalFinding };
+    // Normalization does not overwrite an explicit identity carried by the draft.
+    expect(normalizeVerifierSubmission(candidate, merged)).toBeUndefined();
+    expect(assessFinalSuggestions(final, (normalized.value as typeof candidate).suggestionAssessments)?.suggestedFix?.status).toBe("unverified");
   });
 });
