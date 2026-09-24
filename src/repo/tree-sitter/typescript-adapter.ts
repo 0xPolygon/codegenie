@@ -1,4 +1,4 @@
-import type { Node } from "web-tree-sitter";
+import type { Node, Tree } from "web-tree-sitter";
 import type {
   ChangedSymbol,
   DiffHunk,
@@ -31,6 +31,10 @@ const EACH_TEST_FUNCTION = /^(?:describe|it|test)(?:\.(?:only|skip))?\.each$/u;
 
 export class TypeScriptAdapter implements LanguageAdapter {
   readonly extensions: string[];
+  // ParsedFile wrappers are recreated on parse-cache hits. Reuse symbols by
+  // tree identity instead, without retaining trees after parser-cache eviction.
+  // Identical blobs can occur at different paths with different test roles.
+  private readonly symbolsByTree = new WeakMap<Tree, Map<string, SymbolInfo[]>>();
 
   constructor(
     private readonly service: TreeSitterService,
@@ -53,6 +57,10 @@ export class TypeScriptAdapter implements LanguageAdapter {
     if (!tree) {
       return [];
     }
+    const cached = this.symbolsByTree.get(tree)?.get(file.path);
+    if (cached) {
+      return copySymbols(cached);
+    }
     const symbols: SymbolInfo[] = [];
     const exportedNames = exportLocalNames(file.content);
 
@@ -68,7 +76,14 @@ export class TypeScriptAdapter implements LanguageAdapter {
     }
 
     symbols.push(...testSymbols(file));
-    return dedupeSymbols(symbols).sort((a, b) => a.lineRange[0] - b.lineRange[0]);
+    const result = dedupeSymbols(symbols).sort((a, b) => a.lineRange[0] - b.lineRange[0]);
+    let byPath = this.symbolsByTree.get(tree);
+    if (!byPath) {
+      byPath = new Map();
+      this.symbolsByTree.set(tree, byPath);
+    }
+    byPath.set(file.path, result);
+    return copySymbols(result);
   }
 
   getEnclosingSymbol(file: ParsedFile, line: number): SymbolInfo | undefined {
@@ -85,6 +100,10 @@ export class TypeScriptAdapter implements LanguageAdapter {
     const side = file.source.kind === "base" ? "old" : "new";
     return changedSymbolsFromEnclosing(file, hunk, (line) => this.getEnclosingSymbol(file, line), side);
   }
+}
+
+function copySymbols(symbols: SymbolInfo[]): SymbolInfo[] {
+  return symbols.map(symbol => ({ ...symbol, lineRange: [...symbol.lineRange] }));
 }
 
 function symbolsForDeclaration(

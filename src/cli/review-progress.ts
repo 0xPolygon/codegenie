@@ -58,6 +58,16 @@ export function createReviewProgress(options: ProgressOptions): ReviewProgress |
       if (event.message === "stage_completed") {
         currentText = `Reviewing (stage ${event.stage}: complete) ...`;
         render();
+        return;
+      }
+      if (event.stage === 4 && event.message === "repository_index_progress" && isRecord(event.data)) {
+        const { phase, filesCompleted, filesTotal } = event.data;
+        if ((phase === "symbols" || phase === "static_signals") &&
+          typeof filesCompleted === "number" && typeof filesTotal === "number") {
+          const label = phase === "symbols" ? "symbols" : "static signals";
+          currentText = `Reviewing (stage 4: repository index, ${label} ${filesCompleted}/${filesTotal} files) ...`;
+          render();
+        }
       }
     },
     stop() {

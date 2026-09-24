@@ -1,7 +1,8 @@
 import { existsSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { Tree } from "web-tree-sitter";
 import { defaultConfig } from "../src/config/schema.js";
 import { parseDiff } from "../src/git/diff-parser.js";
 import { buildRepositoryIndex, RepositoryToolsFacade, withRepositoryToolCallContext } from "../src/repo/repository-index.js";
@@ -83,6 +84,80 @@ describe("repository intelligence", () => {
     expect(registry.forPath("src/view.tsx").listSymbols(tsx)).toEqual(
       expect.arrayContaining([expect.objectContaining({ name: "View", kind: "function", signature: "function View()" })])
     );
+  });
+
+  it("reuses TypeScript symbols across changed lines, hunks, and parse-cache wrappers", async () => {
+    const registry = new LanguageAdapterRegistry(new TreeSitterService());
+    const adapter = registry.forPath("tests/review.test.ts");
+    const lines = [
+      'describe("review", () => {',
+      '  it("keeps evidence", () => {',
+      '    const value = 1;',
+      '    expect(value).toBe(1);',
+      '  });',
+      '});'
+    ];
+    const input = { path: "tests/review.test.ts", language: "typescript", content: lines.join("\n"), source: { kind: "head" as const } };
+    const parsed = await adapter.parse(input);
+    const tree = parsed.tree as Tree;
+    const rootReads = vi.spyOn(tree, "rootNode", "get");
+    try {
+      const expected = adapter.listSymbols(parsed);
+      const readsAfterScan = rootReads.mock.calls.length;
+      expect(readsAfterScan).toBeGreaterThan(0);
+      const hunk = parseDiff(`diff --git a/tests/review.test.ts b/tests/review.test.ts\n--- /dev/null\n+++ b/tests/review.test.ts\n@@ -0,0 +1,6 @@\n${lines.map(line => `+${line}`).join("\n")}\n`).files[0]!.hunks[0]!;
+      const changed = adapter.getChangedSymbols(parsed, hunk);
+      expect(changed).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "review", changedLines: [1, 6] }),
+        expect.objectContaining({ name: "keeps evidence", changedLines: [2, 3, 4, 5] })
+      ]));
+      const wrapper = await adapter.parse(input);
+      expect(wrapper).not.toBe(parsed);
+      expect(wrapper.tree).toBe(tree);
+      expect(adapter.getChangedSymbols(wrapper, hunk)).toEqual(changed);
+      expect(adapter.listSymbols(wrapper)).toEqual(expected);
+      expect(rootReads).toHaveBeenCalledTimes(readsAfterScan);
+
+      // Callers can sort or edit public results without corrupting the cache.
+      const exposed = adapter.listSymbols(wrapper);
+      exposed[0]!.name = "edited";
+      exposed[0]!.lineRange[0] = 999;
+      exposed.pop();
+      const enclosing = adapter.getEnclosingSymbol(wrapper, 3)!;
+      enclosing.lineRange[1] = 999;
+      expect(adapter.listSymbols(parsed)).toEqual(expected);
+    } finally {
+      rootReads.mockRestore();
+    }
+  });
+
+  it("keeps identical TypeScript blobs at source and test paths separate", async () => {
+    const registry = new LanguageAdapterRegistry(new TreeSitterService());
+    const adapter = registry.forLanguage("typescript");
+    const content = 'export function helper() {}\nit("works", () => { helper(); });\n';
+    const source = await adapter.parse({ path: "src/example.ts", language: "typescript", content, source: { kind: "head" } });
+    const test = await adapter.parse({ path: "tests/example.test.ts", language: "typescript", content, source: { kind: "base" } });
+    expect(source.tree).toBe(test.tree);
+    expect(adapter.listSymbols(source).map(symbol => symbol.name)).toEqual(["helper"]);
+    expect(adapter.listSymbols(test).map(symbol => symbol.name)).toEqual(["helper", "works"]);
+    expect(adapter.listSymbols(test).every(symbol => symbol.path === test.path)).toBe(true);
+    expect(adapter.listSymbols(source).every(symbol => symbol.path === source.path)).toBe(true);
+  });
+
+  it("does not reuse stale symbols across TypeScript revisions or parser-cache eviction", async () => {
+    const registry = new LanguageAdapterRegistry(new TreeSitterService());
+    const adapter = registry.forLanguage("typescript");
+    const input = { path: "src/example.ts", language: "typescript", content: "export function before() {}", source: { kind: "base" as const } };
+    const base = await adapter.parse(input);
+    expect(adapter.listSymbols(base)[0]?.name).toBe("before");
+    const head = await adapter.parse({ ...input, content: "export function after() {}", source: { kind: "head" } });
+    expect(adapter.listSymbols(head)[0]?.name).toBe("after");
+    for (let i = 0; i < 128; i += 1) {
+      await adapter.parse({ ...input, content: `export const value = ${i};` });
+    }
+    const reparsed = await adapter.parse(input);
+    expect(reparsed.tree).not.toBe(base.tree);
+    expect(adapter.listSymbols(reparsed)[0]?.name).toBe("before");
   });
 
   it("builds index facts, tools, packet context, and telemetry over git revisions", async () => {
@@ -366,6 +441,14 @@ export { internal as Public }
     const facts = diff.files.map((file) => fileFacts(file));
 
     const index = await buildRepositoryIndex(resolved, diff.files, facts, defaultConfig, telemetry);
+    const progress = telemetry.events.filter(event => event.message === "repository_index_progress");
+    for (const phase of ["symbols", "static_signals"]) {
+      const updates = progress.filter(event => event.data?.phase === phase);
+      expect(updates[0]).toMatchObject({ stage: 4, file: diff.files[0]!.path,
+        data: { filesCompleted: 0, filesTotal: diff.files.length, elapsedMs: expect.any(Number) } });
+      expect(updates.at(-1)).toMatchObject({ stage: 4, file: diff.files.at(-1)!.path,
+        data: { filesCompleted: diff.files.length, filesTotal: diff.files.length } });
+    }
     const tools = index.tools as RepositoryToolsHost;
     const changedFile = diff.files.find((file) => file.path === "store/user.go");
     expect(changedFile).toBeDefined();

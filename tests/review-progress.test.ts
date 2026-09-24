@@ -36,6 +36,21 @@ describe("review progress", () => {
 
     expect(() => createReviewProgress({ enabled: true, env: {}, stream })).not.toThrow();
   });
+
+  it("shows file progress for both repository indexing phases", () => {
+    const stream = fakeStream(true);
+    const progress = createReviewProgress({ enabled: true, env: {}, stream });
+    try {
+      progress?.onTelemetryEvent({ stage: 4, level: "debug", message: "repository_index_progress",
+        file: "tests/example.test.ts", data: { phase: "symbols", filesCompleted: 7, filesTotal: 12, elapsedMs: 150 } });
+      expect(stream.writes.at(-1)).toContain("stage 4: repository index, symbols 7/12 files");
+      progress?.onTelemetryEvent({ stage: 4, level: "debug", message: "repository_index_progress",
+        data: { phase: "static_signals", filesCompleted: 12, filesTotal: 12, elapsedMs: 300 } });
+      expect(stream.writes.at(-1)).toContain("static signals 12/12 files");
+    } finally {
+      progress?.stop();
+    }
+  });
 });
 
 type FakeProgressStream = NodeJS.WriteStream & {

@@ -8,19 +8,21 @@ export async function extractChangedSymbolFacts(
   resolver: SourceResolver,
   registry: LanguageAdapterRegistry,
   kept: DiffFile[],
-  facts: FileFacts[]
+  facts: FileFacts[],
+  onFile?: (file: DiffFile, completed: number) => void
 ): Promise<HunkSymbolFacts[]> {
   const factByPath = new Map(facts.map((fact) => [fact.path, fact]));
   const output: HunkSymbolFacts[] = [];
 
-  for (const file of kept) {
+  for (const [index, file] of kept.entries()) {
+    onFile?.(file, index);
     const fact = factByPath.get(file.path);
-    if (fact?.processingMode === "skip") {
-      continue;
+    if (fact?.processingMode !== "skip") {
+      for (const hunk of file.hunks) {
+        output.push(await extractHunkFacts(resolver, registry, file, hunk, hunkFactSide(file, hunk)));
+      }
     }
-    for (const hunk of file.hunks) {
-      output.push(await extractHunkFacts(resolver, registry, file, hunk, hunkFactSide(file, hunk)));
-    }
+    onFile?.(file, index + 1);
   }
 
   return output;
