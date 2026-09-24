@@ -34,7 +34,7 @@ codegenie provider use glm-5.3:max               # -> openrouter/z-ai/glm-5.3
 codegenie review
 ```
 
-Codegenie's built-in model overrides pin all OpenRouter models with IDs starting with `deepseek/` to the `deepseek` upstream with `only`/`order` and `allow_fallbacks: false`. For this pinned model family, submit calls expose only the submit tool and use `tool_choice: "auto"`, to accommodate the named forced-tool rejection observed on DeepSeek V4.1 Flash. Returned submissions still undergo strict validation, and missing submissions have bounded retries. These [OpenRouter routing preferences](https://openrouter.ai/docs/guides/routing/provider-selection) apply to every stage, including repairs; Codegenie's stage-specific reasoning levels still apply. Requests cannot fall back to another upstream if DeepSeek is unavailable. Routing is included in debug request traces and local model-call cache keys. The overrides live in `src/provider/models-override.ts`.
+Codegenie's built-in model overrides pin all OpenRouter models with IDs starting with `deepseek/` to the `deepseek`, `fireworks`, and `together` upstreams (in that order) with `only`/`order` and `allow_fallbacks: false`. For this pinned model family, submit calls expose only the submit tool and use `tool_choice: "auto"`, to accommodate the named forced-tool rejection observed on DeepSeek V4.1 Flash. Returned submissions still undergo strict validation, and missing submissions have bounded retries. These [OpenRouter routing preferences](https://openrouter.ai/docs/guides/routing/provider-selection) apply to every stage, including repairs; Codegenie's stage-specific reasoning levels still apply. Requests cannot fall back to upstreams outside that list. Routing is included in debug request traces and local model-call cache keys. The overrides live in `src/provider/models-override.ts`.
 
 OpenRouter models with IDs starting with `z-ai/` use `only: ["together", "fireworks", "cloudflare"]`, `order: ["together", "fireworks", "cloudflare"]`, and `allow_fallbacks: false`. This routing override applies across stages, including repairs, and preserves the model's reasoning and tool-choice behavior. It does not add `require_parameters`.
 
@@ -102,7 +102,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}  # trusted base; PR head is fetched as review data
           fetch-depth: 0
-      - uses: 0xPolygon/codegenie@v0.6.0
+      - uses: 0xPolygon/codegenie@v0.6.1
         with:
           # Works with any model!
           model: "openrouter/deepseek/deepseek-v4.1-flash:max"
@@ -127,6 +127,7 @@ codegenie provider login <provider>      # OAuth by default; --api-key to store 
 codegenie provider models [query]        # list available models (e.g. `models gpt`)
 codegenie provider use <model>           # set the default by fuzzy model id
 codegenie provider use <model>:<level>   # ...and its reasoning level (e.g. opus:max)
+codegenie use <model>[:<level>]          # shorthand for `provider use`
 ```
 
 The full list of supported models — every provider, model id, context window, and reasoning levels — lives in [models.md](./models.md) (generated from the [models.dev](https://models.dev) registry; regenerate with `make models-list`).
@@ -145,7 +146,7 @@ baseBranch = "main"
 depth = "normal"
 maxTime = 60        # positive number of minutes; --max-time overrides this per run
 budgetBoost = 1.0   # scales per-packet review budgets; does not change finding caps
-compositionReasoningStepDown = false # opt in to one lower supported reasoning level for composition
+compositionReasoningStepDown = true # default; set false to keep configured reasoning for composition
 
 [telemetry]
 enabled = true      # opt into local run artifacts under .codegenie/runs
@@ -267,7 +268,9 @@ expect:
 
 The planning check rejects degraded plans even when every hunk was reviewed. The composition check rejects degraded report synthesis separately from coverage completeness. The recovery check requires complete telemetry, no unresolved structured-output obligations, and demonstrated preservation; regenerated or revised content is reported as `unknown`, not assumed preserved. Repairs retain draft progress across retries and validate the whole merged submission. For unreadable JSON, repair prompts include a bounded, redacted syntax excerpt and parser diagnostic when available. Fragments remain untrusted diagnostics, never accepted data or proof that a replacement preserved the original.
 
-Composition uses the configured review reasoning level by default, including retries. Set `[review] compositionReasoningStepDown = true` in `codegenie.toml` to use the next lower level supported by the model: for a model supporting `low`, `high`, and `max`, `max` becomes `high`. The lowest supported level stays unchanged; models without advertised reasoning levels retain the configured behavior. Override this per run with `codegenie review --composition-reasoning-step-down` or `--no-composition-reasoning-step-down`. Omitting both flags preserves the configuration, which defaults to `false`. Investigation and verification keep their configured reasoning; traces record configured and selected levels. Structured-output repairs continue to use the model’s lowest supported reasoning level. Each composition attempt has a 300-second deadline, with at most one retry. The outer composition deadline is 780 seconds (two attempts plus the shared 180-second repair allowance); overall review cancellation still takes precedence. Repair attempts share that 180-second allowance, rather than receiving 180 seconds each.
+SVG files are skipped by default. Set `[review] skipSvgReview = false` in `codegenie.toml`, or run `codegenie review --no-skip-svg-review`, to include them subject to other exclusion rules. `--skip-svg-review` enables the skip explicitly. This controls changed-file review; repository evidence searches can still find SVG content and disclose oversized matches they omit.
+
+Composition uses the next lower supported reasoning level by default, including retries: for a model supporting `low`, `high`, and `max`, `max` becomes `high`. Set `[review] compositionReasoningStepDown = false` in `codegenie.toml` to keep the configured review reasoning level for composition. The lowest supported level stays unchanged; models without advertised reasoning levels retain the configured behavior. Override this per run with `codegenie review --composition-reasoning-step-down` or `--no-composition-reasoning-step-down`. Omitting both flags preserves the configuration, which defaults to `true`. Investigation and verification keep their configured reasoning; traces record configured and selected levels. Structured-output repairs continue to use the model’s lowest supported reasoning level. Each composition attempt has a 300-second deadline, with at most one retry. The outer composition deadline is 780 seconds (two attempts plus the shared 180-second repair allowance); overall review cancellation still takes precedence. Repair attempts share that 180-second allowance, rather than receiving 180 seconds each.
 
 Composition validates source references before acceptance. It locally removes repeated known references and misplaced references already correctly accounted for in the same finding, records those removals, and validates the whole result. Remaining attribution errors receive bounded repairs in a fresh context with exact field paths and source inventories. Attribution patches replace only permitted reference lists; finding order and prose stay intact, and the assembled report must pass full validation. If a recommendation lacks support, a bounded composition repair may instead omit or rewrite that advice section while preserving the diagnosis and retaining its original sources. Reports consolidate identical evidence and keep additional verbatim evidence and caveats in expandable sections. If synthesis fails, the report identifies its source-based presentation and retains distinct contributions. `stages/10-composition/composition-sources.json` records all inputs and dispositions; references establish attribution, not proof of semantic equivalence. Verification distinguishes essential missing proof from secondary uncertainty: unresolved hypotheses remain visible under human attention, while established defects may still have uncertainty about severity.
 

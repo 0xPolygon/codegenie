@@ -914,6 +914,22 @@ describe("github-action entrypoint", () => {
     expect(reviewArgv).not.toContain("--post-github-comments");
   });
 
+  it("finalizes returned worker failures as failure while retaining the partial report", async () => {
+    const fake = createFakeComments();
+    const reportPath = path.join(scratch, "failed-workers.md");
+    const runDir = mkdtempSync(path.join(scratch, "failed-workers-"));
+    const report = "# Codegenie Review\n\n> **Review failed.** Stage 7: llm_schema_invalid\n\nPartial findings retained.";
+    await expect(executeGitHubActionCommand([], {
+      env: actionEnv(issueCommentPayload(), "issue_comment", { CODEGENIE_REPORT_PATH: reportPath }),
+      issueComments: fake.client, writeOutput: () => undefined,
+      runReview: async () => ({ runId: "r1", runDir, reportMarkdown: report, failed: true })
+    })).rejects.toMatchObject({ code: "review_failed" });
+    expect(readFileSync(reportPath, "utf8")).toContain("Partial findings retained");
+    expect(JSON.parse(readFileSync(path.join(runDir, "github-action.json"), "utf8"))).toMatchObject({
+      outcome: "review_failed", statusComment: { terminalState: "failure" }
+    });
+  });
+
   it("publishes the report fallback even when the terminal edit fails", async () => {
     const fake = createFakeComments({ failUpdates: true });
     const reportPath = path.join(scratch, `fallback-${Math.random().toString(36).slice(2)}.md`);

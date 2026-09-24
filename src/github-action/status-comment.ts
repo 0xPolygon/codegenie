@@ -34,7 +34,8 @@ export type StatusCommentController = {
   finalizeFailure(
     errorCode: string,
     diagnostic?: StructuredSubmitFailureDiagnostic,
-    providerMessage?: string
+    providerMessage?: string,
+    reportMarkdown?: string
   ): Promise<boolean>;
   settle(): Promise<void>;
   stats(): StatusCommentStats;
@@ -228,14 +229,16 @@ export function createStatusCommentController(options: StatusCommentOptions): St
   async function finalizeFailure(
     errorCode: string,
     diagnostic?: StructuredSubmitFailureDiagnostic,
-    providerMessage?: string
+    providerMessage?: string,
+    reportMarkdown?: string
   ): Promise<boolean> {
     if (commentId === undefined) {
       return false;
     }
     terminal = true;
     await settle();
-    const body = appendStatusCommentMarker(renderFailureBody(errorCode, options.runUrl, diagnostic, providerMessage));
+    const body = appendStatusCommentMarker(reportMarkdown === undefined ? renderFailureBody(errorCode, options.runUrl, diagnostic, providerMessage)
+      : capTerminalBody(sanitizeGitHubCommentBody(reportMarkdown), options.runUrl, STATUS_COMMENT_MARKER.length + 4).body);
     stats.terminalState = "failure";
     const bodyBytes = Buffer.byteLength(body, "utf8");
     stats.finalBodyBytes = bodyBytes;

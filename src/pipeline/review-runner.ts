@@ -1,3 +1,4 @@
+import { deriveReviewHealth, reviewDiagnostic } from "../util/review-health.js";
 import path from "node:path";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { summarizeAdaptiveReviews } from "../util/adaptive-review.js";
@@ -55,7 +56,7 @@ import { applyCoverageEscalations } from "./coverage-escalation.js";
 import { runTargetedSystemReviews, suppressResolvedFollowUpHints } from "./system-reviewer.js";
 import { promoteUncertaintiesForVerification } from "./uncertainty-promotion.js";
 import { verifyFindings } from "./verifier.js";
-import { dedupeRankAndComposeReview } from "./composer.js";
+import { dedupeRankAndComposeReview, refreshReviewHealth } from "./composer.js";
 import { renderMarkdownReview } from "../output/markdown-renderer.js";
 import { renderReviewForStdout, renderPostingSummaryForStdout } from "../output/stdout-renderer.js";
 import { isDisclosableCoverageReason, uniqueDisclosableCoverageReasons } from "../util/coverage-reasons.js";
@@ -82,6 +83,7 @@ type RunReviewOverrides = {
 
 type RunContext = {
   runId: string;
+  readonly currentStage: ReviewStage | 0;
   telemetry: TelemetryRecorder;
   logger: ReturnType<typeof createRunTelemetry>["logger"];
   budget: BudgetLedger;
@@ -114,6 +116,7 @@ export async function runReview(
 ): Promise<ReviewResult> {
   const repoRoot = await resolveRunRepoRoot(overrides.repoRoot);
   const run = await startRun(config, input, repoRoot, overrides);
+  let retainedReview: ReviewResult | undefined;
 
   try {
     await registerPullRequestRefCleanup(input, repoRoot, run);
@@ -306,6 +309,7 @@ export async function runReview(
         }
       }
     });
+    coverage.diagnostics = [...(coverage.diagnostics ?? []), ...(systemReview.diagnostics ?? [])];
     discloseSkillLoadFailures(coverage, services.skills, services.skillFailures);
     const finalReview = await dedupeRankAndComposeReview(verified, plannerResult.plan, resolved, coverage, config, run.telemetry, {
       runner: services.runner,
@@ -318,6 +322,8 @@ export async function runReview(
     if (run.budget.hasDispatchBlocks()) {
       markCoverageBudgetStopped(finalReview.coverage, run.budget.stopSnapshot());
     }
+    refreshReviewHealth(finalReview);
+    retainedReview = finalReview;
     emitBudgetStop(run, finalReview.coverage.budgetStop);
     finalReview.budgetSummary = run.budget.summary(finalReview.coverage, buildContextPressureSummary(run.telemetry, packets, finalReview));
     throwIfHardAborted(run);
@@ -365,16 +371,18 @@ export async function runReview(
     finalReview.runStats = buildRunStats(config, resolved, run, plannerResult.plannerCoverage);
     await renderOutputs(finalReview, overrides, run.telemetry);
     await run.finalize({
-      status: finalReview.coverage.partial ? "completed_partial" : "completed_full",
-      exitCode: 0,
+      status: finalReview.health?.status === "failed" ? "failed" : finalReview.coverage.partial ? "completed_partial" : "completed_full",
+      exitCode: finalReview.health?.status === "failed" ? 1 : 0,
+      ...(finalReview.health?.status === "failed" ? { errorCode: "review_failed" as const } : {}),
       ...(finalReview.coverage.budgetStop !== undefined ? { budgetStop: finalReview.coverage.budgetStop } : {})
     });
     return finalReview;
   } catch (error) {
     const failure = reviewFailureRecord(error);
+    const failureStage = run.currentStage;
     run.logger.error({
       runId: run.runId,
-      stage: 0,
+      stage: failureStage,
       event: "review_pipeline_failed",
       // Carry the code and message inline so run.log states the cause without
       // a reader having to open the failure record beside it.
@@ -384,25 +392,35 @@ export async function runReview(
       data: failure
     });
     run.telemetry.event({
-      stage: 0,
+      stage: failureStage,
       level: "error",
       message: "review pipeline failed",
       data: failure
     });
-    await run.telemetry.writeArtifact("error.json", {
-      schemaVersion: 1,
-      runId: run.runId,
-      ...failure
-    });
+    try {
+      await run.telemetry.writeArtifact("error.json", { schemaVersion: 1, runId: run.runId, stage: failureStage, ...failure });
+      const coverage: RunCoverageStatus = { unavailable: true, totalHunks: 0, reviewedHunks: 0, skippedHunks: 0, failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 0, light: 0, skip: 0 }, degradedPlanning: false, budgetStopped: false,
+        verificationIncompleteCount: 0, partial: true, reasons: [], diagnostics: [reviewDiagnostic(failureStage, error)] };
+      const failureReport: ReviewResult = retainedReview
+        ? { ...retainedReview, coverage: { ...retainedReview.coverage, partial: true,
+            diagnostics: [...(retainedReview.coverage.diagnostics ?? []), reviewDiagnostic(failureStage, error)] } }
+        : { summary: "Review terminated before a trustworthy report could be assembled.", coverage,
+            health: deriveReviewHealth(coverage, 0), findings: [], summaryOnlyFindings: [], needsHumanAttention: [], noFindings: true };
+      refreshReviewHealth(failureReport);
+      await renderOutputs(failureReport, overrides, run.telemetry);
+    } catch (diagnosticError) {
+      run.logger.error({ runId: run.runId, stage: 0, event: "failure_artifact_write_failed", message: "Could not write failure report; original error retained", data: { diagnosticError: String(diagnosticError) } });
+    }
     const budgetStop = run.budget.stopSnapshot();
     emitBudgetStop(run, budgetStop);
-    await run.telemetry.flush();
-    await run.finalize({
-      status: "failed",
-      ...(isCodegenieError(error) ? { errorCode: error.code } : {}),
-      exitCode: errorExitCode(error),
-      ...(budgetStop !== undefined ? { budgetStop } : {})
-    });
+    try {
+      await run.telemetry.flush();
+      await run.finalize({ status: "failed", ...(isCodegenieError(error) ? { errorCode: error.code } : {}),
+        exitCode: errorExitCode(error), ...(budgetStop !== undefined ? { budgetStop } : {}) });
+    } catch (diagnosticError) {
+      run.logger.error({ runId: run.runId, stage: 0, event: "failure_finalize_failed", message: "Could not finalize diagnostics; original error retained", data: { diagnosticError: String(diagnosticError) } });
+    }
     throw error;
   }
 }
@@ -442,7 +460,11 @@ async function startRun(
   });
   const attached = await run.attachRunDirectory(repoRoot);
   overrides.onRunStart?.(attached);
-  const telemetry = observeTelemetry(run.recorder, overrides.onTelemetryEvent);
+  let currentStage: ReviewStage | 0 = 0;
+  const telemetry = observeTelemetry(run.recorder, event => {
+    if (event.message === "stage_started" && event.stage !== 0) currentStage = event.stage;
+    overrides.onTelemetryEvent?.(event);
+  });
   emitConfigWarnings(overrides.configWarnings ?? [], telemetry.runId, run.logger, telemetry);
   emitConcurrencyTuningEvent(config, telemetry);
   const budget = new BudgetLedger(config, telemetry);
@@ -456,6 +478,7 @@ async function startRun(
   let finalized = false;
   return {
     runId: run.recorder.runId,
+    get currentStage() { return currentStage; },
     telemetry,
     logger: run.logger,
     budget,
@@ -504,6 +527,9 @@ function observeTelemetry(
   };
   if (recorder.snapshotContextPressure !== undefined) {
     observed.snapshotContextPressure = recorder.snapshotContextPressure.bind(recorder);
+  }
+  if (recorder.snapshotStageTimings !== undefined) {
+    observed.snapshotStageTimings = recorder.snapshotStageTimings.bind(recorder);
   }
   return observed;
 }
@@ -902,6 +928,7 @@ async function maybeZeroWork(
     totalHunks,
     reviewedHunks: 0,
     skippedHunks: totalHunks,
+    excludedHunks: totalHunks,
     failedHunks: 0,
     coverageByLevel: { deep: 0, normal: 0, light: 0, skip: totalHunks },
     degradedPlanning: false,
@@ -948,7 +975,7 @@ export function aggregateRunCoverage(
   plan: ReviewPlan,
   decisions: FileFilterDecision[],
   packetResults: PacketReviewResult[],
-  verified: { incompleteCount: number; verificationSkipped?: boolean },
+  verified: { incompleteCount: number; verificationSkipped?: boolean; verdicts?: import("../types.js").VerificationVerdict[] },
   _telemetry: TelemetryRecorder,
   opts: CoverageOptions = {}
 ): RunCoverageStatus {
@@ -1016,9 +1043,12 @@ export function aggregateRunCoverage(
 
   return {
     totalHunks,
+    diagnostics: [...packetResults.flatMap(result => result.diagnostics ?? (result.status === "failed" ? [reviewDiagnostic(7, undefined, result.packetId)] : [])),
+      ...(verified.verdicts ?? []).flatMap(verdict => verdict.diagnostic ? [verdict.diagnostic] : [])],
     ...(adaptiveReviews ? { adaptiveReviews } : {}),
     reviewedHunks,
     skippedHunks,
+    excludedHunks: skippedByFilter + (plan.partialReview?.isPartial ? 0 : plan.coverage.filter(decision => decision.coverage === "skip").length),
     failedHunks,
     coverageByLevel,
     degradedPlanning: opts.degradedPlanning === true,
@@ -1277,6 +1307,7 @@ async function renderOutputs(
 ): Promise<void> {
   const markdown = scrubGitHubSecrets(renderMarkdownReview(result));
   await telemetry.writeArtifact("final-review.md", markdown);
+  await telemetry.writeArtifact("final-review.json", scrubGitHubSecrets(result));
   const rendered = overrides.postGithubComments
     ? renderPostingSummaryForStdout(result, overrides.format ?? "markdown", { postRequested: true })
     : renderReviewForStdout(result, overrides.format ?? "markdown");
@@ -1507,7 +1538,13 @@ export class BudgetLedger {
   summary(coverage?: RunCoverageStatus, contextPressure?: ContextPressureSummary): BudgetSummary {
     return {
       completeness: coverage?.partial === true ? "partial" : "complete",
-      partialReasons: coverage?.partial === true ? [...coverage.reasons] : [],
+      partialReasons: coverage?.partial === true ? [
+        ...(coverage.diagnostics ?? []).map(diagnostic => `Stage ${diagnostic.stage}: ${diagnostic.reason}`),
+        ...(coverage.failedHunks ? [`${coverage.failedHunks} hunks failed review`] : []),
+        ...(coverage.verificationIncompleteCount ? [`${coverage.verificationIncompleteCount} verifications incomplete`] : []),
+        ...(coverage.budgetStopped ? ["Review budget exhausted"] : []),
+        ...(coverage.degradedPlanning ? ["Planning incomplete"] : [])
+      ] : [],
       multiplier: this.config.review.budgetBoost,
       configured: {
         timeoutMs: this.config.review.maxTimeMs,

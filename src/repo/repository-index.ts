@@ -169,11 +169,12 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       6,
       async () => {
         const value = await assemblePacketContext(this.opts.resolver, this.opts.registry, file, hunks, symbolFacts);
+        const textMode = value.degradation !== undefined || this.opts.registry.forPath(file.path).id === "generic";
         return {
           value,
           meta: {
-            backend: value.degradation ? "text" : "tree-sitter",
-            precision: value.degradation ? "heuristic" : "syntactic",
+            backend: textMode ? "text" : "tree-sitter",
+            precision: textMode ? "heuristic" : "syntactic",
             degraded: value.degradation !== undefined,
             ...(value.degradation !== undefined ? { degradationReason: value.degradation } : {})
           },
@@ -241,8 +242,8 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         const path = containPath(this.opts.resolver.repoRoot, filePath, this.guardTelemetry("read_file_outline"));
         const result = await this.limit(() => readOutline(this.opts.resolver, this.opts.registry, path, source));
         const meta: ToolResultMeta = {
-          backend: result.degraded ? "text" : "tree-sitter",
-          precision: result.degraded ? "heuristic" : "syntactic",
+          backend: result.parsed?.tree === undefined ? "text" : "tree-sitter",
+          precision: result.parsed?.tree === undefined ? "heuristic" : "syntactic",
           degraded: result.degraded,
           ...(result.degradationReason !== undefined ? { degradationReason: result.degradationReason } : {}),
           ...(result.truncated ? { truncated: true, omittedCount: result.omittedCount ?? 0 } : {})
@@ -348,7 +349,10 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     }
     const fallback = fallbackSymbolText(content.content, selector);
     const meta: ToolResultMeta = {
-      ...degradedMeta("text", "text", "tree-sitter unavailable; returned text window"),
+      backend: "text",
+      precision: "text",
+      degraded: adapter.id !== "generic",
+      ...(adapter.id !== "generic" ? { degradationReason: "tree-sitter unavailable; returned text window" } : {}),
       lookupStatus: fallback === undefined ? "not_found" : "found",
       deliveryStatus: fallback === undefined ? "empty" : fallback.truncated ? "truncated" : "full",
       requestedSource,
@@ -448,6 +452,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
     const omittedCandidatePaths = Math.max(0, allCandidatePaths.length - candidatePaths.length);
     const definitions: Array<{ symbol: SymbolInfo; text?: string }> = [];
     let fallbackCount = 0;
+    let syntaxFallbacks = 0;
     let omittedByTruncation = 0;
     let omittedByDefinitionCap = 0;
     let processedCandidates = 0;
@@ -481,6 +486,7 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           const fallbackDefinition = fallbackDefinitionFromText(content.content, candidate, symbolName);
           if (fallbackDefinition !== undefined) {
             fallbackCount += 1;
+            syntaxFallbacks += 1;
             definitions.push(fallbackDefinition);
           }
         }
@@ -506,6 +512,9 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         const match = matches.find((item) => item.path === candidate);
         if (match) {
           fallbackCount += 1;
+          if (adapter.id !== "generic") {
+            syntaxFallbacks += 1;
+          }
           definitions.push({
             symbol: {
               path: candidate,
@@ -547,14 +556,14 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           )
         : undefined;
     const meta: ToolResultMeta = {
-      backend: fallbackCount === cappedDefinitions.definitions.length ? "text" : "tree-sitter",
-      precision: fallbackCount === cappedDefinitions.definitions.length ? "text" : "syntactic",
-      degraded: fallbackCount > 0,
+      backend: fallbackCount > 0 || cappedDefinitions.definitions.length === 0 ? "text" : "tree-sitter",
+      precision: fallbackCount > 0 || cappedDefinitions.definitions.length === 0 ? "text" : "syntactic",
+      degraded: syntaxFallbacks > 0,
       lookupStatus: definitionLookupStatus,
       deliveryStatus: definitionDeliveryStatus,
       requestedSource,
       sourceUsed: source.kind,
-      ...(fallbackCount > 0 ? { degradationReason: `${fallbackCount} definition candidate(s) used text fallback` } : {}),
+      ...(syntaxFallbacks > 0 ? { degradationReason: `${syntaxFallbacks} definition candidate(s) used text fallback` } : {}),
       ...(definitionRecovery !== undefined ? { recovery: definitionRecovery } : {}),
       ...(cappedDefinitions.omittedCount > 0 ? { truncated: true, omittedCount: cappedDefinitions.omittedCount } : {})
     };
@@ -713,6 +722,8 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ...(measurement.meta.degradationReason !== undefined ? { degradationReason: measurement.meta.degradationReason } : {}),
           ...(measurement.meta.truncated !== undefined ? { truncated: measurement.meta.truncated } : {}),
           ...(measurement.meta.omittedCount !== undefined ? { omittedCount: measurement.meta.omittedCount } : {}),
+          ...(measurement.meta.discoveryLimited ? { discoveryLimited: true } : {}),
+          ...(measurement.meta.omittedCountIsLowerBound ? { omittedCountIsLowerBound: true } : {}),
           ...(measurement.meta.lookupStatus !== undefined ? { lookupStatus: measurement.meta.lookupStatus } : {}),
           ...(measurement.meta.deliveryStatus !== undefined ? { deliveryStatus: measurement.meta.deliveryStatus } : {}),
           ...(measurement.meta.recovery !== undefined ? { recovery: measurement.meta.recovery } : {}),
@@ -802,6 +813,8 @@ function metaFromSearch(execution: {
   degradationReason?: string;
   truncated?: boolean;
   omittedCount?: number;
+  omittedCountIsLowerBound?: boolean;
+  discoveryLimited?: boolean;
 }): ToolResultMeta {
   return {
     backend: execution.backend,
@@ -809,7 +822,9 @@ function metaFromSearch(execution: {
     degraded: execution.degraded,
     ...(execution.degradationReason !== undefined ? { degradationReason: execution.degradationReason } : {}),
     ...(execution.truncated !== undefined ? { truncated: execution.truncated } : {}),
-    ...(execution.omittedCount !== undefined ? { omittedCount: execution.omittedCount } : {})
+    ...(execution.omittedCount !== undefined ? { omittedCount: execution.omittedCount } : {}),
+    ...(execution.omittedCountIsLowerBound ? { omittedCountIsLowerBound: true } : {}),
+    ...(execution.discoveryLimited ? { discoveryLimited: true } : {})
   };
 }
 

@@ -8,7 +8,7 @@ import { parseDiff } from "../src/git/diff-parser.js";
 import { buildRepositoryIndex, RepositoryToolsFacade, withRepositoryToolCallContext } from "../src/repo/repository-index.js";
 import { LanguageAdapterRegistry } from "../src/repo/language-adapter.js";
 import { containGlob, containPath, containRef } from "../src/repo/path-guard.js";
-import type { SourceResolver } from "../src/repo/source-resolver.js";
+import { SourceResolver } from "../src/repo/source-resolver.js";
 import { extractStaticSignals } from "../src/repo/static-signals.js";
 import { TreeSitterService } from "../src/repo/tree-sitter/tree-sitter-service.js";
 import type {
@@ -27,6 +27,86 @@ import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetr
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("repository intelligence", () => {
+  it.each([
+    { filePath: "schema/widget.ridl", content: "struct Widget\n  - name: string\n", degraded: false },
+    { filePath: "config/widget.json", content: '{"Widget": true}\n', degraded: false },
+    { filePath: "config/widget.yaml", content: "Widget: enabled\n", degraded: false },
+    { filePath: "docs/widget.md", content: "# Widget\n", degraded: false },
+    { filePath: "schema/widget.sql", content: "CREATE TABLE Widget (id INT);\n", degraded: false },
+    { filePath: "data/widget.custom", content: "Widget\n", degraded: false },
+    { filePath: "data/extensionless", content: "Widget\n", degraded: false },
+    { filePath: "pkg/widget.go", content: "package pkg\nfunc Widget() {}\n", degraded: true }
+  ])("accounts for text mode in $filePath (degraded: $degraded)", async ({ filePath, content, degraded }) => {
+    const repo = initRepo();
+    writeRepoFile(repo, "README.md", "Fixture\n");
+    const base = commitAll(repo, "base");
+    writeRepoFile(repo, filePath, content);
+    const head = commitAll(repo, "add widget");
+    const rawDiff = git(repo, ["diff", base, head]);
+    const diff = parseDiff(rawDiff);
+    const resolver = await SourceResolver.create({
+      mode: "commit_range", repoRoot: repo, startCommit: base, endCommit: head,
+      mergeBase: base, headSha: head, commits: [], rawDiff
+    });
+    const loadLanguage = vi.fn(async () => { throw new Error("grammar unavailable"); });
+    const registry = new LanguageAdapterRegistry(new TreeSitterService({ loadLanguage }));
+    const telemetry = recordingTelemetry();
+    const tools = new RepositoryToolsFacade({ diff, resolver, registry, telemetry });
+
+    const outline = await tools.readFileOutline(filePath);
+    const symbol = await tools.readSymbol(filePath, { symbolName: "Widget" });
+    const definition = await tools.findDefinition("Widget");
+    const mentions = await tools.findSymbolMentions("Widget");
+    const file = diff.files[0]!;
+    const context = await tools.buildPacketContext(file, file.hunks, []);
+
+    for (const result of [outline, symbol, definition, mentions]) {
+      expect(result.meta).toMatchObject({ backend: "text", degraded });
+      expect(result.meta.precision).not.toBe("syntactic");
+      if (!degraded) expect(result.meta.degradationReason).toBeUndefined();
+    }
+    expect(symbol.text).toContain("Widget");
+    expect(definition.definitions).toHaveLength(1);
+    expect(mentions.results).toHaveLength(1);
+    expect(context.degradation !== undefined).toBe(degraded);
+    expect(telemetry.toolCalls).toHaveLength(5);
+    expect(telemetry.toolCalls.every(call => call.backend === "text" && call.degraded === degraded)).toBe(true);
+    expect(loadLanguage).toHaveBeenCalledTimes(degraded ? 1 : 0);
+    const absentMentions = await tools.findSymbolMentions("AbsentWidget", { pathGlob: filePath });
+    expect(absentMentions.results).toEqual([]);
+    expect(absentMentions.meta).toMatchObject({ backend: "text", precision: "text", degraded: false });
+    if (!degraded) {
+      expect(outline.outline.notes).toContain("text outline; no syntax adapter configured for this language");
+      // An unsupported language still reports actual retrieval failures.
+      expect((await tools.readFileOutline("schema/missing.ridl")).meta.degraded).toBe(true);
+    }
+  });
+
+  it.each([false, true])("keeps mixed syntax/text lookups honest (parser failed: %s)", async (parserFailed) => {
+    const repo = initRepo();
+    writeRepoFile(repo, "schema/widget.ridl", "struct Widget\n  - name: string\n");
+    writeRepoFile(repo, "pkg/widget.go", "package pkg\nfunc Widget() {}\n");
+    const head = commitAll(repo, "fixture");
+    const resolver = await SourceResolver.create({
+      mode: "commit_range", repoRoot: repo, startCommit: head, endCommit: head,
+      mergeBase: head, headSha: head, commits: [], rawDiff: ""
+    });
+    const registry = new LanguageAdapterRegistry(new TreeSitterService(parserFailed
+      ? { loadLanguage: async () => { throw new Error("grammar unavailable"); } }
+      : {}));
+    const tools = new RepositoryToolsFacade({ diff: { files: [] }, resolver, registry, telemetry: recordingTelemetry() });
+
+    const definition = await tools.findDefinition("Widget");
+    const mentions = await tools.findSymbolMentions("Widget");
+    expect(definition.definitions).toHaveLength(2);
+    expect(mentions.results).toHaveLength(2);
+    for (const result of [definition, mentions]) {
+      expect(result.meta).toMatchObject({ backend: "text", precision: "text", degraded: parserFailed });
+      if (parserFailed) expect(result.meta.degradationReason).toMatch(/^1 /u);
+      else expect(result.meta.degradationReason).toBeUndefined();
+    }
+  });
+
   it("contains paths, globs, and refs at the repo boundary", () => {
     const repoRoot = "/repo";
 
@@ -616,11 +696,8 @@ export { internal as Public }
     const totalCappedSearch = await tools.searchFiles("SearchNeedle", { maxResults: 100 });
     expect(totalCappedSearch.meta.truncated).toBe(true);
     expect(JSON.stringify(totalCappedSearch.results).length).toBeLessThanOrEqual(16_000);
-    const hugeLineSearch = await tools.searchFiles("HugeNeedle", { maxResults: 1 });
-    expect(hugeLineSearch.meta.degraded).toBe(true);
-    expect(hugeLineSearch.meta.truncated).toBe(true);
-    expect(hugeLineSearch.meta.omittedCount).toBeGreaterThan(0);
-    expect(hugeLineSearch.results[0]?.path).toBe("huge/huge.txt");
+    // Oversized raw lines must disclose the discovery limit, never masquerade as exhaustive matches.
+    await expect(tools.searchFiles("HugeNeedle", { maxResults: 1 })).rejects.toMatchObject({ code: "budget_exhausted" });
     const untrackedSearch = await tools.searchFiles("UniqueUntracked");
     expect(untrackedSearch.results).toEqual([]);
     const ignoredTrackedSearch = await tools.searchFiles("IgnoredTrackedNeedle");

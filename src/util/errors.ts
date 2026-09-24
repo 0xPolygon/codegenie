@@ -14,6 +14,7 @@ export type CodegenieErrorCode =
   | "parser_unavailable"
   | "skill_invalid"
   | "path_outside_repo"
+  | "review_failed"
   | "llm_call_failed"
   | "llm_schema_invalid"
   | "github_post_failed"

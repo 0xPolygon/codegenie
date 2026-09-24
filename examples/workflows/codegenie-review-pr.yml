@@ -34,7 +34,7 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
 
-      - uses: 0xPolygon/codegenie@v0.6.0
+      - uses: 0xPolygon/codegenie@v0.6.1
         with:
           model: "openrouter/deepseek/deepseek-v4.1-flash:max"
           # model: "openrouter/z-ai/glm-5.3:max"

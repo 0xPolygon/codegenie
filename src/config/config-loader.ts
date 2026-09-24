@@ -28,6 +28,7 @@ export type CliConfigOverrides = {
   depth?: ReviewDepth;
   budgetBoost?: number;
   compositionReasoningStepDown?: boolean;
+  skipSvgReview?: boolean;
   maxTimeMs?: number;
   lenses?: string[];
   provider?: string;
@@ -59,6 +60,7 @@ const DEFAULT_SOURCE_PATHS = [
   "review.depth",
   "review.verify",
   "review.compositionReasoningStepDown",
+  "review.skipSvgReview",
   "review.maxFindings",
   "review.softCommentCap",
   "review.minConfidence",
@@ -82,7 +84,7 @@ const DEFAULT_SOURCE_PATHS = [
   "eval.logsDir"
 ];
 
-const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap", "budgetBoost", "maxTime", "compositionReasoningStepDown"]);
+const REPO_SAFE_REVIEW_KEYS = new Set(["depth", "maxFindings", "softCommentCap", "budgetBoost", "maxTime", "compositionReasoningStepDown", "skipSvgReview"]);
 const CREDENTIAL_KEY_PATTERN = /(?:api[_-]?key|apikey|secret|token|password|passwd|authorization|credentials|auth)/i;
 
 export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
@@ -257,6 +259,10 @@ function applyRawConfig(
     config.review.compositionReasoningStepDown = raw.review.compositionReasoningStepDown;
     sources["review.compositionReasoningStepDown"] = source;
   }
+  if (raw.review?.skipSvgReview !== undefined) {
+    config.review.skipSvgReview = raw.review.skipSvgReview;
+    sources["review.skipSvgReview"] = source;
+  }
   if (raw.review?.budgetBoost !== undefined) {
     config.review.budgetBoost = raw.review.budgetBoost;
     sources["review.budgetBoost"] = source;
@@ -372,6 +378,9 @@ function filterRepoConfig(raw: RawCodegenieConfig, warnings: ConfigWarning[]): R
     if (raw.review.compositionReasoningStepDown !== undefined) {
       safe.review.compositionReasoningStepDown = raw.review.compositionReasoningStepDown;
     }
+    if (raw.review.skipSvgReview !== undefined) {
+      safe.review.skipSvgReview = raw.review.skipSvgReview;
+    }
     if (raw.review.budgetBoost !== undefined) {
       safe.review.budgetBoost = raw.review.budgetBoost;
     }
@@ -482,6 +491,10 @@ function applyCliOverrides(
   if (cli.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = cli.compositionReasoningStepDown;
     sources["review.compositionReasoningStepDown"] = "cli";
+  }
+  if (cli.skipSvgReview !== undefined) {
+    config.review.skipSvgReview = cli.skipSvgReview;
+    sources["review.skipSvgReview"] = "cli";
   }
   if (cli.budgetBoost !== undefined) {
     config.review.budgetBoost = cli.budgetBoost;

@@ -23,6 +23,48 @@ import { scoreEvalRun } from "../src/evals/eval-scoring.js";
 import { nullTelemetry } from "./helpers/git.js";
 
 describe("stage 9 evidence-aware verification", () => {
+  it.each(["unresolved", "recovered", "refuted", "bad-argument", "budget"] as const)("retains source-failure diagnostics only when evidence remains unresolved: %s", async mode => {
+    const fixture = reviewFixture(["service.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("source-failure", packet);
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [finding])], packets: [packet] }, fakeTools(), config(), nullTelemetry(), {
+      runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        request.onToolResults?.([{ id: "t1", tool: "search_files", target: "service.ts", requestKey: "exact", status: "error", resultChars: 50,
+          errorCode: mode === "bad-argument" ? "invalid_args" : mode === "budget" ? "budget_exhausted" : "git_ref_missing", preview: "Unable to inspect selected revision" },
+          ...(mode === "recovered" ? [{ id: "t2", tool: "search_files", target: "service.ts", requestKey: "exact", status: "ok" as const, resultChars: 100 }] : [])]);
+        return { verdict: "reject", reason: "No supported defect.", requiredEvidencePresent: mode === "refuted", falsePositiveRisk: "high",
+          proofAssessment: { status: mode === "refuted" ? "refuted" : "unresolved", evidence: "Caller policy inspected only in supplied scope.",
+            assumptions: mode === "refuted" ? [] : [{ question: "Which caller requires this route?", essential: true }] } } as T;
+      } }, promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+    });
+    const verdict = result.verdicts[0]!;
+    expect(verdict.verdict).toBe("reject");
+    if (mode === "unresolved" || mode === "budget") expect(verdict.diagnostic).toMatchObject({ stage: 9, kind: mode === "budget" ? "incomplete" : "failure" });
+    else expect(verdict.diagnostic).toBeUndefined();
+  });
+
+  it.each([
+    { title: "An extra malformed-input case", actionable: false, evidence: "No consequential contract gap established; transport tests already exercise rejection." },
+    { title: "Tenant assertion accepts another tenant", actionable: true, evidence: "The inspected tenant isolation boundary requires denial, but this assertion accepts cross-tenant access." },
+    { title: "Payment limit test accepts an excessive charge", actionable: true, evidence: "The caller contract caps the amount; the modified assertion accepts a violating charge." },
+    { title: "Missing rejection test for a correct authorization guard", actionable: true, evidence: "The established authorization boundary requires rejection. Inspected relevant tests would still pass if its currently correct guard were removed." }
+  ])("keeps testing findings evidence-based without blanket suppression: $title", async ({ title, actionable, evidence }) => {
+    // Scripted decisions test the prompt/publication contract, not live model judgment.
+    const fixture = reviewFixture(["test_boundary.py"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("test-contract", packet, { category: "testing", title });
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [finding])], packets: [packet] }, fakeTools(), config(), nullTelemetry(), {
+      runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        expect(request.prompt).toContain("A missing test for a new branch alone is not a finding");
+        expect(request.prompt).toContain("no existing production bug or executed mutation is required");
+        expect(request.prompt).toContain("accept valid remedies");
+        return { verdict: actionable ? "keep" : "reject", reason: evidence, requiredEvidencePresent: actionable,
+          falsePositiveRisk: actionable ? "low" : "high", proofAssessment: { status: actionable ? "established" : "refuted", evidence, assumptions: [] } } as T;
+      } }, promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+    });
+    expect(result.verified).toHaveLength(actionable ? 1 : 0);
+  });
+
   it.each([
     { material: true, title: "Recovery instructions disable authorization on a public listener",
       reason: "The documented public recovery command disables authorization, contradicting the deployment requirement." },

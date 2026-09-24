@@ -270,7 +270,8 @@ describe("Plan 98 shared language foundation", () => {
     writeRepoFile(repo, "src/foo.rb", "def foo\n  2\nend\n");
     commitAll(repo, "change foo");
 
-    const telemetry = nullTelemetry();
+    const events: TelemetryEvent[] = [];
+    const telemetry = { ...nullTelemetry(), event: (event: TelemetryEvent) => { events.push(event); } };
     const resolved = await resolveReviewInput(
       { mode: "branch", branchName: "feature" },
       defaultConfig,
@@ -292,8 +293,10 @@ describe("Plan 98 shared language foundation", () => {
       telemetry,
       { lenses }
     );
+    const plan = defaultPlan(dossier, lenses, "generic likely-test compatibility");
+    for (const decision of plan.coverage) decision.coverage = "deep";
     const packets = await buildReviewPackets(
-      defaultPlan(dossier, lenses, "generic likely-test compatibility"),
+      plan,
       kept,
       facts,
       index,
@@ -315,6 +318,8 @@ describe("Plan 98 shared language foundation", () => {
     expect(packets).toHaveLength(1);
     expect(packets[0]?.relevantTests).toEqual([expectedTest]);
     expect(packets[0]?.contextText).toContain("tests/foo.rb");
+    expect(packets[0]?.degraded).toBeUndefined();
+    expect(events).not.toContainEqual(expect.objectContaining({ message: "packet_context_degraded_high_risk" }));
   });
 
   it("uses one parsed test-symbol contract for all three candidate conventions", async () => {

@@ -50,6 +50,7 @@ type CommanderReviewOptions = {
   model?: string;
   reasoning?: string;
   compositionReasoningStepDown?: boolean;
+  skipSvgReview?: boolean;
   format?: string;
   postGithubComments?: boolean;
   cache?: boolean;
@@ -92,6 +93,8 @@ export function parseReviewCommand(
     .option("--provider <provider>", "provider override")
     .option("--model <model>", "model override, optionally with a :reasoning suffix (e.g. claude-opus-5:max)")
     .option("--reasoning <level>", "reasoning level: minimal, low, medium, high, xhigh, max, or auto")
+    .option("--skip-svg-review", "skip SVG files during review (default)")
+    .option("--no-skip-svg-review", "include SVG files in review, subject to other exclusion rules")
     .option("--composition-reasoning-step-down", "use the next lower supported reasoning level for composition only")
     .option("--no-composition-reasoning-step-down", "use the configured reasoning level for composition")
     .option("--format <format>", "output format: markdown or json", "markdown")
@@ -120,6 +123,7 @@ export function parseReviewCommand(
   providerConfig.command("set-model").argument("<provider>").argument("<model>");
   providerConfig.command("set-depth").argument("<light|normal|deep>");
   providerConfig.command("set-reasoning").argument(REASONING_USAGE);
+  program.command("use").description("shorthand for `provider use`").argument("<model>");
   program.command("version").description("show codegenie version");
   program.command("eval").description("run codegenie eval suites");
 
@@ -315,6 +319,9 @@ function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides 
   }
   if (options.compositionReasoningStepDown !== undefined) {
     cli.compositionReasoningStepDown = options.compositionReasoningStepDown;
+  }
+  if (options.skipSvgReview !== undefined) {
+    cli.skipSvgReview = options.skipSvgReview;
   }
   if (options.cache !== undefined) {
     cli.cacheEnabled = options.cache;

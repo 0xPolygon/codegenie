@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { executeReviewCommand, isCliDisplayExit, parseReviewCommand } from "./review-command.js";
 import { createReviewProgress, type ReviewProgress } from "./review-progress.js";
-import { executeProviderCommand } from "./provider-command.js";
+import { executeProviderCommand, expandProviderAlias } from "./provider-command.js";
 import { executeGitHubActionCommand } from "../github-action/entrypoint.js";
 import { executeEvalCommand } from "../evals/eval-command.js";
 import { stripCredentials } from "../telemetry/redaction.js";
@@ -17,8 +17,9 @@ async function main(): Promise<void> {
       process.stdout.write(renderVersion());
       return;
     }
-    if (argv[0] === "provider" || (argv[0] === "help" && argv[1] === "provider")) {
-      await executeProviderCommand(argv, { allowOutput: true });
+    const providerArgv = expandProviderAlias(argv);
+    if (providerArgv) {
+      await executeProviderCommand(providerArgv, { allowOutput: true });
       return;
     }
     if (argv[0] === "github-action") {
@@ -38,7 +39,7 @@ async function main(): Promise<void> {
       env: process.env,
       stream: process.stderr
     });
-    await executeReviewCommand(parsed, {
+    const completed = await executeReviewCommand(parsed, {
       ...(progress !== undefined ? { onTelemetryEvent: progress.onTelemetryEvent } : {}),
       writeOutput: (text) => {
         progress?.stop();
@@ -46,6 +47,7 @@ async function main(): Promise<void> {
         process.stdout.write(text);
       }
     });
+    if (completed.review.health?.status === "failed") process.exitCode = 1;
     progress?.stop();
   } catch (error) {
     progress?.stop();

@@ -1,5 +1,7 @@
 import type { Api, Model, OpenAICompletionsCompat, OpenRouterRouting } from "@earendil-works/pi-ai";
 
+const DEEPSEEK_UPSTREAMS = ["deepseek", "fireworks", "together"];
+
 // Apply family-specific upstream routing on OpenRouter. Preserve Pi's catalog
 // capabilities, prices, and reasoning mappings.
 export function applyModelOverrides(model: Model<Api>): Model<Api> {
@@ -7,7 +9,7 @@ export function applyModelOverrides(model: Model<Api>): Model<Api> {
     return model;
   }
   const deepseek = model.id.startsWith("deepseek/");
-  const upstreams = deepseek ? ["deepseek"]
+  const upstreams = deepseek ? DEEPSEEK_UPSTREAMS
     : model.id.startsWith("z-ai/") ? ["together", "fireworks", "cloudflare"] : undefined;
   if (!upstreams) return model;
   const compat = model.compat as OpenAICompletionsCompat | undefined;
@@ -38,6 +40,7 @@ export function modelProviderRouting(raw: unknown): OpenRouterRouting | undefine
 export function requiresAutomaticSubmitToolChoice(model: Model<Api>): boolean {
   const routing = modelProviderRouting(model);
   return model.provider === "openrouter" && model.id.startsWith("deepseek/")
-    && routing?.only?.length === 1 && routing.only[0] === "deepseek"
+    && routing?.only?.length === DEEPSEEK_UPSTREAMS.length
+    && DEEPSEEK_UPSTREAMS.every((upstream, i) => routing.only?.[i] === upstream)
     && routing.allow_fallbacks === false;
 }

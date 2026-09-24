@@ -133,10 +133,47 @@ describe("phase 5 pipeline regressions", () => {
       outputNotes: [{ ...original, question: expected }], reconciliation: { outcomes: [{ candidateId: "policy-question", original, remainingQuestion: expected }] } });
     expect(JSON.stringify(artifacts.get("human-attention-notes.json"))).not.toContain("[redacted:circular]");
     if (mode !== "fallback" && mode !== "legacy" && mode !== "no-findings") {
-      expect(result.summary).toContain("violates current-membership policy");
+      expect(result.summary).toContain("Unresolved questions require attention");
       expect(result.summaryOnlyFindings[0]!.finalBody).toContain(finding.proofAssessment!.evidence);
       expect(artifacts.get("composition-sources.json")).toMatchObject({ mode: "llm" });
     }
+  });
+
+  it.each(["resolved", "partial", "missing-ref", "fallback", "fully-resolved"] as const)("reconciles packet questions with rejected-candidate evidence even with zero findings: %s", async mode => {
+    const candidate = verifierResolutionCandidate();
+    const packet = verifierResolutionPacket();
+    const packetResult = packetResultWithFindingAndHint(candidate, "billing/fee.ts");
+    packetResult.followUpHints.push({ ...packetResult.followUpHints[0]!, question: "Does the remote payment provider enforce currency limits?" });
+    if (mode === "fully-resolved") packetResult.followUpHints = packetResult.followUpHints.slice(0, 1);
+    const coverage = fakeCoverage();
+    if (mode === "fully-resolved") coverage.diagnostics = [{ stage: 7, workItem: packetResult.packetId, kind: "incomplete", code: "budget_exhausted", reason: "Caller evidence lookup refused", recoveryExhausted: true, origin: "tool" }];
+    let inventory: { concerns: Array<{ id: string; question: string }>; evidence: Array<{ id: string }> };
+    const builder = createPromptBuilder(fakeLensRegistry());
+    const result = await dedupeRankAndComposeReview({ verified: [], verdicts: [{ candidateId: candidate.id, verdict: "reject",
+      reason: "The helper already rejects zero.", requiredEvidencePresent: true, falsePositiveRisk: "low",
+      proofAssessment: { status: "refuted", evidence: "At the reviewed head, normalizeAmount rejects zero before fee calculation.", assumptions: [] }
+    }] }, fakePlan(), { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "", headSha: "head" }, coverage, { ...config(), github: { ...config().github, summaryWhenNoFindings: true } }, nullTelemetry(), {
+      postGithubComments: true, packets: [packet], packetResults: [packetResult],
+      promptBuilder: { ...builder, buildComposerPrompt: input => {
+        inventory = JSON.parse(input.attentionReconciliationJson!);
+        return builder.buildComposerPrompt(input);
+      } }, runner: { runStructured: async <T>() => {
+        if (mode === "fallback") throw new CodegenieError("llm_schema_invalid", "invalid composition", { recoverable: true });
+        const concern = inventory.concerns.find(item => item.question.includes("normalizeAmount"))!;
+        return { summary: "Everything looks good", composedFindings: [], attentionResolutions: [{ concernId: concern.id,
+          disposition: mode === "partial" ? "narrowed" : "resolved", supportingRefs: [mode === "missing-ref" ? "not-supplied" : inventory.evidence[0]!.id],
+          rationale: "The inspected head helper answers the zero-value guard question; it says nothing about remote provider policy.",
+          ...(mode === "partial" ? { remainingQuestion: "Does the deployed helper match this reviewed guard?" } : {}) }] } as T;
+      } }
+    });
+    expect(result.noFindings).toBe(true);
+    expect(result.needsHumanAttention.some(note => note.question.includes("remote payment"))).toBe(mode !== "fully-resolved");
+    expect(result.needsHumanAttention.some(note => note.question.includes("normalizeAmount"))).toBe(mode === "missing-ref" || mode === "fallback");
+    if (mode === "partial") expect(result.needsHumanAttention.some(note => note.question.includes("deployed helper"))).toBe(true);
+    expect(result.health?.status).toBe(mode === "fully-resolved" ? "completed" : "unresolved");
+    if (mode === "fully-resolved") expect(result.coverage.diagnostics).toEqual([]);
+    else expect(result.postingPlan?.reviewBody).toContain("Review completed with unresolved questions");
+    expect(renderMarkdownReview(result)).not.toContain("Everything looks good");
   });
 
   it.each([true, false])("publishes supplied summary conclusions with original disagreement retained, resolved=%s", async resolved => {
@@ -5663,6 +5700,36 @@ describe("phase 5 pipeline regressions", () => {
     }
   });
 
+  it("returns a failed report when required workers exhaust schema recovery, saving diagnostics and a failed run outcome", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "a.ts", "export const a = 1;\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "a.ts", "export const a = 2;\n");
+    commitAll(repo, "feature");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-health-")), "run");
+    const review = await runReview({ mode: "branch", branchName: "feature" }, config(), {
+      repoRoot: repo, runArtifactDir,
+      runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        if (request.stage === 5) {
+          const dossier = extractPromptJson<PlannerDossier>(request.prompt, "planner-dossier");
+          return { diffUnderstanding: { declaredIntent: "fixture", inferredBehavior: "fixture" }, coverage: dossier!.files.flatMap(file => file.hunks.map(hunk => ({
+            hunkId: hunk.hunkId, path: file.path, coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "review"
+          }))) } as T;
+        }
+        if (request.stage === 7) throw new CodegenieError("llm_schema_invalid", "required submission invalid after recovery", { recoverable: true });
+        return { summary: "Everything looks good", composedFindings: [] } as T;
+      } }
+    });
+    expect(review.health?.status).toBe("failed");
+    const report = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
+    expect(report).toContain("**Review failed.");
+    expect(report).toContain("required submission invalid after recovery");
+    expect(report).not.toContain("Everything looks good");
+    expect(JSON.parse(readFileSync(path.join(runArtifactDir, "final-review.json"), "utf8")).health.status).toBe("failed");
+    expect(JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8"))).toMatchObject({ outcome: { status: "failed", exitCode: 1 } });
+  });
+
   it("records undispatched budget-stopped packets as failed coverage records", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "a.ts", "export const a = 1;\n");
@@ -5795,7 +5862,7 @@ describe("phase 5 pipeline regressions", () => {
         const dossier = JSON.parse(request.prompt) as PlannerDossier;
         return {
           diffUnderstanding: { declaredIntent: "chunk intent", inferredBehavior: dossier.compaction.chunkRoot ?? "single" },
-          coverage: dossier.files.flatMap((file) =>
+          coverage: dossier!.files.flatMap((file) =>
             file.hunks.map((hunk) => ({
               hunkId: hunk.hunkId,
               path: file.path,
@@ -5854,7 +5921,7 @@ describe("phase 5 pipeline regressions", () => {
         omittedCounts.push(dossier.compaction.omitted.length);
         return {
           diffUnderstanding: { declaredIntent: "chunk intent", inferredBehavior: dossier.compaction.chunkRoot ?? "single" },
-          coverage: dossier.files.flatMap((file) =>
+          coverage: dossier!.files.flatMap((file) =>
             file.hunks.map((hunk) => ({
               hunkId: hunk.hunkId,
               path: file.path,
@@ -6888,10 +6955,10 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.postingPlan?.reviewBody).toContain("Coverage disclosure:");
     expect(result.postingPlan?.reviewBody).toContain(partialReason);
     expect(result.postingPlan?.reviewBody).toContain("**Review incomplete.**");
-    expect(result.postingPlan?.reviewBody).toContain("incomplete coverage or verification prevents a clean conclusion");
-    expect(result.postingPlan?.reviewBody).not.toContain("Everything looks good");
+    expect(result.postingPlan?.reviewBody).toContain("Incomplete required work prevents a clean conclusion");
+    expect(result.postingPlan?.reviewBody).not.toContain("No credible findings were found within the reviewed scope");
     expect(result.postingPlan?.reviewBody.indexOf("**Review incomplete.**")).toBeLessThan(
-      result.postingPlan?.reviewBody.indexOf("Review incomplete: completed work") ?? Number.MAX_SAFE_INTEGER
+      result.postingPlan?.reviewBody.indexOf("0 confirmed findings") ?? Number.MAX_SAFE_INTEGER
     );
   });
 
@@ -6953,9 +7020,9 @@ describe("phase 5 pipeline regressions", () => {
       noFindings: true
     });
     expect(markdown).toContain("**Partial review:** 1 hunk did not complete review.");
-    expect(markdown).toContain("## ⚠️ Review Incomplete");
-    expect(markdown).not.toContain("Everything looks good");
-    expect(markdown.indexOf("**Review incomplete.**")).toBeLessThan(markdown.indexOf("Review completed."));
+    expect(markdown).toContain("**Review incomplete.");
+    expect(markdown).not.toContain("No credible findings were found within the reviewed scope");
+    expect(markdown.indexOf("**Review incomplete.**")).toBeLessThan(markdown.indexOf("0 confirmed findings"));
   });
 
   it("renders planner degradation prominently without inventing partial coverage", () => {
@@ -6983,9 +7050,9 @@ describe("phase 5 pipeline regressions", () => {
     expect(markdown).toContain("**Degraded run: planner fallback.**");
     expect(markdown.indexOf("**Degraded run: planner fallback.**")).toBeLessThan(markdown.indexOf("Review completed."));
     expect(markdown).toContain("## ✅ No Findings");
-    expect(markdown).toContain("Everything looks good");
+    expect(markdown).toContain("No credible findings were found within the reviewed scope");
     expect(markdown).not.toContain("**Review incomplete.**");
-    expect(markdown).not.toContain("## ⚠️ Review Incomplete");
+    expect(markdown).not.toContain("**Review incomplete.");
     expect(markdown).not.toContain("**Partial review:**");
   });
 
@@ -9702,7 +9769,10 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.findings[0]?.finalBody).not.toContain("Compact repaired body.");
   });
 
-  it("fails the run on persistent provider-wide non-auth failures and writes failure logs", async () => {
+  it.each([
+    { status: 503, message: "provider unavailable", reason: "transient_error", calls: 4, error: "LLM provider call failed" },
+    { status: 400, message: "You have reached your specified API usage limits.", reason: "usage_limit", calls: 1, error: "LLM provider usage limit reached" }
+  ])("reports planning failures and unavailable coverage for provider HTTP $status", async (providerFailure) => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
     commitAll(repo, "base");
@@ -9716,8 +9786,8 @@ describe("phase 5 pipeline regressions", () => {
       resolveModel: () => ({ provider: "scripted", id: "scripted-model", raw: { id: "scripted-model", api: "faux" } }),
       complete: async () => {
         providerCalls += 1;
-        const error = new Error("provider unavailable") as Error & { status: number };
-        error.status = 503;
+        const error = new Error(providerFailure.message) as Error & { status: number };
+        error.status = providerFailure.status;
         throw error;
       },
       validateToolCall: (_tools, call) => call.arguments
@@ -9734,9 +9804,20 @@ describe("phase 5 pipeline regressions", () => {
           },
           { repoRoot: repo, runArtifactDir, piAdapter: adapter }
         )
-      ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "transient_error" } });
+      ).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: providerFailure.reason } });
 
-      expect(providerCalls).toBe(4);
+      expect(providerCalls).toBe(providerFailure.calls);
+      const markdown = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
+      expect(markdown).toContain("**Review failed.");
+      expect(markdown).toContain("Stage 5: llm_call_failed");
+      expect(markdown).toContain("**Coverage unavailable:");
+      expect(markdown).not.toContain("0/0 hunks");
+      expect(markdown).not.toContain("assigned hunks were reviewed");
+      expect(markdown).not.toContain("Coverage levels");
+      expect(JSON.parse(readFileSync(path.join(runArtifactDir, "final-review.json"), "utf8"))).toMatchObject({
+        health: { status: "failed", diagnostics: [expect.objectContaining({ stage: 5 })] },
+        coverage: { unavailable: true, partial: true }
+      });
       const runJson = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8")) as {
         outcome: { status: string; errorCode: string | null };
       };
@@ -9747,9 +9828,10 @@ describe("phase 5 pipeline regressions", () => {
         context: { reason: string };
       };
       expect(errorJson).toMatchObject({
+        stage: 5,
         errorCode: "llm_call_failed",
-        error: "LLM provider call failed",
-        context: { reason: "transient_error" }
+        error: providerFailure.error,
+        context: { reason: providerFailure.reason }
       });
       const runLog = readFileSync(path.join(runArtifactDir, "run.log"), "utf8");
       expect(runLog).toContain("model_call_started");
@@ -12803,7 +12885,7 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(result.needsHumanAttention).toContainEqual(expect.objectContaining({ question: "Which denomination does the deployed contract expect?" }));
-    expect(result.summary).toBe("No security issues, but one correctness bug remains.");
+    expect(result.summary).toContain("Unresolved questions require attention");
     expect([...result.findings, ...result.summaryOnlyFindings]).toHaveLength(1);
   });
 
@@ -13543,7 +13625,7 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
-  it("suppresses human-attention notes already covered by final findings", async () => {
+  it("retains packet questions when overlapping findings lack an explicit evidence resolution", async () => {
     const finding: CandidateFinding = {
       ...fakeFinding(),
       id: "finding-cache-stale",
@@ -13621,7 +13703,7 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(result.summaryOnlyFindings).toHaveLength(1);
-    expect(result.needsHumanAttention).toEqual([]);
+    expect(result.needsHumanAttention).toHaveLength(1);
   });
 
   it("renders the matching fallback note when a completed keep is suppressed by publication quality", async () => {
@@ -13685,17 +13767,14 @@ describe("phase 5 pipeline regressions", () => {
     });
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
       outputNotes: [expect.objectContaining({ question: "Check whether normalizeAmount rejects zero prices before fee calculation." })],
-      fallbackGroupCount: 1,
+      fallbackGroupCount: 0,
       omittedFallbackCount: 0,
-      publicationFallbacks: [expect.objectContaining({ candidateId: candidate.id, verdict: "keep" })]
+      publicationFallbacks: []
     });
-    expect(events).toContainEqual(expect.objectContaining({
-      message: "human_attention_publication_fallback",
-      data: expect.objectContaining({ fallbackCandidateIds: [candidate.id], fallbackGroupCount: 1, omittedFallbackCount: 0 })
-    }));
+    expect(events.some(event => event.message === "human_attention_publication_fallback")).toBe(false);
   });
 
-  it("publishes a fully concrete completed keep summary-only and suppresses its redundant note", async () => {
+  it("publishes a concrete keep without implicitly deleting its outstanding question", async () => {
     const base = verifierResolutionCandidate();
     const candidate: CandidateFinding = {
       ...base,
@@ -13745,18 +13824,18 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.summaryOnlyFindings).toEqual([
       expect.objectContaining({ id: candidate.id, publication: "summary-only", changedLine: false })
     ]);
-    expect(result.needsHumanAttention).toEqual([]);
+    expect(result.needsHumanAttention).toHaveLength(1);
     expect(artifacts.get("final-selection.json")).toMatchObject({
       records: [expect.objectContaining({ findingId: candidate.id, decision: "published", reason: "low-confidence-anchorless" })]
     });
     expect(artifacts.get("human-attention-notes.json")).toMatchObject({
-      outputNotes: [],
+      outputNotes: [expect.objectContaining({ question: expect.any(String) })],
       fallbackGroupCount: 0,
       omittedFallbackCount: 0
     });
   });
 
-  it("suppresses human-attention notes resolved by verifier rejection with evidence", async () => {
+  it("retains packet questions when a reject supplies no explicit composition resolution", async () => {
     const artifacts = new Map<string, unknown>();
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     let composerNotes: string[] | undefined;
@@ -13807,29 +13886,10 @@ describe("phase 5 pipeline regressions", () => {
       }
     );
 
-    expect(composerNotes).toEqual([]);
-    expect(result.needsHumanAttention).toEqual([]);
-    expect(artifacts.get("human-attention-notes.json")).toMatchObject({
-      schemaVersion: 3,
-      suppressedByVerification: [
-        expect.objectContaining({
-          candidateId: "finding-helper-guard",
-          verdict: "reject",
-          noteIds: [expect.stringMatching(/^note-/u)],
-          match: expect.objectContaining({
-            sharedFiles: ["billing/fee.ts"],
-            questionMatched: true,
-            provenanceMatched: true
-          })
-        })
-      ],
-      keptForOutputGroupIds: []
-    });
-    expect(events).toContainEqual(expect.objectContaining({
-      stage: 10,
-      message: "human_attention_hints_suppressed_by_verification",
-      data: expect.objectContaining({ suppressed: 1, remainingGroups: 0 })
-    }));
+    expect(composerNotes).toHaveLength(1);
+    expect(result.needsHumanAttention).toHaveLength(1);
+    expect(result.health?.status).toBe("unresolved");
+    expect(artifacts.get("human-attention-notes.json")).toMatchObject({ suppressedByVerification: [] });
   });
 
   it("does not suppress unrelated human-attention notes through weak same-file verifier overlap", async () => {
@@ -13975,7 +14035,7 @@ describe("phase 5 pipeline regressions", () => {
     ]);
   });
 
-  it("drops unknown human-attention paths and allows verifier suppression by predicate", async () => {
+  it("drops unknown paths but retains unanswered packet predicates", async () => {
     const artifacts = new Map<string, unknown>();
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const candidate = verifierResolutionCandidate();
@@ -14018,7 +14078,7 @@ describe("phase 5 pipeline regressions", () => {
       }
     );
 
-    expect(result.needsHumanAttention).toEqual([]);
+    expect(result.needsHumanAttention).toEqual([expect.objectContaining({ files: [], symbols: ["calculateFee", "normalizeAmount"] })]);
     expect(events).toContainEqual(expect.objectContaining({
       stage: 10,
       message: "human_attention_note_path_dropped",
@@ -14036,12 +14096,7 @@ describe("phase 5 pipeline regressions", () => {
           droppedPaths: [{ path: "billing/quotes.ts", reason: "unknown_path" }]
         })
       ],
-      suppressedByVerification: [
-        expect.objectContaining({
-          candidateId: "finding-helper-guard",
-          match: expect.objectContaining({ sharedFiles: [] })
-        })
-      ]
+      suppressedByVerification: []
     });
   });
 

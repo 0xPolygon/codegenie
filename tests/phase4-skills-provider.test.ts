@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import { executeProviderCommand, parseProviderCommand } from "../src/cli/provider-command.js";
+import { executeProviderCommand, expandProviderAlias, parseProviderCommand } from "../src/cli/provider-command.js";
 import { getCodegeniePaths } from "../src/config/paths.js";
 import { defaultConfig } from "../src/config/schema.js";
 import {
@@ -359,6 +359,14 @@ describe("Phase 4 provider commands", () => {
     expect(error.context?.helpText).toContain("Usage: codegenie provider login [options] <provider>");
     expect(error.context?.helpText).toContain("store credentials for a provider");
     expect(error.context?.helpText).toContain("--api-key   store an API key instead of using OAuth");
+  });
+
+  it("expands the top-level `use` shorthand to `provider use`", () => {
+    expect(expandProviderAlias(["use", "opus:max"])).toEqual(["provider", "use", "opus:max"]);
+    expect(expandProviderAlias(["help", "use"])).toEqual(["provider", "use", "--help"]);
+    expect(expandProviderAlias(["provider", "list"])).toEqual(["provider", "list"]);
+    expect(expandProviderAlias(["HEAD~1"])).toBeUndefined();
+    expect(parseProviderCommand(expandProviderAlias(["use", "opus:max"])!)).toEqual({ args: ["provider", "use", "opus:max"], options: {} });
   });
 
   it("includes command help for other missing required provider arguments", () => {

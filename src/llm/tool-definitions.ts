@@ -64,7 +64,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "read_symbol",
-      description: "Read a symbol by exact symbolName or by the smallest enclosing symbol at line; provide exactly one selector. Use source {kind:\"auto\"} for renamed or deleted symbols so head is searched first, then base.",
+      description: "Requires path; discover an unknown path with find_definition first. Read a symbol by exact symbolName or by the smallest enclosing symbol at line; provide exactly one selector. Use source {kind:\"auto\"} for renamed or deleted symbols so head is searched first, then base.",
       parameters: Type.Object(
         {
           path: Type.String({ minLength: 1 }),
@@ -138,7 +138,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "search_files",
-      description: "Search file contents with a POSIX ERE query at the head or base revision.",
+      description: "Search committed contents with POSIX ERE (name|other, no lookarounds). pathGlob uses the same glob dialect as list_files: **, *, ?, character classes and {api,data} alternatives. contextMode: none, lines, symbols. Empty or truncated results do not prove repository-wide absence.",
       parameters: Type.Object(
         {
           query: Type.String({ minLength: 1, maxLength: 500 }),
@@ -159,12 +159,12 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
           caseSensitive: input.caseSensitive,
           source: input.source
         })));
-        return { text: withMeta(JSON.stringify(result.results, null, 2), result.meta), meta: result.meta };
+        return { text: withMeta(JSON.stringify(result.results), result.meta), searchResults: result.results, meta: result.meta };
       })
     },
     {
       name: "find_symbol_mentions",
-      description: "Find text/token mentions of an identifier, optionally constrained by pathGlob, contextMode, maxResults, and source.",
+      description: "Find identifier mentions. pathGlob uses list_files glob semantics including {api,data}/** alternatives. contextMode: none, lines, symbols; discovery and syntax inspection are bounded.",
       parameters: Type.Object(
         {
           symbolName: Type.String({ minLength: 1, maxLength: 200 }),
@@ -183,7 +183,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
           maxResults: input.maxResults,
           source: input.source
         })));
-        return { text: withMeta(JSON.stringify(result.results, null, 2), result.meta), meta: result.meta };
+        return { text: withMeta(JSON.stringify(result.results), result.meta), searchResults: result.results, meta: result.meta };
       })
     },
     {
@@ -311,7 +311,7 @@ function withMeta(text: string, meta: ToolResultMeta): string {
     notes.push(`degraded${meta.degradationReason ? `: ${meta.degradationReason}` : ""}`);
   }
   if (meta.truncated) {
-    notes.push(`truncated${meta.omittedCount ? `: ${meta.omittedCount} omitted` : ""}`);
+    notes.push(`truncated${meta.omittedCount ? `: ${meta.omittedCountIsLowerBound ? "at least " : ""}${meta.omittedCount} omitted` : ""}`);
   }
   return notes.length > 0 ? `${text}\n\n[tool meta: ${notes.join("; ")}]` : text;
 }

@@ -52,13 +52,17 @@ export async function readOutline(
     contentSha: content.contentSha
   });
   if (parsed.tree === undefined) {
-    const fallback = fallbackOutline(filePath, registry.languageForPath(filePath), content.content, "tree-sitter unavailable; using text outline");
+    const degraded = adapter.id !== "generic";
+    const note = degraded
+      ? "tree-sitter unavailable; using text outline"
+      : "text outline; no syntax adapter configured for this language";
+    const fallback = fallbackOutline(filePath, registry.languageForPath(filePath), content.content, note);
     const capped = capOutlineTotal(fallback.outline, fallback.omittedCount);
     return {
       outline: capped.outline,
       parsed,
-      degraded: true,
-      degradationReason: "tree-sitter unavailable; using text outline",
+      degraded,
+      ...(degraded ? { degradationReason: note } : {}),
       ...(capped.omittedCount > 0 ? { truncated: true, omittedCount: capped.omittedCount } : {})
     };
   }

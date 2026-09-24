@@ -395,7 +395,6 @@ async function buildPacket(
     reviewProfile,
     telemetry
   });
-  emitPacketContextQuality(telemetry, first.file.path, coverage, reviewPriority, contextQuality, contextDegradationReasons);
   const packet: ReviewPacket = {
     id: sha256Hex(`${first.file.path}\n${[...hunkIds].sort().join("\n")}\n${kind}`),
     dispatchRank: packetDispatchRank(first.file.path, first.facts, packetChangedLines),
@@ -435,6 +434,7 @@ async function buildPacket(
         ? { fileContext: { mode: "file-diff", reason: "grouped file hunks" } }
         : {})
   };
+  emitPacketContextQuality(telemetry, first.file.path, coverage, reviewPriority, contextQuality, contextDegradationReasons, packet.degraded !== undefined);
   return packet;
 }
 
@@ -2714,7 +2714,8 @@ function emitPacketContextQuality(
   coverage: Exclude<CoverageLevel, "skip">,
   reviewPriority: ReviewPriority,
   quality: PacketContextQuality,
-  reasons: string[]
+  reasons: string[],
+  degraded: boolean
 ): void {
   telemetry.event({
     stage: 6,
@@ -2728,7 +2729,7 @@ function emitPacketContextQuality(
       reasons
     }
   });
-  if ((quality === "outline_only" || quality === "path_only") && isHighRiskPacket(coverage, reviewPriority)) {
+  if (degraded && (quality === "outline_only" || quality === "path_only") && isHighRiskPacket(coverage, reviewPriority)) {
     telemetry.event({
       stage: 6,
       level: "warn",

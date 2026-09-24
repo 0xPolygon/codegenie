@@ -1,3 +1,4 @@
+import { reviewDiagnostic, unresolvedToolDiagnostic } from "../util/review-health.js";
 import { assessFinalSuggestions, suggestionAssessment } from "./suggestion-assessment.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { normalizeVerifierSubmission, expandVerifierRevision, promotedCompletionIssues } from "../llm/verifier-revision.js";
@@ -54,6 +55,7 @@ const VERIFIER_BASE_TOKEN_ESTIMATE = 1_000;
 const EVIDENCE_RESOLUTION_LANE_MAX = 4;
 
 type VerifyOptions = {
+  onToolResults?: import("../llm/llm-runner.js").LlmStructuredRequest<unknown>["onToolResults"];
   runner: LlmRunner;
   promptBuilder: PromptBuilder;
   lensRegistry: LensRegistry;
@@ -373,6 +375,7 @@ export async function verifyFindings(
     }
     const candidateId = outcome.task.candidateId ?? "unknown";
     const verdict = incompleteVerificationVerdict(candidateId, verifierOutcomeReason(outcome));
+    verdict.diagnostic = reviewDiagnostic(9, outcome.error, candidateId, outcome.outcome);
     verdicts.push(verdict);
     const meta = {
       ...candidateRecordMeta(candidateId, verificationLaneByCandidateId, gateReasonByCandidateId, gateFactsByCandidateId),
@@ -604,7 +607,8 @@ async function verifyCandidate(
     ...(packet?.intentSignals !== undefined ? { intentSignals: packet.intentSignals } : {}),
     skills
   });
-  const submitted = await runVerifierStructured(candidate, prompt, tools, config, opts, workerId, telemetry, runtimeStats);
+  let toolResults: import("../llm/llm-runner.js").LlmToolResultSummary[] = [];
+  const submitted = await runVerifierStructured(candidate, prompt, tools, config, { ...opts, onToolResults: results => { toolResults = results; } }, workerId, telemetry, runtimeStats);
   const normalized = normalizeSubmittedVerdict(candidate, submitted, telemetry);
   const submittedFinalFinding = normalized.finalFinding;
   const revised = submittedFinalFinding !== undefined
@@ -626,10 +630,15 @@ async function verifyCandidate(
     falsePositiveRisk: normalized.falsePositiveRisk,
     ...(revised !== undefined ? { finalFinding: revised } : {}),
     ...(revisedAnchor !== undefined ? { revisedAnchor } : {}),
-    ...(verificationIncomplete ? { verificationIncomplete: true } : {}),
+    ...(verificationIncomplete ? { verificationIncomplete: true,
+      diagnostic: reviewDiagnostic(9, new CodegenieError(normalized.reason.includes("budget") ? "budget_exhausted" : "llm_schema_invalid", normalized.reason), candidate.id) } : {}),
     ...(normalized.behaviorChange !== undefined ? { behaviorChange: normalized.behaviorChange } : {}),
     ...(normalized.intentEvidence !== undefined ? { intentEvidence: normalized.intentEvidence } : {})
   };
+  if (verdict.unresolvedConcern && !verdict.diagnostic) {
+    const diagnostic = unresolvedToolDiagnostic(9, toolResults, candidate.id);
+    if (diagnostic) verdict.diagnostic = diagnostic;
+  }
   telemetry.event({ stage: 9, level: "info", message: "verification_suggestion_assessments",
     data: { candidateId: candidate.id, suppliedAssessments: normalized.suggestionAssessments ?? {}, assessments: verdict.suggestionAssessments } });
   for (const field of ["suggestedFix", "suggestedTest"] as const) {
@@ -824,6 +833,7 @@ async function runVerifierStructured(
   try {
     const result = await opts.runner.runStructured<SubmitVerificationVerdict>({
       stage: 9,
+      ...(opts.onToolResults ? { onToolResults: opts.onToolResults } : {}),
       prompt: prompt.prompt,
       schema: { ...SubmitVerificationVerdictSchema,
         required: [...SubmitVerificationVerdictSchema.required, "proofAssessment"] },

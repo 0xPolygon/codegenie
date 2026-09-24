@@ -9,7 +9,7 @@ import { CodegenieError } from "../src/util/errors.js";
 
 describe("review command", () => {
   it.each([
-    [undefined, undefined, false, "defaults"],
+    [undefined, undefined, true, "defaults"],
     [true, undefined, true, "repo-config"],
     [false, undefined, false, "repo-config"],
     [false, "--composition-reasoning-step-down", true, "cli"],
@@ -22,6 +22,23 @@ describe("review command", () => {
     const parsed = parseReviewCommand(["review", "--branch", "feature", ...(flag ? [flag] : [])], ctx);
     expect(parsed.config.review.compositionReasoningStepDown).toBe(expected);
     expect(parsed.configSources["review.compositionReasoningStepDown"]).toBe(source);
+    expect(parsed.warnings).toEqual([]);
+  });
+
+  it.each([
+    [undefined, undefined, true, "defaults"],
+    [true, undefined, true, "repo-config"],
+    [false, undefined, false, "repo-config"],
+    [false, "--skip-svg-review", true, "cli"],
+    [true, "--no-skip-svg-review", false, "cli"],
+    [undefined, "--skip-svg-review", true, "cli"],
+    [undefined, "--no-skip-svg-review", false, "cli"]
+  ] as const)("resolves SVG skipping config=%s flag=%s", (configured, flag, expected, source) => {
+    const ctx = testContext();
+    if (configured !== undefined) writeFileSync(path.join(ctx.repoRoot, "codegenie.toml"), `[review]\nskipSvgReview = ${configured}\n`);
+    const parsed = parseReviewCommand(["review", "--branch", "feature", ...(flag ? [flag] : [])], ctx);
+    expect(parsed.config.review.skipSvgReview).toBe(expected);
+    expect(parsed.configSources["review.skipSvgReview"]).toBe(source);
     expect(parsed.warnings).toEqual([]);
   });
 
