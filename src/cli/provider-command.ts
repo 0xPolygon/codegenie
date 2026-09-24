@@ -21,6 +21,15 @@ export async function executeProviderCommand(
   await runProviderCommand(parsed.args, { ...opts, ...parsed.options });
 }
 
+// `codegenie use <model>` is shorthand for `codegenie provider use <model>`.
+// Returns the expanded provider argv, or undefined for any other command.
+export function expandProviderAlias(argv: string[]): string[] | undefined {
+  if (argv[0] === "provider" || (argv[0] === "help" && argv[1] === "provider")) return argv;
+  if (argv[0] === "use") return ["provider", ...argv];
+  if (argv[0] === "help" && argv[1] === "use") return ["provider", "use", "--help"];
+  return undefined;
+}
+
 export function parseProviderCommand(
   argv: string[],
   opts: ParseProviderCommandOptions = {}

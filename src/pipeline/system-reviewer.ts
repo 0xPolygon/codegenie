@@ -1,3 +1,4 @@
+import { reviewDiagnostic } from "../util/review-health.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmRunner } from "../llm/llm-runner.js";
@@ -158,11 +159,13 @@ export async function runTargetedSystemReviews(
     });
     return [];
   });
+  const diagnostics = outcomes.filter(outcome => outcome.outcome !== "completed").map(outcome => reviewDiagnostic(8, outcome.error, outcome.task.packetId, outcome.outcome));
   const packetResults = completed.map((result) => result.packetResult);
   const resolvedHints = completed.flatMap((result) => result.resolvedHints);
   await telemetry.writeArtifact("system-review-results.json", {
     packetResults,
-    resolvedHints
+    resolvedHints,
+    diagnostics
   });
   telemetry.event({
     stage: 8,
@@ -192,7 +195,7 @@ export async function runTargetedSystemReviews(
       resolvedHints: resolvedHints.length
     }
   });
-  return { tasks, packetResults, resolvedHints };
+  return { tasks, packetResults, resolvedHints, diagnostics };
 }
 
 export function suppressResolvedFollowUpHints(

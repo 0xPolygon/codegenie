@@ -26,6 +26,8 @@ export type LlmCallUsage = {
 };
 
 export type ToolExecutionResult = {
+  /** Canonical bounded matches; packed after cache lookup for each consumer. */
+  searchResults?: import("../types.js").SearchResult[];
   text: string;
   isError?: boolean;
   errorCode?: CodegenieErrorCode;
@@ -54,6 +56,8 @@ export interface ToolResultCache {
 }
 
 export type LlmToolResultSummary = {
+  repositoryEvidence?: import("../types.js").RepositoryEvidence;
+  requestKey?: string;
   id: string;
   tool: string;
   target: string;
@@ -86,6 +90,7 @@ export type ToolDefinition = {
 };
 
 export type LlmStructuredRequest<T> = {
+  onToolResults?(results: LlmToolResultSummary[]): void;
   /** Worker cancellation, combined with the overall run signal, including repairs. */
   signal?: AbortSignal;
   /** Type-only link between the request and the expected submit payload. */

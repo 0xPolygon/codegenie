@@ -16,6 +16,9 @@ export type GitCommandOptions = {
 };
 
 export type GitCappedCommandOptions = {
+  /** Skip complete oversized records, retaining other lines within the same allowance. */
+  lineLimitBytes?: number;
+  onOmittedLine?: () => void;
   maxBytes: number;
   maxLines: number;
   timeoutMs?: number;
@@ -72,9 +75,29 @@ export async function runGitCapped(
     let collectedLines = 0;
     let reachedLimit = false;
     let settled = false;
+    let timedOut = false;
+    let pending = Buffer.alloc(0);
+    let oversized = false;
+
+    const finishLine = () => {
+      if (oversized || collectedBytes + pending.length + 1 > opts.maxBytes) {
+        opts.onOmittedLine?.();
+      } else {
+        chunks.push(pending, Buffer.from("\n"));
+        collectedBytes += pending.length + 1;
+        collectedLines++;
+      }
+      pending = Buffer.alloc(0);
+      oversized = false;
+      if (collectedLines >= opts.maxLines) {
+        reachedLimit = true;
+        child.kill("SIGTERM");
+      }
+    };
 
     const timeout = setTimeout(() => {
       if (!settled) {
+        timedOut = true;
         reachedLimit = false;
         child.kill("SIGTERM");
       }
@@ -82,6 +105,22 @@ export async function runGitCapped(
 
     child.stdout.on("data", (chunk: Buffer) => {
       if (reachedLimit) {
+        return;
+      }
+      if (opts.lineLimitBytes !== undefined) {
+        let offset = 0;
+        while (offset < chunk.length && !reachedLimit) {
+          const newline = chunk.indexOf(0x0a, offset);
+          const end = newline < 0 ? chunk.length : newline;
+          if (!oversized) {
+            if (pending.length + end - offset > opts.lineLimitBytes) {
+              oversized = true;
+              pending = Buffer.alloc(0);
+            } else pending = Buffer.concat([pending, chunk.subarray(offset, end)]);
+          }
+          if (newline >= 0) finishLine();
+          offset = end + 1;
+        }
         return;
       }
       const remaining = opts.maxBytes - collectedBytes;
@@ -118,6 +157,11 @@ export async function runGitCapped(
         return;
       }
       settled = true;
+      if (timedOut) {
+        reject(new CodegenieError("timeout", "Git search/read timed out; results are unavailable."));
+        return;
+      }
+      if (opts.lineLimitBytes !== undefined && !reachedLimit && (pending.length || oversized)) finishLine();
       const output = truncateLines(Buffer.concat(chunks).toString("utf8"), opts.maxLines);
       if (reachedLimit || (typeof code === "number" && allowedExitCodes.has(code))) {
         resolve(output);

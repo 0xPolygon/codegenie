@@ -696,11 +696,8 @@ export { internal as Public }
     const totalCappedSearch = await tools.searchFiles("SearchNeedle", { maxResults: 100 });
     expect(totalCappedSearch.meta.truncated).toBe(true);
     expect(JSON.stringify(totalCappedSearch.results).length).toBeLessThanOrEqual(16_000);
-    const hugeLineSearch = await tools.searchFiles("HugeNeedle", { maxResults: 1 });
-    expect(hugeLineSearch.meta.degraded).toBe(true);
-    expect(hugeLineSearch.meta.truncated).toBe(true);
-    expect(hugeLineSearch.meta.omittedCount).toBeGreaterThan(0);
-    expect(hugeLineSearch.results[0]?.path).toBe("huge/huge.txt");
+    // Oversized raw lines must disclose the discovery limit, never masquerade as exhaustive matches.
+    await expect(tools.searchFiles("HugeNeedle", { maxResults: 1 })).rejects.toMatchObject({ code: "budget_exhausted" });
     const untrackedSearch = await tools.searchFiles("UniqueUntracked");
     expect(untrackedSearch.results).toEqual([]);
     const ignoredTrackedSearch = await tools.searchFiles("IgnoredTrackedNeedle");

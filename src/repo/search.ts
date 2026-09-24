@@ -15,6 +15,8 @@ export type SearchExecution = {
   degradationReason?: string;
   truncated?: boolean;
   omittedCount?: number;
+  discoveryLimited?: boolean;
+  omittedCountIsLowerBound?: boolean;
 };
 
 type RawSearchOptions = SearchOptions & {
@@ -22,6 +24,7 @@ type RawSearchOptions = SearchOptions & {
   word?: boolean;
   defaultMaxResults?: number;
   hardMaxResults?: number;
+  mention?: string;
 };
 
 const DEFAULT_MAX_RESULTS = 50;
@@ -50,39 +53,40 @@ export class SearchService {
       ...(pathGlob !== undefined ? { pathGlob } : {})
     });
 
-    const countOmitted = raw.length > maxResults ? raw.length - maxResults : 0;
-    const lineCapped = capMatchTexts(raw.slice(0, maxResults));
+    const omittedLines = raw.omittedLines ?? 0;
+    if (!raw.length && omittedLines) throw new CodegenieError("budget_exhausted", "All matching lines exceeded the search output allowance; narrow pathGlob or read a known range. This is not a zero-match result.");
+    const discoveryLimited = raw.length > maxResults || omittedLines > 0;
+    // The extra text match may be a comment, not a verified identifier mention.
+    const countOmitted = options.mention === undefined ? omittedLines + Number(raw.length > maxResults) : 0;
+    const classified = options.mention === undefined ? undefined : await this.classifyMentions(raw.slice(0, maxResults), options.mention, source);
+    const lineCapped = capMatchTexts(classified?.results ?? raw.slice(0, maxResults));
     await this.enrich(lineCapped.results, source, options.contextMode ?? "none");
-    const capped = capSearchResultsTotal(lineCapped.results, countOmitted + lineCapped.truncatedTextCount);
+    const capped = capSearchResultsTotal(lineCapped.results, countOmitted);
+    if (lineCapped.results.length > 0 && capped.results.length === 0) throw new CodegenieError("budget_exhausted", "No complete search entry fits the result allowance; narrow pathGlob or read a known range. This is not a zero-match result.");
+    const shortened = lineCapped.truncatedTextCount > 0 || capped.shortened;
+    const degraded = discoveryLimited || capped.omittedCount > 0 || shortened || (classified?.syntaxFallbacks ?? 0) > 0;
     return {
-      results: capped.results,
-      engine: "git-grep",
-      backend: "text",
-      precision: "text",
-      degraded: capped.omittedCount > 0,
-      ...(capped.omittedCount > 0 ? { degradationReason: "search results truncated" } : {}),
-      ...(capped.omittedCount > 0 ? { truncated: true, omittedCount: capped.omittedCount } : {})
+      results: capped.results, engine: "git-grep",
+      backend: classified?.syntaxOnly ? "tree-sitter" : "text",
+      precision: classified?.syntaxOnly ? "syntactic" : "text",
+      degraded,
+      ...(degraded ? { degradationReason: classified?.syntaxFallbacks ? `${classified.syntaxFallbacks} mention result(s) were not syntax-verified` : "search bounded: excerpts shortened or results omitted" } : {}),
+      ...(discoveryLimited || capped.omittedCount > 0 || shortened ? { truncated: true, omittedCount: capped.omittedCount, omittedCountIsLowerBound: true, discoveryLimited } : {})
     };
   }
 
-  async findSymbolMentions(
-    symbolName: string,
-    options: SymbolMentionOptions = {}
-  ): Promise<SearchExecution> {
-    const execution = await this.search(symbolName, {
-      ...options,
-      fixedString: true,
-      word: true,
-      defaultMaxResults: 100,
-      hardMaxResults: 300
-    });
+  async findSymbolMentions(symbolName: string, options: SymbolMentionOptions = {}): Promise<SearchExecution> {
+    return this.search(symbolName, { ...options, fixedString: true, word: true, defaultMaxResults: 100, hardMaxResults: 300, mention: symbolName });
+  }
+
+  private async classifyMentions(results: SearchResult[], symbolName: string, source: SourceSelector) {
     const attemptedFiles = new Set<string>();
     let unverified = 0;
     // Generic text matches affect precision, but are not a failed syntax lookup.
     let syntaxFallbacks = 0;
     const kept: SearchResult[] = [];
 
-    for (const result of execution.results) {
+    for (const result of results) {
       const alreadyAttempted = attemptedFiles.has(result.path);
       if (attemptedFiles.size >= 25 && !alreadyAttempted) {
         unverified += 1;
@@ -93,7 +97,7 @@ export class SearchService {
         continue;
       }
       attemptedFiles.add(result.path);
-      const verified = await this.verifyIdentifierMention(result, symbolName, options.source ?? { kind: "head" });
+      const verified = await this.verifyIdentifierMention(result, symbolName, source);
       if (verified === true) {
         kept.push(result);
       } else if (verified === undefined) {
@@ -106,36 +110,18 @@ export class SearchService {
     }
 
     const syntaxOnly = kept.length > 0 && unverified === 0;
-    return {
-      ...execution,
-      results: kept,
-      backend: syntaxOnly ? "tree-sitter" : "text",
-      precision: syntaxOnly ? "syntactic" : "text",
-      degraded: execution.degraded || syntaxFallbacks > 0,
-      ...(syntaxFallbacks > 0
-        ? { degradationReason: `${syntaxFallbacks} mention result(s) were not syntax-verified` }
-        : execution.degradationReason !== undefined
-          ? { degradationReason: execution.degradationReason }
-          : {})
-    };
+    return { results: kept, syntaxOnly, syntaxFallbacks };
   }
 
-  private async gitGrep(query: string, options: RawSearchOptions & { pathGlob?: string; source: SourceSelector; maxResults: number }): Promise<SearchResult[]> {
-    try {
-      return await this.limit(() => this.resolver.grep(query, {
-        source: options.source,
-        maxResults: options.maxResults,
-        ...(options.pathGlob !== undefined ? { glob: options.pathGlob } : {}),
-        ...(options.caseSensitive !== undefined ? { caseSensitive: options.caseSensitive } : {}),
-        ...(options.fixedString !== undefined ? { fixedString: options.fixedString } : {}),
-        ...(options.word !== undefined ? { word: options.word } : {})
-      }));
-    } catch (error) {
-      if (error instanceof CodegenieError && error.code === "git_ref_missing") {
-        throw new CodegenieError("invalid_args", "search pattern or revision could not be searched", { cause: error });
-      }
-      throw error;
-    }
+  private async gitGrep(query: string, options: RawSearchOptions & { pathGlob?: string; source: SourceSelector; maxResults: number }): Promise<import("../git/git-client.js").GrepResults> {
+    return this.limit(() => this.resolver.grep(query, {
+      source: options.source,
+      maxResults: options.maxResults,
+      ...(options.pathGlob !== undefined ? { glob: options.pathGlob } : {}),
+      ...(options.caseSensitive !== undefined ? { caseSensitive: options.caseSensitive } : {}),
+      ...(options.fixedString !== undefined ? { fixedString: options.fixedString } : {}),
+      ...(options.word !== undefined ? { word: options.word } : {})
+    }));
   }
 
   private async enrich(results: SearchResult[], source: SourceSelector, mode: SearchOptions["contextMode"]): Promise<void> {
@@ -178,7 +164,8 @@ export class SearchService {
       });
       const symbol = adapter.getEnclosingSymbol(parsed, match.line);
       if (symbol) {
-        match.enclosingSymbol = symbol;
+        const { name, kind, path, lineRange } = symbol;
+        match.enclosingSymbol = { name, kind, path, lineRange };
       }
     }
   }
@@ -234,20 +221,32 @@ function capMatchTexts(results: SearchResult[]): { results: SearchResult[]; trun
         return result;
       }
       truncatedTextCount += 1;
-      return { ...result, matchText: `${result.matchText.slice(0, MAX_MATCH_TEXT_CHARS)}...` };
+      const matchOffset = Buffer.from(result.matchText).subarray(0, (result.column ?? 1) - 1).toString("utf8").length;
+      const offset = Math.max(0, matchOffset - 120);
+      return { ...result, matchText: result.matchText.slice(offset, offset + MAX_MATCH_TEXT_CHARS), excerptStartColumn: Buffer.byteLength(result.matchText.slice(0, offset)) + 1, excerpt: true };
     }),
     truncatedTextCount
   };
 }
 
-function capSearchResultsTotal(results: SearchResult[], initialOmittedCount: number): { results: SearchResult[]; omittedCount: number } {
-  const capped = [...results];
-  let omittedCount = initialOmittedCount;
-  while (JSON.stringify(capped).length > MAX_TOTAL_RESULT_CHARS && capped.length > 0) {
-    capped.pop();
-    omittedCount += 1;
+function capSearchResultsTotal(results: SearchResult[], initialOmittedCount: number): { results: SearchResult[]; omittedCount: number; shortened: boolean } {
+  const capped = results.map(result => ({ ...result }));
+  // Optional context must never evict core match locations.
+  const shortened = JSON.stringify(capped).length > MAX_TOTAL_RESULT_CHARS;
+  if (shortened) {
+    for (const result of capped) {
+      delete result.contextBefore;
+      delete result.contextAfter;
+      delete result.enclosingSymbol;
+    }
   }
-  return { results: capped, omittedCount };
+  let omittedCount = initialOmittedCount;
+  const packed: SearchResult[] = [];
+  for (const result of capped) {
+    if (JSON.stringify([...packed, result]).length <= MAX_TOTAL_RESULT_CHARS) packed.push(result);
+    else omittedCount++;
+  }
+  return { results: packed, omittedCount, shortened };
 }
 
 function groupByPath(results: SearchResult[]): Map<string, SearchResult[]> {

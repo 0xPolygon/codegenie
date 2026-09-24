@@ -1,14 +1,17 @@
+import { healthForResult, renderReviewHealth, factualReviewSummary } from "../util/review-health.js";
 import type { BudgetLimitEvent, BudgetSummary, FinalFinding, ReviewResult, ReviewRunStats, RunCoverageStatus, RunPostingRecord } from "../types.js";
 import { renderBudgetStopNotice, renderCoverageSummaryLines, renderCoverageTrustBanner } from "../util/coverage-summary.js";
 import { inlineCode, severityBadge } from "../util/markdown.js";
 
 export function renderMarkdownReview(result: ReviewResult): string {
+  const health = healthForResult(result);
   const sections = [
     "# 🧞 Codegenie Review",
     "",
-    renderCoverageTrustBanner(result.coverage),
+    renderReviewHealth(health),
+    ...(health.status === "completed" ? [renderCoverageTrustBanner(result.coverage)] : []),
     renderBudgetStopNotice(result.coverage),
-    result.summary.trim() || "Review completed.",
+    health.status === "completed" ? result.summary.trim() || "Review completed." : factualReviewSummary(health, result.findings.length + result.summaryOnlyFindings.length),
     "",
     renderCoverage(result.coverage),
     renderFindings("⚠️ Findings", result.findings, result.runStats?.git),
@@ -22,16 +25,16 @@ export function renderMarkdownReview(result: ReviewResult): string {
 }
 
 function renderNoFindings(result: ReviewResult): string {
-  if (!result.noFindings) {
+  if (!result.noFindings || healthForResult(result).status === "failed") {
     return "";
   }
-  if (result.coverage.partial) {
+  if (healthForResult(result).status !== "completed") {
     return (
-      "## ⚠️ Review Incomplete\n\n" +
-      "Completed review work produced no credible verified findings, but incomplete coverage or verification prevents a clean conclusion."
+      "## No confirmed findings\n\n" +
+      "No confirmed findings were retained. The limitations above prevent a clean conclusion."
     );
   }
-  return "## ✅ No Findings\n\nNo credible findings were found. Everything looks good.";
+  return "## ✅ No Findings\n\nNo credible findings were found within the reviewed scope.";
 }
 
 function renderCoverage(coverage: RunCoverageStatus): string {

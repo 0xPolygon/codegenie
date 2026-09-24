@@ -1,4 +1,4 @@
-import picomatch from "picomatch";
+import { matchRepositoryGlob } from "./path-guard.js";
 import type { SearchResult, SourceSelector, ResolvedReviewInput } from "../types.js";
 import { createGitClient, type InternalGitClient } from "../git/git-client.js";
 import { CodegenieError } from "../util/errors.js";
@@ -62,7 +62,7 @@ export class SourceResolver {
     if (containedGlob === undefined) {
       return paths;
     }
-    const isMatch = picomatch(containedGlob, { dot: true });
+    const isMatch = matchRepositoryGlob(containedGlob);
     return paths.filter((filePath) => isMatch(filePath));
   }
 
@@ -76,11 +76,11 @@ export class SourceResolver {
       fixedString?: boolean;
       word?: boolean;
     } = {}
-  ): Promise<SearchResult[]> {
+  ): Promise<import("../git/git-client.js").GrepResults> {
     const commit = this.resolveSource(opts.source);
     const containedGlob = opts.glob === undefined ? undefined : containGlob(this.repoRoot, opts.glob);
     return this.git.grep(commit, pattern, {
-      ...(containedGlob !== undefined ? { glob: containedGlob } : {}),
+      ...(containedGlob !== undefined ? { paths: await this.listFiles(containedGlob, opts.source) } : {}),
       ...(opts.maxResults !== undefined ? { maxResults: opts.maxResults } : {}),
       ...(opts.caseSensitive !== undefined ? { caseSensitive: opts.caseSensitive } : {}),
       ...(opts.fixedString !== undefined ? { fixedString: opts.fixedString } : {}),

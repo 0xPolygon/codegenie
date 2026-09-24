@@ -4908,6 +4908,54 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(lineRangeSchema).not.toHaveProperty("additionalItems");
   });
 
+  it.each(["full", "truncated", "error", "missing"] as const)("retains only usable source reads for reconciliation: %s", async mode => {
+    const telemetry = fakeTelemetry();
+    const tool: ToolDefinition = { name: "read_range", description: "read", parameters: Type.Object({ path: Type.String() }),
+      execute: async () => ({ text: "return db.list(tenantId);", ...(mode === "error" ? { isError: true } : {}),
+        meta: { backend: "text", precision: "exact", degraded: false, sourceUsed: "base",
+          deliveryStatus: mode === "missing" ? "empty" : "full", lookupStatus: mode === "missing" ? "file_missing" : "found",
+          ...(mode === "truncated" ? { truncated: true } : {}) } }) };
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "source", name: "read_range", arguments: { path: "store.ts" } }]),
+      assistant([validSubmitReviewCall("done")])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+    await runner.runStructured({ ...submitReviewRequest("evidence"), tools: [tool], onToolResults: results => captured.push(...results),
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 2000 } });
+    expect(captured).toHaveLength(1);
+    if (mode === "full") expect(captured[0]!.repositoryEvidence).toMatchObject({ path: "store.ts", source: "base", text: "return db.list(tenantId);" });
+    else expect(captured[0]!.repositoryEvidence).toBeUndefined();
+  });
+
+  it("packs cached search data into complete JSON under each caller cap and records its scope", async () => {
+    const telemetry = fakeTelemetry();
+    const matches = Array.from({ length: 20 }, (_, index) => ({ path: "src/a.ts", line: index + 1, matchText: "needle " + "x".repeat(100) }));
+    const execute = vi.fn(async () => ({ text: JSON.stringify(matches), searchResults: matches,
+      meta: { backend: "text" as const, precision: "text" as const, degraded: false } }));
+    const tool: ToolDefinition = { name: "search_files", description: "search", execute,
+      parameters: Type.Object({ query: Type.String(), pathGlob: Type.String(), maxResults: Type.Number() }) };
+    const lookup = (id: string): PiToolCall => ({ type: "toolCall", id, name: "search_files", arguments: { query: "needle", pathGlob: "src/{api,data}/**", maxResults: 20 } });
+    const adapter = scriptedAdapter([assistant([lookup("small")]), assistant([validSubmitReviewCall("done-small")]), assistant([lookup("large")]), assistant([validSubmitReviewCall("done-large")])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, toolResultCache: createToolResultCache(),
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    for (const limit of [1200, 6000]) await runner.runStructured({ ...submitReviewRequest(`search-${limit}`), tools: [tool],
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: limit } });
+    const delivered = [adapter.contexts[1]!, adapter.contexts[3]!].map(context => {
+      const messages = JSON.parse(context) as Array<{role: string; content: Array<{ text: string }>}>;
+      const text = messages.find(message => message.role === "toolResult")!.content[0]!.text;
+      const payload = text.split("\n").slice(3, -3).join("\n");
+      return { payload, parsed: JSON.parse(payload) };
+    });
+    expect(delivered[0]!.payload.length).toBeLessThanOrEqual(1200);
+    expect(delivered[0]!.parsed.results.length).toBeGreaterThan(0);
+    expect(delivered[0]!.parsed.results.length).toBeLessThan(20);
+    expect(delivered[1]!.parsed.results).toHaveLength(20);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(telemetry.toolCalls[1]).toMatchObject({ cacheStatus: "hit", args: { pathGlob: "src/{api,data}/**", maxResults: 20 } });
+  });
+
   it("rejects tools before execution when result-character budget is exhausted", async () => {
     const telemetry = fakeTelemetry();
     const execute = vi.fn(async () => ({

@@ -1,3 +1,4 @@
+import { reviewDiagnostic, unresolvedToolDiagnostic } from "../util/review-health.js";
 import { clarifyFindingLocations } from "./finding-location.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
@@ -155,6 +156,7 @@ export async function runLensPackets(
       findings: [],
       followUpHints: [],
       uncertainties: [],
+      diagnostics: [reviewDiagnostic(7, outcome.error, packetId, outcome.outcome)],
       status: outcome.outcome === "not_dispatched" || budgetSkipped ? "skipped" : "failed"
     };
   });
@@ -438,6 +440,8 @@ function poolEnsemblePassResults(
     packetId: packet.id,
     lenses: packet.lenses,
     passesRun: passResults.reduce((sum, result) => sum + (result.passesRun ?? 1), 0),
+    ...(!passResults.some(result => result.status === "completed" && !result.diagnostics?.length) ? { diagnostics: passResults.flatMap(result => result.diagnostics ?? []) } : {}),
+    repositoryEvidence: source.filter(result => result.status === "completed").flatMap(result => result.repositoryEvidence ?? []),
     findings: pooled,
     ...(reviewStatus !== undefined ? { reviewStatus } : {}),
     ...(noFindingReason !== undefined ? { noFindingReason } : {}),
@@ -493,7 +497,9 @@ async function runPacket(
   const repositoryTools = packet.reviewProfile === "simple" || packet.toolBudget.maxToolCalls <= 0
     ? []
     : buildRepositoryToolDefinitions(tools, { includeLikelyTests: shouldExposeLikelyTestsForPacket(packet) });
+  let toolResults: import("../llm/llm-runner.js").LlmToolResultSummary[] = [];
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
+    onToolResults: results => { toolResults = results; },
     stage: 7,
     prompt: prompt.prompt,
     schema: SubmitPacketReviewSchema,
@@ -544,7 +550,11 @@ async function runPacket(
   }
   const followUpHints = normalizeFollowUpHints(submitted.followUpHints, packet, passSkillIds, telemetry, workerId);
   const uncertainties = normalizeUncertainties(submitted.uncertainties, packet, passSkillIds, telemetry, workerId);
+  const diagnostic = reviewStatus === "incomplete" || followUpHints.kept.length > 0 || uncertainties.kept.length > 0
+    ? unresolvedToolDiagnostic(7, toolResults, packet.id) : undefined;
   const result: PacketReviewResult = {
+    repositoryEvidence: toolResults.flatMap(result => result.repositoryEvidence ? [result.repositoryEvidence] : []),
+    ...(diagnostic ? { diagnostics: [diagnostic] } : {}),
     packetId: packet.id,
     lenses: packet.lenses,
     findings,

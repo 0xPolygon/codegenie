@@ -194,6 +194,9 @@ function filterDecision(
   detections: FileDetectionResult,
   config: CodegenieConfig
 ): FileFilterDecision {
+  if (config.review.skipSvgReview && /\.svg$/i.test(file.path)) {
+    return skip(file, "SVG review disabled (review.skipSvgReview)", { fact: "processingMode", source: "config", confidence: "high", reason: "review.skipSvgReview = true" });
+  }
   if (detections.binary.value) {
     return skip(file, "binary file", detections.binary.provenance);
   }

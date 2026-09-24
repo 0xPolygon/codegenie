@@ -11,6 +11,8 @@ import {
   runGitCapped
 } from "./subprocess.js";
 
+export type GrepResults = SearchResult[] & { omittedLines?: number };
+
 export interface GitClient {
   revParse(ref: string): Promise<string>;
   catFile(ref: string, path: string): Promise<string>;
@@ -19,8 +21,8 @@ export interface GitClient {
   grep(
     ref: string,
     pattern: string,
-    opts?: { glob?: string; maxResults?: number; caseSensitive?: boolean; fixedString?: boolean; word?: boolean }
-  ): Promise<SearchResult[]>;
+    opts?: { glob?: string; paths?: string[]; maxResults?: number; caseSensitive?: boolean; fixedString?: boolean; word?: boolean }
+  ): Promise<GrepResults>;
   mergeBase(a: string, b: string): Promise<string>;
   log(range: string): Promise<CommitInfo[]>;
   diff(base: string, head: string): Promise<string>;
@@ -130,42 +132,65 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
     async grep(
       ref: string,
       pattern: string,
-      grepOpts: { glob?: string; maxResults?: number; caseSensitive?: boolean; fixedString?: boolean; word?: boolean } = {}
-    ): Promise<SearchResult[]> {
+      grepOpts: { glob?: string; paths?: string[]; maxResults?: number; caseSensitive?: boolean; fixedString?: boolean; word?: boolean } = {}
+    ): Promise<GrepResults> {
       assertSafeRef(ref);
       if (grepOpts.glob !== undefined) {
         assertSafeGlob(grepOpts.glob);
       }
-      const args = [
-        "grep",
-        "-I",
-        "-n",
-        "--column",
-        "--no-color",
-        grepOpts.fixedString === true ? "-F" : "-E",
-        ...(grepOpts.word === true ? ["-w"] : []),
-        ...(grepOpts.caseSensitive === false ? ["-i"] : []),
-        "-e",
-        pattern,
-        ref,
-        "--"
-      ];
-      if (grepOpts.glob !== undefined) {
-        args.push(`:(glob)${grepOpts.glob}`);
+      if (!grepOpts.fixedString && hasUnsupportedEreSyntax(pattern)) {
+        throw new CodegenieError("invalid_args", "query uses unsupported regex syntax. Use POSIX ERE (e.g. name|other, [0-9], [[:space:]]); lookarounds and Perl digit classes are unsupported.");
       }
       const maxResults = grepOpts.maxResults ?? 50;
-      const stdout = await runGitCapped(repoRoot, args, {
-        maxBytes: Math.max(64 * 1024, maxResults * 1024),
-        maxLines: maxResults,
-        allowedExitCodes: [0, 1],
-        errorCode: "git_ref_missing"
-      });
-      return stdout
-        .split("\n")
-        .filter(Boolean)
-        .slice(0, maxResults)
-        .map((line) => parseGrepLine(line, ref))
-        .filter((result): result is SearchResult => result !== undefined);
+      if ((grepOpts.paths?.length ?? 0) > 20_000) throw new CodegenieError("budget_exhausted", "pathGlob expands to more than 20000 tracked paths; narrow the scope before searching (no files searched)");
+      const chunks: string[][] = [[]];
+      let chunkBytes = 0;
+      for (const path of grepOpts.paths ?? []) {
+        assertSafePathspec(path);
+        const bytes = Buffer.byteLength(path) + 16;
+        if (bytes > 24_000) throw new CodegenieError("budget_exhausted", "search path exceeds argument allowance; narrow pathGlob");
+        if (chunkBytes + bytes > 24_000 || chunks[chunks.length - 1]!.length >= 256) {
+          chunks.push([]);
+          chunkBytes = 0;
+        }
+        chunks[chunks.length - 1]!.push(`:(literal)${path}`);
+        chunkBytes += bytes;
+      }
+      const results: GrepResults = [];
+      let omittedLines = 0;
+      for (const paths of chunks) {
+        const args = ["grep", "-I", "-n", "--column", "--no-color",
+          grepOpts.fixedString === true ? "-F" : "-E",
+          ...(grepOpts.word === true ? ["-w"] : []),
+          ...(grepOpts.caseSensitive === false ? ["-i"] : []),
+          "-e", pattern, ref, "--",
+          ...paths,
+          // Still ask Git to compile ERE when the selected scope is empty.
+          ...(grepOpts.paths?.length === 0 ? [":(exclude,glob)**"] : []),
+          ...(grepOpts.glob !== undefined ? [`:(glob)${grepOpts.glob}`] : [])];
+        let stdout: string;
+        try {
+          stdout = await runGitCapped(repoRoot, args, {
+            maxBytes: Math.max(64 * 1024, (maxResults - results.length) * 1024),
+            maxLines: maxResults - results.length,
+            lineLimitBytes: 32 * 1024,
+            onOmittedLine: () => { omittedLines++; },
+            allowedExitCodes: [0, 1], errorCode: "git_ref_missing"
+          });
+        } catch (error) {
+          const stderr = error instanceof CodegenieError ? String(error.context?.stderr ?? "") : "";
+          if (/^fatal: (?:command line, |-e option, )/u.test(stderr)) {
+            throw new CodegenieError("invalid_args", `query is invalid POSIX ERE: ${stderr.slice(0, 300)}. Check brackets and parentheses; use name|other for alternatives.`, { cause: error });
+          }
+          throw error;
+        }
+        results.push(...stdout.split("\n").filter(Boolean)
+          .slice(0, maxResults - results.length).map((line) => parseGrepLine(line, ref))
+          .filter((result): result is SearchResult => result !== undefined));
+        if (results.length >= maxResults) break;
+      }
+      if (omittedLines) results.omittedLines = omittedLines;
+      return results;
     },
 
     async mergeBase(a: string, b: string): Promise<string> {
@@ -484,4 +509,22 @@ function orderRemotes(remotes: GitRemote[]): GitRemote[] {
     }
     return a.name.localeCompare(b.name);
   });
+}
+
+// Detect recognizable dialect mistakes without using JavaScript to validate ERE.
+// Escaped punctuation and character-class contents remain literal.
+function hasUnsupportedEreSyntax(pattern: string): boolean {
+  let inClass = false;
+  for (let i = 0; i < pattern.length; i++) {
+    const char = pattern[i];
+    if (char === "\\") {
+      if (!inClass && /[dD]/u.test(pattern[i + 1] ?? "")) return true;
+      i++;
+      continue;
+    }
+    if (char === "[") inClass = true;
+    else if (char === "]") inClass = false;
+    else if (!inClass && char === "(" && pattern[i + 1] === "?") return true;
+  }
+  return false;
 }

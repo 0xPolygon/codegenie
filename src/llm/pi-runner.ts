@@ -1,3 +1,4 @@
+import { packSearchToolResult } from "./search-result-packing.js";
 import { createFieldRepair, mergeRepairDraft, type FieldRepair } from "./field-repair.js";
 import { randomUUID } from "node:crypto";
 import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
@@ -658,6 +659,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                   obligationId: recoveryObligations.get(obligationKey)?.id, validation: "complete_schema_and_semantics_passed" });
               }
               resolveObligation(localEdits.length && !schemaRepairUsed ? "deterministic_correction" : "model_repair");
+              request.onToolResults?.(toolResultSummaries);
               return validated as T;
             } catch (cause) {
               if (fieldRepair) {
@@ -845,7 +847,16 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               // Fixed budget-status messages are control information, not source content.
               // Keep them visible even at zero remaining characters, without spending
               // the reserve for decisive source reads. Rejected calls still count above.
-              const resultText = budgetRejected
+              if (!budgetRejected && outcome.result.searchResults) {
+                outcome.result = packSearchToolResult(outcome.result, remainingResultChars);
+                if (outcome.result.isError) {
+                  outcome.status = "rejected";
+                  outcome.rejectionReason = "tool_result_budget_exhausted";
+                  if (outcome.result.errorCode) outcome.errorCode = outcome.result.errorCode;
+                }
+              }
+              const searchBudgetRejected = outcome.result.errorCode === "budget_exhausted" && outcome.result.meta?.deliveryStatus === "budget_rejected";
+              const resultText = budgetRejected || searchBudgetRejected
                 ? outcome.result.text
                 : fitToolResultText(outcome.result.text, remainingResultChars);
               if (resultText.length < outcome.result.text.length) {
@@ -855,7 +866,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                   meta: markTruncated(outcome.result.meta)
                 };
               }
-              if (!budgetRejected) {
+              if (!budgetRejected && !searchBudgetRejected) {
                 resultCharsUsed += resultText.length;
               }
               if (extensionDecision?.status === "granted") {
@@ -1114,9 +1125,19 @@ function summarizeToolResult(toolCall: PiToolCall, outcome: ToolRunOutcome, resu
     id: toolCall.id || safeFenceLabelPart(toolCall.name),
     tool: toolCall.name,
     target: toolTargetSummary(toolCall),
+    requestKey: sha256Hex(stableJson({ tool: toolCall.name, arguments: toolCall.arguments })),
     status: outcome.status,
     resultChars: resultText.length,
     preview: firstMeaningfulLine(resultText),
+    repositoryEvidence: outcome.status === "ok" && !outcome.result.isError && !meta?.truncated && !meta?.degraded
+      && meta?.deliveryStatus === "full" && meta.lookupStatus === "found"
+      && ["read_range", "read_symbol", "find_definition"].includes(toolCall.name)
+      && resultText.trim() && resultText.length <= 8_000
+      ? { id: toolCall.id, tool: toolCall.name,
+          ...(typeof toolCall.arguments.symbolName === "string" ? { symbols: [toolCall.arguments.symbolName] } : {}),
+          ...(typeof toolCall.arguments.path === "string" ? { path: toolCall.arguments.path } : {}),
+          source: meta.sourceUsed ?? (toolCall.arguments.source === "base" ? "base" : "head"),
+          text: resultText } : undefined,
     errorCode: outcome.errorCode,
     rejectionReason: outcome.rejectionReason,
     degraded: meta?.degraded,
@@ -2449,6 +2470,8 @@ function recordToolCall(
     degradationReason: meta.degradationReason,
     truncated: meta.truncated,
     omittedCount: meta.omittedCount,
+    omittedCountIsLowerBound: meta.omittedCountIsLowerBound,
+    discoveryLimited: meta.discoveryLimited,
     lookupStatus: meta.lookupStatus,
     deliveryStatus: meta.deliveryStatus,
     recovery: meta.recovery,
@@ -4187,6 +4210,8 @@ function toolArgsForRecord(args: Record<string, unknown>): ToolCallRecord["args"
     startLine: typeof args.startLine === "number" ? args.startLine : undefined,
     endLine: typeof args.endLine === "number" ? args.endLine : undefined,
     query: typeof args.query === "string" ? args.query : undefined,
+    pathGlob: typeof args.pathGlob === "string" ? args.pathGlob.slice(0, 500) : undefined,
+    maxResults: typeof args.maxResults === "number" ? args.maxResults : undefined,
     glob: typeof args.glob === "string" ? args.glob : undefined,
     source: sourceForRecord(args.source),
     contextMode: typeof args.contextMode === "string" ? args.contextMode : undefined

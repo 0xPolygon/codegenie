@@ -1,6 +1,6 @@
 # Issue 123: Reliable Search Evidence and Honest Review Outcomes
 
-Status: DRAFT — reviewed; implementation pending
+Status: IMPLEMENTED — deterministic validation complete; matching live reviews pending
 Based on: OMSX runs `20260924-150110-7e5144d6` and `20260924-151933-2809b013`, 2026-09-24
 Depends on: existing repository tools, bounded budgets, strict verification/composition validation, and plans 118–122
 
@@ -163,4 +163,30 @@ No blanket budget increase, added schema-repair attempts, relaxed validation, so
 - Reporting distinguishes known failure, incomplete work, unresolved semantics, recovered errors, and intentional exclusions. It includes zero-findings and partial-results failure paths, not merely successful composition.
 - Reconciliation requires predicate-specific evidence and cannot delete questions on rejection status or fuzzy similarity.
 - Test-gap calibration has positive and negative controls; no OMSX-specific production branches or mandatory new fields.
-- Each section is independently reviewable. Implementation remains pending until the user proceeds.
+- Each section is independently reviewable. Sections 1–4 are implemented; live comparisons remain a separate user-run measurement.
+
+
+## Implementation record (2026-09-24)
+
+- Search resolves the shared validated glob against tracked revision paths, then uses bounded chunks of literal Git pathspecs. Git validates ERE even for empty scopes; syntax errors remain distinct from backend failures. Path expansion and raw-output limits fail explicitly rather than returning authoritative empty results.
+- Search metadata now retains compact symbol identities. Mention classification precedes packing. The runner packs complete result entries after cache lookup against each consumer's actual allowance, includes limitation metadata, and refuses delivery when no entry fits. An exceptionally large raw line exceeding Git's existing discovery byte cap is an explicit limitation, not a silently shortened exhaustive result.
+- Host-derived health is shared by report bodies, saved Markdown/JSON, CLI outcome and Action finalization. Required worker failures retain diagnostics; terminal failures write deterministic reports. Unresolved questions cannot become a clean conclusion. Deliberate exclusions are distinguished from skips under incomplete planning.
+- Packet questions use original hint IDs in the existing bounded reconciliation inventory, including zero-findings compositions. Grouping preserves unanswered members. Findings and rejection verdicts alone do not erase questions. Explicit resolutions can close a tool-evidence handoff, but cannot rescue a failed required worker. Fallback composition retains concerns.
+- Existing test-review and verification guidance now requires an established consequential requirement and an evidenced protection gap, while retaining actionable tests for currently correct guards. Prompt/schema versions were updated.
+- Read-only reproductions at the original OMSX revisions: the combined brace scope returns 9 matches (8 data + 1 domain); `expectedPerms` retains 4 identifier mentions and `ListProjectAccess` retains 27 under the existing discovery/result bounds. No paid inference calls were made.
+- Full tests, typecheck, build, workflow checks and diff checks are the release checks for this implementation. Model judgment and report quality still require the matched live reviews described above; deterministic reference validation does not prove semantic entailment.
+
+### Follow-up from OMSX runs 20260924-163621 and 20260924-163651
+
+- Preserve complete search matches around oversized matching lines; disclose omitted lines within the existing output allowance, and reject an all-omitted response rather than report no matches.
+- Admit reconciliation questions by a compact character budget, independently of the five-note display cap. Include successful, complete source reads from completed packets with tool/revision provenance; retain explicit supporting-reference validation.
+- Correct partial-review wording when all assigned hunks finished but evidence gathering did not; do not label deliberate exclusions as budget-summary failure reasons.
+- Default `review.skipSvgReview` to true, with repo/user config, CLI positive/negative flags, and eval overrides. Explicit exclusion rules still apply when it is false.
+- Read-only reproduction: the DeepSeek search returns 17 complete matches with one oversized SVG line omitted. Replaying recorded evidence admits all 15 concerns (previously five) and the `ListForUser` source within the existing 16,000-character inventory limit. Live model behavior remains to be measured.
+
+### 0.6.1 release validation
+
+- Terminal failure diagnostics retain the last started pipeline stage in the report, event log, and error artifact. Reports without a trustworthy coverage snapshot explicitly mark coverage unavailable instead of displaying placeholder zero counts; reports already assembled retain their measured coverage. Health diagnostics are copied so artifact redaction does not mistake their shared coverage references for circular data.
+- Regression tests cover planning-stage provider usage limits and persistent outages, unavailable versus known-empty coverage, and serialized diagnostic preservation. Final checks: 1,362 tests across 62 files, workflow checks, typecheck, build, and `git diff --check` passed.
+- Fresh eval 129 used the built CLI with `openai-codex/gpt-6-astra`, medium reasoning, composition step-down, no local model cache, and composition prompt `p10.17`. It passed with 10/10 hunks reviewed, one consolidated finding, 33 successful calls, no repairs/timeouts/tool-budget refusals, 153.971 seconds, and $3.038528 recorded review cost. The separate recommendation judge graded the fix and test correct ($0.03045).
+- This smoke run validates the finished build and report path. It emitted no unresolved questions, so it does not independently measure the expanded reconciliation behavior; other model comparisons and recommendation-consistency improvements remain follow-up work.

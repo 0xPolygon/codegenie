@@ -28,6 +28,20 @@ describe("config loader", () => {
     expect(rawConfigSchema.safeParse({ review: { compositionReasoningStepDown: "true" } }).success).toBe(false);
   });
 
+  it("layers SVG skipping as a repo-safe boolean", () => {
+    const repoRoot = tempDir();
+    const homeOverride = tempDir();
+    expect(loadConfig({ repoRoot, homeOverride }).config.review.skipSvgReview).toBe(true);
+    writeFileSync(path.join(homeOverride, "config.toml"), "[review]\nskipSvgReview = false\n");
+    expect(loadConfig({ repoRoot, homeOverride }).config.review.skipSvgReview).toBe(false);
+    writeFileSync(path.join(homeOverride, "config.toml"), "[review]\nskipSvgReview = true\n");
+    expect(loadConfig({ repoRoot, homeOverride }).config.review.skipSvgReview).toBe(true);
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\nskipSvgReview = false\n");
+    expect(loadConfig({ repoRoot, homeOverride }).config.review.skipSvgReview).toBe(false);
+    expect(loadConfig({ repoRoot, homeOverride, cli: { skipSvgReview: true } }).config.review.skipSvgReview).toBe(true);
+    expect(rawConfigSchema.safeParse({ review: { skipSvgReview: "true" } }).success).toBe(false);
+  });
+
   it("resolves maxTime minutes from defaults, user config, repo config, and CLI in precedence order", () => {
     const repoRoot = tempDir();
     const home = tempDir();

@@ -127,6 +127,7 @@ codegenie provider login <provider>      # OAuth by default; --api-key to store 
 codegenie provider models [query]        # list available models (e.g. `models gpt`)
 codegenie provider use <model>           # set the default by fuzzy model id
 codegenie provider use <model>:<level>   # ...and its reasoning level (e.g. opus:max)
+codegenie use <model>[:<level>]          # shorthand for `provider use`
 ```
 
 The full list of supported models — every provider, model id, context window, and reasoning levels — lives in [models.md](./models.md) (generated from the [models.dev](https://models.dev) registry; regenerate with `make models-list`).
@@ -266,6 +267,8 @@ expect:
 ```
 
 The planning check rejects degraded plans even when every hunk was reviewed. The composition check rejects degraded report synthesis separately from coverage completeness. The recovery check requires complete telemetry, no unresolved structured-output obligations, and demonstrated preservation; regenerated or revised content is reported as `unknown`, not assumed preserved. Repairs retain draft progress across retries and validate the whole merged submission. For unreadable JSON, repair prompts include a bounded, redacted syntax excerpt and parser diagnostic when available. Fragments remain untrusted diagnostics, never accepted data or proof that a replacement preserved the original.
+
+SVG files are skipped by default. Set `[review] skipSvgReview = false` in `codegenie.toml`, or run `codegenie review --no-skip-svg-review`, to include them subject to other exclusion rules. `--skip-svg-review` enables the skip explicitly. This controls changed-file review; repository evidence searches can still find SVG content and disclose oversized matches they omit.
 
 Composition uses the next lower supported reasoning level by default, including retries: for a model supporting `low`, `high`, and `max`, `max` becomes `high`. Set `[review] compositionReasoningStepDown = false` in `codegenie.toml` to keep the configured review reasoning level for composition. The lowest supported level stays unchanged; models without advertised reasoning levels retain the configured behavior. Override this per run with `codegenie review --composition-reasoning-step-down` or `--no-composition-reasoning-step-down`. Omitting both flags preserves the configuration, which defaults to `true`. Investigation and verification keep their configured reasoning; traces record configured and selected levels. Structured-output repairs continue to use the model’s lowest supported reasoning level. Each composition attempt has a 300-second deadline, with at most one retry. The outer composition deadline is 780 seconds (two attempts plus the shared 180-second repair allowance); overall review cancellation still takes precedence. Repair attempts share that 180-second allowance, rather than receiving 180 seconds each.
 

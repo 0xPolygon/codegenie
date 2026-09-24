@@ -123,9 +123,9 @@ export type HumanAttentionOutput = {
 
 export function buildHumanAttentionNotes(
   packetResults: PacketReviewResult[],
-  options: { packets: ReviewPacket[]; diff?: UnifiedDiff; telemetry?: TelemetryRecorder }
+  options: { packets: ReviewPacket[]; diff?: UnifiedDiff; telemetry?: TelemetryRecorder; rawHints?: RawAttentionHint[] }
 ): HumanAttentionNotes {
-  const raw = rawAttentionHints(packetResults, knownAttentionPaths(options.packets, options.diff), options.telemetry);
+  const raw = options.rawHints ?? rawAttentionHints(packetResults, knownAttentionPaths(options.packets, options.diff), options.telemetry);
   const groups = new Map<string, AttentionHintGroup>();
   let eligibleHints = 0;
 
@@ -189,6 +189,14 @@ export function buildHumanAttentionNotes(
   const exactGroups = [...groups.values()];
   const merged = mergeNearDuplicateAttentionGroups(exactGroups);
   const ranked = merged.groups.sort(compareAttentionGroups);
+  if (options.rawHints) {
+    // Reconciliation works on original IDs. Grouping must not erase untouched
+    // members just because they share a file or symbol with the representative.
+    for (const group of ranked) {
+      const questions = [...new Set(raw.filter(hint => group.rawNoteIds.has(hint.id)).map(hint => hint.question))];
+      group.representative = { ...group.representative, question: questions.join("; ") };
+    }
+  }
   const selected = selectHumanAttentionGroups(ranked);
   const mergeStats: HumanAttentionMergeStats = {
     exactDuplicateHints: Math.max(0, eligibleHints - exactGroups.length),
@@ -433,12 +441,14 @@ export function buildVerificationResolutionIndex(
 export function humanAttentionArtifact(
   attention: HumanAttentionNotes,
   output: HumanAttentionOutput,
-  composerPromptGroups: AttentionHintGroup[]
+  composerPromptGroups: AttentionHintGroup[],
+  reconciled?: HumanAttentionNotes
 ): Record<string, unknown> {
   return {
     schemaVersion: 3,
     notes: attention.raw.map(rawAttentionHintArtifact),
     groups: attention.groups.map(attentionGroupArtifact),
+    ...(reconciled ? { reconciledGroups: reconciled.groups.map(attentionGroupArtifact) } : {}),
     mergeStats: attention.mergeStats,
     composerPromptGroupIds: composerPromptGroups.map((group) => group.key),
     outputGroupIds: output.selectedGroups.map((group) => group.key),

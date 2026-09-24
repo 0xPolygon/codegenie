@@ -28,6 +28,22 @@ function fixture(questions = ["Does head include a revoked-session test?", "Is t
 }
 
 describe("evidence-backed attention reconciliation", () => {
+  it("uses completed packet source reads without treating a no-finding conclusion as evidence", () => {
+    const f = fixture();
+    f.packet.findings = [];
+    f.packet.noFindingReason = "Everything is safe.";
+    f.packet.repositoryEvidence = [{ id: "read-1", tool: "read_range", path: "documents.test.ts", source: "base", text: "test('revoked session', () => expect(access(revoked)).toBe(false));" }];
+    f.verdicts.splice(1);
+    const input = f.build();
+    const source = input.inventory.evidence.find(item => item.origin === "repository_tool")!;
+    expect(source).toMatchObject({ source: "base", text: f.packet.repositoryEvidence[0]!.text });
+    expect(JSON.stringify(input.inventory)).not.toContain("Everything is safe");
+    expect(reconcileAttention(input, [], true).notes).toEqual([f.concern.unresolvedConcern]);
+    expect(reconcileAttention(input, [{ ...f.proposal, supportingRefs: [source.id] }], true).decisions[0]!.accepted).toBe(true);
+    f.packet.status = "incomplete";
+    expect(f.build().inventory.evidence.some(item => item.origin === "repository_tool")).toBe(false);
+  });
+
   it("stores repeated evidence qualifications once without dropping their uncertainty", () => {
     const f = fixture();
     f.observation.proofAssessment!.assumptions = [{ question: "Deployment is unconfirmed. ".repeat(50), essential: true }];
@@ -152,15 +168,15 @@ describe("evidence-backed attention reconciliation", () => {
     expect(reconcileAttention(input, [f.proposal], true).notes).toEqual([f.concern.unresolvedConcern]);
   });
 
-  it("caps selected concern groups and does not remove an omitted sibling or same-text concern", () => {
+  it("admits more concerns than the display cap without removing unanswered siblings", () => {
     const f = fixture(["Does a test exist?"]);
-    for (let i = 1; i < 7; i++) f.verdicts.push({ ...structuredClone(f.concern), candidateId: "question-" + i });
+    for (let i = 1; i < 15; i++) f.verdicts.push({ ...structuredClone(f.concern), candidateId: "question-" + i });
     const input = f.build();
-    expect(input.inventory.concerns).toHaveLength(5);
-    expect(input.omittedConcernIds).toHaveLength(2);
+    expect(input.inventory.concerns).toHaveLength(15);
+    expect(input.omittedConcernIds).toHaveLength(0);
     const result = reconcileAttention(input, [f.proposal], true);
     expect(result.notes).toEqual([f.concern.unresolvedConcern]);
-    expect(result.outcomes.filter(outcome => outcome.remainingQuestion)).toHaveLength(6);
+    expect(result.outcomes.filter(outcome => outcome.remainingQuestion)).toHaveLength(14);
   });
 
   it("reuses published source IDs but never permits attention-only evidence to account for finding content", () => {
@@ -224,7 +240,7 @@ describe("evidence-backed attention reconciliation", () => {
     expect(supplied.suggestionAssessment).toMatchObject({ status: "unverified", rationale: expect.stringContaining("Conflicting compatibility assessments") });
     expect(input.inventory.evidence.find(source => source.id === id)).toMatchObject({ sourceRef: id });
     // Reuse this valid registered reference against its own candidate's concern.
-    input.inventory.concerns[0]!.candidateId = f.candidate.id;
+    input.groups[0]!.concerns[0]!.candidateId = f.candidate.id;
     const result = reconcileAttention(input, [{ ...f.proposal, supportingRefs: [id] }], true);
     expect(result.decisions[0]).toMatchObject({ accepted: false, rejectionReason: "self_support" });
     expect(result.notes).toEqual([f.concern.unresolvedConcern]);

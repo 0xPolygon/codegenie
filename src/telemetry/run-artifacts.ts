@@ -79,6 +79,7 @@ export const ARTIFACT_LOCATION = {
   "final-findings.json": "stages/10-composition/final-findings.json",
   "github-posting.json": "stages/11-github-posting/github-posting.json",
   "final-review.md": "final-review.md",
+  "final-review.json": "final-review.json",
   "run.json": "run.json",
   "telemetry.json": "telemetry.json",
   "artifact-manifest.json": "artifact-manifest.json"

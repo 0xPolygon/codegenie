@@ -48,7 +48,7 @@ describe("phase 6 live review path", () => {
     ).not.toBe(reviewCacheFingerprint(baseConfig, "/repo", resolved, "registry"));
   });
 
-  it("uses the Pi runner end to end for branch reviews with repair, retry, and covered follow-up suppression", async () => {
+  it("uses the Pi runner end to end for branch reviews with repair, retry, and explicit unresolved follow-ups", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export function divide(total: number, count: number) {\n  return total / Math.max(1, count);\n}\n");
     commitAll(repo, "base");
@@ -73,7 +73,7 @@ describe("phase 6 live review path", () => {
         }
       );
 
-      expect(result.summary).toBe("⚠️ Found 1 verified issue.");
+      expect(result.summary).toContain("1 confirmed finding");
       expect(result.findings).toHaveLength(1);
       expect(result.findings[0]).toMatchObject({
         title: "Division by zero guard was removed",
@@ -81,9 +81,9 @@ describe("phase 6 live review path", () => {
         publication: "inline",
         finalBody: expect.stringContaining("Restore the guard")
       });
-      expect(result.needsHumanAttention).toEqual([]);
-      expect(output.join("\n")).toContain("Found 1 verified issue.");
-      expect(output.join("\n")).not.toContain("Needs Human Attention");
+      expect(result.needsHumanAttention).toEqual([expect.objectContaining({ question: "Check whether callers can pass zero count." })]);
+      expect(output.join("\n")).toContain("1 confirmed finding");
+      expect(output.join("\n")).toContain("Needs Human Attention");
       expect(output.join("\n")).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
       expect(output.join("\n")).toContain("Diagnostic token: [redacted:");
       expect(adapter.callsByPrompt).toMatchObject({

@@ -141,6 +141,7 @@ const caseSchema = z
         deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
         adaptiveSecondPass: z.boolean().optional(),
         compositionReasoningStepDown: z.boolean().optional(),
+        skipSvgReview: z.boolean().optional(),
         verify: z.boolean().optional(),
         cache: z.boolean().optional(),
         cacheDir: z.string().min(1).optional(),
@@ -867,6 +868,9 @@ function applyCaseReviewConfig(
   if (review?.compositionReasoningStepDown !== undefined) {
     config.review.compositionReasoningStepDown = review.compositionReasoningStepDown;
   }
+  if (review?.skipSvgReview !== undefined) {
+    config.review.skipSvgReview = review.skipSvgReview;
+  }
   if (review?.verify !== undefined) {
     config.review.verify = review.verify;
   }
@@ -908,6 +912,7 @@ function evalEffectiveConfig(config: CodegenieConfig): NonNullable<EvalRunInfo["
     review: {
       concurrency: config.review.concurrency,
       compositionReasoningStepDown: config.review.compositionReasoningStepDown,
+      skipSvgReview: config.review.skipSvgReview,
       timeoutMs: config.review.maxTimeMs,
       ...(config.review.maxBudgetTokens !== undefined ? { maxBudgetTokens: config.review.maxBudgetTokens } : {})
     },

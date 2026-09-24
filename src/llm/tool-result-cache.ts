@@ -58,7 +58,7 @@ export function createToolResultCache(opts: CreateToolResultCacheOptions = {}): 
   };
 
   const write = (key: string, result: ToolExecutionResult): number => {
-    const entry = { result: cloneToolResult(result), resultChars: result.text.length };
+    const entry = { result: cloneToolResult(result), resultChars: result.text.length + (result.searchResults ? JSON.stringify(result.searchResults).length : 0) };
     const existing = entries.get(key);
     if (existing !== undefined) {
       storedResultChars -= existing.resultChars;
@@ -183,6 +183,7 @@ function isCacheableResult(result: ToolExecutionResult): boolean {
 
 function cloneToolResult(result: ToolExecutionResult): ToolExecutionResult {
   const output: ToolExecutionResult = { text: result.text };
+  if (result.searchResults !== undefined) output.searchResults = structuredClone(result.searchResults);
   if (result.isError !== undefined) {
     output.isError = result.isError;
   }

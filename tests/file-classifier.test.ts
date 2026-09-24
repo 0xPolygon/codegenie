@@ -8,6 +8,23 @@ import { resolveReviewInput } from "../src/git/review-input-resolver.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 
 describe("file filtering and classification", () => {
+  it("skips SVGs by default, permits opt-in, and retains explicit exclusions", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "README.md", "base\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    for (const file of ["icon.svg", "assets/diagram.svg", "assets/upper.SVG"]) writeRepoFile(repo, file, "<svg></svg>\n");
+    commitAll(repo, "SVGs");
+    const resolved = await resolveReviewInput({ mode: "branch", branchName: "feature" }, defaultConfig, nullTelemetry(), { repoRoot: repo });
+    const diff = parseDiff(resolved.rawDiff);
+    expect((await filterDiffFiles(resolved, diff, defaultConfig, nullTelemetry())).kept).toHaveLength(0);
+    const config = structuredClone(defaultConfig);
+    config.review.skipSvgReview = false;
+    expect((await filterDiffFiles(resolved, diff, config, nullTelemetry())).kept).toHaveLength(3);
+    config.classification.pathRules.push({ pattern: "**/*.svg", processingMode: "skip", reason: "explicit exclusion" });
+    expect((await filterDiffFiles(resolved, diff, config, nullTelemetry())).kept.map(file => file.path)).toEqual(["assets/upper.SVG"]);
+  });
+
   it("classifies Rust, Python, and Solidity path roles without ambiguous directory skips", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "README.md", "base\n");

@@ -24,10 +24,15 @@ export function renderCoverageTrustBanner(coverage: RunCoverageStatus): string {
 }
 
 export function renderCoverageSummaryLines(coverage: RunCoverageStatus): string[] {
+  if (coverage.unavailable) {
+    return ["**Coverage unavailable:** the review failed before a trustworthy coverage summary could be assembled."];
+  }
   const lines = [coverageHeadline(coverage)];
   if (coverage.partial) {
-    lines.push(`Reviewed ${coverage.reviewedHunks}/${coverage.totalHunks} hunks before stopping.`);
+    lines.push(`Reviewed ${coverage.reviewedHunks}/${coverage.totalHunks} hunks${coverage.budgetStopped ? " before stopping" : ""}.`);
   }
+  const excluded = coverage.excludedHunks ?? coverage.skippedHunks;
+  if (excluded > 0) lines.push(`**Excluded by configuration/planning:** ${excluded} hunks.`);
   const statusLine = coverageStatusLine(coverage);
   if (statusLine !== undefined) {
     lines.push(statusLine);
@@ -119,6 +124,7 @@ function coverageHeadline(coverage: RunCoverageStatus): string {
   if (unreviewed === 0 && coverage.degradedPlanning) {
     return "Review completed with degraded planning.";
   }
+  if (unreviewed === 0) return "**Partial review:** assigned hunks were reviewed, but required evidence gathering remains incomplete.";
   return `**Partial review:** ${unreviewed} ${hunkNoun(unreviewed)} did not complete review.`;
 }
 
@@ -128,9 +134,8 @@ function hunkNoun(count: number): string {
 
 function coverageStatusLine(coverage: RunCoverageStatus): string | undefined {
   const parts: string[] = [];
-  if (coverage.skippedHunks > 0) {
-    parts.push(`skipped ${coverage.skippedHunks}`);
-  }
+  const uncertainSkips = coverage.skippedHunks - (coverage.excludedHunks ?? coverage.skippedHunks);
+  if (uncertainSkips > 0) parts.push(`skipped under incomplete planning ${uncertainSkips}`);
   if (coverage.failedHunks > 0) {
     parts.push(`failed ${coverage.failedHunks}`);
   }

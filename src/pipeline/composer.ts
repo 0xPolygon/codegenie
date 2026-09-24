@@ -1,3 +1,4 @@
+import { deriveReviewHealth, factualReviewSummary, renderReviewHealth } from "../util/review-health.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "./composition-repair.js";
 import { buildAttentionReconciliation, reconcileAttention, type AttentionReconciliation } from "./attention-reconciliation.js";
 import { type CompositionMetrics, eligibleCompositionSource, compositionSources, composePresentation, safeReportProse, validateCompositionSubmission, renderRetainedComposition } from "./composition-content.js";
@@ -34,11 +35,10 @@ import { hasCriticalOrHighGuarantee } from "./severity-policy.js";
 import type { LlmSchemaInvalidSubmitRecoveryInput, LlmSchemaRepairInput } from "../llm/llm-runner.js";
 import {
   buildHumanAttentionNotes,
-  buildVerificationResolutionIndex,
   humanAttentionArtifact,
   selectHumanAttentionForOutput,
   selectHumanAttentionGroups,
-  suppressAttentionGroupsResolvedByVerification
+  MAX_HUMAN_ATTENTION_NOTES
 } from "./human-attention.js";
 
 type ComposeOptions = {
@@ -104,14 +104,10 @@ export async function dedupeRankAndComposeReview(
     ...(opts.diff !== undefined ? { diff: opts.diff } : {}),
     telemetry
   });
-  const verificationResolutions = buildVerificationResolutionIndex(verified.verdicts, opts.packetResults ?? [], verified.verified, packetsById, coverage);
-  const preComposerAttentionGroups = suppressAttentionGroupsResolvedByVerification(
-    attention.groups,
-    verificationResolutions.filter((resolution) => resolution.verdict === "reject" && !verified.verdicts.some(verdict => verdict.candidateId === resolution.candidateId && verdict.unresolvedConcern))
-  ).available;
+  const preComposerAttentionGroups = attention.groups;
   const composerPromptSelection = selectHumanAttentionGroups(preComposerAttentionGroups);
   const composerPromptNotes = composerPromptSelection.notes;
-  const attentionReconciliation = buildAttentionReconciliation(verified.verdicts, pretrim.kept, opts.packetResults ?? [], resolved);
+  const attentionReconciliation = buildAttentionReconciliation(verified.verdicts, pretrim.kept, opts.packetResults ?? [], resolved, attention.raw);
   if (pretrim.suppressed.length > 0) {
     const reason = `composer pre-trim suppressed ${pretrim.suppressed.length} verified finding${pretrim.suppressed.length === 1 ? "" : "s"} above the ${MAX_COMPOSER_FINDINGS}-finding composer input cap`;
     coverage.reasons.push(reason);
@@ -246,15 +242,21 @@ export async function dedupeRankAndComposeReview(
   const summaryOnlyFindings = capped.findings.filter((finding) => finding.publication === "summary-only");
   const publishableCount = findings.length + summaryOnlyFindings.length;
   const reconciledAttention = reconcileAttention(attentionReconciliation, composition.attentionResolutions,
-    compositionMode === "llm" && publishableCount > 0);
+    compositionMode === "llm");
+  const decisionsByHint = new Map(reconciledAttention.decisions.filter(decision => decision.accepted).map(decision => [decision.concernId, decision]));
+  const regroupedAttention = buildHumanAttentionNotes([], { packets: opts.packets ?? [], rawHints: attention.raw.flatMap(hint => {
+    const decision = decisionsByHint.get(`packet/${hint.id}`);
+    return decision?.disposition === "resolved" ? [] : [{ ...hint, question: decision?.remainingQuestion ?? hint.question }];
+  }) });
   const humanAttention = selectHumanAttentionForOutput(
-    attention.groups,
-    capped.findings.filter((finding) => finding.publication !== "suppressed"),
+    regroupedAttention.groups,
+    [], // Finding overlap alone does not establish that every question was answered.
     packetsById,
-    verificationResolutions,
+    [], // Packet questions require explicit evidence-backed reconciliation, not verdict/word similarity.
     telemetry
   );
-  for (const note of reconciledAttention.notes) {
+  const verifierQuestions = new Set(reconciledAttention.outcomes.filter(outcome => !outcome.candidateId.startsWith("packet:")).map(outcome => outcome.remainingQuestion));
+  for (const note of reconciledAttention.notes.filter(note => verifierQuestions.has(note.question))) {
     if (!humanAttention.notes.some(existing => existing.question === note.question)) humanAttention.notes.push(note);
   }
   telemetry.event({ stage: 10, level: "info", message: "human_attention_reconciliation", data: {
@@ -274,7 +276,24 @@ export async function dedupeRankAndComposeReview(
     const fallbackPresentation = presentationMeasurements.find(record => record.synthesis === "fallback" && record.findingIds.includes(finding.id));
     publishSupportedSuggestions(finding, pretrim.kept, fallbackPresentation?.metrics.publishedSuggestionSources);
   }
-  const summary = publishableCount === 0
+  // Explicitly answering every retained question can finish an evidence handoff.
+  // This never rescues a worker that failed to complete its required review.
+  if (coverage.diagnostics) coverage.diagnostics = coverage.diagnostics.filter(diagnostic => {
+    if (diagnostic.origin !== "tool" || !diagnostic.workItem) return true;
+    if (diagnostic.stage === 7 && !opts.packetResults?.some(packet => packet.packetId === diagnostic.workItem && packet.status === "completed")) return true;
+    const key = diagnostic.stage === 7 ? `packet:${diagnostic.workItem}` : diagnostic.workItem;
+    const groups = attentionReconciliation.groups.filter(group => group.candidateId === key);
+    const answered = groups.length > 0 && groups.every(group => !group.ineligibleReason && group.concerns.length > 0 && group.concerns.every(concern => decisionsByHint.get(concern.id)?.disposition === "resolved"));
+    if (answered) telemetry.event({ stage: 10, level: "info", message: "tool_evidence_limitation_reconciled", data: { diagnostic, concernIds: groups.flatMap(group => group.concerns.map(concern => concern.id)) } });
+    return !answered;
+  });
+  const unresolvedCount = humanAttention.notes.length + humanAttention.omittedCount;
+  if (humanAttention.notes.length > MAX_HUMAN_ATTENTION_NOTES) {
+    humanAttention.omittedCount += humanAttention.notes.length - MAX_HUMAN_ATTENTION_NOTES;
+    humanAttention.notes = humanAttention.notes.slice(0, MAX_HUMAN_ATTENTION_NOTES);
+  }
+  const health = deriveReviewHealth(coverage, unresolvedCount, verified.verified.length > 0);
+  const summary = health.status !== "completed" ? factualReviewSummary(health, publishableCount) : publishableCount === 0
     ? coverage.partial
       ? "Review incomplete: completed work produced no credible verified findings, but incomplete coverage or verification prevents a clean conclusion."
       : fallbackSummary(0)
@@ -284,6 +303,7 @@ export async function dedupeRankAndComposeReview(
   const createPostingPlan = opts.postGithubComments === true && (publishableCount > 0 || config.github.summaryWhenNoFindings);
   const result: ReviewResult = {
     summary,
+    health,
     coverage,
     findings,
     summaryOnlyFindings,
@@ -294,7 +314,7 @@ export async function dedupeRankAndComposeReview(
       ? {
           postingPlan: {
             inline: findings.flatMap((finding) => (finding.anchor ? [{ findingId: finding.id, anchor: finding.anchor }] : [])),
-            reviewBody: renderReviewBody(summary, summaryOnlyFindings, humanAttention.notes, coverage, humanAttention.omittedCount)
+            reviewBody: renderReviewBody(summary, summaryOnlyFindings, humanAttention.notes, coverage, humanAttention.omittedCount, health)
           }
         }
       : {})
@@ -325,7 +345,7 @@ export async function dedupeRankAndComposeReview(
     }))
   });
   await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets(
-    { ...humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups),
+    { ...humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups, regroupedAttention),
       // These records deliberately share original scope/evidence objects.
       // Serialize to a tree before the scrubber's repeated-object protection
       // so shared provenance is not mistaken for circular data and redacted.
@@ -1708,9 +1728,10 @@ function renderReviewBody(
   summaryOnly: FinalFinding[],
   notes: NeedsHumanAttentionNote[],
   coverage: RunCoverageStatus,
-  omittedNoteCount = 0
+  omittedNoteCount = 0,
+  health?: import("../types.js").ReviewHealth
 ): string {
-  const trustBanner = renderCoverageTrustBanner(coverage);
+  const trustBanner = health && health.status !== "completed" ? renderReviewHealth(health) : renderCoverageTrustBanner(coverage);
   const lines = [
     "### 🧞 Codegenie Review",
     "",
@@ -2012,4 +2033,14 @@ function belowSeverity(actual: Severity, minimum: Severity | undefined): boolean
 
 function normalize(input: string): string {
   return input.toLowerCase().replace(/\s+/gu, " ").trim();
+}
+
+/** Rebuild publication text if a budget stop occurred during composition itself. */
+export function refreshReviewHealth(result: ReviewResult): void {
+  if (result.health?.status === "failed" || result.health?.status === "incomplete") result.coverage.partial = true;
+  result.health = deriveReviewHealth(result.coverage, result.health?.unresolvedCount ?? result.needsHumanAttention.length + (result.needsHumanAttentionOmittedCount ?? 0),
+    result.findings.length + result.summaryOnlyFindings.length > 0);
+  if (result.health.status === "failed" || result.health.status === "incomplete") result.coverage.partial = true;
+  if (result.health.status !== "completed") result.summary = factualReviewSummary(result.health, result.findings.length + result.summaryOnlyFindings.length);
+  if (result.postingPlan) result.postingPlan.reviewBody = renderReviewBody(result.summary, result.summaryOnlyFindings, result.needsHumanAttention, result.coverage, result.needsHumanAttentionOmittedCount, result.health);
 }

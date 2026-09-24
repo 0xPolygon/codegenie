@@ -722,6 +722,8 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           ...(measurement.meta.degradationReason !== undefined ? { degradationReason: measurement.meta.degradationReason } : {}),
           ...(measurement.meta.truncated !== undefined ? { truncated: measurement.meta.truncated } : {}),
           ...(measurement.meta.omittedCount !== undefined ? { omittedCount: measurement.meta.omittedCount } : {}),
+          ...(measurement.meta.discoveryLimited ? { discoveryLimited: true } : {}),
+          ...(measurement.meta.omittedCountIsLowerBound ? { omittedCountIsLowerBound: true } : {}),
           ...(measurement.meta.lookupStatus !== undefined ? { lookupStatus: measurement.meta.lookupStatus } : {}),
           ...(measurement.meta.deliveryStatus !== undefined ? { deliveryStatus: measurement.meta.deliveryStatus } : {}),
           ...(measurement.meta.recovery !== undefined ? { recovery: measurement.meta.recovery } : {}),
@@ -811,6 +813,8 @@ function metaFromSearch(execution: {
   degradationReason?: string;
   truncated?: boolean;
   omittedCount?: number;
+  omittedCountIsLowerBound?: boolean;
+  discoveryLimited?: boolean;
 }): ToolResultMeta {
   return {
     backend: execution.backend,
@@ -818,7 +822,9 @@ function metaFromSearch(execution: {
     degraded: execution.degraded,
     ...(execution.degradationReason !== undefined ? { degradationReason: execution.degradationReason } : {}),
     ...(execution.truncated !== undefined ? { truncated: execution.truncated } : {}),
-    ...(execution.omittedCount !== undefined ? { omittedCount: execution.omittedCount } : {})
+    ...(execution.omittedCount !== undefined ? { omittedCount: execution.omittedCount } : {}),
+    ...(execution.omittedCountIsLowerBound ? { omittedCountIsLowerBound: true } : {}),
+    ...(execution.discoveryLimited ? { discoveryLimited: true } : {})
   };
 }
 

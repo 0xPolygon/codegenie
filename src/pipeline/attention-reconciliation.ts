@@ -1,7 +1,7 @@
 import type { SubmitComposition } from "../llm/schemas.js";
 import type { CandidateFinding, NeedsHumanAttentionNote, PacketReviewResult, ResolvedReviewInput, VerificationVerdict } from "../types.js";
 import { compositionSources, safeReportProse, type CompositionSource } from "./composition-content.js";
-import { MAX_HUMAN_ATTENTION_NOTES } from "./human-attention.js";
+import type { RawAttentionHint } from "./human-attention.js";
 
 export const MAX_ATTENTION_RECONCILIATION_CHARS = 16_000;
 type Resolution = NonNullable<SubmitComposition["attentionResolutions"]>[number];
@@ -11,7 +11,7 @@ type Concern = {
   assumptionIndex: number;
   question: string;
   essential: boolean;
-  verdict: VerificationVerdict["verdict"];
+  verdict: VerificationVerdict["verdict"] | "not_verified";
   scope: NeedsHumanAttentionNote;
 };
 type Evidence = {
@@ -23,7 +23,10 @@ type Evidence = {
   text: string;
   path?: string;
   explanation?: string;
-  verdict: VerificationVerdict["verdict"];
+  verdict: VerificationVerdict["verdict"] | "not_verified";
+  origin?: "repository_tool";
+  symbols?: string[];
+  source?: "head" | "base";
   proofStatus?: NonNullable<VerificationVerdict["proofAssessment"]>["status"];
   assumptions?: NonNullable<VerificationVerdict["proofAssessment"]>["assumptions"];
 };
@@ -37,7 +40,7 @@ type Inventory = {
   // This is review context, not a claim that each excerpt was read at head.
   // Individual excerpts/observations retain their original source wording.
   reviewRevision: { base?: string; head?: string };
-  concerns: Concern[];
+  concerns: Array<Pick<Concern, "id" | "question"> & { files: string[] }>;
   // Published observations are already in the composition source components.
   // Register their IDs without duplicating their text in this bounded inventory.
   evidence: Array<Omit<Evidence, "text" | "verdict" | "proofStatus" | "assumptions"> & { text?: string }>;
@@ -82,12 +85,21 @@ export function buildAttentionReconciliation(
   verdicts: VerificationVerdict[],
   publishedInputs: CandidateFinding[],
   packetResults: PacketReviewResult[],
-  resolved: ResolvedReviewInput
+  resolved: ResolvedReviewInput,
+  packetHints: RawAttentionHint[] = []
 ): AttentionReconciliation {
   const groups = verdicts.flatMap(verdict => {
     const group = concernGroup(verdict);
     return group ? [group] : [];
   });
+  for (const hint of packetHints) {
+    if (hint.confidence === "low" || !hint.question.trim() || (!hint.files.length && !hint.symbols.length)) continue;
+    const original: NeedsHumanAttentionNote = { question: hint.question, files: hint.files, symbols: hint.symbols,
+      reason: hint.reason, confidence: hint.confidence, sourcePacketIds: [hint.packetId] };
+    const candidateId = `packet:${hint.packetId}`;
+    groups.push({ candidateId, original, concerns: [{ id: `packet/${hint.id}`, candidateId, assumptionIndex: 0,
+      question: hint.question, essential: true, verdict: "not_verified", scope: original }] });
+  }
   const candidates = new Map(packetResults.flatMap(result => result.findings).map(finding => [finding.id, finding]));
   for (const verdict of verdicts) if (verdict.finalFinding) candidates.set(verdict.candidateId, verdict.finalFinding);
   for (const finding of publishedInputs) candidates.set(finding.id, finding);
@@ -138,6 +150,21 @@ export function buildAttentionReconciliation(
       });
     }
   }
+  // Source reads are independent evidence, not a packet's own conclusion.
+  // Retain revision and tool provenance; failed/incomplete work cannot settle questions.
+  const seenReads = new Set<string>();
+  for (const packet of packetResults) {
+    if (packet.status !== "completed") continue;
+    for (const read of packet.repositoryEvidence ?? []) {
+      const key = JSON.stringify([read.source, read.path, read.text]);
+      if (!read.text.trim() || seenReads.has(key)) continue;
+      seenReads.add(key);
+      allEvidence.push({ id: `repository/${packet.packetId}/${read.id}`, candidateId: `repository:${packet.packetId}`,
+        kind: "excerpt", text: read.text, ...(read.path ? { path: read.path } : {}),
+        explanation: `Successful ${read.tool} at ${read.source}; packet ${packet.packetId}`,
+        origin: "repository_tool", ...(read.symbols ? { symbols: read.symbols } : {}), source: read.source, verdict: "not_verified" });
+    }
+  }
   const inventory: Inventory = {
     reviewRevision: {
       ...(resolved.baseRef ? { base: resolved.baseRef } : {}),
@@ -147,16 +174,15 @@ export function buildAttentionReconciliation(
   const omittedConcernIds: string[] = [];
   const omittedEvidenceIds: string[] = [];
   const excludedEvidenceIds: string[] = [];
-  let admittedGroups = 0;
   for (const group of groups) {
     if (!group.concerns.length) continue;
-    const next = [...inventory.concerns, ...group.concerns];
-    if (admittedGroups >= MAX_HUMAN_ATTENTION_NOTES || JSON.stringify({ ...inventory, concerns: next }).length > MAX_ATTENTION_RECONCILIATION_CHARS) {
+    const next = [...inventory.concerns, ...group.concerns.map(concern => ({ id: concern.id, question: concern.question, files: concern.scope.files }))];
+    // Reserve half the existing allowance for supporting evidence.
+    if (JSON.stringify({ ...inventory, concerns: next }).length > MAX_ATTENTION_RECONCILIATION_CHARS / 2) {
       omittedConcernIds.push(...group.concerns.map(concern => concern.id));
       continue;
     }
     inventory.concerns = next;
-    admittedGroups++;
   }
   const eligible: Evidence[] = [];
   for (const evidence of allEvidence) {
@@ -168,7 +194,8 @@ export function buildAttentionReconciliation(
   }
   // Give each question a turn instead of allowing the first candidate's excerpts
   // to consume the inventory. Ranking only allocates context; it proves nothing.
-  const queues = inventory.concerns.map(concern => [...eligible].sort((a, b) =>
+  const fullConcerns = new Map(groups.flatMap(group => group.concerns).map(concern => [concern.id, concern]));
+  const queues = inventory.concerns.map(({ id }) => fullConcerns.get(id)!).map(concern => [...eligible].sort((a, b) =>
     evidencePriority(b, concern) - evidencePriority(a, concern)));
   const considered = new Set<string>();
   const observations = new Set<string>();
@@ -213,6 +240,7 @@ function evidencePriority(evidence: Evidence, concern: Concern): number {
     .replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase().match(/[\p{L}\p{N}_]{4,}/gu) ?? []);
   const overlap = [...terms].filter(term => words.has(term)).length / Math.max(terms.size, 1);
   return (evidence.candidateId !== concern.candidateId ? 8 : 0)
+    + (evidence.symbols?.filter(symbol => concern.scope.symbols.includes(symbol) || concern.question.includes(symbol)).length ?? 0) * 2
     + overlap * 4
     + (concern.scope.files.includes(evidence.path ?? "") ? 1 : 0)
     + (evidence.kind === "observation" ? 0.5 : 0)
@@ -224,7 +252,8 @@ export function reconcileAttention(
   proposals: Resolution[] | undefined,
   enabled: boolean
 ) {
-  const concerns = new Map(input.inventory.concerns.map(concern => [concern.id, concern]));
+  const supplied = new Set(input.inventory.concerns.map(concern => concern.id));
+  const concerns = new Map(input.groups.flatMap(group => group.concerns).filter(concern => supplied.has(concern.id)).map(concern => [concern.id, concern]));
   const evidence = new Map(input.inventory.evidence.map(source => [source.id, source]));
   const counts = new Map<string, number>();
   for (const proposal of proposals ?? []) counts.set(proposal.concernId, (counts.get(proposal.concernId) ?? 0) + 1);

@@ -125,7 +125,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 120 | IMPLEMENTED (live comparison pending) | [Issue 120: Verifier Completion and Faithful Fallback](120-issue-120-verifier-completion-and-faithful-fallback.md) |
 | 121 | IMPLEMENTED (live comparison pending) | [Issue 121: Evidence-Backed Recommendations and Report Reconciliation](121-issue-121-evidence-backed-human-attention-reconciliation.md) |
 | 122 | CORE IMPLEMENTED (live baseline pending; C2 deferred) | [Issue 122: Shared Evidence and Focused Review Follow-ups](122-issue-122-shared-evidence-and-focused-review-followups.md) |
-| 123 | DRAFT (reviewed; implementation pending) | [Issue 123: Reliable Search Evidence and Honest Review Outcomes](123-issue-123-search-evidence-and-honest-review-outcomes.md) |
+| 123 | IMPLEMENTED (live comparisons pending) | [Issue 123: Reliable Search Evidence and Honest Review Outcomes](123-issue-123-search-evidence-and-honest-review-outcomes.md) |
 
 ## Recommended order for 106-110
 

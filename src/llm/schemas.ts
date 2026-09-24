@@ -279,7 +279,7 @@ export const SubmitCompositionSchema = Type.Object(
       supportingRefs: Type.Array(Type.String({ minLength: 1, maxLength: 300 }), { minItems: 1, maxItems: 20 }),
       rationale: Type.String({ minLength: 1, maxLength: 2000 }),
       remainingQuestion: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 }))
-    }, { additionalProperties: false }), { maxItems: 30, description: "Optional resolutions of supplied verifier concerns only. Omission leaves concerns unchanged. Attention-only references cannot account for finding sources." })),
+    }, { additionalProperties: false }), { maxItems: 30, description: "Optional resolutions of supplied verifier or packet concerns only. Omission leaves concerns unchanged. Attention-only references cannot account for finding sources." })),
     composedFindings: Type.Array(
       Type.Object(
         {
@@ -320,7 +320,7 @@ export const SCHEMA_VERSIONS = {
   submit_review: 5,
   submit_system_review: 2,
   submit_verdict: 11,
-  submit_composition: 7
+  submit_composition: 8
 } as const;
 
 export function submitToolNameForStage(stage: ReviewStage): keyof typeof SCHEMA_VERSIONS {

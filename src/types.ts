@@ -36,6 +36,7 @@ export type CodegenieConfig = {
     depth: ReviewDepth;
     verify: boolean;
     compositionReasoningStepDown: boolean;
+    skipSvgReview: boolean;
     minSeverity?: Severity;
     maxFindings: number;
     softCommentCap: number;
@@ -342,6 +343,8 @@ export type ToolResultMeta = {
   degradationReason?: string;
   truncated?: boolean;
   omittedCount?: number;
+  omittedCountIsLowerBound?: boolean;
+  discoveryLimited?: boolean;
   lookupStatus?: "found" | "not_found" | "ambiguous" | "file_missing" | "unavailable";
   deliveryStatus?: "full" | "truncated" | "budget_rejected" | "empty";
   recovery?: {
@@ -855,7 +858,18 @@ export type StructuredUncertainty = {
   projectedSkillIds: string[];
 };
 
+export type RepositoryEvidence = {
+  symbols?: string[];
+  id: string;
+  tool: string;
+  path?: string;
+  source: "head" | "base";
+  text: string;
+};
+
 export type PacketReviewResult = {
+  repositoryEvidence?: RepositoryEvidence[];
+  diagnostics?: ReviewDiagnostic[];
   packetId: string;
   lenses: string[];
   findings: CandidateFinding[];
@@ -930,12 +944,14 @@ export type ResolvedFollowUpHint = {
 };
 
 export type SystemReviewResult = {
+  diagnostics?: ReviewDiagnostic[];
   tasks: SystemReviewTask[];
   packetResults: PacketReviewResult[];
   resolvedHints: ResolvedFollowUpHint[];
 };
 
 export type VerificationVerdict = {
+  diagnostic?: ReviewDiagnostic;
   candidateId: string;
   suggestionAssessments?: SuggestionAssessments;
   // Host-owned, provenance-only original proposals replaced during verification.
@@ -974,11 +990,16 @@ export type FinalFinding = CandidateFinding & {
 };
 
 export type RunCoverageStatus = {
+  /** No trustworthy coverage snapshot was assembled; numeric counters are placeholders. */
+  unavailable?: boolean;
+  diagnostics?: ReviewDiagnostic[];
   /** Absent in legacy artifacts or when supplemental outcomes were not recorded. */
   adaptiveReviews?: AdaptiveReviewSummary;
   totalHunks: number;
   reviewedHunks: number;
   skippedHunks: number;
+  /** Proven deliberate exclusions; other skips may be incomplete planning. */
+  excludedHunks?: number;
   failedHunks: number;
   coverageByLevel: Record<CoverageLevel, number>;
   degradedPlanning: boolean;
@@ -1037,7 +1058,23 @@ export type PlannerCoverageStats = {
   rejectedUnknownHunk: number;
 };
 
+export type ReviewDiagnostic = {
+  origin?: "tool";
+  stage: number;
+  workItem?: string;
+  kind: "failure" | "incomplete";
+  code: string;
+  reason: string;
+  recoveryExhausted: boolean;
+};
+export type ReviewHealth = {
+  status: "failed" | "incomplete" | "unresolved" | "completed";
+  diagnostics: ReviewDiagnostic[];
+  unresolvedCount: number;
+};
+
 export type ReviewResult = {
+  health?: ReviewHealth;
   summary: string;
   coverage: RunCoverageStatus;
   runStats?: ReviewRunStats;
@@ -1097,6 +1134,7 @@ export type EvalCase = {
     adaptiveSecondPass?: boolean;
     verify?: boolean;
     compositionReasoningStepDown?: boolean;
+    skipSvgReview?: boolean;
     cache?: boolean;
     cacheDir?: string;
     debug?: boolean;
@@ -1359,6 +1397,7 @@ export type EvalRunInfo = {
     review: {
       concurrency: number;
       compositionReasoningStepDown?: boolean;
+      skipSvgReview?: boolean;
       timeoutMs: number;
       maxBudgetTokens?: number;
     };
@@ -1628,6 +1667,8 @@ export type PlannerDossier = {
 };
 
 export type SearchResult = {
+  excerpt?: boolean;
+  excerptStartColumn?: number;
   path: string;
   line: number;
   column?: number;
@@ -1704,6 +1745,8 @@ export type ToolCallRecord = {
     startLine?: number;
     endLine?: number;
     query?: string;
+    pathGlob?: string;
+    maxResults?: number;
     glob?: string;
     source?: string;
     contextMode?: string;
@@ -1715,6 +1758,8 @@ export type ToolCallRecord = {
   degradationReason?: string;
   truncated?: boolean;
   omittedCount?: number;
+  omittedCountIsLowerBound?: boolean;
+  discoveryLimited?: boolean;
   lookupStatus?: ToolResultMeta["lookupStatus"];
   deliveryStatus?: ToolResultMeta["deliveryStatus"];
   recovery?: ToolResultMeta["recovery"];

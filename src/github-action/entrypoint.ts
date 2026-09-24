@@ -39,6 +39,7 @@ export type RunReviewResult = RunAttachment & {
   // The full markdown review. Never the writeOutput capture: with inline
   // posting enabled, stdout carries the short posting summary, not the report.
   reportMarkdown: string;
+  failed?: boolean;
 };
 
 export type ExecuteGitHubActionOptions = {
@@ -229,6 +230,11 @@ export async function executeGitHubActionCommand(
   // Fallback copies land before the terminal PATCH so the report survives a
   // failed edit (which still fails the run as github_post_failed).
   publishReportFiles(runResult.reportMarkdown, env);
+  if (runResult.failed) {
+    await controller.finalizeFailure("review_failed", undefined, "Required review work failed. See the saved report for diagnostics.", runResult.reportMarkdown);
+    emitActionRecord(runResult.runDir, eventName, authorized, "review_failed", controller.stats(), env, write, "review_failed");
+    throw new CodegenieError("review_failed", "Required review work failed; partial report retained.");
+  }
   try {
     await controller.finalizeSuccess(runResult.reportMarkdown);
   } catch (error) {
@@ -256,6 +262,7 @@ export function toRunReviewResult(result: { runId: string; runDir: string; revie
   return {
     runId: result.runId,
     runDir: result.runDir,
+    failed: result.review.health?.status === "failed",
     reportMarkdown: scrubGitHubSecrets(renderMarkdownReview(result.review))
   };
 }
