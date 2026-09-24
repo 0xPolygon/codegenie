@@ -102,14 +102,21 @@ export async function buildRepositoryIndex(
   opts: BuildRepositoryIndexOptions = {}
 ): Promise<RepositoryIndex> {
   void config;
+  const startedAt = Date.now();
   telemetry.event({ stage: 4, level: "info", message: "stage_started", data: { name: "repository_index" } });
   const git = opts.git ?? createGitClient(resolved.repoRoot);
   const resolver = await SourceResolver.create(resolved, git);
   const parser = new TreeSitterService({ telemetry });
   const registry = new LanguageAdapterRegistry(parser);
   const diff = parseDiff(resolved.rawDiff);
-  const symbolFacts = await extractChangedSymbolFacts(resolver, registry, kept, facts);
-  const staticSignals = await extractStaticSignals(resolver, registry, kept, facts, symbolFacts, telemetry);
+  const progress = (phase: "symbols" | "static_signals") => (file: DiffFile, filesCompleted: number) => {
+    telemetry.event({
+      stage: 4, level: "debug", message: "repository_index_progress", file: file.path,
+      data: { phase, filesCompleted, filesTotal: kept.length, elapsedMs: Date.now() - startedAt }
+    });
+  };
+  const symbolFacts = await extractChangedSymbolFacts(resolver, registry, kept, facts, progress("symbols"));
+  const staticSignals = await extractStaticSignals(resolver, registry, kept, facts, symbolFacts, telemetry, progress("static_signals"));
   const tools = new RepositoryToolsFacade({
     diff,
     resolver,

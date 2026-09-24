@@ -16,14 +16,16 @@ export async function extractStaticSignals(
   kept: DiffFile[],
   facts: FileFacts[],
   symbolFacts: HunkSymbolFacts[],
-  telemetry: TelemetryRecorder
+  telemetry: TelemetryRecorder,
+  onFile?: (file: DiffFile, completed: number) => void
 ): Promise<StaticSignal[]> {
   const signals: StaticSignal[] = [];
   let runOmitted = 0;
   const factByPath = new Map(facts.map((fact) => [fact.path, fact]));
   const factsByHunk = groupFactsByHunk(symbolFacts);
 
-  for (const file of kept) {
+  for (const [index, file] of kept.entries()) {
+    onFile?.(file, index);
     const perFile: StaticSignal[] = [];
     const fact = factByPath.get(file.path);
     if (file.status === "deleted" && fact?.testStatus === "test") {
@@ -63,6 +65,7 @@ export async function extractStaticSignals(
     const remainingRunSlots = Math.max(0, MAX_SIGNALS_PER_RUN - signals.length);
     signals.push(...fileSignals.slice(0, remainingRunSlots));
     runOmitted += Math.max(0, fileSignals.length - remainingRunSlots);
+    onFile?.(file, index + 1);
   }
 
   if (runOmitted > 0) {
