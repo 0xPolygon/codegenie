@@ -4,7 +4,7 @@ import { applyModelOverrides, modelProviderRouting, requiresAutomaticSubmitToolC
 import { getCodegeniePiModels } from "../src/provider/pi-ai-models.js";
 import { createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 
-const routing = { only: ["deepseek"], order: ["deepseek"], allow_fallbacks: false };
+const routing = { order: ["deepseek"] };
 const catalogModel = () => getCodegeniePiModels().getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
 
 describe("model routing overrides", () => {
@@ -15,6 +15,7 @@ describe("model routing overrides", () => {
     };
     const before = structuredClone(original);
     const result = applyModelOverrides(original);
+    expect(modelProviderRouting(result)).toEqual({ ...routing, data_collection: "deny" });
     expect(result).toMatchObject({ ...before, compat: { supportsDeveloperRole: false, thinkingFormat: "openrouter", openRouterRouting: { ...routing, data_collection: "deny" } } });
     expect(result.thinkingLevelMap).toEqual(original.thinkingLevelMap);
     expect(original).toEqual(before);
@@ -35,10 +36,10 @@ describe("model routing overrides", () => {
     expect(requiresAutomaticSubmitToolChoice(model)).toBe(false);
   });
 
-  it.each(["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-pro", "deepseek/deepseek-r1", "deepseek/deepseek-chat", "deepseek/future-model:free"])("pins all DeepSeek model IDs on OpenRouter: %s", (id) => {
+  it.each(["deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4.1-pro", "deepseek/deepseek-r1", "deepseek/deepseek-chat", "deepseek/future-model:free"])("prefers the official upstream for DeepSeek model IDs on OpenRouter: %s", (id) => {
     const original = { ...catalogModel(), id };
     const result = applyModelOverrides(original);
-    expect(modelProviderRouting(result)).toMatchObject(routing);
+    expect(modelProviderRouting(result)).toEqual(routing);
     expect(requiresAutomaticSubmitToolChoice(result)).toBe(true);
     expect(result.thinkingLevelMap).toEqual(original.thinkingLevelMap);
   });
@@ -77,6 +78,10 @@ describe("model routing overrides", () => {
       });
       expect(payload).toMatchObject({ model: model.id, provider: expectedRouting, stream: true, reasoning: { effort: "low" } });
       expect((payload as { provider: object }).provider).not.toHaveProperty("require_parameters");
+      if (modelId.startsWith("deepseek/")) {
+        expect((payload as { provider: object }).provider).not.toHaveProperty("only");
+        expect((payload as { provider: object }).provider).not.toHaveProperty("allow_fallbacks");
+      }
       if (forced) expect(payload).toMatchObject({ tool_choice: modelId.startsWith("deepseek/") ? "auto" : { type: "function", function: { name: "submit_review" } } });
       expect((payload as { tools: unknown[] }).tools).toHaveLength(1);
       expect(getCodegeniePiModels().getModel(model.provider, model.id)).toEqual(catalogBefore);
