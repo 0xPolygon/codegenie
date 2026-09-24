@@ -4,7 +4,7 @@ import { applyModelOverrides, modelProviderRouting, requiresAutomaticSubmitToolC
 import { getCodegeniePiModels } from "../src/provider/pi-ai-models.js";
 import { createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 
-const routing = { only: ["deepseek"], order: ["deepseek"], allow_fallbacks: false };
+const routing = { only: ["deepseek", "fireworks", "together"], order: ["deepseek", "fireworks", "together"], allow_fallbacks: false };
 const catalogModel = () => getCodegeniePiModels().getModel("openrouter", "deepseek/deepseek-v4.1-flash")!;
 
 describe("model routing overrides", () => {

@@ -1,0 +1,12 @@
+[review]
+compositionReasoningStepDown = true
+
+[[classification.pathRules]]
+pattern = "**/specs/**"
+processingMode = "skip"
+reason = "spec documents are not reviewed"
+
+[[classification.pathRules]]
+pattern = "{evals,tests/fixtures}/**"
+processingMode = "skip"
+reason = "eval and test fixture data, often intentionally defective"

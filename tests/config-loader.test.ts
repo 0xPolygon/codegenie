@@ -17,6 +17,9 @@ describe("config loader", () => {
   it("layers composition step-down as a repo-safe boolean", () => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();
+    expect(loadConfig({ repoRoot, homeOverride }).config.review.compositionReasoningStepDown).toBe(true);
+    writeFileSync(path.join(homeOverride, "config.toml"), "[review]\ncompositionReasoningStepDown = false\n");
+    expect(loadConfig({ repoRoot, homeOverride }).config.review.compositionReasoningStepDown).toBe(false);
     writeFileSync(path.join(homeOverride, "config.toml"), "[review]\ncompositionReasoningStepDown = true\n");
     expect(loadConfig({ repoRoot, homeOverride }).config.review.compositionReasoningStepDown).toBe(true);
     writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\ncompositionReasoningStepDown = false\n");

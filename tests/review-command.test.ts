@@ -9,7 +9,7 @@ import { CodegenieError } from "../src/util/errors.js";
 
 describe("review command", () => {
   it.each([
-    [undefined, undefined, false, "defaults"],
+    [undefined, undefined, true, "defaults"],
     [true, undefined, true, "repo-config"],
     [false, undefined, false, "repo-config"],
     [false, "--composition-reasoning-step-down", true, "cli"],

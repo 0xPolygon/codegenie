@@ -78,12 +78,17 @@ export class SearchService {
     });
     const attemptedFiles = new Set<string>();
     let unverified = 0;
+    // Generic text matches affect precision, but are not a failed syntax lookup.
+    let syntaxFallbacks = 0;
     const kept: SearchResult[] = [];
 
     for (const result of execution.results) {
       const alreadyAttempted = attemptedFiles.has(result.path);
       if (attemptedFiles.size >= 25 && !alreadyAttempted) {
         unverified += 1;
+        if (this.registry.forPath(result.path).id !== "generic") {
+          syntaxFallbacks += 1;
+        }
         kept.push(result);
         continue;
       }
@@ -93,18 +98,22 @@ export class SearchService {
         kept.push(result);
       } else if (verified === undefined) {
         unverified += 1;
+        if (this.registry.forPath(result.path).id !== "generic") {
+          syntaxFallbacks += 1;
+        }
         kept.push(result);
       }
     }
 
+    const syntaxOnly = kept.length > 0 && unverified === 0;
     return {
       ...execution,
       results: kept,
-      backend: unverified === 0 ? "tree-sitter" : "text",
-      precision: unverified === 0 ? "syntactic" : "text",
-      degraded: execution.degraded || unverified > 0,
-      ...(unverified > 0
-        ? { degradationReason: `${unverified} mention result(s) were not syntax-verified` }
+      backend: syntaxOnly ? "tree-sitter" : "text",
+      precision: syntaxOnly ? "syntactic" : "text",
+      degraded: execution.degraded || syntaxFallbacks > 0,
+      ...(syntaxFallbacks > 0
+        ? { degradationReason: `${syntaxFallbacks} mention result(s) were not syntax-verified` }
         : execution.degradationReason !== undefined
           ? { degradationReason: execution.degradationReason }
           : {})

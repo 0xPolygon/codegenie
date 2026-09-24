@@ -204,7 +204,7 @@ export const defaultConfig: CodegenieConfig = {
   review: {
     depth: "normal",
     verify: true,
-    compositionReasoningStepDown: false,
+    compositionReasoningStepDown: true,
     maxFindings: 25,
     softCommentCap: 7,
     minConfidence: "medium",
