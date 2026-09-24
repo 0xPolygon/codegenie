@@ -1,7 +1,10 @@
 import { repairJson, type AssistantMessageEvent } from "@earendil-works/pi-ai";
 import { isDeepStrictEqual } from "node:util";
+import { createHash } from "node:crypto";
+import { stripCredentials } from "../telemetry/redaction.js";
 import type {
   PiAssistantMessage,
+  PiArgumentSyntaxDiagnostic,
   PiInvalidToolCall,
   PiToolCall,
   PiTrustedArgumentParse,
@@ -19,25 +22,43 @@ type Capture = {
   endCall?: PiToolCall;
 };
 
-export type FinalToolArgumentTestHooks = {
+export type FinalToolArgumentHooks = {
+  onEvent?(event: AssistantMessageEvent): void;
   onBuffersCleared?(remainingChars: number): void;
+  onRejectedArguments?(diagnostic: RejectedArgumentDiagnostic): void;
+};
+
+export type RejectedArgumentDiagnostic = {
+  contentIndex: number;
+  toolCallId: string;
+  name: string;
+  parse: PiUntrustedArgumentParse;
+  capturedChars: number;
+  sha256: string;
+  syntaxErrorOffset?: number;
+  syntaxDiagnostic?: PiArgumentSyntaxDiagnostic;
+  prefix: string;
+  suffix: string;
+  omittedChars: number;
+  sampleChars: number;
 };
 
 /**
  * Consume Pi's public stream and establish final-argument provenance for one
- * named stage submit tool. Argument fragments remain local to this call and
- * are cleared before it returns or throws.
+ * named stage submit tool. Only bounded, redacted diagnostics may leave via
+ * the optional hook. Capture buffers are cleared before returning or throwing.
  */
 export async function consumeFinalToolArguments(
   stream: PublicAssistantEventStream,
   submitToolName: string,
-  hooks: FinalToolArgumentTestHooks = {}
+  hooks: FinalToolArgumentHooks = {}
 ): Promise<PiAssistantMessage> {
   const captures = new Map<number, Capture>();
   let terminal: PiAssistantMessage | undefined;
 
   try {
     for await (const event of stream) {
+      hooks.onEvent?.(event);
       if (event.type === "toolcall_start") {
         const existing = captures.get(event.contentIndex);
         if (existing !== undefined) {
@@ -75,7 +96,7 @@ export async function consumeFinalToolArguments(
     if (terminal === undefined) {
       throw new Error("Pi stream ended without a terminal event");
     }
-    return finalizeMessage(terminal, submitToolName, captures);
+    return finalizeMessage(terminal, submitToolName, captures, hooks);
   } finally {
     for (const capture of captures.values()) {
       capture.text = "";
@@ -93,7 +114,8 @@ function emptyCapture(started: boolean): Capture {
 function finalizeMessage(
   message: PiAssistantMessage,
   submitToolName: string,
-  captures: ReadonlyMap<number, Capture>
+  captures: ReadonlyMap<number, Capture>,
+  hooks: FinalToolArgumentHooks
 ): PiAssistantMessage {
   const content = message.content.map((block, contentIndex) => {
     if (!isPiToolCall(block) || block.name !== submitToolName) {
@@ -108,14 +130,56 @@ function finalizeMessage(
         : { state: "repaired", repairs: ["pi_narrow_string_repair"] };
       return { ...block, arguments: parse.value, argumentParse } satisfies PiToolCall;
     }
+    // Diagnostics never become usable arguments. Only a small syntax excerpt
+    // can enter repair prompts; larger samples stay in redacted debug artifacts.
+    const raw = captures.get(contentIndex)?.text ?? "";
+    const sample = stripCredentials(raw);
+    const syntaxDiagnostic = parse.state === "partial" || parse.state === "invalid" || parse.state === "length_stopped"
+      ? argumentSyntaxDiagnostic(sample) : undefined;
+    if (hooks.onRejectedArguments) {
+      let syntaxErrorOffset: number | undefined;
+      try { JSON.parse(raw); } catch (cause) {
+        const offset = cause instanceof SyntaxError ? cause.message.match(/position (\d+)/u)?.[1] : undefined;
+        if (offset !== undefined) syntaxErrorOffset = Number(offset);
+      }
+      // Redact before slicing so a boundary cannot expose part of a secret.
+      const prefix = sample.slice(0, 8192);
+      const suffix = sample.length > prefix.length ? sample.slice(Math.max(prefix.length, sample.length - 8192)) : "";
+      hooks.onRejectedArguments({ contentIndex, toolCallId: block.id, name: block.name, parse,
+        capturedChars: raw.length, sha256: createHash("sha256").update(raw).digest("hex"),
+        ...(syntaxErrorOffset !== undefined ? { syntaxErrorOffset } : {}),
+        ...(syntaxDiagnostic ? { syntaxDiagnostic } : {}),
+        prefix, suffix, sampleChars: sample.length, omittedChars: sample.length - prefix.length - suffix.length });
+    }
     return {
       type: "invalidToolCall",
       id: block.id,
       name: block.name,
-      argumentParse: parse
+      argumentParse: parse,
+      ...(syntaxDiagnostic ? { syntaxDiagnostic } : {})
     } satisfies PiInvalidToolCall;
   });
   return { ...message, content };
+}
+
+// Locate the error after redaction so offsets remain meaningful without
+// slicing through secrets. Parser messages can echo raw input: allow only
+// structural descriptions, never the parser's embedded string preview.
+function argumentSyntaxDiagnostic(sample: string): PiArgumentSyntaxDiagnostic | undefined {
+  try { JSON.parse(sample); return undefined; } catch (cause) {
+    if (!(cause instanceof SyntaxError)) return undefined;
+    const position = cause.message.match(/position (\d+)/u)?.[1];
+    const offset = position !== undefined ? Number(position)
+      : /end of JSON|unterminated/iu.test(cause.message) ? sample.length : undefined;
+    const error = cause.message.match(/^(?:Expected .*? in JSON|Unterminated string in JSON|Unexpected (?:non-whitespace character after JSON|end of JSON input))/u)?.[0] ?? "Invalid JSON syntax";
+    // Some runtimes provide only a quoted preview, not an offset. Locate it
+    // only when it occurs exactly once; never report a guessed error offset.
+    const preview = cause.message.match(/, (?:\.\.\.)?"([\s\S]*)"(?:\.\.\.)? is not valid JSON$/u)?.[1];
+    const previewStart = preview && sample.indexOf(preview) === sample.lastIndexOf(preview) ? sample.indexOf(preview) : -1;
+    const excerptStart = Math.max(0, (offset ?? Math.max(0, previewStart)) - 256);
+    return { error: error.slice(0, 160), ...(offset !== undefined ? { offset } : {}),
+      excerptStart, excerpt: sample.slice(excerptStart, excerptStart + 512) };
+  }
 }
 
 type ParsedCapture =

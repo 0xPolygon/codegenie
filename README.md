@@ -21,14 +21,24 @@ Or run without installing: `npx @0xsequence/codegenie --help`
 codegenie provider login anthropic --api-key   # Anthropic API key
 codegenie provider login openai-codex          # ChatGPT plan (browser OAuth)
 codegenie provider login openai --api-key      # OpenAI API key
+codegenie provider login openrouter --api-key  # OpenRouter API key setup
 
 # 2. Pick your default model (fuzzy-matched)
-codegenie provider use opus       # -> anthropic/claude-opus-5
-codegenie provider use gpt-5.5    # -> openai-codex/gpt-5.5
+codegenie provider use opus                      # -> anthropic/claude-opus-5
+codegenie provider use gpt-5.5                   # -> openai-codex/gpt-5.5
+codegenie provider use deepseek-v4.1-flash:max   # -> openrouter/deepseek/deepseek-v4.1-flash
+codegenie provider use glm-5.3:max               # -> openrouter/z-ai/glm-5.3
+
 
 # 3. Review your current branch
 codegenie review
 ```
+
+Codegenie's built-in model overrides pin all OpenRouter models with IDs starting with `deepseek/` to the `deepseek` upstream with `only`/`order` and `allow_fallbacks: false`. For this pinned model family, submit calls expose only the submit tool and use `tool_choice: "auto"`, to accommodate the named forced-tool rejection observed on DeepSeek V4.1 Flash. Returned submissions still undergo strict validation, and missing submissions have bounded retries. These [OpenRouter routing preferences](https://openrouter.ai/docs/guides/routing/provider-selection) apply to every stage, including repairs; Codegenie's stage-specific reasoning levels still apply. Requests cannot fall back to another upstream if DeepSeek is unavailable. Routing is included in debug request traces and local model-call cache keys. The overrides live in `src/provider/models-override.ts`.
+
+OpenRouter models with IDs starting with `z-ai/` use `only: ["together", "fireworks", "cloudflare"]`, `order: ["together", "fireworks", "cloudflare"]`, and `allow_fallbacks: false`. This routing override applies across stages, including repairs, and preserves the model's reasoning and tool-choice behavior. It does not add `require_parameters`.
+
+In our trails-api eval, pinning OpenRouter to DeepSeek's own upstream together with the automatic submit-tool compatibility setting produced significantly better completion and performance: DeepSeek V4.1 Flash at `max` finished run 79 in **8m23s**, reviewed all **10/10 hunks**, found the expected bug, and passed with **zero timeouts**. Before these changes, run 77 took **42m19s** and failed completeness with seven unreviewed hunks. Composition dropped from almost six minutes (including a timed-out attempt) to **20 seconds**. Recorded cost rose from about **$0.14 to $0.26**; timed-out calls in run 77 had incomplete usage reporting. This is one eval comparison, not a guarantee for every DeepSeek model or workload: run 79 also used the fallback planner with normal coverage rather than run 77's mostly deep coverage, and still needed schema repairs. The override targets the `deepseek/` model namespace on OpenRouter; it does not call DeepSeek's API directly or change other model families.
 
 The report prints to stdout as Markdown. A review with findings is a *successful* review: the exit code is `0` either way.
 
@@ -58,7 +68,8 @@ Common options:
 codegenie review --depth light|normal|deep         # review budget & planner bias
 codegenie review --lens lang/go --lens core/tests  # restrict lenses for this run
 codegenie review --provider anthropic --model claude-opus-5   # one-run model override
-codegenie review --reasoning high                  # low | medium | high | xhigh | auto
+codegenie review --model claude-opus-5:max         # model[:reasoning] shorthand
+codegenie review --reasoning high                  # minimal | low | medium | high | xhigh | max | auto
 codegenie review --format json                     # machine-readable review object
 codegenie review --pr 123 --post-github-comments   # publish inline comments (explicit flag, never config)
 ```
@@ -91,9 +102,16 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}  # trusted base; PR head is fetched as review data
           fetch-depth: 0
-      - uses: 0xPolygon/codegenie@v0.5.7
+      - uses: 0xPolygon/codegenie@v0.6.0
         with:
-          model: "anthropic/claude-opus-5:high"
+          # Works with any model!
+          model: "openrouter/deepseek/deepseek-v4.1-flash:max"
+          # model: "openrouter/z-ai/glm-5.3:max"
+          # model: "anthropic/claude-opus-5:high"
+
+          # Set the llm-api-key to the api key for the respective model provider.
+          # for example, for Claude, pass an Anthropic key, for OpenRouter models
+          # pass the OpenRouter API Key.
           llm-api-key: ${{ secrets.LLM_API_KEY }}
 ```
 
@@ -108,11 +126,12 @@ codegenie provider list                  # known providers and auth status
 codegenie provider login <provider>      # OAuth by default; --api-key to store a key
 codegenie provider models [query]        # list available models (e.g. `models gpt`)
 codegenie provider use <model>           # set the default by fuzzy model id
+codegenie provider use <model>:<level>   # ...and its reasoning level (e.g. opus:max)
 ```
 
 The full list of supported models — every provider, model id, context window, and reasoning levels — lives in [models.md](./models.md) (generated from the [models.dev](https://models.dev) registry; regenerate with `make models-list`).
 
-`provider use` fuzzy-matches: `use opus`, `use sonnet`, `use gpt-5.5` all resolve to a concrete provider/model pair and print what they picked. Credentials and defaults live under `~/.codegenie/`, never in the repository. Supported lanes include Anthropic (API key) and OpenAI via both the API and ChatGPT-plan Codex OAuth — all on each provider's current APIs.
+`provider use` fuzzy-matches: `use opus`, `use sonnet`, `use gpt-5.5` all resolve to a concrete provider/model pair and print what they picked (exact id first, then prefix, then whole-name tail, then substring; ties go to the later-listed id). A `:reasoning` suffix sets the level in the same step (`use deepseek-v4.1-flash:max`); an unsupported level is normalized to a supported one and the command prints and saves the effective level. Exact supported levels are preserved. Fallback preferences are `minimal → low`, `medium → high`, and `xhigh → max`; if that target is unavailable, choose the next supported level above it, or the highest available. This also applies to `provider config set-reasoning`; `:auto` clears the stored level. Models with no advertised reasoning levels retain the existing behavior. Credentials and defaults live under `~/.codegenie/`, never in the repository. Supported lanes include Anthropic (API key) and OpenAI via both the API and ChatGPT-plan Codex OAuth — all on each provider's current APIs.
 
 ## Configuration
 
@@ -126,6 +145,7 @@ baseBranch = "main"
 depth = "normal"
 maxTime = 60        # positive number of minutes; --max-time overrides this per run
 budgetBoost = 1.0   # scales per-packet review budgets; does not change finding caps
+compositionReasoningStepDown = false # opt in to one lower supported reasoning level for composition
 
 [telemetry]
 enabled = true      # opt into local run artifacts under .codegenie/runs
@@ -206,11 +226,52 @@ Autonomy still lives where it earns its keep — *inside* the stages, where revi
 
 **Built to be evaluated.** With telemetry enabled, every run writes typed artifacts — plan, packets, candidates, verdicts, selections, budgets, per-call cost. `codegenie eval` replays real repos against expected findings and scores misses *by loss stage*. The eval suite, the skills, and the telemetry are the compounding assets — models swap underneath them.
 
+Eval YAML can also opt into an independent, observational recommendation judge:
+
+```yaml
+recommendationJudge:
+  provider: openai-codex
+  model: gpt-6-astra
+  reasoning: medium
+  checks:
+    - id: preserves-caller-contract
+      rubric: |
+        State the established caller requirement and relevant source evidence.
+        Assess whether the published remedy preserves that requirement.
+        Accept equivalent implementations; distinguish withheld advice from
+        an incorrect recommendation and from rejected historical alternatives.
+```
+
+This makes one additional LLM call after each live review, using the fixed judge above rather than the review model. Results are `correct`, `incorrect`, `withheld`, or `uncertain`, with report quotes and rationale. They appear separately in `info.json` and `recommendation-judge.json`; judge cost is separate from review cost, and neither a negative judgment nor a judge error changes the existing eval pass/fail. The judge sees the published report with the renderer's historical provenance removed and the case rubric; it does not independently inspect the repository. Supply the relevant contract in the rubric and calibrate against saved reports before using judgments as quality evidence. Invalid responses and a 180-second timeout produce an explicit error, with no repair loop.
+
+Artifact rescoring stays offline by default. To explicitly re-judge a saved report against the current case YAML, use `codegenie eval --from-artifacts /path/to/logs/118 --judge`. Replay creates a new run; it does not change the original. Repeated live cases record judgments and separate usage in each repeat's `score.json` and judge artifact.
+
+For optional judge calibration, `scripts/calibrate-recommendations.ts` loads one eval case's rubric and a separate JSON array of `{ id, report, expected, reason }` examples. Run it with `pnpm exec tsx scripts/calibrate-recommendations.ts --eval-dir <suite> --cases <cases.json> --out <new-directory> --repeats 2`; add `--live` to make paid judge calls. Gold labels stay out of the prompt. Every repetition and disagreement is saved, alongside usage and input hashes. This calibration does not change eval pass/fail.
+
+
+
 **Reviewing untrusted code is a security problem.** A PR is attacker-controlled input flowing into tool-equipped LLMs whose output gets posted publicly. Untrusted content is structurally delimited as data-not-instructions; tools enforce repo-root containment; repo config can never enable command execution or posting; comments pass deterministic sanitization before posting.
 
 **Fail honestly, degrade predictably.** A failed planner falls back to a deterministic plan; a failed packet marks its hunks in coverage; budget exhaustion stops future dispatch without discarding completed work. Partial reviews exit `0` and *say they're partial*.
 
 **Build when evidence demands it.** Richer designs (hierarchical planning, per-role model tiering, cross-packet indexes) are specified but deferred behind written triggers — machinery is added when telemetry shows it improves review quality, never speculatively.
+
+Eval cases can opt into stricter reliability checks:
+
+```yaml
+expect:
+  planningQuality: non-degraded
+  compositionQuality: non-degraded
+  recoveryFidelity: preserved
+```
+
+The planning check rejects degraded plans even when every hunk was reviewed. The composition check rejects degraded report synthesis separately from coverage completeness. The recovery check requires complete telemetry, no unresolved structured-output obligations, and demonstrated preservation; regenerated or revised content is reported as `unknown`, not assumed preserved. Repairs retain draft progress across retries and validate the whole merged submission. For unreadable JSON, repair prompts include a bounded, redacted syntax excerpt and parser diagnostic when available. Fragments remain untrusted diagnostics, never accepted data or proof that a replacement preserved the original.
+
+Composition uses the configured review reasoning level by default, including retries. Set `[review] compositionReasoningStepDown = true` in `codegenie.toml` to use the next lower level supported by the model: for a model supporting `low`, `high`, and `max`, `max` becomes `high`. The lowest supported level stays unchanged; models without advertised reasoning levels retain the configured behavior. Override this per run with `codegenie review --composition-reasoning-step-down` or `--no-composition-reasoning-step-down`. Omitting both flags preserves the configuration, which defaults to `false`. Investigation and verification keep their configured reasoning; traces record configured and selected levels. Structured-output repairs continue to use the model’s lowest supported reasoning level. Each composition attempt has a 300-second deadline, with at most one retry. The outer composition deadline is 780 seconds (two attempts plus the shared 180-second repair allowance); overall review cancellation still takes precedence. Repair attempts share that 180-second allowance, rather than receiving 180 seconds each.
+
+Composition validates source references before acceptance. It locally removes repeated known references and misplaced references already correctly accounted for in the same finding, records those removals, and validates the whole result. Remaining attribution errors receive bounded repairs in a fresh context with exact field paths and source inventories. Attribution patches replace only permitted reference lists; finding order and prose stay intact, and the assembled report must pass full validation. If a recommendation lacks support, a bounded composition repair may instead omit or rewrite that advice section while preserving the diagnosis and retaining its original sources. Reports consolidate identical evidence and keep additional verbatim evidence and caveats in expandable sections. If synthesis fails, the report identifies its source-based presentation and retains distinct contributions. `stages/10-composition/composition-sources.json` records all inputs and dispositions; references establish attribution, not proof of semantic equivalence. Verification distinguishes essential missing proof from secondary uncertainty: unresolved hypotheses remain visible under human attention, while established defects may still have uncertainty about severity.
+
+Verification assesses proposed fixes and tests independently from the defect, using the existing optional assessment fields and investigation budget. The verifier selects a concrete remedy that preserves the original caller requirement and checks its test against both the defect and a weakened guarantee. In verifier submissions, `suggestionText` may be omitted: the harness binds the assessment to the named final suggestion before retaining a repair draft. Explicit text mismatches still lose support; changing a suggestion alone cannot transfer a retained assessment to it. Support requires evidence for the observable requirement; tests should reject weakened guarantees without excluding other valid implementations. Prominent fix/test sections and structured recommendation fields contain only supported current proposals. Unverified, incompatible and replaced proposals remain in expandable provenance. The composer is instructed to keep summaries diagnosis-focused and advice out of impact/verification prose; source validation checks attribution and eligibility, not the semantic correctness of arbitrary prose.
 
 ## Development
 

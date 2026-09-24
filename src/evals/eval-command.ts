@@ -9,6 +9,7 @@ import { loadEvalSuite, replayFromArtifacts, runEvalCase } from "./eval-runner.j
 export type EvalCommandOptions = {
   evalDir?: string;
   fromArtifacts?: string;
+  judge?: boolean;
   cache?: boolean;
 };
 
@@ -23,6 +24,7 @@ type ExecuteEvalCommandOptions = {
 type CommanderEvalOptions = {
   evalDir?: string;
   fromArtifacts?: string;
+  judge?: boolean;
   cache?: boolean;
 };
 
@@ -47,6 +49,7 @@ export async function runEvalCommand(
   if (options.fromArtifacts !== undefined) {
     const result = await replayFromArtifacts(options.fromArtifacts, {
       config,
+      judgeReplay: options.judge === true,
       ...(options.cache !== undefined ? { cacheOverride: options.cache } : {})
     });
     write(renderCaseResult(result));
@@ -63,6 +66,7 @@ export async function runEvalCommand(
   for (const entry of suite.cases) {
     const result = await runEvalCase(suite, entry, {
       config,
+      judgeReplay: options.judge === true,
       ...(options.cache !== undefined ? { cacheOverride: options.cache } : {})
     });
     results.push(result);
@@ -92,10 +96,12 @@ export function parseEvalCommand(
     .description("run codegenie eval suites")
     .option("--eval-dir <path>", "eval suite directory")
     .option("--from-artifacts <path>", "re-score a previous eval run directory")
+    .option("--judge", "run the configured recommendation judge when rescoring saved artifacts (uses an LLM)")
     .option("--cache", "enable local model-call cache for live cases; provider prompt caching is reported separately")
     .option("--no-cache", "disable local model-call cache for live cases; provider prompt caching is reported separately")
     .action((options: CommanderEvalOptions) => {
       parsed = {
+        ...(options.judge !== undefined ? { judge: options.judge } : {}),
         ...(options.evalDir !== undefined ? { evalDir: options.evalDir } : {}),
         ...(options.fromArtifacts !== undefined ? { fromArtifacts: options.fromArtifacts } : {}),
         ...(options.cache !== undefined ? { cache: options.cache } : {})
@@ -132,12 +138,19 @@ function validateEvalOptions(options: EvalCommandOptions, config: CodegenieConfi
 export function renderCaseResult(result: EvalCaseResult): string {
   const score = result.info.score;
   const metrics = score.metrics;
+  const quality = score.recommendationQuality;
+
   const expectationParts = expectationSummaryParts(score);
   const parts = [
     `${result.caseName} run ${result.info.runNumber}: ${result.status}`,
     `${metrics.reportedFindings} reported`,
     ...expectationParts
   ];
+  if (quality) {
+    const detail = quality.status === "completed" ? quality.results.map(result => `${result.id}=${result.status}`).join(", ") : quality.status;
+    parts.push(`recommendation quality (non-gating): ${detail}`);
+    if (quality.costUSD !== undefined) parts.push(`judge $${quality.costUSD.toFixed(4)} separately`);
+  }
   if (metrics.costUSD !== undefined) {
     parts.push(`$${metrics.costUSD.toFixed(4)}`);
   }
@@ -147,6 +160,9 @@ export function renderCaseResult(result: EvalCaseResult): string {
   if (metrics.reviewCompleteness !== undefined) {
     parts.push(`${metrics.reviewCompleteness} review`);
   }
+  if (metrics.planningQuality !== undefined) parts.push(`${metrics.planningQuality} planning`);
+  if (metrics.compositionQuality !== undefined) parts.push(`${metrics.compositionQuality} composition`);
+  if (metrics.recoveryFidelity !== undefined) parts.push(`recovery fidelity ${metrics.recoveryFidelity}`);
   if (metrics.budgetOverruns !== undefined) {
     parts.push(`${metrics.budgetOverruns} budget overruns`);
   }

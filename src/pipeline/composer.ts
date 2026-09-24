@@ -1,3 +1,6 @@
+import { createCompositionAttributionRepair, normalizeCompositionReferences } from "./composition-repair.js";
+import { buildAttentionReconciliation, reconcileAttention, type AttentionReconciliation } from "./attention-reconciliation.js";
+import { type CompositionMetrics, eligibleCompositionSource, compositionSources, composePresentation, safeReportProse, validateCompositionSubmission, renderRetainedComposition } from "./composition-content.js";
 import type { LlmRunner } from "../llm/llm-runner.js";
 import { SubmitCompositionSchema, type SubmitComposition } from "../llm/schemas.js";
 import type { PromptBuilder } from "../skills/prompt-builder.js";
@@ -86,6 +89,11 @@ export async function dedupeRankAndComposeReview(
   opts: ComposeOptions
 ): Promise<ReviewResult> {
   const link = evidenceLinker(resolved);
+  const presentationMeasurements: Array<{ findingIds: string[]; synthesis: "composed" | "fallback"; metrics: CompositionMetrics }> = [];
+  const recordPresentation = (findingIds: string[], synthesis: "composed" | "fallback", metrics: CompositionMetrics) => {
+    presentationMeasurements.push({ findingIds, synthesis, metrics });
+    telemetry.event({ stage: 10, level: "info", message: "composition_presentation_metrics", data: { findingIds, synthesis, ...metrics } });
+  };
   telemetry.event({ stage: 10, level: "info", message: "stage_started", data: { verified: verified.verified.length } });
   const packetsById = new Map((opts.packets ?? []).map((packet) => [packet.id, packet]));
   const publishable = verified.verified.map((candidate) => withholdRepresentativeAnchor(candidate, telemetry));
@@ -99,10 +107,11 @@ export async function dedupeRankAndComposeReview(
   const verificationResolutions = buildVerificationResolutionIndex(verified.verdicts, opts.packetResults ?? [], verified.verified, packetsById, coverage);
   const preComposerAttentionGroups = suppressAttentionGroupsResolvedByVerification(
     attention.groups,
-    verificationResolutions.filter((resolution) => resolution.verdict === "reject")
+    verificationResolutions.filter((resolution) => resolution.verdict === "reject" && !verified.verdicts.some(verdict => verdict.candidateId === resolution.candidateId && verdict.unresolvedConcern))
   ).available;
   const composerPromptSelection = selectHumanAttentionGroups(preComposerAttentionGroups);
   const composerPromptNotes = composerPromptSelection.notes;
+  const attentionReconciliation = buildAttentionReconciliation(verified.verdicts, pretrim.kept, opts.packetResults ?? [], resolved);
   if (pretrim.suppressed.length > 0) {
     const reason = `composer pre-trim suppressed ${pretrim.suppressed.length} verified finding${pretrim.suppressed.length === 1 ? "" : "s"} above the ${MAX_COMPOSER_FINDINGS}-finding composer input cap`;
     coverage.reasons.push(reason);
@@ -117,7 +126,7 @@ export async function dedupeRankAndComposeReview(
   let fallbackReason: string | undefined;
   let fallbackMode: CompositionMode | undefined;
   let compositionDegraded = false;
-  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes).catch((error) => {
+  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes, attentionReconciliation).catch((error) => {
     if (!canUseComposerFallback(error)) {
       telemetry.event({
         stage: 10,
@@ -146,7 +155,7 @@ export async function dedupeRankAndComposeReview(
   const confidenceSelections = new Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>();
   const finalFindings: FinalFinding[] = pretrim.suppressed.map((finding) => {
     const requestedPublication = "suppressed" as const;
-    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding, [finding], link), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections, link);
+    const final = toFinalFinding(finding, fingerprintFinding(finding, packetsById), templateBody(finding, [finding], link), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections, link, false, metrics => recordPresentation([finding.id], "fallback", metrics), pretrim.kept);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     return final;
   });
@@ -177,7 +186,26 @@ export async function dedupeRankAndComposeReview(
     const mergedFindings = ids.map((id) => known.get(id)).filter((finding): finding is CandidateFinding => finding !== undefined);
     const representative = canonicalMergedRepresentative(mergedFindings, opts.diff);
     const fingerprint = fingerprintFinding(representative, packetsById);
-    const final = toFinalFinding(representative, fingerprint, composed.finalBody, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections, link);
+    let body = composed.finalBody ?? "";
+    let attributed = false;
+    if (composed.sections !== undefined || composed.evidenceRefs !== undefined) {
+      try {
+        const presentation = composePresentation(mergedFindings, (composed.sections ?? []).map(section => ({ ...section, text: normalizeFinalBodyForRendering(section.text, representative) })), composed.evidenceRefs ?? [], link, composed, pretrim.kept);
+        body = presentation.body;
+        recordPresentation(ids, "composed", presentation.metrics);
+        attributed = true;
+        telemetry.event({ stage: 10, level: "info", message: "composition_sources_accounted", data: { findingIds: ids, sections: composed.sections, evidenceRefs: composed.evidenceRefs, semanticPreservation: "not_machine_proven" } });
+      } catch (error) {
+        compositionDegraded = true;
+        body = templateBody(representative, mergedFindings, link);
+        telemetry.event({ stage: 10, level: "warn", message: "composition_source_validation_failed", data: { findingIds: ids, error: String(error) } });
+      }
+    } else {
+      // Legacy outputs remain readable, but lack component-level attribution.
+      compositionDegraded = true;
+      telemetry.event({ stage: 10, level: "warn", message: "composition_legacy_content_fallback", data: { findingIds: ids } });
+    }
+    const final = toFinalFinding(representative, fingerprint, body, composed.publication, mergedFindings, opts.diff, publicationAnchorDecisions, confidenceSelections, link, attributed, metrics => recordPresentation(ids, "fallback", metrics), pretrim.kept);
     recordAnchorDowngrade(final, composed.publication, anchorDowngradeReasons);
     finalFindings.push(final);
     used.add(representative.id);
@@ -194,7 +222,7 @@ export async function dedupeRankAndComposeReview(
     }
     const fingerprint = fingerprintFinding(finding, packetsById);
     const requestedPublication = finding.anchor ? "inline" : "summary-only";
-    const final = toFinalFinding(finding, fingerprint, templateBody(finding, [finding], link), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections, link);
+    const final = toFinalFinding(finding, fingerprint, templateBody(finding, [finding], link), requestedPublication, [finding], opts.diff, publicationAnchorDecisions, confidenceSelections, link, false, metrics => recordPresentation([finding.id], "fallback", metrics), pretrim.kept);
     recordAnchorDowngrade(final, requestedPublication, anchorDowngradeReasons);
     finalFindings.push(final);
     baseSelection.set(finding.id, { findingId: finding.id, decision: "published", reason: "composer_omitted_finding" });
@@ -217,6 +245,8 @@ export async function dedupeRankAndComposeReview(
   const findings = capped.findings.filter((finding) => finding.publication === "inline");
   const summaryOnlyFindings = capped.findings.filter((finding) => finding.publication === "summary-only");
   const publishableCount = findings.length + summaryOnlyFindings.length;
+  const reconciledAttention = reconcileAttention(attentionReconciliation, composition.attentionResolutions,
+    compositionMode === "llm" && publishableCount > 0);
   const humanAttention = selectHumanAttentionForOutput(
     attention.groups,
     capped.findings.filter((finding) => finding.publication !== "suppressed"),
@@ -224,13 +254,33 @@ export async function dedupeRankAndComposeReview(
     verificationResolutions,
     telemetry
   );
+  for (const note of reconciledAttention.notes) {
+    if (!humanAttention.notes.some(existing => existing.question === note.question)) humanAttention.notes.push(note);
+  }
+  telemetry.event({ stage: 10, level: "info", message: "human_attention_reconciliation", data: {
+    suppliedConcerns: attentionReconciliation.inventory.concerns.length,
+    suppliedEvidence: attentionReconciliation.inventory.evidence.length,
+    omittedConcerns: attentionReconciliation.omittedConcernIds.length,
+    omittedEvidence: attentionReconciliation.omittedEvidenceIds.length,
+    excludedEvidence: attentionReconciliation.excludedEvidenceIds.length,
+    accepted: reconciledAttention.decisions.filter(decision => decision.accepted).length,
+    rejected: reconciledAttention.decisions.filter(decision => !decision.accepted).length,
+    resolvedConcernIds: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "resolved").map(decision => decision.concernId).slice(0, 30),
+    narrowedConcernIds: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "narrowed").map(decision => decision.concernId).slice(0, 30)
+  } });
+  // Publication policy must not affect defect selection: an unverified proposed
+  // test can still describe a confirmation path used by the existing gates.
+  for (const finding of capped.findings) {
+    const fallbackPresentation = presentationMeasurements.find(record => record.synthesis === "fallback" && record.findingIds.includes(finding.id));
+    publishSupportedSuggestions(finding, pretrim.kept, fallbackPresentation?.metrics.publishedSuggestionSources);
+  }
   const summary = publishableCount === 0
     ? coverage.partial
       ? "Review incomplete: completed work produced no credible verified findings, but incomplete coverage or verification prevents a clean conclusion."
       : fallbackSummary(0)
     : fallbackUsed || compositionDegraded || isNoFindingsSummary(composition.summary) || summaryCountConflicts(composition.summary, publishableCount)
       ? fallbackSummary(publishableCount)
-      : composition.summary || fallbackSummary(publishableCount);
+      : safeReportProse(composition.summary) || fallbackSummary(publishableCount);
   const createPostingPlan = opts.postGithubComments === true && (publishableCount > 0 || config.github.summaryWhenNoFindings);
   const result: ReviewResult = {
     summary,
@@ -250,6 +300,15 @@ export async function dedupeRankAndComposeReview(
       : {})
   };
 
+  await telemetry.writeArtifact("composition-sources.json", scrubGitHubSecrets({
+    schemaVersion: 1,
+    mode: compositionMode,
+    semanticPreservation: "not_machine_proven",
+    sourceComponents: compositionSources(pretrim.kept),
+    proposals: composition.composedFindings,
+    dispositions: selection,
+    presentationMeasurements
+  }));
   await telemetry.writeArtifact("final-selection.json", {
     composition: {
       mode: compositionMode,
@@ -266,7 +325,11 @@ export async function dedupeRankAndComposeReview(
     }))
   });
   await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets(
-    humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups)
+    { ...humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups),
+      // These records deliberately share original scope/evidence objects.
+      // Serialize to a tree before the scrubber's repeated-object protection
+      // so shared provenance is not mistaken for circular data and redacted.
+      reconciliation: JSON.parse(JSON.stringify({ ...attentionReconciliation, ...reconciledAttention })) }
   ));
   await telemetry.writeArtifact("final-findings.json", scrubGitHubSecrets(capped.findings));
   telemetry.event({
@@ -302,28 +365,70 @@ async function runComposer(
   config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   opts: ComposeOptions,
-  notes: NeedsHumanAttentionNote[]
+  notes: NeedsHumanAttentionNote[],
+  attention: AttentionReconciliation
 ): Promise<SubmitComposition> {
   const prompt = opts.promptBuilder.buildComposerPrompt({
-    groupedFindingsJson: JSON.stringify(groups, null, 2),
+    groupedFindingsJson: JSON.stringify(groups.map(group => ({ fingerprint: group.fingerprint, representativeId: group.representative.id, findings: group.findings.map(({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence }) => ({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence })), sourceComponents: compositionSources(group.findings, groups.flatMap(group => group.findings)) })), null, 2),
     intent: `Declared intent: ${plan.diffUnderstanding.declaredIntent}\nInferred behavior: ${plan.diffUnderstanding.inferredBehavior}\n${summarizeIntentSignals(plan.intentSignals)}`,
     coverage,
-    followUpHintNotes: notes.map((note) => `${note.question} (${note.files.join(", ")})`)
+    followUpHintNotes: notes.map((note) => `${note.question} (${note.files.join(", ")})`),
+    ...(attention.inventory.concerns.length ? { attentionReconciliationJson: JSON.stringify(attention.inventory) } : {})
   });
   const submitted = await opts.runner.runStructured<SubmitComposition>({
     stage: 10,
+    compositionReasoningStepDown: config.review.compositionReasoningStepDown,
     prompt: prompt.prompt,
-    schema: SubmitCompositionSchema,
+    schema: composerSubmissionSchema(groups),
+    normalizeSubmit: value => normalizeCompositionReferences(value, groups.flatMap(group => group.findings)),
+    validateSubmit: value => {
+      try {
+        validateCompositionSubmission(value, groups.flatMap(group => group.findings));
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, classification: "schema_invalid", details: String(error) };
+      }
+    },
     templateVersion: prompt.templateVersion,
     timeoutMs: config.review.perPassTimeoutMs,
     schemaRepair: {
-      replaceConversation: true,
+      createFieldRepair: (schema, retained) => createCompositionAttributionRepair(schema, retained, groups.flatMap(group => group.findings)),
+      // Source IDs alone cannot establish their meaning. Keep the immutable
+      // source inventory available during the bounded semantic repair.
+      replaceConversation: false,
       recoverInvalidSubmit: (input) => recoverComposerInvalidSubmit(input, groups, telemetry),
       buildPrompt: (input) => buildComposerSchemaRepairPrompt(input, groups)
     }
   });
   telemetry.event({ stage: 10, level: "info", message: "composer_completed", data: { composed: submitted.composedFindings.length } });
   return submitted;
+}
+
+export function composerSubmissionSchema(groups: FindingGroup[]): typeof SubmitCompositionSchema {
+  const schema = structuredClone(SubmitCompositionSchema);
+  const sources = compositionSources(groups.flatMap(group => group.findings));
+  const item = schema.properties.composedFindings.items;
+  // Historical artifacts may contain finalBody; providers only author sections.
+  Reflect.deleteProperty(item.properties, "finalBody");
+
+  Object.assign(item.properties.sections, { maxItems: 4 });
+  const restrictToInventory = (schemaItem: object, ids: string[]) => {
+    // Empty enum is rejected by some provider schema implementations.
+    // Membership is still enforced by validateCompositionSubmission.
+    if (ids.length) Object.assign(schemaItem, { enum: ids });
+  };
+  Object.assign(item, { required: [...new Set([...(item.required ?? []), "sections", "evidenceRefs"])] });
+  // Providers receive the exact inventory; semantic validation also checks
+  // membership, kinds, duplicates and coverage across the selected groups.
+  restrictToInventory(item.properties.findingIds.items, groups.flatMap(group => group.findings.map(finding => finding.id)));
+  restrictToInventory(item.properties.sections.items.properties.sourceRefs.items, sources.filter(source => source.kind !== "evidence" && eligibleCompositionSource(source, source.kind)).map(source => source.id));
+  const evidenceIds = sources.filter(source => source.kind === "evidence").map(source => source.id);
+  restrictToInventory(item.properties.evidenceRefs.items, evidenceIds);
+  restrictToInventory(item.properties.primaryEvidenceRefs.items, evidenceIds);
+  restrictToInventory(item.properties.retainedSourceRefs.items, sources.map(source => source.id));
+  restrictToInventory(item.properties.reconciliations.items.properties.sourceRefs.items, sources.filter(source => source.kind === "verification").map(source => source.id));
+  restrictToInventory(item.properties.reconciliations.items.properties.supportingRefs.items, sources.map(source => source.id));
+  return schema;
 }
 
 type ComposerSchemaInvalidKind =
@@ -437,7 +542,7 @@ function recoverComposerInvalidSubmit(
   telemetry.event({
     stage: 10,
     level: "info",
-    message: "composer_payload_salvage_succeeded",
+    message: "composer_payload_salvage_proposed",
     data: {
       schemaInvalidKind: classification,
       composedFindings: Array.isArray(composedFindings) ? composedFindings.length : 0,
@@ -525,7 +630,7 @@ function unknownComposedFindingIds(input: unknown, knownIds: Set<string>): strin
     if (!Array.isArray(findingIds) || findingIds.length === 0) {
       return undefined;
     }
-    if (typeof record.finalBody !== "string" || record.finalBody.trim().length === 0) {
+    if (!Array.isArray(record.sections) && (typeof record.finalBody !== "string" || record.finalBody.trim().length === 0)) {
       return undefined;
     }
     if (record.publication !== "inline" && record.publication !== "summary-only") {
@@ -555,15 +660,16 @@ function buildComposerSchemaRepairPrompt(input: LlmSchemaRepairInput, groups: Fi
     "- Do not invent, remove, or re-review findings.",
     "- Do not output XML.",
     "- Do not write `<parameter>` tags.",
-    "- Do not wrap the tool call or its JSON arguments in Markdown code fences (fences are allowed inside finalBody string values).",
+    "- Do not wrap the tool call or its JSON arguments in Markdown code fences (fences are allowed inside section text values).",
     "- Do not answer in prose outside the tool call.",
     "- Do not ask for repository tools or more context.",
     "",
     "Schema constraints:",
-    "- summary: string, 4000 characters or fewer.",
-    "- composedFindings: array of objects { findingIds, finalBody, publication }.",
+    "- summary: string, 4000 characters or fewer; diagnosis, scope and uncertainty only, no remedies or test instructions.",
+    "- composedFindings: array of objects { findingIds, sections, evidenceRefs, publication }; retainedSourceRefs, primaryEvidenceRefs and reconciliations are optional.",
     "- findingIds: non-empty array of known finding IDs.",
-    "- finalBody: non-empty string.",
+    "- Write one concise current conclusion per section kind. Do not generate legacy finalBody.",
+    "- Fix/test sections require supported current suggestion sources. Retain all other proposals in retainedSourceRefs; do not restate them in summary, impact or verification prose.",
     "- publication: \"inline\" or \"summary-only\".",
     "",
     "Verified finding groups:",
@@ -582,16 +688,12 @@ function compactComposerRepairGroups(groups: FindingGroup[]): unknown[] {
       path: group.representative.path,
       anchorLine: group.representative.anchor?.line,
       category: group.representative.category,
-      failureMode: truncateComposerRepairText(group.representative.failureMode, 700),
-      whyThisMatters: truncateComposerRepairText(group.representative.whyThisMatters, 700)
+      failureMode: group.representative.failureMode,
+      whyThisMatters: group.representative.whyThisMatters
     },
     defaultPublication: group.representative.anchor ? "inline" : "summary-only",
-    defaultBody: truncateComposerRepairText(templateBody(group.representative, group.findings), 2400)
+    sourceComponents: compositionSources(group.findings, groups.flatMap(group => group.findings))
   }));
-}
-
-function truncateComposerRepairText(input: string, maxChars: number): string {
-  return input.length <= maxChars ? input : `${input.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
 }
 
 function safeComposerJson(input: unknown): string {
@@ -694,7 +796,7 @@ function fallbackComposition(groups: FindingGroup[], link?: EvidenceLinker): Sub
     summary: groups.length === 0 ? "No credible findings." : `Found ${groups.length} verified issue${groups.length === 1 ? "" : "s"}.`,
     composedFindings: groups.map((group) => ({
       findingIds: group.findings.map((finding) => finding.id),
-      finalBody: templateBody(group.representative, group.findings, link),
+      finalBody: templateBody(group.representative, group.findings, link, undefined, groups.flatMap(group => group.findings)),
       publication: group.representative.anchor ? "inline" : "summary-only"
     }))
   };
@@ -760,6 +862,21 @@ function liftConfidenceOneStep(confidence: Confidence): Confidence {
   return "high";
 }
 
+function publishSupportedSuggestions(finding: FinalFinding, candidates: CandidateFinding[], publishedSourceRefs?: string[]): void {
+  const memberIds = new Set([finding.id, ...(finding.mergedCandidateIds ?? [])]);
+  const sources = compositionSources(candidates.filter(candidate => memberIds.has(candidate.id)), candidates);
+  delete finding.suggestionAssessments;
+  for (const [field, kind] of [["suggestedFix", "fix"], ["suggestedTest", "test"]] as const) {
+    delete finding[field];
+    const source = sources.find(source => eligibleCompositionSource(source, kind)
+      && (publishedSourceRefs === undefined || publishedSourceRefs.includes(source.id)));
+    if (source) {
+      finding[field] = source.text;
+      (finding.suggestionAssessments ??= {})[field] = source.suggestionAssessment!;
+    }
+  }
+}
+
 function toFinalFinding(
   finding: CandidateFinding,
   fingerprint: string,
@@ -769,12 +886,17 @@ function toFinalFinding(
   diff: UnifiedDiff | undefined,
   publicationAnchorDecisions?: Map<string, PublicationAnchorDecision>,
   confidenceSelections?: Map<string, ConfidenceSelection & { representativeConfidence: Confidence }>,
-  link?: EvidenceLinker
+  link?: EvidenceLinker,
+  attributed = false,
+  onFallbackMetrics?: (metrics: CompositionMetrics) => void,
+  assessmentFindings = mergedFindings
 ): FinalFinding {
   const { anchor: _unvalidatedAnchor, anchorSource: _staleAnchorSource, ...findingWithoutAnchor } = finding;
   const publicationAnchor = selectPublicationAnchor(finding, mergedFindings, diff);
-  const normalizedFinalBody = normalizeFinalBodyForRendering(finalBody, finding) || templateBody(finding, [finding], link);
-  const normalizedTitle = normalizeFinalFindingTitle(finding, mergedFindings, normalizedFinalBody);
+  // Only attributed output can replace verified prose. Legacy or invalid output
+  // uses one deterministic rendering, never narrative plus every source section.
+  const normalizedFinalBody = attributed ? finalBody : templateBody(finding, mergedFindings, link, onFallbackMetrics, assessmentFindings);
+  const normalizedTitle = normalizeFinalFindingTitle(finding, mergedFindings, attributed ? normalizedFinalBody : undefined);
   const mergedCandidateIds = uniqueStrings(mergedFindings.map((item) => item.id));
   const mergedAnchors = dedupeAnchors(mergedFindings.flatMap((item) => item.anchor === undefined ? [] : [item.anchor]));
   const mergedCategories = uniqueStrings(mergedFindings.map((item) => item.category)) as Array<CandidateFinding["category"]>;
@@ -960,7 +1082,7 @@ function publicationAnchorSelectionRecords(
   }).sort((left, right) => left.findingId.localeCompare(right.findingId));
 }
 
-function normalizeFinalFindingTitle(finding: CandidateFinding, mergedFindings: CandidateFinding[], finalBody: string): string {
+function normalizeFinalFindingTitle(finding: CandidateFinding, mergedFindings: CandidateFinding[], finalBody?: string): string {
   if (!isQuestionShapedFindingTitle(finding.title)) {
     return finding.title;
   }
@@ -975,7 +1097,7 @@ function normalizeFinalFindingTitle(finding: CandidateFinding, mergedFindings: C
   // content — run 31 published exactly that boilerplate as a title.
   const fallback = [
     finding.failureMode,
-    finalBody,
+    ...(finalBody === undefined ? [] : [finalBody]),
     finding.whyThisMatters
   ].map(firstIssueSentence).find((title) => title !== undefined);
   return fallback ?? finding.title;
@@ -1743,67 +1865,8 @@ function evidenceLinker(resolved: ResolvedReviewInput): EvidenceLinker {
   return (path, line) => `https://github.com/${pr.owner}/${pr.repo}/blob/${sha}/${path}${line !== undefined ? `#L${line}` : ""}`;
 }
 
-function evidenceLinkSuffix(link: EvidenceLinker | undefined, path: string, line?: number): string {
-  const url = link?.(path, line);
-  return url === undefined ? "" : ` [↗](${url})`;
-}
-
-function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding], link?: EvidenceLinker): string {
-  const evidenceBlocks = mergedEvidenceBlocks(finding, groupedFindings, link);
-  return [
-    [`**Impact:** ${finding.failureMode}`, finding.whyThisMatters].filter((line) => line.length > 0).join("\n"),
-    `**Evidence:**\n\n${evidenceBlocks.join("\n\n")}`,
-    finding.suggestedFix ? `**Suggested fix:** ${finding.suggestedFix}` : undefined,
-    finding.suggestedTest ? `**Suggested test:** ${finding.suggestedTest}` : undefined
-  ]
-    .filter((section): section is string => section !== undefined && section.length > 0)
-    .join("\n\n");
-}
-
-function mergedEvidenceBlocks(representative: CandidateFinding, groupedFindings: CandidateFinding[], link?: EvidenceLinker): string[] {
-  const blocks: string[] = [];
-  const seen = new Set<string>();
-  const add = (label: string, code: string, path: string) => {
-    const compacted = compactEvidence(code);
-    if (normalizeSnippet(compacted).length === 0) {
-      return;
-    }
-    const key = normalizeSnippet(`${label}\n${compacted}`);
-    if (seen.has(key)) {
-      return;
-    }
-    seen.add(key);
-    blocks.push(`${label}\n${codeBlock(compacted, fenceLanguageForPath(path))}`);
-  };
-  add("Changed code:", representative.evidence.changedCode, representative.anchor?.path ?? representative.path);
-  for (const related of representative.evidence.relatedCode ?? []) {
-    add(`${inlineCode(related.path)}${evidenceLinkSuffix(link, related.path)} (${related.whyRelevant}):`, related.lines, related.path);
-  }
-  for (const finding of groupedFindings) {
-    if (finding.id === representative.id) {
-      continue;
-    }
-    add(`Also reported in ${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)}${evidenceLinkSuffix(link, finding.path, finding.anchor?.line)}:`, finding.evidence.changedCode, finding.path);
-    for (const related of finding.evidence.relatedCode ?? []) {
-      add(`${inlineCode(related.path)}${evidenceLinkSuffix(link, related.path)} (${related.whyRelevant}):`, related.lines, related.path);
-    }
-  }
-  return blocks.length > 0 ? blocks : ["Evidence was present in the reviewed diff."];
-}
-
-const MAX_EVIDENCE_LINES = 12;
-const MAX_EVIDENCE_CHARS = 600;
-
-function compactEvidence(text: string): string {
-  const lines = text
-    .split(/\r?\n/u)
-    .map((line) => line.replace(/\s+$/u, ""))
-    .filter((line) => line.trim().length > 0);
-  const block = lines.slice(0, MAX_EVIDENCE_LINES).join("\n");
-  if (block.length > MAX_EVIDENCE_CHARS) {
-    return `${block.slice(0, MAX_EVIDENCE_CHARS - 3)}...`;
-  }
-  return lines.length > MAX_EVIDENCE_LINES ? `${block}\n...` : block;
+function templateBody(finding: CandidateFinding, groupedFindings: CandidateFinding[] = [finding], link?: EvidenceLinker, onMetrics?: (metrics: CompositionMetrics) => void, assessmentFindings = groupedFindings): string {
+  return renderRetainedComposition([finding, ...groupedFindings.filter(member => member.id !== finding.id)], link, text => normalizeUnsupportedIntentFraming(text, finding), onMetrics, assessmentFindings);
 }
 
 function fingerprintFinding(finding: CandidateFinding, packetsById: Map<string, ReviewPacket> = new Map()): string {

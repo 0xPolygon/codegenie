@@ -1,3 +1,5 @@
+import { clarifyFindingLocations } from "./finding-location.js";
+import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
 import type { LlmPostToolNudgeInput, LlmRunner } from "../llm/llm-runner.js";
 import { SubmitPacketReviewSchema, type SubmitPacketReview } from "../llm/schemas.js";
@@ -5,6 +7,7 @@ import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-
 import { projectedSkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
+  AdaptiveReviewOutcome,
   AnchorSource,
   CandidateFinding,
   CodegenieConfig,
@@ -20,7 +23,7 @@ import type {
 } from "../types.js";
 import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
 import { isExactDuplicateCandidate } from "./verifier.js";
-import { inferAnchorFromChangedCode, isBudgetExhaustedError, isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff, validateAnchorForPacket } from "./pipeline-utils.js";
+import { inferAnchorFromChangedCode, isBudgetExhaustedError, isRunFatalLlmError, isRecoverableWorkerError, isSchemaInvalidError, validateAnchorForDiff } from "./pipeline-utils.js";
 import { isCodegenieError } from "../util/errors.js";
 import { applySeverityPolicy } from "./severity-policy.js";
 import { isAdaptiveNearMissSignal } from "./uncertainty-promotion.js";
@@ -28,6 +31,7 @@ import { MAX_DEEP_ENSEMBLE_PASSES } from "../config/schema.js";
 import { isPacketReviewTestPath } from "../util/path-roles.js";
 import { stage7RecoverInvalidSubmit } from "../llm/stage7-submit-repair.js";
 import { cleanStrings } from "../util/text-similarity.js";
+import { summarizeAdaptiveReviews } from "../util/adaptive-review.js";
 
 type LensRunnerOptions = {
   runner: LlmRunner;
@@ -80,6 +84,7 @@ export async function runLensPackets(
 ): Promise<PacketReviewResult[]> {
   telemetry.event({ stage: 7, level: "info", message: "stage_started", data: { packets: packets.length } });
   const workerRunner = createWorkerRunner({
+    telemetry,
     concurrency: config.review.concurrency,
     signal: opts.signal,
     isRetriableError: isRecoverableWorkerError,
@@ -118,6 +123,8 @@ export async function runLensPackets(
     packetId: packet.id,
     ensemblePass: pass,
     timeoutMs: config.review.perPassTimeoutMs,
+    repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
+    awaitCancellation: true,
     retryOnTransient: true,
     run: async (signal, task) => runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, passes > 1 ? { pass, passes } : undefined)
   }));
@@ -173,6 +180,8 @@ export async function runLensPackets(
     return poolEnsemblePassResults(packet, passes, telemetry);
   });
   results = await runAdaptiveSecondWave(results, packets, workerRunner, tools, config, telemetry, opts);
+  const adaptiveReviews = summarizeAdaptiveReviews(results);
+  await clarifyFindingLocations(results.flatMap((result) => result.findings), config, telemetry, { ...opts, packets });
   telemetry.event({
     stage: 7,
     level: "info",
@@ -190,7 +199,8 @@ export async function runLensPackets(
       candidates: {
         generated: results.reduce((sum, result) => sum + result.findings.length, 0)
       },
-      generation: summarizeStage7Generation(results)
+      generation: summarizeStage7Generation(results),
+      ...(adaptiveReviews ? { adaptiveReviews: adaptiveReviews.counts } : {})
     }
   });
   telemetry.event({ stage: 7, level: "info", message: "stage_completed", data: { packets: results.length } });
@@ -206,7 +216,7 @@ export function ensemblePassesForPacket(packet: ReviewPacket, config: CodegenieC
   return Math.min(MAX_DEEP_ENSEMBLE_PASSES, Math.max(1, config.review.deepEnsemblePasses ?? 1));
 }
 
-type AdaptiveTrigger = "concrete_hint" | "silent_with_signal" | "low_confidence_only";
+type AdaptiveTrigger = NonNullable<AdaptiveReviewOutcome["trigger"]>;
 
 // Plan 92 layer 3: a single-pass packet whose first pass shows near-miss
 // evidence earns ONE additional independent review pass — a real second draw
@@ -256,6 +266,7 @@ async function runAdaptiveSecondWave(
   if (config.review.adaptiveSecondPass !== true) {
     return results;
   }
+  for (const result of results) result.adaptiveReview = { outcome: "not_triggered", attempts: 0 };
   const packetsById = new Map(packets.map((packet) => [packet.id, packet]));
   const triggered = results.flatMap((result) => {
     const packet = packetsById.get(result.packetId);
@@ -274,6 +285,7 @@ async function runAdaptiveSecondWave(
   const ordered = [...triggered].sort((a, b) => ADAPTIVE_TRIGGER_RANK[a.trigger] - ADAPTIVE_TRIGGER_RANK[b.trigger]);
   const scheduled = ordered.slice(0, cap);
   const capped = ordered.length - scheduled.length;
+  for (const entry of ordered.slice(cap)) entry.result.adaptiveReview = { trigger: entry.trigger, outcome: "capped", attempts: 0 };
   telemetry.event({
     stage: 7,
     level: scheduled.length > 0 ? "info" : "debug",
@@ -297,13 +309,24 @@ async function runAdaptiveSecondWave(
     packetId: packet.id,
     ensemblePass: 2,
     timeoutMs: config.review.perPassTimeoutMs,
+    repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
+    awaitCancellation: true,
     retryOnTransient: true,
     run: async (signal, task) => runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, { pass: 2, passes: 2, adaptive: true })
   }));
   const outcomes = await workerRunner.schedule(tasks);
   const adaptiveByPacket = new Map<string, PacketReviewResult>();
+  const statusByPacket = new Map<string, AdaptiveReviewOutcome>();
   outcomes.forEach((outcome) => {
     const packetId = outcome.task.packetId ?? "unknown";
+    const status: AdaptiveReviewOutcome = {
+      outcome: outcome.outcome, attempts: outcome.attempts,
+      ...(outcome.value ? { reviewStatus: outcome.value.status } : {}),
+      ...(isCodegenieError(outcome.error) ? { errorCode: outcome.error.code,
+        ...(outcome.error.code === "timeout" || outcome.error.context?.reason === "timeout" ? { failureReason: "timeout" as const } : {}) } : {})
+    };
+    statusByPacket.set(packetId, status);
+    telemetry.event({ stage: 7, level: "info", message: "adaptive_pass_outcome", packetId, data: status });
     if (outcome.outcome === "completed" && outcome.value) {
       adaptiveByPacket.set(packetId, outcome.value);
       return;
@@ -324,6 +347,9 @@ async function runAdaptiveSecondWave(
     const adaptive = adaptiveByPacket.get(result.packetId);
     const packet = packetsById.get(result.packetId);
     if (adaptive === undefined || packet === undefined) {
+      const status = statusByPacket.get(result.packetId);
+      const trigger = triggerByPacket.get(result.packetId);
+      if (status) result.adaptiveReview = { ...status, ...(trigger ? { trigger } : {}) };
       return result;
     }
     telemetry.event({
@@ -337,7 +363,10 @@ async function runAdaptiveSecondWave(
         firstPassCandidates: result.findings.length
       }
     });
-    return poolEnsemblePassResults(packet, [result, adaptive], telemetry, false);
+    const pooled = poolEnsemblePassResults(packet, [result, adaptive], telemetry, false);
+    const trigger = triggerByPacket.get(result.packetId);
+    pooled.adaptiveReview = { ...statusByPacket.get(result.packetId)!, ...(trigger ? { trigger } : {}) };
+    return pooled;
   });
 }
 
@@ -452,7 +481,7 @@ async function runPacket(
   opts: LensRunnerOptions,
   telemetry: TelemetryRecorder,
   workerId: string,
-  _signal: AbortSignal,
+  signal: AbortSignal,
   ensemble?: { pass: number; passes: number; adaptive?: boolean }
 ): Promise<PacketReviewResult> {
   const skills = skillsCompatibleWithLanguage(
@@ -468,6 +497,7 @@ async function runPacket(
     stage: 7,
     prompt: prompt.prompt,
     schema: SubmitPacketReviewSchema,
+    signal,
     templateVersion: prompt.templateVersion,
     tools: repositoryTools,
     toolBudget: packet.toolBudget,
@@ -861,7 +891,7 @@ function stampFinding(
   let anchor = modelAnchor;
   let anchorSource: AnchorSource | undefined = modelAnchor !== undefined ? "model" : undefined;
   if (anchor === undefined && submitted.evidence.changedCode.trim().length > 0) {
-    const inferred = normalizeAnchor(inferAnchorFromChangedCode(packet, submitted.evidence.changedCode), packet, diff);
+    const inferred = normalizeAnchor(inferAnchorFromChangedCode(diff ?? packet, submitted.evidence.changedCode), packet, diff);
     if (inferred !== undefined) {
       anchor = inferred;
       anchorSource = "backfill_changed_code";
@@ -892,7 +922,7 @@ function stampFinding(
     });
   }
   const changedLine = anchor !== undefined;
-  const path = anchor?.path ?? packet.path;
+  const path = anchor?.path ?? submitted.path ?? submitted.anchor?.path ?? packet.path;
   const primaryLens = packet.lenses[0] ?? "core/code-review";
   return {
     id: candidateId,
@@ -903,6 +933,7 @@ function stampFinding(
     ...(anchor !== undefined ? { anchor } : {}),
     ...(anchorSource !== undefined ? { anchorSource } : {}),
     modelAnchorSubmitted: submitted.anchor !== undefined,
+    ...(anchor === undefined ? { locationResolution: { status: "unresolved" as const, ...(submitted.anchor ? { rejectedAnchor: submitted.anchor } : {}) } } : {}),
     changedLine,
     category: submitted.category,
     evidence: submitted.evidence,
@@ -930,7 +961,7 @@ function normalizeAnchor(
   packet: ReviewPacket,
   diff: UnifiedDiff | undefined
 ): DiffAnchor | undefined {
-  return validateAnchorForDiff(validateAnchorForPacket(anchor, packet), diff);
+  return validateAnchorForDiff(anchor, diff);
 }
 
 function packetPriority(packet: ReviewPacket): ReviewPriority {

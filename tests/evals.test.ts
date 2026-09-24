@@ -104,6 +104,8 @@ describe("eval suite validation", () => {
       "  maxTimeMinutes: 60",
       "expect:",
       "  reviewCompleteness: complete",
+      "  planningQuality: non-degraded",
+      "  recoveryFidelity: preserved",
       "  maxBudgetOverruns: 0",
       "  maxToolBudgetRejections: 0",
       "  maxDegradedHunks: 0",
@@ -338,6 +340,64 @@ describe("eval suite validation", () => {
 });
 
 describe("eval scoring", () => {
+  it.each(["invalid", "partial", "length_stopped", "event_capture_missing", "event_final_mismatch"])("does not claim preservation after %s arguments are regenerated", state => {
+    const events = [
+      { message: "recovery_fidelity_started", data: { version: 1 } },
+      { message: "final_arguments_rejected", stage: 9, data: { state } },
+      { message: "final_argument_repair_outcome", data: { outcome: "recovered" } },
+      { message: "stage_completed", stage: 10 }
+    ].map((event, index) => ({ ...event, eventId: `ev-${String(index + 1).padStart(6, "0")}` }));
+    const artifacts: EvalArtifacts = { candidates: [], verification: [], finalSelection: [], finalFindings: [], packets: [], hintEvents: [],
+      metricsSources: { recoveryEvents: events, runJson: { totals: { events: events.length } } } };
+    const evalCase: EvalCase = { name: "untrusted", artifacts: { path: "unused" } };
+    expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
+    artifacts.metricsSources.recoveryEvents = events.map(event => event.message === "final_argument_repair_outcome"
+      ? { ...event, message: "recovery_obligation_opened", data: { obligationId: "open" } } : event);
+    expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unresolved");
+    artifacts.metricsSources.runJson = { totals: { events: events.length + 1 } };
+    expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
+    artifacts.metricsSources.runJson = { totals: { events: events.length } };
+    artifacts.metricsSources.recoveryEvents = artifacts.metricsSources.recoveryEvents!.map(event =>
+      (event as { message: string }).message === "stage_completed" ? { ...(event as object), message: "unfinished" } : event);
+    expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
+  });
+  it.each(["llm", "llm_degraded", "deterministic_fallback", "schema_repair_fallback", undefined])("scores composition quality separately for %s", mode => {
+    const evalCase: EvalCase = { name: "composition", artifacts: { path: "unused" }, expect: { compositionQuality: "non-degraded" } };
+    const artifacts: EvalArtifacts = { candidates: [], verification: [], finalSelection: [], finalFindings: [], packets: [], hintEvents: [],
+      metricsSources: { recoveryEvents: [{ message: "stage_completed", stage: 10, data: { compositionMode: mode } }] } };
+    const score = scoreEvalRun(evalCase, artifacts, "replay");
+    expect(score.metrics.compositionQuality).toBe(mode === "llm" ? "non-degraded" : mode ? "degraded" : "unknown");
+    expect(score.budgetResults.find(result => result.check === "compositionQuality")?.status).toBe(mode === "llm" ? "pass" : "fail");
+  });
+
+  it("requires non-degraded planning and complete, reconciled recovery evidence when opted in", () => {
+    const evalCase: EvalCase = { name: "fidelity", artifacts: { path: "unused" }, expect: { planningQuality: "non-degraded", recoveryFidelity: "preserved" } };
+    const events = [
+      { message: "recovery_fidelity_started", data: { version: 1 } },
+      { message: "recovery_obligation_opened", data: { obligationId: "a" } },
+      { message: "recovery_preservation_rejected", data: { obligationId: "a" } },
+      { message: "recovery_obligation_resolved", data: { obligationId: "a" } },
+      { message: "stage_completed", stage: 10 }
+    ].map((event, index) => ({ ...event, eventId: `ev-${String(index + 1).padStart(6, "0")}` }));
+    const artifacts: EvalArtifacts = { candidates: [], verification: [], finalSelection: [], finalFindings: [], packets: [], hintEvents: [],
+      coverage: { totalHunks: 1, reviewedHunks: 1, skippedHunks: 0, failedHunks: 0, coverageByLevel: { deep: 1, normal: 0, light: 0, skip: 0 }, degradedPlanning: false, budgetStopped: false, verificationIncompleteCount: 0, partial: false, reasons: [] },
+      metricsSources: { recoveryEvents: events, runJson: { totals: { events: events.length } } } };
+    expect(scoreEvalRun(evalCase, artifacts, "replay").budgetResults.map(result => result.status)).toEqual(["pass", "pass"]);
+    artifacts.coverage!.degradedPlanning = true;
+    expect(scoreEvalRun(evalCase, artifacts, "replay").budgetResults.find(result => result.check === "planningQuality")?.status).toBe("fail");
+    artifacts.metricsSources.recoveryEvents = events.map(event => event.message === "recovery_obligation_resolved" ? { ...event, message: "unrelated" } : event);
+    expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unresolved");
+    artifacts.metricsSources.recoveryEvents = events.map(event => event.message === "recovery_preservation_rejected" ? { ...event, message: "recovery_unusable_submission" } : event);
+    expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
+    expect(scoreEvalRun(evalCase, artifacts, "replay").budgetResults.find(result => result.check === "recoveryFidelity")?.status).toBe("fail");
+    artifacts.metricsSources.recoveryEvents = events.map(event => event.message === "recovery_preservation_rejected" ? { ...event, message: "recovery_content_revised" } : event);
+    expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
+    artifacts.metricsSources.recoveryEvents = events.slice(1);
+    expect(scoreEvalRun(evalCase, artifacts, "replay").metrics.recoveryFidelity).toBe("unknown");
+    artifacts.metricsSources = {};
+    expect(scoreEvalRun(evalCase, artifacts, "replay").budgetResults.find(result => result.check === "recoveryFidelity")?.status).toBe("fail");
+  });
+
   it("matches fields, assigns deterministically, attributes losses, and scores budgets", () => {
     const finding = finalFinding("final-1", "src/app.ts", 12, {
       title: "Fake finding in src/app.ts",
@@ -1380,6 +1440,20 @@ describe("eval artifacts", () => {
 });
 
 describe("artifact replay", () => {
+  it("records configured recommendation scoring as not run during offline artifact evaluation", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "codegenie-offline-judge-"));
+    const telemetry = path.join(dir, "source", "telemetry");
+    writeArtifactSet(telemetry, [], []);
+    writeFileSync(path.join(dir, "eval.yml"), JSON.stringify({ name: "offline", artifacts: { path: "source" },
+      recommendationJudge: { provider: "unavailable", model: "no-model", reasoning: "medium",
+        checks: [{ id: "contract", rubric: "Preserve the caller contract." }] } }));
+    const suite = await loadEvalSuite(dir);
+    const result = await runEvalCase(suite, suite.cases[0]!, { config: defaultConfig });
+    expect(result.status).toBe("pass");
+    expect(result.info.score.recommendationQuality).toMatchObject({ status: "not_run", results: [] });
+    expect(renderCaseResult(result)).toContain("recommendation quality (non-gating): not_run");
+  });
+
   it("re-scores saved artifacts, writes a new run, and compares to the previous run", async () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-replay-suite-"));
     const logsDir = path.join(suiteDir, "logs");
@@ -1932,6 +2006,31 @@ describe("eval command fixture suite", () => {
       llm: { provider: "fake", model: "fake-model", reasoning: "high", maxConcurrentCalls: 3 }
     });
     expect(result.info.cache).toMatchObject({ enabled: false, source: "case" });
+  });
+
+  it.each([true, false, undefined])("applies an explicit eval composition step-down override and preserves inherited settings when omitted (%s)", async enabled => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-eval-composition-effort-"));
+    const repo = initRepo();
+    writeRepoFile(repo, "src/app.js", "export const base = true;\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "src/app.js", "export const value = 'CODEGENIE_FAKE_FINDING';\n");
+    commitAll(repo, "feature");
+    writeFileSync(path.join(suiteDir, "composition.yml"), [
+      "name: composition-effort", "repo:", `  external: ${JSON.stringify(repo)}`,
+      "command:", "  branch: feature", "  base: main",
+      ...(enabled === undefined ? [] : ["review:", `  compositionReasoningStepDown: ${enabled}`]),
+      "expect:", "  minFindings: 1"
+    ].join("\n"));
+    const suite = await loadEvalSuite(suiteDir);
+    expect(suite.cases[0]!.evalCase.review?.compositionReasoningStepDown).toBe(enabled);
+    const result = await runEvalCase(suite, suite.cases[0]!, { config: {
+      ...defaultConfig,
+      llm: { ...defaultConfig.llm, provider: "fake", model: "fake-model" },
+      review: { ...defaultConfig.review, compositionReasoningStepDown: enabled !== true }
+    } });
+    expect(result.status).toBe("pass");
+    expect(result.info.effectiveConfig?.review.compositionReasoningStepDown).toBe(enabled ?? true);
   });
 
   it("applies the reviewed repository codegenie.toml layer before eval YAML overrides", async () => {

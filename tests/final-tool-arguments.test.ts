@@ -3,6 +3,8 @@ import {
   type AssistantMessageEvent,
   type AssistantMessageEventStream
 } from "@earendil-works/pi-ai";
+import { createHash } from "node:crypto";
+import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
 import { describe, expect, it, vi } from "vitest";
 import { consumeFinalToolArguments } from "../src/llm/final-tool-arguments.js";
 import type { PiAssistantMessage, PiInvalidToolCall, PiToolCall } from "../src/llm/llm-runner.js";
@@ -15,7 +17,9 @@ describe("final tool argument provenance", () => {
     ["canonical", ['{"findings":[]}']]
   ])("accepts a %s strict object", async (_label, deltas) => {
     const final = message(call("submit-1", SUBMIT, { findings: [] }));
-    const result = await consumeFinalToolArguments(sequence(final, deltas), SUBMIT);
+    const onEvent = vi.fn();
+    const result = await consumeFinalToolArguments(sequence(final, deltas), SUBMIT, { onEvent });
+    expect(onEvent.mock.calls.some(([event]) => event.type === "toolcall_delta")).toBe(true);
     expect(result).toEqual({
       ...final,
       content: [{ ...call("submit-1", SUBMIT, { findings: [] }), argumentParse: { state: "strict" } }]
@@ -55,7 +59,7 @@ describe("final tool argument provenance", () => {
     const secret = "repository-secret-value";
     const final = message(call("submit-1", SUBMIT, { secret }));
     const result = await consumeFinalToolArguments(sequence(final, [delta]), SUBMIT);
-    expect(result.content[0]).toEqual({
+    expect(result.content[0]).toMatchObject({
       type: "invalidToolCall",
       id: "submit-1",
       name: SUBMIT,
@@ -63,6 +67,75 @@ describe("final tool argument provenance", () => {
     });
     expect(JSON.stringify(result.content[0])).not.toContain(secret);
     expect(result.content[0]).not.toHaveProperty("arguments");
+  });
+
+  it("keeps bounded, redacted rejected-argument diagnostics separate from trusted arguments", async () => {
+    registerSecret("unique-diagnostic-secret");
+    const onRejectedArguments = vi.fn();
+    const onBuffersCleared = vi.fn();
+    const raw = '{"reason":"' + "x".repeat(8170) + 'unique-diagnostic-secret' + "y".repeat(20_000) + '","verdict":}';
+    try {
+      const final = message(call("submit-bad", SUBMIT, { reason: "partial guess" }));
+      const result = await consumeFinalToolArguments(sequence(final, [raw]), SUBMIT, { onRejectedArguments, onBuffersCleared });
+      expect(result.content[0]).toMatchObject({ type: "invalidToolCall", id: "submit-bad", name: SUBMIT,
+        argumentParse: { state: "invalid", errorKind: "invalid_syntax" } });
+      expect(onRejectedArguments).toHaveBeenCalledOnce();
+      const diagnostic = onRejectedArguments.mock.calls[0]![0];
+      expect(diagnostic).toMatchObject({ toolCallId: "submit-bad", contentIndex: 0,
+        capturedChars: raw.length, sha256: createHash("sha256").update(raw).digest("hex"),
+        parse: { state: "invalid", errorKind: "invalid_syntax" } });
+      expect(diagnostic.prefix.length + diagnostic.suffix.length).toBe(16_384);
+      expect(diagnostic.omittedChars).toBe(diagnostic.sampleChars - 16_384);
+      expect(diagnostic.prefix).not.toContain("unique-");
+      expect(diagnostic.suffix).toContain('"verdict":}');
+      expect(onBuffersCleared).toHaveBeenCalledWith(0);
+      expect(JSON.stringify(result)).not.toContain("partial guess");
+    } finally { clearRegisteredSecretsForTests(); }
+  });
+
+  it.each([
+    ['{"findings":[]}}', "Unexpected non-whitespace character after JSON"],
+    ['{"findings":[{"title":"x"],"followUpHints":[]}', "Expected"],
+    ['{"findings":[', "Unexpected end"]
+  ])("provides bounded syntax feedback without accepting malformed JSON: %s", async (raw, error) => {
+    const result = await consumeFinalToolArguments(sequence(message(call("bad", SUBMIT, { findings: [] })), [raw]), SUBMIT);
+    const block = result.content[0] as PiInvalidToolCall;
+    expect(block.type).toBe("invalidToolCall");
+    expect(block).not.toHaveProperty("arguments");
+    expect(block.syntaxDiagnostic?.error).toContain(error);
+    expect(block.syntaxDiagnostic?.excerpt).toBe(raw);
+    expect(block.syntaxDiagnostic?.excerptStart).toBe(0);
+  });
+
+  it("centers syntax excerpts on the error after redaction, even outside debug prefixes", async () => {
+    const secret = "syntax-secret-with-a-long-credential-value";
+    registerSecret(secret);
+    try {
+      const raw = '{"secret":"' + secret + '","padding":"' + "x".repeat(10_000) + '","bad":},"tail":"' + "y".repeat(10_000) + '"}';
+      const result = await consumeFinalToolArguments(sequence(message(call("bad", SUBMIT, {})), [raw]), SUBMIT);
+      const diagnostic = (result.content[0] as PiInvalidToolCall).syntaxDiagnostic!;
+      expect(diagnostic.excerpt).toContain('"bad":}');
+      expect(diagnostic.excerpt.length).toBeLessThanOrEqual(512);
+      expect(diagnostic.excerptStart).toBeGreaterThan(8192);
+      if (diagnostic.offset !== undefined) expect(diagnostic.offset - diagnostic.excerptStart).toBe(256);
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(result.content[0]).not.toHaveProperty("arguments");
+    } finally { clearRegisteredSecretsForTests(); }
+  });
+
+  it("captures short malformed text completely but produces no diagnostic for valid submissions", async () => {
+    const onRejectedArguments = vi.fn();
+    const raw = '{"verdict":}';
+    await consumeFinalToolArguments(sequence(message(call("bad", SUBMIT, {})), [raw]), SUBMIT, { onRejectedArguments });
+    expect(onRejectedArguments.mock.calls[0]![0]).toMatchObject({ prefix: raw, suffix: "", omittedChars: 0 });
+    await consumeFinalToolArguments(sequence(message(call("good", SUBMIT, { verdict: "keep" })), ['{"verdict":"keep"}']), SUBMIT, { onRejectedArguments });
+    expect(onRejectedArguments).toHaveBeenCalledOnce();
+  });
+
+  it("does not mislabel missing stream provenance as a JSON syntax error", async () => {
+    const result = await consumeFinalToolArguments(sequence(message(call("bad", SUBMIT, {})), ['{"unfinished":'], { omitStart: true }), SUBMIT);
+    expect(result.content[0]).toMatchObject({ type: "invalidToolCall", argumentParse: { state: "event_capture_missing" } });
+    expect(result.content[0]).not.toHaveProperty("syntaxDiagnostic");
   });
 
   it.each([
@@ -104,7 +177,7 @@ describe("final tool argument provenance", () => {
   it("gives normalized length stop precedence over valid JSON", async () => {
     const final = { ...message(call("submit-1", SUBMIT, { ok: true })), stopReason: "length" };
     const result = await consumeFinalToolArguments(sequence(final, ['{"ok":true}']), SUBMIT);
-    expect(result.content[0]).toEqual({
+    expect(result.content[0]).toMatchObject({
       type: "invalidToolCall",
       id: "submit-1",
       name: SUBMIT,

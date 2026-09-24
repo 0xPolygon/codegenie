@@ -30,6 +30,8 @@ Explicitly not this component's responsibility:
 - Fixture materialization tooling (cloning bundles, unpacking archives). V1 requires fixture paths to already be git worktrees; how they got there (CI clone, setup script) is outside codegenie.
 - Stage-level replay (candidate-recall, merge-only), verifier/merge expectations (`VerifierExpectation`, `MergeExpectation`), and the fine-grained loss-label taxonomy — all deferred to Future Considerations (see architecture.md).
 
+Plan 115 adds opt-in `expect.planningQuality: "non-degraded"` and `expect.recoveryFidelity: "preserved"`. Planning quality comes from the coverage artifact's explicit degraded-planning flag. Recovery fidelity requires the versioned start event, completed composition, a contiguous event stream matching `run.json`'s event count, and all opened obligations resolved. Missing or incomplete evidence is `unknown` and fails an enabled assertion. Existing completeness checks keep their original meaning. Both dimensions appear separately in eval summaries; rejection of a destructive intermediate repair is not a permanent failure if a later preserved recovery resolves its obligation.
+
 ## Public Interface
 
 ### CLI Surface

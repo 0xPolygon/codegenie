@@ -1,6 +1,9 @@
+import { submissionIssues } from "./submit-preservation.js";
+import { SubmitPacketReviewSchema } from "./schemas.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import { truncateDiagnostic } from "../util/errors.js";
 import { stableJson } from "../util/json.js";
+import { SUBMIT_REVIEW_SHAPE_GUIDANCE } from "./submit-review-guidance.js";
 import type {
   LlmInvalidSubmitRecovery,
   LlmSchemaInvalidSubmitRecoveryInput,
@@ -183,25 +186,12 @@ export function stage7SubmitRepairDecisionFromParts(
   if (!isSafeStage7NoFindingsSalvage(submitCall.arguments)) {
     return { classification };
   }
-  const noFindingReason = cleanStage7NoFindingReason(submitCall.arguments.noFindingReason);
-  return {
-    classification,
-    cleanupKind: noFindingReason.truncated ? "no_finding_reason_truncated" : "no_findings_shape",
-    recovered: {
-      reviewStatus: "no_findings",
-      findings: [],
-      followUpHints: [],
-      uncertainties: [],
-      noFindingReason: noFindingReason.value
-    },
-    ...(noFindingReason.changed ? { cleanedFields: ["noFindingReason"] } : {}),
-    ...(noFindingReason.truncated ? { truncatedFields: ["noFindingReason"] } : {}),
-    truncatedNoFindingReason: noFindingReason.truncated
-  };
+  return { classification, compactRepair: true };
 }
 
 export function classifyStage7SchemaInvalid(error: string, submitCalls: PiToolCall[]): Stage7SchemaInvalidKind {
-  const text = `${error}\n${submitCalls.map((call) => safeStringify(call.arguments)).join("\n")}`.toLowerCase();
+  const text = error.split("Received arguments:")[0]!.toLowerCase();
+  const issues = submitCalls.flatMap(call => submissionIssues(SubmitPacketReviewSchema, call.arguments));
   if (/<\/?\s*parameter\b/u.test(text) || /&lt;\/?\s*parameter\b/u.test(text)) {
     return "xml_parameter_bleed";
   }
@@ -209,13 +199,13 @@ export function classifyStage7SchemaInvalid(error: string, submitCalls: PiToolCa
     if (submitCalls.some((call) => extraStage7TopLevelKeys(call.arguments).length > 0)) {
       return "extra_top_level_properties";
     }
-    if (submitCalls.some((call) => extraStage7FindingKeys(call.arguments).length > 0)) {
+    if (issues.some(issue => issue.kind === "unknown" && issue.path.startsWith("findings."))) {
       return "extra_finding_properties";
     }
     if (submitCalls.some((call) => hasInvalidStage7FindingEnum(call.arguments))) {
       return "invalid_enum_value";
     }
-    if (/\b(required|missing)\b/u.test(text)) {
+    if (issues.some(issue => issue.kind === "missing" && issue.path.startsWith("findings."))) {
       return "missing_required_finding_fields";
     }
     if (/\b(enum|literal|union|allowed value|one of|expected.*(?:critical|high|medium|low|logic_bug|correctness|security|performance|architecture|testing|maintainability))\b/u.test(text)) {
@@ -252,7 +242,7 @@ export function stage7CompactSchemaRepairPrompt(
     `Classification: ${classification}`,
     "",
     "Invalid submit arguments:",
-    fenceUntrusted(truncateStage7RepairPayload(stableJson(invalidSubmitArgs)), "stage7-invalid-submit-arguments"),
+    fenceUntrusted(stableJson(invalidSubmitArgs), "stage7-invalid-submit-arguments"),
     "",
     "Required action:",
     `- Call \`${submitToolName}\` exactly once with schema-valid arguments.`,
@@ -264,7 +254,8 @@ export function stage7CompactSchemaRepairPrompt(
     "- Do not output XML.",
     "- Do not write `<parameter>` tags.",
     "- Do not describe the schema.",
-    "- Do not answer in plain text."
+    "- Do not answer in plain text.",
+    SUBMIT_REVIEW_SHAPE_GUIDANCE
   ].join("\n");
 }
 
@@ -339,6 +330,9 @@ function cleanupStage7NoFindingsSubmit(args: Record<string, unknown>): Stage7NoF
     strippedKeys.push(key);
     delete cleaned[key];
   }
+  if (typeof cleaned.noFindingReason !== "string" || cleaned.noFindingReason.trim().length === 0
+    || cleaned.noFindingReason.length > STAGE7_NO_FINDING_REASON_MAX_CHARS
+    || ["followUpHints", "uncertainties"].some(key => cleaned[key] !== undefined && !Array.isArray(cleaned[key]))) return { status: "not_applicable" };
   const reason = cleanStage7NoFindingReason(cleaned.noFindingReason);
   const changedReason = cleaned.noFindingReason !== reason.value;
   const cleanedFields = [
@@ -511,14 +505,6 @@ function stripStage7Markup(value: string): string {
 
 function normalizeStage7Path(value: string): string {
   return value.trim().replace(/\\/gu, "/");
-}
-
-function truncateStage7RepairPayload(input: string): string {
-  const maxChars = 40_000;
-  if (input.length <= maxChars) {
-    return input;
-  }
-  return `${input.slice(0, maxChars).trimEnd()}\n[invalid submit arguments truncated by codegenie]`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -44,6 +44,8 @@ const MAX_LABEL_CHARS = 64;
 
 const CLASSIFICATIONS: ReadonlySet<LlmSubmitFailureClassification> = new Set([
   "schema_invalid",
+  "recovery_content_changed",
+  "review_status_findings_mismatch",
   "missing_submit",
   "multiple_submits",
   "revise_without_revision_payload",

@@ -8,6 +8,23 @@ import { MAX_REVIEW_TIME_MINUTES } from "../src/config/schema.js";
 import { CodegenieError } from "../src/util/errors.js";
 
 describe("review command", () => {
+  it.each([
+    [undefined, undefined, false, "defaults"],
+    [true, undefined, true, "repo-config"],
+    [false, undefined, false, "repo-config"],
+    [false, "--composition-reasoning-step-down", true, "cli"],
+    [true, "--no-composition-reasoning-step-down", false, "cli"],
+    [undefined, "--composition-reasoning-step-down", true, "cli"],
+    [undefined, "--no-composition-reasoning-step-down", false, "cli"]
+  ] as const)("resolves composition step-down config=%s flag=%s", (configured, flag, expected, source) => {
+    const ctx = testContext();
+    if (configured !== undefined) writeFileSync(path.join(ctx.repoRoot, "codegenie.toml"), `[review]\ncompositionReasoningStepDown = ${configured}\n`);
+    const parsed = parseReviewCommand(["review", "--branch", "feature", ...(flag ? [flag] : [])], ctx);
+    expect(parsed.config.review.compositionReasoningStepDown).toBe(expected);
+    expect(parsed.configSources["review.compositionReasoningStepDown"]).toBe(source);
+    expect(parsed.warnings).toEqual([]);
+  });
+
   it("treats top-level help as a successful display exit", () => {
     expect(() => parseReviewCommand(["--help"], testContext())).toThrow(CliDisplayExit);
 
@@ -73,6 +90,25 @@ describe("review command", () => {
     expect(parsed.options.cacheOverride).toBe(true);
     expect(parsed.config.lenses.restrictTo).toEqual(["core/tests", "lang/go"]);
     expect(parsed.config.cache.enabled).toBe(true);
+  });
+
+  it("accepts a :reasoning suffix on --model and rejects combining it with --reasoning", () => {
+    const parsed = parseReviewCommand(["review", "feature", "--model", "deepseek/deepseek-v4.1-flash:max"], testContext());
+    expect(parsed.config.llm.model).toBe("deepseek/deepseek-v4.1-flash");
+    expect(parsed.config.llm.reasoning).toBe("max");
+    expect(parsed.configSources["llm.reasoning"]).toBe("cli");
+
+    // a non-level suffix stays part of the model id
+    const ollama = parseReviewCommand(["review", "feature", "--model", "ollama/llama3:8b"], testContext());
+    expect(ollama.config.llm.model).toBe("ollama/llama3:8b");
+    expect(ollama.configSources["llm.reasoning"]).toBeUndefined();
+
+    expect(() =>
+      parseReviewCommand(["review", "feature", "--model", "claude-opus-5:max", "--reasoning", "low"], testContext())
+    ).toThrow("pass reasoning as either --model <model>:<reasoning> or --reasoning, not both");
+    expect(() => parseReviewCommand(["review", "feature", "--reasoning", "ultra"], testContext())).toThrow(
+      "--reasoning must be one of: minimal, low, medium, high, xhigh, max, auto"
+    );
   });
 
   it("applies --budget-boost as a review budget override", () => {

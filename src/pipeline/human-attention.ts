@@ -20,7 +20,7 @@ import {
   tokenJaccard
 } from "../util/text-similarity.js";
 
-const MAX_HUMAN_ATTENTION_NOTES = 5;
+export const MAX_HUMAN_ATTENTION_NOTES = 5;
 const HUMAN_ATTENTION_LOCATION_CAP = 6;
 
 export type RawAttentionHint = {
@@ -436,7 +436,7 @@ export function humanAttentionArtifact(
   composerPromptGroups: AttentionHintGroup[]
 ): Record<string, unknown> {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     notes: attention.raw.map(rawAttentionHintArtifact),
     groups: attention.groups.map(attentionGroupArtifact),
     mergeStats: attention.mergeStats,
@@ -950,6 +950,7 @@ function verdictIsAdjudicatedPromotionReject(
   original: CandidateFinding | undefined
 ): boolean {
   return verdict.verdict === "reject" &&
+    verdict.unresolvedConcern === undefined &&
     verdict.verificationIncomplete !== true &&
     verdict.falsePositiveRisk === "high" &&
     original?.provenance?.source === "uncertainty_promotion";

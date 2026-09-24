@@ -1,3 +1,4 @@
+import type { FieldRepair } from "./field-repair.js";
 import type { TSchema } from "@earendil-works/pi-ai";
 import type { CodegenieConfig, RepositoryTools, ReviewStage, ToolBudget, ToolResultMeta } from "../types.js";
 import type { CodegenieErrorCode } from "../util/errors.js";
@@ -85,9 +86,15 @@ export type ToolDefinition = {
 };
 
 export type LlmStructuredRequest<T> = {
+  /** Worker cancellation, combined with the overall run signal, including repairs. */
+  signal?: AbortSignal;
   /** Type-only link between the request and the expected submit payload. */
   readonly responseType?: T;
   stage: ReviewStage;
+  /** Optional placement repair: lowest reasoning, one provider attempt, no follow-up loop. */
+  purpose?: "location_clarification";
+  /** Stage 10 only: step down one supported reasoning level; repairs keep their own policy. */
+  compositionReasoningStepDown?: boolean;
   prompt: string;
   schema: TSchema;
   templateVersion: string;
@@ -99,8 +106,14 @@ export type LlmStructuredRequest<T> = {
     packetId?: string;
     candidateId?: string;
   };
+  /** Pure stage-specific normalization of trusted, assembled arguments. Raw input remains auditable. */
+  normalizeSubmit?(value: unknown): { value: unknown; removedFields: string[]; addedFields?: string[]; reason: string } | undefined;
   validateSubmit?(value: T): LlmSubmitSemanticValidation;
   schemaRepair?: {
+    /** Top-level alternative encodings: explicitly supplying one replaces retained siblings. */
+    replacementGroups?: readonly (readonly string[])[];
+    /** Optional constrained patch contract; the runner still validates the full merged submission. */
+    createFieldRepair?(schema: TSchema, retained: unknown): FieldRepair | undefined;
     replaceConversation?: boolean;
     failAfterRepair?: boolean;
     recoverInvalidSubmit?(input: LlmSchemaInvalidSubmitRecoveryInput): Record<string, unknown> | LlmInvalidSubmitRecovery | undefined;
@@ -118,6 +131,8 @@ export interface LlmRunner {
 
 export type LlmSubmitFailureClassification =
   | "schema_invalid"
+  | "recovery_content_changed"
+  | "review_status_findings_mismatch"
   | "missing_submit"
   | "multiple_submits"
   | "revise_without_revision_payload"
@@ -139,7 +154,7 @@ export type LlmSubmitFailureClassification =
 
 export type LlmSubmitSemanticValidation =
   | { ok: true }
-  | { ok: false; classification: LlmSubmitFailureClassification };
+  | { ok: false; classification: LlmSubmitFailureClassification; details?: string };
 
 export type LlmSchemaRepairInput = {
   stage: ReviewStage;
@@ -151,6 +166,7 @@ export type LlmSchemaRepairInput = {
     name: string;
     state: PiUntrustedArgumentParse["state"];
     errorKind?: "unexpected_end" | "unterminated" | "invalid_syntax" | "non_object_root";
+    syntaxDiagnostic?: PiArgumentSyntaxDiagnostic;
   }>;
   extraToolNames: string[];
   classification?: LlmSubmitFailureClassification;
@@ -220,11 +236,20 @@ export type PiUntrustedArgumentParse =
   | { state: "event_capture_missing" }
   | { state: "event_final_mismatch" };
 
+/** Syntax-only evidence from redacted raw text; never a usable submission. */
+export type PiArgumentSyntaxDiagnostic = {
+  error: string;
+  offset?: number;
+  excerptStart: number;
+  excerpt: string;
+};
+
 export type PiInvalidToolCall = {
   type: "invalidToolCall";
   id: string;
   name: string;
   argumentParse: PiUntrustedArgumentParse;
+  syntaxDiagnostic?: PiArgumentSyntaxDiagnostic;
 };
 
 export type PiSubmitCall = PiToolCall | PiInvalidToolCall;

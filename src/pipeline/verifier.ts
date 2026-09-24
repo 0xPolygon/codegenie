@@ -1,4 +1,10 @@
+import { assessFinalSuggestions, suggestionAssessment } from "./suggestion-assessment.js";
+import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
+import { normalizeVerifierSubmission, expandVerifierRevision, promotedCompletionIssues } from "../llm/verifier-revision.js";
+import { createFieldRepair } from "../llm/field-repair.js";
+import { cleanupSubmitShape } from "../llm/submit-preservation.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
+import { recoverStringWrappedVerifierFinding, VERIFIER_SUBMIT_SHAPE_GUIDANCE } from "../llm/verifier-submit-repair.js";
 import type { LlmRunner, LlmSchemaRepairInput, LlmSubmitFailureClassification } from "../llm/llm-runner.js";
 import {
   SCHEMA_VERSIONS,
@@ -25,9 +31,8 @@ import { createWorkerRunner, type WorkerTask } from "./worker-runner.js";
 import {
   isRunFatalLlmError,
   isRecoverableWorkerError,
-  representativeAnchorFromPacket,
-  validateAnchorForDiff,
-  validateAnchorForPacket
+  findingDiffContext,
+  validateAnchorForDiff
 } from "./pipeline-utils.js";
 import { applySeverityPolicy } from "./severity-policy.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
@@ -36,7 +41,7 @@ import { scaleBudgetValue, scaleToolBudget } from "../util/budget.js";
 const VERIFIER_TOOL_BUDGET = {
   maxToolCalls: 8,
   maxInvestigationRounds: 3,
-  maxResultChars: 16_000,
+  maxResultChars: 32_000,
   maxSingleToolResultChars: 6_000,
   reservedSourceResultChars: 4_000,
   sourceExtension: {
@@ -299,6 +304,7 @@ export async function verifyFindings(
     repairFailed: 0
   };
   const workerRunner = createWorkerRunner({
+    telemetry,
     concurrency: config.review.concurrency,
     signal: opts.signal,
     isRetriableError: isRecoverableWorkerError,
@@ -309,10 +315,12 @@ export async function verifyFindings(
     priority: candidate.severity === "critical" ? "critical" : candidate.severity === "high" ? "high" : "normal",
     candidateId: candidate.id,
     timeoutMs: config.review.perPassTimeoutMs,
+    repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
+    awaitCancellation: true,
     retryOnTransient: false,
-    run: async (_signal, task) => {
+    run: async (signal, task) => {
       releaseVerifierReservation(scheduling.reservations.get(candidate.id), opts);
-      return verifyCandidate(candidate, packetsById.get(candidate.producedBy.packetId), tools, config, opts, task.workerId, telemetry, runtimeStats);
+      return verifyCandidate(candidate, packetsById.get(candidate.producedBy.packetId), tools, config, { ...opts, signal }, task.workerId, telemetry, runtimeStats);
     }
   }));
   const outcomes = await workerRunner.schedule(tasks);
@@ -432,7 +440,7 @@ function preGateAnchor(
   telemetry: TelemetryRecorder
 ): { candidate: CandidateFinding; anchorStripped: boolean } {
   if (!candidate.anchor) {
-    return { candidate: backfillRepresentativeAnchor(candidate, packet, diff, telemetry), anchorStripped: false };
+    return { candidate: candidate, anchorStripped: false };
   }
   const anchor = normalizeAnchor(candidate.anchor, packet, diff);
   if (!anchor) {
@@ -445,7 +453,7 @@ function preGateAnchor(
       data: { candidateId: candidate.id, anchor: candidate.anchor }
     });
     const stripped: CandidateFinding = { ...withoutAnchor, changedLine: false };
-    return { candidate: backfillRepresentativeAnchor(stripped, packet, diff, telemetry), anchorStripped: true };
+    return { candidate: stripped, anchorStripped: true };
   }
   return {
     candidate: {
@@ -455,42 +463,6 @@ function preGateAnchor(
       changedLine: true
     },
     anchorStripped: false
-  };
-}
-
-// Tier 2 anchor reconstruction (plan 76): an anchorless candidate whose
-// evidence quotes changed code is on-diff even though Stage 7 gave the gate
-// no placement to prove it with. The packet's first changed line proves
-// relevance for gating; it is NOT a publishable location (anchorSource
-// "backfill_packet_representative" is withheld at composition).
-function backfillRepresentativeAnchor(
-  candidate: CandidateFinding,
-  packet: ReviewPacket | undefined,
-  diff: UnifiedDiff | undefined,
-  telemetry: TelemetryRecorder
-): CandidateFinding {
-  if (candidate.anchor !== undefined || packet === undefined) {
-    return candidate;
-  }
-  if (candidate.evidence.changedCode.trim().length === 0) {
-    return candidate;
-  }
-  const representative = normalizeAnchor(representativeAnchorFromPacket(packet), packet, diff);
-  if (representative === undefined) {
-    return candidate;
-  }
-  telemetry.event({
-    stage: 9,
-    level: "info",
-    message: "anchor_representative",
-    file: candidate.path,
-    data: { candidateId: candidate.id, hunkId: representative.hunkId, line: representative.line, side: representative.side }
-  });
-  return {
-    ...candidate,
-    anchor: representative,
-    anchorSource: "backfill_packet_representative",
-    changedLine: true
   };
 }
 
@@ -511,7 +483,21 @@ function applyVerificationVerdict(candidate: CandidateFinding, verdict: Verifica
   const revised = verdict.finalFinding !== undefined
     ? applyFindingRevision(candidate, verdict.finalFinding)
     : candidate;
-  return applyVerdictIntentAssessment(applyVerdictAnchor(revised, verdict), verdict);
+  const originalSuggestions = { ...candidate.originalSuggestions };
+  for (const field of ["suggestedFix", "suggestedTest"] as const) {
+    if (candidate[field] && candidate[field] !== revised[field] && !originalSuggestions[field]) {
+      const supplied = candidate.suggestionAssessments?.[field];
+      originalSuggestions[field] = supplied?.suggestionText === candidate[field]
+        ? supplied : suggestionAssessment(candidate, field)!;
+    }
+  }
+  const assessed = {
+    ...revised,
+    ...(Object.keys(originalSuggestions).length ? { originalSuggestions } : {}),
+    ...((revised.suggestedFix || revised.suggestedTest) ? { suggestionAssessments: assessFinalSuggestions(revised, verdict.suggestionAssessments) } : {}),
+    ...(verdict.proofAssessment ? { proofAssessment: verdict.proofAssessment } : {})
+  };
+  return applyVerdictIntentAssessment(applyVerdictAnchor(assessed, verdict), verdict);
 }
 
 function applyFindingRevision(candidate: CandidateFinding, revision: CandidateFinding): CandidateFinding {
@@ -614,7 +600,7 @@ async function verifyCandidate(
   const prompt = opts.promptBuilder.buildVerifierPrompt({
     candidate,
     originContext: verificationOriginContext(candidate, packet),
-    hunksText: packet?.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n") ?? "",
+    hunksText: findingDiffContext(opts.diff, [candidate.anchor?.path ?? candidate.path], candidate.anchor?.hunkId) || packet?.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n") || "",
     ...(packet?.intentSignals !== undefined ? { intentSignals: packet.intentSignals } : {}),
     skills
   });
@@ -628,6 +614,12 @@ async function verifyCandidate(
   const verificationIncomplete = normalized.reason.startsWith("verification incomplete:");
   const verdict: VerificationVerdict = {
     candidateId: candidate.id,
+    suggestionAssessments: assessFinalSuggestions(revised ?? candidate, bindSubmittedAssessments(revised ?? candidate, normalized.suggestionAssessments)),
+    ...(normalized.proofAssessment ? { proofAssessment: normalized.proofAssessment } : {}),
+    ...(normalized.proofAssessment && (normalized.proofAssessment.status === "unresolved" || normalized.proofAssessment.assumptions.some(a => a.essential))
+      ? { unresolvedConcern: { question: normalized.proofAssessment.assumptions.filter(a => a.essential).map(a => a.question).join("; ") || normalized.proofAssessment.evidence,
+          files: [candidate.path], symbols: [], reason: "The defect depends on evidence that verification could not establish.", confidence: "medium" as const,
+          sourcePacketIds: [candidate.producedBy.packetId] } } : {}),
     verdict: verificationIncomplete ? "incomplete" : normalized.verdict,
     reason: normalized.reason,
     requiredEvidencePresent: normalized.requiredEvidencePresent,
@@ -638,6 +630,16 @@ async function verifyCandidate(
     ...(normalized.behaviorChange !== undefined ? { behaviorChange: normalized.behaviorChange } : {}),
     ...(normalized.intentEvidence !== undefined ? { intentEvidence: normalized.intentEvidence } : {})
   };
+  telemetry.event({ stage: 9, level: "info", message: "verification_suggestion_assessments",
+    data: { candidateId: candidate.id, suppliedAssessments: normalized.suggestionAssessments ?? {}, assessments: verdict.suggestionAssessments } });
+  for (const field of ["suggestedFix", "suggestedTest"] as const) {
+    const supplied = normalized.suggestionAssessments?.[field];
+    const effective = verdict.suggestionAssessments?.[field];
+    if (supplied?.status === "supported" && effective?.status === "unverified") {
+      telemetry.event({ stage: 9, level: "info", message: "verification_suggestion_support_downgraded",
+        data: { candidateId: candidate.id, field, reason: effective.rationale, submitted: supplied, effective } });
+    }
+  }
   if (verdict.verdict === "revise" && revised !== undefined && submittedFinalFinding !== undefined) {
     // Derive the audit from the same fully policy-applied candidate that enters
     // the verified set, including any verdict-level behavior assessment.
@@ -694,7 +696,24 @@ function verificationOriginContext(candidate: CandidateFinding, packet: ReviewPa
   if (!packet) {
     return "";
   }
-  return packet.contextText;
+  return `${packet.contextText}\n\nDiscovery packet ${packet.id} (${packet.path}); this is origin evidence, not a finding location.\n${packet.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n")}`;
+}
+
+// Bind only newly submitted assessments, after applying this verdict's updates.
+// Persisted assessments keep exact text identity; explicit mismatches remain
+// mismatches. This removes the need for the model to retype an unchanged value.
+function bindSubmittedAssessments(
+  finding: CandidateFinding,
+  submitted: SubmitVerificationVerdict["suggestionAssessments"]
+): CandidateFinding["suggestionAssessments"] {
+  if (!submitted) return undefined;
+  const bound: NonNullable<CandidateFinding["suggestionAssessments"]> = {};
+  for (const field of ["suggestedFix", "suggestedTest"] as const) {
+    const assessment = submitted[field];
+    const text = finding[field];
+    if (assessment && text) bound[field] = { ...assessment, suggestionText: assessment.suggestionText ?? text };
+  }
+  return bound;
 }
 
 function normalizeSubmittedVerdict(
@@ -702,6 +721,26 @@ function normalizeSubmittedVerdict(
   submitted: SubmitVerificationVerdict,
   telemetry: TelemetryRecorder
 ): SubmitVerificationVerdict {
+  try {
+    const canonicalization = normalizeVerifierSubmission(candidate, submitted);
+    if (canonicalization) {
+      telemetry.event({ stage: 9, level: "info", message: "submit_semantic_canonicalization_accepted",
+        data: { candidateId: candidate.id, removedFields: canonicalization.removedFields,
+          ...("addedFields" in canonicalization ? { addedFields: canonicalization.addedFields } : {}),
+          reason: canonicalization.reason, originalArguments: submitted } });
+      submitted = canonicalization.value as SubmitVerificationVerdict;
+    }
+    const updates = submitted.findingUpdates;
+    submitted = expandVerifierRevision(candidate, submitted);
+    if (updates !== undefined) {
+      telemetry.event({ stage: 9, level: "info", message: "verification_finding_updates_applied",
+        data: { candidateId: candidate.id, changedFields: Object.keys(updates) } });
+    }
+  } catch {
+    telemetry.event({ stage: 9, level: "warn", message: "verification_semantic_invalid",
+      data: { candidateId: candidate.id, reason: "invalid_finding_updates" } });
+    return incompleteSubmittedVerdict("invalid_finding_updates");
+  }
   // Schema-valid adapters never return null payloads, but normalize them away
   // defensively before applying the same semantic checks to every verdict.
   const {
@@ -742,6 +781,12 @@ function normalizeSubmittedVerdict(
     });
     return incompleteSubmittedVerdict(reason);
   }
+  if (normalized.proofAssessment && (normalized.proofAssessment.status !== "established" ||
+      normalized.proofAssessment.assumptions.some(assumption => assumption.essential))) {
+    telemetry.event({ stage: 9, level: "info", message: "verification_proof_not_established",
+      data: { candidateId: candidate.id, proofAssessment: normalized.proofAssessment } });
+    return { ...normalized, verdict: "reject", requiredEvidencePresent: false };
+  }
   if (normalized.verdict === "reject" || normalized.requiredEvidencePresent === true) {
     return normalized;
   }
@@ -775,22 +820,70 @@ async function runVerifierStructured(
   runtimeStats: VerificationRuntimeStats
 ): Promise<SubmitVerificationVerdict> {
   let repairAttempt: VerifierRepairAttempt | undefined;
+  let deterministicRecovered = false;
   try {
     const result = await opts.runner.runStructured<SubmitVerificationVerdict>({
       stage: 9,
       prompt: prompt.prompt,
-      schema: SubmitVerificationVerdictSchema,
+      schema: { ...SubmitVerificationVerdictSchema,
+        required: [...SubmitVerificationVerdictSchema.required, "proofAssessment"] },
+      ...(opts.signal ? { signal: opts.signal } : {}),
       templateVersion: prompt.templateVersion,
       tools: buildRepositoryToolDefinitions(tools, { includeLikelyTests: candidate.category === "testing" }),
       toolBudget: scaleToolBudget(VERIFIER_TOOL_BUDGET, config.review.budgetBoost),
       timeoutMs: config.review.perPassTimeoutMs,
       telemetryContext: { workerId, candidateId: candidate.id, packetId: candidate.producedBy.packetId },
-      validateSubmit: (value) => value.verdict === "revise" && value.finalFinding === undefined && value.revisedAnchor === undefined
-        ? { ok: false, classification: "revise_without_revision_payload" }
-        : { ok: true },
+      normalizeSubmit: value => normalizeVerifierSubmission(candidate, value),
+      validateSubmit: (value) => {
+        try {
+          const proof = value.proofAssessment;
+          if (!proof) return { ok: false, classification: "schema_invalid", details: "Supply proofAssessment: status, concrete evidence, and unresolved assumptions with essential flags." };
+          if ((value.verdict === "keep" || value.verdict === "revise") &&
+              (proof.status !== "established" || proof.assumptions.some(assumption => assumption.essential) || !value.requiredEvidencePresent)) {
+            return { ok: false, classification: "schema_invalid", details: "A publishable verdict requires established proof and no unresolved essential assumption. If the defect's existence remains conditional, return reject with proofAssessment.status=unresolved and retain the open questions. Secondary uncertainty about magnitude alone does not require rejection." };
+          }
+          const expanded = expandVerifierRevision(candidate, value);
+          return expanded.verdict === "revise" && expanded.finalFinding === undefined && expanded.revisedAnchor === undefined
+            ? { ok: false, classification: "revise_without_revision_payload" }
+            : { ok: true };
+        } catch (error) {
+          return { ok: false, classification: "invalid_tool_arguments", details: error instanceof Error ? error.message : String(error) };
+        }
+      },
       schemaRepair: {
-        replaceConversation: true,
+        replacementGroups: [["finalFinding", "findingUpdates"]],
+        createFieldRepair: (schema, retained) => createFieldRepair(schema, retained, true,
+          [["finalFinding", "findingUpdates"]], promotedCompletionIssues(candidate, cleanupSubmitShape(schema, retained).arguments)),
+        // Retain the investigation and any readable verdict. Unreadable
+        // arguments are diagnosed separately and never treated as evidence.
+        replaceConversation: false,
         failAfterRepair: false,
+        recoverInvalidSubmit: (input) => {
+          const recovered = recoverStringWrappedVerifierFinding(input);
+          if (recovered === undefined) return undefined;
+          return {
+            kind: "recovery",
+            arguments: recovered,
+            onRecovered: () => {
+              deterministicRecovered = true;
+              if (repairAttempt === undefined) runtimeStats.schemaInvalid += 1;
+              telemetry.event({
+                stage: 9,
+                level: "info",
+                message: "schema_invalid_submit_recovered",
+                workerId,
+                packetId: candidate.producedBy.packetId,
+                data: {
+                  candidateId: candidate.id,
+                  submitTool: "submit_verdict",
+                  invalidSubmitCallCount: input.submitCalls.length,
+                  schemaRepairUsed: input.schemaRepairUsed,
+                  recovery: "decoded_final_finding_object"
+                }
+              });
+            }
+          };
+        },
         buildPrompt: (input) => {
           repairAttempt = recordVerifierSchemaRepairAttempt(candidate, input, telemetry, runtimeStats);
           return buildVerifierSchemaRepairPrompt(candidate, input, repairAttempt);
@@ -828,7 +921,7 @@ async function runVerifierStructured(
         });
         return incompleteSubmittedVerdict("schema_invalid_after_repair: empty_submit_object");
       }
-    } else if (isPrimaryVerifierSubmitAccepted(result)) {
+    } else if (!deterministicRecovered && isPrimaryVerifierSubmitAccepted(result, candidate)) {
       telemetry.event({
         stage: 9,
         level: "info",
@@ -948,8 +1041,11 @@ function buildVerifierSchemaRepairPrompt(
   attempt: VerifierRepairAttempt
 ): string {
   const candidateSummary = fenceUntrusted(stableJson(verifierRepairCandidateProjection(candidate)), "verifier-repair-candidate-summary");
+  const unreadable = !input.submitCalls.length || Boolean(input.untrustedSubmitCalls?.length);
   return [
-    "Repair the Stage 9 verifier response for codegenie.",
+    unreadable
+      ? "Generate a new complete Stage 9 verifier submission from the retained investigation evidence. The previous verdict was unreadable or absent."
+      : "Repair only the structured shape of the Stage 9 verifier response for codegenie.",
     "",
     candidateSummary,
     "",
@@ -966,13 +1062,19 @@ function buildVerifierSchemaRepairPrompt(
     "- Do not answer in plain text.",
     "- Do not call repository tools or ask for more context.",
     "",
-    "Verdict reminder:",
-    "- Judge only the bounded candidate evidence above. It preserves the candidate claim, not repository-tool results from the discarded response.",
-    "- keep only if the candidate is proven by concrete evidence.",
-    "- revise only when the same issue is real but the evidence, wording, or anchor needs correction; include finalFinding or revisedAnchor.",
+    "Repair constraints:",
+    "- The earlier verifier conversation and repository-tool evidence are retained. The candidate summary above is a reference, not a replacement for that evidence.",
+    ...(unreadable ? [
+      "- The unreadable submission is not available as a trusted verdict. Do not claim to preserve its decisions or reconstruct them from fragments. Produce a complete verdict justified by the retained evidence; this is a new submission whose fidelity to the unreadable draft cannot be established.",
+      "- Do not invent evidence, locations, or conclusions to obtain a valid result. Make required decisions only when supported by the retained investigation."
+    ] : [
+      "- Preserve the verdict and substantive conclusions of the retained readable submission. Do not reopen the investigation or downgrade a confirmed result because evidence is absent from the candidate summary.",
+      "- Correct serialization and schema shape only. Never invent missing evidence, severity, confidence, locations, or conclusions. Recover unfinished fields only when their content is explicitly present in the retained conversation."
+    ]),
+    "- Prefer a small findingUpdates object with only changed fields; use revisedAnchor for placement. Never encode an object as a JSON string. Do not repeat unchanged evidence. Do not combine findingUpdates and finalFinding.",
     `- Keep reason concise and at most ${VERIFIER_REASON_TARGET_CHARS.toLocaleString("en-US")} characters.`,
-    "- reject when required evidence is missing, the claim is speculative, or false-positive risk is high.",
-    "- If rejecting because verification cannot be completed, set requiredEvidencePresent=false and falsePositiveRisk=high."
+    "- If missing substantive content cannot be recovered from the retained evidence, do not manufacture a valid verdict; report that repair is impossible. The harness will mark verification incomplete.",
+    VERIFIER_SUBMIT_SHAPE_GUIDANCE
   ].join("\n");
 }
 
@@ -1104,11 +1206,16 @@ function isEmptySubmitObject(input: unknown): boolean {
   return typeof input === "object" && input !== null && !Array.isArray(input) && Object.keys(input).length === 0;
 }
 
-function isPrimaryVerifierSubmitAccepted(input: unknown): input is SubmitVerificationVerdict {
+function isPrimaryVerifierSubmitAccepted(input: unknown, candidate: CandidateFinding): input is SubmitVerificationVerdict {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     return false;
   }
   const verdict = input as Partial<SubmitVerificationVerdict>;
+  try {
+    expandVerifierRevision(candidate, input as SubmitVerificationVerdict);
+  } catch {
+    return false;
+  }
   const sharedFieldsValid = typeof verdict.reason === "string" && verdict.reason.length > 0 &&
     typeof verdict.requiredEvidencePresent === "boolean" &&
     (verdict.falsePositiveRisk === "low" || verdict.falsePositiveRisk === "medium" || verdict.falsePositiveRisk === "high");
@@ -1118,7 +1225,7 @@ function isPrimaryVerifierSubmitAccepted(input: unknown): input is SubmitVerific
   if (verdict.verdict === "keep" || verdict.verdict === "reject") {
     return true;
   }
-  return verdict.verdict === "revise" && (verdict.finalFinding != null || verdict.revisedAnchor != null);
+  return verdict.verdict === "revise" && (verdict.finalFinding != null || verdict.findingUpdates != null || verdict.revisedAnchor != null);
 }
 
 function sanitizeVerifierSchemaError(error: string): string {
@@ -1188,6 +1295,9 @@ function revisedFinding(
   if (anchorSource !== undefined) {
     revised.anchorSource = anchorSource;
   }
+  if (original.locationResolution !== undefined) {
+    revised.locationResolution = original.locationResolution;
+  }
   if (original.modelAnchorSubmitted !== undefined) {
     revised.modelAnchorSubmitted = original.modelAnchorSubmitted;
   }
@@ -1212,8 +1322,7 @@ function normalizeAnchor(
   packet: ReviewPacket | undefined,
   diff: UnifiedDiff | undefined
 ): CandidateFinding["anchor"] {
-  const packetValid = packet ? validateAnchorForPacket(anchor, packet) : anchor;
-  return validateAnchorForDiff(packetValid, diff);
+  return validateAnchorForDiff(anchor, diff);
 }
 
 function gateCandidate(candidate: CandidateFinding, config: CodegenieConfig): CandidateGateDecision {
@@ -1254,15 +1363,14 @@ function candidateGateFacts(candidate: CandidateFinding): VerificationGateFacts 
     failureModeConcrete: failureMode.length >= 24,
     relatedEvidenceCount,
     modelAnchorSubmitted: candidate.modelAnchorSubmitted === true,
-    modelAnchorValid: candidate.anchorSource === "model",
+    modelAnchorValid: candidate.anchorSource === "model" && candidate.locationResolution?.status !== "clarified",
     validAnchorPresent,
     ...(candidate.anchorSource !== undefined ? { anchorSource: candidate.anchorSource } : {})
   };
 }
 
 function isEvidenceBackedLowConfidenceCandidate(facts: VerificationGateFacts): boolean {
-  return facts.changedLine &&
-    facts.hasChangedCode &&
+  return facts.hasChangedCode &&
     facts.hasFailureMode &&
     facts.failureModeConcrete &&
     facts.relatedEvidenceCount > 0 &&
@@ -1275,9 +1383,6 @@ function lowConfidenceGateReason(facts: VerificationGateFacts): string {
   }
   if (!(facts.category === "logic_bug" || facts.category === "correctness" || facts.category === "security")) {
     return "low_confidence_unsupported_category";
-  }
-  if (!facts.changedLine) {
-    return "low_confidence_no_changed_line_anchor";
   }
   if (facts.relatedEvidenceCount === 0) {
     return "low_confidence_no_related_evidence";

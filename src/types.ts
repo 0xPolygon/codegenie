@@ -1,7 +1,7 @@
 export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
 
 export type ReviewDepth = "light" | "normal" | "deep";
-export type ReasoningLevel = "low" | "medium" | "high" | "xhigh";
+export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type Severity = "critical" | "high" | "medium" | "low";
 export type Confidence = "high" | "medium" | "low";
 export type ProcessingMode = "per-hunk" | "whole-file" | "skip";
@@ -35,6 +35,7 @@ export type CodegenieConfig = {
   review: {
     depth: ReviewDepth;
     verify: boolean;
+    compositionReasoningStepDown: boolean;
     minSeverity?: Severity;
     maxFindings: number;
     softCommentCap: number;
@@ -790,6 +791,18 @@ export type AnchorSource =
   | "backfill_packet_representative"
   | "verifier_revised";
 
+export type SuggestionAssessment = {
+  contractCheck?: { status: "established" | "unresolved"; requirement: string };
+  status: "supported" | "incompatible" | "unverified";
+  suggestionText: string;
+  rationale: string;
+  evidence: Array<{ path: string; lines: string; whyRelevant: string }>;
+};
+export type SuggestionAssessments = {
+  suggestedFix?: SuggestionAssessment;
+  suggestedTest?: SuggestionAssessment;
+};
+
 export type CandidateFinding = {
   id: string;
   title: string;
@@ -807,6 +820,11 @@ export type CandidateFinding = {
   // distinguishes "model never anchored" from "model anchor was invalid"
   // after reconstruction has run.
   modelAnchorSubmitted?: boolean;
+  locationResolution?: {
+    status: "unresolved" | "clarified" | "unavailable";
+    rejectedAnchor?: DiffAnchor;
+    reason?: string;
+  };
   changedLine: boolean;
   category: FindingCategory;
   evidence: {
@@ -817,6 +835,10 @@ export type CandidateFinding = {
   whyThisMatters: string;
   suggestedFix?: string;
   suggestedTest?: string;
+  suggestionAssessments?: SuggestionAssessments;
+  // Host-owned, provenance-only original proposals replaced during verification.
+  originalSuggestions?: SuggestionAssessments;
+  proofAssessment?: VerificationVerdict["proofAssessment"];
   verification: string;
   behaviorChange?: BehaviorChangeAssessment;
   intentEvidence?: string[];
@@ -853,6 +875,36 @@ export type PacketReviewResult = {
   // Total Stage-7 passes that produced this result (planned ensemble +
   // adaptive second pass); absent on stage-8 system results.
   passesRun?: number;
+  /** Supplemental investigation only; never substitutes for baseline coverage. */
+  adaptiveReview?: AdaptiveReviewOutcome;
+};
+
+export type AdaptiveReviewOutcome = {
+  trigger?: "concrete_hint" | "silent_with_signal" | "low_confidence_only";
+  outcome: "not_triggered" | "capped" | "completed" | "failed" | "cancelled" | "timed_out" | "not_dispatched";
+  attempts: number;
+  reviewStatus?: PacketReviewResult["status"];
+  errorCode?: string;
+  /** An explicit cooperative deadline error can have worker outcome=failed. */
+  failureReason?: "timeout";
+};
+
+export type AdaptiveReviewCounts = {
+  triggered: number;
+  scheduled: number;
+  completed: number;
+  incomplete: number;
+  failed: number;
+  timedOut: number;
+  cancelled: number;
+  notDispatched: number;
+  capped: number;
+  retries: number;
+};
+
+export type AdaptiveReviewSummary = {
+  passes: Array<AdaptiveReviewOutcome & { packetId: string }>;
+  counts: AdaptiveReviewCounts;
 };
 
 export type SystemReviewTask = {
@@ -885,6 +937,11 @@ export type SystemReviewResult = {
 
 export type VerificationVerdict = {
   candidateId: string;
+  suggestionAssessments?: SuggestionAssessments;
+  // Host-owned, provenance-only original proposals replaced during verification.
+  originalSuggestions?: SuggestionAssessments;
+  proofAssessment?: { status: "established" | "refuted" | "unresolved"; evidence: string; assumptions: Array<{ question: string; essential: boolean }> };
+  unresolvedConcern?: NeedsHumanAttentionNote;
   // "incomplete" is runner-assigned only (timeout/budget/schema loss before a
   // real verdict); the model-submitted verdict never carries it.
   verdict: "keep" | "reject" | "revise" | "incomplete";
@@ -917,6 +974,8 @@ export type FinalFinding = CandidateFinding & {
 };
 
 export type RunCoverageStatus = {
+  /** Absent in legacy artifacts or when supplemental outcomes were not recorded. */
+  adaptiveReviews?: AdaptiveReviewSummary;
   totalHunks: number;
   reviewedHunks: number;
   skippedHunks: number;
@@ -1009,6 +1068,7 @@ export type EvalFindingExpectation = {
 };
 
 export type EvalCase = {
+  recommendationJudge?: import("./evals/recommendation-judge.js").RecommendationJudgeConfig;
   name: string;
   // Number of independent executions of this case (plan 79). Default 1.
   // repeat > 1 requires caching off and is incompatible with artifact-backed
@@ -1036,6 +1096,7 @@ export type EvalCase = {
     deepEnsemblePasses?: number;
     adaptiveSecondPass?: boolean;
     verify?: boolean;
+    compositionReasoningStepDown?: boolean;
     cache?: boolean;
     cacheDir?: string;
     debug?: boolean;
@@ -1065,6 +1126,9 @@ export type EvalCase = {
     maxToolCalls?: number;
     maxPromptCharsByStage?: Partial<Record<ReviewStage | string, number>>;
     reviewCompleteness?: "complete" | "partial";
+    planningQuality?: "non-degraded";
+    compositionQuality?: "non-degraded";
+    recoveryFidelity?: "preserved";
     maxBudgetOverruns?: number;
     maxToolBudgetRejections?: number;
     maxDegradedHunks?: number;
@@ -1157,6 +1221,9 @@ export type EvalBudgetResult = {
     | "maxToolCalls"
     | "maxPromptCharsByStage"
     | "reviewCompleteness"
+    | "compositionQuality"
+    | "planningQuality"
+    | "recoveryFidelity"
     | "maxBudgetOverruns"
     | "maxToolBudgetRejections"
     | "maxDegradedHunks"
@@ -1201,6 +1268,7 @@ export type AttentionEfficiency = {
 };
 
 export type EvalRunMetrics = {
+  adaptiveReviews?: AdaptiveReviewCounts;
   reportedFindings: number;
   inlineFindings: number;
   summaryOnlyFindings: number;
@@ -1217,6 +1285,9 @@ export type EvalRunMetrics = {
   missingArtifacts?: string[];
   maxPromptCharsByStage?: Partial<Record<ReviewStage, number>>;
   reviewCompleteness?: "complete" | "partial";
+  planningQuality?: "non-degraded" | "degraded" | "unknown";
+  compositionQuality?: "non-degraded" | "degraded" | "unknown";
+  recoveryFidelity?: "preserved" | "unresolved" | "unknown";
   budgetOverruns?: number;
   toolBudgetRejections?: number;
   toolBudgetExtensions?: number;
@@ -1246,6 +1317,7 @@ export type EvalRunMetrics = {
 };
 
 export type EvalScore = {
+  recommendationQuality?: import("./evals/recommendation-judge.js").RecommendationJudgment;
   status: "pass" | "fail" | "error";
   expectationResults: EvalExpectationResult[];
   budgetResults: EvalBudgetResult[];
@@ -1286,6 +1358,7 @@ export type EvalRunInfo = {
   effectiveConfig?: {
     review: {
       concurrency: number;
+      compositionReasoningStepDown?: boolean;
       timeoutMs: number;
       maxBudgetTokens?: number;
     };
@@ -1384,6 +1457,7 @@ export type EvalArtifacts = {
     budgetSummary?: BudgetSummary;
     runJson?: unknown;
     telemetry?: unknown;
+    recoveryEvents?: unknown[];
     modelCalls?: unknown[];
     toolCalls?: unknown[];
   };

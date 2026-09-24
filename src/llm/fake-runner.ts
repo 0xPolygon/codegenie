@@ -1,4 +1,4 @@
-import { codeBlock, fenceLanguageForPath } from "../util/markdown.js";
+import type { CompositionSource } from "../pipeline/composition-content.js";
 import type { LlmRunner, LlmStructuredRequest } from "./llm-runner.js";
 import type {
   CandidateFinding,
@@ -17,6 +17,7 @@ type FakePlannerDossier = {
 
 type FakeGroupedFinding = {
   representative?: CandidateFinding;
+  sourceComponents?: CompositionSource[];
   findings?: CandidateFinding[];
 };
 
@@ -164,18 +165,17 @@ function fakeComposition(prompt: string): unknown {
 
   return {
     summary: findings.length === 0 ? "No credible findings." : `Found ${findings.length} verified issue${findings.length === 1 ? "" : "s"}.`,
-    composedFindings: findings.map((finding) => ({
-      findingIds: [finding.id, ...(finding.duplicateOf ? [finding.duplicateOf] : [])],
-      finalBody: [
-        finding.failureMode,
-        "",
-        `**Evidence:**\n${codeBlock(finding.evidence.changedCode, fenceLanguageForPath(finding.path))}`,
-        finding.suggestedFix ? `**Suggested fix:** ${finding.suggestedFix}` : ""
-      ]
-        .filter(Boolean)
-        .join("\n"),
-      publication: finding.anchor ? "inline" : "summary-only"
-    }))
+    composedFindings: groups.map((group) => {
+      const finding = group.representative ?? group.findings![0]!;
+      const sources = group.sourceComponents ?? [];
+      return {
+        findingIds: (group.findings ?? [finding]).map(item => item.id),
+        finalBody: "Verified source components.",
+        sections: sources.filter(source => source.kind !== "evidence").map(source => ({ kind: source.kind, text: source.text, sourceRefs: [source.id] })),
+        evidenceRefs: sources.filter(source => source.kind === "evidence").map(source => source.id),
+        publication: finding.anchor ? "inline" : "summary-only"
+      };
+    })
   };
 }
 

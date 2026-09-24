@@ -1,8 +1,9 @@
 import { z } from "zod";
-import type { CodegenieConfig } from "../types.js";
+import type { CodegenieConfig, ReasoningLevel } from "../types.js";
 
 export const reviewDepthSchema = z.enum(["light", "normal", "deep"]);
-export const reasoningLevelSchema = z.enum(["low", "medium", "high", "xhigh"]);
+export const REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ReasoningLevel[];
+export const reasoningLevelSchema = z.enum(REASONING_LEVELS);
 export const severitySchema = z.enum(["critical", "high", "medium", "low"]);
 export const confidenceSchema = z.enum(["high", "medium", "low"]);
 export const logLevelSchema = z.enum(["debug", "info", "warn", "error"]);
@@ -42,6 +43,7 @@ export const rawConfigSchema = z
       .object({
         depth: reviewDepthSchema.optional(),
         verify: z.boolean().optional(),
+        compositionReasoningStepDown: z.boolean().optional(),
         minSeverity: severitySchema.optional(),
         maxFindings: positiveIntSchema.optional(),
         softCommentCap: positiveIntSchema.optional(),
@@ -129,6 +131,7 @@ export const codegenieConfigSchema = z
       .object({
         depth: reviewDepthSchema,
         verify: z.boolean(),
+        compositionReasoningStepDown: z.boolean(),
         minSeverity: severitySchema.optional(),
         maxFindings: positiveIntSchema,
         softCommentCap: positiveIntSchema,
@@ -201,6 +204,7 @@ export const defaultConfig: CodegenieConfig = {
   review: {
     depth: "normal",
     verify: true,
+    compositionReasoningStepDown: false,
     maxFindings: 25,
     softCommentCap: 7,
     minConfidence: "medium",

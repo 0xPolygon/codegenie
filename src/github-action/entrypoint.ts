@@ -17,6 +17,7 @@ import {
   type TriggerDecision,
   type TriggerRules
 } from "./event-gate.js";
+import { splitReasoningSuffix } from "../provider/reasoning.js";
 import { createIssueCommentClient, type IssueCommentClient } from "./issue-comments.js";
 import { createStatusCommentController } from "./status-comment.js";
 import { renderProviderMessage, renderStructuredSubmitFailure } from "./render.js";
@@ -72,8 +73,6 @@ export type ModelSpec = {
   model: string;
   reasoning: string;
 };
-
-const REASONING_LEVELS = new Set(["low", "medium", "high", "xhigh", "auto"]);
 
 // The `codegenie github-action` subcommand: the whole GitHub Actions surface
 // (plan 97). Composes the review path through its public seams only — the
@@ -316,17 +315,10 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
 // One model spec instead of separate provider/model/reasoning inputs:
 // `provider/model[:reasoning]`, e.g. `anthropic/claude-opus-5:xhigh`.
 // Reasoning defaults to "high" — Action reviews are unattended, so the
-// action's posture favors quality over the CLI's interactive default. A
-// `:suffix` that is not a reasoning level stays part of the model id
-// (ollama-style `provider/llama3:8b`).
+// action's posture favors quality over the CLI's interactive default. The
+// suffix rule is the shared one (a non-level `:suffix` stays in the model id).
 export function parseModelSpec(spec: string): ModelSpec {
-  let reasoning = "high";
-  let rest = spec;
-  const colon = spec.lastIndexOf(":");
-  if (colon > -1 && REASONING_LEVELS.has(spec.slice(colon + 1))) {
-    reasoning = spec.slice(colon + 1);
-    rest = spec.slice(0, colon);
-  }
+  const { model: rest, reasoning = "high" } = splitReasoningSuffix(spec);
   const slash = rest.indexOf("/");
   const provider = slash > 0 ? rest.slice(0, slash) : undefined;
   const model = slash > 0 ? rest.slice(slash + 1) : rest;

@@ -4,7 +4,6 @@ import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import path from "node:path";
 import {
-  getSupportedThinkingLevels,
   type AuthEvent,
   type AuthPrompt,
   type Api,
@@ -23,6 +22,13 @@ import { CodegenieError } from "../util/errors.js";
 import { filterDeprecatedProviderModels } from "./model-policy.js";
 import { getCodegeniePiModels, getPiEnvApiKey } from "./pi-ai-models.js";
 import { loadProviderSettings, saveProviderSettings } from "./provider-settings.js";
+import {
+  REASONING_USAGE,
+  normalizeReasoningLevel,
+  modelThinkingLevels,
+  parseReasoningLevel,
+  splitReasoningSuffix
+} from "./reasoning.js";
 
 export { ensureCodegenieHome, getCodegeniePaths, loadProviderSettings, saveProviderSettings };
 export type { CodegeniePaths, ProviderSettings };
@@ -400,17 +406,49 @@ function commandLogout(args: string[], services: ProviderServices, opts: RunProv
 }
 
 function commandUse(args: string[], services: ProviderServices, writeOut: (text: string) => void): void {
-  const query = requireArg(args[0], "provider use <model>");
-  const match = findUsableModel(query, services);
+  const query = requireArg(args[0], "provider use <model>[:reasoning]");
+  const spec = splitReasoningSuffix(query);
+  const match = findUsableModel(spec.model, services);
   if (!match) {
-    throw new CodegenieError(
+    throw unknownModelError(query, services);
+  }
+  const requested = spec.reasoning ?? "high";
+  const reasoning = requested === "auto" ? "auto" : normalizeReasoningLevel(requested, match.thinkingLevels);
+  const settings = loadProviderSettings(services.paths);
+  const next: ProviderSettings = { ...settings, defaultProvider: match.provider, defaultModel: match.id };
+  if (reasoning === "auto") {
+    delete next.defaultReasoning;
+  } else {
+    next.defaultReasoning = reasoning;
+  }
+  saveProviderSettings(next, services.paths);
+  writeOut(
+    `default model set to ${match.provider}/${match.id} (${match.name}); ` +
+    `${reasoning === "auto" ? "reasoning override cleared" : `reasoning set to ${reasoning}${reasoning !== requested ? ` (normalized from ${requested})` : ""}`}\n`
+  );
+}
+
+// `model:mmm` where the model exists but the suffix is not a level reads as a
+// level typo, not a missing model: answer with the levels that model takes.
+// Ids that really contain a colon (`...-0731:batch`) never reach here because
+// the full query matched.
+function unknownModelError(query: string, services: ProviderServices): CodegenieError {
+  const colon = query.lastIndexOf(":");
+  const base = colon > 0 ? findUsableModel(query.slice(0, colon), services) : undefined;
+  if (base !== undefined) {
+    const levels = base.thinkingLevels.length > 0
+      ? `supported levels: ${base.thinkingLevels.join(", ")}`
+      : "it does not expose reasoning levels";
+    return new CodegenieError(
       "invalid_args",
-      `sorry cannot find model ${query}. please check codegenie provider models for complete list`
+      `unknown reasoning level ${query.slice(colon + 1)} for ${base.provider}/${base.id}; ${levels}`,
+      { context: { provider: base.provider, model: base.id, reasoning: query.slice(colon + 1), supported: [...base.thinkingLevels] } }
     );
   }
-  const settings = loadProviderSettings(services.paths);
-  saveProviderSettings({ ...settings, defaultProvider: match.provider, defaultModel: match.id, defaultReasoning: "high" }, services.paths);
-  writeOut(`default model set to ${match.provider}/${match.id} (${match.name}); reasoning set to high\n`);
+  return new CodegenieError(
+    "invalid_args",
+    `sorry cannot find model ${query}. please check codegenie provider models for complete list`
+  );
 }
 
 function findUsableModel(query: string, services: ProviderServices, opts: { provider?: string } = {}): ProviderModelInfo | undefined {
@@ -437,7 +475,12 @@ function modelMatchRank(normalizedQuery: string, modelId: string): number | unde
   if (normalizedModelId.startsWith(normalizedQuery)) {
     return 1;
   }
-  return normalizedModelId.includes(normalizedQuery) ? 2 : undefined;
+  // A query that is the whole tail of an id (vendor path aside) outranks one
+  // buried inside a longer name, e.g. `<vendor>/<query>` over `<vendor>/<query>x`.
+  if (normalizedModelId.endsWith(normalizedQuery)) {
+    return 2;
+  }
+  return normalizedModelId.includes(normalizedQuery) ? 3 : undefined;
 }
 
 function normalizeModelSearch(value: string): string {
@@ -527,17 +570,21 @@ async function commandConfig(
       return;
     }
     case "set-reasoning": {
-      const value = requireArg(rest[0], "provider config set-reasoning <low|medium|high|xhigh|auto>");
-      if (value === "auto") {
+      const value = requireArg(rest[0], `provider config set-reasoning ${REASONING_USAGE}`);
+      const reasoning = parseReasoningLevel(value, "reasoning");
+      if (reasoning === "auto") {
         const next = { ...settings };
         delete next.defaultReasoning;
         saveProviderSettings(next, services.paths);
         writeOut("default reasoning override cleared\n");
         return;
       }
-      const reasoning = parseReasoning(value);
-      saveProviderSettings({ ...settings, defaultReasoning: reasoning }, services.paths);
-      writeOut(`default reasoning set to ${reasoning}\n`);
+      const current = settings.defaultProvider !== undefined && settings.defaultModel !== undefined
+        ? services.modelRegistry.listModels(settings.defaultProvider).find((model) => model.id === settings.defaultModel)
+        : undefined;
+      const effective = normalizeReasoningLevel(reasoning, current?.thinkingLevels ?? []);
+      saveProviderSettings({ ...settings, defaultReasoning: effective }, services.paths);
+      writeOut(`default reasoning set to ${effective}${effective !== reasoning ? ` (normalized from ${reasoning})` : ""}\n`);
       return;
     }
     default:
@@ -663,10 +710,9 @@ function renderAuthStatus(provider: string | undefined, services: ProviderServic
 function renderModels(query: string | undefined, all: boolean, services: ProviderServices, env?: NodeJS.ProcessEnv): string {
   const providers = services.modelRegistry.listProviders();
   const current = currentModelSelection(services, env);
-  const providerQuery = query && services.modelRegistry.providerExists(query) ? query : undefined;
-  const needle = providerQuery ? undefined : query?.toLowerCase();
+  const needle = query?.toLowerCase();
   const rows = services.modelRegistry
-    .listModels(providerQuery)
+    .listModels()
     .filter((model) => {
       const status = services.modelRegistry.authStatus(model.provider);
       const available = all || status.configured;
@@ -675,9 +721,6 @@ function renderModels(query: string | undefined, all: boolean, services: Provide
     });
 
   if (rows.length === 0) {
-    if (providerQuery) {
-      return `No models available for ${providerQuery}${all ? "" : " with current authentication"}.\n`;
-    }
     if (query) {
       return `No models matched ${query}${all ? "" : " among authenticated providers"}.\n`;
     }
@@ -760,7 +803,7 @@ function renderProviderConfig(
     "  codegenie provider use <model>",
     "  codegenie provider config set-provider <provider>",
     "  codegenie provider config set-model <provider> <model>",
-    "  codegenie provider config set-reasoning <low|medium|high|xhigh|auto>",
+    `  codegenie provider config set-reasoning ${REASONING_USAGE}`,
     "  codegenie provider config set-depth <light|normal|deep>",
     "",
     "Depth controls review budget and investigation intensity. Reasoning controls model thinking effort.",
@@ -915,7 +958,7 @@ function modelInfo(model: Model<Api>): ProviderModelInfo {
     contextWindow: model.contextWindow,
     maxOutputTokens: model.maxTokens,
     reasoning: model.reasoning,
-    thinkingLevels: getSupportedThinkingLevels(model).filter((level) => level !== "off"),
+    thinkingLevels: modelThinkingLevels(model),
     input: [...model.input]
   };
 }
@@ -1183,9 +1226,3 @@ function parseDepth(value: string): ReviewDepth {
   throw new CodegenieError("invalid_args", "depth must be one of: light, normal, deep");
 }
 
-function parseReasoning(value: string): ReasoningLevel {
-  if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
-    return value;
-  }
-  throw new CodegenieError("invalid_args", "reasoning must be one of: low, medium, high, xhigh, auto");
-}

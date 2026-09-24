@@ -713,6 +713,11 @@ function scoreBudgets(
     const actual = metrics.maxPromptCharsByStage?.[stage];
     results.push(metricBudgetResult("maxPromptCharsByStage", limit, actual, replaySkip, stage));
   }
+  for (const check of ["planningQuality", "compositionQuality", "recoveryFidelity"] as const) {
+    const expected = expect[check];
+    if (expected !== undefined) results.push({ check, expected, actualText: metrics[check] ?? "unknown",
+      status: metrics[check] === expected ? "pass" : "fail", direction: "equals" });
+  }
   if (expect.reviewCompleteness !== undefined) {
     results.push(completenessBudgetResult(expect.reviewCompleteness, metrics.reviewCompleteness));
   }
@@ -838,6 +843,35 @@ function buildMetrics(artifacts: EvalArtifacts): EvalRunMetrics {
   } else if (artifacts.coverage !== undefined) {
     metrics.reviewCompleteness = artifacts.coverage.partial ? "partial" : "complete";
   }
+  metrics.planningQuality = artifacts.coverage?.degradedPlanning === undefined ? "unknown"
+    : artifacts.coverage.degradedPlanning ? "degraded" : "non-degraded";
+  if (artifacts.coverage?.adaptiveReviews) metrics.adaptiveReviews = { ...artifacts.coverage.adaptiveReviews.counts };
+  const recoveryEvents = artifacts.metricsSources.recoveryEvents ?? [];
+  const openObligations = new Set<string>();
+  let fidelityStarted = false;
+  let unprovenFidelity = false;
+  let runFinished = false;
+  metrics.compositionQuality = "unknown";
+  const expectedEvents = numberPath(artifacts.metricsSources.runJson, ["totals", "events"]);
+  const completeEvents = expectedEvents !== undefined && expectedEvents === recoveryEvents.length
+    && recoveryEvents.every((raw, index) => isRecord(raw) && raw.eventId === `ev-${String(index + 1).padStart(6, "0")}`);
+  for (const raw of recoveryEvents) {
+    if (raw === null || typeof raw !== "object") continue;
+    const event = raw as { message?: string; stage?: number; data?: { obligationId?: string; version?: number; compositionMode?: string } };
+    if (event.message === "recovery_fidelity_started" && event.data?.version === 1) fidelityStarted = true;
+    if (event.message === "recovery_unusable_submission" || event.message === "recovery_content_revised"
+      || event.message === "final_arguments_rejected") unprovenFidelity = true;
+    if (event.message === "stage_completed" && event.stage === 10) {
+      runFinished = true;
+      const mode = event.data?.compositionMode;
+      metrics.compositionQuality = mode === "llm" ? "non-degraded" : mode ? "degraded" : "unknown";
+    }
+    if (event.data?.obligationId) {
+      if (event.message === "recovery_obligation_opened") openObligations.add(event.data.obligationId);
+      if (event.message === "recovery_obligation_resolved") openObligations.delete(event.data.obligationId);
+    }
+  }
+  metrics.recoveryFidelity = !fidelityStarted || !runFinished || !completeEvents ? "unknown" : openObligations.size ? "unresolved" : unprovenFidelity ? "unknown" : "preserved";
   const costUSD = numberPath(artifacts.metricsSources.costProfile, ["totalCostUSD"]);
   if (costUSD !== undefined) {
     metrics.costUSD = costUSD;

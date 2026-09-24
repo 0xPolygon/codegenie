@@ -40,6 +40,7 @@ import {
 } from "./eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "./eval-compare.js";
 import { aggregateRepeatScores, scoreEvalRun } from "./eval-scoring.js";
+import { addRecommendationJudgment, recommendationJudgeSchema } from "./recommendation-judge.js";
 
 export type EvalSuite = {
   dir: string;
@@ -47,6 +48,7 @@ export type EvalSuite = {
 };
 
 export type EvalRunOptions = {
+  judgeReplay?: boolean;
   cacheOverride?: boolean;
   config: CodegenieConfig;
 };
@@ -138,6 +140,7 @@ const caseSchema = z
         maxBudgetTokens: positiveIntSchema.optional(),
         deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
         adaptiveSecondPass: z.boolean().optional(),
+        compositionReasoningStepDown: z.boolean().optional(),
         verify: z.boolean().optional(),
         cache: z.boolean().optional(),
         cacheDir: z.string().min(1).optional(),
@@ -180,6 +183,9 @@ const caseSchema = z
         maxToolCalls: positiveNumberSchema.optional(),
         maxPromptCharsByStage: z.record(z.string(), positiveIntSchema).optional(),
         reviewCompleteness: z.enum(["complete", "partial"]).optional(),
+        planningQuality: z.literal("non-degraded").optional(),
+        compositionQuality: z.literal("non-degraded").optional(),
+        recoveryFidelity: z.literal("preserved").optional(),
         maxBudgetOverruns: z.number().int().nonnegative().optional(),
         maxToolBudgetRejections: z.number().int().nonnegative().optional(),
         maxDegradedHunks: z.number().int().nonnegative().optional(),
@@ -187,6 +193,7 @@ const caseSchema = z
       })
       .strict()
       .optional(),
+    recommendationJudge: recommendationJudgeSchema.optional(),
     should_find: z.array(expectationSchema).optional(),
     should_find_candidate: z.array(expectationSchema).optional(),
     should_not_find: z.array(expectationSchema).optional()
@@ -315,6 +322,8 @@ export async function replayFromArtifacts(
   const suiteDir = path.dirname(logsDir);
   const allocated = await allocateRunDir(logsDir);
   const reread = await rereadReplayCase(sourceInfo, suiteDir);
+  const codegenieRuntime = resolveCodegenieRuntimeProvenance();
+  const effectiveConfig = evalEffectiveConfig(options.config);
   const startedAt = new Date().toISOString();
   try {
     assertReplayLayoutSupported(source);
@@ -323,12 +332,15 @@ export async function replayFromArtifacts(
     const artifacts = await loadEvalArtifacts(telemetryDir);
     assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(reread.evalCase, artifacts, "replay");
+    await addRecommendationJudgment(reread.evalCase, score, allocated.dir, options.judgeReplay === true);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
       evalCase: reread.evalCase,
       caseHash: reread.caseHash,
       mode: "replay",
+      codegenieRuntime,
+      effectiveConfig,
       startedAt,
       finishedAt,
       score,
@@ -347,6 +359,8 @@ export async function replayFromArtifacts(
         ...(sourceInfo.caseFile !== undefined ? { file: sourceInfo.caseFile } : {})
       },
       options.config,
+      codegenieRuntime,
+      effectiveConfig,
       startedAt,
       error,
       "replay",
@@ -395,6 +409,8 @@ async function runArtifactCase(
   allocated: { runNumber: number; dir: string },
   options: EvalRunOptions
 ): Promise<EvalCaseResult> {
+  const codegenieRuntime = resolveCodegenieRuntimeProvenance();
+  const effectiveConfig = evalEffectiveConfig(options.config);
   const startedAt = new Date().toISOString();
   const source = resolveCasePath(suite.dir, entry.evalCase.artifacts?.path ?? "");
   try {
@@ -403,6 +419,7 @@ async function runArtifactCase(
     const artifacts = await loadEvalArtifacts(telemetryDir);
     assertReplayArtifactsComplete(artifacts, telemetryDir);
     const score = scoreEvalRun(entry.evalCase, artifacts, "replay");
+    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, options.judgeReplay === true);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -410,6 +427,8 @@ async function runArtifactCase(
       caseHash: entry.caseHash,
       caseFile: entry.file,
       mode: "replay",
+      codegenieRuntime,
+      effectiveConfig,
       startedAt,
       finishedAt,
       score,
@@ -423,6 +442,8 @@ async function runArtifactCase(
       allocated,
       entry,
       options.config,
+      codegenieRuntime,
+      effectiveConfig,
       startedAt,
       error,
       "replay",
@@ -440,6 +461,8 @@ async function runLiveCase(
   if ((entry.evalCase.repeat ?? 1) > 1) {
     return runRepeatedLiveCase(suite, entry, allocated, options, entry.evalCase.repeat ?? 1);
   }
+  const codegenieRuntime = resolveCodegenieRuntimeProvenance();
+  let effectiveConfig = evalEffectiveConfig(options.config);
   const startedAt = new Date().toISOString();
   let reviewRunId: string | undefined;
   let errorConfig = options.config;
@@ -456,6 +479,7 @@ async function runLiveCase(
     const repoLayer = applyRepoConfigLayer(options.config, actualRepoRoot);
     const caseConfig = applyCaseReviewConfig(repoLayer.config, entry.evalCase, options.cacheOverride);
     errorConfig = caseConfig.config;
+    effectiveConfig = evalEffectiveConfig(caseConfig.config);
     errorCache = caseConfig.cache;
     const target = targetForCase(entry.evalCase);
     let reviewOutput = "";
@@ -478,6 +502,7 @@ async function runLiveCase(
     const telemetryDir = path.join(allocated.dir, "telemetry");
     const artifacts = await loadEvalArtifacts(telemetryDir);
     const score = scoreEvalRun(entry.evalCase, artifacts, "live");
+    await addRecommendationJudgment(entry.evalCase, score, allocated.dir, true);
     const finishedAt = new Date().toISOString();
     const info = buildRunInfo({
       runNumber: allocated.runNumber,
@@ -485,6 +510,8 @@ async function runLiveCase(
       caseHash: entry.caseHash,
       caseFile: entry.file,
       mode: "live",
+      codegenieRuntime,
+      effectiveConfig,
       startedAt,
       finishedAt,
       score,
@@ -496,7 +523,7 @@ async function runLiveCase(
     await writeRunOutputs(allocated.dir, path.dirname(allocated.dir), info, artifacts.finalFindings);
     return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
   } catch (error) {
-    return writeErroredCase(allocated, entry, errorConfig, startedAt, error, "live", undefined, errorCache);
+    return writeErroredCase(allocated, entry, errorConfig, codegenieRuntime, effectiveConfig, startedAt, error, "live", undefined, errorCache);
   }
 }
 
@@ -513,6 +540,8 @@ async function runRepeatedLiveCase(
   options: EvalRunOptions,
   repeat: number
 ): Promise<EvalCaseResult> {
+  const codegenieRuntime = resolveCodegenieRuntimeProvenance();
+  let effectiveConfig = evalEffectiveConfig(options.config);
   const startedAt = new Date().toISOString();
   let errorConfig = options.config;
   let errorCache: EvalRunInfo["cache"] | undefined;
@@ -528,6 +557,7 @@ async function runRepeatedLiveCase(
     const repoLayer = applyRepoConfigLayer(options.config, actualRepoRoot);
     const caseConfig = applyCaseReviewConfig(repoLayer.config, entry.evalCase, options.cacheOverride);
     errorConfig = caseConfig.config;
+    effectiveConfig = evalEffectiveConfig(caseConfig.config);
     errorCache = caseConfig.cache;
     if (caseConfig.cache.enabled) {
       throw new CodegenieError("config_error", "repeat > 1 requires the local model-call cache to be disabled — repeats need fresh sampling (set review.cache: false and do not pass --cache)", {
@@ -557,6 +587,7 @@ async function runRepeatedLiveCase(
         }
         const artifacts = await loadEvalArtifacts(path.join(execDir, "telemetry"));
         const score = scoreEvalRun(entry.evalCase, artifacts, "live");
+        await addRecommendationJudgment(entry.evalCase, score, execDir, true);
         await writeFile(path.join(execDir, "score.json"), `${JSON.stringify(score, null, 2)}\n`);
         executions.push({ runDir: execDirName, score, artifacts });
       } catch (error) {
@@ -573,6 +604,8 @@ async function runRepeatedLiveCase(
       caseHash: entry.caseHash,
       caseFile: entry.file,
       mode: "live",
+      codegenieRuntime,
+      effectiveConfig,
       startedAt,
       finishedAt,
       score,
@@ -586,7 +619,7 @@ async function runRepeatedLiveCase(
     await writeEvalRunInfo(allocated.dir, info);
     return { caseName: info.caseName, runDir: allocated.dir, status: info.score.status, info };
   } catch (error) {
-    return writeErroredCase(allocated, entry, errorConfig, startedAt, error, "live", undefined, errorCache);
+    return writeErroredCase(allocated, entry, errorConfig, codegenieRuntime, effectiveConfig, startedAt, error, "live", undefined, errorCache);
   }
 }
 
@@ -594,6 +627,8 @@ async function writeErroredCase(
   allocated: { runNumber: number; dir: string },
   entry: { evalCase: EvalCase; caseHash: string; file?: string },
   config: CodegenieConfig,
+  codegenieRuntime: ReturnType<typeof resolveCodegenieRuntimeProvenance>,
+  effectiveConfig: NonNullable<EvalRunInfo["effectiveConfig"]>,
   startedAt: string,
   error: unknown,
   mode: "live" | "replay",
@@ -609,6 +644,8 @@ async function writeErroredCase(
     mode,
     ...(entry.file !== undefined ? { caseFile: entry.file } : {}),
     ...(replay !== undefined ? { replay } : {}),
+    codegenieRuntime,
+    effectiveConfig,
     startedAt,
     finishedAt,
     score,
@@ -726,6 +763,8 @@ function buildRunInfo(input: {
   repeats?: EvalRunInfo["repeats"];
   repo?: EvalRunInfo["repo"];
   reviewRunId?: string;
+  codegenieRuntime: ReturnType<typeof resolveCodegenieRuntimeProvenance>;
+  effectiveConfig: NonNullable<EvalRunInfo["effectiveConfig"]>;
   startedAt: string;
   finishedAt: string;
   score: EvalScore;
@@ -743,9 +782,9 @@ function buildRunInfo(input: {
     ...(input.repeats !== undefined ? { repeats: input.repeats } : {}),
     ...(input.repo !== undefined ? { repo: input.repo } : {}),
     ...(input.reviewRunId !== undefined ? { reviewRunId: input.reviewRunId } : {}),
-    codegenieRuntime: resolveCodegenieRuntimeProvenance(),
+    codegenieRuntime: input.codegenieRuntime,
     cache: input.cache ?? { enabled: input.config.cache.enabled, source: "config", dir: input.config.cache.dir },
-    effectiveConfig: evalEffectiveConfig(input.config),
+    effectiveConfig: input.effectiveConfig,
     startedAt: input.startedAt,
     finishedAt: input.finishedAt,
     score: input.score
@@ -825,6 +864,9 @@ function applyCaseReviewConfig(
   if (review?.adaptiveSecondPass !== undefined) {
     config.review.adaptiveSecondPass = review.adaptiveSecondPass;
   }
+  if (review?.compositionReasoningStepDown !== undefined) {
+    config.review.compositionReasoningStepDown = review.compositionReasoningStepDown;
+  }
   if (review?.verify !== undefined) {
     config.review.verify = review.verify;
   }
@@ -865,6 +907,7 @@ function evalEffectiveConfig(config: CodegenieConfig): NonNullable<EvalRunInfo["
   return {
     review: {
       concurrency: config.review.concurrency,
+      compositionReasoningStepDown: config.review.compositionReasoningStepDown,
       timeoutMs: config.review.maxTimeMs,
       ...(config.review.maxBudgetTokens !== undefined ? { maxBudgetTokens: config.review.maxBudgetTokens } : {})
     },

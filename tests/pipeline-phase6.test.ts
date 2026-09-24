@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { validateToolCall } from "@earendil-works/pi-ai";
+import { validateToolCall } from "./helpers/pi-validation.js";
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import type { PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
@@ -73,19 +73,19 @@ describe("phase 6 live review path", () => {
         }
       );
 
-      expect(result.summary).toBe("Live review found one issue.");
+      expect(result.summary).toBe("⚠️ Found 1 verified issue.");
       expect(result.findings).toHaveLength(1);
       expect(result.findings[0]).toMatchObject({
         title: "Division by zero guard was removed",
         path: "app.ts",
         publication: "inline",
-        finalBody: expect.stringContaining("Restoring the guard")
+        finalBody: expect.stringContaining("Restore the guard")
       });
       expect(result.needsHumanAttention).toEqual([]);
-      expect(output.join("\n")).toContain("Live review found one issue.");
+      expect(output.join("\n")).toContain("Found 1 verified issue.");
       expect(output.join("\n")).not.toContain("Needs Human Attention");
       expect(output.join("\n")).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
-      expect(output.join("\n")).toContain("[redacted:");
+      expect(output.join("\n")).toContain("Diagnostic token: [redacted:");
       expect(adapter.callsByPrompt).toMatchObject({
         planner: 1,
         packetReview: 2,
@@ -103,10 +103,11 @@ describe("phase 6 live review path", () => {
         expect.objectContaining({ stage: 7, role: "packetReview", kind: "repair", status: "ok" }),
         expect.objectContaining({ stage: 9, role: "verifier", status: "transient_error", attempt: 1 }),
         expect.objectContaining({ stage: 9, role: "verifier", status: "ok", attempt: 2 }),
-        expect.objectContaining({ stage: 10, role: "composer", status: "ok" })
+        expect.objectContaining({ stage: 10, role: "composer", kind: "initial", status: "ok" })
       ]));
 
       const events = readJsonl<{ stage: number; message: string; data?: Record<string, unknown> }>(path.join(runArtifactDir, "events.jsonl"));
+      expect(events).toContainEqual(expect.objectContaining({ stage: 10, message: "submit_semantic_canonicalization_accepted" }));
       expect(events).toEqual(expect.arrayContaining([
         expect.objectContaining({ stage: 1, message: "stage_started" }),
         expect.objectContaining({ stage: 1, message: "stage_completed" }),
@@ -124,9 +125,12 @@ describe("phase 6 live review path", () => {
       expect(deferredStage8Artifacts(runArtifactDir)).toEqual([]);
       expect(existsSync(path.join(runArtifactDir, "final-review.md"))).toBe(true);
       const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
-      expect(finalReview).toContain("Restoring the guard");
+      expect(finalReview).toContain("Restore the guard");
       expect(finalReview).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
-      expect(finalReview).toContain("[redacted:");
+      expect(finalReview).toContain("Diagnostic token: [redacted:");
+      const compositionSources = readFileSync(path.join(runArtifactDir, "stages/10-composition/composition-sources.json"), "utf8");
+      expect(compositionSources).toContain("[redacted:");
+      expect(compositionSources).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
       const runJson = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8")) as {
         totals: { packets: number; candidates: number; verified: number; finalFindings: number };
       };
@@ -257,7 +261,7 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
       if (prompt.includes("packet review")) {
         callsByPrompt.packetReview += 1;
         if (callsByPrompt.packetReview === 1) {
-          return assistant([toolCall("submit-review-invalid", "submit_review", { packetId: "model-owned-field" })]);
+          return assistant([toolCall("submit-review-invalid", "submit_review", {})]);
         }
         const packet = extractPromptJson<ReviewPacket>(prompt, "review-packet");
         if (!packet) {
@@ -267,16 +271,25 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
       }
       if (prompt.includes("composition")) {
         callsByPrompt.composer += 1;
-        const groups = extractPromptJson<Array<{ representative?: { id?: string } }>>(prompt, "grouped-findings") ?? [];
-        const findingId = groups[0]?.representative?.id;
+        const groups = extractPromptJson<Array<{ representativeId?: string; representative?: { id?: string }; sourceComponents: Array<{ id: string; kind: string; text: string; suggestionAssessment?: { status: string }; provenanceOnly?: boolean }> }>>(prompt, "grouped-findings") ?? [];
+        const findingId = groups[0]?.representativeId ?? groups[0]?.representative?.id;
         if (!findingId) {
           throw new Error("composer prompt did not include a finding id");
         }
         return assistant([toolCall("submit-composition-live", "submit_composition", {
-          summary: "Live review found one issue.",
+          summary: "⚠️ Found 1 verified issue.",
           composedFindings: [
             {
               findingIds: [findingId],
+              sections: ["impact", "verification", "fix", "test"].flatMap(kind => {
+                const sources = groups.flatMap(group => group.sourceComponents).filter(source => source.kind === kind && !source.provenanceOnly && ((kind !== "fix" && kind !== "test") || source.suggestionAssessment?.status === "supported"));
+                const refs = sources.map(source => source.id);
+                // Redundant wrong-kind attribution is corrected locally.
+                if (callsByPrompt.composer === 1 && kind === "impact") refs.push(groups.flatMap(group => group.sourceComponents).find(source => source.kind === "verification")!.id);
+                return sources.length ? [{ kind, text: sources.map(source => source.text).join("\n") + (kind === "impact" ? " Diagnostic token: ghp_abcdefghijklmnopqrstuvwxyz1234567890." : ""), sourceRefs: refs }] : [];
+              }),
+              retainedSourceRefs: groups.flatMap(group => group.sourceComponents).filter(source => source.provenanceOnly || ((source.kind === "fix" || source.kind === "test") && source.suggestionAssessment?.status !== "supported")).map(source => source.id),
+              evidenceRefs: groups.flatMap(group => group.sourceComponents).filter(source => source.kind === "evidence").map(source => source.id),
               finalBody:
                 "Restoring the guard preserves the previous behavior when count is zero. Diagnostic token: ghp_abcdefghijklmnopqrstuvwxyz1234567890.",
               publication: "inline"
@@ -295,6 +308,7 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
         return assistant([toolCall("submit-verdict-live", "submit_verdict", {
           verdict: "keep",
           reason: "The changed code divides by an unguarded parameter.",
+          proofAssessment: { status: "established", evidence: "The divisor guard was removed.", assumptions: [] },
           requiredEvidencePresent: true,
           falsePositiveRisk: "low"
         })]);

@@ -1,5 +1,6 @@
 import { Command, CommanderError } from "commander";
 import { runProviderCommand, type RunProviderCommandOptions } from "../provider/provider-services.js";
+import { REASONING_USAGE } from "../provider/reasoning.js";
 import { CodegenieError } from "../util/errors.js";
 import { CliDisplayExit } from "./review-command.js";
 
@@ -34,6 +35,7 @@ export function parseProviderCommand(
   });
 
   const provider = program.command("provider").description("manage model providers and defaults");
+  provider.action(() => provider.help());
   const helpByPath = new Map<string, Command>();
   provider
     .command("list")
@@ -76,9 +78,17 @@ export function parseProviderCommand(
     });
   provider
     .command("models")
-    .description("list available models")
-    .argument("[query]")
+    .description("list models from authenticated providers (use --all for every provider)")
+    .argument("[query]", "search provider IDs, model IDs, and model names (case-insensitive substring)")
     .option("--all", "include unauthenticated providers")
+    .addHelpText("after", `
+Examples:
+  codegenie provider models                  List models from authenticated providers
+  codegenie provider models opus             Search for models matching 'opus'
+  codegenie provider models deepseek         Find DeepSeek models, including through other providers
+  codegenie provider models --all             List models from every provider
+  codegenie provider models --all gemini      Search across every provider
+`)
     .action((query: string | undefined, options: { all?: boolean }) => {
       parsed = {
         args: query ? ["provider", "models", query] : ["provider", "models"],
@@ -87,7 +97,7 @@ export function parseProviderCommand(
     });
   const useCommand = provider
     .command("use")
-    .description("set the default provider/model by fuzzy model id")
+    .description("set the default provider/model by fuzzy model id, with an optional :reasoning suffix (e.g. opus:max)")
     .argument("<model>")
     .action((modelQuery: string) => {
       parsed = { args: ["provider", "use", modelQuery], options: {} };
@@ -122,7 +132,7 @@ export function parseProviderCommand(
   helpByPath.set("provider config set-depth", configSetDepthCommand);
   const configSetReasoningCommand = config
     .command("set-reasoning")
-    .argument("<low|medium|high|xhigh|auto>")
+    .argument(REASONING_USAGE)
     .action((reasoning: string) => {
       parsed = { args: ["provider", "config", "set-reasoning", reasoning], options: {} };
     });
