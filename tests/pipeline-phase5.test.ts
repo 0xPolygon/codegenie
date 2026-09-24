@@ -10438,11 +10438,11 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.findings[0]?.mergedCandidateIds.sort()).toEqual(["finding-1", "finding-2", "finding-3"]);
   });
 
-  it("uses the canonical normalized delimiter-based final fingerprint", async () => {
+  it.each(["APP.ts", "docs/examples/server.ts"])("uses the canonical normalized delimiter-based final fingerprint for %s", async filePath => {
     const finding: CandidateFinding = {
       ...fakeFinding(),
-      path: "APP.ts",
-      anchor: { path: "APP.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+      path: filePath,
+      anchor: { path: filePath, line: 1, side: "RIGHT", hunkId: "h1" },
       producedBy: { ...fakeFinding().producedBy, lensId: "CORE/Code-Review" }
     };
     const result = await dedupeRankAndComposeReview(
@@ -10475,11 +10475,12 @@ describe("phase 5 pipeline regressions", () => {
           }
         },
         promptBuilder: fakePromptBuilder(),
-        packets: [packetWithSymbol("packet-1", " Checkout Flow ")]
+        packets: [{ ...packetWithSymbol("packet-1", " Checkout Flow "), path: filePath,
+          symbolFacts: packetWithSymbol("packet-1", " Checkout Flow ").symbolFacts.map(fact => ({ ...fact, path: filePath })) }]
       }
     );
 
-    const expected = sha256Hex(["app.ts", "checkout flow", "correctness", "core/code-review"].join("\0"));
+    const expected = sha256Hex([filePath.toLowerCase(), "checkout flow", "correctness", "core/code-review"].join("\0"));
     const [final] = [...result.findings, ...result.summaryOnlyFindings];
     expect(final?.fingerprint).toBe(expected);
   });
@@ -10564,6 +10565,161 @@ describe("phase 5 pipeline regressions", () => {
     const [secondFinal] = [...second.findings, ...second.summaryOnlyFindings];
     expect(firstFinal?.fingerprint).toBe(expected);
     expect(secondFinal?.fingerprint).toBe(expected);
+  });
+
+  it("keeps docs comment identity stable when a later push shifts the hunk", async () => {
+    const docsPath = "docs/plans/service-rollout/design.md";
+    const tableRow = "| `POST /widgets` | write | `widgetCreated` |";
+    const docsPacket = (hunkId: string, line: number): ReviewPacket => ({
+      ...fakePacket({ path: docsPath }),
+      id: `packet-${hunkId}`,
+      language: "markdown",
+      hunks: [
+        {
+          hunkId,
+          oldStart: line,
+          oldLines: 1,
+          newStart: line,
+          newLines: 1,
+          contentWithLineNumbers: `  ${line}   ${line} +${tableRow}`,
+          lines: [{ kind: "add", content: tableRow, newLine: line }],
+          changedNewLineNumbers: [line],
+          changedOldLineNumbers: []
+        }
+      ]
+    });
+    const docsFinding = (hunkId: string, line: number): CandidateFinding => ({
+      ...fakeFinding(),
+      path: docsPath,
+      anchor: { path: docsPath, line, side: "RIGHT", hunkId },
+      evidence: { changedCode: tableRow },
+      producedBy: { ...fakeFinding().producedBy, packetId: `packet-${hunkId}` }
+    });
+    const compose = async (hunkId: string, line: number) => dedupeRankAndComposeReview(
+      { verified: [docsFinding(hunkId, line)], verdicts: [] },
+      fakePlanForHunks([hunkId], docsPath),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 1,
+        reviewedHunks: 1,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 1, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async () => {
+            throw composerTransientError();
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        packets: [docsPacket(hunkId, line)],
+        diff: { files: [{ ...fakeDiffFile(docsPath), language: "markdown", hunks: [{
+          ...fakeDiffFile(docsPath).hunks[0]!, id: hunkId, oldStart: line, newStart: line,
+          lines: [{ kind: "add", content: tableRow, newLineNumber: line }]
+        }] }] }
+      }
+    );
+
+    const beforePush = await compose("hunk-at-81", 81);
+    const afterPush = await compose("hunk-at-74", 74);
+
+    const [before] = [...beforePush.findings, ...beforePush.summaryOnlyFindings];
+    const [after] = [...afterPush.findings, ...afterPush.summaryOnlyFindings];
+    expect(before).toBeDefined();
+    expect(after).toBeDefined();
+    expect(after!.anchor).toEqual(docsFinding("hunk-at-74", 74).anchor);
+    // Keep grouping identities distinct; publication identity survives shifted geometry.
+    expect(before!.fingerprint).not.toBe(after!.fingerprint);
+    const { detectDuplicateFindings, proseContentFingerprint } = await import("../src/github/duplicate-detector.js");
+    expect(proseContentFingerprint(before!.finalBody)).toBe(proseContentFingerprint(after!.finalBody));
+    expect(detectDuplicateFindings([after!], [{ id: "old-comment", path: docsPath, side: "RIGHT", line: 81,
+      author: "bot", isCodegenie: true, fingerprint: before!.fingerprint, body: before!.finalBody }]))
+      .toEqual([expect.objectContaining({ action: "skip_unchanged_content", matchedCommentId: "old-comment" })]);
+  });
+
+  it("keeps distinct same-category docs findings in one file separate", async () => {
+    const docsPath = "docs/design.md";
+    const docsPacket: ReviewPacket = {
+      ...fakePacket({ path: docsPath }),
+      kind: "coalesced-hunks",
+      language: "markdown",
+      hunks: [
+        {
+          hunkId: "h1",
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          contentWithLineNumbers: "   1    1 +alpha claim",
+          lines: [{ kind: "add", content: "alpha claim", newLine: 1 }],
+          changedNewLineNumbers: [1],
+          changedOldLineNumbers: []
+        },
+        {
+          hunkId: "h2",
+          oldStart: 20,
+          oldLines: 1,
+          newStart: 20,
+          newLines: 1,
+          contentWithLineNumbers: "  20   20 +beta claim",
+          lines: [{ kind: "add", content: "beta claim", newLine: 20 }],
+          changedNewLineNumbers: [20],
+          changedOldLineNumbers: []
+        }
+      ]
+    };
+    const { anchor: _anchor, ...base } = fakeFinding();
+    const first = { ...base, path: docsPath, changedLine: false, evidence: { changedCode: "alpha claim" } };
+    const second = { ...first, id: "finding-2", title: "second docs claim", evidence: { changedCode: "beta claim" } };
+    const result = await dedupeRankAndComposeReview(
+      { verified: [first, second], verdicts: [] },
+      fakePlanForHunks(["h1", "h2"], docsPath),
+      {
+        mode: "branch",
+        repoRoot: "/tmp/repo",
+        commits: [],
+        rawDiff: ""
+      },
+      {
+        totalHunks: 2,
+        reviewedHunks: 2,
+        skippedHunks: 0,
+        failedHunks: 0,
+        coverageByLevel: { deep: 0, normal: 2, light: 0, skip: 0 },
+        degradedPlanning: false,
+        budgetStopped: false,
+        verificationIncompleteCount: 0,
+        partial: false,
+        reasons: []
+      },
+      { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async () => {
+            throw composerTransientError();
+          }
+        },
+        promptBuilder: fakePromptBuilder(),
+        packets: [docsPacket]
+      }
+    );
+
+    expect(result.summaryOnlyFindings).toHaveLength(2);
+    expect(result.summaryOnlyFindings.map(finding => finding.mergedCandidateIds)).toEqual([["finding-1"], ["finding-2"]]);
   });
 
   it("does not merge unanchored findings from different hunks in one coalesced packet", async () => {

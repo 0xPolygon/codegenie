@@ -45,6 +45,11 @@ export function isDocsPath(filePath: string): boolean {
   return /(?:^|\/)(?:docs?|documentation|postmortems?)(?:\/|$)|\.(?:md|mdx|rst|txt)$/u.test(normalized);
 }
 
+/** Prose extensions, not directory roles: executable examples under docs/ remain code. */
+export function isProsePath(filePath: string): boolean {
+  return /\.(?:md|mdx|rst|txt)$/u.test(normalizePathRoleInput(filePath));
+}
+
 function normalizePathRoleInput(filePath: string): string {
   return filePath.toLowerCase().replace(/\\/gu, "/");
 }

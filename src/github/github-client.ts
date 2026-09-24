@@ -217,6 +217,8 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
           }
           if (marker !== undefined) {
             thread.fingerprint = marker.fingerprint;
+            if (marker.contentFingerprint !== undefined) thread.contentFingerprint = marker.contentFingerprint;
+            if (comment.body !== undefined) thread.body = comment.body;
           }
           own.push(thread);
         }

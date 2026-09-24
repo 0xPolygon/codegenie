@@ -171,6 +171,9 @@ export type ExistingReviewThread = {
   author: string;
   isCodegenie: boolean;
   fingerprint?: string;
+  /** Stable identity of the complete published prose, before the inline size cap. */
+  contentFingerprint?: string;
+  body?: string;
 };
 
 export interface GitHubClient {
@@ -1553,7 +1556,7 @@ export type EvalCompareReport = {
 
 export type FindingDuplicateDecision = {
   findingId: string;
-  action: "post" | "skip_exact_fingerprint" | "skip_fuzzy_proximity";
+  action: "post" | "skip_exact_fingerprint" | "skip_fuzzy_proximity" | "skip_unchanged_content";
   matchedCommentId?: string;
   reason: string;
 };

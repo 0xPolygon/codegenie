@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   detectDuplicateFindings,
   formatCodegenieMarker,
-  parseCodegenieMarker
+  parseCodegenieMarker,
+  proseContentFingerprint
 } from "../src/github/duplicate-detector.js";
 import type { ExistingReviewThread, FinalFinding } from "../src/types.js";
 
@@ -13,6 +14,54 @@ describe("GitHub duplicate detector", () => {
 
     expect(parseCodegenieMarker(`body\n${marker}`)).toEqual({ fingerprint, runId: "run-123" });
     expect(parseCodegenieMarker("body only")).toBeUndefined();
+  });
+
+  it("round trips content markers while retaining legacy marker support", () => {
+    const fingerprint = "a".repeat(64), contentFingerprint = "b".repeat(64);
+    expect(parseCodegenieMarker(formatCodegenieMarker(fingerprint, "run-1", contentFingerprint)))
+      .toEqual({ fingerprint, runId: "run-1", contentFingerprint });
+    expect(proseContentFingerprint("\r\nSome unchanged advice.\r\n")).toBe(proseContentFingerprint("Some unchanged advice."));
+    expect(proseContentFingerprint(" ")).toBeUndefined();
+  });
+
+  it.each(["docs/design.md", "README.MD", "guide.mdx", "guide.rst", "notes.txt"])("matches legacy prose content across distant or different anchors in %s", path => {
+    const body = "The table lists widgetCreated, but EventKind does not define it.";
+    const f = { ...finding({ line: 74 }), path, finalBody: body,
+      anchor: { path, side: "RIGHT" as const, hunkId: "new-hunk", line: 74 } };
+    expect(detectDuplicateFindings([f], [{ id: "previous", path: f.path, line: 81, side: "RIGHT", author: "bot", isCodegenie: true,
+      fingerprint: "b".repeat(64), body: `${body}\n\n${formatCodegenieMarker("b".repeat(64), "old-run")}` }]))
+      .toEqual([expect.objectContaining({ action: "skip_unchanged_content" })]);
+  });
+
+  it.each([20, 21, 180])("does not hide a different prose defect at line %i under an old fingerprint or proximity", line => {
+    const f = { ...finding({ line }), path: "docs/api.md", finalBody: "Retrying this request creates duplicate orders.",
+      anchor: { path: "docs/api.md", side: "RIGHT" as const, hunkId: "new", line } };
+    expect(detectDuplicateFindings([f], [{ id: "old", path: f.path, line: 20, side: "RIGHT", author: "bot", isCodegenie: true,
+      fingerprint: f.fingerprint, body: "The enum value is not defined." }])[0]?.action).toBe("post");
+  });
+
+  it("does not match absent content, other files, other sides, or foreign comments", () => {
+    const f = { ...finding(), path: "docs/api.md", finalBody: "An actionable issue.",
+      anchor: { path: "docs/api.md", side: "RIGHT" as const, hunkId: "h1", line: 1 } };
+    const base = { id: "old", path: f.path, side: "RIGHT" as const, author: "bot", isCodegenie: true,
+      fingerprint: f.fingerprint, body: f.finalBody };
+    for (const comment of [{ ...base, body: "" }, { ...base, path: "docs/other.md" },
+      { ...base, side: "LEFT" as const }, { ...base, isCodegenie: false }]) {
+      expect(detectDuplicateFindings([f], [comment])[0]?.action).toBe("post");
+    }
+  });
+
+  it("preserves code fingerprint behavior for executable examples under docs", () => {
+    const f = { ...finding(), path: "docs/examples/server.ts" };
+    expect(detectDuplicateFindings([f], [{ id: "old", author: "bot", isCodegenie: true, fingerprint: f.fingerprint }])[0]?.action)
+      .toBe("skip_exact_fingerprint");
+  });
+
+  it("does not treat two missing anchor sides as a proven prose match", () => {
+    const { anchor: _anchor, ...unanchored } = finding();
+    const f = { ...unanchored, path: "docs/api.md" };
+    expect(detectDuplicateFindings([f], [{ id: "old", path: f.path, author: "bot", isCodegenie: true,
+      body: f.finalBody }])[0]?.action).toBe("post");
   });
 
   it("skips exact fingerprint and fuzzy nearby codegenie comments only", () => {
