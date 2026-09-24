@@ -1,4 +1,4 @@
-.PHONY: init build run install uninstall check check-workflows typecheck test clean help models-list
+.PHONY: init build run install uninstall check check-workflows typecheck test evals clean help models-list
 
 # Default target
 help:
@@ -13,6 +13,7 @@ help:
 	@echo "  make check-workflows Validate workflows with actionlint"
 	@echo "  make typecheck   Run TypeScript type checking"
 	@echo "  make test        Run tests"
+	@echo "  make evals       Run deterministic synthetic harness evals (no inference or network)"
 	@echo "  make models-list Regenerate models.md from the model registry"
 	@echo "  make clean       Remove dist/"
 	@echo ""
@@ -59,6 +60,9 @@ check:
 
 test:
 	pnpm test
+
+evals:
+	pnpm exec vitest run evals/synthetics
 
 models-list: build
 	pnpm run models-list

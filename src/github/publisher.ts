@@ -17,7 +17,8 @@ import { inlineCode, severityBadge } from "../util/markdown.js";
 import { codegenieVersionInfo, workflowRunUrl } from "../util/version-info.js";
 import { sanitizeGitHubCommentBody } from "./comment-sanitizer.js";
 import { createGitHubClient } from "./github-client.js";
-import { detectDuplicateFindings, formatCodegenieMarker } from "./duplicate-detector.js";
+import { detectDuplicateFindings, formatCodegenieMarker, proseContentFingerprint } from "./duplicate-detector.js";
+import { isProsePath } from "../util/path-roles.js";
 
 type PublishOptions = {
   github?: GitHubClient;
@@ -116,7 +117,9 @@ export async function maybePublishToGitHub(
   }
 
   const comments = await github.listOwnComments(resolved.pr.number);
-  const duplicateDecisions = detectDuplicateFindings(inlineCandidates.map((candidate) => candidate.finding), comments);
+  const duplicateDecisions = detectDuplicateFindings(
+    inlineCandidates.map(({ finding, anchor }) => ({ ...finding, anchor })), comments
+  );
   const duplicateById = new Map(duplicateDecisions.map((decision) => [decision.findingId, decision]));
   const prepared = inlineCandidates
     .filter(({ finding }) => duplicateById.get(finding.id)?.action === "post")
@@ -280,11 +283,13 @@ function prepareInlineComment(
   runId: string,
   deletedFileAnchor: boolean
 ): PreparedInlineComment {
+  const contentFingerprint = isProsePath(finding.path) ? proseContentFingerprint(finding.finalBody) : undefined;
+  const marker = formatCodegenieMarker(finding.fingerprint, runId, contentFingerprint);
   const input: InlineCommentInput = {
     path: anchor.path,
     line: anchor.line,
     side: anchor.side,
-    body: `${capBody(sanitizeGitHubCommentBody(finding.finalBody), INLINE_BODY_CAP)}\n\n${formatCodegenieMarker(finding.fingerprint, runId)}`
+    body: `${capBody(sanitizeGitHubCommentBody(finding.finalBody), INLINE_BODY_CAP)}\n\n${marker}`
   };
   if (anchor.startLine !== undefined && anchor.startLine !== anchor.line) {
     input.start_line = anchor.startLine;

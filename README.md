@@ -76,6 +76,8 @@ codegenie review --pr 123 --post-github-comments   # publish inline comments (ex
 
 Posting to GitHub is a single `COMMENT`-type review with inline comments anchored to changed lines — it never approves or requests changes, and only happens when you pass the flag. Interactive runs show a stderr progress spinner (auto-disabled in CI; `--no-progress` disables it explicitly). Non-posting Markdown/JSON runs emit the full report to stdout; posting runs emit a concise posting summary instead. Action mode separately renders the full report into the status comment, step summary, and report artifact.
 
+For prose files (`.md`, `.mdx`, `.rst`, `.txt`), unchanged inline comment content is deduplicated across shifted anchors on the same file and diff side. Matching uses the complete sanitized body before truncation; changed wording remains eligible for posting. Executable examples under `docs/` retain code fingerprint matching. Separate findings are not merged merely because they occur in the same document.
+
 ## GitHub Action
 
 codegenie ships as a reusable GitHub Action: reviews run automatically on PR open/update, or on demand when a collaborator comments `codegenie review` on a PR. The run posts a single status comment ("Reviewing ...") that live-updates through the pipeline stages and finishes as the full markdown report; inline finding comments post as a PR review alongside it (on by default, `post-inline-comments: "false"` disables).
@@ -279,6 +281,8 @@ Verification assesses proposed fixes and tests independently from the defect, us
 ## Development
 
 Run `pnpm run check` for TypeScript and GitHub workflow validation, then `pnpm test` and `pnpm build` for the full suite. Workflow validation uses [`actionlint`](https://github.com/rhysd/actionlint); `pnpm test` runs it automatically so GitHub expression/context errors cannot pass while unit tests remain green.
+
+Run `make evals` for the deterministic [synthetic harness evals](evals/synthetics/README.md). These scenarios exercise harness behavior without network requests or model inference, and also run in `pnpm test`.
 
 ## Status
 

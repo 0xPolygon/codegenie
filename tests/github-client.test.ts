@@ -91,7 +91,8 @@ describe("GitHub client", () => {
         side: "RIGHT",
         author: "codebot",
         isCodegenie: true,
-        fingerprint
+        fingerprint,
+        body: `<!-- codegenie:fingerprint=${fingerprint};run=run-1 -->`
       }
     ]);
   });
