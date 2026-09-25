@@ -269,3 +269,19 @@ Likely files: `src/github-action/event-gate.ts`, `src/github-action/entrypoint.t
 - **Mutation checks:** removing the failure-body sanitizer, or the credential clearing, fails the new tests.
 
 Validation: `pnpm test` passed **1,583 tests across 69 files**, including actionlint on the merged example. `make evals` passed **39 synthetic tests**. Typecheck, build and `git diff --check` passed, and `models.md` regenerates identically. The built CLI printed the missing-credentials, unknown-model and deprecated-model messages on a real commit range, failing before any model call. No paid inference, pushes or GitHub posts were made. Dogfooding on a test PR (bare trigger, alias, unknown alias, alias with missing credentials) and the release remain with the owner.
+
+### Follow-up PR review (#37)
+
+A second high-effort review of the PR diff led to these changes (owner-approved; the stored-login guard is kept):
+
+- **One env var, not one provider.** The `llm-api-key` single-key rule now requires every selectable model to read the same API-key env var, not the same provider id. Provider pairs that share a var (`moonshotai`/`moonshotai-cn`, `opencode`/`opencode-go`, the two `cloudflare-*` providers) work with one key. Competing vars are cleared, and the stored-login guard runs, for every routed provider.
+- **Validate after the trigger gate.** `model`/`models` are validated after the trigger gate instead of at flag parsing. A broken block still fails every real trigger, including every push, but unrelated comments ("LGTM") skip instead of failing.
+- **Record types restored.** The decision-record union is back to discriminated variants (authorized, denied, unknown alias), so impossible records don't type-check.
+- **Shared provider check.** Alias validation reuses `providerKnown` from `provider-services.ts`, which is now exported, instead of its own copy.
+- **Token normalization in one place.** The event gate is the only place the alias token is normalized. It lowercases the token and strips surrounding quotes, backticks and brackets plus trailing punctuation, so `` `opus` `` and `opus.` select `opus`. To keep every alias reachable after that stripping, alias names must now start and end with a letter or digit.
+- **Unchanged, as by-design or owner decisions:**
+  - Other words after the phrase get the reply when `models` is set.
+  - Pre-claim configuration errors reach only the job log, as an invalid `model` always did.
+  - The stale "Reviewing…" comment left by any superseding comment is the plan 97 residual.
+  - The optional `explainUnresolvedModel` re-resolution is kept.
+  - An Action-only explicit-key alternative to the stored-login guard exists, but it needs a new path for the key into the review; the owner kept the guard.

@@ -173,6 +173,13 @@ describe("github-action event gate", () => {
     expect(requestedAliasFromComment("codegenie review   \r\nopus", "codegenie review")).toBeUndefined();
     expect(requestedAliasFromComment("codegenie reviewopus", "codegenie review")).toBeUndefined();
     expect(requestedAliasFromComment("please codegenie review opus", "codegenie review")).toBeUndefined();
+    // Surrounding quotes/backticks/brackets and trailing punctuation are stripped.
+    expect(requestedAliasFromComment("codegenie review `opus`", "codegenie review")).toBe("opus");
+    expect(requestedAliasFromComment("codegenie review opus.", "codegenie review")).toBe("opus");
+    expect(requestedAliasFromComment("codegenie review \"GLM\"!", "codegenie review")).toBe("glm");
+    expect(requestedAliasFromComment("codegenie review (deep-seek),", "codegenie review")).toBe("deep-seek");
+    expect(requestedAliasFromComment("codegenie review gpt-5.5", "codegenie review")).toBe("gpt-5.5");
+    expect(requestedAliasFromComment("codegenie review ...", "codegenie review")).toBeUndefined();
 
     expect(decideTrigger("issue_comment", issueCommentPayload({ body: "codegenie review GLM" }), RULES)).toMatchObject({
       run: true,
@@ -220,6 +227,8 @@ describe("github-action model aliases", () => {
     const cases: Array<[string, RegExp]> = [
       ["Opus: anthropic/claude-opus-5\nopus: anthropic/claude-sonnet-5", /line 2: duplicate alias opus/u],
       ["-bad: anthropic/claude-opus-5", /line 1: alias names must match/u],
+      ["bad.: anthropic/claude-opus-5", /line 1: alias names must match/u],
+      ["bad-: anthropic/claude-opus-5", /line 1: alias names must match/u],
       ["has space: anthropic/claude-opus-5", /line 1: alias names must match/u],
       ["opus:\n  model: anthropic/claude-opus-5", /line 1: alias opus must map to a provider\/model/u],
       ["opus: [anthropic/claude-opus-5]", /line 1: alias opus must map to a provider\/model/u],
@@ -261,7 +270,7 @@ describe("github-action model aliases", () => {
   it("selects the requested alias, ignores tokens without models, and lists names for unknowns", () => {
     const config = resolveModelConfig("luna", parseModelAliases(MODELS));
     expect(selectModel(config, undefined)).toEqual({ kind: "selected", selection: config.defaultModel });
-    expect(selectModel(config, "OPUS")).toMatchObject({ kind: "selected", selection: { alias: "opus" } });
+    expect(selectModel(config, "opus")).toMatchObject({ kind: "selected", selection: { alias: "opus" } });
     expect(selectModel(config, "opsu")).toEqual({ kind: "unknown_alias" });
     const legacy = resolveModelConfig("openrouter/deepseek/deepseek-v4.1-flash:max", new Map());
     expect(selectModel(legacy, "opsu")).toEqual({ kind: "selected", selection: legacy.defaultModel });
@@ -273,14 +282,15 @@ describe("github-action model aliases", () => {
     );
   });
 
-  it("validates model and models together when parsing action flags", () => {
-    expect(() => parseGitHubActionArgs(["--models", MODELS])).toThrow(/--models requires --model/u);
-    expect(() => parseGitHubActionArgs(["--models", MODELS, "--model", "sonnet"])).toThrow(/not one of the configured/u);
-    const parsed = parseGitHubActionArgs(["--models", MODELS, "--model", "luna"]);
-    expect(parsed.models.defaultModel?.alias).toBe("luna");
-    expect(parsed.models.aliases.size).toBe(3);
+  it("keeps model and models raw at flag parsing; they are validated after the trigger gate", () => {
+    // Validation happens in the entrypoint (see "validates model and models
+    // only for real triggers"), so parsing never throws on these values.
+    expect(parseGitHubActionArgs(["--models", "opus: [broken", "--model", "sonnet"])).toMatchObject({
+      modelInput: "sonnet",
+      modelsInput: "opus: [broken"
+    });
     // The composite action always forwards both flags, possibly empty.
-    expect(parseGitHubActionArgs(["--model", "", "--models", ""]).models).toEqual({ aliases: new Map() });
+    expect(parseGitHubActionArgs(["--model", "", "--models", ""])).toMatchObject({ modelInput: "", modelsInput: "" });
   });
 });
 
@@ -1264,6 +1274,15 @@ describe("github-action entrypoint", () => {
     });
     expect(String((caught as Error).message)).not.toContain(secret);
 
+    // Different providers that read the same env var share one key.
+    const sharedVar = resolveModelConfig("kimi", parseModelAliases([
+      "kimi:    moonshotai/kimi-k2.5",
+      "kimi-cn: moonshotai-cn/kimi-k2.5"
+    ].join("\n")));
+    const shared: NodeJS.ProcessEnv = { LLM_API_KEY: secret };
+    expect(applyLlmApiKey(shared, sharedVar)).toEqual(["moonshotai", "moonshotai-cn"]);
+    expect(shared.MOONSHOT_API_KEY).toBe(secret);
+
     const sameProvider = resolveModelConfig("luna", parseModelAliases([
       "luna: openrouter/openai/gpt-6-luna:xhigh",
       "glm: openrouter/z-ai/glm-5.3:max"
@@ -1332,6 +1351,18 @@ describe("github-action entrypoint", () => {
     const opus = await runWithModels(issueCommentPayload({ body: "codegenie review OPUS\nplease focus on auth" }), "issue_comment", MODEL_ARGS);
     expect(opus.argv?.slice(-6)).toEqual(["--provider", "anthropic", "--model", "claude-opus-5", "--reasoning", "high"]);
     expect(opus.output).toContain('"modelAlias":"opus"');
+  });
+
+  it("validates model and models only for real triggers", async () => {
+    const broken = ["--model", "luna", "--models", "luna: [openrouter/openai/gpt-6-luna"];
+    const unrelated = await runWithModels(issueCommentPayload({ body: "LGTM, thanks!" }), "issue_comment", broken);
+    expect(unrelated.output).toContain("skipped — comment does not match the trigger phrase");
+    expect(unrelated.calls).toHaveLength(0);
+
+    await expect(runWithModels(issueCommentPayload(), "issue_comment", broken)).rejects.toThrow(/--models invalid YAML at line 1/u);
+    await expect(runWithModels(pullRequestPayload(), "pull_request", ["--models", MODELS, "--model", "sonnet"]))
+      .rejects.toThrow(/not one of the configured model aliases/u);
+    await expect(runWithModels(pullRequestPayload(), "pull_request", ["--models", MODELS])).rejects.toThrow(/--models requires --model/u);
   });
 
   it("replies once to an unknown alias without claiming the status comment or reviewing", async () => {

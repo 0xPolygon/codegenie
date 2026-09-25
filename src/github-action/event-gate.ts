@@ -58,14 +58,17 @@ export function decideTrigger(eventName: string, payload: unknown, rules: Trigge
 }
 
 // The first whitespace-delimited token on the trigger phrase's own line,
-// lowercased. Later lines never count, so a comment that continues on the
-// next line still means "default".
+// lowercased, with surrounding quotes/backticks/brackets and trailing
+// punctuation stripped ("`opus`", "opus." → "opus"). This is the only place the
+// token is normalized. Later lines never count, so a comment that continues on
+// the next line still means "default".
 export function requestedAliasFromComment(body: string, phrase: string): string | undefined {
   if (!matchesTriggerPhrase(body, phrase)) {
     return undefined;
   }
   const rest = body.trim().slice(phrase.trim().length);
-  const token = (rest.split(/\r?\n/u)[0] ?? "").trim().split(/\s+/u)[0] ?? "";
+  const token = ((rest.split(/\r?\n/u)[0] ?? "").trim().split(/\s+/u)[0] ?? "")
+    .replace(/^[`'"([]+|[`'")\].,;:!?]+$/gu, "");
   return token === "" ? undefined : token.toLowerCase();
 }
 

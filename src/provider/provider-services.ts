@@ -975,7 +975,7 @@ function resolveProviderAlias(provider: string): string {
   return PROVIDER_ALIASES[provider] ?? provider;
 }
 
-function providerKnown(provider: string, models: Pick<Models, "getProvider"> = getCodegeniePiModels()): boolean {
+export function providerKnown(provider: string, models: Pick<Models, "getProvider"> = getCodegeniePiModels()): boolean {
   return models.getProvider(provider) !== undefined;
 }
 

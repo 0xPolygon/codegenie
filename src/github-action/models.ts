@@ -3,11 +3,8 @@
 // only ever selects an alias the workflow author listed — it never becomes a
 // model spec, reasoning level, or flag.
 import { isMap, isScalar, LineCounter, parseDocument } from "yaml";
-import {
-  getCodegeniePiModels,
-  getPiApiKeyEnvVarName,
-  getPiCredentialEnvVarNames
-} from "../provider/pi-ai-models.js";
+import { getPiApiKeyEnvVarName, getPiCredentialEnvVarNames } from "../provider/pi-ai-models.js";
+import { providerKnown } from "../provider/provider-services.js";
 import { splitReasoningSuffix } from "../provider/reasoning.js";
 import { CodegenieError } from "../util/errors.js";
 
@@ -29,7 +26,9 @@ export type ModelConfig = {
   defaultModel?: ModelSelection;
 };
 
-const ALIAS_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/u;
+// Starts and ends with a letter or digit, so the comment-side stripping of
+// surrounding punctuation (event-gate) can never make an alias unreachable.
+const ALIAS_NAME_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,30}[A-Za-z0-9])?$/u;
 
 // One model spec instead of separate provider/model/reasoning inputs:
 // `provider/model[:reasoning]`, e.g. `anthropic/claude-opus-5:xhigh`.
@@ -60,7 +59,7 @@ export function formatModelSpec(spec: ModelSpec): string {
 // masks secret values in the log regardless.
 export function parseModelAliases(
   text: string,
-  providerExists: (provider: string) => boolean = defaultProviderExists
+  providerExists: (provider: string) => boolean = providerKnown
 ): Map<string, ModelSpec> {
   const aliases = new Map<string, ModelSpec>();
   if (text.trim() === "") {
@@ -132,6 +131,7 @@ export function resolveModelConfig(modelInput: string | undefined, aliases: Map<
 
 // The model for this event. Without aliases, comment text is ignored exactly
 // as before; with aliases, an unlisted token is "unknown" (the caller replies).
+// `requestedAlias` arrives normalized by the event gate.
 export function selectModel(
   config: ModelConfig,
   requestedAlias: string | undefined
@@ -139,8 +139,8 @@ export function selectModel(
   if (config.aliases.size === 0 || requestedAlias === undefined) {
     return { kind: "selected", ...(config.defaultModel !== undefined ? { selection: config.defaultModel } : {}) };
   }
-  const spec = config.aliases.get(requestedAlias.toLowerCase());
-  return spec === undefined ? { kind: "unknown_alias" } : { kind: "selected", selection: { alias: requestedAlias.toLowerCase(), spec } };
+  const spec = config.aliases.get(requestedAlias);
+  return spec === undefined ? { kind: "unknown_alias" } : { kind: "selected", selection: { alias: requestedAlias, spec } };
 }
 
 // Fixed text built only from configured alias names (restricted charset), so
@@ -153,14 +153,15 @@ export function renderUnknownAliasReply(config: ModelConfig): string {
 }
 
 // `llm-api-key` (LLM_API_KEY) is authoritative when set: every selectable
-// model must share one API-key provider, that provider's competing credential
-// vars are cleared, and the key is written unconditionally. Unset, provider
-// credentials resolve exactly as they always have. Returns the provider the
-// key was routed to, if any.
-export function applyLlmApiKey(env: NodeJS.ProcessEnv, config: ModelConfig): string | undefined {
+// model must read its key from one env var (usually one provider; a few
+// provider pairs share a var, e.g. moonshotai/moonshotai-cn), those providers'
+// competing credential vars are cleared, and the key is written
+// unconditionally. Unset, provider credentials resolve exactly as they always
+// have. Returns the providers the key was routed to (empty when unset).
+export function applyLlmApiKey(env: NodeJS.ProcessEnv, config: ModelConfig): string[] {
   const key = env.LLM_API_KEY;
   if (key === undefined || key === "") {
-    return undefined;
+    return [];
   }
   const selectable = [
     ...(config.defaultModel !== undefined ? [config.defaultModel.spec] : []),
@@ -173,29 +174,27 @@ export function applyLlmApiKey(env: NodeJS.ProcessEnv, config: ModelConfig): str
     );
   }
   const providers = [...new Set(selectable.map((spec) => spec.provider as string))];
-  if (providers.length > 1) {
+  const envVarNames = new Set(providers.map((provider) => getPiApiKeyEnvVarName(provider)));
+  if (envVarNames.size > 1) {
     throw new CodegenieError(
       "invalid_args",
       `llm-api-key is a single key, but models use providers ${providers.join(", ")}. Remove llm-api-key and set each provider's env var (see models.md#credentials).`
     );
   }
-  const provider = providers[0] as string;
-  const envVarName = getPiApiKeyEnvVarName(provider);
+  const [envVarName] = envVarNames;
   if (envVarName === undefined) {
     throw new CodegenieError(
       "invalid_args",
-      `provider ${provider} does not accept an API key; set its native credentials instead of LLM_API_KEY`
+      `provider ${providers.join(", ")} does not accept an API key; set its native credentials instead of LLM_API_KEY`
     );
   }
-  for (const name of getPiCredentialEnvVarNames(provider)) {
-    delete env[name];
+  for (const provider of providers) {
+    for (const name of getPiCredentialEnvVarNames(provider)) {
+      delete env[name];
+    }
   }
   env[envVarName] = key;
-  return provider;
-}
-
-function defaultProviderExists(provider: string): boolean {
-  return getCodegeniePiModels().getProvider(provider) !== undefined;
+  return providers;
 }
 
 function modelsError(detail: string): CodegenieError {

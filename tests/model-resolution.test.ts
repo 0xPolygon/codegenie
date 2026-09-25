@@ -158,7 +158,7 @@ describe("llm-api-key routing reaches codegenie's resolver", () => {
     vi.stubEnv("LLM_API_KEY", "explicit-llm-api-key");
     const config = resolveModelConfig("opus", parseModelAliases("opus: anthropic/claude-opus-5\nsonnet: anthropic/claude-sonnet-5"));
 
-    expect(applyLlmApiKey(process.env, config)).toBe("anthropic");
+    expect(applyLlmApiKey(process.env, config)).toEqual(["anthropic"]);
 
     expect(process.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     expect(process.env.ANTHROPIC_OAUTH_TOKEN).toBeUndefined();

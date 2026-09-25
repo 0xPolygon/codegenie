@@ -71,7 +71,10 @@ type GitHubActionInputs = {
   postInlineComments: boolean;
   preflightOnly: boolean;
   botLogin?: string;
-  models: ModelConfig;
+  // Raw `model` / `models` inputs, validated only after the trigger gate so
+  // a bad block cannot fail unrelated comment events.
+  modelInput?: string;
+  modelsInput: string;
   reviewPassthrough: string[];
 };
 
@@ -115,6 +118,10 @@ export async function executeGitHubActionCommand(
     return;
   }
 
+  // A configuration error still fails every real trigger (including every
+  // push), but "LGTM" comments skip above instead of going red.
+  const models: ModelConfig = resolveModelConfig(inputs.modelInput, parseModelAliases(inputs.modelsInput));
+
   const comments = opts.issueComments ?? createIssueCommentClient(repoRoot, repoFullName);
 
   // Payload association fields are attacker-visible history; the live
@@ -155,9 +162,9 @@ export async function executeGitHubActionCommand(
 
   // Resolved only after authorization, so unauthorized commenters never get
   // a reply. An unlisted alias gets fixed text from the workflow's own list.
-  const selected = selectModel(inputs.models, decision.requestedAlias);
+  const selected = selectModel(models, decision.requestedAlias);
   if (selected.kind === "unknown_alias") {
-    await comments.createComment(decision.prNumber, renderUnknownAliasReply(inputs.models));
+    await comments.createComment(decision.prNumber, renderUnknownAliasReply(models));
     const reason = "unknown model alias";
     write(`github-action: skipped — ${reason}\n`);
     writeDecisionRecord(write, { ...decisionFields, run: false, reason });
@@ -172,15 +179,16 @@ export async function executeGitHubActionCommand(
     return;
   }
 
-  const keyProvider = applyLlmApiKey(env, inputs.models);
-  if (keyProvider !== undefined) {
+  const keyProviders = applyLlmApiKey(env, models);
+  if (keyProviders.length > 0) {
     // pi-ai lets a stored login own its provider ahead of env vars, which
     // would silently bypass llm-api-key. Only self-hosted runners can have one.
     const storage = opts.authStorage ?? createFileAuthStorage(getCodegeniePaths(undefined, env));
-    if (storage.get(keyProvider) !== undefined) {
+    const overriding = keyProviders.find((provider) => storage.get(provider) !== undefined);
+    if (overriding !== undefined) {
       throw new CodegenieError(
         "invalid_args",
-        `a stored codegenie login for ${keyProvider} on this runner would override llm-api-key; run \`codegenie provider logout ${keyProvider}\` on the runner, or unset llm-api-key to use the stored login`
+        `a stored codegenie login for ${overriding} on this runner would override llm-api-key; run \`codegenie provider logout ${overriding}\` on the runner, or unset llm-api-key to use the stored login`
       );
     }
   }
@@ -312,11 +320,9 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
     allowedUsers: [],
     postInlineComments: true,
     preflightOnly: false,
-    models: { aliases: new Map() },
+    modelsInput: "",
     reviewPassthrough: []
   };
-  let modelInput: string | undefined;
-  let modelsInput = "";
   const passthroughFlags = new Set(["--depth", "--lens", "--max-time", "--budget-boost"]);
 
   for (let index = 0; index < argv.length; index += 2) {
@@ -338,9 +344,9 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
     } else if (flag === "--preflight-only") {
       inputs.preflightOnly = parseBoolean(flag, value);
     } else if (flag === "--model") {
-      modelInput = value;
+      inputs.modelInput = value;
     } else if (flag === "--models") {
-      modelsInput = value;
+      inputs.modelsInput = value;
     } else if (flag === "--bot-login") {
       if (value.trim() !== "") {
         inputs.botLogin = value.trim();
@@ -356,8 +362,6 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
   if (inputs.triggerPhrase.trim() === "") {
     throw new CodegenieError("invalid_args", "--trigger-phrase must not be empty");
   }
-  // `model` and `models` are validated together, after every flag is read.
-  inputs.models = resolveModelConfig(modelInput, parseModelAliases(modelsInput));
   return inputs;
 }
 
@@ -562,21 +566,35 @@ function writeFailureFile(filePath: string | undefined, contents: string): void 
   }
 }
 
+type AuthorizedRecordFields = {
+  eventName: string;
+  lane: AuthorizedDecision["lane"];
+  prNumber: number;
+  actor: string;
+  association: string;
+};
+
 type DecisionRecord =
   | { eventName: string; run: false; reason: string }
-  | {
-      eventName: string;
-      run: boolean;
-      reason?: string;
-      lane: AuthorizedDecision["lane"];
-      prNumber: number;
-      actor: string;
-      association: string;
+  | (AuthorizedRecordFields & {
+      run: true;
       actorAllowlisted: boolean;
-      permissionCheck: PermissionCheck | "denied";
+      permissionCheck: PermissionCheck;
       modelAlias?: string;
       modelSpec?: string;
-    };
+    })
+  | (AuthorizedRecordFields & {
+      run: false;
+      reason: string;
+      actorAllowlisted: false;
+      permissionCheck: "denied";
+    })
+  | (AuthorizedRecordFields & {
+      run: false;
+      reason: "unknown model alias";
+      actorAllowlisted: boolean;
+      permissionCheck: PermissionCheck;
+    });
 
 function modelRecordFields(selection: ModelSelection | undefined): { modelAlias?: string; modelSpec?: string } {
   return {
