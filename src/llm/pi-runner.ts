@@ -25,7 +25,7 @@ import {
 import pLimit from "p-limit";
 import { createFileAuthStorage, createPiCredentialStore } from "../provider/provider-services.js";
 import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../provider/model-policy.js";
-import { getCodegeniePiModels, getPiEnvApiKey } from "../provider/pi-ai-models.js";
+import { describeProviderCredentials, getCodegeniePiModels, getPiEnvApiKey } from "../provider/pi-ai-models.js";
 import { assertReasoningSupported, modelThinkingLevels, selectReasoningEffort, type ReasoningPolicy } from "../provider/reasoning.js";
 import { getCodegeniePaths } from "../config/paths.js";
 import { registerSecret, stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
@@ -48,6 +48,7 @@ import {
   type LlmSubmitFailureClassification,
   type LlmToolResultSummary,
   type ModelCallCacheMissReason,
+  type ModelResolutionFailure,
   type PiAiAdapter,
   type PiAssistantMessage,
   type PiModelRef,
@@ -217,10 +218,18 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
     model?: string;
   });
   if (!model) {
-    throw new CodegenieError("config_error", "no usable LLM model could be resolved; run `codegenie provider login <provider>` or configure --provider/--model", {
+    const request = definedRecord({ provider: opts.llmConfig.provider, model: opts.llmConfig.model }) as { provider?: string; model?: string };
+    let failure: ModelResolutionFailure = { kind: "unresolved" };
+    try {
+      failure = adapter.explainUnresolvedModel?.(request) ?? failure;
+    } catch {
+      // The explanation is best-effort; the generic message still applies.
+    }
+    throw new CodegenieError("config_error", modelResolutionMessage(failure), {
       context: {
         provider: opts.llmConfig.provider ?? null,
         model: opts.llmConfig.model ?? null,
+        modelResolution: failure.kind,
         hint: "run `codegenie provider login <provider>` and `codegenie provider models --all` to inspect available authenticated models"
       }
     });
@@ -967,6 +976,10 @@ export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): PiAiAdapt
   const models = deps.models ?? getCodegeniePiModels(createPiCredentialStore(authStorage));
   return {
     resolveModel: ({ provider, model }) => resolveRealModel(provider, model, authStorage, models),
+    explainUnresolvedModel: ({ provider, model }) => {
+      const resolution = resolveRealModelWithReason(provider, model, authStorage, models);
+      return "failure" in resolution ? resolution.failure : { kind: "unresolved" };
+    },
     complete: async (model, context, options) => {
       const { submitToolName, onStreamEvent, onRejectedArguments, ...providerOptions } = options;
       const streamHooks = {
@@ -4169,40 +4182,60 @@ function defaultToolMeta(): ToolResultMeta {
   return { backend: "text", precision: "text", degraded: false };
 }
 
+type ModelResolution = { model: PiModelRef } | { failure: ModelResolutionFailure };
+
 function resolveRealModel(
   provider: string | undefined,
   model: string | undefined,
   authStorage?: PiAuthStorage,
   models: Pick<Models, "getModel" | "getModels" | "getProviders" | "getProvider"> = getCodegeniePiModels()
 ): PiModelRef | undefined {
+  const resolution = resolveRealModelWithReason(provider, model, authStorage, models);
+  return "model" in resolution ? resolution.model : undefined;
+}
+
+function resolveRealModelWithReason(
+  provider: string | undefined,
+  model: string | undefined,
+  authStorage?: PiAuthStorage,
+  models: Pick<Models, "getModel" | "getModels" | "getProviders" | "getProvider"> = getCodegeniePiModels()
+): ModelResolution {
   const qualified = provider === undefined && model ? splitProviderQualifiedModel(model, models) : undefined;
   const resolvedProvider = provider ?? qualified?.provider;
   const resolvedModel = qualified?.model ?? model;
 
   if (resolvedProvider && resolvedModel) {
+    const target = { provider: resolvedProvider, model: resolvedModel };
     if (isDeprecatedProviderModel(resolvedProvider, resolvedModel)) {
-      return undefined;
+      return { failure: { kind: "deprecated_model", ...target } };
     }
     try {
       const raw = models.getModel(resolvedProvider, resolvedModel);
       if (!raw) {
-        return undefined;
+        return { failure: { kind: "unknown_model", ...target } };
       }
       const auth = resolveProviderAuth(resolvedProvider, authStorage, models);
-      return auth ? { provider: resolvedProvider, id: resolvedModel, raw: applyModelOverrides(raw), ...auth } : undefined;
+      return auth
+        ? { model: { provider: resolvedProvider, id: resolvedModel, raw: applyModelOverrides(raw), ...auth } }
+        : { failure: { kind: "missing_credentials", ...target } };
     } catch {
-      return undefined;
+      return { failure: { kind: "unresolved", ...target } };
     }
   }
 
   if (resolvedProvider) {
+    if (models.getProvider(resolvedProvider) === undefined) {
+      return { failure: { kind: "unresolved", provider: resolvedProvider } };
+    }
     const auth = resolveProviderAuth(resolvedProvider, authStorage, models);
     if (!auth) {
-      return undefined;
+      return { failure: { kind: "missing_credentials", provider: resolvedProvider } };
     }
     const providerModels = filterDeprecatedProviderModels([...models.getModels(resolvedProvider)]);
     const first = providerModels[0];
-    return first ? { provider: resolvedProvider, id: first.id, raw: applyModelOverrides(first), ...auth } : undefined;
+    return first
+      ? { model: { provider: resolvedProvider, id: first.id, raw: applyModelOverrides(first), ...auth } }
+      : { failure: { kind: "unresolved", provider: resolvedProvider } };
   }
 
   for (const provider of models.getProviders()) {
@@ -4214,10 +4247,28 @@ function resolveRealModel(
     const providerModels = filterDeprecatedProviderModels([...models.getModels(providerId)]);
     const match = resolvedModel ? providerModels.find((candidate) => candidate.id === resolvedModel) : providerModels[0];
     if (match) {
-      return { provider: providerId, id: match.id, raw: applyModelOverrides(match), ...auth };
+      return { model: { provider: providerId, id: match.id, raw: applyModelOverrides(match), ...auth } };
     }
   }
-  return undefined;
+  return { failure: { kind: "unresolved", ...(resolvedModel !== undefined ? { model: resolvedModel } : {}) } };
+}
+
+const UNRESOLVED_MODEL_MESSAGE = "no usable LLM model could be resolved; run `codegenie provider login <provider>` or configure --provider/--model";
+
+// Only codegenie-authored text with workflow- or CLI-supplied ids; the
+// GitHub Action renders it in the failure comment (scrubbed and sanitized).
+export function modelResolutionMessage(failure: ModelResolutionFailure): string {
+  const target = failure.provider !== undefined && failure.model !== undefined ? `${failure.provider}/${failure.model}` : undefined;
+  if (failure.kind === "unknown_model" && target !== undefined) {
+    return `unknown model ${target}; run \`codegenie provider models --all\` to list available models`;
+  }
+  if (failure.kind === "deprecated_model" && target !== undefined) {
+    return `model ${target} is deprecated; choose a current model`;
+  }
+  if (failure.kind === "missing_credentials" && failure.provider !== undefined) {
+    return `no credentials for provider ${failure.provider}: ${describeProviderCredentials(failure.provider)}`;
+  }
+  return UNRESOLVED_MODEL_MESSAGE;
 }
 
 function splitProviderQualifiedModel(

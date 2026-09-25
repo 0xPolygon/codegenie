@@ -1,0 +1,71 @@
+# codegenie review: automatic on every PR open/update, and on demand when a
+# collaborator comments "codegenie review" (or "codegenie review <model>" to
+# pick one of the models listed below for that run).
+#
+# Trust model: `pull_request` runs check out the PR's BASE revision, and
+# `issue_comment` runs check out the default branch, so codegenie's config and
+# skills always come from trusted code; the PR head is fetched by `--pr` as
+# untrusted data. Uses `pull_request`, never `pull_request_target`: fork PRs
+# run without secrets and skip cleanly — the comment trigger serves them.
+#
+# All trigger authorization (exact phrase match, live write-permission check,
+# model-alias lookup) happens inside codegenie — no gating logic in YAML.
+#
+# cancel-in-progress: newest event wins. A push makes the running review stale
+# by definition. Trade-off: any comment on the PR (including a mistyped model
+# name) starts a run that supersedes an in-flight review of that PR before
+# codegenie decides it is a skip. If your PR threads are chatty, set this to
+# false (re-triggers then queue) or gate a separate ungrouped job with the
+# `preflight-only` input.
+name: codegenie review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: codegenie-review-pr-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # base SHA on pull_request events; default branch on comment events
+          ref: ${{ github.event.pull_request.base.sha || '' }}
+          fetch-depth: 0
+
+      - uses: 0xPolygon/codegenie@v0.7.0
+        # One credential env var per provider used below; the name for every
+        # provider is listed in models.md#credentials.
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          # Default model: automatic reviews and a bare "codegenie review".
+          model: luna
+          # "codegenie review <alias>" reviews with that model instead.
+          models: |
+            luna:     openrouter/openai/gpt-6-luna:xhigh
+            deepseek: openrouter/deepseek/deepseek-v4.1-flash:max
+            glm:      openrouter/z-ai/glm-5.3:max
+            opus:     anthropic/claude-opus-5:high
+
+          # Simple single-model form (no `models`, no `env:` above):
+          #   model: "openrouter/openai/gpt-6-luna:xhigh"
+          #   llm-api-key: ${{ secrets.LLM_API_KEY }}
+          # When set, llm-api-key is the only model key: it overrides the
+          # provider env vars, and every configured model must use one provider.
+
+          trigger-phrase: "codegenie review"
+          post-inline-comments: "true"

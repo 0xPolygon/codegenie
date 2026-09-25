@@ -1,7 +1,9 @@
 // Pure trigger/authorization decisions over GitHub webhook payloads. No IO:
 // the live collaborator-permission re-check happens in the entrypoint, this
 // module only reads the (attacker-visible) payload. Comment text is matched,
-// never interpreted — trailing text after the trigger phrase is ignored and
+// never interpreted: the only thing read after the trigger phrase is the
+// first token of its line, as a candidate alias the entrypoint looks up in
+// the workflow's own `models` list (plan 125). Everything else is ignored and
 // review knobs come exclusively from workflow inputs.
 
 export const DEFAULT_TRIGGER_PHRASE = "codegenie review";
@@ -36,6 +38,9 @@ export type TriggerDecision =
       // Users explicitly allowlisted by workflow input skip the live
       // write-permission re-check; association-gated actors do not.
       actorAllowlisted: boolean;
+      // Comment lane only: lowercased first token after the phrase on its
+      // line. A lookup key, never a spec — unlisted values are rejected.
+      requestedAlias?: string;
     }
   | { run: false; reason: string };
 
@@ -50,6 +55,21 @@ export function decideTrigger(eventName: string, payload: unknown, rules: Trigge
     return decideIssueComment(payload, rules);
   }
   return skip(`unsupported event: ${eventName}`);
+}
+
+// The first whitespace-delimited token on the trigger phrase's own line,
+// lowercased, with surrounding quotes/backticks/brackets and trailing
+// punctuation stripped ("`opus`", "opus." → "opus"). This is the only place the
+// token is normalized. Later lines never count, so a comment that continues on
+// the next line still means "default".
+export function requestedAliasFromComment(body: string, phrase: string): string | undefined {
+  if (!matchesTriggerPhrase(body, phrase)) {
+    return undefined;
+  }
+  const rest = body.trim().slice(phrase.trim().length);
+  const token = ((rest.split(/\r?\n/u)[0] ?? "").trim().split(/\s+/u)[0] ?? "")
+    .replace(/^[`'"([]+|[`'")\].,;:!?]+$/gu, "");
+  return token === "" ? undefined : token.toLowerCase();
 }
 
 export function matchesTriggerPhrase(body: string, phrase: string): boolean {
@@ -120,7 +140,9 @@ function decideIssueComment(payload: Record<string, unknown>, rules: TriggerRule
   }
   const actor = stringAt(comment, ["user", "login"]) ?? "";
   const association = stringAt(comment, ["author_association"]) ?? "NONE";
-  return authorize({ lane: "issue_comment", prNumber, actor, association, isBot: userIsBot(comment) }, rules);
+  const decision = authorize({ lane: "issue_comment", prNumber, actor, association, isBot: userIsBot(comment) }, rules);
+  const requestedAlias = requestedAliasFromComment(body, rules.triggerPhrase);
+  return decision.run && requestedAlias !== undefined ? { ...decision, requestedAlias } : decision;
 }
 
 function authorize(

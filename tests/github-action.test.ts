@@ -8,10 +8,11 @@ import {
   DEFAULT_ALLOWED_ASSOCIATIONS,
   DEFAULT_TRIGGER_PHRASE,
   decideTrigger,
-  matchesTriggerPhrase
+  matchesTriggerPhrase,
+  requestedAliasFromComment
 } from "../src/github-action/event-gate.js";
 import {
-  applyGenericApiKey,
+  applyLlmApiKey,
   executeGitHubActionCommand,
   parseGitHubActionArgs,
   parseModelSpec,
@@ -21,6 +22,12 @@ import type { IssueComment, IssueCommentClient } from "../src/github-action/issu
 import { createIssueCommentClient } from "../src/github-action/issue-comments.js";
 import { appendStatusCommentMarker, STATUS_COMMENT_MARKER } from "../src/github-action/marker.js";
 import { createStatusCommentController } from "../src/github-action/status-comment.js";
+import {
+  parseModelAliases,
+  renderUnknownAliasReply,
+  resolveModelConfig,
+  selectModel
+} from "../src/github-action/models.js";
 import { ISSUE_COMMENT_MAX_CHARS, TRUNCATION_DISCLOSURE } from "../src/github-action/render.js";
 import { createGitHubClient } from "../src/github/github-client.js";
 import type { runGh } from "../src/git/subprocess.js";
@@ -155,6 +162,135 @@ describe("github-action event gate", () => {
     expect(matchesTriggerPhrase("codegenie reviews", "codegenie review")).toBe(false);
     expect(matchesTriggerPhrase("I think codegenie review is neat", "codegenie review")).toBe(false);
     expect(matchesTriggerPhrase("anything", "")).toBe(false);
+  });
+
+  it("extracts a requested alias from the phrase's own line only", () => {
+    expect(requestedAliasFromComment("codegenie review opus", "codegenie review")).toBe("opus");
+    expect(requestedAliasFromComment("  codegenie review OPUS please\n", "codegenie review")).toBe("opus");
+    expect(requestedAliasFromComment("codegenie review\tglm", "codegenie review")).toBe("glm");
+    expect(requestedAliasFromComment("codegenie review", "codegenie review")).toBeUndefined();
+    expect(requestedAliasFromComment("codegenie review\n\nfocus on auth", "codegenie review")).toBeUndefined();
+    expect(requestedAliasFromComment("codegenie review   \r\nopus", "codegenie review")).toBeUndefined();
+    expect(requestedAliasFromComment("codegenie reviewopus", "codegenie review")).toBeUndefined();
+    expect(requestedAliasFromComment("please codegenie review opus", "codegenie review")).toBeUndefined();
+    // Surrounding quotes/backticks/brackets and trailing punctuation are stripped.
+    expect(requestedAliasFromComment("codegenie review `opus`", "codegenie review")).toBe("opus");
+    expect(requestedAliasFromComment("codegenie review opus.", "codegenie review")).toBe("opus");
+    expect(requestedAliasFromComment("codegenie review \"GLM\"!", "codegenie review")).toBe("glm");
+    expect(requestedAliasFromComment("codegenie review (deep-seek),", "codegenie review")).toBe("deep-seek");
+    expect(requestedAliasFromComment("codegenie review gpt-5.5", "codegenie review")).toBe("gpt-5.5");
+    expect(requestedAliasFromComment("codegenie review ...", "codegenie review")).toBeUndefined();
+
+    expect(decideTrigger("issue_comment", issueCommentPayload({ body: "codegenie review GLM" }), RULES)).toMatchObject({
+      run: true,
+      requestedAlias: "glm"
+    });
+    expect(decideTrigger("issue_comment", issueCommentPayload(), RULES)).not.toHaveProperty("requestedAlias");
+    expect(decideTrigger("pull_request", pullRequestPayload(), RULES)).not.toHaveProperty("requestedAlias");
+  });
+});
+
+const MODELS = [
+  "luna:     openrouter/openai/gpt-6-luna:xhigh",
+  "deepseek: openrouter/deepseek/deepseek-v4.1-flash:max",
+  "opus:     anthropic/claude-opus-5"
+].join("\n");
+
+describe("github-action model aliases", () => {
+  it("parses a flat alias block with comments, quotes, blank lines and mixed case", () => {
+    const aliases = parseModelAliases([
+      "# models for this repo",
+      "Luna: openrouter/openai/gpt-6-luna:xhigh",
+      "",
+      "\"opus\": \"anthropic/claude-opus-5\"   # default reasoning",
+      "free:     openrouter/cohere/north-mini-code:free",
+      "freehigh: openrouter/cohere/north-mini-code:free:high",
+      "freelow:  openrouter/cohere/north-mini-code:free:low",
+      "typo:     anthropic/claude-opus-5:hgh"
+    ].join("\n"));
+    expect([...aliases.keys()]).toEqual(["luna", "opus", "free", "freehigh", "freelow", "typo"]);
+    expect(aliases.get("luna")).toEqual({ provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "xhigh" });
+    expect(aliases.get("opus")).toEqual({ provider: "anthropic", model: "claude-opus-5", reasoning: "high" });
+    // Only recognized reasoning suffixes split; other suffixes stay in the id.
+    expect(aliases.get("free")).toEqual({ provider: "openrouter", model: "cohere/north-mini-code:free", reasoning: "high" });
+    expect(aliases.get("freehigh")).toEqual({ provider: "openrouter", model: "cohere/north-mini-code:free", reasoning: "high" });
+    expect(aliases.get("freelow")).toEqual({ provider: "openrouter", model: "cohere/north-mini-code:free", reasoning: "low" });
+    // A typo'd level is left for selected-model lookup, not rejected here.
+    expect(aliases.get("typo")).toEqual({ provider: "anthropic", model: "claude-opus-5:hgh", reasoning: "high" });
+    expect(parseModelAliases("   \n").size).toBe(0);
+    // Numeric-looking names are names, not YAML numbers.
+    expect([...parseModelAliases("405: openrouter/meta-llama/llama-3.1-405b-instruct\n1.5: anthropic/claude-opus-5").keys()])
+      .toEqual(["405", "1.5"]);
+  });
+
+  it("rejects malformed alias blocks with line-level errors that never echo values", () => {
+    const cases: Array<[string, RegExp]> = [
+      ["Opus: anthropic/claude-opus-5\nopus: anthropic/claude-sonnet-5", /line 2: duplicate alias opus/u],
+      ["-bad: anthropic/claude-opus-5", /line 1: alias names must match/u],
+      ["bad.: anthropic/claude-opus-5", /line 1: alias names must match/u],
+      ["bad-: anthropic/claude-opus-5", /line 1: alias names must match/u],
+      ["has space: anthropic/claude-opus-5", /line 1: alias names must match/u],
+      ["opus:\n  model: anthropic/claude-opus-5", /line 1: alias opus must map to a provider\/model/u],
+      ["opus: [anthropic/claude-opus-5]", /line 1: alias opus must map to a provider\/model/u],
+      ["base: &spec anthropic/claude-opus-5\nopus: *spec", /line 2: alias opus must map to a provider\/model/u],
+      ["- anthropic/claude-opus-5", /must be a mapping/u],
+      ["opus: claude-opus-5", /line 1: alias opus needs a provider prefix/u],
+      ["opus: nope/claude-opus-5", /line 1: alias opus names unknown provider nope/u],
+      ["opus: /claude-opus-5", /line 1: alias opus must be provider\/model/u]
+    ];
+    for (const [text, pattern] of cases) {
+      expect(() => parseModelAliases(text), text).toThrow(pattern);
+    }
+    let caught: unknown;
+    try {
+      parseModelAliases("ok: anthropic/claude-opus-5\nbad: \"sk-ant-unterminated-secret");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({ code: "invalid_args", message: expect.stringMatching(/invalid YAML at line 2/u) });
+    expect(String((caught as Error).message)).not.toContain("sk-ant-unterminated-secret");
+  });
+
+  it("resolves the default from an alias or a full spec, and keeps the no-models behavior", () => {
+    const aliases = parseModelAliases(MODELS);
+    expect(resolveModelConfig("LUNA", aliases).defaultModel).toEqual({
+      alias: "luna",
+      spec: { provider: "openrouter", model: "openai/gpt-6-luna", reasoning: "xhigh" }
+    });
+    expect(resolveModelConfig("openai/gpt-5.5", aliases).defaultModel).toEqual({
+      spec: { provider: "openai", model: "gpt-5.5", reasoning: "high" }
+    });
+    expect(() => resolveModelConfig("sonnet", aliases)).toThrow(/not one of the configured model aliases/u);
+    expect(() => resolveModelConfig("", aliases)).toThrow(/--models requires --model/u);
+    // Without models, `model` parses exactly as before (provider-less allowed).
+    expect(resolveModelConfig("opus", new Map()).defaultModel).toEqual({ spec: { model: "opus", reasoning: "high" } });
+    expect(resolveModelConfig(" ", new Map()).defaultModel).toBeUndefined();
+  });
+
+  it("selects the requested alias, ignores tokens without models, and lists names for unknowns", () => {
+    const config = resolveModelConfig("luna", parseModelAliases(MODELS));
+    expect(selectModel(config, undefined)).toEqual({ kind: "selected", selection: config.defaultModel });
+    expect(selectModel(config, "opus")).toMatchObject({ kind: "selected", selection: { alias: "opus" } });
+    expect(selectModel(config, "opsu")).toEqual({ kind: "unknown_alias" });
+    const legacy = resolveModelConfig("openrouter/deepseek/deepseek-v4.1-flash:max", new Map());
+    expect(selectModel(legacy, "opsu")).toEqual({ kind: "selected", selection: legacy.defaultModel });
+    expect(renderUnknownAliasReply(config)).toBe(
+      "**🧞 Codegenie**: unknown model. Available: `luna` (default), `deepseek`, `opus`."
+    );
+    expect(renderUnknownAliasReply(resolveModelConfig("openai/gpt-5.5", parseModelAliases(MODELS)))).toBe(
+      "**🧞 Codegenie**: unknown model. Available: `luna`, `deepseek`, `opus`."
+    );
+  });
+
+  it("keeps model and models raw at flag parsing; they are validated after the trigger gate", () => {
+    // Validation happens in the entrypoint (see "validates model and models
+    // only for real triggers"), so parsing never throws on these values.
+    expect(parseGitHubActionArgs(["--models", "opus: [broken", "--model", "sonnet"])).toMatchObject({
+      modelInput: "sonnet",
+      modelsInput: "opus: [broken"
+    });
+    // The composite action always forwards both flags, possibly empty.
+    expect(parseGitHubActionArgs(["--model", "", "--models", ""])).toMatchObject({ modelInput: "", modelsInput: "" });
   });
 });
 
@@ -1088,22 +1224,72 @@ describe("github-action entrypoint", () => {
     expect(result.reportMarkdown).not.toContain("concise posting summary");
   });
 
-  it("routes LLM_API_KEY to the provider's env var without clobbering native vars", () => {
+  it("makes LLM_API_KEY the only key for its provider, overriding native vars", () => {
+    const single = (model: string) => resolveModelConfig(model, new Map());
     const env: NodeJS.ProcessEnv = { LLM_API_KEY: "generic-key" };
-    applyGenericApiKey(env, parseModelSpec("anthropic/claude-opus-4-8"));
+    applyLlmApiKey(env, single("anthropic/claude-opus-4-8"));
     expect(env.ANTHROPIC_API_KEY).toBe("generic-key");
 
+    // Plan 125 precedence: an explicit llm-api-key beats a pre-set native var.
     const preset: NodeJS.ProcessEnv = { LLM_API_KEY: "generic-key", OPENAI_API_KEY: "native-key" };
-    applyGenericApiKey(preset, parseModelSpec("openai/gpt-5.5"));
-    expect(preset.OPENAI_API_KEY).toBe("native-key");
+    applyLlmApiKey(preset, single("openai/gpt-5.5"));
+    expect(preset.OPENAI_API_KEY).toBe("generic-key");
 
-    expect(() => applyGenericApiKey({ LLM_API_KEY: "k" }, parseModelSpec("opus"))).toThrow(/provider prefix/u);
-    expect(() => applyGenericApiKey({ LLM_API_KEY: "k" }, parseModelSpec("not-a-provider/x"))).toThrow(
+    // Competing credentials for the same provider are cleared; others stay.
+    const competing: NodeJS.ProcessEnv = {
+      LLM_API_KEY: "generic-key",
+      ANTHROPIC_AUTH_TOKEN: "bearer",
+      ANTHROPIC_OAUTH_TOKEN: "oauth",
+      OPENAI_API_KEY: "unrelated"
+    };
+    applyLlmApiKey(competing, single("anthropic/claude-opus-5"));
+    expect(competing).toEqual({ LLM_API_KEY: "generic-key", ANTHROPIC_API_KEY: "generic-key", OPENAI_API_KEY: "unrelated" });
+
+    expect(() => applyLlmApiKey({ LLM_API_KEY: "k" }, single("opus"))).toThrow(/provider prefix/u);
+    expect(() => applyLlmApiKey({ LLM_API_KEY: "k" }, { aliases: new Map() })).toThrow(/provider prefix/u);
+    expect(() => applyLlmApiKey({ LLM_API_KEY: "k" }, single("not-a-provider/x"))).toThrow(/does not accept an API key/u);
+    expect(() => applyLlmApiKey({ LLM_API_KEY: "k" }, single("amazon-bedrock/anthropic.claude-sonnet-5"))).toThrow(
       /does not accept an API key/u
     );
-    const untouched: NodeJS.ProcessEnv = {};
-    applyGenericApiKey(untouched, undefined);
-    expect(untouched).toEqual({});
+    const untouched: NodeJS.ProcessEnv = { OPENAI_API_KEY: "native-key" };
+    applyLlmApiKey(untouched, single("openai/gpt-5.5"));
+    expect(untouched).toEqual({ OPENAI_API_KEY: "native-key" });
+  });
+
+  it("requires every configured model to share llm-api-key's provider", () => {
+    const secret = "sk-or-v1-MUSTNOTSURFACE";
+    const mixed = resolveModelConfig("luna", parseModelAliases([
+      "luna: openrouter/openai/gpt-6-luna:xhigh",
+      "opus: anthropic/claude-opus-5"
+    ].join("\n")));
+    let caught: unknown;
+    try {
+      applyLlmApiKey({ LLM_API_KEY: secret }, mixed);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      code: "invalid_args",
+      message: expect.stringContaining("llm-api-key is a single key, but models use providers openrouter, anthropic")
+    });
+    expect(String((caught as Error).message)).not.toContain(secret);
+
+    // Different providers that read the same env var share one key.
+    const sharedVar = resolveModelConfig("kimi", parseModelAliases([
+      "kimi:    moonshotai/kimi-k2.5",
+      "kimi-cn: moonshotai-cn/kimi-k2.5"
+    ].join("\n")));
+    const shared: NodeJS.ProcessEnv = { LLM_API_KEY: secret };
+    expect(applyLlmApiKey(shared, sharedVar)).toEqual(["moonshotai", "moonshotai-cn"]);
+    expect(shared.MOONSHOT_API_KEY).toBe(secret);
+
+    const sameProvider = resolveModelConfig("luna", parseModelAliases([
+      "luna: openrouter/openai/gpt-6-luna:xhigh",
+      "glm: openrouter/z-ai/glm-5.3:max"
+    ].join("\n")));
+    const env: NodeJS.ProcessEnv = { LLM_API_KEY: secret };
+    applyLlmApiKey(env, sameProvider);
+    expect(env.OPENROUTER_API_KEY).toBe(secret);
   });
 
   it("expands the model spec into the synthesized review argv", async () => {
@@ -1123,6 +1309,233 @@ describe("github-action entrypoint", () => {
       "review", "--pr", "7", "--ci", "--post-github-comments",
       "--provider", "anthropic", "--model", "claude-opus-5", "--reasoning", "xhigh"
     ]);
+  });
+
+  async function runWithModels(
+    payload: Record<string, unknown>,
+    eventName: string,
+    args: string[],
+    extra: { env?: Record<string, string>; comments?: ReturnType<typeof createFakeComments> } = {}
+  ): Promise<{ argv?: string[]; output: string; calls: FakeCommentCall[]; env: NodeJS.ProcessEnv }> {
+    const fake = extra.comments ?? createFakeComments();
+    const env = actionEnv(payload, eventName, extra.env);
+    let argv: string[] | undefined;
+    let output = "";
+    await executeGitHubActionCommand(args, {
+      env,
+      issueComments: fake.client,
+      authStorage: { get: () => undefined },
+      minEditIntervalMs: 0,
+      writeOutput: (text) => {
+        output += text;
+      },
+      runReview: async (reviewArgv) => {
+        argv = reviewArgv;
+        return { runId: "r1", runDir: "", reportMarkdown: "# report" };
+      }
+    });
+    return { ...(argv !== undefined ? { argv } : {}), output, calls: fake.calls, env };
+  }
+
+  const MODEL_ARGS = ["--model", "luna", "--models", MODELS];
+
+  it("reviews with the default on the PR lane and a bare comment, and with the alias when requested", async () => {
+    const pr = await runWithModels(pullRequestPayload(), "pull_request", MODEL_ARGS);
+    expect(pr.argv?.slice(-6)).toEqual(["--provider", "openrouter", "--model", "openai/gpt-6-luna", "--reasoning", "xhigh"]);
+    expect(pr.output).toContain('"modelAlias":"luna"');
+    expect(pr.output).toContain('"modelSpec":"openrouter/openai/gpt-6-luna:xhigh"');
+
+    const bare = await runWithModels(issueCommentPayload(), "issue_comment", MODEL_ARGS);
+    expect(bare.argv?.slice(-6)).toEqual(["--provider", "openrouter", "--model", "openai/gpt-6-luna", "--reasoning", "xhigh"]);
+
+    const opus = await runWithModels(issueCommentPayload({ body: "codegenie review OPUS\nplease focus on auth" }), "issue_comment", MODEL_ARGS);
+    expect(opus.argv?.slice(-6)).toEqual(["--provider", "anthropic", "--model", "claude-opus-5", "--reasoning", "high"]);
+    expect(opus.output).toContain('"modelAlias":"opus"');
+  });
+
+  it("validates model and models only for real triggers", async () => {
+    const broken = ["--model", "luna", "--models", "luna: [openrouter/openai/gpt-6-luna"];
+    const unrelated = await runWithModels(issueCommentPayload({ body: "LGTM, thanks!" }), "issue_comment", broken);
+    expect(unrelated.output).toContain("skipped — comment does not match the trigger phrase");
+    expect(unrelated.calls).toHaveLength(0);
+
+    await expect(runWithModels(issueCommentPayload(), "issue_comment", broken)).rejects.toThrow(/--models invalid YAML at line 1/u);
+    await expect(runWithModels(pullRequestPayload(), "pull_request", ["--models", MODELS, "--model", "sonnet"]))
+      .rejects.toThrow(/not one of the configured model aliases/u);
+    await expect(runWithModels(pullRequestPayload(), "pull_request", ["--models", MODELS])).rejects.toThrow(/--models requires --model/u);
+  });
+
+  it("replies once to an unknown alias without claiming the status comment or reviewing", async () => {
+    const result = await runWithModels(issueCommentPayload({ body: "codegenie review opsu @someone" }), "issue_comment", MODEL_ARGS);
+    expect(result.argv).toBeUndefined();
+    expect(result.calls).toEqual([
+      { kind: "permission", login: "alice" },
+      { kind: "create", issueNumber: 7, body: "**🧞 Codegenie**: unknown model. Available: `luna` (default), `deepseek`, `opus`." }
+    ]);
+    expect(result.output).toContain("skipped — unknown model alias");
+    expect(result.output).toContain('"reason":"unknown model alias"');
+  });
+
+  it("stays silent for unauthorized commenters, even with an unknown alias", async () => {
+    const denied = createFakeComments({ permission: "read" });
+    const result = await runWithModels(issueCommentPayload({ body: "codegenie review opsu" }), "issue_comment", MODEL_ARGS, { comments: denied });
+    expect(result.argv).toBeUndefined();
+    expect(result.calls).toEqual([{ kind: "permission", login: "alice" }]);
+  });
+
+  it("resolves aliases in preflight without model credentials", async () => {
+    async function preflight(body: string): Promise<{ outputs: Record<string, string>; calls: FakeCommentCall[] }> {
+      const fake = createFakeComments();
+      const outputPath = path.join(scratch, `alias-output-${Math.random().toString(36).slice(2)}.txt`);
+      await executeGitHubActionCommand(["--preflight-only", "true", ...MODEL_ARGS], {
+        env: actionEnv(issueCommentPayload({ body }), "issue_comment", { GITHUB_OUTPUT: outputPath, GITHUB_ACTIONS: "true" }),
+        issueComments: fake.client,
+        writeOutput: () => undefined,
+        runReview: async () => {
+          throw new Error("preflight must not run a review");
+        }
+      });
+      const outputs = Object.fromEntries(
+        readFileSync(outputPath, "utf8").trim().split("\n").map((line) => line.split("=", 2) as [string, string])
+      );
+      return { outputs, calls: fake.calls };
+    }
+    const unknown = await preflight("codegenie review opsu");
+    expect(unknown.outputs).toEqual({ "should-run": "false" });
+    expect(unknown.calls.filter((call) => call.kind === "create")).toHaveLength(1);
+
+    const known = await preflight("codegenie review opus");
+    expect(known.outputs).toEqual({ "should-run": "true", "pr-number": "7" });
+    expect(known.calls).toEqual([{ kind: "permission", login: "alice" }]);
+  });
+
+  it("uses each alias's own provider env var when llm-api-key is unset", async () => {
+    const extra = { env: { OPENROUTER_API_KEY: "or-native", ANTHROPIC_API_KEY: "ant-native" } };
+    const opus = await runWithModels(issueCommentPayload({ body: "codegenie review opus" }), "issue_comment", MODEL_ARGS, extra);
+    expect(opus.argv).toContain("claude-opus-5");
+    expect(opus.env.ANTHROPIC_API_KEY).toBe("ant-native");
+    expect(opus.env.OPENROUTER_API_KEY).toBe("or-native");
+  });
+
+  it("fails a multi-provider alias set given one llm-api-key before claiming the status comment", async () => {
+    const fake = createFakeComments();
+    await expect(
+      executeGitHubActionCommand(MODEL_ARGS, {
+        env: actionEnv(pullRequestPayload(), "pull_request", { LLM_API_KEY: "sk-or-v1-one-key" }),
+        issueComments: fake.client,
+        writeOutput: () => undefined,
+        runReview: async () => {
+          throw new Error("review must not run");
+        }
+      })
+    ).rejects.toThrow(/llm-api-key is a single key, but models use providers openrouter, anthropic/u);
+    expect(fake.calls.some((call) => call.kind === "create" || call.kind === "update")).toBe(false);
+  });
+
+  it("refuses llm-api-key when a stored login on the runner would override it", async () => {
+    const fake = createFakeComments();
+    const stored = { type: "api_key" as const, apiKey: "sk-or-stored", createdAt: new Date(0).toISOString() };
+    await expect(
+      executeGitHubActionCommand(["--model", "openrouter/deepseek/deepseek-v4.1-flash:max"], {
+        env: actionEnv(pullRequestPayload(), "pull_request", { LLM_API_KEY: "sk-or-v1-explicit" }),
+        issueComments: fake.client,
+        authStorage: { get: (provider) => (provider === "openrouter" ? stored : undefined) },
+        writeOutput: () => undefined,
+        runReview: async () => {
+          throw new Error("review must not run");
+        }
+      })
+    ).rejects.toThrow(/stored codegenie login for openrouter on this runner would override llm-api-key/u);
+    expect(fake.calls.some((call) => call.kind === "create" || call.kind === "update")).toBe(false);
+
+    // A stored login for another provider, or no llm-api-key, is unaffected.
+    const other = await runWithModels(pullRequestPayload(), "pull_request", ["--model", "anthropic/claude-opus-5"], {
+      env: { LLM_API_KEY: "sk-ant-explicit" }
+    });
+    expect(other.env.ANTHROPIC_API_KEY).toBe("sk-ant-explicit");
+  });
+
+  // The README's simple form must behave exactly as it did before plan 125.
+  it("keeps the simple single-model form backward compatible", async () => {
+    const simple = ["--model", "openrouter/deepseek/deepseek-v4.1-flash:max", "--models", ""];
+    const expectedArgv = [
+      "review", "--pr", "7", "--ci", "--post-github-comments",
+      "--provider", "openrouter", "--model", "deepseek/deepseek-v4.1-flash", "--reasoning", "max"
+    ];
+    const withKey = await runWithModels(
+      issueCommentPayload({ body: "codegenie review opus please" }),
+      "issue_comment",
+      simple,
+      { env: { LLM_API_KEY: "sk-or-v1-simple" } }
+    );
+    expect(withKey.argv).toEqual(expectedArgv);
+    expect(withKey.env.OPENROUTER_API_KEY).toBe("sk-or-v1-simple");
+    expect(withKey.calls.filter((call) => call.kind === "create")).toHaveLength(1); // the status comment only
+
+    const nativeOnly = await runWithModels(pullRequestPayload(), "pull_request", simple, { env: { OPENROUTER_API_KEY: "or-native" } });
+    expect(nativeOnly.argv).toEqual(expectedArgv);
+    expect(nativeOnly.env.OPENROUTER_API_KEY).toBe("or-native");
+  });
+
+  it("shows model-resolution messages in the failure comment, and only those", async () => {
+    async function fail(error: CodegenieError): Promise<{ body: string; failure: Record<string, unknown> }> {
+      const fake = createFakeComments();
+      const failurePath = path.join(scratch, `resolution-${Math.random().toString(36).slice(2)}.json`);
+      await expect(
+        executeGitHubActionCommand(MODEL_ARGS, {
+          env: actionEnv(pullRequestPayload(), "pull_request", { CODEGENIE_FAILURE_PATH: failurePath }),
+          issueComments: fake.client,
+          minEditIntervalMs: 0,
+          writeOutput: () => undefined,
+          runReview: async () => {
+            throw error;
+          }
+        })
+      ).rejects.toBe(error);
+      const terminal = fake.calls.at(-1) as { kind: string; body: string };
+      return { body: terminal.body, failure: JSON.parse(readFileSync(failurePath, "utf8")) as Record<string, unknown> };
+    }
+
+    const message = "no credentials for provider anthropic: set ANTHROPIC_API_KEY (or run `codegenie provider login anthropic`)";
+    const missing = await fail(new CodegenieError("config_error", message, { context: { modelResolution: "missing_credentials" } }));
+    expect(missing.body).toContain("`config_error`");
+    expect(missing.body).toContain(message);
+    expect(missing.failure).toMatchObject({ errorCode: "config_error", modelResolution: { kind: "missing_credentials", message } });
+    expect(missing.failure).not.toHaveProperty("providerMessage");
+
+    const generic = await fail(new CodegenieError("config_error", "git stderr: fatal: /home/runner/private/path"));
+    expect(generic.body).toContain("`config_error`");
+    expect(generic.body).not.toContain("/home/runner/private/path");
+    expect(generic.failure).not.toHaveProperty("modelResolution");
+  });
+
+  it("sanitizes every failure comment: mentions, HTML comments and secrets", async () => {
+    async function failureBody(error: CodegenieError): Promise<string> {
+      const fake = createFakeComments();
+      await expect(
+        executeGitHubActionCommand([], {
+          env: actionEnv(pullRequestPayload(), "pull_request"),
+          issueComments: fake.client,
+          minEditIntervalMs: 0,
+          writeOutput: () => undefined,
+          runReview: async () => {
+            throw error;
+          }
+        })
+      ).rejects.toBe(error);
+      return (fake.calls.at(-1) as { body: string }).body;
+    }
+    const hostile = "ping @octocat <!-- hidden --> token=abcdefghijklmnopqrstuv";
+    for (const error of [
+      new CodegenieError("llm_call_failed", "provider failed", { context: { providerMessage: hostile } }),
+      new CodegenieError("config_error", `unknown model openrouter/x; ${hostile}`, { context: { modelResolution: "unknown_model" } })
+    ]) {
+      const body = await failureBody(error);
+      expect(body).toContain("`@octocat`");
+      expect(body).not.toContain("<!-- hidden -->");
+      expect(body).not.toContain("abcdefghijklmnopqrstuv");
+      expect(body).toContain(STATUS_COMMENT_MARKER);
+    }
   });
 
   it("rejects unknown flags and invalid booleans", () => {
@@ -1227,6 +1640,7 @@ type WorkflowJob = {
 };
 
 type WorkflowDocument = {
+  on?: Record<string, unknown>;
   concurrency?: { group?: string; "cancel-in-progress"?: boolean | string };
   jobs: Record<string, WorkflowJob>;
 };
@@ -1234,8 +1648,7 @@ type WorkflowDocument = {
 describe("GitHub Action and workflow contracts", () => {
   const workflowPaths = [
     ".github/workflows/codegenie-review.yml",
-    "examples/workflows/codegenie-review-comment.yml",
-    "examples/workflows/codegenie-review-pr.yml"
+    "examples/workflows/codegenie-review.yml"
   ];
 
   it("forwards preflight and bot identity inputs through the composite action", () => {
@@ -1254,6 +1667,9 @@ describe("GitHub Action and workflow contracts", () => {
 
     const runStep = action.runs.steps.find((step) => step.id === "run");
     expect(runStep?.run).toContain('args+=(--bot-login "$INPUT_BOT_LOGIN")');
+    expect(action.inputs.models).toBeDefined();
+    expect(runStep?.env?.INPUT_MODELS).toBe("${{ inputs.models }}");
+    expect(runStep?.run).toContain('args+=(--models "$INPUT_MODELS")');
     expect(runStep?.run).toContain('args+=(--preflight-only "$INPUT_PREFLIGHT_ONLY")');
     const failurePath = runStep?.env?.CODEGENIE_FAILURE_PATH;
     expect(failurePath).toBe("${{ runner.temp }}/codegenie-failure.json");
@@ -1278,9 +1694,18 @@ describe("GitHub Action and workflow contracts", () => {
       expect(workflow.concurrency?.["cancel-in-progress"], workflowPath).toBe(true);
       return workflow;
     });
-    const commentExample = documents[1];
-    const commentReviewStep = commentExample?.jobs.review?.steps?.find((step) => step.uses?.startsWith("0xPolygon/codegenie@"));
-    expect(commentReviewStep?.with?.["trigger-phrase"]).toBe("codegenie review");
+    const example = documents[1];
+    expect(Object.keys(example?.on ?? {}).sort()).toEqual(["issue_comment", "pull_request"]);
+    const exampleStep = example?.jobs.review?.steps?.find((step) => step.uses?.startsWith("0xPolygon/codegenie@"));
+    expect(exampleStep?.with?.["trigger-phrase"]).toBe("codegenie review");
+    // The example's alias list must parse with the real parser, and its
+    // default must be one of the aliases.
+    const config = resolveModelConfig(exampleStep?.with?.model, parseModelAliases(exampleStep?.with?.models ?? ""));
+    expect(config.aliases.size).toBeGreaterThan(1);
+    expect(config.defaultModel?.alias).toBe(exampleStep?.with?.model);
+    // models holds specs only; keys go in the step env.
+    expect(exampleStep?.with?.models).not.toContain("secrets.");
+    expect(Object.keys(exampleStep?.env ?? {})).toEqual(["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"]);
   });
 
   // The action installs the npm version read from its own package.json, so a
@@ -1302,16 +1727,14 @@ describe("GitHub Action and workflow contracts", () => {
     }
   });
 
-  it("pins pull-request jobs to the base SHA and leaves comment jobs on the default branch", () => {
-    const dogfood = parseYaml(readFileSync(path.resolve(workflowPaths[0] ?? ""), "utf8")) as WorkflowDocument;
-    const prExample = parseYaml(readFileSync(path.resolve(workflowPaths[2] ?? ""), "utf8")) as WorkflowDocument;
-    const commentExample = parseYaml(readFileSync(path.resolve(workflowPaths[1] ?? ""), "utf8")) as WorkflowDocument;
-    const dogfoodCheckout = dogfood.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v7");
-    expect(dogfoodCheckout?.with?.ref).toContain("github.event.pull_request.base.sha || ''");
-    const prCheckout = prExample.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v7");
-    expect(prCheckout?.with?.ref).toContain("github.event.pull_request.base.sha");
-    const commentCheckout = commentExample.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v7");
-    expect(commentCheckout?.with?.ref).toBeUndefined();
+  it("pins pull-request runs to the base SHA and leaves comment runs on the default branch", () => {
+    for (const workflowPath of workflowPaths) {
+      const workflow = parseYaml(readFileSync(path.resolve(workflowPath), "utf8")) as WorkflowDocument;
+      const checkout = workflow.jobs.review?.steps?.find((step) => step.uses === "actions/checkout@v7");
+      // Evaluates to "" on issue_comment, so checkout falls back to the default branch.
+      expect(checkout?.with?.ref, workflowPath).toContain("github.event.pull_request.base.sha || ''");
+      expect(workflow.concurrency?.group, workflowPath).toContain("github.event.pull_request.number || github.event.issue.number");
+    }
   });
 
   it("runs standalone CI against the PR head with actionlint available before every gate", () => {

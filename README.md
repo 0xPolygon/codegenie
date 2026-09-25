@@ -24,6 +24,7 @@ codegenie provider login openai --api-key      # OpenAI API key
 codegenie provider login openrouter --api-key  # OpenRouter API key setup
 
 # 2. Pick your default model (fuzzy-matched)
+codegenie provider use luna:xhigh                # -> openai/gpt-6-luna
 codegenie provider use opus                      # -> anthropic/claude-opus-5
 codegenie provider use gpt-5.5                   # -> openai-codex/gpt-5.5
 codegenie provider use deepseek-v4.1-flash:max   # -> openrouter/deepseek/deepseek-v4.1-flash
@@ -104,10 +105,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.base.sha }}  # trusted base; PR head is fetched as review data
           fetch-depth: 0
-      - uses: 0xPolygon/codegenie@v0.6.3
+      - uses: 0xPolygon/codegenie@v0.7.0
         with:
           # Works with any model!
-          model: "openrouter/deepseek/deepseek-v4.1-flash:max"
+          model: "openrouter/openai/gpt-6-luna:xhigh"
+          # model: "openrouter/deepseek/deepseek-v4.1-flash:max"
           # model: "openrouter/z-ai/glm-5.3:max"
           # model: "anthropic/claude-opus-5:high"
 
@@ -117,9 +119,53 @@ jobs:
           llm-api-key: ${{ secrets.LLM_API_KEY }}
 ```
 
-The `model` input is one spec: `provider/model[:reasoning]` — any model in [models.md](./models.md) works (`openai/gpt-5.5:xhigh`, `google/gemini-3-pro`, ...), with reasoning defaulting to `high`. `llm-api-key` is provider-generic: codegenie routes it to whatever variable the named provider reads. Provider-native env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...) also work and take precedence if you already keep secrets under those names.
+The `model` input is one spec: `provider/model[:reasoning]` — any model in [models.md](./models.md) works (`openai/gpt-5.5:xhigh`, `google/gemini-3-pro`, ...), with reasoning defaulting to `high`. `llm-api-key` is provider-generic: codegenie routes it to whatever variable the named provider reads. When `llm-api-key` is set it is the only model key — it overrides that provider's env vars. Without it, codegenie reads the provider's own env vars (see [Credentials](#credentials)).
 
-See `examples/workflows/` for both trigger lanes (automatic and comment-triggered). All authorization — exact trigger-phrase match, live write-permission check — happens inside codegenie; the workflows contain no gating logic to drift. Cancellation policy is one rule: `cancel-in-progress: true`, newest event wins — a push supersedes the now-stale review. On the comment lane that also means any comment on a PR supersedes that PR's in-flight run before codegenie decides it's a skip; if your PR threads are chatty, set it to `false` there (re-triggers queue instead), or gate a separate ungrouped job with the `preflight-only` input for the strictest setup. Fork `pull_request` events skip cleanly (the comment lane serves fork PRs), and all posting is deterministic harness code — reviewed content and comment text never reach the model as instructions or tools. Costs are the usual two: GitHub Actions minutes and provider tokens.
+### Several models, picked per comment
+
+List named models once. `model` stays the default for automatic reviews and a bare `codegenie review`. A collaborator can comment `codegenie review opus` to run that one review with the `opus` entry instead.
+
+```yaml
+      - uses: 0xPolygon/codegenie@v0.7.0
+        env:
+          # one credential env var per provider in the list (see Credentials below)
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          model: luna                 # default: an alias below, or a full spec
+          models: |
+            luna:     openrouter/openai/gpt-6-luna:xhigh
+            deepseek: openrouter/deepseek/deepseek-v4.1-flash:max
+            glm:      openrouter/z-ai/glm-5.3:max
+            opus:     anthropic/claude-opus-5:high
+```
+
+- **Grammar.** The first word after the trigger phrase, on the same line, is looked up in `models` (case-insensitive; surrounding quotes or backticks and trailing punctuation are ignored, so `` `opus` `` and `opus.` both work). Nothing else in the comment is read. Comments cannot supply a model spec, a reasoning level or any other option; to offer a reasoning variant, add an alias for it (`opus-max: anthropic/claude-opus-5:max`). Without `models`, text after the trigger phrase is ignored exactly as before.
+- **Unknown names.** `codegenie review opsu` runs no review. codegenie replies with the configured names (`Unknown model. Available: luna (default), deepseek, …`), and only to collaborators who pass the permission check.
+- **Keys.** `models` holds model specs only — never put keys in it. With several providers, set each provider's env var on the step, as above. If every configured model uses one provider, a single `llm-api-key` covers them all. When `llm-api-key` is set and the models span several providers, every run fails with a configuration error instead of sending one provider's key to another. On a self-hosted runner where someone ran `codegenie provider login` for that provider, the stored login would take precedence, so the run fails and says to log out there or drop `llm-api-key`.
+- **Precedence change.** `llm-api-key` now wins over a provider env var for the same provider. Older releases preferred the env var. A workflow that sets both, with different values, now uses `llm-api-key`.
+- **One status comment.** A `codegenie review opus` comment supersedes an in-flight run on the same PR (newest event wins), and the PR's single status comment shows the newest report.
+- **A mistyped name still cancels.** `codegenie review opsu` starts a run that supersedes the running review, then only posts the reply — the same "any comment supersedes" trade-off described below.
+- **Inline comments accumulate across models.** A `codegenie review opus` run after an automatic review posts its own inline findings. Duplicate suppression only matches unchanged wording, so two models reporting the same issue both appear. That is expected for a second opinion.
+
+### Credentials
+
+Each provider reads its key from its own env var. The common ones:
+
+| Provider | Env var |
+| --- | --- |
+| `anthropic` | `ANTHROPIC_API_KEY` |
+| `openai` | `OPENAI_API_KEY` |
+| `openrouter` | `OPENROUTER_API_KEY` |
+| `google` | **`GEMINI_API_KEY`** |
+| `amazon-bedrock` | AWS credentials (`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, `AWS_BEARER_TOKEN_BEDROCK`, or OIDC via `aws-actions/configure-aws-credentials`) |
+| `google-vertex` | `GOOGLE_CLOUD_API_KEY`, or Application Default Credentials plus `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION` |
+
+Most names are the provider id in capitals plus `_API_KEY`. Exceptions include `google` → `GEMINI_API_KEY`, `vercel-ai-gateway` → `AI_GATEWAY_API_KEY`, `huggingface` → `HF_TOKEN`, `github-copilot` → `COPILOT_GITHUB_TOKEN`, and shared names such as `MOONSHOT_API_KEY` and `CLOUDFLARE_API_KEY`. `openai-codex` uses a stored ChatGPT-plan login, so in CI it needs a self-hosted runner with that login. The full table for every provider is in [models.md#credentials](./models.md#credentials). A missing key fails the review with a message naming the env var to set.
+
+### Triggers, trust and cancellation
+
+See [`examples/workflows/codegenie-review.yml`](./examples/workflows/codegenie-review.yml) for one workflow that serves both trigger lanes (automatic and comment-triggered). All authorization — exact trigger-phrase match, live write-permission check, model-name lookup — happens inside codegenie; the workflow contains no gating logic to drift. Cancellation policy is one rule: `cancel-in-progress: true`, newest event wins — a push supersedes the now-stale review. On the comment lane that also means any comment on a PR supersedes that PR's in-flight run before codegenie decides it's a skip; if your PR threads are chatty, set it to `false` (re-triggers queue instead), or gate a separate ungrouped job with the `preflight-only` input for the strictest setup. A preflight job needs no model credentials; give it the same `model`, `models` and trigger inputs as the review job. Fork `pull_request` events skip cleanly (the comment lane serves fork PRs), and all posting is deterministic harness code — reviewed content and comment text never reach the model as instructions or tools. Costs are the usual two: GitHub Actions minutes and provider tokens.
 
 ## Providers and models
 

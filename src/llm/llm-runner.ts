@@ -305,8 +305,20 @@ export type PiModelRef = {
   oauthProvider?: string;
 };
 
+// Why resolveModel returned undefined. "unresolved" covers every case the
+// resolver cannot attribute (no authenticated provider matched, a provider
+// with no usable models, or an unexpected lookup error).
+export type ModelResolutionFailure = {
+  kind: "unknown_model" | "deprecated_model" | "missing_credentials" | "unresolved";
+  provider?: string;
+  model?: string;
+};
+
 export interface PiAiAdapter {
   resolveModel(input: { provider?: string; model?: string }): PiModelRef | undefined;
+  // Optional: explains a resolveModel miss. Test adapters may omit it; the
+  // runner then reports the generic unresolved message.
+  explainUnresolvedModel?(input: { provider?: string; model?: string }): ModelResolutionFailure;
   complete(
     model: PiModelRef,
     context: { messages: unknown[]; tools: Array<{ name: string; description: string; parameters: TSchema }> },

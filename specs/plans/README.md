@@ -127,6 +127,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 122 | CORE IMPLEMENTED (live baseline pending; C2 deferred) | [Issue 122: Shared Evidence and Focused Review Follow-ups](122-issue-122-shared-evidence-and-focused-review-followups.md) |
 | 123 | IMPLEMENTED (live comparisons pending) | [Issue 123: Reliable Search Evidence and Honest Review Outcomes](123-issue-123-search-evidence-and-honest-review-outcomes.md) |
 | 124 | IMPLEMENTED | [Issue 124: Repair Feedback, Evidence Retention, and Faithful Fallback Reports](124-issue-124-repair-feedback-evidence-retention-and-fallback-reports.md) |
+| 125 | IMPLEMENTED (dogfood pending) | [Issue 125: GitHub Action Model Aliases and Provider Credential Docs](125-issue-125-github-model-aliases-and-provider-credentials.md) |
 
 ## Recommended order for 106-110
 
