@@ -45,7 +45,7 @@ jobs:
           ref: ${{ github.event.pull_request.base.sha || '' }}
           fetch-depth: 0
 
-      - uses: 0xPolygon/codegenie@v0.6.3
+      - uses: 0xPolygon/codegenie@v0.7.0
         # One credential env var per provider used below; the name for every
         # provider is listed in models.md#credentials.
         env:

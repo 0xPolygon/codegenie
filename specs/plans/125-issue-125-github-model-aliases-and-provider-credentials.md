@@ -264,7 +264,7 @@ Likely files: `src/github-action/event-gate.ts`, `src/github-action/entrypoint.t
   - Found that pi-ai's stored-credential-first auth bypasses `llm-api-key` on self-hosted runners with a stored login. Resolved by the owner-chosen Action guard.
   - Found that a nonexistent provider was reported as "missing credentials". Fixed: it now gets the generic message.
   - Found that numeric alias names were rejected. Fixed with the failsafe schema.
-  - Not changed: the example and README pins stay `@v0.6.3`, which has no `models` input. The existing contract test forces them to the package version at release. The optional adapter method (rather than a reason-returning `resolveModel`) was kept to avoid touching the ~40 test adapters.
+  - Pins: the example and README pins stayed `@v0.6.3` (no `models` input) until the package was bumped to 0.7.0 on this branch; they now pin `@v0.7.0`, as the existing contract test requires. The optional adapter method (rather than a reason-returning `resolveModel`) was kept to avoid touching the ~40 test adapters.
   - Sound: the trust boundary, secrets on every published surface, backward compatibility and error labeling on the Action path.
 - **Mutation checks:** removing the failure-body sanitizer, or the credential clearing, fails the new tests.
 
