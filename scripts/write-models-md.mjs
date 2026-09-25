@@ -6,6 +6,7 @@ import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPiModelRegistry } from "../dist/provider/provider-services.js";
+import { getAmbientCredentialNote, getPiApiKeyEnvVarNames } from "../dist/provider/pi-ai-models.js";
 
 const stubAuthStorage = {
   loadAll: () => ({}),
@@ -40,7 +41,16 @@ const lines = [
   "The **Reasoning levels** column shows each model's native thinking levels from the registry (a dash means none).",
   "codegenie's `--reasoning` flag (and the `:reasoning` suffix) accepts `low`, `medium`, `high`, `xhigh`, or `auto`",
   "and maps onto whatever the model natively supports. Listing here means the model is known, not authenticated —",
-  "connect a provider with `codegenie provider login <provider>` (or env vars / the Action's `llm-api-key`).",
+  "connect a provider with `codegenie provider login <provider>`, or set the env var listed under [Credentials](#credentials).",
+  "",
+  "## Credentials",
+  "",
+  "The env vars each provider's credentials are read from, in lookup order. In the GitHub Action, set them on the",
+  "`uses:` step's `env:`, or pass one key as `llm-api-key` when every configured model uses the same provider.",
+  "",
+  "| Provider | Credentials |",
+  "| --- | --- |",
+  ...[...byProvider.keys()].map((provider) => `| \`${provider}\` | ${credentialsCell(provider)} |`),
   ""
 ];
 
@@ -53,6 +63,13 @@ for (const [provider, group] of byProvider) {
     );
   }
   lines.push("");
+}
+
+function credentialsCell(provider) {
+  const envVars = getPiApiKeyEnvVarNames(provider).map((name) => `\`${name}\``).join(", ");
+  const note = getAmbientCredentialNote(provider);
+  const cell = [envVars, note].filter((part) => part !== undefined && part !== "").join(" ");
+  return escapeCell(cell === "" ? "—" : cell);
 }
 
 function formatTokens(value) {

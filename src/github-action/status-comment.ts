@@ -237,7 +237,10 @@ export function createStatusCommentController(options: StatusCommentOptions): St
     }
     terminal = true;
     await settle();
-    const body = appendStatusCommentMarker(reportMarkdown === undefined ? renderFailureBody(errorCode, options.runUrl, diagnostic, providerMessage)
+    // Both shapes are sanitized: the failure body carries provider prose and
+    // codegenie error text, which must not ping users or smuggle HTML.
+    const body = appendStatusCommentMarker(reportMarkdown === undefined
+      ? sanitizeGitHubCommentBody(renderFailureBody(errorCode, options.runUrl, diagnostic, providerMessage))
       : capTerminalBody(sanitizeGitHubCommentBody(reportMarkdown), options.runUrl, STATUS_COMMENT_MARKER.length + 4).body);
     stats.terminalState = "failure";
     const bodyBytes = Buffer.byteLength(body, "utf8");

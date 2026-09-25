@@ -1,7 +1,8 @@
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { executeReviewCommand, parseReviewCommand } from "../cli/review-command.js";
-import { getPiApiKeyEnvVarName } from "../provider/pi-ai-models.js";
+import { getCodegeniePaths } from "../config/paths.js";
+import { createFileAuthStorage, type PiAuthStorage } from "../provider/provider-services.js";
 import { renderMarkdownReview } from "../output/markdown-renderer.js";
 import { sanitizeGitHubCommentBody, scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import type { ReviewResult, TelemetryEvent } from "../types.js";
@@ -17,8 +18,17 @@ import {
   type TriggerDecision,
   type TriggerRules
 } from "./event-gate.js";
-import { splitReasoningSuffix } from "../provider/reasoning.js";
 import { createIssueCommentClient, type IssueCommentClient } from "./issue-comments.js";
+import {
+  applyLlmApiKey,
+  formatModelSpec,
+  parseModelAliases,
+  renderUnknownAliasReply,
+  resolveModelConfig,
+  selectModel,
+  type ModelConfig,
+  type ModelSelection
+} from "./models.js";
 import { createStatusCommentController } from "./status-comment.js";
 import { renderProviderMessage, renderStructuredSubmitFailure } from "./render.js";
 
@@ -49,6 +59,8 @@ export type ExecuteGitHubActionOptions = {
   issueComments?: IssueCommentClient;
   runReview?: (reviewArgv: string[], hooks: ReviewHooks) => Promise<RunReviewResult>;
   minEditIntervalMs?: number;
+  // Stored codegenie logins on this runner (self-hosted); tests inject one.
+  authStorage?: Pick<PiAuthStorage, "get">;
 };
 
 type GitHubActionInputs = {
@@ -59,7 +71,7 @@ type GitHubActionInputs = {
   postInlineComments: boolean;
   preflightOnly: boolean;
   botLogin?: string;
-  model?: ModelSpec;
+  models: ModelConfig;
   reviewPassthrough: string[];
 };
 
@@ -69,11 +81,7 @@ type AuthorizedDecision = Extract<TriggerDecision, { run: true }> & {
   permissionCheck: PermissionCheck;
 };
 
-export type ModelSpec = {
-  provider?: string;
-  model: string;
-  reasoning: string;
-};
+export { applyLlmApiKey, parseModelSpec, type ModelSpec } from "./models.js";
 
 // The `codegenie github-action` subcommand: the whole GitHub Actions surface
 // (plan 97). Composes the review path through its public seams only — the
@@ -135,23 +143,47 @@ export async function executeGitHubActionCommand(
   }
 
   const authorized: AuthorizedDecision = { ...decision, permissionCheck };
-  writePreflightOutputs(env, true, decision.prNumber);
-  writeDecisionRecord(write, {
+  const decisionFields = {
     eventName,
-    run: true,
     lane: decision.lane,
     prNumber: decision.prNumber,
     actor: decision.actor,
     association: decision.association,
     actorAllowlisted: decision.actorAllowlisted,
     permissionCheck
-  });
+  };
+
+  // Resolved only after authorization, so unauthorized commenters never get
+  // a reply. An unlisted alias gets fixed text from the workflow's own list.
+  const selected = selectModel(inputs.models, decision.requestedAlias);
+  if (selected.kind === "unknown_alias") {
+    await comments.createComment(decision.prNumber, renderUnknownAliasReply(inputs.models));
+    const reason = "unknown model alias";
+    write(`github-action: skipped — ${reason}\n`);
+    writeDecisionRecord(write, { ...decisionFields, run: false, reason });
+    writePreflightOutputs(env, false);
+    return;
+  }
+  const selection = selected.selection;
+  writePreflightOutputs(env, true, decision.prNumber);
+  writeDecisionRecord(write, { ...decisionFields, run: true, ...modelRecordFields(selection) });
   if (inputs.preflightOnly) {
     write(`github-action: preflight authorized ${decision.lane} trigger for PR #${decision.prNumber}\n`);
     return;
   }
 
-  applyGenericApiKey(env, inputs.model);
+  const keyProvider = applyLlmApiKey(env, inputs.models);
+  if (keyProvider !== undefined) {
+    // pi-ai lets a stored login own its provider ahead of env vars, which
+    // would silently bypass llm-api-key. Only self-hosted runners can have one.
+    const storage = opts.authStorage ?? createFileAuthStorage(getCodegeniePaths(undefined, env));
+    if (storage.get(keyProvider) !== undefined) {
+      throw new CodegenieError(
+        "invalid_args",
+        `a stored codegenie login for ${keyProvider} on this runner would override llm-api-key; run \`codegenie provider logout ${keyProvider}\` on the runner, or unset llm-api-key to use the stored login`
+      );
+    }
+  }
 
   // Identity resolution order: explicit bot-login input (custom GitHub
   // Apps) → /user lookup (PATs) → the GITHUB_TOKEN default. Reclaim and
@@ -181,13 +213,13 @@ export async function executeGitHubActionCommand(
     String(decision.prNumber),
     "--ci",
     ...(inputs.postInlineComments ? ["--post-github-comments"] : []),
-    ...(inputs.model !== undefined
+    ...(selection !== undefined
       ? [
-          ...(inputs.model.provider !== undefined ? ["--provider", inputs.model.provider] : []),
+          ...(selection.spec.provider !== undefined ? ["--provider", selection.spec.provider] : []),
           "--model",
-          inputs.model.model,
+          selection.spec.model,
           "--reasoning",
-          inputs.model.reasoning
+          selection.spec.reasoning
         ]
       : []),
     ...inputs.reviewPassthrough
@@ -210,19 +242,24 @@ export async function executeGitHubActionCommand(
     const code = actionErrorCode(error);
     const diagnostic = structuredSubmitFailureDiagnosticFromError(error);
     const providerMessage = providerMessageFromError(error);
+    const modelResolution = modelResolutionFromError(error);
+    // Our own model-resolution text rides the same explanation slot as a
+    // provider message; the failure JSON keeps the two distinct.
+    const explanation = providerMessage ?? modelResolution?.message;
     publishFailureFiles({
       errorCode: code,
       decision: authorized,
       env,
       ...(diagnostic !== undefined ? { diagnostic } : {}),
       ...(providerMessage !== undefined ? { providerMessage } : {}),
+      ...(modelResolution !== undefined ? { modelResolution } : {}),
       ...(runUrl !== undefined ? { runUrl } : {})
     });
-    await controller.finalizeFailure(code, diagnostic, providerMessage);
-    emitActionRecord(attachment?.runDir, eventName, authorized, "review_failed", controller.stats(), env, write, code);
+    await controller.finalizeFailure(code, diagnostic, explanation);
+    emitActionRecord(attachment?.runDir, eventName, authorized, selection, "review_failed", controller.stats(), env, write, code);
     const detail = diagnostic !== undefined ? renderStructuredSubmitFailure(diagnostic) : code;
     write(
-      `github-action: review failed — ${detail}${providerMessage !== undefined ? `: ${providerMessage}` : ""}\n`
+      `github-action: review failed — ${detail}${explanation !== undefined ? `: ${explanation}` : ""}\n`
     );
     throw error;
   }
@@ -232,17 +269,17 @@ export async function executeGitHubActionCommand(
   publishReportFiles(runResult.reportMarkdown, env);
   if (runResult.failed) {
     await controller.finalizeFailure("review_failed", undefined, "Required review work failed. See the saved report for diagnostics.", runResult.reportMarkdown);
-    emitActionRecord(runResult.runDir, eventName, authorized, "review_failed", controller.stats(), env, write, "review_failed");
+    emitActionRecord(runResult.runDir, eventName, authorized, selection, "review_failed", controller.stats(), env, write, "review_failed");
     throw new CodegenieError("review_failed", "Required review work failed; partial report retained.");
   }
   try {
     await controller.finalizeSuccess(runResult.reportMarkdown);
   } catch (error) {
     const code = actionErrorCode(error);
-    emitActionRecord(runResult.runDir, eventName, authorized, "terminal_post_failed", controller.stats(), env, write, code);
+    emitActionRecord(runResult.runDir, eventName, authorized, selection, "terminal_post_failed", controller.stats(), env, write, code);
     throw error;
   }
-  emitActionRecord(runResult.runDir, eventName, authorized, "success", controller.stats(), env, write);
+  emitActionRecord(runResult.runDir, eventName, authorized, selection, "success", controller.stats(), env, write);
   write(`github-action: review complete — report posted to PR #${decision.prNumber}\n`);
 }
 
@@ -275,8 +312,11 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
     allowedUsers: [],
     postInlineComments: true,
     preflightOnly: false,
+    models: { aliases: new Map() },
     reviewPassthrough: []
   };
+  let modelInput: string | undefined;
+  let modelsInput = "";
   const passthroughFlags = new Set(["--depth", "--lens", "--max-time", "--budget-boost"]);
 
   for (let index = 0; index < argv.length; index += 2) {
@@ -298,9 +338,9 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
     } else if (flag === "--preflight-only") {
       inputs.preflightOnly = parseBoolean(flag, value);
     } else if (flag === "--model") {
-      if (value.trim() !== "") {
-        inputs.model = parseModelSpec(value.trim());
-      }
+      modelInput = value;
+    } else if (flag === "--models") {
+      modelsInput = value;
     } else if (flag === "--bot-login") {
       if (value.trim() !== "") {
         inputs.botLogin = value.trim();
@@ -316,53 +356,9 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
   if (inputs.triggerPhrase.trim() === "") {
     throw new CodegenieError("invalid_args", "--trigger-phrase must not be empty");
   }
+  // `model` and `models` are validated together, after every flag is read.
+  inputs.models = resolveModelConfig(modelInput, parseModelAliases(modelsInput));
   return inputs;
-}
-
-// One model spec instead of separate provider/model/reasoning inputs:
-// `provider/model[:reasoning]`, e.g. `anthropic/claude-opus-5:xhigh`.
-// Reasoning defaults to "high" — Action reviews are unattended, so the
-// action's posture favors quality over the CLI's interactive default. The
-// suffix rule is the shared one (a non-level `:suffix` stays in the model id).
-export function parseModelSpec(spec: string): ModelSpec {
-  const { model: rest, reasoning = "high" } = splitReasoningSuffix(spec);
-  const slash = rest.indexOf("/");
-  const provider = slash > 0 ? rest.slice(0, slash) : undefined;
-  const model = slash > 0 ? rest.slice(slash + 1) : rest;
-  if (model.trim() === "" || (slash === 0)) {
-    throw new CodegenieError("invalid_args", `--model must be provider/model[:reasoning], got: ${spec}`);
-  }
-  return {
-    ...(provider !== undefined ? { provider } : {}),
-    model,
-    reasoning
-  };
-}
-
-// Routes a generic LLM_API_KEY to the env var the selected provider actually
-// reads (the names are not uniform: google reads GEMINI_API_KEY). Explicitly
-// set provider-native vars always win; the generic key never overwrites.
-export function applyGenericApiKey(env: NodeJS.ProcessEnv, model: ModelSpec | undefined): void {
-  const generic = env.LLM_API_KEY;
-  if (generic === undefined || generic === "") {
-    return;
-  }
-  if (model?.provider === undefined) {
-    throw new CodegenieError(
-      "invalid_args",
-      "LLM_API_KEY requires a model input with a provider prefix (e.g. anthropic/claude-opus-5) so the key can be routed"
-    );
-  }
-  const envVarName = getPiApiKeyEnvVarName(model.provider);
-  if (envVarName === undefined) {
-    throw new CodegenieError(
-      "invalid_args",
-      `provider ${model.provider} does not accept an API key; set its native credentials instead of LLM_API_KEY`
-    );
-  }
-  if (env[envVarName] === undefined || env[envVarName] === "") {
-    env[envVarName] = generic;
-  }
 }
 
 async function hasWritePermission(comments: IssueCommentClient, login: string): Promise<boolean> {
@@ -435,7 +431,10 @@ type ActionFailureRecord = {
   runId?: string;
   structuredSubmitFailure?: StructuredSubmitFailureDiagnostic;
   providerMessage?: string;
+  modelResolution?: ModelResolutionDetail;
 };
+
+type ModelResolutionDetail = { kind: string; message: string };
 
 const PROVIDER_MESSAGE_MAX_CHARS = 300;
 
@@ -450,9 +449,12 @@ function providerMessageFromError(error: unknown): string | undefined {
     return undefined;
   }
   const value = error.context?.providerMessage;
-  if (typeof value !== "string") {
-    return undefined;
-  }
+  return typeof value === "string" ? boundedPublishedText(value) : undefined;
+}
+
+// Scrubbed against the Actions secrets, collapsed to one line, and capped for
+// world-readable surfaces (comment, step summary, artifacts, log).
+function boundedPublishedText(value: string): string | undefined {
   const collapsed = scrubGitHubSecrets(value).replace(/\s+/gu, " ").trim();
   if (collapsed.length === 0) {
     return undefined;
@@ -460,6 +462,21 @@ function providerMessageFromError(error: unknown): string | undefined {
   return collapsed.length <= PROVIDER_MESSAGE_MAX_CHARS
     ? collapsed
     : `${collapsed.slice(0, PROVIDER_MESSAGE_MAX_CHARS - 1).trimEnd()}…`;
+}
+
+// Model-resolution errors carry codegenie-authored text (with workflow- or
+// CLI-supplied model ids) that tells a CI user what to set. Only these error
+// messages are published — other error messages can carry external text.
+function modelResolutionFromError(error: unknown): ModelResolutionDetail | undefined {
+  if (!(error instanceof CodegenieError)) {
+    return undefined;
+  }
+  const kind = error.context?.modelResolution;
+  if (typeof kind !== "string") {
+    return undefined;
+  }
+  const message = boundedPublishedText(error.message);
+  return message !== undefined ? { kind, message } : undefined;
 }
 
 const FAILURE_JSON_MAX_BYTES = 16 * 1024;
@@ -473,6 +490,7 @@ function publishFailureFiles(input: {
   errorCode: CodegenieErrorCode | "unknown_error";
   diagnostic?: StructuredSubmitFailureDiagnostic;
   providerMessage?: string;
+  modelResolution?: ModelResolutionDetail;
   decision: AuthorizedDecision;
   runUrl?: string;
   env: NodeJS.ProcessEnv;
@@ -486,15 +504,17 @@ function publishFailureFiles(input: {
     ...(input.runUrl !== undefined ? { runUrl: input.runUrl } : {}),
     ...(runId !== undefined && /^\d+$/u.test(runId) ? { runId } : {}),
     ...(input.diagnostic !== undefined ? { structuredSubmitFailure: input.diagnostic } : {}),
-    ...(input.providerMessage !== undefined ? { providerMessage: input.providerMessage } : {})
+    ...(input.providerMessage !== undefined ? { providerMessage: input.providerMessage } : {}),
+    ...(input.modelResolution !== undefined ? { modelResolution: input.modelResolution } : {})
   };
+  const explanation = input.providerMessage ?? input.modelResolution?.message;
   const json = fitFailureJson(record);
   const markdown = fitFailureMarkdown([
     "# 🧞 Codegenie Review Failed",
     "",
     `Error code: \`${input.errorCode}\``,
     ...(input.diagnostic !== undefined ? ["", renderStructuredSubmitFailure(input.diagnostic)] : []),
-    ...(input.providerMessage !== undefined ? ["", renderProviderMessage(input.providerMessage)] : []),
+    ...(explanation !== undefined ? ["", renderProviderMessage(explanation)] : []),
     ...(input.runUrl !== undefined ? ["", `See the [workflow job](${input.runUrl}) and the failure JSON artifact.`] : [])
   ].join("\n"));
   writeFailureFile(input.env.CODEGENIE_FAILURE_PATH, json);
@@ -546,25 +566,24 @@ type DecisionRecord =
   | { eventName: string; run: false; reason: string }
   | {
       eventName: string;
-      run: true;
+      run: boolean;
+      reason?: string;
       lane: AuthorizedDecision["lane"];
       prNumber: number;
       actor: string;
       association: string;
       actorAllowlisted: boolean;
-      permissionCheck: PermissionCheck;
-    }
-  | {
-      eventName: string;
-      run: false;
-      reason: string;
-      lane: AuthorizedDecision["lane"];
-      prNumber: number;
-      actor: string;
-      association: string;
-      actorAllowlisted: false;
-      permissionCheck: "denied";
+      permissionCheck: PermissionCheck | "denied";
+      modelAlias?: string;
+      modelSpec?: string;
     };
+
+function modelRecordFields(selection: ModelSelection | undefined): { modelAlias?: string; modelSpec?: string } {
+  return {
+    ...(selection?.alias !== undefined ? { modelAlias: selection.alias } : {}),
+    ...(selection !== undefined ? { modelSpec: formatModelSpec(selection.spec) } : {})
+  };
+}
 
 function writeDecisionRecord(write: (text: string) => void, record: DecisionRecord): void {
   write(`github-action: decision ${JSON.stringify(scrubGitHubSecrets(record))}\n`);
@@ -594,6 +613,7 @@ function emitActionRecord(
   runDir: string | undefined,
   eventName: string,
   decision: AuthorizedDecision,
+  selection: ModelSelection | undefined,
   outcome: "success" | "review_failed" | "terminal_post_failed",
   stats: ReturnType<ReturnType<typeof createStatusCommentController>["stats"]>,
   env: NodeJS.ProcessEnv,
@@ -609,6 +629,7 @@ function emitActionRecord(
     association: decision.association,
     actorAllowlisted: decision.actorAllowlisted,
     permissionCheck: decision.permissionCheck,
+    ...modelRecordFields(selection),
     outcome,
     ...(errorCode !== undefined ? { errorCode } : {}),
     runUrl: buildRunUrl(env, env.GITHUB_REPOSITORY ?? "") ?? null,
