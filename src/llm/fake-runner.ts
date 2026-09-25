@@ -165,6 +165,8 @@ function fakeComposition(prompt: string): unknown {
 
   return {
     summary: findings.length === 0 ? "No credible findings." : `Found ${findings.length} verified issue${findings.length === 1 ? "" : "s"}.`,
+    attentionResolutions: (extractJsonBlock<{ concerns: Array<{ id: string }> }>(prompt, "attention-reconciliation")?.concerns ?? [])
+      .map(concern => ({ concernId: concern.id, disposition: "unresolved", supportingRefs: [], rationale: "Fake composition does not infer evidence-based resolutions." })),
     composedFindings: groups.map((group) => {
       const finding = group.representative ?? group.findings![0]!;
       const sources = group.sourceComponents ?? [];

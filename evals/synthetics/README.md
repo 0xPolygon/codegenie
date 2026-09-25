@@ -17,6 +17,16 @@ findings in a document remain separate. The latter deliberately reverses PR #28'
 file-wide merging tradeoff. Existing code fingerprint tests, including executable
 examples under `docs/`, retain symbol-based identity.
 
+The text-tool investigation suite uses temporary committed Git repositories and
+production tool schemas, wrappers and Git grep. It covers `.ridl` and arbitrary
+unsupported formats: small outlines, locating a late section in a large file,
+exact bounded reads, base/head isolation from dirty files, POSIX regexes, shared
+glob semantics, invalid-query correction, text-only mentions, and bounded result
+packing followed by exact source reads. Boundary cases (missing/fractional bounds,
+EOF, empty/missing files, UTF-8, CRLF and truncation) live in
+`tests/text-tool-contracts.test.ts`; runner tests verify invalid arguments do not
+consume source-call slots or masquerade as provider failures.
+
 These evaluate harness behavior, not whether a model identifies or phrases a
 finding consistently. Use `codegenie eval --eval-dir ...` for live model comparisons.
 Add additional `*.test.ts` scenarios here as harness failure patterns are found.

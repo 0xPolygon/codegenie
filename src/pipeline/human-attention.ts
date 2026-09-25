@@ -123,9 +123,9 @@ export type HumanAttentionOutput = {
 
 export function buildHumanAttentionNotes(
   packetResults: PacketReviewResult[],
-  options: { packets: ReviewPacket[]; diff?: UnifiedDiff; telemetry?: TelemetryRecorder; rawHints?: RawAttentionHint[] }
+  options: { packets: ReviewPacket[]; diff?: UnifiedDiff; repositoryPaths?: readonly string[]; telemetry?: TelemetryRecorder; rawHints?: RawAttentionHint[] }
 ): HumanAttentionNotes {
-  const raw = options.rawHints ?? rawAttentionHints(packetResults, knownAttentionPaths(options.packets, options.diff), options.telemetry);
+  const raw = options.rawHints ?? rawAttentionHints(packetResults, knownAttentionPaths(options.packets, options.diff, options.repositoryPaths), options.telemetry);
   const groups = new Map<string, AttentionHintGroup>();
   let eligibleHints = 0;
 
@@ -518,7 +518,7 @@ function rawAttentionHints(
   return raw;
 }
 
-function knownAttentionPaths(packets: ReviewPacket[], diff: UnifiedDiff | undefined): Set<string> {
+function knownAttentionPaths(packets: ReviewPacket[], diff: UnifiedDiff | undefined, repositoryPaths: readonly string[] = []): Set<string> {
   const paths = new Set<string>();
   const add = (value: string | undefined) => {
     const normalized = normalizeAttentionPath(value ?? "");
@@ -526,6 +526,9 @@ function knownAttentionPaths(packets: ReviewPacket[], diff: UnifiedDiff | undefi
       paths.add(normalized);
     }
   };
+  // Unchanged files can answer packet questions too. These paths come from the
+  // reviewed Git tree, not model output or the current worktree.
+  for (const filePath of repositoryPaths) add(filePath);
   for (const file of diff?.files ?? []) {
     add(file.path);
     add(file.oldPath);

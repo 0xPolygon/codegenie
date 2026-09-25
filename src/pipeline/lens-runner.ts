@@ -2,7 +2,7 @@ import { reviewDiagnostic, unresolvedToolDiagnostic } from "../util/review-healt
 import { clarifyFindingLocations } from "./finding-location.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { buildRepositoryToolDefinitions } from "../llm/tool-definitions.js";
-import type { LlmPostToolNudgeInput, LlmRunner } from "../llm/llm-runner.js";
+import type { LlmPostToolNudgeInput, LlmRunner, LlmToolResultSummary } from "../llm/llm-runner.js";
 import { SubmitPacketReviewSchema, type SubmitPacketReview } from "../llm/schemas.js";
 import { skillsCompatibleWithLanguage, type LensRegistry } from "../skills/lens-registry.js";
 import { projectedSkillIds, type PromptBuilder } from "../skills/prompt-builder.js";
@@ -15,6 +15,7 @@ import type {
   DiffAnchor,
   PacketReviewResult,
   RepositoryTools,
+  RepositoryEvidence,
   ReviewPacket,
   ReviewPlan,
   ReviewPriority,
@@ -116,6 +117,7 @@ export async function runLensPackets(
       data: { cap: MAX_ENSEMBLED_PACKETS_PER_RUN, ensembledPackets, skipped: ensembleCapSkipped }
     });
   }
+  const retainedReads = new Map<string, RepositoryEvidence[]>();
   const tasks = passPlan.map(({ packet, pass, passes }): WorkerTask<PacketReviewResult> => ({
     stage: 7,
     priority: packetPriority(packet),
@@ -127,7 +129,7 @@ export async function runLensPackets(
     repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
     awaitCancellation: true,
     retryOnTransient: true,
-    run: async (signal, task) => runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, passes > 1 ? { pass, passes } : undefined)
+    run: packetAttemptRunner(packet, tools, config, opts, telemetry, retainedReads, pass, passes > 1 ? { pass, passes } : undefined)
   }));
   const outcomes = await workerRunner.schedule(tasks);
   const passResults = outcomes.map((outcome): PacketReviewResult => {
@@ -153,6 +155,7 @@ export async function runLensPackets(
     return {
       packetId,
       lenses: packets.find((packet) => packet.id === packetId)?.lenses ?? [],
+      repositoryEvidence: retainedReads.get(`${packetId}/${outcome.task.ensemblePass ?? 1}`) ?? [],
       findings: [],
       followUpHints: [],
       uncertainties: [],
@@ -303,6 +306,7 @@ async function runAdaptiveSecondWave(
   if (scheduled.length === 0) {
     return results;
   }
+  const retainedReads = new Map<string, RepositoryEvidence[]>();
   const tasks = scheduled.map(({ packet }): WorkerTask<PacketReviewResult> => ({
     stage: 7,
     priority: packetPriority(packet),
@@ -314,7 +318,7 @@ async function runAdaptiveSecondWave(
     repairAllowanceMs: SCHEMA_REPAIR_TIMEOUT_MS,
     awaitCancellation: true,
     retryOnTransient: true,
-    run: async (signal, task) => runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, { pass: 2, passes: 2, adaptive: true })
+    run: packetAttemptRunner(packet, tools, config, opts, telemetry, retainedReads, 2, { pass: 2, passes: 2, adaptive: true })
   }));
   const outcomes = await workerRunner.schedule(tasks);
   const adaptiveByPacket = new Map<string, PacketReviewResult>();
@@ -349,6 +353,7 @@ async function runAdaptiveSecondWave(
     const adaptive = adaptiveByPacket.get(result.packetId);
     const packet = packetsById.get(result.packetId);
     if (adaptive === undefined || packet === undefined) {
+      result.repositoryEvidence = [...(result.repositoryEvidence ?? []), ...(retainedReads.get(`${result.packetId}/2`) ?? [])];
       const status = statusByPacket.get(result.packetId);
       const trigger = triggerByPacket.get(result.packetId);
       if (status) result.adaptiveReview = { ...status, ...(trigger ? { trigger } : {}) };
@@ -441,7 +446,7 @@ function poolEnsemblePassResults(
     lenses: packet.lenses,
     passesRun: passResults.reduce((sum, result) => sum + (result.passesRun ?? 1), 0),
     ...(!passResults.some(result => result.status === "completed" && !result.diagnostics?.length) ? { diagnostics: passResults.flatMap(result => result.diagnostics ?? []) } : {}),
-    repositoryEvidence: source.filter(result => result.status === "completed").flatMap(result => result.repositoryEvidence ?? []),
+    repositoryEvidence: passResults.flatMap(result => result.repositoryEvidence ?? []),
     findings: pooled,
     ...(reviewStatus !== undefined ? { reviewStatus } : {}),
     ...(noFindingReason !== undefined ? { noFindingReason } : {}),
@@ -478,6 +483,41 @@ function dedupeByQuestion<T extends { question: string }>(items: T[]): T[] {
   return kept;
 }
 
+// One journal per logical pass, bounded by the worker's existing attempt and
+// tool-delivery limits. Never feed prior findings into independent prompts.
+function packetAttemptRunner(
+  packet: ReviewPacket, tools: RepositoryTools, config: CodegenieConfig,
+  opts: LensRunnerOptions, telemetry: TelemetryRecorder,
+  retained: Map<string, RepositoryEvidence[]>, pass: number,
+  ensemble?: { pass: number; passes: number; adaptive?: boolean }
+): WorkerTask<PacketReviewResult>["run"] {
+  const reads = new Map<string, RepositoryEvidence>();
+  const observations = new Map<string, LlmToolResultSummary>();
+  let attempt = 0;
+  return async (signal, task) => {
+    const currentAttempt = ++attempt;
+    const collect = (results: LlmToolResultSummary[]) => {
+      results.forEach((result, index) => {
+        // Provider IDs are only local to a model response and may repeat even
+        // within a worker attempt. Snapshot position is a host-owned identity.
+        const id = `${task.workerId}/pass-${pass}/attempt-${currentAttempt}/read-${index}`;
+        observations.set(id, structuredClone(result));
+        for (const [hit, evidence] of (result.repositoryEvidence ?? []).entries()) {
+          const readId = result.repositoryEvidence!.length === 1 ? id : `${id}/hit-${hit}`;
+          const read = { ...structuredClone(evidence), id: readId,
+            origin: { workerId: task.workerId, attempt: currentAttempt, pass, toolCallId: result.id } };
+          reads.set(readId, read);
+        }
+      });
+      retained.set(`${packet.id}/${pass}`, [...reads.values()]);
+      return [...observations.values()];
+    };
+    const result = await runPacket(packet, tools, config, opts, telemetry, task.workerId, signal, ensemble, collect);
+    result.repositoryEvidence = [...reads.values()];
+    return result;
+  };
+}
+
 async function runPacket(
   packet: ReviewPacket,
   tools: RepositoryTools,
@@ -486,7 +526,8 @@ async function runPacket(
   telemetry: TelemetryRecorder,
   workerId: string,
   signal: AbortSignal,
-  ensemble?: { pass: number; passes: number; adaptive?: boolean }
+  ensemble?: { pass: number; passes: number; adaptive?: boolean },
+  collect?: (results: LlmToolResultSummary[]) => LlmToolResultSummary[]
 ): Promise<PacketReviewResult> {
   const skills = skillsCompatibleWithLanguage(
     packet.lenses.flatMap((lensId) => opts.lensRegistry.skillsForLens(lensId)),
@@ -497,9 +538,9 @@ async function runPacket(
   const repositoryTools = packet.reviewProfile === "simple" || packet.toolBudget.maxToolCalls <= 0
     ? []
     : buildRepositoryToolDefinitions(tools, { includeLikelyTests: shouldExposeLikelyTestsForPacket(packet) });
-  let toolResults: import("../llm/llm-runner.js").LlmToolResultSummary[] = [];
+  let toolResults: LlmToolResultSummary[] = [];
   const submitted = await opts.runner.runStructured<SubmitPacketReview>({
-    onToolResults: results => { toolResults = results; },
+    onToolResults: results => { toolResults = collect?.(results) ?? results; },
     stage: 7,
     prompt: prompt.prompt,
     schema: SubmitPacketReviewSchema,
@@ -553,7 +594,7 @@ async function runPacket(
   const diagnostic = reviewStatus === "incomplete" || followUpHints.kept.length > 0 || uncertainties.kept.length > 0
     ? unresolvedToolDiagnostic(7, toolResults, packet.id) : undefined;
   const result: PacketReviewResult = {
-    repositoryEvidence: toolResults.flatMap(result => result.repositoryEvidence ? [result.repositoryEvidence] : []),
+    repositoryEvidence: toolResults.flatMap(result => result.repositoryEvidence ?? []),
     ...(diagnostic ? { diagnostics: [diagnostic] } : {}),
     packetId: packet.id,
     lenses: packet.lenses,

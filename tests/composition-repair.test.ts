@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createFieldRepair } from "../src/llm/field-repair.js";
+import { submissionIssues } from "../src/llm/submit-preservation.js";
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { compositionAttributionDiagnostics, compositionSources, validateCompositionSubmission } from "../src/pipeline/composition-content.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "../src/pipeline/composition-repair.js";
@@ -14,6 +15,33 @@ function fixture(build: typeof contractComposition = contractComposition) {
 }
 
 describe("composition attribution repair", () => {
+  it.each(["wrong-kind", "empty", "unsupported"])("can remove %s advice and restore visible proof without changing diagnosis", kind => {
+    const { findings, original, group } = fixture(authorizationComposition);
+    const test = group.sections.find(section => section.kind === "test")!;
+    const verification = group.sections.find(section => section.kind === "verification")!;
+    const proofRef = findings[0]!.id + "/proofAssessment";
+    findings[0]!.suggestionAssessments!.suggestedTest!.status = "unverified";
+    verification.sourceRefs = verification.sourceRefs.filter(ref => ref !== proofRef);
+    const suggestionRef = findings[0]!.id + "/suggestedTest";
+    test.sourceRefs = kind === "wrong-kind" ? [proofRef] : kind === "empty" ? [] : [suggestionRef];
+    group.retainedSourceRefs = kind === "unsupported" ? [proofRef] : [suggestionRef];
+    const schema = composerSubmissionSchema([{ fingerprint: "test", representative: findings[0]!, findings }]);
+    const repair = createCompositionAttributionRepair(schema, original, findings)!;
+    expect(repair.paths).toContain("composedFindings.0.sections");
+    expect(repair.paths).not.toContain("composedFindings.0.sections.3.sourceRefs");
+    const sections = structuredClone(group.sections.filter(section => section.kind !== "test"));
+    sections.find(section => section.kind === "verification")!.sourceRefs.push(proofRef);
+    const patch = { "composedFindings.0.sections": sections, "composedFindings.0.retainedSourceRefs": [suggestionRef] };
+    const result = repair.merge(patch) as typeof original;
+    expect(submissionIssues(schema, result)).toEqual([]);
+    expect(() => validateCompositionSubmission(result, findings)).not.toThrow();
+    expect(result.composedFindings[0]!.evidenceRefs).toEqual(group.evidenceRefs);
+    const rewritten = structuredClone(patch);
+    rewritten["composedFindings.0.sections"][0]!.text = "A different diagnosis.";
+    expect(() => repair.merge(rewritten)).toThrow("preserve impact and verification");
+    expect(() => repair.merge({ ...patch, "composedFindings.0.retainedSourceRefs": [] })).toThrow();
+    expect(() => repair.merge({ ...patch, "composedFindings.0.sections": group.sections })).toThrow();
+  });
   it("uses general sparse repair for mixed unfinished prose and reference errors", () => {
     const { findings, original, group, schema } = fixture(authorizationComposition);
     const good = structuredClone(original);

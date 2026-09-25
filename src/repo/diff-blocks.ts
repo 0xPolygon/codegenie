@@ -29,6 +29,8 @@ export class DiffBlockRenderer {
           backend: "text",
           precision: "exact",
           degraded: true,
+          lookupStatus: "not_found",
+          deliveryStatus: "empty",
           degradationReason: "packet bindings are unavailable or packet id is unknown"
         }
       };
@@ -52,6 +54,8 @@ export class DiffBlockRenderer {
         backend: "text",
         precision: "exact",
         degraded: hunks.length === 0,
+        lookupStatus: hunks.length === 0 ? "not_found" : "found",
+        deliveryStatus: rendered.length === 0 ? "empty" : omitted > 0 ? "truncated" : "full",
         ...(hunks.length === 0 ? { degradationReason: "no diff blocks matched selector" } : {}),
         ...(omitted > 0 ? { truncated: true, omittedCount: omitted } : {})
       }

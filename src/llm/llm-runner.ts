@@ -28,6 +28,11 @@ export type LlmCallUsage = {
 export type ToolExecutionResult = {
   /** Canonical bounded matches; packed after cache lookup for each consumer. */
   searchResults?: import("../types.js").SearchResult[];
+  definitions?: Array<{ symbol: import("../types.js").SymbolInfo; text?: string }>;
+  /** Actual inclusive lines delivered by read_range, after EOF clipping. */
+  sourceLineRange?: [number, number];
+  filePaths?: string[];
+  outline?: import("../types.js").FileOutline;
   text: string;
   isError?: boolean;
   errorCode?: CodegenieErrorCode;
@@ -56,7 +61,7 @@ export interface ToolResultCache {
 }
 
 export type LlmToolResultSummary = {
-  repositoryEvidence?: import("../types.js").RepositoryEvidence;
+  repositoryEvidence?: import("../types.js").RepositoryEvidence[];
   requestKey?: string;
   id: string;
   tool: string;
@@ -90,6 +95,7 @@ export type ToolDefinition = {
 };
 
 export type LlmStructuredRequest<T> = {
+  /** Delivered tool observations survive failed submissions and cancellation. */
   onToolResults?(results: LlmToolResultSummary[]): void;
   /** Worker cancellation, combined with the overall run signal, including repairs. */
   signal?: AbortSignal;
@@ -107,6 +113,8 @@ export type LlmStructuredRequest<T> = {
   toolBudget?: ToolBudget;
   timeoutMs: number;
   telemetryContext?: {
+    /** Runner-owned identity shared by a structured submission and its repairs. */
+    structuredRequestId?: string;
     workerId?: string;
     packetId?: string;
     candidateId?: string;
@@ -247,6 +255,7 @@ export type PiArgumentSyntaxDiagnostic = {
   offset?: number;
   excerptStart: number;
   excerpt: string;
+  xmlParameter?: { field?: string };
 };
 
 export type PiInvalidToolCall = {

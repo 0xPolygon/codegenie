@@ -58,7 +58,7 @@ export function createToolResultCache(opts: CreateToolResultCacheOptions = {}): 
   };
 
   const write = (key: string, result: ToolExecutionResult): number => {
-    const entry = { result: cloneToolResult(result), resultChars: result.text.length + (result.searchResults ? JSON.stringify(result.searchResults).length : 0) };
+    const entry = { result: cloneToolResult(result), resultChars: JSON.stringify(result).length };
     const existing = entries.get(key);
     if (existing !== undefined) {
       storedResultChars -= existing.resultChars;
@@ -182,18 +182,9 @@ function isCacheableResult(result: ToolExecutionResult): boolean {
 }
 
 function cloneToolResult(result: ToolExecutionResult): ToolExecutionResult {
-  const output: ToolExecutionResult = { text: result.text };
-  if (result.searchResults !== undefined) output.searchResults = structuredClone(result.searchResults);
-  if (result.isError !== undefined) {
-    output.isError = result.isError;
-  }
-  if (result.errorCode !== undefined) {
-    output.errorCode = result.errorCode;
-  }
-  if (result.meta !== undefined) {
-    output.meta = JSON.parse(JSON.stringify(result.meta)) as NonNullable<ToolExecutionResult["meta"]>;
-  }
-  return output;
+  // Preserve canonical source/search payloads as well as rendered text. Both
+  // the first execution and cache hits pass through this copy.
+  return structuredClone(result);
 }
 
 function omitUndefinedDeep(input: unknown): unknown {

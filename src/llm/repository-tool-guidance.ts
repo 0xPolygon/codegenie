@@ -1,0 +1,2 @@
+// Shared by normal tool delivery and bounded result packing.
+export const MISSING_FILE_GUIDANCE = "The requested file does not exist at the selected revision. Discover an existing path with list_files (head only), or search_files/find_definition with the intended source revision, then read that path. Do not infer that the implementation is absent or retry a guessed filename with different line bounds.";

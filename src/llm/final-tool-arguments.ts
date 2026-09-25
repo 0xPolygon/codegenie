@@ -1,5 +1,6 @@
 import { repairJson, type AssistantMessageEvent } from "@earendil-works/pi-ai";
 import { isDeepStrictEqual } from "node:util";
+import { xmlParameterSyntax } from "./json-syntax-guidance.js";
 import { createHash } from "node:crypto";
 import { stripCredentials } from "../telemetry/redaction.js";
 import type {
@@ -168,9 +169,10 @@ function finalizeMessage(
 function argumentSyntaxDiagnostic(sample: string): PiArgumentSyntaxDiagnostic | undefined {
   try { JSON.parse(sample); return undefined; } catch (cause) {
     if (!(cause instanceof SyntaxError)) return undefined;
+    const xml = xmlParameterSyntax(sample);
     const position = cause.message.match(/position (\d+)/u)?.[1];
     const offset = position !== undefined ? Number(position)
-      : /end of JSON|unterminated/iu.test(cause.message) ? sample.length : undefined;
+      : xml?.offset ?? (/end of JSON|unterminated/iu.test(cause.message) ? sample.length : undefined);
     const error = cause.message.match(/^(?:Expected .*? in JSON|Unterminated string in JSON|Unexpected (?:non-whitespace character after JSON|end of JSON input))/u)?.[0] ?? "Invalid JSON syntax";
     // Some runtimes provide only a quoted preview, not an offset. Locate it
     // only when it occurs exactly once; never report a guessed error offset.
@@ -178,6 +180,7 @@ function argumentSyntaxDiagnostic(sample: string): PiArgumentSyntaxDiagnostic | 
     const previewStart = preview && sample.indexOf(preview) === sample.lastIndexOf(preview) ? sample.indexOf(preview) : -1;
     const excerptStart = Math.max(0, (offset ?? Math.max(0, previewStart)) - 256);
     return { error: error.slice(0, 160), ...(offset !== undefined ? { offset } : {}),
+      ...(xml ? { xmlParameter: { ...(xml.field ? { field: xml.field } : {}) } } : {}),
       excerptStart, excerpt: sample.slice(excerptStart, excerptStart + 512) };
   }
 }

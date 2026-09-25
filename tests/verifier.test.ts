@@ -23,6 +23,26 @@ import { scoreEvalRun } from "../src/evals/eval-scoring.js";
 import { nullTelemetry } from "./helpers/git.js";
 
 describe("stage 9 evidence-aware verification", () => {
+  it("hands a relevant source read from another completed packet to the verifier with provenance", async () => {
+    const fixture = reviewFixture(["service.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("reused-source", packet);
+    const other = packetResult("other-packet", []);
+    const text = "function handler() { if (!caller.active) return deny(); return value; }";
+    other.repositoryEvidence = [{ id: "read-1", tool: "read_range", path: finding.path, source: "head", text }];
+    let prompt = "";
+    await verifyFindings({ packetResults: [packetResult(packet.id, [finding]), other], packets: [packet] }, fakeTools(), config(), nullTelemetry(), {
+      runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        prompt = request.prompt;
+        return { verdict: "reject", reason: "The complete supplied branch enforces the guard.", requiredEvidencePresent: true,
+          falsePositiveRisk: "high", proofAssessment: { status: "refuted", evidence: text, assumptions: [] } } as T;
+      } }, promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+    });
+    expect(prompt).toContain("untrusted-data label=collected-source-evidence");
+    expect(prompt).toContain(text);
+    expect(prompt).toContain('"packetId": "other-packet"');
+    expect(prompt).toContain('"source": "head"');
+  });
   it.each(["unresolved", "recovered", "refuted", "bad-argument", "budget"] as const)("retains source-failure diagnostics only when evidence remains unresolved: %s", async mode => {
     const fixture = reviewFixture(["service.ts"]);
     const packet = fixture.packets[0]!;
@@ -1939,8 +1959,8 @@ describe("plan 107 related promotion signal handoff", () => {
       maxInvestigationRounds: 3,
       maxResultChars: 32_000,
       maxSingleToolResultChars: 6_000,
+      maxDiscoveryResultChars: 4_000,
       reservedSourceResultChars: 4_000,
-      sourceExtension: { maxToolCalls: 2, maxResultChars: 8_000 }
     });
     expect(request?.prompt).toContain("RELATED_SIGNAL_SKILL_MARKER");
     expect(request?.prompt).toContain(`\"question\": \"${primaryQuestion}\"`);

@@ -8,7 +8,7 @@ export function renderMarkdownReview(result: ReviewResult): string {
   const sections = [
     "# 🧞 Codegenie Review",
     "",
-    renderReviewHealth(health),
+    renderReviewHealth(health, result.composition),
     ...(health.status === "completed" ? [renderCoverageTrustBanner(result.coverage)] : []),
     renderBudgetStopNotice(result.coverage),
     health.status === "completed" ? result.summary.trim() || "Review completed." : factualReviewSummary(health, result.findings.length + result.summaryOnlyFindings.length),
@@ -28,7 +28,7 @@ function renderNoFindings(result: ReviewResult): string {
   if (!result.noFindings || healthForResult(result).status === "failed") {
     return "";
   }
-  if (healthForResult(result).status !== "completed") {
+  if (healthForResult(result).status !== "completed" || result.composition?.fallbackReason) {
     return (
       "## No confirmed findings\n\n" +
       "No confirmed findings were retained. The limitations above prevent a clean conclusion."

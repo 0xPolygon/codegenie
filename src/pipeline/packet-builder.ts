@@ -2922,9 +2922,9 @@ export function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: Code
   }
   const baseByProfile = profile === "investigate"
     ? {
-        light: { maxToolCalls: 2, maxInvestigationRounds: 1, maxResultChars: 4000 },
+        light: { maxToolCalls: 4, maxInvestigationRounds: 2, maxResultChars: 4000 },
         normal: { maxToolCalls: 6, maxInvestigationRounds: 2, maxResultChars: 12000 },
-        deep: { maxToolCalls: 15, maxInvestigationRounds: 5, maxResultChars: 48000 }
+        deep: { maxToolCalls: 20, maxInvestigationRounds: 6, maxResultChars: 48000 }
       }
     : {
         light: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 3000 },
@@ -2934,18 +2934,13 @@ export function toolBudget(coverage: Exclude<CoverageLevel, "skip">, depth: Code
   const base = baseByProfile[coverage];
   const scale = depth === "deep" ? 1.5 : depth === "light" ? 0.5 : 1;
   const round = depth === "light" ? Math.floor : Math.ceil;
+  const maxResultChars = Math.max(4000, round(base.maxResultChars * scale));
   return {
     maxToolCalls: Math.max(1, round(base.maxToolCalls * scale)),
     maxInvestigationRounds: Math.max(1, round(base.maxInvestigationRounds * scale)),
-    maxResultChars: Math.max(4000, round(base.maxResultChars * scale)),
-    ...(profile === "investigate"
-      ? {
-          sourceExtension: {
-            maxToolCalls: 1,
-            maxResultChars: 4_000
-          }
-        }
-      : {})
+    maxResultChars,
+    maxDiscoveryResultChars: Math.min(4000, Math.floor(maxResultChars / 2)),
+    reservedSourceResultChars: Math.min(4000, Math.floor(maxResultChars / 2))
   };
 }
 

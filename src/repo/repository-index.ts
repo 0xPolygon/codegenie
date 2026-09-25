@@ -196,24 +196,25 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
       { path: filePath, startLine, endLine, source: source.kind },
       7,
       async () => {
-        if (startLine < 1 || startLine > endLine) {
-          throw new CodegenieError("invalid_args", "readRange requires 1 <= startLine <= endLine");
+        if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || startLine < 1 || startLine > endLine) {
+          throw new CodegenieError("invalid_args", "read_range requires both startLine and endLine as integers with 1 <= startLine <= endLine; use search_files to locate the desired range");
         }
         const path = containPath(this.opts.resolver.repoRoot, filePath, this.guardTelemetry("read_range"));
         const content = await this.limit(() => this.opts.resolver.readFile(path, source));
         if (!content) {
           const meta: ToolResultMeta = {
             ...degradedMeta("text", "exact", "file missing at selected revision"),
+            requestedSource: source.kind, sourceUsed: source.kind,
             lookupStatus: "file_missing",
             deliveryStatus: "empty"
           };
           return { value: { text: "", meta }, meta, args: { path, startLine, endLine, source: source.kind }, resultChars: 0 };
         }
         const lines = content.content.length === 0 ? [] : content.content.split(/\n/u);
-        const clampedStart = Math.min(Math.max(1, startLine), Math.max(1, lines.length));
+        const rangeStart = startLine;
         const requestedEnd = Math.min(endLine, lines.length);
-        const cappedEnd = Math.min(requestedEnd, clampedStart + READ_RANGE_MAX_LINES - 1);
-        const text = capText(lines.slice(clampedStart - 1, cappedEnd).join("\n"), READ_RANGE_MAX_CHARS);
+        const cappedEnd = Math.min(requestedEnd, rangeStart + READ_RANGE_MAX_LINES - 1);
+        const text = capText(lines.slice(rangeStart - 1, cappedEnd).join("\n"), READ_RANGE_MAX_CHARS);
         // omittedCount is a count of real in-file lines that fell outside the
         // returned window because of the line cap. Lines past EOF never existed,
         // and character truncation is signalled by `truncated` alone.
@@ -221,9 +222,10 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
         const meta: ToolResultMeta = {
           backend: "text",
           precision: "exact",
+          requestedSource: source.kind, sourceUsed: source.kind,
           degraded: false,
           lookupStatus: "found",
-          deliveryStatus: omittedLines > 0 || text.truncated ? "truncated" : "full",
+          deliveryStatus: omittedLines > 0 || text.truncated ? "truncated" : text.text.length === 0 ? "empty" : "full",
           ...(omittedLines > 0 || text.truncated
             ? { truncated: true, ...(omittedLines > 0 ? { omittedCount: omittedLines } : {}) }
             : {})
@@ -245,6 +247,10 @@ export class RepositoryToolsFacade implements RepositoryToolsHost {
           backend: result.parsed?.tree === undefined ? "text" : "tree-sitter",
           precision: result.parsed?.tree === undefined ? "heuristic" : "syntactic",
           degraded: result.degraded,
+          requestedSource: source.kind, sourceUsed: source.kind,
+          ...(result.fileMissing ? { lookupStatus: "file_missing" as const, deliveryStatus: "empty" as const } : {}),
+          ...(result.outline.sourceText && !result.truncated && (source.kind === "head" || source.kind === "base")
+            ? { lookupStatus: "found" as const, deliveryStatus: "full" as const, sourceUsed: source.kind } : {}),
           ...(result.degradationReason !== undefined ? { degradationReason: result.degradationReason } : {}),
           ...(result.truncated ? { truncated: true, omittedCount: result.omittedCount ?? 0 } : {})
         };

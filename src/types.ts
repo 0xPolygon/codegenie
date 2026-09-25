@@ -365,14 +365,20 @@ export type ToolResultMeta = {
 };
 
 export type ToolBudgetState = {
+  softLimits?: Pick<ToolBudget, "maxToolCalls" | "maxInvestigationRounds" | "maxResultChars">;
   toolCallsUsed: number;
   maxToolCalls: number;
   investigationRoundsUsed: number;
   maxInvestigationRounds: number;
   resultCharsUsed: number;
+  /** Delivered successful source content within the shared character allowance. */
+  sourceResultCharsUsed?: number;
+  /** Unfulfilled portion of the soft source target; decreases with successful source reads. */
+  remainingSourceReserveChars?: number;
   maxResultChars: number;
   remainingResultChars: number;
   maxSingleToolResultChars?: number;
+  maxDiscoveryResultChars?: number;
   reservedSourceResultChars?: number;
   toolResultCharLimit?: number;
   sourceExtensionCallsUsed?: number;
@@ -391,6 +397,9 @@ export type FileOutline = {
   topLevelSymbols: SymbolInfo[];
   testSymbols: SymbolInfo[];
   notes: string[];
+  symbolExtraction?: "unavailable";
+  sourceText?: { startLine: number; endLine: number; text: string };
+  sourceReadHint?: { tool: "read_range"; path: string; startLine: number; endLine: number };
 };
 
 export type SearchContextMode = "none" | "lines" | "symbols";
@@ -472,12 +481,15 @@ export type CoverageLevel = "deep" | "normal" | "light" | "skip";
 export type PacketKind = "hunk" | "coalesced-hunks" | "file-diff" | "whole-file";
 export type ReviewProfile = "simple" | "standard" | "investigate";
 
+/** Aggregate values are soft targets; the runner enforces a fixed 2x ceiling. */
 export type ToolBudget = {
   maxToolCalls: number;
   maxInvestigationRounds: number;
   maxResultChars: number;
   maxSingleToolResultChars?: number;
+  maxDiscoveryResultChars?: number;
   reservedSourceResultChars?: number;
+  /** Legacy allowance, subsumed by the 2x hard ceiling; never additive. */
   sourceExtension?: {
     maxToolCalls: number;
     maxResultChars: number;
@@ -862,6 +874,10 @@ export type StructuredUncertainty = {
 };
 
 export type RepositoryEvidence = {
+  lineRange?: [number, number];
+  lookupStatus?: "found" | "ambiguous";
+  /** The source was delivered successfully, independently of submission outcome. */
+  origin?: { workerId: string; attempt: number; pass?: number; toolCallId?: string };
   symbols?: string[];
   id: string;
   tool: string;
@@ -1077,6 +1093,8 @@ export type ReviewHealth = {
 };
 
 export type ReviewResult = {
+  /** Synthesis outcome is separate from packet/verification coverage. */
+  composition?: { mode: "llm" | "llm_degraded" | "deterministic_fallback" | "schema_repair_fallback"; fallbackReason?: string };
   health?: ReviewHealth;
   summary: string;
   coverage: RunCoverageStatus;

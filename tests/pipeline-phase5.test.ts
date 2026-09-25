@@ -1,4 +1,5 @@
 import { contractComposition } from "./fixtures/composition/contract-review.js";
+import { validateToolCall } from "./helpers/pi-validation.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { clarifyFindingLocations } from "../src/pipeline/finding-location.js";
 import { compositionSources } from "../src/pipeline/composition-content.js";
@@ -10,8 +11,9 @@ import { defaultConfig } from "../src/config/schema.js";
 import type { LlmInvalidSubmitRecovery, LlmRunner, LlmStructuredRequest, PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
 import { parseDiff } from "../src/git/diff-parser.js";
 import { createPiRunner } from "../src/llm/pi-runner.js";
+import { createFakeRunner } from "../src/llm/fake-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
-import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier } from "../src/pipeline/packet-builder.js";
+import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
 import { runLensPackets } from "../src/pipeline/lens-runner.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
 import { dedupeRankAndComposeReview } from "../src/pipeline/composer.js";
@@ -59,6 +61,35 @@ import { sha256Hex } from "../src/util/hashing.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 
 describe("phase 5 pipeline regressions", () => {
+  it.each([false, true])("repairs omitted reconciliation with bounded calls and preserves unanswered questions, exhaust=%s", async exhaust => {
+    const fixture = authorizationComposition();
+    const finding = fixture.findings[0]!;
+    const original = { summary: "Current access policy needs attention.", composedFindings: [{ findingIds: [finding.id], publication: "summary-only",
+      sections: fixture.sections, evidenceRefs: fixture.evidenceRefs }] };
+    const note = { question: "Is this endpoint deployed?", files: [finding.path], symbols: [], confidence: "medium" as const,
+      reason: "Deployment is not established by the code.", sourcePacketIds: [] };
+    const messages = [assistantMessage([toolCall("original", "submit_composition", original)]),
+      ...Array.from({ length: exhaust ? 3 : 1 }, (_, i) => assistantMessage([toolCall(`repair-${i}`, "submit_composition", { attentionResolutions: exhaust ? [] : [{
+        concernId: "deployment/assumptions/0", disposition: "unresolved", supportingRefs: [], rationale: "No deployment evidence is supplied."
+      }] })]))];
+    const adapter = { ...scriptedPiAdapter(messages), validateToolCall };
+    const events: Array<{ message: string }> = [];
+    const telemetry = { ...nullTelemetry(), event: (event: { message: string }) => { events.push(event); } };
+    const runner = createPiRunner({ llmConfig: { provider: "scripted", model: "scripted-model", maxConcurrentCalls: 1 }, telemetry,
+      logger: { debug() {}, info() {}, warn() {}, error() {} }, runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const result = await dedupeRankAndComposeReview({ verified: fixture.findings, verdicts: [{ candidateId: "deployment", verdict: "reject",
+      requiredEvidencePresent: false, falsePositiveRisk: "high", reason: note.reason, unresolvedConcern: note,
+      proofAssessment: { status: "unresolved", evidence: note.reason, assumptions: [{ question: note.question, essential: true }] } }] },
+      fakePlan(), { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "", headSha: "head" }, fakeCoverage(), config(), telemetry,
+      { runner, promptBuilder: createPromptBuilder(fakeLensRegistry()) });
+    expect(result.needsHumanAttention).toContainEqual(note);
+    expect(events.filter(event => event.message === "field_repair_scheduled")).toHaveLength(exhaust ? 3 : 1);
+    expect(events.some(event => event.message === "composer_fallback_used")).toBe(exhaust);
+    expect(result.summaryOnlyFindings).toHaveLength(1);
+    if (!exhaust) expect(result.summaryOnlyFindings[0]!.finalBody).toContain(fixture.sections[0]!.text);
+  });
+
   it.each(["resolved", "assessment", "narrowed", "unknown", "duplicate", "fallback", "legacy", "no-findings"] as const)("reconciles exact verifier concerns only after valid composition: %s", async mode => {
     // Supplied semantic decisions exercise plumbing, not model inference.
     const fixture = authorizationComposition();
@@ -112,8 +143,8 @@ describe("phase 5 pipeline regressions", () => {
           const response = { summary: "The document reader violates current-membership policy; deployment remains unconfirmed.",
             composedFindings: mode === "no-findings" ? [] : [{ findingIds: [finding.id], publication: "summary-only",
               ...(mode === "legacy" ? { finalBody: "Legacy prose" } : { sections: fixture.sections, evidenceRefs: fixture.evidenceRefs }) }],
-            attentionResolutions: mode === "duplicate" ? [proposal, proposal] : [proposal] };
-          if (mode !== "legacy") expect(request.validateSubmit?.(response as T)).toEqual({ ok: true });
+            attentionResolutions: mode === "duplicate" ? [proposal, proposal] : [proposal, { concernId: "policy-question/assumptions/1", disposition: "unresolved", supportingRefs: [], rationale: "Deployment remains unconfirmed." }] };
+          if (mode !== "legacy") expect(request.validateSubmit?.(response as T)?.ok).toBe(!["unknown", "duplicate", "no-findings"].includes(mode));
           return response as T;
         } }
       });
@@ -4551,6 +4582,10 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it("scales packet tool budgets with light-depth floors, deep-depth ceilings, and budget multipliers", async () => {
+    expect(toolBudget("light", "normal", "investigate")).toEqual({
+      maxToolCalls: 4, maxInvestigationRounds: 2, maxResultChars: 4_000,
+      maxDiscoveryResultChars: 2_000, reservedSourceResultChars: 2_000,
+    });
     const budgetFor = async (coverage: Exclude<CoverageLevel, "skip">, depth: CodegenieConfig["review"]["depth"], budgetBoost = 1) => {
       const plan = {
         ...fakePlan(),
@@ -4568,13 +4603,22 @@ describe("phase 5 pipeline regressions", () => {
     };
 
     await expect(budgetFor("deep", "light")).resolves.toEqual({
-      maxToolCalls: 7,
-      maxInvestigationRounds: 2,
+      maxToolCalls: 10,
+      maxInvestigationRounds: 3,
       maxResultChars: 24_000,
-      sourceExtension: {
-        maxToolCalls: 1,
-        maxResultChars: 4_000
-      }
+      maxDiscoveryResultChars: 4_000, reservedSourceResultChars: 4_000,
+    });
+    await expect(budgetFor("deep", "normal")).resolves.toEqual({
+      maxToolCalls: 20, maxInvestigationRounds: 6, maxResultChars: 48_000,
+      maxDiscoveryResultChars: 4_000, reservedSourceResultChars: 4_000,
+    });
+    await expect(budgetFor("deep", "deep")).resolves.toEqual({
+      maxToolCalls: 30, maxInvestigationRounds: 9, maxResultChars: 72_000,
+      maxDiscoveryResultChars: 4_000, reservedSourceResultChars: 4_000,
+    });
+    await expect(budgetFor("deep", "normal", 1.5)).resolves.toEqual({
+      maxToolCalls: 30, maxInvestigationRounds: 9, maxResultChars: 72_000,
+      maxDiscoveryResultChars: 6_000, reservedSourceResultChars: 6_000,
     });
     await expect(budgetFor("light", "light")).resolves.toEqual({
       maxToolCalls: 0,
@@ -4584,12 +4628,14 @@ describe("phase 5 pipeline regressions", () => {
     await expect(budgetFor("normal", "deep")).resolves.toEqual({
       maxToolCalls: 6,
       maxInvestigationRounds: 3,
-      maxResultChars: 15_000
+      maxResultChars: 15_000,
+      maxDiscoveryResultChars: 4_000, reservedSourceResultChars: 4_000
     });
     await expect(budgetFor("normal", "normal", 1.5)).resolves.toEqual({
       maxToolCalls: 6,
       maxInvestigationRounds: 3,
-      maxResultChars: 15_000
+      maxResultChars: 15_000,
+      maxDiscoveryResultChars: 6_000, reservedSourceResultChars: 6_000
     });
   });
 
@@ -5810,7 +5856,7 @@ describe("phase 5 pipeline regressions", () => {
         if (prompt.includes("submit_review")) {
           packetReviewCalls += 1;
           if (packetReviewCalls === 1) {
-            return assistantMessage(Array.from({ length: 8 }, (_, index) =>
+            return assistantMessage(Array.from({ length: 13 }, (_, index) =>
               toolCall(`read-${index}`, "read_range", { path: "app.ts", startLine: 1, endLine: 3 })
             ));
           }
@@ -8056,11 +8102,8 @@ describe("phase 5 pipeline regressions", () => {
       maxInvestigationRounds: 3,
       maxResultChars: 32_000,
       maxSingleToolResultChars: 6_000,
+      maxDiscoveryResultChars: 4_000,
       reservedSourceResultChars: 4_000,
-      sourceExtension: {
-        maxToolCalls: 2,
-        maxResultChars: 8_000
-      }
     });
   });
 
@@ -9916,6 +9959,38 @@ describe("phase 5 pipeline regressions", () => {
       compositionMode: "deterministic_fallback",
       fallbackReason: "semantic composition skipped; deterministic fallback used"
     });
+  });
+
+  it("validates attention paths against the reviewed tree rather than the checkout or untracked files", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    writeRepoFile(repo, "schema/shared.ridl", "struct Shared { value: string }\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "export const value = 2;\n");
+    commitAll(repo, "feature");
+    // The current checkout no longer contains a file present in the reviewed
+    // revision. Another local file has never existed in that revision.
+    git(repo, ["checkout", "main"]);
+    git(repo, ["rm", "schema/shared.ridl"]);
+    commitAll(repo, "remove shared schema on main");
+    writeRepoFile(repo, "local-only.ridl", "struct Local {}\n");
+    const fake = createFakeRunner();
+    const artifacts = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "attention-paths");
+    const result = await runReview({ mode: "branch", branchName: "feature" }, config(), {
+      repoRoot: repo, runArtifactDir: artifacts,
+      runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => request.stage === 7
+        ? { findings: [], followUpHints: [], uncertainties: [{
+            question: "Which deployment enables the optional mode described by this schema?",
+            files: ["schema/shared.ridl", "local-only.ridl", "invented.ridl"], symbols: []
+          }] } as T
+        : fake.runStructured(request) }
+    });
+    expect(result.needsHumanAttention).toContainEqual(expect.objectContaining({ files: ["schema/shared.ridl"] }));
+    const attention = JSON.parse(readFileSync(path.join(artifacts, canonicalArtifactPath("human-attention-notes.json")), "utf8"));
+    expect(attention.notes[0]).toMatchObject({ files: ["schema/shared.ridl"], droppedPaths: [
+      { path: "invented.ridl", reason: "unknown_path" }, { path: "local-only.ridl", reason: "unknown_path" }
+    ] });
   });
 
   it("writes run artifacts for explicit runArtifactDir even when telemetry config is disabled", async () => {
@@ -15126,4 +15201,205 @@ describe("full-diff finding locations", () => {
     expect(finding.anchor !== undefined).toBe(mode === "located");
     expect(finding.locationResolution?.status).toBe(mode === "located" ? "clarified" : "unavailable");
   });
+});
+
+describe("plan 124 source retention and fallback presentation", () => {
+  it.each([false, true])("retains successful reads across worker retries without accepting failed submissions (terminal=%s)", async terminal => {
+    let calls = 0;
+    const cfg = config();
+    cfg.review = { ...cfg.review, adaptiveSecondPass: false };
+    const runner: LlmRunner = { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+      const attempt = ++calls;
+      const results = [{ id: "read", tool: "read_range", target: "policy.txt", status: "ok" as const, resultChars: 18,
+        repositoryEvidence: [{ id: `read-${attempt}`, tool: "read_range", path: "policy.txt", source: attempt === 1 ? "base" as const : "head" as const, text: "authorize reader" }] }];
+      request.onToolResults?.(results);
+      request.onToolResults?.(results); // A defensive collector must deduplicate repeated delivery.
+      if (attempt === 1 || terminal) throw new CodegenieError("llm_schema_invalid", "bad submission", { recoverable: true });
+      return { findings: [], followUpHints: [], uncertainties: [] } as T;
+    } };
+    const [result] = await runLensPackets(fakePlan(), [fakePacket()], fakeTools(), cfg, nullTelemetry(), {
+      runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry()
+    });
+    expect(calls).toBe(2);
+    expect(result!.status).toBe(terminal ? "failed" : "completed");
+    expect(result!.findings).toEqual([]);
+    expect(result!.repositoryEvidence).toHaveLength(2);
+    expect(result!.repositoryEvidence!.map(read => [read.source, read.origin?.attempt])).toEqual([["base", 1], ["head", 2]]);
+    // Journals are scoped to this execution, not global worker IDs.
+    const [fresh] = await runLensPackets(fakePlan(), [fakePacket()], fakeTools(), cfg, nullTelemetry(), {
+      runner: { runStructured: async <T>() => ({ findings: [], followUpHints: [], uncertainties: [] }) as T },
+      promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry()
+    });
+    expect(fresh!.repositoryEvidence).toEqual([]);
+  });
+
+  it.each(["timeout", "llm_schema_invalid"] as const)("shows %s synthesis failure at the top even with complete coverage and no findings", async code => {
+    const result = await dedupeRankAndComposeReview({ verified: [], verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), { ...config(), github: { ...config().github, summaryWhenNoFindings: true } }, nullTelemetry(), {
+        runner: { runStructured: async () => { throw new CodegenieError(code === "timeout" ? "llm_call_failed" : code, "failed", { recoverable: true, context: { reason: "timeout" } }); } },
+        promptBuilder: fakePromptBuilder(), postGithubComments: true
+      });
+    expect(result.coverage.partial).toBe(false);
+    expect(result.composition?.fallbackReason).toBeTruthy();
+    const markdown = renderMarkdownReview(result);
+    expect(markdown.indexOf("Report synthesis failed")).toBeLessThan(markdown.indexOf("## Coverage"));
+    expect(markdown).not.toContain("## ✅ No Findings");
+    expect(result.postingPlan?.reviewBody).toContain("Report synthesis failed");
+    expect(renderPostingSummaryForStdout(result, "markdown")).toContain("Report synthesis failed");
+    expect(JSON.parse(renderPostingSummaryForStdout(result, "json")).composition).toEqual(result.composition);
+  });
+});
+
+describe("plan 124 conservative grouping", () => {
+  const diagnosis = "Removing the enforceQuota check accepts oversized export batches while existing success-only tests remain green.";
+  function candidate(id: string, path: string, line: number, context: string): CandidateFinding {
+    return { ...fakeFinding(), id, path, category: "testing", anchor: { path, line, side: "RIGHT", hunkId: id },
+      title: `Rejection contract ${id}`, failureMode: diagnosis, whyThisMatters: context,
+      evidence: { changedCode: context }, suggestedTest: "Reject batches exceeding the quota." };
+  }
+  async function compose(findings: CandidateFinding[], fallback: boolean) {
+    let groups: unknown;
+    const result = await dedupeRankAndComposeReview({ verified: findings, verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+        runner: { runStructured: async <T>() => {
+          if (fallback) throw composerTransientError();
+          return { summary: "Confirmed defect", composedFindings: [{ findingIds: findings.map(f => f.id),
+            ...attributedSources(findings, diagnosis), publication: "inline" }] } as T;
+        } }, promptBuilder: { ...fakePromptBuilder(), buildComposerPrompt: (input: Parameters<ReturnType<typeof createPromptBuilder>["buildComposerPrompt"]>[0]) => {
+          groups = JSON.parse(input.groupedFindingsJson); return { prompt: "", templateVersion: "test", untrustedBlockCount: 0 };
+        } }, diff: fakeChangedLineDiff(findings.map(f => ({ path: f.path, hunkId: f.id, line: f.anchor!.line, content: f.evidence.changedCode })))
+      });
+    return { result, groups: groups as Array<{ findingIds: string[] }> };
+  }
+  it.each([false, true])("groups a test/implementation pair through concrete location evidence (fallback=%s)", async fallback => {
+    const handler = candidate("handler", "exports.custom", 40, "storage batching concurrency consistency cursor serialization boundary ownership");
+    const test = candidate("test", "exports.test.custom", 90, "fixtures mocks construction testserver expectation resources cleanup isolation teardown");
+    test.evidence.relatedCode = [{ path: handler.path, lines: "40-42", whyRelevant: "The exact quota guard whose removal must fail this test." }];
+    const promoted = { ...structuredClone(test), id: "promoted", provenance: { source: "uncertainty_promotion" as const, sourceKind: "uncertainty" as const, sourcePacketId: "packet-1", reason: "Open coverage question", question: diagnosis, files: [test.path], symbols: [] } };
+    const { result, groups } = await compose([handler, test, promoted], fallback);
+    expect(groups).toHaveLength(1);
+    expect([...result.findings, ...result.summaryOnlyFindings]).toHaveLength(1);
+    expect([...result.findings, ...result.summaryOnlyFindings][0]!.mergedCandidateIds).toEqual(expect.arrayContaining(["handler", "test", "promoted"]));
+  });
+  it("keeps distinct endpoints separate despite a common helper and identical validation patterns", async () => {
+    const a = candidate("archive", "archive.custom", 20, "checkInput(batch)");
+    const b = candidate("export", "export.custom", 20, "checkInput(batch)");
+    a.failureMode = "Archive accepts an oversized export batch without rejecting excess entries.";
+    b.failureMode = "Export accepts revoked credentials without checking membership expiration.";
+    a.evidence.relatedCode = b.evidence.relatedCode = [{ path: "shared.custom", lines: "checkInput(batch)", whyRelevant: "Shared validation." }];
+    const { groups } = await compose([a, b], true);
+    expect(groups).toHaveLength(2);
+  });
+});
+
+it("does not connect unrelated defects through a broad middle finding", async () => {
+  const make = (id: string, severity: CandidateFinding["severity"], failureMode: string): CandidateFinding => ({
+    ...fakeFinding(), id, severity, title: id, path: `${id}.custom`, anchor: { path: `${id}.custom`, line: 10, side: "RIGHT", hunkId: id },
+    failureMode, evidence: { changedCode: failureMode }
+  });
+  const first = make("billing", "medium", "Repeated payment retries charge customers twice after response delivery fails.");
+  const last = make("storage", "medium", "Archived records retain expired membership permissions during file download authorization.");
+  const bridge = make("bridge", "high", first.failureMode + " " + last.failureMode);
+  bridge.evidence.relatedCode = [first, last].map(f => ({ path: f.path, lines: "10", whyRelevant: "Observed failure branch." }));
+  const result = await dedupeRankAndComposeReview({ verified: [first, bridge, last], verdicts: [] }, fakePlan(),
+    { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+      runner: { runStructured: async () => { throw composerTransientError(); } }, promptBuilder: fakePromptBuilder()
+    });
+  const finals = [...result.findings, ...result.summaryOnlyFindings];
+  expect(finals).toHaveLength(2);
+  expect(finals.some(f => f.mergedCandidateIds?.includes(first.id) && f.mergedCandidateIds.includes(last.id))).toBe(false);
+});
+
+it("does not display synthesis failure for successful or intentional composition without a failure reason", () => {
+  for (const mode of ["llm", "deterministic_fallback"] as const) {
+    const result = { health: { status: "completed" as const, diagnostics: [], unresolvedCount: 0 }, composition: { mode },
+      summary: "Review completed", coverage: fakeCoverage(), findings: [], summaryOnlyFindings: [], needsHumanAttention: [], noFindings: true };
+    expect(renderMarkdownReview(result)).not.toContain("Report synthesis failed");
+    expect(renderPostingSummaryForStdout(result, "markdown")).not.toContain("Report synthesis failed");
+  }
+});
+
+it("retains failed ensemble source without leaking findings into an independent pass", async () => {
+  const packet = { ...fakePacket(), coverage: "deep" as const };
+  const cfg = { ...config(), review: { ...config().review, adaptiveSecondPass: false, deepEnsemblePasses: 2, concurrency: 1 } };
+  const [result] = await runLensPackets(fakePlan(), [packet], fakeTools(), cfg, nullTelemetry(), {
+    runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+      if (request.telemetryContext?.workerId === "w7-001") {
+        request.onToolResults?.([{ id: "read", tool: "read_range", target: "guard.txt", status: "ok", resultChars: 20,
+          repositoryEvidence: [{ id: "read", tool: "read_range", path: "guard.txt", source: "head", text: "guard rejects expired" }] }]);
+        throw new CodegenieError("llm_schema_invalid", "invalid independent pass", { recoverable: false });
+      }
+      expect(request.prompt).not.toContain("guard rejects expired");
+      return { findings: [], followUpHints: [], uncertainties: [] } as T;
+    } }, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry()
+  });
+  expect(result!.status).toBe("completed");
+  expect(result!.findings).toEqual([]);
+  expect(result!.repositoryEvidence).toEqual([expect.objectContaining({ text: "guard rejects expired", origin: expect.objectContaining({ workerId: "w7-001", attempt: 1 }) })]);
+});
+
+it("keeps different invariants in the same function separate despite adjacent anchors", async () => {
+  const a = { ...fakeFinding(), id: "payment", title: "Duplicate charge", failureMode: "Retry charges a completed payment twice.",
+    evidence: { changedCode: "charge(invoice);" } };
+  const b = { ...fakeFinding(), id: "permission", title: "Missing permission", failureMode: "Revoked users can download documents after losing membership.",
+    anchor: { ...fakeFinding().anchor!, line: 3 }, evidence: { changedCode: "download(document);" } };
+  const result = await dedupeRankAndComposeReview({ verified: [a, b], verdicts: [] }, fakePlan(),
+    { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+      runner: { runStructured: async () => { throw composerTransientError(); } }, promptBuilder: fakePromptBuilder()
+    });
+  expect(result.findings.length + result.summaryOnlyFindings.length).toBe(2);
+  expect(new Set([...result.findings, ...result.summaryOnlyFindings].map(f => f.fingerprint)).size).toBe(2);
+});
+
+it("keeps repeated provider call IDs distinct across snapshots and retries, including unresolved refusals", async () => {
+  let attempts = 0;
+  const cfg = { ...config(), review: { ...config().review, adaptiveSecondPass: false } };
+  const read = (source: "head" | "base", text: string) => ({ id: "call-0", tool: "read_range", target: "policy.txt", status: "ok" as const,
+    resultChars: text.length, repositoryEvidence: [{ id: "call-0", tool: "read_range", path: "policy.txt", source, text }] });
+  const [result] = await runLensPackets(fakePlan(), [fakePacket()], fakeTools(), cfg, nullTelemetry(), {
+    runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+      if (++attempts === 1) {
+        const snapshot = [
+          { id: "call-0", tool: "grep", target: "caller", requestKey: "blocked-search", status: "rejected" as const, resultChars: 0,
+            errorCode: "budget_exhausted" as const, preview: "Caller search was refused." },
+          read("base", "grant access"), read("head", "deny access")
+        ];
+        request.onToolResults?.(snapshot);
+        request.onToolResults?.(snapshot);
+        throw new CodegenieError("llm_schema_invalid", "invalid draft", { recoverable: true });
+      }
+      request.onToolResults?.([read("head", "require membership")]);
+      return { findings: [], followUpHints: [], uncertainties: [{ question: "Does the caller enforce the membership requirement?", files: ["policy.txt"], symbols: [] }] } as T;
+    } }, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry()
+  });
+  expect(attempts).toBe(2);
+  expect(result!.repositoryEvidence!.map(read => read.text)).toEqual(["grant access", "deny access", "require membership"]);
+  expect(new Set(result!.repositoryEvidence!.map(read => read.id)).size).toBe(3);
+  expect(result!.repositoryEvidence!.map(read => read.origin!.toolCallId)).toEqual(["call-0", "call-0", "call-0"]);
+  expect(result!.diagnostics).toContainEqual(expect.objectContaining({ origin: "tool", code: "budget_exhausted" }));
+  const { buildAttentionReconciliation } = await import("../src/pipeline/attention-reconciliation.js");
+  const attention = buildAttentionReconciliation([], [], [result!], { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" });
+  expect(attention.allEvidence).toHaveLength(3);
+  expect(new Set(attention.allEvidence.map(source => source.id)).size).toBe(3);
+});
+
+
+it("retains every ambiguous definition hit across a worker retry with distinct host provenance", async () => {
+  let attempts = 0;
+  const cfg = { ...config(), review: { ...config().review, adaptiveSecondPass: false } };
+  const [result] = await runLensPackets(fakePlan(), [fakePacket()], fakeTools(), cfg, nullTelemetry(), {
+    runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+      const attempt = ++attempts;
+      request.onToolResults?.([{ id: "lookup", tool: "find_definition", target: "ReadForUser", status: "ok", resultChars: 100,
+        lookupStatus: "ambiguous", repositoryEvidence: ["src/access.go", "docs/access.custom"].map((path, i) => ({
+          id: `lookup/hit-${i}`, tool: "find_definition", source: "head" as const, path,
+          lineRange: [10, 12] as [number, number], lookupStatus: "ambiguous" as const, text: `ReadForUser observation ${attempt}/${i}` })) }]);
+      if (attempt === 1) throw new CodegenieError("llm_schema_invalid", "invalid submission", { recoverable: true });
+      return { findings: [], followUpHints: [], uncertainties: [] } as T;
+    } }, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry()
+  });
+  expect(result!.repositoryEvidence).toHaveLength(4);
+  expect(new Set(result!.repositoryEvidence!.map(read => read.id)).size).toBe(4);
+  expect(result!.repositoryEvidence!.map(read => read.origin?.attempt)).toEqual([1, 1, 2, 2]);
+  expect(result!.repositoryEvidence!.every(read => read.lookupStatus === "ambiguous" && read.origin?.toolCallId === "lookup")).toBe(true);
 });

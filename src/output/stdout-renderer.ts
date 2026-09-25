@@ -13,10 +13,10 @@ export function renderPostingSummaryForStdout(
   opts: { postRequested?: boolean } = {}
 ): string {
   const health = healthForResult(result);
-  const notice = renderReviewHealth(health);
+  const notice = renderReviewHealth(health, result.composition);
   if (result.posting !== undefined) {
     if (format === "json") {
-      return `${JSON.stringify({ ...result.posting, health }, null, 2)}\n`;
+      return `${JSON.stringify({ ...result.posting, health, composition: result.composition }, null, 2)}\n`;
     }
     return [
       "codegenie GitHub posting summary",
@@ -31,6 +31,7 @@ export function renderPostingSummaryForStdout(
 
   const summary = {
     health,
+    composition: result.composition,
     summary: result.summary,
     findings: result.findings.length,
     summaryOnlyFindings: result.summaryOnlyFindings.length,

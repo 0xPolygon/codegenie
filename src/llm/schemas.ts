@@ -275,11 +275,11 @@ export const SubmitCompositionSchema = Type.Object(
     summary: Type.String({ maxLength: 4000 }),
     attentionResolutions: Type.Optional(Type.Array(Type.Object({
       concernId: Type.String({ minLength: 1, maxLength: 300 }),
-      disposition: StringEnum(["resolved", "narrowed"] as const),
-      supportingRefs: Type.Array(Type.String({ minLength: 1, maxLength: 300 }), { minItems: 1, maxItems: 20 }),
+      disposition: StringEnum(["resolved", "narrowed", "unresolved"] as const),
+      supportingRefs: Type.Array(Type.String({ minLength: 1, maxLength: 300 }), { maxItems: 20, description: "Supplied independent evidence IDs. Required and nonempty for resolved/narrowed decisions; may be empty for unresolved." }),
       rationale: Type.String({ minLength: 1, maxLength: 2000 }),
       remainingQuestion: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 }))
-    }, { additionalProperties: false }), { maxItems: 30, description: "Optional resolutions of supplied verifier or packet concerns only. Omission leaves concerns unchanged. Attention-only references cannot account for finding sources." })),
+    }, { additionalProperties: false }), { maxItems: 30, description: "When concerns are supplied, assess each exactly once as resolved, narrowed, or unresolved. Unresolved preserves the original question. Attention-only references cannot account for finding sources." })),
     composedFindings: Type.Array(
       Type.Object(
         {
@@ -320,7 +320,7 @@ export const SCHEMA_VERSIONS = {
   submit_review: 5,
   submit_system_review: 2,
   submit_verdict: 11,
-  submit_composition: 8
+  submit_composition: 9
 } as const;
 
 export function submitToolNameForStage(stage: ReviewStage): keyof typeof SCHEMA_VERSIONS {

@@ -154,6 +154,10 @@ type ModelStageSummary = {
 };
 
 type SchemaRecoveryCounters = {
+  schemaRecoveryChains: number;
+  schemaRecoveryChainsResolved: number;
+  schemaRecoveryChainsUnresolved: number;
+  schemaRepairInvalidAttempts: number;
   schemaInvalidCalls: number;
   schemaInvalidRecovered: number;
   schemaInvalidUnrecovered: number;
@@ -443,6 +447,8 @@ class RunTelemetryImpl {
     byStage: {} as Record<string, TelemetryStageSummary>
   };
   private schemaRecovery = emptySchemaRecoverySummary();
+  private schemaRecoveryTracking = false;
+  private schemaRecoveryChains = new Map<string, { stage: ReviewStage | 0; invalidCalls: number; resolved: boolean }>();
   private stage7SchemaRepairSummary = emptyStage7SchemaRepairSummary();
   private pipelineSummary = emptyPipelineTelemetrySummary();
 
@@ -1046,7 +1052,12 @@ class RunTelemetryImpl {
   }
 
   private finalSchemaRecoverySummary(): SchemaRecoverySummary {
-    return finalSchemaRecoverySummary(this.schemaRecovery);
+    const summary = finalSchemaRecoverySummary(this.schemaRecovery);
+    if (this.schemaRecoveryTracking) {
+      summary.schemaRecoveryFailed += summary.schemaRecoveryChainsUnresolved;
+      for (const stage of Object.values(summary.byStage)) stage.schemaRecoveryFailed += stage.schemaRecoveryChainsUnresolved;
+    }
+    return summary;
   }
 
   private costProfile(): unknown {
@@ -1160,6 +1171,23 @@ class RunTelemetryImpl {
   }
 
   private updateSchemaRecoveryFromModelCall(record: LlmCallRecord): void {
+    if (this.schemaRecoveryTracking && record.structuredRequestId) {
+      if (record.status === "schema_invalid") {
+        let chain = this.schemaRecoveryChains.get(record.structuredRequestId);
+        if (!chain) {
+          chain = { stage: record.stage, invalidCalls: 0, resolved: false };
+          this.schemaRecoveryChains.set(record.structuredRequestId, chain);
+          addSchemaRecovery(this.schemaRecovery, record.stage, { schemaRecoveryChains: 1 });
+        }
+        chain.invalidCalls += 1;
+        addSchemaRecovery(this.schemaRecovery, record.stage, { schemaInvalidCalls: 1,
+          schemaRepairInvalidAttempts: record.kind === "repair" ? 1 : 0 });
+      }
+      if (record.kind === "repair") addSchemaRecovery(this.schemaRecovery, record.stage, {
+        schemaRepairAttempts: 1, schemaRepairRecovered: record.status === "ok" ? 1 : 0
+      });
+      return;
+    }
     if (record.status === "schema_invalid") {
       addSchemaRecovery(this.schemaRecovery, record.stage, { schemaInvalidCalls: 1 });
     }
@@ -1181,6 +1209,23 @@ class RunTelemetryImpl {
   }
 
   private updateSchemaRecoveryFromEvent(event: TelemetryEvent): void {
+    if (event.message === "schema_recovery_tracking_started" && event.data?.version === 2) {
+      this.schemaRecoveryTracking = true;
+      return;
+    }
+    if (this.schemaRecoveryTracking) {
+      // Only final host validation resolves a chain. Intermediate invalid
+      // repairs and stage-level failure events are not separate obligations.
+      const id = event.data?.structuredRequestId;
+      const chain = typeof id === "string" ? this.schemaRecoveryChains.get(id) : undefined;
+      if (event.message === "structured_submission_accepted" && chain && !chain.resolved) {
+        chain.resolved = true;
+        addSchemaRecovery(this.schemaRecovery, chain.stage, { schemaRecoveryChainsResolved: 1,
+          schemaInvalidRecovered: chain.invalidCalls,
+          deterministicSchemaRecovered: event.data?.method === "deterministic_correction" ? chain.invalidCalls : 0 });
+      }
+      return;
+    }
     if (event.message === "schema_invalid_submit_recovered") {
       const data = objectField(event.data);
       const recoveredCalls = data?.schemaRepairUsed === true ? 2 : 1;
@@ -1372,6 +1417,10 @@ function emptyCacheCounts(): CacheCounts {
 
 function emptySchemaRecoveryCounters(): SchemaRecoveryCounters {
   return {
+    schemaRecoveryChains: 0,
+    schemaRecoveryChainsResolved: 0,
+    schemaRecoveryChainsUnresolved: 0,
+    schemaRepairInvalidAttempts: 0,
     schemaInvalidCalls: 0,
     schemaInvalidRecovered: 0,
     schemaInvalidUnrecovered: 0,
@@ -1393,6 +1442,7 @@ function finalSchemaRecoveryCounters(input: SchemaRecoveryCounters): SchemaRecov
   const recovered = Math.min(input.schemaInvalidRecovered, input.schemaInvalidCalls);
   return {
     ...input,
+    schemaRecoveryChainsUnresolved: Math.max(0, input.schemaRecoveryChains - input.schemaRecoveryChainsResolved),
     schemaInvalidRecovered: recovered,
     schemaInvalidUnrecovered: Math.max(0, input.schemaInvalidCalls - recovered)
   };
@@ -1430,6 +1480,9 @@ function addSchemaRecoveryCounters(
   target.schemaRepairRecovered += delta.schemaRepairRecovered ?? 0;
   target.deterministicSchemaRecovered += delta.deterministicSchemaRecovered ?? 0;
   target.schemaRecoveryFailed += delta.schemaRecoveryFailed ?? 0;
+  target.schemaRecoveryChains += delta.schemaRecoveryChains ?? 0;
+  target.schemaRecoveryChainsResolved += delta.schemaRecoveryChainsResolved ?? 0;
+  target.schemaRepairInvalidAttempts += delta.schemaRepairInvalidAttempts ?? 0;
 }
 
 function copyCacheCounts(cache: CacheCounts): CacheCounts {
