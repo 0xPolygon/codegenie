@@ -17,6 +17,40 @@ import { ARTIFACT_LOCATION, KNOWN_ARTIFACTS, canonicalArtifactPath, createRunTel
 import { clearRegisteredSecretsForTests, registerSecret } from "../src/telemetry/redaction.js";
 
 describe("run telemetry", () => {
+  it.each([
+    { method: "model_repair", otherResolved: false },
+    { method: "model_repair", otherResolved: true },
+    { method: "deterministic_correction", otherResolved: false }
+  ])("accounts for recovery chains separately from failed attempts: %j", async ({ method, otherResolved }) => {
+    const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: true, logLevel: "debug" } });
+    const attached = await run.attachRunDirectory(tempDir());
+    run.recorder.event({ stage: 0, level: "info", message: "schema_recovery_tracking_started", data: { version: 2 } });
+    const base = { stage: 9 as const, role: "verifier" as const, model: "model", provider: "provider", attempt: 1,
+      promptChars: 10, promptHash: "prompt", outputChars: 10, outputHash: "output", durationMs: 10,
+      cacheStatus: "disabled" as const, stopReason: "submit" as const };
+    run.recorder.recordModelCall({ ...base, callId: "a-original", structuredRequestId: "a", kind: "initial", status: "schema_invalid", schemaValid: false });
+    // An independent worker fails in between this worker's attempts.
+    run.recorder.recordModelCall({ ...base, callId: "b-original", structuredRequestId: "b", kind: "initial", status: "schema_invalid", schemaValid: false });
+    run.recorder.recordModelCall({ ...base, callId: "a-repair-1", structuredRequestId: "a", kind: "repair", status: "schema_invalid", schemaValid: false });
+    run.recorder.recordModelCall({ ...base, callId: "a-repair-2", structuredRequestId: "a", kind: "repair", status: "ok", schemaValid: true });
+    // Stage-level events must not double-count intermediate failures or recovery.
+    run.recorder.event({ stage: 9, level: "warn", message: "verification_schema_repair_failed" });
+    run.recorder.event({ stage: 9, level: "info", message: "schema_invalid_submit_recovered", data: { schemaRepairUsed: true } });
+    for (const id of ["a", "a", "unrelated", ...(otherResolved ? ["b"] : [])]) run.recorder.event({ stage: 9, level: "info", message: "structured_submission_accepted",
+      data: { structuredRequestId: id, method } });
+    await run.finalize({ status: "completed_partial", exitCode: 0 });
+    const expected = { schemaInvalidCalls: 3, schemaInvalidRecovered: otherResolved ? 3 : 2, schemaInvalidUnrecovered: otherResolved ? 0 : 1,
+      schemaRecoveryChains: 2, schemaRecoveryChainsResolved: otherResolved ? 2 : 1, schemaRecoveryChainsUnresolved: otherResolved ? 0 : 1,
+      schemaRepairAttempts: 2, schemaRepairRecovered: 1, schemaRepairInvalidAttempts: 1,
+      schemaRecoveryFailed: otherResolved ? 0 : 1, deterministicSchemaRecovered: method === "deterministic_correction" ? 2 : 0 };
+    const summary = readJson(path.join(attached.runDir, "telemetry.json"));
+    expect(summary.schemaRecovery).toMatchObject(expected);
+    expect(summary.stages["9"].schemaRecovery).toMatchObject(expected);
+    expect(readJson(path.join(attached.runDir, "run.json")).totals.schemaRecovery).toMatchObject(expected);
+    expect(readJsonl(path.join(attached.runDir, "model-calls.jsonl")).map(call => call.status))
+      .toEqual(["schema_invalid", "schema_invalid", "schema_invalid", "ok"]);
+  });
+
   it("records startup provenance even when the checkout/build changes before finalization", async () => {
     vi.stubEnv("CODEGENIE_BUILD_COMMIT", "startup-commit");
     vi.stubEnv("CODEGENIE_BUILD_VERSION", "startup-version");

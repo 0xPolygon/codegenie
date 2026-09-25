@@ -1,6 +1,6 @@
 import { deriveReviewHealth, factualReviewSummary, renderReviewHealth } from "../util/review-health.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "./composition-repair.js";
-import { buildAttentionReconciliation, reconcileAttention, type AttentionReconciliation } from "./attention-reconciliation.js";
+import { attentionResolutionErrors, buildAttentionReconciliation, createAttentionResolutionRepair, reconcileAttention, type AttentionReconciliation } from "./attention-reconciliation.js";
 import { type CompositionMetrics, eligibleCompositionSource, compositionSources, composePresentation, safeReportProse, validateCompositionSubmission, renderRetainedComposition } from "./composition-content.js";
 import type { LlmRunner } from "../llm/llm-runner.js";
 import { SubmitCompositionSchema, type SubmitComposition } from "../llm/schemas.js";
@@ -48,6 +48,7 @@ type ComposeOptions = {
   packets?: ReviewPacket[];
   postGithubComments?: boolean;
   diff?: UnifiedDiff;
+  repositoryPaths?: readonly string[];
 };
 
 type FindingGroup = {
@@ -101,6 +102,7 @@ export async function dedupeRankAndComposeReview(
   const groups = groupFindings(pretrim.kept, packetsById);
   const attention = buildHumanAttentionNotes(opts.packetResults ?? [], {
     packets: opts.packets ?? [],
+    ...(opts.repositoryPaths !== undefined ? { repositoryPaths: opts.repositoryPaths } : {}),
     ...(opts.diff !== undefined ? { diff: opts.diff } : {}),
     telemetry
   });
@@ -225,6 +227,20 @@ export async function dedupeRankAndComposeReview(
     compositionDegraded = true;
   }
 
+  // Distinct diagnoses at one structural location must not share a posting
+  // identity, or GitHub duplicate suppression can hide one of them. Ordinary
+  // fingerprints retain their existing wording-independent identity.
+  const fingerprintCounts = new Map<string, number>();
+  for (const finding of finalFindings) fingerprintCounts.set(finding.fingerprint, (fingerprintCounts.get(finding.fingerprint) ?? 0) + 1);
+  for (const finding of finalFindings) {
+    if (fingerprintCounts.get(finding.fingerprint)! < 2) continue;
+    finding.fingerprint = sha256Hex([finding.fingerprint, normalize(finding.evidence.changedCode),
+      [...normalizedTerms(finding.failureMode)].sort().join(" ")].join("\0"));
+    for (const id of finding.mergedCandidateIds) {
+      const selection = baseSelection.get(id);
+      if (selection?.decision === "merged") selection.mergedIntoFingerprint = finding.fingerprint;
+    }
+  }
   const lowConfidencePublishableIds = lowConfidencePublishableCandidateIds(verified.verdicts);
   const capped = applyCaps(finalFindings, config, {
     lowConfidencePublishableIds,
@@ -261,11 +277,14 @@ export async function dedupeRankAndComposeReview(
   }
   telemetry.event({ stage: 10, level: "info", message: "human_attention_reconciliation", data: {
     suppliedConcerns: attentionReconciliation.inventory.concerns.length,
+    evidenceSelection: attentionReconciliation.selection,
     suppliedEvidence: attentionReconciliation.inventory.evidence.length,
     omittedConcerns: attentionReconciliation.omittedConcernIds.length,
     omittedEvidence: attentionReconciliation.omittedEvidenceIds.length,
     excludedEvidence: attentionReconciliation.excludedEvidenceIds.length,
     accepted: reconciledAttention.decisions.filter(decision => decision.accepted).length,
+    assessedUnresolved: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "unresolved").length,
+    missingDecisions: attentionReconciliation.inventory.concerns.filter(concern => !reconciledAttention.decisions.some(decision => decision.concernId === concern.id)).length,
     rejected: reconciledAttention.decisions.filter(decision => !decision.accepted).length,
     resolvedConcernIds: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "resolved").map(decision => decision.concernId).slice(0, 30),
     narrowedConcernIds: reconciledAttention.decisions.filter(decision => decision.accepted && decision.disposition === "narrowed").map(decision => decision.concernId).slice(0, 30)
@@ -301,7 +320,9 @@ export async function dedupeRankAndComposeReview(
       ? fallbackSummary(publishableCount)
       : safeReportProse(composition.summary) || fallbackSummary(publishableCount);
   const createPostingPlan = opts.postGithubComments === true && (publishableCount > 0 || config.github.summaryWhenNoFindings);
+  const compositionOutcome = { mode: compositionMode, ...(fallbackReason ? { fallbackReason } : {}) };
   const result: ReviewResult = {
+    composition: compositionOutcome,
     summary,
     health,
     coverage,
@@ -314,7 +335,7 @@ export async function dedupeRankAndComposeReview(
       ? {
           postingPlan: {
             inline: findings.flatMap((finding) => (finding.anchor ? [{ findingId: finding.id, anchor: finding.anchor }] : [])),
-            reviewBody: renderReviewBody(summary, summaryOnlyFindings, humanAttention.notes, coverage, humanAttention.omittedCount, health)
+            reviewBody: renderReviewBody(summary, summaryOnlyFindings, humanAttention.notes, coverage, humanAttention.omittedCount, health, compositionOutcome)
           }
         }
       : {})
@@ -399,11 +420,13 @@ async function runComposer(
     stage: 10,
     compositionReasoningStepDown: config.review.compositionReasoningStepDown,
     prompt: prompt.prompt,
-    schema: composerSubmissionSchema(groups),
+    schema: composerSubmissionSchema(groups, attention),
     normalizeSubmit: value => normalizeCompositionReferences(value, groups.flatMap(group => group.findings)),
     validateSubmit: value => {
       try {
         validateCompositionSubmission(value, groups.flatMap(group => group.findings));
+        const attentionErrors = attentionResolutionErrors(attention, value.attentionResolutions);
+        if (attentionErrors.length) return { ok: false, classification: "schema_invalid", details: `${attentionErrors.join("; ")}. Assess each supplied concern; use unresolved when independent evidence is insufficient.` };
         return { ok: true };
       } catch (error) {
         return { ok: false, classification: "schema_invalid", details: String(error) };
@@ -412,7 +435,14 @@ async function runComposer(
     templateVersion: prompt.templateVersion,
     timeoutMs: config.review.perPassTimeoutMs,
     schemaRepair: {
-      createFieldRepair: (schema, retained) => createCompositionAttributionRepair(schema, retained, groups.flatMap(group => group.findings)),
+      createFieldRepair: (schema, retained) => {
+        try {
+          validateCompositionSubmission(retained as SubmitComposition, groups.flatMap(group => group.findings));
+          const repair = createAttentionResolutionRepair(schema, retained as SubmitComposition, attention);
+          if (repair) return repair;
+        } catch { /* Finding-content failures need their existing repair contract. */ }
+        return createCompositionAttributionRepair(schema, retained, groups.flatMap(group => group.findings));
+      },
       // Source IDs alone cannot establish their meaning. Keep the immutable
       // source inventory available during the bounded semantic repair.
       replaceConversation: false,
@@ -424,8 +454,13 @@ async function runComposer(
   return submitted;
 }
 
-export function composerSubmissionSchema(groups: FindingGroup[]): typeof SubmitCompositionSchema {
+export function composerSubmissionSchema(groups: FindingGroup[], attention?: AttentionReconciliation): typeof SubmitCompositionSchema {
   const schema = structuredClone(SubmitCompositionSchema);
+  if (attention?.inventory.concerns.length) {
+    Object.assign(schema, { required: [...new Set([...(schema.required ?? []), "attentionResolutions"])] });
+    Object.assign(schema.properties.attentionResolutions, { minItems: attention.inventory.concerns.length, maxItems: attention.inventory.concerns.length });
+    Object.assign(schema.properties.attentionResolutions.items.properties.concernId, { enum: attention.inventory.concerns.map(concern => concern.id) });
+  }
   const sources = compositionSources(groups.flatMap(group => group.findings));
   const item = schema.properties.composedFindings.items;
   // Historical artifacts may contain finalBody; providers only author sections.
@@ -687,6 +722,7 @@ function buildComposerSchemaRepairPrompt(input: LlmSchemaRepairInput, groups: Fi
     "Schema constraints:",
     "- summary: string, 4000 characters or fewer; diagnosis, scope and uncertainty only, no remedies or test instructions.",
     "- composedFindings: array of objects { findingIds, sections, evidenceRefs, publication }; retainedSourceRefs, primaryEvidenceRefs and reconciliations are optional.",
+    "- attentionResolutions: when an attention inventory is supplied, assess every listed concern exactly once as resolved, narrowed, or unresolved. Resolved/narrowed require independent supportingRefs; unresolved may use [] and preserves the question. Compare published findings as well as other supplied evidence.",
     "- findingIds: non-empty array of known finding IDs.",
     "- Write one concise current conclusion per section kind. Do not generate legacy finalBody.",
     "- Fix/test sections require supported current suggestion sources. Retain all other proposals in retainedSourceRefs; do not restate them in summary, impact or verification prose.",
@@ -725,18 +761,18 @@ function safeComposerJson(input: unknown): string {
 }
 
 function groupFindings(findings: CandidateFinding[], packetsById: Map<string, ReviewPacket>): FindingGroup[] {
-  const groups = new Map<string, CandidateFinding[]>();
-  for (const finding of findings) {
+  // A structural fingerprint locates work; it is not proof that two diagnoses
+  // in that function/hunk describe the same defect.
+  const exactGroups: FindingGroup[] = [];
+  for (const finding of [...findings].sort(compareFindings)) {
     const fingerprint = fingerprintFinding(finding, packetsById);
-    groups.set(fingerprint, [...(groups.get(fingerprint) ?? []), finding]);
+    const existing = exactGroups.find(group => group.fingerprint === fingerprint
+      && group.findings.every(member => diagnosesMatch(member, finding) || conciseDiagnosesMatch(member, finding)));
+    if (existing) {
+      existing.findings.push(finding);
+      existing.representative = canonicalMergedRepresentative(existing.findings);
+    } else exactGroups.push({ fingerprint, representative: finding, findings: [finding] });
   }
-  const exactGroups = [...groups.entries()]
-    .map(([fingerprint, members]) => ({
-      fingerprint,
-      representative: canonicalMergedRepresentative(members),
-      findings: members
-    }))
-    .sort((a, b) => compareFindings(a.representative, b.representative));
   return mergeRootCauseGroups(mergeProximityGroups(exactGroups, packetsById), packetsById);
 }
 
@@ -1296,7 +1332,8 @@ function pretrimComposerInput(findings: CandidateFinding[]): { kept: CandidateFi
 function mergeProximityGroups(groups: FindingGroup[], packetsById: Map<string, ReviewPacket>): FindingGroup[] {
   const merged: FindingGroup[] = [];
   for (const group of groups) {
-    const existing = merged.find((candidate) => nearbyGroup(candidate, group));
+    const existing = merged.find(candidate => nearbyGroup(candidate, group)
+      && candidate.findings.every(left => group.findings.every(right => diagnosesMatch(left, right))));
     if (!existing) {
       merged.push(group);
       continue;
@@ -1311,25 +1348,11 @@ function mergeProximityGroups(groups: FindingGroup[], packetsById: Map<string, R
 function mergeRootCauseGroups(groups: FindingGroup[], packetsById: Map<string, ReviewPacket>): FindingGroup[] {
   const merged: FindingGroup[] = [];
   for (const group of groups) {
-    const matches = merged.filter((candidate) => rootCauseGroupsMatch(candidate, group, packetsById));
-    if (matches.length === 0) {
-      merged.push({ ...group, fingerprint: rootCauseGroupFingerprint(group, packetsById) });
-      continue;
-    }
-    for (const match of matches) {
-      merged.splice(merged.indexOf(match), 1);
-    }
-    let combined = combineFindingGroups([group, ...matches], packetsById);
-    for (let index = 0; index < merged.length;) {
-      const candidate = merged[index];
-      if (candidate !== undefined && rootCauseGroupsMatch(candidate, combined, packetsById)) {
-        merged.splice(index, 1);
-        combined = combineFindingGroups([combined, candidate], packetsById);
-        continue;
-      }
-      index += 1;
-    }
-    merged.push(combined);
+    // Require compatibility with every existing member; a broad middle
+    // candidate must not connect two otherwise unrelated defects.
+    const index = merged.findIndex(candidate => rootCauseGroupsMatch(candidate, group, packetsById));
+    if (index < 0) merged.push({ ...group, fingerprint: rootCauseGroupFingerprint(group, packetsById) });
+    else merged[index] = combineFindingGroups([merged[index]!, group], packetsById);
   }
   return merged.sort((a, b) => compareFindings(a.representative, b.representative));
 }
@@ -1362,11 +1385,15 @@ function rootCauseGroupsMatch(a: FindingGroup, b: FindingGroup, packetsById: Map
   if (a.representative.category !== b.representative.category) {
     return false;
   }
+  if (a.findings.length > 1 || b.findings.length > 1) {
+    return a.findings.every(left => b.findings.every(right => rootCauseGroupsMatch(
+      { ...a, representative: left, findings: [left] }, { ...b, representative: right, findings: [right] }, packetsById)));
+  }
   const similarity = rootCauseSimilarity(a.findings, b.findings);
   if (a.representative.path !== b.representative.path) {
     return crossFileRootCauseGroupsMatch(a, b, packetsById, similarity);
   }
-  if (similarity < 0.5) {
+  if (similarity < 0.5 || (!diagnosesMatch(a.representative, b.representative) && !conciseDiagnosesMatch(a.representative, b.representative))) {
     return false;
   }
   if (a.findings.some((left) => b.findings.some((right) => anchorsWithinFiveLines(left.anchor, right.anchor)))) {
@@ -1390,11 +1417,28 @@ function crossFileRootCauseGroupsMatch(
   packetsById: Map<string, ReviewPacket>,
   similarity: number
 ): boolean {
+  // Large evidence inventories and alternate remedies can dilute full-text
+  // similarity. Compare the diagnosis separately only with a concrete link to
+  // the other finding's changed implementation location.
+  const left = a.representative;
+  const right = b.representative;
+  const leftDiagnosis = normalizedTerms(left.failureMode);
+  const rightDiagnosis = normalizedTerms(right.failureMode);
+  const sharedDiagnosis = [...leftDiagnosis].filter(term => rightDiagnosis.has(term)).length;
+  const sharedImplementation = (left.evidence.relatedCode ?? []).some(l => (right.evidence.relatedCode ?? []).some(r =>
+    l.path === r.path && normalizedTerms(l.lines).size >= 6 && l.lines.trim() === r.lines.trim()));
+  const linkedImplementation = referencesImplementation(left, right) || referencesImplementation(right, left);
+  if ((sharedImplementation || linkedImplementation)
+    && sharedDiagnosis / Math.max(1, Math.min(leftDiagnosis.size, rightDiagnosis.size)) >= 0.65) return true;
+  // A concise diagnosis can remain aligned while long evidence inventories and
+  // differently phrased explanations dominate full-text similarity. Require an
+  // explicit implementation location as well, never a matching title alone.
+  if (linkedImplementation && conciseDiagnosesMatch(left, right)) return true;
   if (similarity < CROSS_FILE_EVIDENCE_LINK_SIMILARITY) {
     return false;
   }
   if (groupsShareEvidencePath(a, b)) {
-    return true;
+    return diagnosesMatch(left, right);
   }
   if (groupsShareSymbol(a, b, packetsById)) {
     return similarity >= 0.55;
@@ -1403,6 +1447,35 @@ function crossFileRootCauseGroupsMatch(
     return similarity >= 0.6;
   }
   return false;
+}
+
+function conciseDiagnosesMatch(left: CandidateFinding, right: CandidateFinding): boolean {
+  const leftTitle = normalizedTerms(left.title.replace(/([a-z])([A-Z])/g, "$1 $2"));
+  const rightTitle = normalizedTerms(right.title.replace(/([a-z])([A-Z])/g, "$1 $2"));
+  const shared = [...leftTitle].filter(term => rightTitle.has(term)).length;
+  return shared >= 4 && shared / Math.max(1, Math.min(leftTitle.size, rightTitle.size)) >= 0.6;
+}
+
+function diagnosesMatch(left: CandidateFinding, right: CandidateFinding): boolean {
+  return !!left.failureMode.trim() && left.failureMode.trim() === right.failureMode.trim()
+    || tokenJaccard(normalizedTerms(left.failureMode), normalizedTerms(right.failureMode)) >= CROSS_FILE_EVIDENCE_LINK_SIMILARITY;
+}
+
+function referencesImplementation(from: CandidateFinding, to: CandidateFinding): boolean {
+  return (from.evidence.relatedCode ?? []).some(evidence => {
+    if (evidence.path !== to.path) return false;
+    const range = /^(?:L)?(\d+)(?:\s*[-–:]\s*(?:L)?(\d+))?$/u.exec(evidence.lines.trim());
+    if (!range) {
+      const identifiers = new Set(evidence.lines.match(/[\p{L}_$][\p{L}\p{N}_$]*/gu) ?? []);
+      const specificIdentifiers = (to.evidence.changedCode.match(/[\p{L}_$][\p{L}\p{N}_$]*/gu) ?? [])
+        .filter(name => /[a-z][A-Z]|[a-z]_[a-z]/u.test(name));
+      return normalizedTerms(evidence.lines).size >= 6 && (specificIdentifiers.some(name => identifiers.has(name))
+        || tokenJaccard(normalizedTerms(evidence.lines), normalizedTerms(to.evidence.changedCode)) >= CROSS_FILE_EVIDENCE_LINK_SIMILARITY);
+    }
+    const start = Number(range[1]);
+    const end = Number(range[2] ?? range[1]);
+    return start > 0 && end >= start && (!to.anchor || (start <= to.anchor.line && to.anchor.line <= end));
+  });
 }
 
 function rootCauseSimilarity(a: CandidateFinding[], b: CandidateFinding[]): number {
@@ -1729,9 +1802,10 @@ function renderReviewBody(
   notes: NeedsHumanAttentionNote[],
   coverage: RunCoverageStatus,
   omittedNoteCount = 0,
-  health?: import("../types.js").ReviewHealth
+  health?: import("../types.js").ReviewHealth,
+  composition?: ReviewResult["composition"]
 ): string {
-  const trustBanner = health && health.status !== "completed" ? renderReviewHealth(health) : renderCoverageTrustBanner(coverage);
+  const trustBanner = health ? renderReviewHealth(health, composition) || renderCoverageTrustBanner(coverage) : renderCoverageTrustBanner(coverage);
   const lines = [
     "### 🧞 Codegenie Review",
     "",

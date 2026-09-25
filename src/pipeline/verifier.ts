@@ -1,5 +1,6 @@
 import { reviewDiagnostic, unresolvedToolDiagnostic } from "../util/review-health.js";
 import { assessFinalSuggestions, suggestionAssessment } from "./suggestion-assessment.js";
+import { selectVerifierSourceEvidence } from "./source-evidence.js";
 import { SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
 import { normalizeVerifierSubmission, expandVerifierRevision, promotedCompletionIssues } from "../llm/verifier-revision.js";
 import { createFieldRepair } from "../llm/field-repair.js";
@@ -44,11 +45,8 @@ const VERIFIER_TOOL_BUDGET = {
   maxInvestigationRounds: 3,
   maxResultChars: 32_000,
   maxSingleToolResultChars: 6_000,
-  reservedSourceResultChars: 4_000,
-  sourceExtension: {
-    maxToolCalls: 2,
-    maxResultChars: 8_000
-  }
+  maxDiscoveryResultChars: 4_000,
+  reservedSourceResultChars: 4_000
 };
 const VERIFIER_EXPECTED_CALLS_PER_CANDIDATE = 2;
 const VERIFIER_BASE_TOKEN_ESTIMATE = 1_000;
@@ -322,7 +320,7 @@ export async function verifyFindings(
     retryOnTransient: false,
     run: async (signal, task) => {
       releaseVerifierReservation(scheduling.reservations.get(candidate.id), opts);
-      return verifyCandidate(candidate, packetsById.get(candidate.producedBy.packetId), tools, config, { ...opts, signal }, task.workerId, telemetry, runtimeStats);
+      return verifyCandidate(candidate, packetsById.get(candidate.producedBy.packetId), tools, config, { ...opts, signal }, task.workerId, telemetry, runtimeStats, input.packetResults);
     }
   }));
   const outcomes = await workerRunner.schedule(tasks);
@@ -570,7 +568,8 @@ async function verifyCandidate(
   opts: VerifyOptions,
   workerId: string,
   telemetry: TelemetryRecorder,
-  runtimeStats: VerificationRuntimeStats
+  runtimeStats: VerificationRuntimeStats,
+  packetResults: PacketReviewResult[]
 ): Promise<VerificationVerdict> {
   const requestedSkillIds = candidate.producedBy.skillIds;
   if (!Array.isArray(requestedSkillIds) || requestedSkillIds.some((id) => typeof id !== "string")) {
@@ -603,6 +602,7 @@ async function verifyCandidate(
   const prompt = opts.promptBuilder.buildVerifierPrompt({
     candidate,
     originContext: verificationOriginContext(candidate, packet),
+    collectedSourceEvidence: selectVerifierSourceEvidence(candidate, packetResults),
     hunksText: findingDiffContext(opts.diff, [candidate.anchor?.path ?? candidate.path], candidate.anchor?.hunkId) || packet?.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n") || "",
     ...(packet?.intentSignals !== undefined ? { intentSignals: packet.intentSignals } : {}),
     skills

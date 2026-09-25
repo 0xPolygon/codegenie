@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { type TSchema } from "@earendil-works/pi-ai";
 import { cleanupSubmitShape, focusedRepairDiagnostics, submissionIssues, type ValidationIssue } from "./submit-preservation.js";
 
@@ -138,8 +139,12 @@ export function createFieldRepair(schema: TSchema, original: unknown, allowSeman
           parent = (parent as Record<string, unknown>)[part];
           supplied = supplied !== null && typeof supplied === "object" ? (supplied as Record<string, unknown>)[part] : undefined;
         }
-        // Two representations of the same value are ambiguous, not an ordered update.
-        if (supplied !== null && typeof supplied === "object" && Object.hasOwn(supplied, key)) throw new Error("Conflicting field repair representations");
+        // Repeating an identical value is harmless; differing representations
+        // have no defined precedence and must not silently overwrite each other.
+        if (supplied !== null && typeof supplied === "object" && Object.hasOwn(supplied, key)
+          && !isDeepStrictEqual((supplied as Record<string, unknown>)[key], patch[path])) {
+          throw new Error(`Conflicting field repair representations at ${path}: nested and literal-path values differ. Supply one representation or identical values.`);
+        }
         Object.defineProperty(parent, key, { value: structuredClone(patch[path]), enumerable: true, writable: true, configurable: true });
       }
       return result;

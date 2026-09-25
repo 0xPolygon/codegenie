@@ -23,6 +23,7 @@ export type LlmCallRecord = {
   workerId?: string;
   packetId?: string;
   candidateId?: string;
+  structuredRequestId?: string;
   kind: "initial" | "tool-continuation" | "repair" | "finalize";
   finalizeMode?: "compact" | "full" | undefined;
   finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;

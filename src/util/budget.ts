@@ -30,6 +30,9 @@ export function scaleToolBudget(budget: ToolBudget, multiplier: number): ToolBud
   if (budget.maxSingleToolResultChars !== undefined) {
     scaled.maxSingleToolResultChars = scaleBudgetValue(budget.maxSingleToolResultChars, multiplier);
   }
+  if (budget.maxDiscoveryResultChars !== undefined) {
+    scaled.maxDiscoveryResultChars = scaleBudgetValue(budget.maxDiscoveryResultChars, multiplier);
+  }
   if (budget.reservedSourceResultChars !== undefined) {
     scaled.reservedSourceResultChars = scaleBudgetValue(budget.reservedSourceResultChars, multiplier);
   }
@@ -40,4 +43,19 @@ export function scaleToolBudget(budget: ToolBudget, multiplier: number): ToolBud
     };
   }
   return scaled;
+}
+
+/**
+ * Local investigation totals have one configured target and a fixed 2x ceiling.
+ * Per-result limits and source targets are not multiplied. Legacy source
+ * extensions are subsumed by this headroom, never added to the ceiling.
+ */
+export function hardToolBudget(soft: ToolBudget): ToolBudget {
+  const { sourceExtension: _legacyExtension, ...limits } = soft;
+  return {
+    ...limits,
+    maxToolCalls: scaleBudgetValue(soft.maxToolCalls, 2),
+    maxInvestigationRounds: scaleBudgetValue(soft.maxInvestigationRounds, 2),
+    maxResultChars: scaleBudgetValue(soft.maxResultChars, 2)
+  };
 }

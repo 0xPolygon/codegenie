@@ -24,6 +24,26 @@ function composed(findings: CandidateFinding[]) {
 }
 
 describe("attributed composition", () => {
+  it("can publish a testing remedy once while retaining the duplicate fix and every source", () => {
+    const item = finding("testing");
+    item.category = "testing";
+    item.suggestedFix = item.suggestedTest = "Assert that a revoked session cannot read the document.";
+    const assessment = { status: "supported" as const, suggestionText: item.suggestedTest, rationale: "Tests the required access boundary.",
+      contractCheck: { status: "established" as const, requirement: "Revoked sessions cannot read documents." },
+      evidence: [{ path: "contract.go", lines: "deny revoked sessions", whyRelevant: "Established requirement." }] };
+    item.suggestionAssessments = { suggestedFix: assessment, suggestedTest: assessment };
+    const proposal = composed([item]);
+    const fix = proposal.sections.find(section => section.kind === "fix")!;
+    proposal.sections = proposal.sections.filter(section => section.kind !== "fix");
+    proposal.retainedSourceRefs.push(...fix.sourceRefs);
+    const full = renderCompositionSections([item], proposal.sections, proposal.evidenceRefs, undefined, proposal);
+    const primary = full.split("\n\n<details>")[0]!;
+    expect(primary.split(item.suggestedTest)).toHaveLength(2);
+    expect(primary).not.toContain("remains unverified");
+    expect(full).toContain("testing/suggestedFix");
+    expect(full).toContain("testing/suggestedTest");
+  });
+
   it("renders the rounding chain once, retaining zero rejection and contract uncertainty", () => {
     const findings = Array.from({ length: 5 }, (_, index) => finding(`f${index}`));
     const proposal = composed(findings);

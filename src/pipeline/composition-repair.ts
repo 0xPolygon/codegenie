@@ -76,15 +76,17 @@ export function createCompositionAttributionRepair(schema: TSchema, original: un
   const contexts = entries.map((group, index) => {
     const sources = compositionSources(findings.filter(finding => group.findingIds.includes(finding.id)), findings);
     const prefix = `composedFindings.${index}.`;
-    return { group, sources, lists: compositionReferenceLists(group.sections, group.evidenceRefs, group, prefix),
+    const needsAdviceRepair = group.sections.some(section => (section.kind === "fix" || section.kind === "test")
+      && !sources.some(source => eligibleCompositionSource(source, section.kind)));
+    return { group, sources, needsAdviceRepair, lists: compositionReferenceLists(group.sections, group.evidenceRefs, group, prefix),
       diagnostics: compositionAttributionDiagnostics(sources, group.sections, group.evidenceRefs, group, prefix) };
-  }).filter(context => context.diagnostics.length);
+  }).filter(context => context.diagnostics.length || context.needsAdviceRepair);
   if (!contexts.length) return;
   const properties: Record<string, TSchema> = {};
   const adviceGroups = new Map<string, Group>();
-  const contextData = contexts.map(({ group, sources, lists, diagnostics }) => {
+  const contextData = contexts.map(({ group, sources, needsAdviceRepair, lists, diagnostics }) => {
     const paths = new Set(diagnostics.flatMap(issue => issue.allowedPaths ?? [issue.path.replace(/\.\d+$/u, "")]));
-    if (diagnostics.some(issue => issue.code === "unsupported_suggestion")) {
+    if (needsAdviceRepair || diagnostics.some(issue => issue.code === "unsupported_suggestion")) {
       const sectionPath = lists[0]!.path.replace(/sections\.\d+\.sourceRefs$/u, "sections");
       adviceGroups.set(sectionPath, group);
       // Only recommendation sections may change; merge enforces diagnosis
@@ -110,12 +112,16 @@ export function createCompositionAttributionRepair(schema: TSchema, original: un
   const patchSchema = Type.Object(properties, { additionalProperties: false, minProperties: 1 });
   const paths = Object.keys(properties);
   const baseline = structuredClone(original);
+  const exampleEntry = Object.entries(properties as Record<string, TSchema & { type?: string; items?: { type?: string; enum?: string[] } }>).find(([, shape]) => shape.type === "array" && shape.items?.type === "string" && shape.items.enum?.length);
+  const example = exampleEntry ? { [exampleEntry[0]]: [exampleEntry[1].items!.enum![0]] } : undefined;
   return {
     schema: patchSchema, paths, baseline, diagnostics: focusedRepairDiagnostics(schema, original),
     prompt: (adviceGroups.size
-      ? "Repair unsupported composition advice. Replace the permitted sections array to omit unsupported fix/test sections, or rewrite them using only supported current suggestions. Keep all impact/verification sections exactly unchanged. Do not strengthen or combine assessed proposals. Replace retainedSourceRefs to retain every omitted proposal; no finding or evidence may be lost. Only the literal path keys in this tool schema are accepted. No repository tools. Full schema and source accounting validation follows.\n"
+      ? "Repair unsupported composition advice. Replace the permitted sections array to omit fix/test sections with no eligible supporting sources, or rewrite advice using only supported current suggestions. Keep every impact/verification section's kind, text and order unchanged; correct their sourceRefs as needed, including placing proof assessments in visible verification. An empty sourceRefs list cannot support a section. Do not strengthen or combine assessed proposals. Replace retainedSourceRefs to retain every omitted proposal; no finding or evidence may be lost. Only the literal path keys in this tool schema are accepted. No repository tools. Full schema and source accounting validation follows.\n"
       : "Repair composition source attribution. Call submit_composition exactly once with only the literal field-path keys permitted by the tool schema. Each supplied string array REPLACES that entire reference list: remove incorrect entries and retain correct ones. Omitted lists remain unchanged. You may remove reference entries, but must not delete or reorder findings or sections, change prose, or invent source IDs. Each supplied source must remain accounted for exactly once in its matching section, evidenceRefs, or retainedSourceRefs. Primary evidence and visible proof requirements still apply. This is an attribution correction, not a request for missing prose. Do not call repository tools. The complete assembled submission will undergo schema and semantic validation.\n")
-      + fenceUntrusted(JSON.stringify(contextData), "attribution-repair-context"),
+      + fenceUntrusted(JSON.stringify(contextData), "attribution-repair-context")
+      + (example ? "\nSyntax example only; not a complete attribution solution. Dotted keys are literal JSON property names, arrays are JSON arrays (not strings). Omitted update keys retain their current values.\n"
+        + fenceUntrusted(JSON.stringify(example), "patch-format-example") : ""),
     replaceConversation: true,
     merge(values) {
       if (submissionIssues(patchSchema, values).length || !Object.keys(values).length || Object.keys(values).some(key => !paths.includes(key))) throw new Error("Invalid attribution patch");
@@ -123,7 +129,8 @@ export function createCompositionAttributionRepair(schema: TSchema, original: un
       for (const [path, refs] of Object.entries(values)) {
         const adviceGroup = adviceGroups.get(path);
         if (adviceGroup) {
-          const diagnosis = (sections: CompositionSection[]) => sections.filter(section => section.kind !== "fix" && section.kind !== "test");
+          const diagnosis = (sections: CompositionSection[]) => sections.filter(section => section.kind !== "fix" && section.kind !== "test")
+            .map(({ kind, text }) => ({ kind, text }));
           if (JSON.stringify(diagnosis(refs as CompositionSection[])) !== JSON.stringify(diagnosis(adviceGroup.sections))) {
             throw new Error("Advice repair must preserve impact and verification sections");
           }

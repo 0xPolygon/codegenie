@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { submissionIssues } from "../src/llm/submit-preservation.js";
 import { SubmitCompositionSchema } from "../src/llm/schemas.js";
-import { buildAttentionReconciliation, MAX_ATTENTION_RECONCILIATION_CHARS, reconcileAttention } from "../src/pipeline/attention-reconciliation.js";
+import { attentionResolutionErrors, buildAttentionReconciliation, createAttentionResolutionRepair, MAX_ATTENTION_RECONCILIATION_CHARS, reconcileAttention } from "../src/pipeline/attention-reconciliation.js";
+import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { compositionSources, validateCompositionSubmission } from "../src/pipeline/composition-content.js";
 import type { PacketReviewResult, VerificationVerdict } from "../src/types.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
@@ -28,7 +29,157 @@ function fixture(questions = ["Does head include a revoked-session test?", "Is t
 }
 
 describe("evidence-backed attention reconciliation", () => {
-  it("uses completed packet source reads without treating a no-finding conclusion as evidence", () => {
+  it("accepts evidence already delivered in finding components when its duplicate inventory entry was omitted", () => {
+    const f = fixture();
+    const input = buildAttentionReconciliation(f.verdicts, [f.candidate], [f.packet], { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" });
+    const id = "authorization/evidence/relatedCode/0";
+    input.inventory.evidence = input.inventory.evidence.filter(source => source.id !== id);
+    input.omittedEvidenceIds.push(id);
+    const proposal = { ...f.proposal, supportingRefs: [id] };
+    expect(reconcileAttention(input, [proposal], true).decisions[0]!.accepted).toBe(true);
+    expect(reconcileAttention(input, [{ ...proposal, supportingRefs: ["not-delivered"] }], true).decisions[0]!.accepted).toBe(false);
+    input.groups[0]!.concerns[0]!.candidateId = f.candidate.id;
+    expect(reconcileAttention(input, [proposal], true).decisions[0]!.rejectionReason).toBe("self_support");
+    input.groups[0]!.concerns[0]!.candidateId = "question";
+    delete input.allEvidence.find(source => source.id === id)!.sourceRef;
+    expect(reconcileAttention(input, [proposal], true).decisions[0]!.rejectionReason).toBe("unknown_or_omitted_evidence");
+  });
+
+  it("retains a complete explicitly referenced source before repeated compact assessments fill the cap", () => {
+    const f = fixture(["Does readDocument have its required permission declaration?"]);
+    f.concern.unresolvedConcern!.files = ["config/access.custom"];
+    const text = 'permission = "readDocument"\n' + "# Complete source context\n".repeat(100);
+    f.packet.repositoryEvidence = [
+      // Cheap excerpts from the same file must not outrank the relevant full read
+      // merely because each question's fair share is smaller than that read.
+      ...Array.from({ length: 10 }, (_, i) => ({ id: `unrelated-${i}`, tool: "read_range", source: "head" as const,
+        path: "config/access.custom", text: `# Unrelated section ${i}\nlogging = true` })),
+      { id: "config-read", tool: "read_range", source: "head", path: "config/access.custom", text }
+    ];
+    for (let i = 0; i < 35; i++) f.verdicts.push({ ...structuredClone(f.observation), candidateId: `other-${i}`,
+      proofAssessment: { status: "unresolved", evidence: "readDocument permission declaration remains unconfirmed. ".repeat(12), assumptions: [] } });
+    const input = f.build();
+    const source = input.inventory.evidence.find(item => item.origin === "repository_tool")!;
+    expect(source).toMatchObject({ path: "config/access.custom", text, source: "head" });
+    expect(input.omittedEvidenceIds.length).toBeGreaterThan(0);
+    expect(JSON.stringify(input.inventory).length).toBeLessThanOrEqual(MAX_ATTENTION_RECONCILIATION_CHARS);
+    // Selection never resolves the question by itself.
+    expect(reconcileAttention(input, undefined, true).notes).toEqual([f.concern.unresolvedConcern]);
+  });
+
+  it("prioritizes the referenced implementation over its header under a crowded evidence cap", () => {
+    const f = fixture(["Does the route drift guard compare RouteCatalog.entries() with expectedRoutes?"]);
+    f.concern.unresolvedConcern!.files = ["routing/guard.custom"];
+    f.concern.unresolvedConcern!.symbols = [];
+    const header = "# route drift guard maintains an expectedRoutes table\n" + "# introductory notes\n".repeat(50);
+    const body = "check route_drift_guard { actual = RouteCatalog.entries(); assert_equal(actual, expectedRoutes); }\n"
+      + "# complete implementation context\n".repeat(40);
+    f.packet.repositoryEvidence = [
+      { id: "header", tool: "read_range", source: "head", path: "routing/guard.custom", text: header },
+      { id: "body", tool: "read_range", source: "head", path: "routing/guard.custom", text: body },
+      { id: "contained", tool: "read_range", source: "head", path: "routing/guard.custom", text: body.split("\n")[0]! }
+    ];
+    for (let i = 0; i < 35; i++) f.verdicts.push({ ...structuredClone(f.observation), candidateId: `other-${i}`,
+      proofAssessment: { status: "unresolved", evidence: "Route drift guard and expectedRoutes remain unconfirmed. ".repeat(12), assumptions: [] } });
+    const input = f.build();
+    expect(input.inventory.evidence.some(item => item.id === "repository/auth/body")).toBe(true);
+    expect(input.inventory.evidence.some(item => item.id === "repository/auth/contained")).toBe(false);
+    expect(input.allEvidence.some(item => item.id === "repository/auth/contained")).toBe(true);
+    expect(input.omittedEvidenceIds).toContain("repository/auth/contained");
+    expect(JSON.stringify(input.inventory).length).toBeLessThanOrEqual(MAX_ATTENTION_RECONCILIATION_CHARS);
+    expect(reconcileAttention(input, undefined, true).notes).toEqual([f.concern.unresolvedConcern]);
+  });
+
+  it("repairs every delivered concern even when more than thirty fit in the inventory", () => {
+    const f = fixture(Array.from({ length: 31 }, (_, i) => `Is condition ${i} established?`));
+    const input = f.build();
+    expect(input.inventory.concerns).toHaveLength(31);
+    const schema = composerSubmissionSchema([], input);
+    const original = { summary: "Review completed with questions.", composedFindings: [] };
+    const repair = createAttentionResolutionRepair(schema, original, input)!;
+    const values = { attentionResolutions: input.inventory.concerns.map(concern => ({ concernId: concern.id,
+      disposition: "unresolved" as const, supportingRefs: [], rationale: "The supplied evidence does not establish this condition." })) };
+    expect(submissionIssues(repair.schema, values)).toEqual([]);
+    expect(submissionIssues(schema, repair.merge(values))).toEqual([]);
+    expect(attentionResolutionErrors(input, values.attentionResolutions)).toEqual([]);
+    expect(() => repair.merge({ attentionResolutions: values.attentionResolutions.slice(0, 30) })).toThrow();
+    // An all-unresolved decision list preserves the original authored wording.
+    input.groups[0]!.original.question = "Original combined question wording.";
+    expect(reconcileAttention(input, values.attentionResolutions, true).notes[0]!.question).toBe("Original combined question wording.");
+  });
+
+  it("requires an explicit decision for every supplied concern, while allowing honest uncertainty", () => {
+    const f = fixture();
+    const input = f.build();
+    const schema = composerSubmissionSchema([], input);
+    const original = { summary: "Retain current findings.", composedFindings: [] };
+    expect(submissionIssues(schema, original)).toContainEqual({ path: "attentionResolutions", kind: "missing" });
+    expect(attentionResolutionErrors(input, undefined)).toHaveLength(2);
+    const unresolved = { concernId: input.inventory.concerns[1]!.id, disposition: "unresolved" as const,
+      supportingRefs: [], rationale: "No deployment evidence was supplied." };
+    expect(attentionResolutionErrors(input, [f.proposal, unresolved])).toEqual([]);
+    expect(submissionIssues(schema, { ...original, attentionResolutions: [f.proposal, unresolved] })).toEqual([]);
+    expect(reconcileAttention(input, [f.proposal, unresolved], true).notes[0]!.question).toBe("Is this endpoint deployed?");
+    expect(attentionResolutionErrors(input, [{ ...f.proposal, supportingRefs: [] }, unresolved])).toContainEqual(expect.stringContaining("unknown_or_omitted_evidence"));
+    expect(attentionResolutionErrors(input, [f.proposal, { ...unresolved, remainingQuestion: "Silently rewritten" }])).toContainEqual(expect.stringContaining("conflicting_remaining_question"));
+    expect(reconcileAttention(input, [f.proposal, unresolved], false).notes).toEqual([f.concern.unresolvedConcern]);
+  });
+
+  it("repairs missing or duplicate decisions without rewriting finding content", () => {
+    const f = fixture();
+    const input = f.build();
+    const original = { summary: "Keep the finding.", composedFindings: [], attentionResolutions: [f.proposal, f.proposal] };
+    const repair = createAttentionResolutionRepair(composerSubmissionSchema([], input), original, input)!;
+    expect(repair.prompt).toContain("duplicate_resolution");
+    expect(repair.prompt).toContain(input.inventory.concerns[1]!.id);
+    const values = { attentionResolutions: [f.proposal, { concernId: input.inventory.concerns[1]!.id,
+      disposition: "unresolved" as const, supportingRefs: [], rationale: "Deployment cannot be established." }] };
+    const merged = repair.merge(values);
+    expect(merged).toEqual({ ...original, ...values });
+    expect(original.attentionResolutions).toHaveLength(2);
+    expect(merged.summary).toBe(original.summary);
+    expect(repair.merge({ ...values, summary: "Erase the retained diagnosis", composedFindings: [] })).toEqual(merged);
+    expect(attentionResolutionErrors(input, values.attentionResolutions)).toEqual([]);
+    expect(attentionResolutionErrors(input, [f.proposal, f.proposal])).toContainEqual(expect.stringContaining("duplicate_resolution"));
+    const omitted = { ...input, inventory: { ...input.inventory, concerns: input.inventory.concerns.slice(0, 1) }, omittedConcernIds: [input.inventory.concerns[1]!.id] };
+    expect(attentionResolutionErrors(omitted, [f.proposal])).toEqual([]);
+    expect(attentionResolutionErrors({ ...omitted, inventory: { ...omitted.inventory, concerns: [] } }, undefined)).toEqual([]);
+  });
+
+  it("retains verifier answers before large matching tables consume the inventory", () => {
+    const f = fixture(["Does readDocument reject revoked sessions?", "Does restoreArchive preserve archived records?"]);
+    f.concern.unresolvedConcern!.files = ["permissions.ts", "archives.ts"];
+    f.concern.unresolvedConcern!.symbols = ["readDocument", "restoreArchive"];
+    f.observation.proofAssessment = { status: "refuted",
+      evidence: "readDocument rejects revoked sessions: its current guard checks revokedAt before returning the document.",
+      assumptions: [{ question: "Deployment is not established.", essential: false }] };
+    f.verdicts.push({ ...structuredClone(f.observation), candidateId: "archive-answer",
+      proofAssessment: { status: "established", evidence: "restoreArchive preserves archived records; the rollback branch restores both payload and metadata.", assumptions: [] } });
+    f.packet.repositoryEvidence = Array.from({ length: 3 }, (_, i) => ({ id: `table-${i}`, tool: "read_range", source: "head" as const,
+      path: "permissions.ts", symbols: ["readDocument", "restoreArchive"],
+      text: `// readDocument rejects revoked sessions; restoreArchive preserves archived records\n${"permissionName: permissionValue,\n".repeat(200)}// table ${i}` }));
+    const original = structuredClone(f.verdicts);
+    const input = f.build();
+    for (const id of ["attention/authorization/proofAssessment", "attention/archive-answer/proofAssessment"]) {
+      const supplied = input.inventory.evidence.find(item => item.id === id);
+      expect(supplied?.text).toBe(input.allEvidence.find(item => item.id === id)!.text);
+    }
+    expect(input.inventory.evidenceContexts.find(item => item.candidateId === "authorization")?.assumptions)
+      .toEqual(f.observation.proofAssessment.assumptions);
+    expect(input.omittedEvidenceIds.some(id => id.includes("table-"))).toBe(true);
+    expect(JSON.stringify(input.inventory).length).toBeLessThanOrEqual(MAX_ATTENTION_RECONCILIATION_CHARS);
+    expect(reconcileAttention(input, [], true).notes).toEqual([f.concern.unresolvedConcern]);
+    expect(f.verdicts).toEqual(original);
+  });
+
+  it("keeps identical text from base and head as distinct revision evidence", () => {
+    const f = fixture();
+    f.packet.repositoryEvidence = (["base", "head"] as const).map(source => ({ id: source, tool: "read_range", source,
+      path: "documents.test.ts", text: "readDocument denies revoked sessions" }));
+    expect(f.build().inventory.evidence.filter(item => item.origin === "repository_tool").map(item => item.source).sort()).toEqual(["base", "head"]);
+  });
+
+  it("uses successful source reads independently of the packet submission outcome", () => {
     const f = fixture();
     f.packet.findings = [];
     f.packet.noFindingReason = "Everything is safe.";
@@ -41,7 +192,19 @@ describe("evidence-backed attention reconciliation", () => {
     expect(reconcileAttention(input, [], true).notes).toEqual([f.concern.unresolvedConcern]);
     expect(reconcileAttention(input, [{ ...f.proposal, supportingRefs: [source.id] }], true).decisions[0]!.accepted).toBe(true);
     f.packet.status = "incomplete";
-    expect(f.build().inventory.evidence.some(item => item.origin === "repository_tool")).toBe(false);
+    expect(f.build().inventory.evidence.some(item => item.origin === "repository_tool")).toBe(true);
+  });
+
+  it("admits a deferred complete source when space remains after compact observations", () => {
+    const f = fixture(Array.from({ length: 12 }, (_, i) => `Does readDocument enforce access condition ${i}?`));
+    f.packet.findings = [];
+    f.verdicts.splice(1);
+    const text = "function readDocument() { enforceAllAccessConditions(); }\n".repeat(90);
+    f.packet.repositoryEvidence = [{ id: "large-source", tool: "read_range", source: "head", path: "documents.ts", text }];
+    const input = f.build();
+    expect(input.inventory.evidence.find(e => e.origin === "repository_tool")?.text).toBe(text);
+    expect(JSON.stringify(input.inventory).length).toBeLessThanOrEqual(MAX_ATTENTION_RECONCILIATION_CHARS);
+    expect(reconcileAttention(input, [], true).notes).toEqual([f.concern.unresolvedConcern]);
   });
 
   it("stores repeated evidence qualifications once without dropping their uncertainty", () => {
@@ -276,4 +439,108 @@ describe("evidence-backed attention reconciliation", () => {
     expect(submissionIssues(SubmitCompositionSchema, { ...payload, attentionResolutions: [{ ...payload.attentionResolutions[0], rationale: 42 }] })).not.toEqual([]);
     expect(submissionIssues(SubmitCompositionSchema, { summary: "Legacy", composedFindings: [] })).toEqual([]);
   });
+});
+
+describe("plan 124 question coverage", () => {
+  it("supplies distinct method bodies despite crowded assessments and oversized reads, with stable provenance", () => {
+    const f = fixture(["Does InputRule.checkRequest invoke NestedRule.checkItems?", "Does WritePolicy.authorize deny expiredSession?"]);
+    f.concern.unresolvedConcern!.files = ["rules.custom", "policy.custom"];
+    f.concern.unresolvedConcern!.symbols = [];
+    const source = (id: string, path: string, text: string) => ({ id, path, text, source: "head" as const, tool: "read_range" });
+    const nested = "method checkRequest on InputRule { return NestedRule.checkItems(input); }";
+    const policy = "method authorize on WritePolicy { if expiredSession { deny; } }";
+    f.packet.repositoryEvidence = [source("too-large", "rules.custom", nested + "\n# irrelevant extra context".repeat(1000)),
+      source("nested", "rules.custom", nested), source("policy", "policy.custom", policy),
+      source("duplicate", "rules.custom", nested)];
+    for (let i = 0; i < 40; i++) f.verdicts.push({ ...structuredClone(f.observation), candidateId: `assessment-${i}`,
+      proofAssessment: { status: "unresolved", evidence: "InputRule checkRequest and WritePolicy authorize remain unconfirmed. ".repeat(10), assumptions: [] } });
+    const input = f.build();
+    expect(input.inventory.evidence.filter(e => e.origin === "repository_tool").map(e => e.text)).toEqual(expect.arrayContaining([nested, policy]));
+    expect(input.selection.every(selection => selection.suppliedRefs.length > 0)).toBe(true);
+    expect(input.selection[0]!.omittedForSize).toContain("repository/auth/too-large");
+    expect(JSON.stringify(input.inventory).length).toBeLessThanOrEqual(MAX_ATTENTION_RECONCILIATION_CHARS);
+    const excludedDuplicate = input.omittedEvidenceIds.find(id => id === "repository/auth/nested" || id === "repository/auth/duplicate")!;
+    expect(reconcileAttention(input, [{ ...f.proposal, supportingRefs: [excludedDuplicate] }], true).decisions[0]!.rejectionReason).toBe("unknown_or_omitted_evidence");
+    f.packet.repositoryEvidence.reverse();
+    expect(f.build().inventory).toEqual(input.inventory);
+    expect(reconcileAttention(input, undefined, true).notes).toEqual([f.concern.unresolvedConcern]);
+  });
+});
+
+it("gives a late question's compact source a turn before several large unrelated method reads", () => {
+  const questions = Array.from({ length: 7 }, (_, i) => `Does Early${i}.check enforce its declared caller requirement in early${i}.custom?`);
+  questions.push("Does generated/dispatch.custom implement BatchRequest.check by invoking NestedItems.check?");
+  const f = fixture(questions);
+  f.concern.unresolvedConcern!.files = [...Array.from({ length: 7 }, (_, i) => `early${i}.custom`), "generated/dispatch.custom", "handler.custom"];
+  f.concern.unresolvedConcern!.symbols = [];
+  const nested = "method check on BatchRequest { return NestedItems.check(items); }\n" + "# complete method context\n".repeat(20);
+  f.packet.repositoryEvidence = [
+    ...Array.from({ length: 7 }, (_, i) => ({ id: `early-${i}`, tool: "read_range", source: "head" as const, path: `early${i}.custom`,
+      text: `method check on Early${i} { enforce declared caller requirement; }\n` + "# whole surrounding context\n".repeat(95) })),
+    { id: "nested", tool: "read_range", source: "head", path: "generated/dispatch.custom", text: nested },
+    { id: "caller-only", tool: "read_range", source: "head", path: "handler.custom", text: "handler(BatchRequest) { request.check(); NestedItems; }\n" + "# handler context\n".repeat(60) }
+  ];
+  const input = f.build();
+  expect(input.inventory.evidence).toContainEqual(expect.objectContaining({ id: "repository/auth/nested", text: nested }));
+  expect(input.omittedEvidenceIds.some(id => id.includes("early-"))).toBe(true);
+  expect(JSON.stringify(input.inventory).length).toBeLessThanOrEqual(MAX_ATTENTION_RECONCILIATION_CHARS);
+  expect(reconcileAttention(input, undefined, true).notes).toEqual([f.concern.unresolvedConcern]);
+});
+
+
+it("permits published verification references without promoting incomplete or self-supported claims", () => {
+  const f = fixture(["Does head reject a revoked session?"]);
+  f.candidate.verification = "The head test calls revoke(session) and asserts that readDocument denies access.";
+  const build = () => buildAttentionReconciliation(f.verdicts, [f.candidate], [f.packet], { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" });
+  const input = build();
+  const id = `${f.candidate.id}/verification`;
+  expect(input.allEvidence).toContainEqual(expect.objectContaining({ id, sourceRef: id, text: f.candidate.verification }));
+  input.inventory.evidence = input.inventory.evidence.filter(item => item.id !== id);
+  expect(attentionResolutionErrors(input, [{ ...f.proposal, supportingRefs: [id] }])).toEqual([]);
+  input.groups[0]!.concerns[0]!.candidateId = f.candidate.id;
+  expect(attentionResolutionErrors(input, [{ ...f.proposal, supportingRefs: [id] }])[0]).toContain("self_support");
+  f.observation.verificationIncomplete = true;
+  expect(build().allEvidence.some(item => item.id === id)).toBe(false);
+});
+
+it("names rejected references and bounded permitted alternatives in semantic repair feedback", () => {
+  const f = fixture(["Does head include a revoked-session test?"]);
+  const input = f.build();
+  const original = { summary: "Keep findings.", composedFindings: [], attentionResolutions: [{ ...f.proposal, supportingRefs: ["invented/source"] }] };
+  const repair = createAttentionResolutionRepair(composerSubmissionSchema([], input), original, input)!;
+  expect(repair.prompt).toContain('"rejectedRefs":["invented/source"]');
+  expect(repair.prompt).toContain('"permittedRefs":[');
+  expect(repair.prompt).toContain(f.proposal.supportingRefs[0]!);
+  expect(repair.prompt).toContain("otherwise retain the unanswered question");
+});
+
+it("cleans attention-only repairs without accepting missing decisions or invalid values", () => {
+  const f = fixture(["Does head include a revoked-session test?"]);
+  const input = f.build();
+  const original = { summary: "Keep findings.", composedFindings: [], attentionResolutions: [] };
+  const repair = createAttentionResolutionRepair(composerSubmissionSchema([], input), original, input)!;
+  const patch = { summary: "Discard this", composedFindings: [{ invented: true }], attentionResolutions: [{ ...f.proposal, extra: true }] };
+  expect(repair.merge(patch)).toEqual({ ...original, attentionResolutions: [f.proposal] });
+  expect(patch.attentionResolutions[0]!.extra).toBe(true);
+  expect(() => repair.merge({ attentionResolution: [f.proposal] })).toThrow();
+  expect(() => repair.merge({ attentionResolutions: [{ ...f.proposal, disposition: "probably" }] })).toThrow();
+  expect(() => repair.merge({ attentionResolutions: [{ concernId: f.proposal.concernId }] })).toThrow();
+});
+
+it("selects context around a cited line instead of a cheaper window ending at its declaration", () => {
+  const f = fixture(["Does generated/validation.custom:81 recurse from BatchRequest.check into EntryFilter.check?"]);
+  f.concern.unresolvedConcern!.files = ["generated/validation.custom"];
+  f.concern.unresolvedConcern!.symbols = ["BatchRequest.check", "EntryFilter.check"];
+  const prefix = "method check on EntryFilter { acceptItems(items); }\nmethod check on BatchRequest {";
+  f.packet.repositoryEvidence = [
+    { id: "header", tool: "read_range", path: "generated/validation.custom", source: "head", lineRange: [58, 82], text: prefix },
+    { id: "body", tool: "read_range", path: "generated/validation.custom", source: "head", lineRange: [60, 110],
+      text: prefix + "\n  return EntryFilter.check(items);\n}\n" + "# surrounding context\n".repeat(25) }
+  ];
+  for (let i = 0; i < 40; i++) f.verdicts.push({ ...structuredClone(f.observation), candidateId: `other-${i}`,
+    proofAssessment: { status: "unresolved", evidence: "BatchRequest and EntryFilter check remain unconfirmed. ".repeat(20), assumptions: [] } });
+  const input = f.build();
+  expect(input.inventory.evidence).toContainEqual(expect.objectContaining({ id: "repository/auth/body" }));
+  expect(JSON.stringify(input.inventory).length).toBeLessThanOrEqual(MAX_ATTENTION_RECONCILIATION_CHARS);
+  expect(reconcileAttention(input, undefined, true).notes).toEqual([f.concern.unresolvedConcern]);
 });

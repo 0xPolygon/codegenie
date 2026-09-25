@@ -72,9 +72,24 @@ describe("field-only and full-object repair merging", () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
-  it("rejects overlapping flat and nested representations", () => {
+  it("accepts identical flat and nested values without losing other repaired fields", () => {
     const repair = createFieldRepair(schema, draft())!;
-    expect(() => repair.merge({ "hints.0.symbols": ["A"], hints: [{ symbols: ["B"] }] })).toThrow("Conflicting");
+    const merged = repair.merge({ "hints.0.symbols": ["Caller"], hints: [{ symbols: ["Caller"] }], findings: [{ note: "Concrete new evidence" }] });
+    expect(submissionIssues(schema, merged)).toEqual([]);
+    expect(merged).toMatchObject({ findings: [{ ...draft().findings[0], note: "Concrete new evidence" }, draft().findings[1]],
+      hints: [{ question: "Which caller?", symbols: ["Caller"] }] });
+  });
+
+  it("accepts identical scalar repairs and still requires missing fields", () => {
+    const s = Type.Object({ updates: Type.Object({ confidence: Type.String(), severity: Type.String() }) });
+    const repair = createFieldRepair(s, { updates: {} })!;
+    const merged = repair.merge({ "updates.confidence": "high", updates: { confidence: "high" } });
+    expect(submissionIssues(s, merged)).toEqual([{ path: "updates.severity", kind: "missing" }]);
+  });
+
+  it("rejects conflicting flat and nested representations with their exact path", () => {
+    const repair = createFieldRepair(schema, draft())!;
+    expect(() => repair.merge({ "hints.0.symbols": ["A"], hints: [{ symbols: ["B"] }] })).toThrow("Conflicting field repair representations at hints.0.symbols");
   });
 
   it("corrects invalid scalar fields without requesting optional absent ones", () => {

@@ -123,6 +123,15 @@ describe("final tool argument provenance", () => {
     } finally { clearRegisteredSecretsForTests(); }
   });
 
+  it("identifies XML parameter syntax in streamed nested arguments without accepting the draft", async () => {
+    const raw = '{"reason":"' + "x".repeat(1000) + '","proofAssessment":\n<parameter name="status">unresolved,"assumptions":"[]"}';
+    const result = await consumeFinalToolArguments(sequence(message(call("bad", SUBMIT, { reason: "partial" })),
+      [raw.slice(0, 1010), raw.slice(1010)]), SUBMIT);
+    expect(result.content[0]).toMatchObject({ type: "invalidToolCall", argumentParse: { state: "invalid" },
+      syntaxDiagnostic: { xmlParameter: { field: "proofAssessment" }, excerpt: expect.stringContaining('<parameter name="status">') } });
+    expect(result.content[0]).not.toHaveProperty("arguments");
+  });
+
   it("captures short malformed text completely but produces no diagnostic for valid submissions", async () => {
     const onRejectedArguments = vi.fn();
     const raw = '{"verdict":}';

@@ -1,3 +1,5 @@
+import { MISSING_FILE_GUIDANCE } from "./repository-tool-guidance.js";
+import { submissionIssues } from "./submit-preservation.js";
 import { Type } from "@earendil-works/pi-ai";
 import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector, ToolResultMeta } from "../types.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
@@ -22,15 +24,30 @@ const SymbolLookupSourceSelectorSchema = Type.Optional(
   )
 );
 
+const PATH_DISCOVERY_GUIDANCE = "Use known file paths; package/import directories and function names do not establish filenames. Discover unknown paths with list_files (head only), find_definition or search_files at the intended revision before reading.";
+
 export type RepositoryToolDefinitionOptions = {
   includeLikelyTests?: boolean;
 };
+
+/** Reject invalid raw arguments before SDK coercion can change a requested range. */
+export function assertRepositoryToolArguments(tool: Pick<ToolDefinition, "name" | "parameters">, args: unknown): void {
+  const issues = submissionIssues(tool.parameters, args);
+  if (issues.length) throw new CodegenieError("invalid_args", `Invalid arguments for ${tool.name}: ${issues.slice(0, 5)
+    .map(issue => `${issue.path || "arguments"}: ${issue.kind}`).join("; ")}`);
+  const range = args as Record<string, unknown>;
+  if (tool.name === "read_range" && ("startLine" in range || "endLine" in range)
+    && (!Number.isSafeInteger(range.startLine) || !Number.isSafeInteger(range.endLine)
+      || (range.startLine as number) < 1 || (range.startLine as number) > (range.endLine as number))) {
+    throw new CodegenieError("invalid_args", "read_range requires integer bounds with 1 <= startLine <= endLine");
+  }
+}
 
 export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: RepositoryToolDefinitionOptions = {}): ToolDefinition[] {
   const definitions: ToolDefinition[] = [
     {
       name: "read_range",
-      description: "Read an inclusive 1-based line range from a file at the head or base revision.",
+      description: "Read committed text at head (default) or base; works for any text format without syntax support. Both startLine and endLine are required inclusive 1-based integers, with startLine <= endLine. Prefer a small window around a diff or search hit. Returns at most 400 lines / 16,000 characters before local budget limits, with truncation metadata. An end beyond EOF is clipped; a start beyond EOF returns empty text, never the last line. Missing files have lookup=file_missing. " + PATH_DISCOVERY_GUIDANCE,
       parameters: Type.Object(
         {
           path: Type.String({ minLength: 1 }),
@@ -43,12 +60,14 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { path: string; startLine: number; endLine: number; source?: SourceSelector };
         const result = await runWithoutFacadeRecording(tools, () => tools.readRange(input.path, input.startLine, input.endLine, input.source));
-        return { text: withMeta(result.text, result.meta), meta: result.meta };
+        return { text: withMeta(result.text, result.meta), meta: result.meta,
+          ...(result.meta.deliveryStatus === "full" && result.text.length > 0
+            ? { sourceLineRange: [input.startLine, Math.min(input.endLine, input.startLine + result.text.split("\n").length - 1)] as [number, number] } : {}) };
       })
     },
     {
       name: "read_file_outline",
-      description: "Read a compact outline of imports, top-level symbols, and test symbols for a file.",
+      description: "Read a compact outline of imports, top-level symbols, and test symbols. Without syntax support, symbolExtraction is unavailable: empty symbol arrays do not mean no definitions. Small files can include complete sourceText when it fits; larger or locally bounded outlines provide a read_range hint. For known source locations, prefer read_range directly. " + PATH_DISCOVERY_GUIDANCE,
       parameters: Type.Object(
         {
           path: Type.String({ minLength: 1 }),
@@ -59,12 +78,12 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { path: string; source?: SourceSelector };
         const result = await runWithoutFacadeRecording(tools, () => tools.readFileOutline(input.path, input.source));
-        return { text: withMeta(JSON.stringify(result.outline, null, 2), result.meta), meta: result.meta };
+        return { text: withMeta(JSON.stringify(result.outline, null, 2), result.meta), outline: result.outline, meta: result.meta };
       })
     },
     {
       name: "read_symbol",
-      description: "Requires path; discover an unknown path with find_definition first. Read a symbol by exact symbolName or by the smallest enclosing symbol at line; provide exactly one selector. Use source {kind:\"auto\"} for renamed or deleted symbols so head is searched first, then base.",
+      description: "Requires path; discover an unknown path with find_definition first. Read a symbol by exact symbolName or by the smallest enclosing symbol at line; provide exactly one selector. Without syntax support, returns a text window around a matching name/line, not a verified symbol body; prefer read_range for known locations. Use source {kind:\"auto\"} for renamed or deleted symbols so head is searched first, then base. " + PATH_DISCOVERY_GUIDANCE,
       parameters: Type.Object(
         {
           path: Type.String({ minLength: 1 }),
@@ -102,7 +121,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "find_definition",
-      description: "Find definition candidates for an exact symbol name, optionally constrained by pathGlob and source. Use source {kind:\"auto\"} for renamed or deleted symbols so head is searched first, then base.",
+      description: "Find definition candidates for an exact symbol name, optionally constrained by pathGlob and source. Without syntax support, candidates are text matches, not proven definitions; inspect their source with read_range. Use source {kind:\"auto\"} for renamed or deleted symbols so head is searched first, then base.",
       parameters: Type.Object(
         {
           symbolName: Type.String({ minLength: 1, maxLength: 200 }),
@@ -114,7 +133,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { symbolName: string; pathGlob?: string; source?: SymbolLookupSourceSelector };
         const result = await runWithoutFacadeRecording(tools, () => tools.findDefinition(input.symbolName, optionalOptions({ pathGlob: input.pathGlob, source: input.source })));
-        return { text: withMeta(JSON.stringify(result.definitions, null, 2), result.meta), meta: result.meta };
+        return { text: withMeta(JSON.stringify(result.definitions, null, 2), result.meta), definitions: result.definitions, meta: result.meta };
       })
     },
     {
@@ -138,7 +157,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "search_files",
-      description: "Search committed contents with POSIX ERE (name|other, no lookarounds). pathGlob uses the same glob dialect as list_files: **, *, ?, character classes and {api,data} alternatives. contextMode: none, lines, symbols. Empty or truncated results do not prove repository-wide absence.",
+      description: "Search committed text at head (default) or base with case-sensitive POSIX ERE: name|other, [0-9], [[:space:]]; no lookarounds or Perl digit classes. Set caseSensitive=false to ignore case. pathGlob uses list_files glob semantics, including {api,data}/** alternatives. Results include 1-based line/column locations for read_range. contextMode defaults to none; lines adds up to two neighboring lines; symbols adds an enclosing symbol when available. Works without syntax support. Defaults to 50 matches, at most 200, also bounded by output budgets. Invalid syntax is an error; empty or truncated results do not prove repository-wide absence.",
       parameters: Type.Object(
         {
           query: Type.String({ minLength: 1, maxLength: 500 }),
@@ -164,7 +183,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "find_symbol_mentions",
-      description: "Find identifier mentions. pathGlob uses list_files glob semantics including {api,data}/** alternatives. contextMode: none, lines, symbols; discovery and syntax inspection are bounded.",
+      description: "Find case-sensitive, literal whole-word identifier mentions at head (default) or base; symbolName is not a regex. Without a syntax adapter these are text matches, including comments/strings, not proof of semantic references. pathGlob uses list_files glob semantics including {api,data}/** alternatives. contextMode: none (default), lines, symbols; defaults to 100 matches, at most 300, with bounded output and syntax inspection.",
       parameters: Type.Object(
         {
           symbolName: Type.String({ minLength: 1, maxLength: 200 }),
@@ -215,7 +234,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
     },
     {
       name: "list_files",
-      description: "List repository files at head matching a gitignore-style glob.",
+      description: "List tracked files at the head revision using a repo-relative glob: ** crosses directories; * and ? match within a segment; [ab] character classes and {api,data}/** alternatives are supported, including dotfiles. Use **/*.txt to include nested files. This is a glob, not a regular expression or gitignore file; use braces for path alternatives. Untracked files are excluded. Bounded results disclose omissions; narrow the glob when truncated.",
       parameters: Type.Object(
         {
           glob: Type.String({ minLength: 1 })
@@ -225,7 +244,7 @@ export function buildRepositoryToolDefinitions(tools: RepositoryTools, options: 
       execute: (args, signal) => wrapTool(signal, async () => {
         const input = args as { glob: string };
         const result = await runWithoutFacadeRecording(tools, () => tools.listFiles(input.glob));
-        return { text: withMeta(result.paths.join("\n"), result.meta), meta: result.meta };
+        return { text: withMeta(result.paths.join("\n"), result.meta), filePaths: result.paths, meta: result.meta };
       })
     }
   ];
@@ -298,6 +317,9 @@ function withMeta(text: string, meta: ToolResultMeta): string {
   }
   if (meta.lookupStatus !== undefined) {
     notes.push(`lookup: ${meta.lookupStatus}`);
+  }
+  if (meta.lookupStatus === "file_missing") {
+    notes.push(MISSING_FILE_GUIDANCE);
   }
   if (meta.deliveryStatus !== undefined) {
     notes.push(`delivery: ${meta.deliveryStatus}`);

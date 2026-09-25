@@ -1,4 +1,8 @@
+import { buildAttentionReconciliation, attentionResolutionErrors, createAttentionResolutionRepair } from "../src/pipeline/attention-reconciliation.js";
 import { assessFinalSuggestions } from "../src/pipeline/suggestion-assessment.js";
+import { defaultConfig } from "../src/config/schema.js";
+import { unresolvedToolDiagnostic } from "../src/util/review-health.js";
+import { createRunTelemetry } from "../src/telemetry/run-artifacts.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { validateCompositionSubmission } from "../src/pipeline/composition-content.js";
@@ -33,6 +37,7 @@ import {
   SCHEMA_VERSIONS,
   SubmitCompositionSchema,
   type SubmitPacketReview,
+  type SubmitComposition,
   SubmitPacketReviewSchema,
   SubmitPlanSchema,
   SubmitSystemReviewSchema,
@@ -53,7 +58,7 @@ import { clearRegisteredSecretsForTests, registerSecret, stripCredentials } from
 import type { ToolDefinition } from "../src/llm/llm-runner.js";
 import type { PiAuthStorage, ProviderAuthEntry } from "../src/provider/provider-services.js";
 import { CodegenieError } from "../src/util/errors.js";
-import { scaleToolBudget } from "../src/util/budget.js";
+import { hardToolBudget, scaleToolBudget } from "../src/util/budget.js";
 import {
   buildStructuredSubmitFailureDiagnostic,
   structuredSubmitFailureDiagnosticFromError
@@ -676,6 +681,33 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     } finally { clearRegisteredSecretsForTests(); }
   });
 
+  it.each([false, true])("targets XML verifier repairs and preserves attempt limits (exhausted=%s)", async exhausted => {
+    const invalid = { ...invalidSubmitCall("xml", "submit_verdict", { state: "invalid", errorKind: "invalid_syntax" }),
+      syntaxDiagnostic: { error: "Invalid JSON syntax", excerptStart: 0,
+        excerpt: '"proofAssessment": <parameter name="status">unresolved', xmlParameter: { field: "proofAssessment" } } };
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter(exhausted ? Array.from({ length: 4 }, () => assistant([invalid]))
+      : [assistant([invalid]), assistant([validSubmitVerdictCall("recovered")])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const result = runner.runStructured({ stage: 9, schema: SubmitVerificationVerdictSchema, prompt: "verify",
+      templateVersion: "test", timeoutMs: 1000, schemaRepair: { buildPrompt: () => "CUSTOM_VERIFIER_REPAIR" } });
+    if (exhausted) await expect(result).rejects.toMatchObject({ code: "llm_schema_invalid" });
+    else await expect(result).resolves.toHaveProperty("verdict");
+    const prompt = adapter.contexts[1]!;
+    expect(prompt).toContain("CUSTOM_VERIFIER_REPAIR");
+    expect(prompt).toContain("XML-style parameter tags occurred outside JSON strings");
+    expect(prompt).toContain("xml-json-shape-targets");
+    expect(prompt).toContain("jsonStructureExample");
+    expect(prompt).toContain("Optional fields remain optional");
+    expect(prompt).toContain("not default decisions");
+    expect(prompt).toContain("assumptions");
+    expect(prompt).toContain("do not convert or merge the unreadable draft");
+    expect(telemetry.modelCalls[0]).toMatchObject({ stopReason: "submit", status: "schema_invalid", finalArgumentState: "invalid" });
+    expect(adapter.complete).toHaveBeenCalledTimes(exhausted ? 4 : 2);
+  });
+
   it("writes redacted reconstructable model request and response debug artifacts", async () => {
     clearRegisteredSecretsForTests();
     registerSecret("debug-secret-token");
@@ -732,7 +764,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       packetId: "packet-debug",
       provider: { provider: "fake", model: "fake-model", reasoning: "high" },
       request: {
-        runnerMessageVersion: "pi-runner-loop-v18",
+        runnerMessageVersion: "pi-runner-loop-v24",
         promptTemplateVersion: "debug-template",
         schemaName: "submit_review",
         schemaVersion: 5,
@@ -749,7 +781,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(request1Text).toContain("[redacted:secret]");
     const request1Payload = request1.request as { messages: unknown[]; tools: Array<Record<string, unknown>> };
     expect(request1Payload.messages).toEqual([
-      expect.objectContaining({ role: "user", content: "review [redacted:secret]" })
+      expect.objectContaining({ role: "user", content: expect.stringContaining("review [redacted:secret]") })
     ]);
     expect(request1Payload.tools.find((tool) => tool.name === "read_range")).toMatchObject({
       localParametersHash: expect.any(String),
@@ -1040,7 +1072,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await runner.runStructured({
       ...submitReviewRequest("packet-timeout-signal"),
       tools: [tool],
-      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 }
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 3 }
     });
 
     expect(providerSignals).toHaveLength(2);
@@ -1999,6 +2031,32 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.contexts).toHaveLength(3);
   });
 
+  it.each([false, true])("merges duplicate repair encodings and reports actual conflicts, conflicting=%s", async conflicting => {
+    const schema = Type.Object({ findingUpdates: Type.Object({ confidence: Type.String(), severity: Type.String(), suggestedTest: Type.Optional(Type.String()) }) });
+    const submit = (id: string, args: Record<string, unknown>) => assistant([{ type: "toolCall", id, name: "submit_verdict", arguments: args }]);
+    const adapter = scriptedAdapter([
+      submit("original", { findingUpdates: {} }),
+      submit("repair", { findingUpdates: { confidence: "high", suggestedTest: "Exercise the rejected boundary." },
+        "findingUpdates.confidence": conflicting ? "low" : "high", "findingUpdates.severity": "medium" }),
+      ...(conflicting ? [submit("retry", { "findingUpdates.confidence": "high", "findingUpdates.severity": "medium" })] : [])
+    ]);
+    const telemetry = fakeTelemetry();
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const result = await runner.runStructured<{ findingUpdates: Record<string, string> }>({ stage: 9, prompt: "Verify boundary.", schema,
+      templateVersion: "repair-duplicates", timeoutMs: 1000 });
+    expect(result.findingUpdates).toMatchObject({ confidence: "high", severity: "medium" });
+    if (conflicting) expect(adapter.contexts[2]).toContain("Conflicting field repair representations at findingUpdates.confidence");
+    else expect(result.findingUpdates.suggestedTest).toBe("Exercise the rejected boundary.");
+    expect(adapter.contexts).toHaveLength(conflicting ? 3 : 2);
+    const ids = new Set(telemetry.modelCalls.map(call => call.structuredRequestId));
+    expect(ids.size).toBe(1);
+    expect(ids.has(undefined)).toBe(false);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "structured_submission_accepted",
+      data: expect.objectContaining({ structuredRequestId: [...ids][0] }) }));
+  });
+
   it("run-88 regeneration merges into the retained draft after an unreadable worker retry", async () => {
     const complete = validCandidateSubmitReviewCall("complete");
     const incomplete = structuredClone(complete);
@@ -2021,6 +2079,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await expect(runner.runStructured(request)).resolves.toEqual(revised.arguments);
     expect(cache.put).toHaveBeenCalledTimes(1);
     expect(adapter.contexts).toHaveLength(6);
+    expect(new Set(telemetry.modelCalls.map(call => call.structuredRequestId)).size).toBe(1);
     expect(adapter.contexts[5]).toContain("retained-submission");
     expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "recovery_content_revised",
       data: expect.objectContaining({ paths: expect.arrayContaining(["findings.0.evidence.changedCode"]) }) }));
@@ -2365,7 +2424,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         data: expect.objectContaining({
           submitTool: "submit_plan",
           invalidSubmitCallCount: 2,
-          repairPromptChars: "compact planner repair for submit-plan-a,submit-plan-b".length,
+          repairPromptChars: expect.any(Number),
           replaceConversation: true
         })
       })
@@ -2598,7 +2657,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(result.composedFindings[0]!.sections).toEqual(fixedSections);
     expect(result.composedFindings[0]).toHaveProperty("retainedSourceRefs", ["authorization/suggestedFix"]);
     const repairTool = vi.mocked(adapter.complete).mock.calls[1]![1].tools![0]!;
-    expect(repairTool.description).toContain("Supplied values replace those paths");
+    expect(repairTool.description).toContain("Supplied values update only the permitted fields");
     expect(repairTool.description).not.toContain("Supplied reference lists");
     expect(repairTool.parameters).toMatchObject({ properties: { "composedFindings.0.sections": expect.anything() } });
     expect(adapter.complete).toHaveBeenCalledTimes(3);
@@ -4164,7 +4223,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await investigativeRunner.runStructured({
       ...submitReviewRequest("packet-tool-choice"),
       tools: [tool],
-      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 }
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 3 }
     });
     expect(investigative.options.map((options) => options.toolChoice)).toEqual([
       "auto",
@@ -4231,7 +4290,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       runner.runStructured({
         ...submitReviewRequest("packet-full-finalize"),
         tools: [tool],
-        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 2, maxResultChars: 5000 },
+        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 2, maxResultChars: (`function decisive() {\n${"return true;\n".repeat(200)}}`).length / 2 },
         telemetryContext: { workerId: "worker-full", packetId: "packet-full-finalize" },
         finalization: {
           noResultInstruction: "If there are no findings, submit reviewStatus:\"no_findings\", findings: []."
@@ -4264,7 +4323,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       description: "read",
       parameters: Type.Object({ path: Type.String() }),
       execute: vi.fn(async () => ({
-        text: "decisive source evidence",
+        text: "decisive source evidence.\n",
         meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
       }))
     };
@@ -4308,7 +4367,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       runner.runStructured({
         ...submitReviewRequest("packet-full-finalize"),
         tools: [tool],
-        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 2, maxResultChars: 5000 },
+        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 2, maxResultChars: 13 },
         telemetryContext: { workerId: "worker-full", packetId: "packet-full-finalize" },
         finalization: {
           noResultInstruction: "If there are no findings, submit reviewStatus:\"no_findings\", findings: []. Concrete unresolved risk may still use followUpHints or uncertainties."
@@ -4854,9 +4913,191 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       }
     });
     expect(adapter.contexts[1]).toContain("NUDGE: submit no findings");
+    expect(adapter.contexts[1]).toContain("Local investigation target remaining: 2 tool calls; 2 investigation rounds; 994 result characters");
     expect(telemetry.events).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: "post_tool_close_nudge" })
     ]));
+  });
+
+  it("allows a source-read recovery after crossing the outline batch soft target", async () => {
+    const telemetry = fakeTelemetry();
+    const outline = vi.fn(async () => ({ text: "imports" }));
+    const read = vi.fn(async () => ({ text: "complete source" }));
+    const adapter = scriptedAdapter([
+      assistant(Array.from({ length: 3 }, (_, i) => ({ type: "toolCall" as const, id: `outline-${i}`, name: "read_file_outline", arguments: { path: `file-${i}.custom` } }))),
+      assistant([{ type: "toolCall", id: "source", name: "read_range", arguments: { path: "file-2.custom", startLine: 1, endLine: 20 } }]),
+      assistant([validSubmitReviewCall("done")])
+    ]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("outline-refusals"), tools: [
+      { name: "read_file_outline", description: "outline", parameters: Type.Object({ path: Type.String() }), execute: outline },
+      { name: "read_range", description: "read", parameters: Type.Object({ path: Type.String(), startLine: Type.Integer(), endLine: Type.Integer() }), execute: read }
+    ], toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 4000, sourceExtension: { maxToolCalls: 1, maxResultChars: 4000 } } });
+    expect(outline).toHaveBeenCalledTimes(3);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(adapter.contexts[1]).toContain("target has been reached");
+    expect(adapter.toolNames[1]).toContain("read_range");
+    expect(telemetry.toolCalls[3]).toMatchObject({ status: "ok", budgetState: { toolCallsUsed: 3, maxToolCalls: 4 } });
+    expect(telemetry.events.filter(event => event.message === "tool_budget_extension_granted")).toHaveLength(0);
+  });
+
+  it("bounds invalid requests separately without consuming source-call slots", async () => {
+    const telemetry = fakeTelemetry();
+    const read = vi.fn(async () => ({ text: "source" }));
+    const adapter = scriptedAdapter([
+      assistant(Array.from({ length: 4 }, (_, i) => ({ type: "toolCall" as const, id: `invalid-${i}`, name: "read_range", arguments: {} }))),
+      assistant([validSubmitReviewCall("done")])
+    ]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("invalid-request-limit"), tools: [{ name: "read_range", description: "read",
+      parameters: Type.Object({ path: Type.String() }), execute: read }],
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 10, maxResultChars: 100, sourceExtension: { maxToolCalls: 1, maxResultChars: 100 } } });
+    expect(read).not.toHaveBeenCalled();
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "tool_refusal_limit_reached" }));
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "tool_budget_remaining", data: expect.objectContaining({ ordinaryCalls: 2, resultChars: 100, rejectedCalls: 4 }) }));
+    expect(adapter.toolNames[1]).toEqual(["submit_review"]);
+  });
+
+  it.each([undefined, 1.5, true, "1.5"])("corrects invalid range bounds (%s) without SDK coercion or a provider failure", async startLine => {
+    const telemetry = fakeTelemetry();
+    const execute = vi.fn(async () => ({ text: "complete requested range" }));
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "missing-start", name: "read_range", arguments: { path: "policy.custom", ...(startLine === undefined ? {} : { startLine }), endLine: 30 } }]),
+      assistant([{ type: "toolCall", id: "corrected", name: "read_range", arguments: { path: "policy.custom", startLine: 1, endLine: 30 } }]),
+      assistant([validSubmitReviewCall("done")])
+    ]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    let summaries: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+    await runner.runStructured({ ...submitReviewRequest("correct-invalid-range"), onToolResults: results => { summaries = results; },
+      tools: [{ name: "read_range", description: "read", parameters: Type.Object({ path: Type.String(), startLine: Type.Integer(), endLine: Type.Integer() }), execute }],
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 2, maxResultChars: 1000 } });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(adapter.contexts[1]).toContain("startLine");
+    expect(telemetry.toolCalls[0]).toMatchObject({ errorCode: "invalid_args", backendExecuted: false });
+    expect(telemetry.toolCalls[1]).toMatchObject({ status: "ok", budgetState: { toolCallsUsed: 0 } });
+    expect(unresolvedToolDiagnostic(7, summaries, "packet")).toBeUndefined();
+  });
+
+  it("caps discovery matches while preserving an ordinary source read in the same batch", async () => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "broad", name: "search_files", arguments: {} },
+        { type: "toolCall", id: "source", name: "read_range", arguments: { path: "src/a.ts", startLine: 1, endLine: 80 } }
+      ]), assistant([validSubmitReviewCall("done")])
+    ]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const source = "source branch\n".repeat(100);
+    await runner.runStructured({ ...submitReviewRequest("bounded-discovery"), tools: [
+      { name: "search_files", description: "search", parameters: Type.Object({}), execute: async () => ({ text: "large search",
+        searchResults: Array.from({ length: 80 }, (_, i) => ({ path: `src/a${i}.ts`, line: 1, column: 1, matchText: "a matching definition" })),
+        meta: { backend: "text" as const, precision: "text" as const, degraded: false } }) },
+      { name: "read_range", description: "read", parameters: Type.Object({ path: Type.String(), startLine: Type.Integer(), endLine: Type.Integer() }), execute: async () => ({ text: source }) }
+    ], toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 1, maxResultChars: 4000, maxDiscoveryResultChars: 1000, reservedSourceResultChars: 2000 } });
+    expect(telemetry.toolCalls[0]).toMatchObject({ status: "ok", truncated: true });
+    expect(telemetry.toolCalls[0]!.resultChars).toBeLessThanOrEqual(1000);
+    expect(telemetry.toolCalls[1]).toMatchObject({ status: "ok", resultChars: source.length });
+    expect(adapter.contexts[0]).toContain("Discovery per-result cap: 1000");
+  });
+
+  it.each([
+    { size: 1000, kind: "source", remainingReserve: 3000, discovery: 6000 },
+    { size: 4000, kind: "source", remainingReserve: 0, discovery: 6000 },
+    { size: 8000, kind: "source", remainingReserve: 0, discovery: 2000 },
+    { size: 1000, kind: "error", remainingReserve: 4000, discovery: 5000 },
+    { size: 1000, kind: "missing", remainingReserve: 4000, discovery: 5000 },
+    { size: 1000, kind: "empty", remainingReserve: 4000, discovery: 5000 }
+  ])("credits delivered source against the reserve, not errors/empty lookups: $kind/$size", async ({ size, kind, remainingReserve, discovery }) => {
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "source", name: "read_range", arguments: {} }]),
+      assistant([{ type: "toolCall", id: "search", name: "search_files", arguments: {} }]),
+      assistant([validSubmitReviewCall("done")])
+    ]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("reserve-credit"), tools: [
+      { name: "read_range", description: "read", parameters: Type.Object({}), execute: async () => ({ text: "s".repeat(size),
+        ...(kind === "error" ? { isError: true } : {}),
+        meta: { backend: "text" as const, precision: "text" as const, degraded: false,
+          lookupStatus: kind === "missing" ? "not_found" as const : "found" as const,
+          deliveryStatus: kind === "empty" ? "empty" as const : "full" as const } }) },
+      { name: "search_files", description: "search", parameters: Type.Object({}), execute: async () => ({ text: "hit" }) }
+    ], toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 10000, reservedSourceResultChars: 4000 } });
+    expect(telemetry.toolCalls[1]).toMatchObject({ status: "ok", budgetState: {
+      remainingSourceReserveChars: remainingReserve, toolResultCharLimit: 20000 - size
+    } });
+    expect(telemetry.events.filter(event => event.message === "tool_budget_remaining")[0]?.data)
+      .toMatchObject({ remainingSourceReserveChars: remainingReserve, discoveryResultChars: discovery });
+  });
+
+  it("allows a final discovery request after the source reserve has already been satisfied", async () => {
+    const telemetry = fakeTelemetry();
+    const calls = [1198, 1497, 1927, 1215, 3941].map((size, i): PiToolCall => ({
+      type: "toolCall", id: `call-${i}`, name: i === 3 ? "list_files" : "read_range", arguments: { size }
+    }));
+    const adapter = scriptedAdapter([assistant(calls),
+      assistant([{ type: "toolCall", id: "search", name: "search_files", arguments: { size: 2000 } }]),
+      assistant([validSubmitReviewCall("done")])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("reserve-regression"), tools:
+      ["read_range", "list_files", "search_files"].map(name => ({ name, description: name,
+        parameters: Type.Object({ size: Type.Number() }), execute: async (args: Record<string, unknown>) => ({ text: "s".repeat(Number(args.size)) }) })),
+      toolBudget: { maxToolCalls: 6, maxInvestigationRounds: 2, maxResultChars: 12000,
+        maxDiscoveryResultChars: 4000, reservedSourceResultChars: 4000 } });
+    expect(telemetry.toolCalls[5]).toMatchObject({ status: "ok", resultChars: 2000,
+      budgetState: { resultCharsUsed: 9778, sourceResultCharsUsed: 8563, remainingSourceReserveChars: 0, toolResultCharLimit: 4000 } });
+    expect(telemetry.events.filter(event => event.message === "tool_budget_remaining").at(-1)?.data)
+      .toMatchObject({ resultChars: 222, discoveryResultChars: 222 });
+  });
+
+  it("reports batch consumption and the source-only reserve before the next model call", async () => {
+    const telemetry = fakeTelemetry();
+    const call = (line: number): PiToolCall => ({ type: "toolCall", id: `read-${line}`, name: "read_range",
+      arguments: { path: "src/a.ts", startLine: line, endLine: line } });
+    const adapter = scriptedAdapter([
+      assistant([call(1), call(2)]), assistant([call(3)]), assistant([validSubmitReviewCall("done")])
+    ]);
+    const execute = vi.fn(async () => ({ text: "1234567890" }));
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+    await runner.runStructured({ ...submitReviewRequest("budget-feedback"),
+      tools: [{ name: "read_range", description: "read",
+        parameters: Type.Object({ path: Type.String(), startLine: Type.Number(), endLine: Type.Number() }), execute }],
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 4, maxResultChars: 100,
+        reservedSourceResultChars: 20, maxSingleToolResultChars: 40,
+        sourceExtension: { maxToolCalls: 1, maxResultChars: 50 } }
+    });
+    expect(adapter.contexts[0]).toContain("2 tool calls; 4 investigation rounds; 100 result characters (80 within the discovery target)");
+    expect(adapter.contexts[1]).toContain("0 tool calls; 3 investigation rounds; 80 result characters");
+    expect(adapter.contexts[1]).toContain("target has been reached");
+    expect(adapter.contexts[1]).toContain("Per-result cap: 40 characters");
+    expect(adapter.contexts[2]).not.toContain("No further repository tool calls are allowed");
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(telemetry.events.filter(event => event.message === "tool_budget_remaining").map(event => event.data))
+      .toEqual([
+        expect.objectContaining({ ordinaryCalls: 0, investigationRounds: 3, resultChars: 80,
+          sourceResultCharsUsed: 20, remainingSourceReserveChars: 0,
+          hardRemaining: { toolCalls: 2, investigationRounds: 7, resultChars: 180 } }),
+        expect.objectContaining({ ordinaryCalls: 0, investigationRounds: 2, resultChars: 70,
+          sourceResultCharsUsed: 30, remainingSourceReserveChars: 0,
+          hardRemaining: { toolCalls: 1, investigationRounds: 6, resultChars: 170 } })
+      ]);
+    expect(telemetry.events.filter(event => event.message === "tool_budget_soft_target_reached")).toHaveLength(1);
   });
 
   it("normalizes tuple schemas to draft 2020-12 for provider tool registration", async () => {
@@ -4924,8 +5165,58 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     await runner.runStructured({ ...submitReviewRequest("evidence"), tools: [tool], onToolResults: results => captured.push(...results),
       toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 2000 } });
     expect(captured).toHaveLength(1);
-    if (mode === "full") expect(captured[0]!.repositoryEvidence).toMatchObject({ path: "store.ts", source: "base", text: "return db.list(tenantId);" });
+    if (mode === "full") expect(captured[0]!.repositoryEvidence).toMatchObject([{ path: "store.ts", source: "base", text: "return db.list(tenantId);" }]);
     else expect(captured[0]!.repositoryEvidence).toBeUndefined();
+  });
+
+  it.each([
+    { requested: undefined, used: undefined, expected: "head" },
+    { requested: "base", used: undefined, expected: "base" },
+    { requested: "auto", used: undefined, expected: undefined },
+    { requested: "auto", used: "base", expected: "base" },
+    { requested: "base", used: "head", expected: "head" }
+  ] as const)("retains the actual source revision without guessing an unresolved auto lookup: %j", async ({ requested, used, expected }) => {
+    const tool: ToolDefinition = { name: "read_symbol", description: "source", parameters: Type.Object({ path: Type.String(),
+      source: Type.Optional(Type.Object({ kind: Type.String() })) }),
+      execute: async () => ({ text: "complete source", meta: { backend: "text", precision: "exact", degraded: false,
+        lookupStatus: "found", deliveryStatus: "full", ...(used ? { sourceUsed: used } : {}) } }) };
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "read", name: tool.name,
+      arguments: { path: "policy.custom", ...(requested ? { source: { kind: requested } } : {}) } }]), assistant([validSubmitReviewCall("done")])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+    await runner.runStructured({ ...submitReviewRequest("source-revision"), tools: [tool], onToolResults: results => captured.push(...results),
+      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 2000 } });
+    if (expected) expect(captured[0]?.repositoryEvidence?.[0]?.source).toBe(expected);
+    else expect(captured[0]?.repositoryEvidence).toBeUndefined();
+  });
+
+  it.each([{ limit: 0, meta: true }, { limit: 38, meta: true }, { limit: 38, meta: false }])("counts a search refusal without losing its correction message: %j", async ({ limit, meta }) => {
+    const telemetry = fakeTelemetry();
+    const matches = [{ path: "src/store.ts", line: 1, matchText: "export function loadAccount() {}" }];
+    const execute = vi.fn(async () => ({ text: JSON.stringify(matches), searchResults: matches,
+      ...(meta ? { meta: { backend: "text" as const, precision: "text" as const, degraded: false } } : {}) }));
+    const tool: ToolDefinition = { name: "search_files", description: "search", execute,
+      parameters: Type.Object({ query: Type.String() }) };
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "search", name: "search_files", arguments: { query: "loadAccount" } }]),
+      assistant([validSubmitReviewCall("done")])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+    await runner.runStructured({ ...submitReviewRequest("refusal"), tools: [tool], onToolResults: results => captured.push(...results),
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: limit, maxSingleToolResultChars: limit } });
+    expect(execute).toHaveBeenCalledTimes(limit ? 1 : 0);
+    expect(captured[0]).toMatchObject({ status: "rejected", errorCode: "budget_exhausted",
+      rejectionReason: "tool_result_budget_exhausted", deliveryStatus: "budget_rejected" });
+    const run = createRunTelemetry({ telemetryConfig: defaultConfig.telemetry });
+    run.recorder.recordToolCall(telemetry.toolCalls[0]!);
+    expect(run.recorder.snapshotContextPressure?.().toolBudgetRejections).toBe(1);
+    expect(unresolvedToolDiagnostic(7, captured, "refusal")).toMatchObject({ kind: "incomplete", code: "budget_exhausted" });
+    expect(unresolvedToolDiagnostic(7, [...captured, { id: "recovered", tool: "search_files", target: "loadAccount",
+      requestKey: captured[0]!.requestKey!, status: "ok", resultChars: 2 }], "refusal")).toBeUndefined();
+    expect(adapter.contexts[1]).toContain("not a zero-match result");
   });
 
   it("packs cached search data into complete JSON under each caller cap and records its scope", async () => {
@@ -4941,7 +5232,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter, toolResultCache: createToolResultCache(),
       hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
     for (const limit of [1200, 6000]) await runner.runStructured({ ...submitReviewRequest(`search-${limit}`), tools: [tool],
-      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: limit } });
+      toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: limit, maxSingleToolResultChars: limit } });
     const delivered = [adapter.contexts[1]!, adapter.contexts[3]!].map(context => {
       const messages = JSON.parse(context) as Array<{role: string; content: Array<{ text: string }>}>;
       const text = messages.find(message => message.role === "toolResult")!.content[0]!.text;
@@ -5000,9 +5291,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       degradationReason: "tool_result_budget_exhausted",
       budgetState: {
         toolCallsUsed: 0,
-        maxToolCalls: 2,
+        maxToolCalls: 4,
         investigationRoundsUsed: 1,
-        maxInvestigationRounds: 2,
+        maxInvestigationRounds: 4,
         resultCharsUsed: 0,
         maxResultChars: 0,
         remainingResultChars: 0
@@ -5037,16 +5328,16 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     });
   });
 
-  it("distinguishes rejected searches from zero matches without consuming the source reserve", async () => {
+  it("distinguishes rejected searches from zero matches at the hard character ceiling", async () => {
     const telemetry = fakeTelemetry();
     const search = vi.fn(async () => ({ text: "[]" }));
     const read = vi.fn(async () => ({ text: "source hit" }));
     const adapter = scriptedAdapter([
       assistant([
+        { type: "toolCall", id: "reserved-read", name: "read_range", arguments: { path: "src/a.ts" } },
         { type: "toolCall", id: "empty-search", name: "search_files", arguments: { query: "absent" } },
         { type: "toolCall", id: "rejected-search-1", name: "search_files", arguments: { query: "helper" } },
-        { type: "toolCall", id: "rejected-search-2", name: "search_files", arguments: { query: "caller" } },
-        { type: "toolCall", id: "reserved-read", name: "read_range", arguments: { path: "src/a.ts" } }
+        { type: "toolCall", id: "rejected-search-2", name: "search_files", arguments: { query: "caller" } }
       ]),
       assistant([validSubmitReviewCall("submit-after-reserved-read")])
     ]);
@@ -5067,7 +5358,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       ],
       toolBudget: {
         maxToolCalls: 4, maxInvestigationRounds: 2,
-        maxResultChars: 12, reservedSourceResultChars: 10
+        maxResultChars: 6, reservedSourceResultChars: 10
       }
     });
 
@@ -5078,294 +5369,139 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }>;
     const results = messages.filter((message) => message.role === "toolResult");
     expect(results).toHaveLength(4);
-    expect(results[0]).toMatchObject({ toolCallId: "empty-search", isError: false });
-    expect(results[0]?.content[0]?.text).toContain("\n[]\n");
-    expect(results[0]?.content[0]?.text).not.toContain("tool rejected");
-    for (const result of results.slice(1, 3)) {
+    expect(results[1]).toMatchObject({ toolCallId: "empty-search", isError: false });
+    expect(results[1]?.content[0]?.text).toContain("\n[]\n");
+    expect(results[1]?.content[0]?.text).not.toContain("tool rejected");
+    for (const result of results.slice(2, 4)) {
       expect(result.isError).toBe(true);
       expect(result.content[0]?.text).toContain("tool result character budget exhausted");
       expect(result.content[0]?.text).toContain("This tool call was not executed");
       expect(result.content[0]?.text).toContain("not a zero-match result");
     }
-    expect(results[3]).toMatchObject({ toolCallId: "reserved-read", isError: false });
-    expect(results[3]?.content[0]?.text).toContain("source hit");
-    expect(telemetry.toolCalls[3]).toMatchObject({
+    expect(results[0]).toMatchObject({ toolCallId: "reserved-read", isError: false });
+    expect(results[0]?.content[0]?.text).toContain("source hit");
+    expect(telemetry.toolCalls[0]).toMatchObject({
       status: "ok", resultChars: 10,
-      budgetState: { toolCallsUsed: 3, resultCharsUsed: 2, remainingResultChars: 10 }
+      budgetState: { toolCallsUsed: 0, resultCharsUsed: 0, remainingResultChars: 12 }
     });
-    for (const record of telemetry.toolCalls.slice(1, 3)) {
-      expect(record).toMatchObject({ status: "rejected", backendExecuted: false, deliveryStatus: "budget_rejected" });
+    for (const record of telemetry.toolCalls.slice(2, 4)) {
+      expect(record).toMatchObject({ status: "rejected", errorCode: "budget_exhausted", backendExecuted: false, deliveryStatus: "budget_rejected" });
       expect(record.truncated).not.toBe(true);
       expect(record.resultChars).toBeGreaterThan(0);
     }
   });
 
-  it("uses source budget extension for exact reads after result budget exhaustion", async () => {
-    const telemetry = fakeTelemetry();
-    const execute = vi.fn(async () => ({
-      text: "decisive helper branch",
-      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
-    }));
-    const tool: ToolDefinition = {
-      name: "read_range",
-      description: "read",
-      parameters: Type.Object({ path: Type.String(), startLine: Type.Number(), endLine: Type.Number() }),
-      execute
-    };
-    const adapter = scriptedAdapter([
-      assistant([
-        {
-          type: "toolCall",
-          id: "tool-extension",
-          name: "read_range",
-          arguments: { path: "src/a.ts", startLine: 10, endLine: 20 }
-        }
-      ]),
-      assistant([validSubmitReviewCall("submit-after-extension")])
-    ]);
-    const runner = createPiRunner({
-      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-      telemetry: telemetry.recorder,
-      logger: fakeLogger(),
-      runSignal: new AbortController().signal,
-      adapter,
-      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
-    });
+  it.each([7, 8, 9] as const)("permits continuation past each soft target and finalizes at each hard ceiling in stage %i", async stage => {
+    for (const dimension of ["maxToolCalls", "maxInvestigationRounds", "maxResultChars"] as const) {
+      const telemetry = fakeTelemetry();
+      const execute = vi.fn(async () => ({ text: "0123456789" }));
+      const read = (id: string): PiToolCall => ({ type: "toolCall", id, name: "read_range", arguments: { path: "policy.custom" } });
+      const adapter = scriptedAdapter([
+        assistant([read("first")]), assistant([read("continuation")]),
+        assistant([stage === 7 ? validSubmitReviewCall("done") : stage === 8
+          ? { type: "toolCall", id: "done", name: "submit_system_review", arguments: { findings: [], resolvedHints: [] } }
+          : validSubmitVerdictCall("done")])
+      ]);
+      const soft = { maxToolCalls: 10, maxInvestigationRounds: 10, maxResultChars: 1000,
+        [dimension]: dimension === "maxResultChars" ? 10 : 1 };
+      const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+        toolResultCache: createToolResultCache(), hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+      const common = { tools: [{ name: "read_range", description: "read", parameters: Type.Object({ path: Type.String() }), execute }],
+        toolBudget: { ...soft, sourceExtension: { maxToolCalls: 100, maxResultChars: 10000 } }, timeoutMs: 1000 };
+      if (stage === 7) await runner.runStructured({ ...submitReviewRequest("soft-hard"), ...common });
+      else if (stage === 8) await runner.runStructured({ stage: 8, prompt: "review system", schema: SubmitSystemReviewSchema, templateVersion: "test", ...common });
+      else await runner.runStructured({ stage: 9, prompt: "verify", schema: SubmitVerificationVerdictSchema, templateVersion: "test", ...common });
 
-    await runner.runStructured({
-      ...submitReviewRequest("packet-extension"),
-      tools: [tool],
-      toolBudget: {
-        maxToolCalls: 2,
-        maxInvestigationRounds: 2,
-        maxResultChars: 0,
-        sourceExtension: { maxToolCalls: 1, maxResultChars: 1000 }
-      }
-    });
-
-    expect(execute).toHaveBeenCalledWith(
-      { path: "src/a.ts", startLine: 10, endLine: 20 },
-      expect.any(AbortSignal)
-    );
-    expect(telemetry.toolCalls[0]).toMatchObject({
-      status: "ok",
-      budgetState: expect.objectContaining({
-        maxResultChars: 0,
-        sourceExtensionActive: true,
-        sourceExtensionCallsUsed: 0,
-        sourceExtensionMaxCalls: 1,
-        sourceExtensionResultCharsUsed: 0,
-        sourceExtensionMaxResultChars: 1000,
-        toolResultCharLimit: 1000
-      }),
-      resultChars: "decisive helper branch".length
-    });
-    expect(telemetry.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        message: "tool_budget_extension_granted",
-        data: expect.objectContaining({
-          tool: "read_range",
-          triggerReason: "tool_result_budget_exhausted",
-          resultChars: "decisive helper branch".length
-        })
-      })
-    ]));
-    expect(telemetry.events).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ message: "tool_call_rejected" })
-    ]));
+      expect(adapter.toolNames[1]).toContain("read_range");
+      expect(adapter.toolNames[2]).toEqual([submitToolNameForStage(stage)]);
+      expect(adapter.contexts[1]).toContain("target has been reached");
+      expect(adapter.contexts[2]).toContain("No further repository tool calls are allowed");
+      expect(telemetry.toolCalls.map(call => call.status)).toEqual(["ok", "ok"]);
+      // A cache hit still spends one call and ten delivered characters.
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(telemetry.toolCalls[1]).toMatchObject({ cacheStatus: "hit" });
+      expect(telemetry.modelCalls[2]).toMatchObject({ kind: "finalize" });
+      const initial = telemetry.events.find(event => event.message === "tool_budget_initial")?.data;
+      expect(initial).toMatchObject({ softLimits: soft, hardLimits: {
+        maxToolCalls: soft.maxToolCalls * 2, maxInvestigationRounds: soft.maxInvestigationRounds * 2,
+        maxResultChars: soft.maxResultChars * 2 } });
+      expect(telemetry.events.filter(event => event.message === "tool_budget_soft_target_reached")).toHaveLength(1);
+      expect(telemetry.events.some(event => event.message === "tool_budget_extension_granted")).toBe(false);
+      expect(adapter.contexts[0]).toContain(`${soft.maxToolCalls} tool calls; ${soft.maxInvestigationRounds} investigation rounds; ${soft.maxResultChars} result characters`);
+      expect(adapter.contexts[0]).not.toContain(`${soft.maxResultChars * 2} result characters`);
+    }
   });
 
-  it("does not extend broad tools after local budget exhaustion", async () => {
+  it("delivers the full requested search after 11,996 characters without treating soft pressure as an evidence gap", async () => {
     const telemetry = fakeTelemetry();
-    const execute = vi.fn(async () => ({
-      text: "should not execute",
-      meta: { backend: "text" as const, precision: "text" as const, degraded: false }
-    }));
-    const tool: ToolDefinition = {
-      name: "search_files",
-      description: "search",
-      parameters: Type.Object({ query: Type.String() }),
-      execute
-    };
+    const summaries: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+    const call = (size: number, i: number): PiToolCall => ({ type: "toolCall", id: `read-${i}`, name: "read_range", arguments: { size } });
     const adapter = scriptedAdapter([
-      assistant([
-        {
-          type: "toolCall",
-          id: "tool-broad-extension",
-          name: "search_files",
-          arguments: { query: "helper" }
-        }
-      ]),
-      assistant([validSubmitReviewCall("submit-after-broad-denied")])
+      assistant([4000, 4000, 3996].map(call)),
+      assistant([{ type: "toolCall", id: "search", name: "search_files", arguments: {} }]),
+      assistant([validSubmitReviewCall("done")])
     ]);
-    const runner = createPiRunner({
-      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-      telemetry: telemetry.recorder,
-      logger: fakeLogger(),
-      runSignal: new AbortController().signal,
-      adapter,
-      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
-    });
-
-    await runner.runStructured({
-      ...submitReviewRequest("packet-broad-extension"),
-      tools: [tool],
-      toolBudget: {
-        maxToolCalls: 2,
-        maxInvestigationRounds: 2,
-        maxResultChars: 0,
-        sourceExtension: { maxToolCalls: 1, maxResultChars: 1000 }
-      }
-    });
-
-    expect(execute).not.toHaveBeenCalled();
-    expect(telemetry.toolCalls[0]).toMatchObject({
-      status: "rejected",
-      degradationReason: "tool_result_budget_exhausted"
-    });
-    expect(telemetry.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        message: "tool_budget_extension_denied",
-        data: expect.objectContaining({
-          tool: "search_files",
-          triggerReason: "tool_result_budget_exhausted",
-          denyReason: "not_exact_source_tool"
-        })
-      }),
-      expect.objectContaining({
-        message: "tool_call_rejected",
-        data: expect.objectContaining({
-          tool: "search_files",
-          reason: "tool_result_budget_exhausted"
-        })
-      })
-    ]));
+    const matches = [{ path: "policy.custom", line: 12, matchText: "decisive evidence" }];
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("four-chars-left"),
+      onToolResults: results => summaries.push(...results), tools: [
+        { name: "read_range", description: "read", parameters: Type.Object({ size: Type.Number() }), execute: async (args: Record<string, unknown>) => ({ text: "s".repeat(Number(args.size)) }) },
+        { name: "search_files", description: "search", parameters: Type.Object({}), execute: async () => ({ text: JSON.stringify(matches), searchResults: matches }) }
+      ], toolBudget: { maxToolCalls: 6, maxInvestigationRounds: 2, maxResultChars: 12000,
+        reservedSourceResultChars: 4000, maxDiscoveryResultChars: 4000 } });
+    expect(telemetry.toolCalls[3]).toMatchObject({ status: "ok", budgetState: { resultCharsUsed: 11996, toolResultCharLimit: 4000 } });
+    expect(adapter.contexts[2]).toContain("decisive evidence");
+    expect(adapter.toolNames[2]).toContain("search_files");
+    expect(unresolvedToolDiagnostic(7, summaries, "four-chars-left")).toBeUndefined();
   });
 
-  it("does not grant source budget extensions after global budget exhaustion", async () => {
+  it("keeps global exhaustion authoritative during local continuation", async () => {
+    let checkpoints = 0;
     const telemetry = fakeTelemetry();
-    const execute = vi.fn(async () => ({
-      text: "should not execute",
-      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
-    }));
-    const tool: ToolDefinition = {
-      name: "read_range",
-      description: "read",
-      parameters: Type.Object({ path: Type.String(), startLine: Type.Number(), endLine: Type.Number() }),
-      execute
-    };
     const adapter = scriptedAdapter([
-      assistant([
-        {
-          type: "toolCall",
-          id: "tool-global-exhausted",
-          name: "read_range",
-          arguments: { path: "src/a.ts", startLine: 10, endLine: 20 }
-        }
-      ]),
-      assistant([validSubmitReviewCall("submit-after-global-extension-denied")])
+      assistant([{ type: "toolCall", id: "read", name: "read_range", arguments: {} }]),
+      assistant([validSubmitReviewCall("global-closeout")])
     ]);
-    const checkpoint = vi.fn()
-      .mockReturnValueOnce("ok")
-      .mockReturnValue("exhausted");
-    const runner = createPiRunner({
-      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-      telemetry: telemetry.recorder,
-      logger: fakeLogger(),
-      runSignal: new AbortController().signal,
-      adapter,
-      hooks: { checkpoint, onUsage: vi.fn() }
-    });
-
-    await runner.runStructured({
-      ...submitReviewRequest("packet-global-extension-denied"),
-      tools: [tool],
-      toolBudget: {
-        maxToolCalls: 2,
-        maxInvestigationRounds: 2,
-        maxResultChars: 0,
-        sourceExtension: { maxToolCalls: 1, maxResultChars: 1000 }
-      }
-    });
-
-    expect(execute).not.toHaveBeenCalled();
-    expect(telemetry.toolCalls[0]).toMatchObject({
-      status: "rejected",
-      degradationReason: "tool_result_budget_exhausted"
-    });
-    expect(telemetry.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        message: "tool_budget_extension_denied",
-        data: expect.objectContaining({
-          tool: "read_range",
-          triggerReason: "tool_result_budget_exhausted",
-          denyReason: "global_budget_exhausted"
-        })
-      })
-    ]));
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => ++checkpoints === 1 ? "ok" : "exhausted", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("global-stop"), tools: [
+      { name: "read_range", description: "read", parameters: Type.Object({}), execute: async () => ({ text: "source" }) }
+    ], toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 100 } });
+    expect(checkpoints).toBe(2);
+    expect(adapter.toolNames[1]).toEqual(["submit_review"]);
+    expect(telemetry.toolCalls).toHaveLength(1);
+    expect(telemetry.modelCalls[1]).toMatchObject({ kind: "finalize" });
   });
 
-  it("does not grant source budget extensions for unsafe path arguments", async () => {
+  it.each(["maxToolCalls", "maxInvestigationRounds", "maxResultChars"] as const)("keeps zero %s disabled even with legacy extensions", async dimension => {
     const telemetry = fakeTelemetry();
-    const execute = vi.fn(async () => ({
-      text: "should not execute",
-      meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
-    }));
-    const tool: ToolDefinition = {
-      name: "read_range",
-      description: "read",
-      parameters: Type.Object({ path: Type.String(), startLine: Type.Number(), endLine: Type.Number() }),
-      execute
-    };
+    const execute = vi.fn(async () => ({ text: "must not run" }));
     const adapter = scriptedAdapter([
-      assistant([
-        {
-          type: "toolCall",
-          id: "tool-unsafe-extension",
-          name: "read_range",
-          arguments: { path: "../secret.ts", startLine: 1, endLine: 2 }
-        }
-      ]),
-      assistant([validSubmitReviewCall("submit-after-unsafe-extension-denied")])
+      assistant([{ type: "toolCall", id: "read", name: "read_range", arguments: {} }]),
+      assistant([validSubmitReviewCall("done")])
     ]);
-    const runner = createPiRunner({
-      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-      telemetry: telemetry.recorder,
-      logger: fakeLogger(),
-      runSignal: new AbortController().signal,
-      adapter,
-      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
-    });
-
-    await runner.runStructured({
-      ...submitReviewRequest("packet-unsafe-extension-denied"),
-      tools: [tool],
-      toolBudget: {
-        maxToolCalls: 2,
-        maxInvestigationRounds: 2,
-        maxResultChars: 0,
-        sourceExtension: { maxToolCalls: 1, maxResultChars: 1000 }
-      }
-    });
-
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await runner.runStructured({ ...submitReviewRequest("zero-disabled"), tools: [
+      { name: "read_range", description: "read", parameters: Type.Object({}), execute }
+    ], toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 100, [dimension]: 0,
+      sourceExtension: { maxToolCalls: 100, maxResultChars: 10000 } } });
     expect(execute).not.toHaveBeenCalled();
-    expect(telemetry.toolCalls[0]).toMatchObject({
-      status: "rejected",
-      degradationReason: "tool_result_budget_exhausted"
-    });
-    expect(telemetry.events).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        message: "tool_budget_extension_denied",
-        data: expect.objectContaining({
-          tool: "read_range",
-          triggerReason: "tool_result_budget_exhausted",
-          denyReason: "unsafe_path_arg"
-        })
-      })
-    ]));
-    expect(telemetry.events).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ message: "tool_budget_extension_granted" })
-    ]));
+    expect(telemetry.toolCalls[0]).toMatchObject({ status: "rejected", errorCode: "budget_exhausted" });
+  });
+
+  it("derives ceilings after boost scaling without multiplying per-result caps or source targets again", () => {
+    const soft = scaleToolBudget({ maxToolCalls: 4, maxInvestigationRounds: 2, maxResultChars: 10000,
+      maxSingleToolResultChars: 2000, maxDiscoveryResultChars: 1000, reservedSourceResultChars: 3000,
+      sourceExtension: { maxToolCalls: 100, maxResultChars: 100000 } }, 1.5);
+    expect(hardToolBudget(soft)).toEqual({ maxToolCalls: 12, maxInvestigationRounds: 6, maxResultChars: 30000,
+      maxSingleToolResultChars: 3000, maxDiscoveryResultChars: 1500, reservedSourceResultChars: 4500 });
+    expect(soft.maxResultChars).toBe(15000);
   });
 
   it("does not treat repository safety rejections as source budget extensions", async () => {
@@ -5457,6 +5593,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const adapter = scriptedAdapter([
       assistant([
         { type: "toolCall", id: "tool-ok", name: "read_range", arguments: { path: "src/a.ts" } },
+        { type: "toolCall", id: "tool-headroom", name: "read_range", arguments: { path: "src/b.ts" } },
         { type: "toolCall", id: "tool-call-budget", name: "read_range", arguments: { path: "src/b.ts" } }
       ]),
       assistant([validSubmitReviewCall("submit-after-tool-call-budget")])
@@ -5476,19 +5613,19 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 2, maxResultChars: 1000 }
     });
 
-    expect(execute).toHaveBeenCalledTimes(1);
-    expect(telemetry.toolCalls[1]).toMatchObject({
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(telemetry.toolCalls[2]).toMatchObject({
       status: "rejected",
       degradationReason: "tool_call_budget_exhausted",
       budgetState: expect.objectContaining({
-        toolCallsUsed: 1,
-        maxToolCalls: 1,
-        resultCharsUsed: "first result".length,
-        maxResultChars: 1000,
-        remainingResultChars: 1000 - "first result".length
+        toolCallsUsed: 2,
+        maxToolCalls: 2,
+        resultCharsUsed: 2 * "first result".length,
+        maxResultChars: 2000,
+        remainingResultChars: 2000 - 2 * "first result".length
       })
     });
-    expect(telemetry.toolCalls[1]?.degradationReason).not.toBe("budget_or_tool_rejected");
+    expect(telemetry.toolCalls[2]?.degradationReason).not.toBe("budget_or_tool_rejected");
   });
 
   it("records precise investigation-round budget rejection reason metadata", async () => {
@@ -5529,7 +5666,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       budgetState: expect.objectContaining({
         investigationRoundsUsed: 1,
         maxInvestigationRounds: 0,
-        remainingResultChars: 1000
+        remainingResultChars: 2000
       })
     });
     expect(telemetry.toolCalls[0]?.degradationReason).not.toBe("budget_or_tool_rejected");
@@ -5562,8 +5699,8 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       degradationReason: "unknown_tool",
       budgetState: expect.objectContaining({
         toolCallsUsed: 0,
-        maxToolCalls: 2,
-        remainingResultChars: 1000
+        maxToolCalls: 4,
+        remainingResultChars: 2000
       })
     });
     expect(telemetry.toolCalls[0]?.degradationReason).not.toBe("budget_or_tool_rejected");
@@ -5771,7 +5908,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       runner.runStructured({
         ...submitReviewRequest("packet-finalize-text"),
         tools: [tool],
-        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 }
+        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 3 }
       })
     ).resolves.toMatchObject({
       findings: [],
@@ -5837,7 +5974,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       runner.runStructured({
         ...submitReviewRequest("packet-finalize-text"),
         tools: [tool],
-        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 1000 }
+        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 3 }
       })
     ).rejects.toMatchObject({
       code: "llm_schema_invalid",
@@ -7042,3 +7179,143 @@ function readCacheText(cacheDir: string): string {
 async function delay(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+describe("plan 124 repair feedback and failed-request evidence", () => {
+  it.each(["underscore", "string", "envelope"])("explains rejected %s patches in replaced composition contexts", async mode => {
+    const { findings, sections, evidenceRefs, presentation } = authorizationComposition();
+    const original = { summary: "Verified issue", composedFindings: [{ findingIds: findings.map(f => f.id), sections: structuredClone(sections), evidenceRefs, ...presentation, publication: "inline" }] };
+    const index = sections.findIndex(section => section.kind === "fix");
+    original.composedFindings[0]!.sections[index]!.sourceRefs.push("invented/fix");
+    const key = `composedFindings.0.sections.${index}.sourceRefs`;
+    const good = { [key]: sections[index]!.sourceRefs };
+    const bad = mode === "underscore" ? { [key.replaceAll(".", "_")]: JSON.stringify(good[key]) }
+      : mode === "string" ? { [key]: '["unterminated' } : { composedFindings: JSON.stringify(good) };
+    const telemetry = fakeTelemetry();
+    const adapter = scriptedAdapter([original, bad, { unexpectedSecondEnvelope: "still wrong" }, good].map((arguments_, i) =>
+      assistant([{ type: "toolCall", id: `submit-${i}`, name: "submit_composition", arguments: arguments_ }])));
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const schema = composerSubmissionSchema([{ fingerprint: "test", representative: findings[0]!, findings }]);
+    await expect(runner.runStructured({ stage: 10, prompt: "compose", schema, templateVersion: "test", timeoutMs: 600_000,
+      normalizeSubmit: value => normalizeCompositionReferences(value, findings),
+      validateSubmit: value => {
+        try { validateCompositionSubmission(value as typeof original, findings); return { ok: true }; }
+        catch (error) { return { ok: false, classification: "schema_invalid", details: String(error) }; }
+      }, schemaRepair: { createFieldRepair: (schema, retained) => createCompositionAttributionRepair(schema, retained, findings) }
+    })).resolves.toMatchObject({ composedFindings: [{ sections }] });
+    const next = adapter.contexts[2]!;
+    expect(next).toContain("latest-repair-feedback");
+    expect(next).toContain(Object.keys(bad)[0]);
+    expect(next).toContain('string');
+    expect(next).toContain(key);
+    expect(next).toContain("patch-format-example");
+    expect(adapter.contexts[3]).not.toEqual(next);
+    expect(adapter.complete).toHaveBeenCalledTimes(4);
+  });
+
+  it.each([false, true])("delivers a successful read once when submission fails (cancel=%s)", async cancel => {
+    const abort = new AbortController();
+    const adapter = scriptedAdapter([]);
+    let calls = 0;
+    adapter.complete = vi.fn(async () => {
+      if (++calls === 1) return assistant([{ type: "toolCall", id: "read", name: "read_range", arguments: { path: "policy.txt" } }]);
+      if (cancel) { abort.abort(new Error("cancelled by test")); throw abort.signal.reason; }
+      return assistant([invalidSubmitCall("bad", "submit_review", { state: "invalid", errorKind: "invalid_syntax" })]);
+    });
+    const callback = vi.fn();
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: abort.signal, adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    await expect(runner.runStructured({ ...submitReviewRequest("evidence-failure"), signal: abort.signal, onToolResults: callback,
+      tools: [{ name: "read_range", description: "read", parameters: Type.Object({ path: Type.String() }), execute: async () => ({
+        text: "authorize reader", meta: { backend: "text", precision: "exact", degraded: false, lookupStatus: "found", deliveryStatus: "full", sourceUsed: "head" }
+      }) }], toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 2, maxResultChars: 2000 }
+    })).rejects.toBeDefined();
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(callback.mock.calls[0]![0]).toEqual([expect.objectContaining({ repositoryEvidence: [expect.objectContaining({ text: "authorize reader", source: "head" })] })]);
+  });
+});
+
+it("keeps bounded redacted key/type feedback with a non-composition custom repair", async () => {
+  const secret = "sk-test-repair-feedback-secret-0123456789";
+  registerSecret(secret);
+  const adapter = scriptedAdapter([
+    {}, { decison: "accept", [secret]: "unused" }, { decision: "accept" }
+  ].map((arguments_, i) => assistant([{ type: "toolCall", id: `s${i}`, name: "submit_system_review", arguments: arguments_ }])));
+  const schema = Type.Object({ decision: Type.String() }, { additionalProperties: false });
+  const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+    telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+    hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+  await expect(runner.runStructured({ stage: 8, prompt: "review", schema, templateVersion: "test", timeoutMs: 1000,
+    schemaRepair: { createFieldRepair: (schema, original) => {
+      const repair = createFieldRepair(schema, original, true)!;
+      return { ...repair, schema: Type.Object({ decision: Type.Optional(Type.String()) }, { additionalProperties: false, minProperties: 1 }),
+        prompt: "Only update decision. The tool schema is authoritative.", replaceConversation: true };
+    } }
+  })).resolves.toEqual({ decision: "accept" });
+  expect(adapter.contexts[2]).toContain("decison");
+  expect(adapter.contexts[2]).toContain("permittedFields");
+  expect(adapter.contexts[2]).toContain("latest-repair-feedback");
+  expect(adapter.contexts[2]).not.toContain(secret);
+  expect(adapter.contexts[2]!.length).toBeLessThan(10_000);
+});
+
+
+it.each(["full", "cached", "truncated", "error", "unknown-revision"] as const)("retains separately identified ambiguous definition hits only when delivered in full: %s", async mode => {
+  const definitions = [
+    { symbol: { path: "src/access.go", name: "ReadForUser", kind: "function" as const, lineRange: [20, 24] as [number, number] }, text: "func ReadForUser(user) { return read(user.org); }" },
+    { symbol: { path: "docs/design.txt", name: "ReadForUser", kind: "other" as const, lineRange: [8, 8] as [number, number] }, text: "ReadForUser is used by the handler." }
+  ];
+  const tool: ToolDefinition = { name: "find_definition", description: "Find candidates", parameters: Type.Object({ symbolName: Type.String(), source: Type.Object({ kind: Type.String() }) }),
+    execute: async () => ({ text: JSON.stringify(definitions), definitions,
+      ...(mode === "error" ? { isError: true } : {}), meta: { backend: "text", precision: "text", degraded: false,
+        lookupStatus: "ambiguous", deliveryStatus: mode === "truncated" ? "truncated" : "full",
+        ...(mode !== "unknown-revision" ? { sourceUsed: "base" as const } : {}) } }) };
+  const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "lookup", name: tool.name, arguments: { symbolName: "ReadForUser", source: { kind: "auto" } } }]), assistant([validSubmitReviewCall("done")])]);
+  if (mode === "cached") adapter.complete = scriptedAdapter([
+    assistant([{ type: "toolCall", id: "lookup", name: tool.name, arguments: { symbolName: "ReadForUser", source: { kind: "auto" } } }]),
+    assistant([{ type: "toolCall", id: "lookup", name: tool.name, arguments: { symbolName: "ReadForUser", source: { kind: "auto" } } }]),
+    assistant([validSubmitReviewCall("done")])
+  ]).complete;
+  const execute = vi.spyOn(tool, "execute");
+  const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+    telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+    toolResultCache: createToolResultCache(), hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+  const captured: import("../src/llm/llm-runner.js").LlmToolResultSummary[] = [];
+  await runner.runStructured({ ...submitReviewRequest("definitions"), tools: [tool], onToolResults: results => captured.push(...results),
+    toolBudget: { maxToolCalls: 2, maxInvestigationRounds: 3, maxResultChars: 2000 } });
+  expect(captured[0]!.lookupStatus).toBe("ambiguous");
+  if (mode === "full" || mode === "cached") {
+    expect(captured[0]!.repositoryEvidence).toEqual(definitions.map((hit, i) => ({ id: `lookup/hit-${i}`, tool: "find_definition",
+      path: hit.symbol.path, lineRange: hit.symbol.lineRange, symbols: [hit.symbol.name], text: hit.text, source: "base", lookupStatus: "ambiguous" })));
+    if (mode === "cached") {
+      expect(captured).toHaveLength(2);
+      expect(captured[1]!.repositoryEvidence).toEqual(captured[0]!.repositoryEvidence);
+      expect(execute).toHaveBeenCalledTimes(1);
+    }
+  } else expect(captured[0]!.repositoryEvidence).toBeUndefined();
+});
+
+it.each([false, true])("uses the same cleaned attention patch for acceptance and telemetry (invalid=%s)", async invalid => {
+  const finding = authorizationComposition().findings[0]!;
+  const input = buildAttentionReconciliation([{ candidateId: finding.id, verdict: "keep", requiredEvidencePresent: true,
+    falsePositiveRisk: "low", reason: "Verified." }], [finding], [], { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+    [{ id: "q", packetId: "packet", source: "uncertainty", originalFiles: [finding.path], droppedPaths: [], suggestedLenses: [], question: "Does readDocument reject revoked access?", files: [finding.path], symbols: ["readDocument"], confidence: "medium", reason: "Check the existing evidence." }]);
+  const original = { summary: "Keep original summary.", composedFindings: [], attentionResolutions: [{ concernId: "packet/q", disposition: "resolved", supportingRefs: ["invented/ref"], rationale: "Incorrect citation." }] };
+  const decision = { concernId: "packet/q", disposition: "resolved", supportingRefs: [`${finding.id}/verification`], rationale: "Published verification answers the question." };
+  const patch = { summary: "Ignore extra summary.", composedFindings: [{ bad: true }], attentionResolutions: [{ ...decision, ...(invalid ? { supportingRefs: ["still/invented"] } : {}), extra: "ignore" }] };
+  const submissions = [original, patch, ...(invalid ? [{ attentionResolutions: [decision] }] : [])];
+  const adapter = scriptedAdapter(submissions.map((arguments_, i) => assistant([{ type: "toolCall", id: `submit-${i}`, name: "submit_composition", arguments: arguments_ }])));
+  const telemetry = fakeTelemetry();
+  const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 }, telemetry: telemetry.recorder,
+    logger: fakeLogger(), runSignal: new AbortController().signal, adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+  const schema = composerSubmissionSchema([], input);
+  await expect(runner.runStructured({ stage: 10, prompt: "compose", schema, templateVersion: "test", timeoutMs: 600_000,
+    validateSubmit: value => { const errors = attentionResolutionErrors(input, (value as SubmitComposition).attentionResolutions);
+      return errors.length ? { ok: false, classification: "schema_invalid", details: errors.join("\n") } : { ok: true }; },
+    schemaRepair: { createFieldRepair: (shape, value) => createAttentionResolutionRepair(shape, value as SubmitComposition, input) }
+  })).resolves.toEqual({ ...original, attentionResolutions: [decision] });
+  expect(adapter.complete).toHaveBeenCalledTimes(invalid ? 3 : 2);
+  expect(telemetry.modelCalls.map(call => call.schemaValid)).toEqual(invalid ? [false, false, true] : [false, true]);
+});

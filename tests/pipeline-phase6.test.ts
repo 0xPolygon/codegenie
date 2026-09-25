@@ -278,6 +278,8 @@ function liveReviewAdapter(): PiAiAdapter & { callsByPrompt: Record<"planner" | 
         }
         return assistant([toolCall("submit-composition-live", "submit_composition", {
           summary: "⚠️ Found 1 verified issue.",
+          attentionResolutions: (extractPromptJson<{ concerns: Array<{ id: string }> }>(prompt, "attention-reconciliation")?.concerns ?? [])
+            .map(concern => ({ concernId: concern.id, disposition: "unresolved", supportingRefs: [], rationale: "Caller inputs are not established by supplied evidence." })),
           composedFindings: [
             {
               findingIds: [findingId],

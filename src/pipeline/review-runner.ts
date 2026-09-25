@@ -7,6 +7,7 @@ import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { parseDiff } from "../git/diff-parser.js";
 import { classifyChangedFiles, filterDiffFiles } from "../git/file-classifier.js";
 import { createGitClient } from "../git/git-client.js";
+import { SourceResolver } from "../repo/source-resolver.js";
 import { cleanupPullRequestRefs, resolveReviewCommandTarget } from "../git/review-input-resolver.js";
 import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import { maybePublishToGitHub } from "../github/publisher.js";
@@ -311,12 +312,14 @@ export async function runReview(
     });
     coverage.diagnostics = [...(coverage.diagnostics ?? []), ...(systemReview.diagnostics ?? [])];
     discloseSkillLoadFailures(coverage, services.skills, services.skillFailures);
+    const repositoryPaths = await (await SourceResolver.create(resolved)).listFiles();
     const finalReview = await dedupeRankAndComposeReview(verified, plannerResult.plan, resolved, coverage, config, run.telemetry, {
       runner: services.runner,
       promptBuilder: services.promptBuilder,
       packetResults: packetResultsForVerification,
       packets,
       diff,
+      repositoryPaths,
       ...(overrides.postGithubComments !== undefined ? { postGithubComments: overrides.postGithubComments } : {})
     });
     if (run.budget.hasDispatchBlocks()) {

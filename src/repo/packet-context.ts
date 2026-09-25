@@ -27,6 +27,7 @@ export async function readOutline(
 ): Promise<{
   outline: FileOutline;
   parsed?: ParsedFile;
+  fileMissing?: boolean;
   degraded: boolean;
   degradationReason?: string;
   truncated?: boolean;
@@ -34,10 +35,11 @@ export async function readOutline(
 }> {
   const content = await resolver.readFile(filePath, source);
   if (!content) {
-    const fallback = fallbackOutline(filePath, registry.languageForPath(filePath), "", "file missing at selected revision");
+    const fallback = fallbackOutline(filePath, registry.languageForPath(filePath), undefined, "file missing at selected revision");
     const capped = capOutlineTotal(fallback.outline, fallback.omittedCount);
     return {
       outline: capped.outline,
+      fileMissing: true,
       degraded: true,
       degradationReason: "file missing at selected revision",
       ...(capped.omittedCount > 0 ? { truncated: true, omittedCount: capped.omittedCount } : {})
@@ -175,13 +177,18 @@ function rangeSpan(range: [number, number]): number {
   return range[1] - range[0];
 }
 
-function fallbackOutline(filePath: string, language: string, content: string, note: string): { outline: FileOutline; omittedCount: number } {
-  const imports = importLikeScan(content);
+function fallbackOutline(filePath: string, language: string, content: string | undefined, note: string): { outline: FileOutline; omittedCount: number } {
+  const imports = importLikeScan(content ?? "");
+  const lineCount = content === undefined ? 0 : Math.max(1, content.replace(/\n$/, "").split("\n").length);
   const omittedCount = Math.max(0, imports.length - MAX_IMPORTS);
   return {
     outline: {
       path: filePath,
       language,
+      symbolExtraction: "unavailable",
+      ...(content === undefined ? {} : content.length <= 3000
+        ? { sourceText: { startLine: 1, endLine: lineCount, text: content } }
+        : { sourceReadHint: { tool: "read_range" as const, path: filePath, startLine: 1, endLine: Math.min(lineCount, 80) } }),
       imports: imports.slice(0, MAX_IMPORTS),
       topLevelSymbols: [],
       testSymbols: isRepositoryTestPath(filePath)
@@ -195,7 +202,7 @@ function fallbackOutline(filePath: string, language: string, content: string, no
             }
           ]
         : [],
-      notes: [note]
+      notes: [note, "Empty symbol arrays mean extraction is unavailable, not that definitions are absent. Read sourceText or use read_range at the same source revision; use search_files to locate later sections."]
     },
     omittedCount
   };
@@ -212,7 +219,11 @@ function capOutlineTotal(outline: FileOutline, existingOmittedCount: number): { 
   let omittedCount = existingOmittedCount;
 
   while (JSON.stringify(capped).length > MAX_OUTLINE_CHARS) {
-    if (capped.topLevelSymbols.length > 0) {
+    if (capped.sourceText) {
+      capped.sourceReadHint = { tool: "read_range", path: capped.path, startLine: 1, endLine: Math.min(capped.sourceText.endLine, 80) };
+      delete capped.sourceText;
+      omittedCount += 1;
+    } else if (capped.topLevelSymbols.length > 0) {
       capped.topLevelSymbols.pop();
       omittedCount += 1;
     } else if (capped.testSymbols.length > 0) {

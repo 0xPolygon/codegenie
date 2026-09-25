@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   type AttentionHintGroup,
   buildHumanAttentionNotes,
@@ -18,6 +18,29 @@ import type {
 import { nullTelemetry } from "./helpers/git.js";
 
 const QUESTION = "Does the changed LiFi parser still tolerate malformed provider numeric fields?";
+
+describe("human-attention repository paths", () => {
+  it("retains unchanged files for file-only hints and uncertainties while rejecting unknown and unsafe paths", () => {
+    const result = packetResultWithHint();
+    result.followUpHints[0]!.files = ["./schema/shared.ridl:12-15", "missing.go", "../outside.go", "/tmp/outside.go", "C:\\outside.go"];
+    result.followUpHints[0]!.symbols = [];
+    result.uncertainties = [{ question: "Which deployed database schema defines this constraint?",
+      files: ["data/migrations/initial.sql"], symbols: [], projectedSkillIds: [] }];
+    const event = vi.fn();
+    const attention = buildHumanAttentionNotes([result], { packets: [packet()],
+      repositoryPaths: ["lib/lifi/parser.go", "schema/shared.ridl", "data/migrations/initial.sql"],
+      telemetry: { ...nullTelemetry(), event } });
+    expect(attention.raw.map(hint => hint.files)).toEqual([["schema/shared.ridl"], ["data/migrations/initial.sql"]]);
+    expect(attention.notes.flatMap(note => note.files)).toEqual(expect.arrayContaining(["schema/shared.ridl", "data/migrations/initial.sql"]));
+    expect(attention.raw[0]!.droppedPaths).toEqual([
+      { path: "../outside.go", reason: "traversal" },
+      { path: "/tmp/outside.go", reason: "absolute_path" },
+      { path: "C:\\outside.go", reason: "absolute_path" },
+      { path: "missing.go", reason: "unknown_path" }
+    ]);
+    expect(event.mock.calls.filter(([value]) => value.message === "human_attention_note_path_dropped")).toHaveLength(4);
+  });
+});
 
 function packet(): ReviewPacket {
   return {

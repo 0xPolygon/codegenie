@@ -27,6 +27,29 @@ import type { LlmCallRecord, TelemetryRecorder } from "../src/telemetry/telemetr
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("repository intelligence", () => {
+  it("directs large unsupported files to bounded source reads at the requested revision", async () => {
+    const repo = initRepo();
+    const content = "record Widget\n" + "  field: value\n".repeat(400);
+    writeRepoFile(repo, "schema/contract.custom", content);
+    const base = commitAll(repo, "base");
+    writeRepoFile(repo, "schema/contract.custom", "record Replacement\n");
+    const head = commitAll(repo, "head");
+    const rawDiff = git(repo, ["diff", base, head]);
+    const resolver = await SourceResolver.create({ mode: "commit_range", repoRoot: repo, startCommit: base, endCommit: head,
+      mergeBase: base, headSha: head, commits: [], rawDiff });
+    const tools = new RepositoryToolsFacade({ diff: parseDiff(rawDiff), resolver, registry: new LanguageAdapterRegistry(new TreeSitterService()), telemetry: recordingTelemetry() });
+    const result = await tools.readFileOutline("schema/contract.custom", { kind: "base" });
+    expect(result.meta.degraded).toBe(false);
+    expect(result.outline.sourceText).toBeUndefined();
+    expect(result.outline.sourceReadHint).toEqual({ tool: "read_range", path: "schema/contract.custom", startLine: 1, endLine: 80 });
+    const read = await tools.readRange("schema/contract.custom", 1, 80, { kind: "base" });
+    expect(read.text).toContain("record Widget");
+    expect(read.text).not.toContain("Replacement");
+    const small = await tools.readFileOutline("schema/contract.custom");
+    expect(small.outline.sourceText?.text).toBe("record Replacement\n");
+    expect(small.meta).toMatchObject({ degraded: false, sourceUsed: "head", deliveryStatus: "full" });
+  });
+
   it.each([
     { filePath: "schema/widget.ridl", content: "struct Widget\n  - name: string\n", degraded: false },
     { filePath: "config/widget.json", content: '{"Widget": true}\n', degraded: false },
@@ -54,6 +77,9 @@ describe("repository intelligence", () => {
     const tools = new RepositoryToolsFacade({ diff, resolver, registry, telemetry });
 
     const outline = await tools.readFileOutline(filePath);
+    expect(outline.outline.symbolExtraction).toBe("unavailable");
+    expect(outline.outline.sourceText?.text).toBe(content);
+    expect(outline.outline.notes.join(" ")).toContain("not that definitions are absent");
     const symbol = await tools.readSymbol(filePath, { symbolName: "Widget" });
     const definition = await tools.findDefinition("Widget");
     const mentions = await tools.findSymbolMentions("Widget");
@@ -714,7 +740,7 @@ export { internal as Public }
       precision: "exact",
       degraded: false,
       lookupStatus: "found",
-      deliveryStatus: "full"
+      deliveryStatus: "empty"
     });
     const listed = await tools.listFiles("store/*.go");
     expect(listed.paths).toEqual(expect.arrayContaining(["store/user.go", "store/user_test.go"]));
