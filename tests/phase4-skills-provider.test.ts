@@ -1,8 +1,8 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
+import type { LoginOptions, OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { executeProviderCommand, expandProviderAlias, parseProviderCommand } from "../src/cli/provider-command.js";
 import { getCodegeniePaths } from "../src/config/paths.js";
@@ -919,6 +919,27 @@ describe("Phase 4 provider commands", () => {
     }
   });
 
+  it("supplies a stable installation device id to OAuth login", async () => {
+    const providerId = `test-oauth-device-id-${Date.now()}`;
+    const deviceIds: Array<string | undefined> = [];
+    const oauthAuth = testOAuthAuth(async (_interaction, options) => {
+      deviceIds.push(options?.getDeviceId?.());
+      return fakeOAuthCredential();
+    });
+    const services = fakeProviderServices(tempDir(), {
+      providerIds: [providerId],
+      oauthAuthByProvider: { [providerId]: oauthAuth }
+    });
+
+    await runProviderCommand(["provider", "login", providerId], { services });
+    await runProviderCommand(["provider", "login", providerId], { services });
+
+    expect(deviceIds).toHaveLength(2);
+    expect(deviceIds[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u);
+    expect(deviceIds[1]).toBe(deviceIds[0]);
+    expect(readFileSync(path.join(services.paths.home, "device-id"), "utf8").trim()).toBe(deviceIds[0]);
+  });
+
   it("opens the local browser for device-code OAuth login when the user presses enter", async () => {
     const providerId = `test-oauth-device-${Date.now()}`;
     const verificationUri = "https://device.example.test/activate";
@@ -1236,7 +1257,7 @@ function testSkill(input: { id: string; checks: string; falsePositives?: string;
 }
 
 function testOAuthAuth(
-  login: (interaction: ProviderAuthInteraction) => Promise<OAuthCredential>
+  login: (interaction: ProviderAuthInteraction, options?: LoginOptions) => Promise<OAuthCredential>
 ): OAuthAuth {
   return {
     name: "Test OAuth",

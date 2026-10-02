@@ -43,6 +43,7 @@ const API_KEY_ENV_VARS: Record<string, string[]> = {
   "qwen-token-plan-individual": ["QWEN_TOKEN_PLAN_API_KEY"],
   "radius": ["RADIUS_API_KEY"],
   "together": ["TOGETHER_API_KEY"],
+  "typesafe": ["TYPESAFE_API_KEY"],
   "vercel-ai-gateway": ["AI_GATEWAY_API_KEY"],
   "xai": ["XAI_API_KEY"],
   "xiaomi": ["XIAOMI_API_KEY"],
