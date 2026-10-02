@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
@@ -311,7 +312,7 @@ async function commandLogin(
         notify: (event) => {
           authUrl = handleOAuthEvent(event, authUrl, opts, devicePromptControllers);
         }
-      }));
+      }, { getDeviceId: () => getOrCreateDeviceId(services.paths) }));
       const { type: _type, ...storedCredentials } = credentials;
       services.authStorage.set(provider, {
         type: "oauth",
@@ -985,6 +986,24 @@ function assertProviderExists(provider: string, services: ProviderServices): voi
       context: { available: services.modelRegistry.listProviders() }
     });
   }
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
+// Stable installation id for login flows that need one (Sign in with ChatGPT).
+// Created lazily on first such login, then reused so the provider sees one host.
+function getOrCreateDeviceId(paths: CodegeniePaths): string {
+  const deviceIdPath = path.join(paths.home, "device-id");
+  if (existsSync(deviceIdPath)) {
+    const existing = readFileSync(deviceIdPath, "utf8").trim();
+    if (UUID_PATTERN.test(existing)) {
+      return existing;
+    }
+  }
+  ensureCodegenieHome(paths);
+  const deviceId = randomUUID();
+  writeFileSync(deviceIdPath, `${deviceId}\n`, { mode: 0o600 });
+  return deviceId;
 }
 
 function loadAuthFile(paths: CodegeniePaths): Record<string, ProviderAuthEntry> {
