@@ -1,12 +1,16 @@
 import type {
+  ComparedFileLines,
   ExistingReviewThread,
   GitHubClient,
+  GitHubReviewEvent,
   InlineCommentInput,
+  OwnPullRequestReview,
   PullRequestMetadata
 } from "../types.js";
 import { CodegenieError, isCodegenieError, type CodegenieErrorCode } from "../util/errors.js";
 import { runGh } from "../git/subprocess.js";
 import { parseCodegenieMarker } from "./duplicate-detector.js";
+import { changedLinesFromPatch } from "./review-verdict.js";
 
 type RunGh = typeof runGh;
 
@@ -42,7 +46,24 @@ type GhReviewComment = {
   line?: number | null;
   original_line?: number | null;
   body?: string;
+  pull_request_review_id?: number | string | null;
   user?: { login?: string };
+};
+
+type GhPullReview = {
+  id?: number | string;
+  state?: string;
+  body?: string;
+  commit_id?: string | null;
+  submitted_at?: string | null;
+  user?: { login?: string };
+};
+
+type GhCompareFile = {
+  filename?: string;
+  status?: string;
+  patch?: string;
+  changes?: number;
 };
 
 export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOptions = {}): GitHubClient {
@@ -162,7 +183,7 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
 
     async createReview(
       number: number,
-      review: { body: string; event: "COMMENT"; comments: InlineCommentInput[] }
+      review: { body: string; event: GitHubReviewEvent; comments: InlineCommentInput[] }
     ): Promise<void> {
       const pr = prCache.get(number) ?? await viewPr(number);
       const loadedRepo = await loadRepo();
@@ -220,6 +241,9 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
             if (marker.contentFingerprint !== undefined) thread.contentFingerprint = marker.contentFingerprint;
             if (comment.body !== undefined) thread.body = comment.body;
           }
+          if (comment.pull_request_review_id !== undefined && comment.pull_request_review_id !== null) {
+            thread.pullRequestReviewId = String(comment.pull_request_review_id);
+          }
           own.push(thread);
         }
         if (comments.length < 100) {
@@ -227,6 +251,83 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
         }
       }
       return own;
+    },
+
+    async listOwnReviews(number: number): Promise<OwnPullRequestReview[]> {
+      const [loadedRepo, viewer] = await Promise.all([loadRepo(), loadViewerLogin()]);
+      const own: OwnPullRequestReview[] = [];
+      for (let page = 1; ; page += 1) {
+        const stdout = await gh(
+          repoRoot,
+          ["api", `repos/${loadedRepo.owner}/${loadedRepo.repo}/pulls/${number}/reviews?per_page=100&page=${page}`],
+          { errorCode: "gh_auth_failed" }
+        );
+        const reviews = parseJson<GhPullReview[]>(stdout, "failed to parse gh pull request reviews", "gh_auth_failed");
+        for (const review of reviews) {
+          const author = review.user?.login ?? "";
+          if (author.toLowerCase() !== viewer.toLowerCase() || review.id === undefined) {
+            continue;
+          }
+          const item: OwnPullRequestReview = {
+            id: String(review.id),
+            state: review.state ?? ""
+          };
+          if (review.commit_id) {
+            item.commitId = review.commit_id;
+          }
+          if (review.body !== undefined) {
+            item.body = review.body;
+          }
+          if (review.submitted_at) {
+            item.submittedAt = review.submitted_at;
+          }
+          own.push(item);
+        }
+        if (reviews.length < 100) {
+          break;
+        }
+      }
+      return own;
+    },
+
+    async dismissReview(number: number, reviewId: string, message: string): Promise<void> {
+      const loadedRepo = await loadRepo();
+      try {
+        await gh(
+          repoRoot,
+          ["api", `repos/${loadedRepo.owner}/${loadedRepo.repo}/pulls/${number}/reviews/${reviewId}/dismissals`, "--method", "PUT", "--input", "-"],
+          {
+            input: JSON.stringify({ message, event: "DISMISS" }),
+            errorCode: "github_post_failed"
+          }
+        );
+      } catch (error) {
+        throw normalizeCreateReviewError(error);
+      }
+    },
+
+    async compareFiles(baseSha: string, headSha: string): Promise<ComparedFileLines[]> {
+      const loadedRepo = await loadRepo();
+      const stdout = await gh(
+        repoRoot,
+        ["api", `repos/${loadedRepo.owner}/${loadedRepo.repo}/compare/${baseSha}...${headSha}`],
+        { errorCode: "github_post_failed" }
+      );
+      const compared = parseJson<{ files?: GhCompareFile[] }>(stdout, "failed to parse gh compare", "github_post_failed");
+      return (compared.files ?? []).flatMap((file) => {
+        if (file.filename === undefined) {
+          return [];
+        }
+        const patch = file.patch;
+        const parsed = patch === undefined ? { addedLines: [], deletedLines: [] } : changedLinesFromPatch(patch);
+        return [{
+          path: file.filename,
+          ...(file.status !== undefined ? { status: file.status } : {}),
+          patchMissing: patch === undefined && (file.changes ?? 0) > 0,
+          addedLines: parsed.addedLines,
+          deletedLines: parsed.deletedLines
+        }];
+      });
     }
   };
 }

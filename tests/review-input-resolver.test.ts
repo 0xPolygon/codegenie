@@ -520,7 +520,10 @@ function fakeGithub(prs: PullRequestMetadata[]): GitHubClient {
       return pr;
     },
     createReview: async () => undefined,
-    listOwnComments: async () => []
+    listOwnComments: async () => [],
+    listOwnReviews: async () => [],
+    dismissReview: async () => undefined,
+    compareFiles: async () => []
   };
 }
 

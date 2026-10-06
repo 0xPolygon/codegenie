@@ -5,6 +5,7 @@ import { loadConfig, type CliConfigOverrides, type LoadConfigOptions } from "../
 import { MAX_REVIEW_TIME_MINUTES } from "../config/schema.js";
 import { REASONING_USAGE, parseReasoningLevel, splitReasoningSuffix } from "../provider/reasoning.js";
 import type {
+  GitHubReviewMode,
   OutputFormat,
   ParsedReviewCommand,
   ReviewCommandTarget,
@@ -53,6 +54,7 @@ type CommanderReviewOptions = {
   skipSvgReview?: boolean;
   format?: string;
   postGithubComments?: boolean;
+  reviewMode?: string;
   cache?: boolean;
   ci?: boolean;
   progress?: boolean;
@@ -99,6 +101,7 @@ export function parseReviewCommand(
     .option("--no-composition-reasoning-step-down", "use the configured reasoning level for composition")
     .option("--format <format>", "output format: markdown or json", "markdown")
     .option("--post-github-comments", "post inline comments to GitHub for --pr runs")
+    .option("--review-mode <mode>", "GitHub review ceiling: comment, request_changes, or approve")
     .option("--ci", "disable interactive progress output for CI-friendly logs")
     .option("--no-progress", "disable the interactive progress spinner")
     .option("--cache", "enable local model-call cache for this run; provider prompt caching is reported separately")
@@ -220,6 +223,9 @@ function resolveTarget(options: CommanderReviewOptions, commits: string[]): Revi
   if (options.postGithubComments && !hasPr) {
     throw new CodegenieError("invalid_args", "--post-github-comments requires --pr");
   }
+  if (options.reviewMode !== undefined && !options.postGithubComments) {
+    throw new CodegenieError("invalid_args", "--review-mode requires --post-github-comments");
+  }
 
   if (options.base !== undefined && (hasPr || (hasCommits && !isSingleRef(commits)))) {
     throw new CodegenieError("invalid_args", "--base is only valid for branch, head, or default review");
@@ -326,6 +332,9 @@ function buildCliOverrides(options: CommanderReviewOptions): CliConfigOverrides 
   if (options.cache !== undefined) {
     cli.cacheEnabled = options.cache;
   }
+  if (options.reviewMode !== undefined) {
+    cli.reviewMode = parseReviewMode(options.reviewMode);
+  }
   return cli;
 }
 
@@ -366,6 +375,13 @@ function parsePrNumber(value: string | undefined): number {
     throw new CodegenieError("invalid_args", "--pr must be a positive integer");
   }
   return Number(raw);
+}
+
+function parseReviewMode(value: string): GitHubReviewMode {
+  if (value === "comment" || value === "request_changes" || value === "approve") {
+    return value;
+  }
+  throw new CodegenieError("invalid_args", "--review-mode must be one of: comment, request_changes, approve");
 }
 
 function parseDepth(value: string): ReviewDepth {

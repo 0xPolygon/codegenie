@@ -786,11 +786,109 @@ describe("GitHub publisher", () => {
     expect(createdBodies[0]).toContain("Verification incomplete for 1 candidate.");
     expect(createdBodies[0]).toContain("semantic composition skipped; deterministic fallback used");
   });
+
+  it("approves a clean completed review only in approve mode", async () => {
+    const created: Array<{ event: string; body: string }> = [];
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        created.push(review);
+      }
+    });
+    const record = await maybePublishToGitHub(reviewResult(), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github, diff: parseDiff(RAW_DIFF) });
+    expect(record?.reviewEvent).toBe("APPROVE");
+    expect(created[0]?.event).toBe("APPROVE");
+    expect(created[0]?.body).toContain("Approved.");
+    expect(created[0]?.body).toContain("codegenie:verdict=approve");
+  });
+
+  it("requests changes for findings and never approves in request_changes mode", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const hunk = diff.files[0]?.hunks[0];
+    if (!hunk) throw new Error("missing hunk");
+    const created: Array<{ event: string }> = [];
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        created.push(review);
+      }
+    });
+    await maybePublishToGitHub(reviewResult(finalFinding({ hunkId: hunk.id, line: 1 })), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "request_changes" }
+    }, nullTelemetry(), { github, diff });
+    expect(created[0]?.event).toBe("REQUEST_CHANGES");
+
+    created.length = 0;
+    await maybePublishToGitHub(reviewResult(), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "request_changes" }
+    }, nullTelemetry(), { github, diff });
+    expect(created[0]?.event).toBe("COMMENT");
+  });
+
+  it("keeps an untouched prior request open and settles a touched one", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const prior = "a".repeat(64);
+    const head = "h".repeat(40);
+    const reviews = [{
+      id: "9",
+      state: "CHANGES_REQUESTED",
+      commitId: "c".repeat(40),
+      submittedAt: "2026-01-01T00:00:00Z",
+      body: `<!-- codegenie:verdict=request_changes;commit=${"c".repeat(40)};open=${prior}:src%2Fapp.ts:1:RIGHT -->`
+    }];
+    const blocked = fakeGithub({
+      reviews,
+      compared: [{ path: "src/app.ts", patchMissing: false, addedLines: [], deletedLines: [] }],
+      createReview: async () => undefined
+    });
+    const blockedRecord = await maybePublishToGitHub(reviewResult(), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github: blocked, diff });
+    expect(blockedRecord?.reviewEvent).toBe("REQUEST_CHANGES");
+
+    const settled = fakeGithub({
+      reviews,
+      compared: [{ path: "src/app.ts", patchMissing: false, addedLines: [1], deletedLines: [] }],
+      createReview: async () => undefined
+    });
+    const settledRecord = await maybePublishToGitHub(reviewResult(), { ...resolved(), pr: { ...pr(), headSha: head }, headSha: head }, {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github: settled, diff });
+    expect(settledRecord?.reviewEvent).toBe("APPROVE");
+  });
+
+  it("falls back to COMMENT when GitHub rejects a verdict on the author's own PR", async () => {
+    const created: string[] = [];
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        created.push(review.event);
+        if (review.event !== "COMMENT") {
+          throw new CodegenieError("github_post_failed", "Can not approve your own pull request", {
+            context: { httpStatus: 422, responseBody: { message: "Can not approve your own pull request" } }
+          });
+        }
+      }
+    });
+    const record = await maybePublishToGitHub(reviewResult(), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github, diff: parseDiff(RAW_DIFF) });
+    expect(created).toEqual(["APPROVE", "COMMENT"]);
+    expect(record?.verdictFallback).toBe("own_pr");
+    expect(record?.reviewEvent).toBe("COMMENT");
+  });
 });
 
 function fakeGithub(
   opts: {
     comments?: ExistingReviewThread[];
+    reviews?: import("../src/types.js").OwnPullRequestReview[];
+    compared?: import("../src/types.js").ComparedFileLines[];
     viewPr?: GitHubClient["viewPr"];
     createReview?: GitHubClient["createReview"];
   } = {}
@@ -798,6 +896,9 @@ function fakeGithub(
   return {
     viewPr: opts.viewPr ?? (async () => pr()),
     listOwnComments: async () => opts.comments ?? [],
+    listOwnReviews: async () => opts.reviews ?? [],
+    dismissReview: async () => undefined,
+    compareFiles: async () => opts.compared ?? [],
     createReview: opts.createReview ?? (async () => undefined)
   };
 }

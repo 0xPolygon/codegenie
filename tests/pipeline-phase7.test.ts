@@ -123,6 +123,9 @@ function fakeGithub(baseSha: string, headSha: string, posted: Array<{ comments: 
   return {
     viewPr: async () => metadata,
     listOwnComments: async () => [],
+    listOwnReviews: async () => [],
+    dismissReview: async () => undefined,
+    compareFiles: async () => [],
     createReview: async (_number, review) => {
       posted.push({ comments: review.comments, body: review.body });
     }

@@ -59,6 +59,7 @@ export type CodegenieConfig = {
   };
   github: {
     summaryWhenNoFindings: boolean;
+    reviewMode: GitHubReviewMode;
   };
   git: {
     baseBranch?: string;
@@ -133,6 +134,9 @@ export type ParsedReviewCommand = {
   configSources: Record<string, ConfigSource>;
 };
 
+export type GitHubReviewMode = "comment" | "request_changes" | "approve";
+export type GitHubReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+
 export type ReviewMode = "github_pr" | "branch" | "head" | "commit_range";
 
 export type ReviewInput =
@@ -174,15 +178,35 @@ export type ExistingReviewThread = {
   /** Stable identity of the complete published prose, before the inline size cap. */
   contentFingerprint?: string;
   body?: string;
+  pullRequestReviewId?: string;
+};
+
+export type OwnPullRequestReview = {
+  id: string;
+  state: string;
+  commitId?: string;
+  body?: string;
+  submittedAt?: string;
+};
+
+export type ComparedFileLines = {
+  path: string;
+  status?: string;
+  patchMissing: boolean;
+  addedLines: number[];
+  deletedLines: number[];
 };
 
 export interface GitHubClient {
   viewPr(number: number, opts?: { refresh?: boolean }): Promise<PullRequestMetadata>;
   createReview(
     number: number,
-    review: { body: string; event: "COMMENT"; comments: InlineCommentInput[] }
+    review: { body: string; event: GitHubReviewEvent; comments: InlineCommentInput[] }
   ): Promise<void>;
   listOwnComments(number: number): Promise<ExistingReviewThread[]>;
+  listOwnReviews(number: number): Promise<OwnPullRequestReview[]>;
+  dismissReview(number: number, reviewId: string, message: string): Promise<void>;
+  compareFiles(baseSha: string, headSha: string): Promise<ComparedFileLines[]>;
 }
 
 export type CommitInfo = {
@@ -1586,6 +1610,8 @@ export type RunPostingRecord = {
   demotedToBody: number;
   skippedDuplicates: number;
   attempts: Array<{ httpStatus?: number; commentCount: number; outcome: "ok" | "rejected" | "error" | "fallback_summary_only" }>;
+  reviewEvent?: GitHubReviewEvent;
+  verdictFallback?: "own_pr";
   error?: string;
   duplicateDecisions?: FindingDuplicateDecision[];
 };

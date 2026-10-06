@@ -1,0 +1,43 @@
+import { describe, expect, it } from "vitest";
+import {
+  carryForwardIssues,
+  changedLinesFromPatch,
+  formatVerdictMarker,
+  parseVerdictMarker,
+  selectPostedEvent,
+  staleApproval
+} from "../src/github/review-verdict.js";
+
+describe("review verdict", () => {
+  it("keeps comment mode on COMMENT and does not force a post", () => {
+    expect(selectPostedEvent({ mode: "comment", health: "completed", openIssueCount: 0 })).toEqual({
+      event: "COMMENT",
+      forcePost: false
+    });
+  });
+
+  it("requests changes for open issues and approves only a clean completed approve-mode review", () => {
+    expect(selectPostedEvent({ mode: "approve", health: "completed", openIssueCount: 1 }).event).toBe("REQUEST_CHANGES");
+    expect(selectPostedEvent({ mode: "approve", health: "completed", openIssueCount: 0 }).event).toBe("APPROVE");
+    expect(selectPostedEvent({ mode: "approve", health: "incomplete", openIssueCount: 0 }).event).toBe("COMMENT");
+    expect(selectPostedEvent({ mode: "request_changes", health: "completed", openIssueCount: 0 }).event).toBe("COMMENT");
+  });
+
+  it("round-trips the verdict marker and treats an untouched anchor as still open", () => {
+    const issue = { fingerprint: "a".repeat(64), path: "src/app.ts", line: 4, side: "RIGHT" as const };
+    const marker = formatVerdictMarker("request_changes", "abc1234", [issue]);
+    expect(parseVerdictMarker(marker)?.open).toEqual([issue]);
+    expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [2], deletedLines: [] }])).toEqual([issue]);
+    expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [4], deletedLines: [] }])).toEqual([]);
+    expect(changedLinesFromPatch("@@ -1,1 +1,2 @@\n context\n+added\n").addedLines).toEqual([2]);
+  });
+
+  it("dismisses only a stale approval, never a standing change request", () => {
+    const head = "h".repeat(40);
+    const approved = { id: "1", state: "APPROVED", commitId: "a".repeat(40), submittedAt: "2026-01-02T00:00:00Z" };
+    const requested = { id: "2", state: "CHANGES_REQUESTED", commitId: "a".repeat(40), submittedAt: "2026-01-03T00:00:00Z" };
+    expect(staleApproval([approved], head)?.id).toBe("1");
+    expect(staleApproval([approved, requested], head)).toBeUndefined();
+    expect(staleApproval([{ ...approved, commitId: head }], head)).toBeUndefined();
+  });
+});

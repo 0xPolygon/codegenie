@@ -1050,6 +1050,26 @@ describe("github-action entrypoint", () => {
     expect(reviewArgv).not.toContain("--post-github-comments");
   });
 
+  it("passes review-mode only when a verdict or inline comments will be posted", async () => {
+    const fake = createFakeComments();
+    let reviewArgv: string[] = [];
+    await executeGitHubActionCommand(["--review-mode", "approve", "--post-inline-comments", "false"], {
+      env: actionEnv(issueCommentPayload(), "issue_comment"),
+      issueComments: fake.client,
+      minEditIntervalMs: 0,
+      writeOutput: () => undefined,
+      runReview: async (argv) => {
+        reviewArgv = argv;
+        return { runId: "r1", runDir: "", reportMarkdown: "# report" };
+      }
+    });
+    expect(reviewArgv).toContain("--post-github-comments");
+    expect(reviewArgv).toContain("--review-mode");
+    expect(reviewArgv).toContain("approve");
+    expect(parseGitHubActionArgs(["--review-mode", ""])).not.toHaveProperty("reviewMode");
+    expect(() => parseGitHubActionArgs(["--review-mode", "ship"])).toThrow(/review-mode/u);
+  });
+
   it("finalizes returned worker failures as failure while retaining the partial report", async () => {
     const fake = createFakeComments();
     const reportPath = path.join(scratch, "failed-workers.md");

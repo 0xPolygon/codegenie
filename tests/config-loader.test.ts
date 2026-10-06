@@ -28,6 +28,19 @@ describe("config loader", () => {
     expect(rawConfigSchema.safeParse({ review: { compositionReasoningStepDown: "true" } }).success).toBe(false);
   });
 
+  it("defaults a missing reviewMode to comment and lets repo config set only that github key", () => {
+    const repoRoot = tempDir();
+    const homeOverride = tempDir();
+    expect(loadConfig({ repoRoot, homeOverride }).config.github.reviewMode).toBe("comment");
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[github]\nreviewMode = \"approve\"\nsummaryWhenNoFindings = true\n");
+    const loaded = loadConfig({ repoRoot, homeOverride });
+    expect(loaded.config.github.reviewMode).toBe("approve");
+    expect(loaded.config.github.summaryWhenNoFindings).toBe(false);
+    expect(loaded.warnings.some((warning) => warning.key === "github.summaryWhenNoFindings")).toBe(true);
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[github]\nreviewMode = \"nope\"\n");
+    expect(() => loadConfig({ repoRoot, homeOverride })).toThrow(CodegenieError);
+  });
+
   it("layers SVG skipping as a repo-safe boolean", () => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();

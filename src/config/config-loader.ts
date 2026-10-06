@@ -35,6 +35,7 @@ export type CliConfigOverrides = {
   model?: string;
   reasoning?: ReasoningLevel | "auto";
   cacheEnabled?: boolean;
+  reviewMode?: import("../types.js").GitHubReviewMode;
 };
 
 export type LoadConfigOptions = {
@@ -71,6 +72,7 @@ const DEFAULT_SOURCE_PATHS = [
   "review.budgetBoost",
   "review.maxBudgetTokens",
   "github.summaryWhenNoFindings",
+  "github.reviewMode",
   "classification.pathRules",
   "llm.maxConcurrentCalls",
   "llm.forceSubmitToolChoice",
@@ -288,6 +290,10 @@ function applyRawConfig(
     config.github.summaryWhenNoFindings = raw.github.summaryWhenNoFindings;
     sources["github.summaryWhenNoFindings"] = source;
   }
+  if (raw.github?.reviewMode !== undefined) {
+    config.github.reviewMode = raw.github.reviewMode;
+    sources["github.reviewMode"] = source;
+  }
 
   if (raw.git?.baseBranch !== undefined) {
     config.git.baseBranch = raw.git.baseBranch;
@@ -410,7 +416,17 @@ function filterRepoConfig(raw: RawCodegenieConfig, warnings: ConfigWarning[]): R
     safe.classification = { pathRules: raw.classification.pathRules };
   }
 
-  warnTopLevelRepoSection(warnings, raw.github, "github");
+  if (raw.github) {
+    const reviewMode = raw.github.reviewMode;
+    if (reviewMode !== undefined) {
+      safe.github = { reviewMode };
+    }
+    for (const key of Object.keys(raw.github)) {
+      if (key !== "reviewMode") {
+        warnIgnoredRepoKey(warnings, `github.${key}`);
+      }
+    }
+  }
   warnTopLevelRepoSection(warnings, raw.llm, "llm");
   warnTopLevelRepoSection(warnings, raw.cache, "cache");
   if (raw.telemetry) {
@@ -523,6 +539,10 @@ function applyCliOverrides(
   if (cli.cacheEnabled !== undefined) {
     config.cache.enabled = cli.cacheEnabled;
     sources["cache.enabled"] = "cli";
+  }
+  if (cli.reviewMode !== undefined) {
+    config.github.reviewMode = cli.reviewMode;
+    sources["github.reviewMode"] = "cli";
   }
 }
 

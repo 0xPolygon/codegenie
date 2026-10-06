@@ -2,9 +2,11 @@ import { buildDiffAnchorIndex, parseDiff, validateDiffAnchor } from "../git/diff
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
   CodegenieConfig,
+  ComparedFileLines,
   DiffAnchor,
   FinalFinding,
   GitHubClient,
+  GitHubReviewEvent,
   InlineCommentInput,
   ResolvedReviewInput,
   ReviewResult,
@@ -19,6 +21,17 @@ import { sanitizeGitHubCommentBody } from "./comment-sanitizer.js";
 import { createGitHubClient } from "./github-client.js";
 import { detectDuplicateFindings, formatCodegenieMarker, proseContentFingerprint } from "./duplicate-detector.js";
 import { isProsePath } from "../util/path-roles.js";
+import { healthForResult } from "../util/review-health.js";
+import {
+  carryForwardIssues,
+  formatVerdictMarker,
+  issuesFromFindings,
+  issuesFromReview,
+  latestSubmittedReview,
+  renderCarriedIssues,
+  selectPostedEvent,
+  type OpenReviewIssue
+} from "./review-verdict.js";
 
 type PublishOptions = {
   github?: GitHubClient;
@@ -125,7 +138,34 @@ export async function maybePublishToGitHub(
     .filter(({ finding }) => duplicateById.get(finding.id)?.action === "post")
     .map(({ finding, anchor }) => prepareInlineComment(finding, anchor, telemetry.runId, deletedAnchors.has(anchorKey(anchor))));
   const skippedDuplicates = duplicateDecisions.filter((decision) => decision.action !== "post").length;
-  const reviewBody = buildPostingBody(finalReview, demoted, config, { includeInlineSummary: prepared.length > 0 });
+  const mode = config.github.reviewMode;
+  const published = [...finalReview.findings, ...finalReview.summaryOnlyFindings];
+  const carriedLookup = mode === "comment"
+    ? { issues: [], unknown: false }
+    : await carriedOpenIssues(github, resolved.pr.number, resolved.pr.headSha, published);
+  const carried = carriedLookup.issues;
+  let decision = selectPostedEvent({
+    mode,
+    health: healthForResult(finalReview).status,
+    openIssueCount: published.length + carried.length
+  });
+  if (carriedLookup.unknown && decision.event === "APPROVE") {
+    decision = { event: "COMMENT", forcePost: true };
+  }
+  let reviewBody = buildPostingBody(finalReview, demoted, config, { includeInlineSummary: prepared.length > 0 });
+  const carriedSection = renderCarriedIssues(carried);
+  if (carriedSection !== "") {
+    reviewBody = reviewBody.trim().length === 0 ? carriedSection : `${reviewBody.trimEnd()}\n\n${carriedSection}`;
+  }
+  if (decision.event === "REQUEST_CHANGES" && healthForResult(finalReview).status !== "completed" && !reviewBody.includes("partial")) {
+    reviewBody = `This review is partial; confirmed findings still require changes.\n\n${reviewBody}`.trim();
+  }
+  if (decision.forcePost && reviewBody.trim().length === 0) {
+    reviewBody = decision.event === "APPROVE" ? "Approved." : "No open issues.";
+  }
+  const verdictMarker = mode !== "comment" && reviewBody.trim().length > 0
+    ? formatVerdictMarker(mode, resolved.pr.headSha, [...issuesFromFindings(published), ...carried])
+    : undefined;
   const shouldPostBody = reviewBody.trim().length > 0;
 
   const record: RunPostingRecord = {
@@ -135,7 +175,8 @@ export async function maybePublishToGitHub(
     demotedToBody: demoted.length,
     skippedDuplicates,
     attempts: [],
-    duplicateDecisions
+    duplicateDecisions,
+    reviewEvent: decision.event
   };
 
   if (prepared.length === 0 && !shouldPostBody) {
@@ -146,10 +187,10 @@ export async function maybePublishToGitHub(
 
   record.attempted = true;
   const provenance = resolveReviewBodyProvenance(opts);
-  const finalize = (input: string): string => finalizeReviewBody(input, provenance);
+  const finalize = (input: string): string => finalizeReviewBody(input, provenance, verdictMarker);
   const body = finalize(reviewBody);
   try {
-    const result = await postWithRecovery(github, resolved.pr.number, body, prepared, record, finalize);
+    const result = await postWithRecovery(github, resolved.pr.number, body, prepared, record, finalize, decision.event);
     record.status = result.summaryOnly ? "summary_only_fallback" : "posted";
     record.inlinePosted = result.inlinePosted;
     await persistPostingRecord(record, telemetry);
@@ -177,29 +218,73 @@ export async function maybePublishToGitHub(
   }
 }
 
+async function carriedOpenIssues(
+  github: GitHubClient,
+  prNumber: number,
+  headSha: string,
+  published: FinalFinding[]
+): Promise<{ issues: OpenReviewIssue[]; unknown: boolean }> {
+  let reviews;
+  try {
+    reviews = await github.listOwnReviews(prNumber);
+  } catch {
+    return { issues: [], unknown: true };
+  }
+  const latest = latestSubmittedReview(reviews);
+  if (latest?.state !== "CHANGES_REQUESTED") {
+    return { issues: [], unknown: false };
+  }
+  const comments = await github.listOwnComments(prNumber);
+  const prior = issuesFromReview(latest, comments);
+  if (prior.length === 0) {
+    return { issues: [], unknown: false };
+  }
+  let files: ComparedFileLines[] | undefined;
+  if (latest.commitId !== undefined && latest.commitId !== headSha) {
+    try {
+      files = await github.compareFiles(latest.commitId, headSha);
+    } catch {
+      files = undefined;
+    }
+  }
+  return {
+    issues: carryForwardIssues(prior, new Set(published.map((finding) => finding.fingerprint)), files),
+    unknown: false
+  };
+}
+
 async function postWithRecovery(
   github: GitHubClient,
   prNumber: number,
   body: string,
   initialComments: PreparedInlineComment[],
   record: RunPostingRecord,
-  finalize: (input: string) => string
+  finalize: (input: string) => string,
+  event: GitHubReviewEvent
 ): Promise<{ inlinePosted: number; summaryOnly: boolean }> {
   let comments = [...initialComments];
   let currentBody = body;
   let summaryOnly = false;
+  let currentEvent = event;
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const attemptingSummaryOnly = summaryOnly && comments.length === 0;
     try {
       await github.createReview(prNumber, {
         body: currentBody,
-        event: "COMMENT",
+        event: currentEvent,
         comments: comments.map((comment) => comment.input)
       });
+      record.reviewEvent = currentEvent;
       record.attempts.push({ commentCount: comments.length, outcome: attemptingSummaryOnly ? "fallback_summary_only" : "ok" });
       return { inlinePosted: comments.length, summaryOnly };
     } catch (error) {
+      if (currentEvent !== "COMMENT" && isOwnPullRequestReview(error)) {
+        currentEvent = "COMMENT";
+        record.verdictFallback = "own_pr";
+        record.attempts.push({ httpStatus: 422, commentCount: comments.length, outcome: "rejected" });
+        continue;
+      }
       if (attemptingSummaryOnly) {
         recordFailedPostingAttempt(record, 0, error);
         throw error;
@@ -245,7 +330,8 @@ async function postWithRecovery(
   }
 
   try {
-    await github.createReview(prNumber, { body: currentBody, event: "COMMENT", comments: [] });
+    await github.createReview(prNumber, { body: currentBody, event: currentEvent, comments: [] });
+    record.reviewEvent = currentEvent;
     record.attempts.push({ commentCount: 0, outcome: "fallback_summary_only" });
   } catch (error) {
     recordFailedPostingAttempt(record, 0, error);
@@ -338,14 +424,15 @@ function buildPostingBody(
 // LAST body transform (after demotions and capping) so the footer is always
 // the final line: it strips any footer a prior pass appended, and the cap
 // reserves room for it so truncation cannot drop it.
-function finalizeReviewBody(body: string, provenance: ReviewBodyProvenance): string {
+function finalizeReviewBody(body: string, provenance: ReviewBodyProvenance, marker?: string): string {
   const stripped = stripReviewBodyFooter(body);
   if (stripped.trim().length === 0) {
     return stripped.trim();
   }
   const footer = reviewBodyFooter(provenance);
-  const capped = capBody(sanitizeGitHubCommentBody(stripped), REVIEW_BODY_CAP - footer.length - 2);
-  return `${capped.trimEnd()}\n\n${footer}`;
+  const markerBlock = marker === undefined ? "" : `\n\n${marker}`;
+  const capped = capBody(sanitizeGitHubCommentBody(stripped), REVIEW_BODY_CAP - footer.length - markerBlock.length - 2);
+  return `${capped.trimEnd()}${markerBlock}\n\n${footer}`;
 }
 
 function reviewBodyFooter(provenance: ReviewBodyProvenance): string {
@@ -429,6 +516,16 @@ function capBody(body: string, maxChars: number): string {
 
 function isGithub422(error: unknown): boolean {
   return githubHttpStatus(error) === 422;
+}
+
+function isOwnPullRequestReview(error: unknown): boolean {
+  if (!isGithub422(error) || !(error instanceof CodegenieError)) {
+    return false;
+  }
+  const raw = [error.message, error.context?.stderr, error.context?.stdout, JSON.stringify(error.context?.responseBody ?? "")]
+    .map((value) => typeof value === "string" ? value : "")
+    .join("\n");
+  return /own pull request/iu.test(raw);
 }
 
 function githubHttpStatus(error: unknown): number | undefined {
