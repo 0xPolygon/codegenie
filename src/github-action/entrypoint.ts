@@ -216,7 +216,7 @@ export async function executeGitHubActionCommand(
   // login — self-correcting for a custom app missing its bot-login input.
   env.CODEGENIE_GITHUB_LOGIN = claimed.author !== "" ? claimed.author : ownLogin;
 
-  const postsVerdict = inputs.reviewMode === "request_changes" || inputs.reviewMode === "approve";
+  const postsVerdict = inputs.reviewMode === "approve";
   const reviewArgv = [
     "review",
     "--pr",
@@ -693,10 +693,10 @@ function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
 }
 
 function parseReviewMode(value: string): string {
-  if (value === "comment" || value === "request_changes" || value === "approve") {
+  if (value === "comment" || value === "approve") {
     return value;
   }
-  throw new CodegenieError("invalid_args", "--review-mode must be one of: comment, request_changes, approve");
+  throw new CodegenieError("invalid_args", "--review-mode must be one of: comment, approve");
 }
 
 function parseBoolean(flag: string, value: string): boolean {

@@ -134,7 +134,7 @@ export type ParsedReviewCommand = {
   configSources: Record<string, ConfigSource>;
 };
 
-export type GitHubReviewMode = "comment" | "request_changes" | "approve";
+export type GitHubReviewMode = "comment" | "approve";
 export type GitHubReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
 
 export type ReviewMode = "github_pr" | "branch" | "head" | "commit_range";

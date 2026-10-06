@@ -76,7 +76,7 @@ codegenie review --pr 123 --post-github-comments   # publish inline comments (ex
 codegenie review --pr 123 --post-github-comments --review-mode approve
 ```
 
-Posting to GitHub is a single review with inline comments anchored to changed lines, and only happens when you pass `--post-github-comments`. The review event is `COMMENT` unless `[github] reviewMode` is `request_changes` or `approve`. A missing `reviewMode` is `comment`. `approve` can approve a clean completed review and request changes when issues remain. `request_changes` can request changes but never approves. Incomplete runs are never approved. Interactive runs show a stderr progress spinner (auto-disabled in CI; `--no-progress` disables it explicitly). Non-posting Markdown/JSON runs emit the full report to stdout; posting runs emit a concise posting summary instead. Action mode separately renders the full report into the status comment, step summary, and report artifact.
+Posting to GitHub is a single review with inline comments anchored to changed lines, and only happens when you pass `--post-github-comments`. The review event is `COMMENT` unless `[github] reviewMode` is `approve`. A missing `reviewMode` is `comment`. `approve` requests changes when issues remain and approves a clean completed review, because only that reviewer can clear its own change request. Incomplete runs are never approved. Interactive runs show a stderr progress spinner (auto-disabled in CI; `--no-progress` disables it explicitly). Non-posting Markdown/JSON runs emit the full report to stdout; posting runs emit a concise posting summary instead. Action mode separately renders the full report into the status comment, step summary, and report artifact.
 
 For prose files (`.md`, `.mdx`, `.rst`, `.txt`), unchanged inline comment content is deduplicated across shifted anchors on the same file and diff side. Matching uses the complete sanitized body before truncation; changed wording remains eligible for posting. Executable examples under `docs/` retain code fingerprint matching. Separate findings are not merged merely because they occur in the same document.
 
@@ -198,7 +198,7 @@ budgetBoost = 1.0   # scales per-packet review budgets; does not change finding 
 compositionReasoningStepDown = true # default; set false to keep configured reasoning for composition
 
 [github]
-reviewMode = "comment" # comment | request_changes | approve. Omitted means comment.
+reviewMode = "comment" # comment | approve. Omitted means comment. approve also requests changes.
 
 [telemetry]
 enabled = true      # opt into local run artifacts under .codegenie/runs

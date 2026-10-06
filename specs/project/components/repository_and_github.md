@@ -628,7 +628,7 @@ Skipped findings are not demoted to the body (skip means "already said"); each d
 ```
 
    The marker is appended after sanitization so HTML-comment stripping cannot remove it, and the stdout renderer hides markers from normal Markdown output where possible (`src/output/`, one-line reference).
-7. `createReview(n, { body, event, comments })` — exactly one review per run. `event` is `COMMENT` unless `github.reviewMode` is `request_changes` or `approve`. A missing `reviewMode` is `comment`. `commit_id` is the PR head SHA.
+7. `createReview(n, { body, event, comments })` — exactly one review per run. `event` is `COMMENT` unless `github.reviewMode` is `approve`. A missing `reviewMode` is `comment`. `approve` may submit `REQUEST_CHANGES` or `APPROVE`; it never requests changes without also being able to approve later. `commit_id` is the PR head SHA.
 8. Write the `RunPostingRecord` through telemetry (`github-posting.json`) and return it. The publisher writes nothing to stdout itself: `renderOutputs` runs after `maybePublishToGitHub` and renders the concise posting summary — Markdown counts/status, or the record itself as the pinned `--format json` run-summary schema — from the returned record.
 
 #### Comment Sanitization

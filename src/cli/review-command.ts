@@ -101,7 +101,7 @@ export function parseReviewCommand(
     .option("--no-composition-reasoning-step-down", "use the configured reasoning level for composition")
     .option("--format <format>", "output format: markdown or json", "markdown")
     .option("--post-github-comments", "post inline comments to GitHub for --pr runs")
-    .option("--review-mode <mode>", "GitHub review ceiling: comment, request_changes, or approve")
+    .option("--review-mode <mode>", "GitHub review ceiling: comment or approve")
     .option("--ci", "disable interactive progress output for CI-friendly logs")
     .option("--no-progress", "disable the interactive progress spinner")
     .option("--cache", "enable local model-call cache for this run; provider prompt caching is reported separately")
@@ -378,10 +378,10 @@ function parsePrNumber(value: string | undefined): number {
 }
 
 function parseReviewMode(value: string): GitHubReviewMode {
-  if (value === "comment" || value === "request_changes" || value === "approve") {
+  if (value === "comment" || value === "approve") {
     return value;
   }
-  throw new CodegenieError("invalid_args", "--review-mode must be one of: comment, request_changes, approve");
+  throw new CodegenieError("invalid_args", "--review-mode must be one of: comment, approve");
 }
 
 function parseDepth(value: string): ReviewDepth {

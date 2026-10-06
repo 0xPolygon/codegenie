@@ -16,7 +16,7 @@ export type OpenReviewIssue = {
 };
 
 const VERDICT_MARKER =
-  /<!--\s*codegenie:verdict=(comment|request_changes|approve);commit=([0-9a-f]{7,40});open=([^>]*?)\s*-->/u;
+  /<!--\s*codegenie:verdict=(comment|approve);commit=([0-9a-f]{7,40});open=([^>]*?)\s*-->/u;
 
 export function selectPostedEvent(input: {
   mode: GitHubReviewMode;
@@ -32,10 +32,7 @@ export function selectPostedEvent(input: {
   if (input.health !== "completed") {
     return { event: "COMMENT", forcePost: true };
   }
-  if (input.mode === "approve") {
-    return { event: "APPROVE", forcePost: true };
-  }
-  return { event: "COMMENT", forcePost: true };
+  return { event: "APPROVE", forcePost: true };
 }
 
 export function staleApproval(reviews: OwnPullRequestReview[], headSha: string): OwnPullRequestReview | undefined {
@@ -101,7 +98,7 @@ export function parseVerdictMarker(body: string): { mode: GitHubReviewMode; comm
   }
   const mode = match[1];
   const commit = match[2];
-  if (mode !== "comment" && mode !== "request_changes" && mode !== "approve" || commit === undefined) {
+  if (mode !== "comment" && mode !== "approve" || commit === undefined) {
     return undefined;
   }
   return { mode, commit, open: parseOpenList(match[3] ?? "") };

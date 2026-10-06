@@ -835,7 +835,7 @@ type CodegenieConfig = {
   }
   github: {
     summaryWhenNoFindings: boolean
-    reviewMode: "comment" | "request_changes" | "approve"
+    reviewMode: "comment" | "approve"
   }
   git: {
     baseBranch?: string
@@ -1527,7 +1527,7 @@ Responsibilities:
 GitHub publishing approach:
 
 - Use `gh api` for REST calls.
-- Create one pull request review containing a summary body and inline comments. The event is `COMMENT` unless `github.reviewMode` allows `REQUEST_CHANGES` or `APPROVE`. Missing `reviewMode` is `comment`. codegenie never approves a partial, failed, or unresolved run.
+- Create one pull request review containing a summary body and inline comments. The event is `COMMENT` unless `github.reviewMode` is `approve`. Missing `reviewMode` is `comment`. `approve` submits `REQUEST_CHANGES` when issues remain and `APPROVE` only for a clean completed review. codegenie never approves a partial, failed, or unresolved run.
 - Inline comments use GitHub review comment fields such as `path`, `line`, `side`, `start_line`, `start_side`, and `commit_id` where applicable.
 - Do not use deprecated diff positions as comment anchors.
 - Use the PR head SHA as `commit_id`.

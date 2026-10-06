@@ -804,7 +804,7 @@ describe("GitHub publisher", () => {
     expect(created[0]?.body).toContain("codegenie:verdict=approve");
   });
 
-  it("requests changes for findings and never approves in request_changes mode", async () => {
+  it("requests changes for findings and approves a clean review in approve mode", async () => {
     const diff = parseDiff(RAW_DIFF);
     const hunk = diff.files[0]?.hunks[0];
     if (!hunk) throw new Error("missing hunk");
@@ -816,16 +816,16 @@ describe("GitHub publisher", () => {
     });
     await maybePublishToGitHub(reviewResult(finalFinding({ hunkId: hunk.id, line: 1 })), resolved(), {
       ...defaultConfig,
-      github: { ...defaultConfig.github, reviewMode: "request_changes" }
+      github: { ...defaultConfig.github, reviewMode: "approve" }
     }, nullTelemetry(), { github, diff });
     expect(created[0]?.event).toBe("REQUEST_CHANGES");
 
     created.length = 0;
     await maybePublishToGitHub(reviewResult(), resolved(), {
       ...defaultConfig,
-      github: { ...defaultConfig.github, reviewMode: "request_changes" }
+      github: { ...defaultConfig.github, reviewMode: "approve" }
     }, nullTelemetry(), { github, diff });
-    expect(created[0]?.event).toBe("COMMENT");
+    expect(created[0]?.event).toBe("APPROVE");
   });
 
   it("keeps an untouched prior request open and settles a touched one", async () => {
@@ -837,7 +837,7 @@ describe("GitHub publisher", () => {
       state: "CHANGES_REQUESTED",
       commitId: "c".repeat(40),
       submittedAt: "2026-01-01T00:00:00Z",
-      body: `<!-- codegenie:verdict=request_changes;commit=${"c".repeat(40)};open=${prior}:src%2Fapp.ts:1:RIGHT -->`
+      body: `<!-- codegenie:verdict=approve;commit=${"c".repeat(40)};open=${prior}:src%2Fapp.ts:1:RIGHT -->`
     }];
     const blocked = fakeGithub({
       reviews,

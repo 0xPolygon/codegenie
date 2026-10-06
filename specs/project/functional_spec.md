@@ -912,7 +912,7 @@ GitHub posting cannot be enabled from configuration in v1; it requires the expli
 
 When enabled, codegenie should:
 
-- Post inline comments and the summary as a single GitHub review. The event is `COMMENT` unless `github.reviewMode` is `request_changes` or `approve`. A missing `reviewMode` is `comment`. `approve` submits `APPROVE` only for a clean completed review and `REQUEST_CHANGES` when issues remain. `request_changes` never approves. Incomplete, failed, and unresolved runs are never approved.
+- Post inline comments and the summary as a single GitHub review. The event is `COMMENT` unless `github.reviewMode` is `approve`. A missing `reviewMode` is `comment`. `approve` submits `REQUEST_CHANGES` when issues remain and `APPROVE` only for a clean completed review. There is no request-changes-only mode: the same reviewer must be able to clear its own request by approving. Incomplete, failed, and unresolved runs are never approved.
 - Post inline comments for verified findings with valid changed-line anchors.
 - Use `RIGHT` anchors for new/head-side lines and `LEFT` anchors for removed/base-side lines when GitHub accepts old-side review comments.
 - Avoid posting low-confidence findings.

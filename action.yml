@@ -29,7 +29,7 @@ inputs:
     description: "Also post inline finding comments as a PR review (true/false). The status-comment report posts either way."
     default: "true"
   review-mode:
-    description: "GitHub review ceiling: comment, request_changes, or approve. Empty uses codegenie.toml, which defaults to comment."
+    description: "GitHub review ceiling: comment or approve. approve also requests changes when issues remain, because only that reviewer can clear its own request. Empty uses codegenie.toml, which defaults to comment."
     default: ""
   depth:
     description: "Review depth: light, normal, or deep."

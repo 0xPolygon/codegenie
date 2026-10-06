@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { CodegenieConfig, ReasoningLevel } from "../types.js";
 
 export const reviewDepthSchema = z.enum(["light", "normal", "deep"]);
-export const githubReviewModeSchema = z.enum(["comment", "request_changes", "approve"]);
+export const githubReviewModeSchema = z.enum(["comment", "approve"]);
 export const REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ReasoningLevel[];
 export const reasoningLevelSchema = z.enum(REASONING_LEVELS);
 export const severitySchema = z.enum(["critical", "high", "medium", "low"]);

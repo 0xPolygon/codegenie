@@ -20,12 +20,12 @@ describe("review verdict", () => {
     expect(selectPostedEvent({ mode: "approve", health: "completed", openIssueCount: 1 }).event).toBe("REQUEST_CHANGES");
     expect(selectPostedEvent({ mode: "approve", health: "completed", openIssueCount: 0 }).event).toBe("APPROVE");
     expect(selectPostedEvent({ mode: "approve", health: "incomplete", openIssueCount: 0 }).event).toBe("COMMENT");
-    expect(selectPostedEvent({ mode: "request_changes", health: "completed", openIssueCount: 0 }).event).toBe("COMMENT");
+    expect(selectPostedEvent({ mode: "approve", health: "completed", openIssueCount: 0 }).event).toBe("APPROVE");
   });
 
   it("round-trips the verdict marker and treats an untouched anchor as still open", () => {
     const issue = { fingerprint: "a".repeat(64), path: "src/app.ts", line: 4, side: "RIGHT" as const };
-    const marker = formatVerdictMarker("request_changes", "abc1234", [issue]);
+    const marker = formatVerdictMarker("approve", "abc1234", [issue]);
     expect(parseVerdictMarker(marker)?.open).toEqual([issue]);
     expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [2], deletedLines: [] }])).toEqual([issue]);
     expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [4], deletedLines: [] }])).toEqual([]);
