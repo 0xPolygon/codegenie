@@ -1,0 +1,117 @@
+---
+import "../styles/global.css";
+import { site } from "../data/site";
+import { withBase, absoluteUrl } from "../utils/url";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const { title = site.title, description = site.description } = Astro.props;
+
+const siteOrigin = Astro.site ?? new URL("https://0xpolygon.github.io");
+const canonical = new URL(Astro.url.pathname, siteOrigin).href;
+const ogImage = absoluteUrl("og.png", siteOrigin);
+const favicon = withBase("favicon.png");
+const appleTouch = withBase("apple-touch-icon.png");
+
+const jsonLd = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: site.name,
+  description,
+  applicationCategory: "DeveloperApplication",
+  operatingSystem: "Node.js",
+  url: canonical,
+  codeRepository: site.repo,
+  programmingLanguage: "TypeScript",
+  license: site.license,
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+};
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+
+    <link rel="icon" type="image/png" href={favicon} />
+    <link rel="apple-touch-icon" href={appleTouch} />
+    <meta name="theme-color" content="#0b0b10" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={site.name} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+
+    <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+  </head>
+
+  <body class="min-h-screen bg-bg text-text">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <slot />
+
+    {/* The only client script on the site: progressive copy-to-clipboard.
+        Buttons ship `hidden` and stay hidden when JS is off. */}
+    <script is:inline>
+      (function () {
+        var buttons = document.querySelectorAll("[data-copy]");
+        for (var i = 0; i < buttons.length; i++) {
+          (function (btn) {
+            btn.hidden = false;
+            var original = btn.textContent;
+            btn.addEventListener("click", function () {
+              var text = btn.getAttribute("data-copy") || "";
+              var done = function () {
+                btn.textContent = "Copied";
+                window.setTimeout(function () {
+                  btn.textContent = original;
+                }, 1500);
+              };
+              if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(done, function () {
+                  fallback(text, done);
+                });
+              } else {
+                fallback(text, done);
+              }
+            });
+          })(buttons[i]);
+        }
+        function fallback(text, done) {
+          var ta = document.createElement("textarea");
+          ta.value = text;
+          ta.setAttribute("readonly", "");
+          ta.style.position = "fixed";
+          ta.style.top = "-1000px";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          try {
+            /** @type {any} */ (document).execCommand("copy");
+            done();
+          } catch (e) {
+            /* clipboard unavailable; leave the label unchanged */
+          }
+          document.body.removeChild(ta);
+        }
+      })();
+    </script>
+  </body>
+</html>
