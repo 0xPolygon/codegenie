@@ -658,7 +658,7 @@ const KNOWN_PROVIDER_DESCRIPTIONS: Record<string, string> = {
   "ant-ling": "Ant Ling",
   "anthropic": "Anthropic (Claude Pro/Max OAuth or API key)",
   "antling": "Ant Ling",
-  "azure-openai-responses": "Azure OpenAI (Responses)",
+  "azure": "Azure OpenAI",
   "cerebras": "Cerebras",
   "cloudflare-ai-gateway": "Cloudflare AI Gateway",
   "cloudflare-workers-ai": "Cloudflare Workers AI",
