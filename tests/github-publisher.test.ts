@@ -852,7 +852,7 @@ describe("GitHub publisher", () => {
 
     const settled = fakeGithub({
       reviews,
-      compared: [{ path: "src/app.ts", patchMissing: false, addedLines: [1], deletedLines: [] }],
+      compared: [{ path: "src/app.ts", patchMissing: false, addedLines: [1], deletedLines: [1] }],
       createReview: async () => undefined
     });
     const settledRecord = await maybePublishToGitHub(reviewResult(), { ...resolved(), pr: { ...pr(), headSha: head }, headSha: head }, {
@@ -860,6 +860,27 @@ describe("GitHub publisher", () => {
       github: { ...defaultConfig.github, reviewMode: "approve" }
     }, nullTelemetry(), { github: settled, diff });
     expect(settledRecord?.reviewEvent).toBe("APPROVE");
+  });
+
+  it("keeps open issues from a comment review that still carries the verdict marker", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const prior = "b".repeat(64);
+    const github = fakeGithub({
+      reviews: [{
+        id: "9",
+        state: "COMMENTED",
+        commitId: "c".repeat(40),
+        submittedAt: "2026-01-01T00:00:00Z",
+        body: `<!-- codegenie:verdict=approve;commit=${"c".repeat(40)};open=${prior}:src%2Fapp.ts:1:RIGHT -->`
+      }],
+      compared: [{ path: "src/app.ts", patchMissing: false, addedLines: [1], deletedLines: [] }],
+      createReview: async () => undefined
+    });
+    const record = await maybePublishToGitHub(reviewResult(), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github, diff });
+    expect(record?.reviewEvent).toBe("REQUEST_CHANGES");
   });
 
   it("falls back to COMMENT when GitHub rejects a verdict on the author's own PR", async () => {

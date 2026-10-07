@@ -24,11 +24,12 @@ describe("review verdict", () => {
   });
 
   it("round-trips the verdict marker and treats an untouched anchor as still open", () => {
-    const issue = { fingerprint: "a".repeat(64), path: "src/app.ts", line: 4, side: "RIGHT" as const };
+    const issue = { fingerprint: "a".repeat(64), path: "src/app.ts", line: 4, side: "RIGHT" as const, lineBasis: "previous" as const };
     const marker = formatVerdictMarker("approve", "abc1234", [issue]);
     expect(parseVerdictMarker(marker)?.open).toEqual([issue]);
-    expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [2], deletedLines: [] }])).toEqual([issue]);
-    expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [4], deletedLines: [] }])).toEqual([]);
+    expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [4], deletedLines: [] }])).toEqual([issue]);
+    expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [], deletedLines: [4] }])).toEqual([]);
+    expect(carryForwardIssues([{ ...issue, lineBasis: "current" }], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [4], deletedLines: [] }])).toEqual([]);
     expect(changedLinesFromPatch("@@ -1,1 +1,2 @@\n context\n+added\n").addedLines).toEqual([2]);
   });
 

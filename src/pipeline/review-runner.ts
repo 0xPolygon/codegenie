@@ -74,6 +74,7 @@ type RunReviewOverrides = {
   runArtifactDir?: string;
   format?: OutputFormat;
   postGithubComments?: boolean;
+  skipGithubInlineComments?: boolean;
   configWarnings?: ConfigWarning[];
   writeOutput?: (text: string) => void;
   runner?: LlmRunner;
@@ -356,7 +357,8 @@ export async function runReview(
     await run.telemetry.writeArtifact("budget-summary.json", finalReview.budgetSummary);
     const posting = await maybePublishToGitHub(finalReview, resolved, config, run.telemetry, {
       diff,
-      ...(overrides.github !== undefined ? { github: overrides.github } : {})
+      ...(overrides.github !== undefined ? { github: overrides.github } : {}),
+      ...(overrides.skipGithubInlineComments === true ? { skipInlineComments: true } : {})
     });
     if (posting !== undefined) {
       run.telemetry.event({
@@ -942,16 +944,16 @@ async function dismissStaleApproval(
     });
   } catch (error) {
     const status = isCodegenieError(error) ? error.context?.httpStatus : undefined;
-    if (status === 403) {
-      run.telemetry.event({
-        stage: 1,
-        level: "warn",
-        message: "github_stale_approval_dismiss_forbidden",
-        data: { reviewId: latest.id }
-      });
-      return;
-    }
-    throw error;
+    run.telemetry.event({
+      stage: 1,
+      level: "warn",
+      message: status === 403 ? "github_stale_approval_dismiss_forbidden" : "github_stale_approval_dismiss_skipped",
+      data: {
+        reviewId: latest.id,
+        ...(status !== undefined ? { httpStatus: status } : {}),
+        reason: error instanceof Error ? error.message : String(error)
+      }
+    });
   }
 }
 
@@ -989,7 +991,7 @@ async function maybeZeroWork(
     degradedPlanning: false,
     budgetStopped: false,
     verificationIncompleteCount: 0,
-    partial: false,
+    partial: totalHunks > 0,
     reasons
   };
   const result: ReviewResult = {
@@ -1014,7 +1016,8 @@ async function maybeZeroWork(
   await run.telemetry.writeArtifact("final-findings.json", []);
   await run.telemetry.writeArtifact("budget-summary.json", result.budgetSummary);
   await maybePublishToGitHub(result, resolved, config, run.telemetry, {
-    ...(overrides.github !== undefined ? { github: overrides.github } : {})
+    ...(overrides.github !== undefined ? { github: overrides.github } : {}),
+    ...(overrides.skipGithubInlineComments === true ? { skipInlineComments: true } : {})
   });
   result.runStats = buildRunStats(config, resolved, run);
   await renderOutputs(result, overrides, run.telemetry);

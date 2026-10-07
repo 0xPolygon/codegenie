@@ -37,6 +37,7 @@ type PublishOptions = {
   github?: GitHubClient;
   diff?: UnifiedDiff;
   provenance?: ReviewBodyProvenance;
+  skipInlineComments?: boolean;
 };
 
 type ReviewBodyProvenance = {
@@ -134,7 +135,7 @@ export async function maybePublishToGitHub(
     inlineCandidates.map(({ finding, anchor }) => ({ ...finding, anchor })), comments
   );
   const duplicateById = new Map(duplicateDecisions.map((decision) => [decision.findingId, decision]));
-  const prepared = inlineCandidates
+  const prepared = opts.skipInlineComments === true ? [] : inlineCandidates
     .filter(({ finding }) => duplicateById.get(finding.id)?.action === "post")
     .map(({ finding, anchor }) => prepareInlineComment(finding, anchor, telemetry.runId, deletedAnchors.has(anchorKey(anchor))));
   const skippedDuplicates = duplicateDecisions.filter((decision) => decision.action !== "post").length;
@@ -231,7 +232,7 @@ async function carriedOpenIssues(
     return { issues: [], unknown: true };
   }
   const latest = latestSubmittedReview(reviews);
-  if (latest?.state !== "CHANGES_REQUESTED") {
+  if (latest === undefined || latest.state === "APPROVED" || latest.state === "DISMISSED") {
     return { issues: [], unknown: false };
   }
   const comments = await github.listOwnComments(prNumber);
@@ -283,6 +284,11 @@ async function postWithRecovery(
         currentEvent = "COMMENT";
         record.verdictFallback = "own_pr";
         record.attempts.push({ httpStatus: 422, commentCount: comments.length, outcome: "rejected" });
+        if (attempt === 3 && comments.length > 0) {
+          currentBody = demoteCommentsIntoBody(currentBody, comments, record, finalize);
+          comments = [];
+          summaryOnly = true;
+        }
         continue;
       }
       if (attemptingSummaryOnly) {

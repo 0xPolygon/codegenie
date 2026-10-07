@@ -241,6 +241,9 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
             if (marker.contentFingerprint !== undefined) thread.contentFingerprint = marker.contentFingerprint;
             if (comment.body !== undefined) thread.body = comment.body;
           }
+          if (typeof comment.line === "number") {
+            thread.lineIsCurrent = true;
+          }
           if (comment.pull_request_review_id !== undefined && comment.pull_request_review_id !== null) {
             thread.pullRequestReviewId = String(comment.pull_request_review_id);
           }

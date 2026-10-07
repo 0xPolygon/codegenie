@@ -26,7 +26,7 @@ inputs:
     description: "Comma-separated logins allowed to trigger regardless of association. Widening this is a deliberate security decision."
     default: ""
   post-inline-comments:
-    description: "Also post inline finding comments as a PR review (true/false). The status-comment report posts either way."
+    description: "Also post inline finding comments as a PR review (true/false). The status-comment report posts either way. review-mode approve still posts a verdict when this is false, but it does not post inline comments."
     default: "true"
   review-mode:
     description: "GitHub review ceiling: comment or approve. approve also requests changes when issues remain, because only that reviewer can clear its own request. Empty uses codegenie.toml, which defaults to comment."

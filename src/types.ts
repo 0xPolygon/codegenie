@@ -121,6 +121,7 @@ export type ReviewCommandTarget =
 export type ReviewCommandOptions = {
   format: OutputFormat;
   postGithubComments: boolean;
+  skipGithubInlineComments?: boolean;
   cacheOverride?: boolean;
   progress: boolean;
 };
@@ -179,6 +180,8 @@ export type ExistingReviewThread = {
   contentFingerprint?: string;
   body?: string;
   pullRequestReviewId?: string;
+  /** True when `line` is GitHub's current diff line, not `original_line`. */
+  lineIsCurrent?: boolean;
 };
 
 export type OwnPullRequestReview = {

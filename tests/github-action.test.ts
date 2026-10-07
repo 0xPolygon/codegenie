@@ -1064,10 +1064,28 @@ describe("github-action entrypoint", () => {
       }
     });
     expect(reviewArgv).toContain("--post-github-comments");
+    expect(reviewArgv).toContain("--skip-github-inline-comments");
     expect(reviewArgv).toContain("--review-mode");
     expect(reviewArgv).toContain("approve");
     expect(parseGitHubActionArgs(["--review-mode", ""])).not.toHaveProperty("reviewMode");
     expect(() => parseGitHubActionArgs(["--review-mode", "ship"])).toThrow(/review-mode/u);
+  });
+
+  it("omits review-mode when comment mode posts nothing", async () => {
+    const fake = createFakeComments();
+    let reviewArgv: string[] = [];
+    await executeGitHubActionCommand(["--review-mode", "comment", "--post-inline-comments", "false"], {
+      env: actionEnv(issueCommentPayload(), "issue_comment"),
+      issueComments: fake.client,
+      minEditIntervalMs: 0,
+      writeOutput: () => undefined,
+      runReview: async (argv) => {
+        reviewArgv = argv;
+        return { runId: "r1", runDir: "", reportMarkdown: "# report" };
+      }
+    });
+    expect(reviewArgv).not.toContain("--review-mode");
+    expect(reviewArgv).not.toContain("--post-github-comments");
   });
 
   it("finalizes returned worker failures as failure while retaining the partial report", async () => {

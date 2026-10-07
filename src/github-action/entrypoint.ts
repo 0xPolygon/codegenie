@@ -223,6 +223,7 @@ export async function executeGitHubActionCommand(
     String(decision.prNumber),
     "--ci",
     ...(inputs.postInlineComments || postsVerdict ? ["--post-github-comments"] : []),
+    ...(postsVerdict && !inputs.postInlineComments ? ["--skip-github-inline-comments"] : []),
     ...(inputs.reviewMode !== undefined && (inputs.postInlineComments || postsVerdict) ? ["--review-mode", inputs.reviewMode] : []),
     ...(selection !== undefined
       ? [

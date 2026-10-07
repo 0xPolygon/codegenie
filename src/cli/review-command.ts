@@ -54,6 +54,7 @@ type CommanderReviewOptions = {
   skipSvgReview?: boolean;
   format?: string;
   postGithubComments?: boolean;
+  skipGithubInlineComments?: boolean;
   reviewMode?: string;
   cache?: boolean;
   ci?: boolean;
@@ -101,6 +102,7 @@ export function parseReviewCommand(
     .option("--no-composition-reasoning-step-down", "use the configured reasoning level for composition")
     .option("--format <format>", "output format: markdown or json", "markdown")
     .option("--post-github-comments", "post inline comments to GitHub for --pr runs")
+    .option("--skip-github-inline-comments", "post the review verdict without inline comments")
     .option("--review-mode <mode>", "GitHub review ceiling: comment or approve")
     .option("--ci", "disable interactive progress output for CI-friendly logs")
     .option("--no-progress", "disable the interactive progress spinner")
@@ -179,6 +181,7 @@ export async function executeReviewCommand(
     repoRoot: parsed.repoRoot,
     format: parsed.options.format,
     postGithubComments: parsed.options.postGithubComments,
+    ...(parsed.options.skipGithubInlineComments ? { skipGithubInlineComments: true } : {}),
     onRunStart: (run: { runId: string; runDir: string }) => {
       attached = run;
       opts.onRunStart?.(run);
@@ -225,6 +228,9 @@ function resolveTarget(options: CommanderReviewOptions, commits: string[]): Revi
   }
   if (options.reviewMode !== undefined && !options.postGithubComments) {
     throw new CodegenieError("invalid_args", "--review-mode requires --post-github-comments");
+  }
+  if (options.skipGithubInlineComments && !options.postGithubComments) {
+    throw new CodegenieError("invalid_args", "--skip-github-inline-comments requires --post-github-comments");
   }
 
   if (options.base !== undefined && (hasPr || (hasCommits && !isSingleRef(commits)))) {
@@ -342,6 +348,7 @@ function buildReviewOptions(options: CommanderReviewOptions): ParsedReviewComman
   const parsed = {
     format: parseFormat(options.format ?? "markdown"),
     postGithubComments: options.postGithubComments ?? false,
+    ...(options.skipGithubInlineComments ? { skipGithubInlineComments: true } : {}),
     progress: options.ci === true ? false : options.progress !== false
   };
   return {

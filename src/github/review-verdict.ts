@@ -13,6 +13,8 @@ export type OpenReviewIssue = {
   path: string;
   line: number;
   side: "RIGHT" | "LEFT";
+  /** `previous` lines belong to the prior review commit. `current` lines belong to the new head. */
+  lineBasis: "previous" | "current";
 };
 
 const VERDICT_MARKER =
@@ -58,7 +60,13 @@ export function issuesFromReview(
     if (comment.pullRequestReviewId !== review.id || comment.fingerprint === undefined || comment.path === undefined || comment.line === undefined || comment.side === undefined) {
       return [];
     }
-    return [{ fingerprint: comment.fingerprint, path: comment.path, line: comment.line, side: comment.side }];
+    return [{
+      fingerprint: comment.fingerprint,
+      path: comment.path,
+      line: comment.line,
+      side: comment.side,
+      lineBasis: comment.lineIsCurrent === true ? "current" : "previous"
+    }];
   });
   const fromBody = parseVerdictMarker(review.body ?? "")?.open ?? [];
   const seen = new Set<string>();
@@ -113,7 +121,8 @@ export function issuesFromFindings(findings: FinalFinding[]): OpenReviewIssue[] 
       fingerprint: finding.fingerprint,
       path: finding.anchor.path,
       line: finding.anchor.line,
-      side: finding.anchor.side
+      side: finding.anchor.side,
+      lineBasis: "current"
     }];
   });
 }
@@ -168,6 +177,10 @@ function anchorSettled(issue: OpenReviewIssue, files: ComparedFileLines[] | unde
   if (file.patchMissing) {
     return false;
   }
+  // A marker line is numbered on the previous commit. Compare deleted lines, not new-head added lines.
+  if (issue.lineBasis !== "current") {
+    return issue.side === "RIGHT" && file.deletedLines.includes(issue.line);
+  }
   const lines = issue.side === "LEFT" ? file.deletedLines : file.addedLines;
   return lines.includes(issue.line);
 }
@@ -184,6 +197,6 @@ function parseOpenList(raw: string): OpenReviewIssue[] {
     if (!/^[0-9a-f]{64}$/u.test(fingerprint) || !/^\d+$/u.test(line)) {
       return [];
     }
-    return [{ fingerprint, path: decodeURIComponent(encodedPath), line: Number(line), side }];
+    return [{ fingerprint, path: decodeURIComponent(encodedPath), line: Number(line), side, lineBasis: "previous" }];
   });
 }
