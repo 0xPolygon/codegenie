@@ -65,7 +65,7 @@ export function issuesFromReview(
       path: comment.path,
       line: comment.line,
       side: comment.side,
-      lineBasis: comment.lineIsCurrent === true ? "current" : "previous"
+      lineBasis: comment.lineIsCurrent === true ? "current" as const : "previous" as const
     }];
   });
   const fromBody = parseVerdictMarker(review.body ?? "")?.open ?? [];
