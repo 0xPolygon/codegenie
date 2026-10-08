@@ -132,7 +132,6 @@ export async function runReview(
     });
     const resolved = await resolveInput(input, config, run.telemetry, repoRoot, overrides);
     throwIfHardAborted(run);
-    await dismissStaleApproval(resolved, config, run, overrides);
     await run.telemetry.writeArtifact("resolved-input.json", summarizeResolvedInput(resolved));
     run.telemetry.event({
       stage: 1,
@@ -184,6 +183,8 @@ export async function runReview(
       await run.finalize({ status: "completed_full", exitCode: 0 });
       return zeroWork;
     }
+    // Dismiss only once there is reviewable work. An exclusion-only push cannot earn a new approval, so it keeps the old one.
+    await dismissStaleApproval(resolved, config, run, overrides);
 
     run.telemetry.event({
       stage: 3,
@@ -923,7 +924,7 @@ async function dismissStaleApproval(
     reviews = await github.listOwnReviews(resolved.pr.number);
   } catch (error) {
     run.telemetry.event({
-      stage: 1,
+      stage: 2,
       level: "warn",
       message: "github_stale_approval_dismiss_skipped",
       data: { reason: error instanceof Error ? error.message : String(error) }
@@ -937,7 +938,7 @@ async function dismissStaleApproval(
   try {
     await github.dismissReview(resolved.pr.number, latest.id, "New commits pushed since approval; re-reviewing");
     run.telemetry.event({
-      stage: 1,
+      stage: 2,
       level: "info",
       message: "github_stale_approval_dismissed",
       data: { reviewId: latest.id, commitId: latest.commitId }
@@ -945,7 +946,7 @@ async function dismissStaleApproval(
   } catch (error) {
     const status = isCodegenieError(error) ? error.context?.httpStatus : undefined;
     run.telemetry.event({
-      stage: 1,
+      stage: 2,
       level: "warn",
       message: status === 403 ? "github_stale_approval_dismiss_forbidden" : "github_stale_approval_dismiss_skipped",
       data: {

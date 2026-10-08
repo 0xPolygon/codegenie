@@ -417,9 +417,12 @@ function filterRepoConfig(raw: RawCodegenieConfig, warnings: ConfigWarning[]): R
   }
 
   if (raw.github) {
+    // The reviewed tree may be PR-author-controlled, so repo config can lower the review ceiling but never raise it to approve.
     const reviewMode = raw.github.reviewMode;
-    if (reviewMode !== undefined) {
+    if (reviewMode === "comment") {
       safe.github = { reviewMode };
+    } else if (reviewMode !== undefined) {
+      warnIgnoredRepoKey(warnings, "github.reviewMode");
     }
     for (const key of Object.keys(raw.github)) {
       if (key !== "reviewMode") {

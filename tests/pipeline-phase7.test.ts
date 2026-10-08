@@ -73,6 +73,49 @@ describe("phase 7 GitHub pipeline integration", () => {
     expect(readFileSync(runFilePath(runArtifactDir, "github-posting.json"), "utf8")).toContain("\"inlinePosted\": 0");
   });
 
+  it("keeps a stale approval on an exclusion-only push and dismisses it once there is reviewable work", async () => {
+    const staleApprove = [{ id: "7", state: "APPROVED", commitId: "c".repeat(40), submittedAt: "2026-01-01T00:00:00Z" }];
+    const approveConfig = (runArtifactDir: string): CodegenieConfig => ({
+      ...phase7Config(runArtifactDir),
+      github: { ...defaultConfig.github, reviewMode: "approve" },
+      classification: { pathRules: [{ pattern: "generated/**", processingMode: "skip", reason: "generated output" }] }
+    });
+
+    const excludedRepo = initRepo();
+    writeRepoFile(excludedRepo, "generated/out.ts", "export const value = 1;\n");
+    const excludedBase = commitAll(excludedRepo, "base");
+    git(excludedRepo, ["checkout", "-b", "feature"]);
+    writeRepoFile(excludedRepo, "generated/out.ts", "export const value = 2;\n");
+    const excludedHead = commitAll(excludedRepo, "feature");
+    const excludedDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-phase7-excluded-")), "pr-review");
+    const excludedDismissed: string[] = [];
+    await runReview({ mode: "github_pr", prNumber: 44 }, approveConfig(excludedDir), {
+      repoRoot: excludedRepo,
+      runArtifactDir: excludedDir,
+      postGithubComments: true,
+      github: fakeGithub(excludedBase, excludedHead, [], { reviews: staleApprove, dismissed: excludedDismissed }),
+      writeOutput: () => undefined
+    });
+    expect(excludedDismissed).toEqual([]);
+
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    const base = commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "export const value = 2; // CODEGENIE_FAKE_FINDING HIGH_CONFIDENCE\n");
+    const head = commitAll(repo, "feature");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-phase7-stale-")), "pr-review");
+    const dismissed: string[] = [];
+    await runReview({ mode: "github_pr", prNumber: 44 }, approveConfig(runArtifactDir), {
+      repoRoot: repo,
+      runArtifactDir,
+      postGithubComments: true,
+      github: fakeGithub(base, head, [], { reviews: staleApprove, dismissed }),
+      writeOutput: () => undefined
+    });
+    expect(dismissed).toEqual(["7"]);
+  });
+
   it("scrubs pinned secret patterns from final review artifacts", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "console.log(\"safe\");\n");
@@ -107,7 +150,12 @@ function phase7Config(runArtifactDir: string): CodegenieConfig {
   };
 }
 
-function fakeGithub(baseSha: string, headSha: string, posted: Array<{ comments: unknown[]; body: string }>): GitHubClient {
+function fakeGithub(
+  baseSha: string,
+  headSha: string,
+  posted: Array<{ comments: unknown[]; body: string }>,
+  approvals: { reviews?: Awaited<ReturnType<GitHubClient["listOwnReviews"]>>; dismissed?: string[] } = {}
+): GitHubClient {
   const metadata: PullRequestMetadata = {
     owner: "0xPolygon",
     repo: "codegenie",
@@ -123,8 +171,10 @@ function fakeGithub(baseSha: string, headSha: string, posted: Array<{ comments: 
   return {
     viewPr: async () => metadata,
     listOwnComments: async () => [],
-    listOwnReviews: async () => [],
-    dismissReview: async () => undefined,
+    listOwnReviews: async () => approvals.reviews ?? [],
+    dismissReview: async (_number, reviewId) => {
+      approvals.dismissed?.push(reviewId);
+    },
     compareFiles: async () => [],
     createReview: async (_number, review) => {
       posted.push({ comments: review.comments, body: review.body });
