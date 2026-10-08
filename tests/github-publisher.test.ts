@@ -904,6 +904,38 @@ describe("GitHub publisher", () => {
     expect(record?.reviewEvent).toBe("REQUEST_CHANGES");
   });
 
+  it("carries a standing change request past a later markerless comment-mode review", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const prior = "d".repeat(64);
+    const created: Array<{ event: string; body: string }> = [];
+    const github = fakeGithub({
+      reviews: [{
+        id: "9",
+        state: "CHANGES_REQUESTED",
+        commitId: "c".repeat(40),
+        submittedAt: "2026-01-01T00:00:00Z",
+        body: `<!-- codegenie:verdict=approve;commit=${"c".repeat(40)};open=${prior}:src%2Fapp.ts:1:RIGHT -->`
+      }, {
+        id: "10",
+        state: "COMMENTED",
+        commitId: "c".repeat(40),
+        submittedAt: "2026-01-02T00:00:00Z",
+        body: "Comment-mode review without a verdict marker."
+      }],
+      compared: [{ path: "src/app.ts", patchMissing: false, addedLines: [], deletedLines: [] }],
+      createReview: async (_number, review) => {
+        created.push(review);
+      }
+    });
+    const record = await maybePublishToGitHub(reviewResult(), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github, diff });
+    expect(record?.reviewEvent).toBe("REQUEST_CHANGES");
+    expect(created[0]?.body).toContain("Still open from the previous review");
+    expect(created[0]?.body).toContain("src/app.ts:1");
+  });
+
   it("falls back to COMMENT when GitHub rejects a verdict on the author's own PR", async () => {
     const created: string[] = [];
     const github = fakeGithub({

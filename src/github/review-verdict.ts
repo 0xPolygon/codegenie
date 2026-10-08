@@ -53,6 +53,13 @@ export function latestSubmittedReview(reviews: OwnPullRequestReview[]): OwnPullR
     .at(-1);
 }
 
+/** The newest review that records verdict state. A markerless COMMENTED review comes from comment mode and holds none. */
+export function latestVerdictReview(reviews: OwnPullRequestReview[]): OwnPullRequestReview | undefined {
+  return latestSubmittedReview(reviews.filter((review) =>
+    review.state !== "COMMENTED" || parseVerdictMarker(review.body ?? "") !== undefined
+  ));
+}
+
 export function issuesFromReview(
   review: OwnPullRequestReview,
   comments: ExistingReviewThread[]

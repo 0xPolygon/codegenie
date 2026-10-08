@@ -27,7 +27,7 @@ import {
   formatVerdictMarker,
   issuesFromFindings,
   issuesFromReview,
-  latestSubmittedReview,
+  latestVerdictReview,
   renderCarriedIssues,
   selectPostedEvent,
   type OpenReviewIssue
@@ -245,7 +245,7 @@ async function carriedOpenIssues(
   } catch {
     return { issues: [], unknown: true };
   }
-  const latest = latestSubmittedReview(reviews);
+  const latest = latestVerdictReview(reviews);
   if (latest === undefined || latest.state === "APPROVED" || latest.state === "DISMISSED") {
     return { issues: [], unknown: false };
   }
