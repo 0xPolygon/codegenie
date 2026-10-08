@@ -311,6 +311,8 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
 
     async compareFiles(baseSha: string, headSha: string): Promise<ComparedFileLines[]> {
       const loadedRepo = await loadRepo();
+      // GitHub caps `files` at 300 for the whole comparison and does not paginate it (page/per_page page commits).
+      // A file past the cap is absent, so anchorSettled keeps its issue open: conservative, never a wrong approval.
       const stdout = await gh(
         repoRoot,
         ["api", `repos/${loadedRepo.owner}/${loadedRepo.repo}/compare/${baseSha}...${headSha}`],

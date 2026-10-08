@@ -936,6 +936,26 @@ describe("GitHub publisher", () => {
     expect(created[0]?.body).toContain("src/app.ts:1");
   });
 
+  it("posts COMMENT instead of APPROVE when prior reviews cannot be listed", async () => {
+    const created: Array<{ event: string; body: string }> = [];
+    const github = fakeGithub({
+      listOwnReviews: async () => {
+        throw new CodegenieError("github_post_failed", "rate limited");
+      },
+      createReview: async (_number, review) => {
+        created.push(review);
+      }
+    });
+    const record = await maybePublishToGitHub(reviewResult(), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github, diff: parseDiff(RAW_DIFF) });
+    expect(record?.reviewEvent).toBe("COMMENT");
+    expect(created).toHaveLength(1);
+    expect(created[0]?.event).toBe("COMMENT");
+    expect(created[0]?.body.trim().length).toBeGreaterThan(0);
+  });
+
   it("falls back to COMMENT when GitHub rejects a verdict on the author's own PR", async () => {
     const created: string[] = [];
     const github = fakeGithub({
@@ -964,13 +984,14 @@ function fakeGithub(
     reviews?: import("../src/types.js").OwnPullRequestReview[];
     compared?: import("../src/types.js").ComparedFileLines[];
     viewPr?: GitHubClient["viewPr"];
+    listOwnReviews?: GitHubClient["listOwnReviews"];
     createReview?: GitHubClient["createReview"];
   } = {}
 ): GitHubClient {
   return {
     viewPr: opts.viewPr ?? (async () => pr()),
     listOwnComments: async () => opts.comments ?? [],
-    listOwnReviews: async () => opts.reviews ?? [],
+    listOwnReviews: opts.listOwnReviews ?? (async () => opts.reviews ?? []),
     dismissReview: async () => undefined,
     compareFiles: async () => opts.compared ?? [],
     createReview: opts.createReview ?? (async () => undefined)
