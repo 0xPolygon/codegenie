@@ -828,6 +828,27 @@ describe("GitHub publisher", () => {
     expect(created[0]?.event).toBe("APPROVE");
   });
 
+  it("names the open issues when approve mode requests changes with every inline comment suppressed", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const hunk = diff.files[0]?.hunks[0];
+    if (!hunk) throw new Error("missing hunk");
+    const created: Array<{ event: string; body: string }> = [];
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        created.push(review);
+      }
+    });
+    const finding = finalFinding({ hunkId: hunk.id, line: 1 });
+    await maybePublishToGitHub(reviewResult(finding), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve", summaryWhenNoFindings: false }
+    }, nullTelemetry(), { github, diff, skipInlineComments: true });
+    expect(created).toHaveLength(1);
+    expect(created[0]?.event).toBe("REQUEST_CHANGES");
+    expect(created[0]?.body).not.toMatch(/no open issues/iu);
+    expect(created[0]?.body).toContain(finding.title);
+  });
+
   it("keeps an untouched prior request open and settles a touched one", async () => {
     const diff = parseDiff(RAW_DIFF);
     const prior = "a".repeat(64);

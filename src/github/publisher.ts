@@ -162,7 +162,7 @@ export async function maybePublishToGitHub(
     reviewBody = `This review is partial; confirmed findings still require changes.\n\n${reviewBody}`.trim();
   }
   if (decision.forcePost && reviewBody.trim().length === 0) {
-    reviewBody = decision.event === "APPROVE" ? "Approved." : "No open issues.";
+    reviewBody = forcedFallbackBody(decision.event, published);
   }
   const verdictMarker = mode !== "comment" && reviewBody.trim().length > 0
     ? formatVerdictMarker(mode, resolved.pr.headSha, [...issuesFromFindings(published), ...carried])
@@ -217,6 +217,20 @@ export async function maybePublishToGitHub(
     }
     throw new CodegenieError("github_post_failed", record.error, { cause: error });
   }
+}
+
+function forcedFallbackBody(event: GitHubReviewEvent, published: FinalFinding[]): string {
+  if (event === "APPROVE") {
+    return "Approved.";
+  }
+  if (event === "COMMENT") {
+    return "No open issues.";
+  }
+  // Inline comments for these findings were suppressed (duplicates or skipped), so name them here.
+  const lines = published.map((finding) =>
+    `- ${severityBadge(finding.severity)}: **${finding.title}** (${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)})`
+  );
+  return ["Changes requested. These issues are still open:", "", ...lines].join("\n");
 }
 
 async function carriedOpenIssues(

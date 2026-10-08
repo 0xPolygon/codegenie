@@ -177,12 +177,16 @@ function anchorSettled(issue: OpenReviewIssue, files: ComparedFileLines[] | unde
   if (file.patchMissing) {
     return false;
   }
+  // A LEFT line is numbered on the PR base, which the previous-to-head compare never expresses.
+  // Treat any change to the file since the last review as settling it; a still-present issue is re-raised by fingerprint.
+  if (issue.side === "LEFT") {
+    return file.addedLines.length > 0 || file.deletedLines.length > 0;
+  }
   // A marker line is numbered on the previous commit. Compare deleted lines, not new-head added lines.
   if (issue.lineBasis !== "current") {
-    return issue.side === "RIGHT" && file.deletedLines.includes(issue.line);
+    return file.deletedLines.includes(issue.line);
   }
-  const lines = issue.side === "LEFT" ? file.deletedLines : file.addedLines;
-  return lines.includes(issue.line);
+  return file.addedLines.includes(issue.line);
 }
 
 function parseOpenList(raw: string): OpenReviewIssue[] {

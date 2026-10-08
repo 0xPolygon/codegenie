@@ -33,6 +33,13 @@ describe("review verdict", () => {
     expect(changedLinesFromPatch("@@ -1,1 +1,2 @@\n context\n+added\n").addedLines).toEqual([2]);
   });
 
+  it("settles a LEFT anchor once its file changes and keeps it while the file is untouched", () => {
+    const left = { fingerprint: "b".repeat(64), path: "src/app.ts", line: 9, side: "LEFT" as const, lineBasis: "previous" as const };
+    expect(carryForwardIssues([left], new Set(), [])).toEqual([left]);
+    expect(carryForwardIssues([left], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [2], deletedLines: [] }])).toEqual([]);
+    expect(carryForwardIssues([{ ...left, lineBasis: "current" }], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [], deletedLines: [3] }])).toEqual([]);
+  });
+
   it("dismisses only a stale approval, never a standing change request", () => {
     const head = "h".repeat(40);
     const approved = { id: "1", state: "APPROVED", commitId: "a".repeat(40), submittedAt: "2026-01-02T00:00:00Z" };

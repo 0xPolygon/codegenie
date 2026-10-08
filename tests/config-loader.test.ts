@@ -37,6 +37,9 @@ describe("config loader", () => {
     expect(loaded.config.github.reviewMode).toBe("approve");
     expect(loaded.config.github.summaryWhenNoFindings).toBe(false);
     expect(loaded.warnings.some((warning) => warning.key === "github.summaryWhenNoFindings")).toBe(true);
+    const overridden = loadConfig({ repoRoot, homeOverride, cli: { reviewMode: "comment" } });
+    expect(overridden.config.github.reviewMode).toBe("comment");
+    expect(overridden.sources["github.reviewMode"]).toBe("cli");
     writeFileSync(path.join(repoRoot, "codegenie.toml"), "[github]\nreviewMode = \"nope\"\n");
     expect(() => loadConfig({ repoRoot, homeOverride })).toThrow(CodegenieError);
   });
