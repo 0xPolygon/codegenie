@@ -89,14 +89,17 @@ describe("phase 7 GitHub pipeline integration", () => {
     const excludedHead = commitAll(excludedRepo, "feature");
     const excludedDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-phase7-excluded-")), "pr-review");
     const excludedDismissed: string[] = [];
+    const excludedEvents: string[] = [];
     await runReview({ mode: "github_pr", prNumber: 44 }, approveConfig(excludedDir), {
       repoRoot: excludedRepo,
       runArtifactDir: excludedDir,
       postGithubComments: true,
-      github: fakeGithub(excludedBase, excludedHead, [], { reviews: staleApprove, dismissed: excludedDismissed }),
+      github: fakeGithub(excludedBase, excludedHead, [], { reviews: staleApprove, dismissed: excludedDismissed, events: excludedEvents }),
       writeOutput: () => undefined
     });
     expect(excludedDismissed).toEqual([]);
+    // Zero reviewed hunks is an incomplete run, so it must post a verdict that is not an approval.
+    expect(excludedEvents).toEqual(["COMMENT"]);
 
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
@@ -154,7 +157,7 @@ function fakeGithub(
   baseSha: string,
   headSha: string,
   posted: Array<{ comments: unknown[]; body: string }>,
-  approvals: { reviews?: Awaited<ReturnType<GitHubClient["listOwnReviews"]>>; dismissed?: string[] } = {}
+  approvals: { reviews?: Awaited<ReturnType<GitHubClient["listOwnReviews"]>>; dismissed?: string[]; events?: string[] } = {}
 ): GitHubClient {
   const metadata: PullRequestMetadata = {
     owner: "0xPolygon",
@@ -178,6 +181,7 @@ function fakeGithub(
     compareFiles: async () => [],
     createReview: async (_number, review) => {
       posted.push({ comments: review.comments, body: review.body });
+      approvals.events?.push(review.event);
     }
   };
 }
