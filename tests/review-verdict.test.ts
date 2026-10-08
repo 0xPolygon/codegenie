@@ -33,6 +33,15 @@ describe("review verdict", () => {
     expect(changedLinesFromPatch("@@ -1,1 +1,2 @@\n context\n+added\n").addedLines).toEqual([2]);
   });
 
+  it("keeps a prior issue open when the compare patch is unavailable", () => {
+    const right = { fingerprint: "a".repeat(64), path: "src/app.ts", line: 4, side: "RIGHT" as const, lineBasis: "previous" as const };
+    const left = { ...right, fingerprint: "c".repeat(64), side: "LEFT" as const };
+    const patchless = [{ path: "src/app.ts", patchMissing: true, addedLines: [4], deletedLines: [4] }];
+    expect(carryForwardIssues([right], new Set(), patchless)).toEqual([right]);
+    expect(carryForwardIssues([{ ...right, lineBasis: "current" as const }], new Set(), patchless)).toEqual([{ ...right, lineBasis: "current" }]);
+    expect(carryForwardIssues([left], new Set(), patchless)).toEqual([left]);
+  });
+
   it("settles a LEFT anchor once its file changes and keeps it while the file is untouched", () => {
     const left = { fingerprint: "b".repeat(64), path: "src/app.ts", line: 9, side: "LEFT" as const, lineBasis: "previous" as const };
     expect(carryForwardIssues([left], new Set(), [])).toEqual([left]);
