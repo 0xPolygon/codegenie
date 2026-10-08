@@ -47,5 +47,8 @@ describe("review verdict", () => {
     expect(staleApproval([approved], head)?.id).toBe("1");
     expect(staleApproval([approved, requested], head)).toBeUndefined();
     expect(staleApproval([{ ...approved, commitId: head }], head)).toBeUndefined();
+    const commented = { id: "3", state: "COMMENTED", commitId: "b".repeat(40), submittedAt: "2026-01-04T00:00:00Z" };
+    expect(staleApproval([approved, commented], head)?.id).toBe("1");
+    expect(staleApproval([approved, requested, commented], head)).toBeUndefined();
   });
 });

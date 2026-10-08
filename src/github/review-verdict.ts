@@ -38,7 +38,8 @@ export function selectPostedEvent(input: {
 }
 
 export function staleApproval(reviews: OwnPullRequestReview[], headSha: string): OwnPullRequestReview | undefined {
-  const latest = latestSubmittedReview(reviews);
+  // GitHub ignores COMMENTED reviews when deciding a reviewer's standing verdict, so a later comment must not hide an approval.
+  const latest = latestSubmittedReview(reviews.filter((review) => review.state !== "COMMENTED"));
   if (latest?.state !== "APPROVED" || latest.commitId === undefined || latest.commitId === headSha) {
     return undefined;
   }
