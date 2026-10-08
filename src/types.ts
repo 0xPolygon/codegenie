@@ -194,6 +194,8 @@ export type OwnPullRequestReview = {
 
 export type ComparedFileLines = {
   path: string;
+  /** Pre-rename path, when GitHub reports the file as renamed in this comparison. */
+  previousPath?: string;
   status?: string;
   patchMissing: boolean;
   addedLines: number[];

@@ -97,6 +97,99 @@ describe("GitHub client", () => {
     ]);
   });
 
+  it("lists only viewer-authored reviews across pages and stops after a short page", async () => {
+    const reviewCalls: string[] = [];
+    const gh: RunGh = async (_repoRoot, args) => {
+      if (args[0] === "--version" || args.join(" ") === "auth status") {
+        return "";
+      }
+      if (args.join(" ") === "repo view --json owner,name") {
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codegenie" });
+      }
+      if (args.join(" ") === "api user --jq .login") {
+        return "codebot\n";
+      }
+      if (args[0] === "api" && String(args[1]).startsWith("repos/0xPolygon/codegenie/pulls/5/reviews?")) {
+        reviewCalls.push(String(args[1]));
+        if (String(args[1]).endsWith("page=1")) {
+          return JSON.stringify(Array.from({ length: 100 }, (_, index) => index === 0
+            ? { id: 11, state: "CHANGES_REQUESTED", commit_id: "c".repeat(40), body: "first", submitted_at: "2026-01-01T00:00:00Z", user: { login: "CodeBot" } }
+            : { id: 1000 + index, state: "COMMENTED", user: { login: "other" } }));
+        }
+        return JSON.stringify([
+          { id: 12, state: "APPROVED", commit_id: "d".repeat(40), body: "", submitted_at: "2026-01-02T00:00:00Z", user: { login: "codebot" } }
+        ]);
+      }
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    };
+    const client = createGitHubClient("/repo", { runGh: gh });
+
+    await expect(client.listOwnReviews(5)).resolves.toEqual([
+      { id: "11", state: "CHANGES_REQUESTED", commitId: "c".repeat(40), body: "first", submittedAt: "2026-01-01T00:00:00Z" },
+      { id: "12", state: "APPROVED", commitId: "d".repeat(40), body: "", submittedAt: "2026-01-02T00:00:00Z" }
+    ]);
+    expect(reviewCalls).toEqual([
+      "repos/0xPolygon/codegenie/pulls/5/reviews?per_page=100&page=1",
+      "repos/0xPolygon/codegenie/pulls/5/reviews?per_page=100&page=2"
+    ]);
+  });
+
+  it("dismisses a review with a PUT to the dismissals endpoint and surfaces failures", async () => {
+    let call: { args: string[]; input: unknown } | undefined;
+    let fail = false;
+    const gh: RunGh = async (_repoRoot, args, opts = {}) => {
+      if (args[0] === "--version" || args.join(" ") === "auth status") {
+        return "";
+      }
+      if (args.join(" ") === "repo view --json owner,name") {
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codegenie" });
+      }
+      if (args[0] === "api" && String(args[1]).endsWith("/dismissals")) {
+        call = { args, input: JSON.parse(String(opts.input)) };
+        if (fail) {
+          throw new CodegenieError("github_post_failed", "forbidden", { context: { httpStatus: 403 } });
+        }
+        return "{}";
+      }
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    };
+    const client = createGitHubClient("/repo", { runGh: gh });
+
+    await client.dismissReview(5, "11", "stale");
+    expect(call?.args).toEqual(["api", "repos/0xPolygon/codegenie/pulls/5/reviews/11/dismissals", "--method", "PUT", "--input", "-"]);
+    expect(call?.input).toEqual({ message: "stale", event: "DISMISS" });
+    fail = true;
+    await expect(client.dismissReview(5, "11", "stale")).rejects.toBeInstanceOf(CodegenieError);
+  });
+
+  it("maps compare files to changed lines, renames, and missing patches", async () => {
+    const gh: RunGh = async (_repoRoot, args) => {
+      if (args[0] === "--version" || args.join(" ") === "auth status") {
+        return "";
+      }
+      if (args.join(" ") === "repo view --json owner,name") {
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codegenie" });
+      }
+      if (args[0] === "api" && args[1] === `repos/0xPolygon/codegenie/compare/${"a".repeat(40)}...${"h".repeat(40)}`) {
+        return JSON.stringify({
+          files: [
+            { filename: "src/app.ts", status: "modified", changes: 2, patch: "@@ -3,1 +3,1 @@\n-old\n+new\n" },
+            { filename: "assets/big.bin", status: "modified", changes: 9 },
+            { filename: "src/new.ts", previous_filename: "src/old.ts", status: "renamed", changes: 0 }
+          ]
+        });
+      }
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    };
+    const client = createGitHubClient("/repo", { runGh: gh });
+
+    await expect(client.compareFiles("a".repeat(40), "h".repeat(40))).resolves.toEqual([
+      { path: "src/app.ts", status: "modified", patchMissing: false, addedLines: [3], deletedLines: [3] },
+      { path: "assets/big.bin", status: "modified", patchMissing: true, addedLines: [], deletedLines: [] },
+      { path: "src/new.ts", previousPath: "src/old.ts", status: "renamed", patchMissing: false, addedLines: [], deletedLines: [] }
+    ]);
+  });
+
   it("posts one COMMENT review with the cached PR head SHA", async () => {
     let payload: unknown;
     const gh: RunGh = async (_repoRoot, args, opts = {}) => {

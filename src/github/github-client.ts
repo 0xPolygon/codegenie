@@ -61,6 +61,7 @@ type GhPullReview = {
 
 type GhCompareFile = {
   filename?: string;
+  previous_filename?: string;
   status?: string;
   patch?: string;
   changes?: number;
@@ -327,6 +328,7 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
         const parsed = patch === undefined ? { addedLines: [], deletedLines: [] } : changedLinesFromPatch(patch);
         return [{
           path: file.filename,
+          ...(file.previous_filename !== undefined ? { previousPath: file.previous_filename } : {}),
           ...(file.status !== undefined ? { status: file.status } : {}),
           patchMissing: patch === undefined && (file.changes ?? 0) > 0,
           addedLines: parsed.addedLines,

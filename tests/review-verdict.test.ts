@@ -33,6 +33,13 @@ describe("review verdict", () => {
     expect(changedLinesFromPatch("@@ -1,1 +1,2 @@\n context\n+added\n").addedLines).toEqual([2]);
   });
 
+  it("settles an issue whose file was renamed and keeps one whose file is absent from the compare", () => {
+    const issue = { fingerprint: "e".repeat(64), path: "src/old.ts", line: 4, side: "RIGHT" as const, lineBasis: "previous" as const };
+    const renamed = { path: "src/new.ts", previousPath: "src/old.ts", status: "renamed", patchMissing: false, addedLines: [], deletedLines: [] };
+    expect(carryForwardIssues([issue], new Set(), [renamed])).toEqual([]);
+    expect(carryForwardIssues([issue], new Set(), [{ ...renamed, previousPath: "src/other.ts" }])).toEqual([issue]);
+  });
+
   it("keeps a prior issue open when the compare patch is unavailable", () => {
     const right = { fingerprint: "a".repeat(64), path: "src/app.ts", line: 4, side: "RIGHT" as const, lineBasis: "previous" as const };
     const left = { ...right, fingerprint: "c".repeat(64), side: "LEFT" as const };

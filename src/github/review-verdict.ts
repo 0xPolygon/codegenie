@@ -175,7 +175,8 @@ function anchorSettled(issue: OpenReviewIssue, files: ComparedFileLines[] | unde
   if (files === undefined) {
     return false;
   }
-  const file = files.find((candidate) => candidate.path === issue.path);
+  // A carried issue keeps its pre-rename path, so a rename in this window is found by its previous path.
+  const file = files.find((candidate) => candidate.path === issue.path || candidate.previousPath === issue.path);
   if (file === undefined) {
     return false;
   }
