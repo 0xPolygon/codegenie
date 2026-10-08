@@ -210,6 +210,13 @@ function parseOpenList(raw: string): OpenReviewIssue[] {
     if (!/^[0-9a-f]{64}$/u.test(fingerprint) || !/^\d+$/u.test(line)) {
       return [];
     }
-    return [{ fingerprint, path: decodeURIComponent(encodedPath), line: Number(line), side, lineBasis: "previous" }];
+    let path: string;
+    try {
+      path = decodeURIComponent(encodedPath);
+    } catch {
+      // The marker sits in an editable review body; a bad escape drops this entry like any other malformed field.
+      return [];
+    }
+    return [{ fingerprint, path, line: Number(line), side, lineBasis: "previous" }];
   });
 }

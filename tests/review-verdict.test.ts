@@ -33,6 +33,14 @@ describe("review verdict", () => {
     expect(changedLinesFromPatch("@@ -1,1 +1,2 @@\n context\n+added\n").addedLines).toEqual([2]);
   });
 
+  it("drops a marker entry with an invalid path escape and keeps its valid siblings", () => {
+    const good = `${"a".repeat(64)}:src%2Fapp.ts:4:RIGHT`;
+    expect(parseVerdictMarker(`<!-- codegenie:verdict=approve;commit=abc1234;open=${"b".repeat(64)}:bad%zz:4:RIGHT -->`)?.open).toEqual([]);
+    expect(parseVerdictMarker(`<!-- codegenie:verdict=approve;commit=abc1234;open=${"b".repeat(64)}:bad%zz:4:RIGHT,${good} -->`)?.open).toEqual([
+      { fingerprint: "a".repeat(64), path: "src/app.ts", line: 4, side: "RIGHT", lineBasis: "previous" }
+    ]);
+  });
+
   it("settles an issue whose file was renamed and keeps one whose file is absent from the compare", () => {
     const issue = { fingerprint: "e".repeat(64), path: "src/old.ts", line: 4, side: "RIGHT" as const, lineBasis: "previous" as const };
     const renamed = { path: "src/new.ts", previousPath: "src/old.ts", status: "renamed", patchMissing: false, addedLines: [], deletedLines: [] };
