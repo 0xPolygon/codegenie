@@ -319,7 +319,12 @@ export function createGitHubClient(repoRoot: string, opts: CreateGitHubClientOpt
         ["api", `repos/${loadedRepo.owner}/${loadedRepo.repo}/compare/${baseSha}...${headSha}`],
         { errorCode: "github_post_failed" }
       );
-      const compared = parseJson<{ files?: GhCompareFile[] }>(stdout, "failed to parse gh compare", "github_post_failed");
+      const compared = parseJson<{ status?: string; files?: GhCompareFile[] }>(stdout, "failed to parse gh compare", "github_post_failed");
+      // Three-dot compare diffs from the merge base. Unless base is an ancestor of head (ahead/identical), e.g. after a
+      // force-push, the files describe the whole branch rather than changes since base, so they cannot settle anything.
+      if (compared.status !== "ahead" && compared.status !== "identical") {
+        throw new CodegenieError("github_post_failed", `compare ${baseSha}...${headSha} is ${compared.status ?? "unknown"}, not a fast-forward`);
+      }
       return (compared.files ?? []).flatMap((file) => {
         if (file.filename === undefined) {
           return [];

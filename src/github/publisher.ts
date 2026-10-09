@@ -151,8 +151,9 @@ export async function maybePublishToGitHub(
     health: healthForResult(finalReview).status,
     openIssueCount: published.length + carried.length
   });
-  // Never approve when prior state is unknown, or when the diff had hunks but none were reviewed (exclusion-only push).
-  const reviewedNothing = finalReview.coverage.totalHunks > 0 && finalReview.coverage.reviewedHunks === 0;
+  // Never approve when prior state is unknown, or when no hunk was reviewed: exclusion-only, binary or mode-only,
+  // and empty pushes all leave the changed content uninspected.
+  const reviewedNothing = finalReview.coverage.reviewedHunks === 0;
   if ((carriedLookup.unknown || reviewedNothing) && decision.event === "APPROVE") {
     decision = { event: "COMMENT", forcePost: true };
   }

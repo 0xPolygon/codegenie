@@ -991,6 +991,37 @@ describe("GitHub publisher", () => {
     expect(changed?.reviewEvent).toBe("APPROVE");
   });
 
+  it("keeps a carried issue open when the compare is unavailable, e.g. after a force-push", async () => {
+    const prior = "7".repeat(64);
+    const github = fakeGithub({
+      reviews: [{
+        id: "9",
+        state: "CHANGES_REQUESTED",
+        commitId: "c".repeat(40),
+        submittedAt: "2026-01-01T00:00:00Z",
+        body: `<!-- codegenie:verdict=approve;commit=${"c".repeat(40)};open=${prior}:src%2Fapp.ts:1:RIGHT -->`
+      }],
+      createReview: async () => undefined
+    });
+    github.compareFiles = async () => {
+      throw new CodegenieError("github_post_failed", "compare is diverged, not a fast-forward");
+    };
+    const record = await maybePublishToGitHub(reviewResult(), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github, diff: parseDiff(RAW_DIFF) });
+    expect(record?.reviewEvent).toBe("REQUEST_CHANGES");
+  });
+
+  it("does not approve a hunk-less push such as binary or mode-only changes", async () => {
+    const result = reviewResult();
+    const record = await maybePublishToGitHub({ ...result, coverage: { ...result.coverage, totalHunks: 0, reviewedHunks: 0 } }, resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github: fakeGithub(), diff: parseDiff(RAW_DIFF) });
+    expect(record?.reviewEvent).toBe("COMMENT");
+  });
+
   it("does not approve when the diff had hunks but none were reviewed", async () => {
     const result = reviewResult();
     const record = await maybePublishToGitHub({ ...result, coverage: { ...result.coverage, reviewedHunks: 0, skippedHunks: 1, excludedHunks: 1 } }, resolved(), {

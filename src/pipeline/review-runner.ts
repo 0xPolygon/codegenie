@@ -992,7 +992,7 @@ async function maybeZeroWork(
     degradedPlanning: false,
     budgetStopped: false,
     verificationIncompleteCount: 0,
-    // Deliberate exclusions are not incomplete work; the publisher separately refuses to approve when nothing was reviewed.
+    // Deliberate exclusions are not incomplete work; the publisher separately refuses to approve when no hunk was reviewed.
     partial: false,
     reasons
   };

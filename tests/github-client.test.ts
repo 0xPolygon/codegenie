@@ -172,6 +172,7 @@ describe("GitHub client", () => {
       }
       if (args[0] === "api" && args[1] === `repos/0xPolygon/codegenie/compare/${"a".repeat(40)}...${"h".repeat(40)}`) {
         return JSON.stringify({
+          status: "ahead",
           files: [
             { filename: "src/app.ts", status: "modified", changes: 2, patch: "@@ -3,1 +3,1 @@\n-old\n+new\n" },
             { filename: "assets/big.bin", status: "modified", changes: 9 },
@@ -188,6 +189,25 @@ describe("GitHub client", () => {
       { path: "assets/big.bin", status: "modified", patchMissing: true, addedLines: [], deletedLines: [] },
       { path: "src/new.ts", previousPath: "src/old.ts", status: "renamed", patchMissing: false, addedLines: [], deletedLines: [] }
     ]);
+  });
+
+  it("rejects a compare whose base is not an ancestor of head", async () => {
+    const gh: RunGh = async (_repoRoot, args) => {
+      if (args[0] === "--version" || args.join(" ") === "auth status") {
+        return "";
+      }
+      if (args.join(" ") === "repo view --json owner,name") {
+        return JSON.stringify({ owner: { login: "0xPolygon" }, name: "codegenie" });
+      }
+      if (args[0] === "api" && String(args[1]).includes("/compare/")) {
+        // After a force-push the three-dot diff runs from the branch point and lists every PR line.
+        return JSON.stringify({ status: "diverged", files: [{ filename: "src/app.ts", status: "modified", changes: 1, patch: "@@ -1,0 +1,1 @@\n+line\n" }] });
+      }
+      throw new Error(`unexpected gh args: ${args.join(" ")}`);
+    };
+    const client = createGitHubClient("/repo", { runGh: gh });
+
+    await expect(client.compareFiles("a".repeat(40), "h".repeat(40))).rejects.toThrow(/diverged/u);
   });
 
   it("posts one COMMENT review with the cached PR head SHA", async () => {
