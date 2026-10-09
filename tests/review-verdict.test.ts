@@ -27,10 +27,22 @@ describe("review verdict", () => {
     const issue = { fingerprint: "a".repeat(64), path: "src/app.ts", line: 4, side: "RIGHT" as const, lineBasis: "previous" as const };
     const marker = formatVerdictMarker("approve", "abc1234", [issue]);
     expect(parseVerdictMarker(marker)?.open).toEqual([issue]);
-    expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [4], deletedLines: [] }])).toEqual([issue]);
+    // A line inserted above the untouched anchor moves it to line 5 on the new head.
+    expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [4], deletedLines: [] }])).toEqual([{ ...issue, line: 5 }]);
     expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [], deletedLines: [4] }])).toEqual([]);
     expect(carryForwardIssues([{ ...issue, lineBasis: "current" }], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [4], deletedLines: [] }])).toEqual([]);
     expect(changedLinesFromPatch("@@ -1,1 +1,2 @@\n context\n+added\n").addedLines).toEqual([2]);
+  });
+
+  it("rebases a carried RIGHT line onto the new head and leaves LEFT and patch-less lines alone", () => {
+    const issue = { fingerprint: "f".repeat(64), path: "src/app.ts", line: 10, side: "RIGHT" as const, lineBasis: "previous" as const };
+    // Two lines added above, one deleted above: 10 -> 11.
+    const shifted = [{ path: "src/app.ts", patchMissing: false, addedLines: [2, 3], deletedLines: [5] }];
+    expect(carryForwardIssues([issue], new Set(), shifted)).toEqual([{ ...issue, line: 11 }]);
+    // An unrelated change below the anchor neither moves nor settles it.
+    expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [20], deletedLines: [20] }])).toEqual([issue]);
+    expect(carryForwardIssues([{ ...issue, side: "LEFT" as const }], new Set(), [{ path: "src/other.ts", patchMissing: false, addedLines: [1], deletedLines: [] }])).toEqual([{ ...issue, side: "LEFT" }]);
+    expect(carryForwardIssues([issue], new Set(), [{ ...shifted[0]!, patchMissing: true }])).toEqual([issue]);
   });
 
   it("drops a marker entry with an invalid path escape and keeps its valid siblings", () => {

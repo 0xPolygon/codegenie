@@ -956,6 +956,76 @@ describe("GitHub publisher", () => {
     expect(created[0]?.body.trim().length).toBeGreaterThan(0);
   });
 
+  it("omits the verdict marker when prior reviews cannot be listed", async () => {
+    const created: Array<{ event: string; body: string }> = [];
+    const github = fakeGithub({
+      listOwnReviews: async () => {
+        throw new CodegenieError("github_post_failed", "rate limited");
+      },
+      createReview: async (_number, review) => {
+        created.push(review);
+      }
+    });
+    await maybePublishToGitHub(reviewResult(), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github, diff: parseDiff(RAW_DIFF) });
+    expect(created[0]?.event).toBe("COMMENT");
+    expect(created[0]?.body).not.toContain("codegenie:verdict=");
+  });
+
+  it("carries a standing change request past a later failed-lookup review and its own inline issue", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const older = "1".repeat(64);
+    const newer = "2".repeat(64);
+    const github = fakeGithub({
+      reviews: [{
+        id: "9",
+        state: "CHANGES_REQUESTED",
+        commitId: "c".repeat(40),
+        submittedAt: "2026-01-01T00:00:00Z",
+        body: `<!-- codegenie:verdict=approve;commit=${"c".repeat(40)};open=${older}:src%2Fapp.ts:1:RIGHT -->`
+      }, {
+        id: "10",
+        state: "COMMENTED",
+        commitId: "d".repeat(40),
+        submittedAt: "2026-01-02T00:00:00Z",
+        body: "No open issues."
+      }, {
+        id: "11",
+        state: "CHANGES_REQUESTED",
+        commitId: "d".repeat(40),
+        submittedAt: "2026-01-03T00:00:00Z",
+        body: "Markerless change request from a failed lookup."
+      }],
+      comments: [{
+        id: "c1",
+        pullRequestReviewId: "11",
+        path: "src/lib.ts",
+        line: 7,
+        side: "RIGHT",
+        author: "codebot",
+        isCodegenie: true,
+        fingerprint: newer,
+        body: `<!-- codegenie:fingerprint=${newer};run=r -->`
+      }],
+      createReview: async () => undefined
+    });
+    const created: string[] = [];
+    const record = await maybePublishToGitHub(reviewResult(), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), {
+      github: { ...github, createReview: async (_number, review) => { created.push(review.body); } },
+      diff
+    });
+    expect(record?.reviewEvent).toBe("REQUEST_CHANGES");
+    expect(created[0]).toContain("src/app.ts:1");
+    expect(created[0]).toContain("src/lib.ts:7");
+    expect(created[0]).toContain(`${older}:src%2Fapp.ts:1:RIGHT`);
+    expect(created[0]).toContain(`${newer}:src%2Flib.ts:7:RIGHT`);
+  });
+
   it("falls back to COMMENT on an own-PR rejection of the final summary-only post", async () => {
     const diff = parseDiff(RAW_DIFF);
     const hunk = diff.files[0]?.hunks[0];

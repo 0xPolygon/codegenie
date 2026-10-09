@@ -53,11 +53,23 @@ export function latestSubmittedReview(reviews: OwnPullRequestReview[]): OwnPullR
     .at(-1);
 }
 
-/** The newest review that records verdict state. A markerless COMMENTED review comes from comment mode and holds none. */
+/**
+ * The newest review whose verdict marker records the full open-issue state. Comment-mode reviews carry no marker,
+ * and an approve-mode run whose prior-review lookup failed omits it because its state would be incomplete.
+ */
 export function latestVerdictReview(reviews: OwnPullRequestReview[]): OwnPullRequestReview | undefined {
-  return latestSubmittedReview(reviews.filter((review) =>
-    review.state !== "COMMENTED" || parseVerdictMarker(review.body ?? "") !== undefined
-  ));
+  return latestSubmittedReview(reviews.filter((review) => parseVerdictMarker(review.body ?? "") !== undefined));
+}
+
+/** Markerless change requests newer than the verdict review: runs whose lookup failed, still blocking with their own inline issues. */
+export function unrecordedChangeRequests(reviews: OwnPullRequestReview[], verdict: OwnPullRequestReview | undefined): OwnPullRequestReview[] {
+  const after = verdict?.submittedAt ?? "";
+  return reviews.filter((review) =>
+    review.state === "CHANGES_REQUESTED" &&
+    review.submittedAt !== undefined &&
+    review.submittedAt > after &&
+    parseVerdictMarker(review.body ?? "") === undefined
+  );
 }
 
 export function issuesFromReview(
@@ -92,11 +104,11 @@ export function carryForwardIssues(
   currentFingerprints: ReadonlySet<string>,
   files: ComparedFileLines[] | undefined
 ): OpenReviewIssue[] {
-  return prior.filter((issue) => {
-    if (currentFingerprints.has(issue.fingerprint)) {
-      return false;
+  return prior.flatMap((issue) => {
+    if (currentFingerprints.has(issue.fingerprint) || anchorSettled(issue, files)) {
+      return [];
     }
-    return anchorSettled(issue, files) !== true;
+    return [rebaseOntoHead(issue, files)];
   });
 }
 
@@ -169,6 +181,38 @@ export function renderCarriedIssues(issues: OpenReviewIssue[]): string {
   }
   const lines = issues.map((issue) => `- \`${issue.path}:${issue.line}\` was not changed since the last request`);
   return ["## Still open from the previous review", "", ...lines].join("\n");
+}
+
+/**
+ * Moves a previous-commit RIGHT line onto the new head so the marker's line matches its `commit=`. LEFT lines are
+ * numbered on the PR base and current lines already sit on the head. Without a usable patch the line is kept as is.
+ */
+function rebaseOntoHead(issue: OpenReviewIssue, files: ComparedFileLines[] | undefined): OpenReviewIssue {
+  if (issue.side !== "RIGHT" || issue.lineBasis === "current" || files === undefined) {
+    return issue;
+  }
+  const file = files.find((candidate) => candidate.path === issue.path || candidate.previousPath === issue.path);
+  if (file === undefined || file.patchMissing) {
+    return issue;
+  }
+  const added = new Set(file.addedLines);
+  const deleted = new Set(file.deletedLines);
+  let oldLine = 1;
+  let newLine = 1;
+  while (oldLine < issue.line) {
+    if (added.has(newLine)) {
+      newLine += 1;
+    } else if (deleted.has(oldLine)) {
+      oldLine += 1;
+    } else {
+      oldLine += 1;
+      newLine += 1;
+    }
+  }
+  while (added.has(newLine)) {
+    newLine += 1;
+  }
+  return { ...issue, line: newLine };
 }
 
 function anchorSettled(issue: OpenReviewIssue, files: ComparedFileLines[] | undefined): boolean {

@@ -30,6 +30,7 @@ import {
   latestVerdictReview,
   renderCarriedIssues,
   selectPostedEvent,
+  unrecordedChangeRequests,
   type OpenReviewIssue
 } from "./review-verdict.js";
 
@@ -164,7 +165,8 @@ export async function maybePublishToGitHub(
   if (decision.forcePost && reviewBody.trim().length === 0) {
     reviewBody = forcedFallbackBody(decision.event, published);
   }
-  const verdictMarker = mode !== "comment" && reviewBody.trim().length > 0
+  // A failed lookup leaves the open-issue state incomplete; a marker here would hide older standing issues next run.
+  const verdictMarker = mode !== "comment" && !carriedLookup.unknown && reviewBody.trim().length > 0
     ? formatVerdictMarker(mode, resolved.pr.headSha, [...issuesFromFindings(published), ...carried])
     : undefined;
   const shouldPostBody = reviewBody.trim().length > 0;
@@ -246,26 +248,36 @@ async function carriedOpenIssues(
     return { issues: [], unknown: true };
   }
   const latest = latestVerdictReview(reviews);
-  if (latest === undefined || latest.state === "APPROVED" || latest.state === "DISMISSED") {
+  const sources = [
+    ...(latest !== undefined && latest.state !== "APPROVED" ? [latest] : []),
+    ...unrecordedChangeRequests(reviews, latest)
+  ];
+  if (sources.length === 0) {
     return { issues: [], unknown: false };
   }
   const comments = await github.listOwnComments(prNumber);
-  const prior = issuesFromReview(latest, comments);
-  if (prior.length === 0) {
-    return { issues: [], unknown: false };
-  }
-  let files: ComparedFileLines[] | undefined;
-  if (latest.commitId !== undefined && latest.commitId !== headSha) {
-    try {
-      files = await github.compareFiles(latest.commitId, headSha);
-    } catch {
-      files = undefined;
+  const current = new Set(published.map((finding) => finding.fingerprint));
+  const compared = new Map<string, Promise<ComparedFileLines[] | undefined>>();
+  const seen = new Set<string>();
+  const issues: OpenReviewIssue[] = [];
+  // Each source review numbers its lines on its own commit, so settle each against its own compare.
+  for (const source of sources) {
+    const prior = issuesFromReview(source, comments).filter((issue) => !seen.has(issue.fingerprint));
+    if (prior.length === 0) {
+      continue;
     }
+    prior.forEach((issue) => seen.add(issue.fingerprint));
+    let files: ComparedFileLines[] | undefined;
+    if (source.commitId !== undefined && source.commitId !== headSha) {
+      const commitId = source.commitId;
+      if (!compared.has(commitId)) {
+        compared.set(commitId, github.compareFiles(commitId, headSha).catch(() => undefined));
+      }
+      files = await compared.get(commitId);
+    }
+    issues.push(...carryForwardIssues(prior, current, files));
   }
-  return {
-    issues: carryForwardIssues(prior, new Set(published.map((finding) => finding.fingerprint)), files),
-    unknown: false
-  };
+  return { issues, unknown: false };
 }
 
 async function postWithRecovery(
