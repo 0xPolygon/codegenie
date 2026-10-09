@@ -11,6 +11,8 @@ import { SourceResolver } from "../repo/source-resolver.js";
 import { cleanupPullRequestRefs, resolveReviewCommandTarget } from "../git/review-input-resolver.js";
 import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import { maybePublishToGitHub } from "../github/publisher.js";
+import { createGitHubClient } from "../github/github-client.js";
+import { staleApproval } from "../github/review-verdict.js";
 import { createPiRunner } from "../llm/pi-runner.js";
 import type { LlmCallUsage, LlmRunner, ModelCallCache, PiAiAdapter } from "../llm/llm-runner.js";
 import { buildModelCallCacheKey, createModelCallCache } from "../llm/model-call-cache.js";
@@ -72,6 +74,7 @@ type RunReviewOverrides = {
   runArtifactDir?: string;
   format?: OutputFormat;
   postGithubComments?: boolean;
+  skipGithubInlineComments?: boolean;
   configWarnings?: ConfigWarning[];
   writeOutput?: (text: string) => void;
   runner?: LlmRunner;
@@ -180,6 +183,8 @@ export async function runReview(
       await run.finalize({ status: "completed_full", exitCode: 0 });
       return zeroWork;
     }
+    // Dismiss only once there is reviewable work. An exclusion-only push cannot earn a new approval, so it keeps the old one.
+    await dismissStaleApproval(resolved, config, run, overrides);
 
     run.telemetry.event({
       stage: 3,
@@ -353,7 +358,8 @@ export async function runReview(
     await run.telemetry.writeArtifact("budget-summary.json", finalReview.budgetSummary);
     const posting = await maybePublishToGitHub(finalReview, resolved, config, run.telemetry, {
       diff,
-      ...(overrides.github !== undefined ? { github: overrides.github } : {})
+      ...(overrides.github !== undefined ? { github: overrides.github } : {}),
+      ...(overrides.skipGithubInlineComments === true ? { skipInlineComments: true } : {})
     });
     if (posting !== undefined) {
       run.telemetry.event({
@@ -903,6 +909,55 @@ function throwIfHardAborted(run: RunContext): void {
   throw new CodegenieError("timeout", "review run exceeded hard timeout");
 }
 
+async function dismissStaleApproval(
+  resolved: ResolvedReviewInput,
+  config: CodegenieConfig,
+  run: RunContext,
+  overrides: RunReviewOverrides
+): Promise<void> {
+  if (config.github.reviewMode !== "approve" || overrides.postGithubComments !== true || resolved.mode !== "github_pr" || resolved.pr === undefined) {
+    return;
+  }
+  const github = overrides.github ?? createGitHubClient(resolved.repoRoot);
+  let reviews;
+  try {
+    reviews = await github.listOwnReviews(resolved.pr.number);
+  } catch (error) {
+    run.telemetry.event({
+      stage: 2,
+      level: "warn",
+      message: "github_stale_approval_dismiss_skipped",
+      data: { reason: error instanceof Error ? error.message : String(error) }
+    });
+    return;
+  }
+  const latest = staleApproval(reviews, resolved.pr.headSha);
+  if (latest === undefined) {
+    return;
+  }
+  try {
+    await github.dismissReview(resolved.pr.number, latest.id, "New commits pushed since approval; re-reviewing");
+    run.telemetry.event({
+      stage: 2,
+      level: "info",
+      message: "github_stale_approval_dismissed",
+      data: { reviewId: latest.id, commitId: latest.commitId }
+    });
+  } catch (error) {
+    const status = isCodegenieError(error) ? error.context?.httpStatus : undefined;
+    run.telemetry.event({
+      stage: 2,
+      level: "warn",
+      message: status === 403 ? "github_stale_approval_dismiss_forbidden" : "github_stale_approval_dismiss_skipped",
+      data: {
+        reviewId: latest.id,
+        ...(status !== undefined ? { httpStatus: status } : {}),
+        reason: error instanceof Error ? error.message : String(error)
+      }
+    });
+  }
+}
+
 async function resolveInput(
   input: ReviewInput | ReviewCommandTarget,
   config: CodegenieConfig,
@@ -937,6 +992,7 @@ async function maybeZeroWork(
     degradedPlanning: false,
     budgetStopped: false,
     verificationIncompleteCount: 0,
+    // Deliberate exclusions are not incomplete work; the publisher separately refuses to approve when no hunk was reviewed.
     partial: false,
     reasons
   };
@@ -948,7 +1004,7 @@ async function maybeZeroWork(
     summaryOnlyFindings: [],
     needsHumanAttention: [],
     noFindings: true,
-    ...(overrides.postGithubComments === true && resolved.mode === "github_pr" && config.github.summaryWhenNoFindings
+    ...(overrides.postGithubComments === true && resolved.mode === "github_pr" && (config.github.summaryWhenNoFindings || config.github.reviewMode !== "comment")
       ? { postingPlan: { inline: [], reviewBody: "Nothing to review." } }
       : {})
   };
@@ -962,7 +1018,8 @@ async function maybeZeroWork(
   await run.telemetry.writeArtifact("final-findings.json", []);
   await run.telemetry.writeArtifact("budget-summary.json", result.budgetSummary);
   await maybePublishToGitHub(result, resolved, config, run.telemetry, {
-    ...(overrides.github !== undefined ? { github: overrides.github } : {})
+    ...(overrides.github !== undefined ? { github: overrides.github } : {}),
+    ...(overrides.skipGithubInlineComments === true ? { skipInlineComments: true } : {})
   });
   result.runStats = buildRunStats(config, resolved, run);
   await renderOutputs(result, overrides, run.telemetry);

@@ -59,6 +59,7 @@ export type CodegenieConfig = {
   };
   github: {
     summaryWhenNoFindings: boolean;
+    reviewMode: GitHubReviewMode;
   };
   git: {
     baseBranch?: string;
@@ -120,6 +121,7 @@ export type ReviewCommandTarget =
 export type ReviewCommandOptions = {
   format: OutputFormat;
   postGithubComments: boolean;
+  skipGithubInlineComments?: boolean;
   cacheOverride?: boolean;
   progress: boolean;
 };
@@ -132,6 +134,9 @@ export type ParsedReviewCommand = {
   warnings: ConfigWarning[];
   configSources: Record<string, ConfigSource>;
 };
+
+export type GitHubReviewMode = "comment" | "approve";
+export type GitHubReviewEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
 
 export type ReviewMode = "github_pr" | "branch" | "head" | "commit_range";
 
@@ -174,15 +179,39 @@ export type ExistingReviewThread = {
   /** Stable identity of the complete published prose, before the inline size cap. */
   contentFingerprint?: string;
   body?: string;
+  pullRequestReviewId?: string;
+  /** True when `line` is GitHub's current diff line, not `original_line`. */
+  lineIsCurrent?: boolean;
+};
+
+export type OwnPullRequestReview = {
+  id: string;
+  state: string;
+  commitId?: string;
+  body?: string;
+  submittedAt?: string;
+};
+
+export type ComparedFileLines = {
+  path: string;
+  /** Pre-rename path, when GitHub reports the file as renamed in this comparison. */
+  previousPath?: string;
+  status?: string;
+  patchMissing: boolean;
+  addedLines: number[];
+  deletedLines: number[];
 };
 
 export interface GitHubClient {
   viewPr(number: number, opts?: { refresh?: boolean }): Promise<PullRequestMetadata>;
   createReview(
     number: number,
-    review: { body: string; event: "COMMENT"; comments: InlineCommentInput[] }
+    review: { body: string; event: GitHubReviewEvent; comments: InlineCommentInput[] }
   ): Promise<void>;
   listOwnComments(number: number): Promise<ExistingReviewThread[]>;
+  listOwnReviews(number: number): Promise<OwnPullRequestReview[]>;
+  dismissReview(number: number, reviewId: string, message: string): Promise<void>;
+  compareFiles(baseSha: string, headSha: string): Promise<ComparedFileLines[]>;
 }
 
 export type CommitInfo = {
@@ -1586,6 +1615,8 @@ export type RunPostingRecord = {
   demotedToBody: number;
   skippedDuplicates: number;
   attempts: Array<{ httpStatus?: number; commentCount: number; outcome: "ok" | "rejected" | "error" | "fallback_summary_only" }>;
+  reviewEvent?: GitHubReviewEvent;
+  verdictFallback?: "own_pr";
   error?: string;
   duplicateDecisions?: FindingDuplicateDecision[];
 };

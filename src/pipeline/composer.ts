@@ -319,7 +319,7 @@ export async function dedupeRankAndComposeReview(
     : fallbackUsed || compositionDegraded || isNoFindingsSummary(composition.summary) || summaryCountConflicts(composition.summary, publishableCount)
       ? fallbackSummary(publishableCount)
       : safeReportProse(composition.summary) || fallbackSummary(publishableCount);
-  const createPostingPlan = opts.postGithubComments === true && (publishableCount > 0 || config.github.summaryWhenNoFindings);
+  const createPostingPlan = opts.postGithubComments === true && (publishableCount > 0 || config.github.summaryWhenNoFindings || config.github.reviewMode !== "comment");
   const compositionOutcome = { mode: compositionMode, ...(fallbackReason ? { fallbackReason } : {}) };
   const result: ReviewResult = {
     composition: compositionOutcome,

@@ -2,9 +2,11 @@ import { buildDiffAnchorIndex, parseDiff, validateDiffAnchor } from "../git/diff
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type {
   CodegenieConfig,
+  ComparedFileLines,
   DiffAnchor,
   FinalFinding,
   GitHubClient,
+  GitHubReviewEvent,
   InlineCommentInput,
   ResolvedReviewInput,
   ReviewResult,
@@ -19,11 +21,24 @@ import { sanitizeGitHubCommentBody } from "./comment-sanitizer.js";
 import { createGitHubClient } from "./github-client.js";
 import { detectDuplicateFindings, formatCodegenieMarker, proseContentFingerprint } from "./duplicate-detector.js";
 import { isProsePath } from "../util/path-roles.js";
+import { healthForResult } from "../util/review-health.js";
+import {
+  carryForwardIssues,
+  formatVerdictMarker,
+  issuesFromFindings,
+  issuesFromReview,
+  latestVerdictReview,
+  renderCarriedIssues,
+  selectPostedEvent,
+  unrecordedChangeRequests,
+  type OpenReviewIssue
+} from "./review-verdict.js";
 
 type PublishOptions = {
   github?: GitHubClient;
   diff?: UnifiedDiff;
   provenance?: ReviewBodyProvenance;
+  skipInlineComments?: boolean;
 };
 
 type ReviewBodyProvenance = {
@@ -121,11 +136,42 @@ export async function maybePublishToGitHub(
     inlineCandidates.map(({ finding, anchor }) => ({ ...finding, anchor })), comments
   );
   const duplicateById = new Map(duplicateDecisions.map((decision) => [decision.findingId, decision]));
-  const prepared = inlineCandidates
+  const prepared = opts.skipInlineComments === true ? [] : inlineCandidates
     .filter(({ finding }) => duplicateById.get(finding.id)?.action === "post")
     .map(({ finding, anchor }) => prepareInlineComment(finding, anchor, telemetry.runId, deletedAnchors.has(anchorKey(anchor))));
   const skippedDuplicates = duplicateDecisions.filter((decision) => decision.action !== "post").length;
-  const reviewBody = buildPostingBody(finalReview, demoted, config, { includeInlineSummary: prepared.length > 0 });
+  const mode = config.github.reviewMode;
+  const published = [...finalReview.findings, ...finalReview.summaryOnlyFindings];
+  const carriedLookup = mode === "comment"
+    ? { issues: [], unknown: false }
+    : await carriedOpenIssues(github, resolved.pr.number, resolved.pr.headSha, published);
+  const carried = carriedLookup.issues;
+  let decision = selectPostedEvent({
+    mode,
+    health: healthForResult(finalReview).status,
+    openIssueCount: published.length + carried.length
+  });
+  // Never approve when prior state is unknown, or when no hunk was reviewed: exclusion-only, binary or mode-only,
+  // and empty pushes all leave the changed content uninspected.
+  const reviewedNothing = finalReview.coverage.reviewedHunks === 0;
+  if ((carriedLookup.unknown || reviewedNothing) && decision.event === "APPROVE") {
+    decision = { event: "COMMENT", forcePost: true };
+  }
+  let reviewBody = buildPostingBody(finalReview, demoted, config, { includeInlineSummary: prepared.length > 0 });
+  const carriedSection = renderCarriedIssues(carried);
+  if (carriedSection !== "") {
+    reviewBody = reviewBody.trim().length === 0 ? carriedSection : `${reviewBody.trimEnd()}\n\n${carriedSection}`;
+  }
+  if (decision.event === "REQUEST_CHANGES" && healthForResult(finalReview).status !== "completed" && !reviewBody.includes("partial")) {
+    reviewBody = `This review is partial; confirmed findings still require changes.\n\n${reviewBody}`.trim();
+  }
+  if (decision.forcePost && reviewBody.trim().length === 0) {
+    reviewBody = forcedFallbackBody(decision.event, published);
+  }
+  // A failed lookup leaves the open-issue state incomplete; a marker here would hide older standing issues next run.
+  const verdictMarker = mode !== "comment" && !carriedLookup.unknown && reviewBody.trim().length > 0
+    ? formatVerdictMarker(mode, resolved.pr.headSha, [...issuesFromFindings(published), ...carried])
+    : undefined;
   const shouldPostBody = reviewBody.trim().length > 0;
 
   const record: RunPostingRecord = {
@@ -135,7 +181,8 @@ export async function maybePublishToGitHub(
     demotedToBody: demoted.length,
     skippedDuplicates,
     attempts: [],
-    duplicateDecisions
+    duplicateDecisions,
+    reviewEvent: decision.event
   };
 
   if (prepared.length === 0 && !shouldPostBody) {
@@ -146,10 +193,10 @@ export async function maybePublishToGitHub(
 
   record.attempted = true;
   const provenance = resolveReviewBodyProvenance(opts);
-  const finalize = (input: string): string => finalizeReviewBody(input, provenance);
+  const finalize = (input: string): string => finalizeReviewBody(input, provenance, verdictMarker);
   const body = finalize(reviewBody);
   try {
-    const result = await postWithRecovery(github, resolved.pr.number, body, prepared, record, finalize);
+    const result = await postWithRecovery(github, resolved.pr.number, body, prepared, record, finalize, decision.event);
     record.status = result.summaryOnly ? "summary_only_fallback" : "posted";
     record.inlinePosted = result.inlinePosted;
     await persistPostingRecord(record, telemetry);
@@ -177,29 +224,107 @@ export async function maybePublishToGitHub(
   }
 }
 
+function forcedFallbackBody(event: GitHubReviewEvent, published: FinalFinding[]): string {
+  if (event === "APPROVE") {
+    return "Approved.";
+  }
+  if (event === "COMMENT") {
+    return "No open issues.";
+  }
+  // Inline comments for these findings were suppressed (duplicates or skipped), so name them here.
+  const lines = published.map((finding) =>
+    `- ${severityBadge(finding.severity)}: **${finding.title}** (${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)})`
+  );
+  return ["Changes requested. These issues are still open:", "", ...lines].join("\n");
+}
+
+async function carriedOpenIssues(
+  github: GitHubClient,
+  prNumber: number,
+  headSha: string,
+  published: FinalFinding[]
+): Promise<{ issues: OpenReviewIssue[]; unknown: boolean }> {
+  let reviews;
+  try {
+    reviews = await github.listOwnReviews(prNumber);
+  } catch {
+    return { issues: [], unknown: true };
+  }
+  const latest = latestVerdictReview(reviews);
+  // Newest first: when several reviews raised the same issue, settle it against the latest one's narrower window.
+  const sources = [
+    ...(latest !== undefined && latest.state !== "APPROVED" ? [latest] : []),
+    ...unrecordedChangeRequests(reviews, latest)
+  ].sort((left, right) => (right.submittedAt ?? "").localeCompare(left.submittedAt ?? ""));
+  if (sources.length === 0) {
+    return { issues: [], unknown: false };
+  }
+  const comments = await github.listOwnComments(prNumber);
+  const current = new Set(published.map((finding) => finding.fingerprint));
+  const compared = new Map<string, Promise<ComparedFileLines[] | undefined>>();
+  const seen = new Set<string>();
+  const issues: OpenReviewIssue[] = [];
+  // Each line is numbered on its own commit (an entry's recorded commit, else its review's), so settle each
+  // group of issues against a compare from that commit.
+  for (const source of sources) {
+    const prior = issuesFromReview(source, comments).filter((issue) => !seen.has(issue.fingerprint));
+    prior.forEach((issue) => seen.add(issue.fingerprint));
+    const byOrigin = new Map<string | undefined, OpenReviewIssue[]>();
+    for (const issue of prior) {
+      const origin = issue.commit ?? source.commitId;
+      byOrigin.set(origin, [...(byOrigin.get(origin) ?? []), issue]);
+    }
+    for (const [origin, group] of byOrigin) {
+      let files: ComparedFileLines[] | undefined;
+      if (origin !== undefined && origin !== headSha) {
+        if (!compared.has(origin)) {
+          compared.set(origin, github.compareFiles(origin, headSha).catch(() => undefined));
+        }
+        files = await compared.get(origin);
+      }
+      issues.push(...carryForwardIssues(group, current, files, origin !== headSha ? origin : undefined));
+    }
+  }
+  return { issues, unknown: false };
+}
+
 async function postWithRecovery(
   github: GitHubClient,
   prNumber: number,
   body: string,
   initialComments: PreparedInlineComment[],
   record: RunPostingRecord,
-  finalize: (input: string) => string
+  finalize: (input: string) => string,
+  event: GitHubReviewEvent
 ): Promise<{ inlinePosted: number; summaryOnly: boolean }> {
   let comments = [...initialComments];
   let currentBody = body;
   let summaryOnly = false;
+  let currentEvent = event;
 
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const attemptingSummaryOnly = summaryOnly && comments.length === 0;
     try {
       await github.createReview(prNumber, {
         body: currentBody,
-        event: "COMMENT",
+        event: currentEvent,
         comments: comments.map((comment) => comment.input)
       });
+      record.reviewEvent = currentEvent;
       record.attempts.push({ commentCount: comments.length, outcome: attemptingSummaryOnly ? "fallback_summary_only" : "ok" });
       return { inlinePosted: comments.length, summaryOnly };
     } catch (error) {
+      if (currentEvent !== "COMMENT" && isOwnPullRequestReview(error)) {
+        currentEvent = "COMMENT";
+        record.verdictFallback = "own_pr";
+        record.attempts.push({ httpStatus: 422, commentCount: comments.length, outcome: "rejected" });
+        if (attempt === 3 && comments.length > 0) {
+          currentBody = demoteCommentsIntoBody(currentBody, comments, record, finalize);
+          comments = [];
+          summaryOnly = true;
+        }
+        continue;
+      }
       if (attemptingSummaryOnly) {
         recordFailedPostingAttempt(record, 0, error);
         throw error;
@@ -244,14 +369,24 @@ async function postWithRecovery(
     }
   }
 
-  try {
-    await github.createReview(prNumber, { body: currentBody, event: "COMMENT", comments: [] });
-    record.attempts.push({ commentCount: 0, outcome: "fallback_summary_only" });
-  } catch (error) {
-    recordFailedPostingAttempt(record, 0, error);
-    throw error;
+  for (;;) {
+    try {
+      await github.createReview(prNumber, { body: currentBody, event: currentEvent, comments: [] });
+      record.reviewEvent = currentEvent;
+      record.attempts.push({ commentCount: 0, outcome: "fallback_summary_only" });
+      return { inlinePosted: 0, summaryOnly: true };
+    } catch (error) {
+      // The loop can exhaust on comment 422s before GitHub reports the own-PR verdict rejection.
+      if (currentEvent !== "COMMENT" && isOwnPullRequestReview(error)) {
+        currentEvent = "COMMENT";
+        record.verdictFallback = "own_pr";
+        record.attempts.push({ httpStatus: 422, commentCount: 0, outcome: "rejected" });
+        continue;
+      }
+      recordFailedPostingAttempt(record, 0, error);
+      throw error;
+    }
   }
-  return { inlinePosted: 0, summaryOnly: true };
 }
 
 function recordFailedPostingAttempt(record: RunPostingRecord, commentCount: number, error: unknown): void {
@@ -338,14 +473,15 @@ function buildPostingBody(
 // LAST body transform (after demotions and capping) so the footer is always
 // the final line: it strips any footer a prior pass appended, and the cap
 // reserves room for it so truncation cannot drop it.
-function finalizeReviewBody(body: string, provenance: ReviewBodyProvenance): string {
+function finalizeReviewBody(body: string, provenance: ReviewBodyProvenance, marker?: string): string {
   const stripped = stripReviewBodyFooter(body);
   if (stripped.trim().length === 0) {
     return stripped.trim();
   }
   const footer = reviewBodyFooter(provenance);
-  const capped = capBody(sanitizeGitHubCommentBody(stripped), REVIEW_BODY_CAP - footer.length - 2);
-  return `${capped.trimEnd()}\n\n${footer}`;
+  const markerBlock = marker === undefined ? "" : `\n\n${marker}`;
+  const capped = capBody(sanitizeGitHubCommentBody(stripped), REVIEW_BODY_CAP - footer.length - markerBlock.length - 2);
+  return `${capped.trimEnd()}${markerBlock}\n\n${footer}`;
 }
 
 function reviewBodyFooter(provenance: ReviewBodyProvenance): string {
@@ -429,6 +565,16 @@ function capBody(body: string, maxChars: number): string {
 
 function isGithub422(error: unknown): boolean {
   return githubHttpStatus(error) === 422;
+}
+
+function isOwnPullRequestReview(error: unknown): boolean {
+  if (!isGithub422(error) || !(error instanceof CodegenieError)) {
+    return false;
+  }
+  const raw = [error.message, error.context?.stderr, error.context?.stdout, JSON.stringify(error.context?.responseBody ?? "")]
+    .map((value) => typeof value === "string" ? value : "")
+    .join("\n");
+  return /own pull request/iu.test(raw);
 }
 
 function githubHttpStatus(error: unknown): number | undefined {
