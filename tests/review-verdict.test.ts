@@ -54,6 +54,21 @@ describe("review verdict", () => {
     expect(renderCarriedIssues([fileLevel])).toContain("- `src/app.ts` was not changed");
   });
 
+  it("keeps an unmovable carried line tied to its own commit and drops that commit once the line moves", () => {
+    const issue = { fingerprint: "a".repeat(64), path: "src/app.ts", line: 4, side: "RIGHT" as const, lineBasis: "previous" as const };
+    const origin = "c".repeat(40);
+    const stuck = carryForwardIssues([issue], new Set(), undefined, origin);
+    expect(stuck).toEqual([{ ...issue, commit: origin }]);
+    const marker = formatVerdictMarker("approve", "e".repeat(40), stuck);
+    expect(marker).toContain(`:4:RIGHT:${origin}`);
+    expect(parseVerdictMarker(marker)?.open).toEqual([{ ...issue, commit: origin }]);
+    expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: true, addedLines: [], deletedLines: [] }], origin)).toEqual([{ ...issue, commit: origin }]);
+    // Once a compare from that commit can move the line, the recorded commit is no longer needed.
+    expect(carryForwardIssues([{ ...issue, commit: origin }], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [1], deletedLines: [] }], origin)).toEqual([{ ...issue, line: 5 }]);
+    // Four-field entries from older markers still parse, without a commit.
+    expect(parseVerdictMarker(`<!-- codegenie:verdict=approve;commit=abc1234;open=${"a".repeat(64)}:src%2Fapp.ts:4:RIGHT -->`)?.open).toEqual([issue]);
+  });
+
   it("drops a marker entry with an invalid path escape and keeps its valid siblings", () => {
     const good = `${"a".repeat(64)}:src%2Fapp.ts:4:RIGHT`;
     expect(parseVerdictMarker(`<!-- codegenie:verdict=approve;commit=abc1234;open=${"b".repeat(64)}:bad%zz:4:RIGHT -->`)?.open).toEqual([]);

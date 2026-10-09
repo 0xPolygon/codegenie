@@ -1013,6 +1013,70 @@ describe("GitHub publisher", () => {
     expect(record?.reviewEvent).toBe("REQUEST_CHANGES");
   });
 
+  it("settles an un-rebased carried line against its own commit on the next run", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const issueFp = "4".repeat(64);
+    const c1 = "c".repeat(40);
+    const runAHead = "e".repeat(40);
+    const approve = { ...defaultConfig, github: { ...defaultConfig.github, reviewMode: "approve" as const } };
+    // Run A: the compare from C1 is diverged (force-push), so the carried line cannot move onto run A's head.
+    const runABodies: string[] = [];
+    const runA = fakeGithub({
+      viewPr: async () => ({ ...pr(), headSha: runAHead }),
+      reviews: [{ id: "9", state: "CHANGES_REQUESTED", commitId: c1, submittedAt: "2026-01-01T00:00:00Z",
+        body: `<!-- codegenie:verdict=approve;commit=${c1};open=${issueFp}:src%2Fapp.ts:4:RIGHT -->` }],
+      createReview: async (_number, review) => { runABodies.push(review.body); }
+    });
+    runA.compareFiles = async () => {
+      throw new CodegenieError("github_post_failed", "compare is diverged, not a fast-forward");
+    };
+    await maybePublishToGitHub(reviewResult(), { ...resolved(), pr: { ...pr(), headSha: runAHead }, headSha: runAHead }, approve, nullTelemetry(), { github: runA, diff });
+    expect(runABodies[0]).toContain(`${issueFp}:src%2Fapp.ts:4:RIGHT:${c1}`);
+
+    // Run B: run A's head deleted an unrelated old line 4, while nothing changed at the issue since C1.
+    const comparedFrom: string[] = [];
+    const runB = fakeGithub({
+      reviews: [{ id: "10", state: "CHANGES_REQUESTED", commitId: runAHead, submittedAt: "2026-01-02T00:00:00Z", body: runABodies[0] ?? "" }]
+    });
+    runB.compareFiles = async (base) => {
+      comparedFrom.push(base);
+      return base === runAHead ? [{ path: "src/app.ts", patchMissing: false, addedLines: [], deletedLines: [4] }] : [];
+    };
+    const record = await maybePublishToGitHub(reviewResult(), resolved(), approve, nullTelemetry(), { github: runB, diff });
+    expect(comparedFrom).toEqual([c1]);
+    expect(record?.reviewEvent).toBe("REQUEST_CHANGES");
+  });
+
+  it("settles an issue raised by two prior reviews against the newer review's window", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const shared = "5".repeat(64);
+    const c1 = "c".repeat(40);
+    const c2 = "d".repeat(40);
+    const bodies: string[] = [];
+    const github = fakeGithub({
+      reviews: [{
+        id: "9", state: "CHANGES_REQUESTED", commitId: c1, submittedAt: "2026-01-01T00:00:00Z",
+        body: `<!-- codegenie:verdict=approve;commit=${c1};open=${shared}:src%2Fapp.ts:1:RIGHT -->`
+      }, {
+        id: "11", state: "CHANGES_REQUESTED", commitId: c2, submittedAt: "2026-01-03T00:00:00Z", body: "Markerless change request from a failed lookup."
+      }],
+      comments: [{
+        id: "c1", pullRequestReviewId: "11", path: "src/app.ts", line: 1, side: "RIGHT", author: "codebot",
+        isCodegenie: true, fingerprint: shared, body: `<!-- codegenie:fingerprint=${shared};run=r -->`
+      }],
+      createReview: async (_number, review) => { bodies.push(review.body); }
+    });
+    // Line 1 changed between C1 and C2, before the newer review raised the issue again; nothing changed since C2.
+    github.compareFiles = async (base) =>
+      base === c1 ? [{ path: "src/app.ts", patchMissing: false, addedLines: [1], deletedLines: [1] }] : [];
+    const record = await maybePublishToGitHub(reviewResult(), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github, diff });
+    expect(record?.reviewEvent).toBe("REQUEST_CHANGES");
+    expect(bodies[0]).toContain("src/app.ts:1");
+  });
+
   it("does not approve a hunk-less push such as binary or mode-only changes", async () => {
     const result = reviewResult();
     const record = await maybePublishToGitHub({ ...result, coverage: { ...result.coverage, totalHunks: 0, reviewedHunks: 0 } }, resolved(), {

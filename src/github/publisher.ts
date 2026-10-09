@@ -251,10 +251,11 @@ async function carriedOpenIssues(
     return { issues: [], unknown: true };
   }
   const latest = latestVerdictReview(reviews);
+  // Newest first: when several reviews raised the same issue, settle it against the latest one's narrower window.
   const sources = [
     ...(latest !== undefined && latest.state !== "APPROVED" ? [latest] : []),
     ...unrecordedChangeRequests(reviews, latest)
-  ];
+  ].sort((left, right) => (right.submittedAt ?? "").localeCompare(left.submittedAt ?? ""));
   if (sources.length === 0) {
     return { issues: [], unknown: false };
   }
@@ -263,22 +264,26 @@ async function carriedOpenIssues(
   const compared = new Map<string, Promise<ComparedFileLines[] | undefined>>();
   const seen = new Set<string>();
   const issues: OpenReviewIssue[] = [];
-  // Each source review numbers its lines on its own commit, so settle each against its own compare.
+  // Each line is numbered on its own commit (an entry's recorded commit, else its review's), so settle each
+  // group of issues against a compare from that commit.
   for (const source of sources) {
     const prior = issuesFromReview(source, comments).filter((issue) => !seen.has(issue.fingerprint));
-    if (prior.length === 0) {
-      continue;
-    }
     prior.forEach((issue) => seen.add(issue.fingerprint));
-    let files: ComparedFileLines[] | undefined;
-    if (source.commitId !== undefined && source.commitId !== headSha) {
-      const commitId = source.commitId;
-      if (!compared.has(commitId)) {
-        compared.set(commitId, github.compareFiles(commitId, headSha).catch(() => undefined));
-      }
-      files = await compared.get(commitId);
+    const byOrigin = new Map<string | undefined, OpenReviewIssue[]>();
+    for (const issue of prior) {
+      const origin = issue.commit ?? source.commitId;
+      byOrigin.set(origin, [...(byOrigin.get(origin) ?? []), issue]);
     }
-    issues.push(...carryForwardIssues(prior, current, files));
+    for (const [origin, group] of byOrigin) {
+      let files: ComparedFileLines[] | undefined;
+      if (origin !== undefined && origin !== headSha) {
+        if (!compared.has(origin)) {
+          compared.set(origin, github.compareFiles(origin, headSha).catch(() => undefined));
+        }
+        files = await compared.get(origin);
+      }
+      issues.push(...carryForwardIssues(group, current, files, origin !== headSha ? origin : undefined));
+    }
   }
   return { issues, unknown: false };
 }

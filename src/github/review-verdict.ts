@@ -15,6 +15,8 @@ export type OpenReviewIssue = {
   side: "RIGHT" | "LEFT";
   /** `previous` lines belong to the prior review commit. `current` lines belong to the new head. */
   lineBasis: "previous" | "current";
+  /** The commit this line is numbered on, when it could not be moved onto the commit that records it. */
+  commit?: string;
 };
 
 const VERDICT_MARKER =
@@ -99,22 +101,28 @@ export function issuesFromReview(
   });
 }
 
+/**
+ * Keeps prior issues that were not re-raised and whose anchors did not settle, moved onto the new head.
+ * `origin` is the commit `files` was compared from; a line that cannot be moved keeps it so the next run settles it there.
+ */
 export function carryForwardIssues(
   prior: OpenReviewIssue[],
   currentFingerprints: ReadonlySet<string>,
-  files: ComparedFileLines[] | undefined
+  files: ComparedFileLines[] | undefined,
+  origin?: string
 ): OpenReviewIssue[] {
   return prior.flatMap((issue) => {
     if (currentFingerprints.has(issue.fingerprint) || anchorSettled(issue, files)) {
       return [];
     }
-    return [rebaseOntoHead(issue, files)];
+    return [rebaseOntoHead(issue, files, origin)];
   });
 }
 
 export function formatVerdictMarker(mode: GitHubReviewMode, commit: string, open: OpenReviewIssue[]): string {
+  // An optional fifth field names the commit an un-rebased line is numbered on; older readers ignore it.
   const encoded = open.map((issue) =>
-    `${issue.fingerprint}:${encodeURIComponent(issue.path)}:${issue.line}:${issue.side}`
+    `${issue.fingerprint}:${encodeURIComponent(issue.path)}:${issue.line}:${issue.side}${issue.commit !== undefined ? `:${issue.commit}` : ""}`
   ).join(",");
   return `<!-- codegenie:verdict=${mode};commit=${commit};open=${encoded} -->`;
 }
@@ -192,13 +200,19 @@ export function renderCarriedIssues(issues: OpenReviewIssue[]): string {
  * Moves a previous-commit RIGHT line onto the new head so the marker's line matches its `commit=`. LEFT lines are
  * numbered on the PR base and current lines already sit on the head. Without a usable patch the line is kept as is.
  */
-function rebaseOntoHead(issue: OpenReviewIssue, files: ComparedFileLines[] | undefined): OpenReviewIssue {
-  if (issue.side !== "RIGHT" || issue.line === FILE_LEVEL_LINE || issue.lineBasis === "current" || files === undefined) {
+function rebaseOntoHead(issue: OpenReviewIssue, files: ComparedFileLines[] | undefined, origin: string | undefined): OpenReviewIssue {
+  if (issue.side !== "RIGHT" || issue.line === FILE_LEVEL_LINE || issue.lineBasis === "current") {
     return issue;
   }
-  const file = files.find((candidate) => candidate.path === issue.path || candidate.previousPath === issue.path);
-  if (file === undefined || file.patchMissing) {
-    return issue;
+  const file = files?.find((candidate) => candidate.path === issue.path || candidate.previousPath === issue.path);
+  if (files === undefined || file?.patchMissing === true) {
+    // The line cannot be moved, so keep it tied to the commit it is numbered on rather than the new head.
+    return origin === undefined ? issue : { ...issue, commit: origin };
+  }
+  // From here the line is on the new head: unchanged when its file is absent from the compare, else shifted.
+  const { commit: _numberedOn, ...onHead } = issue;
+  if (file === undefined) {
+    return onHead;
   }
   const added = new Set(file.addedLines);
   const deleted = new Set(file.deletedLines);
@@ -217,7 +231,7 @@ function rebaseOntoHead(issue: OpenReviewIssue, files: ComparedFileLines[] | und
   while (added.has(newLine)) {
     newLine += 1;
   }
-  return { ...issue, line: newLine };
+  return { ...onHead, line: newLine };
 }
 
 function anchorSettled(issue: OpenReviewIssue, files: ComparedFileLines[] | undefined): boolean {
@@ -253,7 +267,7 @@ function parseOpenList(raw: string): OpenReviewIssue[] {
     return [];
   }
   return raw.split(",").flatMap((entry) => {
-    const [fingerprint, encodedPath, line, side] = entry.split(":");
+    const [fingerprint, encodedPath, line, side, numberedOn] = entry.split(":");
     if (fingerprint === undefined || encodedPath === undefined || line === undefined || (side !== "RIGHT" && side !== "LEFT")) {
       return [];
     }
@@ -267,6 +281,7 @@ function parseOpenList(raw: string): OpenReviewIssue[] {
       // The marker sits in an editable review body; a bad escape drops this entry like any other malformed field.
       return [];
     }
-    return [{ fingerprint, path, line: Number(line), side, lineBasis: "previous" }];
+    const commit = numberedOn !== undefined && /^[0-9a-f]{7,40}$/u.test(numberedOn) ? { commit: numberedOn } : {};
+    return [{ fingerprint, path, line: Number(line), side, lineBasis: "previous" as const, ...commit }];
   });
 }
