@@ -132,10 +132,13 @@ export function parseVerdictMarker(body: string): { mode: GitHubReviewMode; comm
   return { mode, commit, open: parseOpenList(match[3] ?? "") };
 }
 
+/** Line 0 marks a file-level issue: a summary-only finding with no diff anchor. */
+const FILE_LEVEL_LINE = 0;
+
 export function issuesFromFindings(findings: FinalFinding[]): OpenReviewIssue[] {
   return findings.flatMap((finding) => {
     if (finding.anchor === undefined) {
-      return [];
+      return [{ fingerprint: finding.fingerprint, path: finding.path, line: FILE_LEVEL_LINE, side: "RIGHT" as const, lineBasis: "current" as const }];
     }
     return [{
       fingerprint: finding.fingerprint,
@@ -179,7 +182,9 @@ export function renderCarriedIssues(issues: OpenReviewIssue[]): string {
   if (issues.length === 0) {
     return "";
   }
-  const lines = issues.map((issue) => `- \`${issue.path}:${issue.line}\` was not changed since the last request`);
+  const lines = issues.map((issue) =>
+    `- \`${issue.line === FILE_LEVEL_LINE ? issue.path : `${issue.path}:${issue.line}`}\` was not changed since the last request`
+  );
   return ["## Still open from the previous review", "", ...lines].join("\n");
 }
 
@@ -188,7 +193,7 @@ export function renderCarriedIssues(issues: OpenReviewIssue[]): string {
  * numbered on the PR base and current lines already sit on the head. Without a usable patch the line is kept as is.
  */
 function rebaseOntoHead(issue: OpenReviewIssue, files: ComparedFileLines[] | undefined): OpenReviewIssue {
-  if (issue.side !== "RIGHT" || issue.lineBasis === "current" || files === undefined) {
+  if (issue.side !== "RIGHT" || issue.line === FILE_LEVEL_LINE || issue.lineBasis === "current" || files === undefined) {
     return issue;
   }
   const file = files.find((candidate) => candidate.path === issue.path || candidate.previousPath === issue.path);
@@ -230,9 +235,10 @@ function anchorSettled(issue: OpenReviewIssue, files: ComparedFileLines[] | unde
   if (file.patchMissing) {
     return false;
   }
-  // A LEFT line is numbered on the PR base, which the previous-to-head compare never expresses.
-  // Treat any change to the file since the last review as settling it; a still-present issue is re-raised by fingerprint.
-  if (issue.side === "LEFT") {
+  // A LEFT line is numbered on the PR base, which the previous-to-head compare never expresses, and a file-level
+  // issue has no line. Treat any change to the file since the last review as settling it; a still-present issue is
+  // re-raised by fingerprint.
+  if (issue.side === "LEFT" || issue.line === FILE_LEVEL_LINE) {
     return file.addedLines.length > 0 || file.deletedLines.length > 0;
   }
   // A marker line is numbered on the previous commit. Compare deleted lines, not new-head added lines.

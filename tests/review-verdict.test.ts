@@ -4,6 +4,7 @@ import {
   changedLinesFromPatch,
   formatVerdictMarker,
   parseVerdictMarker,
+  renderCarriedIssues,
   selectPostedEvent,
   staleApproval
 } from "../src/github/review-verdict.js";
@@ -43,6 +44,14 @@ describe("review verdict", () => {
     expect(carryForwardIssues([issue], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [20], deletedLines: [20] }])).toEqual([issue]);
     expect(carryForwardIssues([{ ...issue, side: "LEFT" as const }], new Set(), [{ path: "src/other.ts", patchMissing: false, addedLines: [1], deletedLines: [] }])).toEqual([{ ...issue, side: "LEFT" }]);
     expect(carryForwardIssues([issue], new Set(), [{ ...shifted[0]!, patchMissing: true }])).toEqual([issue]);
+  });
+
+  it("settles a file-level issue once its file changes, never shifts it, and renders it without a line", () => {
+    const fileLevel = { fingerprint: "9".repeat(64), path: "src/app.ts", line: 0, side: "RIGHT" as const, lineBasis: "previous" as const };
+    expect(carryForwardIssues([fileLevel], new Set(), [])).toEqual([fileLevel]);
+    expect(carryForwardIssues([fileLevel], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [], deletedLines: [] }])).toEqual([fileLevel]);
+    expect(carryForwardIssues([fileLevel], new Set(), [{ path: "src/app.ts", patchMissing: false, addedLines: [1], deletedLines: [] }])).toEqual([]);
+    expect(renderCarriedIssues([fileLevel])).toContain("- `src/app.ts` was not changed");
   });
 
   it("drops a marker entry with an invalid path escape and keeps its valid siblings", () => {

@@ -956,6 +956,50 @@ describe("GitHub publisher", () => {
     expect(created[0]?.body.trim().length).toBeGreaterThan(0);
   });
 
+  it("records an anchorless summary-only finding so a later clean run cannot approve over it", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const hunk = diff.files[0]?.hunks[0];
+    if (!hunk) throw new Error("missing hunk");
+    const { anchor: _anchor, ...unanchored } = finalFinding({ hunkId: hunk.id, line: 1, fingerprint: "9".repeat(64) });
+    const summaryOnly: FinalFinding = { ...unanchored, publication: "summary-only" };
+    const approve = { ...defaultConfig, github: { ...defaultConfig.github, reviewMode: "approve" as const } };
+
+    const firstBodies: string[] = [];
+    // The marker parser accepts only hex commit ids, so give the first run a hex head.
+    const hexHead = { ...resolved(), pr: { ...pr(), headSha: "e".repeat(40) }, headSha: "e".repeat(40) };
+    const first = await maybePublishToGitHub({ ...reviewResult(), summaryOnlyFindings: [summaryOnly], noFindings: false }, hexHead, approve, nullTelemetry(), {
+      github: fakeGithub({ viewPr: async () => hexHead.pr, createReview: async (_number, review) => { firstBodies.push(review.body); } }),
+      diff
+    });
+    expect(first?.reviewEvent).toBe("REQUEST_CHANGES");
+    expect(firstBodies[0]).toContain(`${"9".repeat(64)}:src%2Fapp.ts:0:RIGHT`);
+
+    const prior = [{ id: "9", state: "CHANGES_REQUESTED", commitId: "c".repeat(40), submittedAt: "2026-01-01T00:00:00Z", body: firstBodies[0] ?? "" }];
+    const untouchedBodies: string[] = [];
+    const untouched = await maybePublishToGitHub(reviewResult(), resolved(), approve, nullTelemetry(), {
+      github: fakeGithub({ reviews: prior, compared: [], createReview: async (_number, review) => { untouchedBodies.push(review.body); } }),
+      diff
+    });
+    expect(untouched?.reviewEvent).toBe("REQUEST_CHANGES");
+    expect(untouchedBodies[0]).toContain("- `src/app.ts` was not changed since the last request");
+
+    // Control: once the file changes and the finding is not raised again, the clean run approves.
+    const changed = await maybePublishToGitHub(reviewResult(), resolved(), approve, nullTelemetry(), {
+      github: fakeGithub({ reviews: prior, compared: [{ path: "src/app.ts", patchMissing: false, addedLines: [3], deletedLines: [] }] }),
+      diff
+    });
+    expect(changed?.reviewEvent).toBe("APPROVE");
+  });
+
+  it("does not approve when the diff had hunks but none were reviewed", async () => {
+    const result = reviewResult();
+    const record = await maybePublishToGitHub({ ...result, coverage: { ...result.coverage, reviewedHunks: 0, skippedHunks: 1, excludedHunks: 1 } }, resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github: fakeGithub(), diff: parseDiff(RAW_DIFF) });
+    expect(record?.reviewEvent).toBe("COMMENT");
+  });
+
   it("omits the verdict marker when prior reviews cannot be listed", async () => {
     const created: Array<{ event: string; body: string }> = [];
     const github = fakeGithub({

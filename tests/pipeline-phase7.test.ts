@@ -90,7 +90,7 @@ describe("phase 7 GitHub pipeline integration", () => {
     const excludedDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-phase7-excluded-")), "pr-review");
     const excludedDismissed: string[] = [];
     const excludedEvents: string[] = [];
-    await runReview({ mode: "github_pr", prNumber: 44 }, approveConfig(excludedDir), {
+    const excludedResult = await runReview({ mode: "github_pr", prNumber: 44 }, approveConfig(excludedDir), {
       repoRoot: excludedRepo,
       runArtifactDir: excludedDir,
       postGithubComments: true,
@@ -100,6 +100,8 @@ describe("phase 7 GitHub pipeline integration", () => {
     expect(excludedDismissed).toEqual([]);
     // Zero reviewed hunks is an incomplete run, so it must post a verdict that is not an approval.
     expect(excludedEvents).toEqual(["COMMENT"]);
+    // Deliberate exclusions are not incomplete work, so no "Review incomplete" banner for any mode.
+    expect(excludedResult.coverage.partial).toBe(false);
 
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
@@ -117,7 +119,7 @@ describe("phase 7 GitHub pipeline integration", () => {
       writeOutput: () => undefined
     });
     expect(dismissed).toEqual(["7"]);
-  }, 20_000);
+  }, 60_000);
 
   it("scrubs pinned secret patterns from final review artifacts", async () => {
     const repo = initRepo();

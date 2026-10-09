@@ -151,7 +151,9 @@ export async function maybePublishToGitHub(
     health: healthForResult(finalReview).status,
     openIssueCount: published.length + carried.length
   });
-  if (carriedLookup.unknown && decision.event === "APPROVE") {
+  // Never approve when prior state is unknown, or when the diff had hunks but none were reviewed (exclusion-only push).
+  const reviewedNothing = finalReview.coverage.totalHunks > 0 && finalReview.coverage.reviewedHunks === 0;
+  if ((carriedLookup.unknown || reviewedNothing) && decision.event === "APPROVE") {
     decision = { event: "COMMENT", forcePost: true };
   }
   let reviewBody = buildPostingBody(finalReview, demoted, config, { includeInlineSummary: prepared.length > 0 });
