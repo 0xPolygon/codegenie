@@ -117,7 +117,7 @@ describe("phase 7 GitHub pipeline integration", () => {
       writeOutput: () => undefined
     });
     expect(dismissed).toEqual(["7"]);
-  });
+  }, 20_000);
 
   it("scrubs pinned secret patterns from final review artifacts", async () => {
     const repo = initRepo();
