@@ -1071,6 +1071,24 @@ describe("github-action entrypoint", () => {
     expect(() => parseGitHubActionArgs(["--review-mode", "ship"])).toThrow(/review-mode/u);
   });
 
+  it("keeps inline comments in approve mode when post-inline-comments is left at its default", async () => {
+    const fake = createFakeComments();
+    let reviewArgv: string[] = [];
+    await executeGitHubActionCommand(["--review-mode", "approve"], {
+      env: actionEnv(issueCommentPayload(), "issue_comment"),
+      issueComments: fake.client,
+      minEditIntervalMs: 0,
+      writeOutput: () => undefined,
+      runReview: async (argv) => {
+        reviewArgv = argv;
+        return { runId: "r1", runDir: "", reportMarkdown: "# report" };
+      }
+    });
+    expect(reviewArgv).toContain("--post-github-comments");
+    expect(reviewArgv[reviewArgv.indexOf("--review-mode") + 1]).toBe("approve");
+    expect(reviewArgv).not.toContain("--skip-github-inline-comments");
+  });
+
   it("omits review-mode when comment mode posts nothing", async () => {
     const fake = createFakeComments();
     let reviewArgv: string[] = [];
