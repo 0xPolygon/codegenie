@@ -956,6 +956,43 @@ describe("GitHub publisher", () => {
     expect(created[0]?.body.trim().length).toBeGreaterThan(0);
   });
 
+  it("falls back to COMMENT on an own-PR rejection of the final summary-only post", async () => {
+    const diff = parseDiff(RAW_DIFF);
+    const hunk = diff.files[0]?.hunks[0];
+    if (!hunk) throw new Error("missing hunk");
+    const findings = ["a", "b", "c"].map((char, index) =>
+      finalFinding({ id: `f${index}`, hunkId: hunk.id, line: 1, fingerprint: char.repeat(64) })
+    );
+    const calls: Array<{ event: string; comments: number }> = [];
+    const github = fakeGithub({
+      createReview: async (_number, review) => {
+        calls.push({ event: review.event, comments: review.comments.length });
+        if (review.comments.length > 0) {
+          throw github422({ errors: [{ index: 0 }] });
+        }
+        if (review.event !== "COMMENT") {
+          throw new CodegenieError("github_post_failed", "Can not request changes on your own pull request", {
+            context: { httpStatus: 422, responseBody: { message: "Can not request changes on your own pull request" } }
+          });
+        }
+      }
+    });
+    const record = await maybePublishToGitHub(reviewResult(...findings), resolved(), {
+      ...defaultConfig,
+      github: { ...defaultConfig.github, reviewMode: "approve" }
+    }, nullTelemetry(), { github, diff });
+    expect(calls).toEqual([
+      { event: "REQUEST_CHANGES", comments: 3 },
+      { event: "REQUEST_CHANGES", comments: 2 },
+      { event: "REQUEST_CHANGES", comments: 1 },
+      { event: "REQUEST_CHANGES", comments: 0 },
+      { event: "COMMENT", comments: 0 }
+    ]);
+    expect(record?.status).toBe("summary_only_fallback");
+    expect(record?.verdictFallback).toBe("own_pr");
+    expect(record?.reviewEvent).toBe("COMMENT");
+  });
+
   it("falls back to COMMENT when GitHub rejects a verdict on the author's own PR", async () => {
     const created: string[] = [];
     const github = fakeGithub({

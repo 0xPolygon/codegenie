@@ -349,15 +349,24 @@ async function postWithRecovery(
     }
   }
 
-  try {
-    await github.createReview(prNumber, { body: currentBody, event: currentEvent, comments: [] });
-    record.reviewEvent = currentEvent;
-    record.attempts.push({ commentCount: 0, outcome: "fallback_summary_only" });
-  } catch (error) {
-    recordFailedPostingAttempt(record, 0, error);
-    throw error;
+  for (;;) {
+    try {
+      await github.createReview(prNumber, { body: currentBody, event: currentEvent, comments: [] });
+      record.reviewEvent = currentEvent;
+      record.attempts.push({ commentCount: 0, outcome: "fallback_summary_only" });
+      return { inlinePosted: 0, summaryOnly: true };
+    } catch (error) {
+      // The loop can exhaust on comment 422s before GitHub reports the own-PR verdict rejection.
+      if (currentEvent !== "COMMENT" && isOwnPullRequestReview(error)) {
+        currentEvent = "COMMENT";
+        record.verdictFallback = "own_pr";
+        record.attempts.push({ httpStatus: 422, commentCount: 0, outcome: "rejected" });
+        continue;
+      }
+      recordFailedPostingAttempt(record, 0, error);
+      throw error;
+    }
   }
-  return { inlinePosted: 0, summaryOnly: true };
 }
 
 function recordFailedPostingAttempt(record: RunPostingRecord, commentCount: number, error: unknown): void {
