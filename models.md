@@ -3,7 +3,7 @@
 > Generated from the pi model registry ([models.dev](https://models.dev)) — do not edit by hand.
 > Regenerate with `make models-list`.
 
-codegenie is multi-provider: **1533 models** across **41 providers**. Use any of them as:
+codegenie is multi-provider: **1613 models** across **41 providers**. Use any of them as:
 
 - `codegenie review --provider <provider> --model <model> [--reasoning <level>]`
 - `codegenie provider use <fuzzy>` (e.g. `use opus`) to set a default
@@ -74,6 +74,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `anthropic.claude-fable-5` | Claude Fable 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic.claude-fable-5-1` | Claude Fable 5.1 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 | 200k | 64k | minimal, low, medium, high |
+| `anthropic.claude-haiku-5-5` | Claude Haiku 5.5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic.claude-opus-4-1-20250805-v1:0` | Claude Opus 4.1 | 200k | 32k | minimal, low, medium, high |
 | `anthropic.claude-opus-4-5-20251101-v1:0` | Claude Opus 4.5 | 200k | 64k | minimal, low, medium, high |
 | `anthropic.claude-opus-4-6-v1` | Claude Opus 4.6 | 1000k | 128k | minimal, low, medium, high, max |
@@ -89,6 +90,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `apac.amazon.nova-pro-v1:0` | Nova Pro (APAC) | 300k | 10k | — |
 | `apac.anthropic.claude-sonnet-4-20250514-v1:0` | Claude Sonnet 4 (APAC) | 200k | 64k | minimal, low, medium, high |
 | `au.anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 (AU) | 200k | 64k | minimal, low, medium, high |
+| `au.anthropic.claude-haiku-5-5` | Claude Haiku 5.5 (AU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `au.anthropic.claude-opus-4-6-v1` | AU Anthropic Claude Opus 4.6 | 1000k | 128k | minimal, low, medium, high, max |
 | `au.anthropic.claude-opus-4-7` | Claude Opus 4.7 (AU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `au.anthropic.claude-opus-4-8` | Claude Opus 4.8 (AU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
@@ -106,6 +108,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `eu.amazon.nova-pro-v1:0` | Nova Pro (EU) | 300k | 10k | — |
 | `eu.anthropic.claude-fable-5` | Claude Fable 5 (EU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `eu.anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 (EU) | 200k | 64k | minimal, low, medium, high |
+| `eu.anthropic.claude-haiku-5-5` | Claude Haiku 5.5 (EU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `eu.anthropic.claude-opus-4-5-20251101-v1:0` | Claude Opus 4.5 (EU) | 200k | 64k | minimal, low, medium, high |
 | `eu.anthropic.claude-opus-4-6-v1` | Claude Opus 4.6 (EU) | 1000k | 128k | minimal, low, medium, high, max |
 | `eu.anthropic.claude-opus-4-7` | Claude Opus 4.7 (EU) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
@@ -122,6 +125,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `global.anthropic.claude-fable-5` | Claude Fable 5 (Global) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `global.anthropic.claude-fable-5-1` | Claude Fable 5.1 (Global) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `global.anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 (Global) | 200k | 64k | minimal, low, medium, high |
+| `global.anthropic.claude-haiku-5-5` | Claude Haiku 5.5 (Global) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `global.anthropic.claude-opus-4-5-20251101-v1:0` | Claude Opus 4.5 (Global) | 200k | 64k | minimal, low, medium, high |
 | `global.anthropic.claude-opus-4-6-v1` | Claude Opus 4.6 (Global) | 1000k | 128k | minimal, low, medium, high, max |
 | `global.anthropic.claude-opus-4-7` | Claude Opus 4.7 (Global) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
@@ -143,6 +147,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `global.openai.gpt-6.1-sol` | GPT-6.1 Sol (Global) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `global.xai.grok-4.6` | Grok 4.6 (Global) | 500k | 500k | minimal, low, medium, high |
 | `global.xai.grok-4.7` | Grok 4.7 (Global) | 500k | 500k | minimal, low, medium, high |
+| `global.zai.glm-5.3` | GLM-5.3 (Global) | 1000k | 128k | minimal, low, medium, high |
 | `google.gemma-4-26b-a4b` | Gemma 4 26B A4B IT | 262144 | 32768 | minimal, low, medium, high |
 | `google.gemma-4-31b` | Gemma 4 31B IT | 262144 | 32768 | minimal, low, medium, high |
 | `google.gemma-4-e2b` | Gemma 4 E2B IT | 131072 | 8192 | minimal, low, medium, high |
@@ -153,6 +158,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `in.openai.gpt-5.6-terra` | GPT-5.6 Terra (India) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `jp.amazon.nova-2-lite-v1:0` | Nova 2 Lite (JP) | 1000k | 65535 | minimal, low, medium, high |
 | `jp.anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 (JP) | 200k | 64k | minimal, low, medium, high |
+| `jp.anthropic.claude-haiku-5-5` | Claude Haiku 5.5 (JP) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `jp.anthropic.claude-opus-4-7` | Claude Opus 4.7 (JP) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `jp.anthropic.claude-opus-4-8` | Claude Opus 4.8 (JP) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `jp.anthropic.claude-opus-5` | Claude Opus 5 (JP) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
@@ -215,6 +221,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `us.anthropic.claude-fable-5` | Claude Fable 5 (US) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `us.anthropic.claude-fable-5-1` | Claude Fable 5.1 (US) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Claude Haiku 4.5 (US) | 200k | 64k | minimal, low, medium, high |
+| `us.anthropic.claude-haiku-5-5` | Claude Haiku 5.5 (US) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `us.anthropic.claude-opus-4-1-20250805-v1:0` | Claude Opus 4.1 (US) | 200k | 32k | minimal, low, medium, high |
 | `us.anthropic.claude-opus-4-5-20251101-v1:0` | Claude Opus 4.5 (US) | 200k | 64k | minimal, low, medium, high |
 | `us.anthropic.claude-opus-4-6-v1` | Claude Opus 4.6 (US) | 1000k | 128k | minimal, low, medium, high, max |
@@ -245,6 +252,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `us.writer.palmyra-x5-v1:0` | Palmyra X5 (US) | 1040k | 8192 | minimal, low, medium, high |
 | `us.xai.grok-4.6` | Grok 4.6 (US) | 500k | 500k | minimal, low, medium, high |
 | `us.xai.grok-4.7` | Grok 4.7 (US) | 500k | 500k | minimal, low, medium, high |
+| `us.zai.glm-5.3` | GLM-5.3 (US) | 1000k | 128k | minimal, low, medium, high |
 | `writer.palmyra-x4-v1:0` | Palmyra X4 | 122880 | 8192 | minimal, low, medium, high |
 | `writer.palmyra-x5-v1:0` | Palmyra X5 | 1040k | 8192 | minimal, low, medium, high |
 | `xai.grok-4.3` | Grok 4.3 | 1000k | 131072 | minimal, low, medium, high |
@@ -269,6 +277,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `claude-fable-5-1` | Claude Fable 5.1 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-haiku-4-5` | Claude Haiku 4.5 (latest) | 200k | 64k | minimal, low, medium, high |
 | `claude-haiku-4-5-20251001` | Claude Haiku 4.5 | 200k | 64k | minimal, low, medium, high |
+| `claude-haiku-5-5` | Claude Haiku 5.5 | 1000k | 128k | low, medium, high, xhigh, max |
 | `claude-opus-4-5` | Claude Opus 4.5 (latest) | 200k | 64k | minimal, low, medium, high |
 | `claude-opus-4-5-20251101` | Claude Opus 4.5 | 200k | 64k | minimal, low, medium, high |
 | `claude-opus-4-6` | Claude Opus 4.6 | 1000k | 128k | minimal, low, medium, high, max |
@@ -276,8 +285,8 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `claude-opus-4-8` | Claude Opus 4.8 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-opus-5` | Claude Opus 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-opus-5-5` | Claude Opus 5.5 | 1000k | 128k | low, medium, high, xhigh, max |
-| `claude-sonnet-4-5` | Claude Sonnet 4.5 (latest) | 1000k | 64k | minimal, low, medium, high |
-| `claude-sonnet-4-5-20250929` | Claude Sonnet 4.5 | 1000k | 64k | minimal, low, medium, high |
+| `claude-sonnet-4-5` | Claude Sonnet 4.5 (latest) | 200k | 64k | minimal, low, medium, high |
+| `claude-sonnet-4-5-20250929` | Claude Sonnet 4.5 | 200k | 64k | minimal, low, medium, high |
 | `claude-sonnet-4-6` | Claude Sonnet 4.6 | 1000k | 128k | minimal, low, medium, high, max |
 | `claude-sonnet-5` | Claude Sonnet 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-sonnet-5-5` | Claude Sonnet 5.5 | 1000k | 128k | low, medium, high, xhigh, max |
@@ -340,7 +349,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `deepseek-ai/DeepSeek-V4-Pro` | DeepSeek V4 Pro | 1048576 | 262144 | minimal, low, medium, high, xhigh, max |
 | `deepseek-ai/DeepSeek-V4-Pro-0813` | DeepSeek V4 Pro 0813 | 1048576 | 262144 | low, high, max |
 | `deepseek-ai/DeepSeek-V4.1-Flash` | DeepSeek V4.1 Flash | 1048576 | 32768 | low, high, max |
-| `deepseek-ai/DeepSeek-V4.1-Flash-Fast` | deepseek-ai/DeepSeek-V4.1-Flash-Fast | 1048576 | 32768 | low, high, max |
+| `deepseek-ai/DeepSeek-V4.1-Flash-Fast` | DeepSeek V4.1 Flash Fast | 1048576 | 32768 | low, high, max |
 | `moonshotai/Kimi-K2.5` | Kimi K2.5 | 262k | 262k | high |
 | `moonshotai/Kimi-K2.6` | Kimi K2.6 | 262k | 262k | high |
 | `moonshotai/Kimi-K2.7-Code` | Kimi K2.7 Code | 262k | 262k | high |
@@ -373,6 +382,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `claude-fable-5` | Claude Fable 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-fable-5-1` | Claude Fable 5.1 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-haiku-4-5` | Claude Haiku 4.5 (latest) | 200k | 64k | minimal, low, medium, high |
+| `claude-haiku-5-5` | Claude Haiku 5.5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-opus-4-5` | Claude Opus 4.5 (latest) | 200k | 64k | minimal, low, medium, high |
 | `claude-opus-4-6` | Claude Opus 4.6 | 1000k | 128k | minimal, low, medium, high, max |
 | `claude-opus-4-7` | Claude Opus 4.7 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
@@ -382,6 +392,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `claude-sonnet-4-5` | Claude Sonnet 4.5 (latest) | 200k | 64k | minimal, low, medium, high |
 | `claude-sonnet-4-6` | Claude Sonnet 4.6 | 1000k | 128k | minimal, low, medium, high, max |
 | `claude-sonnet-5` | Claude Sonnet 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `claude-sonnet-5-5` | Claude Sonnet 5.5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `gpt-4.1` | GPT-4.1 | 1047576 | 32768 | — |
 | `gpt-4.1-mini` | GPT-4.1 mini | 1047576 | 32768 | — |
 | `gpt-4.1-nano` | GPT-4.1 nano | 1000k | 32768 | — |
@@ -403,6 +414,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `gpt-6-astra` | GPT-6 Astra | 1050k | 128k | low, medium, high, xhigh, max |
 | `gpt-6-luna` | GPT-6 Luna | 1050k | 128k | low, medium, high, xhigh, max |
 | `gpt-6-sol` | GPT-6 Sol | 1050k | 128k | low, medium, high, xhigh, max |
+| `gpt-6.1-sol` | GPT-6.1 Sol | 1050k | 128k | low, medium, high, xhigh, max |
 | `o3` | o3 | 200k | 100k | low, medium, high |
 | `o3-mini` | o3-mini | 200k | 100k | low, medium, high |
 | `o4-mini` | o4-mini | 200k | 100k | low, medium, high |
@@ -489,6 +501,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `claude-fable-5` | Claude Fable 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-fable-5.1` | Claude Fable 5.1 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-haiku-4.5` | Claude Haiku 4.5 (latest) | 200k | 64k | minimal, low, medium, high |
+| `claude-haiku-5.5` | Claude Haiku 5.5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-opus-4.7` | Claude Opus 4.7 | 1000k | 32k | minimal, low, medium, high, xhigh, max |
 | `claude-opus-4.8` | Claude Opus 4.8 | 1000k | 64k | minimal, low, medium, high, xhigh, max |
 | `claude-opus-5` | Claude Opus 5 | 1000k | 64k | minimal, low, medium, high, xhigh, max |
@@ -500,6 +513,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `gemini-3.6-flash` | Gemini 3.6 Flash | 1000k | 64k | minimal, low, medium, high |
 | `gemini-3.7-flash` | Gemini 3.7 Flash | 1000k | 64k | minimal, low, medium, high |
 | `gemini-3.8-flash` | Gemini 3.8 Flash | 1000k | 64k | minimal, low, medium, high |
+| `gemini-4-argon` | Gemini 4 Argon | 1048576 | 65536 | minimal, low, medium, high |
 | `gpt-5-mini` | GPT-5 Mini | 264k | 64k | minimal, low, medium, high |
 | `gpt-5.3-codex` | GPT-5.3 Codex | 1000k | 128k | minimal, low, medium, high, xhigh |
 | `gpt-5.4` | GPT-5.4 | 1000k | 128k | minimal, low, medium, high, xhigh |
@@ -526,10 +540,11 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
 | `gemini-2.5-flash` | Gemini 2.5 Flash | 1048576 | 65536 | minimal, low, medium, high |
-| `gemini-2.5-flash-lite` | Gemini 2.5 Flash-Lite | 1048576 | 65535 | minimal, low, medium, high |
+| `gemini-2.5-flash-lite` | Gemini 2.5 Flash-Lite | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-2.5-pro` | Gemini 2.5 Pro | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-3-flash-preview` | Gemini 3 Flash Preview | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-3.1-flash-lite` | Gemini 3.1 Flash Lite | 1048576 | 65536 | minimal, low, medium, high |
+| `gemini-3.1-flash-lite-image` | Nano Banana 2 Lite | 65536 | 4096 | minimal, high |
 | `gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | 1048576 | 65536 | low, medium, high |
 | `gemini-3.1-pro-preview-customtools` | Gemini 3.1 Pro Preview Custom Tools | 1048576 | 65536 | low, medium, high |
 | `gemini-3.5-flash` | Gemini 3.5 Flash | 1048576 | 65536 | minimal, low, medium, high |
@@ -537,8 +552,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `gemini-3.6-flash` | Gemini 3.6 Flash | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-3.7-flash` | Gemini 3.7 Flash | 1048576 | 65536 | low, medium, high |
 | `gemini-3.8-flash` | Gemini 3.8 Flash | 1048576 | 65536 | low, medium, high |
-| `gemini-flash-latest` | Gemini Flash Latest | 1048576 | 65536 | minimal, low, medium, high |
-| `gemini-flash-lite-latest` | Gemini Flash-Lite Latest | 1048576 | 65536 | minimal, low, medium, high |
+| `gemini-4-argon` | Gemini 4 Argon | 1048576 | 65536 | low, medium, high |
 
 ## google
 
@@ -562,6 +576,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `gemini-3.6-flash` | Gemini 3.6 Flash | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-3.7-flash` | Gemini 3.7 Flash | 1048576 | 65536 | low, medium, high |
 | `gemini-3.8-flash` | Gemini 3.8 Flash | 1048576 | 65536 | low, medium, high |
+| `gemini-4-argon` | Gemini 4 Argon | 1048576 | 32768 | low, medium, high |
 | `gemini-flash-latest` | Gemini Flash Latest | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-flash-lite-latest` | Gemini Flash-Lite Latest | 1048576 | 65536 | minimal, low, medium, high |
 | `gemma-4-26b-a4b-it` | Gemma 4 26B A4B IT | 262144 | 32768 | minimal, high |
@@ -602,6 +617,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `google/gemma-4-31B-it` | Gemma 4 31B IT | 262144 | 32768 | minimal, low, medium, high |
 | `meta-llama/Llama-3.1-8B-Instruct` | Llama-3.1-8B-Instruct | 131072 | 4096 | — |
 | `meta-llama/Llama-3.3-70B-Instruct` | Llama-3.3-70B-Instruct | 131072 | 4096 | — |
+| `MiniMaxAI/MiniMax-M1-80k` | MiniMax M1 80K | 1000k | 80k | minimal, low, medium, high |
 | `MiniMaxAI/MiniMax-M2` | MiniMax-M2 | 204800 | 131072 | minimal, low, medium, high |
 | `MiniMaxAI/MiniMax-M2.1` | MiniMax-M2.1 | 204800 | 131072 | minimal, low, medium, high |
 | `MiniMaxAI/MiniMax-M2.5` | MiniMax-M2.5 | 204800 | 131072 | minimal, low, medium, high |
@@ -629,6 +645,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `Qwen/Qwen3-Next-80B-A3B-Thinking` | Qwen3-Next-80B-A3B-Thinking | 262144 | 131072 | — |
 | `Qwen/Qwen3-VL-235B-A22B-Instruct` | Qwen3 VL 235B A22B Instruct | 131072 | 32768 | — |
 | `Qwen/Qwen3-VL-235B-A22B-Thinking` | Qwen3 VL 235B A22B Thinking | 131072 | 32768 | low, medium, high |
+| `Qwen/Qwen3-VL-30B-A3B-Instruct` | Qwen3 VL 30B A3B Instruct | 131072 | 32768 | — |
 | `Qwen/Qwen3.5-122B-A10B` | Qwen3.5 122B-A10B | 262144 | 65536 | minimal, low, medium, high |
 | `Qwen/Qwen3.5-27B` | Qwen3.5 27B | 262144 | 65536 | minimal, low, medium, high |
 | `Qwen/Qwen3.5-35B-A3B` | Qwen3.5 35B-A3B | 262144 | 65536 | minimal, low, medium, high |
@@ -678,6 +695,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `muse-spark-1.2-contributor` | Muse Spark 1.2 Contributor | 1048576 | 131072 | minimal, low, medium, high, xhigh |
 | `muse-spark-1.3` | Muse Spark 1.3 | 1048576 | 131072 | minimal, low, medium, high, xhigh, max |
 | `muse-spark-1.3-contributor` | Muse Spark 1.3 Contributor | 1048576 | 131072 | minimal, low, medium, high, xhigh |
+| `muse-wonder-1.0` | Muse Wonder | 1048576 | 131072 | minimal, low, medium, high, xhigh, max |
 
 ## minimax-cn
 
@@ -699,6 +717,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
+| `codestral-2508` | Codestral 25.08 | 256k | 8192 | — |
 | `codestral-latest` | Codestral (latest) | 256k | 4096 | — |
 | `devstral-2512` | Devstral 2 | 262144 | 262144 | — |
 | `devstral-latest` | Devstral 2 | 262144 | 262144 | — |
@@ -706,12 +725,18 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `devstral-medium-latest` | Devstral 2 (latest) | 262144 | 262144 | — |
 | `devstral-small-2505` | Devstral Small 2505 | 128k | 128k | — |
 | `devstral-small-2507` | Devstral Small | 128k | 128k | — |
+| `glm-5-2` | GLM-5.2 | 1048576 | 131072 | high, max |
 | `labs-devstral-small-2512` | Devstral Small 2 | 256k | 256k | — |
-| `magistral-medium-latest` | Magistral Medium (latest) | 128k | 16384 | minimal, low, medium, high |
-| `ministral-3b-latest` | Ministral 3B (latest) | 128k | 128k | — |
-| `ministral-8b-latest` | Ministral 8B (latest) | 128k | 128k | — |
+| `labs-leanstral-1-5-1` | Leanstral 1.5 | 262144 | 128k | high |
+| `magistral-medium-latest` | Magistral Medium (latest) | 262144 | 16384 | high |
+| `ministral-14b-2512` | Ministral 3 14B | 262144 | 262144 | — |
+| `ministral-3b-2512` | Ministral 3 3B | 131072 | 262144 | — |
+| `ministral-3b-latest` | Ministral 3B (latest) | 131072 | 128k | — |
+| `ministral-8b-2512` | Ministral 3 8B | 262144 | 262144 | — |
+| `ministral-8b-latest` | Ministral 8B (latest) | 262144 | 128k | — |
 | `mistral-large-2411` | Mistral Large 2.1 | 131072 | 16384 | — |
 | `mistral-large-2512` | Mistral Large 3 | 262144 | 262144 | — |
+| `mistral-large-4` | Mistral Large 4 | 1048576 | 262144 | high |
 | `mistral-large-latest` | Mistral Large (latest) | 262144 | 262144 | — |
 | `mistral-medium-2505` | Mistral Medium 3 | 131072 | 131072 | — |
 | `mistral-medium-2508` | Mistral Medium 3.1 | 262144 | 262144 | — |
@@ -720,17 +745,18 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `mistral-medium-latest` | Mistral Medium (latest) | 262144 | 262144 | high |
 | `mistral-nemo` | Mistral Nemo | 128k | 128k | — |
 | `mistral-small-2506` | Mistral Small 3.2 | 128k | 16384 | — |
-| `mistral-small-2603` | Mistral Small 4 | 256k | 256k | high |
-| `mistral-small-latest` | Mistral Small (latest) | 256k | 256k | high |
+| `mistral-small-2603` | Mistral Small 4 | 262144 | 256k | high |
+| `mistral-small-latest` | Mistral Small (latest) | 262144 | 256k | high |
 | `open-mistral-7b` | Mistral 7B | 8k | 8k | — |
 | `open-mistral-nemo` | Open Mistral Nemo | 128k | 128k | — |
 | `open-mixtral-8x22b` | Mixtral 8x22B | 64k | 64k | — |
 | `open-mixtral-8x7b` | Mixtral 8x7B | 32k | 32k | — |
 | `pixtral-12b` | Pixtral 12B | 128k | 128k | — |
 | `pixtral-large-latest` | Pixtral Large (latest) | 128k | 128k | — |
-| `voxtral-small-latest` | Voxtral Small (latest) | 32k | 32k | — |
-| `zai-glm-5-2` | GLM-5.2 | 1000k | 131072 | high, max |
-| `zai-glm-5-3` | GLM-5.3 | 1000k | 131072 | low, high, max |
+| `voxtral-small-2507` | Voxtral Small | 32768 | 32k | — |
+| `voxtral-small-latest` | Voxtral Small (latest) | 32768 | 32k | — |
+| `zai-glm-5-2` | GLM-5.2 | 1048576 | 131072 | high, max |
+| `zai-glm-5-3` | GLM-5.3 | 1048576 | 131072 | low, high, max |
 
 ## moonshotai-cn
 
@@ -763,14 +789,13 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `meta/muse-glimmer-30b` | Muse Glimmer 30B | 131072 | 131072 | minimal, low, medium, high |
 | `mistralai/mistral-7b-instruct-v0.3` | Mistral-7B-Instruct-v0.3 | 65536 | 65536 | — |
 | `moonshotai/kimi-k2.6` | Kimi K2.6 | 262144 | 262144 | minimal, low, medium, high |
-| `moonshotai/kimi-k3` | Kimi K3 | 1048576 | 131072 | minimal, low, medium, high |
 | `nvidia/cosmos-reason2-8b` | Cosmos Reason2 8B | 131072 | 16384 | minimal, low, medium, high |
 | `nvidia/llama-3.1-nemotron-70b-instruct` | Llama 3.1 Nemotron 70B Instruct | 128k | 8192 | — |
 | `nvidia/llama-3.1-nemotron-ultra-253b-v1` | Llama 3.1 Nemotron Ultra 253B | 128k | 16384 | minimal, low, medium, high |
 | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning` | Nemotron 3 Nano Omni | 256k | 65536 | minimal, low, medium, high |
-| `nvidia/nemotron-3-super-120b-a12b` | Nemotron 3 Super | 262144 | 262144 | minimal, low, medium, high |
 | `nvidia/nemotron-3-ultra-550b-a55b` | Nemotron 3 Ultra 550B A55B | 1000k | 65536 | minimal, low, medium, high |
 | `nvidia/nemotron-3.5-lightning-30b-a3b` | Nemotron 3.5 Lightning 30B A3B | 262144 | 262144 | minimal, low, medium, high |
+| `nvidia/nemotron-3.5-super-vl-120b-a12b` | Nemotron 3.5 Super VL 120B A12B | 1048576 | 8192 | minimal, low, medium, high |
 | `openai/gpt-oss-20b` | GPT OSS 20B | 131072 | 32768 | minimal, low, medium, high |
 | `poolside/laguna-xs-2.1` | Laguna XS 2.1 | 262144 | 16384 | minimal, low, medium, high |
 | `z-ai/glm-5.3` | GLM-5.3 | 1000k | 131072 | minimal, low, medium, high |
@@ -788,7 +813,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `gpt-6-astra` | GPT-6 Astra | 272k | 128k | minimal, low, medium, high, xhigh, max |
 | `gpt-6-luna` | GPT-6 Luna | 272k | 128k | minimal, low, medium, high, xhigh, max |
 | `gpt-6-sol` | GPT-6 Sol | 272k | 128k | minimal, low, medium, high, xhigh, max |
-| `gpt-6.1-sol` | GPT-6.1 Sol | 272k | 128k | minimal, low, medium, high, xhigh, max |
+| `gpt-6.1-sol` | GPT-6.1 Sol | 500k | 128k | minimal, low, medium, high, xhigh, max |
 
 ## openai
 
@@ -843,16 +868,16 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
-| `deepseek-v4-flash` | DeepSeek V4 Flash | 1000k | 384k | low, high, max |
-| `deepseek-v4-flash-vision-exp` | DeepSeek V4 Flash Vision Exp | 1000k | 384k | low, high, max |
+| `cat-jam-free` | Cat Jam Free | 262144 | 131072 | low, medium, high, xhigh, max |
+| `claude-haiku-5-5` | Claude Haiku 5.5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `deepseek-v4-pro` | DeepSeek V4 Pro (New) | 1000k | 384k | high, max |
 | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | 1000k | 384k | low, high, max |
+| `gemini-4-argon-contributor` | Gemini 4 Argon Contributor | 1048576 | 65536 | low, medium, high |
 | `glm-5.2` | GLM-5.2 | 1000k | 131072 | high, max |
 | `glm-5.3` | GLM-5.3 | 1000k | 131072 | low, high, max |
 | `glm-5.3-flash` | GLM-5.3-Flash | 1000k | 131072 | low, high, max |
 | `gpt-5.6-luna` | GPT-5.6 Luna | 1050k | 128k | low, medium, high, xhigh, max |
 | `gpt-6-luna` | GPT-6 Luna | 1050k | 128k | low, medium, high, xhigh, max |
-| `grok-4.6` | Grok 4.6 | 500k | 500k | low, medium, high, xhigh |
 | `grok-4.7` | Grok 4.7 | 500k | 500k | low, medium, high, xhigh |
 | `hy3` | Hy3 | 256k | 128k | low, high |
 | `hy4-preview` | Hy4 preview | 1024k | 64k | high |
@@ -864,23 +889,25 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `mimo-v2.5-pro` | MiMo V2.5 Pro | 1048576 | 128k | minimal, low, medium, high |
 | `mimo-v2.6-flash` | MiMo-V2.6-Flash | 1048576 | 131072 | minimal, low, medium, high |
 | `mimo-v2.6-pro` | MiMo-V2.6-Pro | 1048576 | 131072 | minimal, low, medium, high |
-| `minimax-m2.7` | MiniMax-M2.7 | 204800 | 131072 | minimal, low, medium, high |
 | `minimax-m3` | MiniMax-M3 | 1000k | 131072 | minimal, low, medium, high |
 | `muse-spark-1.2-contributor` | Muse Spark 1.2 Contributor | 1048576 | 131072 | minimal, low, medium, high, xhigh |
 | `muse-spark-1.3-contributor` | Muse Spark 1.3 Contributor | 1048576 | 131072 | minimal, low, medium, high, xhigh |
 | `qwen3.7-plus` | Qwen3.7 Plus | 1000k | 65536 | minimal, low, medium, high |
 | `qwen3.8-flash` | Qwen3.8 Flash | 1000k | 131072 | minimal, low, medium, high |
 | `qwen3.8-max` | Qwen3.8 Max | 1000k | 131072 | minimal, low, medium, high |
-| `space-bunny-free` | Space Bunny Free | 1048576 | 524288 | low, medium, high, xhigh, max |
+| `space-bunny` | Space Bunny | 1048576 | 524288 | low, medium, high, xhigh, max |
+| `step-5-preview-free` | Step 5 Preview Free | 1000k | 65536 | low, medium, high |
 
 ## opencode
 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
 | `big-pickle` | Big Pickle | 200k | 32k | minimal, low, medium, high |
+| `cat-jam-free` | Cat Jam Free | 262144 | 131072 | low, medium, high, xhigh, max |
 | `claude-fable-5` | Claude Fable 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-fable-5-1` | Claude Fable 5.1 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-haiku-4-5` | Claude Haiku 4.5 | 200k | 64k | minimal, low, medium, high |
+| `claude-haiku-5-5` | Claude Haiku 5.5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-opus-4-5` | Claude Opus 4.5 | 200k | 64k | minimal, low, medium, high |
 | `claude-opus-4-6` | Claude Opus 4.6 | 1000k | 128k | minimal, low, medium, high, max |
 | `claude-opus-4-7` | Claude Opus 4.7 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
@@ -896,7 +923,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `deepseek-v4-flash-vision-exp` | DeepSeek V4 Flash Vision Exp | 1000k | 384k | low, high, max |
 | `deepseek-v4-pro` | DeepSeek V4 Pro | 1000k | 384k | high, max |
 | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | 1000k | 384k | low, high, max |
-| `fledge-alpha-free` | Fledge Alpha Free | 1048576 | 131072 | low, high, max |
+| `deepseek-v4.1-flash-free` | DeepSeek V4.1 Flash Free | 200k | 32k | low, high, max |
 | `gemini-3-flash` | Gemini 3 Flash | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-3.1-pro` | Gemini 3.1 Pro Preview | 1048576 | 65536 | low, medium, high |
 | `gemini-3.5-flash` | Gemini 3.5 Flash | 1048576 | 65536 | minimal, low, medium, high |
@@ -904,6 +931,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `gemini-3.6-flash` | Gemini 3.6 Flash | 1048576 | 65536 | minimal, low, medium, high |
 | `gemini-3.7-flash` | Gemini 3.7 Flash | 1048576 | 65536 | low, medium, high |
 | `gemini-3.8-flash` | Gemini 3.8 Flash | 1048576 | 65536 | low, medium, high |
+| `gemini-4-argon` | Gemini 4 Argon | 1048576 | 65536 | low, medium, high |
 | `glm-5` | GLM-5 | 204800 | 131072 | minimal, low, medium, high |
 | `glm-5.1` | GLM-5.1 | 204800 | 131072 | minimal, low, medium, high |
 | `glm-5.2` | GLM-5.2 | 1000k | 131072 | high, max |
@@ -940,30 +968,31 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `kimi-k2.6` | Kimi K2.6 | 262144 | 65536 | minimal, low, medium, high |
 | `kimi-k2.7-code` | Kimi K2.7 Code | 262144 | 262144 | minimal, low, medium, high |
 | `kimi-k3` | Kimi K3 | 1048576 | 131072 | max |
-| `ling-3.0-flash-fin-free` | Ling 3.0 Flash Fin Free | 262144 | 32768 | minimal, low, medium, high |
-| `ling-3.1-flash-free` | Ling 3.1 Flash Free | 262144 | 32768 | minimal, low, medium, high |
 | `longcat-2.5-preview-free` | LongCat 2.5 Preview Free | 1000k | 131072 | minimal, low, medium, high |
 | `mimo-v2.6-flash-free` | MiMo-V2.6-Flash Free | 200k | 32k | minimal, low, medium, high |
 | `minimax-m2.5` | MiniMax-M2.5 | 204800 | 131072 | minimal, low, medium, high |
 | `minimax-m2.7` | MiniMax-M2.7 | 204800 | 131072 | minimal, low, medium, high |
 | `minimax-m3` | MiniMax-M3 | 512k | 128k | minimal, low, medium, high |
+| `mistral-large-4` | Mistral Large 4 | 524288 | 262144 | high |
 | `muse-spark-1.2` | Muse Spark 1.2 | 1048576 | 131072 | minimal, low, medium, high, xhigh |
 | `muse-spark-1.3` | Muse Spark 1.3 | 1048576 | 131072 | minimal, low, medium, high, xhigh |
 | `muse-spark-1.3-contributor-free` | Muse Spark 1.3 Free | 1048576 | 131072 | minimal, low, medium, high, xhigh |
 | `nemotron-3-ultra-free` | Nemotron 3 Ultra Free | 1000k | 128k | minimal, low, medium, high |
 | `nemotron-3.5-lightning-free` | Nemotron 3.5 Lightning Free | 262144 | 262144 | minimal, low, medium, high |
+| `nemotron-3.5-super-vl-free` | Nemotron 3.5 Super VL Free | 1048576 | 131072 | minimal, low, medium, high, xhigh |
 | `qwen3.5-plus` | Qwen3.5 Plus | 262144 | 65536 | minimal, low, medium, high |
 | `qwen3.6-plus` | Qwen3.6 Plus | 262144 | 65536 | minimal, low, medium, high |
 | `qwen3.8-flash` | Qwen3.8 Flash | 1000k | 131072 | minimal, low, medium, high |
 | `qwen3.8-max` | Qwen3.8 Max | 262144 | 131072 | minimal, low, medium, high |
 | `space-bunny-free` | Space Bunny Free | 1048576 | 524288 | low, medium, high, xhigh, max |
+| `step-5-preview-free` | Step 5 Preview Free | 1000k | 65536 | low, medium, high |
 
 ## openrouter
 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
 | `~anthropic/claude-fable-latest` | Anthropic: Claude Fable Latest | 1000k | 128k | low, medium, high, xhigh, max |
-| `~anthropic/claude-haiku-latest` | Anthropic: Claude Haiku Latest | 200k | 64k | minimal, low, medium, high |
+| `~anthropic/claude-haiku-latest` | Anthropic: Claude Haiku Latest | 1000k | 128k | low, medium, high, xhigh, max |
 | `~anthropic/claude-opus-latest` | Anthropic: Claude Opus Latest | 1000k | 128k | low, medium, high, xhigh, max |
 | `~anthropic/claude-sonnet-latest` | Anthropic: Claude Sonnet Latest | 1000k | 128k | low, medium, high, xhigh, max |
 | `~deepseek/deepseek-flash-latest` | DeepSeek: DeepSeek Flash Latest | 1048576 | 943718 | low, high, max |
@@ -977,8 +1006,9 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `~openai/gpt-mini-latest` | OpenAI: GPT Mini Latest | 400k | 128k | low, medium, high, xhigh |
 | `~openai/gpt-sol-latest` | OpenAI: GPT Sol Latest | 1050k | 128k | low, medium, high, xhigh, max |
 | `~openai/gpt-terra-latest` | OpenAI: GPT Terra Latest | 1050k | 128k | low, medium, high, xhigh, max |
+| `~unbiased/pareto-latest` | Pareto Latest | 262144 | 131072 | — |
 | `~x-ai/grok-latest` | xAI: Grok Latest | 500k | 450k | low, medium, high, xhigh |
-| `~z-ai/glm-flash-latest` | Z.ai: GLM Flash Latest | 1048576 | 131072 | low, high, max |
+| `~z-ai/glm-flash-latest` | Z.ai: GLM Flash Latest | 1048576 | 943718 | low, high, max |
 | `~z-ai/glm-latest` | Z.ai: GLM Latest | 1048576 | 131072 | low, high, max |
 | `aion-labs/aion-2.0` | AionLabs: Aion-2.0 | 131072 | 32768 | minimal, low, medium, high |
 | `aion-labs/aion-3.0` | AionLabs: Aion-3.0 | 131072 | 32768 | minimal, low, medium, high |
@@ -996,6 +1026,8 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `anthropic/claude-fable-5.1:batch` | Anthropic: Claude Fable 5.1 (batch) | 1000k | 128k | low, medium, high, xhigh, max |
 | `anthropic/claude-haiku-4.5` | Anthropic: Claude Haiku 4.5 | 200k | 64k | minimal, low, medium, high |
 | `anthropic/claude-haiku-4.5:batch` | Anthropic: Claude Haiku 4.5 (batch) | 200k | 64k | minimal, low, medium, high |
+| `anthropic/claude-haiku-5.5` | Anthropic: Claude Haiku 5.5 | 1000k | 128k | low, medium, high, xhigh, max |
+| `anthropic/claude-haiku-5.5:batch` | Anthropic: Claude Haiku 5.5 (batch) | 1000k | 128k | low, medium, high, xhigh, max |
 | `anthropic/claude-opus-4.1` | Anthropic: Claude Opus 4.1 | 200k | 32k | minimal, low, medium, high |
 | `anthropic/claude-opus-4.1:batch` | Anthropic: Claude Opus 4.1 (batch) | 200k | 32k | minimal, low, medium, high |
 | `anthropic/claude-opus-4.5` | Anthropic: Claude Opus 4.5 | 200k | 64k | minimal, low, medium, high |
@@ -1018,7 +1050,6 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `anthropic/claude-sonnet-5:batch` | Anthropic: Claude Sonnet 5 (batch) | 1000k | 128k | low, medium, high, xhigh, max |
 | `anthropic/claude-sonnet-5.5` | Anthropic: Claude Sonnet 5.5 | 1000k | 128k | low, medium, high, xhigh, max |
 | `anthropic/claude-sonnet-5.5:batch` | Anthropic: Claude Sonnet 5.5 (batch) | 1000k | 128k | low, medium, high, xhigh, max |
-| `apodex/apodex-1.1-mini:free` | Apodex: Apodex 1.1 Mini (free) | 262144 | 235929 | minimal, low, medium, high |
 | `arcee-ai/trinity-large-thinking` | Arcee AI: Trinity Large Thinking | 262144 | 80k | minimal, low, medium, high |
 | `auto` | Auto | 2000k | 30k | minimal, low, medium, high |
 | `bytedance-seed/seed-1.6` | ByteDance Seed: Seed 1.6 | 262144 | 32768 | minimal, low, medium, high |
@@ -1031,15 +1062,15 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `cohere/command-r-08-2024` | Cohere: Command R (08-2024) | 128k | 4k | — |
 | `cohere/command-r-plus-08-2024` | Cohere: Command R+ (08-2024) | 128k | 4k | — |
 | `cohere/north-mini-code:free` | Cohere: North Mini Code (free) | 256k | 64k | minimal, low, medium, high |
-| `deepseek/deepseek-chat` | DeepSeek: DeepSeek V3 | 128k | 16k | — |
+| `deepseek/deepseek-chat` | DeepSeek: DeepSeek V3 | 163840 | 16384 | — |
 | `deepseek/deepseek-chat-v3-0324` | DeepSeek: DeepSeek V3 0324 | 128k | 115200 | — |
 | `deepseek/deepseek-chat-v3.1` | DeepSeek: DeepSeek V3.1 | 163840 | 32768 | minimal, low, medium, high |
 | `deepseek/deepseek-r1` | DeepSeek: R1 | 64k | 16k | minimal, low, medium, high |
 | `deepseek/deepseek-r1-0528` | DeepSeek: R1 0528 | 163840 | 32768 | minimal, low, medium, high |
-| `deepseek/deepseek-v3.1-terminus` | DeepSeek: DeepSeek V3.1 Terminus | 131072 | 65536 | minimal, low, medium, high |
+| `deepseek/deepseek-v3.1-terminus` | DeepSeek: DeepSeek V3.1 Terminus | 163840 | 147456 | minimal, low, medium, high |
 | `deepseek/deepseek-v3.2` | DeepSeek: DeepSeek V3.2 | 163840 | 147456 | minimal, low, medium, high |
 | `deepseek/deepseek-v3.2-exp` | DeepSeek: DeepSeek V3.2 Exp | 163840 | 147456 | minimal, low, medium, high |
-| `deepseek/deepseek-v4-flash` | DeepSeek: DeepSeek V4 Flash 0423 | 1048576 | 943718 | high, xhigh |
+| `deepseek/deepseek-v4-flash` | DeepSeek: DeepSeek V4 Flash 0423 | 1048575 | 943717 | high, xhigh |
 | `deepseek/deepseek-v4-flash-0731` | DeepSeek: DeepSeek V4 Flash 0731 | 1048576 | 943718 | low, high, max |
 | `deepseek/deepseek-v4-flash-vision-exp` | DeepSeek: DeepSeek V4 Flash Vision Exp | 1048576 | 262144 | low, high, max |
 | `deepseek/deepseek-v4-pro` | DeepSeek: DeepSeek V4 Pro 0423 | 1024k | 384k | high, xhigh |
@@ -1074,6 +1105,9 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `google/gemini-3.7-flash:batch` | Google: Gemini 3.7 Flash (batch) | 1048576 | 65536 | low, medium, high |
 | `google/gemini-3.8-flash` | Google: Gemini 3.8 Flash | 1048576 | 65536 | low, medium, high |
 | `google/gemini-3.8-flash:batch` | Google: Gemini 3.8 Flash (batch) | 1048576 | 65536 | low, medium, high |
+| `google/gemini-4-argon` | Google: Gemini 4 Argon | 1048576 | 65536 | low, medium, high |
+| `google/gemini-4-argon:batch` | Google: Gemini 4 Argon (batch) | 1048576 | 943718 | low, medium, high |
+| `google/gemini-nano-banana-2.1` | Google: Nano Banana 2.1 | 65536 | 58982 | minimal, high |
 | `google/gemma-3-12b-it` | Google: Gemma 3 12B | 131072 | 16384 | — |
 | `google/gemma-3-27b-it` | Google: Gemma 3 27B | 131072 | 117964 | — |
 | `google/gemma-4-26b-a4b-it` | Google: Gemma 4 26B A4B  | 262144 | 235929 | minimal, low, medium, high |
@@ -1084,29 +1118,29 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `inception/mercury-2` | Inception: Mercury 2 | 128k | 50k | low, medium, high |
 | `inception/mercury-2.5` | Inception: Mercury 2.5 | 260k | 65536 | low, medium, high |
 | `inclusionai/ling-3.0-flash` | inclusionAI: Ling 3.0 Flash | 262144 | 32768 | minimal, low, medium, high |
-| `inclusionai/ling-3.0-flash-fin` | inclusionAI: Ling 3.0 Flash Fin | 262144 | 32768 | minimal, low, medium, high |
-| `inclusionai/ling-3.0-flash-sante:free` | inclusionAI: Ling 3.0 Flash Sante (free) | 262144 | 32768 | minimal, low, medium, high |
-| `inclusionai/ling-3.0-flash-vl` | inclusionAI: Ling 3.0 Flash VL | 262144 | 32768 | minimal, low, medium, high |
-| `inclusionai/ling-3.1-flash` | inclusionAI: Ling 3.1 Flash | 262144 | 32768 | minimal, low, medium, high |
-| `kwaipilot/kat-coder-pro-v2.5` | Kwaipilot: KAT-Coder-Pro V2.5 | 262144 | 235929 | — |
+| `inclusionai/ling-3.0-flash-vl` | inclusionAI: Ling 3.0 Flash VL | 131072 | 32768 | minimal, low, medium, high |
+| `inclusionai/ling-3.1-flash` | inclusionAI: Ling 3.1 Flash | 262144 | 235929 | minimal, low, medium, high |
 | `liquid/lfm-2.5-2.6b:free` | LiquidAI: LFM2.5-2.6B (free) | 65536 | 8192 | minimal, low, medium, high |
+| `liquid/lfm-2.5-24b-a2b` | LiquidAI: LFM2.5-24B-A2B | 128k | 8192 | minimal, low, medium, high |
 | `meituan/longcat-2.0` | Meituan: LongCat 2.0 | 1048756 | 262144 | minimal, low, medium, high |
 | `meta-llama/llama-3.1-70b-instruct` | Meta: Llama 3.1 70B Instruct | 131072 | 16384 | — |
 | `meta-llama/llama-3.1-8b-instruct` | Meta: Llama 3.1 8B Instruct | 131072 | 117964 | — |
-| `meta-llama/llama-3.3-70b-instruct` | Meta: Llama 3.3 70B Instruct | 131072 | 16384 | — |
+| `meta-llama/llama-3.3-70b-instruct` | Meta: Llama 3.3 70B Instruct | 131072 | 32768 | — |
 | `meta-llama/llama-4-maverick` | Meta: Llama 4 Maverick | 128k | 16384 | — |
-| `meta-llama/llama-4-scout` | Meta: Llama 4 Scout | 327680 | 16384 | — |
-| `meta/muse-glimmer-30b` | Meta: Muse Glimmer 30B | 131072 | 117964 | low, medium, high, xhigh |
+| `meta-llama/llama-4-scout` | Meta: Llama 4 Scout | 131072 | 117964 | — |
+| `meta/muse-glimmer-30b` | Meta: Muse Glimmer 30B | 131072 | 16384 | low, medium, high, xhigh |
 | `meta/muse-spark-1.1` | Meta: Muse Spark 1.1 | 1048576 | 943718 | minimal, low, medium, high, xhigh |
 | `meta/muse-spark-1.2` | Meta: Muse Spark 1.2 | 1048576 | 943718 | minimal, low, medium, high, xhigh |
 | `meta/muse-spark-1.2-contributor` | Meta: Muse Spark 1.2 Contributor | 1048576 | 943718 | minimal, low, medium, high, xhigh |
 | `meta/muse-spark-1.3` | Meta: Muse Spark 1.3 | 1048576 | 943718 | minimal, low, medium, high, xhigh, max |
 | `meta/muse-spark-1.3-contributor` | Meta: Muse Spark 1.3 Contributor | 1048576 | 943718 | minimal, low, medium, high, xhigh, max |
+| `meta/muse-spark-open` | Meta: Muse Spark Open | 1048576 | 943718 | low, medium, high, xhigh |
+| `meta/muse-wonder` | Meta: Muse Wonder | 1048576 | 943718 | minimal, low, medium, high, xhigh, max |
 | `minimax/minimax-m1` | MiniMax: MiniMax M1 | 1000k | 40k | minimal, low, medium, high |
-| `minimax/minimax-m2` | MiniMax: MiniMax M2 | 196608 | 176947 | minimal, low, medium, high |
+| `minimax/minimax-m2` | MiniMax: MiniMax M2 | 204800 | 131072 | minimal, low, medium, high |
 | `minimax/minimax-m2.1` | MiniMax: MiniMax M2.1 | 204800 | 131072 | minimal, low, medium, high |
-| `minimax/minimax-m2.5` | MiniMax: MiniMax M2.5 | 200k | 128k | minimal, low, medium, high |
-| `minimax/minimax-m2.7` | MiniMax: MiniMax M2.7 | 196608 | 176947 | minimal, low, medium, high |
+| `minimax/minimax-m2.5` | MiniMax: MiniMax M2.5 | 198k | 32768 | minimal, low, medium, high |
+| `minimax/minimax-m2.7` | MiniMax: MiniMax M2.7 | 204800 | 131072 | minimal, low, medium, high |
 | `minimax/minimax-m3` | MiniMax: MiniMax M3 | 524288 | 512k | minimal, low, medium, high |
 | `mistralai/codestral-2508` | Mistral: Codestral 2508 | 256k | 204800 | — |
 | `mistralai/codestral-2508:batch` | Mistral: Codestral 2508 (batch) | 256k | 204800 | — |
@@ -1119,6 +1153,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `mistralai/mistral-large-2407` | Mistral Large 2407 | 131072 | 104857 | — |
 | `mistralai/mistral-large-2512` | Mistral: Mistral Large 3 2512 | 262144 | 209715 | — |
 | `mistralai/mistral-large-2512:batch` | Mistral: Mistral Large 3 2512 (batch) | 262144 | 209715 | — |
+| `mistralai/mistral-large-4-0` | Mistral: Mistral Large 4 | 1048576 | 262144 | high |
 | `mistralai/mistral-medium-3` | Mistral: Mistral Medium 3 | 131072 | 104857 | — |
 | `mistralai/mistral-medium-3-5` | Mistral: Mistral Medium 3.5 | 262144 | 209715 | high |
 | `mistralai/mistral-medium-3-5:batch` | Mistral: Mistral Medium 3.5 (batch) | 262144 | 209715 | high |
@@ -1134,7 +1169,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `mistralai/voxtral-small-24b-2507` | Mistral: Voxtral Small 24B 2507 | 32768 | 26214 | — |
 | `moonshotai/kimi-k2` | MoonshotAI: Kimi K2 0711 | 131072 | 98304 | — |
 | `moonshotai/kimi-k2-0905` | MoonshotAI: Kimi K2 0905 | 262144 | 98304 | — |
-| `moonshotai/kimi-k2-thinking` | MoonshotAI: Kimi K2 Thinking | 262144 | 235929 | minimal, low, medium, high |
+| `moonshotai/kimi-k2-thinking` | MoonshotAI: Kimi K2 Thinking | 262144 | 98304 | minimal, low, medium, high |
 | `moonshotai/kimi-k2.5` | MoonshotAI: Kimi K2.5 | 262144 | 4096 | minimal, low, medium, high |
 | `moonshotai/kimi-k2.6` | MoonshotAI: Kimi K2.6 | 262144 | 235929 | minimal, low, medium, high |
 | `moonshotai/kimi-k2.7-code` | MoonshotAI: Kimi K2.7 Code | 262144 | 235929 | minimal, low, medium, high |
@@ -1145,10 +1180,12 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free` | NVIDIA: Nemotron 3 Nano Omni (free) | 256k | 65536 | minimal, low, medium, high |
 | `nvidia/nemotron-3-super-120b-a12b` | NVIDIA: Nemotron 3 Super | 262144 | 235929 | low, medium |
 | `nvidia/nemotron-3-super-120b-a12b:free` | NVIDIA: Nemotron 3 Super (free) | 262144 | 235929 | low, medium |
-| `nvidia/nemotron-3-ultra-550b-a55b` | NVIDIA: Nemotron 3 Ultra | 262144 | 16384 | medium, high |
+| `nvidia/nemotron-3-ultra-550b-a55b` | NVIDIA: Nemotron 3 Ultra | 202800 | 182520 | medium, high |
 | `nvidia/nemotron-3-ultra-550b-a55b:free` | NVIDIA: Nemotron 3 Ultra (free) | 1000k | 65536 | medium, high |
-| `nvidia/nemotron-3.5-lightning` | NVIDIA: Nemotron 3.5 Lightning | 262144 | 32768 | minimal, low, medium, high |
+| `nvidia/nemotron-3.5-lightning` | NVIDIA: Nemotron 3.5 Lightning | 262144 | 235929 | minimal, low, medium, high |
 | `nvidia/nemotron-3.5-lightning:free` | NVIDIA: Nemotron 3.5 Lightning (free) | 1000k | 65536 | minimal, low, medium, high |
+| `nvidia/nemotron-3.5-super-vl` | NVIDIA: Nemotron 3.5 Super VL | 262144 | 235929 | minimal, low, medium, high |
+| `nvidia/nemotron-3.5-super-vl:free` | NVIDIA: Nemotron 3.5 Super VL (free) | 1000k | 131072 | minimal, low, medium, high |
 | `openai/gpt-3.5-turbo` | OpenAI: GPT-3.5 Turbo | 16385 | 4096 | — |
 | `openai/gpt-3.5-turbo-0613` | OpenAI: GPT-3.5 Turbo (older v0613) | 4095 | 3685 | — |
 | `openai/gpt-3.5-turbo-16k` | OpenAI: GPT-3.5 Turbo 16k | 16385 | 4096 | — |
@@ -1228,10 +1265,12 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `openai/gpt-6-sol:batch` | OpenAI: GPT-6 Sol (batch) | 1050k | 128k | low, medium, high, xhigh, max |
 | `openai/gpt-6.1-sol` | OpenAI: GPT-6.1 Sol | 1050k | 128k | low, medium, high, xhigh, max |
 | `openai/gpt-6.1-sol-pro` | OpenAI: GPT-6.1 Sol Pro | 1050k | 128k | low, medium, high, xhigh, max |
+| `openai/gpt-6.1-sol-pro:batch` | OpenAI: GPT-6.1 Sol Pro (batch) | 1050k | 128k | low, medium, high, xhigh, max |
+| `openai/gpt-6.1-sol:batch` | OpenAI: GPT-6.1 Sol (batch) | 1050k | 128k | low, medium, high, xhigh, max |
 | `openai/gpt-audio` | OpenAI: GPT Audio | 128k | 16384 | — |
 | `openai/gpt-audio-mini` | OpenAI: GPT Audio Mini | 128k | 16384 | — |
 | `openai/gpt-chat-latest` | OpenAI: GPT Chat Latest | 400k | 128k | — |
-| `openai/gpt-oss-120b` | OpenAI: gpt-oss-120b | 131072 | 117964 | low, medium, high |
+| `openai/gpt-oss-120b` | OpenAI: gpt-oss-120b | 131072 | 65536 | low, medium, high |
 | `openai/gpt-oss-120b:batch` | OpenAI: gpt-oss-120b (batch) | 131072 | 117964 | low, medium, high |
 | `openai/gpt-oss-20b` | OpenAI: gpt-oss-20b | 131072 | 32768 | low, medium, high |
 | `openai/gpt-oss-20b:batch` | OpenAI: gpt-oss-20b (batch) | 131072 | 117964 | low, medium, high |
@@ -1250,6 +1289,7 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `openrouter/auto-beta` | Auto Router (Beta) | 2000k | 4096 | minimal, low, medium, high |
 | `openrouter/free` | Free Models Router | 200k | 4096 | minimal, low, medium, high |
 | `openrouter/fusion` | OpenRouter: Fusion | 1000k | 30k | minimal, low, medium, high |
+| `openrouter/pareto-code` | Pareto Code Router | 2000k | 4096 | minimal, low, medium, high |
 | `perceptron/perceptron-mk1.5` | Perceptron: Perceptron Mk1.5 | 36864 | 8192 | minimal, low, medium, high |
 | `poolside/laguna-s-2.1` | Poolside: Laguna S 2.1 | 1048576 | 131072 | minimal, low, medium, high |
 | `poolside/laguna-s-2.1:free` | Poolside: Laguna S 2.1 (free) | 262144 | 32768 | minimal, low, medium, high |
@@ -1259,50 +1299,39 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `qwen/qwen-2.5-72b-instruct` | Qwen2.5 72B Instruct | 32768 | 16384 | — |
 | `qwen/qwen-2.5-7b-instruct` | Qwen: Qwen2.5 7B Instruct | 32768 | 29491 | — |
 | `qwen/qwen-plus` | Qwen: Qwen-Plus | 1000k | 32768 | — |
-| `qwen/qwen-plus-2025-07-28` | Qwen: Qwen Plus 0728 | 1000k | 32768 | — |
 | `qwen/qwen3-14b` | Qwen: Qwen3 14B | 40960 | 16384 | minimal, low, medium, high |
-| `qwen/qwen3-235b-a22b` | Qwen: Qwen3 235B A22B | 131072 | 8192 | minimal, low, medium, high |
-| `qwen/qwen3-235b-a22b-2507` | Qwen: Qwen3 235B A22B Instruct 2507 | 262144 | 235929 | — |
-| `qwen/qwen3-235b-a22b-thinking-2507` | Qwen: Qwen3 235B A22B Thinking 2507 | 131072 | 117964 | minimal, low, medium, high |
+| `qwen/qwen3-235b-a22b-2507` | Qwen: Qwen3 235B A22B Instruct 2507 | 262144 | 16384 | — |
+| `qwen/qwen3-235b-a22b-thinking-2507` | Qwen: Qwen3 235B A22B Thinking 2507 | 128k | 16384 | minimal, low, medium, high |
 | `qwen/qwen3-30b-a3b` | Qwen: Qwen3 30B A3B | 40960 | 16384 | minimal, low, medium, high |
-| `qwen/qwen3-30b-a3b-instruct-2507` | Qwen: Qwen3 30B A3B Instruct 2507 | 128k | 32k | — |
-| `qwen/qwen3-30b-a3b-thinking-2507` | Qwen: Qwen3 30B A3B Thinking 2507 | 81920 | 32768 | minimal, low, medium, high |
+| `qwen/qwen3-30b-a3b-instruct-2507` | Qwen: Qwen3 30B A3B Instruct 2507 | 262144 | 235929 | — |
 | `qwen/qwen3-32b` | Qwen: Qwen3 32B | 40960 | 16384 | minimal, low, medium, high |
-| `qwen/qwen3-8b` | Qwen: Qwen3 8B | 131072 | 8192 | minimal, low, medium, high |
 | `qwen/qwen3-coder` | Qwen: Qwen3 Coder 480B A35B | 262144 | 65536 | — |
 | `qwen/qwen3-coder-30b-a3b-instruct` | Qwen: Qwen3 Coder 30B A3B Instruct | 262144 | 235929 | — |
 | `qwen/qwen3-coder-flash` | Qwen: Qwen3 Coder Flash | 1000k | 65536 | — |
 | `qwen/qwen3-coder-next` | Qwen: Qwen3 Coder Next | 262144 | 235929 | — |
-| `qwen/qwen3-coder-plus` | Qwen: Qwen3 Coder Plus | 1000k | 65536 | — |
-| `qwen/qwen3-max` | Qwen: Qwen3 Max | 262144 | 65536 | — |
-| `qwen/qwen3-max-thinking` | Qwen: Qwen3 Max Thinking | 262144 | 65536 | minimal, low, medium, high |
 | `qwen/qwen3-next-80b-a3b-instruct` | Qwen: Qwen3 Next 80B A3B Instruct | 262144 | 235929 | — |
-| `qwen/qwen3-next-80b-a3b-thinking` | Qwen: Qwen3 Next 80B A3B Thinking | 131072 | 32768 | minimal, low, medium, high |
+| `qwen/qwen3-next-80b-a3b-thinking` | Qwen: Qwen3 Next 80B A3B Thinking | 262144 | 235929 | minimal, low, medium, high |
 | `qwen/qwen3-vl-235b-a22b-instruct` | Qwen: Qwen3 VL 235B A22B Instruct | 131072 | 32768 | — |
-| `qwen/qwen3-vl-235b-a22b-thinking` | Qwen: Qwen3 VL 235B A22B Thinking | 131072 | 32768 | minimal, low, medium, high |
 | `qwen/qwen3-vl-30b-a3b-instruct` | Qwen: Qwen3 VL 30B A3B Instruct | 262144 | 16384 | — |
-| `qwen/qwen3-vl-30b-a3b-thinking` | Qwen: Qwen3 VL 30B A3B Thinking | 131072 | 32768 | minimal, low, medium, high |
-| `qwen/qwen3-vl-32b-instruct` | Qwen: Qwen3 VL 32B Instruct | 131072 | 32768 | — |
-| `qwen/qwen3-vl-8b-instruct` | Qwen: Qwen3 VL 8B Instruct | 131072 | 32768 | — |
-| `qwen/qwen3-vl-8b-thinking` | Qwen: Qwen3 VL 8B Thinking | 131072 | 32768 | minimal, low, medium, high |
+| `qwen/qwen3-vl-30b-a3b-thinking` | Qwen: Qwen3 VL 30B A3B Thinking | 262144 | 235929 | minimal, low, medium, high |
+| `qwen/qwen3-vl-8b-instruct` | Qwen: Qwen3 VL 8B Instruct | 262144 | 235929 | — |
 | `qwen/qwen3.5-122b-a10b` | Qwen: Qwen3.5-122B-A10B | 262144 | 65536 | minimal, low, medium, high |
-| `qwen/qwen3.5-27b` | Qwen: Qwen3.5-27B | 262144 | 65536 | minimal, low, medium, high |
-| `qwen/qwen3.5-35b-a3b` | Qwen: Qwen3.5-35B-A3B | 262144 | 235929 | minimal, low, medium, high |
+| `qwen/qwen3.5-27b` | Qwen: Qwen3.5-27B | 262144 | 81920 | minimal, low, medium, high |
+| `qwen/qwen3.5-35b-a3b` | Qwen: Qwen3.5-35B-A3B | 256k | 16384 | minimal, low, medium, high |
 | `qwen/qwen3.5-397b-a17b` | Qwen: Qwen3.5 397B A17B | 262144 | 235929 | minimal, low, medium, high |
 | `qwen/qwen3.5-9b` | Qwen: Qwen3.5-9B | 256k | 32768 | minimal, low, medium, high |
 | `qwen/qwen3.5-flash-02-23` | Qwen: Qwen3.5-Flash | 1000k | 65536 | minimal, low, medium, high |
 | `qwen/qwen3.5-plus-02-15` | Qwen: Qwen3.5 Plus 2026-02-15 | 1000k | 65536 | minimal, low, medium, high |
 | `qwen/qwen3.5-plus-20260420` | Qwen: Qwen3.5 Plus 2026-04-20 | 1000k | 65536 | minimal, low, medium, high |
-| `qwen/qwen3.6-27b` | Qwen: Qwen3.6 27B | 262144 | 262140 | minimal, low, medium, high |
+| `qwen/qwen3.6-27b` | Qwen: Qwen3.6 27B | 262144 | 65536 | minimal, low, medium, high |
 | `qwen/qwen3.6-35b-a3b` | Qwen: Qwen3.6 35B A3B | 262144 | 235929 | minimal, low, medium, high |
 | `qwen/qwen3.6-flash` | Qwen: Qwen3.6 Flash | 1000k | 65536 | minimal, low, medium, high |
-| `qwen/qwen3.6-max-preview` | Qwen: Qwen3.6 Max Preview | 262144 | 65536 | minimal, low, medium, high |
 | `qwen/qwen3.6-plus` | Qwen: Qwen3.6 Plus | 1000k | 65536 | minimal, low, medium, high |
 | `qwen/qwen3.7-flash` | Qwen: Qwen3.7 Flash | 1000k | 65536 | minimal, low, medium, high |
 | `qwen/qwen3.7-max` | Qwen: Qwen3.7 Max | 1000k | 131072 | minimal, low, medium, high |
 | `qwen/qwen3.7-plus` | Qwen: Qwen3.7 Plus | 1000k | 131072 | minimal, low, medium, high |
 | `qwen/qwen3.8-2.4t-a95b` | Qwen: Qwen3.8 2.4T A95B | 1000k | 131072 | low, medium, xhigh |
-| `qwen/qwen3.8-27b` | Qwen: Qwen3.8 27B | 1000k | 131072 | low, medium, xhigh |
+| `qwen/qwen3.8-27b` | Qwen: Qwen3.8 27B | 262144 | 235929 | low, medium, xhigh |
 | `qwen/qwen3.8-flash` | Qwen: Qwen3.8 Flash | 1000k | 131072 | minimal, low, medium, high |
 | `qwen/qwen3.8-max-0902` | Qwen: Qwen3.8 Max (0902) | 1000k | 131072 | minimal, low, medium, high, xhigh |
 | `qwen/qwen3.8-max-prime` | Qwen: Qwen3.8 Max Prime | 1000k | 131072 | minimal, low, medium, high, xhigh |
@@ -1313,19 +1342,18 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `sakana/fugu-ultra` | Sakana: Fugu Ultra | 1000k | 128k | high, xhigh, max |
 | `sakana/fugu-ultra-v2` | Sakana: Fugu Ultra v2 | 1000k | 128k | high, xhigh, max |
 | `sakana/sakana-namazu` | Sakana: Sakana Namazu | 262144 | 65536 | high |
-| `sao10k/l3.1-euryale-70b` | Sao10K: Llama 3.1 Euryale 70B v2.2 | 131072 | 16384 | — |
 | `stepfun/step-3.5-flash` | StepFun: Step 3.5 Flash | 262144 | 65536 | minimal, low, medium, high |
 | `stepfun/step-3.7-flash` | StepFun: Step 3.7 Flash | 256k | 230400 | low, medium, high |
+| `stepfun/step-5-preview` | StepFun: Step 5 Preview | 1000k | 64k | low, medium, high |
 | `tencent/hy3` | Tencent: Hy3 | 262144 | 128k | low, high |
 | `tencent/hy3-preview` | Tencent: Hy3 preview | 262144 | 235929 | low, high |
 | `tencent/hy4-preview` | Tencent: Hy4 preview | 1048576 | 64k | low, high |
-| `thinkingmachines/inkling` | Thinking Machines: Inkling | 524288 | 262144 | minimal, low, medium, high, max |
+| `thinkingmachines/inkling` | Thinking Machines: Inkling | 524288 | 471859 | minimal, low, medium, high, max |
 | `thinkingmachines/inkling-small` | Thinking Machines: Inkling Small | 524288 | 262144 | minimal, low, medium, high, max |
 | `thinkingmachines/inkling-small:free` | Thinking Machines: Inkling Small (free) | 1048576 | 262144 | minimal, low, medium, high, max |
 | `thinkingmachines/inkling:free` | Thinking Machines: Inkling (free) | 1048576 | 262144 | minimal, low, medium, high, max |
 | `typesafe/jev-router` | TypeSafe: Jev Router | 1000k | 4096 | minimal, low, medium, high |
-| `unbiased/pareto` | Pareto | 262144 | 131072 | — |
-| `unbiased/pareto-26.10-preview` | Pareto 26.10 Preview | 1048576 | 131072 | — |
+| `unbiased/pareto-26.9` | Pareto 26.9 | 262144 | 131072 | — |
 | `upstage/solar-mini4` | Upstage: Solar Mini 4 | 524288 | 131072 | minimal, low, medium, high, xhigh, max |
 | `upstage/solar-pro-3` | Upstage: Solar Pro 3 | 131072 | 117964 | minimal, low, medium, high |
 | `upstage/solar-pro4` | Upstage: Solar Pro 4 | 524288 | 131072 | minimal, low, medium, high, xhigh, max |
@@ -1344,14 +1372,14 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `z-ai/glm-4.5` | Z.ai: GLM 4.5 | 131072 | 98304 | minimal, low, medium, high |
 | `z-ai/glm-4.5-air` | Z.ai: GLM 4.5 Air | 131072 | 98304 | minimal, low, medium, high |
 | `z-ai/glm-4.5v` | Z.ai: GLM 4.5V | 65536 | 16384 | minimal, low, medium, high |
-| `z-ai/glm-4.6` | Z.ai: GLM 4.6 | 198k | 16384 | minimal, low, medium, high |
+| `z-ai/glm-4.6` | Z.ai: GLM 4.6 | 202752 | 131072 | minimal, low, medium, high |
 | `z-ai/glm-4.6v` | Z.ai: GLM 4.6V | 131072 | 32768 | minimal, low, medium, high |
 | `z-ai/glm-4.7` | Z.ai: GLM 4.7 | 202752 | 131072 | minimal, low, medium, high |
 | `z-ai/glm-4.7-flash` | Z.ai: GLM 4.7 Flash | 131072 | 117964 | minimal, low, medium, high |
-| `z-ai/glm-5` | Z.ai: GLM 5 | 198k | 128k | minimal, low, medium, high |
+| `z-ai/glm-5` | Z.ai: GLM 5 | 202752 | 131072 | minimal, low, medium, high |
 | `z-ai/glm-5-turbo` | Z.ai: GLM 5 Turbo | 202752 | 131072 | minimal, low, medium, high |
-| `z-ai/glm-5.1` | Z.ai: GLM 5.1 | 202752 | 131072 | minimal, low, medium, high |
-| `z-ai/glm-5.2` | Z.ai: GLM 5.2 | 1048576 | 131072 | high, xhigh |
+| `z-ai/glm-5.1` | Z.ai: GLM 5.1 | 200k | 128k | minimal, low, medium, high |
+| `z-ai/glm-5.2` | Z.ai: GLM 5.2 | 1048576 | 943718 | high, xhigh |
 | `z-ai/glm-5.3` | Z.ai: GLM 5.3 | 1048576 | 943718 | low, high, max |
 | `z-ai/glm-5.3-flash` | Z.ai: GLM 5.3 Flash | 1048575 | 943717 | low, high, max |
 | `z-ai/glm-5.3-flash:batch` | Z.ai: GLM 5.3 Flash (batch) | 1048576 | 131072 | low, high, max |
@@ -1433,11 +1461,12 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `claude-fable-5` | Claude Fable 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-fable-5-1` | Claude Fable 5.1 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-haiku-4-5` | Claude Haiku 4.5 | 200k | 64k | minimal, low, medium, high |
+| `claude-haiku-5-5` | Claude Haiku 5.5 | 1000k | 128k | low, medium, high, xhigh, max |
 | `claude-opus-4-5` | Claude Opus 4.5 | 200k | 64k | minimal, low, medium, high |
 | `claude-opus-4-8` | Claude Opus 4.8 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-opus-5` | Claude Opus 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-opus-5-5` | Claude Opus 5.5 | 1000k | 128k | low, medium, high, xhigh, max |
-| `claude-sonnet-4-5` | Claude Sonnet 4.5 | 1000k | 64k | minimal, low, medium, high |
+| `claude-sonnet-4-5` | Claude Sonnet 4.5 | 200k | 64k | minimal, low, medium, high |
 | `claude-sonnet-5` | Claude Sonnet 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `claude-sonnet-5-5` | Claude Sonnet 5.5 | 1000k | 128k | low, medium, high, xhigh, max |
 | `deepseek-v4.1-flash` | DeepSeek V4.1 Flash | 1000k | 32768 | low, high, max |
@@ -1484,23 +1513,16 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
 | `alibaba/qwen-3-14b` | Qwen3-14B | 40960 | 16384 | minimal, low, medium, high |
-| `alibaba/qwen-3-235b` | Qwen3 235B A22B | 262144 | 16384 | minimal, low, medium, high |
+| `alibaba/qwen-3-235b` | Qwen3 235B A22B | 262144 | 16384 | — |
 | `alibaba/qwen-3-30b` | Qwen3-30B-A3B | 40960 | 16384 | minimal, low, medium, high |
 | `alibaba/qwen-3-32b` | Qwen 3 32B | 128k | 8192 | minimal, low, medium, high |
-| `alibaba/qwen-3.6-max-preview` | Qwen 3.6 Max Preview | 240k | 64k | minimal, low, medium, high |
-| `alibaba/qwen3-235b-a22b-thinking` | Qwen3 VL 235B A22B Thinking | 131072 | 32768 | minimal, low, medium, high |
-| `alibaba/qwen3-coder` | Qwen3 Coder 480B A35B Instruct | 262144 | 65536 | — |
+| `alibaba/qwen3-coder` | Qwen3 Coder 480B A35B Instruct | 262144 | 32768 | — |
 | `alibaba/qwen3-coder-30b-a3b` | Qwen 3 Coder 30B A3B Instruct | 262144 | 8192 | — |
 | `alibaba/qwen3-coder-next` | Qwen3 Coder Next | 256k | 256k | — |
-| `alibaba/qwen3-coder-plus` | Qwen3 Coder Plus | 1000k | 65536 | — |
-| `alibaba/qwen3-max` | Qwen3 Max | 262144 | 32768 | — |
-| `alibaba/qwen3-max-preview` | Qwen3 Max Preview | 262144 | 32768 | — |
 | `alibaba/qwen3-max-thinking` | Qwen 3 Max Thinking | 256k | 65536 | minimal, low, medium, high |
 | `alibaba/qwen3-next-80b-a3b-instruct` | Qwen3 Next 80B A3B Instruct | 262114 | 262114 | — |
 | `alibaba/qwen3-next-80b-a3b-thinking` | Qwen3 Next 80B A3B Thinking | 262144 | 262144 | minimal, low, medium, high |
-| `alibaba/qwen3-vl-235b-a22b-instruct` | Qwen3 VL 235B A22B Instruct | 131072 | 129024 | — |
-| `alibaba/qwen3-vl-instruct` | Qwen3 VL 235B A22B Instruct | 131072 | 129024 | — |
-| `alibaba/qwen3-vl-thinking` | Qwen3 VL 235B A22B Thinking | 131072 | 32768 | minimal, low, medium, high |
+| `alibaba/qwen3-vl-instruct` | Qwen3 VL 235B A22B Instruct | 262144 | 262144 | — |
 | `alibaba/qwen3.5-flash` | Qwen 3.5 Flash | 1000k | 64k | minimal, low, medium, high |
 | `alibaba/qwen3.5-plus` | Qwen 3.5 Plus | 1000k | 64k | minimal, low, medium, high |
 | `alibaba/qwen3.6-27b` | Qwen 3.6 27B | 256k | 256k | minimal, low, medium, high |
@@ -1520,29 +1542,44 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `amazon/nova-micro` | Nova Micro | 128k | 8192 | — |
 | `amazon/nova-pro` | Nova Pro | 300k | 8192 | — |
 | `anthropic/claude-fable-5` | Claude Fable 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-fable-5-batch` | Claude Fable 5 (Batch) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-fable-5.1` | Claude Fable 5.1 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-fable-5.1-batch` | Claude Fable 5.1 (Batch) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-haiku-4.5` | Claude Haiku 4.5 | 200k | 64k | minimal, low, medium, high |
+| `anthropic/claude-haiku-4.5-batch` | Claude Haiku 4.5 (Batch) | 200k | 64k | minimal, low, medium, high |
+| `anthropic/claude-haiku-5.5` | Claude Haiku 5.5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-haiku-5.5-batch` | Claude Haiku 5.5 (Batch) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-opus-4.5` | Claude Opus 4.5 | 200k | 64k | minimal, low, medium, high |
+| `anthropic/claude-opus-4.5-batch` | Claude Opus 4.5 (Batch) | 200k | 64k | minimal, low, medium, high |
 | `anthropic/claude-opus-4.6` | Claude Opus 4.6 | 1000k | 128k | minimal, low, medium, high, max |
+| `anthropic/claude-opus-4.6-batch` | Claude Opus 4.6 (Batch) | 1000k | 128k | minimal, low, medium, high, max |
 | `anthropic/claude-opus-4.7` | Claude Opus 4.7 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-opus-4.7-batch` | Claude Opus 4.7 (Batch) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-opus-4.8` | Claude Opus 4.8 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-opus-4.8-batch` | Claude Opus 4.8 (Batch) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-opus-4.8-fast` | Claude Opus 4.8 (Fast) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-opus-5` | Claude Opus 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-opus-5-batch` | Claude Opus 5 (Batch) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-opus-5-fast` | Claude Opus 5 (Fast) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-opus-5.5` | Claude Opus 5.5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-opus-5.5-batch` | Claude Opus 5.5 (Batch) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-opus-5.5-fast` | Claude Opus 5.5 (Fast) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-sonnet-4.5` | Claude Sonnet 4.5 | 1000k | 64k | minimal, low, medium, high |
+| `anthropic/claude-sonnet-4.5-batch` | Claude Sonnet 4.5 (Batch) | 1000k | 64k | minimal, low, medium, high |
 | `anthropic/claude-sonnet-4.6` | Claude Sonnet 4.6 | 1000k | 128k | minimal, low, medium, high, max |
+| `anthropic/claude-sonnet-4.6-batch` | Claude Sonnet 4.6 (Batch) | 1000k | 128k | minimal, low, medium, high, max |
 | `anthropic/claude-sonnet-5` | Claude Sonnet 5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-sonnet-5-batch` | Claude Sonnet 5 (Batch) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `anthropic/claude-sonnet-5.5` | Claude Sonnet 5.5 | 1000k | 128k | minimal, low, medium, high, xhigh, max |
+| `anthropic/claude-sonnet-5.5-batch` | Claude Sonnet 5.5 (Batch) | 1000k | 128k | minimal, low, medium, high, xhigh, max |
 | `arcee-ai/trinity-large-thinking` | Trinity Large Thinking | 262100 | 80k | minimal, low, medium, high |
 | `bytedance/seed-1.6` | Seed 1.6 | 256k | 32k | minimal, low, medium, high |
 | `bytedance/seed-1.8` | Bytedance Seed 1.8 | 256k | 64k | minimal, low, medium, high |
 | `bytedance/seed-2.1-turbo` | Seed 2.1 Turbo | 262144 | 262144 | minimal, low, medium, high |
+| `callstack/apex` | Apex | 262144 | 131072 | minimal, low, medium, high |
 | `cohere/command-a` | Command A | 256k | 8k | — |
 | `deepseek/deepseek-r1` | DeepSeek-R1 | 128k | 8192 | minimal, low, medium, high |
 | `deepseek/deepseek-v3.1` | DeepSeek V3.1 | 163840 | 128k | minimal, low, medium, high |
-| `deepseek/deepseek-v3.1-terminus` | DeepSeek V3.1 Terminus | 131072 | 65536 | minimal, low, medium, high |
 | `deepseek/deepseek-v3.2` | DeepSeek V3.2 | 128k | 8k | — |
 | `deepseek/deepseek-v3.2-thinking` | DeepSeek V3.2 Thinking | 128k | 8k | — |
 | `deepseek/deepseek-v4-flash` | DeepSeek V4 Flash | 1000k | 384k | minimal, low, medium, high |
@@ -1551,19 +1588,30 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `deepseek/deepseek-v4-pro` | DeepSeek V4 Pro | 1000k | 384k | minimal, low, medium, high |
 | `deepseek/deepseek-v4-pro-0813` | DeepSeek V4 Pro 0813 | 1000k | 384k | minimal, low, medium, high |
 | `deepseek/deepseek-v4.1-flash` | DeepSeek V4.1 Flash | 1048576 | 32768 | minimal, low, medium, high |
-| `deepseek/deepseek-v4.1-flash-fast` | DeepSeek V4.1 Flash Fast | 1048576 | 1000k | minimal, low, medium, high |
+| `deepseek/deepseek-v4.1-flash-fast` | DeepSeek V4.1 Flash Fast | 1048576 | 32768 | minimal, low, medium, high |
 | `fireworks/ember-1` | Ember-1 | 1048576 | 1048576 | minimal, low, medium, high |
 | `google/gemini-2.5-flash` | Gemini 2.5 Flash | 1000k | 65535 | minimal, low, medium, high |
+| `google/gemini-2.5-flash-batch` | Gemini 2.5 Flash (Batch) | 1000k | 64k | minimal, low, medium, high |
 | `google/gemini-2.5-flash-lite` | Gemini 2.5 Flash Lite | 1048576 | 65535 | minimal, low, medium, high |
+| `google/gemini-2.5-flash-lite-batch` | Gemini 2.5 Flash Lite (Batch) | 1048576 | 65535 | minimal, low, medium, high |
 | `google/gemini-2.5-pro` | Gemini 2.5 Pro | 1048576 | 65535 | minimal, low, medium, high |
+| `google/gemini-2.5-pro-batch` | Gemini 2.5 Pro (Batch) | 1048576 | 65535 | minimal, low, medium, high |
 | `google/gemini-3-flash` | Gemini 3 Flash | 1000k | 65k | minimal, low, medium, high |
+| `google/gemini-3-flash-batch` | Gemini 3 Flash (Batch) | 1000k | 64k | minimal, low, medium, high |
 | `google/gemini-3.1-flash-lite` | Gemini 3.1 Flash Lite | 1000k | 65k | minimal, low, medium, high |
+| `google/gemini-3.1-flash-lite-batch` | Gemini 3.1 Flash Lite (Batch) | 1000k | 65k | minimal, low, medium, high |
 | `google/gemini-3.1-pro-preview` | Gemini 3.1 Pro Preview | 1000k | 64k | minimal, low, medium, high |
+| `google/gemini-3.1-pro-preview-batch` | Gemini 3.1 Pro Preview (Batch) | 1000k | 64k | minimal, low, medium, high |
 | `google/gemini-3.5-flash` | Gemini 3.5 Flash | 1000k | 64k | minimal, low, medium, high |
+| `google/gemini-3.5-flash-batch` | Gemini 3.5 Flash (Batch) | 1000k | 64k | minimal, low, medium, high |
 | `google/gemini-3.5-flash-lite` | Gemini 3.5 Flash Lite | 1000k | 65k | minimal, low, medium, high |
+| `google/gemini-3.5-flash-lite-batch` | Gemini 3.5 Flash Lite (Batch) | 1000k | 65k | minimal, low, medium, high |
 | `google/gemini-3.6-flash` | Gemini 3.6 Flash | 1000k | 64k | minimal, low, medium, high |
+| `google/gemini-3.6-flash-batch` | Gemini 3.6 Flash (Batch) | 1000k | 64k | minimal, low, medium, high |
 | `google/gemini-3.7-flash` | Gemini 3.7 Flash | 1000k | 65535 | minimal, low, medium, high |
+| `google/gemini-3.7-flash-batch` | Gemini 3.7 Flash (Batch) | 1000k | 65535 | minimal, low, medium, high |
 | `google/gemini-3.8-flash` | Gemini 3.8 Flash | 1000k | 65535 | minimal, low, medium, high |
+| `google/gemini-4-argon` | Gemini 4 Argon | 1000k | 1000k | minimal, low, medium, high |
 | `google/gemma-4-26b-a4b-it` | Google Gemma 4 26B A4B | 262144 | 131072 | minimal, low, medium, high |
 | `google/gemma-4-31b-it` | Gemma 4 31B IT | 262144 | 131072 | minimal, low, medium, high |
 | `inception/mercury-2` | Mercury 2 | 128k | 128k | minimal, low, medium, high |
@@ -1574,8 +1622,8 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `inclusionai/ling-3.0-flash-sante` | Ling 3.0 Flash Sante | 256k | 32k | minimal, low, medium, high |
 | `inclusionai/ling-3.0-flash-vl` | Ling 3.0 Flash VL | 256k | 32k | minimal, low, medium, high |
 | `inclusionai/ling-3.1-flash` | Ling 3.1 Flash | 262144 | 32768 | minimal, low, medium, high |
-| `inclusionai/ling-3.1-flash-free` | Ling 3.1 Flash (Free) | 262144 | 32768 | minimal, low, medium, high |
 | `interfaze/interfaze-beta` | Interfaze Beta | 1000k | 32k | minimal, low, medium, high |
+| `liquid/lfm2.5-24b-a2b` | LFM2.5-24B-A2B | 128k | 8200 | minimal, low, medium, high |
 | `meituan/longcat-2.5-preview` | LongCat 2.5 Preview | 1048576 | 131072 | minimal, low, medium, high |
 | `meta/llama-3.1-70b` | Llama 3.1 70B Instruct | 128k | 8192 | — |
 | `meta/llama-3.1-8b` | Llama 3.1 8B Instruct | 128k | 8192 | — |
@@ -1588,6 +1636,8 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `meta/muse-spark-1.2-contributor` | Muse Spark 1.2 Contributor | 1048576 | 1048576 | minimal, low, medium, high |
 | `meta/muse-spark-1.3` | Muse Spark 1.3 | 1048576 | 1048576 | minimal, low, medium, high |
 | `meta/muse-spark-1.3-contributor` | Muse Spark 1.3 Contributor | 1048576 | 1048576 | minimal, low, medium, high |
+| `meta/muse-spark-open` | Muse Spark Open | 1048576 | 1048576 | minimal, low, medium, high |
+| `meta/muse-wonder-1.0` | Muse Wonder | 1048576 | 1048576 | minimal, low, medium, high |
 | `minimax/minimax-m2` | MiniMax M2 | 205k | 205k | minimal, low, medium, high |
 | `minimax/minimax-m2.1` | MiniMax M2.1 | 204800 | 131072 | minimal, low, medium, high |
 | `minimax/minimax-m2.1-lightning` | MiniMax M2.1 Lightning | 204800 | 131072 | minimal, low, medium, high |
@@ -1601,12 +1651,12 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `mistral/ministral-3b` | Ministral 3B | 131072 | 4k | — |
 | `mistral/ministral-8b` | Ministral 8B | 262144 | 4k | — |
 | `mistral/mistral-large-3` | Mistral Large 3 | 262144 | 256k | — |
+| `mistral/mistral-large-4` | Mistral Large 4 | 524288 | 262144 | minimal, low, medium, high |
 | `mistral/mistral-medium-3.5` | Mistral Medium Latest | 262144 | 256k | minimal, low, medium, high |
-| `mistral/mistral-nemo` | Mistral Nemo 12B | 60288 | 16k | — |
+| `mistral/mistral-nemo` | Mistral Nemo 12B | 131072 | 131072 | — |
 | `mistral/mistral-small` | Mistral Small | 262144 | 4k | — |
 | `mixedbread/toast-1` | Toast 1 | 131k | 4k | — |
 | `moonshotai/kimi-k2` | Kimi K2 Instruct | 131072 | 131072 | — |
-| `moonshotai/kimi-k2-thinking` | Kimi K2 Thinking | 216144 | 216144 | minimal, low, medium, high |
 | `moonshotai/kimi-k2.5` | Kimi K2.5 | 256k | 256k | minimal, low, medium, high |
 | `moonshotai/kimi-k2.6` | Kimi K2.6 | 262k | 262k | minimal, low, medium, high |
 | `moonshotai/kimi-k2.7-code` | Kimi K2.7 Code | 256k | 32768 | minimal, low, medium, high |
@@ -1617,60 +1667,84 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `nvidia/nemotron-3-super-120b-a12b` | NVIDIA Nemotron 3 Super 120B A12B | 256k | 32k | minimal, low, medium, high |
 | `nvidia/nemotron-3-ultra-550b-a55b` | Nemotron 3 Ultra | 1000k | 65k | minimal, low, medium, high |
 | `nvidia/nemotron-3.5-lightning` | Nemotron 3.5 Lightning 30B | 262144 | 131072 | minimal, low, medium, high |
+| `nvidia/nemotron-3.5-lightning-free` | Nemotron 3.5 Lightning Free | 1000k | 65k | minimal, low, medium, high |
+| `nvidia/nemotron-3.5-super-vl` | NVIDIA Nemotron 3.5 Super VL | 1048576 | 1048576 | minimal, low, medium, high |
 | `nvidia/nemotron-nano-12b-v2-vl` | Nvidia Nemotron Nano 12B V2 VL | 131072 | 131072 | minimal, low, medium, high |
 | `nvidia/nemotron-nano-9b-v2` | Nvidia Nemotron Nano 9B V2 | 131072 | 131072 | minimal, low, medium, high |
 | `openai/gpt-3.5-turbo` | GPT-3.5 Turbo | 16385 | 4096 | — |
 | `openai/gpt-4-turbo` | GPT-4 Turbo | 128k | 4096 | — |
 | `openai/gpt-4.1` | GPT-4.1 | 1047576 | 32768 | — |
+| `openai/gpt-4.1-batch` | GPT-4.1 (Batch) | 1047576 | 32768 | — |
 | `openai/gpt-4.1-fast` | GPT-4.1 (Fast) | 1047576 | 32768 | — |
 | `openai/gpt-4.1-mini` | GPT-4.1 mini | 1047576 | 32768 | — |
+| `openai/gpt-4.1-mini-batch` | GPT-4.1 mini (Batch) | 1047576 | 32768 | — |
 | `openai/gpt-4.1-mini-fast` | GPT-4.1 mini (Fast) | 1047576 | 32768 | — |
 | `openai/gpt-4.1-nano` | GPT-4.1 nano | 1047576 | 32768 | — |
+| `openai/gpt-4.1-nano-batch` | GPT-4.1 nano (Batch) | 1047576 | 32768 | — |
 | `openai/gpt-4.1-nano-fast` | GPT-4.1 nano (Fast) | 1047576 | 32768 | — |
 | `openai/gpt-4o` | GPT-4o | 128k | 16384 | — |
+| `openai/gpt-4o-batch` | GPT-4o (Batch) | 128k | 16384 | — |
 | `openai/gpt-4o-fast` | GPT-4o (Fast) | 128k | 16384 | — |
 | `openai/gpt-4o-mini` | GPT-4o mini | 128k | 16384 | — |
+| `openai/gpt-4o-mini-batch` | GPT-4o mini (Batch) | 128k | 16384 | — |
 | `openai/gpt-4o-mini-fast` | GPT-4o mini (Fast) | 128k | 16384 | — |
 | `openai/gpt-5` | GPT-5 | 400k | 128k | minimal, low, medium, high |
+| `openai/gpt-5-batch` | GPT-5 (Batch) | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5-codex` | GPT-5-Codex | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5-fast` | GPT-5 (Fast) | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5-mini` | GPT-5 mini | 400k | 128k | minimal, low, medium, high |
+| `openai/gpt-5-mini-batch` | GPT-5 mini (Batch) | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5-mini-fast` | GPT-5 mini (Fast) | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5-nano` | GPT-5 nano | 400k | 128k | minimal, low, medium, high |
+| `openai/gpt-5-nano-batch` | GPT-5 nano (Batch) | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5-pro` | GPT-5 pro | 400k | 272k | minimal, low, medium, high |
+| `openai/gpt-5-pro-batch` | GPT-5 pro (Batch) | 400k | 272k | minimal, low, medium, high |
 | `openai/gpt-5.1-codex` | GPT-5.1-Codex | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5.1-codex-max` | GPT 5.1 Codex Max | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5.1-codex-mini` | GPT 5.1 Codex Mini | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5.1-thinking` | GPT 5.1 Thinking | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5.1-thinking-fast` | GPT 5.1 Thinking (Fast) | 400k | 128k | minimal, low, medium, high |
 | `openai/gpt-5.2` | GPT 5.2 | 400k | 128k | minimal, low, medium, high, xhigh |
+| `openai/gpt-5.2-batch` | GPT 5.2 (Batch) | 400k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.2-codex` | GPT 5.2 Codex | 400k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.2-fast` | GPT 5.2 (Fast) | 400k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.2-pro` | GPT 5.2  | 400k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.3-codex` | GPT 5.3 Codex | 400k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.3-codex-fast` | GPT 5.3 Codex (Fast) | 400k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.4` | GPT 5.4 | 1050k | 128k | minimal, low, medium, high, xhigh |
+| `openai/gpt-5.4-batch` | GPT 5.4 (Batch) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.4-fast` | GPT 5.4 (Fast) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.4-mini` | GPT 5.4 Mini | 400k | 128k | minimal, low, medium, high, xhigh |
+| `openai/gpt-5.4-mini-batch` | GPT 5.4 Mini (Batch) | 400k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.4-mini-fast` | GPT 5.4 Mini (Fast) | 400k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.4-nano` | GPT 5.4 Nano | 400k | 128k | minimal, low, medium, high, xhigh |
+| `openai/gpt-5.4-nano-batch` | GPT 5.4 Nano (Batch) | 400k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.4-pro` | GPT 5.4 Pro | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.5` | GPT 5.5 | 1000k | 128k | minimal, low, medium, high, xhigh |
+| `openai/gpt-5.5-batch` | GPT 5.5 (Batch) | 1000k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.5-fast` | GPT 5.5 (Fast) | 1000k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.5-pro` | GPT 5.5 Pro | 1000k | 128k | medium, high, xhigh |
+| `openai/gpt-5.5-pro-batch` | GPT 5.5 Pro (Batch) | 1000k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.6-luna` | GPT 5.6 Luna | 1050k | 128k | minimal, low, medium, high, xhigh |
+| `openai/gpt-5.6-luna-batch` | GPT 5.6 Luna (Batch) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.6-luna-fast` | GPT 5.6 Luna (Fast) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.6-sol` | GPT 5.6 Sol | 1050k | 128k | minimal, low, medium, high, xhigh |
+| `openai/gpt-5.6-sol-batch` | GPT 5.6 Sol (Batch) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.6-sol-fast` | GPT 5.6 Sol (Fast) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.6-terra` | GPT 5.6 Terra | 1050k | 128k | minimal, low, medium, high, xhigh |
+| `openai/gpt-5.6-terra-batch` | GPT 5.6 Terra (Batch) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-5.6-terra-fast` | GPT 5.6 Terra (Fast) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-6-astra` | GPT-6 Astra | 1050k | 128k | minimal, low, medium, high, xhigh |
+| `openai/gpt-6-astra-batch` | GPT-6 Astra (Batch) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-6-astra-fast` | GPT-6 Astra (Fast) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-6-luna` | GPT-6 Luna | 1050k | 128k | minimal, low, medium, high, xhigh |
+| `openai/gpt-6-luna-batch` | GPT-6 Luna (Batch) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-6-luna-fast` | GPT-6 Luna (Fast) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-6-sol` | GPT-6 Sol | 1050k | 128k | minimal, low, medium, high, xhigh |
+| `openai/gpt-6-sol-batch` | GPT-6 Sol (Batch) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-6-sol-fast` | GPT-6 Sol (Fast) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-6.1-sol` | GPT-6.1 Sol | 1050k | 128k | minimal, low, medium, high, xhigh |
+| `openai/gpt-6.1-sol-batch` | GPT-6.1 Sol (Batch) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-6.1-sol-fast` | GPT-6.1 Sol (Fast) | 1050k | 128k | minimal, low, medium, high, xhigh |
 | `openai/gpt-oss-120b` | GPT OSS 120B | 131072 | 131072 | minimal, low, medium, high |
 | `openai/gpt-oss-20b` | GPT OSS 20B | 131072 | 8192 | minimal, low, medium, high |
@@ -1694,18 +1768,24 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 | `spacexai/grok-4.1-fast-non-reasoning` | Grok 4.1 Fast Non-Reasoning | 1000k | 1000k | — |
 | `spacexai/grok-4.1-fast-reasoning` | Grok 4.1 Fast Reasoning | 1000k | 1000k | minimal, low, medium, high |
 | `spacexai/grok-4.20-multi-agent` | Grok 4.20 Multi-Agent | 2000k | 2000k | minimal, low, medium, high |
+| `spacexai/grok-4.20-multi-agent-batch` | Grok 4.20 Multi-Agent (Batch) | 2000k | 2000k | minimal, low, medium, high |
 | `spacexai/grok-4.20-multi-agent-beta` | Grok 4.20 Multi Agent Beta | 2000k | 2000k | minimal, low, medium, high |
 | `spacexai/grok-4.20-non-reasoning` | Grok 4.20 Non-Reasoning | 2000k | 2000k | — |
+| `spacexai/grok-4.20-non-reasoning-batch` | Grok 4.20 Non-Reasoning (Batch) | 2000k | 2000k | — |
 | `spacexai/grok-4.20-non-reasoning-beta` | Grok 4.20 Beta Non-Reasoning | 2000k | 2000k | — |
 | `spacexai/grok-4.20-reasoning` | Grok 4.20 Reasoning | 2000k | 2000k | minimal, low, medium, high |
+| `spacexai/grok-4.20-reasoning-batch` | Grok 4.20 Reasoning (Batch) | 2000k | 2000k | minimal, low, medium, high |
 | `spacexai/grok-4.20-reasoning-beta` | Grok 4.20 Beta Reasoning | 2000k | 2000k | minimal, low, medium, high |
 | `spacexai/grok-4.3` | Grok 4.3 | 1000k | 1000k | minimal, low, medium, high |
+| `spacexai/grok-4.3-batch` | Grok 4.3 (Batch) | 1000k | 1000k | minimal, low, medium, high |
 | `spacexai/grok-4.5` | Grok 4.5 | 500k | 500k | minimal, low, medium, high |
 | `spacexai/grok-4.6` | Grok 4.6 | 500k | 500k | minimal, low, medium, high |
 | `spacexai/grok-4.7` | Grok 4.7 | 500k | 500k | minimal, low, medium, high |
 | `spacexai/grok-build-0.1` | Grok Build 0.1 | 256k | 256k | minimal, low, medium, high |
-| `stepfun/step-3.5-flash` | StepFun 3.5 Flash | 262114 | 262114 | minimal, low, medium, high |
+| `stealth/cat-jam` | Cat Jam | 1048576 | 131072 | minimal, low, medium, high |
+| `stealth/glyph-cluster` | Glyph Cluster | 256k | 256k | minimal, low, medium, high |
 | `stepfun/step-3.7-flash` | Step 3.7 Flash | 256k | 256k | minimal, low, medium, high |
+| `stepfun/step-5-preview` | Step 5 Preview | 1048576 | 1048576 | minimal, low, medium, high |
 | `tencent/hy3` | Hy3 | 262144 | 262144 | minimal, low, medium, high |
 | `tencent/hy4-preview` | Tencent Hy4 Preview | 1024k | 64k | minimal, low, medium, high |
 | `thinkingmachines/inkling` | Inkling | 256k | 256k | minimal, low, medium, high |
@@ -1746,39 +1826,39 @@ The env vars each provider's credentials are read from, in lookup order. In the 
 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
-| `mimo-v2.5` | MiMo-V2.5 | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.6-flash` | MiMo-V2.6-Flash | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.6-pro` | MiMo-V2.6-Pro | 1048576 | 131072 | minimal, low, medium, high |
+| `mimo-v2.5` | MiMo-V2.5 | 1048576 | 131072 | high |
+| `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1048576 | 131072 | high |
+| `mimo-v2.6-flash` | MiMo-V2.6-Flash | 1048576 | 131072 | high |
+| `mimo-v2.6-pro` | MiMo-V2.6-Pro | 1048576 | 131072 | high |
 
 ## xiaomi-token-plan-cn
 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
-| `mimo-v2.5` | MiMo-V2.5 | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.6-flash` | MiMo-V2.6-Flash | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.6-pro` | MiMo-V2.6-Pro | 1048576 | 131072 | minimal, low, medium, high |
+| `mimo-v2.5` | MiMo-V2.5 | 1048576 | 131072 | high |
+| `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1048576 | 131072 | high |
+| `mimo-v2.6-flash` | MiMo-V2.6-Flash | 1048576 | 131072 | high |
+| `mimo-v2.6-pro` | MiMo-V2.6-Pro | 1048576 | 131072 | high |
 
 ## xiaomi-token-plan-sgp
 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
-| `mimo-v2.5` | MiMo-V2.5 | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.6-flash` | MiMo-V2.6-Flash | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.6-pro` | MiMo-V2.6-Pro | 1048576 | 131072 | minimal, low, medium, high |
+| `mimo-v2.5` | MiMo-V2.5 | 1048576 | 131072 | high |
+| `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1048576 | 131072 | high |
+| `mimo-v2.6-flash` | MiMo-V2.6-Flash | 1048576 | 131072 | high |
+| `mimo-v2.6-pro` | MiMo-V2.6-Pro | 1048576 | 131072 | high |
 
 ## xiaomi
 
 | Model | Name | Context | Max output | Reasoning levels |
 | --- | --- | --- | --- | --- |
-| `mimo-v2.5` | MiMo-V2.5 | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.5-pro-ultraspeed` | MiMo-V2.5-Pro-UltraSpeed | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.6-flash` | MiMo-V2.6-Flash | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.6-pro` | MiMo-V2.6-Pro | 1048576 | 131072 | minimal, low, medium, high |
-| `mimo-v2.6-pro-ultraspeed` | MiMo-V2.6-Pro-UltraSpeed | 1048576 | 131072 | minimal, low, medium, high |
+| `mimo-v2.5` | MiMo-V2.5 | 1048576 | 131072 | high |
+| `mimo-v2.5-pro` | MiMo-V2.5-Pro | 1048576 | 131072 | high |
+| `mimo-v2.5-pro-ultraspeed` | MiMo-V2.5-Pro-UltraSpeed | 1048576 | 131072 | high |
+| `mimo-v2.6-flash` | MiMo-V2.6-Flash | 1048576 | 131072 | high |
+| `mimo-v2.6-pro` | MiMo-V2.6-Pro | 1048576 | 131072 | high |
+| `mimo-v2.6-pro-ultraspeed` | MiMo-V2.6-Pro-UltraSpeed | 1048576 | 131072 | high |
 
 ## zai-coding-cn
 
