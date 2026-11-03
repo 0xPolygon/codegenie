@@ -2,6 +2,7 @@ import { z } from "zod";
 import type { CodegenieConfig, ReasoningLevel } from "../types.js";
 
 export const reviewDepthSchema = z.enum(["light", "normal", "deep"]);
+export const githubReviewModeSchema = z.enum(["comment", "approve"]);
 export const REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const satisfies readonly ReasoningLevel[];
 export const reasoningLevelSchema = z.enum(REASONING_LEVELS);
 export const severitySchema = z.enum(["critical", "high", "medium", "low"]);
@@ -63,7 +64,8 @@ export const rawConfigSchema = z
       .optional(),
     github: z
       .object({
-        summaryWhenNoFindings: z.boolean().optional()
+        summaryWhenNoFindings: z.boolean().optional(),
+        reviewMode: githubReviewModeSchema.optional()
       })
       .strict()
       .optional(),
@@ -151,7 +153,8 @@ export const codegenieConfigSchema = z
       .strict(),
     github: z
       .object({
-        summaryWhenNoFindings: z.boolean()
+        summaryWhenNoFindings: z.boolean(),
+        reviewMode: githubReviewModeSchema
       })
       .strict(),
     git: z
@@ -226,7 +229,8 @@ export const defaultConfig: CodegenieConfig = {
     maxBudgetTokens: 8_000_000
   },
   github: {
-    summaryWhenNoFindings: false
+    summaryWhenNoFindings: false,
+    reviewMode: "comment"
   },
   git: {},
   classification: {

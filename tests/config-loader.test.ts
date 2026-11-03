@@ -28,6 +28,30 @@ describe("config loader", () => {
     expect(rawConfigSchema.safeParse({ review: { compositionReasoningStepDown: "true" } }).success).toBe(false);
   });
 
+  it("defaults a missing reviewMode to comment and lets repo config only lower it", () => {
+    const repoRoot = tempDir();
+    const homeOverride = tempDir();
+    expect(loadConfig({ repoRoot, homeOverride }).config.github.reviewMode).toBe("comment");
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[github]\nreviewMode = \"approve\"\nsummaryWhenNoFindings = true\n");
+    const loaded = loadConfig({ repoRoot, homeOverride });
+    expect(loaded.config.github.reviewMode).toBe("comment");
+    expect(loaded.warnings.some((warning) => warning.key === "github.reviewMode")).toBe(true);
+    expect(loaded.config.github.summaryWhenNoFindings).toBe(false);
+    expect(loaded.warnings.some((warning) => warning.key === "github.summaryWhenNoFindings")).toBe(true);
+    const overridden = loadConfig({ repoRoot, homeOverride, cli: { reviewMode: "approve" } });
+    expect(overridden.config.github.reviewMode).toBe("approve");
+    expect(overridden.sources["github.reviewMode"]).toBe("cli");
+    writeFileSync(path.join(homeOverride, "config.toml"), "[github]\nreviewMode = \"approve\"\n");
+    expect(loadConfig({ repoRoot: tempDir(), homeOverride }).config.github.reviewMode).toBe("approve");
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[github]\nreviewMode = \"comment\"\n");
+    const lowered = loadConfig({ repoRoot, homeOverride });
+    expect(lowered.config.github.reviewMode).toBe("comment");
+    expect(lowered.sources["github.reviewMode"]).toBe("repo-config");
+    expect(loadConfig({ repoRoot, homeOverride, cli: { reviewMode: "approve" } }).config.github.reviewMode).toBe("approve");
+    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[github]\nreviewMode = \"nope\"\n");
+    expect(() => loadConfig({ repoRoot, homeOverride })).toThrow(CodegenieError);
+  });
+
   it("layers SVG skipping as a repo-safe boolean", () => {
     const repoRoot = tempDir();
     const homeOverride = tempDir();

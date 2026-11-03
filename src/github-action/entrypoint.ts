@@ -69,6 +69,7 @@ type GitHubActionInputs = {
   allowedAssociations: string[];
   allowedUsers: string[];
   postInlineComments: boolean;
+  reviewMode?: string;
   preflightOnly: boolean;
   botLogin?: string;
   // Raw `model` / `models` inputs, validated only after the trigger gate so
@@ -215,12 +216,15 @@ export async function executeGitHubActionCommand(
   // login — self-correcting for a custom app missing its bot-login input.
   env.CODEGENIE_GITHUB_LOGIN = claimed.author !== "" ? claimed.author : ownLogin;
 
+  const postsVerdict = inputs.reviewMode === "approve";
   const reviewArgv = [
     "review",
     "--pr",
     String(decision.prNumber),
     "--ci",
-    ...(inputs.postInlineComments ? ["--post-github-comments"] : []),
+    ...(inputs.postInlineComments || postsVerdict ? ["--post-github-comments"] : []),
+    ...(postsVerdict && !inputs.postInlineComments ? ["--skip-github-inline-comments"] : []),
+    ...(inputs.reviewMode !== undefined && (inputs.postInlineComments || postsVerdict) ? ["--review-mode", inputs.reviewMode] : []),
     ...(selection !== undefined
       ? [
           ...(selection.spec.provider !== undefined ? ["--provider", selection.spec.provider] : []),
@@ -341,6 +345,10 @@ export function parseGitHubActionArgs(argv: string[]): GitHubActionInputs {
       inputs.allowedUsers = parseCsv(value);
     } else if (flag === "--post-inline-comments") {
       inputs.postInlineComments = parseBoolean(flag, value);
+    } else if (flag === "--review-mode") {
+      if (value.trim() !== "") {
+        inputs.reviewMode = parseReviewMode(value.trim());
+      }
     } else if (flag === "--preflight-only") {
       inputs.preflightOnly = parseBoolean(flag, value);
     } else if (flag === "--model") {
@@ -683,6 +691,13 @@ function requireEnv(env: NodeJS.ProcessEnv, name: string): string {
     throw new CodegenieError("invalid_args", `${name} is required — codegenie github-action only runs inside GitHub Actions`);
   }
   return value;
+}
+
+function parseReviewMode(value: string): string {
+  if (value === "comment" || value === "approve") {
+    return value;
+  }
+  throw new CodegenieError("invalid_args", "--review-mode must be one of: comment, approve");
 }
 
 function parseBoolean(flag: string, value: string): boolean {

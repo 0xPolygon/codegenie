@@ -1050,6 +1050,62 @@ describe("github-action entrypoint", () => {
     expect(reviewArgv).not.toContain("--post-github-comments");
   });
 
+  it("passes review-mode only when a verdict or inline comments will be posted", async () => {
+    const fake = createFakeComments();
+    let reviewArgv: string[] = [];
+    await executeGitHubActionCommand(["--review-mode", "approve", "--post-inline-comments", "false"], {
+      env: actionEnv(issueCommentPayload(), "issue_comment"),
+      issueComments: fake.client,
+      minEditIntervalMs: 0,
+      writeOutput: () => undefined,
+      runReview: async (argv) => {
+        reviewArgv = argv;
+        return { runId: "r1", runDir: "", reportMarkdown: "# report" };
+      }
+    });
+    expect(reviewArgv).toContain("--post-github-comments");
+    expect(reviewArgv).toContain("--skip-github-inline-comments");
+    expect(reviewArgv).toContain("--review-mode");
+    expect(reviewArgv).toContain("approve");
+    expect(parseGitHubActionArgs(["--review-mode", ""])).not.toHaveProperty("reviewMode");
+    expect(() => parseGitHubActionArgs(["--review-mode", "ship"])).toThrow(/review-mode/u);
+  });
+
+  it("keeps inline comments in approve mode when post-inline-comments is left at its default", async () => {
+    const fake = createFakeComments();
+    let reviewArgv: string[] = [];
+    await executeGitHubActionCommand(["--review-mode", "approve"], {
+      env: actionEnv(issueCommentPayload(), "issue_comment"),
+      issueComments: fake.client,
+      minEditIntervalMs: 0,
+      writeOutput: () => undefined,
+      runReview: async (argv) => {
+        reviewArgv = argv;
+        return { runId: "r1", runDir: "", reportMarkdown: "# report" };
+      }
+    });
+    expect(reviewArgv).toContain("--post-github-comments");
+    expect(reviewArgv[reviewArgv.indexOf("--review-mode") + 1]).toBe("approve");
+    expect(reviewArgv).not.toContain("--skip-github-inline-comments");
+  });
+
+  it("omits review-mode when comment mode posts nothing", async () => {
+    const fake = createFakeComments();
+    let reviewArgv: string[] = [];
+    await executeGitHubActionCommand(["--review-mode", "comment", "--post-inline-comments", "false"], {
+      env: actionEnv(issueCommentPayload(), "issue_comment"),
+      issueComments: fake.client,
+      minEditIntervalMs: 0,
+      writeOutput: () => undefined,
+      runReview: async (argv) => {
+        reviewArgv = argv;
+        return { runId: "r1", runDir: "", reportMarkdown: "# report" };
+      }
+    });
+    expect(reviewArgv).not.toContain("--review-mode");
+    expect(reviewArgv).not.toContain("--post-github-comments");
+  });
+
   it("finalizes returned worker failures as failure while retaining the partial report", async () => {
     const fake = createFakeComments();
     const reportPath = path.join(scratch, "failed-workers.md");

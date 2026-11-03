@@ -72,10 +72,11 @@ codegenie review --provider anthropic --model claude-opus-5   # one-run model ov
 codegenie review --model claude-opus-5:max         # model[:reasoning] shorthand
 codegenie review --reasoning high                  # minimal | low | medium | high | xhigh | max | auto
 codegenie review --format json                     # machine-readable review object
-codegenie review --pr 123 --post-github-comments   # publish inline comments (explicit flag, never config)
+codegenie review --pr 123 --post-github-comments   # publish inline comments (explicit flag, never implied)
+codegenie review --pr 123 --post-github-comments --review-mode approve
 ```
 
-Posting to GitHub is a single `COMMENT`-type review with inline comments anchored to changed lines — it never approves or requests changes, and only happens when you pass the flag. Interactive runs show a stderr progress spinner (auto-disabled in CI; `--no-progress` disables it explicitly). Non-posting Markdown/JSON runs emit the full report to stdout; posting runs emit a concise posting summary instead. Action mode separately renders the full report into the status comment, step summary, and report artifact.
+Posting to GitHub is a single review with inline comments anchored to changed lines, and only happens when you pass `--post-github-comments`. The review event is `COMMENT` unless `[github] reviewMode` is `approve`, which only user config, `--review-mode`, or the Action `review-mode` input can set; a repo `codegenie.toml` may only lower it to `comment`. A missing `reviewMode` is `comment`. `approve` requests changes when issues remain and approves a clean completed review, because only that reviewer can clear its own change request. Incomplete runs are never approved. Interactive runs show a stderr progress spinner (auto-disabled in CI; `--no-progress` disables it explicitly). Non-posting Markdown/JSON runs emit the full report to stdout; posting runs emit a concise posting summary instead. Action mode separately renders the full report into the status comment, step summary, and report artifact.
 
 For prose files (`.md`, `.mdx`, `.rst`, `.txt`), unchanged inline comment content is deduplicated across shifted anchors on the same file and diff side. Matching uses the complete sanitized body before truncation; changed wording remains eligible for posting. Executable examples under `docs/` retain code fingerprint matching. Separate findings are not merged merely because they occur in the same document.
 
@@ -195,6 +196,9 @@ depth = "normal"
 maxTime = 60        # positive number of minutes; --max-time overrides this per run
 budgetBoost = 1.0   # scales per-packet review budgets; does not change finding caps
 compositionReasoningStepDown = true # default; set false to keep configured reasoning for composition
+
+[github]
+reviewMode = "comment" # comment | approve. Omitted means comment. Repo config cannot set approve; use user config, --review-mode, or the Action input.
 
 [telemetry]
 enabled = true      # opt into local run artifacts under .codegenie/runs

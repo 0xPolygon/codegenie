@@ -26,8 +26,11 @@ inputs:
     description: "Comma-separated logins allowed to trigger regardless of association. Widening this is a deliberate security decision."
     default: ""
   post-inline-comments:
-    description: "Also post inline finding comments as a PR review (true/false). The status-comment report posts either way."
+    description: "Also post inline finding comments as a PR review (true/false). The status-comment report posts either way. review-mode approve still posts a verdict when this is false, but it does not post inline comments."
     default: "true"
+  review-mode:
+    description: "GitHub review ceiling: comment or approve. approve also requests changes when issues remain, because only that reviewer can clear its own request. Empty defaults to comment. A repository codegenie.toml cannot enable approve, so set this input to post verdicts."
+    default: ""
   depth:
     description: "Review depth: light, normal, or deep."
     default: ""
@@ -86,6 +89,7 @@ runs:
         INPUT_ALLOWED_ASSOCIATIONS: ${{ inputs.allowed-associations }}
         INPUT_ALLOWED_USERS: ${{ inputs.allowed-users }}
         INPUT_POST_INLINE_COMMENTS: ${{ inputs.post-inline-comments }}
+        INPUT_REVIEW_MODE: ${{ inputs.review-mode }}
         INPUT_DEPTH: ${{ inputs.depth }}
         INPUT_LENSES: ${{ inputs.lenses }}
         INPUT_MODEL: ${{ inputs.model }}
@@ -105,6 +109,7 @@ runs:
         args+=(--allowed-associations "$INPUT_ALLOWED_ASSOCIATIONS")
         args+=(--allowed-users "$INPUT_ALLOWED_USERS")
         args+=(--post-inline-comments "$INPUT_POST_INLINE_COMMENTS")
+        args+=(--review-mode "$INPUT_REVIEW_MODE")
         args+=(--depth "$INPUT_DEPTH")
         args+=(--model "$INPUT_MODEL")
         args+=(--models "$INPUT_MODELS")
