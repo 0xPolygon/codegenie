@@ -1,0 +1,149 @@
+@import "tailwindcss";
+
+/* Self-hosted variable fonts — no third-party requests. */
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+@theme {
+  /* Surfaces */
+  --color-bg: #0b0b10;
+  --color-surface: #13131a;
+  --color-surface-2: #1a1a23;
+  --color-border: #23232e;
+  --color-border-strong: #333340;
+
+  /* Text */
+  --color-text: #e7e7ee;
+  --color-muted: #9a9aab;
+  /* 5.4:1 on --color-bg — the dimmest text that still clears WCAG AA. */
+  --color-faint: #85859a;
+
+  /* Accent */
+  --color-accent: #8b5cf6;
+  --color-accent-hover: #a78bfa;
+  --color-accent-dim: #6d28d9;
+  /* CTA fill: white on it is 5.7:1 (--color-accent is only 4.2:1). */
+  --color-accent-mid: #7c3aed;
+  /* Purple for text: 6.8:1 on --color-surface, where --color-accent is 4.4:1. */
+  --color-accent-text: #a78bfa;
+
+  /* LLM stage tint (from README pipeline Mermaid) */
+  --color-llm: #c8963e;
+  --color-llm-bg: #2a2213;
+  --color-llm-border: #4a3a1c;
+
+  /* Type */
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system,
+    "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo,
+    monospace;
+
+  /* Layout */
+  --spacing-section: 6rem;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 5rem;
+    background-color: var(--color-bg);
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--color-bg);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    font-size: 1.0625rem;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    color: var(--color-text);
+    text-wrap: balance;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  code,
+  pre,
+  kbd {
+    font-family: var(--font-mono);
+    font-variant-ligatures: none;
+  }
+
+  /* Visible focus rings everywhere. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent-hover);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background-color: var(--color-accent-dim);
+    color: #fff;
+  }
+
+  /* Skip link */
+  .skip-link {
+    position: absolute;
+    left: 1rem;
+    top: -100%;
+    z-index: 100;
+    padding: 0.6rem 1rem;
+    background: var(--color-accent-dim);
+    color: #fff;
+    border-radius: 0.5rem;
+    font-weight: 600;
+    transition: top 120ms ease;
+  }
+  .skip-link:focus {
+    top: 1rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Hero entrance — the only motion on the page. */
+@keyframes cg-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.animate-rise {
+  animation: cg-rise 600ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-rise {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}

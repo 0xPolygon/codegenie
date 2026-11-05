@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://0xpolygon.github.io/codegenie/sitemap-index.xml

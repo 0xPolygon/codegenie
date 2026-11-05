@@ -1,0 +1,50 @@
+---
+import Section from "./Section.astro";
+import CodeBlock from "./CodeBlock.astro";
+import { actionYaml, actionBullets } from "../data/snippets";
+import { links } from "../data/site";
+---
+
+<Section
+  id="github-action"
+  eyebrow="GitHub Action"
+  title="High-signal AI code review on pull requests."
+  lead="One reusable action. A live status comment that becomes the final report, and inline findings posted as a COMMENT-type review."
+>
+  <div class="grid gap-10">
+    <CodeBlock
+      code={actionYaml}
+      lang="yaml"
+      filename=".github/workflows/codegenie.yml"
+    />
+
+    <div>
+      <ul class="grid gap-x-8 gap-y-4 md:grid-cols-2">
+        {
+          actionBullets.map((bullet) => (
+            <li class="flex gap-3 text-sm text-muted">
+              <span
+                class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+                aria-hidden="true"
+              />
+              <span>{bullet}</span>
+            </li>
+          ))
+        }
+      </ul>
+
+      <p class="mt-6 text-sm text-faint">
+        See{" "}
+        <a
+          href={links.workflows}
+          class="text-accent-text underline decoration-accent/40 underline-offset-4 hover:decoration-accent"
+          rel="noopener noreferrer"
+          target="_blank"
+        >
+          examples/workflows
+        </a>{" "}
+        for both trigger lanes — automatic and comment-triggered.
+      </p>
+    </div>
+  </div>
+</Section>

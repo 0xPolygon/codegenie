@@ -1,0 +1,19 @@
+---
+import { withBase } from "../utils/url";
+
+interface Props {
+  size?: number;
+  class?: string;
+}
+
+const { size = 28, class: className = "" } = Astro.props;
+---
+
+<img
+  src={withBase("mark.png")}
+  alt=""
+  width={Math.round(size * 0.86)}
+  height={size}
+  class:list={["inline-block shrink-0 object-contain", className]}
+  style={`height:${size}px;width:auto`}
+/>
