@@ -1,4 +1,4 @@
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { describe, expect, it } from "vitest";
 import { xmlParameterSyntax, xmlSyntaxRepairTargets } from "../src/llm/json-syntax-guidance.js";
 import { SubmitVerificationVerdictSchema } from "../src/llm/schemas.js";

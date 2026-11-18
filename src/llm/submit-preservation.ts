@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
-import { validateToolCall, type TSchema } from "@earendil-works/pi-ai";
+import { validateToolCall } from "@earendil-works/pi-ai";
+import { type TSchema } from "typebox";
 import { parseCompleteJson } from "./complete-json.js";
 
 type JsonSchema = TSchema & {

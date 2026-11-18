@@ -2790,8 +2790,8 @@ function queueSchemaRepair(input: {
   error: string;
   repairBudgetExhausted: boolean;
   promptOverride?: string;
-  rejectedSchema?: import("@earendil-works/pi-ai").TSchema;
-  repairSchema?: import("@earendil-works/pi-ai").TSchema;
+  rejectedSchema?: import("typebox").TSchema;
+  repairSchema?: import("typebox").TSchema;
   repairClassification?: LlmSubmitFailureClassification;
   replaceConversationOverride?: boolean;
   cause?: unknown;

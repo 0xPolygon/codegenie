@@ -1,4 +1,4 @@
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import type { ReviewStage } from "../types.js";
 import type { LlmRole, LlmSubmitFailureClassification } from "./llm-runner.js";
 import {

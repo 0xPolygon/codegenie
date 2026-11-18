@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { createFieldRepair, mergeSubmissionDraft } from "../src/llm/field-repair.js";
 import { preservationViolations, submissionIssues } from "../src/llm/submit-preservation.js";
 

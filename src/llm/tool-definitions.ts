@@ -1,6 +1,6 @@
 import { MISSING_FILE_GUIDANCE } from "./repository-tool-guidance.js";
 import { submissionIssues } from "./submit-preservation.js";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { RepositoryTools, SourceSelector, SymbolLookupSourceSelector, ToolResultMeta } from "../types.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import type { ToolDefinition, ToolExecutionResult } from "./llm-runner.js";

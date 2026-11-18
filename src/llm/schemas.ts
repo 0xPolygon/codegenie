@@ -1,4 +1,5 @@
-import { StringEnum, Type, type Static } from "@earendil-works/pi-ai";
+import { StringEnum } from "./string-enum.js";
+import { Type, type Static } from "typebox";
 import type { ReviewStage } from "../types.js";
 
 const SeveritySchema = StringEnum(["critical", "high", "medium", "low"] as const);

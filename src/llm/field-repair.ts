@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { type TSchema } from "@earendil-works/pi-ai";
+import { type TSchema } from "typebox";
 import { cleanupSubmitShape, focusedRepairDiagnostics, submissionIssues, type ValidationIssue } from "./submit-preservation.js";
 
 type Schema = TSchema & { description?: string; type?: string; properties?: Record<string, Schema>; items?: Schema | Schema[]; additionalItems?: boolean | Schema; required?: string[]; anyOf?: Schema[]; oneOf?: Schema[]; allOf?: Schema[]; patternProperties?: Record<string, Schema> };

@@ -1,4 +1,5 @@
-import { StringEnum, Type, type Static } from "@earendil-works/pi-ai";
+import { StringEnum } from "../llm/string-enum.js";
+import { Type, type Static } from "typebox";
 import pLimit from "p-limit";
 import { buildDiffAnchorIndex, validateDiffAnchor } from "../git/diff-parser.js";
 import type { LlmRunner } from "../llm/llm-runner.js";

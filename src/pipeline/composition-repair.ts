@@ -1,4 +1,4 @@
-import { Type, type TSchema } from "@earendil-works/pi-ai";
+import { Type, type TSchema } from "typebox";
 import type { SubmitCompositionSchema } from "../llm/schemas.js";
 import type { FieldRepair } from "../llm/field-repair.js";
 import { focusedRepairDiagnostics, submissionIssues } from "../llm/submit-preservation.js";
