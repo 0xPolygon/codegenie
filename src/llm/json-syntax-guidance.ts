@@ -1,4 +1,4 @@
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import type { PiArgumentSyntaxDiagnostic } from "./llm-runner.js";
 import { submissionIssues } from "./submit-preservation.js";
 

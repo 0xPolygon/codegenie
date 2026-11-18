@@ -1,5 +1,5 @@
 import type { FieldRepair } from "./field-repair.js";
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import type { CodegenieConfig, RepositoryTools, ReviewStage, ToolBudget, ToolResultMeta } from "../types.js";
 import type { CodegenieErrorCode } from "../util/errors.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";

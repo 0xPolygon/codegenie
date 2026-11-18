@@ -1,6 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { z } from "zod";
 import { reasoningLevelSchema } from "../config/schema.js";
 import { createRealPiAiAdapter } from "../llm/pi-runner.js";

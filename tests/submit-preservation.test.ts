@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { Type, validateToolCall } from "@earendil-works/pi-ai";
+import { validateToolCall } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { normalizePlannerBookkeeping, preservationViolations, submissionIssues } from "../src/llm/submit-preservation.js";
 import { SubmitPacketReviewSchema, SubmitPlanSchema, SubmitVerificationVerdictSchema } from "../src/llm/schemas.js";
 
