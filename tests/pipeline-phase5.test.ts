@@ -16,6 +16,7 @@ import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
 import { runLensPackets } from "../src/pipeline/lens-runner.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
+import { coverageEscalationReason } from "../src/pipeline/coverage-escalation.js";
 import { dedupeRankAndComposeReview, refreshReviewHealth, reviewRetainedOnCompositionFailure } from "../src/pipeline/composer.js";
 import { applySeverityPolicy, capSeverityForBehaviorChange, guaranteeSeverity, hasCriticalOrHighGuarantee } from "../src/pipeline/severity-policy.js";
 import { aggregateRunCoverage, BudgetLedger, runReview } from "../src/pipeline/review-runner.js";
@@ -7420,6 +7421,30 @@ describe("phase 5 pipeline regressions", () => {
       packetId: packet.id,
       data: expect.objectContaining({ from: plannedCoverage })
     }));
+  });
+
+  it("does not escalate a planned-deep packet whose deleted tests leave surviving references (#59)", async () => {
+    const file = genericTestRewriteFile();
+    const facts = { ...fakeFacts(file.path, "per-hunk"), testStatus: "test" as const };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packets = await buildReviewPackets(
+      {
+        ...fakePlan(file.path),
+        coverage: [{ hunkId: "h1", path: file.path, coverage: "deep", lenses: ["core/tests"], surroundingContextHints: [], reason: "test rewrite" }]
+      },
+      [file],
+      [facts],
+      fakeRepositoryIndex(),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      { config: config(), enabledLenses: ["core/tests"] }
+    );
+
+    const packet = packets[0] as ReviewPacket;
+    // The delta would qualify for the deep floor, but the packet is already deep.
+    expect(coverageEscalationReason(packet.testCoverageDelta)).toBeDefined();
+    expect(packet.coverage).toBe("deep");
+    expect(packet.coverageEscalation).toBeUndefined();
+    expect(events.some((event) => event.message === "coverage_escalated")).toBe(false);
   });
 
   it("threads test coverage delta and boundary rewrite signals into packets and prompts", async () => {

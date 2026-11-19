@@ -75,9 +75,14 @@ describe("plan 92 layer 2: coverage escalators", () => {
     const escalated = packet("packet-orphaned", { coverage: "deep", coverageEscalation: { rule: "test_coverage_delta", reason: "deleted tests" } });
     const plain = packet("packet-plain");
 
+    // Snapshot before the call: comparing against the same references would
+    // also pass if the packets were mutated in place.
+    const before = structuredClone([escalated, plain]);
+
     const results = applyCoverageEscalations([escalated, plain], plan, telemetry);
 
-    expect(results).toEqual([escalated, plain]);
+    expect(results).toEqual(before);
+    expect([escalated, plain]).toEqual(before);
     expect(events).toContainEqual(expect.objectContaining({
       message: "coverage_escalations",
       data: { escalated: 1, rule: "test_coverage_delta" }
