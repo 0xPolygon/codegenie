@@ -835,7 +835,7 @@ async function createReviewCache(
   return createModelCallCache({
     dir: config.cache.dir,
     repoRoot,
-    runFingerprint: reviewCacheFingerprint(config, repoRoot, resolved, lensState),
+    runFingerprint: reviewCacheFingerprint(config, resolved, lensState),
     logger: run.logger,
     telemetry: run.telemetry
   });
@@ -843,12 +843,17 @@ async function createReviewCache(
 
 export function reviewCacheFingerprint(
   config: CodegenieConfig,
-  repoRoot: string,
   resolved: ResolvedReviewInput,
   registryHash: string
 ): string {
+  // The resolved target and registry already identify the inputs selected by
+  // the base-branch setting and skill paths. The model-call key also hashes
+  // the actual prompts and tools, including changes caused by runtime limits.
+  const { extraSkillPaths: _skillPaths, ...lenses } = config.lenses;
+  const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout, ...review } = config.review;
+  const { maxConcurrentCalls: _providerSlots, ...llm } = config.llm;
   return buildModelCallCacheKey({
-    repoRoot: path.resolve(repoRoot),
+    version: 2,
     mode: resolved.mode,
     baseSha: resolved.baseRef ?? null,
     headSha: resolved.headRef ?? resolved.headSha ?? null,
@@ -858,11 +863,10 @@ export function reviewCacheFingerprint(
     pr: resolved.pr ? { number: resolved.pr.number, baseSha: resolved.pr.baseSha, headSha: resolved.pr.headSha } : null,
     diffHash: sha256Hex(resolved.rawDiff),
     reviewConfigHash: buildModelCallCacheKey({
-      lenses: config.lenses,
-      review: config.review,
-      git: config.git,
+      lenses,
+      review,
       classification: config.classification,
-      llm: config.llm
+      llm
     }),
     registryHash
   });

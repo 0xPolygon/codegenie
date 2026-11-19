@@ -11,7 +11,7 @@ import type { CodegenieConfig, PlannerDossier, ResolvedReviewInput, ReviewPacket
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("phase 6 live review path", () => {
-  it("keeps review cache fingerprints stable across telemetry output directories", () => {
+  it("keys review cache fingerprints on semantic inputs", () => {
     const resolved: ResolvedReviewInput = {
       mode: "commit_range",
       repoRoot: "/repo",
@@ -34,18 +34,79 @@ describe("phase 6 live review path", () => {
       cache: { ...baseConfig.cache, dir: ".codegenie/cache-b" }
     };
 
-    expect(reviewCacheFingerprint(baseConfig, "/repo", resolved, "registry")).toBe(
-      reviewCacheFingerprint(changedOutputDirs, "/repo", resolved, "registry")
-    );
-    expect(
-      reviewCacheFingerprint(baseConfig, "/repo", { ...resolved, rawDiff: `${resolved.rawDiff}+changed\n` }, "registry")
-    ).not.toBe(reviewCacheFingerprint(baseConfig, "/repo", resolved, "registry"));
-    expect(
-      reviewCacheFingerprint({
-        ...baseConfig,
-        llm: { ...baseConfig.llm, model: "different-model" }
-      }, "/repo", resolved, "registry")
-    ).not.toBe(reviewCacheFingerprint(baseConfig, "/repo", resolved, "registry"));
+    const fingerprint = reviewCacheFingerprint(baseConfig, resolved, "registry");
+    expect(reviewCacheFingerprint(changedOutputDirs, resolved, "registry")).toBe(fingerprint);
+    expect(reviewCacheFingerprint({
+      ...baseConfig,
+      lenses: { ...baseConfig.lenses, extraSkillPaths: ["/worktree/skills"] },
+      git: { baseBranch: "alias-for-the-same-base" }
+    }, resolved, "registry")).toBe(fingerprint);
+    expect(reviewCacheFingerprint(baseConfig, resolved, "other-registry")).not.toBe(fingerprint);
+    expect(reviewCacheFingerprint(baseConfig, { ...resolved, rawDiff: `${resolved.rawDiff}+changed\n` }, "registry"))
+      .not.toBe(fingerprint);
+    for (const config of [
+      { ...baseConfig, llm: { ...baseConfig.llm, model: "different-model" } },
+      { ...baseConfig, llm: { ...baseConfig.llm, reasoning: "high" as const } },
+      { ...baseConfig, review: { ...baseConfig.review, depth: "deep" as const } },
+      { ...baseConfig, lenses: { ...baseConfig.lenses, restrictTo: ["core/tests"] } }
+    ]) {
+      expect(reviewCacheFingerprint(config, resolved, "registry")).not.toBe(fingerprint);
+    }
+  });
+
+  it("replays model calls across worktrees and operational settings, with a miss on a budget change", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    const base = commitAll(repo, "base");
+    writeRepoFile(repo, "app.ts", "export const value = 2;\n");
+    const head = commitAll(repo, "update value");
+    const scratch = mkdtempSync(path.join(tmpdir(), "codegenie-worktree-cache-"));
+    const otherWorktree = path.join(scratch, "other-worktree");
+    git(repo, ["worktree", "add", "--detach", otherWorktree, head]);
+    const config = {
+      ...liveConfig(path.join(scratch, "first")),
+      cache: { enabled: true, dir: path.join(scratch, "shared-cache") }
+    };
+    const operationalConfig = {
+      ...config,
+      llm: { ...config.llm, maxConcurrentCalls: 2 },
+      review: {
+        ...config.review,
+        concurrency: 2,
+        maxTimeMs: config.review.maxTimeMs * 2,
+        perPassTimeoutMs: config.review.perPassTimeoutMs * 2
+      }
+    };
+    const changedBudgetConfig = {
+      ...operationalConfig,
+      review: { ...operationalConfig.review, maxModelCalls: 13 }
+    };
+    for (const [name, repoRoot, runConfig, providerCalls] of [
+      ["first", repo, config, 1],
+      ["other-worktree", otherWorktree, config, 0],
+      ["operational-change", otherWorktree, operationalConfig, 0],
+      ["budget-change", otherWorktree, changedBudgetConfig, 1]
+    ] as const) {
+      const adapter = partialBudgetAdapter();
+      const runArtifactDir = path.join(scratch, `${name}-artifacts`);
+      const result = await runReview({ mode: "commit_range", startCommit: base, endCommit: head }, runConfig, {
+        repoRoot,
+        runArtifactDir,
+        piAdapter: adapter
+      });
+
+      expect(result.coverage.partial, name).toBe(false);
+      expect(adapter.callsByPrompt, name).toEqual({
+        planner: providerCalls,
+        packetReview: providerCalls,
+        composer: providerCalls,
+        verifier: 0
+      });
+      if (providerCalls === 0) {
+        const events = readJsonl<{ message: string }>(path.join(runArtifactDir, "events.jsonl"));
+        expect(events.filter((event) => event.message === "model_call_cache_hit"), name).toHaveLength(3);
+      }
+    }
   });
 
   it("uses the Pi runner end to end for branch reviews with repair, retry, and explicit unresolved follow-ups", async () => {
