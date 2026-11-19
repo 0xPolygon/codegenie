@@ -222,8 +222,7 @@ function normalizeHumanAttentionOutputNotes(raw: unknown): EvalHumanAttentionNot
   return normalizeHumanAttentionNotes(raw.outputNotes);
 }
 
-// Optional artifact read with the same pre-layout-v2 root fallback as
-// readScoredJson (plan 83): old runs stay loadable for replay and compare.
+// Optional artifacts use the same pre-layout-v2 root fallback as scored findings.
 async function readOptionalArtifact<T>(dir: string, logicalName: string): Promise<T | undefined> {
   const relPath = canonicalArtifactPath(logicalName);
   const primary = await readOptionalJson<T>(dir, relPath);

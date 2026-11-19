@@ -120,11 +120,17 @@ export function matchExpectation(
       best = match;
     }
   }
-  // Historical artifacts have separate, unpaired merged fields. They can
-  // establish one field or one location, but cannot establish both together.
-  if (sources.length === 0 && (best.fields.length === 1 ||
-    best.fields.every(({ field }) => field === "path" || field === "lineRange"))) {
-    return matchNegativeExpectation(expectation, finding, artifacts);
+  if (sources.length === 0) {
+    // Historical anchors pair paths with ranges. A range must come from a
+    // variant whose own path matches, even when other variants supply paths.
+    if (best.fields.every(({ field }) => field === "path" || field === "lineRange")) {
+      return matchExpectationFields(expectation, [], findingLocationVariants(finding, artifacts));
+    }
+    // Historical merged text and labels have no pairing with locations or
+    // with each other. They can establish a single field on their own.
+    if (best.fields.length === 1) {
+      return matchExpectationFields(expectation, findingMatchViews(finding, artifacts), []);
+    }
   }
   return best;
 }
@@ -699,7 +705,7 @@ function scoreShouldNotFind(
         });
       }
     }
-    for (const finding of artifacts.candidates.filter((candidate) => matchExpectation(expectation, candidate, artifacts).matched)) {
+    for (const finding of artifacts.candidates.filter((candidate) => matchNegativeExpectation(expectation, candidate, artifacts).matched)) {
       nearViolations.push({ expectationId: expectation.id, findingId: finding.id, artifact: "candidate-findings" });
     }
     for (const finding of artifacts.finalFindings.filter((candidate) =>
@@ -1647,17 +1653,16 @@ function findingLocationVariants(finding: ScorableFinding, artifacts?: EvalArtif
 
 function addFinalMetadataLocationVariants(variants: FindingLocationVariant[], finding: FinalFinding): void {
   for (const anchor of finding.mergedAnchors ?? []) {
-    // Artifact redaction can replace a repeated anchor with a marker string.
-    if (typeof anchor?.path !== "string" || typeof anchor.line !== "number") {
+    // Redaction can replace an anchor or a coordinate with a marker string.
+    if (typeof anchor?.path !== "string") {
       continue;
     }
-    const start = typeof anchor.startLine === "number" ? anchor.startLine : anchor.line;
-    const end = anchor.line;
-    variants.push({
-      path: normalizePath(anchor.path),
-      range: [Math.min(start, end), Math.max(start, end)],
-      source: "merged-candidate"
-    });
+    const variant: FindingLocationVariant = { path: normalizePath(anchor.path), source: "merged-candidate" };
+    if (typeof anchor.line === "number") {
+      const start = typeof anchor.startLine === "number" ? anchor.startLine : anchor.line;
+      variant.range = [Math.min(start, anchor.line), Math.max(start, anchor.line)];
+    }
+    variants.push(variant);
   }
   for (const path of finding.mergedPaths ?? []) {
     variants.push({

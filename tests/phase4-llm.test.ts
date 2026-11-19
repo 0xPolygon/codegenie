@@ -6835,22 +6835,30 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(unrelated.every(file => existsSync(file))).toBe(true);
   });
 
-  it.each(["entry", "shard"])("continues cache eviction when a listed %s disappears", async (removed) => {
+  it.each(["entry removed", "shard removed", "shard replaced"])("continues cache eviction with a listed %s concurrently", async (race) => {
     const repoRoot = tempGitRepo();
     const cacheDir = path.join(repoRoot, ".codegenie", "cache");
     const key = buildModelCallCacheKey({ prompt: "removed concurrently" });
     const entry = modelCallCacheEntryPath(cacheDir, key);
     const shard = path.dirname(entry);
+    const staleEntry = modelCallCacheEntryPath(cacheDir, "f".repeat(64));
+    const staleTime = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    mkdirSync(path.dirname(staleEntry), { recursive: true });
+    writeFileSync(staleEntry, "{}\n");
+    utimesSync(staleEntry, staleTime, staleTime);
     mkdirSync(shard, { recursive: true });
     writeFileSync(entry, "{}\n");
 
     const readDirectory = fs.readdirSync;
     const readdir = vi.spyOn(fs, "readdirSync").mockImplementation((dir, options) => {
-      if (removed === "shard" && dir === shard) {
+      if (race !== "entry removed" && dir === shard) {
         rmSync(shard, { recursive: true, force: true });
+        if (race === "shard replaced") {
+          writeFileSync(shard, "unrelated replacement\n");
+        }
       }
       const children = readDirectory(dir, options);
-      if (removed === "entry" && dir === shard) {
+      if (race === "entry removed" && dir === shard) {
         rmSync(entry, { force: true });
       }
       return children;
@@ -6860,7 +6868,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       await expect(createModelCallCache({
         dir: cacheDir, repoRoot, runFingerprint: "run-race", logger: fakeLogger(), telemetry: fakeTelemetry().recorder
       })).resolves.toMatchObject({ runFingerprint: "run-race" });
-      expect(existsSync(entry)).toBe(false);
+      expect(existsSync(staleEntry)).toBe(false);
+      if (race === "shard replaced") {
+        expect(readFileSync(shard, "utf8")).toBe("unrelated replacement\n");
+      }
     } finally {
       readdir.mockRestore();
       syncBuiltinESMExports();

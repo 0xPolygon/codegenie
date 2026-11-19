@@ -222,7 +222,8 @@ function readCacheDirectory(dir: string): Dirent[] {
   try {
     return readdirSync(dir, { withFileTypes: true });
   } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code === "ENOENT") {
+    const code = (cause as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
       return [];
     }
     throw cause;
