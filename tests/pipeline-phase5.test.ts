@@ -16,7 +16,8 @@ import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
 import { runLensPackets } from "../src/pipeline/lens-runner.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
-import { dedupeRankAndComposeReview } from "../src/pipeline/composer.js";
+import { coverageEscalationReason } from "../src/pipeline/coverage-escalation.js";
+import { dedupeRankAndComposeReview, refreshReviewHealth, reviewRetainedOnCompositionFailure } from "../src/pipeline/composer.js";
 import { applySeverityPolicy, capSeverityForBehaviorChange, guaranteeSeverity, hasCriticalOrHighGuarantee } from "../src/pipeline/severity-policy.js";
 import { aggregateRunCoverage, BudgetLedger, runReview } from "../src/pipeline/review-runner.js";
 import { verifyFindings } from "../src/pipeline/verifier.js";
@@ -6903,6 +6904,25 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("keeps a planner skip reason when the skip has empty lenses (#71)", async () => {
+    const dossier = fakeDossier(["generated.ts"]);
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        diffUnderstanding: { declaredIntent: "regenerate", inferredBehavior: "regenerate" },
+        coverage: [{ hunkId: "h1", path: "generated.ts", coverage: "skip", lenses: [], surroundingContextHints: [], reason: "generated client code" }]
+      }) as T
+    };
+    const result = await runPlanner(dossier, config(), nullTelemetry(), {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{ id: "core/code-review", title: "core", description: "core", skillIds: [], enabledByDefault: true, enabled: true, languages: [] }],
+      skills: []
+    });
+    expect(result.plan.coverage).toEqual([
+      expect.objectContaining({ hunkId: "h1", coverage: "skip", reason: "generated client code" })
+    ]);
+  });
+
   it("records a verifier recovery-inventory overflow as an incomplete verdict, not a run failure (#80)", async () => {
     const overflow = new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
     const result = await verifyFindings(
@@ -7450,6 +7470,56 @@ describe("phase 5 pipeline regressions", () => {
         confidence: "medium"
       })
     ]);
+  });
+
+  it.each(["light", "normal"] as const)("builds an escalated %s packet with the deep profile, lenses and tool budget (#59)", async (plannedCoverage) => {
+    const file = genericTestRewriteFile();
+    const facts = { ...fakeFacts(file.path, "per-hunk"), testStatus: "test" as const };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packets = await buildReviewPackets(
+      {
+        ...fakePlan(file.path),
+        coverage: [{ hunkId: "h1", path: file.path, coverage: plannedCoverage, lenses: ["core/tests"], surroundingContextHints: [], reason: "test rewrite" }]
+      },
+      [file],
+      [facts],
+      fakeRepositoryIndex(),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      { config: config(), enabledLenses: ["core/tests"] }
+    );
+
+    const packet = packets[0] as ReviewPacket;
+    expect(packet).toMatchObject({ coverage: "deep", reviewProfile: "investigate", coverageEscalation: { rule: "test_coverage_delta" } });
+    expect(packet.toolBudget).toEqual(toolBudget("deep", config().review.depth, "investigate"));
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "coverage_escalated",
+      packetId: packet.id,
+      data: expect.objectContaining({ from: plannedCoverage })
+    }));
+  });
+
+  it("does not escalate a planned-deep packet whose deleted tests leave surviving references (#59)", async () => {
+    const file = genericTestRewriteFile();
+    const facts = { ...fakeFacts(file.path, "per-hunk"), testStatus: "test" as const };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packets = await buildReviewPackets(
+      {
+        ...fakePlan(file.path),
+        coverage: [{ hunkId: "h1", path: file.path, coverage: "deep", lenses: ["core/tests"], surroundingContextHints: [], reason: "test rewrite" }]
+      },
+      [file],
+      [facts],
+      fakeRepositoryIndex(),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      { config: config(), enabledLenses: ["core/tests"] }
+    );
+
+    const packet = packets[0] as ReviewPacket;
+    // The delta would qualify for the deep floor, but the packet is already deep.
+    expect(coverageEscalationReason(packet.testCoverageDelta)).toBeDefined();
+    expect(packet.coverage).toBe("deep");
+    expect(packet.coverageEscalation).toBeUndefined();
+    expect(events.some((event) => event.message === "coverage_escalated")).toBe(false);
   });
 
   it("threads test coverage delta and boundary rewrite signals into packets and prompts", async () => {
@@ -8376,6 +8446,28 @@ describe("phase 5 pipeline regressions", () => {
       message: "gate_anchor_stripped",
       data: expect.objectContaining({ candidateId: "finding-1" })
     }));
+  });
+
+  it("discloses planner skips with their path and reason in the rendered coverage (#65)", () => {
+    const plan = { ...fakePlan(), coverage: [{ hunkId: "h1", path: "app.ts", coverage: "skip" as const, lenses: [], surroundingContextHints: [], reason: "generated client code" }] };
+    const coverage = aggregateRunCoverage(
+      plan,
+      [],
+      [],
+      { verdicts: [], incompleteCount: 0 },
+      nullTelemetry(),
+      { allFiles: fakeDiff().files, packets: [] }
+    );
+    expect(coverage.reasons).toContain("app.ts: generated client code");
+    expect(renderCoverageSummaryLines(coverage)).toContain("- app.ts: generated client code");
+  });
+
+  it("deduplicates repeated skip path/reason pairs before the disclosure limit (#65)", () => {
+    const repeated = Array.from({ length: 10 }, (_, index) => ({ hunkId: `r${index}`, path: "gen.ts", coverage: "skip" as const, lenses: [], surroundingContextHints: [], reason: "generated client code" }));
+    const plan = { ...fakePlan(), coverage: [...repeated, { hunkId: "h-last", path: "vendor.ts", coverage: "skip" as const, lenses: [], surroundingContextHints: [], reason: "vendored dependency" }] };
+    const coverage = aggregateRunCoverage(plan, [], [], { verdicts: [], incompleteCount: 0 }, nullTelemetry(), { allFiles: fakeDiff().files, packets: [] });
+    expect(coverage.reasons).toContain("gen.ts: generated client code");
+    expect(coverage.reasons).toContain("vendor.ts: vendored dependency");
   });
 
   it("discloses when verification is disabled in coverage", async () => {
@@ -10108,6 +10200,129 @@ describe("phase 5 pipeline regressions", () => {
       compositionMode: "deterministic_fallback",
       fallbackReason: "semantic composition skipped; deterministic fallback used"
     });
+  });
+
+  it("keeps verified findings in the failure report when composition fails non-recoverably (#60)", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "export const value = 'changed';\n");
+    commitAll(repo, "feature");
+
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "run-composer-failed");
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        if (request.stage === 5) {
+          return {
+            diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
+            coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "test" }]
+          } as T;
+        }
+        if (request.stage === 7) {
+          return {
+            findings: [{
+              title: "Changed value breaks callers",
+              severity: "medium",
+              confidence: "medium",
+              path: "app.ts",
+              anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+              category: "correctness",
+              evidence: { changedCode: "+changed" },
+              failureMode: "bad",
+              whyThisMatters: "matters",
+              verification: "test"
+            }],
+            followUpHints: [],
+            uncertainties: []
+          } as T;
+        }
+        if (request.stage === 9) {
+          return { verdict: "keep", reason: "kept", requiredEvidencePresent: true, falsePositiveRisk: "low" } as T;
+        }
+        throw new CodegenieError("llm_call_failed", "composer exploded");
+      }
+    };
+
+    await expect(runReview(
+      { mode: "branch", branchName: "feature" },
+      { ...config(), telemetry: { ...defaultConfig.telemetry, enabled: true, runDir: path.dirname(runArtifactDir) } },
+      { repoRoot: repo, runArtifactDir, runner }
+    )).rejects.toMatchObject({ code: "llm_call_failed" });
+
+    const finalReview = JSON.parse(readFileSync(path.join(runArtifactDir, "final-review.json"), "utf8")) as {
+      findings: Array<{ title: string }>;
+      summaryOnlyFindings: Array<{ title: string }>;
+      composition?: { mode: string };
+      coverage: { partial: boolean };
+    };
+    expect([...finalReview.findings, ...finalReview.summaryOnlyFindings].map((finding) => finding.title)).toEqual(["Changed value breaks callers"]);
+    expect(finalReview.composition?.mode).toBe("deterministic_fallback");
+    expect(finalReview.coverage.partial).toBe(true);
+    expect(readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8")).toContain("Changed value breaks callers");
+  });
+
+  it.each([
+    { name: "undefined", reason: undefined },
+    { name: "a string", reason: "composer exploded" },
+    { name: "null", reason: null }
+  ])("fails and retains the deterministic review when the composer rejects with $name (#60)", async ({ reason }) => {
+    const finding = fakeFinding();
+    const failure = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      { runner: { runStructured: () => Promise.reject(reason) }, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    ).then(() => undefined, (error: unknown) => ({ error }));
+
+    expect(failure).toBeDefined();
+    const retained = reviewRetainedOnCompositionFailure(failure!.error);
+    expect([...(retained?.findings ?? []), ...(retained?.summaryOnlyFindings ?? [])].map((item) => item.id)).toEqual([finding.id]);
+  });
+
+  it("keeps the retained review when an artifact write fails after a non-recoverable composer error (#60)", async () => {
+    const finding = fakeFinding();
+    const writeFailure = new Error("disk full");
+    const failure = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      { ...nullTelemetry(), writeArtifact: async (name: string) => { if (name === "final-findings.json") throw writeFailure; } },
+      { runner: { runStructured: () => Promise.reject(new CodegenieError("llm_call_failed", "composer exploded")) }, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    ).then(() => undefined, (error: unknown) => ({ error }));
+
+    // The write failure is what gets reported, and it still carries the review.
+    expect(failure?.error).toBe(writeFailure);
+    const retained = reviewRetainedOnCompositionFailure(failure!.error);
+    expect([...(retained?.findings ?? []), ...(retained?.summaryOnlyFindings ?? [])].map((item) => item.id)).toEqual([finding.id]);
+  });
+
+  it("keeps the report-synthesis-failed banner in the posted review body after a health refresh (#61)", async () => {
+    const finding = fakeFinding();
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: { runStructured: async () => { throw composerTransientError(); } },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff(),
+        postGithubComments: true
+      }
+    );
+    expect(result.postingPlan?.reviewBody).toContain("Report synthesis failed");
+
+    refreshReviewHealth(result);
+
+    expect(result.postingPlan?.reviewBody).toContain("Report synthesis failed");
   });
 
   it("validates attention paths against the reviewed tree rather than the checkout or untracked files", async () => {
@@ -12897,6 +13112,44 @@ describe("phase 5 pipeline regressions", () => {
     expect(artifacts.get("final-selection.json")).toMatchObject({
       records: [expect.objectContaining({ findingId: finding.id, decision: "published", reason: "low-confidence-anchorless" })]
     });
+  });
+
+it("does not treat a verify=false synthetic keep as verified for the low-confidence exception (#62)", async () => {
+    const finding = lowConfidenceDeltaFinding("unverified-low");
+    const packet = fakePacket();
+    const verification = await verifyFindings(
+      {
+        packetResults: [{ packetId: packet.id, lenses: ["core/code-review"], findings: [finding], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [packet]
+      },
+      fakeTools(),
+      { ...config(), review: { ...config().review, verify: false } },
+      nullTelemetry(),
+      { runner: { runStructured: async <T>() => ({}) as T }, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+    expect(verification.verified.map((candidate) => candidate.id)).toEqual(["unverified-low"]);
+
+    const result = await dedupeRankAndComposeReview(
+      verification,
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            summary: "Found 1 issue.",
+            composedFindings: [{ findingIds: ["unverified-low"], finalBody: "The changed conversion can fail.", publication: "inline" }]
+          }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.findings).toEqual([]);
+    expect(result.summaryOnlyFindings).toEqual([]);
   });
 
   it("requires complete evidence-backed non-high-risk keep or revise verdicts for the low-confidence hatch", async () => {

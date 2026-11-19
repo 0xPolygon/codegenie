@@ -1,7 +1,5 @@
-import type { CodegenieConfig, ReviewPacket, ReviewPlan } from "../types.js";
+import type { ReviewPacket, ReviewPlan } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
-import { toolBudget } from "./packet-builder.js";
-import { scaleToolBudget } from "../util/budget.js";
 import { isCoverageEscalationTestPath } from "../util/path-roles.js";
 
 // Plan 92 layer 2: deterministic structural coverage escalators. The planner's
@@ -15,34 +13,11 @@ import { isCoverageEscalationTestPath } from "../util/path-roles.js";
 export function applyCoverageEscalations(
   packets: ReviewPacket[],
   plan: ReviewPlan,
-  config: CodegenieConfig,
   telemetry: TelemetryRecorder
 ): ReviewPacket[] {
-  let escalatedCount = 0;
-  const escalated = packets.map((packet) => {
-    if (packet.coverage === "deep") {
-      return packet;
-    }
-    const reason = orphanedTestCoverageDeltaReason(packet);
-    if (reason === undefined) {
-      return packet;
-    }
-    escalatedCount += 1;
-    telemetry.event({
-      stage: 6,
-      level: "info",
-      message: "coverage_escalated",
-      packetId: packet.id,
-      file: packet.path,
-      data: { rule: "test_coverage_delta", from: packet.coverage, reason }
-    });
-    return {
-      ...packet,
-      coverage: "deep" as const,
-      coverageEscalation: { rule: "test_coverage_delta" as const, reason },
-      toolBudget: scaleToolBudget(toolBudget("deep", config.review.depth, packet.reviewProfile), config.review.budgetBoost)
-    };
-  });
+  // E1 is decided while each packet is built (coverageEscalationReason), so
+  // its profile, lenses, context and tool budget follow the deep coverage.
+  const escalatedCount = packets.filter((packet) => packet.coverageEscalation !== undefined).length;
 
   // E2 (intent mismatch) ships telemetry-only in v1: a run claimed as a
   // refactor / behavior-preserving whose packets delete production lines is
@@ -50,7 +25,7 @@ export function applyCoverageEscalations(
   // weak to bind deterministically yet — record candidates for Layer-1 data.
   const intent = plan.intentSignals;
   if (intent !== undefined && (intent.refactorLike || intent.explicitlyBehaviorPreserving)) {
-    for (const packet of escalated) {
+    for (const packet of packets) {
       if (packet.coverage === "deep" || isCoverageEscalationTestPath(packet.path)) {
         continue;
       }
@@ -76,13 +51,12 @@ export function applyCoverageEscalations(
       data: { escalated: escalatedCount, rule: "test_coverage_delta" }
     });
   }
-  return escalated;
+  return packets;
 }
 
 // E1: tests were deleted for production code that still exists — a
 // borderline-finding factory in any language (the erc20 shape, structurally).
-function orphanedTestCoverageDeltaReason(packet: ReviewPacket): string | undefined {
-  const delta = packet.testCoverageDelta;
+export function coverageEscalationReason(delta: ReviewPacket["testCoverageDelta"]): string | undefined {
   if (delta === undefined || delta.deletedTestSymbols.length === 0) {
     return undefined;
   }

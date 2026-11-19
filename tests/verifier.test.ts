@@ -675,6 +675,25 @@ describe("stage 9 evidence-aware verification", () => {
     expect(checked).toBe(true);
   });
 
+  it("keeps host-owned promotion provenance on a verifier revise (#64)", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const provenance = {
+      source: "uncertainty_promotion" as const, sourceKind: "uncertainty" as const, sourcePacketId: packet.id,
+      question: "Does revocation deny access?", files: [packet.path], symbols: [], reason: "Investigate access"
+    };
+    const finding = candidate("promoted-revised", packet, { provenance });
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [finding])], packets: [packet] },
+      fakeTools(), config(), nullTelemetry(), {
+        runner: verifierRunner(() => ({ verdict: "revise", reason: "Confirmed the missing permission check", requiredEvidencePresent: true,
+          falsePositiveRisk: "low", findingUpdates: { ...Object.fromEntries(["failureMode", "whyThisMatters", "verification", "category", "severity", "confidence"]
+            .map(key => [key, finding[key as keyof CandidateFinding]])), title: "Revoked members keep read access" } })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      });
+    expect(result.verified).toHaveLength(1);
+    expect(result.verified[0]).toMatchObject({ title: "Revoked members keep read access", provenance });
+  });
+
   it("supplies precise promoted repair targets through the live verifier request", async () => {
     const fixture = reviewFixture(["src/app.ts"]);
     const packet = fixture.packets[0]!;
@@ -887,6 +906,40 @@ describe("stage 9 evidence-aware verification", () => {
           candidateId: "missing-evidence-keep",
           originalVerdict: "keep"
         })
+      })
+    ]));
+  });
+  it.each(["keep", "revise"] as const)("rejects a %s verdict that reports high false-positive risk (#63)", async (verdict) => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const finding = candidate("high-risk-keep", fixture.packets[0]!);
+    const telemetry = captureTelemetry();
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(fixture.packets[0]!.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict,
+          reason: "The path is reachable but the failure is probably handled upstream.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "high",
+          ...(verdict === "revise" ? { findingUpdates: { title: "Narrowed title" } } : {})
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(result.verified).toEqual([]);
+    expect(result.verdicts[0]).toMatchObject({ verdict: "reject", falsePositiveRisk: "high", reason: expect.stringContaining("high false-positive risk") });
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 9,
+        message: "verification_high_false_positive_risk_normalized_to_reject",
+        data: expect.objectContaining({ candidateId: "high-risk-keep", originalVerdict: verdict })
       })
     ]));
   });
@@ -1848,6 +1901,26 @@ describe("plan 108 verifier severity revision observability", () => {
       }
     });
   }
+
+  it.each([
+    { name: "title-only revise keeps the Stage 7 pre-cap guarantee", updates: { title: "Narrowed title" }, severity: "medium", severityBeforeCap: "critical" },
+    { name: "a verifier severity change replaces it", updates: { title: "Narrowed title", severity: "low" }, severity: "low", severityBeforeCap: undefined }
+  ] as const)("verifier revise and severityBeforeCap (#73): $name", async ({ updates, severity, severityBeforeCap }) => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("capped-critical", packet, {
+      severity: "medium", severityBeforeCap: "critical", behaviorChange: "intentional_needs_confirmation"
+    });
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [finding])], packets: [packet] },
+      fakeTools(), config(), nullTelemetry(), {
+        runner: verifierRunner(() => ({ verdict: "revise", reason: "Confirmed; narrowed the title.", requiredEvidencePresent: true,
+          falsePositiveRisk: "low", findingUpdates: updates })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      });
+    expect(result.verified).toHaveLength(1);
+    expect(result.verified[0]?.severity).toBe(severity);
+    expect(result.verified[0]?.severityBeforeCap).toBe(severityBeforeCap);
+  });
 
   it("does not record severity revision telemetry for reject compatibility payloads", async () => {
     const fixture = reviewFixture(["src/severity.ts"]);

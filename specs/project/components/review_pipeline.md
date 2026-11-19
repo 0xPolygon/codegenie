@@ -451,7 +451,7 @@ Step 2 — planner validation defaults/fallbacks. Applied per hunk:
 
 - No decision → coverage `normal`, default lens set, coverage record source `deterministic_default`, no warning and no final-report disclosure reason.
 - Invalid skip (empty reason after trimming) → coverage `normal`, default lens set, coverage record source `planner`, reason `planner_invalid_skip`, and telemetry.
-- Decision with empty lens set after validation → default lens set (enabled `core/*` lenses plus the file's enabled language lens), coverage record source `planner`, reason `planner_empty_lenses`.
+- Non-skip decision with empty lens set after validation → default lens set (enabled `core/*` lenses plus the file's enabled language lens), coverage record source `planner`, reason `planner_empty_lenses`. A valid skip with an empty lens set keeps the planner's reason (it runs no lenses).
 - Valid `skip` (non-empty reason) → no packet; coverage record `{ coverage: "skip", source: "planner", status: "skipped", reason: <planner reason> }`.
 
 The packet builder validates and assembles; it never makes primary coverage decisions beyond these mechanical defaults/fallbacks.

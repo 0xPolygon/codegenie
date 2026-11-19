@@ -971,8 +971,7 @@ function verdictIsAdjudicatedPromotionReject(
 
 function verdictResolvesPredicate(verdict: VerificationVerdict): boolean {
   return verdict.verificationIncomplete !== true &&
-    verdict.requiredEvidencePresent === true &&
-    !/^verification disabled by config$/iu.test(verdict.reason.trim());
+    verdict.requiredEvidencePresent === true;
 }
 
 function candidateFiles(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): string[] {
