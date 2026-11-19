@@ -4457,7 +4457,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }));
   });
 
-  it("rejects lossy repair: truncates overlong Stage 7 no-finding reasons before model repair", async () => {
+  it("rejects lossy repair: truncates overlong Stage 7 no-finding reasons before model repair (#81)", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
       assistant([{
@@ -4499,6 +4499,18 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.contexts).toHaveLength(4);
     expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "field_repair_rejected" }));
     expect(telemetry.events).not.toContainEqual(expect.objectContaining({ message: "recovery_obligation_resolved" }));
+    // #81: Pi's raw "Received arguments" payload stays out of telemetry and repair prompts.
+    const rejected = telemetry.events.filter((event) => event.message === "field_repair_rejected");
+    expect(rejected.length).toBeGreaterThan(0);
+    expect(JSON.stringify(rejected)).not.toContain("Received arguments");
+    const repairPrompts = JSON.stringify(adapter.contexts);
+    expect(repairPrompts).toContain("Field repair failed complete submission validation");
+    for (const block of repairPrompts.split("label=semantic-validation-error").slice(1)) {
+      expect(block.split("End of semantic-validation-error data block")[0]).not.toContain("Received arguments");
+    }
+    for (const error of repairPrompts.split("Field repair failed complete submission validation").slice(1)) {
+      expect(error.split("omittedPermittedFieldCount")[0]).not.toContain("Received arguments");
+    }
   });
 
   it("strips redundant candidate anchor fields before model repair", async () => {
