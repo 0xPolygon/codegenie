@@ -9090,6 +9090,45 @@ describe("phase 5 pipeline regressions", () => {
     ]));
   });
 
+  it("does not classify a revise carrying findingUpdates as an empty revise (#82)", async () => {
+    let repairPrompt = "";
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
+          stage: 9,
+          submitTool: "submit_verdict",
+          error: "schema-invalid arguments: falsePositiveRisk must be low, medium or high",
+          submitCalls: [{
+            id: "submit-verdict-updates-revise",
+            arguments: {
+              verdict: "revise",
+              reason: "The issue is real; the title overstates it.",
+              requiredEvidencePresent: true,
+              falsePositiveRisk: "unknown",
+              findingUpdates: { title: "Narrowed title" }
+            }
+          }],
+          extraToolNames: []
+        }) ?? "";
+        return { verdict: "keep", reason: "Confirmed.", requiredEvidencePresent: true, falsePositiveRisk: "low" } as T;
+      }
+    };
+
+    await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff(), checkpoint: () => "ok" }
+    );
+
+    expect(repairPrompt).toContain("- class:");
+    expect(repairPrompt).not.toContain("- class: revise_without_revision_payload");
+  });
+
   it("repairs an empty revise with a required structured payload", async () => {
     let repairPrompt = "";
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];

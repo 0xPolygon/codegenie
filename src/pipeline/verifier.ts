@@ -1111,6 +1111,7 @@ function classifyVerifierSchemaInvalid(input: LlmSchemaRepairInput | string): Ve
     return typeof argumentsValue === "object" && argumentsValue !== null &&
       "verdict" in argumentsValue && argumentsValue.verdict === "revise" &&
       (!("finalFinding" in argumentsValue) || argumentsValue.finalFinding == null) &&
+      (!("findingUpdates" in argumentsValue) || argumentsValue.findingUpdates == null) &&
       (!("revisedAnchor" in argumentsValue) || argumentsValue.revisedAnchor == null);
   })) {
     return "revise_without_revision_payload";
