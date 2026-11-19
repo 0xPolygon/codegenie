@@ -277,9 +277,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             forceSubmitToolChoice: opts.llmConfig.forceSubmitToolChoice !== false,
             forcedToolChoiceEffective: forcedProbe.toolChoiceEffective,
             toolChoiceDowngraded: forcedProbe.toolChoiceDowngraded,
-            reasoningMechanism: forcedProbe.reasoningMechanism,
-            ...(forcedProbe.reasoningRequested !== undefined ? { reasoningRequested: forcedProbe.reasoningRequested } : {}),
-            ...(forcedProbe.reasoningLevelEffective !== undefined ? { reasoningLevelEffective: forcedProbe.reasoningLevelEffective } : {})
+            ...(forcedProbe.reasoningRequested !== undefined ? { reasoningRequested: forcedProbe.reasoningRequested } : {})
           }
         });
       }
@@ -1898,17 +1896,6 @@ function mapForcedSubmitOptions(model: Model<Api>, options: SimpleStreamOptions 
   return mapped;
 }
 
-function googleThinkingLevel(reasoning: string): "LOW" | "MEDIUM" | "HIGH" {
-  switch (reasoning) {
-    case "minimal":
-    case "low":
-      return "LOW";
-    case "medium":
-      return "MEDIUM";
-    default:
-      return "HIGH";
-  }
-}
 
 function mapProviderToolChoice(model: Model<Api>, choice: unknown, forceSubmit = true): unknown {
   if (choice === "auto") {
@@ -1964,14 +1951,12 @@ type ProviderProtocolFields = {
   toolChoiceEffective: string;
   toolChoiceDowngraded: boolean;
   reasoningRequested?: string;
-  reasoningMechanism: string;
-  reasoningLevelEffective?: string;
 };
 
-// Describes the protocol the provider actually runs for this call (plan 86):
-// requested vs effective tool choice (the anthropic-messages forced-submit
-// downgrade becomes visible instead of silent) and the reasoning mechanism the
-// codegenie reasoning level maps onto for this API family.
+// Describes the protocol for this call (plan 86): requested vs effective tool
+// choice (the forced-submit downgrade becomes visible instead of silent) and
+// the reasoning level requested. Pi maps that level onto each provider's wire
+// fields; codegenie does not restate the mapping (#77).
 function describeProviderProtocol(
   model: PiModelRef,
   toolChoice: ToolChoiceMode,
@@ -1988,18 +1973,11 @@ function describeProviderProtocol(
       : mapped && typeof mapped === "object"
         ? `forced:${forcedToolChoiceName(mapped) ?? "tool"}`
         : requested;
-  const api = (raw as { api?: string }).api;
   return definedRecord({
     toolChoiceRequested: requested,
     toolChoiceEffective: effective,
     toolChoiceDowngraded: requested.startsWith("forced:") && effective === "auto",
-    reasoningRequested: reasoning,
-    reasoningMechanism: reasoning === undefined ? "none" : reasoningMechanismForApi(api),
-    reasoningLevelEffective: reasoning === undefined
-      ? undefined
-      : api === "google-generative-ai" || api === "google-vertex"
-        ? googleThinkingLevel(reasoning)
-        : reasoning
+    reasoningRequested: reasoning
   }) as ProviderProtocolFields;
 }
 
@@ -2012,24 +1990,6 @@ function forcedToolChoiceName(mapped: object): string | undefined {
   return typeof fn === "string" ? fn : undefined;
 }
 
-function reasoningMechanismForApi(api: string | undefined): string {
-  switch (api) {
-    case "anthropic-messages":
-      return "adaptive-effort";
-    case "google-generative-ai":
-    case "google-vertex":
-      return "thinking-level";
-    case "bedrock-converse-stream":
-    case "mistral-conversations":
-    case "openai-completions":
-    case "openai-responses":
-    case "azure-openai-responses":
-    case "openai-codex-responses":
-      return "reasoning-effort";
-    default:
-      return "unknown";
-  }
-}
 
 function withToolChoicePayload(
   existing: unknown,

@@ -1184,7 +1184,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.modelCalls[1]).toMatchObject({ kind: "finalize", status: "ok" });
   });
 
-  it("records the effective provider protocol on model calls and emits provider_protocol once", async () => {
+  it("records the effective provider protocol on model calls and emits provider_protocol once (#77)", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
       assistant([
@@ -1206,18 +1206,19 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       toolChoiceRequested: "forced:submit_review",
       toolChoiceEffective: "required",
       toolChoiceDowngraded: false,
-      reasoningRequested: "high",
-      reasoningMechanism: "unknown",
-      reasoningLevelEffective: "high"
+      reasoningRequested: "high"
     });
+    // #77: the wire mechanism is Pi's; codegenie no longer restates a guess of it.
+    expect(telemetry.modelCalls[0]).not.toHaveProperty("reasoningMechanism");
+    expect(telemetry.modelCalls[0]).not.toHaveProperty("reasoningLevelEffective");
     const protocolEvents = telemetry.events.filter((event) => event.message === "provider_protocol");
     expect(protocolEvents).toHaveLength(1);
     expect(protocolEvents[0]?.data).toMatchObject({
       api: "faux",
       forcedToolChoiceEffective: "required",
-      toolChoiceDowngraded: false,
-      reasoningMechanism: "unknown"
+      toolChoiceDowngraded: false
     });
+    expect(protocolEvents[0]?.data).not.toHaveProperty("reasoningMechanism");
     expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(0);
   });
 
@@ -1334,11 +1335,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.modelCalls[0]).toMatchObject({
       toolChoiceRequested: "forced:submit_review",
       toolChoiceEffective: "forced:submit_review",
-      toolChoiceDowngraded: false,
-      // The forced-submit call runs with thinking disabled, so no reasoning
-      // mechanism is in play for this call.
-      reasoningMechanism: "none"
+      toolChoiceDowngraded: false
     });
+    // The forced-submit call runs with thinking disabled: no reasoning is requested.
+    expect(telemetry.modelCalls[0]).not.toHaveProperty("reasoningRequested");
     expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(0);
     const protocolEvent = telemetry.events.find((event) => event.message === "provider_protocol");
     expect(protocolEvent?.data).toMatchObject({
@@ -1374,7 +1374,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       toolChoiceRequested: "forced:submit_review",
       toolChoiceEffective: "auto",
       toolChoiceDowngraded: true,
-      reasoningMechanism: "adaptive-effort"
+      reasoningRequested: "high"
     });
     const downgraded = telemetry.events.filter((event) => event.message === "tool_choice_downgraded");
     expect(downgraded).toHaveLength(1);
@@ -1410,7 +1410,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       toolChoiceRequested: "forced:submit_review",
       toolChoiceEffective: "auto",
       toolChoiceDowngraded: true,
-      reasoningMechanism: "adaptive-effort"
+      reasoningRequested: "high"
     });
     expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(1);
     expect(telemetry.events.find((event) => event.message === "provider_protocol")?.data).toMatchObject({
