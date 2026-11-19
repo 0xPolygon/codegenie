@@ -9961,6 +9961,66 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
+  it("keeps verified findings in the failure report when composition fails non-recoverably (#60)", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "export const value = 'changed';\n");
+    commitAll(repo, "feature");
+
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "run-composer-failed");
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        if (request.stage === 5) {
+          return {
+            diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
+            coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "test" }]
+          } as T;
+        }
+        if (request.stage === 7) {
+          return {
+            findings: [{
+              title: "Changed value breaks callers",
+              severity: "medium",
+              confidence: "medium",
+              path: "app.ts",
+              anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+              category: "correctness",
+              evidence: { changedCode: "+changed" },
+              failureMode: "bad",
+              whyThisMatters: "matters",
+              verification: "test"
+            }],
+            followUpHints: [],
+            uncertainties: []
+          } as T;
+        }
+        if (request.stage === 9) {
+          return { verdict: "keep", reason: "kept", requiredEvidencePresent: true, falsePositiveRisk: "low" } as T;
+        }
+        throw new CodegenieError("llm_call_failed", "composer exploded");
+      }
+    };
+
+    await expect(runReview(
+      { mode: "branch", branchName: "feature" },
+      { ...config(), telemetry: { ...defaultConfig.telemetry, enabled: true, runDir: path.dirname(runArtifactDir) } },
+      { repoRoot: repo, runArtifactDir, runner }
+    )).rejects.toMatchObject({ code: "llm_call_failed" });
+
+    const finalReview = JSON.parse(readFileSync(path.join(runArtifactDir, "final-review.json"), "utf8")) as {
+      findings: Array<{ title: string }>;
+      summaryOnlyFindings: Array<{ title: string }>;
+      composition?: { mode: string };
+      coverage: { partial: boolean };
+    };
+    expect([...finalReview.findings, ...finalReview.summaryOnlyFindings].map((finding) => finding.title)).toEqual(["Changed value breaks callers"]);
+    expect(finalReview.composition?.mode).toBe("deterministic_fallback");
+    expect(finalReview.coverage.partial).toBe(true);
+    expect(readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8")).toContain("Changed value breaks callers");
+  });
+
   it("validates attention paths against the reviewed tree rather than the checkout or untracked files", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");

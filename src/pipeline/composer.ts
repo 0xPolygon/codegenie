@@ -124,6 +124,7 @@ export async function dedupeRankAndComposeReview(
   let fallbackReason: string | undefined;
   let fallbackMode: CompositionMode | undefined;
   let compositionDegraded = false;
+  let compositionFailure: unknown;
   const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes, attentionReconciliation).catch((error) => {
     if (!canUseComposerFallback(error)) {
       telemetry.event({
@@ -132,7 +133,10 @@ export async function dedupeRankAndComposeReview(
         message: "stage_failed",
         data: composerFailureTelemetry(error, groups)
       });
-      throw error;
+      // The run still fails, but verified findings must not be dropped
+      // (architecture: Stage-10 invalidity uses deterministic composition).
+      // Build that report and hand it to the failure path below.
+      compositionFailure = error;
     }
     fallbackUsed = true;
     fallbackMode = isSchemaInvalidError(error) ? "schema_repair_fallback" : "deterministic_fallback";
@@ -395,8 +399,21 @@ export async function dedupeRankAndComposeReview(
       }
     }
   });
+  if (compositionFailure !== undefined) {
+    if (typeof compositionFailure === "object" && compositionFailure !== null) {
+      reviewsRetainedOnCompositionFailure.set(compositionFailure, result);
+    }
+    throw compositionFailure;
+  }
   telemetry.event({ stage: 10, level: "info", message: "stage_completed", data: { finalFindings: capped.findings.length, compositionMode } });
   return result;
+}
+
+const reviewsRetainedOnCompositionFailure = new WeakMap<object, ReviewResult>();
+
+/** The deterministic report built when composition failed with this error. */
+export function reviewRetainedOnCompositionFailure(error: unknown): ReviewResult | undefined {
+  return typeof error === "object" && error !== null ? reviewsRetainedOnCompositionFailure.get(error) : undefined;
 }
 
 async function runComposer(
