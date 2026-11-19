@@ -234,7 +234,7 @@ The `LlmRunner` interface and `LlmStructuredRequest<T>` type in `architecture.md
 
 #### Provider Protocol Matrix (plan 86)
 
-codegenie's normalized interface maps onto vendor dialects inside `pi-runner`'s per-API adaptation layer (`mapProviderToolChoice`, `mapReasoningOptions`). The mapping the provider actually runs is recorded per model call (`toolChoiceRequested/Effective/Downgraded`, `reasoningMechanism`, `reasoningLevelEffective` in `model-calls.jsonl`), summarized once per run (`provider_protocol` event), and warned on first downgrade (`tool_choice_downgraded`); downgrade counts aggregate into `model-calls-summary.json` (`toolChoiceDowngradedCalls`) and eval metrics.
+codegenie's normalized interface maps the submit tool choice onto vendor dialects inside `pi-runner` (`mapProviderToolChoice`); every call, forced or not, goes through Pi's simple path, so Pi maps the reasoning level onto each provider's wire fields (#74-#77). Each model call records the tool-choice protocol and the requested reasoning level (`toolChoiceRequested/Effective/Downgraded`, `reasoningRequested/Configured/Selected` in `model-calls.jsonl`), summarized once per run (`provider_protocol` event), and warned on first downgrade (`tool_choice_downgraded`); downgrade counts aggregate into `model-calls-summary.json` (`toolChoiceDowngradedCalls`) and eval metrics.
 
 | API family | Forced submit tool choice | Reasoning mechanism | Notes |
 | --- | --- | --- | --- |
@@ -247,7 +247,7 @@ codegenie's normalized interface maps onto vendor dialects inside `pi-runner`'s 
 
 Reasoning-token spend is not exposed by pi-ai usage today; `reasoningTokens` recording is deferred until it is.
 
-**Anthropic forced-submit protocol (plan 86 step 3, landed 2026-07-02):** forced `tool_choice` conflicts with extended thinking on the Anthropic API, which previously forced a silent downgrade to `auto` on every finalize/repair/no-tool call. Now those calls (the only calls that request forcing; investigation rounds keep thinking + auto) run with thinking explicitly disabled (`thinkingEnabled: false`) and a genuinely forced submit tool choice. Escape hatch: `llm.forceSubmitToolChoice = false` restores the downgrade, which then events `tool_choice_downgraded` — never silent. The once-per-run `provider_protocol` event records the flag; forced-submit calls record `reasoningMechanism: "none"` and cache keys carry `forced-submit-no-thinking`.
+**Anthropic forced-submit protocol (plan 86 step 3, landed 2026-07-02):** forced `tool_choice` conflicts with extended thinking on the Anthropic API, which previously forced a silent downgrade to `auto` on every finalize/repair/no-tool call. Now those calls (the only calls that request forcing; investigation rounds keep thinking + auto) run with thinking disabled (no reasoning is passed, so Pi's Anthropic simple adapter sends thinking disabled) and a genuinely forced submit tool choice. Escape hatch: `llm.forceSubmitToolChoice = false` restores the downgrade, which then events `tool_choice_downgraded` — never silent. The once-per-run `provider_protocol` event records the flag; forced-submit calls record no `reasoningRequested` and cache keys carry `forced-submit-no-thinking`.
 
 **Session-ID / cache-affinity semantics differ sharply per provider** (verified in pi-ai 0.80.3):
 
