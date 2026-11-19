@@ -24,7 +24,7 @@ Specs follow the spec skill (spec-driven development). The project spec is in `s
 
 1. The operator assigns tasks with acceptance criteria. Non-trivial changes get one design first, from an architect, written as a plan in `specs/plans/`; another architect or developer may challenge it. @pm records owner, criteria, branch or commit, verdict and next step on the issue.
 2. Developers agree on shared interfaces before parallel work, implement, run `pnpm check` and `pnpm test`, then ask @reviewer for a review with the task, criteria and exact commit. They fix findings until approved. After three rounds on one task, the operator decides how to go on.
-3. The operator reviews the result and integrates it through a pull request (see Pull requests).
+3. The operator reviews the result and integrates it through a pull request (see Pull requests). Once the pull request is ready, the operator squash-merges it.
 4. Each developer works in its own worktree, one ticket per branch. Parallel tickets are fine when their files do not collide; the operator sequences the ones that do.
 
 ## Review
@@ -41,6 +41,7 @@ Work reaches master only through a pull request on GitHub, repository 0xPolygon/
 Run from the checkout. Learn the commands with `gh pr --help`; check access with `gh auth status`.
 
 The team may push ticket branches and open or update pull requests.
+The team may squash-merge a pull request once it is ready: @reviewer approved its current head commit, every check passed, and no verified finding is open, including open questions from the codegenie review check.
 
 - Push/open/update: `git push -u origin <branch>`; `gh pr create --base master --head <branch>`; later pushes update the PR.
 - Wait for checks: `timeout 900 gh pr checks <branch> --watch --interval 60`. Fit the command limit to the harness; restart the watcher if it times out with checks pending.
