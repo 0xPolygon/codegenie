@@ -8322,6 +8322,20 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("discloses planner skips with their path and reason in the rendered coverage (#65)", () => {
+    const plan = { ...fakePlan(), coverage: [{ hunkId: "h1", path: "app.ts", coverage: "skip" as const, lenses: [], surroundingContextHints: [], reason: "generated client code" }] };
+    const coverage = aggregateRunCoverage(
+      plan,
+      [],
+      [],
+      { verdicts: [], incompleteCount: 0 },
+      nullTelemetry(),
+      { allFiles: fakeDiff().files, packets: [] }
+    );
+    expect(coverage.reasons).toContain("app.ts: generated client code");
+    expect(renderCoverageSummaryLines(coverage)).toContain("- app.ts: generated client code");
+  });
+
   it("discloses when verification is disabled in coverage", async () => {
     const packet = fakePacket();
     const verifyDisabled = await verifyFindings(

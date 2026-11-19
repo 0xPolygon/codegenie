@@ -1041,7 +1041,12 @@ export function aggregateRunCoverage(
   if (plan.partialReview?.isPartial === true && plan.partialReview.reason.trim().length > 0) {
     reasons.push(plan.partialReview.reason.trim());
   }
-  for (const decision of decisions.filter((decision) => decision.action === "skip").slice(0, 10)) {
+  // Configuration and planner skips are disclosed alike: path and reason.
+  const skipped = [
+    ...decisions.filter((decision) => decision.action === "skip"),
+    ...plan.coverage.filter((decision) => decision.coverage === "skip")
+  ];
+  for (const decision of skipped.slice(0, 10)) {
     reasons.push(`${decision.path}: ${decision.reason}`);
   }
 
