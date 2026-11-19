@@ -1,6 +1,7 @@
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { withRepositoryToolCallContext } from "../repo/repository-index.js";
 import { buildTestCoverageDelta } from "../repo/test-coverage-delta.js";
+import { coverageEscalationReason } from "./coverage-escalation.js";
 import type {
   CodegenieConfig,
   CoverageLevel,
@@ -293,7 +294,8 @@ async function buildPacket(
     0
   );
   const kind = packetKind(group, planned, first.file);
-  const coverage = maxCoverage(decisions.map((decision) => decision.coverage));
+  const packetId = sha256Hex(`${first.file.path}\n${[...hunkIds].sort().join("\n")}\n${kind}`);
+  const plannedCoverage = maxCoverage(decisions.map((decision) => decision.coverage));
   const reviewPriority = maxReviewPriority(planned.map((entry) => entry.facts.reviewPriority));
   const symbolFacts = planned.flatMap((entry) => entry.symbolFacts);
   const packetHunks = planned.map((entry, index) =>
@@ -301,6 +303,20 @@ async function buildPacket(
   );
   const patchChars = packetHunks.reduce((sum, hunk) => sum + hunk.contentWithLineNumbers.length, 0);
   const testCoverageDelta = buildTestCoverageDelta(first.file, planned.map((entry) => entry.hunk), first.facts, symbolFacts);
+  // Decide the coverage floor (plan 92 E1) before context, profile, lenses and
+  // tool budget, so an escalated packet is built as the deep packet it is.
+  const escalationReason = plannedCoverage === "deep" ? undefined : coverageEscalationReason(testCoverageDelta);
+  const coverage = escalationReason === undefined ? plannedCoverage : "deep";
+  if (escalationReason !== undefined) {
+    telemetry.event({
+      stage: 6,
+      level: "info",
+      message: "coverage_escalated",
+      packetId,
+      file: first.file.path,
+      data: { rule: "test_coverage_delta", from: plannedCoverage, reason: escalationReason }
+    });
+  }
   const relatedChangedContext = await buildRelatedChangedContext(planned, relationshipGraph, repoIndex, telemetry);
   const plannerAttentionNotes = attentionNotesForDecisions(decisions);
   const attentionNoteSelection = mergeAttentionNotes(plannerAttentionNotes, relatedChangedContext);
@@ -396,7 +412,7 @@ async function buildPacket(
     telemetry
   });
   const packet: ReviewPacket = {
-    id: sha256Hex(`${first.file.path}\n${[...hunkIds].sort().join("\n")}\n${kind}`),
+    id: packetId,
     dispatchRank: packetDispatchRank(first.file.path, first.facts, packetChangedLines),
     kind,
     prSummary: (reviewContext?.prSummary ?? "Review local diff.").slice(0, 500),
@@ -407,6 +423,7 @@ async function buildPacket(
     language: first.facts.language,
     reviewPriority,
     coverage,
+    ...(escalationReason !== undefined ? { coverageEscalation: { rule: "test_coverage_delta" as const, reason: escalationReason } } : {}),
     reviewProfile,
     lenses,
     hunks: packetHunks,

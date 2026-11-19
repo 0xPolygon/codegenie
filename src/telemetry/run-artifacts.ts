@@ -617,6 +617,8 @@ class RunTelemetryImpl {
 
   private recordEvent(event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">): void {
     if (!this.config.enabled) {
+      // Stage timings feed the report's stats even when telemetry is off.
+      this.recordStageTiming(String(event.stage), event.message, this.clock().toISOString());
       return;
     }
 
@@ -1113,13 +1115,23 @@ class RunTelemetryImpl {
     if (event.cacheStatus !== undefined) {
       bucket.cache[event.cacheStatus] += 1;
     }
-    if (event.message === "stage_started" && bucket.startedAt === undefined) {
-      bucket.startedAt = event.timestamp;
+    this.recordStageTiming(stage, event.message, event.timestamp);
+  }
+
+  private recordStageTiming(stage: string, message: string, timestamp: string): void {
+    if (message !== "stage_started" && message !== "stage_completed" && message !== "stage_failed") {
+      return;
     }
-    if ((event.message === "stage_completed" || event.message === "stage_failed") && bucket.completedAt === undefined) {
-      bucket.completedAt = event.timestamp;
+    const bucket =
+      this.telemetrySummary.byStage[stage] ??
+      (this.telemetrySummary.byStage[stage] = emptyTelemetryStageSummary());
+    if (message === "stage_started" && bucket.startedAt === undefined) {
+      bucket.startedAt = timestamp;
+    }
+    if ((message === "stage_completed" || message === "stage_failed") && bucket.completedAt === undefined) {
+      bucket.completedAt = timestamp;
       if (bucket.startedAt !== undefined) {
-        bucket.runtimeMs += durationBetween(bucket.startedAt, event.timestamp);
+        bucket.runtimeMs += durationBetween(bucket.startedAt, timestamp);
       }
     }
   }

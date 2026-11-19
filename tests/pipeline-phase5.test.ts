@@ -16,7 +16,8 @@ import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
 import { runLensPackets } from "../src/pipeline/lens-runner.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
-import { dedupeRankAndComposeReview } from "../src/pipeline/composer.js";
+import { coverageEscalationReason } from "../src/pipeline/coverage-escalation.js";
+import { dedupeRankAndComposeReview, refreshReviewHealth, reviewRetainedOnCompositionFailure } from "../src/pipeline/composer.js";
 import { applySeverityPolicy, capSeverityForBehaviorChange, guaranteeSeverity, hasCriticalOrHighGuarantee } from "../src/pipeline/severity-policy.js";
 import { aggregateRunCoverage, BudgetLedger, runReview } from "../src/pipeline/review-runner.js";
 import { verifyFindings } from "../src/pipeline/verifier.js";
@@ -5434,7 +5435,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("applies bounded safety coverage when recovered planner output omits source hunks", async () => {
+  it("applies bounded safety coverage when recovered planner output omits source hunks (#84)", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const baseDossier = fakeDossier(["a.ts", "b.ts", "c.ts", "README.md"]);
     const dossier: PlannerDossier = {
@@ -5525,8 +5526,7 @@ describe("phase 5 pipeline regressions", () => {
       reviewableSourceHunks: 3,
       explicitSourceCoverageEntries: 0,
       safetyCoverageApplied: {
-        upgradedHunks: 3,
-        upgradedPackets: 3
+        upgradedHunks: 3
       }
     });
     expect(events).toContainEqual(expect.objectContaining({
@@ -5538,6 +5538,9 @@ describe("phase 5 pipeline regressions", () => {
       message: "planner_degraded_safety_coverage_applied",
       data: expect.objectContaining({ upgradedHunks: 3, reviewableSourceHunks: 3 })
     }));
+    // #84: no packets exist at planning time, so no packet count is claimed.
+    expect(result.plan.plannerRecovery?.safetyCoverageApplied).not.toHaveProperty("upgradedPackets");
+    expect(events.find((event) => event.message === "planner_degraded_safety_coverage_applied")?.data).not.toHaveProperty("upgradedPackets");
   });
 
   it("does not recover planner submits that are missing required roots", async () => {
@@ -6346,6 +6349,53 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
+  it("degrades a planner chunk whose submission overflows the recovery inventory (#80)", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
+      }
+    };
+    const promptBuilder = {
+      ...fakePromptBuilder(),
+      renderDossier: (dossier: PlannerDossier) => dossier.compaction.level === "chunked" ? "fits" : "x".repeat(MAX_DOSSIER_PROMPT_CHARS + 1),
+      buildPlannerPrompt: ({ dossier }: { dossier: PlannerDossier }) => ({
+        prompt: JSON.stringify(dossier),
+        templateVersion: "test",
+        untrustedBlockCount: 0
+      })
+    };
+
+    const result = await runPlanner(fakeDossier(["pkg-a/a.ts", "pkg-b/b.ts"]), config(), { ...nullTelemetry(), event: (event) => events.push(event) }, {
+      runner,
+      promptBuilder,
+      lenses: [],
+      skills: []
+    });
+
+    expect(result.chunked).toBe(true);
+    expect(result.degradedPlanning).toBe(true);
+    expect(result.plan.coverage.map((decision) => decision.hunkId).sort()).toEqual(["h1", "h2"]);
+    expect(events.filter((event) => event.message === "planner chunk fallback used").length).toBeGreaterThan(0);
+    expect(events).toContainEqual(expect.objectContaining({ stage: 5, message: "stage_completed", data: expect.objectContaining({ degraded: true, chunked: true }) }));
+  });
+
+  it("closes stage 5 when an oversized dossier yields no planner chunks", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const promptBuilder = {
+      ...fakePromptBuilder(),
+      renderDossier: () => "x".repeat(MAX_DOSSIER_PROMPT_CHARS + 1)
+    };
+    const result = await runPlanner({ ...fakeDossier(["app.ts"]), files: [] }, config(), { ...nullTelemetry(), event: (event) => events.push(event) }, {
+      runner: { runStructured: async () => { throw new Error("planner must not be called"); } },
+      promptBuilder,
+      lenses: [],
+      skills: []
+    });
+    expect(result.degradedPlanning).toBe(true);
+    expect(events).toContainEqual(expect.objectContaining({ stage: 5, message: "stage_completed", data: expect.objectContaining({ degraded: true, chunks: 0 }) }));
+  });
+
   it("chunk fallback covers full hunks when compacted chunks omit hunk detail", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {
@@ -6852,6 +6902,51 @@ describe("phase 5 pipeline regressions", () => {
       message: "planner_coverage_lost",
       data: expect.objectContaining({ submittedEntries: 1, acceptedEntries: 0, rejectedUnknownHunk: 1 })
     }));
+  });
+
+  it("keeps a planner skip reason when the skip has empty lenses (#71)", async () => {
+    const dossier = fakeDossier(["generated.ts"]);
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        diffUnderstanding: { declaredIntent: "regenerate", inferredBehavior: "regenerate" },
+        coverage: [{ hunkId: "h1", path: "generated.ts", coverage: "skip", lenses: [], surroundingContextHints: [], reason: "generated client code" }]
+      }) as T
+    };
+    const result = await runPlanner(dossier, config(), nullTelemetry(), {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{ id: "core/code-review", title: "core", description: "core", skillIds: [], enabledByDefault: true, enabled: true, languages: [] }],
+      skills: []
+    });
+    expect(result.plan.coverage).toEqual([
+      expect.objectContaining({ hunkId: "h1", coverage: "skip", reason: "generated client code" })
+    ]);
+  });
+
+  it("records a verifier recovery-inventory overflow as an incomplete verdict, not a run failure (#80)", async () => {
+    const overflow = new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
+    const result = await verifyFindings(
+      { packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }], packets: [fakePacket()] },
+      fakeTools(), config(), nullTelemetry(),
+      { runner: { runStructured: async () => { throw overflow; } }, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+    expect(result.verified).toEqual([]);
+    expect(result.incompleteCount).toBe(1);
+  });
+
+  it("degrades to the default plan when the planner submission overflows the recovery inventory (#80)", async () => {
+    const overflow = new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), { ...nullTelemetry(), event: (event) => events.push(event) }, {
+      runner: { runStructured: async () => { throw overflow; } },
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{ id: "core/code-review", title: "core", description: "core", skillIds: [], enabledByDefault: true, enabled: true, languages: [] }],
+      skills: []
+    });
+    expect(result.degradedPlanning).toBe(true);
+    expect(result.plan.coverage.length).toBeGreaterThan(0);
+    // Stage 5 closes its lifecycle on the fallback path too.
+    expect(events).toContainEqual(expect.objectContaining({ stage: 5, message: "stage_completed", data: expect.objectContaining({ degraded: true }) }));
   });
 
   it("removes wrong-language planner lenses and restores exact deterministic defaults", async () => {
@@ -7375,6 +7470,56 @@ describe("phase 5 pipeline regressions", () => {
         confidence: "medium"
       })
     ]);
+  });
+
+  it.each(["light", "normal"] as const)("builds an escalated %s packet with the deep profile, lenses and tool budget (#59)", async (plannedCoverage) => {
+    const file = genericTestRewriteFile();
+    const facts = { ...fakeFacts(file.path, "per-hunk"), testStatus: "test" as const };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packets = await buildReviewPackets(
+      {
+        ...fakePlan(file.path),
+        coverage: [{ hunkId: "h1", path: file.path, coverage: plannedCoverage, lenses: ["core/tests"], surroundingContextHints: [], reason: "test rewrite" }]
+      },
+      [file],
+      [facts],
+      fakeRepositoryIndex(),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      { config: config(), enabledLenses: ["core/tests"] }
+    );
+
+    const packet = packets[0] as ReviewPacket;
+    expect(packet).toMatchObject({ coverage: "deep", reviewProfile: "investigate", coverageEscalation: { rule: "test_coverage_delta" } });
+    expect(packet.toolBudget).toEqual(toolBudget("deep", config().review.depth, "investigate"));
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "coverage_escalated",
+      packetId: packet.id,
+      data: expect.objectContaining({ from: plannedCoverage })
+    }));
+  });
+
+  it("does not escalate a planned-deep packet whose deleted tests leave surviving references (#59)", async () => {
+    const file = genericTestRewriteFile();
+    const facts = { ...fakeFacts(file.path, "per-hunk"), testStatus: "test" as const };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packets = await buildReviewPackets(
+      {
+        ...fakePlan(file.path),
+        coverage: [{ hunkId: "h1", path: file.path, coverage: "deep", lenses: ["core/tests"], surroundingContextHints: [], reason: "test rewrite" }]
+      },
+      [file],
+      [facts],
+      fakeRepositoryIndex(),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      { config: config(), enabledLenses: ["core/tests"] }
+    );
+
+    const packet = packets[0] as ReviewPacket;
+    // The delta would qualify for the deep floor, but the packet is already deep.
+    expect(coverageEscalationReason(packet.testCoverageDelta)).toBeDefined();
+    expect(packet.coverage).toBe("deep");
+    expect(packet.coverageEscalation).toBeUndefined();
+    expect(events.some((event) => event.message === "coverage_escalated")).toBe(false);
   });
 
   it("threads test coverage delta and boundary rewrite signals into packets and prompts", async () => {
@@ -8303,6 +8448,28 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("discloses planner skips with their path and reason in the rendered coverage (#65)", () => {
+    const plan = { ...fakePlan(), coverage: [{ hunkId: "h1", path: "app.ts", coverage: "skip" as const, lenses: [], surroundingContextHints: [], reason: "generated client code" }] };
+    const coverage = aggregateRunCoverage(
+      plan,
+      [],
+      [],
+      { verdicts: [], incompleteCount: 0 },
+      nullTelemetry(),
+      { allFiles: fakeDiff().files, packets: [] }
+    );
+    expect(coverage.reasons).toContain("app.ts: generated client code");
+    expect(renderCoverageSummaryLines(coverage)).toContain("- app.ts: generated client code");
+  });
+
+  it("deduplicates repeated skip path/reason pairs before the disclosure limit (#65)", () => {
+    const repeated = Array.from({ length: 10 }, (_, index) => ({ hunkId: `r${index}`, path: "gen.ts", coverage: "skip" as const, lenses: [], surroundingContextHints: [], reason: "generated client code" }));
+    const plan = { ...fakePlan(), coverage: [...repeated, { hunkId: "h-last", path: "vendor.ts", coverage: "skip" as const, lenses: [], surroundingContextHints: [], reason: "vendored dependency" }] };
+    const coverage = aggregateRunCoverage(plan, [], [], { verdicts: [], incompleteCount: 0 }, nullTelemetry(), { allFiles: fakeDiff().files, packets: [] });
+    expect(coverage.reasons).toContain("gen.ts: generated client code");
+    expect(coverage.reasons).toContain("vendor.ts: vendored dependency");
+  });
+
   it("discloses when verification is disabled in coverage", async () => {
     const packet = fakePacket();
     const verifyDisabled = await verifyFindings(
@@ -9086,6 +9253,80 @@ describe("phase 5 pipeline regressions", () => {
     expect(events).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ message: "verification_primary_submit_accepted" })
     ]));
+  });
+
+  it("does not classify a revise carrying findingUpdates as an empty revise (#82)", async () => {
+    let repairPrompt = "";
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
+          stage: 9,
+          submitTool: "submit_verdict",
+          error: "schema-invalid arguments: falsePositiveRisk must be low, medium or high",
+          submitCalls: [{
+            id: "submit-verdict-updates-revise",
+            arguments: {
+              verdict: "revise",
+              reason: "The issue is real; the title overstates it.",
+              requiredEvidencePresent: true,
+              falsePositiveRisk: "unknown",
+              findingUpdates: { title: "Narrowed title" }
+            }
+          }],
+          extraToolNames: []
+        }) ?? "";
+        return { verdict: "keep", reason: "Confirmed.", requiredEvidencePresent: true, falsePositiveRisk: "low" } as T;
+      }
+    };
+
+    await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff(), checkpoint: () => "ok" }
+    );
+
+    expect(repairPrompt).toContain("- class:");
+    expect(repairPrompt).not.toContain("- class: revise_without_revision_payload");
+  });
+
+  it.each([
+    { name: "an empty object", findingUpdates: {} },
+    { name: "an empty array", findingUpdates: [] }
+  ])("classifies a revise whose findingUpdates is $name as an empty revise (#82)", async ({ findingUpdates }) => {
+    let repairPrompt = "";
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
+          stage: 9,
+          submitTool: "submit_verdict",
+          error: "schema-invalid arguments: findingUpdates must have at least 1 property",
+          submitCalls: [{
+            id: "submit-verdict-empty-updates",
+            arguments: { verdict: "revise", reason: "The issue is real.", requiredEvidencePresent: true, falsePositiveRisk: "low", findingUpdates }
+          }],
+          extraToolNames: []
+        }) ?? "";
+        return { verdict: "keep", reason: "Confirmed.", requiredEvidencePresent: true, falsePositiveRisk: "low" } as T;
+      }
+    };
+
+    await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff(), checkpoint: () => "ok" }
+    );
+
+    expect(repairPrompt).toContain("- class: revise_without_revision_payload");
   });
 
   it("repairs an empty revise with a required structured payload", async () => {
@@ -9959,6 +10200,129 @@ describe("phase 5 pipeline regressions", () => {
       compositionMode: "deterministic_fallback",
       fallbackReason: "semantic composition skipped; deterministic fallback used"
     });
+  });
+
+  it("keeps verified findings in the failure report when composition fails non-recoverably (#60)", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "export const value = 'changed';\n");
+    commitAll(repo, "feature");
+
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "run-composer-failed");
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        if (request.stage === 5) {
+          return {
+            diffUnderstanding: { declaredIntent: "test intent", inferredBehavior: "test behavior" },
+            coverage: [{ hunkId: "h1", path: "app.ts", coverage: "normal", lenses: ["core/code-review"], surroundingContextHints: [], reason: "test" }]
+          } as T;
+        }
+        if (request.stage === 7) {
+          return {
+            findings: [{
+              title: "Changed value breaks callers",
+              severity: "medium",
+              confidence: "medium",
+              path: "app.ts",
+              anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+              category: "correctness",
+              evidence: { changedCode: "+changed" },
+              failureMode: "bad",
+              whyThisMatters: "matters",
+              verification: "test"
+            }],
+            followUpHints: [],
+            uncertainties: []
+          } as T;
+        }
+        if (request.stage === 9) {
+          return { verdict: "keep", reason: "kept", requiredEvidencePresent: true, falsePositiveRisk: "low" } as T;
+        }
+        throw new CodegenieError("llm_call_failed", "composer exploded");
+      }
+    };
+
+    await expect(runReview(
+      { mode: "branch", branchName: "feature" },
+      { ...config(), telemetry: { ...defaultConfig.telemetry, enabled: true, runDir: path.dirname(runArtifactDir) } },
+      { repoRoot: repo, runArtifactDir, runner }
+    )).rejects.toMatchObject({ code: "llm_call_failed" });
+
+    const finalReview = JSON.parse(readFileSync(path.join(runArtifactDir, "final-review.json"), "utf8")) as {
+      findings: Array<{ title: string }>;
+      summaryOnlyFindings: Array<{ title: string }>;
+      composition?: { mode: string };
+      coverage: { partial: boolean };
+    };
+    expect([...finalReview.findings, ...finalReview.summaryOnlyFindings].map((finding) => finding.title)).toEqual(["Changed value breaks callers"]);
+    expect(finalReview.composition?.mode).toBe("deterministic_fallback");
+    expect(finalReview.coverage.partial).toBe(true);
+    expect(readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8")).toContain("Changed value breaks callers");
+  });
+
+  it.each([
+    { name: "undefined", reason: undefined },
+    { name: "a string", reason: "composer exploded" },
+    { name: "null", reason: null }
+  ])("fails and retains the deterministic review when the composer rejects with $name (#60)", async ({ reason }) => {
+    const finding = fakeFinding();
+    const failure = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      { runner: { runStructured: () => Promise.reject(reason) }, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    ).then(() => undefined, (error: unknown) => ({ error }));
+
+    expect(failure).toBeDefined();
+    const retained = reviewRetainedOnCompositionFailure(failure!.error);
+    expect([...(retained?.findings ?? []), ...(retained?.summaryOnlyFindings ?? [])].map((item) => item.id)).toEqual([finding.id]);
+  });
+
+  it("keeps the retained review when an artifact write fails after a non-recoverable composer error (#60)", async () => {
+    const finding = fakeFinding();
+    const writeFailure = new Error("disk full");
+    const failure = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      { ...nullTelemetry(), writeArtifact: async (name: string) => { if (name === "final-findings.json") throw writeFailure; } },
+      { runner: { runStructured: () => Promise.reject(new CodegenieError("llm_call_failed", "composer exploded")) }, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    ).then(() => undefined, (error: unknown) => ({ error }));
+
+    // The write failure is what gets reported, and it still carries the review.
+    expect(failure?.error).toBe(writeFailure);
+    const retained = reviewRetainedOnCompositionFailure(failure!.error);
+    expect([...(retained?.findings ?? []), ...(retained?.summaryOnlyFindings ?? [])].map((item) => item.id)).toEqual([finding.id]);
+  });
+
+  it("keeps the report-synthesis-failed banner in the posted review body after a health refresh (#61)", async () => {
+    const finding = fakeFinding();
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: { runStructured: async () => { throw composerTransientError(); } },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff(),
+        postGithubComments: true
+      }
+    );
+    expect(result.postingPlan?.reviewBody).toContain("Report synthesis failed");
+
+    refreshReviewHealth(result);
+
+    expect(result.postingPlan?.reviewBody).toContain("Report synthesis failed");
   });
 
   it("validates attention paths against the reviewed tree rather than the checkout or untracked files", async () => {
@@ -12748,6 +13112,44 @@ describe("phase 5 pipeline regressions", () => {
     expect(artifacts.get("final-selection.json")).toMatchObject({
       records: [expect.objectContaining({ findingId: finding.id, decision: "published", reason: "low-confidence-anchorless" })]
     });
+  });
+
+it("does not treat a verify=false synthetic keep as verified for the low-confidence exception (#62)", async () => {
+    const finding = lowConfidenceDeltaFinding("unverified-low");
+    const packet = fakePacket();
+    const verification = await verifyFindings(
+      {
+        packetResults: [{ packetId: packet.id, lenses: ["core/code-review"], findings: [finding], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [packet]
+      },
+      fakeTools(),
+      { ...config(), review: { ...config().review, verify: false } },
+      nullTelemetry(),
+      { runner: { runStructured: async <T>() => ({}) as T }, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+    expect(verification.verified.map((candidate) => candidate.id)).toEqual(["unverified-low"]);
+
+    const result = await dedupeRankAndComposeReview(
+      verification,
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            summary: "Found 1 issue.",
+            composedFindings: [{ findingIds: ["unverified-low"], finalBody: "The changed conversion can fail.", publication: "inline" }]
+          }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.findings).toEqual([]);
+    expect(result.summaryOnlyFindings).toEqual([]);
   });
 
   it("requires complete evidence-backed non-high-risk keep or revise verdicts for the low-confidence hatch", async () => {

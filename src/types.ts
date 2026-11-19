@@ -622,7 +622,6 @@ export type PlannerRecoveryTelemetry = {
   explicitSourceCoverageEntries: number;
   safetyCoverageApplied?: {
     upgradedHunks: number;
-    upgradedPackets: number;
     reason: string;
   };
 };

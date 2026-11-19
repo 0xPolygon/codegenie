@@ -1,13 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { applyCoverageEscalations } from "../src/pipeline/coverage-escalation.js";
+import { applyCoverageEscalations, coverageEscalationReason } from "../src/pipeline/coverage-escalation.js";
 import { isAdaptiveNearMissSignal } from "../src/pipeline/uncertainty-promotion.js";
-import { defaultConfig } from "../src/config/schema.js";
-import type { CodegenieConfig, ReviewPacket, ReviewPlan, TelemetryEvent } from "../src/types.js";
+import type { ReviewPacket, ReviewPlan, TelemetryEvent } from "../src/types.js";
 import { nullTelemetry } from "./helpers/git.js";
-
-function config(): CodegenieConfig {
-  return structuredClone(defaultConfig) as CodegenieConfig;
-}
 
 function packet(id: string, overrides: Record<string, unknown> = {}): ReviewPacket {
   return {
@@ -50,7 +45,26 @@ const plan: ReviewPlan = {
 };
 
 describe("plan 92 layer 2: coverage escalators", () => {
-  it("escalates packets with orphaned test-coverage deltas to deep (E1)", () => {
+  const orphanedDelta = {
+    deletedTestSymbols: [{ name: "TestErc20BalanceBoundary", side: "LEFT", kind: "test", source: "diff" }],
+    addedTestSymbols: [],
+    deletedHelperSymbols: [],
+    addedHelperSymbols: [],
+    deletedImports: [],
+    addedImports: [],
+    deletedProductionRefs: ["erc20BalanceAt"],
+    addedProductionRefs: [],
+    boundaryIndicators: [],
+    summary: "deleted boundary test"
+  } as unknown as NonNullable<ReviewPacket["testCoverageDelta"]>;
+
+  it("flags orphaned test-coverage deltas for the deep floor (E1)", () => {
+    expect(coverageEscalationReason(orphanedDelta)).toContain("TestErc20BalanceBoundary");
+    expect(coverageEscalationReason({ ...orphanedDelta, deletedProductionRefs: [] })).toBeUndefined();
+    expect(coverageEscalationReason(undefined)).toBeUndefined();
+  });
+
+  it("summarizes packets escalated during packet building without changing them", () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const telemetry = {
       ...nullTelemetry(),
@@ -58,59 +72,21 @@ describe("plan 92 layer 2: coverage escalators", () => {
         events.push(event);
       }
     };
-    const target = packet("packet-orphaned", {
-      testCoverageDelta: {
-        deletedTestSymbols: [{ name: "TestErc20BalanceBoundary", side: "LEFT", kind: "test", source: "diff" }],
-        addedTestSymbols: [],
-        deletedHelperSymbols: [],
-        addedHelperSymbols: [],
-        deletedImports: [],
-        addedImports: [],
-        deletedProductionRefs: ["erc20BalanceAt"],
-        addedProductionRefs: [],
-        boundaryIndicators: [],
-        summary: "deleted boundary test"
-      }
-    });
-    const untouched = packet("packet-plain");
+    const escalated = packet("packet-orphaned", { coverage: "deep", coverageEscalation: { rule: "test_coverage_delta", reason: "deleted tests" } });
+    const plain = packet("packet-plain");
 
-    const [escalated, plain] = applyCoverageEscalations([target, untouched], plan, config(), telemetry);
+    // Snapshot before the call: comparing against the same references would
+    // also pass if the packets were mutated in place.
+    const before = structuredClone([escalated, plain]);
 
-    expect(escalated).toMatchObject({
-      coverage: "deep",
-      coverageEscalation: { rule: "test_coverage_delta" }
-    });
-    // Deep coverage brings the deep tool budget with it.
-    expect(escalated?.toolBudget.maxToolCalls).toBeGreaterThan(0);
-    expect(plain?.coverage).toBe("normal");
-    expect(plain?.coverageEscalation).toBeUndefined();
+    const results = applyCoverageEscalations([escalated, plain], plan, telemetry);
+
+    expect(results).toEqual(before);
+    expect([escalated, plain]).toEqual(before);
     expect(events).toContainEqual(expect.objectContaining({
-      message: "coverage_escalated",
-      packetId: "packet-orphaned",
-      data: expect.objectContaining({ rule: "test_coverage_delta", from: "normal" })
+      message: "coverage_escalations",
+      data: { escalated: 1, rule: "test_coverage_delta" }
     }));
-  });
-
-  it("leaves already-deep packets and deltas without surviving refs alone", () => {
-    const alreadyDeep = packet("packet-deep", { coverage: "deep" });
-    const noSurvivors = packet("packet-clean-delta", {
-      testCoverageDelta: {
-        deletedTestSymbols: [{ name: "TestOld", side: "LEFT", kind: "test", source: "diff" }],
-        addedTestSymbols: [],
-        deletedHelperSymbols: [],
-        addedHelperSymbols: [],
-        deletedImports: [],
-        addedImports: [],
-        deletedProductionRefs: [],
-        addedProductionRefs: [],
-        boundaryIndicators: [],
-        summary: "test replaced cleanly"
-      }
-    });
-    const results = applyCoverageEscalations([alreadyDeep, noSurvivors], plan, config(), nullTelemetry());
-    expect(results[0]?.coverageEscalation).toBeUndefined();
-    expect(results[1]?.coverage).toBe("normal");
-    expect(results[1]?.coverageEscalation).toBeUndefined();
   });
 });
 

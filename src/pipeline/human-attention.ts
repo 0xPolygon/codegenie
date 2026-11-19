@@ -290,6 +290,7 @@ export function selectHumanAttentionForOutput(
         remainingGroups: availableAfterFindings.length
       }
     });
+  }
   const adjudicatedSuppressed = verificationSuppression.suppressed.filter((record) => record.reason.startsWith("adjudicated by stage 9 reject"));
   if (adjudicatedSuppressed.length > 0) {
     telemetry?.event({
@@ -298,7 +299,6 @@ export function selectHumanAttentionForOutput(
       message: "human_attention_hints_suppressed_by_adjudicated_reject",
       data: { suppressed: adjudicatedSuppressed.length, candidateIds: adjudicatedSuppressed.map((record) => record.candidateId) }
     });
-  }
   }
   if (verificationSuppression.suppressed.length > 0) {
     telemetry?.event({
@@ -971,8 +971,7 @@ function verdictIsAdjudicatedPromotionReject(
 
 function verdictResolvesPredicate(verdict: VerificationVerdict): boolean {
   return verdict.verificationIncomplete !== true &&
-    verdict.requiredEvidencePresent === true &&
-    !/^verification disabled by config$/iu.test(verdict.reason.trim());
+    verdict.requiredEvidencePresent === true;
 }
 
 function candidateFiles(candidate: CandidateFinding, packetsById: Map<string, ReviewPacket>): string[] {

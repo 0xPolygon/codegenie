@@ -124,6 +124,9 @@ export async function dedupeRankAndComposeReview(
   let fallbackReason: string | undefined;
   let fallbackMode: CompositionMode | undefined;
   let compositionDegraded = false;
+  // Promises may reject with any value (even undefined), so presence is a flag.
+  let compositionFailed = false;
+  let compositionFailure: unknown;
   const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes, attentionReconciliation).catch((error) => {
     if (!canUseComposerFallback(error)) {
       telemetry.event({
@@ -132,7 +135,11 @@ export async function dedupeRankAndComposeReview(
         message: "stage_failed",
         data: composerFailureTelemetry(error, groups)
       });
-      throw error;
+      // The run still fails, but verified findings must not be dropped
+      // (architecture: Stage-10 invalidity uses deterministic composition).
+      // Build that report and hand it to the failure path below.
+      compositionFailed = true;
+      compositionFailure = error;
     }
     fallbackUsed = true;
     fallbackMode = isSchemaInvalidError(error) ? "schema_repair_fallback" : "deterministic_fallback";
@@ -341,62 +348,87 @@ export async function dedupeRankAndComposeReview(
       : {})
   };
 
-  await telemetry.writeArtifact("composition-sources.json", scrubGitHubSecrets({
-    schemaVersion: 1,
-    mode: compositionMode,
-    semanticPreservation: "not_machine_proven",
-    sourceComponents: compositionSources(pretrim.kept),
-    proposals: composition.composedFindings,
-    dispositions: selection,
-    presentationMeasurements
-  }));
-  await telemetry.writeArtifact("final-selection.json", {
-    composition: {
+  // From here on a failure must not lose the finished review: any error,
+  // including an artifact write failing after a composition failure, carries
+  // it to the runner's failure path (reviewRetainedOnCompositionFailure).
+  const retainReviewOn = (error: unknown): unknown => {
+    // A primitive rejection reason cannot key the handoff, so it is wrapped.
+    const thrown = typeof error === "object" && error !== null
+      ? error
+      : new Error(`composition failed: ${String(error)}`, { cause: error });
+    reviewsRetainedOnCompositionFailure.set(thrown, result);
+    return thrown;
+  };
+  try {
+    await telemetry.writeArtifact("composition-sources.json", scrubGitHubSecrets({
+      schemaVersion: 1,
       mode: compositionMode,
-      ...(fallbackReason !== undefined ? { fallbackReason } : {})
-    },
-    records: selection,
-    publicationAnchors: publicationAnchorSelectionRecords(capped.findings, publicationAnchorDecisions),
-    confidenceSelections: [...confidenceSelections.entries()]
-      .map(([findingId, selection]) => ({ findingId, ...selection }))
-      .sort((left, right) => left.findingId.localeCompare(right.findingId)),
-    groups: groups.map((group) => ({
-      fingerprint: group.fingerprint,
-      findingIds: group.findings.map((finding) => finding.id)
-    }))
-  });
-  await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets(
-    { ...humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups, regroupedAttention),
-      // These records deliberately share original scope/evidence objects.
-      // Serialize to a tree before the scrubber's repeated-object protection
-      // so shared provenance is not mistaken for circular data and redacted.
-      reconciliation: JSON.parse(JSON.stringify({ ...attentionReconciliation, ...reconciledAttention })) }
-  ));
-  await telemetry.writeArtifact("final-findings.json", scrubGitHubSecrets(capped.findings));
-  telemetry.event({
-    stage: 10,
-    level: "info",
-    message: "pipeline_metrics",
-    data: {
-      totals: { finalFindings: capped.findings.length },
-      dedup: {
-        clusters: groups.length,
-        duplicates: groups.reduce((sum, group) => sum + Math.max(0, group.findings.length - 1), 0),
-        suppressed: selection.filter((record) => record.decision === "suppressed").length
-      },
-      finalSelection: {
-        published: selection.filter((record) => record.decision === "published").length,
-        merged: selection.filter((record) => record.decision === "merged").length,
-        suppressed: selection.filter((record) => record.decision === "suppressed").length,
-        finalFindings: capped.findings.length,
-        reportedFindings: publishableCount,
-        compositionMode,
+      semanticPreservation: "not_machine_proven",
+      sourceComponents: compositionSources(pretrim.kept),
+      proposals: composition.composedFindings,
+      dispositions: selection,
+      presentationMeasurements
+    }));
+    await telemetry.writeArtifact("final-selection.json", {
+      composition: {
+        mode: compositionMode,
         ...(fallbackReason !== undefined ? { fallbackReason } : {})
+      },
+      records: selection,
+      publicationAnchors: publicationAnchorSelectionRecords(capped.findings, publicationAnchorDecisions),
+      confidenceSelections: [...confidenceSelections.entries()]
+        .map(([findingId, selection]) => ({ findingId, ...selection }))
+        .sort((left, right) => left.findingId.localeCompare(right.findingId)),
+      groups: groups.map((group) => ({
+        fingerprint: group.fingerprint,
+        findingIds: group.findings.map((finding) => finding.id)
+      }))
+    });
+    await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets(
+      { ...humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups, regroupedAttention),
+        // These records deliberately share original scope/evidence objects.
+        // Serialize to a tree before the scrubber's repeated-object protection
+        // so shared provenance is not mistaken for circular data and redacted.
+        reconciliation: JSON.parse(JSON.stringify({ ...attentionReconciliation, ...reconciledAttention })) }
+    ));
+    await telemetry.writeArtifact("final-findings.json", scrubGitHubSecrets(capped.findings));
+    telemetry.event({
+      stage: 10,
+      level: "info",
+      message: "pipeline_metrics",
+      data: {
+        totals: { finalFindings: capped.findings.length },
+        dedup: {
+          clusters: groups.length,
+          duplicates: groups.reduce((sum, group) => sum + Math.max(0, group.findings.length - 1), 0),
+          suppressed: selection.filter((record) => record.decision === "suppressed").length
+        },
+        finalSelection: {
+          published: selection.filter((record) => record.decision === "published").length,
+          merged: selection.filter((record) => record.decision === "merged").length,
+          suppressed: selection.filter((record) => record.decision === "suppressed").length,
+          finalFindings: capped.findings.length,
+          reportedFindings: publishableCount,
+          compositionMode,
+          ...(fallbackReason !== undefined ? { fallbackReason } : {})
+        }
       }
-    }
-  });
+    });
+  } catch (writeError) {
+    throw retainReviewOn(writeError);
+  }
+  if (compositionFailed) {
+    throw retainReviewOn(compositionFailure);
+  }
   telemetry.event({ stage: 10, level: "info", message: "stage_completed", data: { finalFindings: capped.findings.length, compositionMode } });
   return result;
+}
+
+const reviewsRetainedOnCompositionFailure = new WeakMap<object, ReviewResult>();
+
+/** The deterministic report built when composition failed with this error. */
+export function reviewRetainedOnCompositionFailure(error: unknown): ReviewResult | undefined {
+  return typeof error === "object" && error !== null ? reviewsRetainedOnCompositionFailure.get(error) : undefined;
 }
 
 async function runComposer(
@@ -2116,5 +2148,5 @@ export function refreshReviewHealth(result: ReviewResult): void {
     result.findings.length + result.summaryOnlyFindings.length > 0);
   if (result.health.status === "failed" || result.health.status === "incomplete") result.coverage.partial = true;
   if (result.health.status !== "completed") result.summary = factualReviewSummary(result.health, result.findings.length + result.summaryOnlyFindings.length);
-  if (result.postingPlan) result.postingPlan.reviewBody = renderReviewBody(result.summary, result.summaryOnlyFindings, result.needsHumanAttention, result.coverage, result.needsHumanAttentionOmittedCount, result.health);
+  if (result.postingPlan) result.postingPlan.reviewBody = renderReviewBody(result.summary, result.summaryOnlyFindings, result.needsHumanAttention, result.coverage, result.needsHumanAttentionOmittedCount, result.health, result.composition);
 }
