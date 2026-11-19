@@ -1879,10 +1879,10 @@ function isForcedToolChoice(choice: unknown): choice is Extract<ToolChoiceMode, 
 
 // True when this call runs Anthropic's forced-submit protocol (plan 86 step
 // 3): thinking is disabled for the call so the forced tool choice is legal.
+// Keyed on the mapped choice, so a call downgraded to auto keeps its reasoning.
 function anthropicForcedSubmitCall(model: PiModelRef, toolChoice: ToolChoiceMode, forceSubmit: boolean): boolean {
-  return forceSubmit &&
-    isForcedToolChoice(toolChoice) &&
-    (model.raw as { api?: string }).api === "anthropic-messages";
+  const raw = model.raw as Model<Api>;
+  return raw.api === "anthropic-messages" && isForcedToolChoice(mapProviderToolChoice(raw, toolChoice, forceSubmit));
 }
 
 function mapProviderOptions(model: Model<Api>, options: SimpleStreamOptions & Record<string, unknown>): Record<string, unknown> {
@@ -1893,7 +1893,7 @@ function mapProviderOptions(model: Model<Api>, options: SimpleStreamOptions & Re
   const reasoning = typeof options.reasoning === "string" ? options.reasoning : undefined;
   const forceSubmit = options.forceSubmitToolChoice !== false;
   const toolChoice = mapProviderToolChoice(model, options.toolChoice, forceSubmit);
-  const anthropicForcedSubmit = forceSubmit && model.api === "anthropic-messages" && isForcedToolChoice(options.toolChoice);
+  const anthropicForcedSubmit = model.api === "anthropic-messages" && isForcedToolChoice(toolChoice);
   delete mapped.reasoning;
   delete mapped.toolChoice;
   delete mapped.forceSubmitToolChoice;
