@@ -34,13 +34,28 @@ export function modelProviderRouting(raw: unknown): OpenRouterRouting | undefine
   return (model.compat as OpenAICompletionsCompat | undefined)?.openRouterRouting;
 }
 
-// Use automatic selection for the pinned DeepSeek family: the V4.1 Flash
-// endpoint rejected named forced tool_choice in run 78. Expose only the submit tool when
+// Use automatic selection for the pinned DeepSeek family (the V4.1 Flash
+// endpoint rejected named forced tool_choice in run 78) and for Anthropic
+// models that cannot disable thinking (below). Expose only the submit tool when
 // finalizing and validates its arguments before accepting the result.
 export function requiresAutomaticSubmitToolChoice(model: Model<Api>): boolean {
+  if (anthropicThinkingAlwaysOn(model)) return true;
   const routing = modelProviderRouting(model);
   return model.provider === "openrouter" && model.id.startsWith("deepseek/")
     && routing?.only?.length === DEEPSEEK_UPSTREAMS.length
     && DEEPSEEK_UPSTREAMS.every((upstream, i) => routing.only?.[i] === upstream)
     && routing.allow_fallbacks === false;
+}
+
+// Anthropic forced submit (plan 86 step 3) means a named tool_choice with
+// thinking disabled. A model whose Pi catalog entry cannot turn thinking off
+// (thinkingLevelMap.off === null) cannot run that protocol, and Opus 5.5,
+// Sonnet 5.5 and Fable 5.1/5.2 reject a named or "any" tool_choice outright
+// with HTTP 400 (issue #46). Those models submit with automatic selection,
+// the same path llm.forceSubmitToolChoice = false runs.
+// Known deviation: Fable 5 also has off: null and accepts forced choice; it
+// takes the automatic path too. Models without off: null (e.g. Opus 5,
+// Haiku 5.5) keep forced submit.
+function anthropicThinkingAlwaysOn(model: Model<Api>): boolean {
+  return model.api === "anthropic-messages" && model.reasoning === true && model.thinkingLevelMap?.off === null;
 }

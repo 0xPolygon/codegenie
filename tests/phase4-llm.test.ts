@@ -1382,6 +1382,45 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(downgraded[0]?.level).toBe("warn");
   });
 
+  it("submits with automatic tool choice and configured reasoning when the model cannot disable thinking (issue #46)", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const adapter: typeof scripted = {
+      ...scripted,
+      resolveModel: () => ({ provider: "anthropic", id: "fake-opus-5-5", raw: {
+        id: "fake-opus-5-5", api: "anthropic-messages", reasoning: true, thinkingLevelMap: { off: null, minimal: null }
+      } })
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "anthropic", model: "fake-opus-5-5", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-anthropic-thinking-always-on"));
+
+    expect(scripted.options[0]).toMatchObject({ reasoning: "high", toolChoice: { type: "tool", name: "submit_review" } });
+    expect(telemetry.modelCalls[0]).toMatchObject({
+      toolChoiceRequested: "forced:submit_review",
+      toolChoiceEffective: "auto",
+      toolChoiceDowngraded: true,
+      reasoningMechanism: "adaptive-effort"
+    });
+    expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(1);
+    expect(telemetry.events.find((event) => event.message === "provider_protocol")?.data).toMatchObject({
+      forceSubmitToolChoice: true,
+      forcedToolChoiceEffective: "auto",
+      toolChoiceDowngraded: true
+    });
+  });
+
   it("enforces maxConcurrentCalls across provider misses", async () => {
     const telemetry = fakeTelemetry();
     let active = 0;

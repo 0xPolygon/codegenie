@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { Model } from "@earendil-works/pi-ai";
 import { applyModelOverrides, modelProviderRouting, requiresAutomaticSubmitToolChoice } from "../src/provider/models-override.js";
@@ -82,6 +85,55 @@ describe("model routing overrides", () => {
       expect(getCodegeniePiModels().getModel(model.provider, model.id)).toEqual(catalogBefore);
     } finally {
       vi.unstubAllEnvs();
+    }
+  });
+});
+
+describe("Anthropic models that cannot disable thinking (issue #46)", () => {
+  const anthropicModel = (id: string) => getCodegeniePiModels().getModel("anthropic", id)!;
+
+  // Pi's catalog marks these models thinkingLevelMap.off === null. Opus 5.5,
+  // Sonnet 5.5 and Fable 5.1/5.2 reject a forced tool_choice with HTTP 400;
+  // Fable 5 accepts it but takes the automatic path too (accepted deviation).
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-fable-5-2", "claude-fable-5"])("submits %s with automatic tool choice", (id) => {
+    expect(anthropicModel(id).thinkingLevelMap?.off).toBeNull();
+    expect(requiresAutomaticSubmitToolChoice(anthropicModel(id))).toBe(true);
+  });
+
+  it.each(["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-5-5"])("keeps forced submit for %s", (id) => {
+    expect(requiresAutomaticSubmitToolChoice(anthropicModel(id))).toBe(false);
+  });
+
+  it("applies only to the Anthropic Messages API", () => {
+    expect(requiresAutomaticSubmitToolChoice({ ...anthropicModel("claude-opus-5-5"), api: "bedrock-converse-stream" })).toBe(false);
+  });
+
+  it.each([
+    ["claude-opus-5-5", false], ["claude-fable-5-2", false], ["claude-opus-5", true], ["claude-haiku-5-5", true]
+  ] as const)("serializes the submit request %s accepts in the actual Pi request body (forced: %s)", async (modelId, forced) => {
+    const home = mkdtempSync(path.join(tmpdir(), "codegenie-46-"));
+    vi.stubEnv("CODEGENIE_HOME", home);
+    vi.stubEnv("ANTHROPIC_API_KEY", "test-only-key");
+    try {
+      const adapter = createRealPiAiAdapter();
+      const model = adapter.resolveModel({ provider: "anthropic", model: modelId })!;
+      let payload: unknown;
+      // Inspect Pi's serialized request before transport; never send a paid call.
+      await adapter.complete(model, { messages: [{ role: "user", content: "test", timestamp: 0 }], tools: [{ name: "submit_plan", description: "Submit", parameters: { type: "object", properties: {} } }] }, {
+        submitToolName: "submit_plan", reasoning: "high", maxRetries: 0, toolChoice: { type: "tool", name: "submit_plan" },
+        onPayload: (body: unknown) => { payload = body; throw new Error("stop before network"); }
+      }).catch(() => undefined);
+      if (forced) {
+        expect(payload).toMatchObject({ tool_choice: { type: "tool", name: "submit_plan" }, thinking: { type: "disabled" } });
+      } else {
+        // Default settings: the 400-rejected named choice must not be sent, and
+        // the configured effort still reaches the model.
+        expect(payload).toMatchObject({ tool_choice: { type: "auto" }, thinking: { type: "adaptive" } });
+        expect(JSON.stringify((payload as { messages: unknown[] }).messages)).toContain('"output_config":{"effort":"high"}');
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });
