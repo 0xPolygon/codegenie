@@ -9182,6 +9182,41 @@ describe("phase 5 pipeline regressions", () => {
     expect(repairPrompt).not.toContain("- class: revise_without_revision_payload");
   });
 
+  it.each([
+    { name: "an empty object", findingUpdates: {} },
+    { name: "an empty array", findingUpdates: [] }
+  ])("classifies a revise whose findingUpdates is $name as an empty revise (#82)", async ({ findingUpdates }) => {
+    let repairPrompt = "";
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
+          stage: 9,
+          submitTool: "submit_verdict",
+          error: "schema-invalid arguments: findingUpdates must have at least 1 property",
+          submitCalls: [{
+            id: "submit-verdict-empty-updates",
+            arguments: { verdict: "revise", reason: "The issue is real.", requiredEvidencePresent: true, falsePositiveRisk: "low", findingUpdates }
+          }],
+          extraToolNames: []
+        }) ?? "";
+        return { verdict: "keep", reason: "Confirmed.", requiredEvidencePresent: true, falsePositiveRisk: "low" } as T;
+      }
+    };
+
+    await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff(), checkpoint: () => "ok" }
+    );
+
+    expect(repairPrompt).toContain("- class: revise_without_revision_payload");
+  });
+
   it("repairs an empty revise with a required structured payload", async () => {
     let repairPrompt = "";
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
