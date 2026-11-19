@@ -233,14 +233,16 @@ function parseSkillFile(
 }
 
 function parseFrontmatter(raw: string): { frontmatter: Record<string, unknown>; body: string } | undefined {
-  if (!raw.startsWith("---\n")) {
+  const opener = /^---\r?\n/u.exec(raw);
+  if (!opener) {
     return undefined;
   }
-  const end = raw.indexOf("\n---", 4);
+  const start = opener[0].length;
+  const end = raw.indexOf("\n---", start);
   if (end === -1) {
     return undefined;
   }
-  const frontmatterText = raw.slice(4, end).trim();
+  const frontmatterText = raw.slice(start, end).trim();
   const body = raw.slice(end + "\n---".length).replace(/^\r?\n/, "");
   return { frontmatter: parseSimpleYaml(frontmatterText), body };
 }
@@ -371,6 +373,7 @@ function parseSections(body: string, filePath: string, logger: Logger): Partial<
   let current: SkillSectionName | undefined;
   let currentLines: string[] = [];
   let sawHeading = false;
+  let fence: string | undefined;
 
   const flush = (): void => {
     if (!current) {
@@ -392,7 +395,19 @@ function parseSections(body: string, filePath: string, logger: Logger): Partial<
   };
 
   for (const line of lines) {
-    const heading = /^#\s+(.+?)\s*$/.exec(line);
+    const fenceMatch = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
+    const marker = fenceMatch?.[1];
+    if (marker) {
+      const suffix = fenceMatch[2] ?? "";
+      if (fence) {
+        if (marker[0] === fence[0] && marker.length >= fence.length && /^[ \t]*$/u.test(suffix)) {
+          fence = undefined;
+        }
+      } else if (marker[0] === "~" || !suffix.includes("`")) {
+        fence = marker;
+      }
+    }
+    const heading = fence ? null : /^#\s+(.+?)\s*$/.exec(line);
     if (heading) {
       if (!sawHeading && currentLines.some((entry) => entry.trim())) {
         logger.debug({

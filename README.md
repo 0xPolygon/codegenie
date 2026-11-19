@@ -12,6 +12,8 @@ npm install -g @0xsequence/codegenie   # or: bun install -g @0xsequence/codegeni
 
 Or run without installing: `npx @0xsequence/codegenie --help`
 
+Run `codegenie skill` to print a `SKILL.md` guide for agents running and interpreting reviews.
+
 > Note: the npm package will move out of the `@0xsequence` scope in the future.
 
 ## Quick start
@@ -25,7 +27,7 @@ codegenie provider login openrouter --api-key  # OpenRouter API key setup
 
 # 2. Pick your default model (fuzzy-matched)
 codegenie provider use luna:xhigh                # -> openai/gpt-6-luna
-codegenie provider use opus                      # -> anthropic/claude-opus-5
+codegenie provider use opus                      # -> anthropic/claude-opus-5-5
 codegenie provider use gpt-5.5                   # -> openai-codex/gpt-5.5
 codegenie provider use deepseek-v4.1-flash:max   # -> openrouter/deepseek/deepseek-v4.1-flash
 codegenie provider use glm-5.3:max               # -> openrouter/z-ai/glm-5.3
@@ -35,7 +37,7 @@ codegenie provider use glm-5.3:max               # -> openrouter/z-ai/glm-5.3
 codegenie review
 ```
 
-Codegenie's built-in model overrides pin all OpenRouter models with IDs starting with `deepseek/` to the `deepseek`, `fireworks`, and `together` upstreams (in that order) with `only`/`order` and `allow_fallbacks: false`. For this pinned model family, submit calls expose only the submit tool and use `tool_choice: "auto"`, to accommodate the named forced-tool rejection observed on DeepSeek V4.1 Flash. Returned submissions still undergo strict validation, and missing submissions have bounded retries. These [OpenRouter routing preferences](https://openrouter.ai/docs/guides/routing/provider-selection) apply to every stage, including repairs; Codegenie's stage-specific reasoning levels still apply. Requests cannot fall back to upstreams outside that list. Routing is included in debug request traces and local model-call cache keys. The overrides live in `src/provider/models-override.ts`.
+Codegenie's built-in model overrides pin all OpenRouter models with IDs starting with `deepseek/` to the `deepseek`, `fireworks`, and `together` upstreams (in that order) with `only`/`order` and `allow_fallbacks: false`. For this pinned model family, submit calls expose only the submit tool and use `tool_choice: "auto"`, to accommodate the named forced-tool rejection observed on DeepSeek V4.1 Flash. Returned submissions still undergo strict validation, and missing submissions have bounded retries. Anthropic models whose thinking cannot be turned off (Pi catalog `thinkingLevelMap.off: null`: Claude Opus 5.5, Sonnet 5.5 and Fable 5.1/5.2, which reject a forced `tool_choice`, and Fable 5) submit the same way, with `tool_choice: "auto"` and their configured reasoning. These [OpenRouter routing preferences](https://openrouter.ai/docs/guides/routing/provider-selection) apply to every stage, including repairs; Codegenie's stage-specific reasoning levels still apply. Requests cannot fall back to upstreams outside that list. Routing is included in debug request traces and local model-call cache keys. The overrides live in `src/provider/models-override.ts`.
 
 OpenRouter models with IDs starting with `z-ai/` use `only: ["together", "fireworks", "cloudflare"]`, `order: ["together", "fireworks", "cloudflare"]`, and `allow_fallbacks: false`. This routing override applies across stages, including repairs, and preserves the model's reasoning and tool-choice behavior. It does not add `require_parameters`.
 

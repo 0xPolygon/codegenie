@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { sha256Hex } from "../util/hashing.js";
@@ -153,7 +153,8 @@ function refuseTrackedCacheDirectory(repoRoot: string, dir: string): void {
   });
   if (result.status !== 0) {
     throw new CodegenieError("config_error", "failed to inspect model-call cache directory tracking status", {
-      context: { dir, status: result.status, stderr: result.stderr.trim() }
+      context: { dir, status: result.status, stderr: result.stderr?.trim() },
+      cause: result.error
     });
   }
   if (result.status === 0 && result.stdout.trim().length > 0) {
@@ -192,22 +193,41 @@ function evictCacheEntries(dir: string): EvictionResult {
 
 function listCacheFiles(dir: string): CacheFileInfo[] {
   const files: CacheFileInfo[] = [];
-  const visit = (current: string): void => {
-    if (!existsSync(current)) {
-      return;
+  for (const version of readCacheDirectory(dir)) {
+    if (!version.isDirectory() || !/^v[1-9]\d*$/u.test(version.name)) {
+      continue;
     }
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      const entryPath = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        visit(entryPath);
-      } else if (entry.isFile() && entry.name.endsWith(".json")) {
-        const stat = statSync(entryPath);
-        files.push({ path: entryPath, size: stat.size, mtimeMs: stat.mtimeMs });
+    const versionDir = path.join(dir, version.name);
+    for (const shard of readCacheDirectory(versionDir)) {
+      if (!shard.isDirectory() || !/^[0-9a-f]{3}$/u.test(shard.name)) {
+        continue;
+      }
+      const shardDir = path.join(versionDir, shard.name);
+      for (const entry of readCacheDirectory(shardDir)) {
+        if (!entry.isFile() || !/^[0-9a-f]{64}\.json$/u.test(entry.name) || !entry.name.startsWith(shard.name)) {
+          continue;
+        }
+        const entryPath = path.join(shardDir, entry.name);
+        const stat = statSync(entryPath, { throwIfNoEntry: false });
+        if (stat) {
+          files.push({ path: entryPath, size: stat.size, mtimeMs: stat.mtimeMs });
+        }
       }
     }
-  };
-  visit(dir);
+  }
   return files;
+}
+
+function readCacheDirectory(dir: string): Dirent[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true });
+  } catch (cause) {
+    const code = (cause as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      return [];
+    }
+    throw cause;
+  }
 }
 
 function unlinkBestEffort(filePath: string): boolean {

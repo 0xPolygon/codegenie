@@ -8,7 +8,8 @@ import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { validateCompositionSubmission } from "../src/pipeline/composition-content.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "../src/pipeline/composition-repair.js";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
@@ -1380,6 +1381,45 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const downgraded = telemetry.events.filter((event) => event.message === "tool_choice_downgraded");
     expect(downgraded).toHaveLength(1);
     expect(downgraded[0]?.level).toBe("warn");
+  });
+
+  it("submits with automatic tool choice and configured reasoning when the model cannot disable thinking (issue #46)", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([
+        { type: "toolCall", id: "submit-1", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }
+      ])
+    ]);
+    const adapter: typeof scripted = {
+      ...scripted,
+      resolveModel: () => ({ provider: "anthropic", id: "fake-opus-5-5", raw: {
+        id: "fake-opus-5-5", api: "anthropic-messages", reasoning: true, thinkingLevelMap: { off: null, minimal: null }
+      } })
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "anthropic", model: "fake-opus-5-5", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-anthropic-thinking-always-on"));
+
+    expect(scripted.options[0]).toMatchObject({ reasoning: "high", toolChoice: { type: "tool", name: "submit_review" } });
+    expect(telemetry.modelCalls[0]).toMatchObject({
+      toolChoiceRequested: "forced:submit_review",
+      toolChoiceEffective: "auto",
+      toolChoiceDowngraded: true,
+      reasoningMechanism: "adaptive-effort"
+    });
+    expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(1);
+    expect(telemetry.events.find((event) => event.message === "provider_protocol")?.data).toMatchObject({
+      forceSubmitToolChoice: true,
+      forcedToolChoiceEffective: "auto",
+      toolChoiceDowngraded: true
+    });
   });
 
   it("enforces maxConcurrentCalls across provider misses", async () => {
@@ -4457,7 +4497,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }));
   });
 
-  it("rejects lossy repair: truncates overlong Stage 7 no-finding reasons before model repair", async () => {
+  it("rejects lossy repair: truncates overlong Stage 7 no-finding reasons before model repair (#81)", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
       assistant([{
@@ -4499,6 +4539,54 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(adapter.contexts).toHaveLength(4);
     expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "field_repair_rejected" }));
     expect(telemetry.events).not.toContainEqual(expect.objectContaining({ message: "recovery_obligation_resolved" }));
+    // #81: Pi's raw "Received arguments" payload stays out of telemetry and repair prompts.
+    const rejected = telemetry.events.filter((event) => event.message === "field_repair_rejected");
+    expect(rejected.length).toBeGreaterThan(0);
+    expect(JSON.stringify(rejected)).not.toContain("Received arguments");
+    const repairPrompts = JSON.stringify(adapter.contexts);
+    expect(repairPrompts).toContain("Field repair failed complete submission validation");
+    // Neither the primary schema-repair feedback nor any field-repair text
+    // may resend the rejected payload.
+    expect(repairPrompts).toContain("arguments were schema-invalid");
+    expect(repairPrompts).not.toContain("Received arguments");
+    // Stage 7 repair telemetry (stage7_schema_repair_attempted and friends) neither.
+    expect(telemetry.events.some((event) => event.message.startsWith("stage7_schema"))).toBe(true);
+    expect(JSON.stringify(telemetry.events)).not.toContain("Received arguments");
+  });
+
+  it("gives a generic reason when a validation message is only the rejected payload (#81)", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "submit-marker", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }]),
+      assistant([validSubmitReviewCall("submit-after-repair")])
+    ]);
+    const adapter: typeof scripted = {
+      ...scripted,
+      validateToolCall: (tools, call) => {
+        if ((call as { id?: string }).id === "submit-marker") {
+          throw new Error(`Received arguments:\n${JSON.stringify((call as { arguments?: unknown }).arguments)}`);
+        }
+        return scripted.validateToolCall(tools, call);
+      }
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-payload-only-error", telemetry.recorder));
+
+    const prompts = JSON.stringify(scripted.contexts);
+    expect(prompts).toContain("validation failed (rejected arguments omitted)");
+    expect(prompts).not.toContain("Received arguments");
+    // The repair telemetry carries the error text, so the non-leak check is not vacuous.
+    const serializedEvents = JSON.stringify(telemetry.events);
+    expect(serializedEvents).toContain("validation failed (rejected arguments omitted)");
+    expect(serializedEvents).not.toContain("Received arguments");
   });
 
   it("strips redundant candidate anchor fields before model repair", async () => {
@@ -6809,6 +6897,74 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     );
   });
 
+  it("evicts only files in the versioned model-call cache layout", async () => {
+    const repoRoot = tempGitRepo();
+    const cacheDir = path.join(repoRoot, ".codegenie", "cache");
+    const key = buildModelCallCacheKey({ prompt: "old version" });
+    const shard = key.slice(0, 3);
+    const staleEntry = path.join(cacheDir, "v1", shard, `${key}.json`);
+    const unrelated = [
+      path.join(cacheDir, "settings.json"),
+      path.join(cacheDir, "nested", "v1", shard, `${key}.json`),
+      path.join(cacheDir, "v1", shard, "settings.json"),
+      path.join(cacheDir, "v1", shard === "000" ? "001" : "000", `${key}.json`)
+    ];
+    const staleTime = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    for (const file of [staleEntry, ...unrelated]) {
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, "{}\n");
+      utimesSync(file, staleTime, staleTime);
+    }
+
+    await createModelCallCache({ dir: cacheDir, repoRoot, runFingerprint: "run-layout", logger: fakeLogger(), telemetry: fakeTelemetry().recorder });
+
+    expect(existsSync(staleEntry)).toBe(false);
+    expect(unrelated.every(file => existsSync(file))).toBe(true);
+  });
+
+  it.each(["entry removed", "shard removed", "shard replaced"])("continues cache eviction with a listed %s concurrently", async (race) => {
+    const repoRoot = tempGitRepo();
+    const cacheDir = path.join(repoRoot, ".codegenie", "cache");
+    const key = buildModelCallCacheKey({ prompt: "removed concurrently" });
+    const entry = modelCallCacheEntryPath(cacheDir, key);
+    const shard = path.dirname(entry);
+    const staleEntry = modelCallCacheEntryPath(cacheDir, "f".repeat(64));
+    const staleTime = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    mkdirSync(path.dirname(staleEntry), { recursive: true });
+    writeFileSync(staleEntry, "{}\n");
+    utimesSync(staleEntry, staleTime, staleTime);
+    mkdirSync(shard, { recursive: true });
+    writeFileSync(entry, "{}\n");
+
+    const readDirectory = fs.readdirSync;
+    const readdir = vi.spyOn(fs, "readdirSync").mockImplementation((dir, options) => {
+      if (race !== "entry removed" && dir === shard) {
+        rmSync(shard, { recursive: true, force: true });
+        if (race === "shard replaced") {
+          writeFileSync(shard, "unrelated replacement\n");
+        }
+      }
+      const children = readDirectory(dir, options);
+      if (race === "entry removed" && dir === shard) {
+        rmSync(entry, { force: true });
+      }
+      return children;
+    });
+    syncBuiltinESMExports();
+    try {
+      await expect(createModelCallCache({
+        dir: cacheDir, repoRoot, runFingerprint: "run-race", logger: fakeLogger(), telemetry: fakeTelemetry().recorder
+      })).resolves.toMatchObject({ runFingerprint: "run-race" });
+      expect(existsSync(staleEntry)).toBe(false);
+      if (race === "shard replaced") {
+        expect(readFileSync(shard, "utf8")).toBe("unrelated replacement\n");
+      }
+    } finally {
+      readdir.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+
   it("rejects repo-root cache directories before eviction and fails closed on non-git roots", async () => {
     const repoRoot = tempGitRepo();
     const trackedJson = path.join(repoRoot, "tracked.json");
@@ -6840,6 +6996,25 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ).rejects.toMatchObject({
       code: "config_error"
     });
+  });
+
+  it("reports a typed cache preflight error when Git cannot be started", async () => {
+    const repoRoot = tempGitRepo();
+    vi.stubEnv("PATH", tempDir());
+    try {
+      await expect(createModelCallCache({
+        dir: ".codegenie/cache",
+        repoRoot,
+        runFingerprint: "run-no-git",
+        logger: fakeLogger(),
+        telemetry: fakeTelemetry().recorder
+      })).rejects.toMatchObject({
+        code: "config_error",
+        cause: { code: "ENOENT" }
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

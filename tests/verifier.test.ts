@@ -160,8 +160,8 @@ describe("stage 9 evidence-aware verification", () => {
     expect(prompt).not.toContain("VERIFIER_PYTHON_MARKER");
   });
 
-  it("derives Stage 8 candidate language from the diff before Stage 9 projection", async () => {
-    const fixture = reviewFixture(["src/lib.rs"]);
+  it.each(["rs", "RS"])("derives Stage 8 candidate language from a .%s diff before Stage 9 projection", async (extension) => {
+    const fixture = reviewFixture([`src/lib.${extension}`]);
     const originPacket = fixture.packets[0]!;
     const finding = candidate("stage8-rust-projection", originPacket, {
       producedBy: {

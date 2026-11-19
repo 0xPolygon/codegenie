@@ -99,7 +99,7 @@ describe("Phase 4 skills, lenses, and prompts", () => {
     expect(harness.events.filter((event) => event.message === "skill_invalid")).toHaveLength(2);
   });
 
-  it("accepts block-list YAML frontmatter in repo skills", async () => {
+  it.each([["LF", "\n"], ["CRLF", "\r\n"]])("accepts %s block-list YAML frontmatter in repo skills", async (_name, newline) => {
     const repoRoot = tempDir();
     const skillsRoot = path.join(repoRoot, ".codegenie", "skills");
     mkdirSync(skillsRoot, { recursive: true });
@@ -124,7 +124,7 @@ Exercise normal YAML list frontmatter.
 # Checks
 
 - Validate block-list frontmatter parses.
-`
+`.replace(/\n/gu, newline)
     );
 
     const harness = phase4Harness();
@@ -139,9 +139,41 @@ Exercise normal YAML list frontmatter.
     expect(skill).toMatchObject({
       lenses: ["team/block-list"],
       languages: ["typescript"],
-      categories: ["correctness"]
+      categories: ["correctness"],
+      sections: { checks: "- Validate block-list frontmatter parses." }
     });
     expect(result.failures.map((failure) => failure.filePath)).not.toContain(path.join(skillsRoot, "block-list.md"));
+  });
+
+  it.each(["`", "~"])("preserves section-like lines inside %s code fences", async (marker) => {
+    const repoRoot = tempDir();
+    const skillsRoot = path.join(repoRoot, ".codegenie", "skills");
+    mkdirSync(skillsRoot, { recursive: true });
+    const fence = marker.repeat(4);
+    const checks = [
+      "- Check the example:",
+      `  ${fence}sh`,
+      "# shell comment",
+      marker.repeat(3),
+      "# False Positives",
+      fence,
+      "- Keep reviewing after the example."
+    ].join("\n");
+    writeFileSync(path.join(skillsRoot, "fenced.md"), skillMarkdown({
+      id: "team/fenced",
+      title: "Fenced skill",
+      lenses: ["team/fenced"],
+      checks: `${checks}\n\n# False Positives\n\nSkip harmless cases.`
+    }));
+
+    const harness = phase4Harness();
+    const result = await loadSkills({ repoRoot, extraSkillPaths: [], logger: harness.logger, telemetry: harness.telemetry });
+
+    expect(result.failures).toEqual([]);
+    expect(result.skills.find((skill) => skill.id === "team/fenced")?.sections).toMatchObject({
+      checks,
+      falsePositives: "Skip harmless cases."
+    });
   });
 
   it("resolves lenses from defaults, config, and strict CLI replacement", async () => {

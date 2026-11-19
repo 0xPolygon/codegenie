@@ -641,34 +641,35 @@ function languageFromPath(filePath: string): string {
   if (basename === "go.mod" || basename === "go.sum") {
     return "go";
   }
-  if (filePath.endsWith(".go")) {
+  const lowerPath = filePath.toLowerCase();
+  if (lowerPath.endsWith(".go")) {
     return "go";
   }
-  if (/\.(?:ts|tsx|mts|cts)$/u.test(filePath)) {
+  if (/\.(?:ts|tsx|mts|cts)$/u.test(lowerPath)) {
     return "typescript";
   }
-  if (/\.(?:js|jsx|mjs|cjs)$/u.test(filePath)) {
+  if (/\.(?:js|jsx|mjs|cjs)$/u.test(lowerPath)) {
     return "javascript";
   }
-  if (filePath.endsWith(".rs")) {
+  if (lowerPath.endsWith(".rs")) {
     return "rust";
   }
-  if (filePath.endsWith(".py")) {
+  if (lowerPath.endsWith(".py")) {
     return "python";
   }
-  if (filePath.endsWith(".sol")) {
+  if (lowerPath.endsWith(".sol")) {
     return "solidity";
   }
-  if (filePath.endsWith(".json")) {
+  if (lowerPath.endsWith(".json")) {
     return "json";
   }
-  if (filePath.endsWith(".toml")) {
+  if (lowerPath.endsWith(".toml")) {
     return "toml";
   }
-  if (/\.(?:yaml|yml)$/u.test(filePath)) {
+  if (/\.(?:yaml|yml)$/u.test(lowerPath)) {
     return "yaml";
   }
-  if (filePath.endsWith(".md")) {
+  if (lowerPath.endsWith(".md")) {
     return "markdown";
   }
   return "unknown";

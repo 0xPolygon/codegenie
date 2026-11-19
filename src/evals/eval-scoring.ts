@@ -69,7 +69,11 @@ type RankedLossInstance = {
 export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode: ScoreMode): EvalScore {
   const reportedFinals = artifacts.finalFindings.filter(isReportedFinalFinding);
   const metrics = buildMetrics(artifacts);
-  const shouldNot = scoreShouldNotFind(evalCase.should_not_find ?? [], reportedFinals, artifacts, mode);
+  const missingArtifacts = artifacts.missingArtifacts ?? [];
+  const reviewFailed = fieldAtPath(artifacts.metricsSources.runJson, ["outcome", "status"]) === "failed";
+  const negativeSkipReason = reviewFailed ? "review-failed"
+    : missingArtifacts.some(name => name.startsWith("final-findings.json")) ? "missing-final-findings" : undefined;
+  const shouldNot = scoreShouldNotFind(evalCase.should_not_find ?? [], reportedFinals, artifacts, mode, negativeSkipReason);
   const allExpectationResults = [
     ...scorePositiveList("should_find", evalCase.should_find ?? [], reportedFinals, artifacts, mode),
     ...scorePositiveList("should_find_candidate", evalCase.should_find_candidate ?? [], artifacts.candidates, artifacts, mode),
@@ -82,13 +86,17 @@ export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode:
     budgetResults.some((result) => result.status === "fail")
     ? "fail"
     : "pass";
+  const error: EvalScore["error"] = reviewFailed ? { code: "review_failed", message: "The review run failed." }
+    : missingArtifacts.length > 0 ? { code: "invalid_args", message: `Required eval artifacts unavailable: ${missingArtifacts.join(", ")}` }
+      : undefined;
   return {
-    status,
+    status: error === undefined ? status : "error",
     expectationResults: allExpectationResults,
     budgetResults,
     violations: shouldNot.violations,
     nearViolations: shouldNot.nearViolations,
-    metrics
+    metrics,
+    ...(error !== undefined ? { error } : {})
   };
 }
 
@@ -97,8 +105,66 @@ export function matchExpectation(
   finding: ScorableFinding,
   artifacts?: EvalArtifacts
 ): EvalMatchOutcome {
+  let best = matchFindingSource(expectation, finding, "finding", artifacts !== undefined && isFinalFinding(finding));
+  if (best.matched || artifacts === undefined || !isFinalFinding(finding)) {
+    return best;
+  }
+
+  const sources = sourceCandidatesForFinal(finding, artifacts);
+  for (const source of sources) {
+    const match = matchFindingSource(expectation, source, "merged-candidate", true);
+    if (match.matched) {
+      return match;
+    }
+    if (failedFieldCount(match) < failedFieldCount(best)) {
+      best = match;
+    }
+  }
+  if (sources.length === 0) {
+    // Historical anchors pair paths with ranges. A range must come from a
+    // variant whose own path matches, even when other variants supply paths.
+    if (best.fields.every(({ field }) => field === "path" || field === "lineRange")) {
+      return matchExpectationFields(expectation, [], findingLocationVariants(finding, artifacts));
+    }
+    // Historical merged text and labels have no pairing with locations or
+    // with each other. They can establish a single field on their own.
+    if (best.fields.length === 1) {
+      return matchExpectationFields(expectation, findingMatchViews(finding, artifacts), []);
+    }
+  }
+  return best;
+}
+
+function matchFindingSource(
+  expectation: EvalFindingExpectation,
+  finding: ScorableFinding,
+  source: "finding" | "merged-candidate",
+  includeRelatedEvidence: boolean
+): EvalMatchOutcome {
+  const locations: FindingLocationVariant[] = [];
+  addFindingLocationVariant(locations, finding, source, finding.id);
+  if (includeRelatedEvidence) {
+    addRelatedEvidenceLocationVariants(locations, finding, "related-evidence", finding.id);
+  }
+  return matchExpectationFields(expectation, [findingMatchView(finding, source)], locations);
+}
+
+// Keep the conservative merged matching used by existing negative sentinels.
+function matchNegativeExpectation(
+  expectation: EvalFindingExpectation,
+  finding: ScorableFinding,
+  artifacts: EvalArtifacts
+): EvalMatchOutcome {
+  return matchExpectationFields(expectation, findingMatchViews(finding, artifacts), findingLocationVariants(finding, artifacts));
+}
+
+function matchExpectationFields(
+  expectation: EvalFindingExpectation,
+  views: FindingMatchView[],
+  locations: FindingLocationVariant[]
+): EvalMatchOutcome {
   const fields: EvalMatchOutcome["fields"] = [];
-  const location = matchFindingLocation(expectation, finding, artifacts);
+  const location = matchFindingLocation(expectation, locations);
   if (expectation.path !== undefined) {
     fields.push({
       field: "path",
@@ -118,7 +184,7 @@ export function matchExpectation(
     });
   }
   if (expectation.category !== undefined) {
-    const category = matchCategory(expectation.category, finding, artifacts);
+    const category = matchCategory(expectation.category, views);
     fields.push({
       field: "category",
       present: true,
@@ -129,7 +195,7 @@ export function matchExpectation(
     });
   }
   if (expectation.severityAtLeast !== undefined) {
-    const severity = matchSeverity(expectation.severityAtLeast, finding, artifacts);
+    const severity = matchSeverity(expectation.severityAtLeast, views);
     fields.push({
       field: "severityAtLeast",
       present: true,
@@ -140,7 +206,7 @@ export function matchExpectation(
     });
   }
   if (expectation.titlePattern !== undefined) {
-    const title = matchTitlePattern(expectation.titlePattern, finding, artifacts);
+    const title = matchTitlePattern(expectation.titlePattern, views);
     fields.push({
       field: "titlePattern",
       present: true,
@@ -151,7 +217,7 @@ export function matchExpectation(
     });
   }
   if (expectation.failureModePattern !== undefined) {
-    const failureMode = matchFailureModePattern(expectation.failureModePattern, finding, artifacts);
+    const failureMode = matchFailureModePattern(expectation.failureModePattern, views);
     fields.push({
       field: "failureModePattern",
       present: true,
@@ -616,7 +682,8 @@ function scoreShouldNotFind(
   expectations: EvalFindingExpectation[],
   reportedFinals: Array<FinalFinding & { publication: "inline" | "summary-only" }>,
   artifacts: EvalArtifacts,
-  mode: ScoreMode
+  mode: ScoreMode,
+  negativeSkipReason: string | undefined
 ): {
   results: EvalExpectationResult[];
   violations: EvalViolation[];
@@ -626,7 +693,7 @@ function scoreShouldNotFind(
   const nearViolations: Array<{ expectationId: string; findingId: string; artifact: string }> = [];
   const results = expectations.map((expectation): EvalExpectationResult => {
     const tier = expectation.tier ?? "required";
-    const matches = reportedFinals.filter((finding) => matchExpectation(expectation, finding, artifacts).matched);
+    const matches = reportedFinals.filter((finding) => matchNegativeExpectation(expectation, finding, artifacts).matched);
     for (const finding of matches) {
       if (tier === "optional") {
         nearViolations.push({ expectationId: expectation.id, findingId: finding.id, artifact: "final-findings" });
@@ -638,20 +705,22 @@ function scoreShouldNotFind(
         });
       }
     }
-    for (const finding of artifacts.candidates.filter((candidate) => matchExpectation(expectation, candidate, artifacts).matched)) {
+    for (const finding of artifacts.candidates.filter((candidate) => matchNegativeExpectation(expectation, candidate, artifacts).matched)) {
       nearViolations.push({ expectationId: expectation.id, findingId: finding.id, artifact: "candidate-findings" });
     }
     for (const finding of artifacts.finalFindings.filter((candidate) =>
-      candidate.publication === "suppressed" && matchExpectation(expectation, candidate, artifacts).matched
+      candidate.publication === "suppressed" && matchNegativeExpectation(expectation, candidate, artifacts).matched
     )) {
       nearViolations.push({ expectationId: expectation.id, findingId: finding.id, artifact: "final-findings:suppressed" });
     }
+    const skipReason = matches.length === 0 ? negativeSkipReason
+      : tier === "optional" ? "optional-matched" : undefined;
     return {
       expectationId: expectation.id,
       list: "should_not_find",
       tier,
-      status: matches.length === 0 ? "pass" : tier === "optional" ? "skipped" : "fail",
-      ...(matches.length > 0 && tier === "optional" ? { skipReason: "optional-matched" } : {}),
+      status: skipReason !== undefined ? "skipped" : matches.length === 0 ? "pass" : "fail",
+      ...(skipReason !== undefined ? { skipReason } : {}),
       fromReplayedArtifacts: mode === "replay",
       matched: matches.map((finding) => ({ findingId: finding.id, artifact: "final-findings" }))
     };
@@ -1396,12 +1465,7 @@ function augment(
   return false;
 }
 
-function matchCategory(
-  expected: FindingCategory,
-  finding: ScorableFinding,
-  artifacts?: EvalArtifacts
-): FieldMatch {
-  const views = findingMatchViews(finding, artifacts);
+function matchCategory(expected: FindingCategory, views: FindingMatchView[]): FieldMatch {
   const actual = uniqueStrings(views.map((view) => view.category));
   const exact = views.find((view) => view.category === expected);
   if (exact !== undefined) {
@@ -1414,12 +1478,7 @@ function matchCategory(
   return { matched: false, actual: actual.join(", ") };
 }
 
-function matchSeverity(
-  expected: Severity,
-  finding: ScorableFinding,
-  artifacts?: EvalArtifacts
-): FieldMatch {
-  const views = findingMatchViews(finding, artifacts);
+function matchSeverity(expected: Severity, views: FindingMatchView[]): FieldMatch {
   const actual = uniqueStrings(views.map((view) => view.severity));
   const matched = views.some((view) => severityRank[view.severity] >= severityRank[expected]);
   return {
@@ -1431,13 +1490,9 @@ function matchSeverity(
   };
 }
 
-function matchTitlePattern(
-  pattern: string,
-  finding: ScorableFinding,
-  artifacts?: EvalArtifacts
-): FieldMatch {
+function matchTitlePattern(pattern: string, views: FindingMatchView[]): FieldMatch {
   const checks: Array<{ value: string; via: string }> = [];
-  for (const view of findingMatchViews(finding, artifacts)) {
+  for (const view of views) {
     checks.push({ value: view.title, via: view.source === "finding" ? "title" : "mergedTitle" });
     if (view.finalBody !== undefined) {
       checks.push({ value: firstParagraph(view.finalBody), via: "body" });
@@ -1446,12 +1501,8 @@ function matchTitlePattern(
   return matchPatternAcrossText(pattern, checks);
 }
 
-function matchFailureModePattern(
-  pattern: string,
-  finding: ScorableFinding,
-  artifacts?: EvalArtifacts
-): FieldMatch {
-  const checks = findingMatchViews(finding, artifacts).map((view) => ({
+function matchFailureModePattern(pattern: string, views: FindingMatchView[]): FieldMatch {
+  const checks = views.map((view) => ({
     value: view.failureMode,
     via: view.source === "finding" ? "failureMode" : "mergedFailureMode"
   }));
@@ -1473,29 +1524,24 @@ function matchPatternAcrossText(pattern: string, checks: Array<{ value: string; 
   return { matched: false, actual };
 }
 
-function findingMatchViews(finding: ScorableFinding, artifacts?: EvalArtifacts): FindingMatchView[] {
-  const views: FindingMatchView[] = [{
+function findingMatchView(finding: ScorableFinding, source: FindingMatchView["source"]): FindingMatchView {
+  return {
     id: finding.id,
     title: finding.title,
     category: finding.category,
     severity: finding.severity,
     failureMode: finding.failureMode,
     ...(isFinalFinding(finding) ? { finalBody: finding.finalBody } : {}),
-    source: "finding"
-  }];
+    source
+  };
+}
+
+function findingMatchViews(finding: ScorableFinding, artifacts?: EvalArtifacts): FindingMatchView[] {
+  const views = [findingMatchView(finding, "finding")];
 
   if (artifacts !== undefined && isFinalFinding(finding)) {
     const sourceCandidates = sourceCandidatesForFinal(finding, artifacts);
-    for (const candidate of sourceCandidates) {
-      views.push({
-        id: candidate.id,
-        title: candidate.title,
-        category: candidate.category,
-        severity: candidate.severity,
-        failureMode: candidate.failureMode,
-        source: "merged-candidate"
-      });
-    }
+    views.push(...sourceCandidates.map((candidate) => findingMatchView(candidate, "merged-candidate")));
     if (sourceCandidates.length === 0) {
       views.push(...metadataViewsForFinal(finding));
     }
@@ -1561,15 +1607,13 @@ function firstParagraph(input: string): string {
 
 function matchFindingLocation(
   expectation: EvalFindingExpectation,
-  finding: ScorableFinding,
-  artifacts?: EvalArtifacts
+  variants: FindingLocationVariant[]
 ): {
   pathMatched: boolean;
   lineRangeMatched: boolean;
   actualPaths: string[];
   actualRanges: string[];
 } {
-  const variants = findingLocationVariants(finding, artifacts);
   const pathMatchedVariants = expectation.path === undefined
     ? variants
     : variants.filter((variant) => pathMatches(expectation.path ?? "", variant.path));
@@ -1609,13 +1653,16 @@ function findingLocationVariants(finding: ScorableFinding, artifacts?: EvalArtif
 
 function addFinalMetadataLocationVariants(variants: FindingLocationVariant[], finding: FinalFinding): void {
   for (const anchor of finding.mergedAnchors ?? []) {
-    const start = anchor.startLine ?? anchor.line;
-    const end = anchor.line;
-    variants.push({
-      path: normalizePath(anchor.path),
-      range: [Math.min(start, end), Math.max(start, end)],
-      source: "merged-candidate"
-    });
+    // Redaction can replace an anchor or a coordinate with a marker string.
+    if (typeof anchor?.path !== "string") {
+      continue;
+    }
+    const variant: FindingLocationVariant = { path: normalizePath(anchor.path), source: "merged-candidate" };
+    if (typeof anchor.line === "number") {
+      const start = typeof anchor.startLine === "number" ? anchor.startLine : anchor.line;
+      variant.range = [Math.min(start, anchor.line), Math.max(start, anchor.line)];
+    }
+    variants.push(variant);
   }
   for (const path of finding.mergedPaths ?? []) {
     variants.push({

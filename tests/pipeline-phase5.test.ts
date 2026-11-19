@@ -5435,7 +5435,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("applies bounded safety coverage when recovered planner output omits source hunks", async () => {
+  it("applies bounded safety coverage when recovered planner output omits source hunks (#84)", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const baseDossier = fakeDossier(["a.ts", "b.ts", "c.ts", "README.md"]);
     const dossier: PlannerDossier = {
@@ -5526,8 +5526,7 @@ describe("phase 5 pipeline regressions", () => {
       reviewableSourceHunks: 3,
       explicitSourceCoverageEntries: 0,
       safetyCoverageApplied: {
-        upgradedHunks: 3,
-        upgradedPackets: 3
+        upgradedHunks: 3
       }
     });
     expect(events).toContainEqual(expect.objectContaining({
@@ -5539,6 +5538,9 @@ describe("phase 5 pipeline regressions", () => {
       message: "planner_degraded_safety_coverage_applied",
       data: expect.objectContaining({ upgradedHunks: 3, reviewableSourceHunks: 3 })
     }));
+    // #84: no packets exist at planning time, so no packet count is claimed.
+    expect(result.plan.plannerRecovery?.safetyCoverageApplied).not.toHaveProperty("upgradedPackets");
+    expect(events.find((event) => event.message === "planner_degraded_safety_coverage_applied")?.data).not.toHaveProperty("upgradedPackets");
   });
 
   it("does not recover planner submits that are missing required roots", async () => {
@@ -6347,6 +6349,53 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
+  it("degrades a planner chunk whose submission overflows the recovery inventory (#80)", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
+      }
+    };
+    const promptBuilder = {
+      ...fakePromptBuilder(),
+      renderDossier: (dossier: PlannerDossier) => dossier.compaction.level === "chunked" ? "fits" : "x".repeat(MAX_DOSSIER_PROMPT_CHARS + 1),
+      buildPlannerPrompt: ({ dossier }: { dossier: PlannerDossier }) => ({
+        prompt: JSON.stringify(dossier),
+        templateVersion: "test",
+        untrustedBlockCount: 0
+      })
+    };
+
+    const result = await runPlanner(fakeDossier(["pkg-a/a.ts", "pkg-b/b.ts"]), config(), { ...nullTelemetry(), event: (event) => events.push(event) }, {
+      runner,
+      promptBuilder,
+      lenses: [],
+      skills: []
+    });
+
+    expect(result.chunked).toBe(true);
+    expect(result.degradedPlanning).toBe(true);
+    expect(result.plan.coverage.map((decision) => decision.hunkId).sort()).toEqual(["h1", "h2"]);
+    expect(events.filter((event) => event.message === "planner chunk fallback used").length).toBeGreaterThan(0);
+    expect(events).toContainEqual(expect.objectContaining({ stage: 5, message: "stage_completed", data: expect.objectContaining({ degraded: true, chunked: true }) }));
+  });
+
+  it("closes stage 5 when an oversized dossier yields no planner chunks", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const promptBuilder = {
+      ...fakePromptBuilder(),
+      renderDossier: () => "x".repeat(MAX_DOSSIER_PROMPT_CHARS + 1)
+    };
+    const result = await runPlanner({ ...fakeDossier(["app.ts"]), files: [] }, config(), { ...nullTelemetry(), event: (event) => events.push(event) }, {
+      runner: { runStructured: async () => { throw new Error("planner must not be called"); } },
+      promptBuilder,
+      lenses: [],
+      skills: []
+    });
+    expect(result.degradedPlanning).toBe(true);
+    expect(events).toContainEqual(expect.objectContaining({ stage: 5, message: "stage_completed", data: expect.objectContaining({ degraded: true, chunks: 0 }) }));
+  });
+
   it("chunk fallback covers full hunks when compacted chunks omit hunk detail", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {
@@ -6872,6 +6921,32 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.plan.coverage).toEqual([
       expect.objectContaining({ hunkId: "h1", coverage: "skip", reason: "generated client code" })
     ]);
+  });
+
+  it("records a verifier recovery-inventory overflow as an incomplete verdict, not a run failure (#80)", async () => {
+    const overflow = new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
+    const result = await verifyFindings(
+      { packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }], packets: [fakePacket()] },
+      fakeTools(), config(), nullTelemetry(),
+      { runner: { runStructured: async () => { throw overflow; } }, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+    expect(result.verified).toEqual([]);
+    expect(result.incompleteCount).toBe(1);
+  });
+
+  it("degrades to the default plan when the planner submission overflows the recovery inventory (#80)", async () => {
+    const overflow = new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), { ...nullTelemetry(), event: (event) => events.push(event) }, {
+      runner: { runStructured: async () => { throw overflow; } },
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{ id: "core/code-review", title: "core", description: "core", skillIds: [], enabledByDefault: true, enabled: true, languages: [] }],
+      skills: []
+    });
+    expect(result.degradedPlanning).toBe(true);
+    expect(result.plan.coverage.length).toBeGreaterThan(0);
+    // Stage 5 closes its lifecycle on the fallback path too.
+    expect(events).toContainEqual(expect.objectContaining({ stage: 5, message: "stage_completed", data: expect.objectContaining({ degraded: true }) }));
   });
 
   it("removes wrong-language planner lenses and restores exact deterministic defaults", async () => {
@@ -9178,6 +9253,80 @@ describe("phase 5 pipeline regressions", () => {
     expect(events).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ message: "verification_primary_submit_accepted" })
     ]));
+  });
+
+  it("does not classify a revise carrying findingUpdates as an empty revise (#82)", async () => {
+    let repairPrompt = "";
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
+          stage: 9,
+          submitTool: "submit_verdict",
+          error: "schema-invalid arguments: falsePositiveRisk must be low, medium or high",
+          submitCalls: [{
+            id: "submit-verdict-updates-revise",
+            arguments: {
+              verdict: "revise",
+              reason: "The issue is real; the title overstates it.",
+              requiredEvidencePresent: true,
+              falsePositiveRisk: "unknown",
+              findingUpdates: { title: "Narrowed title" }
+            }
+          }],
+          extraToolNames: []
+        }) ?? "";
+        return { verdict: "keep", reason: "Confirmed.", requiredEvidencePresent: true, falsePositiveRisk: "low" } as T;
+      }
+    };
+
+    await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff(), checkpoint: () => "ok" }
+    );
+
+    expect(repairPrompt).toContain("- class:");
+    expect(repairPrompt).not.toContain("- class: revise_without_revision_payload");
+  });
+
+  it.each([
+    { name: "an empty object", findingUpdates: {} },
+    { name: "an empty array", findingUpdates: [] }
+  ])("classifies a revise whose findingUpdates is $name as an empty revise (#82)", async ({ findingUpdates }) => {
+    let repairPrompt = "";
+    const runner: LlmRunner = {
+      runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        repairPrompt = request.schemaRepair?.buildPrompt?.({
+          stage: 9,
+          submitTool: "submit_verdict",
+          error: "schema-invalid arguments: findingUpdates must have at least 1 property",
+          submitCalls: [{
+            id: "submit-verdict-empty-updates",
+            arguments: { verdict: "revise", reason: "The issue is real.", requiredEvidencePresent: true, falsePositiveRisk: "low", findingUpdates }
+          }],
+          extraToolNames: []
+        }) ?? "";
+        return { verdict: "keep", reason: "Confirmed.", requiredEvidencePresent: true, falsePositiveRisk: "low" } as T;
+      }
+    };
+
+    await verifyFindings(
+      {
+        packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [fakePacket()]
+      },
+      fakeTools(),
+      config(),
+      nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff(), checkpoint: () => "ok" }
+    );
+
+    expect(repairPrompt).toContain("- class: revise_without_revision_payload");
   });
 
   it("repairs an empty revise with a required structured payload", async () => {
