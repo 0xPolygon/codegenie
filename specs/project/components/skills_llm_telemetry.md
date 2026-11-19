@@ -236,14 +236,14 @@ The `LlmRunner` interface and `LlmStructuredRequest<T>` type in `architecture.md
 
 codegenie's normalized interface maps the submit tool choice onto vendor dialects inside `pi-runner` (`mapProviderToolChoice`); every call, forced or not, goes through Pi's simple path, so Pi maps the reasoning level onto each provider's wire fields (#74-#77). Each model call records the tool-choice protocol and the requested reasoning level (`toolChoiceRequested/Effective/Downgraded`, `reasoningRequested/Configured/Selected` in `model-calls.jsonl`), summarized once per run (`provider_protocol` event), and warned on first downgrade (`tool_choice_downgraded`); downgrade counts aggregate into `model-calls-summary.json` (`toolChoiceDowngradedCalls`) and eval metrics.
 
-| API family | Forced submit tool choice | Reasoning mechanism | Notes |
+| API family | Forced submit tool choice | Reasoning on forced submits | Notes |
 | --- | --- | --- | --- |
-| `anthropic-messages` | **downgraded to `auto`** (forced choice conflicts with extended thinking) | `adaptive-effort` (`thinkingEnabled` + effort) | The downgrade is the plan-86 step-3 target; submit compliance rests on prompt text + repair ladder until then |
-| `bedrock-converse-stream` | `{type:"tool",name}` | `reasoning-effort` (pass-through) | |
-| `google-generative-ai` / `google-vertex` | `"any"` | `thinking-level` (`LOW`/`MEDIUM`/`HIGH`; `xhigh` clamps to `HIGH`) | |
-| `mistral-conversations` / `openai-completions` | `{type:"function",function:{name}}` | `reasoning-effort` | |
-| `openai-responses` family | payload-injected `tool_choice` (`withToolChoicePayload`) | `reasoning-effort` | |
-| unknown | `"required"` | `unknown` | |
+| `anthropic-messages` | Models whose Pi catalog can turn thinking off (e.g. `claude-opus-5`, `claude-haiku-5-5`): named `{type:"tool",name}`. Always-on-thinking models (`thinkingLevelMap.off === null`, e.g. `claude-opus-5-5`, `claude-fable-5-2`): downgraded to `auto` (#46). | Named choice: reasoning omitted, so Pi sends thinking disabled (plan 86 step 3). `auto`: reasoning kept and mapped natively by Pi (adaptive effort). | `llm.forceSubmitToolChoice = false` downgrades every Anthropic model to `auto` |
+| `bedrock-converse-stream` | `{type:"tool",name}` | Pi's native mapping | |
+| `google-generative-ai` / `google-vertex` | `"any"` | Pi's native mapping (e.g. Gemini 2.5 thinking budget) | |
+| `mistral-conversations` / `openai-completions` | `{type:"function",function:{name}}` | Pi's native mapping (reasoning effort only for reasoning models) | |
+| `openai-responses` family | payload-injected `tool_choice` (`withToolChoicePayload`) | Pi's native mapping | |
+| unknown | `"required"` | Pi's native mapping | |
 
 Reasoning-token spend is not exposed by pi-ai usage today; `reasoningTokens` recording is deferred until it is.
 
