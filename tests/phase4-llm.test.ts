@@ -6841,6 +6841,25 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       code: "config_error"
     });
   });
+
+  it("reports a typed cache preflight error when Git cannot be started", async () => {
+    const repoRoot = tempGitRepo();
+    vi.stubEnv("PATH", tempDir());
+    try {
+      await expect(createModelCallCache({
+        dir: ".codegenie/cache",
+        repoRoot,
+        runFingerprint: "run-no-git",
+        logger: fakeLogger(),
+        telemetry: fakeTelemetry().recorder
+      })).rejects.toMatchObject({
+        code: "config_error",
+        cause: { code: "ENOENT" }
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 function scriptedAdapter(messages: PiAssistantMessage[]): PiAiAdapter & { contexts: string[]; options: Record<string, unknown>[]; toolNames: string[][] } {

@@ -153,7 +153,8 @@ function refuseTrackedCacheDirectory(repoRoot: string, dir: string): void {
   });
   if (result.status !== 0) {
     throw new CodegenieError("config_error", "failed to inspect model-call cache directory tracking status", {
-      context: { dir, status: result.status, stderr: result.stderr.trim() }
+      context: { dir, status: result.status, stderr: result.stderr?.trim() },
+      cause: result.error
     });
   }
   if (result.status === 0 && result.stdout.trim().length > 0) {
