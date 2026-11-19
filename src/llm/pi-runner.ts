@@ -386,7 +386,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
           nextFieldRepair.diagnostics.removedUnexpectedFields.push(...obligation.removedUnexpectedFields);
         }
         const semanticRepairDetails = repair.cause instanceof SubmitSemanticValidationError
-          ? fenceUntrusted(repair.cause.message.split("Received arguments:")[0]!.trim(), "semantic-validation-error") : "";
+          ? fenceUntrusted(withoutRejectedArguments(repair.cause.message), "semantic-validation-error") : "";
         const fieldPrompt = nextFieldRepair?.prompt ?? (nextFieldRepair ? `Call ${submitTool.name} exactly once to supply the missing or invalid field values listed below. You may return a nested partial update, the literal field-path keys shown in the diagnostics, or the full object. Prefer only the needed updates. Supplied values replace older overlapping values; omitted fields and existing object-array items are retained. Arrays of objects address the original indices; do not reorder or delete those objects. Supplied arrays of scalar values replace the entire list and may remove invalid entries. Optional schema fields remain optional unless stage validation conditionally requires them, as identified by the diagnostics or validation error. Required fields must exist in the final merged submission; fields already retained need not be repeated. Newly created objects and new array entries must include every required field. The tool schema describes an update, while each diagnostic describes the required final field shape. Alternative representation groups: ${stableJson(request.schemaRepair?.replacementGroups ?? [])}. Supplying exactly one member replaces any retained alternative; omit all to retain the existing representation. Check spelling, case and types. Do not call repository tools. Validation category: ${repair.repairClassification ?? "schema_invalid"}. ${semanticRepairDetails}\n${fenceUntrusted(stableJson(nextFieldRepair.diagnostics), "repair-field-diagnostics")}\n${fenceUntrusted(stableJson(nextFieldRepair.baseline), "retained-submission")}` : undefined);
         try {
           queueSchemaRepair({
@@ -679,8 +679,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 if (progress) retainRecoveryProgress(progress);
                 // Pi appends the rejected payload after "Received arguments:"; keep it
                 // out of telemetry and the repair prompt like the other sites do.
-                const detail = cause instanceof Error ? cause.message : String(cause);
-                const repairError = `Field repair failed complete submission validation: ${detail.split("Received arguments:")[0]!.trim()}`;
+                const repairError = `Field repair failed complete submission validation: ${withoutRejectedArguments(cause instanceof Error ? cause.message : String(cause))}`;
                 recordFidelity("field_repair_rejected", { paths: fieldRepair.paths, error: repairError,
                   obligationId: recoveryObligations.get(obligationKey)?.id });
                 scheduleModelRepair({ submitToolName: submitTool.name, submitCalls,
@@ -730,7 +729,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                 : undefined;
               // Pi appends the rejected payload after "Received arguments:"; it never
               // goes back to the model or into artifacts.
-              const causeMessage = (cause instanceof Error ? cause.message : String(cause)).split("Received arguments:")[0]!.trim();
+              const causeMessage = withoutRejectedArguments(cause instanceof Error ? cause.message : String(cause));
               const submitError = semanticClassification !== undefined
                 ? `The ${submitTool.name} arguments were semantically invalid: ${cause instanceof Error ? causeMessage : semanticClassification}`
                 : `The ${submitTool.name} arguments were schema-invalid: ${truncateDiagnostic(causeMessage)}`;
@@ -745,7 +744,9 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
                   ...(semanticClassification !== undefined ? { classification: semanticClassification } : {})
                 }),
                 candidateDrafted: candidateDraftedBeforeSubmit,
-                fullError: cause instanceof Error ? cause.message : String(cause)
+                // Stage 7 classification and its repair telemetry read this; it
+                // never carries the rejected payload either.
+                fullError: causeMessage
               };
               const recovery = tryRecoverInvalidSubmit({
                 opts,
@@ -2078,6 +2079,13 @@ function reasoningMechanismForApi(api: string | undefined): string {
   }
 }
 
+// Pi appends the rejected payload after "Received arguments:". Keep only the
+// reason; a message with nothing before the marker gets a generic reason.
+function withoutRejectedArguments(message: string): string {
+  const reason = message.split("Received arguments:")[0]!.trim();
+  return reason.length > 0 ? reason : "validation failed (rejected arguments omitted)";
+}
+
 function withToolChoicePayload(
   existing: unknown,
   toolChoice: unknown
@@ -2216,7 +2224,7 @@ async function executeToolCall(
       // plain Errors here; they are caller mistakes, not provider failures.
       const detail = cause instanceof Error ? cause.message : String(cause);
       return toolExecutionErrorOutcome(new CodegenieError("invalid_args",
-        `Invalid arguments for ${tool.name}: ${detail.split("Received arguments:")[0]!.trim().slice(0, 1500)}. Correct the arguments and retry; no source was read.`),
+        `Invalid arguments for ${tool.name}: ${withoutRejectedArguments(detail).slice(0, 1500)}. Correct the arguments and retry; no source was read.`),
       toolCall.arguments, Date.now() - startedAt, false, "disabled");
     }
   } catch (cause) {

@@ -4509,6 +4509,41 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     // may resend the rejected payload.
     expect(repairPrompts).toContain("arguments were schema-invalid");
     expect(repairPrompts).not.toContain("Received arguments");
+    // Stage 7 repair telemetry (stage7_schema_repair_attempted and friends) neither.
+    expect(telemetry.events.some((event) => event.message.startsWith("stage7_schema"))).toBe(true);
+    expect(JSON.stringify(telemetry.events)).not.toContain("Received arguments");
+  });
+
+  it("gives a generic reason when a validation message is only the rejected payload (#81)", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "submit-marker", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }]),
+      assistant([validSubmitReviewCall("submit-after-repair")])
+    ]);
+    const adapter: typeof scripted = {
+      ...scripted,
+      validateToolCall: (tools, call) => {
+        if ((call as { id?: string }).id === "submit-marker") {
+          throw new Error(`Received arguments:\n${JSON.stringify((call as { arguments?: unknown }).arguments)}`);
+        }
+        return scripted.validateToolCall(tools, call);
+      }
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-payload-only-error", telemetry.recorder));
+
+    const prompts = JSON.stringify(scripted.contexts);
+    expect(prompts).toContain("validation failed (rejected arguments omitted)");
+    expect(prompts).not.toContain("Received arguments");
+    expect(JSON.stringify(telemetry.events)).not.toContain("Received arguments");
   });
 
   it("strips redundant candidate anchor fields before model repair", async () => {
