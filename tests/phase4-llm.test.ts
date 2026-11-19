@@ -8,7 +8,8 @@ import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { validateCompositionSubmission } from "../src/pipeline/composition-content.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "../src/pipeline/composition-repair.js";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
@@ -6832,6 +6833,38 @@ describe("Phase 4 Pi runner and model-call cache", () => {
 
     expect(existsSync(staleEntry)).toBe(false);
     expect(unrelated.every(file => existsSync(file))).toBe(true);
+  });
+
+  it.each(["entry", "shard"])("continues cache eviction when a listed %s disappears", async (removed) => {
+    const repoRoot = tempGitRepo();
+    const cacheDir = path.join(repoRoot, ".codegenie", "cache");
+    const key = buildModelCallCacheKey({ prompt: "removed concurrently" });
+    const entry = modelCallCacheEntryPath(cacheDir, key);
+    const shard = path.dirname(entry);
+    mkdirSync(shard, { recursive: true });
+    writeFileSync(entry, "{}\n");
+
+    const readDirectory = fs.readdirSync;
+    const readdir = vi.spyOn(fs, "readdirSync").mockImplementation((dir, options) => {
+      if (removed === "shard" && dir === shard) {
+        rmSync(shard, { recursive: true, force: true });
+      }
+      const children = readDirectory(dir, options);
+      if (removed === "entry" && dir === shard) {
+        rmSync(entry, { force: true });
+      }
+      return children;
+    });
+    syncBuiltinESMExports();
+    try {
+      await expect(createModelCallCache({
+        dir: cacheDir, repoRoot, runFingerprint: "run-race", logger: fakeLogger(), telemetry: fakeTelemetry().recorder
+      })).resolves.toMatchObject({ runFingerprint: "run-race" });
+      expect(existsSync(entry)).toBe(false);
+    } finally {
+      readdir.mockRestore();
+      syncBuiltinESMExports();
+    }
   });
 
   it("rejects repo-root cache directories before eviction and fails closed on non-git roots", async () => {

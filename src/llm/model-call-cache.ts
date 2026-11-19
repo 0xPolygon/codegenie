@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, type Dirent } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { sha256Hex } from "../util/hashing.js";
@@ -193,27 +193,40 @@ function evictCacheEntries(dir: string): EvictionResult {
 
 function listCacheFiles(dir: string): CacheFileInfo[] {
   const files: CacheFileInfo[] = [];
-  for (const version of readdirSync(dir, { withFileTypes: true })) {
+  for (const version of readCacheDirectory(dir)) {
     if (!version.isDirectory() || !/^v[1-9]\d*$/u.test(version.name)) {
       continue;
     }
     const versionDir = path.join(dir, version.name);
-    for (const shard of readdirSync(versionDir, { withFileTypes: true })) {
+    for (const shard of readCacheDirectory(versionDir)) {
       if (!shard.isDirectory() || !/^[0-9a-f]{3}$/u.test(shard.name)) {
         continue;
       }
       const shardDir = path.join(versionDir, shard.name);
-      for (const entry of readdirSync(shardDir, { withFileTypes: true })) {
+      for (const entry of readCacheDirectory(shardDir)) {
         if (!entry.isFile() || !/^[0-9a-f]{64}\.json$/u.test(entry.name) || !entry.name.startsWith(shard.name)) {
           continue;
         }
         const entryPath = path.join(shardDir, entry.name);
-        const stat = statSync(entryPath);
-        files.push({ path: entryPath, size: stat.size, mtimeMs: stat.mtimeMs });
+        const stat = statSync(entryPath, { throwIfNoEntry: false });
+        if (stat) {
+          files.push({ path: entryPath, size: stat.size, mtimeMs: stat.mtimeMs });
+        }
       }
     }
   }
   return files;
+}
+
+function readCacheDirectory(dir: string): Dirent[] {
+  try {
+    return readdirSync(dir, { withFileTypes: true });
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") {
+      return [];
+    }
+    throw cause;
+  }
 }
 
 function unlinkBestEffort(filePath: string): boolean {
