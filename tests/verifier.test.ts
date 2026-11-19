@@ -1902,6 +1902,26 @@ describe("plan 108 verifier severity revision observability", () => {
     });
   }
 
+  it.each([
+    { name: "title-only revise keeps the Stage 7 pre-cap guarantee", updates: { title: "Narrowed title" }, severity: "medium", severityBeforeCap: "critical" },
+    { name: "a verifier severity change replaces it", updates: { title: "Narrowed title", severity: "low" }, severity: "low", severityBeforeCap: undefined }
+  ] as const)("verifier revise and severityBeforeCap (#73): $name", async ({ updates, severity, severityBeforeCap }) => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const finding = candidate("capped-critical", packet, {
+      severity: "medium", severityBeforeCap: "critical", behaviorChange: "intentional_needs_confirmation"
+    });
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [finding])], packets: [packet] },
+      fakeTools(), config(), nullTelemetry(), {
+        runner: verifierRunner(() => ({ verdict: "revise", reason: "Confirmed; narrowed the title.", requiredEvidencePresent: true,
+          falsePositiveRisk: "low", findingUpdates: updates })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      });
+    expect(result.verified).toHaveLength(1);
+    expect(result.verified[0]?.severity).toBe(severity);
+    expect(result.verified[0]?.severityBeforeCap).toBe(severityBeforeCap);
+  });
+
   it("does not record severity revision telemetry for reject compatibility payloads", async () => {
     const fixture = reviewFixture(["src/severity.ts"]);
     const packet = fixture.packets[0]!;

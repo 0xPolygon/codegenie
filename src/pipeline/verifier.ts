@@ -1301,10 +1301,17 @@ function revisedFinding(
     : anchor !== undefined
       ? original.anchorSource
       : undefined;
+  const severity = applySeverityPolicy(submitted.severity, submitted.behaviorChange);
+  // A revise that leaves the already-capped severity unchanged keeps the
+  // Stage 7 pre-cap guarantee; a severity the verifier changes replaces it.
+  const retainedCap = severity.severityBeforeCap === undefined && severity.severity === original.severity
+    ? original.severityBeforeCap
+    : undefined;
   const revised: CandidateFinding = {
     id: original.id,
     title: submitted.title,
-    ...applySeverityPolicy(submitted.severity, submitted.behaviorChange),
+    ...severity,
+    ...(retainedCap !== undefined ? { severityBeforeCap: retainedCap } : {}),
     confidence: submitted.confidence,
     path: anchor !== undefined ? pathFromAnchor(anchor, original.path) : original.path,
     changedLine: anchor !== undefined,
