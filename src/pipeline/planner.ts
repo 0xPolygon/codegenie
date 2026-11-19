@@ -31,7 +31,7 @@ import type {
   ReviewPlan,
   StaticSignal
 } from "../types.js";
-import { isProviderOutageError, isRunFatalLlmError } from "./pipeline-utils.js";
+import { isProviderOutageError, isRunFatalLlmError, isSchemaInvalidError } from "./pipeline-utils.js";
 
 type PlannerOptions = {
   lenses?: LensDescriptor[];
@@ -251,8 +251,10 @@ export async function runPlanner(
   } catch (error) {
     // Provider-wide outage on the run's opening call stays run-fatal: a default
     // plan cannot review anything through a down provider, and the spec reserves
-    // run-fatality for auth/provider-wide failures.
-    if (isRunFatalLlmError(error) || isProviderOutageError(error)) {
+    // run-fatality for auth/provider-wide failures. An unresolvable submission
+    // (llm_schema_invalid) degrades to the default plan, as Stage 7 degrades
+    // its packet.
+    if ((isRunFatalLlmError(error) && !isSchemaInvalidError(error)) || isProviderOutageError(error)) {
       throw error;
     }
     telemetry.event({
@@ -263,6 +265,13 @@ export async function runPlanner(
     });
     const plan = defaultPlan(dossier, opts.lenses, "degraded planning: deterministic default");
     await telemetry.writeArtifact("review-plan.json", plan);
+    // Close stage 5 like the success and chunked paths do.
+    telemetry.event({
+      stage: 5,
+      level: "info",
+      message: "stage_completed",
+      data: { degraded: true, compaction: plannerDossier.compaction.level }
+    });
     return { plan, plannerCoverage: emptyPlannerCoverageStats(), degradedPlanning: true, chunked: false };
   }
 }
@@ -584,8 +593,8 @@ function applyPlannerSafetyCoverage(
     surroundingContextHints: [],
     reason: "planner recovery safety coverage: sparse recovered plan omitted source-code hunk"
   }));
+  // Packets are not built yet at planning time, so only hunks are counted.
   const upgradedHunks = safetyCoverage.length;
-  const upgradedPackets = upgradedHunks;
   const plannerRecovery: PlannerRecoveryTelemetry | undefined = plan.plannerRecovery === undefined
     ? undefined
     : {
@@ -594,7 +603,6 @@ function applyPlannerSafetyCoverage(
         reason: plan.plannerRecovery.reason ?? "recovered planner coverage omitted source-code hunks",
         safetyCoverageApplied: {
           upgradedHunks,
-          upgradedPackets,
           reason: "sparse recovered planner coverage"
         }
       };
@@ -604,7 +612,6 @@ function applyPlannerSafetyCoverage(
     message: "planner_degraded_safety_coverage_applied",
     data: {
       upgradedHunks,
-      upgradedPackets,
       reviewableSourceHunks: plan.plannerRecovery?.reviewableSourceHunks ?? reviewableSourceHunkIds(dossier).size,
       explicitSourceCoverageEntries: plan.plannerRecovery?.explicitSourceCoverageEntries ?? 0,
       maxSafetyDeepSourceHunks: MAX_SAFETY_DEEP_SOURCE_HUNKS
@@ -785,6 +792,12 @@ async function runChunkedPlanner(
   if (chunks.length === 0) {
     const plan = defaultPlan(dossier, opts.lenses, "degraded planning: deterministic default");
     await telemetry.writeArtifact("review-plan.json", plan);
+    telemetry.event({
+      stage: 5,
+      level: "info",
+      message: "stage_completed",
+      data: { degraded: true, chunked: false, chunks: 0, failedRoots: [] }
+    });
     return { plan, plannerCoverage: emptyPlannerCoverageStats(), degradedPlanning: true, chunked: false };
   }
 
@@ -802,7 +815,7 @@ async function runChunkedPlanner(
     try {
       callResults.push(await runPlannerCall(chunk.prompt, config, telemetry, opts));
     } catch (error) {
-      if (isRunFatalLlmError(error) || isProviderOutageError(error)) {
+      if ((isRunFatalLlmError(error) && !isSchemaInvalidError(error)) || isProviderOutageError(error)) {
         throw error;
       }
       failedRoots.push(chunkRoot);
@@ -1425,7 +1438,8 @@ function validatePlan(
       lenses: !defaultedLenses
         ? survivingLenses
         : defaultLensesForFile(hunkLanguage, lenses),
-      reason: defaultedLenses ? `planner_empty_lenses: ${decision.reason}` : decision.reason
+      // A skip runs no lenses, so its diagnostic reason stays the planner's own.
+      reason: defaultedLenses && decision.coverage !== "skip" ? `planner_empty_lenses: ${decision.reason}` : decision.reason
     }, knownFiles);
     const existing = coverageByHunk.get(decision.hunkId);
     if (existing) {

@@ -1,5 +1,6 @@
 import { cp, mkdir, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { FINDING_CATEGORIES, SEVERITIES } from "../types.js";
 import type {
   AttentionRecord,
   CandidateFinding,
@@ -17,6 +18,9 @@ import type {
 } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 import { canonicalArtifactPath } from "../telemetry/run-artifacts.js";
+
+const scoredSeverities: ReadonlySet<unknown> = new Set(SEVERITIES);
+const scoredCategories: ReadonlySet<unknown> = new Set(FINDING_CATEGORIES);
 
 export async function allocateRunDir(logsDir: string): Promise<{ runNumber: number; dir: string }> {
   await mkdir(logsDir, { recursive: true });
@@ -37,13 +41,10 @@ export async function allocateRunDir(logsDir: string): Promise<{ runNumber: numb
 
 export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtifacts> {
   const dir = path.resolve(telemetryDir);
-  // Scoring must never crash on a missing or unreadable artifact — a failed
-  // review already lost its findings; losing the scorer's record of the run
-  // compounds the damage (plan 89 A1, run 0c4d5213/24). Unreadable artifacts
-  // degrade to empty defaults and are disclosed via missingArtifacts.
+  // Keep readable records for diagnostics even when an artifact is incomplete.
   const missingArtifacts: string[] = [];
-  const candidates = await readScoredJson<CandidateFinding[]>(dir, "candidate-findings.json", missingArtifacts);
-  const finalFindings = await readScoredJson<FinalFinding[]>(dir, "final-findings.json", missingArtifacts);
+  const candidates = await readScoredFindings(dir, "candidate-findings.json", missingArtifacts, isScoredCandidate);
+  const finalFindings = await readScoredFindings(dir, "final-findings.json", missingArtifacts, isScoredFinalFinding);
   const selectionRaw = await readOptionalArtifact<unknown>(dir, "final-selection.json");
   const coverageRaw = await readOptionalArtifact<unknown>(dir, "coverage.json");
   const reviewPlan = await readOptionalArtifact<ReviewPlan>(dir, "review-plan.json");
@@ -86,10 +87,10 @@ export async function loadEvalArtifacts(telemetryDir: string): Promise<EvalArtif
     metricsSources.toolCalls = toolCalls;
   }
   const artifacts: EvalArtifacts = {
-    candidates: Array.isArray(candidates) ? candidates : [],
+    candidates,
     verification: normalizeVerification(await readOptionalArtifact<unknown>(dir, "verification.json")),
     finalSelection: normalizeSelection(selectionRaw),
-    finalFindings: Array.isArray(finalFindings) ? finalFindings : [],
+    finalFindings,
     missingArtifacts,
     humanAttentionNotes: normalizeHumanAttentionNotes(humanAttention),
     packets: await loadPackets(path.join(dir, "stages", "06-packets", "packets")),
@@ -221,8 +222,7 @@ function normalizeHumanAttentionOutputNotes(raw: unknown): EvalHumanAttentionNot
   return normalizeHumanAttentionNotes(raw.outputNotes);
 }
 
-// Optional artifact read with the same pre-layout-v2 root fallback as
-// readScoredJson (plan 83): old runs stay loadable for replay and compare.
+// Optional artifacts use the same pre-layout-v2 root fallback as scored findings.
 async function readOptionalArtifact<T>(dir: string, logicalName: string): Promise<T | undefined> {
   const relPath = canonicalArtifactPath(logicalName);
   const primary = await readOptionalJson<T>(dir, relPath);
@@ -232,24 +232,31 @@ async function readOptionalArtifact<T>(dir: string, logicalName: string): Promis
   return readOptionalJson<T>(dir, logicalName);
 }
 
-// Tolerant read for scoring inputs: resolution failures, missing files, and
-// unparseable JSON all degrade to undefined and are recorded by logical name,
-// so a broken review run still produces a scored (and disclosed) data point.
 // Pre-layout-v2 runs stored artifacts at the telemetry root, so the bare
 // logical name is tried as a fallback (plan 83): old runs stay comparable.
-async function readScoredJson<T>(dir: string, logicalName: string, missing: string[]): Promise<T | undefined> {
+async function readScoredFindings<T>(
+  dir: string,
+  logicalName: string,
+  missing: string[],
+  isFinding: (value: unknown) => value is T
+): Promise<T[]> {
   let relPath: string;
   try {
     relPath = canonicalArtifactPath(logicalName);
   } catch {
     missing.push(`${logicalName} (unknown artifact path)`);
-    return undefined;
+    return [];
   }
   const candidates = relPath === logicalName ? [relPath] : [relPath, logicalName];
   let lastError: unknown;
   for (const candidate of candidates) {
     try {
-      return JSON.parse(await readFile(path.join(dir, candidate), "utf8")) as T;
+      const input: unknown = JSON.parse(await readFile(path.join(dir, candidate), "utf8"));
+      const findings = Array.isArray(input) ? input.filter(isFinding) : [];
+      if (!Array.isArray(input) || findings.length !== input.length) {
+        missing.push(`${logicalName} (malformed)`);
+      }
+      return findings;
     } catch (error) {
       lastError = error;
       if (!isNodeErrorCode(error, "ENOENT")) {
@@ -258,7 +265,44 @@ async function readScoredJson<T>(dir: string, logicalName: string, missing: stri
     }
   }
   missing.push(isNodeErrorCode(lastError, "ENOENT") ? logicalName : `${logicalName} (unreadable)`);
-  return undefined;
+  return [];
+}
+
+// Validate the fields used by the scorer while allowing historical records to
+// omit fields the current pipeline adds for presentation or provenance.
+function isScoredCandidate(input: unknown): input is CandidateFinding & Record<string, unknown> {
+  if (!isRecord(input) ||
+    !["id", "path", "title", "failureMode"].every(key => typeof input[key] === "string") ||
+    !scoredSeverities.has(input.severity) || !scoredCategories.has(input.category)) {
+    return false;
+  }
+  const evidence = input.evidence;
+  return isRecord(evidence) && (evidence.relatedCode === undefined ||
+    (Array.isArray(evidence.relatedCode) && evidence.relatedCode.every(entry => isRecord(entry) && typeof entry.path === "string"))) &&
+    (input.anchor === undefined || isScoredAnchor(input.anchor));
+}
+
+function isScoredFinalFinding(input: unknown): input is FinalFinding {
+  if (!isRecord(input) || !isScoredCandidate(input)) {
+    return false;
+  }
+  return typeof input.fingerprint === "string" &&
+    (input.finalBody === undefined || typeof input.finalBody === "string") &&
+    (input.publication === "inline" || input.publication === "summary-only" || input.publication === "suppressed") &&
+    isStringArray(input.mergedCandidateIds) &&
+    [input.mergedPaths, input.mergedTitles].every(value => value === undefined || isStringArray(value)) &&
+    (input.mergedCategories === undefined || (Array.isArray(input.mergedCategories) && input.mergedCategories.every(value => scoredCategories.has(value)))) &&
+    (input.mergedSeverities === undefined || (Array.isArray(input.mergedSeverities) && input.mergedSeverities.every(value => scoredSeverities.has(value)))) &&
+    (input.mergedAnchors === undefined || Array.isArray(input.mergedAnchors));
+}
+
+function isScoredAnchor(input: unknown): boolean {
+  return isRecord(input) && typeof input.path === "string" && typeof input.line === "number" &&
+    (input.startLine === undefined || typeof input.startLine === "number");
+}
+
+function isStringArray(input: unknown): boolean {
+  return Array.isArray(input) && input.every(item => typeof item === "string");
 }
 
 async function readOptionalJson<T>(dir: string, fileName: string): Promise<T | undefined> {

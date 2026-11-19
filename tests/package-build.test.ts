@@ -163,6 +163,7 @@ describe("package build scaffold", () => {
       })) as Array<{ filename: string; files: Array<{ path: string }> }>;
       const artifact = packed[0];
       expect(artifact?.files.map((file) => file.path)).toEqual(expect.arrayContaining([
+        "dist/cli/skill.js",
         "bundled-skills/core/code-review.md",
         "bundled-skills/core/tests.md",
         "bundled-skills/lang/go.md",
@@ -268,6 +269,7 @@ describe("package build scaffold", () => {
       // The native tree-sitter binding is what broke `npm install -g` on Node 26.
       // An installed codegenie must not pull it in through any path.
       expect(existsSync(path.join(consumerDirectory, "node_modules", "tree-sitter"))).toBe(false);
+      assertInstalledAgentSkill(consumerDirectory, path.join(sandbox, "codegenie-home"));
 
       const smokePath = path.join(consumerDirectory, "smoke.mjs");
       writeFileSync(smokePath, `
@@ -447,3 +449,47 @@ console.log(JSON.stringify({
     }
   }, 20_000);
 });
+
+function assertInstalledAgentSkill(consumerDirectory: string, home: string): void {
+  const cliPath = path.join(consumerDirectory, "node_modules/@0xsequence/codegenie/dist/cli/main.js");
+  const runCli = (...args: string[]) => execFileSync(process.execPath, [cliPath, ...args], {
+    cwd: consumerDirectory,
+    env: { CODEGENIE_HOME: home },
+    encoding: "utf8"
+  });
+
+  const skill = runCli("skill");
+  const frontMatter = /^---\n([\s\S]+?)\n---\n/u.exec(skill)?.[1];
+  expect(parseYaml(frontMatter ?? "")).toMatchObject({
+    name: "codegenie",
+    description: expect.stringMatching(/review code changes/u)
+  });
+  expect(existsSync(home)).toBe(false);
+  expect(runCli("--help")).toMatch(/^\s+skill\s+/mu);
+  expect(runCli("skill", "--help")).toMatch(/^Usage: codegenie skill\b/u);
+
+  mkdirSync(home);
+  writeFileSync(path.join(home, "config.toml"), "invalid TOML = [");
+  expect(runCli("skill")).toBe(skill);
+
+  // Read the installed commands' Commander help so the guard also covers
+  // provider subcommands, which have a separate parser from review.
+  const cliExamples = Array.from(skill.matchAll(/(?:^|`)codegenie ([^\r\n`]+)/gmu), (match) => match[1]!);
+  expect(cliExamples.length).toBeGreaterThan(0);
+  const checkedFlags = new Set<string>();
+  for (const example of cliExamples) {
+    const words = example.trim().split(/\s+/u);
+    const firstArgument = words.findIndex((word) => /^[-<]/u.test(word));
+    const command = firstArgument === -1 ? words : words.slice(0, firstArgument);
+    const help = runCli(...command, "--help");
+    const usageCommand = /^Usage: codegenie ([a-z0-9-]+(?: [a-z0-9-]+)*)(?=\s|$)/mu.exec(help)?.[1];
+    expect(usageCommand, example).toBe(command.join(" "));
+
+    const options = new Set(Array.from(help.matchAll(/^  (?:-\w, )?(--[a-z][a-z0-9-]*)(?=[\s,]|$)/gmu), (match) => match[1]));
+    for (const flag of example.match(/--[a-z][a-z0-9-]*/gu) ?? []) {
+      expect(options.has(flag), `${flag} in ${example}`).toBe(true);
+      checkedFlags.add(flag);
+    }
+  }
+  expect(checkedFlags).toEqual(new Set(skill.match(/--[a-z][a-z0-9-]*/gu) ?? []));
+}

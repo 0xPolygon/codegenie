@@ -57,7 +57,7 @@ import { applyCoverageEscalations } from "./coverage-escalation.js";
 import { runTargetedSystemReviews, suppressResolvedFollowUpHints } from "./system-reviewer.js";
 import { promoteUncertaintiesForVerification } from "./uncertainty-promotion.js";
 import { verifyFindings } from "./verifier.js";
-import { dedupeRankAndComposeReview, refreshReviewHealth } from "./composer.js";
+import { dedupeRankAndComposeReview, refreshReviewHealth, reviewRetainedOnCompositionFailure } from "./composer.js";
 import { renderMarkdownReview } from "../output/markdown-renderer.js";
 import { renderReviewForStdout, renderPostingSummaryForStdout } from "../output/stdout-renderer.js";
 import { isDisclosableCoverageReason, uniqueDisclosableCoverageReasons } from "../util/coverage-reasons.js";
@@ -223,7 +223,6 @@ export async function runReview(
         reviewContext: packetReviewContextFromDossier(dossier)
       }),
       plannerResult.plan,
-      config,
       run.telemetry
     );
     run.telemetry.event({
@@ -405,9 +404,10 @@ export async function runReview(
       const coverage: RunCoverageStatus = { unavailable: true, totalHunks: 0, reviewedHunks: 0, skippedHunks: 0, failedHunks: 0,
         coverageByLevel: { deep: 0, normal: 0, light: 0, skip: 0 }, degradedPlanning: false, budgetStopped: false,
         verificationIncompleteCount: 0, partial: true, reasons: [], diagnostics: [reviewDiagnostic(failureStage, error)] };
-      const failureReport: ReviewResult = retainedReview
-        ? { ...retainedReview, coverage: { ...retainedReview.coverage, partial: true,
-            diagnostics: [...(retainedReview.coverage.diagnostics ?? []), reviewDiagnostic(failureStage, error)] } }
+      const retained = retainedReview ?? reviewRetainedOnCompositionFailure(error);
+      const failureReport: ReviewResult = retained
+        ? { ...retained, coverage: { ...retained.coverage, partial: true,
+            diagnostics: [...(retained.coverage.diagnostics ?? []), reviewDiagnostic(failureStage, error)] } }
         : { summary: "Review terminated before a trustworthy report could be assembled.", coverage,
             health: deriveReviewHealth(coverage, 0), findings: [], summaryOnlyFindings: [], needsHumanAttention: [], noFindings: true };
       refreshReviewHealth(failureReport);
@@ -835,7 +835,7 @@ async function createReviewCache(
   return createModelCallCache({
     dir: config.cache.dir,
     repoRoot,
-    runFingerprint: reviewCacheFingerprint(config, repoRoot, resolved, lensState),
+    runFingerprint: reviewCacheFingerprint(config, resolved, lensState),
     logger: run.logger,
     telemetry: run.telemetry
   });
@@ -843,12 +843,17 @@ async function createReviewCache(
 
 export function reviewCacheFingerprint(
   config: CodegenieConfig,
-  repoRoot: string,
   resolved: ResolvedReviewInput,
   registryHash: string
 ): string {
+  // The resolved target and registry already identify the inputs selected by
+  // the base-branch setting and skill paths. The model-call key also hashes
+  // the actual prompts and tools, including changes caused by runtime limits.
+  const { extraSkillPaths: _skillPaths, ...lenses } = config.lenses;
+  const { concurrency: _workers, maxTimeMs: _maxTime, perPassTimeoutMs: _passTimeout, ...review } = config.review;
+  const { maxConcurrentCalls: _providerSlots, ...llm } = config.llm;
   return buildModelCallCacheKey({
-    repoRoot: path.resolve(repoRoot),
+    version: 2,
     mode: resolved.mode,
     baseSha: resolved.baseRef ?? null,
     headSha: resolved.headRef ?? resolved.headSha ?? null,
@@ -858,11 +863,10 @@ export function reviewCacheFingerprint(
     pr: resolved.pr ? { number: resolved.pr.number, baseSha: resolved.pr.baseSha, headSha: resolved.pr.headSha } : null,
     diffHash: sha256Hex(resolved.rawDiff),
     reviewConfigHash: buildModelCallCacheKey({
-      lenses: config.lenses,
-      review: config.review,
-      git: config.git,
+      lenses,
+      review,
       classification: config.classification,
-      llm: config.llm
+      llm
     }),
     registryHash
   });
@@ -1040,8 +1044,14 @@ export function aggregateRunCoverage(
   if (plan.partialReview?.isPartial === true && plan.partialReview.reason.trim().length > 0) {
     reasons.push(plan.partialReview.reason.trim());
   }
-  for (const decision of decisions.filter((decision) => decision.action === "skip").slice(0, 10)) {
-    reasons.push(`${decision.path}: ${decision.reason}`);
+  // Configuration and planner skips are disclosed alike: path and reason,
+  // deduplicated before the ten-entry limit so repeats cannot hide others.
+  const skipped = [...new Set([
+    ...decisions.filter((decision) => decision.action === "skip"),
+    ...plan.coverage.filter((decision) => decision.coverage === "skip")
+  ].map((decision) => `${decision.path}: ${decision.reason}`))];
+  for (const reason of skipped.slice(0, 10)) {
+    reasons.push(reason);
   }
 
   return {

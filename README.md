@@ -12,6 +12,8 @@ npm install -g @0xsequence/codegenie   # or: bun install -g @0xsequence/codegeni
 
 Or run without installing: `npx @0xsequence/codegenie --help`
 
+Run `codegenie skill` to print a `SKILL.md` guide for agents running and interpreting reviews.
+
 > Note: the npm package will move out of the `@0xsequence` scope in the future.
 
 ## Quick start

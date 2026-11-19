@@ -51,6 +51,15 @@ describe("run telemetry", () => {
       .toEqual(["schema_invalid", "schema_invalid", "schema_invalid", "ok"]);
   });
 
+  it("keeps stage timings for the report when telemetry is disabled (#72)", () => {
+    let now = Date.parse("2026-11-19T00:00:00.000Z");
+    const run = createRunTelemetry({ telemetryConfig: { ...defaultConfig.telemetry, enabled: false }, clock: () => new Date(now) });
+    run.recorder.event({ stage: 7, level: "info", message: "stage_started" });
+    now += 5;
+    run.recorder.event({ stage: 7, level: "info", message: "stage_completed" });
+    expect(run.recorder.snapshotStageTimings?.()).toEqual([{ stage: 7, runtimeMs: 5 }]);
+  });
+
   it("records startup provenance even when the checkout/build changes before finalization", async () => {
     vi.stubEnv("CODEGENIE_BUILD_COMMIT", "startup-commit");
     vi.stubEnv("CODEGENIE_BUILD_VERSION", "startup-version");

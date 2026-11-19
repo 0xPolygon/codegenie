@@ -14,6 +14,7 @@ import type {
 } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 import { runReview } from "../pipeline/review-runner.js";
+import { AGENT_SKILL } from "./skill.js";
 
 type ParseReviewCommandOptions = {
   repoRoot?: string;
@@ -126,10 +127,22 @@ export function parseReviewCommand(
   program.command("use").description("shorthand for `provider use`").argument("<model>");
   program.command("version").description("show codegenie version");
   program.command("eval").description("run codegenie eval suites");
+  program
+    .command("skill")
+    .description("print the agent skill as Markdown")
+    .action(() => {
+      if (opts.allowOutput) {
+        process.stdout.write(AGENT_SKILL);
+      }
+      throw new CliDisplayExit(0);
+    });
 
   try {
     program.parse(argv, { from: "user" });
   } catch (error) {
+    if (isCliDisplayExit(error)) {
+      throw error;
+    }
     if (isCommanderDisplayExit(error)) {
       throw new CliDisplayExit(error.exitCode);
     }

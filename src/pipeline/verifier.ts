@@ -257,7 +257,9 @@ export async function verifyFindings(
       candidateId: candidate.id,
       verdict: "keep",
       reason: "verification disabled by config",
-      requiredEvidencePresent: true,
+      // Nothing was checked: a synthetic keep must not count as verified
+      // evidence (e.g. for the composer's low-confidence exception).
+      requiredEvidencePresent: false,
       falsePositiveRisk: "low"
     }));
     records.push(...verdicts.map((verdict) => verificationRecord(verdict, anchorStripped, candidateRecordMeta(
@@ -796,6 +798,24 @@ function normalizeSubmittedVerdict(
       data: { candidateId: candidate.id, proofAssessment: normalized.proofAssessment } });
     return { ...normalized, verdict: "reject", requiredEvidencePresent: false };
   }
+  // A kept finding requires false-positive risk that is not high
+  // (specs/project/architecture.md keep criteria), so a keep or revise that
+  // reports high risk is a reject. Missing evidence keeps its own reason below.
+  if (normalized.verdict !== "reject" && normalized.requiredEvidencePresent === true && normalized.falsePositiveRisk === "high") {
+    telemetry.event({
+      stage: 9,
+      level: "warn",
+      message: "verification_high_false_positive_risk_normalized_to_reject",
+      file: candidate.path,
+      data: { candidateId: candidate.id, originalVerdict: submitted.verdict }
+    });
+    return {
+      verdict: "reject",
+      reason: `high false-positive risk; original ${submitted.verdict} verdict rejected: ${normalized.reason}`,
+      requiredEvidencePresent: true,
+      falsePositiveRisk: "high"
+    };
+  }
   if (normalized.verdict === "reject" || normalized.requiredEvidencePresent === true) {
     return normalized;
   }
@@ -1111,6 +1131,8 @@ function classifyVerifierSchemaInvalid(input: LlmSchemaRepairInput | string): Ve
     return typeof argumentsValue === "object" && argumentsValue !== null &&
       "verdict" in argumentsValue && argumentsValue.verdict === "revise" &&
       (!("finalFinding" in argumentsValue) || argumentsValue.finalFinding == null) &&
+      // FindingUpdatesSchema requires at least one field, so {} or [] is no revision.
+      !isNonEmptyPlainObject("findingUpdates" in argumentsValue ? argumentsValue.findingUpdates : undefined) &&
       (!("revisedAnchor" in argumentsValue) || argumentsValue.revisedAnchor == null);
   })) {
     return "revise_without_revision_payload";
@@ -1281,10 +1303,17 @@ function revisedFinding(
     : anchor !== undefined
       ? original.anchorSource
       : undefined;
+  const severity = applySeverityPolicy(submitted.severity, submitted.behaviorChange);
+  // A revise that leaves the already-capped severity unchanged keeps the
+  // Stage 7 pre-cap guarantee; a severity the verifier changes replaces it.
+  const retainedCap = severity.severityBeforeCap === undefined && severity.severity === original.severity
+    ? original.severityBeforeCap
+    : undefined;
   const revised: CandidateFinding = {
     id: original.id,
     title: submitted.title,
-    ...applySeverityPolicy(submitted.severity, submitted.behaviorChange),
+    ...severity,
+    ...(retainedCap !== undefined ? { severityBeforeCap: retainedCap } : {}),
     confidence: submitted.confidence,
     path: anchor !== undefined ? pathFromAnchor(anchor, original.path) : original.path,
     changedLine: anchor !== undefined,
@@ -1296,6 +1325,8 @@ function revisedFinding(
     ...(submitted.behaviorChange !== undefined ? { behaviorChange: submitted.behaviorChange } : {}),
     ...(submitted.intentEvidence !== undefined ? { intentEvidence: submitted.intentEvidence } : {}),
     producedBy: original.producedBy,
+    // Host-owned provenance is trusted metadata, not a revisable field.
+    ...(original.provenance !== undefined ? { provenance: original.provenance } : {}),
     ...(original.clusterId !== undefined ? { clusterId: original.clusterId } : {}),
     ...(original.duplicateOf !== undefined ? { duplicateOf: original.duplicateOf } : {})
   };
@@ -1749,6 +1780,10 @@ function incompleteReasonLabel(reason: string): string {
 
 function isSchemaInvalidError(error: unknown): boolean {
   return isCodegenieError(error) && error.code === "llm_schema_invalid";
+}
+
+function isNonEmptyPlainObject(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0;
 }
 
 function isBudgetExhaustedWorkerError(error: unknown): boolean {

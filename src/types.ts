@@ -2,7 +2,8 @@ export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
 
 export type ReviewDepth = "light" | "normal" | "deep";
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
-export type Severity = "critical" | "high" | "medium" | "low";
+export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
+export type Severity = (typeof SEVERITIES)[number];
 export type Confidence = "high" | "medium" | "low";
 export type ProcessingMode = "per-hunk" | "whole-file" | "skip";
 export type ReviewPriority = "critical" | "high" | "normal" | "low";
@@ -621,7 +622,6 @@ export type PlannerRecoveryTelemetry = {
   explicitSourceCoverageEntries: number;
   safetyCoverageApplied?: {
     upgradedHunks: number;
-    upgradedPackets: number;
     reason: string;
   };
 };
@@ -707,14 +707,16 @@ export type DiffAnchorIndex = {
   hunkIdAt(path: string, line: number, side: "RIGHT" | "LEFT"): string | undefined;
 };
 
-export type FindingCategory =
-  | "logic_bug"
-  | "correctness"
-  | "security"
-  | "performance"
-  | "architecture"
-  | "testing"
-  | "maintainability";
+export const FINDING_CATEGORIES = [
+  "logic_bug",
+  "correctness",
+  "security",
+  "performance",
+  "architecture",
+  "testing",
+  "maintainability"
+] as const;
+export type FindingCategory = (typeof FINDING_CATEGORIES)[number];
 
 export type BehaviorChangeAssessment =
   | "accidental_regression"
