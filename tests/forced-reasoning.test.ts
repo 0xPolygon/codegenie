@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { zstdDecompressSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -22,6 +23,11 @@ function reasoningFields(payload: unknown): Record<string, unknown> {
   };
   scan(payload, "");
   return result;
+}
+
+function valueAt(payload: unknown, dottedPath: string): unknown {
+  return dottedPath.split(".").reduce<unknown>((value, key) =>
+    value !== null && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined, payload);
 }
 
 async function capture(provider: string, model: string, forced: boolean): Promise<unknown> {
@@ -50,10 +56,13 @@ describe("forced submits keep Pi's native reasoning mapping", () => {
   });
 
   it.each([
-    { issue: "#74", provider: "google", model: "gemini-2.5-flash", env: "GEMINI_API_KEY", ordinary: { "config.thinkingConfig.thinkingBudget": 24576 } },
-    { issue: "#75", provider: "mistral", model: "codestral-2508", env: "MISTRAL_API_KEY", ordinary: {} },
-    { issue: "#76", provider: "radius", model: "balanced", env: "RADIUS_API_KEY", ordinary: { "options.reasoning": "high" } }
-  ])("$issue $provider/$model sends the ordinary reasoning fields when forcing submit", async ({ provider, model, env, ordinary }) => {
+    { issue: "#74", provider: "google", model: "gemini-2.5-flash", env: "GEMINI_API_KEY", ordinary: { "config.thinkingConfig.thinkingBudget": 24576 },
+      forcedChoice: ["config.toolConfig.functionCallingConfig.mode", "ANY"] },
+    { issue: "#75", provider: "mistral", model: "codestral-2508", env: "MISTRAL_API_KEY", ordinary: {},
+      forcedChoice: ["toolChoice", { type: "function", function: { name: "submit_review" } }] },
+    { issue: "#76", provider: "radius", model: "balanced", env: "RADIUS_API_KEY", ordinary: { "options.reasoning": "high" },
+      forcedChoice: ["options.toolChoice", "required"] }
+  ])("$issue $provider/$model sends the ordinary reasoning fields when forcing submit", async ({ provider, model, env, ordinary, forcedChoice }) => {
     const home = mkdtempSync(path.join(tmpdir(), "codegenie-forced-reasoning-"));
     vi.stubEnv("CODEGENIE_HOME", home);
     vi.stubEnv(env, "test-only-key");
@@ -62,9 +71,54 @@ describe("forced submits keep Pi's native reasoning mapping", () => {
       const forced = await capture(provider, model, true);
       expect(reasoningFields(plain)).toEqual(ordinary);
       expect(reasoningFields(forced)).toEqual(reasoningFields(plain));
-      // The forced request still forces the submit tool.
-      expect(JSON.stringify(forced)).not.toEqual(JSON.stringify(plain));
+      // The forced request carries the provider-native forcing choice.
+      const [choicePath, choice] = forcedChoice as [string, unknown];
+      expect(valueAt(forced, choicePath)).toEqual(choice);
+      expect(valueAt(plain, choicePath)).not.toEqual(choice);
     } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+// OpenAI-family Responses APIs get the forced choice injected by
+// withToolChoicePayload after Pi's own onPayload hooks, so the request body is
+// captured at a blocked fetch instead (Codex compresses it with zstd).
+describe("forced submits on Responses APIs carry the native tool_choice", () => {
+  it.each([
+    { provider: "openai", model: "gpt-4" },
+    { provider: "azure", model: "gpt-4" },
+    { provider: "openai-codex", model: "gpt-5.6-sol" }
+  ])("$provider/$model sends tool_choice for the submit tool", async ({ provider, model }) => {
+    const home = mkdtempSync(path.join(tmpdir(), "codegenie-forced-responses-"));
+    vi.stubEnv("CODEGENIE_HOME", home);
+    vi.stubEnv("OPENAI_API_KEY", "test-only-key");
+    vi.stubEnv("AZURE_OPENAI_API_KEY", "test-only-key");
+    vi.stubEnv("AZURE_OPENAI_BASE_URL", "https://example.openai.azure.com/openai/v1");
+    // A fake, unexpired Codex login so the adapter resolves without network.
+    const access = `x.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600, "https://api.openai.com/auth": { chatgpt_account_id: "acct" } })).toString("base64url")}.y`;
+    writeFileSync(path.join(home, "auth.json"), JSON.stringify({ "openai-codex": { type: "oauth", createdAt: new Date().toISOString(),
+      credentials: { access, refresh: "test-only-refresh", expires: Date.now() + 3_600_000, accountId: "acct" } } }));
+    let body: unknown;
+    vi.stubGlobal("fetch", async (_url: unknown, init?: { body?: unknown }) => {
+      body = init?.body;
+      throw new Error("transport blocked");
+    });
+    try {
+      const adapter = createRealPiAiAdapter();
+      const ref = adapter.resolveModel({ provider, model });
+      expect(ref).toBeDefined();
+      await adapter.complete(ref!, {
+        messages: [{ role: "user", content: "synthetic", timestamp: 0 }],
+        tools: [{ name: "submit_review", description: "Submit", parameters: { type: "object", properties: {} } }]
+      }, { submitToolName: "submit_review", reasoning: "high", maxRetries: 0, toolChoice: { type: "tool", name: "submit_review" } }).catch(() => undefined);
+      const bytes = body instanceof Uint8Array ? (body[0] === 0x28 && body[1] === 0xb5 ? zstdDecompressSync(body) : body) : undefined;
+      const text = typeof body === "string" ? body : bytes !== undefined ? new TextDecoder().decode(bytes) : undefined;
+      expect(text).toBeDefined();
+      expect((JSON.parse(text!) as { tool_choice?: unknown }).tool_choice).toEqual({ type: "function", name: "submit_review" });
+    } finally {
+      vi.unstubAllGlobals();
       vi.unstubAllEnvs();
       rmSync(home, { recursive: true, force: true });
     }
