@@ -340,6 +340,29 @@ describe("eval suite validation", () => {
 });
 
 describe("eval scoring", () => {
+  it("records a failed review sample without losing its retained findings", () => {
+    const retained = finalFinding("retained", "src/retained.ts", 5);
+    const artifacts: EvalArtifacts = {
+      candidates: [], verification: [], finalSelection: [], finalFindings: [retained], packets: [], hintEvents: [],
+      metricsSources: { runJson: { outcome: { status: "failed", errorCode: "review_failed", exitCode: 1 } } }
+    };
+    const score = scoreEvalRun({
+      name: "failed-review",
+      should_find: [{ id: "retained", path: retained.path }],
+      should_not_find: [{ id: "sentinel", path: "src/unreviewed.ts" }, { id: "retained-sentinel", path: retained.path }]
+    }, artifacts, "live");
+
+    expect(score.status).toBe("error");
+    expect(score.error?.code).toBe("review_failed");
+    expect(score.metrics.reportedFindings).toBe(1);
+    expect(score.expectationResults).toMatchObject([
+      { status: "pass", matched: [{ findingId: "retained" }] },
+      { status: "skipped", skipReason: "review-failed" },
+      { status: "fail", matched: [{ findingId: "retained" }] }
+    ]);
+    expect(score.violations).toEqual([{ expectationId: "retained-sentinel", findingId: "retained", publication: retained.publication }]);
+  });
+
   it.each(["invalid", "partial", "length_stopped", "event_capture_missing", "event_final_mismatch"])("does not claim preservation after %s arguments are regenerated", state => {
     const events = [
       { message: "recovery_fidelity_started", data: { version: 1 } },
@@ -822,6 +845,83 @@ describe("eval scoring", () => {
       matched: true,
       via: "merged-candidate"
     });
+  });
+
+  it("requires one source to satisfy a positive expectation while preserving negative sentinels", () => {
+    const left = candidate("left", "src/left.ts", 10, { category: "security", severity: "low" });
+    const right = candidate("right", "src/right.ts", 20, {
+      title: "Callback can be dropped",
+      category: "correctness",
+      severity: "high",
+      failureMode: "The configured callback is never invoked."
+    });
+    const finding = finalFinding("merged", left.path, 10, {
+      category: left.category,
+      severity: left.severity,
+      mergedCandidateIds: [left.id, right.id]
+    });
+    const artifacts: EvalArtifacts = {
+      candidates: [left, right], finalFindings: [finding], verification: [], finalSelection: [], packets: [], hintEvents: [], metricsSources: {}
+    };
+    const crossed = {
+      id: "crossed",
+      path: left.path,
+      category: "security" as const,
+      severityAtLeast: "high" as const,
+      titlePattern: "callback can be dropped",
+      failureModePattern: "callback is never invoked"
+    };
+
+    const score = scoreEvalRun({
+      name: "coherent-merged-matches",
+      should_find: [crossed, { ...crossed, id: "coherent", path: right.path, lineRange: [20, 20], category: "correctness" }],
+      should_not_find: [{ ...crossed, id: "negative" }, { id: "negative-right", path: right.path, lineRange: [20, 20] }]
+    }, artifacts, "live");
+
+    expect(score.expectationResults.map(({ expectationId, status }) => [expectationId, status])).toEqual([
+      ["crossed", "fail"], ["coherent", "pass"], ["negative", "fail"], ["negative-right", "fail"]
+    ]);
+    expect(score.violations).toMatchObject([
+      { expectationId: "negative", findingId: finding.id },
+      { expectationId: "negative-right", findingId: finding.id }
+    ]);
+    expect(score.nearViolations).toEqual([{ expectationId: "negative-right", findingId: right.id, artifact: "candidate-findings" }]);
+  });
+
+  it("matches historical merged metadata only on a single field or one coherent location", () => {
+    const finding = finalFinding("merged", "src/reported.ts", 10, {
+      mergedCandidateIds: ["missing-source"],
+      mergedTitles: ["Historical callback can be dropped"],
+      mergedPaths: ["src/path-only.ts"],
+      mergedAnchors: [candidate("source", "src/anchored.ts", 20).anchor!]
+    });
+    const artifacts: EvalArtifacts = {
+      candidates: [], finalFindings: [finding], verification: [], finalSelection: [], packets: [], hintEvents: [], metricsSources: {}
+    };
+
+    expect(matchExpectation({ id: "title-only", titlePattern: "historical callback" }, finding, artifacts).matched).toBe(true);
+    expect(matchExpectation({ id: "path-only", path: "src/path-only.ts" }, finding, artifacts).matched).toBe(true);
+    expect(matchExpectation({ id: "same-location", path: "src/anchored.ts", lineRange: [20, 20] }, finding, artifacts).matched).toBe(true);
+    expect(matchExpectation({ id: "crossed-location", path: "src/path-only.ts", lineRange: [20, 20] }, finding, artifacts)).toMatchObject({
+      matched: false,
+      fields: [{ field: "path", matched: true }, { field: "lineRange", matched: false }]
+    });
+    expect(matchExpectation({ id: "crossed-metadata", path: "src/anchored.ts", titlePattern: "historical callback" }, finding, artifacts).matched).toBe(false);
+  });
+
+  it("preserves a historical merged anchor path when its line is unavailable", async () => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-merged-anchor-eval-"));
+    const finding = finalFinding("merged", "src/reported.ts", 10);
+    writeTelemetryArtifact(telemetry, "candidate-findings.json", []);
+    writeTelemetryArtifact(telemetry, "final-findings.json", [{
+      ...finding,
+      mergedAnchors: ["[redacted:circular]", { path: "src/anchored.ts", line: "[redacted]" }]
+    }]);
+    const artifacts = await loadEvalArtifacts(telemetry);
+    const [loaded] = artifacts.finalFindings;
+
+    expect(matchExpectation({ id: "path-only", path: "src/anchored.ts" }, loaded!, artifacts).matched).toBe(true);
+    expect(matchExpectation({ id: "line-required", path: "src/anchored.ts", lineRange: [10, 10] }, loaded!, artifacts).matched).toBe(false);
   });
 
   it("uses conservative category compatibility for logic bug and correctness findings", () => {
@@ -1336,7 +1436,7 @@ describe("eval artifacts", () => {
     const artifacts = await loadEvalArtifacts(telemetry);
 
     expect(artifacts.candidates).toHaveLength(1);
-    expect(artifacts.finalFindings).toHaveLength(1);
+    expect(artifacts.finalFindings).toEqual(finalFindings);
     expect(artifacts.missingArtifacts).toEqual([]);
     expect(artifacts.humanAttentionOutputNotes).toBeUndefined();
   });
@@ -1388,6 +1488,69 @@ describe("eval artifacts", () => {
     expect(artifacts.missingArtifacts).toEqual(
       expect.arrayContaining(["candidate-findings.json", "final-findings.json"])
     );
+  });
+
+  it.each([
+    ["missing", undefined, "final-findings.json"],
+    ["invalid JSON", "{", "final-findings.json (unreadable)"],
+    ["non-array", "{}", "final-findings.json (malformed)"],
+    ["invalid records", "[{}]", "final-findings.json (malformed)"],
+    ["empty array", "[]", undefined]
+  ])("distinguishes %s findings from a known-empty final result", async (_name, contents, missingArtifact) => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-negative-eval-"));
+    writeTelemetryArtifact(telemetry, "candidate-findings.json", []);
+    if (contents !== undefined) {
+      const finalPath = path.join(telemetry, canonicalArtifactPath("final-findings.json"));
+      mkdirSync(path.dirname(finalPath), { recursive: true });
+      writeFileSync(finalPath, contents);
+    }
+
+    const artifacts = await loadEvalArtifacts(telemetry);
+    const score = scoreEvalRun({ name: "clean-change", should_not_find: [{ id: "sentinel", path: "src/app.ts" }] }, artifacts, "live");
+    expect(artifacts.missingArtifacts).toEqual(missingArtifact === undefined ? [] : [missingArtifact]);
+    expect(score.status).toBe(missingArtifact === undefined ? "pass" : "error");
+    expect(score.expectationResults[0]?.status).toBe(missingArtifact === undefined ? "pass" : "skipped");
+  });
+
+  it.each([
+    ["missing", undefined, "candidate-findings.json"],
+    ["unreadable", "{", "candidate-findings.json (unreadable)"],
+    ["malformed", "[{}]", "candidate-findings.json (malformed)"]
+  ])("reports %s candidate artifacts while still checking valid final findings", async (_name, contents, diagnostic) => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-candidate-eval-"));
+    const retained = finalFinding("retained", "src/app.ts", 3);
+    writeTelemetryArtifact(telemetry, "final-findings.json", [retained]);
+    if (contents !== undefined) {
+      const candidatePath = path.join(telemetry, canonicalArtifactPath("candidate-findings.json"));
+      mkdirSync(path.dirname(candidatePath), { recursive: true });
+      writeFileSync(candidatePath, contents);
+    }
+
+    const artifacts = await loadEvalArtifacts(telemetry);
+    const score = scoreEvalRun({ name: "candidate-error", should_not_find: [{ id: "sentinel", path: retained.path }] }, artifacts, "live");
+    expect(score.status).toBe("error");
+    expect(score.metrics.missingArtifacts).toEqual([diagnostic]);
+    expect(score.violations).toEqual([{ expectationId: "sentinel", findingId: retained.id, publication: retained.publication }]);
+  });
+
+  it.each([
+    ["severity", "bogus"],
+    ["category", "bogus"],
+    ["mergedSeverities", ["bogus"]],
+    ["mergedCategories", ["bogus"]]
+  ])("marks findings with an unknown %s value malformed and keeps valid rows", async (field, value) => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-negative-eval-"));
+    const valid = finalFinding("valid", "src/other.ts", 3);
+    const invalid = { ...finalFinding("invalid", "src/app.ts", 3), [field]: value };
+    writeTelemetryArtifact(telemetry, "candidate-findings.json", []);
+    writeTelemetryArtifact(telemetry, "final-findings.json", [valid, invalid]);
+
+    const artifacts = await loadEvalArtifacts(telemetry);
+    const score = scoreEvalRun({ name: "clean-change", should_not_find: [{ id: "sentinel", path: "src/unrelated.ts" }] }, artifacts, "live");
+    expect(artifacts.missingArtifacts).toEqual(["final-findings.json (malformed)"]);
+    expect(artifacts.finalFindings).toEqual([valid]);
+    expect(score.status).toBe("error");
+    expect(score.expectationResults[0]?.status).toBe("skipped");
   });
 
   it("loads canonical staged artifacts and root telemetry streams", async () => {
@@ -1653,13 +1816,13 @@ describe("artifact replay", () => {
     expect(compare.statusChange).toEqual({ from: "pass", to: "error" });
   });
 
-  it("persists errored --from-artifacts replay runs when required artifacts are missing", async () => {
+  it.each(["candidate-findings.json", "final-findings.json"])("persists errored --from-artifacts replay runs when %s is missing", async (missing) => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-replay-error-"));
     const logsDir = path.join(suiteDir, "logs");
     const sourceRun = path.join(logsDir, "1");
     const telemetry = path.join(sourceRun, "telemetry");
     mkdirSync(telemetry, { recursive: true });
-    writeTelemetryArtifact(telemetry, "candidate-findings.json", []);
+    writeTelemetryArtifact(telemetry, missing === "candidate-findings.json" ? "final-findings.json" : "candidate-findings.json", []);
     const evalCase: EvalCase = {
       name: "broken-replay",
       artifacts: { path: "logs/1" },
@@ -1680,6 +1843,7 @@ describe("artifact replay", () => {
     const result = await replayFromArtifacts(sourceRun, { config: defaultConfig });
 
     expect(result.status).toBe("error");
+    expect(result.info.score.error?.message).toContain(missing);
     expect(existsSync(path.join(logsDir, "2", "info.json"))).toBe(true);
     expect(existsSync(path.join(logsDir, "2", "compare-to-previous.json"))).toBe(true);
     const info = JSON.parse(readFileSync(path.join(logsDir, "2", "info.json"), "utf8")) as EvalRunInfo;
@@ -2291,6 +2455,43 @@ describe("eval repeats (plan 79)", () => {
 
     const boundary: EvalCase = { ...evalCase, should_find: [{ id: "wc", path: "src/app.ts", titlePattern: "stale value", minRecallRate: 1 / 3 }] };
     expect(aggregateRepeatScores(boundary, executions).score.status).toBe("pass");
+  });
+
+  it("counts and reports failed repeat draws separately and retains observed negative violations", () => {
+    const evalCase: EvalCase = { name: "mixed", should_not_find: [{ id: "sentinel", path: "src/app.ts" }] };
+    const passing = scoreEvalRun(evalCase, emptyArtifacts(), "live");
+    const failedArtifacts = emptyArtifacts({ metricsSources: { runJson: { outcome: { status: "failed" } } } });
+    const failed = scoreEvalRun(evalCase, failedArtifacts, "live");
+    const failedDraw = { runDir: "repeats/2", score: failed, artifacts: failedArtifacts };
+    const { aggregate, score } = aggregateRepeatScores(evalCase, [{ runDir: "repeats/1", score: passing }, failedDraw]);
+
+    expect(score.status).toBe("pass");
+    expect(aggregate.totals.errors).toBe(1);
+    expect(aggregate.executions.map((execution) => execution.status)).toEqual(["pass", "error"]);
+    expect(aggregateRepeatScores(evalCase, [failedDraw]).score.status).toBe("error");
+    expect(renderCaseResult({
+      caseName: evalCase.name,
+      runDir: "unused",
+      status: score.status,
+      info: {
+        runNumber: 1,
+        caseName: evalCase.name,
+        caseHash: "hash",
+        caseSnapshot: evalCase,
+        mode: "live",
+        cache: { enabled: false, source: "config" },
+        startedAt: "2026-01-01T00:00:00.000Z",
+        finishedAt: "2026-01-01T00:00:01.000Z",
+        score,
+        repeats: aggregate
+      }
+    })).toMatch(/REPEAT x2: pass,error .*1 errored/u);
+
+    const violatingArtifacts = { ...failedArtifacts, finalFindings: [finalFinding("retained", "src/app.ts", 3)] };
+    const violatingDraw = { ...failedDraw, score: scoreEvalRun(evalCase, violatingArtifacts, "live"), artifacts: violatingArtifacts };
+    const violating = aggregateRepeatScores(evalCase, [{ runDir: "repeats/1", score: passing }, violatingDraw]);
+    expect(violating.score.status).toBe("fail");
+    expect(violating.score.violations).toMatchObject([{ expectationId: "sentinel", findingId: "retained" }]);
   });
 
   it("marks a missed expectation that resurfaced as a human-attention note", () => {

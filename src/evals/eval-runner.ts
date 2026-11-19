@@ -370,10 +370,8 @@ export async function replayFromArtifacts(
   }
 }
 
-// Replays take the artifact set as their input: missing core artifacts mean
-// the input is invalid and the replay errors. Live-run scoring, by contrast,
-// tolerates missing artifacts with disclosure (plan 89 A1) because the review
-// already ran and its partial record is the data point.
+// Replay requires both findings artifacts as inputs. Live scoring records an
+// artifact error in the score and preserves any readable findings as diagnostics.
 function assertReplayArtifactsComplete(artifacts: { missingArtifacts?: string[] }, telemetryDir: string): void {
   const missing = artifacts.missingArtifacts ?? [];
   if (missing.length > 0) {

@@ -8,7 +8,8 @@ import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { validateCompositionSubmission } from "../src/pipeline/composition-content.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "../src/pipeline/composition-repair.js";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import fs, { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
@@ -6848,6 +6849,74 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     );
   });
 
+  it("evicts only files in the versioned model-call cache layout", async () => {
+    const repoRoot = tempGitRepo();
+    const cacheDir = path.join(repoRoot, ".codegenie", "cache");
+    const key = buildModelCallCacheKey({ prompt: "old version" });
+    const shard = key.slice(0, 3);
+    const staleEntry = path.join(cacheDir, "v1", shard, `${key}.json`);
+    const unrelated = [
+      path.join(cacheDir, "settings.json"),
+      path.join(cacheDir, "nested", "v1", shard, `${key}.json`),
+      path.join(cacheDir, "v1", shard, "settings.json"),
+      path.join(cacheDir, "v1", shard === "000" ? "001" : "000", `${key}.json`)
+    ];
+    const staleTime = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    for (const file of [staleEntry, ...unrelated]) {
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, "{}\n");
+      utimesSync(file, staleTime, staleTime);
+    }
+
+    await createModelCallCache({ dir: cacheDir, repoRoot, runFingerprint: "run-layout", logger: fakeLogger(), telemetry: fakeTelemetry().recorder });
+
+    expect(existsSync(staleEntry)).toBe(false);
+    expect(unrelated.every(file => existsSync(file))).toBe(true);
+  });
+
+  it.each(["entry removed", "shard removed", "shard replaced"])("continues cache eviction with a listed %s concurrently", async (race) => {
+    const repoRoot = tempGitRepo();
+    const cacheDir = path.join(repoRoot, ".codegenie", "cache");
+    const key = buildModelCallCacheKey({ prompt: "removed concurrently" });
+    const entry = modelCallCacheEntryPath(cacheDir, key);
+    const shard = path.dirname(entry);
+    const staleEntry = modelCallCacheEntryPath(cacheDir, "f".repeat(64));
+    const staleTime = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    mkdirSync(path.dirname(staleEntry), { recursive: true });
+    writeFileSync(staleEntry, "{}\n");
+    utimesSync(staleEntry, staleTime, staleTime);
+    mkdirSync(shard, { recursive: true });
+    writeFileSync(entry, "{}\n");
+
+    const readDirectory = fs.readdirSync;
+    const readdir = vi.spyOn(fs, "readdirSync").mockImplementation((dir, options) => {
+      if (race !== "entry removed" && dir === shard) {
+        rmSync(shard, { recursive: true, force: true });
+        if (race === "shard replaced") {
+          writeFileSync(shard, "unrelated replacement\n");
+        }
+      }
+      const children = readDirectory(dir, options);
+      if (race === "entry removed" && dir === shard) {
+        rmSync(entry, { force: true });
+      }
+      return children;
+    });
+    syncBuiltinESMExports();
+    try {
+      await expect(createModelCallCache({
+        dir: cacheDir, repoRoot, runFingerprint: "run-race", logger: fakeLogger(), telemetry: fakeTelemetry().recorder
+      })).resolves.toMatchObject({ runFingerprint: "run-race" });
+      expect(existsSync(staleEntry)).toBe(false);
+      if (race === "shard replaced") {
+        expect(readFileSync(shard, "utf8")).toBe("unrelated replacement\n");
+      }
+    } finally {
+      readdir.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+
   it("rejects repo-root cache directories before eviction and fails closed on non-git roots", async () => {
     const repoRoot = tempGitRepo();
     const trackedJson = path.join(repoRoot, "tracked.json");
@@ -6879,6 +6948,25 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ).rejects.toMatchObject({
       code: "config_error"
     });
+  });
+
+  it("reports a typed cache preflight error when Git cannot be started", async () => {
+    const repoRoot = tempGitRepo();
+    vi.stubEnv("PATH", tempDir());
+    try {
+      await expect(createModelCallCache({
+        dir: ".codegenie/cache",
+        repoRoot,
+        runFingerprint: "run-no-git",
+        logger: fakeLogger(),
+        telemetry: fakeTelemetry().recorder
+      })).rejects.toMatchObject({
+        code: "config_error",
+        cause: { code: "ENOENT" }
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
