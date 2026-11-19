@@ -211,4 +211,3 @@ All of these were confirmed by reading code at master. None is disputed by @arch
 | 123 | LIVE | `src/util/review-health.ts:16` `deriveReviewHealth` |
 | 124 | LIVE | `src/pipeline/composer.ts:1414` `crossFileRootCauseGroupsMatch` |
 | 125 | LIVE | `src/github-action/models.ts:135` `selectModel` |
-
