@@ -7396,6 +7396,32 @@ describe("phase 5 pipeline regressions", () => {
     ]);
   });
 
+  it.each(["light", "normal"] as const)("builds an escalated %s packet with the deep profile, lenses and tool budget (#59)", async (plannedCoverage) => {
+    const file = genericTestRewriteFile();
+    const facts = { ...fakeFacts(file.path, "per-hunk"), testStatus: "test" as const };
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const packets = await buildReviewPackets(
+      {
+        ...fakePlan(file.path),
+        coverage: [{ hunkId: "h1", path: file.path, coverage: plannedCoverage, lenses: ["core/tests"], surroundingContextHints: [], reason: "test rewrite" }]
+      },
+      [file],
+      [facts],
+      fakeRepositoryIndex(),
+      { ...nullTelemetry(), event: (event) => events.push(event) },
+      { config: config(), enabledLenses: ["core/tests"] }
+    );
+
+    const packet = packets[0] as ReviewPacket;
+    expect(packet).toMatchObject({ coverage: "deep", reviewProfile: "investigate", coverageEscalation: { rule: "test_coverage_delta" } });
+    expect(packet.toolBudget).toEqual(toolBudget("deep", config().review.depth, "investigate"));
+    expect(events).toContainEqual(expect.objectContaining({
+      message: "coverage_escalated",
+      packetId: packet.id,
+      data: expect.objectContaining({ from: plannedCoverage })
+    }));
+  });
+
   it("threads test coverage delta and boundary rewrite signals into packets and prompts", async () => {
     const file = genericTestRewriteFile();
     const facts = { ...fakeFacts(file.path, "per-hunk"), testStatus: "test" as const };

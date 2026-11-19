@@ -223,7 +223,6 @@ export async function runReview(
         reviewContext: packetReviewContextFromDossier(dossier)
       }),
       plannerResult.plan,
-      config,
       run.telemetry
     );
     run.telemetry.event({
