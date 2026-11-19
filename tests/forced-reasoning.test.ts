@@ -6,7 +6,7 @@ import { createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 
 // Forced submits must send the reasoning fields Pi's native (ordinary-path)
 // mapping sends. Payloads are captured before transport with dummy keys.
-const REASONING_KEYS = /^(thinkingBudget|thinkingLevel|reasoningEffort|reasoning_effort|reasoning|promptMode|prompt_mode)$/u;
+const REASONING_KEYS = /^(thinking|thinkingBudget|thinkingLevel|reasoningEffort|reasoning_effort|reasoning|promptMode|prompt_mode)$/u;
 
 function reasoningFields(payload: unknown): Record<string, unknown> {
   const result: Record<string, unknown> = {};
@@ -14,7 +14,9 @@ function reasoningFields(payload: unknown): Record<string, unknown> {
     if (!value || typeof value !== "object") return;
     for (const [key, child] of Object.entries(value)) {
       const keyPath = prefix ? `${prefix}.${key}` : key;
-      if (REASONING_KEYS.test(key) && (child === null || typeof child !== "object")) result[keyPath] = child;
+      // A matched key is recorded whatever its shape (objects as a JSON
+      // snapshot), so reasoning sent as { effort } or { budget_tokens } is seen.
+      if (REASONING_KEYS.test(key)) result[keyPath] = child !== null && typeof child === "object" ? JSON.stringify(child) : child;
       else scan(child, keyPath);
     }
   };
@@ -40,6 +42,13 @@ async function capture(provider: string, model: string, forced: boolean): Promis
 }
 
 describe("forced submits keep Pi's native reasoning mapping", () => {
+  it("observes reasoning fields sent as objects, not only scalars (#75)", () => {
+    expect(reasoningFields({ options: { reasoning: { effort: "high" } }, thinking: { type: "enabled", budget_tokens: 1024 } })).toEqual({
+      "options.reasoning": JSON.stringify({ effort: "high" }),
+      thinking: JSON.stringify({ type: "enabled", budget_tokens: 1024 })
+    });
+  });
+
   it.each([
     { issue: "#74", provider: "google", model: "gemini-2.5-flash", env: "GEMINI_API_KEY", ordinary: { "config.thinkingConfig.thinkingBudget": 24576 } },
     { issue: "#75", provider: "mistral", model: "codestral-2508", env: "MISTRAL_API_KEY", ordinary: {} },
