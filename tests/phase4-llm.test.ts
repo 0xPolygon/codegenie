@@ -4505,12 +4505,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(JSON.stringify(rejected)).not.toContain("Received arguments");
     const repairPrompts = JSON.stringify(adapter.contexts);
     expect(repairPrompts).toContain("Field repair failed complete submission validation");
-    for (const block of repairPrompts.split("label=semantic-validation-error").slice(1)) {
-      expect(block.split("End of semantic-validation-error data block")[0]).not.toContain("Received arguments");
-    }
-    for (const error of repairPrompts.split("Field repair failed complete submission validation").slice(1)) {
-      expect(error.split("omittedPermittedFieldCount")[0]).not.toContain("Received arguments");
-    }
+    // Neither the primary schema-repair feedback nor any field-repair text
+    // may resend the rejected payload.
+    expect(repairPrompts).toContain("arguments were schema-invalid");
+    expect(repairPrompts).not.toContain("Received arguments");
   });
 
   it("strips redundant candidate anchor fields before model repair", async () => {

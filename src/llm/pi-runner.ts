@@ -728,9 +728,12 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
               const semanticClassification = cause instanceof SubmitSemanticValidationError
                 ? cause.classification
                 : undefined;
+              // Pi appends the rejected payload after "Received arguments:"; it never
+              // goes back to the model or into artifacts.
+              const causeMessage = (cause instanceof Error ? cause.message : String(cause)).split("Received arguments:")[0]!.trim();
               const submitError = semanticClassification !== undefined
-                ? `The ${submitTool.name} arguments were semantically invalid: ${cause instanceof Error ? cause.message : semanticClassification}`
-                : `The ${submitTool.name} arguments were schema-invalid: ${truncateDiagnostic(cause instanceof Error ? cause.message : String(cause))}`;
+                ? `The ${submitTool.name} arguments were semantically invalid: ${cause instanceof Error ? causeMessage : semanticClassification}`
+                : `The ${submitTool.name} arguments were schema-invalid: ${truncateDiagnostic(causeMessage)}`;
               const repairInput: LlmSchemaInvalidSubmitRecoveryInput = {
                 ...schemaRepairInput({
                   request,
