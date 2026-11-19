@@ -70,8 +70,10 @@ export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode:
   const reportedFinals = artifacts.finalFindings.filter(isReportedFinalFinding);
   const metrics = buildMetrics(artifacts);
   const missingArtifacts = artifacts.missingArtifacts ?? [];
-  const hasFinalFindings = !missingArtifacts.some(name => name.startsWith("final-findings.json"));
-  const shouldNot = scoreShouldNotFind(evalCase.should_not_find ?? [], reportedFinals, artifacts, mode, hasFinalFindings);
+  const reviewFailed = fieldAtPath(artifacts.metricsSources.runJson, ["outcome", "status"]) === "failed";
+  const negativeSkipReason = reviewFailed ? "review-failed"
+    : missingArtifacts.some(name => name.startsWith("final-findings.json")) ? "missing-final-findings" : undefined;
+  const shouldNot = scoreShouldNotFind(evalCase.should_not_find ?? [], reportedFinals, artifacts, mode, negativeSkipReason);
   const allExpectationResults = [
     ...scorePositiveList("should_find", evalCase.should_find ?? [], reportedFinals, artifacts, mode),
     ...scorePositiveList("should_find_candidate", evalCase.should_find_candidate ?? [], artifacts.candidates, artifacts, mode),
@@ -84,16 +86,17 @@ export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode:
     budgetResults.some((result) => result.status === "fail")
     ? "fail"
     : "pass";
+  const error: EvalScore["error"] = reviewFailed ? { code: "review_failed", message: "The review run failed." }
+    : missingArtifacts.length > 0 ? { code: "invalid_args", message: `Required eval artifacts unavailable: ${missingArtifacts.join(", ")}` }
+      : undefined;
   return {
-    status: missingArtifacts.length === 0 ? status : "error",
+    status: error === undefined ? status : "error",
     expectationResults: allExpectationResults,
     budgetResults,
     violations: shouldNot.violations,
     nearViolations: shouldNot.nearViolations,
     metrics,
-    ...(missingArtifacts.length > 0 ? {
-      error: { code: "invalid_args" as const, message: `Required eval artifacts unavailable: ${missingArtifacts.join(", ")}` }
-    } : {})
+    ...(error !== undefined ? { error } : {})
   };
 }
 
@@ -674,7 +677,7 @@ function scoreShouldNotFind(
   reportedFinals: Array<FinalFinding & { publication: "inline" | "summary-only" }>,
   artifacts: EvalArtifacts,
   mode: ScoreMode,
-  hasFinalFindings: boolean
+  negativeSkipReason: string | undefined
 ): {
   results: EvalExpectationResult[];
   violations: EvalViolation[];
@@ -704,8 +707,8 @@ function scoreShouldNotFind(
     )) {
       nearViolations.push({ expectationId: expectation.id, findingId: finding.id, artifact: "final-findings:suppressed" });
     }
-    const skipReason = matches.length === 0 && !hasFinalFindings ? "missing-final-findings"
-      : matches.length > 0 && tier === "optional" ? "optional-matched" : undefined;
+    const skipReason = matches.length === 0 ? negativeSkipReason
+      : tier === "optional" ? "optional-matched" : undefined;
     return {
       expectationId: expectation.id,
       list: "should_not_find",

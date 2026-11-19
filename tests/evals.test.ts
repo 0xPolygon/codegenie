@@ -340,6 +340,27 @@ describe("eval suite validation", () => {
 });
 
 describe("eval scoring", () => {
+  it("records a failed review sample without losing its retained findings", () => {
+    const retained = finalFinding("retained", "src/retained.ts", 5);
+    const artifacts: EvalArtifacts = {
+      candidates: [], verification: [], finalSelection: [], finalFindings: [retained], packets: [], hintEvents: [],
+      metricsSources: { runJson: { outcome: { status: "failed", errorCode: "review_failed", exitCode: 1 } } }
+    };
+    const score = scoreEvalRun({
+      name: "failed-review",
+      should_find: [{ id: "retained", path: retained.path }],
+      should_not_find: [{ id: "sentinel", path: "src/unreviewed.ts" }]
+    }, artifacts, "live");
+
+    expect(score.status).toBe("error");
+    expect(score.error?.code).toBe("review_failed");
+    expect(score.metrics.reportedFindings).toBe(1);
+    expect(score.expectationResults).toMatchObject([
+      { status: "pass", matched: [{ findingId: "retained" }] },
+      { status: "skipped", skipReason: "review-failed" }
+    ]);
+  });
+
   it.each(["invalid", "partial", "length_stopped", "event_capture_missing", "event_final_mismatch"])("does not claim preservation after %s arguments are regenerated", state => {
     const events = [
       { message: "recovery_fidelity_started", data: { version: 1 } },
