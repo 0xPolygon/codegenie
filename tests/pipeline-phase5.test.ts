@@ -6348,6 +6348,36 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
+  it("degrades a planner chunk whose submission overflows the recovery inventory (#80)", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const runner: LlmRunner = {
+      runStructured: async () => {
+        throw new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
+      }
+    };
+    const promptBuilder = {
+      ...fakePromptBuilder(),
+      renderDossier: (dossier: PlannerDossier) => dossier.compaction.level === "chunked" ? "fits" : "x".repeat(MAX_DOSSIER_PROMPT_CHARS + 1),
+      buildPlannerPrompt: ({ dossier }: { dossier: PlannerDossier }) => ({
+        prompt: JSON.stringify(dossier),
+        templateVersion: "test",
+        untrustedBlockCount: 0
+      })
+    };
+
+    const result = await runPlanner(fakeDossier(["pkg-a/a.ts", "pkg-b/b.ts"]), config(), { ...nullTelemetry(), event: (event) => events.push(event) }, {
+      runner,
+      promptBuilder,
+      lenses: [],
+      skills: []
+    });
+
+    expect(result.chunked).toBe(true);
+    expect(result.degradedPlanning).toBe(true);
+    expect(result.plan.coverage.map((decision) => decision.hunkId).sort()).toEqual(["h1", "h2"]);
+    expect(events.filter((event) => event.message === "planner chunk fallback used").length).toBeGreaterThan(0);
+  });
+
   it("chunk fallback covers full hunks when compacted chunks omit hunk detail", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {
