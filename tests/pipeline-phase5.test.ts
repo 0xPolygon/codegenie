@@ -8362,6 +8362,14 @@ describe("phase 5 pipeline regressions", () => {
     expect(renderCoverageSummaryLines(coverage)).toContain("- app.ts: generated client code");
   });
 
+  it("deduplicates repeated skip path/reason pairs before the disclosure limit (#65)", () => {
+    const repeated = Array.from({ length: 10 }, (_, index) => ({ hunkId: `r${index}`, path: "gen.ts", coverage: "skip" as const, lenses: [], surroundingContextHints: [], reason: "generated client code" }));
+    const plan = { ...fakePlan(), coverage: [...repeated, { hunkId: "h-last", path: "vendor.ts", coverage: "skip" as const, lenses: [], surroundingContextHints: [], reason: "vendored dependency" }] };
+    const coverage = aggregateRunCoverage(plan, [], [], { verdicts: [], incompleteCount: 0 }, nullTelemetry(), { allFiles: fakeDiff().files, packets: [] });
+    expect(coverage.reasons).toContain("gen.ts: generated client code");
+    expect(coverage.reasons).toContain("vendor.ts: vendored dependency");
+  });
+
   it("discloses when verification is disabled in coverage", async () => {
     const packet = fakePacket();
     const verifyDisabled = await verifyFindings(
