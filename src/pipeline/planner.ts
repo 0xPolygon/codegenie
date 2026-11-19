@@ -265,6 +265,13 @@ export async function runPlanner(
     });
     const plan = defaultPlan(dossier, opts.lenses, "degraded planning: deterministic default");
     await telemetry.writeArtifact("review-plan.json", plan);
+    // Close stage 5 like the success and chunked paths do.
+    telemetry.event({
+      stage: 5,
+      level: "info",
+      message: "stage_completed",
+      data: { degraded: true, compaction: plannerDossier.compaction.level }
+    });
     return { plan, plannerCoverage: emptyPlannerCoverageStats(), degradedPlanning: true, chunked: false };
   }
 }

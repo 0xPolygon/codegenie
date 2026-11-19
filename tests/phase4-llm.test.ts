@@ -4543,7 +4543,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const prompts = JSON.stringify(scripted.contexts);
     expect(prompts).toContain("validation failed (rejected arguments omitted)");
     expect(prompts).not.toContain("Received arguments");
-    expect(JSON.stringify(telemetry.events)).not.toContain("Received arguments");
+    // The repair telemetry carries the error text, so the non-leak check is not vacuous.
+    const serializedEvents = JSON.stringify(telemetry.events);
+    expect(serializedEvents).toContain("validation failed (rejected arguments omitted)");
+    expect(serializedEvents).not.toContain("Received arguments");
   });
 
   it("strips redundant candidate anchor fields before model repair", async () => {

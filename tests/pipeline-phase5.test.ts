@@ -6899,7 +6899,8 @@ describe("phase 5 pipeline regressions", () => {
 
   it("degrades to the default plan when the planner submission overflows the recovery inventory (#80)", async () => {
     const overflow = new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
-    const result = await runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), { ...nullTelemetry(), event: (event) => events.push(event) }, {
       runner: { runStructured: async () => { throw overflow; } },
       promptBuilder: fakePromptBuilder(),
       lenses: [{ id: "core/code-review", title: "core", description: "core", skillIds: [], enabledByDefault: true, enabled: true, languages: [] }],
@@ -6907,6 +6908,8 @@ describe("phase 5 pipeline regressions", () => {
     });
     expect(result.degradedPlanning).toBe(true);
     expect(result.plan.coverage.length).toBeGreaterThan(0);
+    // Stage 5 closes its lifecycle on the fallback path too.
+    expect(events).toContainEqual(expect.objectContaining({ stage: 5, message: "stage_completed", data: expect.objectContaining({ degraded: true }) }));
   });
 
   it("removes wrong-language planner lenses and restores exact deterministic defaults", async () => {
