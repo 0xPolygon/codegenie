@@ -10101,6 +10101,25 @@ describe("phase 5 pipeline regressions", () => {
     expect([...(retained?.findings ?? []), ...(retained?.summaryOnlyFindings ?? [])].map((item) => item.id)).toEqual([finding.id]);
   });
 
+  it("keeps the retained review when an artifact write fails after a non-recoverable composer error (#60)", async () => {
+    const finding = fakeFinding();
+    const writeFailure = new Error("disk full");
+    const failure = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      { ...nullTelemetry(), writeArtifact: async (name: string) => { if (name === "final-findings.json") throw writeFailure; } },
+      { runner: { runStructured: () => Promise.reject(new CodegenieError("llm_call_failed", "composer exploded")) }, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    ).then(() => undefined, (error: unknown) => ({ error }));
+
+    // The write failure is what gets reported, and it still carries the review.
+    expect(failure?.error).toBe(writeFailure);
+    const retained = reviewRetainedOnCompositionFailure(failure!.error);
+    expect([...(retained?.findings ?? []), ...(retained?.summaryOnlyFindings ?? [])].map((item) => item.id)).toEqual([finding.id]);
+  });
+
   it("keeps the report-synthesis-failed banner in the posted review body after a health refresh (#61)", async () => {
     const finding = fakeFinding();
     const result = await dedupeRankAndComposeReview(

@@ -348,67 +348,77 @@ export async function dedupeRankAndComposeReview(
       : {})
   };
 
-  await telemetry.writeArtifact("composition-sources.json", scrubGitHubSecrets({
-    schemaVersion: 1,
-    mode: compositionMode,
-    semanticPreservation: "not_machine_proven",
-    sourceComponents: compositionSources(pretrim.kept),
-    proposals: composition.composedFindings,
-    dispositions: selection,
-    presentationMeasurements
-  }));
-  await telemetry.writeArtifact("final-selection.json", {
-    composition: {
-      mode: compositionMode,
-      ...(fallbackReason !== undefined ? { fallbackReason } : {})
-    },
-    records: selection,
-    publicationAnchors: publicationAnchorSelectionRecords(capped.findings, publicationAnchorDecisions),
-    confidenceSelections: [...confidenceSelections.entries()]
-      .map(([findingId, selection]) => ({ findingId, ...selection }))
-      .sort((left, right) => left.findingId.localeCompare(right.findingId)),
-    groups: groups.map((group) => ({
-      fingerprint: group.fingerprint,
-      findingIds: group.findings.map((finding) => finding.id)
-    }))
-  });
-  await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets(
-    { ...humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups, regroupedAttention),
-      // These records deliberately share original scope/evidence objects.
-      // Serialize to a tree before the scrubber's repeated-object protection
-      // so shared provenance is not mistaken for circular data and redacted.
-      reconciliation: JSON.parse(JSON.stringify({ ...attentionReconciliation, ...reconciledAttention })) }
-  ));
-  await telemetry.writeArtifact("final-findings.json", scrubGitHubSecrets(capped.findings));
-  telemetry.event({
-    stage: 10,
-    level: "info",
-    message: "pipeline_metrics",
-    data: {
-      totals: { finalFindings: capped.findings.length },
-      dedup: {
-        clusters: groups.length,
-        duplicates: groups.reduce((sum, group) => sum + Math.max(0, group.findings.length - 1), 0),
-        suppressed: selection.filter((record) => record.decision === "suppressed").length
-      },
-      finalSelection: {
-        published: selection.filter((record) => record.decision === "published").length,
-        merged: selection.filter((record) => record.decision === "merged").length,
-        suppressed: selection.filter((record) => record.decision === "suppressed").length,
-        finalFindings: capped.findings.length,
-        reportedFindings: publishableCount,
-        compositionMode,
-        ...(fallbackReason !== undefined ? { fallbackReason } : {})
-      }
-    }
-  });
-  if (compositionFailed) {
+  // From here on a failure must not lose the finished review: any error,
+  // including an artifact write failing after a composition failure, carries
+  // it to the runner's failure path (reviewRetainedOnCompositionFailure).
+  const retainReviewOn = (error: unknown): unknown => {
     // A primitive rejection reason cannot key the handoff, so it is wrapped.
-    const thrown = typeof compositionFailure === "object" && compositionFailure !== null
-      ? compositionFailure
-      : new Error(`composition failed: ${String(compositionFailure)}`, { cause: compositionFailure });
+    const thrown = typeof error === "object" && error !== null
+      ? error
+      : new Error(`composition failed: ${String(error)}`, { cause: error });
     reviewsRetainedOnCompositionFailure.set(thrown, result);
-    throw thrown;
+    return thrown;
+  };
+  try {
+    await telemetry.writeArtifact("composition-sources.json", scrubGitHubSecrets({
+      schemaVersion: 1,
+      mode: compositionMode,
+      semanticPreservation: "not_machine_proven",
+      sourceComponents: compositionSources(pretrim.kept),
+      proposals: composition.composedFindings,
+      dispositions: selection,
+      presentationMeasurements
+    }));
+    await telemetry.writeArtifact("final-selection.json", {
+      composition: {
+        mode: compositionMode,
+        ...(fallbackReason !== undefined ? { fallbackReason } : {})
+      },
+      records: selection,
+      publicationAnchors: publicationAnchorSelectionRecords(capped.findings, publicationAnchorDecisions),
+      confidenceSelections: [...confidenceSelections.entries()]
+        .map(([findingId, selection]) => ({ findingId, ...selection }))
+        .sort((left, right) => left.findingId.localeCompare(right.findingId)),
+      groups: groups.map((group) => ({
+        fingerprint: group.fingerprint,
+        findingIds: group.findings.map((finding) => finding.id)
+      }))
+    });
+    await telemetry.writeArtifact("human-attention-notes.json", scrubGitHubSecrets(
+      { ...humanAttentionArtifact(attention, humanAttention, composerPromptSelection.groups, regroupedAttention),
+        // These records deliberately share original scope/evidence objects.
+        // Serialize to a tree before the scrubber's repeated-object protection
+        // so shared provenance is not mistaken for circular data and redacted.
+        reconciliation: JSON.parse(JSON.stringify({ ...attentionReconciliation, ...reconciledAttention })) }
+    ));
+    await telemetry.writeArtifact("final-findings.json", scrubGitHubSecrets(capped.findings));
+    telemetry.event({
+      stage: 10,
+      level: "info",
+      message: "pipeline_metrics",
+      data: {
+        totals: { finalFindings: capped.findings.length },
+        dedup: {
+          clusters: groups.length,
+          duplicates: groups.reduce((sum, group) => sum + Math.max(0, group.findings.length - 1), 0),
+          suppressed: selection.filter((record) => record.decision === "suppressed").length
+        },
+        finalSelection: {
+          published: selection.filter((record) => record.decision === "published").length,
+          merged: selection.filter((record) => record.decision === "merged").length,
+          suppressed: selection.filter((record) => record.decision === "suppressed").length,
+          finalFindings: capped.findings.length,
+          reportedFindings: publishableCount,
+          compositionMode,
+          ...(fallbackReason !== undefined ? { fallbackReason } : {})
+        }
+      }
+    });
+  } catch (writeError) {
+    throw retainReviewOn(writeError);
+  }
+  if (compositionFailed) {
+    throw retainReviewOn(compositionFailure);
   }
   telemetry.event({ stage: 10, level: "info", message: "stage_completed", data: { finalFindings: capped.findings.length, compositionMode } });
   return result;
