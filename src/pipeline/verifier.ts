@@ -257,7 +257,9 @@ export async function verifyFindings(
       candidateId: candidate.id,
       verdict: "keep",
       reason: "verification disabled by config",
-      requiredEvidencePresent: true,
+      // Nothing was checked: a synthetic keep must not count as verified
+      // evidence (e.g. for the composer's low-confidence exception).
+      requiredEvidencePresent: false,
       falsePositiveRisk: "low"
     }));
     records.push(...verdicts.map((verdict) => verificationRecord(verdict, anchorStripped, candidateRecordMeta(

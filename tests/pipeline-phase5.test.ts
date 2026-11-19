@@ -12750,6 +12750,44 @@ describe("phase 5 pipeline regressions", () => {
     });
   });
 
+it("does not treat a verify=false synthetic keep as verified for the low-confidence exception (#62)", async () => {
+    const finding = lowConfidenceDeltaFinding("unverified-low");
+    const packet = fakePacket();
+    const verification = await verifyFindings(
+      {
+        packetResults: [{ packetId: packet.id, lenses: ["core/code-review"], findings: [finding], followUpHints: [], uncertainties: [], status: "completed" }],
+        packets: [packet]
+      },
+      fakeTools(),
+      { ...config(), review: { ...config().review, verify: false } },
+      nullTelemetry(),
+      { runner: { runStructured: async <T>() => ({}) as T }, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+    expect(verification.verified.map((candidate) => candidate.id)).toEqual(["unverified-low"]);
+
+    const result = await dedupeRankAndComposeReview(
+      verification,
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: {
+          runStructured: async <T>() => ({
+            summary: "Found 1 issue.",
+            composedFindings: [{ findingIds: ["unverified-low"], finalBody: "The changed conversion can fail.", publication: "inline" }]
+          }) as T
+        },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff()
+      }
+    );
+
+    expect(result.findings).toEqual([]);
+    expect(result.summaryOnlyFindings).toEqual([]);
+  });
+
   it("requires complete evidence-backed non-high-risk keep or revise verdicts for the low-confidence hatch", async () => {
     const finding = lowConfidenceDeltaFinding();
     const cases: Array<{ name: string; verdict: VerificationVerdict; published: boolean }> = [
