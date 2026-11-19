@@ -16,7 +16,7 @@ import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
 import { runLensPackets } from "../src/pipeline/lens-runner.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
-import { dedupeRankAndComposeReview } from "../src/pipeline/composer.js";
+import { dedupeRankAndComposeReview, refreshReviewHealth } from "../src/pipeline/composer.js";
 import { applySeverityPolicy, capSeverityForBehaviorChange, guaranteeSeverity, hasCriticalOrHighGuarantee } from "../src/pipeline/severity-policy.js";
 import { aggregateRunCoverage, BudgetLedger, runReview } from "../src/pipeline/review-runner.js";
 import { verifyFindings } from "../src/pipeline/verifier.js";
@@ -10019,6 +10019,29 @@ describe("phase 5 pipeline regressions", () => {
     expect(finalReview.composition?.mode).toBe("deterministic_fallback");
     expect(finalReview.coverage.partial).toBe(true);
     expect(readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8")).toContain("Changed value breaks callers");
+  });
+
+  it("keeps the report-synthesis-failed banner in the posted review body after a health refresh (#61)", async () => {
+    const finding = fakeFinding();
+    const result = await dedupeRankAndComposeReview(
+      { verified: [finding], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      {
+        runner: { runStructured: async () => { throw composerTransientError(); } },
+        promptBuilder: fakePromptBuilder(),
+        diff: fakeDiff(),
+        postGithubComments: true
+      }
+    );
+    expect(result.postingPlan?.reviewBody).toContain("Report synthesis failed");
+
+    refreshReviewHealth(result);
+
+    expect(result.postingPlan?.reviewBody).toContain("Report synthesis failed");
   });
 
   it("validates attention paths against the reviewed tree rather than the checkout or untracked files", async () => {

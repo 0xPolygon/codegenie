@@ -2133,5 +2133,5 @@ export function refreshReviewHealth(result: ReviewResult): void {
     result.findings.length + result.summaryOnlyFindings.length > 0);
   if (result.health.status === "failed" || result.health.status === "incomplete") result.coverage.partial = true;
   if (result.health.status !== "completed") result.summary = factualReviewSummary(result.health, result.findings.length + result.summaryOnlyFindings.length);
-  if (result.postingPlan) result.postingPlan.reviewBody = renderReviewBody(result.summary, result.summaryOnlyFindings, result.needsHumanAttention, result.coverage, result.needsHumanAttentionOmittedCount, result.health);
+  if (result.postingPlan) result.postingPlan.reviewBody = renderReviewBody(result.summary, result.summaryOnlyFindings, result.needsHumanAttention, result.coverage, result.needsHumanAttentionOmittedCount, result.health, result.composition);
 }
