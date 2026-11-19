@@ -584,8 +584,8 @@ function applyPlannerSafetyCoverage(
     surroundingContextHints: [],
     reason: "planner recovery safety coverage: sparse recovered plan omitted source-code hunk"
   }));
+  // Packets are not built yet at planning time, so only hunks are counted.
   const upgradedHunks = safetyCoverage.length;
-  const upgradedPackets = upgradedHunks;
   const plannerRecovery: PlannerRecoveryTelemetry | undefined = plan.plannerRecovery === undefined
     ? undefined
     : {
@@ -594,7 +594,6 @@ function applyPlannerSafetyCoverage(
         reason: plan.plannerRecovery.reason ?? "recovered planner coverage omitted source-code hunks",
         safetyCoverageApplied: {
           upgradedHunks,
-          upgradedPackets,
           reason: "sparse recovered planner coverage"
         }
       };
@@ -604,7 +603,6 @@ function applyPlannerSafetyCoverage(
     message: "planner_degraded_safety_coverage_applied",
     data: {
       upgradedHunks,
-      upgradedPackets,
       reviewableSourceHunks: plan.plannerRecovery?.reviewableSourceHunks ?? reviewableSourceHunkIds(dossier).size,
       explicitSourceCoverageEntries: plan.plannerRecovery?.explicitSourceCoverageEntries ?? 0,
       maxSafetyDeepSourceHunks: MAX_SAFETY_DEEP_SOURCE_HUNKS

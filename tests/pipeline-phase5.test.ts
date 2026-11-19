@@ -5434,7 +5434,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("applies bounded safety coverage when recovered planner output omits source hunks", async () => {
+  it("applies bounded safety coverage when recovered planner output omits source hunks (#84)", async () => {
     const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
     const baseDossier = fakeDossier(["a.ts", "b.ts", "c.ts", "README.md"]);
     const dossier: PlannerDossier = {
@@ -5525,8 +5525,7 @@ describe("phase 5 pipeline regressions", () => {
       reviewableSourceHunks: 3,
       explicitSourceCoverageEntries: 0,
       safetyCoverageApplied: {
-        upgradedHunks: 3,
-        upgradedPackets: 3
+        upgradedHunks: 3
       }
     });
     expect(events).toContainEqual(expect.objectContaining({
@@ -5538,6 +5537,9 @@ describe("phase 5 pipeline regressions", () => {
       message: "planner_degraded_safety_coverage_applied",
       data: expect.objectContaining({ upgradedHunks: 3, reviewableSourceHunks: 3 })
     }));
+    // #84: no packets exist at planning time, so no packet count is claimed.
+    expect(result.plan.plannerRecovery?.safetyCoverageApplied).not.toHaveProperty("upgradedPackets");
+    expect(events.find((event) => event.message === "planner_degraded_safety_coverage_applied")?.data).not.toHaveProperty("upgradedPackets");
   });
 
   it("does not recover planner submits that are missing required roots", async () => {
