@@ -6856,6 +6856,29 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("records a verifier recovery-inventory overflow as an incomplete verdict, not a run failure (#80)", async () => {
+    const overflow = new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
+    const result = await verifyFindings(
+      { packetResults: [{ packetId: "packet-1", lenses: ["core/code-review"], findings: [fakeFinding()], followUpHints: [], uncertainties: [], status: "completed" }], packets: [fakePacket()] },
+      fakeTools(), config(), nullTelemetry(),
+      { runner: { runStructured: async () => { throw overflow; } }, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() }
+    );
+    expect(result.verified).toEqual([]);
+    expect(result.incompleteCount).toBe(1);
+  });
+
+  it("degrades to the default plan when the planner submission overflows the recovery inventory (#80)", async () => {
+    const overflow = new CodegenieError("llm_schema_invalid", "Recovery inventory budget exceeded; submission remains unresolved", { recoverable: false });
+    const result = await runPlanner(fakeDossier(["app.ts"]), config(), nullTelemetry(), {
+      runner: { runStructured: async () => { throw overflow; } },
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{ id: "core/code-review", title: "core", description: "core", skillIds: [], enabledByDefault: true, enabled: true, languages: [] }],
+      skills: []
+    });
+    expect(result.degradedPlanning).toBe(true);
+    expect(result.plan.coverage.length).toBeGreaterThan(0);
+  });
+
   it("removes wrong-language planner lenses and restores exact deterministic defaults", async () => {
     const base = fakeDossier(["lib.rs", "service.py"]);
     const dossier: PlannerDossier = {

@@ -31,7 +31,7 @@ import type {
   ReviewPlan,
   StaticSignal
 } from "../types.js";
-import { isProviderOutageError, isRunFatalLlmError } from "./pipeline-utils.js";
+import { isProviderOutageError, isRunFatalLlmError, isSchemaInvalidError } from "./pipeline-utils.js";
 
 type PlannerOptions = {
   lenses?: LensDescriptor[];
@@ -251,8 +251,10 @@ export async function runPlanner(
   } catch (error) {
     // Provider-wide outage on the run's opening call stays run-fatal: a default
     // plan cannot review anything through a down provider, and the spec reserves
-    // run-fatality for auth/provider-wide failures.
-    if (isRunFatalLlmError(error) || isProviderOutageError(error)) {
+    // run-fatality for auth/provider-wide failures. An unresolvable submission
+    // (llm_schema_invalid) degrades to the default plan, as Stage 7 degrades
+    // its packet.
+    if ((isRunFatalLlmError(error) && !isSchemaInvalidError(error)) || isProviderOutageError(error)) {
       throw error;
     }
     telemetry.event({
@@ -800,7 +802,7 @@ async function runChunkedPlanner(
     try {
       callResults.push(await runPlannerCall(chunk.prompt, config, telemetry, opts));
     } catch (error) {
-      if (isRunFatalLlmError(error) || isProviderOutageError(error)) {
+      if ((isRunFatalLlmError(error) && !isSchemaInvalidError(error)) || isProviderOutageError(error)) {
         throw error;
       }
       failedRoots.push(chunkRoot);
