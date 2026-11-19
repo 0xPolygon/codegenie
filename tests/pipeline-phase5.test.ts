@@ -6376,6 +6376,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.degradedPlanning).toBe(true);
     expect(result.plan.coverage.map((decision) => decision.hunkId).sort()).toEqual(["h1", "h2"]);
     expect(events.filter((event) => event.message === "planner chunk fallback used").length).toBeGreaterThan(0);
+    expect(events).toContainEqual(expect.objectContaining({ stage: 5, message: "stage_completed", data: expect.objectContaining({ degraded: true, chunked: true }) }));
   });
 
   it("closes stage 5 when an oversized dossier yields no planner chunks", async () => {
