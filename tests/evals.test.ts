@@ -1427,6 +1427,48 @@ describe("eval artifacts", () => {
     );
   });
 
+  it.each([
+    ["missing", undefined, "final-findings.json"],
+    ["invalid JSON", "{", "final-findings.json (unreadable)"],
+    ["non-array", "{}", "final-findings.json (malformed)"],
+    ["invalid records", "[{}]", "final-findings.json (malformed)"],
+    ["empty array", "[]", undefined]
+  ])("distinguishes %s findings from a known-empty final result", async (_name, contents, missingArtifact) => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-negative-eval-"));
+    writeTelemetryArtifact(telemetry, "candidate-findings.json", []);
+    if (contents !== undefined) {
+      const finalPath = path.join(telemetry, canonicalArtifactPath("final-findings.json"));
+      mkdirSync(path.dirname(finalPath), { recursive: true });
+      writeFileSync(finalPath, contents);
+    }
+
+    const artifacts = await loadEvalArtifacts(telemetry);
+    const score = scoreEvalRun({ name: "clean-change", should_not_find: [{ id: "sentinel", path: "src/app.ts" }] }, artifacts, "live");
+    expect(artifacts.missingArtifacts).toEqual(missingArtifact === undefined ? [] : [missingArtifact]);
+    expect(score.status).toBe(missingArtifact === undefined ? "pass" : "error");
+    expect(score.expectationResults[0]?.status).toBe(missingArtifact === undefined ? "pass" : "skipped");
+  });
+
+  it.each([
+    ["severity", "bogus"],
+    ["category", "bogus"],
+    ["mergedSeverities", ["bogus"]],
+    ["mergedCategories", ["bogus"]]
+  ])("marks findings with an unknown %s value malformed and keeps valid rows", async (field, value) => {
+    const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-negative-eval-"));
+    const valid = finalFinding("valid", "src/other.ts", 3);
+    const invalid = { ...finalFinding("invalid", "src/app.ts", 3), [field]: value };
+    writeTelemetryArtifact(telemetry, "candidate-findings.json", []);
+    writeTelemetryArtifact(telemetry, "final-findings.json", [valid, invalid]);
+
+    const artifacts = await loadEvalArtifacts(telemetry);
+    const score = scoreEvalRun({ name: "clean-change", should_not_find: [{ id: "sentinel", path: "src/unrelated.ts" }] }, artifacts, "live");
+    expect(artifacts.missingArtifacts).toEqual(["final-findings.json (malformed)"]);
+    expect(artifacts.finalFindings).toEqual([valid]);
+    expect(score.status).toBe("error");
+    expect(score.expectationResults[0]?.status).toBe("skipped");
+  });
+
   it("loads canonical staged artifacts and root telemetry streams", async () => {
     const telemetry = mkdtempSync(path.join(tmpdir(), "codegenie-staged-artifacts-"));
     const candidates = [candidate("cand-1", "src/app.ts", 3)];

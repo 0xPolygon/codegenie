@@ -69,7 +69,9 @@ type RankedLossInstance = {
 export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode: ScoreMode): EvalScore {
   const reportedFinals = artifacts.finalFindings.filter(isReportedFinalFinding);
   const metrics = buildMetrics(artifacts);
-  const shouldNot = scoreShouldNotFind(evalCase.should_not_find ?? [], reportedFinals, artifacts, mode);
+  const missingArtifacts = artifacts.missingArtifacts ?? [];
+  const hasFinalFindings = !missingArtifacts.some(name => name.startsWith("final-findings.json"));
+  const shouldNot = scoreShouldNotFind(evalCase.should_not_find ?? [], reportedFinals, artifacts, mode, hasFinalFindings);
   const allExpectationResults = [
     ...scorePositiveList("should_find", evalCase.should_find ?? [], reportedFinals, artifacts, mode),
     ...scorePositiveList("should_find_candidate", evalCase.should_find_candidate ?? [], artifacts.candidates, artifacts, mode),
@@ -83,12 +85,15 @@ export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode:
     ? "fail"
     : "pass";
   return {
-    status,
+    status: missingArtifacts.length === 0 ? status : "error",
     expectationResults: allExpectationResults,
     budgetResults,
     violations: shouldNot.violations,
     nearViolations: shouldNot.nearViolations,
-    metrics
+    metrics,
+    ...(missingArtifacts.length > 0 ? {
+      error: { code: "invalid_args" as const, message: `Required eval artifacts unavailable: ${missingArtifacts.join(", ")}` }
+    } : {})
   };
 }
 
@@ -668,7 +673,8 @@ function scoreShouldNotFind(
   expectations: EvalFindingExpectation[],
   reportedFinals: Array<FinalFinding & { publication: "inline" | "summary-only" }>,
   artifacts: EvalArtifacts,
-  mode: ScoreMode
+  mode: ScoreMode,
+  hasFinalFindings: boolean
 ): {
   results: EvalExpectationResult[];
   violations: EvalViolation[];
@@ -698,12 +704,14 @@ function scoreShouldNotFind(
     )) {
       nearViolations.push({ expectationId: expectation.id, findingId: finding.id, artifact: "final-findings:suppressed" });
     }
+    const skipReason = matches.length === 0 && !hasFinalFindings ? "missing-final-findings"
+      : matches.length > 0 && tier === "optional" ? "optional-matched" : undefined;
     return {
       expectationId: expectation.id,
       list: "should_not_find",
       tier,
-      status: matches.length === 0 ? "pass" : tier === "optional" ? "skipped" : "fail",
-      ...(matches.length > 0 && tier === "optional" ? { skipReason: "optional-matched" } : {}),
+      status: skipReason !== undefined ? "skipped" : matches.length === 0 ? "pass" : "fail",
+      ...(skipReason !== undefined ? { skipReason } : {}),
       fromReplayedArtifacts: mode === "replay",
       matched: matches.map((finding) => ({ findingId: finding.id, artifact: "final-findings" }))
     };
@@ -1636,7 +1644,11 @@ function findingLocationVariants(finding: ScorableFinding, artifacts?: EvalArtif
 
 function addFinalMetadataLocationVariants(variants: FindingLocationVariant[], finding: FinalFinding): void {
   for (const anchor of finding.mergedAnchors ?? []) {
-    const start = anchor.startLine ?? anchor.line;
+    // Artifact redaction can replace a repeated anchor with a marker string.
+    if (typeof anchor?.path !== "string" || typeof anchor.line !== "number") {
+      continue;
+    }
+    const start = typeof anchor.startLine === "number" ? anchor.startLine : anchor.line;
     const end = anchor.line;
     variants.push({
       path: normalizePath(anchor.path),
