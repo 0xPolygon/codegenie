@@ -675,6 +675,25 @@ describe("stage 9 evidence-aware verification", () => {
     expect(checked).toBe(true);
   });
 
+  it("keeps host-owned promotion provenance on a verifier revise (#64)", async () => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const packet = fixture.packets[0]!;
+    const provenance = {
+      source: "uncertainty_promotion" as const, sourceKind: "uncertainty" as const, sourcePacketId: packet.id,
+      question: "Does revocation deny access?", files: [packet.path], symbols: [], reason: "Investigate access"
+    };
+    const finding = candidate("promoted-revised", packet, { provenance });
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [finding])], packets: [packet] },
+      fakeTools(), config(), nullTelemetry(), {
+        runner: verifierRunner(() => ({ verdict: "revise", reason: "Confirmed the missing permission check", requiredEvidencePresent: true,
+          falsePositiveRisk: "low", findingUpdates: { ...Object.fromEntries(["failureMode", "whyThisMatters", "verification", "category", "severity", "confidence"]
+            .map(key => [key, finding[key as keyof CandidateFinding]])), title: "Revoked members keep read access" } })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+      });
+    expect(result.verified).toHaveLength(1);
+    expect(result.verified[0]).toMatchObject({ title: "Revoked members keep read access", provenance });
+  });
+
   it("supplies precise promoted repair targets through the live verifier request", async () => {
     const fixture = reviewFixture(["src/app.ts"]);
     const packet = fixture.packets[0]!;

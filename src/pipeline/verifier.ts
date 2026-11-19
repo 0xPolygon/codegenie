@@ -1316,6 +1316,8 @@ function revisedFinding(
     ...(submitted.behaviorChange !== undefined ? { behaviorChange: submitted.behaviorChange } : {}),
     ...(submitted.intentEvidence !== undefined ? { intentEvidence: submitted.intentEvidence } : {}),
     producedBy: original.producedBy,
+    // Host-owned provenance is trusted metadata, not a revisable field.
+    ...(original.provenance !== undefined ? { provenance: original.provenance } : {}),
     ...(original.clusterId !== undefined ? { clusterId: original.clusterId } : {}),
     ...(original.duplicateOf !== undefined ? { duplicateOf: original.duplicateOf } : {})
   };
