@@ -8,13 +8,13 @@ Stack: Node, TypeScript, pnpm, vitest. `pnpm check` runs typecheck and workflow 
 
 ## Tasks
 
-Tasks and bugs are GitHub Issues on 0xPolygon/codegenie, managed with `todos`; the board is 0xPolygon/BOARD_NUMBER, with columns Backlog, Todo, In progress and Done. Run from the checkout. Learn it once with `todos skill`; agent operations always pass `--json`.
+Tasks and bugs are GitHub Issues on 0xPolygon/codegenie, managed with `todos`; the board is 0xPolygon/41, with columns Backlog, Todo, In progress and Done. Run from the checkout. Learn it once with `todos skill`; agent operations always pass `--json`.
 
 Only a person moves an issue into Todo. That column means the operator may assign it without asking; it is not an assignment to a member. Assigned work moves to In progress, and integrated work moves to Done. New issues go to Backlog (`todos add ... --status Backlog`); only @pm reorders the Backlog.
 
 @pm owns tracker writes, or the operator when there is no @pm. Members report discoveries to that owner, who records them in Backlog. Record owner, criteria, branch or commit, verdict and next step on the issue.
 
-Check the board with `todos board --json`; pass `--project 0xPolygon/BOARD_NUMBER` if it shows another. Check failures with `todos doctor --json`; reconcile an uncertain write before retrying. Never run `todos rm`; close instead, after confirmed integration. Link the PR and close only after its merge is confirmed.
+Check the board with `todos board --json`; pass `--project 0xPolygon/41` if it shows another. Check failures with `todos doctor --json`; reconcile an uncertain write before retrying. Never run `todos rm`; close instead, after confirmed integration. Link the PR and close only after its merge is confirmed.
 
 ## Specs
 
