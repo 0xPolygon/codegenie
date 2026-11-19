@@ -193,21 +193,26 @@ function evictCacheEntries(dir: string): EvictionResult {
 
 function listCacheFiles(dir: string): CacheFileInfo[] {
   const files: CacheFileInfo[] = [];
-  const visit = (current: string): void => {
-    if (!existsSync(current)) {
-      return;
+  for (const version of readdirSync(dir, { withFileTypes: true })) {
+    if (!version.isDirectory() || !/^v[1-9]\d*$/u.test(version.name)) {
+      continue;
     }
-    for (const entry of readdirSync(current, { withFileTypes: true })) {
-      const entryPath = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        visit(entryPath);
-      } else if (entry.isFile() && entry.name.endsWith(".json")) {
+    const versionDir = path.join(dir, version.name);
+    for (const shard of readdirSync(versionDir, { withFileTypes: true })) {
+      if (!shard.isDirectory() || !/^[0-9a-f]{3}$/u.test(shard.name)) {
+        continue;
+      }
+      const shardDir = path.join(versionDir, shard.name);
+      for (const entry of readdirSync(shardDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !/^[0-9a-f]{64}\.json$/u.test(entry.name) || !entry.name.startsWith(shard.name)) {
+          continue;
+        }
+        const entryPath = path.join(shardDir, entry.name);
         const stat = statSync(entryPath);
         files.push({ path: entryPath, size: stat.size, mtimeMs: stat.mtimeMs });
       }
     }
-  };
-  visit(dir);
+  }
   return files;
 }
 

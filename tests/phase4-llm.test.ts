@@ -6809,6 +6809,31 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     );
   });
 
+  it("evicts only files in the versioned model-call cache layout", async () => {
+    const repoRoot = tempGitRepo();
+    const cacheDir = path.join(repoRoot, ".codegenie", "cache");
+    const key = buildModelCallCacheKey({ prompt: "old version" });
+    const shard = key.slice(0, 3);
+    const staleEntry = path.join(cacheDir, "v1", shard, `${key}.json`);
+    const unrelated = [
+      path.join(cacheDir, "settings.json"),
+      path.join(cacheDir, "nested", "v1", shard, `${key}.json`),
+      path.join(cacheDir, "v1", shard, "settings.json"),
+      path.join(cacheDir, "v1", shard === "000" ? "001" : "000", `${key}.json`)
+    ];
+    const staleTime = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    for (const file of [staleEntry, ...unrelated]) {
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, "{}\n");
+      utimesSync(file, staleTime, staleTime);
+    }
+
+    await createModelCallCache({ dir: cacheDir, repoRoot, runFingerprint: "run-layout", logger: fakeLogger(), telemetry: fakeTelemetry().recorder });
+
+    expect(existsSync(staleEntry)).toBe(false);
+    expect(unrelated.every(file => existsSync(file))).toBe(true);
+  });
+
   it("rejects repo-root cache directories before eviction and fails closed on non-git roots", async () => {
     const repoRoot = tempGitRepo();
     const trackedJson = path.join(repoRoot, "tracked.json");
