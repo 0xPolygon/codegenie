@@ -99,7 +99,7 @@ describe("Phase 4 skills, lenses, and prompts", () => {
     expect(harness.events.filter((event) => event.message === "skill_invalid")).toHaveLength(2);
   });
 
-  it("accepts block-list YAML frontmatter in repo skills", async () => {
+  it.each([["LF", "\n"], ["CRLF", "\r\n"]])("accepts %s block-list YAML frontmatter in repo skills", async (_name, newline) => {
     const repoRoot = tempDir();
     const skillsRoot = path.join(repoRoot, ".codegenie", "skills");
     mkdirSync(skillsRoot, { recursive: true });
@@ -124,7 +124,7 @@ Exercise normal YAML list frontmatter.
 # Checks
 
 - Validate block-list frontmatter parses.
-`
+`.replace(/\n/gu, newline)
     );
 
     const harness = phase4Harness();
@@ -139,7 +139,8 @@ Exercise normal YAML list frontmatter.
     expect(skill).toMatchObject({
       lenses: ["team/block-list"],
       languages: ["typescript"],
-      categories: ["correctness"]
+      categories: ["correctness"],
+      sections: { checks: "- Validate block-list frontmatter parses." }
     });
     expect(result.failures.map((failure) => failure.filePath)).not.toContain(path.join(skillsRoot, "block-list.md"));
   });

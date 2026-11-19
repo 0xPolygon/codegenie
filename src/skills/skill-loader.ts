@@ -233,14 +233,16 @@ function parseSkillFile(
 }
 
 function parseFrontmatter(raw: string): { frontmatter: Record<string, unknown>; body: string } | undefined {
-  if (!raw.startsWith("---\n")) {
+  const opener = /^---\r?\n/u.exec(raw);
+  if (!opener) {
     return undefined;
   }
-  const end = raw.indexOf("\n---", 4);
+  const start = opener[0].length;
+  const end = raw.indexOf("\n---", start);
   if (end === -1) {
     return undefined;
   }
-  const frontmatterText = raw.slice(4, end).trim();
+  const frontmatterText = raw.slice(start, end).trim();
   const body = raw.slice(end + "\n---".length).replace(/^\r?\n/, "");
   return { frontmatter: parseSimpleYaml(frontmatterText), body };
 }
