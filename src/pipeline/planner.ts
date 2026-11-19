@@ -1425,7 +1425,8 @@ function validatePlan(
       lenses: !defaultedLenses
         ? survivingLenses
         : defaultLensesForFile(hunkLanguage, lenses),
-      reason: defaultedLenses ? `planner_empty_lenses: ${decision.reason}` : decision.reason
+      // A skip runs no lenses, so its diagnostic reason stays the planner's own.
+      reason: defaultedLenses && decision.coverage !== "skip" ? `planner_empty_lenses: ${decision.reason}` : decision.reason
     }, knownFiles);
     const existing = coverageByHunk.get(decision.hunkId);
     if (existing) {

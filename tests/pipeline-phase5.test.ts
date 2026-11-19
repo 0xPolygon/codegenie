@@ -6854,6 +6854,25 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it("keeps a planner skip reason when the skip has empty lenses (#71)", async () => {
+    const dossier = fakeDossier(["generated.ts"]);
+    const runner: LlmRunner = {
+      runStructured: async <T>() => ({
+        diffUnderstanding: { declaredIntent: "regenerate", inferredBehavior: "regenerate" },
+        coverage: [{ hunkId: "h1", path: "generated.ts", coverage: "skip", lenses: [], surroundingContextHints: [], reason: "generated client code" }]
+      }) as T
+    };
+    const result = await runPlanner(dossier, config(), nullTelemetry(), {
+      runner,
+      promptBuilder: fakePromptBuilder(),
+      lenses: [{ id: "core/code-review", title: "core", description: "core", skillIds: [], enabledByDefault: true, enabled: true, languages: [] }],
+      skills: []
+    });
+    expect(result.plan.coverage).toEqual([
+      expect.objectContaining({ hunkId: "h1", coverage: "skip", reason: "generated client code" })
+    ]);
+  });
+
   it("removes wrong-language planner lenses and restores exact deterministic defaults", async () => {
     const base = fakeDossier(["lib.rs", "service.py"]);
     const dossier: PlannerDossier = {
