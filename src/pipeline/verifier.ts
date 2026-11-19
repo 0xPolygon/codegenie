@@ -1111,6 +1111,8 @@ function classifyVerifierSchemaInvalid(input: LlmSchemaRepairInput | string): Ve
     return typeof argumentsValue === "object" && argumentsValue !== null &&
       "verdict" in argumentsValue && argumentsValue.verdict === "revise" &&
       (!("finalFinding" in argumentsValue) || argumentsValue.finalFinding == null) &&
+      // FindingUpdatesSchema requires at least one field, so {} or [] is no revision.
+      !isNonEmptyPlainObject("findingUpdates" in argumentsValue ? argumentsValue.findingUpdates : undefined) &&
       (!("revisedAnchor" in argumentsValue) || argumentsValue.revisedAnchor == null);
   })) {
     return "revise_without_revision_payload";
@@ -1749,6 +1751,10 @@ function incompleteReasonLabel(reason: string): string {
 
 function isSchemaInvalidError(error: unknown): boolean {
   return isCodegenieError(error) && error.code === "llm_schema_invalid";
+}
+
+function isNonEmptyPlainObject(value: unknown): boolean {
+  return typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length > 0;
 }
 
 function isBudgetExhaustedWorkerError(error: unknown): boolean {

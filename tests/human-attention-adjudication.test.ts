@@ -154,6 +154,24 @@ describe("plan 75 step 1: adjudicated-reject note suppression", () => {
     expect(suppressed[0]?.match.provenanceMatched).toBe(true);
   });
 
+  it("reports the adjudicated-reject suppression even when no final finding suppressed a note (#79)", () => {
+    const resolutions = buildVerificationResolutionIndex(
+      [rejectVerdict("high")],
+      [{ ...packetResultWithHint(), findings: [promotedCandidate()] }],
+      [],
+      new Map([["packet-lifi", packet()]]),
+      coverage
+    );
+    const event = vi.fn();
+    selectHumanAttentionForOutput(groupsForHint(), [], new Map([["packet-lifi", packet()]]), resolutions, { ...nullTelemetry(), event });
+    const messages = event.mock.calls.map(([value]) => value.message);
+    expect(messages).not.toContain("human_attention_hints_suppressed_by_findings");
+    expect(event).toHaveBeenCalledWith(expect.objectContaining({
+      message: "human_attention_hints_suppressed_by_adjudicated_reject",
+      data: { suppressed: 1, candidateIds: ["packet-l-u1-abc"] }
+    }));
+  });
+
   it("leaves the note visible when the reject is uncertain (falsePositiveRisk not high)", () => {
     const resolutions = buildVerificationResolutionIndex(
       [rejectVerdict("medium")],
