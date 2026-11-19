@@ -1,0 +1,47 @@
+# The project's suggested formation. factory.py init copies it to your own factory.toml (not committed).
+# The operator is whatever session runs /factory; setup records its harness, model and thinking in your copy.
+# Set `user` at the top of your copy if your system user name is generic.
+
+[operator]
+name = "operator"
+notes = "Owns architecture, assigns tasks and integrates reviewed work."
+
+[members.architect]
+harness = "claude"
+model = "claude-fable-5-2"
+thinking = "high"
+notes = "Designs non-trivial changes: pipeline stages, provider/model plumbing, review contracts. Writes plans under specs/plans."
+
+[members.architect-2]
+role = "architect"
+harness = "codex"
+model = "gpt-6.2-astra"
+thinking = "high"
+notes = "Second architect from another model family: challenges designs and takes independent design tasks."
+
+[members.lead-dev]
+harness = "codex"
+model = "gpt-6.2-sol"
+thinking = "high"
+worktree = true
+notes = "Implements in its own worktree; owns the TypeScript CLI and review pipeline under src/."
+
+[members.lead-dev-2]
+role = "lead-dev"
+harness = "claude"
+model = "claude-opus-5-5"
+thinking = "high"
+worktree = true
+notes = "Second developer in its own worktree for parallel tickets."
+
+[members.reviewer]
+harness = "codex"
+model = "gpt-6-luna"
+thinking = "high"
+notes = "Reviews diffs and commits; runs codegenie for the deep lane at pull-request readiness."
+
+[members.pm]
+harness = "codex"
+model = "gpt-6-luna"
+thinking = "high"
+notes = "Owns the todos tracker: GitHub Issues on 0xPolygon/codegenie and the project board."
