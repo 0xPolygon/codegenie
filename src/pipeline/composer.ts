@@ -124,6 +124,8 @@ export async function dedupeRankAndComposeReview(
   let fallbackReason: string | undefined;
   let fallbackMode: CompositionMode | undefined;
   let compositionDegraded = false;
+  // Promises may reject with any value (even undefined), so presence is a flag.
+  let compositionFailed = false;
   let compositionFailure: unknown;
   const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes, attentionReconciliation).catch((error) => {
     if (!canUseComposerFallback(error)) {
@@ -136,6 +138,7 @@ export async function dedupeRankAndComposeReview(
       // The run still fails, but verified findings must not be dropped
       // (architecture: Stage-10 invalidity uses deterministic composition).
       // Build that report and hand it to the failure path below.
+      compositionFailed = true;
       compositionFailure = error;
     }
     fallbackUsed = true;
@@ -399,11 +402,13 @@ export async function dedupeRankAndComposeReview(
       }
     }
   });
-  if (compositionFailure !== undefined) {
-    if (typeof compositionFailure === "object" && compositionFailure !== null) {
-      reviewsRetainedOnCompositionFailure.set(compositionFailure, result);
-    }
-    throw compositionFailure;
+  if (compositionFailed) {
+    // A primitive rejection reason cannot key the handoff, so it is wrapped.
+    const thrown = typeof compositionFailure === "object" && compositionFailure !== null
+      ? compositionFailure
+      : new Error(`composition failed: ${String(compositionFailure)}`, { cause: compositionFailure });
+    reviewsRetainedOnCompositionFailure.set(thrown, result);
+    throw thrown;
   }
   telemetry.event({ stage: 10, level: "info", message: "stage_completed", data: { finalFindings: capped.findings.length, compositionMode } });
   return result;
