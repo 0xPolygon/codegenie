@@ -6378,6 +6378,22 @@ describe("phase 5 pipeline regressions", () => {
     expect(events.filter((event) => event.message === "planner chunk fallback used").length).toBeGreaterThan(0);
   });
 
+  it("closes stage 5 when an oversized dossier yields no planner chunks", async () => {
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const promptBuilder = {
+      ...fakePromptBuilder(),
+      renderDossier: () => "x".repeat(MAX_DOSSIER_PROMPT_CHARS + 1)
+    };
+    const result = await runPlanner({ ...fakeDossier(["app.ts"]), files: [] }, config(), { ...nullTelemetry(), event: (event) => events.push(event) }, {
+      runner: { runStructured: async () => { throw new Error("planner must not be called"); } },
+      promptBuilder,
+      lenses: [],
+      skills: []
+    });
+    expect(result.degradedPlanning).toBe(true);
+    expect(events).toContainEqual(expect.objectContaining({ stage: 5, message: "stage_completed", data: expect.objectContaining({ degraded: true, chunks: 0 }) }));
+  });
+
   it("chunk fallback covers full hunks when compacted chunks omit hunk detail", async () => {
     const runner: LlmRunner = {
       runStructured: async () => {

@@ -792,6 +792,12 @@ async function runChunkedPlanner(
   if (chunks.length === 0) {
     const plan = defaultPlan(dossier, opts.lenses, "degraded planning: deterministic default");
     await telemetry.writeArtifact("review-plan.json", plan);
+    telemetry.event({
+      stage: 5,
+      level: "info",
+      message: "stage_completed",
+      data: { degraded: true, chunked: false, chunks: 0, failedRoots: [] }
+    });
     return { plan, plannerCoverage: emptyPlannerCoverageStats(), degradedPlanning: true, chunked: false };
   }
 
