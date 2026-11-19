@@ -67,7 +67,6 @@ import {
 } from "../src/llm/schema-diagnostics.js";
 
 type RealPiAiAdapterDepsForTest = NonNullable<Parameters<typeof createRealPiAiAdapter>[0]>;
-type PiStreamForTest = NonNullable<RealPiAiAdapterDepsForTest["stream"]>;
 type PiStreamSimpleForTest = NonNullable<RealPiAiAdapterDepsForTest["streamSimple"]>;
 
 describe("Phase 4 schemas and repository tool definitions", () => {
@@ -1186,7 +1185,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.modelCalls[1]).toMatchObject({ kind: "finalize", status: "ok" });
   });
 
-  it("records the effective provider protocol on model calls and emits provider_protocol once", async () => {
+  it("records the effective provider protocol on model calls and emits provider_protocol once (#77)", async () => {
     const telemetry = fakeTelemetry();
     const adapter = scriptedAdapter([
       assistant([
@@ -1208,18 +1207,19 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       toolChoiceRequested: "forced:submit_review",
       toolChoiceEffective: "required",
       toolChoiceDowngraded: false,
-      reasoningRequested: "high",
-      reasoningMechanism: "unknown",
-      reasoningLevelEffective: "high"
+      reasoningRequested: "high"
     });
+    // #77: the wire mechanism is Pi's; codegenie no longer restates a guess of it.
+    expect(telemetry.modelCalls[0]).not.toHaveProperty("reasoningMechanism");
+    expect(telemetry.modelCalls[0]).not.toHaveProperty("reasoningLevelEffective");
     const protocolEvents = telemetry.events.filter((event) => event.message === "provider_protocol");
     expect(protocolEvents).toHaveLength(1);
     expect(protocolEvents[0]?.data).toMatchObject({
       api: "faux",
       forcedToolChoiceEffective: "required",
-      toolChoiceDowngraded: false,
-      reasoningMechanism: "unknown"
+      toolChoiceDowngraded: false
     });
+    expect(protocolEvents[0]?.data).not.toHaveProperty("reasoningMechanism");
     expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(0);
   });
 
@@ -1336,11 +1336,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.modelCalls[0]).toMatchObject({
       toolChoiceRequested: "forced:submit_review",
       toolChoiceEffective: "forced:submit_review",
-      toolChoiceDowngraded: false,
-      // The forced-submit call runs with thinking disabled, so no reasoning
-      // mechanism is in play for this call.
-      reasoningMechanism: "none"
+      toolChoiceDowngraded: false
     });
+    // The forced-submit call runs with thinking disabled: no reasoning is requested.
+    expect(telemetry.modelCalls[0]).not.toHaveProperty("reasoningRequested");
     expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(0);
     const protocolEvent = telemetry.events.find((event) => event.message === "provider_protocol");
     expect(protocolEvent?.data).toMatchObject({
@@ -1376,7 +1375,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       toolChoiceRequested: "forced:submit_review",
       toolChoiceEffective: "auto",
       toolChoiceDowngraded: true,
-      reasoningMechanism: "adaptive-effort"
+      reasoningRequested: "high"
     });
     const downgraded = telemetry.events.filter((event) => event.message === "tool_choice_downgraded");
     expect(downgraded).toHaveLength(1);
@@ -1412,7 +1411,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       toolChoiceRequested: "forced:submit_review",
       toolChoiceEffective: "auto",
       toolChoiceDowngraded: true,
-      reasoningMechanism: "adaptive-effort"
+      reasoningRequested: "high"
     });
     expect(telemetry.events.filter((event) => event.message === "tool_choice_downgraded")).toHaveLength(1);
     expect(telemetry.events.find((event) => event.message === "provider_protocol")?.data).toMatchObject({
@@ -6598,7 +6597,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         providerOptions.push(options as Record<string, unknown>);
         return streamForMessage(assistant([validSubmitReviewCall("malformed")]), '{"findings":');
       });
-      const adapter = createRealPiAiAdapter({ stream: stream as PiStreamForTest, streamSimple: stream as PiStreamSimpleForTest });
+      const adapter = createRealPiAiAdapter({ streamSimple: stream as PiStreamSimpleForTest });
       const result = await adapter.complete({ provider: "fake", id: "fake-model", raw: { id: "fake-model", api: "openai-completions" }, apiKey: "fake-api-key" },
         { messages: [], tools: [] }, { toolChoice, submitToolName: "submit_review", onRejectedArguments });
       expect(onRejectedArguments).toHaveBeenCalledWith(expect.objectContaining({ toolCallId: "malformed", prefix: '{"findings":' }));
@@ -6608,14 +6607,13 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
-  it("maps forced submit calls to raw Pi provider reasoning and tool choice options", async () => {
-    const rawOptionsSeen: Record<string, unknown>[] = [];
-    const stream = ((_model, _context, options) => {
-      rawOptionsSeen.push(options as Record<string, unknown>);
-      return streamForMessage(assistant([validSubmitReviewCall("submit-raw-forced")]));
-    }) as PiStreamForTest;
-    const streamSimple = vi.fn(() => streamForMessage(assistant([validSubmitReviewCall("must-not-use-simple")]))) as unknown as PiStreamSimpleForTest;
-    const adapter = createRealPiAiAdapter({ stream, streamSimple });
+  it("sends forced submit calls through Pi streamSimple with the mapped tool choice and native reasoning", async () => {
+    const optionsSeen: Record<string, unknown>[] = [];
+    const streamSimple = ((_model, _context, options) => {
+      optionsSeen.push(options as Record<string, unknown>);
+      return streamForMessage(assistant([validSubmitReviewCall("submit-simple-forced")]));
+    }) as PiStreamSimpleForTest;
+    const adapter = createRealPiAiAdapter({ streamSimple });
 
     await adapter.complete(
       {
@@ -6628,25 +6626,24 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, submitToolName: "submit_review" }
     );
 
-    expect(streamSimple).not.toHaveBeenCalled();
-    expect(rawOptionsSeen).toEqual([
+    expect(optionsSeen).toEqual([
       expect.objectContaining({
         apiKey: "fake-api-key",
-        reasoningEffort: "high",
+        reasoning: "high",
         toolChoice: { type: "function", function: { name: "submit_review" } }
       })
     ]);
-    expect(rawOptionsSeen[0]).not.toHaveProperty("reasoning");
+    expect(optionsSeen[0]).not.toHaveProperty("reasoningEffort");
+    expect(optionsSeen[0]).not.toHaveProperty("forceSubmitToolChoice");
   });
 
-  it("disables Anthropic thinking and applies real forced tool choice for submit turns (plan 86 step 3)", async () => {
-    const rawOptionsSeen: Record<string, unknown>[] = [];
-    const stream = ((_model, _context, options) => {
-      rawOptionsSeen.push(options as Record<string, unknown>);
+  it("runs Anthropic forced submits with thinking off by omitting reasoning (plan 86 step 3)", async () => {
+    const optionsSeen: Record<string, unknown>[] = [];
+    const streamSimple = ((_model, _context, options) => {
+      optionsSeen.push(options as Record<string, unknown>);
       return streamForMessage(assistant([validSubmitReviewCall("submit-anthropic-forced")]));
-    }) as PiStreamForTest;
-    const streamSimple = vi.fn(() => streamForMessage(assistant([validSubmitReviewCall("must-not-use-simple")]))) as unknown as PiStreamSimpleForTest;
-    const adapter = createRealPiAiAdapter({ stream, streamSimple });
+    }) as PiStreamSimpleForTest;
+    const adapter = createRealPiAiAdapter({ streamSimple });
 
     await adapter.complete(
       {
@@ -6659,26 +6656,24 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, submitToolName: "submit_review" }
     );
 
-    expect(streamSimple).not.toHaveBeenCalled();
-    expect(rawOptionsSeen).toEqual([
+    expect(optionsSeen).toEqual([
       expect.objectContaining({
         apiKey: "fake-api-key",
-        thinkingEnabled: false,
         toolChoice: { type: "tool", name: "submit_review" }
       })
     ]);
-    expect(rawOptionsSeen[0]).not.toHaveProperty("reasoning");
-    expect(rawOptionsSeen[0]).not.toHaveProperty("effort");
-    expect(rawOptionsSeen[0]).not.toHaveProperty("forceSubmitToolChoice");
+    // Pi's Anthropic simple adapter sends thinking disabled when no reasoning is requested.
+    expect(optionsSeen[0]).not.toHaveProperty("reasoning");
+    expect(optionsSeen[0]).not.toHaveProperty("forceSubmitToolChoice");
   });
 
   it("keeps the legacy Anthropic downgrade when forceSubmitToolChoice is disabled", async () => {
-    const rawOptionsSeen: Record<string, unknown>[] = [];
-    const stream = ((_model, _context, options) => {
-      rawOptionsSeen.push(options as Record<string, unknown>);
+    const optionsSeen: Record<string, unknown>[] = [];
+    const streamSimple = ((_model, _context, options) => {
+      optionsSeen.push(options as Record<string, unknown>);
       return streamForMessage(assistant([validSubmitReviewCall("submit-anthropic-downgraded")]));
-    }) as PiStreamForTest;
-    const adapter = createRealPiAiAdapter({ stream });
+    }) as PiStreamSimpleForTest;
+    const adapter = createRealPiAiAdapter({ streamSimple });
 
     await adapter.complete(
       {
@@ -6691,10 +6686,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       { reasoning: "high", toolChoice: { type: "tool", name: "submit_review" }, maxRetries: 0, forceSubmitToolChoice: false, submitToolName: "submit_review" }
     );
 
-    expect(rawOptionsSeen).toEqual([
+    expect(optionsSeen).toEqual([
       expect.objectContaining({
-        thinkingEnabled: true,
-        effort: "high",
+        reasoning: "high",
         toolChoice: "auto"
       })
     ]);

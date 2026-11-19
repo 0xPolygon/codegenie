@@ -17,7 +17,6 @@ import {
   type OAuthCredential,
   type OAuthCredentials,
   type ProviderHeaders,
-  type ProviderStreamOptions,
   type SimpleStreamOptions,
   type Tool,
   type ToolCall
@@ -184,14 +183,12 @@ const MAX_DEBUG_ARTIFACT_CHARS = 1_500_000;
 const RECORDED_PROVIDER_FAILURE = Symbol("recordedProviderFailure");
 
 type RealPiAiAdapterDeps = {
-  models?: Pick<Models, "stream" | "streamSimple" | "getModel" | "getModels" | "getProviders" | "getProvider">;
-  stream?: PiStreamFunction;
+  models?: Pick<Models, "streamSimple" | "getModel" | "getModels" | "getProviders" | "getProvider">;
   streamSimple?: PiStreamSimpleFunction;
   getOAuthApiKey?: GetOAuthApiKey;
   authStorage?: PiAuthStorage;
 };
 
-type PiStreamFunction = (model: Model<Api>, context: Context, options?: ProviderStreamOptions) => AssistantMessageEventStream;
 type PiStreamSimpleFunction = (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
 type OAuthApiKeyResult = {
   newCredentials: OAuthCredentials;
@@ -280,9 +277,7 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
             forceSubmitToolChoice: opts.llmConfig.forceSubmitToolChoice !== false,
             forcedToolChoiceEffective: forcedProbe.toolChoiceEffective,
             toolChoiceDowngraded: forcedProbe.toolChoiceDowngraded,
-            reasoningMechanism: forcedProbe.reasoningMechanism,
-            ...(forcedProbe.reasoningRequested !== undefined ? { reasoningRequested: forcedProbe.reasoningRequested } : {}),
-            ...(forcedProbe.reasoningLevelEffective !== undefined ? { reasoningLevelEffective: forcedProbe.reasoningLevelEffective } : {})
+            ...(forcedProbe.reasoningRequested !== undefined ? { reasoningRequested: forcedProbe.reasoningRequested } : {})
           }
         });
       }
@@ -995,33 +990,23 @@ export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): PiAiAdapt
         ...(typeof onRejectedArguments === "function" ? { onRejectedArguments: onRejectedArguments as (diagnostic: RejectedArgumentDiagnostic) => void } : {})
       };
       const completeOptions = { ...providerOptions } as SimpleStreamOptions & Record<string, unknown>;
-      if (isForcedToolChoice(completeOptions.toolChoice)) {
-        if (deps.stream !== undefined) {
-          const prepared = await prepareInjectedCompletion(model, completeOptions, deps, models);
-          const stream = deps.stream(
-            prepared.model,
-            context as Context,
-            mapProviderOptions(prepared.model, prepared.options)
-          );
-          return consumeFinalToolArguments(stream, submitToolName, streamHooks);
-        }
-        const stream = models.stream(
-          model.raw as Model<Api>,
-          context as Context,
-          mapProviderOptions(model.raw as Model<Api>, completeOptions)
-        );
-        return consumeFinalToolArguments(stream, submitToolName, streamHooks);
-      }
-      delete completeOptions.forceSubmitToolChoice;
+      // Forced submits use the same simple path as ordinary calls, so Pi's
+      // model-aware reasoning mapping applies to both; only the tool choice is
+      // mapped here (Pi's simple adapters forward it to the native request).
+      const simpleOptions = (raw: Model<Api>, options: SimpleStreamOptions & Record<string, unknown>): SimpleStreamOptions => {
+        if (isForcedToolChoice(options.toolChoice)) return mapForcedSubmitOptions(raw, options) as SimpleStreamOptions;
+        const { forceSubmitToolChoice: _forceSubmit, ...rest } = options;
+        return rest;
+      };
       if (deps.streamSimple !== undefined) {
         const prepared = await prepareInjectedCompletion(model, completeOptions, deps, models);
         return consumeFinalToolArguments(
-          deps.streamSimple(prepared.model, context as Context, prepared.options),
+          deps.streamSimple(prepared.model, context as Context, simpleOptions(prepared.model, prepared.options)),
           submitToolName, streamHooks
         );
       }
       return consumeFinalToolArguments(
-        models.streamSimple(model.raw as Model<Api>, context as Context, completeOptions),
+        models.streamSimple(model.raw as Model<Api>, context as Context, simpleOptions(model.raw as Model<Api>, completeOptions)),
         submitToolName, streamHooks
       );
     },
@@ -1893,25 +1878,21 @@ function anthropicForcedSubmitCall(model: PiModelRef, toolChoice: ToolChoiceMode
   return raw.api === "anthropic-messages" && isForcedToolChoice(mapProviderToolChoice(raw, toolChoice, forceSubmit));
 }
 
-function mapProviderOptions(model: Model<Api>, options: SimpleStreamOptions & Record<string, unknown>): Record<string, unknown> {
-  // Provider-specific bag: pi's SimpleStreamOptions.toolChoice is the neutral
-  // "auto" | "none", while the mapped value is whatever the target API expects
-  // (e.g. anthropic's { type: "tool", name }), so this is not a SimpleStreamOptions.
+// Forced submits travel the simple path (see createRealPiAiAdapter), so Pi
+// maps reasoning natively; only the tool choice is translated here. Pi's
+// public SimpleStreamOptions.toolChoice type is "auto" | "none", but every
+// Pi 1.5.2 simple adapter forwards options.toolChoice to its native stream;
+// tests/forced-reasoning.test.ts pins that untyped passthrough.
+function mapForcedSubmitOptions(model: Model<Api>, options: SimpleStreamOptions & Record<string, unknown>): Record<string, unknown> {
   const mapped: Record<string, unknown> = { ...options };
-  const reasoning = typeof options.reasoning === "string" ? options.reasoning : undefined;
   const forceSubmit = options.forceSubmitToolChoice !== false;
   const toolChoice = mapProviderToolChoice(model, options.toolChoice, forceSubmit);
-  const anthropicForcedSubmit = model.api === "anthropic-messages" && isForcedToolChoice(toolChoice);
-  delete mapped.reasoning;
   delete mapped.toolChoice;
   delete mapped.forceSubmitToolChoice;
-
-  if (anthropicForcedSubmit) {
-    // thinkingEnabled must be explicitly false: adaptive-thinking models
-    // default to thinking on, which the API rejects with forced tool_choice.
-    mapped.thinkingEnabled = false;
-  } else {
-    Object.assign(mapped, mapReasoningOptions(model, reasoning));
+  if (model.api === "anthropic-messages" && isForcedToolChoice(toolChoice)) {
+    // Plan 86 step 3: Anthropic's forced choice runs with thinking off; Pi's
+    // simple adapter disables thinking when no reasoning is requested.
+    delete mapped.reasoning;
   }
   if (toolChoice !== undefined) {
     if (model.api === "openai-responses" || model.api === "azure-openai-responses" || model.api === "openai-codex-responses") {
@@ -1923,40 +1904,6 @@ function mapProviderOptions(model: Model<Api>, options: SimpleStreamOptions & Re
   return mapped;
 }
 
-function mapReasoningOptions(model: Model<Api>, reasoning: string | undefined): Record<string, unknown> {
-  if (!reasoning) {
-    return {};
-  }
-  switch (model.api) {
-    case "anthropic-messages":
-      return { thinkingEnabled: true, effort: reasoning };
-    case "bedrock-converse-stream":
-      return { reasoning };
-    case "google-generative-ai":
-    case "google-vertex":
-      return { thinking: { enabled: true, level: googleThinkingLevel(reasoning) } };
-    case "mistral-conversations":
-    case "openai-completions":
-    case "openai-responses":
-    case "azure-openai-responses":
-    case "openai-codex-responses":
-      return { reasoningEffort: reasoning };
-    default:
-      return { reasoningEffort: reasoning };
-  }
-}
-
-function googleThinkingLevel(reasoning: string): "LOW" | "MEDIUM" | "HIGH" {
-  switch (reasoning) {
-    case "minimal":
-    case "low":
-      return "LOW";
-    case "medium":
-      return "MEDIUM";
-    default:
-      return "HIGH";
-  }
-}
 
 function mapProviderToolChoice(model: Model<Api>, choice: unknown, forceSubmit = true): unknown {
   if (choice === "auto") {
@@ -2012,14 +1959,12 @@ type ProviderProtocolFields = {
   toolChoiceEffective: string;
   toolChoiceDowngraded: boolean;
   reasoningRequested?: string;
-  reasoningMechanism: string;
-  reasoningLevelEffective?: string;
 };
 
-// Describes the protocol the provider actually runs for this call (plan 86):
-// requested vs effective tool choice (the anthropic-messages forced-submit
-// downgrade becomes visible instead of silent) and the reasoning mechanism the
-// codegenie reasoning level maps onto for this API family.
+// Describes the protocol for this call (plan 86): requested vs effective tool
+// choice (the forced-submit downgrade becomes visible instead of silent) and
+// the reasoning level requested. Pi maps that level onto each provider's wire
+// fields; codegenie does not restate the mapping (#77).
 function describeProviderProtocol(
   model: PiModelRef,
   toolChoice: ToolChoiceMode,
@@ -2036,18 +1981,11 @@ function describeProviderProtocol(
       : mapped && typeof mapped === "object"
         ? `forced:${forcedToolChoiceName(mapped) ?? "tool"}`
         : requested;
-  const api = (raw as { api?: string }).api;
   return definedRecord({
     toolChoiceRequested: requested,
     toolChoiceEffective: effective,
     toolChoiceDowngraded: requested.startsWith("forced:") && effective === "auto",
-    reasoningRequested: reasoning,
-    reasoningMechanism: reasoning === undefined ? "none" : reasoningMechanismForApi(api),
-    reasoningLevelEffective: reasoning === undefined
-      ? undefined
-      : api === "google-generative-ai" || api === "google-vertex"
-        ? googleThinkingLevel(reasoning)
-        : reasoning
+    reasoningRequested: reasoning
   }) as ProviderProtocolFields;
 }
 
@@ -2060,24 +1998,6 @@ function forcedToolChoiceName(mapped: object): string | undefined {
   return typeof fn === "string" ? fn : undefined;
 }
 
-function reasoningMechanismForApi(api: string | undefined): string {
-  switch (api) {
-    case "anthropic-messages":
-      return "adaptive-effort";
-    case "google-generative-ai":
-    case "google-vertex":
-      return "thinking-level";
-    case "bedrock-converse-stream":
-    case "mistral-conversations":
-    case "openai-completions":
-    case "openai-responses":
-    case "azure-openai-responses":
-    case "openai-codex-responses":
-      return "reasoning-effort";
-    default:
-      return "unknown";
-  }
-}
 
 // Pi appends the rejected payload after "Received arguments:". Keep only the
 // reason; a message with nothing before the marker gets a generic reason.

@@ -28,7 +28,7 @@ export type LlmCallRecord = {
   finalizeMode?: "compact" | "full" | undefined;
   finalizeTarget?: "no_findings" | "candidate_or_unknown" | undefined;
   // Effective provider protocol for this call (plan 86): requested vs
-  // effective tool choice and the reasoning mechanism the level maps onto.
+  // effective tool choice and the requested/selected reasoning level.
   toolChoiceRequested?: string;
   toolChoiceEffective?: string;
   toolChoiceDowngraded?: boolean;
@@ -36,8 +36,6 @@ export type LlmCallRecord = {
   reasoningSelected?: string;
   reasoningPolicy?: "configured" | "one_level_lower" | "lowest_supported";
   reasoningRequested?: string;
-  reasoningMechanism?: string;
-  reasoningLevelEffective?: string;
   // Headers can arrive before any model output; streamProgress measures Pi events.
   streamProgress?: StreamProgress;
   ttfbMs?: number;
