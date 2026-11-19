@@ -824,6 +824,43 @@ describe("eval scoring", () => {
     });
   });
 
+  it("requires one source to satisfy a positive expectation while preserving negative sentinels", () => {
+    const left = candidate("left", "src/left.ts", 10, { category: "security", severity: "low" });
+    const right = candidate("right", "src/right.ts", 20, {
+      title: "Callback can be dropped",
+      category: "correctness",
+      severity: "high",
+      failureMode: "The configured callback is never invoked."
+    });
+    const finding = finalFinding("merged", left.path, 10, {
+      category: left.category,
+      severity: left.severity,
+      mergedCandidateIds: [left.id, right.id]
+    });
+    const artifacts: EvalArtifacts = {
+      candidates: [left, right], finalFindings: [finding], verification: [], finalSelection: [], packets: [], hintEvents: [], metricsSources: {}
+    };
+    const crossed = {
+      id: "crossed",
+      path: left.path,
+      category: "security" as const,
+      severityAtLeast: "high" as const,
+      titlePattern: "callback can be dropped",
+      failureModePattern: "callback is never invoked"
+    };
+
+    const score = scoreEvalRun({
+      name: "coherent-merged-matches",
+      should_find: [crossed, { ...crossed, id: "coherent", path: right.path, lineRange: [20, 20], category: "correctness" }],
+      should_not_find: [{ ...crossed, id: "negative" }]
+    }, artifacts, "live");
+
+    expect(score.expectationResults.map(({ expectationId, status }) => [expectationId, status])).toEqual([
+      ["crossed", "fail"], ["coherent", "pass"], ["negative", "fail"]
+    ]);
+    expect(score.violations).toMatchObject([{ expectationId: "negative", findingId: finding.id }]);
+  });
+
   it("uses conservative category compatibility for logic bug and correctness findings", () => {
     const final = finalFinding("final-logic", "src/app.ts", 12, {
       title: "Amount conversion rejects a valid value",
