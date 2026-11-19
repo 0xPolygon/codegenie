@@ -890,6 +890,40 @@ describe("stage 9 evidence-aware verification", () => {
       })
     ]));
   });
+  it.each(["keep", "revise"] as const)("rejects a %s verdict that reports high false-positive risk (#63)", async (verdict) => {
+    const fixture = reviewFixture(["src/app.ts"]);
+    const finding = candidate("high-risk-keep", fixture.packets[0]!);
+    const telemetry = captureTelemetry();
+
+    const result = await verifyFindings(
+      { packetResults: [packetResult(fixture.packets[0]!.id, [finding])], packets: fixture.packets },
+      fakeTools(),
+      config(),
+      telemetry.recorder,
+      {
+        runner: verifierRunner(() => ({
+          verdict,
+          reason: "The path is reachable but the failure is probably handled upstream.",
+          requiredEvidencePresent: true,
+          falsePositiveRisk: "high",
+          ...(verdict === "revise" ? { findingUpdates: { title: "Narrowed title" } } : {})
+        })),
+        promptBuilder: createPromptBuilder(fakeLensRegistry()),
+        lensRegistry: fakeLensRegistry(),
+        diff: fixture.diff
+      }
+    );
+
+    expect(result.verified).toEqual([]);
+    expect(result.verdicts[0]).toMatchObject({ verdict: "reject", falsePositiveRisk: "high", reason: expect.stringContaining("high false-positive risk") });
+    expect(telemetry.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 9,
+        message: "verification_high_false_positive_risk_normalized_to_reject",
+        data: expect.objectContaining({ candidateId: "high-risk-keep", originalVerdict: verdict })
+      })
+    ]));
+  });
 });
 
 describe("stage 9 eval diagnostics and prompts", () => {

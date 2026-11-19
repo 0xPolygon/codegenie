@@ -796,6 +796,24 @@ function normalizeSubmittedVerdict(
       data: { candidateId: candidate.id, proofAssessment: normalized.proofAssessment } });
     return { ...normalized, verdict: "reject", requiredEvidencePresent: false };
   }
+  // A kept finding requires false-positive risk that is not high
+  // (specs/project/architecture.md keep criteria), so a keep or revise that
+  // reports high risk is a reject. Missing evidence keeps its own reason below.
+  if (normalized.verdict !== "reject" && normalized.requiredEvidencePresent === true && normalized.falsePositiveRisk === "high") {
+    telemetry.event({
+      stage: 9,
+      level: "warn",
+      message: "verification_high_false_positive_risk_normalized_to_reject",
+      file: candidate.path,
+      data: { candidateId: candidate.id, originalVerdict: submitted.verdict }
+    });
+    return {
+      verdict: "reject",
+      reason: `high false-positive risk; original ${submitted.verdict} verdict rejected: ${normalized.reason}`,
+      requiredEvidencePresent: true,
+      falsePositiveRisk: "high"
+    };
+  }
   if (normalized.verdict === "reject" || normalized.requiredEvidencePresent === true) {
     return normalized;
   }
