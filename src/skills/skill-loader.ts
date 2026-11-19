@@ -371,6 +371,7 @@ function parseSections(body: string, filePath: string, logger: Logger): Partial<
   let current: SkillSectionName | undefined;
   let currentLines: string[] = [];
   let sawHeading = false;
+  let fence: string | undefined;
 
   const flush = (): void => {
     if (!current) {
@@ -392,7 +393,19 @@ function parseSections(body: string, filePath: string, logger: Logger): Partial<
   };
 
   for (const line of lines) {
-    const heading = /^#\s+(.+?)\s*$/.exec(line);
+    const fenceMatch = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
+    const marker = fenceMatch?.[1];
+    if (marker) {
+      const suffix = fenceMatch[2] ?? "";
+      if (fence) {
+        if (marker[0] === fence[0] && marker.length >= fence.length && /^[ \t]*$/u.test(suffix)) {
+          fence = undefined;
+        }
+      } else if (marker[0] === "~" || !suffix.includes("`")) {
+        fence = marker;
+      }
+    }
+    const heading = fence ? null : /^#\s+(.+?)\s*$/.exec(line);
     if (heading) {
       if (!sawHeading && currentLines.some((entry) => entry.trim())) {
         logger.debug({
