@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -111,7 +111,8 @@ describe("Anthropic models that cannot disable thinking (issue #46)", () => {
   it.each([
     ["claude-opus-5-5", false], ["claude-fable-5-2", false], ["claude-opus-5", true], ["claude-haiku-5-5", true]
   ] as const)("serializes the submit request %s accepts in the actual Pi request body (forced: %s)", async (modelId, forced) => {
-    vi.stubEnv("CODEGENIE_HOME", mkdtempSync(path.join(tmpdir(), "codegenie-46-")));
+    const home = mkdtempSync(path.join(tmpdir(), "codegenie-46-"));
+    vi.stubEnv("CODEGENIE_HOME", home);
     vi.stubEnv("ANTHROPIC_API_KEY", "test-only-key");
     try {
       const adapter = createRealPiAiAdapter();
@@ -132,6 +133,7 @@ describe("Anthropic models that cannot disable thinking (issue #46)", () => {
       }
     } finally {
       vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });
