@@ -60,12 +60,9 @@ function signatureField(block: PiAssistantMessage["content"][number]): string | 
 function redactReadableSignatureFields(signature: string): string {
   // Pi's OpenAI adapters use JSON envelopes that can contain both readable
   // summaries and opaque fields. Other adapters use a bare signature string.
-  if (!SIGNATURE_ENVELOPE.test(signature)) {
-    return signature;
-  }
   const envelope = parseSignatureEnvelope(signature);
   if (envelope === undefined) {
-    return stripCredentials(signature);
+    return signature;
   }
   const redacted = Array.isArray(envelope) ? envelope.map(redactReasoningDetail) : redactReasoningDetail(envelope);
   const encoded = JSON.stringify(redacted);

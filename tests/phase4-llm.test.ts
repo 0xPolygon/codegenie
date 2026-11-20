@@ -4145,16 +4145,19 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ]);
   });
 
-  it.each([false, true])("preserves live reasoning signatures while redacting diagnostics (warm cache %s)", async (warmCache) => {
+  it.each(["live envelope", "live opaque", "warm cache"])("preserves reasoning signatures while redacting diagnostics (%s)", async (mode) => {
+    const warmCache = mode === "warm cache";
     const repoRoot = tempGitRepo();
     const cacheDir = path.join(repoRoot, ".codegenie", "cache");
     const telemetry = fakeTelemetry();
     const cache = warmCache ? await createModelCallCache({
       dir: cacheDir, repoRoot, runFingerprint: "reasoning-replay", logger: fakeLogger(), telemetry: telemetry.recorder
     }) : undefined;
-    const opaque = warmCache ? `opaquesk-${"A".repeat(40)}` : `opaque-sk-${"A".repeat(40)}`;
+    const opaque = warmCache ? "opaque-provider-signature" : `opaque-sk-${"A".repeat(40)}`;
     const visible = `visible-sk-${"B".repeat(40)}`;
-    const thinkingSignature = JSON.stringify([{ type: "reasoning.encrypted", data: opaque }], null, 1);
+    const thinkingSignature = mode === "live opaque"
+      ? `{${opaque}`
+      : JSON.stringify([{ type: "reasoning.encrypted", data: opaque }], null, 1);
     const initial = assistant([
       { type: "thinking", thinking: visible, thinkingSignature },
       { type: "text", text: visible, textSignature: opaque },
@@ -4194,7 +4197,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(diagnostics).toContain("visible-[redacted:pattern]");
     if (!warmCache) {
       expect(diagnostics).not.toContain(opaque);
-      expect(diagnostics).toContain("opaque-[redacted:pattern]");
+      expect(diagnostics).toContain(JSON.stringify(thinkingSignature.replace(opaque, "opaque-[redacted:pattern]")));
     }
   });
 
@@ -6995,7 +6998,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(existsSync(file)).toBe(false);
   });
 
-  it.each(["bare registered", "enveloped registered", "unregistered pattern"])("refuses disk replay for a signature with a %s credential", async (kind) => {
+  it.each(["bare registered", "enveloped registered", "unregistered pattern"] as const)("refuses disk replay for a signature with a %s credential", async (kind) => {
     const repoRoot = tempGitRepo();
     const cacheDir = path.join(repoRoot, ".codegenie", "cache");
     const cache = await createModelCallCache({
@@ -7005,11 +7008,13 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const file = modelCallCacheEntryPath(cacheDir, key);
     const credential = kind === "unregistered pattern" ? `sk-${"A".repeat(40)}` : "fixture-credential-for-signature";
     // A JSON escape can hide a credential from a scan of the serialized signature.
-    const signature = kind === "enveloped registered"
-      ? JSON.stringify([{ type: "reasoning.encrypted", data: credential }]).replace(credential, `\\u0066${credential.slice(1)}`)
-      : `prefix-${credential}`;
+    const signatures = {
+      "bare registered": `prefix-${credential}`,
+      "enveloped registered": JSON.stringify([{ type: "reasoning.encrypted", data: credential }]).replace(credential, `\\u0066${credential.slice(1)}`),
+      "unregistered pattern": `{prefix-${credential}`
+    };
     const entry = cacheEntry(7);
-    entry.message.content.unshift({ type: "thinking", thinking: "", thinkingSignature: signature });
+    entry.message.content.unshift({ type: "thinking", thinking: "", thinkingSignature: signatures[kind] });
 
     if (kind !== "unregistered pattern") registerSecret(credential);
     try {
