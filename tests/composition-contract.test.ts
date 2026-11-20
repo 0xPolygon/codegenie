@@ -9,6 +9,10 @@ import { composePresentation, compositionSources, renderRetainedComposition, val
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { assessFinalSuggestions } from "../src/pipeline/suggestion-assessment.js";
 import { SubmitCompositionSchema, SubmitVerificationVerdictSchema } from "../src/llm/schemas.js";
+import { cleanupSubmitShape, submissionIssues } from "../src/llm/submit-preservation.js";
+import { createPromptBuilder } from "../src/skills/prompt-builder.js";
+import type { LensRegistry } from "../src/skills/lens-registry.js";
+import type { RunCoverageStatus } from "../src/types.js";
 
 
 describe("contract-aware concise composition", () => {
@@ -118,6 +122,35 @@ describe("contract-aware concise composition", () => {
     const legacy = { summary: "Historical", composedFindings: [{ findingIds: ["rounding"], finalBody: "Historical body", publication: "inline" }] };
     expect(() => validateWithSchema(SubmitCompositionSchema, legacy)).not.toThrow();
     expect(() => validateWithSchema(schema, legacy)).toThrow();
+  });
+
+  it("asks for publication on every composedFindings item, not once at the root (#98)", () => {
+    const registry = {} as LensRegistry;
+    const coverage = { totalHunks: 1, reviewedHunks: 1, skippedHunks: 0, failedHunks: 0 } as RunCoverageStatus;
+    const { prompt } = createPromptBuilder(registry).buildComposerPrompt({ groupedFindingsJson: "[]", intent: "Review", coverage });
+    expect(prompt).toContain('Each composedFindings[] item needs its own publication ("inline" or "summary-only")');
+
+    const findings = contractReview();
+    const schema = composerSubmissionSchema([{ fingerprint: "fixture", representative: findings[0]!, findings }]);
+    const items = findings.map(f => {
+      const sources = compositionSources([f]);
+      return { findingIds: [f.id], sections: [
+        { kind: "impact" as const, text: f.failureMode, sourceRefs: [f.id + "/failureMode", f.id + "/whyThisMatters"] },
+        { kind: "verification" as const, text: f.verification, sourceRefs: [f.id + "/verification", f.id + "/proofAssessment"] }
+      ], evidenceRefs: sources.filter(s => s.kind === "evidence").map(s => s.id), retainedSourceRefs: [f.id + "/suggestedFix", f.id + "/suggestedTest"] };
+    });
+    const valid = { summary: "Two boundaries require attention.", composedFindings: [{ ...items[0]!, publication: "inline" }, { ...items[1]!, publication: "summary-only" }] };
+    expect(() => validateWithSchema(schema, valid)).not.toThrow();
+    expect(() => validateCompositionSubmission(valid, findings)).not.toThrow();
+
+    // The observed failure: one root-level publication instead of one per item.
+    const misplaced = { summary: valid.summary, publication: "inline", composedFindings: items };
+    expect(() => validateWithSchema(schema, misplaced)).toThrow();
+    const cleaned = cleanupSubmitShape(schema, misplaced).arguments;
+    expect(submissionIssues(schema, cleaned)).toEqual(expect.arrayContaining([
+      { path: "composedFindings.0.publication", kind: "missing" },
+      { path: "composedFindings.1.publication", kind: "missing" }
+    ]));
   });
 
   it("does not require optional suggestion assessments or share support between fix and test", () => {
