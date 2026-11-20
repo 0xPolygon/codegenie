@@ -1411,7 +1411,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         )
       };
       const cachedFailure = providerFailureFromMessage(cachedResponse.message, false);
-      const cachedSchemaValid = schemaValidityForResponse(adapter, request, tools, kind, cachedResponse.message);
+      const cachedSchemaValid = schemaValidityForResponse(adapter, request, tools, kind, cachedResponse.message).valid;
       if (cachedFailure) {
         opts.telemetry.event({
           stage: request.stage,
@@ -1644,7 +1644,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         }
         throw markRecordedProviderFailure(toLlmError(providerFailure.cause, providerFailure.status, taskTimedOut(), failureLocation));
       }
-      const schemaValid = schemaValidityForResponse(adapter, request, tools, kind, message);
+      const { valid: schemaValid, error: schemaError } = schemaValidityForResponse(adapter, request, tools, kind, message);
       const cacheable = Boolean(opts.cache && isCacheableProviderResponse(schemaValid, message, tools));
       releaseReservation();
       reportUsage(opts, request.stage, message);
@@ -1677,8 +1677,9 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
       recordModelCall(opts, request, model, message, definedRecord({
         ...modelCallMeta,
         status: callStatus,
-        errorCode: callErrorCode
-      }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodegenieErrorCode });
+        errorCode: callErrorCode,
+        errorMessage: schemaValid === false && schemaError !== undefined ? recordedSchemaError(schemaError) : undefined
+      }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodegenieErrorCode; errorMessage?: string });
       return { source: "provider", message, callId };
     } catch (cause) {
       if (isRecordedProviderFailure(cause)) {
@@ -3413,29 +3414,40 @@ function schemaValidityForResponse(
   tools: ToolDefinition[],
   kind: ModelCallKind,
   message: PiAssistantMessage
-): boolean | undefined {
+): { valid: boolean | undefined; error?: string } {
   const submitTool = tools.find((tool) => tool.name === submitToolNameForStage(request.stage));
   if (!submitTool) {
-    return undefined;
+    return { valid: undefined };
   }
   const submitCalls = toolCallsNamed(message, submitTool.name);
   const disciplineError = submitResponseDisciplineError(request, submitTool.name, submitCalls);
   if (disciplineError !== undefined) {
-    return false;
+    return { valid: false, error: disciplineError };
   }
   const submitCall = submitCalls[0];
   if (!submitCall) {
-    return kind === "finalize" || kind === "repair" ? false : undefined;
+    return kind === "finalize" || kind === "repair"
+      ? { valid: false, error: `The response did not call ${submitTool.name}.` }
+      : { valid: undefined };
   }
   if (!isTrustedSubmitCall(submitCall)) {
-    return false;
+    return { valid: false, error: `The ${submitTool.name} arguments were not reliably parsed.` };
   }
   try {
     validateSubmitCall(adapter, request, submitTool, submitCall);
-    return true;
-  } catch {
-    return false;
+    return { valid: true };
+  } catch (cause) {
+    // The model-call record keeps the reason, never the rejected payload Pi
+    // appends after "Received arguments:".
+    return { valid: false, error: withoutRejectedArguments(cause instanceof Error ? cause.message : String(cause)) };
   }
+}
+
+// Validation text can quote model output: redact credentials before the cap so
+// a cut cannot leave an unmatched key prefix, and keep within truncateDiagnostic's
+// 2,000-character limit including the marker.
+function recordedSchemaError(error: string): string {
+  return truncateDiagnosticPart(stripCredentials(error), 2_000);
 }
 
 function submitResponseDisciplineError(
