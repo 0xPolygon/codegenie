@@ -28,6 +28,7 @@ import { runGit } from "../git/subprocess.js";
 import { canonicalArtifactPath } from "../telemetry/run-artifacts.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { sha256Hex } from "../util/hashing.js";
+import { safeDiagnosticLine } from "../util/review-health.js";
 import { resolveCodegenieRuntimeProvenance } from "../util/runtime-provenance.js";
 import {
   allocateRunDir,
@@ -39,7 +40,7 @@ import {
   writeEvalRunInfo
 } from "./eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "./eval-compare.js";
-import { aggregateRepeatScores, scoreEvalRun } from "./eval-scoring.js";
+import { aggregateRepeatScores, hasFailedReviewOutcome, scoreEvalRun } from "./eval-scoring.js";
 import { addRecommendationJudgment, recommendationJudgeSchema } from "./recommendation-judge.js";
 
 export type EvalSuite = {
@@ -568,12 +569,13 @@ async function runRepeatedLiveCase(
     for (let execution = 1; execution <= repeat; execution += 1) {
       const execDirName = path.join("repeats", String(execution));
       const execDir = path.join(allocated.dir, execDirName);
+      const telemetryDir = path.join(execDir, "telemetry");
       await mkdir(execDir, { recursive: true });
       try {
         let reviewOutput = "";
         await runReview(target, caseConfig.config, {
           repoRoot: actualRepoRoot,
-          runArtifactDir: path.join(execDir, "telemetry"),
+          runArtifactDir: telemetryDir,
           format: "markdown",
           postGithubComments: false,
           configWarnings: repoLayer.warnings,
@@ -584,15 +586,15 @@ async function runRepeatedLiveCase(
         if (reviewOutput.trim().length > 0) {
           await writeFile(path.join(execDir, "codegenie-review.out.md"), reviewOutput);
         }
-        const artifacts = await loadEvalArtifacts(path.join(execDir, "telemetry"));
+        const artifacts = await loadEvalArtifacts(telemetryDir);
         const score = scoreEvalRun(entry.evalCase, artifacts, "live");
         await addRecommendationJudgment(entry.evalCase, score, execDir, true);
         await writeFile(path.join(execDir, "score.json"), `${JSON.stringify(score, null, 2)}\n`);
         executions.push({ runDir: execDirName, score, artifacts });
       } catch (error) {
-        const score = errorScore(error);
-        await writeFile(path.join(execDir, "score.json"), `${JSON.stringify(score, null, 2)}\n`);
-        executions.push({ runDir: execDirName, score });
+        const result = await scoreFailedDraw(entry.evalCase, telemetryDir, error);
+        await writeFile(path.join(execDir, "score.json"), `${JSON.stringify(result.score, null, 2)}\n`);
+        executions.push({ runDir: execDirName, ...result });
       }
     }
     const { aggregate, score } = aggregateRepeatScores(entry.evalCase, executions);
@@ -620,6 +622,18 @@ async function runRepeatedLiveCase(
   } catch (error) {
     return writeErroredCase(allocated, entry, errorConfig, codegenieRuntime, effectiveConfig, startedAt, error, "live", undefined, errorCache);
   }
+}
+
+async function scoreFailedDraw(evalCase: EvalCase, telemetryDir: string, error: unknown): Promise<{ score: EvalScore; artifacts?: EvalArtifacts }> {
+  try {
+    const artifacts = await loadEvalArtifacts(telemetryDir);
+    if (hasFailedReviewOutcome(artifacts.metricsSources.runJson)) {
+      return { score: scoreEvalRun(evalCase, artifacts, "live"), artifacts };
+    }
+  } catch {
+    // A damaged artifact set must not replace the original review error.
+  }
+  return { score: errorScore(error) };
 }
 
 async function writeErroredCase(
@@ -792,7 +806,7 @@ function buildRunInfo(input: {
 
 function errorScore(error: unknown): EvalScore {
   const code = isCodegenieError(error) ? error.code : "invalid_args";
-  const message = error instanceof Error ? error.message : String(error);
+  const message = safeDiagnosticLine(error instanceof Error ? error.message : String(error));
   return {
     status: "error",
     expectationResults: [],

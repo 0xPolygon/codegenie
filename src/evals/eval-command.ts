@@ -3,6 +3,7 @@ import { Command, CommanderError } from "commander";
 import { loadConfig } from "../config/config-loader.js";
 import type { CodegenieConfig, EvalCaseResult, EvalLossLabel } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
+import { safeDiagnosticLine } from "../util/review-health.js";
 import { CliDisplayExit } from "../cli/review-command.js";
 import { loadEvalSuite, replayFromArtifacts, runEvalCase } from "./eval-runner.js";
 
@@ -190,6 +191,9 @@ export function renderCaseResult(result: EvalCaseResult): string {
   if (result.info.repeats !== undefined) {
     const repeats = result.info.repeats;
     lines.push(`  REPEAT x${repeats.repeat}: ${repeats.executions.map((execution) => execution.status).join(",")} | total $${repeats.totals.costUSD.toFixed(2)} ${repeats.totals.elapsedSeconds.toFixed(0)}s${repeats.totals.errors > 0 ? ` | ${repeats.totals.errors} errored` : ""}`);
+    repeats.executions.forEach(({ error }, index) => {
+      if (error) lines.push(`  ERROR draw ${index + 1} ${safeDiagnosticLine(`${error.code}: ${error.message}`)}`);
+    });
     for (const expectation of repeats.expectations) {
       const loss = Object.entries(expectation.lossHistogram)
         .filter(([, count]) => count > 0)

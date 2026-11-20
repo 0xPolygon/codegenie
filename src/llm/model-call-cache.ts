@@ -6,6 +6,7 @@ import { stableJson } from "../util/json.js";
 import { CodegenieError } from "../util/errors.js";
 import { provisionCodegenieGitignore } from "../telemetry/run-artifacts.js";
 import { stripCredentials } from "../telemetry/redaction.js";
+import { hasUncacheableReplaySignature, redactStoredResponseForReplay } from "./assistant-replay.js";
 import type { Logger, ReviewStage } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type { ModelCallCache, PiAssistantMessage, StoredProviderResponse } from "./llm-runner.js";
@@ -75,7 +76,7 @@ export async function createModelCallCache(opts: CreateModelCallCacheOptions): P
           });
           return { status: "miss", reason: "schema_mismatch" };
         }
-        if (!isStoredProviderResponse(parsed)) {
+        if (!isStoredProviderResponse(parsed) || hasUncacheableReplaySignature(parsed.message)) {
           unlinkBestEffort(filePath);
           opts.telemetry.event({
             stage: stageForTelemetry(stage, parsed),
@@ -97,8 +98,12 @@ export async function createModelCallCache(opts: CreateModelCallCacheOptions): P
       const filePath = cacheEntryPath(dir, key);
       const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
       try {
+        const replay = redactStoredResponseForReplay(entry);
+        if (hasUncacheableReplaySignature(replay.message)) {
+          return { status: "miss", reason: "write_failed" };
+        }
         mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-        writeFileSync(tmpPath, `${JSON.stringify(stripCredentials(entry), null, 2)}\n`, { mode: 0o600 });
+        writeFileSync(tmpPath, `${JSON.stringify(replay, null, 2)}\n`, { mode: 0o600 });
         renameSync(tmpPath, filePath);
         opts.telemetry.event({ stage: entry.stage, level: "debug", message: "model_call_cache_write", cacheStatus: "write" });
         return { status: "write" };

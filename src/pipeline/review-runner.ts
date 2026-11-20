@@ -46,6 +46,7 @@ import type {
   ReviewRunStats,
   ReviewStage,
   RunCoverageStatus,
+  RunOutcome,
   TelemetryEvent
 } from "../types.js";
 import { CodegenieError, errorExitCode, isCodegenieError } from "../util/errors.js";
@@ -90,7 +91,7 @@ type RunContext = {
   budget: BudgetLedger;
   abort: AbortController;
   addCleanupTask(task: () => Promise<void>): void;
-  finalize(outcome: { status: "completed_full" | "completed_partial" | "failed"; errorCode?: import("../util/errors.js").CodegenieErrorCode; exitCode: number; budgetStop?: BudgetStop }): Promise<void>;
+  finalize(outcome: RunOutcome): Promise<void>;
 };
 
 type CoverageOptions = {
@@ -372,16 +373,19 @@ export async function runReview(
     }
     finalReview.runStats = buildRunStats(config, resolved, run, plannerResult.plannerCoverage);
     await renderOutputs(finalReview, overrides, run.telemetry);
+    const failed = finalReview.health?.status === "failed";
+    const failure = finalReview.health?.diagnostics.find((diagnostic) => diagnostic.kind === "failure");
     await run.finalize({
-      status: finalReview.health?.status === "failed" ? "failed" : finalReview.coverage.partial ? "completed_partial" : "completed_full",
-      exitCode: finalReview.health?.status === "failed" ? 1 : 0,
-      ...(finalReview.health?.status === "failed" ? { errorCode: "review_failed" as const } : {}),
+      status: failed ? "failed" : finalReview.coverage.partial ? "completed_partial" : "completed_full",
+      exitCode: failed ? 1 : 0,
+      ...(failed ? { errorCode: "review_failed" as const, ...(failure ? { failure } : {}) } : {}),
       ...(finalReview.coverage.budgetStop !== undefined ? { budgetStop: finalReview.coverage.budgetStop } : {})
     });
     return finalReview;
   } catch (error) {
     const failure = reviewFailureRecord(error);
     const failureStage = run.currentStage;
+    const diagnostic = reviewDiagnostic(failureStage, error);
     run.logger.error({
       runId: run.runId,
       stage: failureStage,
@@ -403,11 +407,11 @@ export async function runReview(
       await run.telemetry.writeArtifact("error.json", { schemaVersion: 1, runId: run.runId, stage: failureStage, ...failure });
       const coverage: RunCoverageStatus = { unavailable: true, totalHunks: 0, reviewedHunks: 0, skippedHunks: 0, failedHunks: 0,
         coverageByLevel: { deep: 0, normal: 0, light: 0, skip: 0 }, degradedPlanning: false, budgetStopped: false,
-        verificationIncompleteCount: 0, partial: true, reasons: [], diagnostics: [reviewDiagnostic(failureStage, error)] };
+        verificationIncompleteCount: 0, partial: true, reasons: [], diagnostics: [diagnostic] };
       const retained = retainedReview ?? reviewRetainedOnCompositionFailure(error);
       const failureReport: ReviewResult = retained
         ? { ...retained, coverage: { ...retained.coverage, partial: true,
-            diagnostics: [...(retained.coverage.diagnostics ?? []), reviewDiagnostic(failureStage, error)] } }
+            diagnostics: [...(retained.coverage.diagnostics ?? []), diagnostic] } }
         : { summary: "Review terminated before a trustworthy report could be assembled.", coverage,
             health: deriveReviewHealth(coverage, 0), findings: [], summaryOnlyFindings: [], needsHumanAttention: [], noFindings: true };
       refreshReviewHealth(failureReport);
@@ -420,7 +424,7 @@ export async function runReview(
     try {
       await run.telemetry.flush();
       await run.finalize({ status: "failed", ...(isCodegenieError(error) ? { errorCode: error.code } : {}),
-        exitCode: errorExitCode(error), ...(budgetStop !== undefined ? { budgetStop } : {}) });
+        exitCode: errorExitCode(error), failure: diagnostic, ...(budgetStop !== undefined ? { budgetStop } : {}) });
     } catch (diagnosticError) {
       run.logger.error({ runId: run.runId, stage: 0, event: "failure_finalize_failed", message: "Could not finalize diagnostics; original error retained", data: { diagnosticError: String(diagnosticError) } });
     }
@@ -494,6 +498,14 @@ async function startRun(
         finalized = true;
         hardKillTimer.cancel();
         await runCleanupTasks(cleanupTasks, run.recorder);
+        if (outcome.status === "failed") {
+          telemetry.event({
+            stage: (outcome.failure?.stage ?? currentStage) as ReviewStage | 0,
+            level: "error",
+            message: "review_health_failed",
+            data: { status: outcome.status, errorCode: outcome.errorCode, ...outcome.failure }
+          });
+        }
       }
       await run.finalize(outcome);
     }

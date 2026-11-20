@@ -2266,12 +2266,14 @@ function normalizeOutcome(outcome: RunOutcome): {
   errorCode: RunOutcome["errorCode"] | null;
   exitCode: number;
   budgetStop: RunOutcome["budgetStop"] | null;
+  failure?: RunOutcome["failure"];
 } {
   return {
     status: outcome.status,
     errorCode: outcome.errorCode ?? null,
     exitCode: outcome.exitCode,
-    budgetStop: outcome.budgetStop ?? null
+    budgetStop: outcome.budgetStop ?? null,
+    ...(outcome.failure ? { failure: outcome.failure } : {})
   };
 }
 
