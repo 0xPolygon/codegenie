@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createFieldRepair } from "../src/llm/field-repair.js";
 import { submissionIssues } from "../src/llm/submit-preservation.js";
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
-import { compositionAttributionDiagnostics, compositionSources, validateCompositionSubmission } from "../src/pipeline/composition-content.js";
+import { compositionAttributionDiagnostics, compositionSources, proofVisibilityDiagnostics, validateCompositionSubmission, type CompositionPresentation, type CompositionSection } from "../src/pipeline/composition-content.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "../src/pipeline/composition-repair.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { contractComposition } from "./fixtures/composition/contract-review.js";
@@ -132,7 +132,7 @@ describe("composition attribution repair", () => {
     expect(() => validateCompositionSubmission(original, findings)).toThrow(/unknown_source/);
     const diagnostics = compositionAttributionDiagnostics(compositionSources(findings), group.sections, group.evidenceRefs, group, "composedFindings.0.");
     expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "unknown_source", reference: "unknown/source" }),
+      expect.objectContaining({ code: "unknown_source", path: expect.stringMatching(/^composedFindings\.0\.sections\.\d+\.sourceRefs\.\d+$/u) }),
       expect.objectContaining({ code: "wrong_section", reference: verification, actualKind: "verification", expectedKind: "fix", accountedAt: undefined }),
       expect.objectContaining({ code: "missing_source", reference: verification })
     ]));
@@ -197,5 +197,105 @@ describe("composition attribution repair", () => {
     const invalid = structuredClone(original) as unknown as Record<string, unknown>;
     delete invalid.summary;
     expect(createCompositionAttributionRepair(schema, invalid, findings)).toBeUndefined();
+  });
+
+  it("opens visible-proof repairs in every composed finding, not only one with a schema error (#95)", () => {
+    const contract = contractComposition();
+    const auth = authorizationComposition();
+    const findings = [...contract.findings, ...auth.findings];
+    const schema = composerSubmissionSchema([
+      { fingerprint: "contract", representative: contract.findings[0]!, findings: contract.findings },
+      { fingerprint: "authorization", representative: auth.findings[0]!, findings: auth.findings }
+    ]);
+    type Composed = CompositionPresentation & { findingIds: string[]; sections: CompositionSection[]; evidenceRefs: string[]; publication: string };
+    const original: { summary: string; composedFindings: Composed[] } = { summary: "Two verified issues", composedFindings: [contract, auth].map(build => ({
+      findingIds: build.findings.map(f => f.id), sections: build.sections, evidenceRefs: build.evidenceRefs, ...build.presentation, publication: "inline"
+    })) };
+    const good = structuredClone(original);
+    // Group 0: a reference outside the inventory, which schema validation reports first.
+    const fixIndex = original.composedFindings[0]!.sections.findIndex(section => section.kind === "fix");
+    original.composedFindings[0]!.sections[fixIndex]!.sourceRefs.push("made-up/fix");
+    // Group 1: a proof with an open assumption, accounted only in provenance.
+    const group = original.composedFindings[1]!;
+    const proofRef = auth.findings[0]!.id + "/proofAssessment";
+    const verificationIndex = group.sections.findIndex(section => section.kind === "verification");
+    group.sections[verificationIndex]!.sourceRefs = group.sections[verificationIndex]!.sourceRefs.filter(ref => ref !== proofRef);
+    group.retainedSourceRefs = [...(group.retainedSourceRefs ?? []), proofRef];
+    expect(() => validateCompositionSubmission(original, findings)).toThrow(/proof_not_visible/);
+
+    const repair = createCompositionAttributionRepair(schema, original, findings)!;
+    expect(repair.paths).toEqual(expect.arrayContaining([
+      `composedFindings.0.sections.${fixIndex}.sourceRefs`,
+      `composedFindings.1.sections.${verificationIndex}.sourceRefs`,
+      "composedFindings.1.retainedSourceRefs"
+    ]));
+    expect(repair.prompt).toContain('"code":"proof_not_visible"');
+    const result = repair.merge({
+      [`composedFindings.0.sections.${fixIndex}.sourceRefs`]: good.composedFindings[0]!.sections[fixIndex]!.sourceRefs,
+      [`composedFindings.1.sections.${verificationIndex}.sourceRefs`]: good.composedFindings[1]!.sections[verificationIndex]!.sourceRefs,
+      "composedFindings.1.retainedSourceRefs": good.composedFindings[1]!.retainedSourceRefs ?? []
+    }) as typeof original;
+    expect(result.composedFindings.map(entry => entry.sections)).toEqual(good.composedFindings.map(entry => entry.sections));
+    expect(result.composedFindings[1]!.retainedSourceRefs ?? []).toEqual(good.composedFindings[1]!.retainedSourceRefs ?? []);
+    expect(() => validateCompositionSubmission(result, findings)).not.toThrow();
+  });
+
+  it("repairs a proof kept only in provenance when it is the sole defect (#95)", () => {
+    const { findings, original, schema, group } = fixture(authorizationComposition);
+    const good = structuredClone(original);
+    const proofRef = findings[0]!.id + "/proofAssessment";
+    const verificationIndex = group.sections.findIndex(section => section.kind === "verification");
+    group.sections[verificationIndex]!.sourceRefs = group.sections[verificationIndex]!.sourceRefs.filter(ref => ref !== proofRef);
+    group.retainedSourceRefs = [...(group.retainedSourceRefs ?? []), proofRef];
+    const repair = createCompositionAttributionRepair(schema, original, findings)!;
+    expect(repair.paths).toEqual([`composedFindings.0.sections.${verificationIndex}.sourceRefs`, "composedFindings.0.retainedSourceRefs"]);
+    const result = repair.merge({
+      [`composedFindings.0.sections.${verificationIndex}.sourceRefs`]: good.composedFindings[0]!.sections[verificationIndex]!.sourceRefs,
+      "composedFindings.0.retainedSourceRefs": good.composedFindings[0]!.retainedSourceRefs ?? []
+    }) as typeof original;
+    expect(result.composedFindings[0]!.sections).toEqual(good.composedFindings[0]!.sections);
+    expect(() => validateCompositionSubmission(result, findings)).not.toThrow();
+  });
+
+  it("leaves a proof with no verification section to the general repair (#95)", () => {
+    const { findings, original, schema, group } = fixture();
+    const verificationIndex = group.sections.findIndex(section => section.kind === "verification");
+    const [verification] = group.sections.splice(verificationIndex, 1);
+    group.retainedSourceRefs = [...(group.retainedSourceRefs ?? []), ...verification!.sourceRefs];
+    expect(submissionIssues(schema, original)).toEqual([]);
+    expect(() => validateCompositionSubmission(original, findings)).toThrow(/proof_not_visible/);
+    // Attribution repair cannot write the missing section's prose.
+    expect(createCompositionAttributionRepair(schema, original, findings)).toBeUndefined();
+    const general = createFieldRepair(schema, original, true);
+    expect(general).toBeDefined();
+  });
+
+  it("does not echo unknown model-supplied references into validation errors (#96)", () => {
+    const { findings, original, group } = fixture();
+    const key = "sk-" + "A1b2C3d4".repeat(4);
+    group.retainedSourceRefs = [...(group.retainedSourceRefs ?? []), key];
+    group.primaryEvidenceRefs = [key];
+    group.findingIds.push(key);
+    let message = "";
+    try { validateCompositionSubmission(original, findings); } catch (error) { message = String(error); }
+    expect(message).toContain("unknown_source");
+    expect(message).toContain(`composedFindings.0.findingIds.${group.findingIds.length - 1}`);
+    expect(message).not.toContain(key);
+    const diagnostics = compositionAttributionDiagnostics(compositionSources(findings), group.sections, group.evidenceRefs, group, "composedFindings.0.");
+    expect(diagnostics).toContainEqual(expect.objectContaining({ code: "unknown_source", path: `composedFindings.0.retainedSourceRefs.${group.retainedSourceRefs.length - 1}` }));
+    expect(JSON.stringify(diagnostics)).not.toContain(key);
+  });
+
+  it("neither echoes nor attribution-repairs an invalid unresolved reconciliation source (#95)", () => {
+    const { findings, original, schema, group } = fixture();
+    const invalid = findings[0]!.id + "/evidence/relatedCode/99";
+    group.reconciliations = [{ sourceRefs: [invalid], supportingRefs: [], disposition: "unresolved", rationale: "Sources disagree." }];
+    let message = "";
+    try { validateCompositionSubmission(original, findings); } catch (error) { message = String(error); }
+    expect(message).toContain("Invalid or repeated reconciliation source: an unknown reference");
+    expect(message).not.toContain("relatedCode/99");
+    expect(proofVisibilityDiagnostics(findings, group.sections, group.evidenceRefs, group, "composedFindings.0.")).toEqual([]);
+    // Attribution repair cannot edit reconciliations, so it must not claim this failure.
+    expect(createCompositionAttributionRepair(schema, original, findings)).toBeUndefined();
   });
 });

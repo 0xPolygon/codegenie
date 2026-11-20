@@ -88,8 +88,10 @@ export function safeReportProse(text: string): string {
 }
 
 export type AttributionDiagnostic = {
-  code: "unknown_source" | "wrong_section" | "duplicate_reference" | "missing_source" | "unsupported_suggestion";
-  path: string; reference: string; actualKind?: CompositionSource["kind"] | undefined; expectedKind?: string | undefined;
+  code: "unknown_source" | "wrong_section" | "duplicate_reference" | "missing_source" | "unsupported_suggestion" | "proof_not_visible";
+  // Omitted for unknown references: model-supplied text is not echoed into
+  // persisted diagnostics; the path locates it.
+  path: string; reference?: string; actualKind?: CompositionSource["kind"] | undefined; expectedKind?: string | undefined;
   accountedAt?: string | undefined; allowedPaths?: string[]; correction: string;
 };
 
@@ -115,7 +117,7 @@ export function compositionAttributionDiagnostics(sources: CompositionSource[], 
   for (const list of lists) list.refs.forEach((ref, index) => {
     const path = `${list.path}.${index}`;
     const source = byId.get(ref);
-    const common = { path, reference: ref, expectedKind: list.kind, actualKind: source?.kind, accountedAt: accounted.get(ref) };
+    const common = { path, ...(source ? { reference: ref } : {}), expectedKind: list.kind, actualKind: source?.kind, accountedAt: accounted.get(ref) };
     if (!source) diagnostics.push({ ...common, code: "unknown_source", correction: "This ID is not in this finding's source inventory. Use only supplied IDs; do not invent a replacement." });
     else if (list.kind && source.kind !== list.kind) diagnostics.push({ ...common, code: "wrong_section", correction: accounted.has(ref)
       ? "Remove this extra occurrence; preserve the correctly accounted occurrence."
@@ -133,10 +135,40 @@ export function compositionAttributionDiagnostics(sources: CompositionSource[], 
   return diagnostics;
 }
 
+// Proofs with open conditions, and sources of unresolved reconciliations, must
+// be cited in the visible verification section unless validly superseded. The
+// diagnostic names the editable lists so attribution repair can move the
+// reference; with no verification section there is nothing to move it to.
+export function proofVisibilityDiagnostics(findings: CandidateFinding[], sections: CompositionSection[], evidenceRefs: string[], presentation: CompositionPresentation, prefix = ""): AttributionDiagnostic[] {
+  const lists = compositionReferenceLists(sections, evidenceRefs, presentation, prefix);
+  const visibleVerification = new Set(sections.filter(section => section.kind === "verification").flatMap(section => section.sourceRefs));
+  const superseded = new Set((presentation.reconciliations ?? []).filter(record => record.disposition === "superseded").flatMap(record => record.sourceRefs));
+  const required = findings.filter(finding => finding.proofAssessment &&
+    (finding.proofAssessment.status === "unresolved" || finding.proofAssessment.assumptions.length > 0))
+    .map(finding => finding.id + "/proofAssessment");
+  // Only inventory verification sources, as validateSources requires; it rejects
+  // any other reconciliation reference without echoing it.
+  const verificationIds = new Set(compositionSources(findings).filter(source => source.kind === "verification").map(source => source.id));
+  required.push(...(presentation.reconciliations ?? []).filter(record => record.disposition === "unresolved").flatMap(record => record.sourceRefs)
+    .filter(ref => verificationIds.has(ref)));
+  const targets = lists.filter(list => list.kind === "verification").map(list => list.path);
+  return [...new Set(required)].filter(ref => !visibleVerification.has(ref) && !superseded.has(ref)).map(ref => ({
+    code: "proof_not_visible" as const,
+    path: lists.flatMap(list => list.refs.flatMap((item, index) => item === ref ? [list.path + "." + index] : []))[0] ?? prefix + "retainedSourceRefs",
+    reference: ref, actualKind: "verification" as const, expectedKind: "verification",
+    allowedPaths: targets.length ? [...targets, prefix + "retainedSourceRefs"] : [],
+    correction: targets.length
+      ? "Unresolved conditions must be attributed to the visible verification section: cite this source there and remove it from retainedSourceRefs. Keep it accounted exactly once."
+      : "Unresolved conditions must be attributed to a visible verification section; this composed finding has none."
+  }));
+}
+
 function validateSources(findings: CandidateFinding[], sections: CompositionSection[], evidenceRefs: string[], presentation: CompositionPresentation, prefix = "", assessmentFindings = findings) {
   const sources = compositionSources(findings, assessmentFindings);
   const byId = new Map(sources.map(source => [source.id, source]));
   const kinds = new Set<string>();
+  // Name only inventory IDs; other references are model text and stay out of errors.
+  const shown = (ref: string) => byId.has(ref) ? ref : "an unknown reference";
   const diagnostics = compositionAttributionDiagnostics(sources, sections, evidenceRefs, presentation, prefix);
   const errors: string[] = diagnostics.map(issue => JSON.stringify(issue));
   const completion = compositionCompletionDiagnostics(sections, prefix);
@@ -150,13 +182,13 @@ function validateSources(findings: CandidateFinding[], sections: CompositionSect
   }
   const primary = presentation.primaryEvidenceRefs ?? evidenceRefs.slice(0, 1);
   if (primary.length > 3 || new Set(primary).size !== primary.length) errors.push("Select up to three distinct primary evidence references.");
-  for (const ref of primary) if (!evidenceRefs.includes(ref)) errors.push("Primary evidence must be an accounted evidence reference: " + ref);
+  for (const ref of primary) if (!evidenceRefs.includes(ref)) errors.push("Primary evidence must be an accounted evidence reference: " + shown(ref));
   if (sources.some(source => source.kind === "evidence") && !primary.length) errors.push("Select at least one decisive primary evidence reference.");
   const reconciled = new Set<string>();
   for (const record of presentation.reconciliations ?? []) {
     if (!record.sourceRefs.length || !record.rationale.trim()) errors.push("Reconciliation needs affected sources and a rationale.");
     for (const ref of record.sourceRefs) {
-      if (byId.get(ref)?.kind !== "verification" || reconciled.has(ref)) errors.push("Invalid or repeated reconciliation source: " + ref);
+      if (byId.get(ref)?.kind !== "verification" || reconciled.has(ref)) errors.push("Invalid or repeated reconciliation source: " + shown(ref));
       reconciled.add(ref);
       if (record.disposition === "superseded" && ref.endsWith("/proofAssessment")) {
         const finding = findings.find(finding => finding.id === byId.get(ref)?.findingId);
@@ -167,18 +199,10 @@ function validateSources(findings: CandidateFinding[], sections: CompositionSect
     }
     if (record.disposition === "superseded" && !record.supportingRefs.length) errors.push("Supersession requires supporting source evidence.");
     for (const ref of record.supportingRefs) {
-      if (!byId.has(ref) || record.sourceRefs.includes(ref)) errors.push("Invalid independent reconciliation support: " + ref);
+      if (!byId.has(ref) || record.sourceRefs.includes(ref)) errors.push("Invalid independent reconciliation support: " + shown(ref));
     }
   }
-  const visibleVerification = new Set(sections.filter(section => section.kind === "verification").flatMap(section => section.sourceRefs));
-  const superseded = new Set((presentation.reconciliations ?? []).filter(record => record.disposition === "superseded").flatMap(record => record.sourceRefs));
-  const required = findings.filter(finding => finding.proofAssessment &&
-    (finding.proofAssessment.status === "unresolved" || finding.proofAssessment.assumptions.length > 0))
-    .map(finding => finding.id + "/proofAssessment");
-  required.push(...(presentation.reconciliations ?? []).filter(record => record.disposition === "unresolved").flatMap(record => record.sourceRefs));
-  for (const ref of new Set(required)) if (!visibleVerification.has(ref) && !superseded.has(ref)) {
-    errors.push("Unresolved conditions must be attributed to the visible verification section: " + ref);
-  }
+  errors.push(...proofVisibilityDiagnostics(findings, sections, evidenceRefs, presentation, prefix).map(issue => JSON.stringify(issue)));
   if (completion.length || errors.length) throw new Error([...completion.map(issue => JSON.stringify(issue)), ...errors.slice(0, 20)].join("; ") + " Use only supplied source IDs in their matching kinds; absent optional fields have no source. Account for all supplied components without inventing source data.");
   return { sources, byId, primary };
 }
@@ -288,8 +312,8 @@ export function validateCompositionSubmission(
   const used = new Set<string>();
   const errors: string[] = [];
   for (const [index, group] of proposal.composedFindings.entries()) {
-    for (const id of group.findingIds) {
-      if (!known.has(id) || used.has(id)) errors.push("Unknown or repeated finding ID: " + id + ". Use each supplied finding exactly once.");
+    for (const [item, id] of group.findingIds.entries()) {
+      if (!known.has(id) || used.has(id)) errors.push("Unknown or repeated finding ID: " + (known.has(id) ? id : `composedFindings.${index}.findingIds.${item}`) + ". Use each supplied finding exactly once.");
       used.add(id);
     }
     if (!group.sections || !group.evidenceRefs) {

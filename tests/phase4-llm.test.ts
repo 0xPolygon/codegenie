@@ -4588,6 +4588,73 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(serializedEvents).not.toContain("Received arguments");
   });
 
+  it("records why a model call was schema-invalid without the rejected payload (#96)", async () => {
+    const telemetry = fakeTelemetry();
+    const scripted = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "submit-invalid", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }]),
+      assistant([validSubmitReviewCall("submit-after-repair")])
+    ]);
+    const adapter: typeof scripted = {
+      ...scripted,
+      validateToolCall: (tools, call) => {
+        if ((call as { id?: string }).id === "submit-invalid") {
+          throw new Error("Validation failed for tool \"submit_review\":\n  - reviewStatus: required property\n\nReceived arguments:\n{\"secret\":\"payload-marker\"}");
+        }
+        return scripted.validateToolCall(tools, call);
+      }
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-schema-invalid-reason", telemetry.recorder));
+
+    expect(telemetry.modelCalls.map((call) => call.status)).toEqual(["schema_invalid", "ok"]);
+    expect(telemetry.modelCalls[0]!.errorMessage).toContain("reviewStatus: required property");
+    expect(telemetry.modelCalls[1]!.errorMessage).toBeUndefined();
+    const records = JSON.stringify(telemetry.modelCalls);
+    expect(records).not.toContain("Received arguments");
+    expect(records).not.toContain("payload-marker");
+  });
+
+  it("redacts credentials and caps the recorded schema-invalid reason at 2,000 characters (#96)", async () => {
+    const telemetry = fakeTelemetry();
+    const key = "sk-" + "A1b2C3d4".repeat(4);
+    const scripted = scriptedAdapter([
+      assistant([{ type: "toolCall", id: "submit-invalid", name: "submit_review", arguments: { findings: [], followUpHints: [], uncertainties: [] } }]),
+      assistant([validSubmitReviewCall("submit-after-repair")])
+    ]);
+    const adapter: typeof scripted = {
+      ...scripted,
+      validateToolCall: (tools, call) => {
+        if ((call as { id?: string }).id === "submit-invalid") {
+          throw new Error(`Validation failed for tool "submit_review":\n  - reviewStatus: unknown reference ${key}\n${"  - findings: too long\n".repeat(200)}`);
+        }
+        return scripted.validateToolCall(tools, call);
+      }
+    };
+    const runner = createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder,
+      logger: fakeLogger(),
+      runSignal: new AbortController().signal,
+      adapter,
+      hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    await runner.runStructured(submitReviewRequest("packet-schema-invalid-secret", telemetry.recorder));
+
+    const recorded = telemetry.modelCalls[0]!.errorMessage!;
+    expect(recorded).toContain("reviewStatus: unknown reference");
+    expect(recorded.length).toBeLessThanOrEqual(2_000);
+    expect(JSON.stringify(telemetry.modelCalls)).not.toContain(key);
+  });
+
   it("strips redundant candidate anchor fields before model repair", async () => {
     const telemetry = fakeTelemetry();
     const anchor = { path: "src/a.ts", line: 12, side: "RIGHT", hunkId: "hunk-a" };
