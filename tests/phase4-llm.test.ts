@@ -6947,15 +6947,16 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     if (kind !== "unregistered pattern") registerSecret(credential);
     try {
       const result = await cache.put(key, entry);
-      const onDisk = existsSync(file) ? readFileSync(file, "utf8") : "";
-      expect(onDisk).not.toContain(credential);
+      expect(readCacheText(cacheDir)).not.toContain(credential);
       expect(result).toMatchObject({ status: "miss" });
       expect(existsSync(file)).toBe(false);
 
-      mkdirSync(path.dirname(file), { recursive: true });
-      writeFileSync(file, JSON.stringify(entry));
-      await expect(cache.get(key, 7)).resolves.toEqual({ status: "miss", reason: "invalid_entry" });
-      expect(existsSync(file)).toBe(false);
+      const legacyKey = buildModelCallCacheKey({ kind, legacy: true });
+      const legacyFile = modelCallCacheEntryPath(cacheDir, legacyKey);
+      mkdirSync(path.dirname(legacyFile), { recursive: true });
+      writeFileSync(legacyFile, JSON.stringify(entry), { flag: "wx" });
+      await expect(cache.get(legacyKey, 7)).resolves.toEqual({ status: "miss", reason: "invalid_entry" });
+      expect(existsSync(legacyFile)).toBe(false);
     } finally {
       clearRegisteredSecretsForTests();
     }
