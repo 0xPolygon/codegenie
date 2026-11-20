@@ -71,7 +71,7 @@ export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode:
   const reportedFinals = artifacts.finalFindings.filter(isReportedFinalFinding);
   const metrics = buildMetrics(artifacts);
   const missingArtifacts = artifacts.missingArtifacts ?? [];
-  const reviewFailed = fieldAtPath(artifacts.metricsSources.runJson, ["outcome", "status"]) === "failed";
+  const reviewFailed = hasFailedReviewOutcome(artifacts.metricsSources.runJson);
   const negativeSkipReason = reviewFailed ? "review-failed"
     : missingArtifacts.some(name => name.startsWith("final-findings.json")) ? "missing-final-findings" : undefined;
   const shouldNot = scoreShouldNotFind(evalCase.should_not_find ?? [], reportedFinals, artifacts, mode, negativeSkipReason);
@@ -99,6 +99,10 @@ export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode:
     metrics,
     ...(error !== undefined ? { error } : {})
   };
+}
+
+export function hasFailedReviewOutcome(runJson: unknown): boolean {
+  return fieldAtPath(runJson, ["outcome", "status"]) === "failed";
 }
 
 function failedReviewMessage(runJson: unknown): string {

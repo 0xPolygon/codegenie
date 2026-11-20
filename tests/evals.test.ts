@@ -2,13 +2,14 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
 import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
 import { compareToPrevious, renderEvalCompareText } from "../src/evals/eval-compare.js";
 import { executeEvalCommand, renderCaseResult, runEvalCommand } from "../src/evals/eval-command.js";
 import { loadEvalSuite, replayFromArtifacts, runEvalCase } from "../src/evals/eval-runner.js";
 import { aggregateRepeatScores, assignExpectations, matchExpectation, scoreEvalRun } from "../src/evals/eval-scoring.js";
+import * as reviewRunner from "../src/pipeline/review-runner.js";
 import type {
   CandidateFinding,
   EvalArtifacts,
@@ -2412,6 +2413,63 @@ describe("eval repeats (plan 79)", () => {
     expect(existsSync(path.join(result.runDir, "eval-aggregate.json"))).toBe(true);
     expect(renderCaseResult(result)).toContain("finalRecall 3/3 (1.00)");
   }, 60_000);
+
+  it("scores a thrown repeat from finalized findings and usage, with a fallback for a throw before finalization", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-repeat-throw-"));
+    const repo = initRepo();
+    writeRepoFile(repo, "src/app.ts", "export const value = 0;\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "src/app.ts", "export const value = 1;\n");
+    commitAll(repo, "feature");
+    const fixture = finalFinding("retained", "src/app.ts", 1);
+    const evalCase: EvalCase = {
+      name: "repeat-throw",
+      repeat: 2,
+      repo: { external: repo },
+      command: { branch: "feature", base: "main" },
+      review: { cache: false },
+      should_find: [{ id: "expected", path: fixture.path }]
+    };
+    const entry = { file: "repeat-throw.yml", evalCase, caseHash: "fixture" };
+    const runReview = vi.spyOn(reviewRunner, "runReview")
+      .mockImplementationOnce(async (_target, _config, overrides) => {
+        const telemetry = overrides!.runArtifactDir!;
+        writeArtifactSet(telemetry, [], [fixture]);
+        writeTelemetryArtifact(telemetry, "cost-profile.json", { totalCostUSD: 0.25 });
+        writeTelemetryArtifact(telemetry, "model-calls-summary.json", { totalCalls: 3 });
+        writeTelemetryArtifact(telemetry, "run.json", {
+          durationMs: 2000,
+          outcome: { status: "failed", failure: { stage: 10, reason: "Provider request was rejected" } }
+        });
+        throw new CodegenieError("llm_call_failed", "Review pipeline threw");
+      })
+      .mockImplementationOnce(async (_target, _config, overrides) => {
+        writeTelemetryArtifact(overrides!.runArtifactDir!, "candidate-findings.json", []);
+        throw new CodegenieError("invalid_args", "Failed before telemetry finalized");
+      });
+    try {
+      const result = await runEvalCase({ dir: suiteDir, cases: [entry] }, entry, { config: defaultConfig });
+      expect(runReview).toHaveBeenCalledTimes(2);
+      const first = JSON.parse(readFileSync(path.join(result.runDir, "repeats/1/score.json"), "utf8"));
+      const second = JSON.parse(readFileSync(path.join(result.runDir, "repeats/2/score.json"), "utf8"));
+      expect(first).toMatchObject({
+        status: "error",
+        error: { code: "review_failed", message: "Stage 10: Provider request was rejected" },
+        expectationResults: [{ status: "pass", matched: [{ findingId: fixture.id }] }],
+        metrics: { reportedFindings: 1, modelCalls: 3, elapsedSeconds: 2, costUSD: 0.25 }
+      });
+      expect(second).toMatchObject({
+        status: "error",
+        error: { code: "invalid_args", message: "Failed before telemetry finalized" },
+        metrics: { reportedFindings: 0 }
+      });
+      expect(result.info.repeats?.totals).toMatchObject({ errors: 2, elapsedSeconds: 2, costUSD: 0.25 });
+      expect(renderCaseResult(result)).toContain("ERROR draw 1 review_failed: Stage 10: Provider request was rejected");
+    } finally {
+      runReview.mockRestore();
+    }
+  });
 
   it("aggregates recall rates, notes, and threshold gates across executions", () => {
     const evalCase: EvalCase = {
