@@ -146,9 +146,11 @@ export function proofVisibilityDiagnostics(findings: CandidateFinding[], section
   const required = findings.filter(finding => finding.proofAssessment &&
     (finding.proofAssessment.status === "unresolved" || finding.proofAssessment.assumptions.length > 0))
     .map(finding => finding.id + "/proofAssessment");
-  // Unknown reconciliation sources are reported, without their text, by validateSources.
+  // Only inventory verification sources, as validateSources requires; it rejects
+  // any other reconciliation reference without echoing it.
+  const verificationIds = new Set(compositionSources(findings).filter(source => source.kind === "verification").map(source => source.id));
   required.push(...(presentation.reconciliations ?? []).filter(record => record.disposition === "unresolved").flatMap(record => record.sourceRefs)
-    .filter(ref => findings.some(finding => ref.startsWith(finding.id + "/"))));
+    .filter(ref => verificationIds.has(ref)));
   const targets = lists.filter(list => list.kind === "verification").map(list => list.path);
   return [...new Set(required)].filter(ref => !visibleVerification.has(ref) && !superseded.has(ref)).map(ref => ({
     code: "proof_not_visible" as const,

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createFieldRepair } from "../src/llm/field-repair.js";
 import { submissionIssues } from "../src/llm/submit-preservation.js";
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
-import { compositionAttributionDiagnostics, compositionSources, validateCompositionSubmission, type CompositionPresentation, type CompositionSection } from "../src/pipeline/composition-content.js";
+import { compositionAttributionDiagnostics, compositionSources, proofVisibilityDiagnostics, validateCompositionSubmission, type CompositionPresentation, type CompositionSection } from "../src/pipeline/composition-content.js";
 import { createCompositionAttributionRepair, normalizeCompositionReferences } from "../src/pipeline/composition-repair.js";
 import { authorizationComposition } from "./fixtures/composition/authorization-review.js";
 import { contractComposition } from "./fixtures/composition/contract-review.js";
@@ -284,5 +284,18 @@ describe("composition attribution repair", () => {
     const diagnostics = compositionAttributionDiagnostics(compositionSources(findings), group.sections, group.evidenceRefs, group, "composedFindings.0.");
     expect(diagnostics).toContainEqual(expect.objectContaining({ code: "unknown_source", path: `composedFindings.0.retainedSourceRefs.${group.retainedSourceRefs.length - 1}` }));
     expect(JSON.stringify(diagnostics)).not.toContain(key);
+  });
+
+  it("neither echoes nor attribution-repairs an invalid unresolved reconciliation source (#95)", () => {
+    const { findings, original, schema, group } = fixture();
+    const invalid = findings[0]!.id + "/evidence/relatedCode/99";
+    group.reconciliations = [{ sourceRefs: [invalid], supportingRefs: [], disposition: "unresolved", rationale: "Sources disagree." }];
+    let message = "";
+    try { validateCompositionSubmission(original, findings); } catch (error) { message = String(error); }
+    expect(message).toContain("Invalid or repeated reconciliation source: an unknown reference");
+    expect(message).not.toContain("relatedCode/99");
+    expect(proofVisibilityDiagnostics(findings, group.sections, group.evidenceRefs, group, "composedFindings.0.")).toEqual([]);
+    // Attribution repair cannot edit reconciliations, so it must not claim this failure.
+    expect(createCompositionAttributionRepair(schema, original, findings)).toBeUndefined();
   });
 });
