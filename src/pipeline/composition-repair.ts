@@ -4,7 +4,7 @@ import type { FieldRepair } from "../llm/field-repair.js";
 import { focusedRepairDiagnostics, submissionIssues } from "../llm/submit-preservation.js";
 import type { CandidateFinding } from "../types.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
-import { eligibleCompositionSource, compositionCompletionDiagnostics, compositionAttributionDiagnostics, compositionReferenceLists, compositionSources, validateCompositionSubmission, type CompositionPresentation, type CompositionSection } from "./composition-content.js";
+import { eligibleCompositionSource, compositionCompletionDiagnostics, compositionAttributionDiagnostics, compositionReferenceLists, compositionSources, proofVisibilityDiagnostics, validateCompositionSubmission, type CompositionPresentation, type CompositionSection } from "./composition-content.js";
 
 type Group = CompositionPresentation & { findingIds: string[]; sections: CompositionSection[]; evidenceRefs: string[] };
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -79,9 +79,13 @@ export function createCompositionAttributionRepair(schema: TSchema, original: un
     const needsAdviceRepair = group.sections.some(section => (section.kind === "fix" || section.kind === "test")
       && !sources.some(source => eligibleCompositionSource(source, section.kind)));
     return { group, sources, needsAdviceRepair, lists: compositionReferenceLists(group.sections, group.evidenceRefs, group, prefix),
-      diagnostics: compositionAttributionDiagnostics(sources, group.sections, group.evidenceRefs, group, prefix) };
+      diagnostics: [...compositionAttributionDiagnostics(sources, group.sections, group.evidenceRefs, group, prefix),
+        ...proofVisibilityDiagnostics(findings.filter(finding => group.findingIds.includes(finding.id)), group.sections, group.evidenceRefs, group, prefix)] };
   }).filter(context => context.diagnostics.length || context.needsAdviceRepair);
   if (!contexts.length) return;
+  // A proof with no verification section to cite it needs new prose, which
+  // attribution repair cannot write: use the general repair instead.
+  if (contexts.some(context => context.diagnostics.some(issue => issue.code === "proof_not_visible" && !issue.allowedPaths?.length))) return;
   const properties: Record<string, TSchema> = {};
   const adviceGroups = new Map<string, Group>();
   const contextData = contexts.map(({ group, sources, needsAdviceRepair, lists, diagnostics }) => {
