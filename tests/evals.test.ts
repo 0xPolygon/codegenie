@@ -2460,7 +2460,10 @@ describe("eval repeats (plan 79)", () => {
   it("counts and reports failed repeat draws separately and retains observed negative violations", () => {
     const evalCase: EvalCase = { name: "mixed", should_not_find: [{ id: "sentinel", path: "src/app.ts" }] };
     const passing = scoreEvalRun(evalCase, emptyArtifacts(), "live");
-    const failedArtifacts = emptyArtifacts({ metricsSources: { runJson: { outcome: { status: "failed" } } } });
+    const failedArtifacts = emptyArtifacts({ metricsSources: { runJson: { outcome: {
+      status: "failed",
+      failure: { stage: 9, reason: `HTTP 400: invalid_encrypted_content\n synthetic-sk-${"Z".repeat(40)}` }
+    } } } });
     const failed = scoreEvalRun(evalCase, failedArtifacts, "live");
     const failedDraw = { runDir: "repeats/2", score: failed, artifacts: failedArtifacts };
     const { aggregate, score } = aggregateRepeatScores(evalCase, [{ runDir: "repeats/1", score: passing }, failedDraw]);
@@ -2468,6 +2471,7 @@ describe("eval repeats (plan 79)", () => {
     expect(score.status).toBe("pass");
     expect(aggregate.totals.errors).toBe(1);
     expect(aggregate.executions.map((execution) => execution.status)).toEqual(["pass", "error"]);
+    expect(failed.error).toEqual({ code: "review_failed", message: "Stage 9: HTTP 400: invalid_encrypted_content synthetic-[redacted:pattern]" });
     expect(aggregateRepeatScores(evalCase, [failedDraw]).score.status).toBe("error");
     expect(renderCaseResult({
       caseName: evalCase.name,
@@ -2485,7 +2489,7 @@ describe("eval repeats (plan 79)", () => {
         score,
         repeats: aggregate
       }
-    })).toMatch(/REPEAT x2: pass,error .*1 errored/u);
+    })).toMatch(/REPEAT x2: pass,error .*1 errored\n  ERROR draw 2 review_failed: Stage 9: HTTP 400: invalid_encrypted_content synthetic-\[redacted:pattern\]/u);
 
     const violatingArtifacts = { ...failedArtifacts, finalFindings: [finalFinding("retained", "src/app.ts", 3)] };
     const violatingDraw = { ...failedDraw, score: scoreEvalRun(evalCase, violatingArtifacts, "live"), artifacts: violatingArtifacts };

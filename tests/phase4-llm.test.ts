@@ -21,6 +21,7 @@ import type {
   LlmCallUsage,
   LlmStructuredRequest,
   LlmRunner,
+  ModelCallCache,
   PiAiAdapter,
   PiAssistantMessage,
   PiInvalidToolCall,
@@ -4144,6 +4145,57 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ]);
   });
 
+  it.each([false, true])("preserves live reasoning signatures while redacting diagnostics (warm cache %s)", async (warmCache) => {
+    const repoRoot = tempGitRepo();
+    const cacheDir = path.join(repoRoot, ".codegenie", "cache");
+    const telemetry = fakeTelemetry();
+    const cache = warmCache ? await createModelCallCache({
+      dir: cacheDir, repoRoot, runFingerprint: "reasoning-replay", logger: fakeLogger(), telemetry: telemetry.recorder
+    }) : undefined;
+    const opaque = `opaque-sk-${"A".repeat(40)}`;
+    const visible = `visible-sk-${"B".repeat(40)}`;
+    const thinkingSignature = JSON.stringify([{ type: "reasoning.encrypted", data: opaque }], null, 1);
+    const initial = assistant([
+      { type: "thinking", thinking: visible, thinkingSignature },
+      { type: "text", text: visible, textSignature: opaque },
+      { type: "toolCall", id: "read-1", name: "read_range", arguments: { path: "src/a.ts" }, thoughtSignature: opaque }
+    ]);
+    const tool: ToolDefinition = {
+      name: "read_range", description: "read", parameters: Type.Object({ path: Type.String() }),
+      execute: async () => ({ text: "fixture evidence", meta: { backend: "text", precision: "exact", degraded: false } })
+    };
+    const request = { ...submitReviewRequest("signature-replay"), tools: [tool] };
+    const runner = (adapter: PiAiAdapter, replayCache?: ModelCallCache) => createPiRunner({
+      llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, ...(replayCache ? { cache: replayCache } : {}), hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+    });
+
+    if (cache) {
+      await runner(scriptedAdapter([initial, assistant([validSubmitReviewCall("warm-only")])]), cache).runStructured(request);
+      // Keep the first cache entry while making the continuation a provider miss.
+      const { key } = debugRecord(telemetry, "mc-000002.request").cache as { key: string };
+      rmSync(modelCallCacheEntryPath(cacheDir, key));
+    }
+    const adapter = scriptedAdapter([
+      ...(cache ? [] : [initial]), assistant([validSubmitReviewCall("signature-final")])
+    ]);
+    await runner(adapter, cache).runStructured(request);
+
+    const context = JSON.parse(adapter.contexts.at(-1)!);
+    expect(context.find((message: { role: string }) => message.role === "assistant").content).toEqual([
+      { type: "thinking", thinking: "visible-[redacted:pattern]", thinkingSignature },
+      { type: "text", text: "visible-[redacted:pattern]", textSignature: opaque },
+      { type: "toolCall", id: "read-1", name: "read_range", arguments: { path: "src/a.ts" }, thoughtSignature: opaque }
+    ]);
+    if (cache) expect(telemetry.modelCalls.slice(-2).map((call) => call.cacheStatus)).toEqual(["hit", "write"]);
+    const diagnostics = JSON.stringify([telemetry.events, telemetry.modelCalls, telemetry.debugWrites]);
+    expect(diagnostics).not.toContain(opaque);
+    expect(diagnostics).not.toContain(visible);
+    expect(diagnostics).toContain("opaque-[redacted:pattern]");
+    expect(diagnostics).toContain("visible-[redacted:pattern]");
+  });
+
   it("replays cache hits without provider budget usage or checkpoint calls", async () => {
     const telemetry = fakeTelemetry();
     const cache = {
@@ -6853,6 +6905,25 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(readFileSync(path.join(repoRoot, ".codegenie", ".gitignore"), "utf8")).toContain("cache/");
     expect(readFileSync(path.join(repoRoot, ".codegenie", ".gitignore"), "utf8")).toContain("locks/");
     clearRegisteredSecretsForTests();
+  });
+
+  it("misses contaminated cached reasoning signatures and refuses to write them", async () => {
+    const repoRoot = tempGitRepo();
+    const cacheDir = path.join(repoRoot, ".codegenie", "cache");
+    const cache = await createModelCallCache({
+      dir: cacheDir, repoRoot, runFingerprint: "signature-replay", logger: fakeLogger(), telemetry: fakeTelemetry().recorder
+    });
+    const key = buildModelCallCacheKey({ prompt: "contaminated signature" });
+    const file = modelCallCacheEntryPath(cacheDir, key);
+    const entry = cacheEntry(7);
+    entry.message.content.unshift({ type: "thinking", thinking: "", thinkingSignature: "opaque-[redacted:pattern]" });
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify(entry));
+
+    await expect(cache.get(key, 7)).resolves.toEqual({ status: "miss", reason: "invalid_entry" });
+    expect(existsSync(file)).toBe(false);
+    await expect(cache.put(key, entry)).resolves.toMatchObject({ status: "miss" });
+    expect(existsSync(file)).toBe(false);
   });
 
   it("evicts stale cache entries at construction and records telemetry", async () => {

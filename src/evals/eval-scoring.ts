@@ -27,6 +27,7 @@ import type {
 } from "../types.js";
 import { isLocalToolBudgetRejectionReason } from "../util/context-pressure.js";
 import { aggregateAttentionEfficiency } from "../pipeline/attention.js";
+import { safeDiagnosticLine } from "../util/review-health.js";
 
 type ScorableFinding = CandidateFinding | FinalFinding;
 type ScoreMode = "live" | "replay";
@@ -86,7 +87,7 @@ export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode:
     budgetResults.some((result) => result.status === "fail")
     ? "fail"
     : "pass";
-  const error: EvalScore["error"] = reviewFailed ? { code: "review_failed", message: "The review run failed." }
+  const error: EvalScore["error"] = reviewFailed ? { code: "review_failed", message: failedReviewMessage(artifacts.metricsSources.runJson) }
     : missingArtifacts.length > 0 ? { code: "invalid_args", message: `Required eval artifacts unavailable: ${missingArtifacts.join(", ")}` }
       : undefined;
   return {
@@ -98,6 +99,18 @@ export function scoreEvalRun(evalCase: EvalCase, artifacts: EvalArtifacts, mode:
     metrics,
     ...(error !== undefined ? { error } : {})
   };
+}
+
+function failedReviewMessage(runJson: unknown): string {
+  const failure = fieldAtPath(runJson, ["outcome", "failure"]);
+  if (!isRecord(failure) || typeof failure.reason !== "string") {
+    return "The review run failed.";
+  }
+  const reason = safeDiagnosticLine(failure.reason);
+  if (reason.length === 0) {
+    return "The review run failed.";
+  }
+  return typeof failure.stage === "number" ? `Stage ${failure.stage}: ${reason}` : reason;
 }
 
 export function matchExpectation(
@@ -580,7 +593,7 @@ export function aggregateRepeatScores(
   return {
     aggregate: {
       repeat,
-      executions: executions.map((execution) => ({ runDir: execution.runDir, status: execution.score.status })),
+      executions: executions.map(({ runDir, score: { status, error } }) => ({ runDir, status, ...(error ? { error } : {}) })),
       expectations: expectationAggregates,
       totals
     },

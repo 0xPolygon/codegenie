@@ -7,10 +7,18 @@ export function reviewDiagnostic(stage: number, error: unknown, workItem?: strin
   const limited = code === "timeout" || code === "budget_exhausted" || outcome === "timed_out" || outcome === "not_dispatched"
     || (isCodegenieError(error) && error.context?.reason === "timeout");
   const headline = error instanceof Error ? error.message : "The underlying cause was not captured.";
-  const providerMessage = isCodegenieError(error) && typeof error.context?.providerMessage === "string" ? error.context.providerMessage : undefined;
+  const context = isCodegenieError(error) ? error.context : undefined;
+  const { providerMessage, providerErrorCode, workerId, callId } = context ?? {};
   return { stage, ...(workItem ? { workItem } : {}), kind: limited ? "incomplete" : "failure", code,
-    reason: stripCredentials(providerMessage ? `${headline}: ${providerMessage}` : headline).slice(0, 600),
+    ...(typeof providerErrorCode === "string" ? { providerErrorCode } : {}),
+    ...(typeof workerId === "string" ? { workerId } : {}),
+    ...(typeof callId === "string" ? { callId } : {}),
+    reason: safeDiagnosticLine(`${headline}${typeof providerMessage === "string" ? `: ${providerMessage}` : ""}${typeof providerErrorCode === "string" ? ` (${providerErrorCode})` : ""}`),
     recoveryExhausted: outcome !== "not_dispatched" };
+}
+
+export function safeDiagnosticLine(message: string): string {
+  return stripCredentials(message).replace(/[\s\u0000-\u001f\u007f-\u009f]+/gu, " ").trim().slice(0, 600);
 }
 
 export function deriveReviewHealth(coverage: RunCoverageStatus, unresolvedCount: number, verificationNeeded = false): ReviewHealth {

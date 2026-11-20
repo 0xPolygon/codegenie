@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { cleanupSubmitShape, focusedRepairDiagnostics, preservationViolations, submissionIssues } from "./submit-preservation.js";
 import { applyModelOverrides, modelProviderRouting, requiresAutomaticSubmitToolChoice } from "../provider/models-override.js";
 import { createStreamProgress, type StreamProgress } from "./stream-progress.js";
+import { redactAssistantForReplay, redactStoredResponseForReplay } from "./assistant-replay.js";
 import {
   validateToolCall,
   type Api,
@@ -1401,7 +1402,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
   if (opts.cache) {
     const cached = await opts.cache.get(cacheKey, request.stage);
     if (cached.status === "hit") {
-      const scrubbedCachedResponse = scrubStoredProviderResponse(cached.response);
+      const scrubbedCachedResponse = redactStoredResponseForReplay(cached.response);
       const cachedResponse = {
         ...scrubbedCachedResponse,
         message: removeProvenanceLessSubmitArguments(
@@ -1489,6 +1490,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
     };
 
     const callId = nextModelCallId();
+    const failureLocation = { callId, workerId: request.telemetryContext?.workerId };
     const startedAt = Date.now();
     const responseCapture: ProviderResponseCapture = {};
     writeModelCallRequestDebug(opts, request, model, {
@@ -1589,7 +1591,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         );
       }), taskSignal, taskTimedOut);
       const message = removeProvenanceLessSubmitArguments(
-        scrubAssistantMessage(rawMessage),
+        redactAssistantForReplay(rawMessage),
         submitToolNameForStage(request.stage)
       );
       const durationMs = Date.now() - startedAt;
@@ -1640,7 +1642,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
             reason: retry.reason
           });
         }
-        throw markRecordedProviderFailure(toLlmError(providerFailure.cause, providerFailure.status, taskTimedOut()));
+        throw markRecordedProviderFailure(toLlmError(providerFailure.cause, providerFailure.status, taskTimedOut(), failureLocation));
       }
       const schemaValid = schemaValidityForResponse(adapter, request, tools, kind, message);
       const cacheable = Boolean(opts.cache && isCacheableProviderResponse(schemaValid, message, tools));
@@ -1728,7 +1730,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
           reason: retry.reason
         });
       }
-      throw toLlmError(cause, status, taskTimedOut());
+      throw toLlmError(cause, status, taskTimedOut(), failureLocation);
     }
   }
 
@@ -3576,14 +3578,6 @@ function sumDefined(...values: Array<number | undefined>): number | undefined {
   return sawValue ? total : undefined;
 }
 
-function scrubAssistantMessage(message: PiAssistantMessage): PiAssistantMessage {
-  return stripCredentials(message) as PiAssistantMessage;
-}
-
-function scrubStoredProviderResponse(response: StoredProviderResponse): StoredProviderResponse {
-  return stripCredentials(response) as StoredProviderResponse;
-}
-
 type ProviderFailure = {
   status: "transient_error" | "auth_error" | "timeout" | "aborted";
   cause: Error & { status?: number };
@@ -3684,20 +3678,27 @@ function classifyProviderRetry(cause: unknown, attempt: number): ProviderRetryCl
 function toLlmError(
   cause: unknown,
   status: "transient_error" | "auth_error" | "timeout" | "aborted",
-  timedOut: boolean
+  timedOut: boolean,
+  location?: { callId: string; workerId: string | undefined }
 ): CodegenieError {
-  const providerMessage = providerFailureSummary(cause);
+  const raw = providerErrorText(cause).trim();
+  const body = providerErrorBody(raw);
+  const details = {
+    ...location,
+    providerMessage: providerFailureSummary(raw, errorHttpStatus(cause), body),
+    providerErrorCode: nestedProviderErrorCode(body)
+  };
   if (!timedOut && status !== "aborted" && isUsageLimitError(cause)) {
     return new CodegenieError("llm_call_failed", "LLM provider usage limit reached", {
       recoverable: false,
-      context: definedRecord({ reason: "usage_limit", providerMessage }) as Record<string, unknown>,
+      context: definedRecord({ reason: "usage_limit", ...details }),
       cause
     });
   }
   if (status === "auth_error") {
     return new CodegenieError("llm_call_failed", "LLM provider authentication failed", {
       recoverable: false,
-      context: definedRecord({ reason: "auth", providerMessage }) as Record<string, unknown>,
+      context: definedRecord({ reason: "auth", ...details }),
       cause
     });
   }
@@ -3710,7 +3711,7 @@ function toLlmError(
       : "LLM provider call failed";
   return new CodegenieError("llm_call_failed", headline, {
     recoverable: true,
-    context: definedRecord({ reason, retryReason: retry?.reason, providerMessage }) as Record<string, unknown>,
+    context: definedRecord({ reason, retryReason: retry?.reason, ...details }),
     cause
   });
 }
@@ -3839,13 +3840,12 @@ const PROVIDER_MESSAGE_MAX_CHARS = 300;
 // It is buried in the raw body, so lift it out for the log line, the failure
 // artifact and the PR comment. Provider-authored text only — never request
 // content — and capped so it cannot dominate a status comment.
-function providerFailureSummary(cause: unknown): string | undefined {
-  const raw = providerErrorText(cause).trim();
-  const status = errorHttpStatus(cause);
+function providerFailureSummary(raw: string, status: number | undefined, body: Record<string, unknown> | undefined): string | undefined {
   if (raw.length === 0) {
     return status !== undefined ? `HTTP ${status}` : undefined;
   }
-  const summary = providerMessageFromBody(raw) ?? raw;
+  const message = body?.message;
+  const summary = typeof message === "string" && message.trim().length > 0 ? message : raw;
   const collapsed = summary.replace(/\s+/gu, " ").trim();
   if (collapsed.length === 0) {
     return status !== undefined ? `HTTP ${status}` : undefined;
@@ -3859,7 +3859,7 @@ function providerFailureSummary(cause: unknown): string | undefined {
   return truncateDiagnosticPart(withStatus, PROVIDER_MESSAGE_MAX_CHARS);
 }
 
-function providerMessageFromBody(raw: string): string | undefined {
+function providerErrorBody(raw: string): Record<string, unknown> | undefined {
   const body = firstJsonObject(raw);
   if (body === undefined) {
     return undefined;
@@ -3869,12 +3869,21 @@ function providerMessageFromBody(raw: string): string | undefined {
     if (!isRecord(parsed)) {
       return undefined;
     }
-    const error = parsed.error;
-    const message = isRecord(error) ? error.message : parsed.message;
-    return typeof message === "string" && message.trim().length > 0 ? message.trim() : undefined;
+    return isRecord(parsed.error) ? parsed.error : parsed;
   } catch {
     return undefined;
   }
+}
+
+function nestedProviderErrorCode(body: Record<string, unknown> | undefined): string | undefined {
+  const metadata = isRecord(body?.metadata) ? body.metadata : undefined;
+  const nested = typeof metadata?.raw === "string" ? providerErrorBody(metadata.raw) : undefined;
+  for (const code of [nested?.code, metadata?.provider_error_code, body?.code]) {
+    if (typeof code === "string" && /^[a-z][a-z0-9_.-]{0,79}$/iu.test(code) && stripCredentials(code) === code) {
+      return code.toLowerCase();
+    }
+  }
+  return undefined;
 }
 
 // The body is embedded in a larger string (`400 {…}`, sometimes repeated), so

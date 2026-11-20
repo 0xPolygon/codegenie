@@ -4,6 +4,8 @@ import path from "node:path";
 import { validateToolCall } from "./helpers/pi-validation.js";
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
+import { loadEvalArtifacts } from "../src/evals/eval-artifacts.js";
+import { scoreEvalRun } from "../src/evals/eval-scoring.js";
 import type { PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
 import { reviewCacheFingerprint, runReview } from "../src/pipeline/review-runner.js";
 import { canonicalArtifactPath } from "../src/telemetry/run-artifacts.js";
@@ -214,6 +216,54 @@ describe("phase 6 live review path", () => {
     } finally {
       random.mockRestore();
     }
+  });
+
+  it("records a terminal failed-health event for a nested provider error", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export function divide(total: number, count: number) {\n  return total / Math.max(1, count);\n}\n");
+    const base = commitAll(repo, "base");
+    writeRepoFile(repo, "app.ts", "export function divide(total: number, count: number) {\n  return total / count;\n}\n");
+    const head = commitAll(repo, "remove zero guard");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-failed-health-")), "run");
+    const adapter = partialBudgetAdapter();
+    const fallback = adapter.complete;
+    adapter.complete = async (model, context, options) => {
+      const prompt = firstPrompt(context);
+      if (prompt.includes("packet review")) {
+        const packet = extractPromptJson<ReviewPacket>(prompt, "review-packet")!;
+        return assistant([toolCall("submit-review", "submit_review", { ...packetReviewFromPacket(packet), followUpHints: [] })]);
+      }
+      if (prompt.includes("verification")) {
+        const raw = JSON.stringify({ error: { code: "invalid_encrypted_content", message: "opaque item ID should stay private" } });
+        return { ...assistant([]), stopReason: "error", errorMessage: `400: ${JSON.stringify({ message: "Provider returned error", code: 400, metadata: { raw } })}` };
+      }
+      return fallback(model, context, options);
+    };
+
+    const review = await runReview({ mode: "commit_range", startCommit: base, endCommit: head }, liveConfig(runArtifactDir), {
+      repoRoot: repo, runArtifactDir, piAdapter: adapter
+    });
+
+    expect(review.health?.status).toBe("failed");
+    const calls = readJsonl<{ stage: number; callId: string; workerId: string }>(path.join(runArtifactDir, "model-calls.jsonl"));
+    const call = calls.find((call) => call.stage === 9)!;
+    const detail = { stage: 9, workerId: call.workerId, callId: call.callId, providerErrorCode: "invalid_encrypted_content" };
+    const events = readJsonl<{ message: string }>(path.join(runArtifactDir, "events.jsonl"));
+    expect(events.filter((event) => event.message === "review_health_failed")).toEqual([
+      expect.objectContaining({ stage: 9, level: "error", data: expect.objectContaining(detail) })
+    ]);
+    const run = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8"));
+    expect(run.outcome).toMatchObject({ status: "failed", exitCode: 1, failure: detail });
+    expect(JSON.stringify(run.outcome)).not.toContain("opaque item ID should stay private");
+    const artifacts = await loadEvalArtifacts(runArtifactDir);
+    const score = scoreEvalRun({ name: "failed-verification" }, artifacts, "live");
+    expect(score).toMatchObject({
+      status: "error",
+      error: { code: "review_failed", message: expect.stringContaining("invalid_encrypted_content") },
+      metrics: { candidateFindings: 1, modelCalls: calls.length, reviewCompleteness: "partial" }
+    });
+    expect(score.error?.message).not.toContain("opaque item ID should stay private");
+    expect(score.metrics.costUSD).toBeGreaterThan(0);
   });
 
   it("marks budget-limited packet dispatch as a partial run with explicit artifacts", async () => {

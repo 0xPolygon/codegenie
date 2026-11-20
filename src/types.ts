@@ -1085,6 +1085,9 @@ export type ReviewDiagnostic = {
   workItem?: string;
   kind: "failure" | "incomplete";
   code: string;
+  providerErrorCode?: string;
+  workerId?: string;
+  callId?: string;
   reason: string;
   recoveryExhausted: boolean;
 };
@@ -1545,7 +1548,7 @@ export type EvalRepeatExpectationAggregate = {
 
 export type EvalRepeatAggregate = {
   repeat: number;
-  executions: Array<{ runDir: string; status: EvalScore["status"] }>;
+  executions: Array<{ runDir: string; status: EvalScore["status"]; error?: EvalScore["error"] }>;
   expectations: EvalRepeatExpectationAggregate[];
   totals: { costUSD: number; elapsedSeconds: number; errors: number };
 };
@@ -1907,4 +1910,5 @@ export type RunOutcome = {
   errorCode?: import("./util/errors.js").CodegenieErrorCode;
   exitCode: number;
   budgetStop?: BudgetStop;
+  failure?: ReviewDiagnostic;
 };
