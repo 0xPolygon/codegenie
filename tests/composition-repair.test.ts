@@ -132,7 +132,7 @@ describe("composition attribution repair", () => {
     expect(() => validateCompositionSubmission(original, findings)).toThrow(/unknown_source/);
     const diagnostics = compositionAttributionDiagnostics(compositionSources(findings), group.sections, group.evidenceRefs, group, "composedFindings.0.");
     expect(diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: "unknown_source", reference: "unknown/source" }),
+      expect.objectContaining({ code: "unknown_source", path: expect.stringMatching(/^composedFindings\.0\.sections\.\d+\.sourceRefs\.\d+$/u) }),
       expect.objectContaining({ code: "wrong_section", reference: verification, actualKind: "verification", expectedKind: "fix", accountedAt: undefined }),
       expect.objectContaining({ code: "missing_source", reference: verification })
     ]));
@@ -268,5 +268,21 @@ describe("composition attribution repair", () => {
     expect(createCompositionAttributionRepair(schema, original, findings)).toBeUndefined();
     const general = createFieldRepair(schema, original, true);
     expect(general).toBeDefined();
+  });
+
+  it("does not echo unknown model-supplied references into validation errors (#96)", () => {
+    const { findings, original, group } = fixture();
+    const key = "sk-" + "A1b2C3d4".repeat(4);
+    group.retainedSourceRefs = [...(group.retainedSourceRefs ?? []), key];
+    group.primaryEvidenceRefs = [key];
+    group.findingIds.push(key);
+    let message = "";
+    try { validateCompositionSubmission(original, findings); } catch (error) { message = String(error); }
+    expect(message).toContain("unknown_source");
+    expect(message).toContain(`composedFindings.0.findingIds.${group.findingIds.length - 1}`);
+    expect(message).not.toContain(key);
+    const diagnostics = compositionAttributionDiagnostics(compositionSources(findings), group.sections, group.evidenceRefs, group, "composedFindings.0.");
+    expect(diagnostics).toContainEqual(expect.objectContaining({ code: "unknown_source", path: `composedFindings.0.retainedSourceRefs.${group.retainedSourceRefs.length - 1}` }));
+    expect(JSON.stringify(diagnostics)).not.toContain(key);
   });
 });

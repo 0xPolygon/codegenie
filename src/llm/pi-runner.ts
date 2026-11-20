@@ -1676,7 +1676,7 @@ async function completeWithCacheAttempt(input: CompleteWithCacheInput): Promise<
         ...modelCallMeta,
         status: callStatus,
         errorCode: callErrorCode,
-        errorMessage: schemaValid === false ? schemaError : undefined
+        errorMessage: schemaValid === false && schemaError !== undefined ? recordedSchemaError(schemaError) : undefined
       }) as typeof modelCallMeta & { status?: "ok" | "schema_invalid"; errorCode?: CodegenieErrorCode; errorMessage?: string });
       return { source: "provider", message, callId };
     } catch (cause) {
@@ -3437,8 +3437,15 @@ function schemaValidityForResponse(
   } catch (cause) {
     // The model-call record keeps the reason, never the rejected payload Pi
     // appends after "Received arguments:".
-    return { valid: false, error: truncateDiagnostic(withoutRejectedArguments(cause instanceof Error ? cause.message : String(cause))) };
+    return { valid: false, error: withoutRejectedArguments(cause instanceof Error ? cause.message : String(cause)) };
   }
+}
+
+// Validation text can quote model output: redact credentials before the cap so
+// a cut cannot leave an unmatched key prefix, and keep within truncateDiagnostic's
+// 2,000-character limit including the marker.
+function recordedSchemaError(error: string): string {
+  return truncateDiagnosticPart(stripCredentials(error), 2_000);
 }
 
 function submitResponseDisciplineError(

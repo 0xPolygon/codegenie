@@ -70,7 +70,10 @@ describe("attributed composition", () => {
     let diagnostic = "";
     try { validateCompositionSubmission({ composedFindings: [{ findingIds: [input.id], ...proposal }] }, [input]); } catch (error) { diagnostic = String(error); }
     expect(diagnostic).toContain("absent optional fields");
-    expect(diagnostic).toContain("db6512fa-a2f1/suggestedTest");
+    // The invented ID is model text: it is located by path, not echoed (#96).
+    expect(diagnostic).toContain(`"path":"composedFindings.0.sections.${proposal.sections.length - 1}.sourceRefs.0"`);
+    expect(diagnostic).toContain("unknown_source");
+    expect(diagnostic).not.toContain("db6512fa-a2f1/suggestedTest");
     expect(diagnostic).toContain(omitted);
     proposal.evidenceRefs.push(omitted);
     proposal.sections.pop();

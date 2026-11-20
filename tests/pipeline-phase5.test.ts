@@ -13506,7 +13506,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
             expect(request.validateSubmit?.(proposal as T)).toEqual({ ok: true });
             const invalid = structuredClone(proposal);
             invalid.composedFindings[0]!.sections[0]!.sourceRefs.push("invented/suggestedTest");
-            expect(request.validateSubmit?.(invalid as T)).toMatchObject({ ok: false, details: expect.stringContaining("invented/suggestedTest") });
+            // The invented ID is located by path, not echoed back (#96).
+            expect(request.validateSubmit?.(invalid as T)).toMatchObject({ ok: false, details: expect.stringContaining('"path":"composedFindings.0.sections.0.sourceRefs.2"') });
             return proposal as T;
           }
         },
