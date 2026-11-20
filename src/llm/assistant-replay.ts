@@ -19,11 +19,27 @@ export function redactAssistantForReplay(message: PiAssistantMessage): PiAssista
   return redacted;
 }
 
-export function hasRedactedReplaySignature(message: PiAssistantMessage): boolean {
+const REDACTION_MARKER = /\[redacted(?::[a-z0-9_-]+)?\]/iu;
+const SIGNATURE_ENVELOPE = /^\s*[\[{]/u;
+
+export function hasUncacheableReplaySignature(message: PiAssistantMessage): boolean {
   return message.content.some((block) => {
     const field = signatureField(block);
     const signature = field && (block as Record<string, unknown>)[field];
-    return typeof signature === "string" && /\[redacted(?::[a-z0-9_-]+)?\]/iu.test(signature);
+    if (typeof signature !== "string") {
+      return false;
+    }
+    if (REDACTION_MARKER.test(signature) || stripCredentials(signature) !== signature) {
+      return true;
+    }
+    // Also scan the decoded fields. Escapes in a serialized envelope can hide
+    // a credential from the string-level checks.
+    const envelope = parseSignatureEnvelope(signature);
+    if (envelope === undefined) {
+      return false;
+    }
+    const encoded = JSON.stringify(envelope);
+    return REDACTION_MARKER.test(encoded) || JSON.stringify(stripCredentials(envelope)) !== encoded;
   });
 }
 
@@ -44,18 +60,27 @@ function signatureField(block: PiAssistantMessage["content"][number]): string | 
 function redactReadableSignatureFields(signature: string): string {
   // Pi's OpenAI adapters use JSON envelopes that can contain both readable
   // summaries and opaque fields. Other adapters use a bare signature string.
-  if (!/^\s*[\[{]/u.test(signature)) {
+  if (!SIGNATURE_ENVELOPE.test(signature)) {
     return signature;
   }
-  let envelope: unknown;
-  try {
-    envelope = JSON.parse(signature);
-  } catch {
+  const envelope = parseSignatureEnvelope(signature);
+  if (envelope === undefined) {
     return stripCredentials(signature);
   }
   const redacted = Array.isArray(envelope) ? envelope.map(redactReasoningDetail) : redactReasoningDetail(envelope);
   const encoded = JSON.stringify(redacted);
   return encoded === JSON.stringify(envelope) ? signature : encoded;
+}
+
+function parseSignatureEnvelope(signature: string): unknown {
+  if (!SIGNATURE_ENVELOPE.test(signature)) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(signature);
+  } catch {
+    return undefined;
+  }
 }
 
 function redactReasoningDetail(detail: unknown): unknown {

@@ -4152,7 +4152,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     const cache = warmCache ? await createModelCallCache({
       dir: cacheDir, repoRoot, runFingerprint: "reasoning-replay", logger: fakeLogger(), telemetry: telemetry.recorder
     }) : undefined;
-    const opaque = `opaque-sk-${"A".repeat(40)}`;
+    const opaque = warmCache ? `opaquesk-${"A".repeat(40)}` : `opaque-sk-${"A".repeat(40)}`;
     const visible = `visible-sk-${"B".repeat(40)}`;
     const thinkingSignature = JSON.stringify([{ type: "reasoning.encrypted", data: opaque }], null, 1);
     const initial = assistant([
@@ -4190,10 +4190,12 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     ]);
     if (cache) expect(telemetry.modelCalls.slice(-2).map((call) => call.cacheStatus)).toEqual(["hit", "write"]);
     const diagnostics = JSON.stringify([telemetry.events, telemetry.modelCalls, telemetry.debugWrites]);
-    expect(diagnostics).not.toContain(opaque);
     expect(diagnostics).not.toContain(visible);
-    expect(diagnostics).toContain("opaque-[redacted:pattern]");
     expect(diagnostics).toContain("visible-[redacted:pattern]");
+    if (!warmCache) {
+      expect(diagnostics).not.toContain(opaque);
+      expect(diagnostics).toContain("opaque-[redacted:pattern]");
+    }
   });
 
   it("replays cache hits without provider budget usage or checkpoint calls", async () => {
@@ -6924,6 +6926,39 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(existsSync(file)).toBe(false);
     await expect(cache.put(key, entry)).resolves.toMatchObject({ status: "miss" });
     expect(existsSync(file)).toBe(false);
+  });
+
+  it.each(["bare registered", "enveloped registered", "unregistered pattern"])("refuses disk replay for a signature with a %s credential", async (kind) => {
+    const repoRoot = tempGitRepo();
+    const cacheDir = path.join(repoRoot, ".codegenie", "cache");
+    const cache = await createModelCallCache({
+      dir: cacheDir, repoRoot, runFingerprint: "signature-credentials", logger: fakeLogger(), telemetry: fakeTelemetry().recorder
+    });
+    const key = buildModelCallCacheKey({ kind });
+    const file = modelCallCacheEntryPath(cacheDir, key);
+    const credential = kind === "unregistered pattern" ? `sk-${"A".repeat(40)}` : "fixture-credential-for-signature";
+    // A JSON escape can hide a credential from a scan of the serialized signature.
+    const signature = kind === "enveloped registered"
+      ? JSON.stringify([{ type: "reasoning.encrypted", data: credential }]).replace(credential, `\\u0066${credential.slice(1)}`)
+      : `prefix-${credential}`;
+    const entry = cacheEntry(7);
+    entry.message.content.unshift({ type: "thinking", thinking: "", thinkingSignature: signature });
+
+    if (kind !== "unregistered pattern") registerSecret(credential);
+    try {
+      const result = await cache.put(key, entry);
+      const onDisk = existsSync(file) ? readFileSync(file, "utf8") : "";
+      expect(onDisk).not.toContain(credential);
+      expect(result).toMatchObject({ status: "miss" });
+      expect(existsSync(file)).toBe(false);
+
+      mkdirSync(path.dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify(entry));
+      await expect(cache.get(key, 7)).resolves.toEqual({ status: "miss", reason: "invalid_entry" });
+      expect(existsSync(file)).toBe(false);
+    } finally {
+      clearRegisteredSecretsForTests();
+    }
   });
 
   it("evicts stale cache entries at construction and records telemetry", async () => {

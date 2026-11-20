@@ -6,7 +6,7 @@ import { stableJson } from "../util/json.js";
 import { CodegenieError } from "../util/errors.js";
 import { provisionCodegenieGitignore } from "../telemetry/run-artifacts.js";
 import { stripCredentials } from "../telemetry/redaction.js";
-import { hasRedactedReplaySignature, redactStoredResponseForReplay } from "./assistant-replay.js";
+import { hasUncacheableReplaySignature, redactStoredResponseForReplay } from "./assistant-replay.js";
 import type { Logger, ReviewStage } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type { ModelCallCache, PiAssistantMessage, StoredProviderResponse } from "./llm-runner.js";
@@ -76,7 +76,7 @@ export async function createModelCallCache(opts: CreateModelCallCacheOptions): P
           });
           return { status: "miss", reason: "schema_mismatch" };
         }
-        if (!isStoredProviderResponse(parsed) || hasRedactedReplaySignature(parsed.message)) {
+        if (!isStoredProviderResponse(parsed) || hasUncacheableReplaySignature(parsed.message)) {
           unlinkBestEffort(filePath);
           opts.telemetry.event({
             stage: stageForTelemetry(stage, parsed),
@@ -99,7 +99,7 @@ export async function createModelCallCache(opts: CreateModelCallCacheOptions): P
       const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
       try {
         const replay = redactStoredResponseForReplay(entry);
-        if (hasRedactedReplaySignature(replay.message)) {
+        if (hasUncacheableReplaySignature(replay.message)) {
           return { status: "miss", reason: "write_failed" };
         }
         mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
