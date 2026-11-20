@@ -2432,6 +2432,7 @@ describe("eval repeats (plan 79)", () => {
       should_find: [{ id: "expected", path: fixture.path }]
     };
     const entry = { file: "repeat-throw.yml", evalCase, caseHash: "fixture" };
+    const credential = `sk-${"Z".repeat(40)}`;
     const runReview = vi.spyOn(reviewRunner, "runReview")
       .mockImplementationOnce(async (_target, _config, overrides) => {
         const telemetry = overrides!.runArtifactDir!;
@@ -2446,7 +2447,7 @@ describe("eval repeats (plan 79)", () => {
       })
       .mockImplementationOnce(async (_target, _config, overrides) => {
         writeTelemetryArtifact(overrides!.runArtifactDir!, "candidate-findings.json", []);
-        throw new CodegenieError("invalid_args", "Failed before telemetry finalized");
+        throw new CodegenieError("invalid_args", `Failed before telemetry finalized\r\n  ${credential}`);
       });
     try {
       const result = await runEvalCase({ dir: suiteDir, cases: [entry] }, entry, { config: defaultConfig });
@@ -2461,11 +2462,15 @@ describe("eval repeats (plan 79)", () => {
       });
       expect(second).toMatchObject({
         status: "error",
-        error: { code: "invalid_args", message: "Failed before telemetry finalized" },
+        error: { code: "invalid_args", message: "Failed before telemetry finalized [redacted:pattern]" },
         metrics: { reportedFindings: 0 }
       });
+      const persisted = readFileSync(path.join(result.runDir, "eval-aggregate.json"), "utf8");
+      expect(persisted).not.toContain(credential);
+      expect(JSON.parse(persisted).executions[1].score.error).toEqual(second.error);
       expect(result.info.repeats?.totals).toMatchObject({ errors: 2, elapsedSeconds: 2, costUSD: 0.25 });
       expect(renderCaseResult(result)).toContain("ERROR draw 1 review_failed: Stage 10: Provider request was rejected");
+      expect(renderCaseResult(result)).toContain("ERROR draw 2 invalid_args: Failed before telemetry finalized [redacted:pattern]");
     } finally {
       runReview.mockRestore();
     }

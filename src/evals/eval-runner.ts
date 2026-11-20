@@ -28,6 +28,7 @@ import { runGit } from "../git/subprocess.js";
 import { canonicalArtifactPath } from "../telemetry/run-artifacts.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { sha256Hex } from "../util/hashing.js";
+import { safeDiagnosticLine } from "../util/review-health.js";
 import { resolveCodegenieRuntimeProvenance } from "../util/runtime-provenance.js";
 import {
   allocateRunDir,
@@ -805,7 +806,7 @@ function buildRunInfo(input: {
 
 function errorScore(error: unknown): EvalScore {
   const code = isCodegenieError(error) ? error.code : "invalid_args";
-  const message = error instanceof Error ? error.message : String(error);
+  const message = safeDiagnosticLine(error instanceof Error ? error.message : String(error));
   return {
     status: "error",
     expectationResults: [],
