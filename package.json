@@ -28,7 +28,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@earendil-works/pi-ai": "1.5.2",
+    "@earendil-works/pi-ai": "1.6.0",
     "commander": "15.1.0",
     "execa": "10.2.1",
     "p-limit": "7.3.3",
