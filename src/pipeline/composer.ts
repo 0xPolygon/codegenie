@@ -1846,11 +1846,12 @@ function renderReviewBody(
   summaryOnly: FinalFinding[],
   notes: NeedsHumanAttentionNote[],
   coverage: RunCoverageStatus,
-  omittedNoteCount = 0,
-  health?: import("../types.js").ReviewHealth,
+  omittedNoteCount: number | undefined,
+  health: import("../types.js").ReviewHealth,
   composition?: ReviewResult["composition"]
 ): string {
-  const trustBanner = health ? renderReviewHealth(health, composition) || renderCoverageTrustBanner(coverage) : renderCoverageTrustBanner(coverage);
+  const trustBanner = renderReviewHealth(health, composition, { shown: notes.length, omitted: omittedNoteCount ?? 0 })
+    || renderCoverageTrustBanner(coverage);
   const lines = [
     "### 🧞 Codegenie Review",
     "",
@@ -1874,9 +1875,6 @@ function renderReviewBody(
     lines.push("", "**🙋 Needs human attention:**");
     for (const note of notes) {
       lines.push(`- ${note.question}`);
-    }
-    if (omittedNoteCount > 0) {
-      lines.push(`- Additional unresolved notes suppressed: ${omittedNoteCount}`);
     }
   }
   return lines.join("\n");

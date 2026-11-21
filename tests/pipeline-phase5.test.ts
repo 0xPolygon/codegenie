@@ -14160,7 +14160,7 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
         partial: false,
         reasons: []
       },
-      config(),
+      { ...config(), github: { ...config().github, summaryWhenNoFindings: true } },
       {
         ...nullTelemetry(),
         event: (event: Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">) => {
@@ -14172,7 +14172,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
           runStructured: async <T>() => ({ summary: "no findings", composedFindings: [] }) as T
         },
         promptBuilder: fakePromptBuilder(),
-        packetResults
+        packetResults,
+        postGithubComments: true
       }
     );
 
@@ -14180,6 +14181,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
     expect(result.needsHumanAttention[0]?.question).toBe("Should retry cancellation be checked against the worker shutdown path?");
     expect(result.needsHumanAttention.some((note) => note.reason.includes("Grouped from 2 related hints"))).toBe(true);
     expect(result.needsHumanAttentionOmittedCount).toBe(5);
+    expect(result.postingPlan?.reviewBody).toContain("5 shown, 5 omitted.");
+    expect(result.postingPlan?.reviewBody).toContain(result.needsHumanAttention[0]?.question);
     expect(events).toContainEqual(expect.objectContaining({
       stage: 10,
       message: "human_attention_hints_grouped",
@@ -14849,7 +14852,8 @@ it("does not treat a verify=false synthetic keep as verified for the low-confide
     });
 
     expect(output).toContain("## 🙋 Needs Human Attention");
-    expect(output).toContain("Additional unresolved notes suppressed: 3.");
+    expect(output).toContain("1 shown, 3 omitted.");
+    expect(output).not.toContain("Additional unresolved notes suppressed");
   });
 });
 

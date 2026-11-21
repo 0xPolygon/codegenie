@@ -8,7 +8,10 @@ export function renderMarkdownReview(result: ReviewResult): string {
   const sections = [
     "# 🧞 Codegenie Review",
     "",
-    renderReviewHealth(health, result.composition),
+    renderReviewHealth(health, result.composition, {
+      shown: result.needsHumanAttention.length,
+      omitted: result.needsHumanAttentionOmittedCount ?? 0
+    }),
     ...(health.status === "completed" ? [renderCoverageTrustBanner(result.coverage)] : []),
     renderBudgetStopNotice(result.coverage),
     health.status === "completed" ? result.summary.trim() || "Review completed." : factualReviewSummary(health, result.findings.length + result.summaryOnlyFindings.length),
@@ -58,8 +61,7 @@ function renderFindings(title: string, findings: FinalFinding[], git?: ReviewRun
 }
 
 function renderNeedsHumanAttention(result: ReviewResult): string {
-  const omittedCount = result.needsHumanAttentionOmittedCount ?? 0;
-  if (result.needsHumanAttention.length === 0 && omittedCount === 0) {
+  if (result.needsHumanAttention.length === 0) {
     return "";
   }
 
@@ -71,9 +73,6 @@ function renderNeedsHumanAttention(result: ReviewResult): string {
       lines.push(`  - **Symbols:** ${note.symbols.map((symbol) => inlineCode(symbol)).join(", ")}`);
     }
     lines.push(`  - **Reason:** ${note.reason}`);
-  }
-  if (omittedCount > 0) {
-    lines.push("", `Additional unresolved notes suppressed: ${omittedCount}.`);
   }
   return lines.join("\n");
 }
