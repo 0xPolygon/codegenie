@@ -1,0 +1,16 @@
+# Public eval case codegenie/cg-03. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-cg-03
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-03
+command:
+  base: 644608d547ad4d1442b24acd55c11c00b9ba02a8
+  head: 285c014b6f6f7ab52eab656712af9d64ffde4d48
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: schema-invalid-reason-redaction
+  path: src/llm/pi-runner.ts
+  lineRange: [3432, 3442]
+  severityAtLeast: low

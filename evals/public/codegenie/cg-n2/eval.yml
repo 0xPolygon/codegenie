@@ -1,0 +1,15 @@
+# Public eval case codegenie/cg-n2. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-cg-n2
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-n2
+command:
+  base: 51ccfaa7580e278d52be049c69a7999c7a51c566
+  head: 8d51475ef0ab3f077b6b729674b5c7d46d08bd74
+review:
+  verify: true
+  debug: true
+  cache: false
+should_not_find:
+- id: material-finding-in-clean-change
+  path: "src/skills/skill-loader.ts"
+  severityAtLeast: medium

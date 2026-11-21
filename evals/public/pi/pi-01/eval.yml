@@ -1,0 +1,16 @@
+# Public eval case pi/pi-01. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-pi-01
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-01
+command:
+  base: 6085986e4b4a55a36a872df9e438e1a55ffcba35
+  head: c4cf7957b4e6698a182925f4393240c1e3b23f41
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: silent-revert-terminate-type
+  path: packages/durable/src/harness/types.ts
+  lineRange: [136, 141]
+  severityAtLeast: low

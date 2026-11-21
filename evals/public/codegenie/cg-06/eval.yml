@@ -1,0 +1,16 @@
+# Public eval case codegenie/cg-06. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-cg-06
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-06
+command:
+  base: 86f90c90d443d4f8f628b1ce375a7d9fde954c37
+  head: f6a37ee054afdfbd1b84183162e6050bbffaa870
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: published-caveats-dropped
+  path: src/pipeline/composition-content.ts
+  lineRange: [225, 246]
+  severityAtLeast: low

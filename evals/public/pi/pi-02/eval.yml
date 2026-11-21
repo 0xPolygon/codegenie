@@ -1,0 +1,17 @@
+# Public eval case pi/pi-02. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-pi-02
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-02
+command:
+  base: 7a11fe1c723b942fa093edb8b00f051ddb9b6627
+  head: d850edee9ccc5d3b6cec79553d4839a1cbab47ed
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: issuer-check-skipped-without-metadata
+  path: packages/mcp/src/oauth/flow.ts
+  lineRange: [322, 330]
+  severityAtLeast: low
+  failureModePattern: "iss|issuer|9207|mix-?up"

@@ -1,0 +1,15 @@
+# Public eval case codegenie/cg-n4. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-cg-n4
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-n4
+command:
+  base: 10251bd2af254169d388b003066044a942fb33a6
+  head: 850f1fc1c5a1e6808eb4a275ac57591342a674a9
+review:
+  verify: true
+  debug: true
+  cache: false
+should_not_find:
+- id: material-finding-in-clean-change
+  path: "src/pipeline/review-runner.ts"
+  severityAtLeast: medium

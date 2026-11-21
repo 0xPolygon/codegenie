@@ -1,0 +1,19 @@
+# Public eval case codegenie/cg-07. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-cg-07
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-07
+command:
+  base: 8a4c5bd1574d4c841343fae94c3cabf9cdc31ff4
+  head: 0711daa5b740a3f1a73d0161d233cb8f98851a82
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: legacy-stage8-accepted-by-guards
+  path: "src/{evals/eval-scoring,llm/model-call-cache,pipeline/review-runner}.ts"
+  severityAtLeast: low
+- id: eval-budget-key-8-accepted
+  path: src/evals/eval-runner.ts
+  lineRange: [250, 258]
+  severityAtLeast: low

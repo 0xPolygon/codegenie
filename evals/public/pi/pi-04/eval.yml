@@ -1,0 +1,15 @@
+# Public eval case pi/pi-04. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-pi-04
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-04
+command:
+  base: 0b54c87e24ba94b0a2ac43501959fd35c48deb1b
+  head: 80c918c2478c0e48a6f1773668f3bef82518ff0f
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: short-ids-from-uuidv7-timestamp
+  path: "packages/agent/src/harness/session/{jsonl,memory}-storage.ts"
+  severityAtLeast: low
