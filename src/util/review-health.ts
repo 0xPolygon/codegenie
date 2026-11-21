@@ -37,12 +37,21 @@ export function healthForResult(result: ReviewResult): ReviewHealth {
     result.findings.length + result.summaryOnlyFindings.length > 0);
 }
 
-export function renderReviewHealth(health: ReviewHealth, composition?: ReviewResult["composition"]): string {
+export function renderReviewHealth(
+  health: ReviewHealth,
+  composition: ReviewResult["composition"],
+  questions: { shown: number; omitted: number; inFullReview?: boolean }
+): string {
   const synthesis = composition?.fallbackReason ? `> **Report synthesis failed (stage 10).** Verified findings are shown using source-based fallback. ${safeText(composition.fallbackReason)}` : "";
   if (health.status === "completed") return synthesis ? `> [!WARNING]\n${synthesis}` : "";
   const title = health.status === "failed" ? "Review failed" : health.status === "incomplete" ? "Review incomplete" : "Review completed with unresolved questions";
-  const detail = health.status === "unresolved" ? `${health.unresolvedCount} question(s) remain unresolved; absence of a confirmed finding does not establish safety.`
-    : "Required work did not complete reliably. Findings below are partial results.";
+  const counts = `${questions.shown} shown, ${questions.omitted} omitted.`;
+  const detail = health.status === "unresolved"
+    ? `${questions.inFullReview ? "In the full review, " : ""}${counts} Absence of a confirmed finding does not establish safety.`
+    : "Required work did not complete reliably. Findings below are partial results." +
+      (questions.shown + questions.omitted > 0
+        ? ` Unresolved questions${questions.inFullReview ? " in the full review" : ""} — ${counts}`
+        : "");
   const diagnostics = [...health.diagnostics].sort((a, b) => Number(b.kind === "failure") - Number(a.kind === "failure")).slice(0, 5).map(d =>
     `> - Stage ${d.stage}${d.workItem ? ` (${safeText(d.workItem)})` : ""}: ${safeText(d.code)} — ${safeText(d.reason)}${d.recoveryExhausted ? " Recovery exhausted." : ""}`);
   return [`> [!WARNING]`, `> **${title}.** ${detail}`, ...(synthesis ? [synthesis] : []), ...diagnostics].join("\n");

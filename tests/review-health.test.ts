@@ -61,11 +61,28 @@ describe("review health", () => {
     expect(renderMarkdownReview(r)).toContain("skipped under incomplete planning 2");
     expect(renderMarkdownReview(r)).not.toContain("Excluded by configuration/planning");
   });
-  it("keeps unresolved status even when presentation hides every question", () => {
+  it("reports unresolved status when every question is omitted", () => {
     const r = result();
     r.needsHumanAttentionOmittedCount = 3;
-    expect(renderMarkdownReview(r)).toContain("Review completed with unresolved questions");
-    expect(renderMarkdownReview(r)).not.toContain("Everything looks good");
+    const markdown = renderMarkdownReview(r);
+    expect(markdown).toContain("Review completed with unresolved questions");
+    expect(markdown).toContain("0 shown, 3 omitted.");
+    expect(markdown).not.toContain("Needs Human Attention");
+    expect(markdown).not.toContain("Everything looks good");
+  });
+  it.each([false, true])("reports separate counts for questions and retains coverage health (partial=%s)", partial => {
+    const r = result({ ...coverage, partial });
+    r.needsHumanAttention = Array.from({ length: 5 }, (_, index) => ({
+      question: `Question ${index + 1}?`, files: [], symbols: [], reason: "More evidence needed", confidence: "medium"
+    }));
+    r.needsHumanAttentionOmittedCount = 11;
+    r.health = deriveReviewHealth(r.coverage, 16);
+    const markdown = renderMarkdownReview(r);
+    expect(markdown).toContain(partial ? "Review incomplete." : "Review completed with unresolved questions.");
+    expect(markdown).toContain("5 shown, 11 omitted.");
+    expect(markdown.match(/^\s*- Question \d+\?$/gmu)).toHaveLength(5);
+    expect(renderPostingSummaryForStdout(r, "markdown")).toMatch(/full review[^\n]*5 shown, 11 omitted/u);
+    expect(r.health.unresolvedCount).toBe(16);
   });
   it("does not call deliberate exclusions incomplete, and does not fail recovered execution", () => {
     expect(deriveReviewHealth(coverage, 0).status).toBe("completed");
