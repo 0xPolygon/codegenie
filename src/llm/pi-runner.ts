@@ -1093,9 +1093,9 @@ type ForcedFinalizeReason = "budget_exhausted" | "tool_budget_exhausted" | "soft
 // is one worker's growing conversation (initial → continuations → finalize).
 // On OpenAI the key maps to prompt_cache_key, where a stage-shared key would
 // concentrate all concurrent workers on one cache node past the documented
-// ~15 req/min per-key overflow threshold; on direct Anthropic the key is
-// inert; on affinity-honoring gateways per-worker keys avoid pinning N
-// concurrent workers to a single upstream shard.
+// ~15 req/min per-key overflow threshold. Pi uses the session ID for message
+// threads on direct Anthropic. On affinity-honoring gateways per-worker keys
+// avoid pinning all concurrent workers to a single upstream shard.
 function providerPromptCacheOptions(runId: string, stage: ReviewStage, workerId?: string): ProviderPromptCacheOptions {
   const workerPart = workerId !== undefined ? `-${safePromptCacheSessionPart(workerId)}` : "";
   return {
@@ -3813,6 +3813,9 @@ function transientProviderMessageReason(cause: unknown): string | undefined {
   }
   if (/\bserver error\b|\binternal server error\b/iu.test(text)) {
     return "server_error";
+  }
+  if (/\b(?:connection (?:closed|reset by peer)|ECONNRESET|EPIPE|websocket[ _-]connection[ _-]limit[ _-]reached)\b/iu.test(text)) {
+    return "network_error";
   }
   return undefined;
 }

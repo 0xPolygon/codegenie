@@ -6641,6 +6641,44 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
+  it.each([
+    "Connection closed.",
+    "read ECONNRESET",
+    "write EPIPE",
+    "connection reset by peer",
+    "Responses websocket connection limit reached",
+    "websocket_connection_limit_reached"
+  ])("retries text-only connection failures: %s", async (message) => {
+    vi.useFakeTimers();
+    try {
+      const telemetry = fakeTelemetry();
+      const adapter = scriptedAdapter([
+        assistantError(message), assistantError(message), assistantError(message),
+        assistant([validSubmitReviewCall("submit-after-reconnect")])
+      ]);
+      const runner = createPiRunner({
+        llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+        telemetry: telemetry.recorder,
+        logger: fakeLogger(),
+        runSignal: new AbortController().signal,
+        adapter,
+        hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
+      });
+
+      const result = runner.runStructured({ ...submitReviewRequest("packet-reconnect"), timeoutMs: 60_000 });
+      void result.catch(() => undefined);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(result).resolves.toMatchObject({ findings: [] });
+
+      expect(telemetry.modelCalls.map(call => call.retryReason)).toEqual([
+        "network_error", "network_error", "network_error", undefined
+      ]);
+      expect(telemetry.modelCalls.at(-1)).toMatchObject({ status: "ok", attempt: 4 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("treats persistent retryable provider errors as recoverable task failures", async () => {
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     const telemetry = fakeTelemetry();
