@@ -51,7 +51,7 @@ Expected findings are mapped by topic from the frozen case files. I did not re-v
 - Cost does not move. Light halves Stage 7 tool calls (421 to 186 on Luna, 181 to 113 on Opus), but tool calls are not what a review costs: Stage 7 cost falls 13% on Luna and rises 2% on Opus.
 - Raw elapsed time on Luna is 41% lower (8.3 against 14.0 minutes), but that is an accident of which reviews hit a padded call. Among reviews without one, light takes 6.9 minutes against 8.6: 19% lower. On Opus it is 5% lower.
 - Detections are not held. Required 2 on Luna is published in 2 of 5 light reviews against 4 of 5 normal ones.
-- Light fails the bar on cost, fails it on time once padded calls are set aside, and loses a required finding.
+- Light misses the fast criteria because required detections are not held (Required 2 is 2 of 5 against 4 of 5) and its cost saving is 1 to 3%. On raw elapsed time, the registered measure, it is about 41% faster (8.3 against 14.0 minutes) and passes that limb; with padded calls set aside the gain is 19%, which is a sensitivity result.
 
 ## Stage 5: planner
 
@@ -150,7 +150,7 @@ So two of the four partial labels describe complete work, and both are in the li
 
 ## What this suggests
 
-1. **Remove the depth setting instead of renaming it.** Deep has no measured benefit, light has no measured saving, and the planner ignores the label. One mode at today's normal budgets is what the data supports.
+1. **Remove the depth setting instead of renaming it.** Deep has no measured benefit and light holds neither required detections nor a meaningful cost saving. The aggregate share of hunks at deep coverage was similar across arms (26%, 19% and 23% on Luna), but planner assignments differed between arms, so the effect of the label on the planner is unresolved. One mode at today's normal budgets is what the data supports.
 2. **Work on Stage 9 before Stage 7 budgets.** The harder findings are found and then rejected, most often as "unresolved". On Opus this is nearly the whole loss.
 3. **Fix Stage 10 on Luna.** 14 of 15 invalid first submissions and 3 fallbacks on the larger case is the least reliable part of the pipeline on the primary model.
 4. **Treat Luna's miss of the TypeScript seeded defect as a Stage 7 recall problem.** No depth setting changed it in 15 reviews.
