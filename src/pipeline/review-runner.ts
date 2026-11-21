@@ -1,5 +1,5 @@
 import { deriveReviewHealth, reviewDiagnostic, safeDiagnosticLine } from "../util/review-health.js";
-import { parseRepoConfigText, type RepoConfigText } from "../config/config-loader.js";
+import type { RepoConfigText } from "../config/config-loader.js";
 import path from "node:path";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { summarizeAdaptiveReviews } from "../util/adaptive-review.js";
@@ -142,17 +142,15 @@ export async function runReview(
       stage: 1, level: "info", message: "repository_policy_loaded",
       data: { origin: policy.origin, revision: policy.revision, config: policy.config !== undefined, skillFiles: policy.skillFiles.length }
     });
-    const repoConfig = policy.config === undefined ? undefined : {
-      text: policy.config.content,
-      label: policy.revision === undefined ? path.join(repoRoot, policy.config.path) : `${policy.revision}:${policy.config.path}`
-    };
     if (overrides.finalizeConfig !== undefined) {
+      const repoConfig = policy.config === undefined ? undefined : {
+        text: policy.config.content,
+        label: policy.revision === undefined ? path.join(repoRoot, policy.config.path) : `${policy.revision}:${policy.config.path}`
+      };
       const loaded = overrides.finalizeConfig(repoConfig);
       config = loaded.config;
       run.adoptConfig(config);
       emitConfigWarnings(loaded.warnings, run.runId, run.logger, run.telemetry, 1);
-    } else if (repoConfig !== undefined && policy.origin === "base-revision") {
-      parseRepoConfigText(repoConfig);
     }
     throwIfHardAborted(run);
     run.telemetry.event({

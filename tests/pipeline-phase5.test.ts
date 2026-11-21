@@ -10510,9 +10510,12 @@ describe("phase 5 pipeline regressions", () => {
     writeRepoFile(repo, "codegenie.toml", "[review]\nmaxTime = 15\n");
     const head = commitAll(repo, "fix the config in the reviewed commit");
     const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "bad-base-policy");
+    const parsed = parseReviewCommand(["review", "--base", base, "--head", head], {
+      repoRoot: repo, homeOverride: `${runArtifactDir}-home`, env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
+    });
     const modelCall = vi.fn();
-    await expect(runReview({ mode: "head", baseRef: base, headRef: head }, config(), {
-      repoRoot: repo, runArtifactDir, runner: { runStructured: modelCall }
+    await expect(runReview(parsed.target, parsed.config, {
+      repoRoot: repo, runArtifactDir, finalizeConfig: parsed.finalizeConfig, runner: { runStructured: modelCall }
     })).rejects.toMatchObject({ code: "config_error", message: expect.stringContaining(`${base}:codegenie.toml`) });
     expect(modelCall).not.toHaveBeenCalled();
     const run = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8"));
