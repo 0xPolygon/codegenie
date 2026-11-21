@@ -69,7 +69,7 @@ export function eligibleCompositionSource(source: CompositionSource, kind?: stri
 }
 
 // Model prose never owns HTML containers. Close unbalanced Markdown fences so
-// they cannot swallow renderer-owned provenance. Original bytes stay in sources.
+// they cannot swallow later report sections. Original bytes stay in sources.
 export function safeReportProse(text: string): string {
   const ticks = String.fromCharCode(96);
   let fence: { char: string; length: number } | undefined;
@@ -207,18 +207,6 @@ function validateSources(findings: CandidateFinding[], sections: CompositionSect
   return { sources, byId, primary };
 }
 
-function proofText(proof: NonNullable<CandidateFinding["proofAssessment"]>): string {
-  return "**Proof status:** " + proof.status + "\n\n" + safeReportProse(proof.evidence)
-    + (proof.assumptions.length ? "\n\n" + proof.assumptions.map(assumption =>
-      "- " + (assumption.essential ? "Essential" : "Secondary") + " assumption: " + safeReportProse(assumption.question)).join("\n") : "");
-}
-
-function assessmentText(assessment: SuggestionAssessment): string {
-  return "**Suggestion assessment:** " + assessment.status + "\n\n" + safeReportProse(assessment.rationale)
-    + (assessment.contractCheck ? "\n\n**Behavioral requirement (" + assessment.contractCheck.status + "):** " + safeReportProse(assessment.contractCheck.requirement) : "")
-    + assessment.evidence.map(item => "\n\n" + inlineCode(item.path) + "\n\n" + codeBlock(item.lines, "text") + "\n\n" + safeReportProse(item.whyRelevant)).join("");
-}
-
 function renderEvidence(source: CompositionSource, link?: (path: string, line?: number) => string | undefined): string {
   const url = source.path ? link?.(source.path) : undefined;
   const location = inlineCode(source.path ?? "") + (url ? " ([source](" + url + "))" : "");
@@ -234,9 +222,9 @@ export function composePresentation(findings: CandidateFinding[], sections: Comp
   for (const [kind, label] of [["fix", "Remediation"], ["test", "Regression-test guidance"]] as const) {
     const proposals = sources.filter(source => source.kind === kind && !source.provenanceOnly);
     if (proposals.length && !proposals.some(source => eligibleCompositionSource(source, kind))) {
-      prose.push(label + " remains unverified; original proposals and assessments are retained below.");
+      prose.push(label + " remains unverified.");
     } else if (unreconciledSuggestionKinds.includes(kind)) {
-      prose.push(label + " remains unreconciled: multiple supported proposals differ; all proposals and assessments are retained below.");
+      prose.push(label + " remains unreconciled because multiple supported proposals differ.");
     }
   }
   const concerns = [...new Set(findings.flatMap(finding => {
@@ -252,41 +240,12 @@ export function composePresentation(findings: CandidateFinding[], sections: Comp
   const evidenceBody = primary.map(ref => renderEvidence(byId.get(ref)!, link)).join("\n\n");
   prose.push("**Evidence:**\n\n" + evidenceBody);
 
-  // Every source remains attributable, including sources omitted from prominent
-  // prose. Dedup only identical records, retaining every originating reference.
-  const originals = new Map<string, { source: CompositionSource; refs: string[] }>();
-  for (const source of sources) {
-    const key = JSON.stringify([source.kind, source.path, source.text, source.explanation, source.suggestionAssessment, source.provenanceOnly]);
-    const entry = originals.get(key) ?? { source, refs: [] };
-    entry.refs.push(source.id);
-    originals.set(key, entry);
-  }
-  const metadata = findings.map(finding => "- " + inlineCode(finding.id) + ": severity " + finding.severity + ", confidence " + finding.confidence).join("\n");
-  const provenance = "**Original candidate metadata:**\n\n" + metadata + "\n\n" + [...originals.values()].map(({ source, refs }) => {
-    const dispositions = (presentation.reconciliations ?? []).filter(record => record.sourceRefs.some(ref => refs.includes(ref)));
-    const attribution = refs.map(ref => inlineCode(ref)).join(", ");
-    const assessment = source.suggestionAssessment;
-    const finding = findings.find(finding => finding.id === source.findingId);
-    const proof = source.id.endsWith("/proofAssessment") ? finding?.proofAssessment : undefined;
-    const submittedAssessment = source.provenanceOnly ? undefined : source.kind === "fix" ? finding?.suggestionAssessments?.suggestedFix
-      : source.kind === "test" ? finding?.suggestionAssessments?.suggestedTest : undefined;
-    const originalStatus = submittedAssessment?.suggestionText === source.text && submittedAssessment.status !== assessment?.status
-      ? "\n\n**Submitted assessment status:** " + submittedAssessment.status + "; the effective qualification is shown below." : "";
-    return "**Original " + source.kind + (source.provenanceOnly ? " (before verification revision; provenance only)" : "") + ":** " + attribution
-      + (dispositions.length ? "\n\n" + dispositions.map(record => "**" + record.disposition + ":** " + safeReportProse(record.rationale) + " Supporting sources: " + record.supportingRefs.map(inlineCode).join(", ")).join("\n\n") : "")
-      + (source.path ? "\n\n" + inlineCode(source.path) : "")
-      + "\n\n" + (proof ? proofText(proof) : codeBlock(source.text, source.kind === "evidence" ? fenceLanguageForPath(source.path ?? "") : "text"))
-      + (source.explanation ? "\n\n" + codeBlock(source.explanation, "text") : "")
-      + originalStatus + (assessment ? "\n\n" + assessmentText(assessment) : "");
-  }).join("\n\n");
-  const primaryBody = prose.join("\n\n");
-  const body = primaryBody + "\n\n<details>\n<summary>Original assessments and supporting evidence (may overlap or disagree)</summary>\n\n"
-    + "Original source material is retained for audit. The current conclusion is above; superseded assessments are labeled where supplied. Attribution does not prove semantic equivalence.\n\n"
-    + provenance + "\n\n</details>";
+  const body = prose.join("\n\n");
   return { body, metrics: {
     narrativeWords: sections.reduce((count, section) => count + section.text.trim().split(/\s+/u).length, 0),
-    primaryWords: primaryBody.trim().split(/\s+/u).length,
-    provenanceWords: provenance.trim().split(/\s+/u).length,
+    primaryWords: body.trim().split(/\s+/u).length,
+    // Keep this measurement comparable with artifacts from older versions.
+    provenanceWords: 0,
     verificationWords: sections.filter(section => section.kind === "verification").reduce((count, section) => count + section.text.trim().split(/\s+/u).length, 0),
     uncertaintyWords: uncertaintyBody ? uncertaintyBody.trim().split(/\s+/u).length : 0,
     evidenceWords: evidenceBody ? evidenceBody.trim().split(/\s+/u).length : 0,
@@ -366,12 +325,12 @@ export function renderRetainedComposition(findings: CandidateFinding[], link?: (
       const secondary = [...new Set(proofs.flatMap(proof => proof.assumptions.filter(a => !a.essential && !essential.has(a.question)).map(a => a.question)))];
       if (secondary.length) renderedTexts.push(secondary.map(question => "Secondary assumption: " + question).join("\n\n"));
     }
-    if (kind === "verification" && conflictingSuggestions(assessmentFindings).size) renderedTexts.push("Compatibility assessments conflict for an identical proposal; the disputed recommendation remains unverified. See original assessments below.");
+    if (kind === "verification" && conflictingSuggestions(assessmentFindings).size) renderedTexts.push("Compatibility assessments conflict for an identical proposal. The disputed recommendation remains unverified.");
     sections.push({ kind, sourceRefs: equivalent.map(source => source.id), text: renderedTexts.join("\n\n") });
     retainedSourceRefs.push(...matching.filter(source => !equivalent.includes(source)).map(source => source.id));
   }
   const presentation: CompositionPresentation = { retainedSourceRefs };
   const rendered = composePresentation(findings, sections, sources.filter(source => source.kind === "evidence").map(source => source.id), link, presentation, assessmentFindings, unreconciledSuggestionKinds);
   onMetrics?.(rendered.metrics);
-  return "Source-based presentation; synthesis was unavailable. Original assessments may overlap or disagree.\n\n" + rendered.body;
+  return "Source-based presentation because synthesis was unavailable.\n\n" + rendered.body;
 }

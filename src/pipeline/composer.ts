@@ -365,6 +365,15 @@ export async function dedupeRankAndComposeReview(
       mode: compositionMode,
       semanticPreservation: "not_machine_proven",
       sourceComponents: compositionSources(pretrim.kept),
+      candidateMetadata: pretrim.kept.map(finding => ({
+        findingId: finding.id,
+        severity: finding.severity,
+        confidence: finding.confidence,
+        ...(finding.suggestionAssessments && { submittedSuggestionStatuses: {
+          suggestedFix: finding.suggestionAssessments.suggestedFix?.status,
+          suggestedTest: finding.suggestionAssessments.suggestedTest?.status
+        } })
+      })),
       proposals: composition.composedFindings,
       dispositions: selection,
       presentationMeasurements

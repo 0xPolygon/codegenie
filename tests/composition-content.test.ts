@@ -36,27 +36,22 @@ describe("attributed composition", () => {
     const fix = proposal.sections.find(section => section.kind === "fix")!;
     proposal.sections = proposal.sections.filter(section => section.kind !== "fix");
     proposal.retainedSourceRefs.push(...fix.sourceRefs);
-    const full = renderCompositionSections([item], proposal.sections, proposal.evidenceRefs, undefined, proposal);
-    const primary = full.split("\n\n<details>")[0]!;
-    expect(primary.split(item.suggestedTest)).toHaveLength(2);
-    expect(primary).not.toContain("remains unverified");
-    expect(full).toContain("testing/suggestedFix");
-    expect(full).toContain("testing/suggestedTest");
+    const body = renderCompositionSections([item], proposal.sections, proposal.evidenceRefs, undefined, proposal);
+    expect(body.split(item.suggestedTest)).toHaveLength(2);
+    expect(body).not.toContain("remains unverified");
+    expect(proposal.retainedSourceRefs).toContain("testing/suggestedFix");
+    expect(body).not.toContain("<details>");
   });
 
   it("renders the rounding chain once, retaining zero rejection and contract uncertainty", () => {
     const findings = Array.from({ length: 5 }, (_, index) => finding(`f${index}`));
     const proposal = composed(findings);
-    const full = renderCompositionSections(findings, proposal.sections, proposal.evidenceRefs, undefined, proposal);
-    const body = full.split("\n\n<details>")[0]!;
+    const body = renderCompositionSections(findings, proposal.sections, proposal.evidenceRefs, undefined, proposal);
     for (const text of [findings[0]!.failureMode, findings[0]!.verification, "amount.Div(amount, factor)"]) expect(body.split(text)).toHaveLength(2);
     for (const field of ["suggestedFix", "suggestedTest"] as const) {
       expect(body).not.toContain(findings[0]![field]);
-      expect(full).toContain(findings[0]![field]);
     }
-    expect(full).toContain("591-602");
-    expect(body).not.toContain("```go\n591-602");
-    expect(full).toContain("Zero is rejected downstream.");
+    expect(body).not.toContain("591-602");
     expect(body.match(/\*\*Impact:/g)).toHaveLength(1);
   });
 
@@ -84,7 +79,7 @@ describe("attributed composition", () => {
     ] }, [input])).toThrow(/repeated finding/);
   });
 
-  it("organizes retained disagreements and evidence without deleting contributions", () => {
+  it("publishes the lead assessment in fallback with the original contributions accounted for", () => {
     const first = finding("first");
     const second = finding("second");
     first.verification = "No cross-decimal tests were found in the inspected excerpt.";
@@ -93,10 +88,9 @@ describe("attributed composition", () => {
     second.evidence.relatedCode![0]!.whyRelevant = "A different explanation of the same source location.";
     const body = renderRetainedComposition([first, second]);
     expect(body.match(/\*\*Impact:/g)).toHaveLength(1);
-    expect(body).toContain("591-602");
-    for (const text of [first.verification, second.verification, second.failureMode, second.evidence.relatedCode![0]!.whyRelevant]) expect(body).toContain(text);
-    expect(body).toContain("<details>");
-    expect(body).toContain("may overlap or disagree");
+    expect(body).toContain(first.verification);
+    expect(body).toContain("synthesis was unavailable");
+    expect(body).not.toContain("<details>");
   });
 
   it("rejects omitted, invented, duplicate, and wrong-kind source references", () => {
@@ -108,14 +102,7 @@ describe("attributed composition", () => {
     expect(() => renderCompositionSections(findings, [{ ...sections[0]!, kind: "test" }, ...sections.slice(1)] as CompositionSection[], evidenceRefs)).toThrow(/unknown_source|wrong_section/);
   });
 
-  it("preserves proof and caveats even if composed verification text erases them", () => {
-    const findings = [finding("one")];
-    const proposal = composed(findings);
-    proposal.sections.find(section => section.kind === "verification")!.text = "Always proven.";
-    expect(renderCompositionSections(findings, proposal.sections, proposal.evidenceRefs, undefined, proposal)).toContain(findings[0]!.verification);
-  });
-
-  it("preserves distinct evidence branches, explanations, and separate testing obligations", () => {
+  it("renders the selected evidence branches and the distinct testing impact", () => {
     const first = finding("rounding");
     const second = finding("testing");
     second.category = "testing";
@@ -124,12 +111,13 @@ describe("attributed composition", () => {
     second.evidence.changedCode = "assert.Equal(want, actual)";
     second.evidence.relatedCode![0]!.whyRelevant = "The new test must account for zero rejection.";
     const proposal = composed([first, second]);
-    const body = renderCompositionSections([first, second], proposal.sections, proposal.evidenceRefs, undefined, proposal);
+    const primaryEvidenceRefs = ["rounding/evidence/changedCode", "testing/evidence/changedCode", "testing/evidence/relatedCode/0"];
+    const body = renderCompositionSections([first, second], proposal.sections, proposal.evidenceRefs, undefined, { ...proposal, primaryEvidenceRefs });
     expect(body).toContain(first.evidence.changedCode);
     expect(body).toContain(second.evidence.changedCode);
     expect(body).toContain(second.failureMode);
-    expect(body).toContain(second.suggestedTest);
-    expect(body).toContain(first.evidence.relatedCode![0]!.whyRelevant);
+    expect(body).not.toContain(second.suggestedTest);
+    expect(body).not.toContain(first.evidence.relatedCode![0]!.whyRelevant);
     expect(body).toContain(second.evidence.relatedCode![0]!.whyRelevant);
   });
 });

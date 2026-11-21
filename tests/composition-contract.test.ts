@@ -16,27 +16,23 @@ import type { RunCoverageStatus } from "../src/types.js";
 
 
 describe("contract-aware concise composition", () => {
-  it("publishes the corrected conclusion and supported remedy while retaining every original", () => {
+  it("publishes the corrected conclusion and supported remedy without the original assessments appendix", () => {
     const { findings, sections, evidenceRefs, presentation } = proposal();
     findings[1]!.severity = "medium";
     const { body, metrics } = composePresentation(findings, sections, evidenceRefs, undefined, presentation);
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary).toContain(findings[1]!.verification);
-    expect(primary).not.toContain(findings[0]!.verification);
-    expect(primary).not.toContain(findings[0]!.suggestedFix);
-    expect(primary).not.toContain(findings[0]!.suggestedTest);
-    expect(primary).toContain("**Suggested fix:** Round");
-    expect(primary).toContain("Regression-test guidance remains unverified");
-    expect(primary).not.toContain(findings[1]!.suggestedTest);
-    expect(primary).toContain("size of the loss depends");
-    expect(primary).not.toContain("Original severity assessments differ");
-    expect(body).toContain("`rounding`: severity high");
-    expect(body).toContain("`boundary-tests`: severity medium");
-    expect(body).toContain("**superseded:**");
-    for (const source of compositionSources(findings)) { if (!source.id.endsWith("/proofAssessment")) expect(body).toContain(source.text); expect(body).toContain(source.id); }
+    expect(body).toContain(findings[1]!.verification);
+    expect(body).not.toContain(findings[0]!.verification);
+    expect(body).not.toContain(findings[0]!.suggestedFix);
+    expect(body).not.toContain(findings[0]!.suggestedTest);
+    expect(body).toContain("**Suggested fix:** Round");
+    expect(body).toContain("Regression-test guidance remains unverified");
+    expect(body).not.toContain(findings[1]!.suggestedTest);
+    expect(body).toContain("size of the loss depends");
+    expect(body).not.toContain("Original assessments and supporting evidence");
+    expect(body).not.toContain("**superseded:**");
     expect(metrics.accountedSourceComponents).toBe(compositionSources(findings).length);
     expect(metrics.primaryEvidenceComponents).toBe(1);
-    expect(metrics.primaryWords).toBeLessThan(metrics.provenanceWords);
+    expect(metrics.provenanceWords).toBe(0);
     expect(metrics.semanticPreservation).toBe("not_machine_proven");
   });
 
@@ -67,9 +63,9 @@ describe("contract-aware concise composition", () => {
   it("keeps unresolved essential conditions visible and cannot supersede them", () => {
     const { findings, sections, evidenceRefs, presentation } = proposal();
     findings[0]!.proofAssessment = { status: "unresolved", evidence: "Caller reachability remains unknown.", assumptions: [{ question: "Can public callers reach this branch?", essential: true }] };
-    const primary = composePresentation(findings, sections, evidenceRefs, undefined, presentation).body.split("\n\n<details>")[0]!;
-    expect(primary).toContain("Essential assumption: Can public callers reach this branch?");
-    expect(primary).toContain("Caller reachability remains unknown.");
+    const body = composePresentation(findings, sections, evidenceRefs, undefined, presentation).body;
+    expect(body).toContain("Essential assumption: Can public callers reach this branch?");
+    expect(body).toContain("Caller reachability remains unknown.");
     presentation.reconciliations![0]!.sourceRefs = ["rounding/proofAssessment"];
     expect(() => composePresentation(findings, sections, evidenceRefs, undefined, presentation)).toThrow(/cannot supersede/);
   });
@@ -79,24 +75,21 @@ describe("contract-aware concise composition", () => {
     let accounted = 0;
     const body = renderRetainedComposition(findings, undefined, text => text, metrics => { accounted = metrics.accountedSourceComponents; });
     expect(accounted).toBe(compositionSources(findings).length);
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary).toContain(findings[0]!.failureMode);
-    expect(primary).not.toContain(findings[0]!.suggestedFix);
-    expect(primary).toContain(findings[1]!.suggestedFix);
-    expect(primary).toContain("synthesis was unavailable");
-    expect(body).toContain(findings[0]!.suggestedFix);
-    expect(body).toContain("incompatible");
+    expect(body).toContain(findings[0]!.failureMode);
+    expect(body).not.toContain(findings[0]!.suggestedFix);
+    expect(body).toContain(findings[1]!.suggestedFix);
+    expect(body).toContain("synthesis was unavailable");
   });
 
   it("contains model HTML and unclosed fences while preserving immutable originals", () => {
     const { findings, sections, evidenceRefs, presentation } = proposal();
     sections[0]!.text = "</details>\n<details><summary>Injected</summary>\n```go\nunclosed";
     findings[0]!.evidence.changedCode = "</details>\n```\n<details>raw source";
+    presentation.primaryEvidenceRefs = ["rounding/evidence/changedCode"];
     const body = composePresentation(findings, sections, evidenceRefs, undefined, presentation).body;
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary).not.toContain("<details>");
-    expect(primary).toContain("&lt;/details>");
-    expect(primary).toContain("unclosed\n```");
+    expect(body).not.toContain("<details><summary>Injected");
+    expect(body).toContain("&lt;/details>");
+    expect(body).toContain("unclosed\n```");
     expect(body).toContain("````go\n" + findings[0]!.evidence.changedCode + "\n````");
   });
 
