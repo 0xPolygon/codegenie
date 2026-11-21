@@ -47,19 +47,15 @@ Questions about intent or policy, about whether behaviour actually differs, or a
 29 unresolved rejects did not flip:
 - **6 were ineligible.** Neither the TypeScript case nor the small case carries an explicitly behaviour-preserving signal.
 - **The other 23 kept an essential question** about provider or product intent, about whether the behaviour differs at all, or about code the verifier had not read.
-- Every stricter-provider-input claim stayed rejected. These are claims that a change now rejects provider input it used to accept, and #112 counted them as policy-dependent.
+- No reject in the class that #112 adjudicated as policy-dependent flipped.
 
-**Rule 2.** When a verifier refutes a claim, it often names leftover differences in passing: a changed error message, a non-finite value that cannot reach the path, or a repeated identical lookup. Flipping on any named residual published 3 wholly false claims. It also flipped the negative-sentinel claim once, where the only residual was a different error message, and once on that claim's sibling in another route.
+**Rule 2.** All 3 wholly false flips and the negative-sentinel flip came from residual differences that a refuting verifier mentioned in passing. Adjudication classed each such residual as cosmetic, unreachable or behaviour-neutral; the table counts the sentinel flip as policy-dependent. One further flip was on a sibling of the sentinel claim, classed as policy-dependent.
 
 Rule 2 would also have recovered 11 real larger-case rejects and 1 TypeScript required finding. Those gains do not offset a failed kill criterion. A tighter variant would need its own pre-registered replay.
 
 ## The second required expectation is a latent regression
 
-Rule 1 recovers the larger case's second required expectation, but that expectation should be read as a latent regression, not a live failure.
-
-The refactor changed a shared helper's contract: an input class that base converted now produces an error, so the function-level difference is real. On base, however, both request handlers already run an unchanged later computation on the same request path, and it rejects the same input class for any positive amount. Today's user-visible effect is therefore mostly a different error message, not a newly failing request.
-
-Several verifiers that rejected the claim were partly right. Rule 1 publishes it at low severity with the reachability question visible. The campaign's success criterion still measures what the rule fixes, namely Stage 9 dropping a proven difference.
+All 14 Rule 1 flips on the larger case's second required expectation are classified **latent**. Each is a real function-level difference, but no newly failing user-visible behaviour was established for it. Rule 1 publishes it at low severity with the reachability question visible. The campaign's success criterion still measures what the rule fixes, namely Stage 9 dropping a proven difference. The analysis behind this classification is in the private worksheet.
 
 ## Not addressed
 

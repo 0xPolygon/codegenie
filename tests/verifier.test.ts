@@ -1840,10 +1840,19 @@ describe("behavior-preserving reachability rule (#112 Stage 9 replay)", () => {
     expect(built.prompt).toContain("If a plausible answer to an open question eliminates the defect, that assumption is essential.");
   });
 
-  it("limits the rule to production reachability and keeps intent, behavior and unread-code questions essential", () => {
+  it("limits the rule to confirmed commitments and production reachability, keeping intent, behavior, contract and unread-code questions essential", () => {
     expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("the only open question is whether production callers actually supply that value");
     expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("no inspected guard on that path excludes");
-    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("product or provider intent, whether the behavior actually differs, or decisive code you have not read");
+    // The flag is heuristic: the commitment must be confirmed from the intent text itself.
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("confirm from the supplied intent text that it makes an unambiguous commitment to preserve the affected behavior");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("negated, hedged, or incidental wording");
+    // Type-correct but contract-invalid values do not qualify.
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("satisfies the changed code's applicable interface contract, including its documented or enforced preconditions");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("whether the value meets the interface contract");
+    // Explicit priority over the general stop condition and intent-as-context rule for this narrow case.
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("takes priority over the general reachable-impact stop condition and the context-not-proof treatment of intent signals");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("the source difference supplies the proof");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("product or provider intent, whether the behavior actually differs, whether the value meets the interface contract, or decisive code you have not read");
     expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("still require reject with status unresolved");
     expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("use severity low unless reachability is proven");
   });
