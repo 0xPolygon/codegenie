@@ -127,7 +127,7 @@ export async function dedupeRankAndComposeReview(
   // Promises may reject with any value (even undefined), so presence is a flag.
   let compositionFailed = false;
   let compositionFailure: unknown;
-  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes, attentionReconciliation).catch((error) => {
+  const composition = await runComposer(groups, plan, coverage, config, telemetry, opts, composerPromptNotes, attentionReconciliation, packetsById).catch((error) => {
     if (!canUseComposerFallback(error)) {
       telemetry.event({
         stage: 10,
@@ -452,10 +452,12 @@ async function runComposer(
   telemetry: TelemetryRecorder,
   opts: ComposeOptions,
   notes: NeedsHumanAttentionNote[],
-  attention: AttentionReconciliation
+  attention: AttentionReconciliation,
+  packetsById: Map<string, ReviewPacket>
 ): Promise<SubmitComposition> {
   const prompt = opts.promptBuilder.buildComposerPrompt({
-    groupedFindingsJson: JSON.stringify(groups.map(group => ({ fingerprint: group.fingerprint, representativeId: group.representative.id, findings: group.findings.map(({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence }) => ({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence })), sourceComponents: compositionSources(group.findings, groups.flatMap(group => group.findings)) })), null, 2),
+    groupedFindingsJson: JSON.stringify(groups.map(group => ({ fingerprint: group.fingerprint, representativeId: group.representative.id,
+      ...relatedGroupsField(group, groups, packetsById), findings: group.findings.map(({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence }) => ({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence })), sourceComponents: compositionSources(group.findings, groups.flatMap(group => group.findings)) })), null, 2),
     intent: `Declared intent: ${plan.diffUnderstanding.declaredIntent}\nInferred behavior: ${plan.diffUnderstanding.inferredBehavior}\n${summarizeIntentSignals(plan.intentSignals)}`,
     coverage,
     followUpHintNotes: notes.map((note) => `${note.question} (${note.files.join(", ")})`),
@@ -1546,6 +1548,16 @@ function rootCauseTerms(finding: CandidateFinding): Set<string> {
 
 function groupHasAnchor(group: FindingGroup): boolean {
   return group.findings.some((finding) => finding.anchor !== undefined);
+}
+
+// #151: a lead for the composer's existing same-defect merge rule, never a
+// merge decision. Same category plus a shared changed symbol is enough to ask
+// the composer to compare two groups; it still keeps distinct defects apart.
+function relatedGroupsField(group: FindingGroup, groups: FindingGroup[], packetsById: Map<string, ReviewPacket>): { relatedGroups?: string[] } {
+  const related = groups.filter(other => other !== group
+    && other.representative.category === group.representative.category
+    && groupsShareSymbol(group, other, packetsById)).map(other => other.representative.id);
+  return related.length ? { relatedGroups: related } : {};
 }
 
 function groupsShareSymbol(a: FindingGroup, b: FindingGroup, packetsById: Map<string, ReviewPacket>): boolean {

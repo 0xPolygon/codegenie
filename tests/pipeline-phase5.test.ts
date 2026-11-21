@@ -15101,6 +15101,53 @@ function fakePacket(opts: {
   };
 }
 
+describe("#151 related-group hint", () => {
+  it("lists same-category groups that share a changed symbol as leads, never merging them itself", async () => {
+    const base = fakeFinding();
+    const finding = (id: string, packetId: string, line: number, overrides: Partial<CandidateFinding>): CandidateFinding => ({
+      ...base, id, producedBy: { ...base.producedBy, packetId },
+      anchor: { ...base.anchor!, line }, evidence: { ...base.evidence, changedCode: "changed line " + id }, ...overrides
+    });
+    const first = finding("route-selection", "packet-a", 3, { category: "correctness",
+      title: "Explicit preference selection errors abort routing", failureMode: "A preference selection error now returns before default routing runs." });
+    const second = finding("route-retry", "packet-b", 40, { category: "correctness",
+      title: "Failed preferred routes no longer retry with AUTO", failureMode: "When the selected providers cannot route, the AUTO retry is skipped." });
+    const otherSymbol = finding("ledger-total", "packet-c", 80, { category: "correctness",
+      title: "Ledger totals drop refunds", failureMode: "Refund rows are excluded from the running total." });
+    const otherCategory = finding("route-test", "packet-d", 60, { category: "testing",
+      title: "Routing fallback tests stop covering selection errors", failureMode: "The rewritten test no longer exercises a selection error." });
+    let grouped: Array<{ representativeId: string; relatedGroups?: string[] }> = [];
+    const builder = createPromptBuilder(fakeLensRegistry());
+    const promptBuilder = { ...builder, buildComposerPrompt: (input: Parameters<typeof builder.buildComposerPrompt>[0]) => {
+      grouped = JSON.parse(input.groupedFindingsJson);
+      return builder.buildComposerPrompt(input);
+    } };
+    const runner: LlmRunner = { runStructured: async <T>() => ({ summary: "Routing preferences changed.", composedFindings:
+      [first, second, otherSymbol, otherCategory].map((member) => ({ findingIds: [member.id], finalBody: member.failureMode, publication: "inline" })) }) as T };
+    const result = await dedupeRankAndComposeReview({ verified: [first, second, otherSymbol, otherCategory], verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+        runner, promptBuilder, diff: fakeDiff(),
+        packets: [packetWithSymbol("packet-a", "SolveRoute"), packetWithSymbol("packet-b", "SolveRoute"),
+          packetWithSymbol("packet-c", "LedgerTotal"), packetWithSymbol("packet-d", "SolveRoute")]
+      });
+    const related = Object.fromEntries(grouped.map((group) => [group.representativeId, group.relatedGroups]));
+    expect(grouped).toHaveLength(4);
+    expect(related["route-selection"]).toEqual(["route-retry"]);
+    expect(related["route-retry"]).toEqual(["route-selection"]);
+    expect(related["ledger-total"]).toBeUndefined();
+    expect(related["route-test"]).toBeUndefined();
+    // The composer chose to keep them separate; the hint never merges by itself.
+    expect([...result.findings, ...result.summaryOnlyFindings].map((published) => published.id).sort())
+      .toEqual(["ledger-total", "route-retry", "route-selection", "route-test"]);
+  });
+
+  it("asks the composer to compare listed related groups under the existing merge rule (p10.27)", () => {
+    const prompt = createPromptBuilder(fakeLensRegistry()).buildComposerPrompt({ groupedFindingsJson: "[]", intent: "", coverage: fakeCoverage(), followUpHintNotes: [] });
+    expect(prompt.templateVersion).toBe("p10.27");
+    expect(prompt.prompt).toContain("A group's relatedGroups lists other groups (by representativeId) with the same category whose findings share a changed symbol; compare each listed group with this rule before keeping them separate. The list is a lead, not a decision.");
+  });
+});
+
 function packetWithSymbol(id: string, enclosingSymbol: string): ReviewPacket {
   return {
     ...fakePacket(),
