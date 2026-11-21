@@ -1,0 +1,15 @@
+# Public eval case codegenie/cg-n3. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-cg-n3
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-n3
+command:
+  base: 22ebccdcfb11c6f4d64cac8a3e8989244b75a8ad
+  head: 8a748215a904c1b07e27e84835f9a1e8e6518247
+review:
+  verify: true
+  debug: true
+  cache: false
+should_not_find:
+- id: material-finding-in-clean-change
+  path: "src/llm/model-call-cache.ts"
+  severityAtLeast: medium

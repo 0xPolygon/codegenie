@@ -1,0 +1,21 @@
+# Public eval case pi/pi-09. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-pi-09
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-09
+command:
+  base: 2fbdff9dab1a1652aa9f97e9508b90b4ae44a7ce
+  head: c48f656f88697b23c65cce1e658893eda02c4c12
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: update-check-uses-inequality
+  path: packages/coding-agent/src/core/package-manager.ts
+  lineRange: [1119, 1130]
+  severityAtLeast: low
+- id: update-check-uses-inequality-second-site
+  tier: optional
+  path: packages/coding-agent/src/core/package-manager.ts
+  lineRange: [1436, 1448]
+  severityAtLeast: low

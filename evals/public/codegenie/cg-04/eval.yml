@@ -1,0 +1,16 @@
+# Public eval case codegenie/cg-04. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-cg-04
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-04
+command:
+  base: 51e8625293b8792f1ccdd31d82f5d5f3d2af332f
+  head: 644608d547ad4d1442b24acd55c11c00b9ba02a8
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: unresolved-reconciliation-required-proof
+  path: src/pipeline/composition-content.ts
+  lineRange: [140, 155]
+  severityAtLeast: low

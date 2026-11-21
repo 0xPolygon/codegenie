@@ -1,0 +1,21 @@
+# Public eval case pi/pi-05. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-pi-05
+repo:
+  external: ~/.cache/codegenie/public-evals/pi/pi-05
+command:
+  base: bd2cfabc5f886447eb7ae9193cc9f87e85a52390
+  head: 871a99047944f060b85a30c7d5b6add89685c9a8
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: waitforidle-waits-for-mutations
+  path: packages/agent/src/harness/agent-harness.ts
+  lineRange: [1136, 1142]
+  severityAtLeast: low
+- id: waitforidle-shared-task-set
+  tier: optional
+  path: packages/agent/src/harness/agent-harness.ts
+  lineRange: [352, 368]
+  severityAtLeast: low

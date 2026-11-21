@@ -1,0 +1,15 @@
+# Public eval case codegenie/cg-n1. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-cg-n1
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-n1
+command:
+  base: a3ab6e02a396f2c4bf45945b0da6792be66cef4e
+  head: 04b2706e7fcd3bacdb78da357150f774a42a5bc8
+review:
+  verify: true
+  debug: true
+  cache: false
+should_not_find:
+- id: material-finding-in-clean-change
+  path: "src/git/diff-parser.ts"
+  severityAtLeast: medium

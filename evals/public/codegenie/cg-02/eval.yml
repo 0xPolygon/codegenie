@@ -1,0 +1,16 @@
+# Public eval case codegenie/cg-02. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-cg-02
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-02
+command:
+  base: 6e1318f5397c925c54d29c07677be47cf48c6b2e
+  head: 91c96b94f6797a03a048e91609e9dbd7c9ee59fe
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: ensemble-pass-pooling
+  path: src/pipeline/lens-runner.ts
+  lineRange: [118, 133]
+  severityAtLeast: low

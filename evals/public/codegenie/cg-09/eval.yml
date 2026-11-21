@@ -1,0 +1,16 @@
+# Public eval case codegenie/cg-09. The oracle is in oracle.md, outside the reviewed checkout.
+name: public-cg-09
+repo:
+  external: ~/.cache/codegenie/public-evals/codegenie/cg-09
+command:
+  base: 052096f9262a00a9666b5c23d8afb2b59b0b0e73
+  head: c9df07f17b21e4a9514b2912f4cc702936a1e364
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+- id: empty-finding-updates-counted-as-revision
+  path: src/pipeline/verifier.ts
+  lineRange: [1108, 1118]
+  severityAtLeast: low
