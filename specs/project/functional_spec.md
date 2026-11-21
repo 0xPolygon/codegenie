@@ -851,6 +851,8 @@ Stage 10 should:
 - Decide whether each final finding should be inline, summary-only, or suppressed from publication.
 - Preserve lineage back to verified candidates, packets, lenses, and source evidence.
 
+Published findings retain open verification conditions through deterministic rendering and include selected supporting evidence. The separate composition-sources artifact retains the original assessments and supporting evidence when telemetry is enabled. Ordinary reviews with telemetry disabled do not retain those originals separately.
+
 The final composer should prefer no comments over weak comments. The default target is roughly 3-7 high-signal comments per PR, but this is a soft cap: verified critical and high-severity findings should not be hidden only to satisfy the default limit.
 
 The composer should produce a final review object containing:

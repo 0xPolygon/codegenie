@@ -227,20 +227,37 @@ export function composePresentation(findings: CandidateFinding[], sections: Comp
       prose.push(label + " remains unreconciled because multiple supported proposals differ.");
     }
   }
-  const concerns = [...new Set(findings.flatMap(finding => {
-    const proof = finding.proofAssessment;
-    if (!proof) return [];
-    return [
-      ...(proof.status === "unresolved" ? [proof.evidence] : []),
-      ...proof.assumptions.filter(assumption => assumption.essential).map(assumption => "Essential assumption: " + assumption.question)
-    ];
-  }))];
+  const superseded = new Set((presentation.reconciliations ?? [])
+    .filter(record => record.disposition === "superseded").flatMap(record => record.sourceRefs));
+  const unresolved = new Set((presentation.reconciliations ?? [])
+    .filter(record => record.disposition === "unresolved").flatMap(record => record.sourceRefs));
+  const proofs = findings.flatMap(finding => finding.proofAssessment && !superseded.has(finding.id + "/proofAssessment")
+    ? [finding.proofAssessment] : []);
+  const assumptions = new Map<string, boolean>();
+  for (const proof of proofs) {
+    for (const { question, essential } of proof.assumptions) {
+      assumptions.set(question, essential || assumptions.get(question) === true);
+    }
+  }
+  const concerns = [...new Set([
+    ...proofs.filter(proof => proof.status === "unresolved").map(proof => proof.evidence),
+    ...[...assumptions].map(([question, essential]) => (essential ? "Essential assumption: " : "Secondary assumption: ") + question)
+  ])];
   const uncertaintyBody = concerns.length ? "**Open conditions:**\n\n" + concerns.map(text => "- " + safeReportProse(text)).join("\n") : "";
-  if (uncertaintyBody) prose.push(uncertaintyBody);
+  // Legacy verification has no structured assumptions. Keep its recorded
+  // wording, and the wording of any explicitly unresolved reconciliation.
+  const composedVerification = sections.find(section => section.kind === "verification")?.text.trim();
+  const recordedVerification = [...new Set(findings.flatMap(finding => {
+    const ref = finding.id + "/verification";
+    const text = finding.verification?.trim();
+    if (!text || text === composedVerification || superseded.has(ref)) return [];
+    return !finding.proofAssessment || unresolved.has(ref) ? [text] : [];
+  }))];
+  const recordedBody = recordedVerification.length ? "**Recorded verification:**\n\n" + recordedVerification.map(safeReportProse).join("\n\n") : "";
   const evidenceBody = primary.map(ref => renderEvidence(byId.get(ref)!, link)).join("\n\n");
   prose.push("**Evidence:**\n\n" + evidenceBody);
 
-  const body = prose.join("\n\n");
+  const body = [uncertaintyBody, recordedBody, ...prose].filter(Boolean).join("\n\n");
   return { body, metrics: {
     narrativeWords: sections.reduce((count, section) => count + section.text.trim().split(/\s+/u).length, 0),
     primaryWords: body.trim().split(/\s+/u).length,
@@ -319,11 +336,6 @@ export function renderRetainedComposition(findings: CandidateFinding[], link?: (
       const proofs = findings.flatMap(finding => selected.some(source => source.id === finding.id + "/proofAssessment")
         && finding.proofAssessment ? [finding.proofAssessment] : []);
       if (proofs.length) renderedTexts.push("Retained proof status (not synthesized): " + [...new Set(proofs.map(proof => proof.status))].join(", ") + ".");
-      // Essential conditions and unresolved evidence are rendered once by
-      // composePresentation's Open conditions. Full proofs remain in provenance.
-      const essential = new Set(proofs.flatMap(proof => proof.assumptions.filter(a => a.essential).map(a => a.question)));
-      const secondary = [...new Set(proofs.flatMap(proof => proof.assumptions.filter(a => !a.essential && !essential.has(a.question)).map(a => a.question)))];
-      if (secondary.length) renderedTexts.push(secondary.map(question => "Secondary assumption: " + question).join("\n\n"));
     }
     if (kind === "verification" && conflictingSuggestions(assessmentFindings).size) renderedTexts.push("Compatibility assessments conflict for an identical proposal. The disputed recommendation remains unverified.");
     sections.push({ kind, sourceRefs: equivalent.map(source => source.id), text: renderedTexts.join("\n\n") });

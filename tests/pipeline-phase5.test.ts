@@ -254,8 +254,11 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.summary).toBe(summary);
     const body = result.summaryOnlyFindings[0]!.finalBody;
     expect(body).toContain(fixture.findings[1]!.verification);
-    expect(body).not.toContain(historical);
-    if (!resolved) expect(body).not.toContain("**Suggested fix:**");
+    if (resolved) expect(body).not.toContain(historical);
+    else {
+      expect(body).toContain(historical);
+      expect(body).not.toContain("**Suggested fix:**");
+    }
     expect(artifacts.get("composition-sources.json")).toMatchObject({
       sourceComponents: expect.arrayContaining([expect.objectContaining({ id: "rounding/verification", text: historical })]),
       proposals: [expect.objectContaining({ reconciliations: fixture.presentation.reconciliations })]

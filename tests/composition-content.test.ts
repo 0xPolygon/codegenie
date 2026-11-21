@@ -102,6 +102,26 @@ describe("attributed composition", () => {
     expect(() => renderCompositionSections(findings, [{ ...sections[0]!, kind: "test" }, ...sections.slice(1)] as CompositionSection[], evidenceRefs)).toThrow(/unknown_source|wrong_section/);
   });
 
+  it("preserves proof and caveats even if composed verification text erases them", () => {
+    const legacy = finding("legacy");
+    const structured = finding("structured");
+    structured.verification = "The function-level difference is established.";
+    structured.proofAssessment = {
+      status: "established",
+      evidence: structured.verification,
+      assumptions: [{ question: "Do production callers provide this input?", essential: false }]
+    };
+    const findings = [legacy, structured];
+    const proposal = composed(findings);
+    proposal.sections.find(section => section.kind === "verification")!.text = "Always proven.";
+
+    const body = renderCompositionSections(findings, proposal.sections, proposal.evidenceRefs, undefined, proposal);
+    expect(body).toContain("**Open conditions:**");
+    expect(body).toContain("Secondary assumption: Do production callers provide this input?");
+    expect(body).toContain(legacy.verification);
+    expect(body).not.toContain("Original assessments and supporting evidence");
+  });
+
   it("renders the selected evidence branches and the distinct testing impact", () => {
     const first = finding("rounding");
     const second = finding("testing");

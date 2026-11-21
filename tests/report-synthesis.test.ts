@@ -78,12 +78,15 @@ describe("report synthesis and requirement support", () => {
     expect([denyAll(true), denyAll(false)]).not.toEqual([true, false]);
     expect([canRead(true), canRead(false)]).toEqual([true, false]);
   });
-  it.each([contractComposition, authorizationComposition])("keeps supplied synthesis concise with original secondary questions accounted for", fixture => {
+  it.each([contractComposition, authorizationComposition])("publishes structured secondary questions alongside concise synthesis", fixture => {
     const { findings, sections, evidenceRefs, presentation } = fixture();
     const { body, metrics } = composePresentation(findings, sections, evidenceRefs, undefined, presentation);
     expect(body).toContain(sections.find(section => section.kind === "verification")!.text);
-    expect(body).not.toContain("**Open conditions:**");
-    expect(metrics.uncertaintyWords).toBe(0);
+    expect(body).toContain("**Open conditions:**");
+    for (const finding of findings) for (const assumption of finding.proofAssessment!.assumptions) {
+      expect(body).toContain("Secondary assumption: " + assumption.question);
+    }
+    expect(metrics.uncertaintyWords).toBeGreaterThan(0);
     expect(metrics.evidenceWords).toBeGreaterThan(0);
     expect(metrics.accountedSourceComponents).toBe(compositionSources(findings).length);
     // Suggestions are retained once per source, not repeated in assessment JSON.
@@ -96,10 +99,11 @@ describe("report synthesis and requirement support", () => {
     sections[1]!.sourceRefs = ["authorization/verification"];
     const presentation = { retainedSourceRefs: ["authorization/proofAssessment"] };
     expect(() => composePresentation(findings, sections, evidenceRefs, undefined, presentation)).toThrow(/visible verification/);
-    expect(() => composePresentation(findings, sections, evidenceRefs, undefined, { ...presentation, reconciliations: [{
+    const resolved = composePresentation(findings, sections, evidenceRefs, undefined, { ...presentation, reconciliations: [{
       sourceRefs: ["authorization/proofAssessment"], supportingRefs: ["authorization/evidence/relatedCode/0"],
       disposition: "superseded", rationale: "Supplied policy evidence settles the secondary question."
-    }] })).not.toThrow();
+    }] });
+    expect(resolved.body).not.toContain("**Open conditions:**");
     expect(() => composePresentation(findings, sections, evidenceRefs, undefined, { ...presentation, reconciliations: [{
       sourceRefs: ["authorization/proofAssessment"], supportingRefs: [], disposition: "unresolved", rationale: "Still open."
     }] })).toThrow(/visible verification/);
