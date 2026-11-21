@@ -3347,9 +3347,15 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets[0]?.degraded?.reason).toContain("enclosing symbol source truncated");
     expect(events).toContainEqual(expect.objectContaining({
       stage: 6,
-      level: "warn",
+      level: "debug",
       message: "packet_symbol_source_truncated",
       file: "app.ts"
+    }));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 6,
+      level: "warn",
+      message: "packet_truncation_summary",
+      data: { total: 1, packetContexts: 0, patchHunks: 0, symbolSources: 1 }
     }));
   });
 
@@ -3517,7 +3523,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets[0]?.contextText).toContain("symbol source sliced around changed lines");
     expect(events).toContainEqual(expect.objectContaining({
       stage: 6,
-      level: "warn",
+      level: "debug",
       message: "packet_symbol_source_truncated",
       file: "app.ts",
       data: expect.objectContaining({
@@ -3741,7 +3747,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(packets[0]?.contextQuality).toBe("sliced");
     expect(events).toContainEqual(expect.objectContaining({
       stage: 6,
-      level: "warn",
+      level: "debug",
       message: "packet_symbol_source_truncated",
       file: "app.ts",
       data: expect.objectContaining({
@@ -4146,7 +4152,7 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
-  it("caps combined non-whole-file packet context and records degradation", async () => {
+  it.each([false, true])("summarizes Stage 6 truncation once per build, truncation=%s", async truncated => {
     const events: TelemetryEvent[] = [];
     const telemetry = {
       ...nullTelemetry(),
@@ -4154,7 +4160,7 @@ describe("phase 5 pipeline regressions", () => {
         events.push(event);
       }
     };
-    const hugeSymbols = Array.from({ length: 700 }, (_, index) => ({
+    const hugeSymbols = Array.from({ length: truncated ? 700 : 0 }, (_, index) => ({
       path: "app.ts",
       name: `veryLongSymbolName${String(index).padStart(3, "0")}_${"x".repeat(20)}`,
       kind: "function" as const,
@@ -4176,24 +4182,38 @@ describe("phase 5 pipeline regressions", () => {
       })
     };
 
+    const files = [fakeDiffFile("app.ts", truncated ? "x".repeat(13_000) : undefined), fakeDiffFile("other.ts")];
+    files[1]!.hunks[0]!.id = "h2";
     const packets = await buildReviewPackets(
       fakePlan(),
-      [fakeDiffFile("app.ts")],
-      [fakeFacts("app.ts", "per-hunk")],
+      files,
+      files.map(file => fakeFacts(file.path, "per-hunk")),
       fakeRepositoryIndex(tools),
       telemetry,
       { config: config(), enabledLenses: ["core/code-review"] }
     );
 
-    expect(packets[0]?.kind).toBe("hunk");
-    expect((packets[0]?.contextText ?? "").length).toBeLessThanOrEqual(8000);
-    expect(packets[0]?.contextText).toContain("content truncated to fit packet context budget");
-    expect(packets[0]?.degraded?.reason).toContain("packet context truncated to 8000 chars");
+    expect(packets).toHaveLength(2);
+    const warnings = events.filter(event => event.stage === 6 && event.level === "warn" && event.message.includes("truncat"));
+    if (!truncated) {
+      expect(warnings).toEqual([]);
+      return;
+    }
+    for (const packet of packets) {
+      expect(packet.kind).toBe("hunk");
+      expect(packet.contextText.length).toBeLessThanOrEqual(8000);
+      expect(packet.contextText).toContain("content truncated to fit packet context budget");
+      expect(packet.degraded?.reason).toContain("packet context truncated to 8000 chars");
+    }
+    expect(warnings).toEqual([expect.objectContaining({
+      message: "packet_truncation_summary",
+      data: { total: 3, packetContexts: 2, patchHunks: 1, symbolSources: 0 }
+    })]);
+    expect(events.filter(event => event.message === "packet_context_truncated")).toEqual(
+      files.map(file => expect.objectContaining({ stage: 6, level: "debug", file: file.path }))
+    );
     expect(events).toContainEqual(expect.objectContaining({
-      stage: 6,
-      level: "warn",
-      message: "packet_context_truncated",
-      file: "app.ts"
+      stage: 6, level: "debug", message: "packet_hunk_truncated", file: "app.ts"
     }));
   });
 

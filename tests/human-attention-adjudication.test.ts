@@ -40,6 +40,21 @@ describe("human-attention repository paths", () => {
     ]);
     expect(event.mock.calls.filter(([value]) => value.message === "human_attention_note_path_dropped")).toHaveLength(4);
   });
+
+  it("keeps known directories out of dropped file diagnostics", () => {
+    const result = packetResultWithHint();
+    result.followUpHints[0]!.files = ["./schema/", "data", "data/migrations", "schema/shared.ridl", "schema/typo.ridl"];
+    result.uncertainties = [{ question: "Which schema version applies to migrations?",
+      files: ["data/migrations/", "data/migrations/initial.sql"], symbols: [], projectedSkillIds: [] }];
+    const event = vi.fn();
+    const attention = buildHumanAttentionNotes([result], { packets: [packet()],
+      repositoryPaths: ["schema/shared.ridl", "data/migrations/initial.sql"],
+      telemetry: { ...nullTelemetry(), event } });
+    expect(attention.raw.map(hint => hint.files)).toEqual([["schema/shared.ridl"], ["data/migrations/initial.sql"]]);
+    expect(attention.raw.map(hint => hint.droppedPaths)).toEqual([[{ path: "schema/typo.ridl", reason: "unknown_path" }], []]);
+    expect(event.mock.calls.map(([value]) => value).filter(value => value.message === "human_attention_note_path_dropped"))
+      .toEqual([expect.objectContaining({ data: { originalPath: "schema/typo.ridl", reason: "unknown_path" } })]);
+  });
 });
 
 function packet(): ReviewPacket {
