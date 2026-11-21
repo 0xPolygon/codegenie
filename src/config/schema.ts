@@ -14,10 +14,6 @@ const positiveFiniteNumberSchema = z.number().positive().finite();
 export const MAX_REVIEW_TIME_MINUTES = Number.MAX_SAFE_INTEGER / 120_000;
 export const MAX_REVIEW_TIME_MS = MAX_REVIEW_TIME_MINUTES * 60_000;
 export const reviewMaxTimeMinutesSchema = positiveFiniteNumberSchema.max(MAX_REVIEW_TIME_MINUTES);
-// Plan 84 guardrail: ensemble cost scales linearly with passes × deep
-// packets; beyond 3 the marginal recall of another draw is negligible while
-// cost keeps climbing. Hard cap, not a default.
-export const MAX_DEEP_ENSEMBLE_PASSES = 3;
 
 export const pathRuleSchema = z
   .object({
@@ -56,7 +52,6 @@ export const rawConfigSchema = z
         budgetBoost: positiveFiniteNumberSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional(),
-        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
         adaptiveSecondPass: z.boolean().optional()
       })
       .strict()
@@ -145,7 +140,6 @@ export const codegenieConfigSchema = z
         budgetBoost: positiveFiniteNumberSchema,
         maxBudgetTokens: positiveIntSchema.optional(),
         maxModelCalls: positiveIntSchema.optional(),
-        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
         adaptiveSecondPass: z.boolean().optional()
       })
       .strict(),

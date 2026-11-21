@@ -112,8 +112,7 @@ describe("plan 92 layer 1: attention records", () => {
       packetResults: [packetResult("packet-deep", [directA, directB], 1, 0), packetResult("packet-default", [], 2, 1)],
       candidateFindings: [directA, directB, promoted],
       verdicts,
-      publishedFindings: published,
-      ensemblePassesForPacket: (target) => (target.coverage === "deep" ? 3 : 1)
+      publishedFindings: published
     });
 
     expect(records).toEqual([
@@ -121,7 +120,7 @@ describe("plan 92 layer 1: attention records", () => {
         packetId: "packet-deep",
         coverage: "deep",
         coverageSource: "planner",
-        ensemblePasses: 3,
+        ensemblePasses: 1,
         directCandidates: 2,
         promotedCandidates: 0,
         hintsEmitted: 1,
@@ -145,7 +144,7 @@ describe("plan 92 layer 1: attention records", () => {
 
   it("aggregates attention efficiency by coverage", () => {
     const records: AttentionRecord[] = [
-      { packetId: "p1", path: "a", coverage: "deep", coverageSource: "planner", ensemblePasses: 3, directCandidates: 0, promotedCandidates: 0, hintsEmitted: 0, uncertaintiesEmitted: 0, keptVerified: 0, published: 0 },
+      { packetId: "p1", path: "a", coverage: "deep", coverageSource: "planner", ensemblePasses: 2, directCandidates: 0, promotedCandidates: 0, hintsEmitted: 0, uncertaintiesEmitted: 0, keptVerified: 0, published: 0 },
       { packetId: "p2", path: "b", coverage: "normal", coverageSource: "deterministic_default", ensemblePasses: 1, directCandidates: 1, promotedCandidates: 0, hintsEmitted: 1, uncertaintiesEmitted: 0, keptVerified: 1, published: 1 }
     ];
     expect(aggregateAttentionEfficiency(records)).toEqual({

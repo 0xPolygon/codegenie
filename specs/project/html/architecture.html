@@ -1291,12 +1291,6 @@ legacy silent downgrade to <code>auto</code>)</li>
 task/worker, not per stage)</li>
 <li><code>review.minConfidence = &quot;medium&quot;</code></li>
 <li><code>review.minInlineConfidence = &quot;medium&quot;</code></li>
-<li><code>review.deepEnsemblePasses = 1</code>, hard-capped at 3 (plan
-84: K independent Stage-7 passes for deep-coverage packets, union
-deduped by the verifier’s exact-duplicate identity and fed to the
-unchanged verification gate; 1 = off, ships dark; eval cases opt in with
-<code>review.deepEnsemblePasses</code> while the effect is
-measured)</li>
 <li><code>review.maxBudgetTokens = 8_000_000</code> (plan 90: the
 primary work-denominated coverage budget; re-derived after run
 0c4d5213/53’s 5.92M legitimate-work run grazed the 7M soft-stop —
