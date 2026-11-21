@@ -8,7 +8,7 @@ Each `<case>/eval.yml` reviews a pinned base and head. The case's `oracle.md` ho
 evals/public/pi/setup.sh   # fetches every case; re-running skips ready checkouts
 ```
 
-Cases come from https://github.com/earendil-works/pi. `oracle.md` front matter carries `contaminationSplit`: `pre-2026-08-01` marks a change that may predate a model's training data. `pi-04` is a spare (`role: spare`) and is excluded from the default set.
+Cases come from https://github.com/earendil-works/pi. `oracle.md` front matter carries `contaminationSplit`: `pre-2026-08-01` marks a change that may predate a model's training data. `pi-04` is a spare (`role: spare`). The eval command loads one case directory per `--eval-dir` and does not recurse, so the comparison launcher must list case directories explicitly. Leave out any case whose oracle has `role: spare` unless it is substituting for a dropped case, so the spare never enters the denominators silently.
 
 ## Runner settings (owner directive: full debug telemetry on every eval run)
 

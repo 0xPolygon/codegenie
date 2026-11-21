@@ -31,7 +31,7 @@ The matcher floor is low. Expected severity is medium; record it as a calibratio
 
 ### Fixing evidence
 
-9cde1725d gives tasks a kind and adds the test "does not treat concurrent mutations as active operations", which fails on the head.
+9cde1725d gives tasks a kind and adds the test "does not treat concurrent mutations as active operations", written for this behaviour (not run by us).
 
 ## Expectation `waitforidle-shared-task-set` (optional)
 
