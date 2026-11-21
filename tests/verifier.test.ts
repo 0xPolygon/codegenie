@@ -1833,8 +1833,8 @@ describe("behavior-preserving reachability rule (#112 Stage 9 replay)", () => {
       ...(intentSignals !== undefined ? { intentSignals } : {})
     });
 
-    expect(built.templateVersion).toBe("p9.29");
-    expect(PROMPT_TEMPLATE_VERSIONS[9]).toBe("p9.29");
+    expect(built.templateVersion).toBe("p9.30");
+    expect(PROMPT_TEMPLATE_VERSIONS[9]).toBe("p9.30");
     expect(built.prompt.includes(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE)).toBe(included);
     // The general proof rule is unchanged in every case.
     expect(built.prompt).toContain("If a plausible answer to an open question eliminates the defect, that assumption is essential.");
@@ -1842,19 +1842,28 @@ describe("behavior-preserving reachability rule (#112 Stage 9 replay)", () => {
 
   it("limits the rule to confirmed commitments and production reachability, keeping intent, behavior, contract and unread-code questions essential", () => {
     expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("the only open question is whether production callers actually supply that value");
-    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("no inspected guard on that path excludes");
     // The flag is heuristic: the commitment must be confirmed from the intent text itself.
     expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("confirm from the supplied intent text that it makes an unambiguous commitment to preserve the affected behavior");
     expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("negated, hedged, or incidental wording");
     // Type-correct but contract-invalid values do not qualify.
-    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("satisfies the changed code's applicable interface contract, including its documented or enforced preconditions");
-    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("whether the value meets the interface contract");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("valid under the existing (base) interface contract and its preconditions");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("whether the value meets the base interface contract");
     // Explicit priority over the general stop condition and intent-as-context rule for this narrow case.
     expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("takes priority over the general reachable-impact stop condition and the context-not-proof treatment of intent signals");
     expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("the source difference supplies the proof");
-    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("product or provider intent, whether the behavior actually differs, whether the value meets the interface contract, or decisive code you have not read");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("product or provider intent, whether the behavior actually differs, whether the value meets the base interface contract, or decisive code you have not read");
     expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("still require reject with status unresolved");
     expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("use severity low unless reachability is proven");
+  });
+
+  it("judges input validity from the base contract and independent guards, treating the changed head check as outcome evidence", () => {
+    // The head check that differs from base is the difference itself; it must not
+    // count as a precondition or an excluding guard.
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("no independent upstream guard on that path excludes");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("Establish input validity from the base contract and guards that are independent of the change");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("the changed head check, rejection, or error for that value is outcome evidence of the difference, not a precondition, so it never makes the value invalid or excluded");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).not.toContain("documented or enforced preconditions");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).not.toContain("changed code's applicable interface contract");
   });
 
   it.each([true, false])("passes packet intent to the verifier and keeps the proof gate unchanged (explicitlyBehaviorPreserving=%s)", async (explicitlyBehaviorPreserving) => {

@@ -65,5 +65,5 @@ The first optional expectation was rejected 10 times, and Rule 1 recovers only 2
 
 ## Next
 
-- **Change:** the Rule 1 prompt text is added to verifier template p9.29 only when the explicitly-behaviour-preserving signal is present. The submit schema and the proof gate are unchanged.
+- **Change:** the Rule 1 prompt text is added to verifier template p9.29 (clarified in p9.30) only when the explicitly-behaviour-preserving signal is present. The submit schema and the proof gate are unchanged.
 - **Validation:** the Luna-high A/B in plan 128 tests the change, using its success, guard and kill criteria.
