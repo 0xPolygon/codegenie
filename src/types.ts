@@ -745,7 +745,7 @@ export type DiffUnderstanding = {
 export type HunkCoverageDecision = {
   hunkId: string;
   path: string;
-  coverage: CoverageLevel;
+  coverage: CoverageLevel; // Saved plans from older versions can contain "skip".
   lenses: string[];
   surroundingContextHints: SurroundingContextHint[];
   reason: string;
@@ -759,6 +759,7 @@ export type ReviewPlan = {
   intentSignals?: IntentSignals;
   coverage: HunkCoverageDecision[];
   plannerRecovery?: PlannerRecoveryTelemetry;
+  // Legacy artifact field. Review completeness now comes from actual run coverage.
   partialReview?: {
     isPartial: boolean;
     reason: string;

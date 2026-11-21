@@ -458,12 +458,6 @@ type SurroundingContextHint = {
 type ReviewPlan = {
   diffUnderstanding: DiffUnderstanding
   coverage: HunkCoverageDecision[]
-  partialReview?: {
-    isPartial: boolean
-    reason: string
-    reviewedHunks: number
-    totalHunks: number
-  }
 }
 
 type CoverageLevel = "deep" | "normal" | "light" | "skip"
@@ -484,11 +478,11 @@ type HunkCoverageDecision = {
 
 The packet builder is the sole owner of packet identity and physical grouping. The planner emits targeted per-hunk coverage/lens overrides only; it does not emit scheduling groups in v1 (see Future Considerations). Packet scheduling order is derived from effective coverage level and configured priority, and all packets may run concurrently because v1 packets never span files and workers are context-isolated.
 
-The planner is the only stage allowed to raise or lower coverage, select non-default lenses, or skip a hunk. It must not select every lens for every packet by default. Omitted changed hunks are not planner failures; Stage 6 reviews them with deterministic `normal` coverage and default core/language lenses. Any explicit `skip` still requires a reason. Any planner output intended to affect reviewer attention must be hunk-scoped through a coverage decision (`reason`, `focusNotes`, `relatedSymbols`, `relatedFiles`, or `surroundingContextHints`); global prose in `diffUnderstanding` is for artifacts and final framing only.
+The planner ranks attention using `light`, `normal`, and `deep` coverage and can select non-default lenses. Only the deterministic filter excludes hunks. It must not select every lens for every packet by default. Omitted changed hunks are not planner failures; Stage 6 reviews them with deterministic `normal` coverage and default core/language lenses. Any planner output intended to affect reviewer attention must be hunk-scoped through a coverage decision (`reason`, `focusNotes`, `relatedSymbols`, `relatedFiles`, or `surroundingContextHints`); global prose in `diffUnderstanding` is for artifacts and final framing only.
 
 The planner may request surrounding-code inspection by emitting `SurroundingContextHint` records. It should not broadly inspect files itself by default. Hints are instructions for packet construction or packet reviewers to inspect concrete symbols, files, tests, local patterns, or integration points.
 
-Later stages may validate planner decisions and apply deterministic defaults, but they must not become independent risk classifiers. If a reviewable hunk has no planner coverage, packet construction quietly uses `normal` default coverage. If the planner skips a reviewable hunk without a valid reason, packet construction falls back to `normal` and records the malformed skip in telemetry.
+Later stages may validate planner decisions and apply deterministic defaults, but they must not become independent risk classifiers. If a reviewable hunk has no planner coverage, packet construction quietly uses `normal` default coverage. The planner normalizes legacy `skip` entries to `normal` and drops legacy completeness counters. Historical plans with `skip` still replay in evals.
 
 Large PRs use deterministic dossier compaction when the planner dossier exceeds configured model or budget limits:
 
@@ -510,7 +504,7 @@ Coverage rules:
 - `light`: low-risk, repetitive, or mostly mechanical changes.
 - `skip`: generated, vendored, binary, irrelevant, or otherwise intentionally unreviewed hunks.
 
-Partial reviews must be explicit. If the configured runtime, token, or provider-call budget prevents full review, `partialReview.isPartial` must be true and the final output must report coverage counts.
+Partial reviews must be explicit. If the configured runtime, token, or provider-call budget prevents full review, `RunCoverageStatus.partial` must be true and the final output must report coverage counts.
 
 ### Review Packets
 
@@ -627,7 +621,7 @@ Review packets are persisted to telemetry artifacts so evals can inspect what co
 Packet construction algorithm:
 
 1. Build one planned hunk record per changed hunk from diff data, file facts, `HunkSymbolFacts`, planner coverage, selected lenses, processing mode, labels, and estimated size.
-2. Validate planner output and apply deterministic fallbacks for missing coverage, invalid skip reasons, or empty lens sets.
+2. Validate planner output and apply deterministic fallbacks for missing coverage, legacy skip entries, or empty lens sets.
 3. Build a lean deterministic relationship graph over changed hunks/symbols using only same-symbol, changed-symbol mention, and explicit planner symbol/file hints. Persist `hunk-relationships.json`.
 4. Apply file processing mode: the skip branch is defensive only — configured-skip files never reach Stage 6 under filter-first — and produces coverage records only; whole-file files produce one file packet when size limits allow; all other files default to hunk-first packets.
 5. Group hunks conservatively: one packet per hunk by default; coalesce only same-file hunks that share an enclosing symbol or are very nearby and still fit strict size limits.
@@ -1373,7 +1367,7 @@ Failure and budget handling:
 - Budgets (`maxTimeMs`, `maxBudgetTokens`, `maxModelCalls`) are checked before each new model call or worker dispatch. On exhaustion: stop scheduling new packet reviews → verify already-produced candidates using a reserved budget slice → always run composition and emit a partial-review disclosure.
 - Approximately 15% of the configured token and model-call budgets (and a fixed tail of the runtime budget) is reserved for Stages 9-10 so completed review work is never lost to exhaustion. A hard kill at 2x the configured runtime budget is fatal; even then codegenie attempts to write telemetry artifacts before exiting.
 - Provider 429 and transient 5xx responses get up to 3 retries with exponential backoff; retries count against budgets.
-- The run-level coverage status is owned by the orchestrator, which aggregates plan-time coverage, runtime failures, budget stops, and verification incompleteness into the final coverage summary (run-level, not only `ReviewPlan.partialReview`):
+- The run-level coverage status is owned by the orchestrator, which aggregates plan-time coverage, runtime failures, budget stops, and verification incompleteness into the final coverage summary from observed review work:
 
 Content-stage invalidity is binary: known-invalid model data is never used. A stage continues only from independently trusted work or an existing deterministic fallback.
 

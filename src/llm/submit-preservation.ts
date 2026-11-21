@@ -163,14 +163,17 @@ export function submissionIssues(input: TSchema, value: unknown, path = ""): Val
 // Invalid primitive fields may be corrected. Unexpected closed-object keys are
 // discarded; schema-defined values, item identities, and order remain protected.
 export function preservationViolations(schema: TSchema, before: unknown, after: unknown): string[] {
+  const plannerSchema = (schema as JsonSchema).properties?.coverage !== undefined;
+  // Unwrap a known planner envelope before closed-object cleanup removes it.
+  if (plannerSchema && record(before) && Object.keys(before).length === 1 && "plan" in before) {
+    let plan: unknown = before.plan;
+    if (typeof plan === "string") { try { plan = JSON.parse(plan); } catch { /* Not a complete wrapper. */ } }
+    if (record(plan) && record(plan.diffUnderstanding) && Array.isArray(plan.coverage)) before = plan;
+  }
   before = cleanupSubmitShape(schema, before).arguments;
-  if ((schema as JsonSchema).properties?.coverage && record(before)) {
-    if (Object.keys(before).length === 1 && "plan" in before) {
-      let plan: unknown = before.plan;
-      if (typeof plan === "string") { try { plan = JSON.parse(plan); } catch { /* Not a complete wrapper. */ } }
-      if (record(plan) && record(plan.diffUnderstanding) && Array.isArray(plan.coverage)) before = plan;
-    }
-    if (record(before)) before = normalizePlannerBookkeeping(before);
+  if (plannerSchema && record(before)) {
+    const plan = normalizePlannerBookkeeping(before);
+    before = normalizePlannerSubmission(plan)?.value ?? plan;
   }
   const violations: string[] = [];
   const walk = (s: JsonSchema | undefined, a: unknown, b: unknown, path: string) => {
@@ -244,4 +247,26 @@ export function normalizePlannerBookkeeping(input: Record<string, unknown>): Rec
     delete understanding.reason;
   }
   return result;
+}
+
+// Legacy plans can rank attention, but only the deterministic filter can
+// exclude hunks and only the review results determine completeness.
+export function normalizePlannerSubmission(value: unknown) {
+  if (!record(value)) return undefined;
+  const { partialReview: _legacyPartial, ...plan } = value;
+  const removedFields = "partialReview" in value ? ["partialReview"] : [];
+  const addedFields: string[] = [];
+  if (Array.isArray(plan.coverage)) {
+    plan.coverage = plan.coverage.map((entry: unknown, index) => {
+      if (!record(entry) || entry.coverage !== "skip") return entry;
+      const prefix = `coverage.${index}`;
+      removedFields.push(`${prefix}.coverage`);
+      if ("reason" in entry) removedFields.push(`${prefix}.reason`);
+      addedFields.push(`${prefix}.coverage`, `${prefix}.reason`);
+      return { ...entry, coverage: "normal", reason: "planner_skip_overridden" };
+    });
+  }
+  return removedFields.length > 0
+    ? { value: plan, removedFields, addedFields, reason: "planner_attention_only" }
+    : undefined;
 }

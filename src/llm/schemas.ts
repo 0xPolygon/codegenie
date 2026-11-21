@@ -6,7 +6,7 @@ const SeveritySchema = StringEnum(["critical", "high", "medium", "low"] as const
 
 const ConfidenceSchema = StringEnum(["high", "medium", "low"] as const);
 
-const CoverageSchema = StringEnum(["deep", "normal", "light", "skip"] as const);
+const CoverageSchema = StringEnum(["deep", "normal", "light"] as const);
 
 const FindingCategorySchema = StringEnum(["logic_bug", "correctness", "security", "performance", "architecture", "testing", "maintainability"] as const);
 
@@ -88,17 +88,6 @@ export const SubmitPlanSchema = Type.Object(
             maxLength: 500,
             description: "Concrete file paths Stage 6 may use to attach deterministic related changed context."
           }), { maxItems: 12 }))
-        },
-        { additionalProperties: false }
-      )
-    ),
-    partialReview: Type.Optional(
-      Type.Object(
-        {
-          isPartial: Type.Boolean(),
-          reason: Type.String({ minLength: 1, maxLength: 1000 }),
-          reviewedHunks: Type.Integer({ minimum: 0 }),
-          totalHunks: Type.Integer({ minimum: 0 })
         },
         { additionalProperties: false }
       )
@@ -298,7 +287,7 @@ export type SubmitVerificationVerdict = Static<typeof SubmitVerificationVerdictS
 export type SubmitComposition = Static<typeof SubmitCompositionSchema>;
 
 export const SCHEMA_VERSIONS = {
-  submit_plan: 6,
+  submit_plan: 7,
   submit_review: 5,
   submit_verdict: 11,
   submit_composition: 9

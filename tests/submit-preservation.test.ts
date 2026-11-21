@@ -53,6 +53,21 @@ describe("lossless submit recovery", () => {
     expect(preservationViolations(SubmitPlanSchema, draft, shallower)).toContain("coverage.0.coverage");
   });
 
+  it("preserves attention when repairing a wrapped legacy planner submission", () => {
+    const diffUnderstanding = { declaredIntent: "Review", inferredBehavior: "Review" };
+    const hunk = { hunkId: "h1", path: "app.ts", lenses: [], focusNotes: ["Look at callers."] };
+    const wrapper = { plan: JSON.stringify({
+      diffUnderstanding,
+      coverage: [{ ...hunk, coverage: "skip", reason: "Legacy skip" }],
+      partialReview: { isPartial: true, reason: "Legacy partial", reviewedHunks: 0, totalHunks: 1 }
+    }) };
+    const repaired = { diffUnderstanding, coverage: [{ ...hunk, coverage: "normal", reason: "planner_skip_overridden" }] };
+    expect(preservationViolations(SubmitPlanSchema, wrapper, repaired)).toEqual([]);
+    expect(preservationViolations(SubmitPlanSchema, wrapper, {
+      ...repaired, coverage: [{ ...repaired.coverage[0], focusNotes: [] }]
+    })).toContain("coverage.0.focusNotes");
+  });
+
   it("allows exact verifier relocation but rejects conflicting destinations and changed verdicts", () => {
     const original = { verdict: "revise", reason: "Preserve judgment", requiredEvidencePresent: true, falsePositiveRisk: "low", findingUpdates: { evidence: { changedCode: "return 0", verification: "Caller uncertain" } } };
     const fixed = { ...original, findingUpdates: { evidence: { changedCode: "return 0" }, verification: "Caller uncertain" } };

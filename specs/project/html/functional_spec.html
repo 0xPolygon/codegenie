@@ -825,20 +825,19 @@ later stages should inspect. Examples include sibling methods that
 establish a consistency pattern, call sites affected by a changed API,
 tests for the changed behavior, or nearby lifecycle/resource-management
 code.</p>
-<p>The planner must not skip a reviewable changed hunk without a
-reason.</p>
-<p>The planner owns coverage and lens overrides. It should emit
-<code>light</code>, <code>normal</code>, <code>deep</code>, or
-<code>skip</code> decisions only for hunks where concrete evidence
-justifies non-default coverage, specific lenses, context hints, or a
-skip. Later stages may validate malformed planner output or apply
-deterministic default coverage to omitted hunks, but they should not
-become independent risk classifiers.</p>
+<p>The deterministic file filter owns exclusions. Every hunk in a kept
+file is eligible for packet review.</p>
+<p>The planner ranks attention with <code>light</code>,
+<code>normal</code>, or <code>deep</code> coverage and may suggest
+lenses and context hints for specific hunks. Later stages may validate
+malformed planner output or apply deterministic default coverage to
+omitted hunks, but they should not become independent risk
+classifiers.</p>
 <p>Configured review depth should influence budgets and defaults, not
 replace judgment. A <code>light</code> run may still review a concrete
 critical-risk hunk at <code>normal</code>; a <code>deep</code> run may
-still skip generated files or keep mechanical hunks at
-<code>light</code>.</p>
+still give mechanical hunks <code>light</code> coverage. Deterministic
+file exclusions apply at every depth.</p>
 <h2 id="large-review-handling">Large Review Handling</h2>
 <p>codegenie must handle large PRs and large commit ranges without
 trying to fit the entire diff into one model context.</p>
@@ -986,10 +985,9 @@ rules.</p>
 <p>The packet builder validates and assembles planner decisions; it does
 not make primary risk decisions. If a reviewable hunk has no planner
 coverage, the packet builder quietly applies deterministic
-<code>normal</code> coverage with default core/language lenses. If the
-planner skips a reviewable hunk without a valid reason, the packet
-builder falls back to <code>normal</code> and records the malformed
-skip.</p>
+<code>normal</code> coverage with default core/language lenses. A legacy
+<code>skip</code> decision is treated as <code>normal</code> coverage.
+The coverage report marks unfinished eligible hunks as incomplete.</p>
 <p>Planner notes must be hunk-scoped. Stage 5 may include short
 <code>focusNotes</code>, concrete <code>relatedSymbols</code>, concrete
 <code>relatedFiles</code>, and <code>surroundingContextHints</code> on a
