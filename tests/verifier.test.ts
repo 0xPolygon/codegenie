@@ -1475,14 +1475,12 @@ describe("plan 106 verifier revision semantics", () => {
     expect(result.incompleteCount).toBe(0);
     const verified = result.verified[0]!;
     const body = renderRetainedComposition([verified]);
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary).toContain(example.chosen);
-    expect(primary).toContain(example.chosenTest);
-    expect(primary).not.toContain(example.compound);
-    expect(primary).not.toContain(example.weakTest);
+    expect(body).toContain(example.chosen);
+    expect(body).toContain(example.chosenTest);
+    expect(body).not.toContain(example.compound);
+    expect(body).not.toContain(example.weakTest);
     expect(verified.originalSuggestions?.suggestedFix?.suggestionText).toBe(example.compound);
-    expect(body).toContain(example.compound);
-    expect(body).toContain(example.weakTest);
+    expect(verified.originalSuggestions?.suggestedTest?.suggestionText).toBe(example.weakTest);
   });
 
   it.each([true, false])("binds remedy assessments after compact expansion (matching=%s)", async matching => {
@@ -1566,13 +1564,11 @@ describe("plan 106 verifier revision semantics", () => {
     const verified = result.verified[0]!;
     expect(verified.suggestionAssessments![example.field]!.status).toBe(example.revised ? "supported" : "incompatible");
     const body = renderRetainedComposition([verified]);
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary).not.toContain(example.proposal);
+    expect(body).not.toContain(example.proposal);
     if (example.revised) {
-      expect(primary).toContain(example.replacement);
+      expect(body).toContain(example.replacement);
       expect(verified.originalSuggestions?.[example.field]?.suggestionText).toBe(example.proposal);
     }
-    expect(body).toContain(example.proposal);
   });
 
   it.each([true, false])("preserves the defect and supported fix when a weak test is revised or withheld (revised=%s)", async revised => {
@@ -1619,15 +1615,13 @@ describe("plan 106 verifier revision semantics", () => {
     expect(verified.suggestedFix).toBe(finding.suggestedFix);
     expect(verified.suggestionAssessments?.suggestedTest?.status).toBe(revised ? "supported" : "unverified");
     const body = renderRetainedComposition([verified]);
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary).toContain(finding.suggestedFix);
-    expect(primary).not.toContain(finding.suggestedTest);
-    expect(primary.includes("**Suggested test:**")).toBe(revised);
+    expect(body).toContain(finding.suggestedFix);
+    expect(body).not.toContain(finding.suggestedTest);
+    expect(body.includes("**Suggested test:**")).toBe(revised);
     if (revised) {
-      expect(primary).toContain(replacement);
+      expect(body).toContain(replacement);
       expect(verified.originalSuggestions?.suggestedTest?.suggestionText).toBe(finding.suggestedTest);
     }
-    expect(body).toContain(finding.suggestedTest);
     expect(finding.suggestedTest).toBe("Revoke membership and assert a subsequent read is denied.");
   });
 

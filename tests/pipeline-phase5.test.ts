@@ -167,8 +167,16 @@ describe("phase 5 pipeline regressions", () => {
     expect(JSON.stringify(artifacts.get("human-attention-notes.json"))).not.toContain("[redacted:circular]");
     if (mode !== "fallback" && mode !== "legacy" && mode !== "no-findings") {
       expect(result.summary).toContain("Unresolved questions require attention");
-      expect(result.summaryOnlyFindings[0]!.finalBody).toContain(finding.proofAssessment!.evidence);
-      expect(artifacts.get("composition-sources.json")).toMatchObject({ mode: "llm" });
+      expect(result.summaryOnlyFindings[0]!.finalBody).toContain(fixture.sections.find(section => section.kind === "verification")!.text);
+      expect(result.postingPlan!.reviewBody).not.toContain("Original assessments and supporting evidence");
+      expect(result.postingPlan!.reviewBody).not.toContain(finding.proofAssessment!.evidence);
+      expect(result.postingPlan!.reviewBody).toContain("Secondary assumption: " + finding.proofAssessment!.assumptions[0]!.question);
+      expect(artifacts.get("composition-sources.json")).toMatchObject({
+        mode: "llm",
+        sourceComponents: expect.arrayContaining([expect.objectContaining({
+          id: finding.id + "/proofAssessment", text: JSON.stringify(finding.proofAssessment)
+        })])
+      });
     }
   });
 
@@ -231,8 +239,10 @@ describe("phase 5 pipeline regressions", () => {
     const summary = resolved
       ? "Rounding can violate the caller's required minimum. The loss magnitude depends on the decimal pair."
       : "Rounding changes the quoted guarantee; compatibility with the caller requirement remains unresolved.";
+    const artifacts = new Map<string, unknown>();
+    const telemetry = { ...nullTelemetry(), writeArtifact: async (name: string, data: unknown) => { artifacts.set(name, data); } };
     const result = await dedupeRankAndComposeReview({ verified: fixture.findings, verdicts: [] }, fakePlan(),
-      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), telemetry, {
         promptBuilder: createPromptBuilder(fakeLensRegistry()), runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
           expect(request.prompt).toContain("do not still call it an open question");
           expect(request.prompt).toContain("preserve uncertainty in both summary and findings");
@@ -244,10 +254,18 @@ describe("phase 5 pipeline regressions", () => {
       });
     expect(result.summary).toBe(summary);
     const body = result.summaryOnlyFindings[0]!.finalBody;
-    expect(body).toContain(historical);
-    expect(body.split("<details>")[0]).toContain(fixture.findings[1]!.verification);
-    expect(body.split("<details>")[0]).not.toContain(historical);
-    if (!resolved) expect(body.split("<details>")[0]).not.toContain("**Suggested fix:**");
+    expect(body).toContain(fixture.findings[1]!.verification);
+    if (resolved) expect(body).not.toContain(historical);
+    else {
+      expect(body).toContain("**Open conditions:**\n\n- " + fixture.presentation.reconciliations[0]!.rationale);
+      expect(body).toContain(historical);
+      expect(body).not.toContain("<details>");
+      expect(body).not.toContain("**Suggested fix:**");
+    }
+    expect(artifacts.get("composition-sources.json")).toMatchObject({
+      sourceComponents: expect.arrayContaining([expect.objectContaining({ id: "rounding/verification", text: historical })]),
+      proposals: [expect.objectContaining({ reconciliations: fixture.presentation.reconciliations })]
+    });
   });
 
   it("keeps fallback risk from classification without escalating every file", () => {
@@ -1004,8 +1022,10 @@ describe("phase 5 pipeline regressions", () => {
     second.suggestionAssessments!.suggestedTest!.suggestionText = second.suggestedTest;
     const candidates = [...fixture.findings, second];
     const before = structuredClone(candidates);
+    const artifacts = new Map<string, unknown>();
+    const telemetry = { ...nullTelemetry(), writeArtifact: async (name: string, data: unknown) => { artifacts.set(name, data); } };
     const result = await dedupeRankAndComposeReview({ verified: candidates, verdicts: [] }, fakePlan(),
-      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), telemetry, {
         runner: { runStructured: async <T>() => {
           if (mode === "timeout") throw new CodegenieError("llm_call_failed", "LLM provider call timed out", { recoverable: true, context: { reason: "timeout" } });
           return { summary: "Revoked members can read documents.", composedFindings: [{
@@ -1017,16 +1037,20 @@ describe("phase 5 pipeline regressions", () => {
       });
     expect(result.summaryOnlyFindings).toHaveLength(1);
     const final = result.summaryOnlyFindings[0]!;
-    const primary = final.finalBody.split("\n\n<details>")[0]!;
-    expect(primary).toContain("Remediation remains unreconciled");
-    expect(primary).toContain("Regression-test guidance remains unreconciled");
+    expect(final.finalBody).toContain("Remediation remains unreconciled");
+    expect(final.finalBody).toContain("Regression-test guidance remains unreconciled");
     expect(final.suggestedFix).toBeUndefined();
     expect(final.suggestedTest).toBeUndefined();
     expect(final.suggestionAssessments).toBeUndefined();
     for (const finding of candidates) for (const field of ["suggestedFix", "suggestedTest"] as const) {
-      expect(primary).not.toContain(finding[field]);
-      expect(final.finalBody).toContain(finding[field]);
-      expect(final.finalBody).toContain(finding.id + "/" + field);
+      expect(final.finalBody).not.toContain(finding[field]);
+      expect(artifacts.get("composition-sources.json")).toMatchObject({
+        sourceComponents: expect.arrayContaining([expect.objectContaining({
+          id: finding.id + "/" + field,
+          text: finding[field],
+          suggestionAssessment: expect.objectContaining({ status: "supported" })
+        })])
+      });
     }
     expect(candidates).toEqual(before);
   });
@@ -1045,14 +1069,44 @@ describe("phase 5 pipeline regressions", () => {
       });
     const final = result.summaryOnlyFindings[0]!;
     expect(final).toBeDefined();
-    expect(final.finalBody).toContain(finding.suggestedFix);
-    expect(final.finalBody).toContain(finding.suggestedTest);
     expect(final.suggestedFix).toBe(supported ? finding.suggestedFix : undefined);
     expect(final.suggestedTest).toBe(supported ? finding.suggestedTest : undefined);
-    if (supported) expect(final.suggestionAssessments).toMatchObject({ suggestedFix: { status: "supported" }, suggestedTest: { status: "supported" } });
-    else expect(final.finalBody.split("<details>")[0]).not.toContain(finding.suggestedFix);
+    if (supported) {
+      expect(final.finalBody).toContain(finding.suggestedFix);
+      expect(final.finalBody).toContain(finding.suggestedTest);
+      expect(final.suggestionAssessments).toMatchObject({ suggestedFix: { status: "supported" }, suggestedTest: { status: "supported" } });
+    } else {
+      expect(final.finalBody).not.toContain(finding.suggestedFix);
+      expect(final.finalBody).not.toContain(finding.suggestedTest);
+    }
     // Source data was not mutated to satisfy the output policy.
     expect(finding.suggestedFix).toBeDefined();
+  });
+
+  it("records submitted suggestion status separately from the effective fallback assessment", async () => {
+    const finding = authorizationComposition().findings[0]!;
+    const conflicting = structuredClone(finding);
+    conflicting.id = "conflicting";
+    conflicting.suggestionAssessments!.suggestedFix!.status = "incompatible";
+    const artifacts = new Map<string, unknown>();
+    await dedupeRankAndComposeReview({ verified: [finding, conflicting], verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(),
+      { ...nullTelemetry(), writeArtifact: async (name, data) => { artifacts.set(name, data); } },
+      { runner: { runStructured: async () => { throw composerTransientError(); } }, promptBuilder: fakePromptBuilder() });
+
+    expect(artifacts.get("composition-sources.json")).toMatchObject({
+      sourceComponents: expect.arrayContaining([expect.objectContaining({
+        id: "authorization/suggestedFix",
+        text: finding.suggestedFix,
+        suggestionAssessment: expect.objectContaining({ status: "unverified" })
+      })]),
+      candidateMetadata: expect.arrayContaining([expect.objectContaining({
+        findingId: "authorization",
+        severity: finding.severity,
+        confidence: finding.confidence,
+        submittedSuggestionStatuses: expect.objectContaining({ suggestedFix: "supported" })
+      })])
+    });
   });
 
   it("composes across initial clusters, retains all sources and selects a valid member anchor", async () => {
@@ -1084,8 +1138,10 @@ describe("phase 5 pipeline regressions", () => {
     } };
     const members = [helper, caller];
     const sources = compositionSources(members);
+    const artifacts = new Map<string, unknown>();
+    const telemetry = { ...nullTelemetry(), writeArtifact: async (name: string, data: unknown) => { artifacts.set(name, data); } };
     const result = await dedupeRankAndComposeReview({ verified: members, verdicts: [] }, fakePlan(),
-      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), telemetry, {
         runner: { runStructured: async <T>() => ({ summary: "One guarantee is unsatisfiable.", composedFindings: [{
           findingIds: members.map(finding => finding.id), publication: "inline",
           sections: (["impact", "verification"] as const).map(kind => ({ kind,
@@ -1098,8 +1154,11 @@ describe("phase 5 pipeline regressions", () => {
     expect(result.findings).toHaveLength(1);
     expect(result.summaryOnlyFindings).toHaveLength(0);
     expect(result.findings[0]?.anchor).toEqual(caller.anchor);
-    expect(JSON.stringify(result.findings[0])).toContain("helper/proofAssessment");
-    expect(JSON.stringify(result.findings[0])).toContain("caller/proofAssessment");
+    expect(artifacts.get("composition-sources.json")).toMatchObject({
+      sourceComponents: expect.arrayContaining(members.map(finding => expect.objectContaining({
+        id: finding.id + "/proofAssessment", text: JSON.stringify(finding.proofAssessment)
+      })))
+    });
   });
 
   it("lifts merged confidence from a compatible same-group candidate without inflation (plan 74)", async () => {
@@ -1272,13 +1331,15 @@ describe("phase 5 pipeline regressions", () => {
       }) as T
     };
 
+    const artifacts = new Map<string, unknown>();
+    const telemetry = { ...nullTelemetry(), writeArtifact: async (name: string, data: unknown) => { artifacts.set(name, data); } };
     const result = await dedupeRankAndComposeReview(
       { verified: [promoted, direct], verdicts: [] },
       fakePlan(),
       { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
       fakeCoverage(),
       config(),
-      nullTelemetry(),
+      telemetry,
       {
         runner,
         promptBuilder: createPromptBuilder(fakeLensRegistry()),
@@ -1288,13 +1349,10 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     const [published] = result.findings;
-    for (const member of [direct, promoted]) {
-      expect(published?.finalBody).toContain(member.failureMode);
-      expect(published?.finalBody).toContain(member.evidence.changedCode);
-      if (member.suggestedFix) expect(published?.finalBody).toContain(member.suggestedFix);
-      if (member.suggestedTest) expect(published?.finalBody).toContain(member.suggestedTest);
-      if (member.verification) expect(published?.finalBody).toContain(member.verification);
-    }
+    expect(published?.finalBody).toContain(direct.evidence.changedCode);
+    expect(artifacts.get("composition-sources.json")).toMatchObject({
+      sourceComponents: expect.arrayContaining(compositionSources([direct, promoted]))
+    });
     expect(published).toMatchObject({
       id: direct.id,
       title: direct.title,
@@ -7597,7 +7655,8 @@ describe("phase 5 pipeline regressions", () => {
       behaviorChange: "intentional_needs_confirmation",
       intentEvidence: ["refactor: enhance preference handling", "strict handling for explicit route preferences"],
       failureMode: "The changed path rejects an explicit preference that previously fell back.",
-      whyThisMatters: "Existing callers may need to opt into or document the stricter contract."
+      whyThisMatters: "Existing callers may need to opt into or document the stricter contract.",
+      verification: "The fallback accidentally contradicts intent."
     };
     const runner: LlmRunner = {
       runStructured: async <T>() => ({
@@ -7645,6 +7704,38 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(result.findings[0]?.finalBody).not.toMatch(/\baccidentally\b|\bsilently\b|contradicts intent/iu);
     expect(result.findings[0]?.finalBody).toContain("changes the contract");
+    expect(result.findings[0]?.finalBody).not.toContain("**Recorded verification:**");
+  });
+
+  it("normalizes both selected and alternate legacy verification in fallback", async () => {
+    const lead: CandidateFinding = {
+      ...fakeFinding(),
+      id: "lead",
+      behaviorChange: "intentional_needs_confirmation",
+      verification: "This behavior accidentally contradicts intent."
+    };
+    const alternate: CandidateFinding = {
+      ...structuredClone(lead),
+      id: "other",
+      verification: "The retry path silently changes the fallback."
+    };
+    const result = await dedupeRankAndComposeReview(
+      { verified: [lead, alternate], verdicts: [] },
+      fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      fakeCoverage(),
+      config(),
+      nullTelemetry(),
+      { runner: { runStructured: async () => { throw composerTransientError(); } }, promptBuilder: fakePromptBuilder(), diff: fakeDiff() }
+    );
+
+    expect(result.findings).toHaveLength(1);
+    const { finalBody, mergedCandidateIds } = result.findings[0]!;
+    expect(mergedCandidateIds).toEqual(["lead", "other"]);
+    expect(finalBody).toContain("**Verification and uncertainty:** This behavior changes the contract.");
+    expect(finalBody).toContain("**Recorded verification:**\n\nThe retry path changes the fallback.");
+    expect(finalBody.split("This behavior changes the contract.")).toHaveLength(2);
+    expect(finalBody).not.toMatch(/\baccidentally\b|\bsilently\b|contradicts intent/iu);
   });
 
   it("does not strip non-intent silent-failure wording from final composition", async () => {
@@ -11638,13 +11729,15 @@ describe("phase 5 pipeline regressions", () => {
       producedBy: { ...fakeFinding().producedBy, packetId: "packet-routing-v15" }
     };
 
+    const artifacts = new Map<string, unknown>();
+    const telemetry = { ...nullTelemetry(), writeArtifact: async (name: string, data: unknown) => { artifacts.set(name, data); } };
     const result = await dedupeRankAndComposeReview(
       { verified: [helper, v1Caller, v15Caller], verdicts: [] },
       fakePlan(),
       { mode: "branch", repoRoot: "/tmp/repo", commits: [], rawDiff: "" },
       { ...fakeCoverage(), totalHunks: 3, reviewedHunks: 3 },
       { ...config(), review: { ...config().review, maxFindings: 100, softCommentCap: 100 } },
-      nullTelemetry(),
+      telemetry,
       {
         runner: {
           runStructured: async () => {
@@ -11668,8 +11761,10 @@ describe("phase 5 pipeline regressions", () => {
       mergedCandidateIds: expect.arrayContaining(["routing-helper", "routing-v1", "routing-v15"])
     });
     expect(result.findings[0]?.mergedCandidateIds).toHaveLength(3);
-    expect(result.findings[0]?.finalBody).toContain(`\`${v1Path}\``);
-    expect(result.findings[0]?.finalBody).toContain(`\`${v15Path}\``);
+    expect(result.findings[0]?.finalBody).toContain(helperPath);
+    expect(artifacts.get("composition-sources.json")).toMatchObject({
+      sourceComponents: expect.arrayContaining([v1Path, v15Path].map(path => expect.objectContaining({ kind: "evidence", path })))
+    });
   });
 
   it("does not merge unrelated cross-file findings just because they cite the same helper path", async () => {
@@ -12259,13 +12354,11 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(markdown).not.toContain("Failure mode:");
     expect(markdown).not.toContain("Why it matters:");
-    expect(markdown.split("<details>")[0]!.match(/A canceled request can keep retrying after the worker is stopped\./gu)).toHaveLength(1);
+    expect(markdown.match(/A canceled request can keep retrying after the worker is stopped\./gu)).toHaveLength(1);
     expect(markdown).toContain("Remediation remains unverified");
     expect(markdown).toContain("Regression-test guidance remains unverified");
-    expect(markdown.split("<details>")[0]).not.toContain(finding.suggestedFix);
-    expect(markdown.split("<details>")[0]).not.toContain(finding.suggestedTest);
-    expect(markdown).toContain(finding.suggestedFix);
-    expect(markdown).toContain(finding.suggestedTest);
+    expect(markdown).not.toContain(finding.suggestedFix);
+    expect(markdown).not.toContain(finding.suggestedTest);
     expect(result.findings[0]).not.toHaveProperty("suggestedFix");
     expect(result.findings[0]).not.toHaveProperty("suggestedTest");
   });

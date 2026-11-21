@@ -28,16 +28,11 @@ describe("supported recommendation publication", () => {
     for (const findings of [[first, second], [second, first]]) {
       let metrics: CompositionMetrics | undefined;
       const body = renderRetainedComposition(findings, undefined, undefined, value => { metrics = value; });
-      const primary = body.split("\n\n<details>")[0]!;
-      expect(primary).toContain(label + " remains unreconciled");
-      expect(primary).not.toContain(label + " remains unverified");
-      expect(primary).not.toContain(first[field]);
-      expect(primary).not.toContain(second[field]);
-      expect(primary).toContain(first[other]);
-      for (const finding of findings) {
-        expect(body).toContain(finding[field]);
-        expect(body).toContain(finding.suggestionAssessments![field]!.rationale);
-      }
+      expect(body).toContain(label + " remains unreconciled");
+      expect(body).not.toContain(label + " remains unverified");
+      expect(body).not.toContain(first[field]);
+      expect(body).not.toContain(second[field]);
+      expect(body).toContain(first[other]);
       expect(metrics?.publishedSuggestionSources.sort()).toEqual(findings.map(f => f.id + "/" + other).sort());
       expect(metrics?.retainedSuggestionSources.sort()).toEqual(findings.map(f => f.id + "/" + field).sort());
       expect(metrics?.accountedSourceComponents).toBe(compositionSources(findings).length);
@@ -50,10 +45,9 @@ describe("supported recommendation publication", () => {
     const second = { ...structuredClone(first), id: "duplicate" };
     let metrics: CompositionMetrics | undefined;
     const body = renderRetainedComposition([first, second], undefined, undefined, value => { metrics = value; });
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary).not.toContain("remains unreconciled");
+    expect(body).not.toContain("remains unreconciled");
     for (const field of ["suggestedFix", "suggestedTest"] as const) {
-      expect(primary.split(first[field]!)).toHaveLength(2);
+      expect(body.split(first[field]!)).toHaveLength(2);
       expect(metrics?.publishedSuggestionSources).toContain(first.id + "/" + field);
       expect(metrics?.publishedSuggestionSources).toContain(second.id + "/" + field);
     }
@@ -68,13 +62,10 @@ describe("supported recommendation publication", () => {
     second.suggestionAssessments!.suggestedFix = { ...second.suggestionAssessments!.suggestedFix!, status, suggestionText: second.suggestedFix };
     first.originalSuggestions = { suggestedFix: { ...first.suggestionAssessments!.suggestedFix!, suggestionText: "Invalidate every session." } };
     const body = renderRetainedComposition([first, second]);
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary).toContain(first.suggestedFix);
-    expect(primary).not.toContain("remains unreconciled");
-    expect(primary).not.toContain(second.suggestedFix);
-    expect(primary).not.toContain(first.originalSuggestions.suggestedFix!.suggestionText);
-    expect(body).toContain(second.suggestedFix);
-    expect(body).toContain(first.originalSuggestions.suggestedFix!.suggestionText);
+    expect(body).toContain(first.suggestedFix);
+    expect(body).not.toContain("remains unreconciled");
+    expect(body).not.toContain(second.suggestedFix);
+    expect(body).not.toContain(first.originalSuggestions.suggestedFix!.suggestionText);
   });
 
   it("allows attributed composition to select among distinct supported proposals", () => {
@@ -89,11 +80,11 @@ describe("supported recommendation publication", () => {
     const rendered = composePresentation(findings, sections, sources.filter(s => s.kind === "evidence").map(s => s.id), undefined, {
       retainedSourceRefs: sources.filter(s => s.findingId === second.id && s.kind !== "evidence" && s.kind !== "verification").map(s => s.id)
     });
-    expect(rendered.body.split("\n\n<details>")[0]).toContain(findings[0]!.suggestedFix);
+    expect(rendered.body).toContain(findings[0]!.suggestedFix);
     expect(rendered.body).not.toContain("remains unreconciled");
     expect(rendered.metrics.accountedSourceComponents).toBe(sources.length);
     // Alternatives in unrelated groups do not compete during fallback.
-    expect(renderRetainedComposition([second], undefined, undefined, undefined, findings).split("\n\n<details>")[0]).toContain(second.suggestedFix);
+    expect(renderRetainedComposition([second], undefined, undefined, undefined, findings)).toContain(second.suggestedFix);
   });
 
   it.each(["same proposal", "different compound proposal"])("can publish supported advice despite an unverified %s", variation => {
@@ -108,7 +99,7 @@ describe("supported recommendation publication", () => {
     sections.find(section => section.kind === "verification")!.sourceRefs.push(alternative.id + "/proofAssessment");
     const retainedSourceRefs = sources.filter(source => source.findingId === alternative.id && source.id !== alternative.id + "/proofAssessment").map(source => source.id);
     const result = composePresentation(findings, sections, sources.filter(source => source.kind === "evidence" && source.findingId !== alternative.id).map(source => source.id), undefined, { retainedSourceRefs });
-    expect(result.body.split("\n\n<details>")[0]).toContain(findings[0]!.suggestedFix);
+    expect(result.body).toContain(findings[0]!.suggestedFix);
     expect(result.metrics.publishedSuggestionSources).toContain(findings[0]!.id + "/suggestedFix");
     expect(result.metrics.retainedSuggestionSources).toContain(alternative.id + "/suggestedFix");
     expect(result.metrics.accountedSourceComponents).toBe(sources.length);
@@ -126,14 +117,12 @@ describe("supported recommendation publication", () => {
     group.sections = group.sections.filter(s => s.kind !== "fix" && s.kind !== "test");
     const composed = composePresentation(findings, group.sections, group.evidenceRefs, undefined, group);
     for (const body of [composed.body, renderRetainedComposition(findings)]) {
-      const primary = body.split("\n\n<details>")[0]!;
-      expect(primary).toContain(findings[0]!.failureMode);
+      expect(body).toContain(findings[0]!.failureMode);
       for (const field of ["suggestedFix", "suggestedTest"] as const) {
-        expect(primary).not.toContain(findings[0]![field]);
-        expect(body).toContain(findings[0]![field]);
+        expect(body).not.toContain(findings[0]![field]);
       }
-      expect(primary.match(/Remediation remains unverified/g)).toHaveLength(1);
-      expect(primary.match(/Regression-test guidance remains unverified/g)).toHaveLength(1);
+      expect(body.match(/Remediation remains unverified/g)).toHaveLength(1);
+      expect(body.match(/Regression-test guidance remains unverified/g)).toHaveLength(1);
     }
     expect(composed.metrics.publishedSuggestionSources).toEqual([]);
     expect(composed.metrics.retainedSuggestionSources).toHaveLength(2);
@@ -157,9 +146,10 @@ describe("supported recommendation publication", () => {
     const ref = "authorization/originalSuggestions/suggestedFix";
     group.retainedSourceRefs.push(ref);
     const rendered = composePresentation(findings, group.sections, group.evidenceRefs, undefined, group);
-    expect(rendered.body.split("\n\n<details>")[0]).not.toContain(original.suggestionText);
-    expect(rendered.body).toContain(original.suggestionText);
-    expect(rendered.body).toContain("before verification revision; provenance only");
+    expect(rendered.body).not.toContain(original.suggestionText);
+    expect(compositionSources(findings)).toContainEqual(expect.objectContaining({
+      id: ref, text: original.suggestionText, suggestionAssessment: original, provenanceOnly: true
+    }));
     group.sections.find(s => s.kind === "fix")!.sourceRefs.push(ref);
     expect(() => validateCompositionSubmission(submission, findings)).toThrow(/unsupported_suggestion/);
     expect(normalizeCompositionReferences(submission, findings)).toBeUndefined();
@@ -180,7 +170,7 @@ describe("supported recommendation publication", () => {
       retainedSourceRefs: sources.filter(s => s.kind === "fix" || s.kind === "test").map(s => s.id) };
     expect(() => validateCompositionSubmission({ composedFindings: [first.group, secondGroup] }, findings)).toThrow(/unsupported_suggestion/);
     const body = renderRetainedComposition(first.findings, undefined, undefined, undefined, findings);
-    expect(body.split("\n\n<details>")[0]).not.toContain(first.findings[0]!.suggestedFix);
+    expect(body).not.toContain(first.findings[0]!.suggestedFix);
   });
 
   it("offers only eligible IDs in attribution repairs, while retaining unsupported sources", () => {

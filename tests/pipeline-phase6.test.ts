@@ -212,7 +212,7 @@ describe("phase 6 live review path", () => {
         title: "Division by zero guard was removed",
         path: "app.ts",
         publication: "inline",
-        finalBody: expect.stringContaining("Restore the guard")
+        finalBody: expect.stringContaining("return total / count;")
       });
       expect(result.needsHumanAttention).toEqual([expect.objectContaining({ question: "Check whether callers can pass zero count." })]);
       expect(output.join("\n")).toContain("1 confirmed finding");
@@ -255,12 +255,24 @@ describe("phase 6 live review path", () => {
       expect(deferredStage8Artifacts(runArtifactDir)).toEqual([]);
       expect(existsSync(path.join(runArtifactDir, "final-review.md"))).toBe(true);
       const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
-      expect(finalReview).toContain("Restore the guard");
+      expect(finalReview).not.toContain("Restore the guard");
+      expect(finalReview).not.toContain("Original assessments and supporting evidence");
       expect(finalReview).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
       expect(finalReview).toContain("Diagnostic token: [redacted:");
       const compositionSources = readFileSync(path.join(runArtifactDir, "stages/10-composition/composition-sources.json"), "utf8");
       expect(compositionSources).toContain("[redacted:");
       expect(compositionSources).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz1234567890");
+      expect(JSON.parse(compositionSources)).toMatchObject({
+        sourceComponents: expect.arrayContaining([
+          expect.objectContaining({
+            kind: "fix",
+            text: "Restore the guard or reject zero counts before division.",
+            suggestionAssessment: expect.objectContaining({ status: "unverified" })
+          }),
+          expect.objectContaining({ kind: "evidence", text: "return total / count;" })
+        ]),
+        candidateMetadata: [expect.objectContaining({ findingId: expect.any(String), severity: "high", confidence: "high" })]
+      });
       const runJson = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8")) as {
         totals: { packets: number; candidates: number; verified: number; finalFindings: number };
       };

@@ -14,7 +14,7 @@ describe("report synthesis and requirement support", () => {
     { wrong: "Separate reported-size and stored-size equalities cannot both pass when stored content is shorter.",
       correct: "Both equalities can pass independently; they do not assert that the stored size covers the reported size.",
       code: "expect(reportedSize).toBe(requestedSize); expect(storedSize).toBe(expectedStoredSize);" }
-  ])("retains original contradictory explanations while publishing the supplied evidence-backed correction: $wrong", example => {
+  ])("publishes the supplied evidence-backed correction with the superseded explanation accounted for: $wrong", example => {
     // Scripted synthesis tests attribution/preservation, not automatic semantic judgment.
     const fixture = authorizationComposition();
     const first = fixture.findings[0]!;
@@ -28,17 +28,16 @@ describe("report synthesis and requirement support", () => {
       sourceRefs: sources.filter(source => source.kind === section.kind && source.id !== "authorization/verification").map(source => source.id)
     }));
     const { body } = composePresentation(findings, sections, sources.filter(source => source.kind === "evidence").map(source => source.id), undefined, {
+      primaryEvidenceRefs: ["corrected/evidence/relatedCode/0"],
       retainedSourceRefs: ["authorization/verification"], reconciliations: [{ sourceRefs: ["authorization/verification"],
         supportingRefs: ["corrected/evidence/relatedCode/0"], disposition: "superseded", rationale: example.correct }]
     });
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary).toContain(example.correct);
-    expect(primary).not.toContain(example.wrong);
-    expect(body).toContain(example.wrong);
+    expect(body).toContain(example.correct);
+    expect(body).not.toContain(example.wrong);
     expect(body).toContain(example.code);
   });
 
-  it("projects six retained proofs to distinct conditions without losing their narratives", () => {
+  it("projects six retained proofs to distinct conditions and material evidence", () => {
     const seed = authorizationComposition().findings[0]!;
     const findings = Array.from({ length: 6 }, (_, index) => ({ ...structuredClone(seed), id: `auth-${index}`,
       proofAssessment: { status: index === 5 ? "unresolved" as const : "established" as const, evidence: `Proof ${index}: ` + "Detailed inspected authorization evidence. ".repeat(40),
@@ -48,22 +47,18 @@ describe("report synthesis and requirement support", () => {
     }));
     let accounted = 0;
     const body = renderRetainedComposition(findings, undefined, text => text, metrics => { accounted = metrics.accountedSourceComponents; });
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary.split("Is this endpoint deployed?")).toHaveLength(2);
-    expect(primary.split("How long is cached membership retained?")).toHaveLength(2);
+    expect(body.split("Is this endpoint deployed?")).toHaveLength(2);
+    expect(body.split("How long is cached membership retained?")).toHaveLength(2);
     for (const finding of findings) {
-      expect(body).toContain(finding.proofAssessment.evidence);
-      expect(body).toContain(finding.id + "/proofAssessment");
-      expect(primary).toContain(finding.proofAssessment.assumptions[2]!.question);
+      expect(body).toContain(finding.proofAssessment.assumptions[2]!.question);
     }
-    expect(primary).not.toContain(findings[0]!.proofAssessment.evidence);
-    expect(primary).toContain(findings[5]!.proofAssessment.evidence);
-    expect(primary.split(findings[5]!.proofAssessment.evidence)).toHaveLength(2);
+    expect(body).not.toContain(findings[0]!.proofAssessment.evidence);
+    expect(body).toContain(findings[5]!.proofAssessment.evidence);
+    expect(body.split(findings[5]!.proofAssessment.evidence)).toHaveLength(2);
     expect(accounted).toBe(compositionSources(findings).length);
-    expect(primary.split(/\s+/).length).toBeLessThan(body.split(/\s+/).length / 2);
   });
 
-  it("can withhold a supported but disputed remedy without losing its source or changing its assessment", () => {
+  it("can withhold a supported but disputed remedy without changing its assessment", () => {
     const { findings, sections, evidenceRefs } = authorizationComposition();
     const finding = findings[0]!;
     finding.suggestedFix = "Return no documents to any principal.";
@@ -73,8 +68,8 @@ describe("report synthesis and requirement support", () => {
     const finished = sections.filter(section => section.kind !== "fix");
     finished.find(section => section.kind === "verification")!.text += " The proposed blanket denial does not establish that active members retain required read access; remedy compatibility remains unresolved.";
     const { body } = composePresentation(findings, finished, evidenceRefs, undefined, { retainedSourceRefs });
-    expect(body.split("\n\n<details>")[0]).not.toContain("**Suggested fix:**");
-    expect(body).toContain(finding.suggestedFix);
+    expect(body).not.toContain("**Suggested fix:**");
+    expect(body).not.toContain(finding.suggestedFix);
     expect(finding.suggestionAssessments!.suggestedFix!.status).toBe("supported");
     const canRead = (active: boolean) => active;
     const denyAll = (_active: boolean) => false;
@@ -83,14 +78,15 @@ describe("report synthesis and requirement support", () => {
     expect([denyAll(true), denyAll(false)]).not.toEqual([true, false]);
     expect([canRead(true), canRead(false)]).toEqual([true, false]);
   });
-  it.each([contractComposition, authorizationComposition])("keeps supplied synthesis concise without deleting original secondary questions", fixture => {
+  it.each([contractComposition, authorizationComposition])("publishes structured secondary questions alongside concise synthesis", fixture => {
     const { findings, sections, evidenceRefs, presentation } = fixture();
     const { body, metrics } = composePresentation(findings, sections, evidenceRefs, undefined, presentation);
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary).toContain(sections.find(section => section.kind === "verification")!.text);
-    expect(primary).not.toContain("**Open conditions:**");
-    for (const finding of findings) for (const assumption of finding.proofAssessment!.assumptions) expect(body).toContain(assumption.question);
-    expect(metrics.uncertaintyWords).toBe(0);
+    expect(body).toContain(sections.find(section => section.kind === "verification")!.text);
+    expect(body).toContain("**Open conditions:**");
+    for (const finding of findings) for (const assumption of finding.proofAssessment!.assumptions) {
+      expect(body).toContain("Secondary assumption: " + assumption.question);
+    }
+    expect(metrics.uncertaintyWords).toBeGreaterThan(0);
     expect(metrics.evidenceWords).toBeGreaterThan(0);
     expect(metrics.accountedSourceComponents).toBe(compositionSources(findings).length);
     // Suggestions are retained once per source, not repeated in assessment JSON.
@@ -103,13 +99,42 @@ describe("report synthesis and requirement support", () => {
     sections[1]!.sourceRefs = ["authorization/verification"];
     const presentation = { retainedSourceRefs: ["authorization/proofAssessment"] };
     expect(() => composePresentation(findings, sections, evidenceRefs, undefined, presentation)).toThrow(/visible verification/);
-    expect(() => composePresentation(findings, sections, evidenceRefs, undefined, { ...presentation, reconciliations: [{
+    const resolved = composePresentation(findings, sections, evidenceRefs, undefined, { ...presentation, reconciliations: [{
       sourceRefs: ["authorization/proofAssessment"], supportingRefs: ["authorization/evidence/relatedCode/0"],
       disposition: "superseded", rationale: "Supplied policy evidence settles the secondary question."
-    }] })).not.toThrow();
+    }] });
+    expect(resolved.body).not.toContain("**Open conditions:**");
     expect(() => composePresentation(findings, sections, evidenceRefs, undefined, { ...presentation, reconciliations: [{
       sourceRefs: ["authorization/proofAssessment"], supportingRefs: [], disposition: "unresolved", rationale: "Still open."
     }] })).toThrow(/visible verification/);
+  });
+
+  it("renders an unresolved reconciliation on an established proof with no assumptions", () => {
+    const { findings, sections, evidenceRefs } = authorizationComposition();
+    const proofEvidence = "The complete read handler returns the document from the cached membership.";
+    findings[0]!.proofAssessment = { status: "established", evidence: proofEvidence, assumptions: [] };
+    const rationale = "The evidence does not settle the scope of the access-policy exception.";
+    sections.find(section => section.kind === "verification")!.text = "The read handler lacks the active-membership check.";
+    const { body } = composePresentation(findings, sections, evidenceRefs, undefined, {
+      reconciliations: [{ sourceRefs: ["authorization/proofAssessment"], supportingRefs: [], disposition: "unresolved", rationale }]
+    });
+
+    expect(body).toContain("**Open conditions:**\n\n- " + rationale);
+    expect(body).toContain("**Recorded verification:**\n\n" + proofEvidence);
+    expect(body).not.toContain("authorization/proofAssessment");
+  });
+
+  it.each([true, false])("renders a shared assumption once at its strongest qualification (first essential=%s)", firstEssential => {
+    const { findings } = authorizationComposition();
+    const first = findings[0]!;
+    const second = { ...structuredClone(first), id: "second" };
+    const question = "Does the caller supply a current membership?";
+    first.proofAssessment!.assumptions = [{ question, essential: firstEssential }];
+    second.proofAssessment!.assumptions = [{ question, essential: !firstEssential }];
+
+    const body = renderRetainedComposition([first, second]);
+    expect(body).toContain("Essential assumption: " + question);
+    expect(body.split(question)).toHaveLength(2);
   });
 
   it.each([true, false])("fallback attributes unsynthesized conditions without inventing disagreement, anchor: %s", anchored => {
@@ -119,12 +144,10 @@ describe("report synthesis and requirement support", () => {
     second.id = "second";
     second.proofAssessment!.assumptions = [{ question: "Does the audit logger retain the revoked principal?", essential: false }];
     const body = renderRetainedComposition([...findings, second]);
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary).toContain("synthesis was unavailable");
-    expect(primary).toContain("How long is a cached membership retained?");
-    expect(primary).toContain("Does the audit logger retain the revoked principal?");
-    expect(primary).not.toContain("Original verification assessments differ");
-    expect(body).toContain("second/proofAssessment");
+    expect(body).toContain("synthesis was unavailable");
+    expect(body).toContain("How long is a cached membership retained?");
+    expect(body).toContain("Does the audit logger retain the revoked principal?");
+    expect(body).not.toContain("Original verification assessments differ");
     expect(renderRetainedComposition(findings)).not.toContain("Original verification assessments differ");
   });
 
@@ -162,11 +185,9 @@ describe("report synthesis and requirement support", () => {
     expect(sources.find(source => source.id === "authorization/suggestedFix")!.suggestionAssessment!.status).toBe("unverified");
     expect(sources.find(source => source.id === "conflicting/suggestedFix")!.suggestionAssessment!.status).toBe("incompatible");
     const body = renderRetainedComposition([...findings, conflicting]);
-    expect(body).toContain("**Submitted assessment status:** supported");
-    const primary = body.split("\n\n<details>")[0]!;
-    expect(primary).toContain("Remediation remains unverified");
-    expect(primary).not.toContain(findings[0]!.suggestedFix);
-    expect(primary).toContain("Compatibility assessments conflict");
+    expect(body).toContain("Remediation remains unverified");
+    expect(body).not.toContain(findings[0]!.suggestedFix);
+    expect(body).toContain("Compatibility assessments conflict");
     delete conflicting.suggestionAssessments!.suggestedFix;
     expect(compositionSources([...findings, conflicting]).find(source => source.id === "authorization/suggestedFix")!.suggestionAssessment!.status).toBe("supported");
   });
