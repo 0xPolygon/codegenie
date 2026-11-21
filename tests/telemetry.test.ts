@@ -1389,7 +1389,7 @@ describe("run telemetry", () => {
 describe("run artifact allowlist", () => {
   // Guards against the class of bug where a pipeline stage adds a writeArtifact("foo.json")
   // call but forgets to register "foo.json" in KNOWN_ARTIFACTS. assertAllowedArtifactPath only
-  // throws at runtime when that code path is hit (e.g. Stage 8 with tasks), so an unregistered
+  // throws at runtime when that code path is hit (e.g. a rarely taken branch), so an unregistered
   // artifact can ship undetected and abort a whole review. This scans source for the literal
   // call sites and fails at test time instead.
   const srcDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src");

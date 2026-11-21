@@ -33,8 +33,6 @@ export function createFakeRunner(): LlmRunner {
           return fakePlan(request.prompt) as T;
         case 7:
           return fakePacketReview(request.prompt) as T;
-        case 8:
-          return fakeSystemReview(request.prompt) as T;
         case 9:
           return fakeVerdict(request.prompt) as T;
         case 10:
@@ -126,24 +124,6 @@ function fakePacketReview(prompt: string): unknown {
         ]
       : [],
     uncertainties: []
-  };
-}
-
-function fakeSystemReview(prompt: string): unknown {
-  const task = extractJsonBlock<{ question?: string; files?: string[]; symbols?: string[] }>(prompt, "system-review-task");
-  if (!task?.question) {
-    return { findings: [], resolvedHints: [] };
-  }
-  return {
-    findings: [],
-    resolvedHints: [
-      {
-        question: task.question,
-        files: task.files ?? [],
-        symbols: task.symbols ?? [],
-        resolution: "fake system review resolved the repeated follow-up without a finding"
-      }
-    ]
   };
 }
 

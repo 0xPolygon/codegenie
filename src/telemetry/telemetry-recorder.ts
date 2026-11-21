@@ -2,7 +2,7 @@ import type { StreamProgress } from "../llm/stream-progress.js";
 import type { ContextPressureSummary, ReviewStage, TelemetryEvent, ToolCallRecord } from "../types.js";
 import type { CodegenieErrorCode } from "../util/errors.js";
 
-export type LlmRole = "planner" | "packetReview" | "systemReview" | "verifier" | "composer";
+export type LlmRole = "planner" | "packetReview" | "verifier" | "composer";
 
 export type LlmFinalArgumentState =
   | "strict"

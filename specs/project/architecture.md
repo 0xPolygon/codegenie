@@ -203,14 +203,14 @@ Pipeline stages are identified by the numeric stage ids from the functional spec
 ```ts
 // 1 diff parsing, 2 filtering, 3 classification, 4 symbol extraction,
 // 5 planning, 6 packet construction, 7 lens review,
-// 8 optional targeted system follow-up for repeated scoped hints,
+// 8 unused (targeted system follow-up, deleted in #114),
 // 9 verification, 10 composition, 11 publishing
 // Logging and telemetry additionally use stage 0 for pre-pipeline events
 // (CLI parse, config load, input validation).
-type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11
+type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11
 ```
 
-Stage ids are stable for telemetry and evals. Mentally the pipeline is six phases: Inventory (1-4), Plan (5), Review (6-7 plus optional Stage 8), Verify (9), Compose (10), Publish (11). Stage 8 is narrow: it runs only when repeated scoped follow-up hints justify a focused system task.
+Stage ids are stable for telemetry and evals. Mentally the pipeline is six phases: Inventory (1-4), Plan (5), Review (6-7), Verify (9), Compose (10), Publish (11). Stage 8 (targeted system follow-up) was deleted in #114; the other ids are unchanged.
 
 ### Review Input
 
@@ -620,7 +620,7 @@ type StructuredUncertainty = {
 
 `PacketReviewResult` does not duplicate worker tool usage: tool calls and files read live in `tool-calls.jsonl`, and readers join on `workerId`.
 
-Packet `followUpHints` and `uncertainties` flow to telemetry, to coverage/report notes, and, when multiple packet reviewers raise the same scoped follow-up question, into the narrow Stage 8 targeted system follow-up. Single unresolved hints remain human-attention notes rather than review tasks. Planner-authored questions and proof obligations are intentionally not part of the packet-review contract.
+Packet `followUpHints` and `uncertainties` flow to telemetry and to coverage/report notes. Unresolved hints remain human-attention notes rather than review tasks. Planner-authored questions and proof obligations are intentionally not part of the packet-review contract.
 
 Review packets are persisted to telemetry artifacts so evals can inspect what context the reviewer saw. Every packet contains one or more hunks. `ReviewPacket.kind` explains why those hunks are reviewed together, while `ReviewPacket.coverage` and `ReviewPacket.reviewProfile` control execution budget and prompting.
 
@@ -631,9 +631,9 @@ Packet construction algorithm:
 3. Build a lean deterministic relationship graph over changed hunks/symbols using only same-symbol, changed-symbol mention, and explicit planner symbol/file hints. Persist `hunk-relationships.json`.
 4. Apply file processing mode: the skip branch is defensive only — configured-skip files never reach Stage 6 under filter-first — and produces coverage records only; whole-file files produce one file packet when size limits allow; all other files default to hunk-first packets.
 5. Group hunks conservatively: one packet per hunk by default; coalesce only same-file hunks that share an enclosing symbol or are very nearby and still fit strict size limits.
-6. Never coalesce across files in v1. Cross-file concerns are recorded as follow-up hints; repeated scoped hints may trigger the narrow Stage 8 follow-up, while isolated hints remain telemetry/report notes.
+6. Never coalesce across files in v1. Cross-file concerns are recorded as follow-up hints, which remain telemetry/report notes.
 7. Attach cheap deterministic surrounding context when available — enclosing symbol source, file outline, likely tests — rendered into `contextText` within `maxContextChars`, plus planner-provided `surroundingContextHints`.
-8. Attach advisory hunk-scoped `attentionNotes` and bounded `relatedChangedContext` from mechanically related changed hunks/symbols. These may influence reviewer attention, but they are not findings, questions, obligations, or Stage 8 triggers.
+8. Attach advisory hunk-scoped `attentionNotes` and bounded `relatedChangedContext` from mechanically related changed hunks/symbols. These may influence reviewer attention, but they are not findings, questions, or obligations.
 9. Enforce max hunks, patch chars, context chars, and skill/lens prompt caps. Split oversized packets back into smaller packets. When one hunk alone exceeds `maxPatchChars`, the packet carries a truncated patch window centered on changed lines, with `truncated: true`, omitted-line counts, and a coverage note; never split below hunk granularity, never synthesize sub-hunk ids. Quantified defaults: `maxPatchChars = 12000`, `maxContextChars = 8000`, `maxHunksPerPacket = 5`.
 10. Compute packet coverage as the max coverage of included hunks, ordered `deep > normal > light`.
 11. Compute packet lenses as the bounded union of included hunk lenses, keeping the primary language lens first, pruning low-value `core/tests` / `core/code-review` from routine source or mechanical packets when another lens remains, and capping the final list.
@@ -1350,8 +1350,8 @@ Lens execution rules:
 
 - Run one composite model task per scheduled packet, with the selected lenses projected into that task.
 - Do not run one model call per lens by default.
-- Project and cap skill prompt sections so large skill files do not dominate prompts. Packet review receives Checks, False Positives, and optional Examples; targeted Stage 8 review receives Checks, False Positives, and Safe Patterns; verification receives False Positives and Safe Patterns; the planner receives one-line summaries only; the composer receives none. A per-skill projection cap and a total skill-content cap per prompt apply, with truncation recorded in telemetry. Defaults: 4000 chars per skill projection, 12000 chars total per prompt.
-- Derive every produced item's ordered skill provenance from its actual prompt projection. Direct Stage-7/8 findings store it in `producedBy.skillIds`; Stage-7 hints and uncertainties store it in `projectedSkillIds`, and promotions inherit the selected source item's list. Stage 9 resolves only those recorded ids, drops unknown or language-incompatible ids, and never infers guidance from `lensId`.
+- Project and cap skill prompt sections so large skill files do not dominate prompts. Packet review receives Checks, False Positives, and optional Examples; verification receives False Positives and Safe Patterns; the planner receives one-line summaries only; the composer receives none. A per-skill projection cap and a total skill-content cap per prompt apply, with truncation recorded in telemetry. Defaults: 4000 chars per skill projection, 12000 chars total per prompt.
+- Derive every produced item's ordered skill provenance from its actual prompt projection. Direct Stage-7 findings store it in `producedBy.skillIds`; Stage-7 hints and uncertainties store it in `projectedSkillIds`, and promotions inherit the selected source item's list. Stage 9 resolves only those recorded ids, drops unknown or language-incompatible ids, and never infers guidance from `lensId`.
 - Use coverage-aware execution profiles:
   - `simple`: one structured call with no repository tools; used for light or obvious mechanical packets.
   - `standard`: one structured/tool-capable task with focused review instructions and a reduced normal-mode tool budget.
@@ -1664,7 +1664,6 @@ type ToolCallRecord = {
   initiator: "model" | "harness" // model = issued inside an LLM tool loop; harness = deterministic pipeline use
   workerId?: string
   packetId?: string
-  taskId?: string // Stage 8 targeted system follow-up task id
   candidateId?: string // verifier-issued calls
   modelCallId?: string // joins to model-calls.jsonl: the LLM call whose loop step issued this tool call
   tool: string
@@ -1971,7 +1970,7 @@ Group summaries, per-group sub-planners, and a meta-planner merging group plans 
 
 ### Broad Cross-File System Review
 
-The shipped Stage 8 is intentionally narrow: it builds at most a few focused system-review tasks only from repeated, scoped Stage 7 follow-up hints. A broader cross-file system review remains deferred. Deferred shapes:
+A cross-file system review remains deferred. The narrow repeated-hint Stage 8 that shipped earlier was deleted in #114 after an archive review found no candidates and unreliable hint resolutions. Deferred shapes:
 
 ```ts
 type SystemFollowUpTask = {
@@ -1992,11 +1991,11 @@ type SystemReviewResult = {
 }
 ```
 
-With the broad stage, the following return: `ReviewPlan.systemFollowUpTasks` (planner-emitted tasks that must name files or symbols), richer promotion rules (packet hints, candidate findings, and structured uncertainties become tasks through a typed signal index), context-isolated system workers with per-task file/symbol constraints and larger but explicit budgets, the `{ kind: "system_task"; stage; taskId; relatedPacketIds; lensId; skillIds; workerId? }` `FindingProducer` variant if distinct producer provenance is needed, the `"system_follow_up"` value in `SurroundingContextHint.expectedUse`, and a `systemReview` config block (`maxTasks`, `maxFilesPerTask`, `maxToolCallsPerTask`, `maxResultChars`, `taskTimeoutMs`). The cross-packet `ReviewSignal` index (next subsection) belongs to this same future. Trigger: hint-only eval losses show real cross-file misses that packet review plus the narrow repeated-hint Stage 8 do not surface.
+With the broad stage, the following return: `ReviewPlan.systemFollowUpTasks` (planner-emitted tasks that must name files or symbols), richer promotion rules (packet hints, candidate findings, and structured uncertainties become tasks through a typed signal index), context-isolated system workers with per-task file/symbol constraints and larger but explicit budgets, the `{ kind: "system_task"; stage; taskId; relatedPacketIds; lensId; skillIds; workerId? }` `FindingProducer` variant if distinct producer provenance is needed, the `"system_follow_up"` value in `SurroundingContextHint.expectedUse`, and a `systemReview` config block (`maxTasks`, `maxFilesPerTask`, `maxToolCallsPerTask`, `maxResultChars`, `taskTimeoutMs`). The cross-packet `ReviewSignal` index (next subsection) belongs to this same future. Trigger: hint-only eval losses show real cross-file misses that packet review does not surface.
 
 ### Cross-packet ReviewSignal index
 
-Normalize planner tasks, packet hints, candidate findings, and uncertainties into typed signal records indexed by symbol, file, category, and configured labels, with graded promotion rules replacing the simple two-independent-mentions rule above:
+Normalize planner tasks, packet hints, candidate findings, and uncertainties into typed signal records indexed by symbol, file, category, and configured labels, with graded promotion rules:
 
 ```ts
 type ReviewSignal = {
@@ -2013,7 +2012,7 @@ type ReviewSignal = {
 }
 ```
 
-Trigger: evals show missed cross-file findings or noisy/duplicated Stage 8 tasks under the simple repeated-hint rule.
+Trigger: evals show missed cross-file findings.
 
 ### Planner scheduling groups
 
@@ -2062,7 +2061,7 @@ Opt-in execution of configured test/typecheck commands (`tools.testCommands` plu
 
 ### Per-role model and reasoning tiering
 
-`llm.roleModels` and `llm.roleReasoning` maps keyed by role (`planner`, `packetReview`, `systemReview`, `verifier`, `composer`) overriding the single `llm.model`/`llm.reasoning` per role. They remain provider-routing keys under the config trust partition (user-scoped sources only). Trigger: evals identify roles where cheaper models or lower reasoning hold review quality.
+`llm.roleModels` and `llm.roleReasoning` maps keyed by role (`planner`, `packetReview`, `verifier`, `composer`) overriding the single `llm.model`/`llm.reasoning` per role. They remain provider-routing keys under the config trust partition (user-scoped sources only). Trigger: evals identify roles where cheaper models or lower reasoning hold review quality.
 
 ### Rich pre-attached packet context
 

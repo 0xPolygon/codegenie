@@ -1,4 +1,5 @@
-export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+// Stage 8 (targeted system review) was deleted in #114; ids stay stable.
+export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11;
 
 export type ReviewDepth = "light" | "normal" | "deep";
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -905,7 +906,7 @@ export type PacketReviewResult = {
   uncertainties: StructuredUncertainty[];
   status: "completed" | "incomplete" | "failed" | "skipped";
   // Total Stage-7 passes that produced this result (first pass + adaptive
-  // second pass); absent on stage-8 system results.
+  // second pass).
   passesRun?: number;
   /** Supplemental investigation only; never substitutes for baseline coverage. */
   adaptiveReview?: AdaptiveReviewOutcome;
@@ -937,35 +938,6 @@ export type AdaptiveReviewCounts = {
 export type AdaptiveReviewSummary = {
   passes: Array<AdaptiveReviewOutcome & { packetId: string }>;
   counts: AdaptiveReviewCounts;
-};
-
-export type SystemReviewTask = {
-  id: string;
-  question: string;
-  reason: string;
-  confidence: Exclude<Confidence, "low">;
-  packetIds: string[];
-  files: string[];
-  symbols: string[];
-  suggestedLenses: string[];
-  representativeFindings: CandidateFinding[];
-  sourceHintKeys?: string[];
-  mergedTaskIds?: string[];
-};
-
-export type ResolvedFollowUpHint = {
-  taskId: string;
-  question: string;
-  files: string[];
-  symbols: string[];
-  resolution: string;
-};
-
-export type SystemReviewResult = {
-  diagnostics?: ReviewDiagnostic[];
-  tasks: SystemReviewTask[];
-  packetResults: PacketReviewResult[];
-  resolvedHints: ResolvedFollowUpHint[];
 };
 
 export type VerificationVerdict = {
@@ -1756,7 +1728,6 @@ export type ToolCallRecord = {
   initiator: "model" | "harness";
   workerId?: string;
   packetId?: string;
-  taskId?: string;
   candidateId?: string;
   modelCallId?: string;
   tool: string;
@@ -1803,7 +1774,6 @@ export type RepositoryToolCallContext = {
   record?: boolean;
   workerId?: string;
   packetId?: string;
-  taskId?: string;
   candidateId?: string;
   modelCallId?: string;
 };

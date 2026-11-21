@@ -180,11 +180,8 @@ describe("phase 6 live review path", () => {
         expect.objectContaining({ stage: 3, message: "stage_completed" }),
         expect.objectContaining({ stage: 7, message: "follow_up_hint" })
       ]));
-      expect(events).toEqual(expect.arrayContaining([
-        expect.objectContaining({ stage: 8, message: "stage_started" }),
-        expect.objectContaining({ stage: 8, message: "system_review_skipped" }),
-        expect.objectContaining({ stage: 8, message: "stage_completed" })
-      ]));
+      // Stage 8 (targeted system review) was deleted in #114.
+      expect(events.filter((event) => event.stage === 8)).toEqual([]);
       expect(deferredStage8Artifacts(runArtifactDir)).toEqual([]);
       expect(existsSync(path.join(runArtifactDir, "final-review.md"))).toBe(true);
       const finalReview = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
@@ -208,7 +205,7 @@ describe("phase 6 live review path", () => {
       expect(telemetryJson.stages["1"]).toMatchObject({ startedAt: expect.any(String), completedAt: expect.any(String) });
       expect(telemetryJson.stages["2"]).toMatchObject({ startedAt: expect.any(String), completedAt: expect.any(String) });
       expect(telemetryJson.stages["3"]).toMatchObject({ startedAt: expect.any(String), completedAt: expect.any(String) });
-      expect(telemetryJson.stages["8"]).toMatchObject({ startedAt: expect.any(String), completedAt: expect.any(String) });
+      expect(telemetryJson.stages).not.toHaveProperty("8");
       expect(telemetryJson.packets).toMatchObject({ generated: 1, reviewed: 1 });
       expect(telemetryJson.candidates).toMatchObject({ generated: 1, verificationScheduled: 1 });
       expect(telemetryJson.verdicts).toMatchObject({ accept: 1 });

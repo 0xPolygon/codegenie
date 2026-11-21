@@ -15402,7 +15402,6 @@ function fakePromptBuilder() {
     renderDossier: () => "",
     buildPlannerPrompt: () => ({ prompt: "", templateVersion: "test", untrustedBlockCount: 0 }),
     buildPacketReviewPrompt: () => ({ prompt: "", templateVersion: "test", untrustedBlockCount: 0 }),
-    buildSystemReviewPrompt: () => ({ prompt: "", templateVersion: "test", untrustedBlockCount: 0 }),
     buildVerifierPrompt: () => ({ prompt: "", templateVersion: "test", untrustedBlockCount: 0 }),
     buildComposerPrompt: () => ({ prompt: "", templateVersion: "test", untrustedBlockCount: 0 })
   };

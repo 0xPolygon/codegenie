@@ -8,6 +8,7 @@ import { provisionCodegenieGitignore } from "../telemetry/run-artifacts.js";
 import { stripCredentials } from "../telemetry/redaction.js";
 import { hasUncacheableReplaySignature, redactStoredResponseForReplay } from "./assistant-replay.js";
 import type { Logger, ReviewStage } from "../types.js";
+import { isReviewStage } from "../review-stages.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import type { ModelCallCache, PiAssistantMessage, StoredProviderResponse } from "./llm-runner.js";
 
@@ -346,10 +347,6 @@ function stageForTelemetry(requestStage: ReviewStage | undefined, parsed: unknow
     return requestStage;
   }
   return isRecord(parsed) && isReviewStage(parsed.stage) ? parsed.stage : 0;
-}
-
-function isReviewStage(input: unknown): input is ReviewStage {
-  return typeof input === "number" && Number.isInteger(input) && input >= 1 && input <= 11;
 }
 
 function isRecord(input: unknown): input is Record<string, unknown> {

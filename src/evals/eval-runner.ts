@@ -28,6 +28,7 @@ import { canonicalArtifactPath } from "../telemetry/run-artifacts.js";
 import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { sha256Hex } from "../util/hashing.js";
 import { safeDiagnosticLine } from "../util/review-health.js";
+import { isReviewStage, STAGES } from "../review-stages.js";
 import { resolveCodegenieRuntimeProvenance } from "../util/runtime-provenance.js";
 import {
   allocateRunDir,
@@ -248,9 +249,8 @@ const caseSchema = z
       }
     }
     for (const stage of Object.keys(evalCase.expect?.maxPromptCharsByStage ?? {})) {
-      const parsed = Number(stage);
-      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 11) {
-        ctx.addIssue({ code: "custom", path: ["expect", "maxPromptCharsByStage", stage], message: "stage keys must be numeric ids 1-11" });
+      if (!isReviewStage(Number(stage))) {
+        ctx.addIssue({ code: "custom", path: ["expect", "maxPromptCharsByStage", stage], message: `stage keys must be current pipeline stage ids (${STAGES.filter((definition) => definition.stage !== 0).map((definition) => definition.stage).join(", ")})` });
       }
     }
     const expectationIds = [

@@ -359,6 +359,20 @@ describe("removed review.deepEnsemblePasses (#115)", () => {
   });
 });
 
+describe("eval stage keys after Stage 8 removal (#114)", () => {
+  it("rejects a maxPromptCharsByStage key for the deleted Stage 8", async () => {
+    const evalCase = (stages: Record<string, number>) => {
+      const dir = tempDir();
+      writeFileSync(path.join(dir, "eval.yml"), JSON.stringify({ name: "example", artifacts: { path: "logs/1" }, expect: { maxPromptCharsByStage: stages } }));
+      return loadEvalSuite(dir);
+    };
+    await expect(evalCase({ "7": 1000 })).resolves.toMatchObject({ cases: [expect.anything()] });
+    await expect(evalCase({ "8": 1000 })).rejects.toMatchObject({
+      context: { errors: [expect.stringContaining("maxPromptCharsByStage")] }
+    });
+  });
+});
+
 function tempDir(): string {
   return mkdtempSync(path.join(tmpdir(), "codegenie-"));
 }

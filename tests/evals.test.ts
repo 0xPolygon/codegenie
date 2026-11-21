@@ -2771,3 +2771,11 @@ function findNestedGitDirs(root: string): string[] {
   }
   return found;
 }
+
+it("ignores legacy Stage 8 model calls in per-stage prompt metrics (#114)", () => {
+  const score = scoreEvalRun({ name: "legacy-stage-8", artifacts: { path: "unused" } }, {
+    candidates: [], verification: [], finalSelection: [], finalFindings: [], packets: [], hintEvents: [],
+    metricsSources: { modelCalls: [{ stage: 7, promptChars: 100 }, { stage: 8, promptChars: 500 }] }
+  }, "live");
+  expect(score.metrics.maxPromptCharsByStage).toEqual({ 7: 100 });
+});

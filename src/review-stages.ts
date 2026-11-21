@@ -17,11 +17,17 @@ export const STAGES = [
   { stage: 5, slug: "05-planner", label: "planning review" },
   { stage: 6, slug: "06-packets", label: "building review packets" },
   { stage: 7, slug: "07-review", label: "reviewing hunks" },
-  { stage: 8, slug: "08-followups", label: "checking follow-ups" },
   { stage: 9, slug: "09-verification", label: "verifying findings" },
   { stage: 10, slug: "10-composition", label: "composing review" },
   { stage: 11, slug: "11-github-posting", label: "github posting" }
 ] as const satisfies readonly ReviewStageDefinition[];
+
+const REVIEW_STAGE_IDS: ReadonlySet<number> = new Set(STAGES.map((definition) => definition.stage).filter((stage) => stage !== 0));
+
+/** True only for a current pipeline stage; legacy ids (Stage 8, deleted in #114) are rejected. */
+export function isReviewStage(input: unknown): input is ReviewStage {
+  return typeof input === "number" && REVIEW_STAGE_IDS.has(input);
+}
 
 export const STAGE_LABELS: Record<ReviewStageNumber, string> = STAGES.reduce(
   (labels, stage) => {

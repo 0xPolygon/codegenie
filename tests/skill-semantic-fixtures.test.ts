@@ -100,7 +100,7 @@ describe("Plan 101 language-skill semantic fixtures", () => {
         packet!.language
       );
       expect(skills.filter((skill) => skill.id.startsWith("lang/")).map((skill) => skill.id)).toEqual([semanticCase.lens]);
-      for (const stage of [7, 8, 9] as const) {
+      for (const stage of [7, 9] as const) {
         const projection = projectSkills(skills, stage);
         expect(projection.perSkill.every((entry) => !entry.omitted && entry.truncatedChars === 0), `${semanticCase.language} stage ${String(stage)}`).toBe(true);
       }

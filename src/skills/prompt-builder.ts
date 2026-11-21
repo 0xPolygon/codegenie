@@ -4,8 +4,7 @@ import type {
   PlannerDossier,
   ReviewPacket,
   ReviewStage,
-  RunCoverageStatus,
-  SystemReviewTask
+  RunCoverageStatus
 } from "../types.js";
 import type { Skill, SkillSectionName } from "./skill-loader.js";
 import type { LensDescriptor, LensRegistry } from "./lens-registry.js";
@@ -56,7 +55,6 @@ export type PromptBuilder = {
   renderDossier(dossier: PlannerDossier): string;
   buildPlannerPrompt(input: { dossier: PlannerDossier; lenses: LensDescriptor[]; skills: Skill[] }): BuiltPrompt;
   buildPacketReviewPrompt(input: { packet: ReviewPacket; skills: Skill[] }): BuiltPrompt;
-  buildSystemReviewPrompt(input: { task: SystemReviewTask; skills: Skill[] }): BuiltPrompt;
   buildVerifierPrompt(input: {
     candidate: CandidateFinding;
     originContext: string;
@@ -74,10 +72,9 @@ export type PromptBuilder = {
   }): BuiltPrompt;
 };
 
-export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 8 | 9 | 10, string> = {
+export const PROMPT_TEMPLATE_VERSIONS: Record<5 | 7 | 9 | 10, string> = {
   5: "p5.8",
   7: "p7.16",
-  8: "p8.3",
   9: "p9.28",
   10: "p10.23"
 };
@@ -109,7 +106,7 @@ const SHARED_FOCUSED_REPAIR: PromptLedgerEntry = {
   evidence: "Plan 116 follow-up after run 81: user authorized deleting all unexpected keys, while missing required fields must still receive focused repair."
 };
 
-export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedgerEntry[]> = {
+export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 9 | 10, PromptLedgerEntry[]> = {
   5: [
     SHARED_SUBMIT_KEY_CHECK,
     SHARED_FOCUSED_REPAIR,
@@ -132,13 +129,6 @@ export const PROMPT_TEMPLATE_WHY_LEDGER: Record<5 | 7 | 8 | 9 | 10, PromptLedger
     { surface: "behaviorChange/intentEvidence", reason: "Preserves explicit framing for refactor-like or mixed-intent behavior changes through verification and composition.", evidence: "Plan 82 unknown-demotion fix and Plan 74 confidence calibration" },
     { surface: "staticSignals/lossy-transform guidance", reason: "Keeps validation-before-conversion and deliverable-bound checks visible where regressions have clustered.", evidence: "Fable D10 static-signal watch and Wave-era relay/hyperlane cases" },
     { surface: "strict submit_review closeout", reason: "Provider/tool dialect drift still produces extra fields and XML wrappers, so closeout remains load-bearing.", evidence: "Plan 95 census: 5 Stage-7 schema-invalid calls, 4 deterministic recoveries" }
-  ],
-  8: [
-    SHARED_SUBMIT_KEY_CHECK,
-    SHARED_FOCUSED_REPAIR,
-    { surface: "targeted repeated predicate", reason: "System review should resolve only repeated concrete follow-up predicates, not reopen general review.", evidence: "Plan 75 human-attention suppression and Plan 92 attention groups" },
-    { surface: "resolvedHints", reason: "Resolution records let Stage 10 suppress covered attention notes by exact predicate scope.", evidence: "Plan 75 step 1 adjudicated-reject suppression" },
-    { surface: "strict submit_system_review closeout", reason: "Keeps the follow-up lane structured and prevents plain-text system-review answers.", evidence: "Plan 95 no schema friction observed, retained as standing structured-call contract" }
   ],
   9: [
     { surface: "collected source evidence and bounded test claims", reason: "Reuse relevant complete tool deliveries across packets and distinguish a proven local assertion gap from global absence.", evidence: "OMSX 205254: validator body collected elsewhere but verifier only inspected search hits; 214916 overstates absence of transport validation." },
@@ -222,8 +212,7 @@ export const BUNDLED_SKILL_WHY_LEDGER: Record<string, PromptLedgerEntry[]> = {
     { surface: "external control and low-level call outcomes", reason: "Reentrancy and unchecked-call findings require a reachable invariant or required effect, while CEI, guards, checked calls, and reverting typed calls remain explicit safe cases.", evidence: "Plan 98 §4.2 checks 1-2 and owner acceptance matrix, 2026-07-23" },
     { surface: "asset units, authority, narrowing, and msg.value", reason: "Accounting and authorization reports must name the producer/consumer units, privileged effect, concrete lost range, or repeated full-value credit rather than matching casts, loops, or public functions alone.", evidence: "Plan 98 §4.2 checks 3-6 required unsafe/safe distinctions, 2026-07-23" },
     { surface: "delegate storage, oracle validity, and audit events", reason: "These checks are actionable only with a named storage invariant, freshness/nonzero consumer guarantee, or external event contract and exclude documented compatible layouts and optional events.", evidence: "Plan 98 §4.2 checks 7-9 and owner content gate, 2026-07-23" },
-    { surface: "current oracle validation contract", reason: "Fresh-price consumers must validate positive data, nonzero/nonfuture timestamps, feed-specific age, and units without relying on deprecated answeredInRound logic.", evidence: "Plan 101 marker-free stale-round Foundry positive/control fixture" },
-    { surface: "Stage-8 projection budget", reason: "Readable compact owner examples retain all nine checks while preventing silent loss of false-positive/safe guidance in system review.", evidence: "Plan 101 deterministic Stage-8 projection gate: 3784 characters" }
+    { surface: "current oracle validation contract", reason: "Fresh-price consumers must validate positive data, nonzero/nonfuture timestamps, feed-specific age, and units without relying on deprecated answeredInRound logic.", evidence: "Plan 101 marker-free stale-round Foundry positive/control fixture" }
   ]
 };
 
@@ -261,7 +250,6 @@ export type PlannerDossierProjectionStats = {
 
 const STAGE_SECTION_MAP: Partial<Record<ReviewStage, SkillSectionName[]>> = {
   7: ["checks", "falsePositives", "examples"],
-  8: ["checks", "falsePositives", "safePatterns"],
   9: ["falsePositives", "safePatterns"]
 };
 
@@ -324,20 +312,6 @@ export function createPromptBuilder(_registry: LensRegistry, options: ProjectSki
         ...blocks,
         "Finish by calling submit_review with schema-valid arguments only. Do not include extra properties, XML tags, <parameter> blocks, or markdown wrappers.",
         SUBMIT_REVIEW_SHAPE_GUIDANCE
-      ], projection, blocks.length);
-    },
-    buildSystemReviewPrompt: ({ task, skills }) => {
-      const projection = projectSkills(skills, 8, options);
-      const blocks = [
-        fenceUntrusted(stableJson(task), "system-review-task")
-      ];
-      return buildPrompt(8, [
-        reviewerFrame("targeted system follow-up review"),
-        injectionInstruction(),
-        "Resolve only the targeted repeated follow-up predicate from packet reviewers. Use repository tools if they can materially confirm or reject a concrete failure mode. Produce findings only with direct evidence; otherwise return no findings. Include a resolved hint only when the predicate is actually resolved, with files/symbols showing the scope covered.",
-        "Skill guidance:\n" + projection.text,
-        ...blocks,
-        "Finish by calling submit_system_review with schema-valid arguments. Do not answer in plain text."
       ], projection, blocks.length);
     },
     buildVerifierPrompt: ({ candidate, originContext, collectedSourceEvidence, hunksText, intentSignals, skills }) => {
@@ -734,7 +708,7 @@ export function fenceUntrusted(content: string, label: string): string {
 }
 
 function buildPrompt(
-  stage: 5 | 7 | 8 | 9 | 10,
+  stage: 5 | 7 | 9 | 10,
   parts: string[],
   projection: SkillProjection | undefined,
   untrustedBlockCount: number

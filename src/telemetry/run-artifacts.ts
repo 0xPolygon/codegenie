@@ -64,9 +64,6 @@ export const ARTIFACT_LOCATION = {
   "planner-dossier-chunks.json": "stages/05-planner/planner-dossier-chunks.json",
   "review-plan.json": "stages/05-planner/review-plan.json",
   "hunk-relationships.json": "stages/06-packets/hunk-relationships.json",
-  "system-review-raw-tasks.json": "stages/08-followups/system-review-raw-tasks.json",
-  "system-review-tasks.json": "stages/08-followups/system-review-tasks.json",
-  "system-review-results.json": "stages/08-followups/system-review-results.json",
   "candidate-findings.json": "stages/09-verification/candidate-findings.json",
   "uncertainty-promotion.json": "stages/09-verification/uncertainty-promotion.json",
   "verification.json": "stages/09-verification/verification.json",
@@ -1367,7 +1364,7 @@ class RunTelemetryImpl {
   private allStageSummaries(): Record<string, TelemetryStageSummary> {
     const stages: Record<string, TelemetryStageSummary> = {};
     const schemaRecovery = this.finalSchemaRecoverySummary();
-    for (const stage of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]) {
+    for (const { stage } of STAGES) {
       const key = String(stage);
       stages[String(stage)] = {
         ...emptyTelemetryStageSummary(),

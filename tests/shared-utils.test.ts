@@ -134,7 +134,7 @@ describe("bundled skills: provenance ledger and projection caps", () => {
     }
   });
 
-  it("every bundled skill projects at stages 7, 8, and 9 without truncation or omission", async () => {
+  it("every bundled skill projects at stages 7 and 9 without truncation or omission", async () => {
     const noop = () => undefined;
     const loaded = await loadSkills({
       repoRoot: process.cwd(),
@@ -145,7 +145,7 @@ describe("bundled skills: provenance ledger and projection caps", () => {
     for (const id of bundledIds) {
       const skill = loaded.skills.find((entry) => entry.id === id);
       expect(skill, id).toBeDefined();
-      for (const stage of [7, 8, 9] as const) {
+      for (const stage of [7, 9] as const) {
         const projection = projectSkills([skill!], stage);
         const per = projection.perSkill[0]!;
         expect(per.omitted, `${id} stage ${String(stage)}`).toBe(false);
@@ -200,12 +200,11 @@ describe("bundled skills: provenance ledger and projection caps", () => {
       expect(stage9.text, skill.id).toContain("### Safe Patterns");
     }
     for (const language of loaded.skills.filter((skill) => skill.id.startsWith("lang/"))) {
-      for (const stage of [7, 8, 9] as const) {
+      for (const stage of [7, 9] as const) {
         const projection = projectSkills([language, ...core], stage);
         expect(projection.totalChars, `${language.id} stage ${String(stage)}`).toBeLessThanOrEqual(12_000);
         expect(projection.perSkill.every((entry) => !entry.omitted && entry.truncatedChars === 0), `${language.id} stage ${String(stage)}`).toBe(true);
       }
     }
-    expect(projectSkills([loaded.skills.find((skill) => skill.id === "lang/solidity")!], 8).totalChars).toBeLessThanOrEqual(3_800);
   });
 });

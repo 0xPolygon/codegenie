@@ -55,7 +55,6 @@ import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-bui
 import { runLensPackets } from "./lens-runner.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "./attention.js";
 import { applyCoverageEscalations } from "./coverage-escalation.js";
-import { runTargetedSystemReviews, suppressResolvedFollowUpHints } from "./system-reviewer.js";
 import { promoteUncertaintiesForVerification } from "./uncertainty-promotion.js";
 import { verifyFindings } from "./verifier.js";
 import { dedupeRankAndComposeReview, refreshReviewHealth, reviewRetainedOnCompositionFailure } from "./composer.js";
@@ -66,7 +65,7 @@ import { sha256Hex } from "../util/hashing.js";
 import { scaleOptionalBudgetValue } from "../util/budget.js";
 import { scheduleLongTimeout } from "../util/long-timeout.js";
 import { codegenieVersionInfo } from "../util/version-info.js";
-import { STAGE_LABELS } from "../review-stages.js";
+import { isReviewStage, STAGE_LABELS } from "../review-stages.js";
 
 type RunReviewOverrides = {
   repoRoot?: string;
@@ -255,19 +254,8 @@ export async function runReview(
       diff
     });
     throwIfHardAborted(run);
-    const systemReview = await runTargetedSystemReviews({ packetResults, packets }, repoIndex.tools, config, run.telemetry, {
-      runner: services.runner,
-      promptBuilder: services.promptBuilder,
-      lensRegistry: services.lensRegistry,
-      signal: run.abort.signal,
-      checkpoint: (stage) => run.budget.checkpoint(stage),
-      diff
-    });
-    throwIfHardAborted(run);
-    const allPacketResults = [...packetResults, ...systemReview.packetResults];
-    const packetResultsForFinal = suppressResolvedFollowUpHints(allPacketResults, systemReview.resolvedHints);
     const promoted = await promoteUncertaintiesForVerification(
-      { packetResults: packetResultsForFinal, packets, budgetBoost: config.review.budgetBoost },
+      { packetResults, packets, budgetBoost: config.review.budgetBoost },
       run.telemetry
     );
     const packetResultsForVerification = promoted.packetResults;
@@ -310,7 +298,6 @@ export async function runReview(
         }
       }
     });
-    coverage.diagnostics = [...(coverage.diagnostics ?? []), ...(systemReview.diagnostics ?? [])];
     discloseSkillLoadFailures(coverage, services.skills, services.skillFailures);
     const repositoryPaths = await (await SourceResolver.create(resolved)).listFiles();
     const finalReview = await dedupeRankAndComposeReview(verified, plannerResult.plan, resolved, coverage, config, run.telemetry, {
@@ -333,7 +320,7 @@ export async function runReview(
     const attentionRecords = buildAttentionRecords({
       packets,
       plannedHunkIds: new Set(plannerResult.plan.coverage.map((decision) => decision.hunkId)),
-      packetResults: packetResultsForFinal,
+      packetResults,
       candidateFindings,
       verdicts: verified.verdicts,
       publishedFindings: [...finalReview.findings, ...finalReview.summaryOnlyFindings]
@@ -1796,8 +1783,4 @@ function unreservedBudget(max: number): number {
 
 function reservedBudgetAmount(max: number): number {
   return max - unreservedBudget(max);
-}
-
-function isReviewStage(stage: number): stage is ReviewStage {
-  return Number.isInteger(stage) && stage >= 1 && stage <= 11;
 }

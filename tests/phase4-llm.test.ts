@@ -43,7 +43,6 @@ import {
   type SubmitComposition,
   SubmitPacketReviewSchema,
   SubmitPlanSchema,
-  SubmitSystemReviewSchema,
   type SubmitVerificationVerdict,
   SubmitVerificationVerdictSchema,
   submitToolNameForStage
@@ -91,7 +90,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
   it("rejects hallucinated fields and exposes stage submit tool names", () => {
     expect(submitToolNameForStage(5)).toBe("submit_plan");
     expect(submitToolNameForStage(7)).toBe("submit_review");
-    expect(submitToolNameForStage(8)).toBe("submit_system_review");
+    expect(() => submitToolNameForStage(8 as never)).toThrow("stage 8 does not have a submit schema");
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
     expect(SCHEMA_VERSIONS.submit_plan).toBe(6);
@@ -214,15 +213,15 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(JSON.stringify(manyIssues)).not.toContain(secret);
   });
 
-  it("extracts Stage 8 diagnostics and rejects mismatched stage/role identities", () => {
+  it("extracts verifier diagnostics and rejects mismatched stage/role identities", () => {
     const diagnostic = buildStructuredSubmitFailureDiagnostic({
-      stage: 8,
-      role: "systemReview",
-      submitTool: "submit_system_review",
+      stage: 9,
+      role: "verifier",
+      submitTool: "submit_verdict",
       submitSchemaVersion: 1,
       attempt: "repair",
-      schema: SubmitSystemReviewSchema,
-      validationMessage: "  - findings: required property\n\nReceived arguments:\n{}"
+      schema: SubmitVerificationVerdictSchema,
+      validationMessage: "  - verdict: required property\n\nReceived arguments:\n{}"
     });
     const wrapped = (structuredSubmitFailure: unknown) => new CodegenieError(
       "llm_schema_invalid",
@@ -233,6 +232,8 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(structuredSubmitFailureDiagnosticFromError(wrapped(diagnostic))).toEqual(diagnostic);
     expect(structuredSubmitFailureDiagnosticFromError(wrapped({ ...diagnostic, role: "planner" }))).toBeUndefined();
     expect(structuredSubmitFailureDiagnosticFromError(wrapped({ ...diagnostic, stage: 7 }))).toBeUndefined();
+    // Stage 8 (targeted system review) was deleted; its identity no longer parses.
+    expect(structuredSubmitFailureDiagnosticFromError(wrapped({ ...diagnostic, stage: 8, role: "systemReview", submitTool: "submit_system_review" }))).toBeUndefined();
   });
 
   it("exposes model-facing submit schemas without pipeline-owned fields", () => {
@@ -5604,16 +5605,14 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     }
   });
 
-  it.each([7, 8, 9] as const)("permits continuation past each soft target and finalizes at each hard ceiling in stage %i", async stage => {
+  it.each([7, 9] as const)("permits continuation past each soft target and finalizes at each hard ceiling in stage %i", async stage => {
     for (const dimension of ["maxToolCalls", "maxInvestigationRounds", "maxResultChars"] as const) {
       const telemetry = fakeTelemetry();
       const execute = vi.fn(async () => ({ text: "0123456789" }));
       const read = (id: string): PiToolCall => ({ type: "toolCall", id, name: "read_range", arguments: { path: "policy.custom" } });
       const adapter = scriptedAdapter([
         assistant([read("first")]), assistant([read("continuation")]),
-        assistant([stage === 7 ? validSubmitReviewCall("done") : stage === 8
-          ? { type: "toolCall", id: "done", name: "submit_system_review", arguments: { findings: [], resolvedHints: [] } }
-          : validSubmitVerdictCall("done")])
+        assistant([stage === 7 ? validSubmitReviewCall("done") : validSubmitVerdictCall("done")])
       ]);
       const soft = { maxToolCalls: 10, maxInvestigationRounds: 10, maxResultChars: 1000,
         [dimension]: dimension === "maxResultChars" ? 10 : 1 };
@@ -5623,7 +5622,6 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       const common = { tools: [{ name: "read_range", description: "read", parameters: Type.Object({ path: Type.String() }), execute }],
         toolBudget: { ...soft, sourceExtension: { maxToolCalls: 100, maxResultChars: 10000 } }, timeoutMs: 1000 };
       if (stage === 7) await runner.runStructured({ ...submitReviewRequest("soft-hard"), ...common });
-      else if (stage === 8) await runner.runStructured({ stage: 8, prompt: "review system", schema: SubmitSystemReviewSchema, templateVersion: "test", ...common });
       else await runner.runStructured({ stage: 9, prompt: "verify", schema: SubmitVerificationVerdictSchema, templateVersion: "test", ...common });
 
       expect(adapter.toolNames[1]).toContain("read_range");
@@ -6963,6 +6961,12 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     );
     await expect(cache.get(malformedContentKey, 7)).resolves.toEqual({ status: "miss", reason: "invalid_entry" });
     expect(existsSync(malformedContentPath)).toBe(false);
+    // A stale record from the deleted Stage 8 (#114) is not a current stage.
+    const legacyStageKey = "legacy-stage-8";
+    const legacyStagePath = modelCallCacheEntryPath(path.join(repoRoot, ".codegenie", "cache"), legacyStageKey);
+    mkdirSync(path.dirname(legacyStagePath), { recursive: true });
+    writeFileSync(legacyStagePath, `${JSON.stringify({ ...cacheEntry(7), stage: 8 })}\n`);
+    await expect(cache.get(legacyStageKey)).resolves.toEqual({ status: "miss", reason: "invalid_entry" });
     expect(telemetry.events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -7590,12 +7594,12 @@ it("keeps bounded redacted key/type feedback with a non-composition custom repai
   registerSecret(secret);
   const adapter = scriptedAdapter([
     {}, { decison: "accept", [secret]: "unused" }, { decision: "accept" }
-  ].map((arguments_, i) => assistant([{ type: "toolCall", id: `s${i}`, name: "submit_system_review", arguments: arguments_ }])));
+  ].map((arguments_, i) => assistant([{ type: "toolCall", id: `s${i}`, name: "submit_verdict", arguments: arguments_ }])));
   const schema = Type.Object({ decision: Type.String() }, { additionalProperties: false });
   const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
     telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
     hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
-  await expect(runner.runStructured({ stage: 8, prompt: "review", schema, templateVersion: "test", timeoutMs: 1000,
+  await expect(runner.runStructured({ stage: 9, prompt: "review", schema, templateVersion: "test", timeoutMs: 1000,
     schemaRepair: { createFieldRepair: (schema, original) => {
       const repair = createFieldRepair(schema, original, true)!;
       return { ...repair, schema: Type.Object({ decision: Type.Optional(Type.String()) }, { additionalProperties: false, minProperties: 1 }),

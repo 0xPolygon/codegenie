@@ -16,9 +16,8 @@ This document owns:
 - Planner invocation, planner output validation, deterministic planner fallbacks, and the degraded-planning default plan.
 - Deterministic dossier compaction and deterministic chunked planning for oversized dossiers, including mechanical plan concatenation.
 - The Stage 6 packet builder: the elaborated packet construction algorithm, coalescing rules, size limits, oversized-hunk truncation, packet identity, and coverage/lens fallbacks.
-- The worker runner: scheduling, bounded concurrency, prompt isolation, retry policy, timeouts, and cancellation for Stage 7, optional Stage 8, and Stage 9 worker-style model tasks.
+- The worker runner: scheduling, bounded concurrency, prompt isolation, retry policy, timeouts, and cancellation for Stage 7 and Stage 9 worker-style model tasks.
 - Stage 7 lens execution rules, coverage-aware execution profiles, and packet result validation.
-- Stage 8 targeted system follow-up: repeated scoped packet hints become at most a few focused system-review tasks; isolated hints remain human-attention notes.
 - Stage 9 verification orchestration: deterministic pre-verification gates, duplicate pre-clustering for verifier scheduling, verifier dispatch, and verdict handling.
 - Stage 10 composition: deterministic pre-grouping, the single composer LLM call, deterministic post-processing, cap enforcement, needs-human-attention hint notes, and the deterministic fallback composition.
 - Failure and budget semantics: per-stage terminal policies, budget checkpoints, the approximately-15% Stage 9-10 reservation, the budget exhaustion ladder, the 2x hard kill, and `RunCoverageStatus` aggregation.
@@ -34,7 +33,7 @@ Explicitly not this component's responsibility (one-line pointers only):
 
 All data contracts referenced here (`ReviewInput`, `ResolvedReviewInput`, `UnifiedDiff`, `DiffFile`, `DiffHunk`, `FileFacts`, `FileFilterDecision`, `HunkSymbolFacts`, `StaticSignal`, `ReviewPlan`, `HunkCoverageDecision`, `SurroundingContextHint`, `ReviewPacket`, `PacketHunk`, `PacketLine`, `PacketContext`, `ToolBudget`, `PacketReviewResult`, `FollowUpHint`, `CandidateFinding`, `DiffAnchor`, `FindingProducer`, `VerificationVerdict`, `FinalFinding`, `RunCoverageStatus`, `ReviewResult`, `CodegenieConfig`, `RepositoryIndex`, `LlmRunner`) are defined in `architecture.md` and the functional spec and are not redefined here. The only type this document defines is the planner dossier (`PlannerDossier` and its `Dossier*` member records), which `architecture.md` explicitly delegates to this document.
 
-Anything listed under Future Considerations in the parent specs — hierarchical planning and the meta-planner, the broad cross-file system review beyond the narrow Stage 8 repeated-hint rule, the cross-packet `ReviewSignal` index, planner scheduling groups, the changed-symbol graph, diff-file input mode, spec-doc discovery, existing-PR-thread hints, per-role model/reasoning tiering, and rich pre-attached packet context — is deferred and not designed here.
+Anything listed under Future Considerations in the parent specs — hierarchical planning and the meta-planner, the broad cross-file system review, the cross-packet `ReviewSignal` index, planner scheduling groups, the changed-symbol graph, diff-file input mode, spec-doc discovery, existing-PR-thread hints, per-role model/reasoning tiering, and rich pre-attached packet context — is deferred and not designed here.
 
 ## Public Interface
 
@@ -240,7 +239,7 @@ Sequencing rules:
 - Stage 5 planning must complete before any packet review. Chunked planner calls for oversized dossiers are the only intra-stage-5 parallelism, bounded by `llm.maxConcurrentCalls`.
 - After Stage 6 completes and before any Stage 7 dispatch, the orchestrator calls the tools host's `bindPackets(packets)` (`RepositoryToolsHost`, `components/context_and_tools.md`) so `readDiffBlocks(packetId)` lookups resolve for stage 7-9 workers; path lookups work without binding.
 - Stage 7 packet workers run with bounded concurrency (`review.concurrency`); packets are independent by construction (never span files, isolated worker context), so all packets may run concurrently up to the limit.
-- Stage 8 targeted system review runs after all Stage 7 workers have settled, but only when repeated scoped follow-up hints create tasks. If no task is built, Stage 8 emits skipped/completed telemetry and performs no model work. Stage 9 verifier calls then run with bounded concurrency after Stage 8 has either skipped or settled.
+- Stage 9 verifier calls run with bounded concurrency after all Stage 7 workers (including adaptive second passes) have settled. Stage 8 (targeted system follow-up) was deleted in #114.
 - Stage 10 composition and stage 11 publishing are strictly sequential and always run (composition runs even under budget exhaustion; publishing only when requested).
 - `renderOutputs` runs after `maybePublishToGitHub`, per the architecture main algorithm: in posting mode the concise stdout summary renders from Stage 11's results, and its schema is the publisher's posting record (owned by `components/repository_and_github.md`); in non-posting mode `posting` is empty and rendering is unaffected by the ordering.
 - `candidate-findings.json` persists all candidates produced by Stage 7 (pre-gate), so evals can attribute losses to gates, verification, or composition.
@@ -479,7 +478,7 @@ Step 5 — conservative grouping (hunk-first files). Default is one packet per h
 
 Otherwise the current group closes and a new group starts. Groups of one produce kind `hunk`; groups of more than one produce kind `coalesced-hunks`, except a group containing every hunk of the file, which produces kind `file-diff`. Grouping is stable: same diff and facts produce identical groups.
 
-Step 6 — no cross-file packets. Cross-file concerns are recorded as packet follow-up hints; repeated scoped hints may later trigger the narrow Stage 8 targeted system follow-up, while isolated or unresolved hints remain telemetry plus report notes. The builder itself never creates cross-file packets.
+Step 6 — no cross-file packets. Cross-file concerns are recorded as packet follow-up hints, which remain telemetry plus report notes. The builder itself never creates cross-file packets.
 
 Step 7 — context attachment. For each packet, the builder calls the tools host's `buildPacketContext(file, hunks, symbolFacts)` (`RepositoryToolsHost`, `components/context_and_tools.md` owns retrieval; the builder owns the budget and assembly order). The call returns the `PacketContext` (path, package name, enclosing function/type/method), the file outline, the likely-tests list the builder assigns to `relevantTests` (`ReviewPacket.relevantTests` is the single carrier of likely tests; `PacketContext` has no tests field), and an optional degradation note that sets `ReviewPacket.degraded`. Richer pre-attached context — changed-node summaries, nearby imports, sibling symbols — is deferred (see architecture.md Future Considerations); reviewers fetch it on demand with read-only tools. The planner's `surroundingContextHints` are attached alongside. Hints with `expectedUse: "packet_context"` are resolved into context content now; hints with `expectedUse: "tool_lookup"` are passed through on the packet for the worker. The relationship graph may attach bounded `relatedChangedContext` snippets for mechanically related changed hunks/symbols. The builder renders the retrieved deterministic context into `ReviewPacket.contextText`, filling `maxContextChars` in priority order — enclosing symbol source, file outline, likely tests, resolved hint extracts — truncating in reverse priority order and recording truncation in telemetry. The builder also fills `ReviewPacket.intentText` with the dossier's declared-intent projection (PR title/body extract, already fenced as untrusted data, capped at ~1000 chars). Deletion-only packets set `isDeletedContent: true` and attach base-revision context when available; when base content is unavailable the packet carries `degraded: { reason }` for coverage disclosure.
 
@@ -518,11 +517,11 @@ Tool budget table (implementation defaults; base budget by packet profile and co
 
 ### Worker Runner
 
-The worker runner (`src/pipeline/worker-runner.ts`) is the shared execution substrate for Stage 7 packet workers, optional Stage 8 system-review tasks, and Stage 9 verifier calls — one worker type. It is codegenie-owned and sub-agent-like (focused child tasks, fresh context, parallel workers, compact result handoff, parent-controlled synthesis); it must not depend on the `pi-subagents` package.
+The worker runner (`src/pipeline/worker-runner.ts`) is the shared execution substrate for Stage 7 packet workers and Stage 9 verifier calls — one worker type. It is codegenie-owned and sub-agent-like (focused child tasks, fresh context, parallel workers, compact result handoff, parent-controlled synthesis); it must not depend on the `pi-subagents` package.
 
 Scheduling:
 
-- A priority queue ordered by: task priority (`critical > high > normal > low`), then coverage level for packet tasks (`deep > normal > light`), then lexicographic `dispatchRank` when both tasks carry one, then stable insertion order. Both initial and adaptive Stage-7 packet tasks copy the packet rank. Stage 8 and Stage 9 tasks omit it and therefore retain their previous byte-identical ordering. Packet task priority derives from the packet's max configured `reviewPriority` across its hunks' files.
+- A priority queue ordered by: task priority (`critical > high > normal > low`), then coverage level for packet tasks (`deep > normal > light`), then lexicographic `dispatchRank` when both tasks carry one, then stable insertion order. Both initial and adaptive Stage-7 packet tasks copy the packet rank. Stage 9 tasks omit it and therefore retain their previous byte-identical ordering. Packet task priority derives from the packet's max configured `reviewPriority` across its hunks' files.
 - Bounded concurrency via `p-limit` at `review.concurrency`; LLM provider calls are additionally capped by `llm.maxConcurrentCalls` inside the LLM runner.
 - Before each dispatch, the runner calls the budget ledger checkpoint. On exhaustion it stops dispatching: remaining queued tasks settle as `not_dispatched` and the stage records them per the budget ladder (Stage 7: hunks not reviewed, partial disclosure; Stage 9: reserved-slice rules apply).
 - Under budget pressure, higher-priority tasks dispatch first — this is the priority queue's only job in v1; there are no planner scheduling groups (Future Considerations).
@@ -559,7 +558,7 @@ Outcome handling:
 Execution rules:
 
 - One composite model task per packet. All selected lenses are projected into that single task; there is never one model call per lens. Skill projection for the review stage includes only Checks, False Positives, and Examples sections, capped at 4000 chars per skill and 12000 chars total per prompt, with truncation recorded in telemetry (projection mechanics owned by `components/skills_llm_telemetry.md`).
-- Before Stage 7 projection, skills are defensively filtered to language-neutral skills or skills whose `languages` contains the packet's canonical language. Stage 9 reapplies the same rule to the recorded producing skills using the candidate packet/diff language, preventing JavaScript/TypeScript/Rust/Python/Solidity content from entering one another's verifier prompts or Go prompts. A targeted Stage-8 task may deliberately span languages; it records the exact skills its task prompt actually projected, and Stage 9 performs the candidate-specific filter.
+- Before Stage 7 projection, skills are defensively filtered to language-neutral skills or skills whose `languages` contains the packet's canonical language. Stage 9 reapplies the same rule to the recorded producing skills using the candidate packet/diff language, preventing JavaScript/TypeScript/Rust/Python/Solidity content from entering one another's verifier prompts or Go prompts.
 - Coverage-aware execution profiles:
   - `light`: one structured call; tiny optional read-only tool budget (table above); compact prompting biased toward submitting immediately.
   - `normal`: one structured, tool-capable task; real read-only tool access; focused review instructions; bounded investigation.
@@ -580,23 +579,6 @@ Result validation, applied in pipeline code to each schema-valid `PacketReviewRe
 - Prompt size, token usage, runtime, and `status` are recorded per worker. `PacketReviewResult` carries no tool-usage data: tool calls and files read live in the always-on `tool-calls.jsonl` `ToolCallRecord`s, and readers join them on `workerId`.
 
 All candidates (pre-gate) are persisted to `candidate-findings.json`.
-
-### Stage 8: Targeted System Follow-Up
-
-Stage 8 is a narrow follow-up stage for repeated unresolved questions, not a broad cross-file review pass. It runs only after Stage 7 has produced packet results, and it skips itself when no repeated scoped follow-up hint exists.
-
-Behavior:
-
-- Packet `followUpHints` are validated for pointer-richness and recorded as Stage 7 telemetry events.
-- Low-confidence hints never schedule Stage 8 work.
-- Medium- and high-confidence hints are grouped by normalized question plus concrete file/symbol scope.
-- A task is created only when more than one packet raises the same scoped question.
-- Stage 8 builds at most a few tasks per run and schedules them through the shared worker runner.
-- Each task carries the repeated question, involved packets, concrete files/symbols, suggested lenses, representative findings, and a tight repository-tool budget.
-- Stage 8 may return candidate findings, resolved hint notes, or no output.
-- Candidate findings produced by Stage 8 are stamped with the exact ordered, non-omitted ids from the Stage-8 prompt projection, appended to the candidate pool, and pass through normal Stage 9 verification. Resolved hints do not become candidates and need no provenance carrier.
-- Resolved hints suppress duplicate human-attention notes for the same scoped question.
-- Hints that are not scheduled or not resolved still surface as "needs human attention" notes in the composed report.
 
 ### Stage 9: Verification Orchestration
 
@@ -759,7 +741,7 @@ Packet builder:
 
 Worker runner and lens execution:
 
-- `workers_respect_concurrency_and_priority`: with `review.concurrency = 2` and mixed priorities, at most two tasks run concurrently and Stage 7 dispatch follows priority, coverage, packet rank, then stable order; unranked Stage 8/9 tasks retain stable order.
+- `workers_respect_concurrency_and_priority`: with `review.concurrency = 2` and mixed priorities, at most two tasks run concurrently and Stage 7 dispatch follows priority, coverage, packet rank, then stable order; unranked Stage 9 tasks retain stable order.
 - `workers_isolated_context`: two packet workers' prompts share no conversation state; each result carries its own `workerId`/`packetId`.
 - `workers_stage7_single_retry`: a transient packet failure re-dispatches once; a second failure yields `status: "failed"` and `review_failed` coverage records for all packet hunks.
 - `workers_timeout_and_cancellation`: `perPassTimeoutMs` is a soft deadline — after it, the pass dispatches no further investigation calls and is routed to one forced finalize; the worker is aborted as terminal only at the hard deadline (`perPassTimeoutMs + finalizeGraceMs`, plan 85). The 2x run-level hard kill cancels in-flight workers immediately and still writes telemetry. Timed-out passes are not re-dispatched.
@@ -770,11 +752,9 @@ Worker runner and lens execution:
 - `lens_candidate_ids_and_producer`: candidate ids follow `"<packet8>-f<seq>"`; `producedBy` is stamped deterministically with stage 7, the packet id, the packet's primary (first) lens, that lens's skill ids, and the worker id; the model output contains no lens claim to honor.
 - `lens_vague_hints_dropped`: a hint without files and symbols is dropped; a pointer-rich hint survives.
 
-Follow-up hints and Stage 8:
+Follow-up hints:
 
 - `hints_medium_high_surface_as_report_notes`: medium- and high-confidence packet hints land as deduplicated `ReviewResult.needsHumanAttention` entries (question, files, symbols, reason, confidence), which renderers surface in the composed report and `postingPlan.reviewBody` embeds; low-confidence hints are telemetry-only.
-- `repeated_hints_schedule_stage8`: repeated medium/high-confidence hints with the same concrete file/symbol scope schedule a bounded Stage 8 task; isolated hints do not.
-- `stage8_resolved_hints_suppress_notes`: resolved Stage 8 hints suppress the matching human-attention notes; unresolved hints remain visible.
 - `hint_events_recorded_for_evals`: every surviving hint and uncertainty emits its Stage 7 telemetry event carrying packet id, question, files, symbols, and confidence.
 
 Stage 9:

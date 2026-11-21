@@ -990,7 +990,6 @@ function toolCallContextRecordFields(
   initiator: "model" | "harness";
   workerId?: string;
   packetId?: string;
-  taskId?: string;
   candidateId?: string;
   modelCallId?: string;
 } {
@@ -1002,7 +1001,6 @@ function toolCallContextRecordFields(
     initiator: context.initiator,
     ...(context.workerId !== undefined ? { workerId: context.workerId } : {}),
     ...(context.packetId !== undefined ? { packetId: context.packetId } : {}),
-    ...(context.taskId !== undefined ? { taskId: context.taskId } : {}),
     ...(context.candidateId !== undefined ? { candidateId: context.candidateId } : {}),
     ...(context.modelCallId !== undefined ? { modelCallId: context.modelCallId } : {})
   };
