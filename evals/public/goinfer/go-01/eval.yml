@@ -1,0 +1,16 @@
+name: go-01
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-01
+command:
+  base: 34bfca8d3010b8b30be1bdd561a70ec0a9619170
+  head: 37e4ad2fa6c99a26179bb4d6fd23ab15dd8da5a6
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+  - id: duplicate-load-leak
+    path: cmd/serve/admin.go
+    lineRange: [76, 81]
+    severityAtLeast: medium
+    failureModePattern: '^(?=[\s\S]*\b(?:duplicat\w*|rac\w*|concurren\w*|409|same[- ]name)\b)(?=[\s\S]*\b(?:leak\w*|unreleased|unclosed|(?:without|never|fails to|does not) clos\w*)\b)'

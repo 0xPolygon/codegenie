@@ -1,0 +1,15 @@
+name: go-11
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-11
+command:
+  base: a9297c9b571a368c1aa2b1e19731d04c2dc8314f
+  head: 9383547fcbbb5c37dee7c7177babe2e751948449
+review:
+  verify: true
+  debug: true
+  cache: false
+should_not_find:
+  - id: in-process-transport-anchor
+    path: internal/inproc/transport.go
+    lineRange: [22, 139]
+    severityAtLeast: medium

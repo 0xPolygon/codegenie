@@ -1,0 +1,15 @@
+name: go-10
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-10
+command:
+  base: 3d50ec1f8f4b9489e189748189c160fa6073a834
+  head: f02d0b534efdd9799aca87f72fe5c9fd0ae36b33
+review:
+  verify: true
+  debug: true
+  cache: false
+should_not_find:
+  - id: streaming-detokenizer-anchor
+    path: tokenizer/stream.go
+    lineRange: [20, 62]
+    severityAtLeast: medium

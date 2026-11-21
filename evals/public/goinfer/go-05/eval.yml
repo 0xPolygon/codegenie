@@ -1,0 +1,16 @@
+name: go-05
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-05
+command:
+  base: abdd312f2e35ba251b81fa816b8c9f122fc8c133
+  head: b6397eee5b7de893078eaba911c15828657491f4
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+  - id: last-token-false-own-rollback
+    path: internal/kvmgr/slots.go
+    lineRange: [222, 230]
+    severityAtLeast: low
+    failureModePattern: '^(?=[\s\S]*\b(?:last|final|firsts|score\w*)\b)(?=[\s\S]*\b(?:rollback|allowance|unlimited|misclassif\w*)\b)'

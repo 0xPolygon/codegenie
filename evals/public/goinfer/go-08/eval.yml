@@ -1,0 +1,16 @@
+name: go-08
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-08
+command:
+  base: b1881f53d5e8fba4e3e67eaa8aa0b2a34c52def1
+  head: 7c410a55b8996ccd5383cd2e3093c33183db0f63
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+  - id: qwen-vision-generation-error-dropped
+    path: cmd/serve/openai.go
+    lineRange: [535, 544]
+    severityAtLeast: medium
+    failureModePattern: '^(?=[\s\S]*\b(?:err\w*|fail\w*)\b)(?=[\s\S]*\b(?:discard\w*|ignor\w*|drop\w*|swallow\w*|unreport\w*|success\w*|200)\b)'

@@ -1,0 +1,16 @@
+name: go-03
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-03
+command:
+  base: 32f854b52984ca58600280ba6f2a1b081a7f4b65
+  head: acf27e2947b7b241c8985abbd105722823fd34dc
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+  - id: gemma-moe-zero-layer-scale
+    path: decoder/gguf.go
+    lineRange: [2316, 2329]
+    severityAtLeast: medium
+    failureModePattern: '^(?=[\s\S]*\b(?:scalar|layerscalar|scal\w*|multipl\w*)\b)(?=[\s\S]*\b(?:zero\w*|uninitiali\w*|before[^.\n]*initiali[sz]\w*)\b)'

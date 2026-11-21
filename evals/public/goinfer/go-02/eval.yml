@@ -1,0 +1,16 @@
+name: go-02
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-02
+command:
+  base: 30af454d60b1aeb8ca4b25f0638f2e1ec8318252
+  head: 8c3083bd675c8ebe860807db7595c5e8704e7e66
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+  - id: pinned-demo-offline-miss
+    path: pull/resolve.go
+    lineRange: [36, 45]
+    severityAtLeast: medium
+    failureModePattern: '^(?=[\s\S]*\b(?:cache\w*|pinned|demo)\b)(?=[\s\S]*\b(?:offline|network|checkaccess|connectiv\w*)\b)'

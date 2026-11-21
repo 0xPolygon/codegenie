@@ -1,0 +1,16 @@
+name: go-06
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-06
+command:
+  base: 22f3631d6e0d1ee52616b97aec9780e1164e0c4b
+  head: d94356157b694ec9f0ceb7d76843704f78d3fee3
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+  - id: speculative-pages-overcount
+    path: internal/hostmem/vmstats64.go
+    lineRange: [34, 37]
+    severityAtLeast: medium
+    failureModePattern: '^(?=[\s\S]*\bspeculative\b)(?=[\s\S]*\b(?:overstat\w*|overcount\w*|twice|doubl\w*|tripl\w*|three)\b)'
