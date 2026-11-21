@@ -2632,6 +2632,33 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       data: expect.objectContaining({ addedFields: [expect.stringContaining("retainedSourceRefs")], validation: "complete_schema_and_semantics_passed" }) }));
   });
 
+  it("drops invented provenance components before the schema enum check, with no model repair", async () => {
+    const telemetry = fakeTelemetry();
+    const { findings, sections, evidenceRefs, presentation } = authorizationComposition();
+    const absent = `${findings[0]!.id}/originalSuggestions/suggestedTest`;
+    const original = { summary: "Verified issue", composedFindings: [{ findingIds: findings.map(f => f.id), sections, evidenceRefs,
+      ...presentation, retainedSourceRefs: [absent], publication: "inline" }] };
+    const adapter = scriptedAdapter([assistant([{ type: "toolCall", id: "compose", name: "submit_composition", arguments: original }])]);
+    const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
+    const schema = composerSubmissionSchema([{ fingerprint: "test", representative: findings[0]!, findings }]);
+    expect(() => validateToolCall([{ name: "submit_composition", description: "", parameters: schema }],
+      { type: "toolCall", id: "raw", name: "submit_composition", arguments: original })).toThrow(/expected one of/);
+    const result = await runner.runStructured({ stage: 10, prompt: "compose", templateVersion: "test", timeoutMs: 600_000, schema,
+      normalizeSubmit: value => normalizeCompositionReferences(value, findings),
+      validateSubmit: value => {
+        try { validateCompositionSubmission(value as typeof original, findings); return { ok: true }; }
+        catch (error) { return { ok: false, classification: "schema_invalid", details: String(error) }; }
+      }
+    }) as typeof original;
+    expect(result.composedFindings[0]!.retainedSourceRefs).toEqual([]);
+    expect(adapter.complete).toHaveBeenCalledOnce();
+    expect(telemetry.events.some(event => event.message === "schema_repair_scheduled")).toBe(false);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "submit_semantic_canonicalization_accepted",
+      data: expect.objectContaining({ removedFields: ["composedFindings.0.retainedSourceRefs.0"], validation: "complete_schema_and_semantics_passed" }) }));
+  });
+
   it.each([false, true])("repairs attribution in fresh constrained contexts and validates the assembled report (exhaust=%s)", async exhaust => {
     const telemetry = fakeTelemetry();
     const { findings, sections, evidenceRefs, presentation } = authorizationComposition();
