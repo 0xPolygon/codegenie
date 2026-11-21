@@ -12,10 +12,6 @@ export type WorkerTask<T> = {
   dispatchRank?: number[];
   packetId?: string;
   candidateId?: string;
-  // Which ensemble pass this task represents (plan 84). Outcomes are
-  // returned in DISPATCH order (sorted by priority/coverage), not input
-  // order, so pass identity must ride on the task itself.
-  ensemblePass?: number;
   timeoutMs: number;
   /** Additional hard-deadline allowance; does not extend investigation. */
   repairAllowanceMs?: number;

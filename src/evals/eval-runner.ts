@@ -5,7 +5,6 @@ import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { applyRepoConfigLayer } from "../config/config-loader.js";
 import {
-  MAX_DEEP_ENSEMBLE_PASSES,
   reasoningLevelSchema,
   reviewDepthSchema,
   reviewMaxTimeMinutesSchema,
@@ -139,7 +138,6 @@ const caseSchema = z
         budgetBoost: positiveNumberSchema.optional(),
         maxTimeMinutes: reviewMaxTimeMinutesSchema.optional(),
         maxBudgetTokens: positiveIntSchema.optional(),
-        deepEnsemblePasses: positiveIntSchema.max(MAX_DEEP_ENSEMBLE_PASSES).optional(),
         adaptiveSecondPass: z.boolean().optional(),
         compositionReasoningStepDown: z.boolean().optional(),
         skipSvgReview: z.boolean().optional(),
@@ -870,9 +868,6 @@ function applyCaseReviewConfig(
   }
   if (review?.maxBudgetTokens !== undefined) {
     config.review.maxBudgetTokens = review.maxBudgetTokens;
-  }
-  if (review?.deepEnsemblePasses !== undefined) {
-    config.review.deepEnsemblePasses = review.deepEnsemblePasses;
   }
   if (review?.adaptiveSecondPass !== undefined) {
     config.review.adaptiveSecondPass = review.adaptiveSecondPass;

@@ -52,7 +52,7 @@ import type {
 import { CodegenieError, errorExitCode, isCodegenieError } from "../util/errors.js";
 import { buildPlannerDossier, runPlanner } from "./planner.js";
 import { buildReviewPackets, packetReviewContextFromDossier } from "./packet-builder.js";
-import { ensemblePassesForPacket, runLensPackets } from "./lens-runner.js";
+import { runLensPackets } from "./lens-runner.js";
 import { aggregateAttentionEfficiency, buildAttentionRecords } from "./attention.js";
 import { applyCoverageEscalations } from "./coverage-escalation.js";
 import { runTargetedSystemReviews, suppressResolvedFollowUpHints } from "./system-reviewer.js";
@@ -336,8 +336,7 @@ export async function runReview(
       packetResults: packetResultsForFinal,
       candidateFindings,
       verdicts: verified.verdicts,
-      publishedFindings: [...finalReview.findings, ...finalReview.summaryOnlyFindings],
-      ensemblePassesForPacket: (packet) => ensemblePassesForPacket(packet, config)
+      publishedFindings: [...finalReview.findings, ...finalReview.summaryOnlyFindings]
     });
     await run.telemetry.writeArtifact("attention.json", attentionRecords);
     run.telemetry.event({

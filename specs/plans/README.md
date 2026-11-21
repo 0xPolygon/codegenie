@@ -87,7 +87,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 81 | IN PROGRESS | Issue 81: Minimal Predicate-Only Uncertainty Promotion (output-quality slice landed; deletions measurement-gated) |
 | 82 | COMPLETE (mechanical) | Issue 82: BehaviorChange Severity Discipline |
 | 83 | COMPLETE | Issue 83: Wording-Independent Finding Fingerprints and Compare Integrity |
-| 84 | COMPLETE (dark) | Issue 84: Stage-7 Ensemble Review for Deep Packets (default off; measurement in progress) |
+| 84 | DELETED (#115) | Issue 84: Stage-7 Ensemble Review for Deep Packets (K>1 and `review.deepEnsemblePasses` removed; pooling kept for the adaptive second pass) |
 | 85 | COMPLETE | Issue 85: Finalize Grace for Per-Pass Worker Timeouts |
 | 86 | IN PROGRESS | Issue 86: Provider Protocol Parity and Observability (steps 1-4 done; step 5 study pending) |
 | 87 | COMPLETE | Issue 87: Verifier Pre-Clustering Restricted to Exact Duplicates |
