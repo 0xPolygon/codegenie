@@ -1,23 +1,13 @@
 import type { RunCoverageStatus } from "../types.js";
-import { isDisclosableCoverageReason } from "./coverage-reasons.js";
+import { isDisclosableCoverageReason, PLANNER_DEGRADED_REASON } from "./coverage-reasons.js";
 import { inlineCode } from "./markdown.js";
 
 export function renderCoverageTrustBanner(coverage: RunCoverageStatus): string {
   if (coverage.partial) {
-    const planning = coverage.degradedPlanning
-      ? " Planning also fell back to deterministic default coverage."
-      : "";
     return (
       "> [!WARNING]\n" +
-      `> **Review incomplete.** Some review or verification work did not complete.${planning} ` +
+      "> **Review incomplete.** Some review or verification work did not complete. " +
       "Treat the results below as partial and consider rerunning."
-    );
-  }
-  if (coverage.degradedPlanning) {
-    return (
-      "> [!WARNING]\n" +
-      "> **Degraded run: planner fallback.** The planner failed, so deterministic default coverage was used. " +
-      "Downstream review completed, but consider rerunning."
     );
   }
   return "";
@@ -38,9 +28,6 @@ export function renderCoverageSummaryLines(coverage: RunCoverageStatus): string[
     lines.push(statusLine);
   }
   lines.push(`**Coverage levels:** deep ${coverage.coverageByLevel.deep}, normal ${coverage.coverageByLevel.normal}, light ${coverage.coverageByLevel.light}, skip ${coverage.coverageByLevel.skip}.`);
-  if (coverage.degradedPlanning) {
-    lines.push("Planning was degraded and deterministic fallbacks were used.");
-  }
   if (coverage.verificationSkipped) {
     lines.push("Verification was skipped by configuration.");
   }
@@ -84,6 +71,9 @@ export function renderBudgetStopNotice(coverage: RunCoverageStatus): string {
 
 export function coverageDisclosureLines(coverage: RunCoverageStatus): string[] {
   const lines: string[] = [];
+  if (coverage.degradedPlanning) {
+    lines.push("- Planning used deterministic recovery or fallback coverage.");
+  }
   const adaptive = coverage.adaptiveReviews?.counts;
   if (adaptive && adaptive.triggered > 0) {
     const statuses = [
@@ -121,9 +111,6 @@ function coverageHeadline(coverage: RunCoverageStatus): string {
   if (unreviewed === 0 && coverage.verificationIncompleteCount > 0) {
     return `Review completed with incomplete verification for ${coverage.verificationIncompleteCount} candidate${coverage.verificationIncompleteCount === 1 ? "" : "s"}.`;
   }
-  if (unreviewed === 0 && coverage.degradedPlanning) {
-    return "Review completed with degraded planning.";
-  }
   if (unreviewed === 0) return "**Partial review:** assigned hunks were reviewed, but required evidence gathering remains incomplete.";
   return `**Partial review:** ${unreviewed} ${hunkNoun(unreviewed)} did not complete review.`;
 }
@@ -157,7 +144,7 @@ function humanizeCoverageReason(reason: string): string {
 }
 
 function shouldRenderCoverageReason(reason: string, coverage: RunCoverageStatus): boolean {
-  if (!isDisclosableCoverageReason(reason)) {
+  if (reason === PLANNER_DEGRADED_REASON || !isDisclosableCoverageReason(reason)) {
     return false;
   }
   if (coverage.budgetStopped && reason === "budget exhausted before all review work completed") {
