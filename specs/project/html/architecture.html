@@ -2006,8 +2006,9 @@ observed review work:</li>
 <p>Complete reviews publish normally. Planner recovery or fallback
 appears in a coverage disclosure line. Partial reviews carry a prominent
 incomplete banner and publish only trusted findings. Partial reviews
-with no findings conclude <code>Review Incomplete</code>. Foundational
-failures stop the review.</p>
+with no findings conclude <code>Review Incomplete</code> and never use
+approval-equivalent wording such as <code>Everything looks good</code>.
+Foundational failures never render a normal review.</p>
 <div class="sourceCode" id="cb28"><pre class="sourceCode ts"><code class="sourceCode typescript"><span id="cb28-1"><a href="#cb28-1" aria-hidden="true" tabindex="-1"></a><span class="kw">type</span> RunCoverageStatus <span class="op">=</span> {</span>
 <span id="cb28-2"><a href="#cb28-2" aria-hidden="true" tabindex="-1"></a>  totalHunks<span class="op">:</span> <span class="dt">number</span></span>
 <span id="cb28-3"><a href="#cb28-3" aria-hidden="true" tabindex="-1"></a>  reviewedHunks<span class="op">:</span> <span class="dt">number</span></span>
