@@ -5,7 +5,7 @@ function validateWithSchema(schema: Tool["parameters"], value: unknown) {
   return validateToolCall([{ name: "submit", description: "fixture", parameters: schema }], { type: "toolCall", id: "fixture", name: "submit", arguments: value as Record<string, unknown> });
 }
 import { contractReview, contractComposition as proposal } from "./fixtures/composition/contract-review.js";
-import { composePresentation, compositionSources, renderRetainedComposition, validateCompositionSubmission } from "../src/pipeline/composition-content.js";
+import { composePresentation, compositionAttributionDiagnostics, compositionSources, renderRetainedComposition, validateCompositionSubmission } from "../src/pipeline/composition-content.js";
 import { composerSubmissionSchema } from "../src/pipeline/composer.js";
 import { assessFinalSuggestions } from "../src/pipeline/suggestion-assessment.js";
 import { SubmitCompositionSchema, SubmitVerificationVerdictSchema } from "../src/llm/schemas.js";
@@ -118,14 +118,32 @@ describe("contract-aware concise composition", () => {
     expect(() => validateWithSchema(schema, legacy)).toThrow();
   });
 
-  it("routes a source discussed under another section kind to retainedSourceRefs (#155)", () => {
+  it("states that a source's kind is its field, not its subject (#155)", () => {
     const registry = {} as LensRegistry;
     const coverage = { totalHunks: 1, reviewedHunks: 1, skippedHunks: 0, failedHunks: 0 } as RunCoverageStatus;
     const built = createPromptBuilder(registry).buildComposerPrompt({ groupedFindingsJson: "[]", intent: "Review", coverage });
     expect(built.templateVersion).toBe("p10.28");
-    expect(built.prompt).toContain("A section's sourceRefs name only sources of that section's kind; when a section discusses a source of another kind (test advice stored in suggestedFix, or a proposal you are explaining but not recommending), cite that source in retainedSourceRefs.");
+    expect(built.prompt).toContain("A source's kind is the field it was supplied in, whatever its text is about: a suggestedFix about tests is still a fix source. Use only matching-kind sourceRefs in each section, and put withheld or other-kind sources in retainedSourceRefs.");
     // Label-free wording survives the removal of suggestion assessment labels.
-    expect(built.prompt).not.toMatch(/explaining but not recommending[^.]*(?:supported|incompatible|unverified)/);
+    expect(built.prompt).not.toMatch(/whatever its text is about[^.]*(?:supported|incompatible|unverified)/);
+  });
+
+  it("accepts a test-suite repair in the fix section and rejects the same source under tests (#155)", () => {
+    const finding = contractReview()[1]!;
+    const repair = "Restore the regression tests that drive the production balance reads through a mock provider.";
+    finding.suggestedFix = repair;
+    finding.suggestionAssessments!.suggestedFix!.suggestionText = repair;
+    const sources = compositionSources([finding]);
+    const evidenceRefs = sources.filter(source => source.kind === "evidence").map(source => source.id);
+    const base = [
+      { kind: "impact" as const, text: finding.failureMode, sourceRefs: [finding.id + "/failureMode", finding.id + "/whyThisMatters"] },
+      { kind: "verification" as const, text: finding.verification, sourceRefs: [finding.id + "/verification", finding.id + "/proofAssessment"] }
+    ];
+    const codes = (kind: "fix" | "test") => compositionAttributionDiagnostics(sources,
+      [...base, { kind, text: repair, sourceRefs: [finding.id + "/suggestedFix"] }], evidenceRefs,
+      { retainedSourceRefs: [finding.id + "/suggestedTest"] }).map(diagnostic => diagnostic.code);
+    expect(codes("fix")).toEqual([]);
+    expect(codes("test")).toEqual(["wrong_section", "missing_source"]);
   });
 
   it("asks for publication on every composedFindings item, not once at the root (#98)", () => {
