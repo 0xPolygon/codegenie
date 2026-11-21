@@ -7448,6 +7448,43 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it.each([
+    { incomplete: 12, total: 12, packetFailed: false, status: "incomplete" },
+    { incomplete: 1, total: 12, packetFailed: true, status: "failed" },
+    { incomplete: 0, total: 0, packetFailed: true, status: "failed" },
+    { incomplete: 1, total: undefined, packetFailed: false, status: "incomplete" }
+  ])("reports verification progress with health $status for $incomplete/$total incomplete", async ({ incomplete, total, packetFailed, status }) => {
+    const coverage = { ...fakeCoverage(), verificationIncompleteCount: incomplete, partial: true,
+      ...(packetFailed ? { failedHunks: 1, reviewedHunks: 0, diagnostics: [{ stage: 7, kind: "failure" as const,
+        code: "llm_call_failed", reason: "Packet review exhausted its retries.", recoveryExhausted: true }] } : {}) };
+    const cfg = { ...config(), github: { ...defaultConfig.github, summaryWhenNoFindings: true } };
+    const verified = { verified: [], verdicts: [], ...(total !== undefined ? { verificationCandidateCount: total } : {}) };
+    const coverageForComposer = structuredClone(coverage);
+    const runner: LlmRunner = { async runStructured<T>(request: LlmStructuredRequest<T>) {
+      expect(extractPromptJson(request.prompt, "coverage-status")).toEqual(coverageForComposer);
+      return { summary: "Review completed.", composedFindings: [] } as T;
+    } };
+    const result = await dedupeRankAndComposeReview(verified, fakePlan(), { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" },
+      coverage, cfg, nullTelemetry(), { runner, promptBuilder: createPromptBuilder(fakeLensRegistry()), postGithubComments: true });
+    refreshReviewHealth(result);
+    const report = renderMarkdownReview(result);
+    const body = result.postingPlan!.reviewBody;
+    const posting = renderPostingSummaryForStdout(result, "markdown");
+    expect(result.health?.status).toBe(status);
+    expect(result.health?.verificationCandidateCount).toBe(incomplete > 0 ? total : undefined);
+    for (const text of [report, body, posting]) {
+      const general = "Required work did not complete reliably. Findings below are partial results.";
+      if (incomplete > 0 && total !== undefined) {
+        expect(text).toContain(`${general} Verification did not finish for ${incomplete} of ${total} candidates selected for verification.`);
+      } else {
+        expect(text).toContain(general);
+        expect(text).not.toContain("candidates selected for verification");
+      }
+      if (packetFailed) expect(text).toContain("Stage 7: llm_call_failed — Packet review exhausted its retries.");
+    }
+    if (incomplete > 0) expect(report).toContain(`- Verification incomplete for ${incomplete} candidate${incomplete === 1 ? "" : "s"}.`);
+  });
+
+  it.each([
     { scenario: "complete recovered plan", fallback: false, incomplete: false },
     { scenario: "complete default fallback", fallback: true, incomplete: false },
     { scenario: "recovered plan with incomplete evidence", fallback: false, incomplete: true }
@@ -8559,6 +8596,7 @@ describe("phase 5 pipeline regressions", () => {
 
     const records = artifacts.get("verification.json") as Array<{ candidateId: string; duplicateOf?: string; verdict: { candidateId: string; verificationIncomplete?: boolean } }>;
     expect(verified.incompleteCount).toBe(2);
+    expect(verified.verificationCandidateCount).toBe(records.length);
     expect(verified.verified).toEqual([]);
     expect(records.map((record) => record.candidateId).sort()).toEqual(["finding-1", "finding-2"]);
     expect(records.find((record) => record.candidateId === "finding-2")).toMatchObject({
@@ -8845,6 +8883,7 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     expect(coverage.verificationSkipped).toBe(true);
+    expect(verifyDisabled.verificationCandidateCount).toBe(0);
     expect(coverage.reasons).toContain("verification disabled by config; candidates were not independently verified");
   });
 
@@ -9271,6 +9310,8 @@ describe("phase 5 pipeline regressions", () => {
     expect(budget.stopSnapshot()).toMatchObject({ reason: "max_model_calls", stage: 9 });
 
     const records = artifacts.get("verification.json") as Array<{ candidateId: string; incompleteReason?: string; verdict?: { verificationIncomplete?: boolean } }>;
+    expect(verified.verificationCandidateCount).toBe(records.filter(record => record.verdict).length);
+    expect(verified.verificationCandidateCount).toBe(2);
     expect(records.find((record) => record.candidateId === "finding-low")).toMatchObject({
       incompleteReason: "budget_limited",
       verdict: { verificationIncomplete: true }

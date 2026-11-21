@@ -81,7 +81,7 @@ const MAX_COMPOSER_SUMMARY_CHARS = 4000;
 const CROSS_FILE_EVIDENCE_LINK_SIMILARITY = 0.42;
 
 export async function dedupeRankAndComposeReview(
-  verified: { verified: CandidateFinding[]; verdicts: VerificationVerdict[] },
+  verified: { verified: CandidateFinding[]; verdicts: VerificationVerdict[]; verificationCandidateCount?: number },
   plan: ReviewPlan,
   resolved: ResolvedReviewInput,
   coverage: RunCoverageStatus,
@@ -324,7 +324,7 @@ export async function dedupeRankAndComposeReview(
     humanAttention.omittedCount += humanAttention.notes.length - MAX_HUMAN_ATTENTION_NOTES;
     humanAttention.notes = humanAttention.notes.slice(0, MAX_HUMAN_ATTENTION_NOTES);
   }
-  const health = deriveReviewHealth(coverage, unresolvedCount, verified.verified.length > 0);
+  const health = deriveReviewHealth(coverage, unresolvedCount, verified.verified.length > 0, verified.verificationCandidateCount);
   const summary = health.status !== "completed" ? factualReviewSummary(health, publishableCount) : publishableCount === 0
     ? coverage.partial
       ? "Review incomplete: completed work produced no credible verified findings, but incomplete coverage or verification prevents a clean conclusion."
@@ -1852,7 +1852,9 @@ function renderReviewBody(
   health: import("../types.js").ReviewHealth,
   composition?: ReviewResult["composition"]
 ): string {
-  const trustBanner = renderReviewHealth(health, composition, { shown: notes.length, omitted: omittedNoteCount ?? 0 });
+  const trustBanner = renderReviewHealth(health, composition, {
+    shown: notes.length, omitted: omittedNoteCount ?? 0, verificationIncompleteCount: coverage.verificationIncompleteCount
+  });
   const lines = [
     "### 🧞 Codegenie Review",
     "",
@@ -2157,7 +2159,7 @@ function normalize(input: string): string {
 export function refreshReviewHealth(result: ReviewResult): void {
   if (result.health?.status === "failed" || result.health?.status === "incomplete") result.coverage.partial = true;
   result.health = deriveReviewHealth(result.coverage, result.health?.unresolvedCount ?? result.needsHumanAttention.length + (result.needsHumanAttentionOmittedCount ?? 0),
-    result.findings.length + result.summaryOnlyFindings.length > 0);
+    result.findings.length + result.summaryOnlyFindings.length > 0, result.health?.verificationCandidateCount);
   if (result.health.status === "failed" || result.health.status === "incomplete") result.coverage.partial = true;
   if (result.health.status !== "completed") result.summary = factualReviewSummary(result.health, result.findings.length + result.summaryOnlyFindings.length);
   if (result.postingPlan) result.postingPlan.reviewBody = renderReviewBody(result.summary, result.summaryOnlyFindings, result.needsHumanAttention, result.coverage, result.needsHumanAttentionOmittedCount, result.health, result.composition);

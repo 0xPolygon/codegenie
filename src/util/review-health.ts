@@ -23,14 +23,25 @@ export function safeDiagnosticLine(message: string): string {
   return stripCredentials(message).replace(/[\s\u0000-\u001f\u007f-\u009f]+/gu, " ").trim().slice(0, 600);
 }
 
-export function deriveReviewHealth(coverage: RunCoverageStatus, unresolvedCount: number, verificationNeeded = false): ReviewHealth {
+export function deriveReviewHealth(
+  coverage: RunCoverageStatus,
+  unresolvedCount: number,
+  verificationNeeded = false,
+  verificationCandidateCount?: number
+): ReviewHealth {
   // Health and coverage are serialized together; shared objects are redacted as circular references.
   const diagnostics = (coverage.diagnostics ?? []).map(diagnostic => ({ ...diagnostic }));
   const status = diagnostics.some(d => d.kind === "failure") ? "failed"
     : coverage.partial || coverage.failedHunks > 0 || coverage.verificationIncompleteCount > 0 || coverage.budgetStopped
       || (coverage.verificationSkipped && verificationNeeded) || diagnostics.some(d => d.kind === "incomplete") ? "incomplete"
     : unresolvedCount > 0 ? "unresolved" : "completed";
-  return { status, diagnostics, unresolvedCount };
+  return {
+    status,
+    diagnostics,
+    unresolvedCount,
+    ...(coverage.verificationIncompleteCount > 0 && verificationCandidateCount !== undefined
+      && verificationCandidateCount >= coverage.verificationIncompleteCount ? { verificationCandidateCount } : {})
+  };
 }
 
 export function healthForResult(result: ReviewResult): ReviewHealth {
@@ -42,17 +53,21 @@ export function healthForResult(result: ReviewResult): ReviewHealth {
 export function renderReviewHealth(
   health: ReviewHealth,
   composition: ReviewResult["composition"],
-  questions: { shown: number; omitted: number; inFullReview?: boolean }
+  details: { shown: number; omitted: number; inFullReview?: boolean; verificationIncompleteCount: number }
 ): string {
   const synthesis = composition?.fallbackReason ? `> **Report synthesis failed (stage 10).** Verified findings are shown using source-based fallback. ${safeText(composition.fallbackReason)}` : "";
   if (health.status === "completed") return synthesis ? `> [!WARNING]\n${synthesis}` : "";
   const title = health.status === "failed" ? "Review failed" : health.status === "incomplete" ? "Review incomplete" : "Review completed with unresolved questions";
-  const counts = `${questions.shown} shown, ${questions.omitted} omitted.`;
+  const counts = `${details.shown} shown, ${details.omitted} omitted.`;
+  const { verificationIncompleteCount } = details;
+  const total = health.verificationCandidateCount;
+  const verification = verificationIncompleteCount > 0 && total !== undefined && total >= verificationIncompleteCount
+    ? ` Verification did not finish for ${verificationIncompleteCount} of ${total} candidates selected for verification.` : "";
   const detail = health.status === "unresolved"
-    ? `${questions.inFullReview ? "In the full review, " : ""}${counts} Absence of a confirmed finding does not establish safety.`
-    : "Required work did not complete reliably. Findings below are partial results." +
-      (questions.shown + questions.omitted > 0
-        ? ` Unresolved questions${questions.inFullReview ? " in the full review" : ""} — ${counts}`
+    ? `${details.inFullReview ? "In the full review, " : ""}${counts} Absence of a confirmed finding does not establish safety.`
+    : `Required work did not complete reliably. Findings below are partial results.${verification}` +
+      (details.shown + details.omitted > 0
+        ? ` Unresolved questions${details.inFullReview ? " in the full review" : ""} — ${counts}`
         : "");
   const diagnostics = [...health.diagnostics].sort((a, b) => Number(b.kind === "failure") - Number(a.kind === "failure")).slice(0, 5).map(d =>
     `> - Stage ${d.stage}${d.workItem ? ` (${safeText(d.workItem)})` : ""}: ${safeText(d.code)} — ${safeText(d.reason)}${d.recoveryExhausted ? " Recovery exhausted." : ""}`);
