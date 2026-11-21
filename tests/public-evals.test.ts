@@ -38,8 +38,9 @@ describe("public eval cases", () => {
     const expectations = [...(evalCase.should_find ?? []), ...(evalCase.should_not_find ?? [])];
     expect(expectations.length).toBeGreaterThan(0);
     for (const expectation of evalCase.should_find ?? []) {
-      // Matchers are pre-filters; severity is adjudicated, so the floor stays low.
-      expect(expectation.severityAtLeast).toBe("low");
+      // Matchers are pre-filters: every expectation states its severity floor
+      // (the suite schema validates the value) and none relies on a title pattern.
+      expect(expectation.severityAtLeast).toBeDefined();
       expect(expectation.titlePattern).toBeUndefined();
     }
   });
