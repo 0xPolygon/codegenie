@@ -49,10 +49,6 @@ export type CodegenieConfig = {
     budgetBoost: number;
     maxBudgetTokens?: number;
     maxModelCalls?: number;
-    // Plan 84: K independent Stage-7 passes for deep-coverage packets, union
-    // fed to the existing verification gate. 1 = off (the default); eval
-    // cases opt in while the effect is being measured.
-    deepEnsemblePasses?: number;
     // Plan 92 layer 3: single-pass packets whose first pass shows near-miss
     // evidence (concrete hint/uncertainty, silent-with-signal, low-confidence
     // only) earn one additional independent review pass. Off by default.
@@ -777,8 +773,9 @@ export type FindingProducer = {
   lensId: string;
   skillIds: string[];
   workerId?: string;
-  // Which ensemble pass produced this candidate (plan 84); absent when the
-  // packet ran a single pass.
+  // 2 when the adaptive second pass (plan 92) produced this candidate;
+  // absent for first-pass candidates. Historical artifacts may also carry
+  // plan 84 ensemble pass numbers.
   ensemblePass?: number;
 };
 
@@ -907,8 +904,8 @@ export type PacketReviewResult = {
   }>;
   uncertainties: StructuredUncertainty[];
   status: "completed" | "incomplete" | "failed" | "skipped";
-  // Total Stage-7 passes that produced this result (planned ensemble +
-  // adaptive second pass); absent on stage-8 system results.
+  // Total Stage-7 passes that produced this result (first pass + adaptive
+  // second pass); absent on stage-8 system results.
   passesRun?: number;
   /** Supplemental investigation only; never substitutes for baseline coverage. */
   adaptiveReview?: AdaptiveReviewOutcome;
@@ -1156,7 +1153,6 @@ export type EvalCase = {
     budgetBoost?: number;
     maxTimeMinutes?: number;
     maxBudgetTokens?: number;
-    deepEnsemblePasses?: number;
     adaptiveSecondPass?: boolean;
     verify?: boolean;
     compositionReasoningStepDown?: boolean;
@@ -1304,7 +1300,7 @@ export type EvalBudgetResult = {
 };
 
 // Plan 92 Layer 1: per-packet attention-allocation scoring — what a packet
-// was allotted (coverage, ensemble passes) joined with what it produced.
+// was allotted (coverage, Stage-7 passes) joined with what it produced.
 export type AttentionRecord = {
   packetId: string;
   path: string;

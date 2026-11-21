@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  MAX_DEEP_ENSEMBLE_PASSES,
   MAX_REVIEW_TIME_MINUTES,
   rawConfigSchema
 } from "../src/config/schema.js";
 import { ensureCodegenieHome, getCodegeniePaths } from "../src/config/paths.js";
 import { loadConfig } from "../src/config/config-loader.js";
+import { loadEvalSuite } from "../src/evals/eval-runner.js";
 import { loadProviderSettings, saveProviderSettings } from "../src/provider/provider-settings.js";
 import { CodegenieError } from "../src/util/errors.js";
 
@@ -343,10 +343,19 @@ describe("codegenie paths and provider settings", () => {
   });
 });
 
-describe("deepEnsemblePasses cap (plan 84)", () => {
-  it("rejects values above the hard cap in raw config", () => {
-    expect(rawConfigSchema.safeParse({ review: { deepEnsemblePasses: MAX_DEEP_ENSEMBLE_PASSES } }).success).toBe(true);
-    expect(rawConfigSchema.safeParse({ review: { deepEnsemblePasses: MAX_DEEP_ENSEMBLE_PASSES + 1 } }).success).toBe(false);
+describe("removed review.deepEnsemblePasses (#115)", () => {
+  it("rejects the key in user config and eval cases", async () => {
+    expect(rawConfigSchema.safeParse({ review: { adaptiveSecondPass: true } }).success).toBe(true);
+    expect(rawConfigSchema.safeParse({ review: { deepEnsemblePasses: 1 } }).success).toBe(false);
+    const evalCase = (review: Record<string, unknown>) => {
+      const dir = tempDir();
+      writeFileSync(path.join(dir, "eval.yml"), JSON.stringify({ name: "example", artifacts: { path: "logs/1" }, review }));
+      return loadEvalSuite(dir);
+    };
+    await expect(evalCase({ adaptiveSecondPass: true })).resolves.toMatchObject({ cases: [expect.anything()] });
+    await expect(evalCase({ deepEnsemblePasses: 1 })).rejects.toMatchObject({
+      context: { errors: [expect.stringContaining("deepEnsemblePasses")] }
+    });
   });
 });
 

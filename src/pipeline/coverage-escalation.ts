@@ -6,7 +6,7 @@ import { isCoverageEscalationTestPath } from "../util/path-roles.js";
 // deep/normal assignment is a one-draw LLM judgment with measured run-to-run
 // variance (the erc20 packet: normal in runs 46-50, deep in 51); these rules
 // floor structurally suspicious packets to deep so attention amplification
-// (budgets, ensemble passes) stops depending on the planner's mood. Rules are
+// (budgets) stops depending on the planner's mood. Rules are
 // codebase-agnostic by policy — structural signals only, never path/keyword
 // domain patterns.
 

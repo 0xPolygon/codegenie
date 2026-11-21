@@ -275,10 +275,6 @@ function applyRawConfig(
     config.review.maxModelCalls = raw.review.maxModelCalls;
     sources["review.maxModelCalls"] = source;
   }
-  if (raw.review?.deepEnsemblePasses !== undefined) {
-    config.review.deepEnsemblePasses = raw.review.deepEnsemblePasses;
-    sources["review.deepEnsemblePasses"] = source;
-  }
   if (raw.review?.adaptiveSecondPass !== undefined) {
     config.review.adaptiveSecondPass = raw.review.adaptiveSecondPass;
     sources["review.adaptiveSecondPass"] = source;

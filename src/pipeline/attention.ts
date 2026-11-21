@@ -11,7 +11,7 @@ import type {
 // Plan 92 Layer 1: score the pipeline's attention-allocation decision.
 // Coverage assignment is the only major pipeline decision with no outcome
 // feedback — these records join what each packet was ALLOTTED (coverage,
-// ensemble passes) with what it PRODUCED (candidates, hints, kept verdicts,
+// Stage-7 passes) with what it PRODUCED (candidates, hints, kept verdicts,
 // published findings), making miscalibration (runs 47/49/50: losses on
 // normal/default packets while deep ensembles ran empty) visible on every
 // run instead of only in post-failure forensics.
@@ -28,7 +28,6 @@ export function buildAttentionRecords(input: {
   candidateFindings: CandidateFinding[];
   verdicts: VerificationVerdict[];
   publishedFindings: FinalFinding[];
-  ensemblePassesForPacket: (packet: ReviewPacket) => number;
 }): AttentionRecord[] {
   const resultByPacket = new Map(input.packetResults.map((result) => [result.packetId, result]));
   const packetByCandidateId = new Map(input.candidateFindings.map((candidate) => [candidate.id, candidate.producedBy.packetId]));
@@ -80,7 +79,7 @@ export function buildAttentionRecords(input: {
             packet.hunks.every((hunk) => input.plannedHunkIds.has(hunk.hunkId) === false)
           ? "deterministic_default"
           : "planner",
-      ensemblePasses: result?.passesRun ?? input.ensemblePassesForPacket(packet),
+      ensemblePasses: result?.passesRun ?? 1,
       directCandidates: result?.findings.length ?? 0,
       promotedCandidates: promotedByPacket.get(packet.id) ?? 0,
       hintsEmitted: result?.followUpHints.length ?? 0,

@@ -889,7 +889,6 @@ Chosen defaults:
 - `review.perPassTimeoutMs = 8 * 60 * 1000` (per model task/worker, not per stage)
 - `review.minConfidence = "medium"`
 - `review.minInlineConfidence = "medium"`
-- `review.deepEnsemblePasses = 1`, hard-capped at 3 (plan 84: K independent Stage-7 passes for deep-coverage packets, union deduped by the verifier's exact-duplicate identity and fed to the unchanged verification gate; 1 = off, ships dark; eval cases opt in with `review.deepEnsemblePasses` while the effect is measured)
 - `review.maxBudgetTokens = 8_000_000` (plan 90: the primary work-denominated coverage budget; re-derived after run 0c4d5213/53's 5.92M legitimate-work run grazed the 7M soft-stop — soft-stop now 6.8M; time budgets are hang-guards, tokens bound coverage); `review.maxModelCalls` unset (no cap)
 - `github.summaryWhenNoFindings = false`
 - `git.baseBranch = undefined`
