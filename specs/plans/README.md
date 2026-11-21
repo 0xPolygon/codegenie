@@ -24,7 +24,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 18 | COMPLETE | Issue 18: Stage 6 Read Range Guard |
 | 19 | COMPLETE | Issue 19: Follow-Up Hint Deduplication |
 | 20 | COMPLETE | Issue 20: Pre-Verification Candidate Clustering |
-| 21 | COMPLETE | Issue 21: Targeted Cross-System Review |
+| 21 | DELETED (#114) | Issue 21: Targeted Cross-System Review (Stage 8 removed after archive adjudication) |
 | 22 | COMPLETE | Issue 22: Cache Telemetry Clarity |
 | 23 | COMPLETE | Issue 23: Evidence-Aware Verification Recall |
 | 24 | COMPLETE | Issue 24: Uncertainty Promotion and Verifier Policy Discipline |
@@ -64,7 +64,7 @@ This directory tracks implementation plans for confirmed improvements. Status va
 | 58 | COMPLETE | Issue 58: Planner Context Hint Contract |
 | 59 | COMPLETE | Issue 59: Stage 5 Planner Schema Repair Salvage |
 | 60 | COMPLETE | Issue 60: Preserve Planner Concerns As Review Obligations |
-| 61 | COMPLETE | Issue 61: Stage 8 Task Deduplication and Question-Finding Title Hygiene |
+| 61 | DELETED (#114) | Issue 61: Stage 8 Task Deduplication and Question-Finding Title Hygiene (Stage 8 removed) |
 | 62 | COMPLETE | Issue 62: Stage 7 Schema Friction Reduction |
 | 63 | COMPLETE | Issue 63: Review Question Ownership and Risk-Area Coverage |
 | 64 | COMPLETE | Issue 64: Material Review Question Answer Quality and Ambiguous Ownership Follow-Up |

@@ -17,7 +17,6 @@ export const STAGES = [
   { stage: 5, slug: "05-planner", label: "planning review" },
   { stage: 6, slug: "06-packets", label: "building review packets" },
   { stage: 7, slug: "07-review", label: "reviewing hunks" },
-  { stage: 8, slug: "08-followups", label: "checking follow-ups" },
   { stage: 9, slug: "09-verification", label: "verifying findings" },
   { stage: 10, slug: "10-composition", label: "composing review" },
   { stage: 11, slug: "11-github-posting", label: "github posting" }

@@ -5,7 +5,6 @@ import {
   SubmitCompositionSchema,
   SubmitPacketReviewSchema,
   SubmitPlanSchema,
-  SubmitSystemReviewSchema,
   SubmitVerificationVerdictSchema
 } from "./schemas.js";
 
@@ -81,11 +80,10 @@ const RULES: ReadonlySet<StructuredSubmitFailureRule> = new Set([
 const PUBLIC_SUBMITS: Readonly<Record<string, { schema: TSchema; stage: ReviewStage; role: LlmRole }>> = {
   submit_plan: { schema: SubmitPlanSchema, stage: 5, role: "planner" },
   submit_review: { schema: SubmitPacketReviewSchema, stage: 7, role: "packetReview" },
-  submit_system_review: { schema: SubmitSystemReviewSchema, stage: 8, role: "systemReview" },
   submit_verdict: { schema: SubmitVerificationVerdictSchema, stage: 9, role: "verifier" },
   submit_composition: { schema: SubmitCompositionSchema, stage: 10, role: "composer" }
 };
-const ROLES: ReadonlySet<LlmRole> = new Set(["planner", "packetReview", "systemReview", "verifier", "composer"]);
+const ROLES: ReadonlySet<LlmRole> = new Set(["planner", "packetReview", "verifier", "composer"]);
 
 export function normalizeStructuredSubmitFailureClassification(
   value: string | undefined

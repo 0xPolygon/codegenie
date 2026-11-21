@@ -160,29 +160,29 @@ describe("stage 9 evidence-aware verification", () => {
     expect(prompt).not.toContain("VERIFIER_PYTHON_MARKER");
   });
 
-  it.each(["rs", "RS"])("derives Stage 8 candidate language from a .%s diff before Stage 9 projection", async (extension) => {
+  it.each(["rs", "RS"])("derives a packetless candidate's language from a .%s diff before Stage 9 projection", async (extension) => {
     const fixture = reviewFixture([`src/lib.${extension}`]);
     const originPacket = fixture.packets[0]!;
-    const finding = candidate("stage8-rust-projection", originPacket, {
+    const finding = candidate("packetless-rust-projection", originPacket, {
       producedBy: {
         kind: "packet",
-        stage: 8,
-        packetId: "system-task-not-a-packet",
+        stage: 7,
+        packetId: "not-a-packet",
         lensId: "shared/review",
         skillIds: ["projection/neutral", "projection/rust", "projection/python", "projection/solidity"]
       }
     });
     const skills = [
-      projectionSkill("neutral", [], "STAGE8_NEUTRAL_MARKER"),
-      projectionSkill("rust", ["rust"], "STAGE8_RUST_MARKER"),
-      projectionSkill("python", ["python"], "STAGE8_PYTHON_MARKER"),
-      projectionSkill("solidity", ["solidity"], "STAGE8_SOLIDITY_MARKER")
+      projectionSkill("neutral", [], "PACKETLESS_NEUTRAL_MARKER"),
+      projectionSkill("rust", ["rust"], "PACKETLESS_RUST_MARKER"),
+      projectionSkill("python", ["python"], "PACKETLESS_PYTHON_MARKER"),
+      projectionSkill("solidity", ["solidity"], "PACKETLESS_SOLIDITY_MARKER")
     ];
     const registry = registryWithSkills(skills);
     let prompt = "";
 
     await verifyFindings(
-      { packetResults: [packetResult("system-task-not-a-packet", [finding])], packets: [originPacket] },
+      { packetResults: [packetResult("not-a-packet", [finding])], packets: [originPacket] },
       fakeTools(),
       config(),
       nullTelemetry(),
@@ -204,20 +204,20 @@ describe("stage 9 evidence-aware verification", () => {
       }
     );
 
-    expect(prompt).toContain("STAGE8_NEUTRAL_MARKER");
-    expect(prompt).toContain("STAGE8_RUST_MARKER");
-    expect(prompt).not.toContain("STAGE8_PYTHON_MARKER");
-    expect(prompt).not.toContain("STAGE8_SOLIDITY_MARKER");
+    expect(prompt).toContain("PACKETLESS_NEUTRAL_MARKER");
+    expect(prompt).toContain("PACKETLESS_RUST_MARKER");
+    expect(prompt).not.toContain("PACKETLESS_PYTHON_MARKER");
+    expect(prompt).not.toContain("PACKETLESS_SOLIDITY_MARKER");
   });
 
   it("projects only neutral skills when a packetless candidate path is language-ambiguous", async () => {
     const fixture = reviewFixture(["src/lib.rs", "src/lib.py"]);
     const originPacket = fixture.packets.find((packet) => packet.path === "src/lib.rs")!;
-    const finding = candidate("stage8-ambiguous-projection", originPacket, {
+    const finding = candidate("packetless-ambiguous-projection", originPacket, {
       producedBy: {
         kind: "packet",
-        stage: 8,
-        packetId: "system-task-not-a-packet",
+        stage: 7,
+        packetId: "not-a-packet",
         lensId: "shared/review",
         skillIds: ["projection/neutral", "projection/rust", "projection/python"]
       }
@@ -236,7 +236,7 @@ describe("stage 9 evidence-aware verification", () => {
     let prompt = "";
 
     await verifyFindings(
-      { packetResults: [packetResult("system-task-not-a-packet", [finding])], packets: [originPacket] },
+      { packetResults: [packetResult("not-a-packet", [finding])], packets: [originPacket] },
       fakeTools(),
       config(),
       nullTelemetry(),

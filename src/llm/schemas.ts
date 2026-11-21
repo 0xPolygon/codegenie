@@ -193,24 +193,6 @@ export const SubmitPacketReviewSchema = Type.Object(
   }
 );
 
-const ResolvedFollowUpHintSchema = Type.Object(
-  {
-    question: Type.String({ minLength: 1, maxLength: 1000 }),
-    files: Type.Array(Type.String({ minLength: 1, maxLength: 500 }), { maxItems: 20 }),
-    symbols: Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 20 }),
-    resolution: Type.String({ minLength: 1, maxLength: 2000 })
-  },
-  { additionalProperties: false }
-);
-
-export const SubmitSystemReviewSchema = Type.Object(
-  {
-    findings: Type.Array(SubmittedFindingSchema, { maxItems: 5 }),
-    resolvedHints: Type.Array(ResolvedFollowUpHintSchema, { maxItems: 5 })
-  },
-  { additionalProperties: false }
-);
-
 export const VERIFIER_REASON_TARGET_CHARS = 2_000;
 export const VERIFIER_REASON_HARD_MAX_CHARS = 4_000;
 
@@ -312,14 +294,12 @@ export const SubmitCompositionSchema = Type.Object(
 
 export type SubmitPlan = Static<typeof SubmitPlanSchema>;
 export type SubmitPacketReview = Static<typeof SubmitPacketReviewSchema>;
-export type SubmitSystemReview = Static<typeof SubmitSystemReviewSchema>;
 export type SubmitVerificationVerdict = Static<typeof SubmitVerificationVerdictSchema>;
 export type SubmitComposition = Static<typeof SubmitCompositionSchema>;
 
 export const SCHEMA_VERSIONS = {
   submit_plan: 6,
   submit_review: 5,
-  submit_system_review: 2,
   submit_verdict: 11,
   submit_composition: 9
 } as const;
@@ -330,8 +310,6 @@ export function submitToolNameForStage(stage: ReviewStage): keyof typeof SCHEMA_
       return "submit_plan";
     case 7:
       return "submit_review";
-    case 8:
-      return "submit_system_review";
     case 9:
       return "submit_verdict";
     case 10:

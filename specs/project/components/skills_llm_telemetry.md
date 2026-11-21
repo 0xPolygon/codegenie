@@ -30,7 +30,7 @@ This component is explicitly not responsible for:
 - Git and GitHub mechanics, diff parsing, anchor validation, posting, and GitHub comment sanitization — `components/repository_and_github.md`.
 - CLI argument parsing itself — `src/cli/*`; this component provides the provider command handler invoked by `src/cli/provider-command.ts`.
 - Eval scoring, replay, and eval run directories — `components/evals.md`; evals consumes this component's telemetry artifacts as reader contracts.
-- Everything under Future Considerations in the parent specs, including executable skill packages, external telemetry export, language analyzer backends, the cross-packet `ReviewSignal` index, the broad system-review expansion beyond the narrow Stage 8 repeated-hint follow-up, per-role model/reasoning tiering (`llm.roleModels`/`llm.roleReasoning`), existing-PR-thread planner hints, and spec-doc discovery. The telemetry recorder keeps a redaction-capable design as `architecture.md` requires, but no export path is designed here.
+- Everything under Future Considerations in the parent specs, including executable skill packages, external telemetry export, language analyzer backends, the cross-packet `ReviewSignal` index, the broad system-review expansion, per-role model/reasoning tiering (`llm.roleModels`/`llm.roleReasoning`), existing-PR-thread planner hints, and spec-doc discovery. The telemetry recorder keeps a redaction-capable design as `architecture.md` requires, but no export path is designed here.
 
 ## Public Interface
 
@@ -155,7 +155,6 @@ interface PromptBuilder {
   renderDossier(dossier: PlannerDossier): string
   buildPlannerPrompt(input: { dossier: PlannerDossier; lenses: LensDescriptor[]; skills: Skill[] }): BuiltPrompt
   buildPacketReviewPrompt(input: { packet: ReviewPacket; skills: Skill[] }): BuiltPrompt
-  buildSystemReviewPrompt(input: { task: SystemReviewTask; skills: Skill[] }): BuiltPrompt
   buildVerifierPrompt(input: {
     candidate: CandidateFinding
     originContext: string                    // packet context rendering, pipeline-supplied
@@ -613,7 +612,6 @@ Projection selects which skill sections each stage's prompt receives, per `archi
 | --- | --- |
 | 5 planner | One-line summaries only: `- <skill id> (lenses: <ids>): <summaryLine>` per skill of the enabled lenses; no section content |
 | 7 packet review | `Checks` + `False Positives` + `Examples` |
-| 8 targeted system review | `Checks` + `False Positives` + `Safe Patterns` |
 | 9 verifier | `False Positives` + `Safe Patterns` |
 | 10 composer | None — `buildComposerPrompt` performs no projection |
 
@@ -886,9 +884,8 @@ Lens registry:
 Prompt builder and projection:
 
 - `projection_stage_maps`: for one skill with all five sections, the stage 7 projection contains Checks + False Positives + Examples only; stage 9 contains False Positives + Safe Patterns only; stage 5 yields summary lines without section content; stage 10 performs no projection.
-- `projection_stage8_map`: targeted system review contains Checks + False Positives + Safe Patterns, with no Examples.
 - `bundled_examples_optional_owner_matrix`: bundled language skills omit Examples and every numbered check has the five owner fields; distinct core Examples remain.
-- `bundled_projection_budgets_and_stage9_self_containment`: every bundled skill and canonical language-plus-core composite is untruncated at Stages 7/8/9, Solidity Stage 8 stays at or below 3800 characters, and rendered Stage-9 sections contain no known dangling cross-reference.
+- `bundled_projection_budgets_and_stage9_self_containment`: every bundled skill and canonical language-plus-core composite is untruncated at Stages 7/9, and rendered Stage-9 sections contain no known dangling cross-reference.
 - `projection_per_skill_cap_4000`: an oversized skill truncates at a section boundary with the truncation marker, `truncatedChars` set, and a `skill_projection_truncated` telemetry event.
 - `projection_total_cap_12000_omits_tail`: four 4000-char skills project three; the fourth is `omitted: true` with telemetry; remainders below the minimum-fragment threshold never produce fragments.
 - `projection_dedupes_shared_skill`: a skill mapped from two selected lenses projects once.

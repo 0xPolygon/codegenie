@@ -1,4 +1,5 @@
-export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
+// Stage 8 (targeted system review) was deleted in #114; ids stay stable.
+export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11;
 
 export type ReviewDepth = "light" | "normal" | "deep";
 export type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -942,35 +943,6 @@ export type AdaptiveReviewSummary = {
   counts: AdaptiveReviewCounts;
 };
 
-export type SystemReviewTask = {
-  id: string;
-  question: string;
-  reason: string;
-  confidence: Exclude<Confidence, "low">;
-  packetIds: string[];
-  files: string[];
-  symbols: string[];
-  suggestedLenses: string[];
-  representativeFindings: CandidateFinding[];
-  sourceHintKeys?: string[];
-  mergedTaskIds?: string[];
-};
-
-export type ResolvedFollowUpHint = {
-  taskId: string;
-  question: string;
-  files: string[];
-  symbols: string[];
-  resolution: string;
-};
-
-export type SystemReviewResult = {
-  diagnostics?: ReviewDiagnostic[];
-  tasks: SystemReviewTask[];
-  packetResults: PacketReviewResult[];
-  resolvedHints: ResolvedFollowUpHint[];
-};
-
 export type VerificationVerdict = {
   diagnostic?: ReviewDiagnostic;
   candidateId: string;
@@ -1760,7 +1732,6 @@ export type ToolCallRecord = {
   initiator: "model" | "harness";
   workerId?: string;
   packetId?: string;
-  taskId?: string;
   candidateId?: string;
   modelCallId?: string;
   tool: string;
@@ -1807,7 +1778,6 @@ export type RepositoryToolCallContext = {
   record?: boolean;
   workerId?: string;
   packetId?: string;
-  taskId?: string;
   candidateId?: string;
   modelCallId?: string;
 };
