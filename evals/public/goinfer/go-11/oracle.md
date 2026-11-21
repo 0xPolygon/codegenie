@@ -6,7 +6,7 @@ intro: 9383547fcbbb5c37dee7c7177babe2e751948449
 base: a9297c9b571a368c1aa2b1e19731d04c2dc8314f
 introDate: 2026-10-12
 kind: control/in-process-http-streaming
-severity: low
+severity: medium
 ---
 
 ## Expected result
@@ -19,7 +19,7 @@ No defect is expected in the in-process HTTP transport. Response bytes stream th
 
 ## Severity floor
 
-Low. The location matcher flags reports for adjudication.
+Medium. The location matcher flags reports for adjudication.
 
 ## Control evidence
 
