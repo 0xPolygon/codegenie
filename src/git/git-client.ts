@@ -16,7 +16,7 @@ export type GrepResults = SearchResult[] & { omittedLines?: number };
 export interface GitClient {
   revParse(ref: string): Promise<string>;
   catFile(ref: string, path: string): Promise<string>;
-  lsTree(ref: string, glob?: string): Promise<string[]>;
+  lsTree(ref: string): Promise<string[]>;
   lsFiles(paths: string[]): Promise<string[]>;
   grep(
     ref: string,
@@ -104,15 +104,13 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
       });
     },
 
-    async lsTree(ref: string, glob?: string): Promise<string[]> {
+    async lsTree(ref: string): Promise<string[]> {
       assertSafeRef(ref);
-      const args = ["ls-tree", "-r", "--name-only", ref, "--"];
-      if (glob !== undefined) {
-        assertSafeGlob(glob);
-        args.push(`:(glob)${glob}`);
-      }
-      const stdout = await runGit(repoRoot, args, { errorCode: "git_ref_missing" });
-      return stdout.split("\n").filter(Boolean);
+      const stdout = await runGit(repoRoot, ["ls-tree", "-r", "-z", "--name-only", ref, "--"], {
+        stripFinalNewline: false,
+        errorCode: "git_ref_missing"
+      });
+      return splitNul(stdout);
     },
 
     async lsFiles(paths: string[]): Promise<string[]> {

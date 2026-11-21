@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, expectTypeOf, it } from "vitest";
 import { createGitClient } from "../src/git/git-client.js";
 import { assertSafeRefspec, runGit, runGitCapped, scrubSubprocessValue } from "../src/git/subprocess.js";
 import { CodegenieError } from "../src/util/errors.js";
@@ -141,6 +141,32 @@ describe("git client", () => {
 
     await expect(client.lsFiles(["--not-a-flag.txt"])).resolves.toEqual(["--not-a-flag.txt"]);
     await expect(client.lsTreeEntry("HEAD", "--not-a-flag.txt")).resolves.toMatchObject({ type: "blob" });
+  });
+
+  it("lists the full tree without accepting a glob pathspec", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "README.md", "base\n");
+    writeRepoFile(repo, "src/nested/file.ts", "export {};\n");
+    commitAll(repo, "base");
+    const client = createGitClient(repo);
+    const paths = ["README.md", "src/nested/file.ts"];
+
+    expectTypeOf(client.lsTree).parameters.toEqualTypeOf<[ref: string]>();
+    await expect(client.lsTree("HEAD")).resolves.toEqual(paths);
+    // An untyped caller can still supply extra arguments. Git must receive no glob.
+    await expect(Reflect.apply(client.lsTree, client, ["HEAD", "src/**"])).resolves.toEqual(paths);
+    await expect(client.lsTree("missing-ref")).rejects.toMatchObject({ code: "git_ref_missing" });
+  });
+
+  it("returns literal tree paths even when Git would quote them", async () => {
+    const repo = initRepo();
+    git(repo, ["config", "core.quotePath", "true"]);
+    const paths = ["src/café/entrée.ts", "src/with spaces.txt"];
+    if (process.platform !== "win32") paths.push("src/with\nnewline.txt");
+    for (const file of paths) writeRepoFile(repo, file, "content\n");
+    commitAll(repo, "literal filenames");
+
+    await expect(createGitClient(repo).lsTree("HEAD")).resolves.toEqual(paths.sort());
   });
 
   it("maps missing grep refs to git_ref_missing", async () => {
