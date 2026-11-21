@@ -1567,7 +1567,7 @@ function relatedGroupsField(group: FindingGroup, groups: FindingGroup[], anchorS
 function groupAnchorSymbols(group: FindingGroup, anchorSymbols: Map<string, string>): Set<string> {
   return new Set(group.findings.flatMap(finding => {
     const symbol = finding.anchor?.hunkId ? anchorSymbols.get(finding.anchor.hunkId) : undefined;
-    return symbol ? [normalize(symbol)] : [];
+    return symbol ? [symbol] : [];
   }));
 }
 
@@ -1575,8 +1575,10 @@ function anchorHunkSymbols(packetsById: Map<string, ReviewPacket>): Map<string, 
   const symbols = new Map<string, string>();
   for (const packet of packetsById.values()) for (const fact of packet.symbolFacts ?? []) {
     if (symbols.has(fact.hunkId)) continue;
+    // Key by file and symbol: same-named functions in different files are
+    // different code and must not be linked.
     const symbol = symbolForHunk(packet, fact.hunkId);
-    if (symbol !== undefined) symbols.set(fact.hunkId, symbol);
+    if (symbol !== undefined) symbols.set(fact.hunkId, fact.path + "\0" + normalize(symbol));
   }
   return symbols;
 }

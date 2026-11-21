@@ -15102,9 +15102,9 @@ function fakePacket(opts: {
 }
 
 describe("#151 related-group hint", () => {
-  const packetWithHunkSymbol = (id: string, hunkId: string, enclosingSymbol: string): ReviewPacket => ({
+  const packetWithHunkSymbol = (id: string, hunkId: string, enclosingSymbol: string, path = "app.ts"): ReviewPacket => ({
     ...fakePacket(), id,
-    symbolFacts: [{ path: "app.ts", hunkId, enclosingSymbol, changedLines: [1], changedLinesSide: "new", source: "fallback", confidence: "heuristic" }]
+    symbolFacts: [{ path, hunkId, enclosingSymbol, changedLines: [1], changedLinesSide: "new", source: "fallback", confidence: "heuristic" }]
   });
 
   it("lists same-category groups anchored in the same changed symbol as leads, never merging them itself", async () => {
@@ -15145,6 +15145,31 @@ describe("#151 related-group hint", () => {
     // The composer chose to keep them separate; the hint never merges by itself.
     expect([...result.findings, ...result.summaryOnlyFindings].map((published) => published.id).sort())
       .toEqual(["ledger-total", "route-retry", "route-selection", "route-test"]);
+  });
+
+  it("does not link same-named functions in different files", async () => {
+    const base = fakeFinding();
+    const left: CandidateFinding = { ...base, id: "left-validate", producedBy: { ...base.producedBy, packetId: "packet-left" },
+      path: "lib/a/handler.ts", anchor: { ...base.anchor!, path: "lib/a/handler.ts", hunkId: "h-left", line: 5 }, category: "correctness",
+      title: "Validation accepts empty IDs", failureMode: "An empty ID now passes validation in package a." };
+    const right: CandidateFinding = { ...base, id: "right-validate", producedBy: { ...base.producedBy, packetId: "packet-right" },
+      path: "lib/b/handler.ts", anchor: { ...base.anchor!, path: "lib/b/handler.ts", hunkId: "h-right", line: 50 }, category: "correctness",
+      title: "Validation drops the length limit", failureMode: "Long names are no longer rejected in package b." };
+    let grouped: Array<{ representativeId: string; relatedGroups?: string[] }> = [];
+    const builder = createPromptBuilder(fakeLensRegistry());
+    const promptBuilder = { ...builder, buildComposerPrompt: (input: Parameters<typeof builder.buildComposerPrompt>[0]) => {
+      grouped = JSON.parse(input.groupedFindingsJson);
+      return builder.buildComposerPrompt(input);
+    } };
+    const runner: LlmRunner = { runStructured: async <T>() => ({ summary: "Validation changed.", composedFindings:
+      [left, right].map((member) => ({ findingIds: [member.id], finalBody: member.failureMode, publication: "inline" })) }) as T };
+    await dedupeRankAndComposeReview({ verified: [left, right], verdicts: [] }, fakePlan(),
+      { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
+        runner, promptBuilder, diff: fakeDiff(),
+        packets: [packetWithHunkSymbol("packet-left", "h-left", "Validate", "lib/a/handler.ts"), packetWithHunkSymbol("packet-right", "h-right", "Validate", "lib/b/handler.ts")]
+      });
+    expect(grouped).toHaveLength(2);
+    expect(grouped.every((group) => group.relatedGroups === undefined)).toBe(true);
   });
 
   it("asks the composer to compare listed related groups under the existing merge rule (p10.27)", () => {
