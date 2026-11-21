@@ -1,5 +1,4 @@
 import { buildAttentionReconciliation, attentionResolutionErrors, createAttentionResolutionRepair } from "../src/pipeline/attention-reconciliation.js";
-import { assessFinalSuggestions } from "../src/pipeline/suggestion-assessment.js";
 import { defaultConfig } from "../src/config/schema.js";
 import { unresolvedToolDiagnostic } from "../src/util/review-health.js";
 import { createRunTelemetry } from "../src/telemetry/run-artifacts.js";
@@ -94,7 +93,7 @@ describe("Phase 4 schemas and repository tool definitions", () => {
     expect(submitToolNameForStage(9)).toBe("submit_verdict");
     expect(submitToolNameForStage(10)).toBe("submit_composition");
     expect(SCHEMA_VERSIONS.submit_plan).toBe(7);
-    expect(SCHEMA_VERSIONS.submit_verdict).toBe(11);
+    expect(SCHEMA_VERSIONS.submit_verdict).toBe(12);
 
     const valid = {
       diffUnderstanding: { declaredIntent: "Small change", inferredBehavior: "The diff makes a small change." },
@@ -2022,24 +2021,24 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "recovery_obligation_resolved" }));
   });
 
-  it.each(["duplicate", "rejected", "conflicting"])("does not transfer retained assessment support after repairing a %s draft", async kind => {
+  it.each([true, false])("strips a legacy suggestionAssessments field through schema recovery, never accepting it (reason supplied=%s)", async withReason => {
+    // #146: the field left the schema; a legacy submission is schema-invalid and
+    // goes through the existing recovery path, never accepted with an assessment attached.
     const full = { ...VERIFIER_SUBMIT_EXAMPLE.finalFinding, suggestedFix: "Honor the original retention request." };
     const candidate = { ...full, id: "candidate", changedLine: true,
       producedBy: { kind: "packet", stage: 7, packetId: "p", lensId: "core/code-review", skillIds: [] } } as CandidateFinding;
-    const original = { verdict: kind === "rejected" ? "reject" : "revise", requiredEvidencePresent: true, falsePositiveRisk: "low",
-      findingUpdates: { suggestedFix: kind === "conflicting" ? "Discard the retention request." : full.suggestedFix },
-      finalFinding: full,
+    const replacement = "Allocate capacity meeting the original retention request.";
+    const original = { verdict: "revise", requiredEvidencePresent: true, falsePositiveRisk: "low",
+      ...(withReason ? { reason: "Revised" } : {}),
+      findingUpdates: { suggestedFix: replacement },
       suggestionAssessments: { suggestedFix: { status: "supported", rationale: "Preserves the original retention minimum.",
         contractCheck: { status: "established", requirement: "Meet the original retention request." },
         evidence: [{ path: "caller.ts", lines: "5-10", whyRelevant: "Checks the requested minimum." }] } } };
-    // A missing reason triggers repair. The patch changes the remedy without
-    // supplying a new assessment, so the prior support must not follow it.
-    const replacement = kind === "conflicting" ? full.suggestedFix : "Reduce the advertised retention below the request.";
-    const patch = { verdict: "revise", reason: "Revised", findingUpdates: { suggestedFix: replacement } };
     const submit = (args: Record<string, unknown>) => assistant([{ type: "toolCall" as const, id: "submit", name: "submit_verdict", arguments: args }]);
-    const adapter = scriptedAdapter([submit(original), submit(patch)]);
+    const adapter = scriptedAdapter([submit(original), submit({ reason: "Revised" })]);
+    const telemetry = fakeTelemetry();
     const runner = createPiRunner({ llmConfig: { provider: "fake", model: "fake-model", maxConcurrentCalls: 1 },
-      telemetry: fakeTelemetry().recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
+      telemetry: telemetry.recorder, logger: fakeLogger(), runSignal: new AbortController().signal, adapter,
       hooks: { checkpoint: () => "ok", onUsage: vi.fn() } });
     const result = await runner.runStructured<SubmitVerificationVerdict>({ stage: 9, schema: SubmitVerificationVerdictSchema,
       prompt: "verify retention", templateVersion: "test", timeoutMs: 1000,
@@ -2050,10 +2049,15 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         catch (error) { return { ok: false, classification: "invalid_tool_arguments", details: String(error) }; }
       }
     });
-    const final = { ...candidate, ...expandVerifierRevision(candidate, result).finalFinding };
-    const assessments = result.suggestionAssessments as CandidateFinding["suggestionAssessments"];
-    expect(assessFinalSuggestions(final, assessments)?.suggestedFix?.status).toBe("unverified");
-    expect(adapter.contexts).toHaveLength(2);
+    expect(result).not.toHaveProperty("suggestionAssessments");
+    expect(result).toMatchObject({ verdict: "revise", reason: "Revised", findingUpdates: { suggestedFix: replacement } });
+    expect(expandVerifierRevision(candidate, result).finalFinding?.suggestedFix).toBe(replacement);
+    // The unknown property is discarded by the existing deterministic shape
+    // correction; other defects still go through targeted field repair.
+    expect(telemetry.events).toContainEqual(expect.objectContaining({ message: withReason ? "submit_shape_correction_accepted" : "submit_shape_correction_rejected",
+      data: expect.objectContaining({ localEdits: [{ path: "suggestionAssessments", rule: "unknown_property" }] }) }));
+    expect(adapter.contexts).toHaveLength(withReason ? 1 : 2);
+    if (!withReason) expect(telemetry.events).toContainEqual(expect.objectContaining({ message: "field_repair_accepted", data: expect.objectContaining({ paths: ["reason"] }) }));
   });
 
   it("run-88 verifier repair selects a compact revision and caches only the validated result", async () => {
@@ -2678,10 +2682,17 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     expect(telemetry.events.filter(event => event.message === "schema_repair_scheduled").every(event => event.data?.replaceConversation === true)).toBe(true);
   });
 
-  it("repairs unsupported advice atomically without restoring removed sections on retry", async () => {
+  it("repairs provenance-only advice atomically without restoring removed sections on retry", async () => {
     const telemetry = fakeTelemetry();
-    const { findings, sections, evidenceRefs } = authorizationComposition();
+    const { findings, sections: fixtureSections, evidenceRefs } = authorizationComposition();
+    // The verifier withdrew its fix; the superseded proposal is provenance only
+    // and never publishable, even though current advice needs no label (#146).
+    const provenanceRef = "authorization/originalSuggestions/suggestedFix";
+    findings[0]!.originalSuggestions = { suggestedFix: { status: "unverified", suggestionText: findings[0]!.suggestedFix!,
+      rationale: "Behavioral requirement compatibility was not assessed.", evidence: [] } };
+    delete findings[0]!.suggestedFix;
     delete findings[0]!.suggestionAssessments!.suggestedFix;
+    const sections = fixtureSections.map(section => section.kind === "fix" ? { ...section, sourceRefs: [provenanceRef] } : section);
     const original = { summary: "Revocation is bypassed.", composedFindings: [{ findingIds: [findings[0]!.id], sections, evidenceRefs, publication: "inline" }] };
     const fixedSections = sections.filter(section => section.kind !== "fix");
     const adapter = scriptedAdapter([
@@ -2690,7 +2701,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
         "composedFindings.0.sections": fixedSections, "composedFindings.0.retainedSourceRefs": []
       } }]),
       assistant([{ type: "toolCall", id: "fixed", name: "submit_composition", arguments: {
-        "composedFindings.0.sections": fixedSections, "composedFindings.0.retainedSourceRefs": ["authorization/suggestedFix"]
+        "composedFindings.0.sections": fixedSections, "composedFindings.0.retainedSourceRefs": [provenanceRef]
       } }])
     ]);
     const runner = createPiRunner({
@@ -2708,7 +2719,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       schemaRepair: { createFieldRepair: (schema, retained) => createCompositionAttributionRepair(schema, retained, findings) }
     });
     expect(result.composedFindings[0]!.sections).toEqual(fixedSections);
-    expect(result.composedFindings[0]).toHaveProperty("retainedSourceRefs", ["authorization/suggestedFix"]);
+    expect(result.composedFindings[0]).toHaveProperty("retainedSourceRefs", [provenanceRef]);
     const repairTool = vi.mocked(adapter.complete).mock.calls[1]![1].tools![0]!;
     expect(repairTool.description).toContain("Supplied values update only the permitted fields");
     expect(repairTool.description).not.toContain("Supplied reference lists");

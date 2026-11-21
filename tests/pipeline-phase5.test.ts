@@ -1055,7 +1055,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(candidates).toEqual(before);
   });
 
-  it.each([true, false])("publishes the same supported-only recommendation policy in structured output (supported=%s)", async supported => {
+  it.each([true, false])("mirrors the advice the composed body cites in structured output (cited=%s)", async supported => {
     const fixture = authorizationComposition();
     const finding = fixture.findings[0]!;
     if (!supported) delete finding.suggestionAssessments;
@@ -7607,6 +7607,16 @@ describe("phase 5 pipeline regressions", () => {
     expect(verifierPrompt.prompt).toContain("Do not use accidental-regression framing");
   });
 
+  it("no longer asks Stage 9 for suggestion assessments or contract checks (#146)", () => {
+    const verifierPrompt = createPromptBuilder(fakeLensRegistry()).buildVerifierPrompt({
+      candidate: fakeFinding(), originContext: "", hunksText: "", skills: []
+    });
+    expect(verifierPrompt.templateVersion).toBe("p9.32");
+    expect(verifierPrompt.prompt).not.toContain("suggestionAssessments");
+    expect(verifierPrompt.prompt).not.toContain("contractCheck");
+    expect(verifierPrompt.prompt).toContain("do not spend investigation budget on recommendations");
+  });
+
   it("preserves behavior-change assessment from packet reviewer output", async () => {
     const runner: LlmRunner = {
       runStructured: async <T>() => ({
@@ -12355,12 +12365,11 @@ describe("phase 5 pipeline regressions", () => {
     expect(markdown).not.toContain("Failure mode:");
     expect(markdown).not.toContain("Why it matters:");
     expect(markdown.match(/A canceled request can keep retrying after the worker is stopped\./gu)).toHaveLength(1);
-    expect(markdown).toContain("Remediation remains unverified");
-    expect(markdown).toContain("Regression-test guidance remains unverified");
-    expect(markdown).not.toContain(finding.suggestedFix);
-    expect(markdown).not.toContain(finding.suggestedTest);
-    expect(result.findings[0]).not.toHaveProperty("suggestedFix");
-    expect(result.findings[0]).not.toHaveProperty("suggestedTest");
+    expect(markdown).not.toContain("remains unverified");
+    expect(markdown.split(finding.suggestedFix)).toHaveLength(2);
+    expect(markdown.split(finding.suggestedTest)).toHaveLength(2);
+    expect(result.findings[0]!.suggestedFix).toBe(finding.suggestedFix);
+    expect(result.findings[0]!.suggestedTest).toBe(finding.suggestedTest);
   });
 
   it("cleans duplicate composer titles and metadata before rendering", async () => {

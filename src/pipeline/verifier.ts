@@ -497,7 +497,7 @@ function applyVerificationVerdict(candidate: CandidateFinding, verdict: Verifica
   const assessed = {
     ...revised,
     ...(Object.keys(originalSuggestions).length ? { originalSuggestions } : {}),
-    ...((revised.suggestedFix || revised.suggestedTest) ? { suggestionAssessments: assessFinalSuggestions(revised, verdict.suggestionAssessments) } : {}),
+    ...((revised.suggestedFix || revised.suggestedTest) ? { suggestionAssessments: assessFinalSuggestions(revised) } : {}),
     ...(verdict.proofAssessment ? { proofAssessment: verdict.proofAssessment } : {})
   };
   return applyVerdictIntentAssessment(applyVerdictAnchor(assessed, verdict), verdict);
@@ -620,7 +620,7 @@ async function verifyCandidate(
   const verificationIncomplete = normalized.reason.startsWith("verification incomplete:");
   const verdict: VerificationVerdict = {
     candidateId: candidate.id,
-    suggestionAssessments: assessFinalSuggestions(revised ?? candidate, bindSubmittedAssessments(revised ?? candidate, normalized.suggestionAssessments)),
+    suggestionAssessments: assessFinalSuggestions(revised ?? candidate),
     ...(normalized.proofAssessment ? { proofAssessment: normalized.proofAssessment } : {}),
     ...(normalized.proofAssessment && (normalized.proofAssessment.status === "unresolved" || normalized.proofAssessment.assumptions.some(a => a.essential))
       ? { unresolvedConcern: { question: normalized.proofAssessment.assumptions.filter(a => a.essential).map(a => a.question).join("; ") || normalized.proofAssessment.evidence,
@@ -640,16 +640,6 @@ async function verifyCandidate(
   if (verdict.unresolvedConcern && !verdict.diagnostic) {
     const diagnostic = unresolvedToolDiagnostic(9, toolResults, candidate.id);
     if (diagnostic) verdict.diagnostic = diagnostic;
-  }
-  telemetry.event({ stage: 9, level: "info", message: "verification_suggestion_assessments",
-    data: { candidateId: candidate.id, suppliedAssessments: normalized.suggestionAssessments ?? {}, assessments: verdict.suggestionAssessments } });
-  for (const field of ["suggestedFix", "suggestedTest"] as const) {
-    const supplied = normalized.suggestionAssessments?.[field];
-    const effective = verdict.suggestionAssessments?.[field];
-    if (supplied?.status === "supported" && effective?.status === "unverified") {
-      telemetry.event({ stage: 9, level: "info", message: "verification_suggestion_support_downgraded",
-        data: { candidateId: candidate.id, field, reason: effective.rationale, submitted: supplied, effective } });
-    }
   }
   if (verdict.verdict === "revise" && revised !== undefined && submittedFinalFinding !== undefined) {
     // Derive the audit from the same fully policy-applied candidate that enters
@@ -708,23 +698,6 @@ function verificationOriginContext(candidate: CandidateFinding, packet: ReviewPa
     return "";
   }
   return `${packet.contextText}\n\nDiscovery packet ${packet.id} (${packet.path}); this is origin evidence, not a finding location.\n${packet.hunks.map((hunk) => hunk.contentWithLineNumbers).join("\n\n")}`;
-}
-
-// Bind only newly submitted assessments, after applying this verdict's updates.
-// Persisted assessments keep exact text identity; explicit mismatches remain
-// mismatches. This removes the need for the model to retype an unchanged value.
-function bindSubmittedAssessments(
-  finding: CandidateFinding,
-  submitted: SubmitVerificationVerdict["suggestionAssessments"]
-): CandidateFinding["suggestionAssessments"] {
-  if (!submitted) return undefined;
-  const bound: NonNullable<CandidateFinding["suggestionAssessments"]> = {};
-  for (const field of ["suggestedFix", "suggestedTest"] as const) {
-    const assessment = submitted[field];
-    const text = finding[field];
-    if (assessment && text) bound[field] = { ...assessment, suggestionText: assessment.suggestionText ?? text };
-  }
-  return bound;
 }
 
 function normalizeSubmittedVerdict(

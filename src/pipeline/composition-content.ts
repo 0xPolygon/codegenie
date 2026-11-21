@@ -60,12 +60,12 @@ export function compositionSources(findings: CandidateFinding[], assessmentFindi
   });
 }
 
-// Shared by validation, live schemas, repair schemas and fallback. Historical
-// assessments remain auditable but never authorize current recommendations.
+// Shared by validation, live schemas, repair schemas and fallback. Verifier-final
+// fix and test advice is eligible without a label (#146); provenance-only
+// originals never authorize current recommendations.
 export function eligibleCompositionSource(source: CompositionSource, kind?: string): boolean {
   if (kind === undefined) return true;
-  return source.kind === kind && !source.provenanceOnly
-    && ((kind !== "fix" && kind !== "test") || source.suggestionAssessment?.status === "supported");
+  return source.kind === kind && !source.provenanceOnly;
 }
 
 // Model prose never owns HTML containers. Close unbalanced Markdown fences so

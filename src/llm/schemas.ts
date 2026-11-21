@@ -208,30 +208,11 @@ export const ProofAssessmentSchema = Type.Object({
   }, { additionalProperties: false }), { maxItems: 8 })
 }, { additionalProperties: false });
 
-export const SuggestionAssessmentSchema = Type.Object({
-  contractCheck: Type.Optional(Type.Object({
-    status: StringEnum(["established", "unresolved"] as const),
-    requirement: Type.String({ maxLength: 2000, description: "Observable behavioral requirement the suggestion must preserve; existing evidence explains its source and relevance." })
-  }, { additionalProperties: false })),
-  status: StringEnum(["supported", "incompatible", "unverified"] as const),
-  suggestionText: Type.Optional(Type.String({ minLength: 1, maxLength: 4000, description: "Omit to assess the named final suggestedFix/suggestedTest after findingUpdates. If supplied, must match that text exactly; this field never revises the suggestion." })),
-  rationale: Type.String({ minLength: 1, maxLength: 2000, description: "Why this exact proposal preserves or violates the established requirement. For tests, explain reachability and before/after expectations without excluding other requirement-preserving implementations." }),
-  evidence: Type.Array(Type.Object({
-    path: Type.String({ maxLength: 500 }),
-    lines: Type.String({ maxLength: 2000 }),
-    whyRelevant: Type.String({ maxLength: 2000 })
-  }, { additionalProperties: false }), { maxItems: 8 })
-}, { additionalProperties: false });
-
 export const SubmitVerificationVerdictSchema = Type.Object(
   {
     verdict: StringEnum(["keep", "reject", "revise"] as const),
     ...VerificationVerdictSharedProperties,
     proofAssessment: Type.Optional(ProofAssessmentSchema),
-    suggestionAssessments: Type.Optional(Type.Object({
-      suggestedFix: Type.Optional(SuggestionAssessmentSchema),
-      suggestedTest: Type.Optional(SuggestionAssessmentSchema)
-    }, { additionalProperties: false, description: "Assess final fix/test suggestions independently when inspected evidence permits. Optional: omission means unverified advice, not a failed defect. Support requires an established contractCheck and relevant evidence." })),
     findingUpdates: Type.Optional(FindingUpdatesSchema),
     finalFinding: Type.Optional(SubmittedFindingSchema),
     revisedAnchor: Type.Optional(DiffAnchorSchema)
@@ -289,7 +270,7 @@ export type SubmitComposition = Static<typeof SubmitCompositionSchema>;
 export const SCHEMA_VERSIONS = {
   submit_plan: 7,
   submit_review: 5,
-  submit_verdict: 11,
+  submit_verdict: 12,
   submit_composition: 9
 } as const;
 

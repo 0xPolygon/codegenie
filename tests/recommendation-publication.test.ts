@@ -15,13 +15,13 @@ function schemaFor(findings: ReturnType<typeof fixture>["findings"]) {
 }
 
 describe("supported recommendation publication", () => {
-  it.each(["suggestedFix", "suggestedTest"] as const)("withholds distinct supported %s proposals in fallback regardless of ordering", field => {
+  it.each(["suggestedFix", "suggestedTest"] as const)("withholds distinct %s proposals in fallback regardless of ordering", field => {
     const first = fixture().findings[0]!;
+    delete first.suggestionAssessments;
     const second = structuredClone(first);
     second.id = "alternative";
     second[field] = field === "suggestedFix" ? "Revalidate the session's membership when loading a document."
       : "Verify active access, then revoke the session and assert no document is returned.";
-    second.suggestionAssessments![field]!.suggestionText = second[field]!;
     const before = structuredClone([first, second]);
     const other = field === "suggestedFix" ? "suggestedTest" : "suggestedFix";
     const label = field === "suggestedFix" ? "Remediation" : "Regression-test guidance";
@@ -40,8 +40,9 @@ describe("supported recommendation publication", () => {
     expect([first, second]).toEqual(before);
   });
 
-  it("publishes identical supported proposals once while retaining every originating source", () => {
+  it("publishes identical proposals once while retaining every originating source", () => {
     const first = fixture().findings[0]!;
+    delete first.suggestionAssessments;
     const second = { ...structuredClone(first), id: "duplicate" };
     let metrics: CompositionMetrics | undefined;
     const body = renderRetainedComposition([first, second], undefined, undefined, value => { metrics = value; });
@@ -54,26 +55,49 @@ describe("supported recommendation publication", () => {
     expect(metrics?.accountedSourceComponents).toBe(compositionSources([first, second]).length);
   });
 
-  it.each(["unverified", "incompatible"] as const)("does not let %s or historical alternatives block a single supported proposal", status => {
+  it.each(["supported", "unverified", "incompatible"] as const)("does not let a historical alternative labeled %s block or replace the current proposal", status => {
     const first = fixture().findings[0]!;
-    const second = structuredClone(first);
-    second.id = "unendorsed";
-    second.suggestedFix = "Use a historical session membership.";
-    second.suggestionAssessments!.suggestedFix = { ...second.suggestionAssessments!.suggestedFix!, status, suggestionText: second.suggestedFix };
-    first.originalSuggestions = { suggestedFix: { ...first.suggestionAssessments!.suggestedFix!, suggestionText: "Invalidate every session." } };
-    const body = renderRetainedComposition([first, second]);
+    first.originalSuggestions = { suggestedFix: { ...first.suggestionAssessments!.suggestedFix!, status, suggestionText: "Invalidate every session." } };
+    delete first.suggestionAssessments;
+    const body = renderRetainedComposition([first]);
     expect(body).toContain(first.suggestedFix);
     expect(body).not.toContain("remains unreconciled");
-    expect(body).not.toContain(second.suggestedFix);
     expect(body).not.toContain(first.originalSuggestions.suggestedFix!.suggestionText);
   });
 
-  it("allows attributed composition to select among distinct supported proposals", () => {
+  it("publishes verifier-final fix and test advice without a label, never a provenance-only original", () => {
+    const { findings, group, submission } = fixture();
+    const finding = findings[0]!;
+    delete finding.suggestionAssessments;
+    const historical = { status: "supported" as const, suggestionText: "Use an older membership snapshot.", rationale: "Historical proposal.", evidence: [] };
+    finding.originalSuggestions = { suggestedFix: historical, suggestedTest: { ...historical, suggestionText: "Assert the snapshot is reused." } };
+    const originals = ["authorization/originalSuggestions/suggestedFix", "authorization/originalSuggestions/suggestedTest"];
+    group.retainedSourceRefs.push(...originals);
+    expect(() => validateCompositionSubmission(submission, findings)).not.toThrow();
+    const composed = composePresentation(findings, group.sections, group.evidenceRefs, undefined, group);
+    let metrics: CompositionMetrics | undefined;
+    const fallback = renderRetainedComposition(findings, undefined, undefined, value => { metrics = value; });
+    for (const [body, published] of [[composed.body, composed.metrics.publishedSuggestionSources], [fallback, metrics!.publishedSuggestionSources]] as const) {
+      expect(body).toContain("**Suggested fix:** " + finding.suggestedFix);
+      expect(body).toContain("**Suggested test:** " + finding.suggestedTest);
+      expect(body).not.toContain("remains unverified");
+      for (const original of Object.values(finding.originalSuggestions)) expect(body).not.toContain(original.suggestionText);
+      expect([...published].sort()).toEqual(["authorization/suggestedFix", "authorization/suggestedTest"]);
+    }
+    expect(compositionSources(findings).filter(s => s.findingId === finding.id && (s.kind === "fix" || s.kind === "test") && !s.provenanceOnly)
+      .map(s => s.suggestionAssessment?.status)).toEqual(["unverified", "unverified"]);
+    // A provenance-only original cannot be cited as advice even when its historical label claimed support.
+    group.sections.find(s => s.kind === "test")!.sourceRefs.push(originals[1]!);
+    group.retainedSourceRefs = [originals[0]!];
+    expect(() => validateCompositionSubmission(submission, findings)).toThrow(/unsupported_suggestion/);
+  });
+
+  it("allows attributed composition to select among distinct proposals", () => {
     const { findings, sections } = fixture();
+    delete findings[0]!.suggestionAssessments;
     const second = structuredClone(findings[0]!);
     second.id = "alternative";
     second.suggestedFix = "Revalidate membership when loading a document.";
-    second.suggestionAssessments!.suggestedFix!.suggestionText = second.suggestedFix;
     findings.push(second);
     const sources = compositionSources(findings);
     sections.find(section => section.kind === "verification")!.sourceRefs.push(...sources.filter(s => s.findingId === second.id && s.kind === "verification").map(s => s.id));
@@ -87,13 +111,12 @@ describe("supported recommendation publication", () => {
     expect(renderRetainedComposition([second], undefined, undefined, undefined, findings)).toContain(second.suggestedFix);
   });
 
-  it.each(["same proposal", "different compound proposal"])("can publish supported advice despite an unverified %s", variation => {
+  it.each(["same proposal", "different compound proposal"])("can publish cited advice while retaining an alternative %s", variation => {
     const { findings, sections } = fixture();
+    delete findings[0]!.suggestionAssessments;
     const alternative = structuredClone(findings[0]!);
-    alternative.id = "unverified-alternative";
+    alternative.id = "alternative";
     if (variation === "different compound proposal") alternative.suggestedFix += " Or allow revoked sessions to finish existing requests.";
-    alternative.suggestionAssessments!.suggestedFix = { status: "unverified", suggestionText: alternative.suggestedFix!,
-      rationale: "The caller contract has not been inspected for this proposal.", evidence: [] };
     findings.push(alternative);
     const sources = compositionSources(findings);
     sections.find(section => section.kind === "verification")!.sourceRefs.push(alternative.id + "/proofAssessment");
@@ -103,26 +126,22 @@ describe("supported recommendation publication", () => {
     expect(result.metrics.publishedSuggestionSources).toContain(findings[0]!.id + "/suggestedFix");
     expect(result.metrics.retainedSuggestionSources).toContain(alternative.id + "/suggestedFix");
     expect(result.metrics.accountedSourceComponents).toBe(sources.length);
-    // Actual contrary evidence about the same proposal must still block it.
-    alternative.suggestedFix = findings[0]!.suggestedFix!;
-    alternative.suggestionAssessments!.suggestedFix = { ...alternative.suggestionAssessments!.suggestedFix!,
-      suggestionText: alternative.suggestedFix!, status: "incompatible", rationale: "An inspected caller requires a behavior this exact remedy removes." };
-    expect(() => composePresentation(findings, sections, [], undefined, { retainedSourceRefs })).toThrow(/unsupported_suggestion/);
   });
 
-  it("retains all unverified proposals without prominently publishing them in synthesis or fallback", () => {
+  it("lets synthesis retain unlabeled proposals without a placeholder, while fallback publishes them", () => {
     const { findings, group } = fixture();
     delete findings[0]!.suggestionAssessments;
     group.retainedSourceRefs = group.sections.filter(s => s.kind === "fix" || s.kind === "test").flatMap(s => s.sourceRefs);
     group.sections = group.sections.filter(s => s.kind !== "fix" && s.kind !== "test");
     const composed = composePresentation(findings, group.sections, group.evidenceRefs, undefined, group);
-    for (const body of [composed.body, renderRetainedComposition(findings)]) {
+    const fallback = renderRetainedComposition(findings);
+    for (const body of [composed.body, fallback]) {
       expect(body).toContain(findings[0]!.failureMode);
-      for (const field of ["suggestedFix", "suggestedTest"] as const) {
-        expect(body).not.toContain(findings[0]![field]);
-      }
-      expect(body.match(/Remediation remains unverified/g)).toHaveLength(1);
-      expect(body.match(/Regression-test guidance remains unverified/g)).toHaveLength(1);
+      expect(body).not.toContain("remains unverified");
+    }
+    for (const field of ["suggestedFix", "suggestedTest"] as const) {
+      expect(composed.body).not.toContain(findings[0]![field]);
+      expect(fallback.split(findings[0]![field]!)).toHaveLength(2);
     }
     expect(composed.metrics.publishedSuggestionSources).toEqual([]);
     expect(composed.metrics.retainedSuggestionSources).toHaveLength(2);
@@ -157,25 +176,9 @@ describe("supported recommendation publication", () => {
     expect(compositionSources(findings).some(s => s.provenanceOnly)).toBe(false);
   });
 
-  it("does not bypass conflicting assessments by composing candidates into separate groups", () => {
-    const first = fixture();
-    const second = fixture();
-    second.findings[0]!.id = "conflict";
-    second.findings[0]!.suggestionAssessments!.suggestedFix!.status = "incompatible";
-    const findings = [...first.findings, ...second.findings];
-    const sources = compositionSources(second.findings, findings);
-    const secondGroup = { findingIds: ["conflict"], sections: (["impact", "verification"] as const).map(kind => ({
-      kind, text: "The defect remains established.", sourceRefs: sources.filter(s => s.kind === kind).map(s => s.id)
-    })), evidenceRefs: sources.filter(s => s.kind === "evidence").map(s => s.id),
-      retainedSourceRefs: sources.filter(s => s.kind === "fix" || s.kind === "test").map(s => s.id) };
-    expect(() => validateCompositionSubmission({ composedFindings: [first.group, secondGroup] }, findings)).toThrow(/unsupported_suggestion/);
-    const body = renderRetainedComposition(first.findings, undefined, undefined, undefined, findings);
-    expect(body).not.toContain(first.findings[0]!.suggestedFix);
-  });
-
-  it("offers only eligible IDs in attribution repairs, while retaining unsupported sources", () => {
+  it("offers only eligible IDs in attribution repairs", () => {
     const { findings, group, submission } = fixture();
-    delete findings[0]!.suggestionAssessments!.suggestedTest;
+    delete findings[0]!.suggestionAssessments;
     const index = group.sections.findIndex(s => s.kind === "test");
     group.sections.splice(index, 1);
     group.retainedSourceRefs = ["authorization/suggestedTest"];
@@ -188,14 +191,19 @@ describe("supported recommendation publication", () => {
     expect(() => validateCompositionSubmission(result as typeof submission, findings)).not.toThrow();
   });
 
-  it("repairs unsupported advice by removing its section without losing the source or changing diagnosis", () => {
+  it("repairs advice citing a provenance-only original by removing its section without losing the source or changing diagnosis", () => {
     const { findings, group, submission } = fixture();
-    delete findings[0]!.suggestionAssessments!.suggestedFix;
+    delete findings[0]!.suggestionAssessments;
+    const original = "authorization/originalSuggestions/suggestedFix";
+    findings[0]!.originalSuggestions = { suggestedFix: { status: "unverified", suggestionText: "Use an older membership snapshot.", rationale: "Historical proposal.", evidence: [] } };
+    group.sections.find(s => s.kind === "fix")!.sourceRefs = [original];
+    group.retainedSourceRefs = ["authorization/suggestedFix"];
+    expect(() => validateCompositionSubmission(submission, findings)).toThrow(/unsupported_suggestion/);
     const before = structuredClone(submission);
     const repair = createCompositionAttributionRepair(schemaFor(findings), submission, findings)!;
     expect(repair.prompt).toContain("Repair unsupported composition advice");
     const sections = group.sections.filter(s => s.kind !== "fix");
-    const updates = { "composedFindings.0.sections": sections, "composedFindings.0.retainedSourceRefs": ["authorization/suggestedFix"] };
+    const updates = { "composedFindings.0.sections": sections, "composedFindings.0.retainedSourceRefs": ["authorization/suggestedFix", original] };
     const repaired = repair.merge(updates) as typeof submission;
     expect(() => validateCompositionSubmission(repaired, findings)).not.toThrow();
     expect(repaired.composedFindings[0]!.sections).toHaveLength(3);

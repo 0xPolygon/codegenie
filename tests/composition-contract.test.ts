@@ -16,7 +16,7 @@ import type { RunCoverageStatus } from "../src/types.js";
 
 
 describe("contract-aware concise composition", () => {
-  it("publishes the corrected conclusion and supported remedy without the original assessments appendix", () => {
+  it("publishes the corrected conclusion and chosen remedy without the original assessments appendix", () => {
     const { findings, sections, evidenceRefs, presentation } = proposal();
     findings[1]!.severity = "medium";
     const { body, metrics } = composePresentation(findings, sections, evidenceRefs, undefined, presentation);
@@ -25,7 +25,7 @@ describe("contract-aware concise composition", () => {
     expect(body).not.toContain(findings[0]!.suggestedFix);
     expect(body).not.toContain(findings[0]!.suggestedTest);
     expect(body).toContain("**Suggested fix:** Round");
-    expect(body).toContain("Regression-test guidance remains unverified");
+    expect(body).not.toContain("remains unverified");
     expect(body).not.toContain(findings[1]!.suggestedTest);
     expect(body).toContain("size of the loss depends");
     expect(body).not.toContain("Original assessments and supporting evidence");
@@ -48,11 +48,10 @@ describe("contract-aware concise composition", () => {
     expect(render).toThrow(/accounted evidence/);
   });
 
-  it("rejects incompatible endorsements, duplicate sections and unsupported supersessions", () => {
+  it("rejects duplicate sections and unsupported supersessions", () => {
     const { findings, sections, evidenceRefs, presentation } = proposal();
     const render = () => composePresentation(findings, sections, evidenceRefs, undefined, presentation);
     sections.push({ kind: "fix", text: "Lower the guarantee", sourceRefs: ["rounding/suggestedFix"] });
-    expect(render).toThrow(/unsupported_suggestion/);
     expect(render).toThrow(/Duplicate section/);
     sections.pop();
     presentation.reconciliations![0]!.supportingRefs = [];
@@ -71,14 +70,15 @@ describe("contract-aware concise composition", () => {
     expect(() => composePresentation(findings, sections, evidenceRefs, undefined, presentation)).toThrow(/cannot supersede/);
   });
 
-  it("retains a defect when its remedy is incompatible in deterministic fallback", () => {
+  it("retains a defect when its remedies are unreconciled in deterministic fallback", () => {
     const findings = contractReview();
     let accounted = 0;
     const body = renderRetainedComposition(findings, undefined, text => text, metrics => { accounted = metrics.accountedSourceComponents; });
     expect(accounted).toBe(compositionSources(findings).length);
     expect(body).toContain(findings[0]!.failureMode);
     expect(body).not.toContain(findings[0]!.suggestedFix);
-    expect(body).toContain(findings[1]!.suggestedFix);
+    expect(body).not.toContain(findings[1]!.suggestedFix);
+    expect(body).toContain("Remediation remains unreconciled");
     expect(body).toContain("synthesis was unavailable");
   });
 
@@ -147,14 +147,16 @@ describe("contract-aware concise composition", () => {
     ]));
   });
 
-  it("does not require optional suggestion assessments or share support between fix and test", () => {
-    expect(() => validateWithSchema(SubmitVerificationVerdictSchema, { verdict: "keep", reason: "Proven defect", requiredEvidencePresent: true, falsePositiveRisk: "low" })).not.toThrow();
+  it("rejects submitted suggestion assessments and marks every final suggestion unverified", () => {
+    const verdict = { verdict: "keep", reason: "Proven defect", requiredEvidencePresent: true, falsePositiveRisk: "low" };
+    expect(() => validateWithSchema(SubmitVerificationVerdictSchema, verdict)).not.toThrow();
     const finding = contractReview()[1]!;
-    expect(assessFinalSuggestions(finding, finding.suggestionAssessments)).toMatchObject({ suggestedFix: { status: "supported" }, suggestedTest: { status: "unverified" } });
-    const changed = { ...finding, suggestedFix: "Lower the minimum instead." };
-    expect(assessFinalSuggestions(changed, finding.suggestionAssessments).suggestedFix?.status).toBe("unverified");
-    finding.suggestionAssessments!.suggestedFix!.evidence = [];
-    expect(assessFinalSuggestions(finding, finding.suggestionAssessments).suggestedFix?.status).toBe("unverified");
+    expect(() => validateWithSchema(SubmitVerificationVerdictSchema, { ...verdict, suggestionAssessments: finding.suggestionAssessments })).toThrow();
+    const { suggestionAssessments: _submitted, ...candidate } = finding;
+    expect(assessFinalSuggestions(candidate)).toMatchObject({
+      suggestedFix: { status: "unverified", suggestionText: finding.suggestedFix },
+      suggestedTest: { status: "unverified", suggestionText: finding.suggestedTest }
+    });
     expect(assessFinalSuggestions({})).toEqual({});
   });
 });

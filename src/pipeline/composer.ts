@@ -302,9 +302,11 @@ export async function dedupeRankAndComposeReview(
   } });
   // Publication policy must not affect defect selection: an unverified proposed
   // test can still describe a confirmation path used by the existing gates.
+  // Structured advice mirrors the advice the composed or fallback body cites:
+  // without a label gate (#146), an uncited proposal must not leak into JSON.
   for (const finding of capped.findings) {
-    const fallbackPresentation = presentationMeasurements.find(record => record.synthesis === "fallback" && record.findingIds.includes(finding.id));
-    publishSupportedSuggestions(finding, pretrim.kept, fallbackPresentation?.metrics.publishedSuggestionSources);
+    const presentation = presentationMeasurements.find(record => record.findingIds.includes(finding.id));
+    publishSupportedSuggestions(finding, pretrim.kept, presentation?.metrics.publishedSuggestionSources);
   }
   // Explicitly answering every retained question can finish an evidence handoff.
   // This never rescues a worker that failed to complete its required review.
