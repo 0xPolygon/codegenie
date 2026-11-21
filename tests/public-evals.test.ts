@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { loadEvalSuite } from "../src/evals/eval-runner.js";
+import { loadEvalSuite, type EvalSuite } from "../src/evals/eval-runner.js";
 
 const root = path.resolve(import.meta.dirname, "../evals/public");
 const caseDirs = existsSync(root)
@@ -11,11 +11,44 @@ const caseDirs = existsSync(root)
       .map((entry) => ({ repo: repo.name, id: entry.name, dir: path.join(root, repo.name, entry.name) })))
   : [];
 
+type EvalCase = EvalSuite["cases"][number]["evalCase"];
+
 function frontMatter(text: string): Record<string, string> {
   const match = /^---\n([\s\S]*?)\n---\n/u.exec(text);
   if (!match) return {};
   return Object.fromEntries(match[1]!.split("\n").map((line) => line.split(/:\s*/u, 2) as [string, string]).filter(([key]) => key.length > 0));
 }
+
+// Matchers are pre-filters: every expectation, in every list, states its
+// severity floor (the suite schema validates the value) and none relies on a
+// title pattern. A clean change is only contradicted by a material finding.
+function matcherContractViolations(evalCase: EvalCase, role: string | undefined): string[] {
+  const lists = { should_find: evalCase.should_find ?? [], should_find_candidate: evalCase.should_find_candidate ?? [], should_not_find: evalCase.should_not_find ?? [] };
+  const violations = Object.entries(lists).flatMap(([list, expectations]) => expectations.flatMap((expectation) => [
+    ...(expectation.severityAtLeast === undefined ? [`${list}/${expectation.id}: missing severityAtLeast`] : []),
+    ...(expectation.titlePattern !== undefined ? [`${list}/${expectation.id}: titlePattern`] : [])
+  ]));
+  if (Object.values(lists).every((expectations) => expectations.length === 0)) violations.push("no expectations");
+  if (role === "negative-control") {
+    if (lists.should_not_find.length === 0) violations.push("negative control without should_not_find");
+    for (const expectation of lists.should_not_find) {
+      if (!["medium", "high", "critical"].includes(expectation.severityAtLeast ?? "")) violations.push(`should_not_find/${expectation.id}: floor below medium`);
+    }
+  }
+  return violations;
+}
+
+describe("public eval matcher contract", () => {
+  const base: EvalCase = { name: "contract", repo: { external: "/tmp/x" }, command: { base: "a", head: "b" } } as EvalCase;
+  it.each([
+    ["should_find", { should_find: [{ id: "f", path: "a.ts" }] }, "positive", ["should_find/f: missing severityAtLeast"]],
+    ["should_find_candidate", { should_find_candidate: [{ id: "c", path: "a.ts" }] }, "positive", ["should_find_candidate/c: missing severityAtLeast"]],
+    ["a low negative-control floor", { should_not_find: [{ id: "n", path: "a.ts", severityAtLeast: "low" }] }, "negative-control", ["should_not_find/n: floor below medium"]],
+    ["a missing negative-control floor", { should_not_find: [{ id: "n", path: "a.ts" }] }, "negative-control", ["should_not_find/n: missing severityAtLeast", "should_not_find/n: floor below medium"]]
+  ] as const)("rejects %s", (_label, lists, role, expected) => {
+    expect(matcherContractViolations({ ...base, ...lists } as unknown as EvalCase, role)).toEqual(expected);
+  });
+});
 
 describe("public eval cases", () => {
   it("has cases", () => {
@@ -35,20 +68,6 @@ describe("public eval cases", () => {
     expect(oracle).toMatchObject({ repo, case: id, intro: evalCase.command?.head, base: evalCase.command?.base });
     expect(oracle.introDate).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
     expect(["positive", "negative-control", "spare"]).toContain(oracle.role);
-    const expectations = [...(evalCase.should_find ?? []), ...(evalCase.should_not_find ?? [])];
-    expect(expectations.length).toBeGreaterThan(0);
-    for (const expectation of expectations) {
-      // Matchers are pre-filters: every expectation states its severity floor
-      // (the suite schema validates the value) and none relies on a title pattern.
-      expect(expectation.severityAtLeast).toBeDefined();
-      expect(expectation.titlePattern).toBeUndefined();
-    }
-    if (oracle.role === "negative-control") {
-      // A clean change is only contradicted by a material finding.
-      expect(evalCase.should_not_find?.length).toBeGreaterThan(0);
-      for (const expectation of evalCase.should_not_find ?? []) {
-        expect(["medium", "high", "critical"]).toContain(expectation.severityAtLeast);
-      }
-    }
+    expect(matcherContractViolations(evalCase, oracle.role)).toEqual([]);
   });
 });
