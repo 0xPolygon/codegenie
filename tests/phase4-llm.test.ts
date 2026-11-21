@@ -6842,6 +6842,7 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       expect(credential).toEqual({ ...oldCredentials, type: "oauth" });
       return { ...newCredentials, type: "oauth" };
     });
+    const getAuth = vi.spyOn(models, "getAuth");
     const adapter = createRealPiAiAdapter({ authStorage, streamSimple, models });
     const model = await adapter.resolveModel({ provider: "github-copilot" });
     expect(model).toBeDefined();
@@ -6854,6 +6855,10 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     );
 
     expect(refresh).toHaveBeenCalledTimes(1);
+    // The caller's AbortSignal reaches Pi's auth resolution, so a network
+    // OAuth refresh stays cancellable by the request controller.
+    expect(getAuth).toHaveBeenCalledOnce();
+    expect(getAuth.mock.calls[0]?.[1]?.signal).toBe(requestController.signal);
     expect(entries.get("github-copilot")).toMatchObject({
       type: "oauth",
       credentials: newCredentials,
