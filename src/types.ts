@@ -1235,6 +1235,9 @@ export type EvalExpectationResult = {
   matched: Array<{ findingId: string; artifact: "final-findings" | "candidate-findings" }>;
   loss?: EvalLossDetail;
   note?: string;
+  // #127: matches that rest on a lexical pattern alone, or anchored findings
+  // that miss only a lexical pattern, are leads for source adjudication.
+  needsAdjudication?: { reason: "lexical-only-match" | "lexical-mismatch"; findingIds: string[] };
 };
 
 export type EvalViolation = {
@@ -1507,6 +1510,8 @@ export type EvalRepeatExpectationAggregate = {
   finalRecallRate: number;
   candidateRecallRate: number;
   noteRate: number;
+  // Executions whose result needs source adjudication (#127).
+  needsAdjudication: number;
   lossHistogram: Record<string, number>;
   // Plan 83 handoff: whether every execution that matched this expectation
   // produced the same finding fingerprint (cross-run identity assertion).

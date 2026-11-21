@@ -484,8 +484,109 @@ describe("eval scoring", () => {
     expect(score.status).toBe("fail");
     expect(score.expectationResults.find((result) => result.expectationId === "verification-loss")?.loss?.label).toBe("lost-at-verification");
     expect(score.expectationResults.find((result) => result.expectationId === "partial")?.loss?.label).toBe("partial-match");
-    expect(score.violations).toHaveLength(1);
+    // #127: title- or failure-mode-only matches are adjudication leads, never confirmed.
+    expect(score.violations).toHaveLength(0);
+    expect(score.expectationResults.find((result) => result.expectationId === "ban-fake")).toMatchObject({
+      status: "skipped", skipReason: "needs-adjudication", needsAdjudication: { reason: "lexical-only-match", findingIds: ["final-1"] }
+    });
+    expect(score.expectationResults.find((result) => result.expectationId === "candidate-hit")).toMatchObject({
+      status: "fail", matched: [], needsAdjudication: { reason: "lexical-only-match", findingIds: ["cand-rejected"] }
+    });
     expect(score.budgetResults.every((result) => result.status === "pass")).toBe(true);
+  });
+
+  it("never confirms a detection or a sentinel hit on a lexical pattern alone (#127)", () => {
+    const overlap = finalFinding("final-overlap", "src/pipeline/composer.ts", 120, {
+      title: "Artifact write failure loses the report",
+      failureMode: "A thrown write error replaces the review and its findings are lost."
+    });
+    const evalCase: EvalCase = {
+      name: "lexical-only",
+      should_find: [{ id: "lexical", path: "src/pipeline/composer.ts", severityAtLeast: "low", failureModePattern: "writ.*(lost|loses)" }],
+      should_not_find: [{ id: "lexical-sentinel", titlePattern: "artifact write" }]
+    };
+    const score = scoreEvalRun(evalCase, scoringArtifacts({ finalFindings: [overlap] }), "live");
+    expect(score.status).toBe("fail");
+    expect(score.expectationResults.find((result) => result.expectationId === "lexical")).toMatchObject({
+      status: "fail", matched: [], loss: { label: "partial-match", subReason: "lexical-only-match" },
+      needsAdjudication: { reason: "lexical-only-match", findingIds: ["final-overlap"] }
+    });
+    expect(score.violations).toEqual([]);
+    expect(score.expectationResults.find((result) => result.expectationId === "lexical-sentinel")).toMatchObject({
+      status: "skipped", skipReason: "needs-adjudication", needsAdjudication: { reason: "lexical-only-match", findingIds: ["final-overlap"] }
+    });
+    expect(score.nearViolations).toContainEqual({ expectationId: "lexical-sentinel", findingId: "final-overlap", artifact: "final-findings" });
+    const rendered = renderCaseResult({
+      caseName: "lexical-only", runDir: "unused", status: "fail",
+      info: { runNumber: 1, caseName: "lexical-only", caseHash: "hash", caseSnapshot: { name: "lexical-only", artifacts: { path: "unused" } },
+        mode: "live", cache: { enabled: false, source: "config" }, startedAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:00:01.000Z", score }
+    });
+    expect(rendered).toContain("ADJUDICATE lexical: lexical-only-match final-overlap");
+    expect(rendered).toContain("ADJUDICATE lexical-sentinel: lexical-only-match final-overlap");
+    expect(rendered).not.toContain("VIOLATION");
+  });
+
+  it("credits an anchored detection and flags an anchored wording mismatch for adjudication (#127)", () => {
+    const anchored = { id: "anchored", path: "src/pipeline/composer.ts", lineRange: [400, 408] as [number, number], severityAtLeast: "low" as const, failureModePattern: "primitive|undefined" };
+    const sameWords = finalFinding("final-same", "src/pipeline/composer.ts", 402, { failureMode: "An undefined rejection is treated as success." });
+    const otherWords = finalFinding("final-other", "src/pipeline/composer.ts", 402, { failureMode: "A non-object composer error skips the retained report." });
+    const credited = scoreEvalRun({ name: "anchored", should_find: [anchored] }, scoringArtifacts({ finalFindings: [sameWords] }), "live");
+    expect(credited.expectationResults[0]).toMatchObject({ status: "pass", matched: [{ findingId: "final-same" }] });
+    expect(credited.expectationResults[0]?.needsAdjudication).toBeUndefined();
+    const reworded = scoreEvalRun({ name: "anchored", should_find: [anchored] }, scoringArtifacts({ finalFindings: [otherWords] }), "live");
+    expect(reworded.expectationResults[0]).toMatchObject({
+      status: "fail", needsAdjudication: { reason: "lexical-mismatch", findingIds: ["final-other"] }
+    });
+  });
+
+  it("keeps lexical-only expectations out of confirmed assignment so anchored expectations keep their findings (#127)", () => {
+    const first = finalFinding("final-a", "src/app.ts", 10, { title: "Stale value returned from cache" });
+    const second = finalFinding("final-b", "src/app.ts", 20, { title: "Stale value returned after refresh" });
+    const score = scoreEvalRun({
+      name: "overlap",
+      should_find: [
+        { id: "broad-lexical", path: "src/*.ts", titlePattern: "stale value" },
+        { id: "anchored-a", path: "src/app.ts", lineRange: [10, 10] },
+        { id: "anchored-b", path: "src/app.ts", lineRange: [20, 20] }
+      ]
+    }, scoringArtifacts({ finalFindings: [first, second] }), "live");
+    expect(score.expectationResults.map(({ expectationId, status }) => [expectationId, status])).toEqual([
+      ["broad-lexical", "fail"], ["anchored-a", "pass"], ["anchored-b", "pass"]
+    ]);
+    expect(score.expectationResults[0]?.needsAdjudication).toEqual({ reason: "lexical-only-match", findingIds: ["final-a", "final-b"] });
+  });
+
+  it("carries lexical-only sentinel leads through repeat aggregation without a violation (#127)", () => {
+    const evalCase: EvalCase = { name: "repeat-sentinel", should_not_find: [{ id: "sentinel", titlePattern: "stale value" }] };
+    const executions = [1, 2].map((index) => {
+      const artifacts = scoringArtifacts({ finalFindings: [finalFinding(`final-${index}`, "src/app.ts", 4, { title: "stale value returned" })] });
+      return { runDir: `repeats/${index}`, score: scoreEvalRun(evalCase, artifacts, "live"), artifacts };
+    });
+    const { score } = aggregateRepeatScores(evalCase, executions);
+    expect(score.violations).toEqual([]);
+    expect(score.status).toBe("pass");
+    expect(score.expectationResults.find((result) => result.expectationId === "sentinel")).toMatchObject({
+      status: "skipped", skipReason: "needs-adjudication",
+      needsAdjudication: { reason: "lexical-only-match", findingIds: ["final-1", "final-2"] }, note: "adjudicate 2/2"
+    });
+    const rendered = renderCaseResult({
+      caseName: "repeat-sentinel", runDir: "unused", status: "pass",
+      info: { runNumber: 1, caseName: "repeat-sentinel", caseHash: "hash", caseSnapshot: { name: "repeat-sentinel", artifacts: { path: "unused" } },
+        mode: "live", cache: { enabled: false, source: "config" }, startedAt: "2026-01-01T00:00:00.000Z", finishedAt: "2026-01-01T00:00:01.000Z", score }
+    });
+    expect(rendered).toContain("ADJUDICATE sentinel: lexical-only-match final-1, final-2");
+  });
+
+  it("keeps lexical-only results out of repeat recall and counts them for adjudication (#127)", () => {
+    const evalCase: EvalCase = { name: "agg-lexical", should_find: [{ id: "wc", path: "src/app.ts", titlePattern: "stale value" }] };
+    const artifacts = scoringArtifacts({
+      finalFindings: [finalFinding("final-1", "src/app.ts", 4, { title: "stale value returned" })],
+      candidates: [candidate("cand-1", "src/app.ts", 4, { title: "stale value returned" })]
+    });
+    const executions = [1, 2].map((index) => ({ runDir: `repeats/${index}`, score: scoreEvalRun(evalCase, artifacts, "live"), artifacts }));
+    expect(aggregateRepeatScores(evalCase, executions).aggregate.expectations[0]).toMatchObject({
+      finalMatched: 0, candidateMatched: 0, needsAdjudication: 2
+    });
   });
 
   it("distinguishes empty verifier revisions from other incomplete verification losses", () => {
@@ -808,6 +909,7 @@ describe("eval scoring", () => {
         id: "routing",
         path: "src/caller.ts",
         category: "correctness",
+        lineRange: [42, 42],
         severityAtLeast: "medium",
         titlePattern: "explicit.*preference.*fallback"
       }]
@@ -876,7 +978,7 @@ describe("eval scoring", () => {
     const score = scoreEvalRun({
       name: "coherent-merged-matches",
       should_find: [crossed, { ...crossed, id: "coherent", path: right.path, lineRange: [20, 20], category: "correctness" }],
-      should_not_find: [{ ...crossed, id: "negative" }, { id: "negative-right", path: right.path, lineRange: [20, 20] }]
+      should_not_find: [{ ...crossed, id: "negative", lineRange: [10, 10] }, { id: "negative-right", path: right.path, lineRange: [20, 20] }]
     }, artifacts, "live");
 
     expect(score.expectationResults.map(({ expectationId, status }) => [expectationId, status])).toEqual([
@@ -1966,8 +2068,7 @@ describe("eval command fixture suite", () => {
       "    - core/code-review",
       "should_find:",
       "  - id: fake-finding",
-      "    path: src/app.js",
-      "    titlePattern: Fake finding"
+      "    path: src/app.js"
     ].join("\n"));
 
     let output = "";
@@ -2003,8 +2104,7 @@ describe("eval command fixture suite", () => {
       "    - core/code-review",
       "should_find:",
       "  - id: fake-finding",
-      "    path: src/app.js",
-      "    titlePattern: Fake finding"
+      "    path: src/app.js"
     ].join("\n"));
 
     const config = {
@@ -2048,8 +2148,7 @@ describe("eval command fixture suite", () => {
       "  maxConcurrentCalls: 2",
       "should_find:",
       "  - id: fake-finding",
-      "    path: src/app.js",
-      "    titlePattern: Fake finding"
+      "    path: src/app.js"
     ].join("\n"));
 
     const suite = await loadEvalSuite(suiteDir);
@@ -2117,8 +2216,7 @@ describe("eval command fixture suite", () => {
       "  maxConcurrentCalls: 2",
       "should_find:",
       "  - id: fake-finding",
-      "    path: src/app.js",
-      "    titlePattern: Fake finding"
+      "    path: src/app.js"
     ].join("\n"));
 
     const suite = await loadEvalSuite(suiteDir);
@@ -2152,8 +2250,7 @@ describe("eval command fixture suite", () => {
       "  maxConcurrentCalls: 3",
       "should_find:",
       "  - id: fake-finding",
-      "    path: src/app.js",
-      "    titlePattern: Fake finding"
+      "    path: src/app.js"
     ].join("\n"));
 
     const suite = await loadEvalSuite(suiteDir);
@@ -2271,8 +2368,7 @@ describe("eval command fixture suite", () => {
         "  - id: fake-finding",
         `    path: ${evalCase.file}`,
         "    category: correctness",
-        "    severityAtLeast: medium",
-        "    titlePattern: Fake finding"
+        "    severityAtLeast: medium"
       ].join("\n"));
     }
 
@@ -2387,8 +2483,7 @@ describe("eval repeats (plan 79)", () => {
       "    - core/code-review",
       "should_find:",
       "  - id: fake-finding",
-      "    path: src/app.js",
-      "    titlePattern: Fake finding"
+      "    path: src/app.js"
     ].join("\n"));
 
     const suite = await loadEvalSuite(suiteDir);
@@ -2480,7 +2575,7 @@ describe("eval repeats (plan 79)", () => {
     const evalCase: EvalCase = {
       name: "agg",
       repo: { external: "/tmp/unused" },
-      should_find: [{ id: "wc", path: "src/app.ts", titlePattern: "stale value", minRecallRate: 0.5 }]
+      should_find: [{ id: "wc", path: "src/app.ts", lineRange: [4, 4], titlePattern: "stale value", minRecallRate: 0.5 }]
     };
     const matchingFinal = finalFinding("final-1", "src/app.ts", 4, { title: "stale value returned" });
     const matchingCandidate = candidate("cand-1", "src/app.ts", 4, { title: "stale value returned" });
@@ -2511,12 +2606,12 @@ describe("eval repeats (plan 79)", () => {
     expect(wc?.gate).toMatchObject({ minRecallRate: 0.5, passed: false });
     expect(score.status).toBe("fail");
 
-    const ungated: EvalCase = { ...evalCase, should_find: [{ id: "wc", path: "src/app.ts", titlePattern: "stale value" }] };
+    const ungated: EvalCase = { ...evalCase, should_find: [{ id: "wc", path: "src/app.ts", lineRange: [4, 4], titlePattern: "stale value" }] };
     const measuredOnly = aggregateRepeatScores(ungated, executions);
     expect(measuredOnly.score.status).toBe("pass");
     expect(measuredOnly.score.expectationResults[0]?.note).toContain("measured only");
 
-    const boundary: EvalCase = { ...evalCase, should_find: [{ id: "wc", path: "src/app.ts", titlePattern: "stale value", minRecallRate: 1 / 3 }] };
+    const boundary: EvalCase = { ...evalCase, should_find: [{ id: "wc", path: "src/app.ts", lineRange: [4, 4], titlePattern: "stale value", minRecallRate: 1 / 3 }] };
     expect(aggregateRepeatScores(boundary, executions).score.status).toBe("pass");
   });
 
@@ -2681,6 +2776,10 @@ function candidate(id: string, filePath: string, line: number, overrides: Partia
     producedBy: { kind: "packet", stage: 7, packetId: "packet-1", lensId: "core/code-review", skillIds: [] },
     ...overrides
   };
+}
+
+function scoringArtifacts(overrides: Partial<EvalArtifacts> = {}): EvalArtifacts {
+  return { candidates: [], verification: [], finalSelection: [], finalFindings: [], packets: [], hintEvents: [], metricsSources: {}, ...overrides };
 }
 
 function finalFinding(id: string, filePath: string, line: number, overrides: Partial<FinalFinding> = {}): FinalFinding {

@@ -19,7 +19,6 @@ should_find:
     path: src/positive.py
     category: correctness
     severityAtLeast: medium
-    titlePattern: Fake finding
 should_not_find:
   - id: python-marker-free-negative-control
     path: src/negative.py

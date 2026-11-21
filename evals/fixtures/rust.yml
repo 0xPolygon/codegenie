@@ -19,7 +19,6 @@ should_find:
     path: src/positive.rs
     category: correctness
     severityAtLeast: medium
-    titlePattern: Fake finding
 should_not_find:
   - id: rust-marker-free-negative-control
     path: src/negative.rs

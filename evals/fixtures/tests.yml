@@ -19,4 +19,3 @@ should_find:
     path: src/core.test.ts
     category: correctness
     severityAtLeast: medium
-    titlePattern: Fake finding
