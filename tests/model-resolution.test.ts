@@ -7,6 +7,7 @@ import { createPiRunner, createRealPiAiAdapter } from "../src/llm/pi-runner.js";
 import { createPiCredentialStore, createPiModelRegistry, type PiAuthStorage, type ProviderAuthEntry } from "../src/provider/provider-services.js";
 import {
   getAmbientCredentialNote,
+  getCodegeniePiModels,
   getPiApiKeyEnvVarNames,
   getPiCredentialEnvVarNames
 } from "../src/provider/pi-ai-models.js";
@@ -100,6 +101,20 @@ describe("Pi credential preflight", () => {
     expect(headers.get("authorization")).toBe(`Bearer ${token}`);
     expect(headers.get("x-api-key")).toBeNull();
     expect(stripCredentials(token)).toBe("[redacted:secret]");
+  });
+});
+
+describe("auth header redaction", () => {
+  it("registers a credential Pi resolves only into a custom auth header (Cloudflare AI Gateway)", async () => {
+    const key = "short-secret";
+    vi.stubEnv("CLOUDFLARE_API_KEY", key);
+    vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "fixture-account");
+    vi.stubEnv("CLOUDFLARE_GATEWAY_ID", "fixture-gateway");
+    const models = getCodegeniePiModels(createPiCredentialStore(authStorage()));
+    const resolved = await models.getAuth("cloudflare-ai-gateway");
+    expect(resolved?.auth.headers?.["cf-aig-authorization"]).toBe("Bearer " + key);
+    expect(resolved?.auth.apiKey).toBeUndefined();
+    expect(stripCredentials("upstream rejected Bearer " + key)).not.toContain(key);
   });
 });
 

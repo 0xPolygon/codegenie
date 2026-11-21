@@ -98,10 +98,11 @@ export function getCodegeniePiModels(credentials?: CredentialStore): Models {
 
 function registerModelAuth(auth: ModelAuth): void {
   registerSecret(auth.apiKey);
-  for (const [name, value] of Object.entries(auth.headers ?? {})) {
-    if (name.toLowerCase() === "authorization" && value) {
-      registerSecret(value.replace(/^\S+\s+/u, ""));
-    }
+  // Auth-resolved headers carry credentials (Authorization, Cloudflare AI
+  // Gateway's cf-aig-authorization, ...); provider defaults merge in later.
+  // Register the secret part of each value, without an auth scheme prefix.
+  for (const value of Object.values(auth.headers ?? {})) {
+    if (typeof value === "string") registerSecret(value.replace(/^\S+\s+/u, ""));
   }
 }
 
