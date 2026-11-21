@@ -2,14 +2,14 @@
 created: 2026-11-21T21:15:30Z
 author: "architect"
 source: "Requested by the operator under the owner's 2026-11-21 directive on independent campaign analyses. Read-only scripts over the telemetry of the 49 depth-campaign reviews on codegenie 54db64b; frozen case expectations. Written before reading the other analyst's worksheets or results."
-status: provisional
+status: verified
 ---
 
 # Depth campaign: independent analysis
 
 **Neither rule for changing the default is met. Deep found no required finding that normal missed, and light is not cheaper.** Under the pre-registered rules that leaves one mode with today's normal budgets, so the depth setting can be removed rather than renamed. The larger lessons are elsewhere: Stage 9 rejects the harder required findings, and on Luna Stage 10 rarely produces a valid first submission.
 
-This is one of two independent analyses and is provisional until the operator reconciles them. [Campaign plan](../../specs/plans/128-issue-124-stage9-and-depth-campaign.md)
+Reconciled with [the other independent analysis](20261121-211400-depth-campaign-independent-codex.md). Both reach one mode at today's normal budgets, from the same required-finding counts per arm and model, cost and time medians, partial causes, padded-call splits, three Stage 10 fallbacks and six false scorer credits. They differ in four places, none of which changes the decision: that note keeps the name deep for the single mode, where this one removes the setting (the decision taken); it counts light as passing the speed bar on the raw 41% median and failing on quality, where this one discounts the raw figure to 19%; it counts hunks named in the plan, where this one counts coverage after defaults; and under source adjudication it finds an Opus hint for the TypeScript seeded defect in 5 of 9 reviews, where this note's topic mapping first said 7. That note also checked all 177 published entries against the source and found none false, which this one did not do. [Campaign plan](../../specs/plans/128-issue-124-stage9-and-depth-campaign.md)
 
 ## What ran
 
@@ -91,7 +91,7 @@ Medians on the larger case:
 - Where required findings are missed before verification:
   - Required 2 was a candidate in 14 of 15 Luna reviews, and in 5 of 9 Opus reviews.
   - Optional 1 was never a candidate on Luna and was one in 2 of 9 Opus reviews.
-  - The TypeScript seeded defect was never a candidate on Luna (0 of 15). Luna instead published a different, real-looking finding about primitive rejections in all 15. Opus raised the seeded defect as a question in 7 of 9 reviews and never raised the primitive-rejection finding.
+  - The TypeScript seeded defect was never a candidate on Luna (0 of 15). Luna instead published a different, real-looking finding about primitive rejections in all 15. Opus raised the seeded defect as a question in 6 of 9 reviews (a seventh named the same error replacement without the failed artifact write) and never raised the primitive-rejection finding.
 
 ## Stage 9: verification
 
@@ -107,7 +107,7 @@ Medians on the larger case:
 - **Stage 9 is where the harder required findings are lost.**
   - Required 2 on Luna: 14 reviews had a candidate and 10 published it. The four losses were rejections, three of them "unresolved".
   - Required 2 on Opus: 5 reviews had a candidate and 1 published it, at low severity.
-  - The TypeScript seeded defect on Opus: 7 reviews had a candidate and 1 published it, at low severity. The verifier's reasons, on this public case, include "The mechanism exists in code, but nothing shows it can actually happen" and "The mechanism is real, but it does not cause a meaningful regression". The defect was later fixed upstream.
+  - The TypeScript seeded defect on Opus: 6 reviews had a candidate and 1 published it, at low severity. The verifier's reasons, on this public case, include "The mechanism exists in code, but nothing shows it can actually happen" and "The mechanism is real, but it does not cause a meaningful regression". The defect was later fixed upstream.
 - Opus rejects fewer candidates overall than Luna, but its rejections fall on exactly these findings.
 - Schema-invalid calls: Luna 26 of 903 (2.9%), Opus 1 of 412.
 
