@@ -65,7 +65,7 @@ import { sha256Hex } from "../util/hashing.js";
 import { scaleOptionalBudgetValue } from "../util/budget.js";
 import { scheduleLongTimeout } from "../util/long-timeout.js";
 import { codegenieVersionInfo } from "../util/version-info.js";
-import { STAGE_LABELS } from "../review-stages.js";
+import { isReviewStage, STAGE_LABELS } from "../review-stages.js";
 
 type RunReviewOverrides = {
   repoRoot?: string;
@@ -1783,8 +1783,4 @@ function unreservedBudget(max: number): number {
 
 function reservedBudgetAmount(max: number): number {
   return max - unreservedBudget(max);
-}
-
-function isReviewStage(stage: number): stage is ReviewStage {
-  return Number.isInteger(stage) && stage >= 1 && stage <= 11;
 }

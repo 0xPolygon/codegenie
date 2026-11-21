@@ -6962,6 +6962,12 @@ describe("Phase 4 Pi runner and model-call cache", () => {
     );
     await expect(cache.get(malformedContentKey, 7)).resolves.toEqual({ status: "miss", reason: "invalid_entry" });
     expect(existsSync(malformedContentPath)).toBe(false);
+    // A stale record from the deleted Stage 8 (#114) is not a current stage.
+    const legacyStageKey = "legacy-stage-8";
+    const legacyStagePath = modelCallCacheEntryPath(path.join(repoRoot, ".codegenie", "cache"), legacyStageKey);
+    mkdirSync(path.dirname(legacyStagePath), { recursive: true });
+    writeFileSync(legacyStagePath, `${JSON.stringify({ ...cacheEntry(7), stage: 8 })}\n`);
+    await expect(cache.get(legacyStageKey)).resolves.toEqual({ status: "miss", reason: "invalid_entry" });
     expect(telemetry.events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

@@ -28,6 +28,7 @@ import type {
 import { isLocalToolBudgetRejectionReason } from "../util/context-pressure.js";
 import { aggregateAttentionEfficiency } from "../pipeline/attention.js";
 import { safeDiagnosticLine } from "../util/review-health.js";
+import { isReviewStage } from "../review-stages.js";
 
 type ScorableFinding = CandidateFinding | FinalFinding;
 type ScoreMode = "live" | "replay";
@@ -1891,10 +1892,6 @@ function firstNumberPath(paths: Array<[unknown, string[]]>): number | undefined 
     }
   }
   return undefined;
-}
-
-function isReviewStage(input: number): input is ReviewStage {
-  return Number.isInteger(input) && input >= 1 && input <= 11;
 }
 
 function isRecord(input: unknown): input is Record<string, unknown> {
