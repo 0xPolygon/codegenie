@@ -101,6 +101,7 @@ type RelatedContextTarget = {
 type PacketBuildMetrics = {
   relatedContextBudgetNudges: number;
   relatedContextBudgetNudgeSources: Set<string>;
+  packetContextTruncations: number;
 };
 
 type RelationshipAttentionCandidate = {
@@ -157,7 +158,8 @@ export async function buildReviewPackets(
   const symbolContextMetrics = emptySymbolContextMetrics();
   const packetBuildMetrics: PacketBuildMetrics = {
     relatedContextBudgetNudges: 0,
-    relatedContextBudgetNudgeSources: new Set()
+    relatedContextBudgetNudgeSources: new Set(),
+    packetContextTruncations: 0
   };
   const plannedByFile = new Map<string, PlannedHunk[]>();
   const effectiveByHunk = new Map<string, EffectiveDecision>();
@@ -200,6 +202,14 @@ export async function buildReviewPackets(
     await telemetry.writeArtifact(`packets/${packet.id}.json`, packet);
   }
   await telemetry.writeArtifact("hunk-relationships.json", relationshipGraphArtifact(relationshipGraph));
+  const packetContexts = packetBuildMetrics.packetContextTruncations;
+  const patchHunks = packets.reduce((count, packet) => count + packet.hunks.filter(hunk => hunk.truncated).length, 0);
+  const symbolSources = symbolContextMetrics.materialOmission;
+  const total = packetContexts + patchHunks + symbolSources;
+  if (total > 0) {
+    telemetry.event({ stage: 6, level: "warn", message: "packet_truncation_summary",
+      data: { total, packetContexts, patchHunks, symbolSources } });
+  }
   telemetry.event({
     stage: 6,
     level: "info",
@@ -342,9 +352,10 @@ async function buildPacket(
     ...(contextTruncationReason !== undefined ? [contextTruncationReason] : [])
   ];
   if (contextTruncationReason !== undefined) {
+    packetBuildMetrics.packetContextTruncations += 1;
     telemetry.event({
       stage: 6,
-      level: "warn",
+      level: "debug",
       message: "packet_context_truncated",
       file: first.file.path,
       data: { maxContextChars: MAX_CONTEXT_CHARS }
@@ -1365,7 +1376,7 @@ function renderPacketHunk(
   if (window.truncated) {
     telemetry.event({
       stage: 6,
-      level: "warn",
+      level: "debug",
       message: "packet_hunk_truncated",
       file: hunk.path,
       data: { hunkId: hunk.id, omittedLineCount: window.omittedLineCount, maxPatchChars: MAX_PATCH_CHARS }
@@ -1793,7 +1804,7 @@ async function readEnclosingSymbolSource(
     });
     telemetry.event({
       stage: 6,
-      level: "warn",
+      level: "debug",
       message: "packet_symbol_source_truncated",
       file: file.path,
       data: {
