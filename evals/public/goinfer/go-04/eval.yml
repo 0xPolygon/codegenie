@@ -1,0 +1,16 @@
+name: go-04
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-04
+command:
+  base: 88aeb1a30e85456ed615cfdfec1bc20a80903040
+  head: 164d6379af6fff2da31787ec6efa12c84eff7d94
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+  - id: blockspec-commits-unwritten-tail
+    path: decoder/blockspec.go
+    lineRange: [434, 436]
+    severityAtLeast: medium
+    failureModePattern: '^(?=[\s\S]*\b(?:trail\w*|last|final|pending)\b)(?=[\s\S]*\b(?:unwritten|stale|(?:never|not|without)[^.\n]*(?:forward|writ)\w*)\b)'

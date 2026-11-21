@@ -1,0 +1,16 @@
+name: go-07
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-07
+command:
+  base: c49d384f57b211aa6608a5564e32b0c83e8ae040
+  head: db0869e115c5967c2698990433e471c495cc1cc6
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+  - id: olmo3-nested-rope-rejected
+    path: decoder/registry.go
+    lineRange: [690, 706]
+    severityAtLeast: medium
+    failureModePattern: '^(?=[\s\S]*\b(?:nest\w*|full_attention)\b)(?=[\s\S]*\b(?:rope\w*|theta|rotary)\b)'

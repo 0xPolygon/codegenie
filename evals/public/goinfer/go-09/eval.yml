@@ -1,0 +1,16 @@
+name: go-09
+repo:
+  external: ~/.cache/codegenie/public-evals/goinfer/go-09
+command:
+  base: 1e2ca04f68e20e8f869f901e4433a79d480726b4
+  head: 6e9fcb99ba1d235dfa5a9e83fd10b21f41d8ab64
+review:
+  verify: true
+  debug: true
+  cache: false
+should_find:
+  - id: adaptive-verification-missing-busy-lock
+    path: decoder/spec_ngram.go
+    lineRange: [716, 730]
+    severityAtLeast: medium
+    failureModePattern: '^(?=[\s\S]*\b(?:lock\w*|exclusiv\w*|busy|resbusy|claim\w*)\b)(?=[\s\S]*\b(?:interleav\w*|corrupt\w*|concurren\w*|wrong|rac\w*)\b)'
