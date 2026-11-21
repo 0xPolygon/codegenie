@@ -6,12 +6,13 @@ import { SCHEMA_VERSIONS } from "../src/llm/schemas.js";
 import { verifyFindings } from "../src/pipeline/verifier.js";
 import { renderRetainedComposition } from "../src/pipeline/composition-content.js";
 import { inferAnchorFromChangedCode, representativeAnchorFromPacket } from "../src/pipeline/pipeline-utils.js";
-import { createPromptBuilder } from "../src/skills/prompt-builder.js";
+import { BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE, createPromptBuilder, PROMPT_TEMPLATE_VERSIONS } from "../src/skills/prompt-builder.js";
 import type { Skill } from "../src/skills/skill-loader.js";
 import type {
   CandidateFinding,
   CodegenieConfig,
   EvalVerificationRecord,
+  IntentSignals,
   PacketReviewResult,
   RepositoryTools,
   RepositoryToolsHost,
@@ -1806,6 +1807,85 @@ describe("plan 106 verifier revision semantics", () => {
       message: "verification_semantic_invalid",
       data: { candidateId: finding.id, reason: "revise_without_revision_payload" }
     }));
+  });
+});
+
+describe("behavior-preserving reachability rule (#112 Stage 9 replay)", () => {
+  const intent = (explicitlyBehaviorPreserving: boolean): IntentSignals => ({
+    refactorLike: true,
+    behaviorChangeLike: false,
+    explicitlyBehaviorPreserving,
+    signals: [],
+    summary: "refactor"
+  });
+
+  it.each([
+    { label: "explicitly behavior-preserving", intentSignals: intent(true), included: true },
+    { label: "refactor-like only", intentSignals: intent(false), included: false },
+    { label: "no intent signals", intentSignals: undefined, included: false }
+  ])("includes the rule only for explicitly behavior-preserving intent: $label", ({ intentSignals, included }) => {
+    const packet = fakePacket("packet-1", "src/app.ts");
+    const built = createPromptBuilder(fakeLensRegistry()).buildVerifierPrompt({
+      candidate: candidate("candidate-1", packet),
+      originContext: "",
+      hunksText: packet.hunks[0]!.contentWithLineNumbers,
+      skills: [],
+      ...(intentSignals !== undefined ? { intentSignals } : {})
+    });
+
+    expect(built.templateVersion).toBe("p9.29");
+    expect(PROMPT_TEMPLATE_VERSIONS[9]).toBe("p9.29");
+    expect(built.prompt.includes(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE)).toBe(included);
+    // The general proof rule is unchanged in every case.
+    expect(built.prompt).toContain("If a plausible answer to an open question eliminates the defect, that assumption is essential.");
+  });
+
+  it("limits the rule to confirmed commitments and production reachability, keeping intent, behavior, contract and unread-code questions essential", () => {
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("the only open question is whether production callers actually supply that value");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("no inspected guard on that path excludes");
+    // The flag is heuristic: the commitment must be confirmed from the intent text itself.
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("confirm from the supplied intent text that it makes an unambiguous commitment to preserve the affected behavior");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("negated, hedged, or incidental wording");
+    // Type-correct but contract-invalid values do not qualify.
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("satisfies the changed code's applicable interface contract, including its documented or enforced preconditions");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("whether the value meets the interface contract");
+    // Explicit priority over the general stop condition and intent-as-context rule for this narrow case.
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("takes priority over the general reachable-impact stop condition and the context-not-proof treatment of intent signals");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("the source difference supplies the proof");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("product or provider intent, whether the behavior actually differs, whether the value meets the interface contract, or decisive code you have not read");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("still require reject with status unresolved");
+    expect(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE).toContain("use severity low unless reachability is proven");
+  });
+
+  it.each([true, false])("passes packet intent to the verifier and keeps the proof gate unchanged (explicitlyBehaviorPreserving=%s)", async (explicitlyBehaviorPreserving) => {
+    // Scripted decisions test the prompt wiring and the unchanged gate, not live model judgment.
+    const fixture = reviewFixture(["service.ts"]);
+    const packet: ReviewPacket = { ...fixture.packets[0]!, intentSignals: intent(explicitlyBehaviorPreserving) };
+    const finding = candidate("reachability-delta", packet, { severity: "medium" });
+    const reachability = { question: "Do production callers supply a zero value here?", essential: true };
+    let prompt = "";
+    let essentialGate: unknown;
+    let secondaryGate: unknown;
+
+    const result = await verifyFindings({ packetResults: [packetResult(packet.id, [finding])], packets: [packet] }, fakeTools(), config(), nullTelemetry(), {
+      runner: { runStructured: async <T>(request: LlmStructuredRequest<T>) => {
+        prompt = request.prompt;
+        const proven = { status: "established", evidence: "Base scaled the value by one; head returns an error for it." };
+        essentialGate = request.validateSubmit?.({ verdict: "revise", reason: "Difference proven; reachability open.", requiredEvidencePresent: true,
+          falsePositiveRisk: "medium", findingUpdates: { severity: "low" }, proofAssessment: { ...proven, assumptions: [reachability] } } as T);
+        const submission = { verdict: "revise", reason: "Difference proven; reachability open.", requiredEvidencePresent: true, falsePositiveRisk: "medium",
+          findingUpdates: { severity: "low", verification: "Base accepted the value and head rejects it. Open: whether production callers supply it." },
+          proofAssessment: { ...proven, assumptions: [{ ...reachability, essential: false }] } };
+        secondaryGate = request.validateSubmit?.(submission as T);
+        return submission as T;
+      } }, promptBuilder: createPromptBuilder(fakeLensRegistry()), lensRegistry: fakeLensRegistry(), diff: fixture.diff
+    });
+
+    expect(prompt.includes(BEHAVIOR_PRESERVING_REACHABILITY_GUIDANCE)).toBe(explicitlyBehaviorPreserving);
+    expect(essentialGate).toMatchObject({ ok: false, classification: "schema_invalid" });
+    expect(secondaryGate).toEqual({ ok: true });
+    expect(result.verified.map((verified) => [verified.id, verified.severity])).toEqual([["reachability-delta", "low"]]);
+    expect(result.verdicts[0]?.unresolvedConcern).toBeUndefined();
   });
 });
 
