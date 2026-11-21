@@ -1679,8 +1679,8 @@ describe("GitHub Action and workflow contracts", () => {
     expect(uploadStep?.with?.path).toContain(failurePath);
   });
 
-  it("keeps authorization in the binary and one newest-event-wins concurrency policy", () => {
-    const documents = workflowPaths.map((workflowPath) => {
+  it("keeps authorization in the binary and the documented concurrency policies", () => {
+    const documents = workflowPaths.map((workflowPath, index) => {
       const raw = readFileSync(path.resolve(workflowPath), "utf8");
       // Authorization lives only in the codegenie binary; any YAML phrase or
       // association matching is a dual source of truth and forbidden.
@@ -1690,10 +1690,13 @@ describe("GitHub Action and workflow contracts", () => {
       expect(workflow.jobs.preflight, workflowPath).toBeUndefined();
       expect(workflow.jobs.review, workflowPath).toBeDefined();
       expect(workflow.concurrency?.group, workflowPath).toContain("codegenie-review-pr-");
-      // Owner decision: uniform cancel-in-progress — newest event wins.
-      expect(workflow.concurrency?.["cancel-in-progress"], workflowPath).toBe(true);
+      // The example serves both lanes, so newest event wins. The dogfood
+      // workflow is manual (comment-only): an unrelated comment must not cancel
+      // an in-flight run, so it queues instead.
+      expect(workflow.concurrency?.["cancel-in-progress"], workflowPath).toBe(index !== 0);
       return workflow;
     });
+    expect(Object.keys(documents[0]?.on ?? {})).toEqual(["issue_comment"]);
     const example = documents[1];
     expect(Object.keys(example?.on ?? {}).sort()).toEqual(["issue_comment", "pull_request"]);
     const exampleStep = example?.jobs.review?.steps?.find((step) => step.uses?.startsWith("0xPolygon/codegenie@"));

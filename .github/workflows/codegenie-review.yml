@@ -7,15 +7,14 @@
 #
 # Deliberately NOT `uses: 0xPolygon/codegenie@<tag>` — the published action
 # installs from npm, while this builds from source. The checkout pins the base
-# revision (default branch on comment events), so a PR cannot modify the
+# revision (the default branch, for comment events), so a PR cannot modify the
 # reviewer that reviews it; the PR head is fetched by `--pr` as untrusted
 # data. Requires the LLM_API_KEY repository secret.
 #
 # All trigger authorization (phrase match, live write-permission check) lives
-# in the codegenie binary — no gating logic in YAML. cancel-in-progress:
-# newest event wins — a push supersedes the now-stale review; a comment on
-# the PR also supersedes an in-flight run before codegenie decides skip/run
-# (accepted trade-off for one simple policy).
+# in the codegenie binary — no gating logic in YAML. cancel-in-progress is
+# false: comment events for the same PR queue, so an unrelated comment cannot
+# cancel an in-flight run before codegenie decides skip/run.
 name: codegenie review
 
 on:
@@ -44,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # base SHA on pull_request events; default branch on comment events
+          # comment events: the default branch (trusted base)
           ref: ${{ github.event.pull_request.base.sha || '' }}
           fetch-depth: 0
 
