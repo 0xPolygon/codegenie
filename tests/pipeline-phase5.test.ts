@@ -15,6 +15,7 @@ import { createFakeRunner } from "../src/llm/fake-runner.js";
 import { SubmitPacketReviewSchema } from "../src/llm/schemas.js";
 import { buildReviewPackets, packetDispatchRank, packetReviewContextFromDossier, toolBudget } from "../src/pipeline/packet-builder.js";
 import { runLensPackets } from "../src/pipeline/lens-runner.js";
+import { aggregateAttentionEfficiency, buildAttentionRecords } from "../src/pipeline/attention.js";
 import { buildPlannerDossier, compactPlannerDossier, defaultPlan, MAX_DOSSIER_PROMPT_CHARS, runPlanner } from "../src/pipeline/planner.js";
 import { coverageEscalationReason } from "../src/pipeline/coverage-escalation.js";
 import { dedupeRankAndComposeReview, refreshReviewHealth, reviewRetainedOnCompositionFailure } from "../src/pipeline/composer.js";
@@ -633,6 +634,42 @@ describe("phase 5 pipeline regressions", () => {
       packetId: "packet-hint",
       data: expect.objectContaining({ trigger: "concrete_hint", produced: 1 })
     }));
+  });
+
+  it("pools a candidate found by both the first and adaptive passes exactly once", async () => {
+    const duplicate = {
+      title: "Zero-decimal origin token truncates the fee result",
+      severity: "medium",
+      confidence: "medium",
+      path: "app.ts",
+      anchor: { path: "app.ts", line: 1, side: "RIGHT", hunkId: "h1" },
+      category: "correctness",
+      evidence: { changedCode: "+bad" },
+      failureMode: "Zero-decimal origin tokens produce a truncated fee where the old path returned the exact amount.",
+      whyThisMatters: "matters",
+      verification: "test"
+    };
+    let calls = 0;
+    const runner: LlmRunner = {
+      runStructured: async <T>() => (++calls === 1 ? {
+        findings: [duplicate],
+        followUpHints: [{ question: "Can a zero-decimal origin token make the changed fee path return a wrong truncated result?",
+          files: ["app.ts"], symbols: [], suggestedLenses: [], reason: "The changed calculation divides by decimals without a zero guard.", confidence: "medium" }],
+        uncertainties: []
+      } : { findings: [duplicate], followUpHints: [], uncertainties: [] }) as T
+    };
+    const packet = fakePacket({ id: "packet-both" });
+    const results = await runLensPackets(fakePlan(), [packet], fakeTools(),
+      { ...config(), review: { ...config().review, adaptiveSecondPass: true, concurrency: 1 } }, nullTelemetry(),
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry(), diff: fakeDiff() });
+
+    expect(calls).toBe(2);
+    expect(results[0]?.findings.map((finding) => finding.id)).toEqual(["packet-b-f1"]);
+    expect(results[0]?.passesRun).toBe(2);
+    const records = buildAttentionRecords({ packets: [packet], plannedHunkIds: new Set(), packetResults: results,
+      candidateFindings: results[0]!.findings, verdicts: [], publishedFindings: [] });
+    expect(records[0]).toMatchObject({ ensemblePasses: 2, directCandidates: 1 });
+    expect(aggregateAttentionEfficiency(records).byCoverage.normal).toMatchObject({ packets: 1, ensembledPackets: 1 });
   });
 
   it.each(["failed", "timeout", "incomplete", "recovered", "not_dispatched", "cancelled", "baseline_failed"] as const)("discloses adaptive %s separately from baseline coverage", async mode => {
