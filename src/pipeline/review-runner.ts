@@ -233,7 +233,8 @@ export async function runReview(
         totals: { packets: packets.length },
         packets: {
           generated: packets.length,
-          degraded: packets.filter((packet) => packet.degraded !== undefined).length
+          degraded: packets.filter((packet) => packet.contextLoss !== undefined).length,
+          sliced: packets.filter((packet) => packet.contextQuality === "sliced").length
         },
         lenses: {
           selected: new Set(packets.flatMap((packet) => packet.lenses)).size,
@@ -293,7 +294,7 @@ export async function runReview(
             reviewed: coverage.reviewedHunks,
             skipped: coverage.skippedHunks,
             failed: coverage.failedHunks,
-            degraded: packets.filter((packet) => packet.degraded !== undefined).reduce((sum, packet) => sum + packet.hunks.length, 0)
+            degraded: packets.filter((packet) => packet.contextLoss !== undefined).reduce((sum, packet) => sum + packet.hunks.length, 0)
           }
         }
       }
@@ -1278,7 +1279,7 @@ function coverageSourceFor(planDecision: ReviewPlan["coverage"][number] | undefi
 }
 
 function reviewedCoverageReason(packet: ReviewPacket, hunk: ReviewPacket["hunks"][number] | undefined): string | undefined {
-  const reasons = [packet.degraded?.reason, hunk?.plannerFallbackReason].filter(
+  const reasons = [packet.contextLoss?.join("; "), hunk?.plannerFallbackReason].filter(
     (reason): reason is string => reason !== undefined && isDisclosableCoverageReason(reason)
   );
   return reasons.length > 0 ? reasons.join("; ") : undefined;
@@ -1323,7 +1324,7 @@ function buildContextPressureSummary(
     degradedToolResults: toolPressure?.degradedToolResults ?? 0,
     degradedToolResultsByStage: toolPressure?.degradedToolResultsByStage ?? {},
     degradedHunks: packets
-      .filter((packet) => packet.degraded !== undefined)
+      .filter((packet) => packet.contextLoss !== undefined)
       .reduce((sum, packet) => sum + packet.hunks.length, 0),
     rejectionReasons: toolPressure?.rejectionReasons ?? [],
     unresolvedNotes: {

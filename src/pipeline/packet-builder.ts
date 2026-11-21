@@ -127,6 +127,7 @@ const MAX_CONTEXT_CHARS = 8_000;
 const DEFAULT_SYMBOL_CONTEXT_CHARS = 3_000;
 const MAX_ADAPTIVE_SYMBOL_CONTEXT_CHARS = 6_000;
 const SYMBOL_EXCERPT_WINDOW = 8;
+const MAX_SYMBOL_EXCERPT_RANGES = 4;
 const MAX_SYMBOL_EXCERPT_CHARS = 2_500;
 const MAX_HINT_CONTEXT_CHARS = 2_000;
 const MAX_HINT_CONTEXT_LINES = 80;
@@ -414,6 +415,17 @@ async function buildPacket(
     reviewProfile,
     telemetry
   });
+  // #175: count only context the reviewer lost and cannot recover. A designed
+  // symbol slice keeps the changed lines and leaves the rest to review tools,
+  // except in the simple profile, which has none.
+  const contextLoss = [
+    ...context.contextLoss,
+    truncationReason,
+    contextDropReason,
+    contextTruncationReason,
+    group.degradationReason,
+    context.symbolSliced === true && reviewProfile === "simple" ? "enclosing symbol source sliced with no review tools" : undefined
+  ].filter((reason): reason is string => reason !== undefined && reason.length > 0);
   const packet: ReviewPacket = {
     id: packetId,
     dispatchRank: packetDispatchRank(first.file.path, first.facts, packetChangedLines),
@@ -448,13 +460,14 @@ async function buildPacket(
     ...(context.degradation !== undefined || truncationReason.length > 0 || contextDropReason !== undefined || contextTruncationReason !== undefined || group.degradationReason !== undefined
       ? { degraded: { reason: [context.degradation, truncationReason, contextDropReason, contextTruncationReason, group.degradationReason].filter(Boolean).join("; ") } }
       : {}),
+    ...(contextLoss.length > 0 ? { contextLoss } : {}),
     ...(group.fileContext !== undefined
       ? { fileContext: group.fileContext }
       : kind === "file-diff"
         ? { fileContext: { mode: "file-diff", reason: "grouped file hunks" } }
         : {})
   };
-  emitPacketContextQuality(telemetry, first.file.path, coverage, reviewPriority, contextQuality, contextDegradationReasons, packet.degraded !== undefined);
+  emitPacketContextQuality(telemetry, first.file.path, coverage, reviewPriority, contextQuality, contextDegradationReasons, packet.contextLoss !== undefined);
   return packet;
 }
 
@@ -1588,12 +1601,17 @@ type PacketContextBuildResult = {
   contextDegradationReasons: string[];
   packetSymbols: SymbolInfo[];
   degradation?: string;
+  /** Real context loss only; a designed symbol slice is not loss (#175). */
+  contextLoss: string[];
+  symbolSliced?: boolean;
 };
 
 type SymbolSourceContext = {
   text: string;
   quality?: Extract<PacketContextQuality, "full" | "sliced">;
   degradation?: string;
+  /** Set when source the packet needed could not be read in full (#175). */
+  loss?: string;
   reasons: string[];
 };
 
@@ -1673,7 +1691,8 @@ async function buildContext(
       relevantTests: [],
       contextQuality: "path_only",
       contextDegradationReasons: ["repository tools do not provide packet context"],
-      packetSymbols: []
+      packetSymbols: [],
+      contextLoss: []
     };
   }
   try {
@@ -1693,7 +1712,9 @@ async function buildContext(
       contextQuality: contextQualityFor(result, symbolSource, contextText),
       contextDegradationReasons: reasons,
       packetSymbols: result.packetSymbols ?? (result.primarySymbol !== undefined ? [result.primarySymbol] : []),
-      ...(degradation.length > 0 ? { degradation } : {})
+      ...(degradation.length > 0 ? { degradation } : {}),
+      contextLoss: [result.degradation, symbolSource.loss].filter((reason): reason is string => reason !== undefined && reason.length > 0),
+      ...(symbolSource.quality === "sliced" ? { symbolSliced: true } : {})
     };
   } catch (error) {
     symbolContextMetrics.outlineOnly += 1;
@@ -1706,7 +1727,8 @@ async function buildContext(
       contextQuality: "path_only",
       contextDegradationReasons: [message],
       packetSymbols: [],
-      degradation: message
+      degradation: message,
+      contextLoss: [message]
     };
   }
 }
@@ -1735,8 +1757,9 @@ async function readEnclosingSymbolSource(
     );
     if (result.text === undefined || result.text.trim().length === 0) {
       symbolContextMetrics.outlineOnly += 1;
+      const unavailable = result.meta.degradationReason ?? "enclosing symbol source unavailable";
       return result.meta.degraded
-        ? { text: "", reasons: [result.meta.degradationReason ?? "enclosing symbol source unavailable"], degradation: result.meta.degradationReason ?? "enclosing symbol source unavailable" }
+        ? { text: "", reasons: [unavailable], degradation: unavailable, loss: unavailable }
         : { text: "", reasons: ["enclosing symbol source empty"] };
     }
     const label = result.symbol?.name ?? fact.enclosingSymbol ?? `line ${String(selector.line ?? "")}`.trim();
@@ -1788,7 +1811,7 @@ async function readEnclosingSymbolSource(
       return { text: block, quality: "full", reasons: [] };
     }
     const sliced = await readChangedLineExcerpts(repoIndex, readPath, fact, source, telemetry);
-    const text = renderSlicedSymbolContext(readPath, label, fact, sliced, result.text, budget.maxChars);
+    const text = renderSlicedSymbolContext(readPath, label, fact, sliced.excerpts, result.text, budget.maxChars);
     recordSymbolContextMetric(symbolContextMetrics, budget, "sliced");
     symbolContextMetrics.materialOmission += 1;
     if (!budget.adaptive) {
@@ -1834,7 +1857,12 @@ async function readEnclosingSymbolSource(
       text,
       quality: "sliced",
       reasons: ["enclosing symbol source sliced"],
-      degradation: "enclosing symbol source truncated"
+      degradation: "enclosing symbol source truncated",
+      // A designed slice keeps exact excerpts around the changed lines, even when
+      // readSymbol's own text was capped. A missing excerpt drops changed lines;
+      // with none, the fallback is the head of the symbol.
+      ...(sliced.excerpts.length === 0 ? { loss: "enclosing symbol excerpts unavailable" }
+        : sliced.missing > 0 ? { loss: `enclosing symbol excerpts incomplete: ${sliced.missing} of ${sliced.missing + sliced.excerpts.length} unread` } : {})
     };
   } catch (error) {
     symbolContextMetrics.outlineOnly += 1;
@@ -1846,7 +1874,8 @@ async function readEnclosingSymbolSource(
       file: file.path,
       data: { hunkId: fact.hunkId, path: readPath, error: message }
     });
-    return { text: "", reasons: [`enclosing symbol source unavailable: ${message}`], degradation: `enclosing symbol source unavailable: ${message}` };
+    const unavailable = `enclosing symbol source unavailable: ${message}`;
+    return { text: "", reasons: [unavailable], degradation: unavailable, loss: unavailable };
   }
 }
 
@@ -2194,9 +2223,12 @@ async function readChangedLineExcerpts(
   fact: HunkSymbolFacts,
   source: { kind: "base" } | { kind: "head" },
   telemetry: TelemetryRecorder
-): Promise<string[]> {
-  const ranges = excerptRanges(fact);
+): Promise<{ excerpts: string[]; missing: number }> {
+  const allRanges = excerptRanges(fact);
+  const ranges = allRanges.slice(0, MAX_SYMBOL_EXCERPT_RANGES);
   const excerpts: string[] = [];
+  // Ranges past the cap are changed lines the slice cannot show (#175).
+  let missing = allRanges.length - ranges.length;
   for (const range of ranges) {
     const normalized = normalizeStage6ReadRange({
       startLine: range[0],
@@ -2219,12 +2251,15 @@ async function readChangedLineExcerpts(
       );
       if (result.text.trim().length > 0) {
         excerpts.push(`Excerpt ${readPath}:${normalized.startLine}-${normalized.endLine}\n${result.text.trimEnd()}`);
+      } else {
+        missing += 1;
       }
     } catch {
       // Best-effort debug context; readSymbol output remains the fallback.
+      missing += 1;
     }
   }
-  return excerpts;
+  return { excerpts, missing };
 }
 
 function excerptRanges(fact: HunkSymbolFacts): Array<[number, number]> {
@@ -2245,7 +2280,7 @@ function excerptRanges(fact: HunkSymbolFacts): Array<[number, number]> {
       ranges.push([start, end]);
     }
   }
-  return ranges.slice(0, 4);
+  return ranges;
 }
 
 function compactLineRanges(lines: number[]): string[] {

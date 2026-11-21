@@ -2369,6 +2369,44 @@ describe("eval command fixture suite", () => {
       .map(event => event.data?.source)).toEqual(["user-config", "eval-case"]);
   });
 
+  it("counts a designed symbol slice as sliced, not as degraded context (#175)", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-slice-suite-"));
+    const logsDir = mkdtempSync(path.join(tmpdir(), "codegenie-slice-logs-"));
+    const repo = initRepo();
+    const body = (marker: string) => `export function large(): number {\n  let total = 0;\n${Array.from({ length: 300 }, (_, i) =>
+      `  total += ${i === 150 ? marker : String(i)};\n`).join("")}  return total;\n}\n`;
+    writeRepoFile(repo, "src/large.ts", body("150"));
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "src/large.ts", body("151"));
+    commitAll(repo, "feature");
+    writeFileSync(path.join(suiteDir, "slice.yml"), [
+      "name: slice",
+      "repo:",
+      `  external: ${JSON.stringify(repo)}`,
+      "command:",
+      "  branch: feature",
+      "  base: main",
+      "logs:",
+      `  dir: ${JSON.stringify(logsDir)}`
+    ].join("\n"));
+    const config = { ...defaultConfig, llm: { ...defaultConfig.llm, provider: "fake", model: "fake-model" } };
+    const suite = await loadEvalSuite(suiteDir);
+    const result = await runEvalCase(suite, suite.cases[0]!, { config });
+    expect(result.status).toBe("pass");
+    const telemetryDir = path.join(logsDir, "1", "telemetry");
+    const events = readFileSync(path.join(telemetryDir, "events.jsonl"), "utf8").trim().split("\n")
+      .map(line => JSON.parse(line) as { stage: number; message: string; data?: Record<string, unknown> });
+    expect(events.some(event => event.message === "packet_symbol_source_truncated")).toBe(true);
+    const metrics = events.filter(event => event.message === "pipeline_metrics");
+    expect(metrics.find(event => event.stage === 6)?.data).toMatchObject({ packets: { generated: 1, degraded: 0, sliced: 1 } });
+    expect(metrics.find(event => event.stage === 9 && event.data?.coverage !== undefined)?.data).toMatchObject({ coverage: { hunks: { degraded: 0 } } });
+    const review = JSON.parse(readFileSync(path.join(telemetryDir, "final-review.json"), "utf8")) as { budgetSummary?: { contextPressure?: { degradedHunks?: number } } };
+    expect(review.budgetSummary?.contextPressure?.degradedHunks ?? 0).toBe(0);
+    expect(result.info.score.metrics.degradedHunks ?? 0).toBe(0);
+    expect(readFileSync(path.join(telemetryDir, "stages", "10-composition", "coverage.json"), "utf8")).not.toContain("enclosing symbol source truncated");
+  });
+
   it("runs fixture-backed fake-provider cases for core, tests, Go, and TypeScript lenses", async () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-fixture-suite-"));
     const cases = [

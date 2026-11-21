@@ -3359,6 +3359,51 @@ describe("phase 5 pipeline regressions", () => {
     }));
   });
 
+  it.each([
+    { name: "designed slice", truncated: false, excerpts: "all", changed: [12, 300], coverage: "normal" as const, loss: undefined },
+    { name: "capped symbol read with exact excerpts", truncated: true, excerpts: "all", changed: [12], coverage: "normal" as const, loss: undefined },
+    { name: "excerpts unavailable", truncated: true, excerpts: "none", changed: [12], coverage: "normal" as const, loss: "enclosing symbol excerpts unavailable" },
+    { name: "one of two excerpts unread", truncated: false, excerpts: "first", changed: [12, 300], coverage: "normal" as const, loss: "enclosing symbol excerpts incomplete: 1 of 2 unread" },
+    { name: "fifth excerpt range past the cap", truncated: false, excerpts: "all", changed: [12, 80, 160, 240, 320], coverage: "normal" as const, loss: "enclosing symbol excerpts incomplete: 1 of 5 unread" },
+    { name: "slice with no review tools", truncated: false, excerpts: "all", changed: [12], coverage: "light" as const, loss: "enclosing symbol source sliced with no review tools" }
+  ])("separates designed symbol slicing from real context loss without changing the prompt (#175): $name", async ({ truncated, excerpts, changed, coverage, loss }) => {
+    const meta = { backend: "tree-sitter" as const, precision: "syntactic" as const, degraded: false, ...(truncated ? { truncated: true } : {}) };
+    const longSource = `export function changed() {\n${"  doWork();\n".repeat(400)}}`;
+    const tools = {
+      ...fakeTools(),
+      readSymbol: async () => ({
+        text: longSource,
+        symbol: { path: "app.ts", name: "changed", kind: "function" as const, lineRange: [10, 420] as [number, number] },
+        meta
+      }),
+      readRange: async (_path: string, startLine: number, endLine: number) => ({
+        text: excerpts === "all" || (excerpts === "first" && startLine < 200) ? Array.from({ length: endLine - startLine + 1 }, () => "  doWork();").join("\n") : "",
+        meta: { backend: "text" as const, precision: "exact" as const, degraded: false }
+      }),
+      buildPacketContext: async (file: DiffFile) => ({ context: { path: file.path }, relevantTests: [] })
+    };
+    const repoIndex: RepositoryIndex = {
+      ...fakeRepositoryIndex(tools),
+      symbolFacts: [{ path: "app.ts", hunkId: "h1", enclosingSymbol: "changed", symbolKind: "function", symbolRange: [10, 420],
+        changedLines: changed, changedLinesSide: "new", source: "tree-sitter", confidence: "syntactic" }]
+    };
+    const plan = { ...fakePlan(), coverage: [{ ...fakePlan().coverage[0]!, coverage }] };
+    const packets = await buildReviewPackets(plan, [fakeDiffFile("app.ts")], [fakeFacts("app.ts", "per-hunk")], repoIndex,
+      nullTelemetry(), { config: config(), enabledLenses: ["core/code-review"] });
+    const packet = packets[0]!;
+    expect(packet.reviewProfile).toBe(coverage === "light" ? "simple" : "standard");
+    expect(packet.contextQuality).toBe("sliced");
+    // The model still sees the existing degraded marker; only the internal loss signal is new.
+    expect(packet.degraded?.reason).toContain("enclosing symbol source truncated");
+    expect(packet.contextLoss).toEqual(loss === undefined ? undefined : [loss]);
+    const promptBuilder = createPromptBuilder(fakeLensRegistry());
+    const { contextLoss: _internal, ...withoutLoss } = packet;
+    const prompt = promptBuilder.buildPacketReviewPrompt({ packet, skills: [] }).prompt;
+    expect(prompt).toBe(promptBuilder.buildPacketReviewPrompt({ packet: withoutLoss, skills: [] }).prompt);
+    expect(prompt).toContain("enclosing symbol source truncated");
+    expect(prompt).not.toContain("contextLoss");
+  });
+
   it("lets deep single-symbol packets use adaptive enclosing symbol budget", async () => {
     const events: TelemetryEvent[] = [];
     const telemetry = {
@@ -4204,6 +4249,7 @@ describe("phase 5 pipeline regressions", () => {
       expect(packet.contextText.length).toBeLessThanOrEqual(8000);
       expect(packet.contextText).toContain("content truncated to fit packet context budget");
       expect(packet.degraded?.reason).toContain("packet context truncated to 8000 chars");
+      expect(packet.contextLoss).toContainEqual("packet context truncated to 8000 chars");
     }
     expect(warnings).toEqual([expect.objectContaining({
       message: "packet_truncation_summary",
@@ -4339,6 +4385,7 @@ describe("phase 5 pipeline regressions", () => {
 
     expect(packets[0]?.kind).toBe("hunk");
     expect(packets[0]?.degraded?.reason).toContain("whole-file downgraded: combined patch exceeds 12000 chars");
+    expect(packets[0]?.contextLoss).toContainEqual(expect.stringContaining("whole-file downgraded"));
     const coverage = aggregateRunCoverage(
       fakePlan(),
       [],
@@ -4700,6 +4747,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(hunk?.contentWithLineNumbers).toContain("chars truncated");
     expect(hunk?.contentWithLineNumbers.length).toBeLessThanOrEqual(12_000);
     expect(packets[0]?.degraded?.reason).toContain("patch truncated");
+    expect(packets[0]?.contextLoss).toContainEqual(expect.stringContaining("patch truncated"));
   });
 
   it("applies verifier revisedAnchor when no finalFinding is returned", async () => {
