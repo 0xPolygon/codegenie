@@ -1,6 +1,6 @@
 # #112 · First-round review baseline
 
-**Decision requested.** Authorize the small case only, then use its actual cost and elapsed time to decide whether to proceed. It comprises 18 reviews, nine per model. The historical-volume estimate for those 18 is **$69 in nominal model cost**, with a $53–85 scenario range. The complete first round has 54 slots. None has been dispatched as part of preparation.
+**Status — first round complete.** The operator authorized the two remaining cases after the small-case checkpoint. All 54 reviews finished on the pinned build for $198.59 in recorded usage, including nominal Codex subscription usage. The comparisons were tied or too sparse under the pre-registered rule. Normal depth with adaptive off remains the default, and light depth is not promoted. The sections below preserve the original protocol and pre-run estimates. [First-round results](../../notes/research/20261121-043636-first-round-baseline-results.md)
 
 ## Cases and scorer
 
