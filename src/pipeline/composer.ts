@@ -455,9 +455,10 @@ async function runComposer(
   attention: AttentionReconciliation,
   packetsById: Map<string, ReviewPacket>
 ): Promise<SubmitComposition> {
+  const anchorSymbols = anchorHunkSymbols(packetsById);
   const prompt = opts.promptBuilder.buildComposerPrompt({
     groupedFindingsJson: JSON.stringify(groups.map(group => ({ fingerprint: group.fingerprint, representativeId: group.representative.id,
-      ...relatedGroupsField(group, groups, packetsById), findings: group.findings.map(({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence }) => ({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence })), sourceComponents: compositionSources(group.findings, groups.flatMap(group => group.findings)) })), null, 2),
+      ...relatedGroupsField(group, groups, anchorSymbols), findings: group.findings.map(({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence }) => ({ id, title, severity, confidence, category, path, anchor, behaviorChange, intentEvidence })), sourceComponents: compositionSources(group.findings, groups.flatMap(group => group.findings)) })), null, 2),
     intent: `Declared intent: ${plan.diffUnderstanding.declaredIntent}\nInferred behavior: ${plan.diffUnderstanding.inferredBehavior}\n${summarizeIntentSignals(plan.intentSignals)}`,
     coverage,
     followUpHintNotes: notes.map((note) => `${note.question} (${note.files.join(", ")})`),
@@ -1551,13 +1552,33 @@ function groupHasAnchor(group: FindingGroup): boolean {
 }
 
 // #151: a lead for the composer's existing same-defect merge rule, never a
-// merge decision. Same category plus a shared changed symbol is enough to ask
-// the composer to compare two groups; it still keeps distinct defects apart.
-function relatedGroupsField(group: FindingGroup, groups: FindingGroup[], packetsById: Map<string, ReviewPacket>): { relatedGroups?: string[] } {
-  const related = groups.filter(other => other !== group
+// merge decision. Same category plus anchors in the same changed symbol is
+// enough to ask the composer to compare two groups; it still keeps distinct
+// defects apart. Findings are often anchored in a hunk another packet owns, so
+// anchor symbols resolve across all packets, not only the producing one.
+function relatedGroupsField(group: FindingGroup, groups: FindingGroup[], anchorSymbols: Map<string, string>): { relatedGroups?: string[] } {
+  const symbols = groupAnchorSymbols(group, anchorSymbols);
+  const related = symbols.size === 0 ? [] : groups.filter(other => other !== group
     && other.representative.category === group.representative.category
-    && groupsShareSymbol(group, other, packetsById)).map(other => other.representative.id);
+    && [...groupAnchorSymbols(other, anchorSymbols)].some(symbol => symbols.has(symbol))).map(other => other.representative.id);
   return related.length ? { relatedGroups: related } : {};
+}
+
+function groupAnchorSymbols(group: FindingGroup, anchorSymbols: Map<string, string>): Set<string> {
+  return new Set(group.findings.flatMap(finding => {
+    const symbol = finding.anchor?.hunkId ? anchorSymbols.get(finding.anchor.hunkId) : undefined;
+    return symbol ? [normalize(symbol)] : [];
+  }));
+}
+
+function anchorHunkSymbols(packetsById: Map<string, ReviewPacket>): Map<string, string> {
+  const symbols = new Map<string, string>();
+  for (const packet of packetsById.values()) for (const fact of packet.symbolFacts ?? []) {
+    if (symbols.has(fact.hunkId)) continue;
+    const symbol = symbolForHunk(packet, fact.hunkId);
+    if (symbol !== undefined) symbols.set(fact.hunkId, symbol);
+  }
+  return symbols;
 }
 
 function groupsShareSymbol(a: FindingGroup, b: FindingGroup, packetsById: Map<string, ReviewPacket>): boolean {

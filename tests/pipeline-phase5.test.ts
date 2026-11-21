@@ -15102,19 +15102,25 @@ function fakePacket(opts: {
 }
 
 describe("#151 related-group hint", () => {
-  it("lists same-category groups that share a changed symbol as leads, never merging them itself", async () => {
+  const packetWithHunkSymbol = (id: string, hunkId: string, enclosingSymbol: string): ReviewPacket => ({
+    ...fakePacket(), id,
+    symbolFacts: [{ path: "app.ts", hunkId, enclosingSymbol, changedLines: [1], changedLinesSide: "new", source: "fallback", confidence: "heuristic" }]
+  });
+
+  it("lists same-category groups anchored in the same changed symbol as leads, never merging them itself", async () => {
     const base = fakeFinding();
-    const finding = (id: string, packetId: string, line: number, overrides: Partial<CandidateFinding>): CandidateFinding => ({
+    const finding = (id: string, packetId: string, hunkId: string, line: number, overrides: Partial<CandidateFinding>): CandidateFinding => ({
       ...base, id, producedBy: { ...base.producedBy, packetId },
-      anchor: { ...base.anchor!, line }, evidence: { ...base.evidence, changedCode: "changed line " + id }, ...overrides
+      anchor: { ...base.anchor!, hunkId, line }, evidence: { ...base.evidence, changedCode: "changed line " + id }, ...overrides
     });
-    const first = finding("route-selection", "packet-a", 3, { category: "correctness",
+    const first = finding("route-selection", "packet-route", "h-route", 3, { category: "correctness",
       title: "Explicit preference selection errors abort routing", failureMode: "A preference selection error now returns before default routing runs." });
-    const second = finding("route-retry", "packet-b", 40, { category: "correctness",
+    // Produced by another packet but anchored in the routing hunk: symbols resolve across packets.
+    const second = finding("route-retry", "packet-caller", "h-route", 40, { category: "correctness",
       title: "Failed preferred routes no longer retry with AUTO", failureMode: "When the selected providers cannot route, the AUTO retry is skipped." });
-    const otherSymbol = finding("ledger-total", "packet-c", 80, { category: "correctness",
+    const otherSymbol = finding("ledger-total", "packet-ledger", "h-ledger", 80, { category: "correctness",
       title: "Ledger totals drop refunds", failureMode: "Refund rows are excluded from the running total." });
-    const otherCategory = finding("route-test", "packet-d", 60, { category: "testing",
+    const otherCategory = finding("route-test", "packet-route", "h-route", 60, { category: "testing",
       title: "Routing fallback tests stop covering selection errors", failureMode: "The rewritten test no longer exercises a selection error." });
     let grouped: Array<{ representativeId: string; relatedGroups?: string[] }> = [];
     const builder = createPromptBuilder(fakeLensRegistry());
@@ -15127,8 +15133,8 @@ describe("#151 related-group hint", () => {
     const result = await dedupeRankAndComposeReview({ verified: [first, second, otherSymbol, otherCategory], verdicts: [] }, fakePlan(),
       { mode: "branch", repoRoot: "/repo", commits: [], rawDiff: "" }, fakeCoverage(), config(), nullTelemetry(), {
         runner, promptBuilder, diff: fakeDiff(),
-        packets: [packetWithSymbol("packet-a", "SolveRoute"), packetWithSymbol("packet-b", "SolveRoute"),
-          packetWithSymbol("packet-c", "LedgerTotal"), packetWithSymbol("packet-d", "SolveRoute")]
+        packets: [packetWithHunkSymbol("packet-route", "h-route", "SolveRoute"), packetWithHunkSymbol("packet-caller", "h-caller", "QuoteIntent"),
+          packetWithHunkSymbol("packet-ledger", "h-ledger", "LedgerTotal")]
       });
     const related = Object.fromEntries(grouped.map((group) => [group.representativeId, group.relatedGroups]));
     expect(grouped).toHaveLength(4);
@@ -15144,7 +15150,7 @@ describe("#151 related-group hint", () => {
   it("asks the composer to compare listed related groups under the existing merge rule (p10.27)", () => {
     const prompt = createPromptBuilder(fakeLensRegistry()).buildComposerPrompt({ groupedFindingsJson: "[]", intent: "", coverage: fakeCoverage(), followUpHintNotes: [] });
     expect(prompt.templateVersion).toBe("p10.27");
-    expect(prompt.prompt).toContain("A group's relatedGroups lists other groups (by representativeId) with the same category whose findings share a changed symbol; compare each listed group with this rule before keeping them separate. The list is a lead, not a decision.");
+    expect(prompt.prompt).toContain("A group's relatedGroups lists other groups (by representativeId) with the same category whose findings are anchored in the same changed symbol; compare each listed group with this rule before keeping them separate. The list is a lead, not a decision.");
   });
 });
 
