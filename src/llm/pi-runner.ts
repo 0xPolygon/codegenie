@@ -13,11 +13,7 @@ import {
   type AssistantMessageEventStream,
   type Context,
   type Model,
-  type ModelAuth,
   type Models,
-  type OAuthCredential,
-  type OAuthCredentials,
-  type ProviderHeaders,
   type SimpleStreamOptions,
   type Tool,
   type ToolCall
@@ -25,13 +21,13 @@ import {
 import pLimit from "p-limit";
 import { createFileAuthStorage, createPiCredentialStore } from "../provider/provider-services.js";
 import { filterDeprecatedProviderModels, isDeprecatedProviderModel } from "../provider/model-policy.js";
-import { describeProviderCredentials, getCodegeniePiModels, getPiEnvApiKey } from "../provider/pi-ai-models.js";
+import { getCodegeniePiModels } from "../provider/pi-ai-models.js";
 import { assertReasoningSupported, modelThinkingLevels, selectReasoningEffort, type ReasoningPolicy } from "../provider/reasoning.js";
 import { getCodegeniePaths } from "../config/paths.js";
-import { registerSecret, stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
+import { stripCredentials, stripCredentialsWithSummary } from "../telemetry/redaction.js";
 import { fenceUntrusted } from "../skills/prompt-builder.js";
 import type { RepositoryEvidence, ReviewStage, ToolBudget, ToolBudgetState, ToolCallRecord, ToolResultMeta } from "../types.js";
-import type { PiAuthStorage, ProviderAuthEntry } from "../provider/provider-services.js";
+import type { PiAuthStorage } from "../provider/provider-services.js";
 import { sha256Hex } from "../util/hashing.js";
 import { stableJson } from "../util/json.js";
 import { finalizeGraceMs, hardToolBudget, SCHEMA_REPAIR_TIMEOUT_MS } from "../util/budget.js";
@@ -184,54 +180,52 @@ const MAX_DEBUG_ARTIFACT_CHARS = 1_500_000;
 const RECORDED_PROVIDER_FAILURE = Symbol("recordedProviderFailure");
 
 type RealPiAiAdapterDeps = {
-  models?: Pick<Models, "streamSimple" | "getModel" | "getModels" | "getProviders" | "getProvider">;
+  models?: Pick<Models, "streamSimple" | "getAuth" | "checkAuth" | "getModel" | "getModels" | "getProviders" | "getProvider">;
   streamSimple?: PiStreamSimpleFunction;
-  getOAuthApiKey?: GetOAuthApiKey;
   authStorage?: PiAuthStorage;
 };
 
 type PiStreamSimpleFunction = (model: Model<Api>, context: Context, options?: SimpleStreamOptions) => AssistantMessageEventStream;
-type OAuthApiKeyResult = {
-  newCredentials: OAuthCredentials;
-  apiKey: string;
-  baseUrl?: string;
-  headers?: ProviderHeaders;
-};
-type GetOAuthApiKey = (
-  provider: string,
-  credentials: Record<string, OAuthCredentials>,
-  signal: AbortSignal
-) => Promise<OAuthApiKeyResult | undefined>;
 
-export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
-  const adapter = opts.adapter ?? createRealPiAiAdapter();
+type PiCompletionAdapter = Pick<PiAiAdapter, "complete" | "validateToolCall">;
+
+export function createPiRunner(opts: CreateRunnerOptions & { adapter: PiAiAdapter }): LlmRunner;
+export function createPiRunner(opts: CreateRunnerOptions): LlmRunner | Promise<LlmRunner>;
+export function createPiRunner(opts: CreateRunnerOptions): LlmRunner | Promise<LlmRunner> {
+  const request = definedRecord({ provider: opts.llmConfig.provider, model: opts.llmConfig.model }) as ModelRequest;
+  if (opts.adapter === undefined) {
+    const adapter = createRealPiAiAdapter();
+    return adapter.resolveModelWithReason(request, opts.runSignal).then((resolution) => buildPiRunner(opts, adapter, resolution));
+  }
+  const model = opts.adapter.resolveModel(request);
+  if (model) return buildPiRunner(opts, opts.adapter, { model });
+  let failure: ModelResolutionFailure = { kind: "unresolved" };
+  try {
+    failure = opts.adapter.explainUnresolvedModel?.(request) ?? failure;
+  } catch {
+    // The explanation is best-effort; the generic message still applies.
+  }
+  return buildPiRunner(opts, opts.adapter, { failure });
+}
+
+function buildPiRunner(opts: CreateRunnerOptions, adapter: PiCompletionAdapter, resolution: ModelResolution): LlmRunner {
+  if ("failure" in resolution) {
+    throw new CodegenieError("config_error", modelResolutionMessage(resolution.failure), {
+      context: {
+        provider: opts.llmConfig.provider ?? null,
+        model: opts.llmConfig.model ?? null,
+        modelResolution: resolution.failure.kind,
+        hint: "run `codegenie provider login <provider>` and `codegenie provider models --all` to inspect available authenticated models"
+      }
+    });
+  }
+  const { model } = resolution;
   const recoveryObligations = new Map<string, { original: Record<string, unknown>; id: string; structuredRequestId: string; removedUnexpectedFields?: ReturnType<typeof focusedRepairDiagnostics>["removedUnexpectedFields"] }>();
   let obligationSequence = 0;
   const recoveryNamespace = randomUUID();
   opts.telemetry.event({ stage: 0, level: "info", message: "recovery_fidelity_started", data: { version: 1 } });
   opts.telemetry.event({ stage: 0, level: "info", message: "schema_recovery_tracking_started", data: { version: 2 } });
   const providerLimit = pLimit(Math.max(1, opts.llmConfig.maxConcurrentCalls));
-  const model = adapter.resolveModel(definedRecord({ provider: opts.llmConfig.provider, model: opts.llmConfig.model }) as {
-    provider?: string;
-    model?: string;
-  });
-  if (!model) {
-    const request = definedRecord({ provider: opts.llmConfig.provider, model: opts.llmConfig.model }) as { provider?: string; model?: string };
-    let failure: ModelResolutionFailure = { kind: "unresolved" };
-    try {
-      failure = adapter.explainUnresolvedModel?.(request) ?? failure;
-    } catch {
-      // The explanation is best-effort; the generic message still applies.
-    }
-    throw new CodegenieError("config_error", modelResolutionMessage(failure), {
-      context: {
-        provider: opts.llmConfig.provider ?? null,
-        model: opts.llmConfig.model ?? null,
-        modelResolution: failure.kind,
-        hint: "run `codegenie provider login <provider>` and `codegenie provider models --all` to inspect available authenticated models"
-      }
-    });
-  }
   assertReasoningSupported(
     { provider: model.provider, id: model.id, thinkingLevels: modelThinkingLevels(model.raw) },
     opts.llmConfig.reasoning ?? "high",
@@ -975,14 +969,20 @@ export function createPiRunner(opts: CreateRunnerOptions): LlmRunner {
   };
 }
 
-export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): PiAiAdapter {
+type ModelRequest = Parameters<PiAiAdapter["resolveModel"]>[0];
+type RealPiAiAdapter = PiAiAdapter<Promise<PiModelRef | undefined>> & {
+  resolveModelWithReason(request: ModelRequest, signal?: AbortSignal): Promise<ModelResolution>;
+};
+
+export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): RealPiAiAdapter {
   const authStorage = deps.authStorage ?? createFileAuthStorage(getCodegeniePaths());
   const models = deps.models ?? getCodegeniePiModels(createPiCredentialStore(authStorage));
+  const resolveModelWithReason = (request: ModelRequest, signal?: AbortSignal) => resolveRealModelWithReason(request, models, signal);
   return {
-    resolveModel: ({ provider, model }) => resolveRealModel(provider, model, authStorage, models),
-    explainUnresolvedModel: ({ provider, model }) => {
-      const resolution = resolveRealModelWithReason(provider, model, authStorage, models);
-      return "failure" in resolution ? resolution.failure : { kind: "unresolved" };
+    resolveModelWithReason,
+    resolveModel: async (request) => {
+      const resolution = await resolveModelWithReason(request);
+      return "model" in resolution ? resolution.model : undefined;
     },
     complete: async (model, context, options) => {
       const { submitToolName, onStreamEvent, onRejectedArguments, ...providerOptions } = options;
@@ -1000,7 +1000,7 @@ export function createRealPiAiAdapter(deps: RealPiAiAdapterDeps = {}): PiAiAdapt
         return rest;
       };
       if (deps.streamSimple !== undefined) {
-        const prepared = await prepareInjectedCompletion(model, completeOptions, deps, models);
+        const prepared = await prepareInjectedCompletion(model, completeOptions, models);
         return consumeFinalToolArguments(
           deps.streamSimple(prepared.model, context as Context, simpleOptions(prepared.model, prepared.options)),
           submitToolName, streamHooks
@@ -1235,7 +1235,7 @@ function truncateDiagnosticPart(text: string, maxChars: number): string {
 
 type CompleteWithCacheInput = {
   opts: CreateRunnerOptions;
-  adapter: PiAiAdapter;
+  adapter: PiCompletionAdapter;
   request: LlmStructuredRequest<unknown>;
   model: PiModelRef;
   messages: ConversationMessage[];
@@ -2091,7 +2091,7 @@ function untrustedRepairMetadata(calls: PiSubmitCall[]): NonNullable<LlmSchemaRe
 }
 
 async function executeToolCall(
-  adapter: PiAiAdapter,
+  adapter: PiCompletionAdapter,
   tools: ToolDefinition[],
   tool: ToolDefinition,
   toolCall: PiToolCall,
@@ -2605,7 +2605,7 @@ function normalizeSubmitArguments(request: LlmStructuredRequest<unknown>, value:
 }
 
 function validateSubmitCall<T>(
-  adapter: PiAiAdapter,
+  adapter: PiCompletionAdapter,
   request: LlmStructuredRequest<T>,
   submitTool: ToolDefinition,
   submitCall: PiToolCall
@@ -2633,7 +2633,7 @@ function validateSubmitCall<T>(
 
 function tryRecoverInvalidSubmit(input: {
   opts: CreateRunnerOptions;
-  adapter: PiAiAdapter;
+  adapter: PiCompletionAdapter;
   request: LlmStructuredRequest<unknown>;
   submitTool: ToolDefinition;
   repairInput: LlmSchemaInvalidSubmitRecoveryInput;
@@ -3409,7 +3409,7 @@ function recordErroredModelCall(
 }
 
 function schemaValidityForResponse(
-  adapter: PiAiAdapter,
+  adapter: PiCompletionAdapter,
   request: LlmStructuredRequest<unknown>,
   tools: ToolDefinition[],
   kind: ModelCallKind,
@@ -4140,70 +4140,52 @@ function defaultToolMeta(): ToolResultMeta {
 
 type ModelResolution = { model: PiModelRef } | { failure: ModelResolutionFailure };
 
-function resolveRealModel(
-  provider: string | undefined,
-  model: string | undefined,
-  authStorage?: PiAuthStorage,
-  models: Pick<Models, "getModel" | "getModels" | "getProviders" | "getProvider"> = getCodegeniePiModels()
-): PiModelRef | undefined {
-  const resolution = resolveRealModelWithReason(provider, model, authStorage, models);
-  return "model" in resolution ? resolution.model : undefined;
-}
-
-function resolveRealModelWithReason(
-  provider: string | undefined,
-  model: string | undefined,
-  authStorage?: PiAuthStorage,
-  models: Pick<Models, "getModel" | "getModels" | "getProviders" | "getProvider"> = getCodegeniePiModels()
-): ModelResolution {
+async function resolveRealModelWithReason(
+  { provider, model }: ModelRequest,
+  models: Pick<Models, "getModel" | "getModels" | "getProviders" | "getProvider" | "checkAuth">,
+  signal?: AbortSignal
+): Promise<ModelResolution> {
   const qualified = provider === undefined && model ? splitProviderQualifiedModel(model, models) : undefined;
   const resolvedProvider = provider ?? qualified?.provider;
   const resolvedModel = qualified?.model ?? model;
+  const authOptions = signal === undefined ? undefined : { signal };
 
-  if (resolvedProvider && resolvedModel) {
-    const target = { provider: resolvedProvider, model: resolvedModel };
-    if (isDeprecatedProviderModel(resolvedProvider, resolvedModel)) {
-      return { failure: { kind: "deprecated_model", ...target } };
-    }
+  if (resolvedProvider) {
+    const target = { provider: resolvedProvider, ...(resolvedModel ? { model: resolvedModel } : {}) };
     try {
-      const raw = models.getModel(resolvedProvider, resolvedModel);
-      if (!raw) {
-        return { failure: { kind: "unknown_model", ...target } };
+      let raw: Model<Api> | undefined;
+      if (resolvedModel) {
+        if (isDeprecatedProviderModel(resolvedProvider, resolvedModel)) {
+          return { failure: { kind: "deprecated_model", ...target } };
+        }
+        raw = models.getModel(resolvedProvider, resolvedModel);
+        if (!raw) return { failure: { kind: "unknown_model", ...target } };
+      } else if (!models.getProvider(resolvedProvider)) {
+        return { failure: { kind: "unresolved", ...target } };
       }
-      const auth = resolveProviderAuth(resolvedProvider, authStorage, models);
-      return auth
-        ? { model: { provider: resolvedProvider, id: resolvedModel, raw: applyModelOverrides(raw), ...auth } }
-        : { failure: { kind: "missing_credentials", ...target } };
+      if (!await models.checkAuth(resolvedProvider, authOptions)) {
+        return { failure: { kind: "missing_credentials", ...target } };
+      }
+      raw ??= filterDeprecatedProviderModels([...models.getModels(resolvedProvider)])[0];
+      return raw
+        ? { model: { provider: resolvedProvider, id: raw.id, raw: applyModelOverrides(raw) } }
+        : { failure: { kind: "unresolved", ...target } };
     } catch {
+      signal?.throwIfAborted();
       return { failure: { kind: "unresolved", ...target } };
     }
   }
 
-  if (resolvedProvider) {
-    if (models.getProvider(resolvedProvider) === undefined) {
-      return { failure: { kind: "unresolved", provider: resolvedProvider } };
-    }
-    const auth = resolveProviderAuth(resolvedProvider, authStorage, models);
-    if (!auth) {
-      return { failure: { kind: "missing_credentials", provider: resolvedProvider } };
-    }
-    const providerModels = filterDeprecatedProviderModels([...models.getModels(resolvedProvider)]);
-    const first = providerModels[0];
-    return first
-      ? { model: { provider: resolvedProvider, id: first.id, raw: applyModelOverrides(first), ...auth } }
-      : { failure: { kind: "unresolved", provider: resolvedProvider } };
-  }
-
   for (const provider of models.getProviders()) {
-    const providerId = provider.id;
-    const auth = resolveProviderAuth(providerId, authStorage, models);
-    if (!auth) {
-      continue;
-    }
-    const providerModels = filterDeprecatedProviderModels([...models.getModels(providerId)]);
+    const providerModels = filterDeprecatedProviderModels([...models.getModels(provider.id)]);
     const match = resolvedModel ? providerModels.find((candidate) => candidate.id === resolvedModel) : providerModels[0];
-    if (match) {
-      return { model: { provider: providerId, id: match.id, raw: applyModelOverrides(match), ...auth } };
+    try {
+      if (match && await models.checkAuth(provider.id, authOptions)) {
+        return { model: { provider: provider.id, id: match.id, raw: applyModelOverrides(match) } };
+      }
+    } catch {
+      signal?.throwIfAborted();
+      // An unavailable provider must not prevent trying the next candidate.
     }
   }
   return { failure: { kind: "unresolved", ...(resolvedModel !== undefined ? { model: resolvedModel } : {}) } };
@@ -4222,7 +4204,7 @@ export function modelResolutionMessage(failure: ModelResolutionFailure): string 
     return `model ${target} is deprecated; choose a current model`;
   }
   if (failure.kind === "missing_credentials" && failure.provider !== undefined) {
-    return `no credentials for provider ${failure.provider}: ${describeProviderCredentials(failure.provider)}`;
+    return `no credentials for provider ${failure.provider}: configure native credentials or run \`codegenie provider login ${failure.provider}\``;
   }
   return UNRESOLVED_MODEL_MESSAGE;
 }
@@ -4242,33 +4224,14 @@ function splitProviderQualifiedModel(
   return { provider, model: model.slice(slash + 1) };
 }
 
-function resolveProviderAuth(
-  provider: string,
-  authStorage = createFileAuthStorage(getCodegeniePaths()),
-  models: Pick<Models, "getProvider"> = getCodegeniePiModels()
-): Pick<PiModelRef, "apiKey" | "oauthProvider"> | undefined {
-  const envApiKey = getPiEnvApiKey(provider);
-  if (envApiKey) {
-    registerSecret(envApiKey);
-    return { apiKey: envApiKey };
-  }
-  const stored = authStorage.get(provider);
-  if (!stored) {
-    return undefined;
-  }
-  if (stored.type === "api_key") {
-    return { apiKey: stored.apiKey };
-  }
-  return models.getProvider(provider)?.auth.oauth ? { oauthProvider: provider } : undefined;
-}
-
 async function prepareInjectedCompletion(
   model: PiModelRef,
   options: SimpleStreamOptions & Record<string, unknown>,
-  deps: RealPiAiAdapterDeps,
-  models: Pick<Models, "getProvider">
+  models: Pick<Models, "getAuth">
 ): Promise<{ model: Model<Api>; options: SimpleStreamOptions & Record<string, unknown> }> {
-  const auth = await resolveModelAuth(model, deps, models, options.signal ?? new AbortController().signal);
+  const { auth, env } = await models.getAuth(model.provider, definedRecord({
+    signal: options.signal, apiKey: options.apiKey, env: options.env
+  }) as NonNullable<Parameters<Models["getAuth"]>[1]>) ?? { auth: {} };
   const rawModel = auth.baseUrl === undefined
     ? model.raw as Model<Api>
     : { ...model.raw as Model<Api>, baseUrl: auth.baseUrl };
@@ -4277,92 +4240,11 @@ async function prepareInjectedCompletion(
     : { ...auth.headers, ...options.headers };
   return {
     model: rawModel,
-    options: definedRecord({ ...options, apiKey: auth.apiKey, headers }) as SimpleStreamOptions & Record<string, unknown>
+    options: definedRecord({
+      ...options, apiKey: options.apiKey ?? auth.apiKey, headers,
+      env: env === undefined ? options.env : { ...env, ...options.env }
+    }) as SimpleStreamOptions & Record<string, unknown>
   };
-}
-
-async function resolveModelAuth(
-  model: PiModelRef,
-  deps: RealPiAiAdapterDeps,
-  models: Pick<Models, "getProvider">,
-  signal: AbortSignal
-): Promise<ModelAuth> {
-  if (model.apiKey) {
-    return { apiKey: model.apiKey };
-  }
-  if (!model.oauthProvider) {
-    return {};
-  }
-
-  const authStorage = deps.authStorage ?? createFileAuthStorage(getCodegeniePaths());
-  const stored = authStorage.get(model.oauthProvider);
-  if (!stored || stored.type !== "oauth") {
-    return {};
-  }
-
-  const getOAuthApiKey = deps.getOAuthApiKey
-    ?? ((provider, credentials, refreshSignal) => getOAuthApiKeyFromProvider(provider, credentials, models, refreshSignal));
-  const result = await getOAuthApiKey(model.oauthProvider, {
-    [model.oauthProvider]: stored.credentials
-  }, signal);
-  if (!result) {
-    return {};
-  }
-
-  persistRefreshedOAuthCredentials(authStorage, model.oauthProvider, stored, result.newCredentials);
-  registerSecret(result.apiKey);
-  result.headers && Object.values(result.headers).forEach((value) => {
-    if (typeof value === "string") {
-      registerSecret(value);
-    }
-  });
-  return {
-    apiKey: result.apiKey,
-    ...(result.baseUrl !== undefined ? { baseUrl: result.baseUrl } : {}),
-    ...(result.headers !== undefined ? { headers: result.headers } : {})
-  };
-}
-
-async function getOAuthApiKeyFromProvider(
-  provider: string,
-  credentials: Record<string, OAuthCredentials>,
-  models: Pick<Models, "getProvider">,
-  signal: AbortSignal
-): Promise<OAuthApiKeyResult | undefined> {
-  const oauthAuth = models.getProvider(provider)?.auth.oauth;
-  const stored = credentials[provider];
-  if (oauthAuth === undefined || stored === undefined) {
-    return undefined;
-  }
-
-  let credential: OAuthCredential = { ...stored, type: "oauth" };
-  if (Date.now() >= credential.expires) {
-    credential = await oauthAuth.refresh(credential, signal);
-  }
-  const auth = await oauthAuth.toAuth(credential);
-  if (auth.apiKey === undefined) {
-    return undefined;
-  }
-  const { type: _type, ...newCredentials } = credential;
-  return {
-    newCredentials,
-    apiKey: auth.apiKey,
-    ...(auth.baseUrl !== undefined ? { baseUrl: auth.baseUrl } : {}),
-    ...(auth.headers !== undefined ? { headers: auth.headers } : {})
-  };
-}
-
-function persistRefreshedOAuthCredentials(
-  authStorage: PiAuthStorage,
-  provider: string,
-  stored: Extract<ProviderAuthEntry, { type: "oauth" }>,
-  credentials: OAuthCredentials
-): void {
-  authStorage.set(provider, {
-    type: "oauth",
-    credentials,
-    createdAt: stored.createdAt
-  });
 }
 
 function definedRecord<T extends Record<string, unknown>>(input: T): T {

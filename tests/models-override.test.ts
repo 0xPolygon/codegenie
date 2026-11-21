@@ -69,7 +69,7 @@ describe("model routing overrides", () => {
     try {
       const catalogBefore = structuredClone(getCodegeniePiModels().getModel("openrouter", modelId));
       const adapter = createRealPiAiAdapter();
-      const model = adapter.resolveModel({ provider: "openrouter", model: modelId })!;
+      const model = (await adapter.resolveModel({ provider: "openrouter", model: modelId }))!;
       expect(modelProviderRouting(model.raw)).toEqual(expectedRouting);
       let payload: unknown;
       // Inspect Pi's serialized request before transport; never send a paid call.
@@ -116,7 +116,7 @@ describe("Anthropic models that cannot disable thinking (issue #46)", () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "test-only-key");
     try {
       const adapter = createRealPiAiAdapter();
-      const model = adapter.resolveModel({ provider: "anthropic", model: modelId })!;
+      const model = (await adapter.resolveModel({ provider: "anthropic", model: modelId }))!;
       let payload: unknown;
       // Inspect Pi's serialized request before transport; never send a paid call.
       await adapter.complete(model, { messages: [{ role: "user", content: "test", timestamp: 0 }], tools: [{ name: "submit_plan", description: "Submit", parameters: { type: "object", properties: {} } }] }, {

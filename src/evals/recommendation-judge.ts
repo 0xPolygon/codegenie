@@ -4,7 +4,7 @@ import { Type } from "typebox";
 import { z } from "zod";
 import { reasoningLevelSchema } from "../config/schema.js";
 import { createRealPiAiAdapter } from "../llm/pi-runner.js";
-import type { PiAiAdapter, PiAssistantMessage, PiToolCall } from "../llm/llm-runner.js";
+import type { PiAiAdapter, PiAssistantMessage, PiModelRef, PiToolCall } from "../llm/llm-runner.js";
 import { assertReasoningSupported, modelThinkingLevels } from "../provider/reasoning.js";
 import { stripCredentials } from "../telemetry/redaction.js";
 import { sha256Hex } from "../util/hashing.js";
@@ -41,8 +41,12 @@ export function publishedRecommendationReport(report: string): string {
     "[Historical assessments and supporting evidence omitted from recommendation scoring.]");
 }
 
-export async function judgeRecommendations(config: RecommendationJudgeConfig, report: string,
-  adapter: PiAiAdapter = createRealPiAiAdapter(), timeoutMs = 180_000): Promise<{ judgment: RecommendationJudgment; prompt?: string; response?: unknown }> {
+export async function judgeRecommendations(
+  config: RecommendationJudgeConfig,
+  report: string,
+  adapter: PiAiAdapter<PiModelRef | undefined | Promise<PiModelRef | undefined>> = createRealPiAiAdapter(),
+  timeoutMs = 180_000
+): Promise<{ judgment: RecommendationJudgment; prompt?: string; response?: unknown }> {
   const started = Date.now();
   const { checks, ...judge } = config;
   const judgment: RecommendationJudgment = { status: "error", judge, promptVersion: PROMPT_VERSION, results: [] };
@@ -62,7 +66,7 @@ export async function judgeRecommendations(config: RecommendationJudgeConfig, re
       JSON.stringify({ rubrics: stripCredentials(checks), publishedReport: published })
     ].join("\n\n");
     judgment.inputHash = sha256Hex(prompt);
-    const model = adapter.resolveModel(judge);
+    const model = await adapter.resolveModel(judge);
     if (!model) throw new Error("Judge model could not be resolved");
     assertReasoningSupported({ provider: model.provider, id: model.id, thinkingLevels: modelThinkingLevels(model.raw) }, judge.reasoning);
     const tool = { name: TOOL, description: "Submit independent recommendation quality judgments.", parameters: Type.Object({ results: Type.Array(Type.Object({

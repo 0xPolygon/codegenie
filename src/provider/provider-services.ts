@@ -21,7 +21,7 @@ import { registerSecret } from "../telemetry/redaction.js";
 import type { CodegeniePaths, ProviderSettings, ReasoningLevel, ReviewDepth } from "../types.js";
 import { CodegenieError } from "../util/errors.js";
 import { filterDeprecatedProviderModels } from "./model-policy.js";
-import { getCodegeniePiModels, getPiEnvApiKey } from "./pi-ai-models.js";
+import { getCodegeniePiModels } from "./pi-ai-models.js";
 import { loadProviderSettings, saveProviderSettings } from "./provider-settings.js";
 import {
   REASONING_USAGE,
@@ -69,7 +69,7 @@ export interface PiModelRegistry {
   providerExists(provider: string): boolean;
   listModels(provider?: string): ProviderModelInfo[];
   modelExists(provider: string, modelId: string): boolean;
-  authStatus(provider: string): AuthStatus;
+  authStatus(provider: string): Promise<AuthStatus>;
 }
 
 export type ProviderServices = {
@@ -120,7 +120,7 @@ export type RunProviderCommandOptions = {
 export function createProviderServices(homeOverride?: string): ProviderServices {
   const paths = getCodegeniePaths(homeOverride);
   const authStorage = createFileAuthStorage(paths);
-  const models = getCodegeniePiModels();
+  const models = getCodegeniePiModels(createPiCredentialStore(authStorage));
   return {
     paths,
     authStorage,
@@ -206,7 +206,10 @@ function credentialToProviderAuthEntry(credential: Credential, existing: Provide
   return { type: "oauth", credentials, createdAt };
 }
 
-export function createPiModelRegistry(authStorage: PiAuthStorage, models: Pick<Models, "getModels" | "getProviders" | "getProvider"> = getCodegeniePiModels()): PiModelRegistry {
+export function createPiModelRegistry(
+  authStorage: PiAuthStorage,
+  models: Pick<Models, "getModels" | "getProviders" | "getProvider" | "checkAuth"> = getCodegeniePiModels(createPiCredentialStore(authStorage))
+): PiModelRegistry {
   return {
     listProviders: () => models.getProviders().map((provider) => provider.id).sort(),
     providerExists: (provider) => providerKnown(provider, models),
@@ -215,17 +218,13 @@ export function createPiModelRegistry(authStorage: PiAuthStorage, models: Pick<M
       return providers.flatMap((id) => modelsForProvider(id, models)).sort((a, b) => `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`));
     },
     modelExists: (provider, modelId) => modelsForProvider(provider, models).some((model) => model.id === modelId),
-    authStatus: (provider) => {
-      const stored = authStorage.get(provider);
-      if (stored) {
-        return { provider, configured: true, source: "stored", kind: stored.type };
-      }
-      const envKey = getPiEnvApiKey(provider);
-      if (envKey) {
-        registerSecret(envKey);
-        return { provider, configured: true, source: "environment", kind: "api_key" };
-      }
-      return { provider, configured: false };
+    authStatus: async (provider) => {
+      const auth = await models.checkAuth(provider);
+      return auth ? {
+        provider, configured: true,
+        source: auth.type === "oauth" || auth.source === "stored credential" ? "stored" : "environment",
+        kind: auth.type
+      } : { provider, configured: false };
     }
   };
 }
@@ -239,7 +238,7 @@ export async function runProviderCommand(args: string[], opts: RunProviderComman
   const rest = rawRest.map((arg) => arg.startsWith("-") ? arg : resolveProviderAlias(arg));
   switch (command) {
     case "list":
-      writeOut(renderProviderList(services));
+      writeOut(await renderProviderList(services));
       return;
     case "login":
       {
@@ -259,16 +258,16 @@ export async function runProviderCommand(args: string[], opts: RunProviderComman
       }
       return;
     case "auth-status":
-      writeOut(renderAuthStatus(rest[0], services));
+      writeOut(await renderAuthStatus(rest[0], services));
       return;
     case "models": {
       const all = opts.all || rest.includes("--all");
       const query = rest.find((item) => item !== "--all");
-      writeOut(renderModels(query, all, services, opts.env));
+      writeOut(await renderModels(query, all, services, opts.env));
       return;
     }
     case "use":
-      commandUse(rest, services, writeOut);
+      await commandUse(rest, services, writeOut);
       return;
     case "config":
       await commandConfig(rest, services, writeOut, opts.env);
@@ -321,7 +320,7 @@ async function commandLogin(
       });
       return {
         provider,
-        preferredDefault: applyPreferredDefaultAfterLogin(provider, services)
+        preferredDefault: await applyPreferredDefaultAfterLogin(provider, services)
       };
     } finally {
       loginController.abort();
@@ -338,7 +337,7 @@ async function commandLogin(
   });
   return {
     provider,
-    preferredDefault: applyPreferredDefaultAfterLogin(provider, services)
+    preferredDefault: await applyPreferredDefaultAfterLogin(provider, services)
   };
 }
 
@@ -406,12 +405,12 @@ function commandLogout(args: string[], services: ProviderServices, opts: RunProv
   services.authStorage.delete(args[0]);
 }
 
-function commandUse(args: string[], services: ProviderServices, writeOut: (text: string) => void): void {
+async function commandUse(args: string[], services: ProviderServices, writeOut: (text: string) => void): Promise<void> {
   const query = requireArg(args[0], "provider use <model>[:reasoning]");
   const spec = splitReasoningSuffix(query);
-  const match = findUsableModel(spec.model, services);
+  const match = await findUsableModel(spec.model, services);
   if (!match) {
-    throw unknownModelError(query, services);
+    throw await unknownModelError(query, services);
   }
   const requested = spec.reasoning ?? "high";
   const reasoning = requested === "auto" ? "auto" : normalizeReasoningLevel(requested, match.thinkingLevels);
@@ -433,9 +432,9 @@ function commandUse(args: string[], services: ProviderServices, writeOut: (text:
 // level typo, not a missing model: answer with the levels that model takes.
 // Ids that really contain a colon (`...-0731:batch`) never reach here because
 // the full query matched.
-function unknownModelError(query: string, services: ProviderServices): CodegenieError {
+async function unknownModelError(query: string, services: ProviderServices): Promise<CodegenieError> {
   const colon = query.lastIndexOf(":");
-  const base = colon > 0 ? findUsableModel(query.slice(0, colon), services) : undefined;
+  const base = colon > 0 ? await findUsableModel(query.slice(0, colon), services) : undefined;
   if (base !== undefined) {
     const levels = base.thinkingLevels.length > 0
       ? `supported levels: ${base.thinkingLevels.join(", ")}`
@@ -452,20 +451,21 @@ function unknownModelError(query: string, services: ProviderServices): Codegenie
   );
 }
 
-function findUsableModel(query: string, services: ProviderServices, opts: { provider?: string } = {}): ProviderModelInfo | undefined {
+async function findUsableModel(query: string, services: ProviderServices, opts: { provider?: string } = {}): Promise<ProviderModelInfo | undefined> {
   const normalizedQuery = normalizeModelSearch(query);
   if (normalizedQuery.length === 0) {
     return undefined;
   }
   const candidateProviders = opts.provider !== undefined ? [opts.provider] : services.modelRegistry.listProviders();
-  const candidates = candidateProviders
-    .filter((provider) => services.modelRegistry.authStatus(provider).configured)
-    .flatMap((provider) => services.modelRegistry.listModels(provider));
+  const candidates = candidateProviders.flatMap((provider) => services.modelRegistry.listModels(provider));
   const ranked = candidates
     .map((model, index) => ({ model, index, rank: modelMatchRank(normalizedQuery, model.id) }))
     .filter((item): item is { model: ProviderModelInfo; index: number; rank: number } => item.rank !== undefined)
     .sort((a, b) => a.rank - b.rank || b.index - a.index);
-  return ranked[0]?.model;
+  const providers = [...new Set(ranked.map(({ model }) => model.provider))];
+  const statuses = await Promise.all(providers.map((provider) => services.modelRegistry.authStatus(provider)));
+  const configured = new Set(statuses.filter((status) => status.configured).map((status) => status.provider));
+  return ranked.find(({ model }) => configured.has(model.provider))?.model;
 }
 
 function modelMatchRank(normalizedQuery: string, modelId: string): number | undefined {
@@ -493,10 +493,10 @@ const PREFERRED_PROVIDER_DEFAULTS: Record<string, PreferredProviderDefault> = {
   "openai-codex": { modelQuery: "gpt", reasoning: "high" }
 };
 
-function applyPreferredDefaultAfterLogin(
+async function applyPreferredDefaultAfterLogin(
   provider: string,
   services: ProviderServices
-): LoginCommandResult["preferredDefault"] | undefined {
+): Promise<LoginCommandResult["preferredDefault"]> {
   const preference = PREFERRED_PROVIDER_DEFAULTS[provider];
   if (preference === undefined) {
     return undefined;
@@ -510,7 +510,7 @@ function applyPreferredDefaultAfterLogin(
     return undefined;
   }
 
-  const model = findUsableModel(preference.modelQuery, services, { provider });
+  const model = await findUsableModel(preference.modelQuery, services, { provider });
   if (model === undefined) {
     return undefined;
   }
@@ -536,7 +536,7 @@ async function commandConfig(
   const [subcommand, ...rest] = args;
   if (!subcommand) {
     const settings = loadProviderSettings(services.paths);
-    writeOut(renderProviderConfig(services, settings, loadResolvedUserConfig(services.paths, env)));
+    writeOut(await renderProviderConfig(services, settings, loadResolvedUserConfig(services.paths, env)));
     return;
   }
 
@@ -593,15 +593,15 @@ async function commandConfig(
   }
 }
 
-function renderProviderList(services: ProviderServices): string {
-  const rows = services.modelRegistry.listProviders().map((provider) => {
-    const status = services.modelRegistry.authStatus(provider);
+async function renderProviderList(services: ProviderServices): Promise<string> {
+  const rows = await Promise.all(services.modelRegistry.listProviders().map(async (provider) => {
+    const status = await services.modelRegistry.authStatus(provider);
     return {
       provider,
       status: renderProviderAuthStatus(status),
       description: providerDescription(provider)
     };
-  });
+  }));
   const providerWidth = Math.max(22, ...rows.map((row) => row.provider.length));
   const statusWidth = Math.max("not authenticated".length + 2, ...rows.map((row) => row.status.length));
   const byProvider = new Map(rows.map((row) => [row.provider, row]));
@@ -699,27 +699,26 @@ const KNOWN_PROVIDER_DESCRIPTIONS: Record<string, string> = {
   "zai-coding-cn": "ZAI Coding China"
 };
 
-function renderAuthStatus(provider: string | undefined, services: ProviderServices): string {
+async function renderAuthStatus(provider: string | undefined, services: ProviderServices): Promise<string> {
   const providers = provider ? [provider] : services.modelRegistry.listProviders();
   for (const id of providers) {
     assertProviderExists(id, services);
   }
-  const statuses = providers.map((id) => services.modelRegistry.authStatus(id));
+  const statuses = await Promise.all(providers.map((id) => services.modelRegistry.authStatus(id)));
   return `${JSON.stringify(provider ? statuses[0] : statuses, null, 2)}\n`;
 }
 
-function renderModels(query: string | undefined, all: boolean, services: ProviderServices, env?: NodeJS.ProcessEnv): string {
+async function renderModels(query: string | undefined, all: boolean, services: ProviderServices, env?: NodeJS.ProcessEnv): Promise<string> {
   const providers = services.modelRegistry.listProviders();
   const current = currentModelSelection(services, env);
   const needle = query?.toLowerCase();
-  const rows = services.modelRegistry
+  const matches = services.modelRegistry
     .listModels()
-    .filter((model) => {
-      const status = services.modelRegistry.authStatus(model.provider);
-      const available = all || status.configured;
-      const matches = !needle || `${model.provider}/${model.id} ${model.name}`.toLowerCase().includes(needle);
-      return available && matches;
-    });
+    .filter((model) => !needle || `${model.provider}/${model.id} ${model.name}`.toLowerCase().includes(needle));
+  const matchedProviders = [...new Set(matches.map((model) => model.provider))];
+  const statuses = all ? [] : await Promise.all(matchedProviders.map((provider) => services.modelRegistry.authStatus(provider)));
+  const configured = new Set(statuses.filter((status) => status.configured).map((status) => status.provider));
+  const rows = all ? matches : matches.filter((model) => configured.has(model.provider));
 
   if (rows.length === 0) {
     if (query) {
@@ -767,16 +766,16 @@ function renderModels(query: string | undefined, all: boolean, services: Provide
   return lines.join("\n");
 }
 
-function renderProviderConfig(
+async function renderProviderConfig(
   services: ProviderServices,
   settings: ProviderSettings,
   layers: ProviderConfigLayers
-): string {
+): Promise<string> {
   const effectiveProvider = layers.effective.config.llm.provider;
   const effectiveModel = layers.effective.config.llm.model;
   const effectiveReasoning = layers.effective.config.llm.reasoning ?? "high";
   const effectiveReasoningSource = layers.effective.sources["llm.reasoning"] ?? "built-in";
-  const auth = effectiveProvider !== undefined ? services.modelRegistry.authStatus(effectiveProvider) : undefined;
+  const auth = effectiveProvider !== undefined ? await services.modelRegistry.authStatus(effectiveProvider) : undefined;
   const lines = [
     renderProviderConfigSummary(effectiveProvider, effectiveModel, effectiveReasoning),
     "",
@@ -850,7 +849,7 @@ function formatProviderAuth(status: AuthStatus): string {
     return `not authenticated (${status.provider})`;
   }
   return status.source === "environment"
-    ? `environment api key (${status.provider})`
+    ? `environment credentials (${status.provider})`
     : `logged in (${status.provider})`;
 }
 
@@ -894,11 +893,11 @@ function formatThinkingLevels(model: ProviderModelInfo): string {
   return model.reasoning ? "reasoning supported" : "no reasoning";
 }
 
-function providerConfigJson(
+async function providerConfigJson(
   services: ProviderServices,
   settings: ProviderSettings,
   layers: ProviderConfigLayers
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   const provider = layers.effective.config.llm.provider;
   return {
     home: services.paths.home,
@@ -915,7 +914,7 @@ function providerConfigJson(
     effectiveModel: layers.effective.config.llm.model ?? null,
     effectiveDepth: layers.effective.config.review.depth,
     effectiveReasoning: layers.effective.config.llm.reasoning ?? "high",
-    auth: provider ? services.modelRegistry.authStatus(provider) : null
+    auth: provider ? await services.modelRegistry.authStatus(provider) : null
   };
 }
 
