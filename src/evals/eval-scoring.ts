@@ -406,20 +406,25 @@ function scorePositiveList(
   artifacts: EvalArtifacts,
   mode: ScoreMode
 ): EvalExpectationResult[] {
-  const assignment = assignPositiveExpectations(expectations, findings, artifacts);
+  // Lexical-only expectations never take part in confirmed assignment, so they
+  // cannot consume a finding an anchored expectation needs (#127).
+  const assignment = assignPositiveExpectations(expectations.filter((expectation) => !isLexicalOnlyExpectation(expectation)), findings, artifacts);
   const pairByExpectation = new Map(assignment.pairs.map((pair) => [pair.expectationId, pair.findingId]));
   const artifact = list === "should_find" ? "final-findings" as const : "candidate-findings" as const;
   return expectations.map((expectation) => {
     const tier = expectation.tier ?? "required";
+    const lexicalMatches = isLexicalOnlyExpectation(expectation)
+      ? findings.filter((finding) => matchExpectation(expectation, finding, artifacts).matched).map((finding) => finding.id)
+      : [];
     const findingId = pairByExpectation.get(expectation.id);
-    if (findingId !== undefined && isLexicalOnlyExpectation(expectation)) {
-      const needsAdjudication = { reason: "lexical-only-match" as const, findingIds: [findingId] };
+    if (lexicalMatches.length > 0) {
+      const needsAdjudication = { reason: "lexical-only-match" as const, findingIds: lexicalMatches };
       return tier === "optional"
         ? { expectationId: expectation.id, list, tier, status: "skipped", skipReason: "needs-adjudication",
           fromReplayedArtifacts: mode === "replay", matched: [], needsAdjudication }
         : { expectationId: expectation.id, list, tier, status: "fail", fromReplayedArtifacts: mode === "replay", matched: [],
           loss: { label: "partial-match", subReason: "lexical-only-match",
-            nearestInstances: [{ findingId, artifact, outcome: "lexical pattern matched without a line anchor" }] },
+            nearestInstances: lexicalMatches.map((id) => ({ findingId: id, artifact, outcome: "lexical pattern matched without a line anchor" })) },
           needsAdjudication };
     }
     if (findingId !== undefined) {
@@ -594,13 +599,23 @@ export function aggregateRepeatScores(
       note: entry.gate === undefined ? `measured only: ${rateNote}` : rateNote
     };
   });
-  const shouldNotResults: EvalExpectationResult[] = (evalCase.should_not_find ?? []).map((expectation) => ({
-    expectationId: expectation.id,
-    list: "should_not_find",
-    tier: expectation.tier ?? "required",
-    status: violations.some((violation) => violation.expectationId === expectation.id) ? "fail" : "pass",
-    matched: []
-  }));
+  const shouldNotResults: EvalExpectationResult[] = (evalCase.should_not_find ?? []).map((expectation) => {
+    const violated = violations.some((violation) => violation.expectationId === expectation.id);
+    // #127: lexical-only sentinel hits stay adjudication leads across repeats.
+    const leads = executions.flatMap((execution) => execution.score.expectationResults.filter((result) =>
+      result.list === "should_not_find" && result.expectationId === expectation.id && result.needsAdjudication !== undefined));
+    const findingIds = [...new Set(leads.flatMap((result) => result.needsAdjudication!.findingIds))];
+    return {
+      expectationId: expectation.id,
+      list: "should_not_find",
+      tier: expectation.tier ?? "required",
+      status: violated ? "fail" : leads.length > 0 ? "skipped" : "pass",
+      ...(!violated && leads.length > 0 ? { skipReason: "needs-adjudication" } : {}),
+      matched: [],
+      ...(leads.length > 0 ? { needsAdjudication: { reason: "lexical-only-match" as const, findingIds },
+        note: `adjudicate ${leads.length}/${repeat}` } : {})
+    };
+  });
   const budgetResults = [...budgetByCheck.values()];
   const status: EvalScore["status"] = errors === repeat && repeat > 0
     ? "error"
