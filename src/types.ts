@@ -598,6 +598,8 @@ export type ReviewPacket = {
   relatedChangedContext: RelatedChangedContext[];
   toolBudget: ToolBudget;
   degraded?: { reason: string };
+  /** Real context loss (#175); internal, never rendered to models. */
+  contextLoss?: string[];
   fileContext?: {
     mode: "file-diff" | "whole-file";
     reason: string;
