@@ -359,7 +359,7 @@ describe("#146 Stage 10 advice publication", () => {
     expect(final.finalBody).not.toContain(rejectedFix);
     expect(final.finalBody).not.toContain("**Suggested fix:**");
     expect(final.finalBody).not.toContain("**Suggested test:**");
-    expect(final.finalBody).toContain("Remediation was not composed: without report synthesis, proposals are not checked against the verified evidence, so they stay in provenance.");
+    expect(final.finalBody).toContain("Remediation was not composed: without report synthesis, proposals are not checked against the verified evidence, so they are kept in the run artifacts, not shown here.");
     expect(records).toEqual([expect.objectContaining({ synthesis: "fallback", publishedSuggestionSources: [],
       retainedSuggestionSources: expect.arrayContaining(["authorization/suggestedFix", "authorization/suggestedTest"]) })]);
     expect(final.suggestedFix).toBeUndefined();

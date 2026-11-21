@@ -233,7 +233,7 @@ export function composePresentation(
     if (proposals.length && !proposals.some(source => eligibleCompositionSource(source, kind))) {
       prose.push(label + " remains unverified.");
     } else if (withheldSuggestionKinds.includes(kind)) {
-      prose.push(label + " was not composed: without report synthesis, proposals are not checked against the verified evidence, so they stay in provenance.");
+      prose.push(label + " was not composed: without report synthesis, proposals are not checked against the verified evidence, so they are kept in the run artifacts, not shown here.");
     }
   }
   const superseded = new Set((presentation.reconciliations ?? [])
