@@ -14,6 +14,35 @@ function fixture(build: typeof contractComposition = contractComposition) {
   return { findings, original, schema, group: original.composedFindings[0]! };
 }
 
+describe("absent provenance components", () => {
+  it("drops retained references to components a supplied finding does not have, and nothing else", () => {
+    const { findings, original, group } = fixture(authorizationComposition);
+    const id = findings[0]!.id;
+    const absent = [`${id}/originalSuggestions/suggestedFix`, `${id}/evidence/relatedCode/99`];
+    group.retainedSourceRefs = [];
+    const valid = structuredClone(original);
+    group.retainedSourceRefs = [...absent];
+    expect(() => validateCompositionSubmission(original, findings)).toThrow();
+    const normalized = normalizeCompositionReferences(original, findings)!;
+    expect(normalized.removedFields).toEqual(["composedFindings.0.retainedSourceRefs.0", "composedFindings.0.retainedSourceRefs.1"]);
+    expect(normalized.value).toEqual(valid);
+    expect(() => validateCompositionSubmission(normalized.value as typeof original, findings)).not.toThrow();
+    // Unknown findings, non-component suffixes and absent components cited
+    // behind published prose are not bookkeeping; they still need repair.
+    for (const mutate of [
+      (draft: typeof original) => { draft.composedFindings[0]!.retainedSourceRefs = ["other-finding/suggestedFix"]; },
+      (draft: typeof original) => { draft.composedFindings[0]!.retainedSourceRefs = [`${id}/notAComponent`]; },
+      (draft: typeof original) => { draft.composedFindings[0]!.sections[0]!.sourceRefs.push(absent[0]!); },
+      (draft: typeof original) => { draft.composedFindings[0]!.evidenceRefs.push(absent[1]!); }
+    ]) {
+      const draft = structuredClone(valid);
+      mutate(draft);
+      const result = normalizeCompositionReferences(draft, findings);
+      expect(() => validateCompositionSubmission((result?.value ?? draft) as typeof original, findings)).toThrow();
+    }
+  });
+});
+
 describe("composition attribution repair", () => {
   it.each(["wrong-kind", "empty", "unsupported"])("can remove %s advice and restore visible proof without changing diagnosis", kind => {
     const { findings, original, group } = fixture(authorizationComposition);
