@@ -30,7 +30,7 @@ import { isCodegenieError } from "../util/errors.js";
 import { applySeverityPolicy } from "./severity-policy.js";
 import { isAdaptiveNearMissSignal } from "./uncertainty-promotion.js";
 import { isPacketReviewTestPath } from "../util/path-roles.js";
-import { stage7RecoverInvalidSubmit } from "../llm/stage7-submit-repair.js";
+import { normalizeStage7Submit, stage7RecoverInvalidSubmit } from "../llm/stage7-submit-repair.js";
 import { cleanStrings } from "../util/text-similarity.js";
 import { summarizeAdaptiveReviews } from "../util/adaptive-review.js";
 
@@ -476,6 +476,7 @@ async function runPacket(
     toolBudget: packet.toolBudget,
     timeoutMs: config.review.perPassTimeoutMs,
     telemetryContext: { workerId, packetId: packet.id },
+    normalizeSubmit: normalizeStage7Submit,
     // Plan 95: stage 7's deterministic submit cleanup rides the shared
     // recoverInvalidSubmit seam like every other stage; the engine and its
     // telemetry live in stage7-submit-repair.ts.

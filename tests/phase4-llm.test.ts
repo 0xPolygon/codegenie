@@ -1042,6 +1042,9 @@ describe("Phase 4 Pi runner and model-call cache", () => {
   });
 
   it("uses a separate investigation signal while tools and finalization share the hard deadline", async () => {
+    const timeoutMs = 100;
+    // At this test-sized timeout, the grace period equals the investigation budget.
+    const hardDeadlineMs = timeoutMs * 2;
     const providerSignals: AbortSignal[] = [];
     const toolSignals: AbortSignal[] = [];
     const tool: ToolDefinition = {
@@ -1063,6 +1066,12 @@ describe("Phase 4 Pi runner and model-call cache", () => {
           throw new Error("missing abort signal");
         }
         providerSignals.push(options.signal);
+        if (providerSignals.length === 2) {
+          vi.advanceTimersByTime(hardDeadlineMs - 1);
+          expect(options.signal.aborted).toBe(false);
+          expect(toolSignals[0]?.aborted).toBe(false);
+          vi.advanceTimersByTime(1);
+        }
         return providerSignals.length === 1
           ? assistant([
               {
@@ -1085,15 +1094,23 @@ describe("Phase 4 Pi runner and model-call cache", () => {
       hooks: { checkpoint: () => "ok", onUsage: vi.fn() }
     });
 
-    await runner.runStructured({
-      ...submitReviewRequest("packet-timeout-signal"),
-      tools: [tool],
-      toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 3 }
-    });
+    vi.useFakeTimers();
+    try {
+      await expect(runner.runStructured({
+        ...submitReviewRequest("packet-timeout-signal"),
+        timeoutMs,
+        tools: [tool],
+        toolBudget: { maxToolCalls: 1, maxInvestigationRounds: 1, maxResultChars: 3 }
+      })).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "timeout" } });
+    } finally {
+      vi.useRealTimers();
+    }
 
     expect(providerSignals).toHaveLength(2);
-    expect(new Set(providerSignals).size).toBe(2);
-    expect(toolSignals).toEqual([providerSignals[1]]);
+    expect(providerSignals[0]).not.toBe(providerSignals[1]);
+    expect(providerSignals[1]?.aborted).toBe(true);
+    expect(toolSignals).toHaveLength(1);
+    expect(toolSignals[0]?.aborted).toBe(true);
   });
 
   it("times out provider calls even when the adapter ignores the abort signal", async () => {
@@ -7310,12 +7327,15 @@ describe("Pi tool argument stream limits", () => {
     expect(onUsage.mock.calls[1]?.[0]).not.toHaveProperty("costUSD");
   });
 
-  it.each([{ stage: 9, limit: 64_000 }, { stage: 10, limit: 128_000 }] as const)(
+  it.each([
+    { stage: 5, limit: 128_000 }, { stage: 7, limit: 64_000 },
+    { stage: 9, limit: 64_000 }, { stage: 10, limit: 128_000 }
+  ] as const)(
     "accepts exactly $limit argument characters in Stage $stage and cuts the next character",
     async ({ stage, limit }) => {
       const submit = (chars: number): PiToolCall => ({
         type: "toolCall", id: "submit", name: submitToolNameForStage(stage),
-        arguments: { text: "x".repeat(chars - '{"text":""}'.length) }
+        arguments: { text: "xy".repeat(Math.ceil(chars / 2)).slice(0, chars - '{"text":""}'.length) }
       });
       const accepted = submit(limit);
       const oversized = submit(limit + 1);
@@ -7326,8 +7346,10 @@ describe("Pi tool argument stream limits", () => {
       };
       const { runner, telemetry } = scriptedPiStreamRunner(streamSimple);
       const request = { stage, schema: Type.Object({ text: Type.String() }), prompt: "submit text", templateVersion: "test", timeoutMs: 2_000 };
-      await expect(runner.runStructured(request)).resolves.toEqual(accepted.arguments);
-      await expect(runner.runStructured(request)).resolves.toEqual(accepted.arguments);
+      for (let i = 0; i < 2; i += 1) {
+        const submitted = await runner.runStructured<{ text: string }>(request);
+        expect(JSON.stringify(submitted)).toHaveLength(limit);
+      }
 
       expect(signals.map(signal => signal.aborted)).toEqual([false, true, false]);
       expect(telemetry.events.filter(event => event.message === "model_tool_argument_stream_limit")).toEqual([
@@ -7341,7 +7363,40 @@ describe("Pi tool argument stream limits", () => {
     }
   );
 
-  it.each([9, 10] as const)("stops after one overflow retry in Stage %s", async stage => {
+  it("accepts a large planner response with schema-valid coverage entries", async () => {
+    const call = validSubmitPlanCall("large-plan");
+    call.arguments.coverage = Array.from({ length: 150 }, (_, index) => ({
+      hunkId: `hunk-${index}`, path: `src/file-${index}.ts`, coverage: "deep", lenses: ["core/code-review"],
+      reason: "Inspect the changed guards and the callers that depend on their behavior. ".repeat(7)
+    }));
+    const chars = JSON.stringify(call.arguments).length;
+    expect(chars).toBeGreaterThan(64_000);
+    expect(chars).toBeLessThan(128_000);
+    const { runner, telemetry } = scriptedPiStreamRunner(() => streamForMessage(assistant([call])));
+    await expect(runner.runStructured({
+      stage: 5, schema: SubmitPlanSchema, prompt: "plan coverage", templateVersion: "test", timeoutMs: 2_000
+    })).resolves.toMatchObject(call.arguments);
+    expect(telemetry.modelCalls).toHaveLength(1);
+  });
+
+  it("cuts a runaway planner repair without adding a provider attempt", async () => {
+    const invalid = { type: "toolCall", id: "initial", name: "submit_plan", arguments: {} } satisfies PiToolCall;
+    const repair = validSubmitPlanCall("repair");
+    const periodic = '{"text":"' + "abcde".repeat(32_000) + '"}';
+    const streamSimple = vi.fn<PiStreamSimpleForTest>().mockImplementationOnce(() => streamForMessage(assistant([invalid])))
+      .mockImplementationOnce(() => streamForMessage(assistant([repair]), periodic));
+    const { runner, telemetry } = scriptedPiStreamRunner(streamSimple);
+    await expect(runner.runStructured({
+      stage: 5, schema: SubmitPlanSchema, prompt: "plan coverage", templateVersion: "test", timeoutMs: 2_000
+    })).rejects.toMatchObject({ code: "llm_call_failed", context: { reason: "tool_argument_stream_limit", trigger: "total_chars" } });
+    expect(streamSimple).toHaveBeenCalledTimes(2);
+    expect(telemetry.events).toContainEqual(expect.objectContaining({
+      stage: 5, message: "model_tool_argument_stream_limit",
+      data: expect.objectContaining({ kind: "repair", limitChars: 128_000, retryScheduled: false })
+    }));
+  });
+
+  it.each([5, 7, 9, 10] as const)("stops after one overflow retry in Stage %s", async stage => {
     const call = { type: "toolCall", id: "submit", name: submitToolNameForStage(stage), arguments: { text: "ok" } } satisfies PiToolCall;
     const response = assistant([call]);
     response.usage = { input: 0, output: 0, totalTokens: 0, cost: { total: 0 } };
@@ -7389,7 +7444,7 @@ describe("Pi tool argument stream limits", () => {
     expect(guard(0, "\t", 9_102)).toMatchObject({
       trigger: "whitespace_run", limitChars: 4_096, observedChars: 4_097, contentIndex: 0
     });
-    expect(createToolArgumentStreamGuard(7)).toBeUndefined();
+    expect(createToolArgumentStreamGuard(6)).toBeUndefined();
   });
 });
 
