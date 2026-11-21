@@ -475,9 +475,11 @@ export function humanAttentionArtifact(
   };
 }
 
+type KnownAttentionPaths = Map<string, "file" | "directory">;
+
 function rawAttentionHints(
   packetResults: PacketReviewResult[],
-  knownPaths: Set<string>,
+  knownPaths: KnownAttentionPaths,
   telemetry: TelemetryRecorder | undefined
 ): RawAttentionHint[] {
   const raw: RawAttentionHint[] = [];
@@ -518,12 +520,16 @@ function rawAttentionHints(
   return raw;
 }
 
-function knownAttentionPaths(packets: ReviewPacket[], diff: UnifiedDiff | undefined, repositoryPaths: readonly string[] = []): Set<string> {
-  const paths = new Set<string>();
+function knownAttentionPaths(packets: ReviewPacket[], diff: UnifiedDiff | undefined, repositoryPaths: readonly string[] = []): KnownAttentionPaths {
+  const paths: KnownAttentionPaths = new Map();
   const add = (value: string | undefined) => {
     const normalized = normalizeAttentionPath(value ?? "");
-    if (normalized !== undefined) {
-      paths.add(normalized);
+    if (normalized === undefined) return;
+    paths.set(normalized, "file");
+    for (let slash = normalized.lastIndexOf("/"); slash > 0; slash = normalized.lastIndexOf("/", slash - 1)) {
+      const parent = normalized.slice(0, slash);
+      if (paths.has(parent)) break;
+      paths.set(parent, "directory");
     }
   };
   // Unchanged files can answer packet questions too. These paths come from the
@@ -565,7 +571,7 @@ function knownAttentionPaths(packets: ReviewPacket[], diff: UnifiedDiff | undefi
 function validateAttentionFiles(
   packetId: string,
   files: string[],
-  knownPaths: Set<string>,
+  knownPaths: KnownAttentionPaths,
   telemetry: TelemetryRecorder | undefined
 ): { files: string[]; dropped: Array<{ path: string; reason: string }> } {
   const valid: string[] = [];
@@ -576,6 +582,7 @@ function validateAttentionFiles(
       valid.push(validation.validPath);
       continue;
     }
+    if (validation.reason === "directory") continue;
     dropped.push({ path: original, reason: validation.reason });
     telemetry?.event({
       stage: 10,
@@ -591,7 +598,7 @@ function validateAttentionFiles(
   return { files: cleanStrings(valid), dropped };
 }
 
-function validateAttentionPath(pathValue: string, knownPaths: Set<string>): { validPath?: string; reason: string } {
+function validateAttentionPath(pathValue: string, knownPaths: KnownAttentionPaths): { validPath?: string; reason: string } {
   const trimmed = pathValue.trim();
   if (trimmed.length === 0) {
     return { reason: "empty" };
@@ -606,10 +613,10 @@ function validateAttentionPath(pathValue: string, knownPaths: Set<string>): { va
   if (normalized.split("/").some((part) => part === "..")) {
     return { reason: "traversal" };
   }
-  if (knownPaths.size > 0 && !knownPaths.has(normalized)) {
-    return { reason: "unknown_path" };
+  if (knownPaths.size === 0 || knownPaths.get(normalized) === "file") {
+    return { validPath: normalized, reason: "valid" };
   }
-  return { validPath: normalized, reason: "valid" };
+  return { reason: knownPaths.get(normalized.replace(/\/$/u, "")) === "directory" ? "directory" : "unknown_path" };
 }
 
 function normalizeAttentionPath(pathValue: string): string | undefined {
