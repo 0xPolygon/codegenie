@@ -2331,6 +2331,38 @@ describe("eval command fixture suite", () => {
     expect(result.info.score.metrics.reportedFindings).toBe(0);
   });
 
+  it("accepts an old eval-case depth, ignores it, and passes one warning to the review (#129)", async () => {
+    const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-depth-suite-"));
+    const logsDir = mkdtempSync(path.join(tmpdir(), "codegenie-depth-logs-"));
+    const repo = initRepo();
+    writeRepoFile(repo, "src/app.js", "export const base = true;\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "src/app.js", "export const value = 1;\n");
+    commitAll(repo, "feature");
+    writeFileSync(path.join(suiteDir, "depth.yml"), [
+      "name: depth",
+      "repo:",
+      `  external: ${JSON.stringify(repo)}`,
+      "command:",
+      "  branch: feature",
+      "  base: main",
+      "review:",
+      "  depth: normal",
+      "logs:",
+      `  dir: ${JSON.stringify(logsDir)}`
+    ].join("\n"));
+    const config = { ...defaultConfig, llm: { ...defaultConfig.llm, provider: "fake", model: "fake-model" } };
+    const suite = await loadEvalSuite(suiteDir);
+    expect(suite.cases[0]!.evalCase.review?.depth).toBe("normal");
+    const result = await runEvalCase(suite, suite.cases[0]!, { config });
+    expect(result.status).toBe("pass");
+    const events = readFileSync(path.join(logsDir, "1", "telemetry", "events.jsonl"), "utf8").trim().split("\n")
+      .map(line => JSON.parse(line) as { message: string; data?: { key?: string; source?: string } });
+    expect(events.filter(event => event.message === "config_warning" && event.data?.key === "review.depth")
+      .map(event => event.data?.source)).toEqual(["eval-case"]);
+  });
+
   it("runs fixture-backed fake-provider cases for core, tests, Go, and TypeScript lenses", async () => {
     const suiteDir = mkdtempSync(path.join(tmpdir(), "codegenie-fixture-suite-"));
     const cases = [

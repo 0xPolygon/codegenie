@@ -1225,5 +1225,3 @@ function requireArg(value: string | undefined, usage: string): string {
   }
   return value;
 }
-
-

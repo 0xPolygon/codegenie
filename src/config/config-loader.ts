@@ -448,12 +448,12 @@ const DEPTH_SETTING_ORIGIN: Partial<Record<ConfigSource, string>> = {
 /** #129: codegenie has one review mode; a depth input is ignored for one release, then rejected. */
 export function ignoredReviewDepthWarning(source: ConfigSource, value: DeprecatedReviewDepth): ConfigWarning {
   const removal = source === "provider-settings"
-    ? "codegenie drops it the next time it saves provider settings"
-    : "remove it; the next release rejects it";
+    ? "It is ignored, and codegenie drops it the next time it saves provider settings."
+    : "It is ignored. Remove it: the next release rejects it.";
   return {
     source,
     key: "review.depth",
-    message: `${DEPTH_SETTING_ORIGIN[source] ?? "review.depth is"} "${value}", but review depth was removed and codegenie has one review mode. The value is ignored; ${removal}.`
+    message: `${DEPTH_SETTING_ORIGIN[source] ?? "review.depth is"} "${value}", but review depth was removed and codegenie has one review mode. ${removal}`
   };
 }
 
