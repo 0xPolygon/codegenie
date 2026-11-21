@@ -5844,6 +5844,48 @@ describe("phase 5 pipeline regressions", () => {
   });
 
   it.each([
+    { name: "positive empty reason", reason: "", acceptedReason: undefined, hasFindings: true, repair: false },
+    { name: "positive nonempty reason", reason: "Context for the packet.", acceptedReason: "Context for the packet.", hasFindings: true, repair: false },
+    { name: "no findings with an empty reason", reason: "", acceptedReason: "No issue in the changed branch.", hasFindings: false, repair: true },
+    { name: "positive empty reason and invalid severity", reason: "", acceptedReason: undefined, hasFindings: true, repair: true }
+  ])("preserves Stage 7 submission validation for $name", async ({ reason, acceptedReason, hasFindings, repair }) => {
+    const { id: _id, producedBy: _producer, changedLine: _changed, anchor: _anchor, ...finding } = fakeFinding();
+    const initial = {
+      reviewStatus: hasFindings ? "findings" : "no_findings", noFindingReason: reason,
+      findings: hasFindings ? [{ ...finding, ...(repair ? { severity: "bogus" } : {}) }] : [],
+      followUpHints: [], uncertainties: []
+    };
+    const messages = [assistantMessage([toolCall("initial", "submit_review", initial)])];
+    if (repair) {
+      messages.push(assistantMessage([toolCall("repair", "submit_review", hasFindings
+        ? { findings: [{ severity: finding.severity }] }
+        : { noFindingReason: acceptedReason })]));
+    }
+    const adapter = { ...scriptedPiAdapter(messages), validateToolCall };
+    const events: Array<Pick<TelemetryEvent, "stage" | "message" | "data">> = [];
+    const telemetry = { ...nullTelemetry(), event: (event: (typeof events)[number]) => { events.push(event); } };
+    const cfg = config();
+    const runner = createPiRunner({ llmConfig: cfg.llm, telemetry,
+      logger: { debug() {}, info() {}, warn() {}, error() {} }, runSignal: new AbortController().signal,
+      adapter, hooks: { checkpoint: () => "ok", onUsage() {} } });
+    const [result] = await runLensPackets(fakePlan(), [fakePacket()], fakeTools(), cfg, telemetry,
+      { runner, promptBuilder: fakePromptBuilder(), lensRegistry: fakeLensRegistry() });
+
+    expect(result!.status).toBe("completed");
+    expect(result!.findings).toEqual(hasFindings ? [expect.objectContaining(finding)] : []);
+    if (acceptedReason === undefined) expect(result).not.toHaveProperty("noFindingReason");
+    else expect(result!.noFindingReason).toBe(acceptedReason);
+    expect(events.filter(event => event.message === "model_call_started" && event.stage === 7)).toHaveLength(repair ? 2 : 1);
+    expect(events.some(event => event.message === "schema_repair_scheduled")).toBe(repair);
+    if (hasFindings && !repair && reason === "") {
+      expect(events).toContainEqual(expect.objectContaining({
+        stage: 7, message: "submit_semantic_canonicalization_accepted",
+        data: expect.objectContaining({ removedFields: ["noFindingReason"] })
+      }));
+    }
+  });
+
+  it.each([
     { incomplete: false, confidence: "medium", health: "unresolved" },
     { incomplete: false, confidence: "low", health: "completed" },
     { incomplete: true, confidence: "medium", health: "incomplete" }
