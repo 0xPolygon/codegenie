@@ -388,7 +388,13 @@ function appendDemotedFindings(body: string, findings: FinalFinding[]): string {
   if (findings.length === 0) {
     return body;
   }
-  const lines = [body.trim(), "", "**Inline findings included in the review body:**", ...(findings.length > 1 ? [FINDING_ORDER_NOTE] : [])].filter((line) => line.length > 0);
+  const trimmed = body.trim();
+  const lines = trimmed.length > 0
+    ? [trimmed, "", "**Inline findings included in the review body:**"]
+    : ["**Inline findings included in the review body:**"];
+  if (findings.length > 1 && !trimmed.includes(FINDING_ORDER_NOTE)) {
+    lines.push("", FINDING_ORDER_NOTE);
+  }
   for (const finding of findings) {
     lines.push("", `- ${severityBadge(finding.severity)}: **${finding.title}** (${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)})`);
     lines.push(indent(finding.finalBody.trim() || finding.failureMode));

@@ -17,8 +17,13 @@ export function renderMarkdownReview(result: ReviewResult): string {
     health.status === "completed" ? result.summary.trim() || "Review completed." : factualReviewSummary(health, result.findings.length + result.summaryOnlyFindings.length),
     "",
     renderCoverage(result.coverage),
-    renderFindings("⚠️ Findings", result.findings, result.runStats?.git),
-    renderFindings("Summary-Only Findings", result.summaryOnlyFindings, result.runStats?.git),
+    renderFindings("⚠️ Findings", result.findings, result.runStats?.git, result.findings.length > 1),
+    renderFindings(
+      "Summary-Only Findings",
+      result.summaryOnlyFindings,
+      result.runStats?.git,
+      result.findings.length <= 1 && result.summaryOnlyFindings.length > 1
+    ),
     renderNeedsHumanAttention(result),
     renderStats(result.runStats, result.budgetSummary, result.posting),
     renderNoFindings(result)
@@ -44,12 +49,12 @@ function renderCoverage(coverage: RunCoverageStatus): string {
   return ["## Coverage", "", ...renderCoverageSummaryLines(coverage)].join("\n");
 }
 
-function renderFindings(title: string, findings: FinalFinding[], git?: ReviewRunStats["git"]): string {
+function renderFindings(title: string, findings: FinalFinding[], git: ReviewRunStats["git"] | undefined, showOrderNote: boolean): string {
   if (findings.length === 0) {
     return "";
   }
 
-  const lines = [`## ${title}`, ...(findings.length > 1 ? ["", FINDING_ORDER_NOTE] : [])];
+  const lines = [`## ${title}`, ...(showOrderNote ? ["", FINDING_ORDER_NOTE] : [])];
   for (const finding of findings) {
     const link = githubFileLink(git, finding.path, finding.anchor?.line);
     lines.push("", `### ${severityBadge(finding.severity)}: ${finding.title}`);

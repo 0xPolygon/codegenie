@@ -315,7 +315,7 @@ describe("finding presentation order (#104)", () => {
     expect(fallbackResult.findings.map((finding) => finding.id)).toEqual(["med-med-a2", "med-med-a10", "med-high-z"]);
     expect(fallbackResult.postingPlan?.inline.map((item) => item.findingId)).toEqual(["med-med-a2", "med-med-a10", "med-high-z"]);
     expect(fallbackResult.summaryOnlyFindings.map((finding) => finding.id)).toEqual(["a-sum-anchorless", "sum-anchorless-z"]);
-    expect(fallbackResult.postingPlan?.reviewBody).toContain(`**Summary-only findings:**\n${FINDING_ORDER_NOTE}`);
+    expect(fallbackResult.postingPlan?.reviewBody).toContain(`**Summary-only findings:**\n\n${FINDING_ORDER_NOTE}\n\n- `);
   });
 
   it("orders inline, summary-only, postingPlan, and reviewBody by severity then file/line and emits the note only for 2+ findings", async () => {
@@ -423,14 +423,14 @@ describe("finding presentation order (#104)", () => {
     );
 
     const reviewBody = result.postingPlan?.reviewBody ?? "";
-    expect(reviewBody).toContain(`**Summary-only findings:**\n${FINDING_ORDER_NOTE}`);
+    expect(reviewBody).toContain(`**Summary-only findings:**\n\n${FINDING_ORDER_NOTE}\n\n- `);
     expect(reviewBody.indexOf("Summary high z.ts")).toBeLessThan(reviewBody.indexOf("Summary medium a.ts"));
     expect(reviewBody.indexOf("Summary medium a.ts")).toBeLessThan(reviewBody.indexOf("Summary medium z.ts"));
 
     // refreshReviewHealth preserves the summary-only order and note.
     refreshReviewHealth(result);
     const refreshedBody = result.postingPlan?.reviewBody ?? "";
-    expect(refreshedBody).toContain(`**Summary-only findings:**\n${FINDING_ORDER_NOTE}`);
+    expect(refreshedBody).toContain(`**Summary-only findings:**\n\n${FINDING_ORDER_NOTE}\n\n- `);
     expect(refreshedBody.indexOf("Summary high z.ts")).toBeLessThan(refreshedBody.indexOf("Summary medium a.ts"));
 
     // Single summary-only finding omits the ordering note.
@@ -452,7 +452,7 @@ describe("finding presentation order (#104)", () => {
     expect(singleSummaryResult.postingPlan?.reviewBody).not.toContain(FINDING_ORDER_NOTE);
   });
 
-  it("renders FINDING_ORDER_NOTE in markdown only for sections with two or more findings", () => {
+  it("renders FINDING_ORDER_NOTE once in markdown above the first section with two or more findings", () => {
     const highZ = finalFinding({ id: "h-z", title: "High Z", severity: "high", path: "src/z.ts", line: 4 });
     const medA = finalFinding({ id: "m-a", title: "Medium A", severity: "medium", path: "src/a.ts", line: 2 });
     const sumOnly = finalFinding({ id: "s-1", title: "Solo Summary", severity: "medium", path: "src/a.ts", line: 5, publication: "summary-only" });
@@ -464,13 +464,21 @@ describe("finding presentation order (#104)", () => {
     expect(twoInlineOneSummary).toContain("## Summary-Only Findings\n\n### 🔵 Medium: Solo Summary");
     expect(twoInlineOneSummary.split(FINDING_ORDER_NOTE)).toHaveLength(2);
 
+    const twoInlineTwoSummary = renderMarkdownReview(reviewResult([highZ, medA], [sumOnly, sumOnly2]));
+    expect(twoInlineTwoSummary).toContain(`## ⚠️ Findings\n\n${FINDING_ORDER_NOTE}\n\n### 🟠 High: High Z`);
+    expect(twoInlineTwoSummary).toContain("## Summary-Only Findings\n\n### 🔵 Medium: Solo Summary");
+    expect(twoInlineTwoSummary.split(FINDING_ORDER_NOTE)).toHaveLength(2);
+
     const oneInlineTwoSummary = renderMarkdownReview(reviewResult([highZ], [sumOnly, sumOnly2]));
     expect(oneInlineTwoSummary).toContain("## ⚠️ Findings\n\n### 🟠 High: High Z");
     expect(oneInlineTwoSummary).toContain(`## Summary-Only Findings\n\n${FINDING_ORDER_NOTE}\n\n### 🔵 Medium: Solo Summary`);
     expect(oneInlineTwoSummary.split(FINDING_ORDER_NOTE)).toHaveLength(2);
+
+    const oneEach = renderMarkdownReview(reviewResult([highZ], [sumOnly]));
+    expect(oneEach).not.toContain(FINDING_ORDER_NOTE);
   });
 
-  it("includes FINDING_ORDER_NOTE for demoted GitHub body findings only when two or more are demoted", async () => {
+  it("prints FINDING_ORDER_NOTE once in the GitHub review body above the first list of two or more findings", async () => {
     const diff = parseDiff(MULTI_FILE_DIFF);
     const aHunk = diff.files.find((file) => file.path === "src/a.ts")!.hunks[0]!;
     const zHunk = diff.files.find((file) => file.path === "src/z.ts")!.hunks[0]!;
@@ -509,10 +517,23 @@ describe("finding presentation order (#104)", () => {
       github: fakeGithub({ createReview: async (_n, review) => { multiBodies.push(review.body); } }),
       diff
     });
-    expect(multiBodies[0]).toContain(`**Inline findings included in the review body:**\n${FINDING_ORDER_NOTE}`);
+    expect(multiBodies[0]).toContain(`**Inline findings included in the review body:**\n\n${FINDING_ORDER_NOTE}\n\n- `);
+    expect(multiBodies[0]!.split(FINDING_ORDER_NOTE)).toHaveLength(2);
     expect(multiBodies[0]!.indexOf("High demoted")).toBeLessThan(multiBodies[0]!.indexOf("Medium demoted"));
 
-    // 422 recovery demoting two inline comments together also includes the note and preserves order.
+    // When the review body already carries the note (from 2+ summary-only findings),
+    // demoted inline findings do not repeat it.
+    const withSummaryNote = reviewResult([first, second], []);
+    withSummaryNote.postingPlan!.reviewBody = `Found issues.\n\n**Summary-only findings:**\n\n${FINDING_ORDER_NOTE}\n\n- Summary 1\n\n- Summary 2`;
+    const combinedBodies: string[] = [];
+    await maybePublishToGitHub(withSummaryNote, githubResolved(MULTI_FILE_DIFF), defaultConfig, nullTelemetry(), {
+      github: fakeGithub({ createReview: async (_n, review) => { combinedBodies.push(review.body); } }),
+      diff
+    });
+    expect(combinedBodies[0]).toContain("**Inline findings included in the review body:**\n\n- ");
+    expect(combinedBodies[0]!.split(FINDING_ORDER_NOTE)).toHaveLength(2);
+
+    // 422 recovery demoting two inline comments together also includes the note once and preserves order.
     const validFirst = { ...first, confidence: "high" as const };
     const validSecond = { ...second, confidence: "high" as const };
     let calls = 0;
@@ -531,7 +552,8 @@ describe("finding presentation order (#104)", () => {
       }),
       diff
     });
-    expect(retryBodies[0]).toContain(`**Inline findings included in the review body:**\n${FINDING_ORDER_NOTE}`);
+    expect(retryBodies[0]).toContain(`**Inline findings included in the review body:**\n\n${FINDING_ORDER_NOTE}\n\n- `);
+    expect(retryBodies[0]!.split(FINDING_ORDER_NOTE)).toHaveLength(2);
     expect(retryBodies[0]!.indexOf("High demoted")).toBeLessThan(retryBodies[0]!.indexOf("Medium demoted"));
   });
 });

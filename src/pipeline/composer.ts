@@ -1868,7 +1868,10 @@ function renderReviewBody(
     lines.push("", "**Coverage disclosure:**", ...coverageDisclosures);
   }
   if (summaryOnly.length > 0) {
-    lines.push("", "**Summary-only findings:**", ...(summaryOnly.length > 1 ? [FINDING_ORDER_NOTE] : []));
+    lines.push("", "**Summary-only findings:**");
+    if (summaryOnly.length > 1) {
+      lines.push("", FINDING_ORDER_NOTE);
+    }
     for (const finding of summaryOnly) {
       lines.push("", `- ${severityBadge(finding.severity)}: **${finding.title}** (${inlineCode(`${finding.path}${finding.anchor ? `:${finding.anchor.line}` : ""}`)})`);
       lines.push(indentBlock(finding.finalBody.trim() || finding.failureMode));
