@@ -1,4 +1,4 @@
-import type { Severity } from "../types.js";
+import type { FinalFinding, Severity } from "../types.js";
 
 /** Wrap text in a GitHub-flavored Markdown inline code span, using a backtick
  * fence longer than any run inside the text so embedded backticks render. */
@@ -77,4 +77,24 @@ const SEVERITY_EMOJI: Record<Severity, string> = {
 /** Emoji-plus-title-case severity label, e.g. "🟡 Medium". */
 export function severityBadge(severity: Severity): string {
   return `${SEVERITY_EMOJI[severity]} ${severity.charAt(0).toUpperCase()}${severity.slice(1)}`;
+}
+
+const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
+/** Shown above a rendered list of two or more findings (#104). */
+export const FINDING_ORDER_NOTE = "_Grouped by severity. Within a severity, findings are listed by file and line, not by importance or confidence._";
+
+/**
+ * Reader-facing order of published findings (#104): severity, then file, then
+ * line (anchorless last), then id. Severity is the only importance signal, so
+ * position within a severity is plain location. Applied once after the caps;
+ * compareFindings still orders composer input, representatives and caps.
+ */
+export function presentationOrder<T extends Pick<FinalFinding, "severity" | "path" | "anchor" | "id">>(findings: readonly T[]): T[] {
+  const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+  return [...findings].sort((a, b) =>
+    SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] ||
+    compare(a.path, b.path) ||
+    (a.anchor?.line ?? Number.MAX_SAFE_INTEGER) - (b.anchor?.line ?? Number.MAX_SAFE_INTEGER) ||
+    compare(a.id, b.id));
 }
