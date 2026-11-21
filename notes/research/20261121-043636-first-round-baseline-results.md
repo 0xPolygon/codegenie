@@ -79,7 +79,9 @@ Sol identified the primitive-rejection defect in all nine reviews. Five also ide
 
 The pipeline labeled a larger-case Opus normal/off review complete after the planner skipped four eligible hunks. Conversely, both partial Sol light reviews covered every hunk and exhausted a Stage 7 tool-result limit. Coverage and completeness therefore answer different questions.
 
-| Light arm, three reviews | Raw planner decisions (deep / normal / light / skip) | Hunks reviewed | Packets | Escalated | Stage 7 candidates |
+Each row sums three reviews. Stage 5 counts one entry per hunk listed in the saved plan, grouped by its assigned coverage level. Stage 6 gives eligible hunks omitted from the plan normal coverage and groups hunks into review packets. For example, on the larger case Opus listed 72 hunk instances in its plans. The packet builder included those 72 and the 321 omitted instances in 219 packets.
+
+| Light arm, three reviews | Stage 5 hunk entries in plan (deep / normal / light / skip) | Hunks reviewed | Stage 6 packets built | Escalated | Stage 7 candidates |
 | --- | --- | ---: | ---: | ---: | ---: |
 | Small · Opus | 15 / 8 / 3 / 0 | 30/30 | 15 | 0 | 9 |
 | Small · Sol | 21 / 3 / 2 / 0 | 30/30 | 15 | 0 | 14 |
