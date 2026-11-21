@@ -1,3 +1,5 @@
+import type { RepoConfigText } from "./config/config-loader.js";
+
 export type ReviewStage = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11;
 
 export type ReviewDepth = "light" | "normal" | "deep";
@@ -132,6 +134,7 @@ export type ParsedReviewCommand = {
   repoRoot: string;
   warnings: ConfigWarning[];
   configSources: Record<string, ConfigSource>;
+  finalizeConfig(repoConfig: RepoConfigText | undefined): { config: CodegenieConfig; warnings: ConfigWarning[]; sources: Record<string, ConfigSource> };
 };
 
 export type ReviewMode = "github_pr" | "branch" | "head" | "commit_range";

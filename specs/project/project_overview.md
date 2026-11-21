@@ -12,7 +12,7 @@ The system will include bundled skills and user-facing review lenses. A skill is
 
 codegenie should be built in TypeScript and run as a CLI.
 
-codegenie should focus on reviewing any git repository. It should also support referencing a GitHub pull request by PR number, but GitLab support is not an initial goal. Reviewed source should target the actual base/head revisions through git, so codegenie can review a PR or branch that is not checked out and source reads are unaffected by local working-tree state. Review policy, config, and skills should still load from the trusted local checkout.
+codegenie should focus on reviewing any git repository. It should also support referencing a GitHub pull request by PR number, but GitLab support is not an initial goal. Reviewed source should target the actual base/head revisions through git, so codegenie can review a PR or branch that is not checked out and source reads are unaffected by local working-tree state. Repository review config and skills should come from the resolved base revision.
 
 The first version should output clean, structured Markdown to stdout and also be able to post inline comments directly on a GitHub PR.
 

@@ -13,7 +13,7 @@ All data contracts referenced here — `ReviewStage`, `ReasoningLevel`, `Codegen
 This component is responsible for:
 
 - The skill loader: parsing Markdown skill files with YAML frontmatter, validating frontmatter and section structure (`Purpose`, `Checks`, `False Positives`, `Safe Patterns`, `Examples`), loading bundled skills from the package's `bundled-skills/` directory and repo-local skills from `.codegenie/skills/`, honoring the extra-skill-path trust partitioning, hashing skill content for cache keying, and the recoverable `skill_invalid` policy (warn, skip, disclose).
-- The trusted-checkout policy-loading rule: skills and config always load from the user's working copy, never from the reviewed PR head revision.
+- Repository config and skills are read through Git at the resolved base tip. The eval runner explicitly supplies checkout policy for historical comparisons.
 - The lens registry: lens existence derived from loaded skills (`lens exists iff at least one loaded skill declares it`), `enabledByDefault` conflict resolution, `--lens` validation with an available-lens error listing, config precedence for the effective enabled-lens set, and one-line lens summaries for the planner dossier.
 - The prompt builder: the four stage prompt templates (stages 5, 7, 9, 10), the deterministic dossier renderer `renderDossier` (also called by the pipeline's dossier compaction for size estimation), per-stage skill projection maps with the 4000-char per-skill and 12000-char total caps, telemetry-recorded truncation, and the untrusted-content fencing required by Trust Boundaries.
 - The provider/auth command layer: `codegenie provider ...`, `~/.codegenie/` path resolution, Pi provider/model registry access, login/logout/auth status, model listing, user-level default provider/model/depth/reasoning settings, and credential registration with the redaction layer.
@@ -69,15 +69,16 @@ type SkillLoadResult = {
 
 async function loadSkills(opts: {
   repoRoot: string
+  repoSkillFiles: Array<{ path: string; content: string }>
   extraSkillPaths: string[]   // already trust-partitioned by the config loader
   logger: Logger
   telemetry: TelemetryRecorder
 }): Promise<SkillLoadResult>
 ```
 
-- Loads, in order: bundled skills from the package's `bundled-skills/` tree, repo-local skills from `<repoRoot>/.codegenie/skills/`, then `extraSkillPaths`. All reads are ordinary filesystem reads of the trusted local checkout; this function must never read skills through git at a reviewed revision.
+- Loads bundled skills first, followed by the supplied repository skill text and then `extraSkillPaths`. Bundled and extra skills are read from disk. Repository skills retain their paths relative to the repository root.
 - Never throws for per-file problems. Malformed files become `failures` entries with a `warn` log and a stage-`0` telemetry event (`skill_invalid`), per the recoverable-degradation rules in `architecture.md`. It throws only for programming errors and for an unreadable `bundled-skills/` directory, which indicates a broken installation (`config_error`).
-- `extraSkillPaths` arrives post-partitioning from the config loader (repo-config paths constrained to the repo root; out-of-repo paths only via user-level opt-in). The loader should still defensively re-validate that repo-sourced entries resolve inside `repoRoot` and record a `skill_invalid` failure for any that do not.
+- `extraSkillPaths` is user-scoped. A resolved extra path inside `repoRoot` loads with an `extra_skill_path_in_repository` warning. The loader still defensively refuses repo-sourced entries outside `repoRoot`.
 
 ### Lens Registry
 
@@ -567,8 +568,8 @@ Body parsing:
 ### Skill Loading And Trust
 
 - Bundled skills resolve relative to the installed package: the loader walks `bundled-skills/**/*.md` from a directory resolved via `import.meta.url`, consistent with how grammar wasm files resolve from `node_modules` (`architecture.md`, Technology Choices). The current bundled inventory is eight files: `core/code-review.md` and `core/tests.md` under `bundled-skills/core/`, plus `go.md`, `javascript.md`, `python.md`, `rust.md`, `solidity.md`, and `typescript.md` under `bundled-skills/lang/`. JavaScript, Python, Rust, and Solidity each declare only their canonical language; TypeScript declares `languages: ["typescript", "tsx"]`. `bundled-skills/domain/` ships empty. A bundled skill failing validation is still recoverable `skill_invalid` (warn, skip, disclose) — a packaging bug must not brick review.
-- Repo-local skills are `.codegenie/skills/**/*.md` read from the working copy. Per the policy-load-revision rule in Trust Boundaries, the loader never resolves these through git at the reviewed head; if the PR under review modifies `.codegenie/skills/` or `codegenie.toml`, surfacing that as a planner risk signal is the dossier's job (`components/review_pipeline.md`) — the loader's only obligation is to read the trusted checkout.
-- `extraSkillPaths` entries are files or directories; directories are walked for `*.md`. The config loader has already enforced trust partitioning (repo-config values outside the repo root were ignored with a warning); the loader re-checks repo-sourced entries against `repoRoot` containment as defense in depth.
+- The review runner supplies Markdown from `.codegenie/skills/` at the base revision. Policy changes appear in the planner dossier and report. For evals, the supplied repository skill text comes from the fixture checkout.
+- `extraSkillPaths` entries are files or directories. Directories are walked for `*.md`. Repository config cannot set these paths; the loader retains a defensive containment check for repo-sourced entries.
 - Discovery order within each source is deterministic: lexicographic by repo-relative (or absolute) path. The resulting `skills` array order is the registry's load order and the tiebreaker for duplicate-id handling.
 - Skill loading happens once per run during startup, before the pipeline starts; all its events carry stage `0`.
 
@@ -868,7 +869,7 @@ Skill loader:
 - `skills_section_parsing`: a skill with all five sections, lower-level headings inside sections, content before the first H1, an unknown H1, and duplicate `# Checks` headings parses into the expected `sections` map (duplicates concatenated, preamble and unknown sections excluded).
 - `skills_guidance_required`: a Purpose-only skill is `skill_invalid`; a skill with only `False Positives` loads with a missing-Checks warning.
 - `skills_duplicate_id_later_loses`: a repo-local skill reusing a bundled id is skipped as `skill_invalid`; the bundled skill remains; an extra-path duplicate of a repo id likewise loses.
-- `skills_trusted_checkout_only`: with a worktree whose `.codegenie/skills/` differs from the reviewed head revision's version, the loader returns the working-copy content and performs no git reads.
+- Repository policy fixtures prove that a dirty skill is ignored and that a base skill still loads after the reviewed branch deletes it.
 - `skills_extra_path_containment`: a repo-config-sourced extra path resolving outside `repoRoot` is rejected as a `skill_invalid` failure.
 - `skills_content_sha_stability`: byte-identical files produce identical `contentSha`; a one-char edit changes it.
 

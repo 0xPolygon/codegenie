@@ -31,6 +31,7 @@ describe("Phase 4 skills, lenses, and prompts", () => {
     const harness = phase4Harness();
     const result = await loadSkills({
       repoRoot: tempDir(),
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger: harness.logger,
       telemetry: harness.telemetry
@@ -61,35 +62,32 @@ describe("Phase 4 skills, lenses, and prompts", () => {
     const repoRoot = tempDir();
     const skillsRoot = path.join(repoRoot, ".codegenie", "skills");
     mkdirSync(skillsRoot, { recursive: true });
-    writeFileSync(path.join(skillsRoot, "bad.md"), "not frontmatter\n# Checks\n- no metadata\n");
-    writeFileSync(
-      path.join(skillsRoot, "duplicate.md"),
-      skillMarkdown({
-        id: "core/tests",
-        title: "Duplicate tests",
-        lenses: ["core/tests"],
-        checks: "- duplicate should lose to bundled"
-      })
-    );
-    writeFileSync(
-      path.join(skillsRoot, "valid.md"),
-      skillMarkdown({
-        id: "team/security",
-        title: "Team security",
-        lenses: ["team/security"],
-        checks: "- Validate authorization and tenant boundaries."
-      })
-    );
+    writeFileSync(path.join(skillsRoot, "dirty.md"), skillMarkdown({
+      id: "team/dirty", title: "Working-tree skill", lenses: ["team/dirty"], checks: "- Working-tree only"
+    }));
 
     const harness = phase4Harness();
     const result = await loadSkills({
       repoRoot,
+      repoSkillFiles: [
+        { path: ".codegenie/skills/bad.md", content: "not frontmatter\n# Checks\n- no metadata\n" },
+        { path: ".codegenie/skills/duplicate.md", content: skillMarkdown({
+          id: "core/tests", title: "Duplicate tests", lenses: ["core/tests"], checks: "- duplicate should lose to bundled"
+        }) },
+        { path: ".codegenie/skills/nested/valid.md", content: skillMarkdown({
+          id: "team/security", title: "Team security", lenses: ["team/security"], checks: "- Validate authorization and tenant boundaries."
+        }) }
+      ],
       extraSkillPaths: [],
       logger: harness.logger,
       telemetry: harness.telemetry
     });
 
-    expect(result.skills.some((skill) => skill.id === "team/security")).toBe(true);
+    expect(result.skills.find((skill) => skill.id === "team/security")).toMatchObject({
+      source: "repo", filePath: ".codegenie/skills/nested/valid.md"
+    });
+    expect(result.skills.find((skill) => skill.id === "core/tests")?.source).toBe("bundled");
+    expect(result.skills.some((skill) => skill.id === "team/dirty")).toBe(false);
     expect(result.failures.map((failure) => failure.reason)).toEqual(
       expect.arrayContaining([
         "missing YAML frontmatter",
@@ -101,11 +99,8 @@ describe("Phase 4 skills, lenses, and prompts", () => {
 
   it.each([["LF", "\n"], ["CRLF", "\r\n"]])("accepts %s block-list YAML frontmatter in repo skills", async (_name, newline) => {
     const repoRoot = tempDir();
-    const skillsRoot = path.join(repoRoot, ".codegenie", "skills");
-    mkdirSync(skillsRoot, { recursive: true });
-    writeFileSync(
-      path.join(skillsRoot, "block-list.md"),
-      `---
+    const filePath = ".codegenie/skills/block-list.md";
+    const content = `---
 id: team/block-list
 title: Block List Skill
 lenses:
@@ -124,12 +119,12 @@ Exercise normal YAML list frontmatter.
 # Checks
 
 - Validate block-list frontmatter parses.
-`.replace(/\n/gu, newline)
-    );
+`.replace(/\n/gu, newline);
 
     const harness = phase4Harness();
     const result = await loadSkills({
       repoRoot,
+      repoSkillFiles: [{ path: filePath, content }],
       extraSkillPaths: [],
       logger: harness.logger,
       telemetry: harness.telemetry
@@ -142,13 +137,11 @@ Exercise normal YAML list frontmatter.
       categories: ["correctness"],
       sections: { checks: "- Validate block-list frontmatter parses." }
     });
-    expect(result.failures.map((failure) => failure.filePath)).not.toContain(path.join(skillsRoot, "block-list.md"));
+    expect(result.failures.map((failure) => failure.filePath)).not.toContain(filePath);
   });
 
   it.each(["`", "~"])("preserves section-like lines inside %s code fences", async (marker) => {
     const repoRoot = tempDir();
-    const skillsRoot = path.join(repoRoot, ".codegenie", "skills");
-    mkdirSync(skillsRoot, { recursive: true });
     const fence = marker.repeat(4);
     const checks = [
       "- Check the example:",
@@ -159,15 +152,18 @@ Exercise normal YAML list frontmatter.
       fence,
       "- Keep reviewing after the example."
     ].join("\n");
-    writeFileSync(path.join(skillsRoot, "fenced.md"), skillMarkdown({
+    const content = skillMarkdown({
       id: "team/fenced",
       title: "Fenced skill",
       lenses: ["team/fenced"],
       checks: `${checks}\n\n# False Positives\n\nSkip harmless cases.`
-    }));
+    });
 
     const harness = phase4Harness();
-    const result = await loadSkills({ repoRoot, extraSkillPaths: [], logger: harness.logger, telemetry: harness.telemetry });
+    const result = await loadSkills({
+      repoRoot, repoSkillFiles: [{ path: ".codegenie/skills/fenced.md", content }], extraSkillPaths: [],
+      logger: harness.logger, telemetry: harness.telemetry
+    });
 
     expect(result.failures).toEqual([]);
     expect(result.skills.find((skill) => skill.id === "team/fenced")?.sections).toMatchObject({
@@ -180,6 +176,7 @@ Exercise normal YAML list frontmatter.
     const harness = phase4Harness();
     const { skills } = await loadSkills({
       repoRoot: tempDir(),
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger: harness.logger,
       telemetry: harness.telemetry
@@ -220,6 +217,7 @@ Exercise normal YAML list frontmatter.
     const harness = phase4Harness();
     const { skills } = await loadSkills({
       repoRoot: tempDir(),
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger: harness.logger,
       telemetry: harness.telemetry
@@ -253,6 +251,7 @@ Exercise normal YAML list frontmatter.
 
     const refused = await loadSkills({
       repoRoot,
+      repoSkillFiles: [],
       extraSkillPaths: [{ path: path.join(outside, "escape.md"), source: "repo-config" }],
       logger: harness.logger,
       telemetry: harness.telemetry
@@ -263,13 +262,31 @@ Exercise normal YAML list frontmatter.
     );
 
     // The same path from a trusted user-scoped source loads normally.
+    const userHarness = phase4Harness();
     const allowed = await loadSkills({
       repoRoot,
+      repoSkillFiles: [],
       extraSkillPaths: [{ path: path.join(outside, "escape.md"), source: "user" }],
-      logger: phase4Harness().logger,
-      telemetry: phase4Harness().telemetry
+      logger: userHarness.logger,
+      telemetry: userHarness.telemetry
     });
     expect(allowed.skills.some((skill) => skill.id === "evil/injected")).toBe(true);
+    expect(userHarness.events).not.toContainEqual(expect.objectContaining({ message: "extra_skill_path_in_repository" }));
+  });
+
+  it("warns and loads user extra skills inside the repository from disk", async () => {
+    const repoRoot = tempDir();
+    const extra = path.join(repoRoot, "local.md");
+    writeFileSync(extra, skillMarkdown({ id: "team/extra", title: "Local skill", lenses: ["team/extra"], checks: "- local guidance" }));
+    const harness = phase4Harness();
+    const result = await loadSkills({
+      repoRoot, repoSkillFiles: [], extraSkillPaths: [extra], logger: harness.logger, telemetry: harness.telemetry
+    });
+    expect(result.skills.find((skill) => skill.id === "team/extra")).toMatchObject({ source: "extra", filePath: extra });
+    expect(harness.events).toContainEqual(expect.objectContaining({
+      level: "warn", message: "extra_skill_path_in_repository", data: expect.objectContaining({ filePath: extra })
+    }));
+    expect(harness.logs).toContainEqual(expect.objectContaining({ event: "extra_skill_path_in_repository" }));
   });
 
   it("projects skills deterministically and fences hostile backtick content safely", () => {

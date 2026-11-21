@@ -2,11 +2,11 @@
 # collaborator comments "codegenie review" (or "codegenie review <model>" to
 # pick one of the models listed below for that run).
 #
-# Trust model: `pull_request` runs check out the PR's BASE revision, and
-# `issue_comment` runs check out the default branch, so codegenie's config and
-# skills always come from trusted code; the PR head is fetched by `--pr` as
-# untrusted data. Uses `pull_request`, never `pull_request_target`: fork PRs
-# run without secrets and skip cleanly — the comment trigger serves them.
+# `pull_request` runs check out the PR base, and `issue_comment` runs check
+# out the default branch. On either trigger, `--pr` reads codegenie.toml and
+# repository skills from the PR base commit and fetches PR head as review data.
+# The automatic trigger uses `pull_request`. Fork PRs run without secrets
+# and skip cleanly. The comment trigger serves them.
 #
 # All trigger authorization (exact phrase match, live write-permission check,
 # model-alias lookup) happens inside codegenie — no gating logic in YAML.

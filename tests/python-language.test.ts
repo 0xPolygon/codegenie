@@ -46,6 +46,7 @@ describe("Plan 98 Python vertical slice", () => {
     const index = await buildRepositoryIndex(resolved, kept, facts, defaultConfig, telemetry);
     const { skills, failures } = await loadSkills({
       repoRoot: repo,
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger: silentLogger(),
       telemetry
@@ -269,6 +270,7 @@ describe("Plan 98 Python vertical slice", () => {
   it("holds every Python skill check to an independently parsed owner matrix", async () => {
     const { skills } = await loadSkills({
       repoRoot: process.cwd(),
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger: silentLogger(),
       telemetry: nullTelemetry()

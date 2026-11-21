@@ -765,8 +765,8 @@ Responsibilities:
 - Parse `codegenie review` arguments, including target selection (defaulting to current branch vs resolved base when no target is passed), `--pr`, single positional branch shorthand, `--branch`, `--head <head-ref> --base <base-ref>`, the `<base-ref>...<head-ref>` shorthand, positional commit/range review, `--depth`, repeatable `--lens`, `--provider`, `--model`, `--reasoning`, `--format markdown|json`, `--post-github-comments`, `--ci`, `--no-progress`, and `--cache`/`--no-cache` (overriding `cache.enabled` per run).
 - Parse `codegenie provider ...` arguments and dispatch to the provider command layer.
 - Enforce flag rules: `--pr`, `--branch`, `--head`, and positional commits are mutually exclusive — passing more than one is `invalid_args`. `--head` requires `--base`; `--base` is allowed for branch, explicit head/base, and default-branch review only. `--post-github-comments` outside `--pr` mode is `invalid_args`.
-- Load `codegenie.toml`.
-- Merge review config from defaults, user-scoped config, repo config, the four provider/home environment variables, and CLI flags, while enforcing the trust partition.
+- Start the run with defaults, user-scoped config, provider settings, environment variables, and CLI flags. After Stage 1 resolves the input, read `codegenie.toml` at the base revision and merge it below the environment and CLI layers.
+- Adopt the effective config before diff filtering. Update the run metadata and recompute the budget and hard deadline from the original start time.
 - Validate config with `zod`.
 - Start a run and create `.codegenie/runs/<run-id>/` only when telemetry is enabled.
 - Render interactive progress on stderr only when enabled and attached to a TTY; never mix progress text into stdout Markdown/JSON output.
@@ -796,8 +796,7 @@ Per-key config sources (normative; Trust Boundaries defers to this table):
 | Keys | Allowed sources |
 | --- | --- |
 | `review.depth`, `review.maxFindings`, `review.softCommentCap`, `review.budgetBoost`, `review.maxTime`, `git.baseBranch`, `lenses.enabled` / `lenses.disabled`, `classification.pathRules` (incl. labels) | Repo `codegenie.toml`, user-scoped config, or CLI |
-| `telemetry.enabled` | Repo `codegenie.toml` or user-scoped config |
-| `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.perPassTimeoutMs`, `review.maxBudgetTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.logLevel`, `telemetry.debugTrace`, `telemetry.runDir`, `telemetry.retainRuns`, `eval.*` | User-scoped config or CLI only |
+| `review.verify`, `review.minSeverity`, `review.minConfidence`, `review.minInlineConfidence`, `review.perPassTimeoutMs`, `review.maxBudgetTokens`, `review.maxModelCalls`, `review.concurrency`, `llm.*`, `lenses.extraSkillPaths`, `cache.*`, `telemetry.*`, `eval.*` | User-scoped config or CLI only |
 
 The loader enforces this via per-key source tracking; repo values for user-scope keys are ignored with a warning.
 
@@ -981,8 +980,8 @@ Shallow and partial clones are detected via `git rev-parse --is-shallow-reposito
 `--branch --base` flow:
 
 1. Resolve the review branch locally.
-2. Resolve the base branch in precedence order: CLI `--base`, `codegenie.toml` `git.baseBranch`, existing `master`, existing `main`.
-3. If no base branch resolves, fail with a clear error asking the user to pass `--base` or configure `git.baseBranch`.
+2. Resolve CLI `--base`, then user `git.baseBranch`, then the first existing `master` or `main`. Follow a redirect in the default branch's committed `codegenie.toml` once.
+3. If the fallback has no base, or valid config at the reviewed branch tip names a different base, require `--base` or user `git.baseBranch`. Checkout-policy evals omit the committed-config checks in the default fallback.
 4. Compute merge base between the base branch and branch head.
 5. Diff `mergeBase..branchHead`.
 6. Collect commit metadata with `git log mergeBase..branchHead`.
@@ -1147,7 +1146,7 @@ Tool results must be capped by count and characters, include line numbers, prefe
 Responsibilities:
 
 - Load bundled Markdown skills from the package's `bundled-skills/` directory.
-- Load repo-local Markdown skills from `.codegenie/skills/`.
+- Parse repo-local Markdown skills supplied from `.codegenie/skills/` at the resolved base revision.
 - Validate skill frontmatter and content.
 - Register user-facing lenses.
 - Map lenses to one or more skills.
@@ -1912,7 +1911,7 @@ Repository tools path containment (single chokepoint in the RepositoryTools laye
 
 Config trust partitioning: the per-key config-source table in CLI And Config is normative. Repo `codegenie.toml` may set only the repo-settable safe keys listed there, including the positive-minute `review.maxTime` run bound; every other key takes effect only with user-level opt-in — a CLI flag, `~/.codegenie/settings.json`, or the user-scoped config file `~/.codegenie/config.toml` (all under `CODEGENIE_HOME`) — and repo-config values for user-scope keys are ignored with a warning. Repo-config-relative paths are constrained to the repo root.
 
-Policy load revision: `codegenie.toml` and `.codegenie/skills/` always load from the trusted local checkout (the user's working copy), never from the PR head revision. If the PR under review modifies policy files (config or skills), that is surfaced to the planner as a risk signal and noted in the report.
+Policy load revision: the review runner reads `codegenie.toml` and `.codegenie/skills/**/*.md` through Git at the resolved base tip. Changes in the diff are surfaced to the planner and noted in the report. The empty tree supplies no repository policy. An unreadable tree or malformed base config fails the run. User extra skills stay on disk; evals explicitly use checkout policy.
 
 Subprocess hygiene (GitClient/GitHubClient/tools contract): never invoke through a shell; always pass `--` before untrusted positional path/ref arguments; reject argument values matching `^-`; prefer SHAs over ref names when both are available (GitHub-supplied ref names are display-only).
 

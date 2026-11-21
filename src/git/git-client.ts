@@ -106,13 +106,13 @@ export function createGitClient(repoRoot: string, opts: CreateGitClientOptions =
 
     async lsTree(ref: string, glob?: string): Promise<string[]> {
       assertSafeRef(ref);
-      const args = ["ls-tree", "-r", "--name-only", ref, "--"];
+      const args = ["ls-tree", "-r", "-z", "--name-only", ref, "--"];
       if (glob !== undefined) {
         assertSafeGlob(glob);
         args.push(`:(glob)${glob}`);
       }
-      const stdout = await runGit(repoRoot, args, { errorCode: "git_ref_missing" });
-      return stdout.split("\n").filter(Boolean);
+      const stdout = await runGit(repoRoot, args, { stripFinalNewline: false, errorCode: "git_ref_missing" });
+      return splitNul(stdout);
     },
 
     async lsFiles(paths: string[]): Promise<string[]> {

@@ -357,10 +357,9 @@ For a single positional CLI target (`codegenie review <target>`), the command re
 1. Resolve the review branch: `refs/heads/<name>` first, then `refs/remotes/<remote>/<name>` (remote order: `origin` first, remaining remotes sorted by name). Unresolvable → `git_ref_missing`.
 2. Resolve the base branch in precedence order, stopping at the first level that yields a resolvable branch:
    1. CLI `--base <name>`.
-   2. `codegenie.toml` `git.baseBranch`.
-   3. An existing `master` branch (local or remote, same lookup order as step 1).
-   4. An existing `main` branch (local or remote).
-   Each candidate name uses the same local-then-remote lookup. An explicitly passed or configured base that does not resolve fails immediately with `git_base_branch_unresolved` naming the candidate; exhausting the chain fails with `git_base_branch_unresolved` asking the user to pass `--base` or configure `git.baseBranch`.
+   2. `git.baseBranch` in user config.
+   3. The first existing `master` or `main` (local or remote). Follow a redirect in that branch's committed `codegenie.toml` once.
+   Each candidate uses the same local-then-remote lookup. An unresolvable named base fails with `git_base_branch_unresolved`. If the default fallback has no branch or the reviewed branch's valid config names a different base, require confirmation with `--base` or user config. Checkout-policy evals omit both committed-config checks in the default fallback.
 3. `mergeBase = mergeBase(baseSha, branchHeadSha)` (merge-base semantics so the diff matches PR-style changes).
 4. `rawDiff = diff(mergeBase, branchHeadSha)` with the fixed flags.
 5. `commits = log(mergeBase..branchHeadSha)`.
@@ -555,7 +554,7 @@ It returns the kept `DiffFile[]` and exactly one `FileFilterDecision` per change
 
 Deleted-file rule: deleted reviewable source/test/config/migration/docs files keep their ordinary processing mode (review of removed behavior happens old-side); deleted generated/vendor/lock/binary files match ordinary skip rules. When deleted-file content cannot be read at base, facts degrade: `degraded = { reason: "base content unavailable for deleted file" }` rather than pretending normal classification.
 
-Policy-file change signal: when the diff touches `codegenie.toml` or `.codegenie/skills/**`, the classifier attaches the label `policy-change` with config-source provenance. Policy itself always loads from the trusted local checkout (Trust Boundaries; loading is the config component's job) — this label is how the modification is surfaced to the planner as a risk signal and noted in the report.
+The classifier attaches `policy-change` with config-source provenance when the diff touches `codegenie.toml` or `.codegenie/skills/**/*.md`. The planner receives these paths as a risk signal. The report names them and discloses that the run used policy from the resolved base revision.
 
 #### Configured Path Rules
 

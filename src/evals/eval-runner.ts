@@ -13,6 +13,7 @@ import {
 } from "../config/schema.js";
 import { createGitClient } from "../git/git-client.js";
 import { runReview } from "../pipeline/review-runner.js";
+import { readWorkingTreePolicy } from "../repo/repository-policy.js";
 import type {
   CodegenieConfig,
   EvalArtifacts,
@@ -476,7 +477,7 @@ async function runLiveCase(
       });
     }
     const actualRepoRoot = await git.repoRoot();
-    const repoLayer = applyRepoConfigLayer(options.config, actualRepoRoot);
+    const { repositoryPolicy, repoLayer } = loadEvalRepositoryPolicy(actualRepoRoot, options.config);
     const caseConfig = applyCaseReviewConfig(repoLayer.config, entry.evalCase, options.cacheOverride);
     errorConfig = caseConfig.config;
     effectiveConfig = evalEffectiveConfig(caseConfig.config);
@@ -489,6 +490,7 @@ async function runLiveCase(
       format: "markdown",
       postGithubComments: false,
       configWarnings: repoLayer.warnings,
+      repositoryPolicy,
       onRunStart: (run) => {
         reviewRunId = run.runId;
       },
@@ -554,7 +556,7 @@ async function runRepeatedLiveCase(
       });
     }
     const actualRepoRoot = await git.repoRoot();
-    const repoLayer = applyRepoConfigLayer(options.config, actualRepoRoot);
+    const { repositoryPolicy, repoLayer } = loadEvalRepositoryPolicy(actualRepoRoot, options.config);
     const caseConfig = applyCaseReviewConfig(repoLayer.config, entry.evalCase, options.cacheOverride);
     errorConfig = caseConfig.config;
     effectiveConfig = evalEffectiveConfig(caseConfig.config);
@@ -579,6 +581,7 @@ async function runRepeatedLiveCase(
           format: "markdown",
           postGithubComments: false,
           configWarnings: repoLayer.warnings,
+          repositoryPolicy,
           writeOutput: (chunk) => {
             reviewOutput += chunk;
           }
@@ -622,6 +625,13 @@ async function runRepeatedLiveCase(
   } catch (error) {
     return writeErroredCase(allocated, entry, errorConfig, codegenieRuntime, effectiveConfig, startedAt, error, "live", undefined, errorCache);
   }
+}
+
+function loadEvalRepositoryPolicy(repoRoot: string, config: CodegenieConfig) {
+  const repositoryPolicy = readWorkingTreePolicy(repoRoot);
+  const file = repositoryPolicy.config;
+  const repoLayer = applyRepoConfigLayer(config, file === undefined ? undefined : { text: file.content, label: path.join(repoRoot, file.path) });
+  return { repositoryPolicy, repoLayer };
 }
 
 async function scoreFailedDraw(evalCase: EvalCase, telemetryDir: string, error: unknown): Promise<{ score: EvalScore; artifacts?: EvalArtifacts }> {

@@ -8,6 +8,16 @@ import { CodegenieError } from "../src/util/errors.js";
 import { commitAll, git, initRepo, writeRepoFile } from "./helpers/git.js";
 
 describe("git client", () => {
+  it("lists literal paths that Git would otherwise quote", async () => {
+    const repo = initRepo();
+    const name = "notes/évidence.md";
+    writeRepoFile(repo, name, "evidence\n");
+    const revision = commitAll(repo, "non-ASCII path");
+    const client = createGitClient(repo);
+    await expect(client.lsTree(revision)).resolves.toEqual([name]);
+    await expect(client.catFile(revision, name)).resolves.toBe("evidence\n");
+  });
+
   it("rejects option-like refs and paths before spawning risky commands", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "file.txt", "base\n");

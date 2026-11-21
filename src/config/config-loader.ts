@@ -1,5 +1,4 @@
 import { existsSync, readFileSync } from "node:fs";
-import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import {
   codegenieConfigSchema,
@@ -38,12 +37,13 @@ export type CliConfigOverrides = {
 };
 
 export type LoadConfigOptions = {
-  repoRoot: string;
   homeOverride?: string;
   env?: NodeJS.ProcessEnv;
   cli?: CliConfigOverrides;
-  loadRepoConfig?: boolean;
+  repoConfig?: RepoConfigText;
 };
+
+export type RepoConfigText = { text: string; label: string };
 
 export type LoadedConfig = {
   config: CodegenieConfig;
@@ -89,13 +89,12 @@ const CREDENTIAL_KEY_PATTERN = /(?:api[_-]?key|apikey|secret|token|password|pass
 
 export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
   const env = opts.env ?? process.env;
-  const repoRoot = path.resolve(opts.repoRoot);
   const paths = getCodegeniePaths(opts.homeOverride, env);
   const warnings: ConfigWarning[] = [];
   const sources = defaultSources();
   const config = structuredClone(defaultConfig) as CodegenieConfig;
 
-  const userConfig = readConfigIfPresent(paths.configTomlPath, "user-config");
+  const userConfig = readUserConfigIfPresent(paths.configTomlPath);
   if (userConfig) {
     applyRawConfig(config, userConfig, "user-config", sources);
   }
@@ -118,14 +117,7 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
     sources["review.depth"] = "provider-settings";
   }
 
-  if (opts.loadRepoConfig !== false) {
-    const repoConfigPath = path.join(repoRoot, "codegenie.toml");
-    const repoConfig = readConfigIfPresent(repoConfigPath, "repo-config");
-    if (repoConfig) {
-      const safeRepoConfig = filterRepoConfig(repoConfig, warnings);
-      applyRawConfig(config, safeRepoConfig, "repo-config", sources);
-    }
-  }
+  mergeRepoConfig(config, opts.repoConfig, warnings, sources);
 
   applyEnvironment(config, env, sources);
   applyCliOverrides(config, opts.cli ?? {}, sources);
@@ -147,16 +139,11 @@ export function loadConfig(opts: LoadConfigOptions): LoadedConfig {
 
 export function applyRepoConfigLayer(
   baseConfig: CodegenieConfig,
-  repoRoot: string
+  repoConfig: RepoConfigText | undefined
 ): { config: CodegenieConfig; warnings: ConfigWarning[] } {
   const config = structuredClone(baseConfig) as CodegenieConfig;
   const warnings: ConfigWarning[] = [];
-  const sources = defaultSources();
-  const repoConfig = readConfigIfPresent(path.join(path.resolve(repoRoot), "codegenie.toml"), "repo-config");
-  if (repoConfig) {
-    const safeRepoConfig = filterRepoConfig(repoConfig, warnings);
-    applyRawConfig(config, safeRepoConfig, "repo-config", sources);
-  }
+  mergeRepoConfig(config, repoConfig, warnings, defaultSources());
 
   const validated = codegenieConfigSchema.safeParse(config);
   if (!validated.success) {
@@ -168,29 +155,50 @@ export function applyRepoConfigLayer(
   return { config: validated.data as CodegenieConfig, warnings };
 }
 
-function readConfigIfPresent(filePath: string, source: ConfigSource): RawCodegenieConfig | undefined {
+function mergeRepoConfig(config: CodegenieConfig, repoConfig: RepoConfigText | undefined, warnings: ConfigWarning[], sources: Record<string, ConfigSource>): void {
+  if (repoConfig !== undefined) {
+    applyRawConfig(config, filterRepoConfig(parseRepoConfigText(repoConfig), warnings), "repo-config", sources);
+  }
+}
+
+export function parseRepoConfigText(repoConfig: RepoConfigText): RawCodegenieConfig {
+  return parseConfigText(repoConfig, true);
+}
+
+function readUserConfigIfPresent(filePath: string): RawCodegenieConfig | undefined {
   if (!existsSync(filePath)) {
     return undefined;
   }
+  let text: string;
+  try {
+    text = readFileSync(filePath, "utf8");
+  } catch (cause) {
+    throw new CodegenieError("config_error", `failed to read config file at ${filePath}`, {
+      context: { path: filePath }, cause
+    });
+  }
+  return parseConfigText({ text, label: filePath }, false);
+}
 
+function parseConfigText({ text, label }: RepoConfigText, repo: boolean): RawCodegenieConfig {
   let parsed: unknown;
   try {
-    parsed = parseToml(readFileSync(filePath, "utf8"));
+    parsed = parseToml(text);
   } catch (cause) {
-    throw new CodegenieError("config_error", `failed to parse config file at ${filePath}`, {
-      context: { path: filePath },
+    throw new CodegenieError("config_error", `failed to parse config file at ${label}`, {
+      context: { path: label },
       cause
     });
   }
 
-  if (source === "repo-config") {
-    assertNoCredentialKeys(parsed, filePath);
+  if (repo) {
+    assertNoCredentialKeys(parsed, label);
   }
 
   const result = rawConfigSchema.safeParse(parsed);
   if (!result.success) {
-    throw new CodegenieError("config_error", `invalid config file at ${filePath}`, {
-      context: { path: filePath, issues: result.error.issues }
+    throw new CodegenieError("config_error", `invalid config file at ${label}`, {
+      context: { path: label, issues: result.error.issues }
     });
   }
   return result.data;
@@ -413,17 +421,7 @@ function filterRepoConfig(raw: RawCodegenieConfig, warnings: ConfigWarning[]): R
   warnTopLevelRepoSection(warnings, raw.github, "github");
   warnTopLevelRepoSection(warnings, raw.llm, "llm");
   warnTopLevelRepoSection(warnings, raw.cache, "cache");
-  if (raw.telemetry) {
-    safe.telemetry = {};
-    if (raw.telemetry.enabled !== undefined) {
-      safe.telemetry.enabled = raw.telemetry.enabled;
-    }
-    for (const key of Object.keys(raw.telemetry)) {
-      if (key !== "enabled") {
-        warnIgnoredRepoKey(warnings, `telemetry.${key}`);
-      }
-    }
-  }
+  warnTopLevelRepoSection(warnings, raw.telemetry, "telemetry");
   warnTopLevelRepoSection(warnings, raw.eval, "eval");
 
   return safe;
@@ -556,7 +554,7 @@ function assertNoCredentialKeys(input: unknown, filePath: string, trail: string[
   for (const [key, value] of Object.entries(input)) {
     const nextTrail = [...trail, key];
     if (CREDENTIAL_KEY_PATTERN.test(key)) {
-      throw new CodegenieError("config_error", "repo codegenie.toml cannot contain credential-bearing fields", {
+      throw new CodegenieError("config_error", `repo codegenie.toml cannot contain credential-bearing fields at ${filePath}`, {
         context: { path: filePath, key: nextTrail.join(".") }
       });
     }

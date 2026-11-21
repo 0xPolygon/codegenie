@@ -1,4 +1,5 @@
-import { deriveReviewHealth, reviewDiagnostic } from "../util/review-health.js";
+import { deriveReviewHealth, reviewDiagnostic, safeDiagnosticLine } from "../util/review-health.js";
+import { parseRepoConfigText, type RepoConfigText } from "../config/config-loader.js";
 import path from "node:path";
 import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { summarizeAdaptiveReviews } from "../util/adaptive-review.js";
@@ -8,6 +9,7 @@ import { parseDiff } from "../git/diff-parser.js";
 import { classifyChangedFiles, filterDiffFiles } from "../git/file-classifier.js";
 import { createGitClient } from "../git/git-client.js";
 import { SourceResolver } from "../repo/source-resolver.js";
+import { isRepositoryPolicyPath, readBaseRevisionPolicy, type RepositoryPolicy } from "../repo/repository-policy.js";
 import { cleanupPullRequestRefs, resolveReviewCommandTarget } from "../git/review-input-resolver.js";
 import { scrubGitHubSecrets } from "../github/comment-sanitizer.js";
 import { maybePublishToGitHub } from "../github/publisher.js";
@@ -65,6 +67,7 @@ import { isDisclosableCoverageReason, uniqueDisclosableCoverageReasons } from ".
 import { sha256Hex } from "../util/hashing.js";
 import { scaleOptionalBudgetValue } from "../util/budget.js";
 import { scheduleLongTimeout } from "../util/long-timeout.js";
+import { inlineCode } from "../util/markdown.js";
 import { codegenieVersionInfo } from "../util/version-info.js";
 import { STAGE_LABELS } from "../review-stages.js";
 
@@ -74,6 +77,8 @@ type RunReviewOverrides = {
   format?: OutputFormat;
   postGithubComments?: boolean;
   configWarnings?: ConfigWarning[];
+  finalizeConfig?: (repoConfig: RepoConfigText | undefined) => { config: CodegenieConfig; warnings: ConfigWarning[] };
+  repositoryPolicy?: RepositoryPolicy;
   writeOutput?: (text: string) => void;
   runner?: LlmRunner;
   piAdapter?: PiAiAdapter;
@@ -88,8 +93,9 @@ type RunContext = {
   readonly currentStage: ReviewStage | 0;
   telemetry: TelemetryRecorder;
   logger: ReturnType<typeof createRunTelemetry>["logger"];
-  budget: BudgetLedger;
+  readonly budget: BudgetLedger;
   abort: AbortController;
+  adoptConfig(config: CodegenieConfig): void;
   addCleanupTask(task: () => Promise<void>): void;
   finalize(outcome: RunOutcome): Promise<void>;
 };
@@ -131,6 +137,24 @@ export async function runReview(
     const resolved = await resolveInput(input, config, run.telemetry, repoRoot, overrides);
     throwIfHardAborted(run);
     await run.telemetry.writeArtifact("resolved-input.json", summarizeResolvedInput(resolved));
+    const policy = overrides.repositoryPolicy ?? await readBaseRevisionPolicy(resolved, createGitClient(repoRoot));
+    run.telemetry.event({
+      stage: 1, level: "info", message: "repository_policy_loaded",
+      data: { origin: policy.origin, revision: policy.revision, config: policy.config !== undefined, skillFiles: policy.skillFiles.length }
+    });
+    const repoConfig = policy.config === undefined ? undefined : {
+      text: policy.config.content,
+      label: policy.revision === undefined ? path.join(repoRoot, policy.config.path) : `${policy.revision}:${policy.config.path}`
+    };
+    if (overrides.finalizeConfig !== undefined) {
+      const loaded = overrides.finalizeConfig(repoConfig);
+      config = loaded.config;
+      run.adoptConfig(config);
+      emitConfigWarnings(loaded.warnings, run.runId, run.logger, run.telemetry, 1);
+    } else if (repoConfig !== undefined && policy.origin === "base-revision") {
+      parseRepoConfigText(repoConfig);
+    }
+    throwIfHardAborted(run);
     run.telemetry.event({
       stage: 1,
       level: "info",
@@ -148,6 +172,7 @@ export async function runReview(
       data: { name: "diff_parsing_filtering" }
     });
     const diff = parseDiff(resolved.rawDiff);
+    const policyReason = repositoryPolicyCoverageReason(diff.files, policy);
     await run.telemetry.writeArtifact("diff.json", diff);
     run.telemetry.event({
       stage: 2,
@@ -174,9 +199,9 @@ export async function runReview(
     });
     overrides.onInventory?.({ filesChanged: diff.files.length, keptFiles: kept.length });
     if (isZeroWork(diff.files, kept)) {
-      await validateExplicitCliLensesForZeroWork(config, repoRoot, run);
+      await validateExplicitCliLensesForZeroWork(config, repoRoot, run, policy.skillFiles);
     }
-    const zeroWork = await maybeZeroWork(diff.files, kept, decisions, resolved, config, run, overrides);
+    const zeroWork = await maybeZeroWork(diff.files, kept, decisions, resolved, config, run, overrides, policyReason);
     if (zeroWork) {
       await run.finalize({ status: "completed_full", exitCode: 0 });
       return zeroWork;
@@ -205,7 +230,7 @@ export async function runReview(
     });
     const repoIndex = await buildRepositoryIndex(resolved, kept, fileFacts, config, run.telemetry);
     throwIfHardAborted(run);
-    const services = await createPipelineServices(config, repoRoot, resolved, run, overrides);
+    const services = await createPipelineServices(config, repoRoot, resolved, run, overrides, policy.skillFiles);
     const dossier = await buildPlannerDossier(resolved, kept, fileFacts, decisions, repoIndex, config, run.telemetry, {
       lenses: services.lenses,
       allFiles: diff.files
@@ -312,6 +337,7 @@ export async function runReview(
     });
     coverage.diagnostics = [...(coverage.diagnostics ?? []), ...(systemReview.diagnostics ?? [])];
     discloseSkillLoadFailures(coverage, services.skills, services.skillFailures);
+    if (policyReason !== undefined) coverage.reasons.push(policyReason);
     const repositoryPaths = await (await SourceResolver.create(resolved)).listFiles();
     const finalReview = await dedupeRankAndComposeReview(verified, plannerResult.plan, resolved, coverage, config, run.telemetry, {
       runner: services.runner,
@@ -438,6 +464,7 @@ async function startRun(
   repoRoot: string,
   overrides: RunReviewOverrides
 ): Promise<RunContext> {
+  const startedAt = Date.now();
   const runArtifactDir = overrides.runArtifactDir;
   const telemetryConfig = runArtifactDir
     ? {
@@ -474,13 +501,18 @@ async function startRun(
   });
   emitConfigWarnings(overrides.configWarnings ?? [], telemetry.runId, run.logger, telemetry);
   emitConcurrencyTuningEvent(config, telemetry);
-  const budget = new BudgetLedger(config, telemetry);
+  let budget = new BudgetLedger(config, telemetry, startedAt);
   const abort = new AbortController();
-  const hardTimeoutMs = config.review.maxTimeMs * 2;
-  const hardKillTimer = scheduleLongTimeout(
-    () => abort.abort(new CodegenieError("timeout", "review run exceeded hard timeout")),
-    hardTimeoutMs
-  );
+  const hardTimeout = () => abort.abort(new CodegenieError("timeout", "review run exceeded hard timeout"));
+  const armHardKillTimer = (maxTimeMs: number) => {
+    const remaining = maxTimeMs * 2 - (Date.now() - startedAt);
+    if (remaining <= 0) {
+      hardTimeout();
+      return undefined;
+    }
+    return scheduleLongTimeout(hardTimeout, remaining);
+  };
+  let hardKillTimer = armHardKillTimer(config.review.maxTimeMs);
   const cleanupTasks: Array<() => Promise<void>> = [];
   let finalized = false;
   return {
@@ -488,15 +520,28 @@ async function startRun(
     get currentStage() { return currentStage; },
     telemetry,
     logger: run.logger,
-    budget,
+    get budget() { return budget; },
     abort,
+    adoptConfig: (effectiveConfig) => {
+      if (currentStage !== 1 || budget.summary().usage.byStage.length > 0) {
+        throw new Error("review configuration must be adopted in stage 1 before model usage");
+      }
+      budget = new BudgetLedger(effectiveConfig, telemetry, startedAt);
+      hardKillTimer?.cancel();
+      hardKillTimer = armHardKillTimer(effectiveConfig.review.maxTimeMs);
+      run.updateReviewMetadata({
+        depth: effectiveConfig.review.depth,
+        budgetBoost: effectiveConfig.review.budgetBoost,
+        lenses: effectiveConfig.lenses.restrictTo ?? effectiveConfig.lenses.enabled
+      });
+    },
     addCleanupTask: (task) => {
       cleanupTasks.push(task);
     },
     finalize: async (outcome) => {
       if (!finalized) {
         finalized = true;
-        hardKillTimer.cancel();
+        hardKillTimer?.cancel();
         await runCleanupTasks(cleanupTasks, run.recorder);
         if (outcome.status === "failed") {
           telemetry.event({
@@ -571,19 +616,20 @@ function emitConfigWarnings(
   warnings: ConfigWarning[],
   runId: string,
   logger: ReturnType<typeof createRunTelemetry>["logger"],
-  telemetry: TelemetryRecorder
+  telemetry: TelemetryRecorder,
+  stage: ReviewStage | 0 = 0
 ): void {
   for (const warning of warnings) {
     const data = { source: warning.source, key: warning.key };
     logger.warn({
       runId,
-      stage: 0,
+      stage,
       event: "config_warning",
       message: warning.message,
       data
     });
     telemetry.event({
-      stage: 0,
+      stage,
       level: "warn",
       message: "config_warning",
       data: { ...data, message: warning.message }
@@ -773,7 +819,8 @@ async function createPipelineServices(
   repoRoot: string,
   resolved: ResolvedReviewInput,
   run: RunContext,
-  overrides: RunReviewOverrides
+  overrides: RunReviewOverrides,
+  repoSkillFiles: RepositoryPolicy["skillFiles"]
 ): Promise<{
   runner: LlmRunner;
   skills: Awaited<ReturnType<typeof loadSkills>>["skills"];
@@ -784,6 +831,7 @@ async function createPipelineServices(
 }> {
   const skillsResult = await loadSkills({
     repoRoot,
+    repoSkillFiles,
     extraSkillPaths: config.lenses.extraSkillPaths,
     logger: run.logger,
     telemetry: run.telemetry
@@ -807,13 +855,15 @@ async function createPipelineServices(
 async function validateExplicitCliLensesForZeroWork(
   config: CodegenieConfig,
   repoRoot: string,
-  run: RunContext
+  run: RunContext,
+  repoSkillFiles: RepositoryPolicy["skillFiles"]
 ): Promise<void> {
   if (config.lenses.restrictTo === undefined || config.lenses.restrictTo.length === 0) {
     return;
   }
   const skillsResult = await loadSkills({
     repoRoot,
+    repoSkillFiles,
     extraSkillPaths: config.lenses.extraSkillPaths,
     logger: run.logger,
     telemetry: run.telemetry
@@ -926,7 +976,11 @@ async function resolveInput(
   repoRoot: string,
   overrides: RunReviewOverrides
 ): Promise<ResolvedReviewInput> {
-  return resolveReviewCommandTarget(input, config, telemetry, { repoRoot, ...(overrides.github !== undefined ? { github: overrides.github } : {}) });
+  return resolveReviewCommandTarget(input, config, telemetry, {
+    repoRoot,
+    repositoryBaseBranch: overrides.repositoryPolicy?.origin !== "working-tree",
+    ...(overrides.github !== undefined ? { github: overrides.github } : {})
+  });
 }
 
 async function maybeZeroWork(
@@ -936,13 +990,15 @@ async function maybeZeroWork(
   resolved: ResolvedReviewInput,
   config: CodegenieConfig,
   run: RunContext,
-  overrides: RunReviewOverrides
+  overrides: RunReviewOverrides,
+  policyReason: string | undefined
 ): Promise<ReviewResult | undefined> {
   if (!isZeroWork(allFiles, kept)) {
     return undefined;
   }
   const totalHunks = allFiles.reduce((sum, file) => sum + file.hunks.length, 0);
   const reasons = zeroWorkReasons(allFiles, decisions);
+  if (policyReason !== undefined) reasons.push(policyReason);
   const coverage: RunCoverageStatus = {
     totalHunks,
     reviewedHunks: 0,
@@ -1206,6 +1262,21 @@ function discloseSkillLoadFailures(
   for (const lensId of droppedLensesFromFailures(skills, failures)) {
     coverage.reasons.push(`lens ${lensId} disabled: all skills declaring it failed to load`);
   }
+}
+
+function repositoryPolicyCoverageReason(files: DiffFile[], policy: RepositoryPolicy): string | undefined {
+  const changedPaths = [...new Set(files.flatMap((file) =>
+    file.status === "renamed" && file.oldPath !== undefined ? [file.oldPath, file.path] : [file.path]
+  ).filter(isRepositoryPolicyPath))].sort();
+  if (changedPaths.length === 0) return undefined;
+  const displayed = changedPaths.slice(0, 5).map((filePath) => inlineCode(safeDiagnosticLine(filePath)));
+  if (changedPaths.length > 5) displayed.push(`+${changedPaths.length - 5} more`);
+  const prefix = `review policy files changed in this diff (${displayed.join(", ")}): `;
+  if (policy.origin === "working-tree") return `${prefix}this eval used the policy from its working tree`;
+  if (policy.origin === "none") return `${prefix}this review has no base revision and used default policy, so the changes did not apply`;
+  const base = policy.revision.slice(0, 12);
+  const empty = policy.config === undefined && policy.skillFiles.length === 0 ? ". The base contained no repository policy." : "";
+  return `${prefix}this review used the policy from base ${base}, so the changes did not apply${empty}`;
 }
 
 function diffHunkCount(files: DiffFile[]): number {
@@ -1474,7 +1545,6 @@ function isToolsHost(tools: unknown): tools is RepositoryToolsHost {
 }
 
 export class BudgetLedger {
-  private startedAt = Date.now();
   private modelCalls = 0;
   private totalTokens = 0;
   private costUSD = 0;
@@ -1491,7 +1561,8 @@ export class BudgetLedger {
 
   constructor(
     private readonly config: CodegenieConfig,
-    private readonly telemetry?: TelemetryRecorder
+    private readonly telemetry?: TelemetryRecorder,
+    private readonly startedAt = Date.now()
   ) {
     this.effectiveMaxModelCalls = scaleOptionalBudgetValue(config.review.maxModelCalls, config.review.budgetBoost);
     this.effectiveMaxBudgetTokens = scaleOptionalBudgetValue(config.review.maxBudgetTokens, config.review.budgetBoost);

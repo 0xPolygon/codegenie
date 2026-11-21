@@ -157,7 +157,6 @@ export function parseReviewCommand(
   const target = resolveTarget(commandOptions, commits);
   const cli = buildCliOverrides(commandOptions);
   const loadOptions: LoadConfigOptions = {
-    repoRoot,
     cli
   };
   if (opts.homeOverride !== undefined) {
@@ -175,7 +174,8 @@ export function parseReviewCommand(
     options,
     repoRoot,
     warnings: loaded.warnings,
-    configSources: loaded.sources
+    configSources: loaded.sources,
+    finalizeConfig: (repoConfig) => loadConfig({ ...loadOptions, ...(repoConfig !== undefined ? { repoConfig } : {}) })
   };
 }
 
@@ -201,6 +201,7 @@ export async function executeReviewCommand(
   const review = await runReview(parsed.target, parsed.config, {
     ...overrides,
     configWarnings: parsed.warnings,
+    finalizeConfig: parsed.finalizeConfig,
     ...(opts.writeOutput !== undefined ? { writeOutput: opts.writeOutput } : {})
   });
   return {

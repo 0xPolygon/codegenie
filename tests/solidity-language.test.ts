@@ -47,6 +47,7 @@ describe("Plan 98 Solidity vertical slice", () => {
     const index = await buildRepositoryIndex(resolved, kept, facts, defaultConfig, telemetry);
     const { skills, failures } = await loadSkills({
       repoRoot: repo,
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger: silentLogger(),
       telemetry
@@ -320,6 +321,7 @@ describe("Plan 98 Solidity vertical slice", () => {
   it("holds every Solidity skill check to an independently enforced owner matrix", async () => {
     const { skills } = await loadSkills({
       repoRoot: process.cwd(),
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger: silentLogger(),
       telemetry: nullTelemetry()

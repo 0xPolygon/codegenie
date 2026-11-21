@@ -15,6 +15,7 @@ describe("Plan 98 cross-language release gate", () => {
     const logger = silentLogger();
     const { skills, failures } = await loadSkills({
       repoRoot: mkdtempSync(path.join(tmpdir(), "codegenie-language-release-")),
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger,
       telemetry

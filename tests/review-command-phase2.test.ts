@@ -60,7 +60,7 @@ describe("review command pipeline", () => {
     expect(stdout).toContain("Fake finding in app.ts");
   });
 
-  it("forwards repo config trust warnings into stage-0 logger and telemetry records", async () => {
+  it("reports base config trust warnings after loading policy in stage 1", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "codegenie.toml", "[llm]\nprovider = \"ignored\"\n");
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
@@ -75,10 +75,7 @@ describe("review command pipeline", () => {
       env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
     });
 
-    expect(parsed.warnings).toContainEqual(expect.objectContaining({
-      source: "repo-config",
-      key: "llm.provider"
-    }));
+    expect(parsed.warnings).toEqual([]);
 
     const result = await executeReviewCommand(enableTelemetry(parsed));
     const warningMessage = "repo codegenie.toml cannot set user-scoped key llm.provider; value ignored";
@@ -86,16 +83,19 @@ describe("review command pipeline", () => {
     const events = readJsonl(path.join(result.runDir, "events.jsonl")) as Array<{ stage: number; message: string; data?: { key?: string; message?: string } }>;
 
     expect(logs).toContainEqual(expect.objectContaining({
-      stage: 0,
+      stage: 1,
       event: "config_warning",
       message: warningMessage,
       data: expect.objectContaining({ key: "llm.provider" })
     }));
     expect(events).toContainEqual(expect.objectContaining({
-      stage: 0,
+      stage: 1,
       message: "config_warning",
       data: expect.objectContaining({ key: "llm.provider", message: warningMessage })
     }));
+    expect(events.findIndex((event) => event.message === "config_warning")).toBeGreaterThan(
+      events.findIndex((event) => event.message === "repository_policy_loaded")
+    );
   });
 
   it("returns inventory counts without telemetry artifacts", async () => {

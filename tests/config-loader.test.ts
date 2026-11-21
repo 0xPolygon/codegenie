@@ -15,54 +15,51 @@ import { CodegenieError } from "../src/util/errors.js";
 
 describe("config loader", () => {
   it("layers composition step-down as a repo-safe boolean", () => {
-    const repoRoot = tempDir();
     const homeOverride = tempDir();
-    expect(loadConfig({ repoRoot, homeOverride }).config.review.compositionReasoningStepDown).toBe(true);
+    expect(loadConfig({ homeOverride }).config.review.compositionReasoningStepDown).toBe(true);
     writeFileSync(path.join(homeOverride, "config.toml"), "[review]\ncompositionReasoningStepDown = false\n");
-    expect(loadConfig({ repoRoot, homeOverride }).config.review.compositionReasoningStepDown).toBe(false);
+    expect(loadConfig({ homeOverride }).config.review.compositionReasoningStepDown).toBe(false);
     writeFileSync(path.join(homeOverride, "config.toml"), "[review]\ncompositionReasoningStepDown = true\n");
-    expect(loadConfig({ repoRoot, homeOverride }).config.review.compositionReasoningStepDown).toBe(true);
-    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\ncompositionReasoningStepDown = false\n");
-    expect(loadConfig({ repoRoot, homeOverride }).config.review.compositionReasoningStepDown).toBe(false);
-    expect(loadConfig({ repoRoot, homeOverride, cli: { compositionReasoningStepDown: true } }).config.review.compositionReasoningStepDown).toBe(true);
+    expect(loadConfig({ homeOverride }).config.review.compositionReasoningStepDown).toBe(true);
+    const repoConfig = { label: "base-sha:codegenie.toml", text: "[review]\ncompositionReasoningStepDown = false\n" };
+    expect(loadConfig({ homeOverride, repoConfig }).config.review.compositionReasoningStepDown).toBe(false);
+    expect(loadConfig({ homeOverride, repoConfig, cli: { compositionReasoningStepDown: true } }).config.review.compositionReasoningStepDown).toBe(true);
     expect(rawConfigSchema.safeParse({ review: { compositionReasoningStepDown: "true" } }).success).toBe(false);
   });
 
   it("layers SVG skipping as a repo-safe boolean", () => {
-    const repoRoot = tempDir();
     const homeOverride = tempDir();
-    expect(loadConfig({ repoRoot, homeOverride }).config.review.skipSvgReview).toBe(true);
+    expect(loadConfig({ homeOverride }).config.review.skipSvgReview).toBe(true);
     writeFileSync(path.join(homeOverride, "config.toml"), "[review]\nskipSvgReview = false\n");
-    expect(loadConfig({ repoRoot, homeOverride }).config.review.skipSvgReview).toBe(false);
+    expect(loadConfig({ homeOverride }).config.review.skipSvgReview).toBe(false);
     writeFileSync(path.join(homeOverride, "config.toml"), "[review]\nskipSvgReview = true\n");
-    expect(loadConfig({ repoRoot, homeOverride }).config.review.skipSvgReview).toBe(true);
-    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\nskipSvgReview = false\n");
-    expect(loadConfig({ repoRoot, homeOverride }).config.review.skipSvgReview).toBe(false);
-    expect(loadConfig({ repoRoot, homeOverride, cli: { skipSvgReview: true } }).config.review.skipSvgReview).toBe(true);
+    expect(loadConfig({ homeOverride }).config.review.skipSvgReview).toBe(true);
+    const repoConfig = { label: "base-sha:codegenie.toml", text: "[review]\nskipSvgReview = false\n" };
+    expect(loadConfig({ homeOverride, repoConfig }).config.review.skipSvgReview).toBe(false);
+    expect(loadConfig({ homeOverride, repoConfig, cli: { skipSvgReview: true } }).config.review.skipSvgReview).toBe(true);
     expect(rawConfigSchema.safeParse({ review: { skipSvgReview: "true" } }).success).toBe(false);
   });
 
   it("resolves maxTime minutes from defaults, user config, repo config, and CLI in precedence order", () => {
-    const repoRoot = tempDir();
     const home = tempDir();
 
-    const defaults = loadConfig({ repoRoot, homeOverride: home });
+    const defaults = loadConfig({ homeOverride: home });
     expect(defaults.config.review.maxTimeMs).toBe(30 * 60 * 1000);
     expect(defaults.sources["review.maxTime"]).toBe("defaults");
 
     writeFileSync(path.join(home, "config.toml"), "[review]\nmaxTime = 45.5\n");
-    const userConfigured = loadConfig({ repoRoot, homeOverride: home });
+    const userConfigured = loadConfig({ homeOverride: home });
     expect(userConfigured.config.review.maxTimeMs).toBe(45.5 * 60 * 1000);
     expect(userConfigured.sources["review.maxTime"]).toBe("user-config");
 
-    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\nmaxTime = 60\n");
-    const repoConfigured = loadConfig({ repoRoot, homeOverride: home });
+    const repoConfig = { label: "base-sha:codegenie.toml", text: "[review]\nmaxTime = 60\n" };
+    const repoConfigured = loadConfig({ homeOverride: home, repoConfig });
     expect(repoConfigured.config.review.maxTimeMs).toBe(60 * 60 * 1000);
     expect(repoConfigured.sources["review.maxTime"]).toBe("repo-config");
     expect(repoConfigured.warnings).toEqual([]);
 
     const cliConfigured = loadConfig({
-      repoRoot,
+      repoConfig,
       homeOverride: home,
       cli: { maxTimeMs: 75 * 60 * 1000 }
     });
@@ -78,18 +75,16 @@ describe("config loader", () => {
     expect(rawConfigSchema.safeParse({ review: { maxTime: MAX_REVIEW_TIME_MINUTES * 2 } }).success).toBe(false);
     expect(rawConfigSchema.safeParse({ review: { timeoutMs: 60_000 } }).success).toBe(false);
 
-    const repoRoot = tempDir();
     const home = tempDir();
     writeFileSync(path.join(home, "config.toml"), `[review]\nmaxTime = ${MAX_REVIEW_TIME_MINUTES}\n`);
-    const maximum = loadConfig({ repoRoot, homeOverride: home });
+    const maximum = loadConfig({ homeOverride: home });
     expect(Number.isSafeInteger(maximum.config.review.maxTimeMs * 2)).toBe(true);
 
-    writeFileSync(path.join(repoRoot, "codegenie.toml"), "[review]\nmaxTime = 2e303\n");
-    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(/invalid config file/);
+    const repoConfig = { label: "base-sha:codegenie.toml", text: "[review]\nmaxTime = 2e303\n" };
+    expect(() => loadConfig({ homeOverride: home, repoConfig })).toThrow(/invalid config file/);
   });
 
   it("merges safe and user-scoped layers with the required precedence", () => {
-    const repoRoot = tempDir();
     const home = tempDir();
     mkdirSync(home, { recursive: true });
 
@@ -123,9 +118,7 @@ extraSkillPaths = ["/trusted/skills"]
         defaultReasoning: "medium"
       })
     );
-    writeFileSync(
-      path.join(repoRoot, "codegenie.toml"),
-      `
+    const repoConfig = { label: "base-sha:codegenie.toml", text: `
 [review]
 depth = "deep"
 verify = true
@@ -150,11 +143,10 @@ pattern = "lib/**"
 reviewPriority = "critical"
 labels = ["payments"]
 reason = "critical lib"
-`
-    );
+` };
 
     const loaded = loadConfig({
-      repoRoot,
+      repoConfig,
       env: {
         CODEGENIE_HOME: home,
         CODEGENIE_PROVIDER: "env-provider",
@@ -206,22 +198,17 @@ reason = "critical lib"
   });
 
   it("rejects credential-bearing repo config fields", () => {
-    const repoRoot = tempDir();
     const home = tempDir();
-    writeFileSync(
-      path.join(repoRoot, "codegenie.toml"),
-      `
+    const repoConfig = { label: "base-sha:codegenie.toml", text: `
 [llm]
 apiKey = "sk-this-should-not-be-in-repo-config"
-`
-    );
+` };
 
-    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(CodegenieError);
-    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(/credential-bearing/);
+    expect(() => loadConfig({ homeOverride: home, repoConfig })).toThrow(CodegenieError);
+    expect(() => loadConfig({ homeOverride: home, repoConfig })).toThrow(/credential-bearing.*base-sha:codegenie\.toml/);
   });
 
   it("rejects non-positive budget multipliers", () => {
-    const repoRoot = tempDir();
     const home = tempDir();
     writeFileSync(
       path.join(home, "config.toml"),
@@ -231,11 +218,10 @@ budgetBoost = 0
 `
     );
 
-    expect(() => loadConfig({ repoRoot, homeOverride: home })).toThrow(CodegenieError);
+    expect(() => loadConfig({ homeOverride: home })).toThrow(CodegenieError);
   });
 
   it("keeps adjacent precedence rules isolated for settings, repo review config, and reasoning auto", () => {
-    const repoRoot = tempDir();
     const home = tempDir();
     writeFileSync(
       path.join(home, "config.toml"),
@@ -255,16 +241,13 @@ reasoning = "low"
         defaultReasoning: "medium"
       })
     );
-    writeFileSync(
-      path.join(repoRoot, "codegenie.toml"),
-      `
+    const repoConfig = { label: "base-sha:codegenie.toml", text: `
 [review]
 depth = "deep"
-`
-    );
+` };
 
     const loaded = loadConfig({
-      repoRoot,
+      repoConfig,
       homeOverride: home,
       cli: { reasoning: "auto" }
     });
@@ -279,12 +262,9 @@ depth = "deep"
     expect(loaded.sources["llm.reasoning"]).toBe("provider-settings");
   });
 
-  it("allows repo telemetry opt-in but ignores repo-scoped telemetry and cache directories", () => {
-    const repoRoot = tempDir();
+  it("ignores repo-scoped telemetry and cache overrides", () => {
     const home = tempDir();
-    writeFileSync(
-      path.join(repoRoot, "codegenie.toml"),
-      `
+    const repoConfig = { label: "base-sha:codegenie.toml", text: `
 [telemetry]
 enabled = true
 runDir = "../outside-runs"
@@ -295,13 +275,12 @@ enabled = false
 
 [review]
 maxFindings = 3
-`
-    );
+` };
 
-    const loaded = loadConfig({ repoRoot, homeOverride: home });
+    const loaded = loadConfig({ homeOverride: home, repoConfig });
 
-    expect(loaded.config.telemetry.enabled).toBe(true);
-    expect(loaded.sources["telemetry.enabled"]).toBe("repo-config");
+    expect(loaded.config.telemetry.enabled).toBe(false);
+    expect(loaded.sources["telemetry.enabled"]).toBe("defaults");
     expect(loaded.config.telemetry.runDir).toBe(".codegenie/runs");
     expect(loaded.config.cache.dir).toBe(".codegenie/cache");
     expect(loaded.config.cache.enabled).toBe(false);
@@ -309,6 +288,7 @@ maxFindings = 3
     expect(loaded.warnings.map((warning) => warning.key).sort()).toEqual([
       "cache.dir",
       "cache.enabled",
+      "telemetry.enabled",
       "telemetry.runDir"
     ]);
   });

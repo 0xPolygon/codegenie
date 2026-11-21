@@ -1971,13 +1971,16 @@ describe("eval command fixture suite", () => {
     ].join("\n"));
 
     let output = "";
-    const exitCode = await executeEvalCommand(["eval", "--eval-dir", suiteDir, "--no-cache"], {
-      repoRoot: invocationDir,
-      homeOverride: home,
-      writeOutput: (text) => {
-        output += text;
-      }
-    });
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(invocationDir);
+    let exitCode: number;
+    try {
+      exitCode = await executeEvalCommand(["eval", "--eval-dir", suiteDir, "--no-cache"], {
+        homeOverride: home,
+        writeOutput: (text) => { output += text; }
+      });
+    } finally {
+      cwd.mockRestore();
+    }
 
     expect(exitCode).toBe(0);
     expect(output).toContain("no-cwd-config-leak run 1: pass");
@@ -2212,6 +2215,7 @@ describe("eval command fixture suite", () => {
     git(repo, ["checkout", "-b", "feature"]);
     writeRepoFile(repo, "src/app.js", "export const value = 'CODEGENIE_FAKE_FINDING';\n");
     commitAll(repo, "feature");
+    writeRepoFile(repo, ".codegenie/skills/checkout-only.md", "fixture skill from the working tree\n");
     writeFileSync(path.join(suiteDir, "repo-config.yml"), [
       "name: repo-config",
       "repo:",
@@ -2232,6 +2236,10 @@ describe("eval command fixture suite", () => {
 
     expect(result.status).toBe("pass");
     expect(result.info.score.metrics.reportedFindings).toBe(0);
+    const events = readFileSync(path.join(result.runDir, "telemetry", "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 1, message: "repository_policy_loaded", data: { origin: "working-tree", config: true, skillFiles: 1 }
+    }));
   });
 
   it("runs fixture-backed fake-provider cases for core, tests, Go, and TypeScript lenses", async () => {

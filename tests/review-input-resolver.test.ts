@@ -8,6 +8,93 @@ import { CodegenieError } from "../src/util/errors.js";
 import { commitAll, git, initRepo, nullTelemetry, writeRepoFile } from "./helpers/git.js";
 
 describe("review input resolver", () => {
+  it("uses master policy for one base redirect and keeps the default fallback for working-tree evals", async () => {
+    const repo = initRepo();
+    git(repo, ["branch", "-m", "master"]);
+    writeRepoFile(repo, "codegenie.toml", '[git]\nbaseBranch = "develop"\n');
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    const master = commitAll(repo, "trusted default config");
+    git(repo, ["checkout", "-b", "develop"]);
+    writeRepoFile(repo, "codegenie.toml", '[git]\nbaseBranch = "third"\n');
+    const develop = commitAll(repo, "integration config");
+    git(repo, ["checkout", "-b", "feature", "master"]);
+    writeRepoFile(repo, "app.ts", "export const value = 2;\n");
+    commitAll(repo, "feature change");
+    const input = { mode: "branch", branchName: "feature" } as const;
+
+    await expect(resolveReviewInput(input, defaultConfig, nullTelemetry(), { repoRoot: repo })).resolves.toMatchObject({
+      baseRef: develop, baseRefName: "develop", mergeBase: master
+    });
+
+    writeRepoFile(repo, "codegenie.toml", '[git]\nbaseBranch = "third"\n');
+    commitAll(repo, "untrusted redirect");
+    await expect(resolveReviewInput(input, defaultConfig, nullTelemetry(), { repoRoot: repo })).rejects.toMatchObject({
+      code: "git_base_branch_unresolved", message: expect.stringContaining('Pass --base "third"')
+    });
+    await expect(resolveReviewInput(input, defaultConfig, nullTelemetry(), { repoRoot: repo, repositoryBaseBranch: false })).resolves.toMatchObject({
+      baseRef: master, baseRefName: "master"
+    });
+  });
+
+  it("requires confirmation for a reviewed branch's base hint and ignores malformed reviewed config", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export {};\n");
+    const base = commitAll(repo, "base with no policy");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "codegenie.toml", '[git]\nbaseBranch = "other"\n');
+    commitAll(repo, "reviewed branch tries to name its base");
+    const input = { mode: "branch", branchName: "feature" } as const;
+    const options = { repoRoot: repo };
+    const telemetry = nullTelemetry();
+
+    await expect(resolveReviewInput(input, defaultConfig, telemetry, options)).rejects.toMatchObject({
+      code: "git_base_branch_unresolved", message: expect.stringContaining('Pass --base "other"')
+    });
+    await expect(resolveReviewInput({ ...input, baseBranch: "main" }, defaultConfig, telemetry, options)).resolves.toMatchObject({ baseRef: base });
+    await expect(resolveReviewInput(input, { ...defaultConfig, git: { baseBranch: "main" } }, telemetry, options)).resolves.toMatchObject({ baseRef: base });
+
+    writeRepoFile(repo, "codegenie.toml", "[broken\n");
+    commitAll(repo, "malformed reviewed-branch config");
+    await expect(resolveReviewInput(input, defaultConfig, telemetry, options)).resolves.toMatchObject({ baseRef: base });
+  });
+
+  it("refuses a trusted default redirect to a missing base", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "codegenie.toml", '[git]\nbaseBranch = "missing"\n');
+    commitAll(repo, "base requests a missing branch");
+    git(repo, ["checkout", "-b", "feature"]);
+    await expect(resolveReviewInput({ mode: "branch", branchName: "feature" }, defaultConfig, nullTelemetry(), { repoRoot: repo })).rejects.toMatchObject({
+      code: "git_base_branch_unresolved", message: expect.stringContaining("'missing' could not be resolved")
+    });
+  });
+
+  it("names --base and the reviewed hint when neither default branch exists", async () => {
+    const repo = initRepo();
+    git(repo, ["branch", "-m", "integration"]);
+    writeRepoFile(repo, "app.ts", "export {};\n");
+    commitAll(repo, "integration base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "codegenie.toml", '[git]\nbaseBranch = "integration"\n');
+    commitAll(repo, "reviewed branch supplies an advisory hint");
+    await expect(resolveReviewCommandTarget({ mode: "default_branch" }, defaultConfig, nullTelemetry(), { repoRoot: repo })).rejects.toMatchObject({
+      code: "git_base_branch_unresolved", message: expect.stringContaining('Pass --base "integration"')
+    });
+  });
+
+  it.each(["name-$(fixture)", "name\u001b[31m"])("keeps an untrusted base hint out of a pasteable command (%j)", async (hint) => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export {};\n");
+    commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "codegenie.toml", `[git]\nbaseBranch = ${JSON.stringify(hint)}\n`);
+    commitAll(repo, "reviewed base hint");
+
+    await expect(resolveReviewInput({ mode: "branch", branchName: "feature" }, defaultConfig, nullTelemetry(), { repoRoot: repo })).rejects.toMatchObject({
+      code: "git_base_branch_unresolved",
+      message: expect.stringMatching(/^[^\u0000-\u001f]*Pass --base with the branch you intend[^\u0000-\u001f]*$/u)
+    });
+  });
+
   it("resolves default branch review like explicit branch mode", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");

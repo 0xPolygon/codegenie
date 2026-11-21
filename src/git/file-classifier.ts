@@ -12,6 +12,7 @@ import type {
   UnifiedDiff
 } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
+import { isRepositoryPolicyPath } from "../repo/repository-policy.js";
 import { createGitClient, type InternalGitClient } from "./git-client.js";
 import {
   detectFile,
@@ -142,7 +143,7 @@ export async function classifyChangedFiles(
       }
     }
 
-    if (isPolicyChange(file.path)) {
+    if (isRepositoryPolicyPath(file.path) || (file.status === "renamed" && file.oldPath !== undefined && isRepositoryPolicyPath(file.oldPath))) {
       addUnique(labels, "policy-change");
       provenance.push({
         fact: "label",
@@ -353,8 +354,4 @@ function addUnique(values: string[], value: string): void {
   if (!values.includes(value)) {
     values.push(value);
   }
-}
-
-function isPolicyChange(filePath: string): boolean {
-  return filePath === "codegenie.toml" || filePath.startsWith(".codegenie/skills/");
 }

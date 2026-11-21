@@ -69,6 +69,7 @@ describe("Plan 101 language-skill semantic fixtures", () => {
       const index = await buildRepositoryIndex(resolved, kept, facts, defaultConfig, telemetry);
       const loaded = await loadSkills({
         repoRoot: repo,
+        repoSkillFiles: [],
         extraSkillPaths: [],
         logger: silentLogger(),
         telemetry

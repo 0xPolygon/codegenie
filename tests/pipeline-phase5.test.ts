@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { defaultConfig } from "../src/config/schema.js";
+import { parseReviewCommand } from "../src/cli/review-command.js";
 import type { LlmInvalidSubmitRecovery, LlmRunner, LlmStructuredRequest, PiAiAdapter, PiAssistantMessage, PiToolCall } from "../src/llm/llm-runner.js";
 import { parseDiff } from "../src/git/diff-parser.js";
 import { createPiRunner } from "../src/llm/pi-runner.js";
@@ -10377,7 +10378,7 @@ describe("phase 5 pipeline regressions", () => {
     expect(existsSync(path.join(runArtifactDir, "run.json"))).toBe(true);
   });
 
-  it("discloses malformed skill loads in the final Markdown review", async () => {
+  it("omits a malformed uncommitted skill from the final Markdown review", async () => {
     const repo = initRepo();
     writeRepoFile(repo, "app.ts", "export const value = 1;\n");
     commitAll(repo, "base");
@@ -10394,9 +10395,156 @@ describe("phase 5 pipeline regressions", () => {
     );
 
     const review = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
-    expect(review).toContain("skill guidance skipped:");
-    expect(review).toContain(".codegenie/skills/bad.md");
-    expect(review).toContain("missing YAML frontmatter");
+    expect(review).not.toContain("skill guidance skipped:");
+    expect(review).not.toContain(".codegenie/skills/bad.md");
+    expect(review).not.toContain("review policy files changed in this diff");
+  });
+
+  it("discloses a malformed base skill even when the reviewed branch deletes it", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    writeRepoFile(repo, ".codegenie/skills/bad.md", "not frontmatter\n# Checks\n- invalid skill\n");
+    const base = commitAll(repo, "base with malformed skill");
+    git(repo, ["checkout", "-b", "feature"]);
+    git(repo, ["rm", ".codegenie/skills/bad.md"]);
+    writeRepoFile(repo, "app.ts", "export const value = 2;\n");
+    commitAll(repo, "feature without the base skill");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "base-skill-disclosure");
+    await runReview({ mode: "branch", branchName: "feature" }, config(), { repoRoot: repo, runArtifactDir });
+
+    const review = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
+    expect(review).toContain("skill guidance skipped: .codegenie/skills/bad.md: missing YAML frontmatter");
+    expect(review).toContain(`used the policy from base ${base.slice(0, 12)}`);
+  });
+
+  it.each([
+    { name: "base policy", policyOnBase: true, cli: [], depth: "deep", minutes: 17, multiplier: 1.5 },
+    { name: "branch-only policy", policyOnBase: false, cli: [], depth: "normal", minutes: 30, multiplier: 1 },
+    { name: "CLI overrides", policyOnBase: true, cli: ["--max-time", "9"], depth: "deep", minutes: 9, multiplier: 1.5 }
+  ])("reports the effective depth and budget with $name", async ({ policyOnBase, cli, depth, minutes, multiplier }) => {
+    const repo = initRepo();
+    const policy = '[review]\ndepth = "deep"\nmaxTime = 17\nbudgetBoost = 1.5\n';
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    if (policyOnBase) writeRepoFile(repo, "codegenie.toml", policy);
+    const base = commitAll(repo, "base");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "export const value = 2;\n");
+    if (policyOnBase) git(repo, ["rm", "codegenie.toml"]);
+    else writeRepoFile(repo, "codegenie.toml", policy);
+    commitAll(repo, "change code and repository policy");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "effective-policy");
+    const parsed = parseReviewCommand(["review", "feature", ...cli], {
+      repoRoot: repo, homeOverride: `${runArtifactDir}-home`, env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
+    });
+    const result = await runReview(parsed.target, parsed.config, { repoRoot: repo, runArtifactDir, finalizeConfig: parsed.finalizeConfig });
+
+    const run = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8"));
+    expect(run.review).toMatchObject({ depth, budgetBoost: multiplier });
+    expect(result.budgetSummary).toMatchObject({ multiplier, effective: { timeoutMs: minutes * 60_000 } });
+    const report = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
+    expect(report).toContain(`review policy files changed in this diff (\`codegenie.toml\`): this review used the policy from base ${base.slice(0, 12)}`);
+  });
+
+  it("uses the PR base tip's policy while the working tree is on the PR head", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    commitAll(repo, "merge base without policy");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "export const value = 2;\n");
+    writeRepoFile(repo, "codegenie.toml", '[review]\ndepth = "light"\n');
+    writeRepoFile(repo, ".codegenie/skills/bad.md", "head skill is invalid\n");
+    const headSha = commitAll(repo, "PR head with different policy");
+    git(repo, ["checkout", "main"]);
+    writeRepoFile(repo, "codegenie.toml", '[review]\ndepth = "deep"\n');
+    const baseSha = commitAll(repo, "base tip policy added after the fork");
+    git(repo, ["checkout", "feature"]);
+
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "pr-base-policy");
+    const parsed = parseReviewCommand(["review", "--pr", "42"], {
+      repoRoot: repo, homeOverride: `${runArtifactDir}-home`, env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
+    });
+    const result = await runReview(parsed.target, parsed.config, {
+      repoRoot: repo, runArtifactDir, finalizeConfig: parsed.finalizeConfig,
+      github: {
+        viewPr: async () => ({ owner: "example", repo: "repo", number: 42, title: "Review policy changes", body: "",
+          url: "https://example.invalid/repo/pull/42", baseRefName: "main", baseSha, headRefName: "feature", headSha }),
+        createReview: vi.fn(), listOwnComments: async () => []
+      }
+    });
+    const run = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8"));
+    expect(run.review.depth).toBe("deep");
+    expect(result.coverage.reasons).not.toContainEqual(expect.stringContaining("skill guidance skipped"));
+    const report = readFileSync(path.join(runArtifactDir, "final-review.md"), "utf8");
+    expect(report).toContain(`review policy files changed in this diff (\`.codegenie/skills/bad.md\`, \`codegenie.toml\`): this review used the policy from base ${baseSha.slice(0, 12)}`);
+  });
+
+  it("uses default policy for a root commit that adds config and skills", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    writeRepoFile(repo, "codegenie.toml", '[review]\ndepth = "deep"\nmaxTime = 10\n');
+    writeRepoFile(repo, ".codegenie/skills/bad.md", "invalid skill\n");
+    const head = commitAll(repo, "root with policy additions");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "root-policy");
+    const parsed = parseReviewCommand(["review", head], {
+      repoRoot: repo, homeOverride: `${runArtifactDir}-home`, env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
+    });
+    const events: Array<Omit<TelemetryEvent, "runId" | "eventId" | "timestamp">> = [];
+    const result = await runReview(parsed.target, parsed.config, {
+      repoRoot: repo, runArtifactDir, finalizeConfig: parsed.finalizeConfig, onTelemetryEvent: (event) => events.push(event)
+    });
+    expect(events).toContainEqual(expect.objectContaining({
+      stage: 1, message: "repository_policy_loaded", data: expect.objectContaining({ origin: "none", config: false, skillFiles: 0 })
+    }));
+    const run = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8"));
+    expect(run.review.depth).toBe("normal");
+    expect(result.budgetSummary?.effective.timeoutMs).toBe(defaultConfig.review.maxTimeMs);
+    expect(result.coverage.reasons).toContainEqual(expect.stringContaining("this review has no base revision and used default policy"));
+    expect(result.coverage.reasons).not.toContainEqual(expect.stringContaining("skill guidance skipped"));
+  });
+
+  it("fails malformed base config in input resolution before starting the review", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    writeRepoFile(repo, "codegenie.toml", "[broken\n");
+    const base = commitAll(repo, "malformed base policy");
+    writeRepoFile(repo, "codegenie.toml", "[review]\nmaxTime = 15\n");
+    const head = commitAll(repo, "fix the config in the reviewed commit");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "bad-base-policy");
+    const modelCall = vi.fn();
+    await expect(runReview({ mode: "head", baseRef: base, headRef: head }, config(), {
+      repoRoot: repo, runArtifactDir, runner: { runStructured: modelCall }
+    })).rejects.toMatchObject({ code: "config_error", message: expect.stringContaining(`${base}:codegenie.toml`) });
+    expect(modelCall).not.toHaveBeenCalled();
+    const run = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8"));
+    expect(run.outcome).toMatchObject({ status: "failed", failure: { stage: 1 } });
+  });
+
+  it("charges elapsed input resolution time against the adopted base hard deadline", async () => {
+    const repo = initRepo();
+    writeRepoFile(repo, "codegenie.toml", "[review]\nmaxTime = 0.25\n");
+    writeRepoFile(repo, "app.ts", "export const value = 1;\n");
+    commitAll(repo, "base with short timeout");
+    git(repo, ["checkout", "-b", "feature"]);
+    writeRepoFile(repo, "app.ts", "export const value = 2;\n");
+    commitAll(repo, "feature change");
+    const runArtifactDir = path.join(mkdtempSync(path.join(tmpdir(), "codegenie-run-")), "adopted-deadline");
+    const parsed = parseReviewCommand(["review", "feature"], {
+      repoRoot: repo, homeOverride: `${runArtifactDir}-home`, env: { CODEGENIE_PROVIDER: "fake", CODEGENIE_MODEL: "fake-model" }
+    });
+    const actualNow = Date.now;
+    let elapsed = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => actualNow() + elapsed);
+    try {
+      await expect(runReview(parsed.target, parsed.config, {
+        repoRoot: repo, runArtifactDir, finalizeConfig: parsed.finalizeConfig,
+        onTelemetryEvent: (event) => { if (event.message === "repository_policy_loaded") elapsed = 31_000; }
+      })).rejects.toMatchObject({ code: "timeout" });
+    } finally {
+      clock.mockRestore();
+    }
+    const run = JSON.parse(readFileSync(path.join(runArtifactDir, "run.json"), "utf8"));
+    expect(run.outcome).toMatchObject({ failure: { stage: 1 } });
+    expect(existsSync(path.join(runArtifactDir, canonicalArtifactPath("diff.json")))).toBe(false);
   });
 
   it("wires cache into the Pi runner and records composer budget exhaustion in coverage artifacts", async () => {

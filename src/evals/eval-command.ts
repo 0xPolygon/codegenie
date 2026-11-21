@@ -1,4 +1,3 @@
-import path from "node:path";
 import { Command, CommanderError } from "commander";
 import { loadConfig } from "../config/config-loader.js";
 import type { CodegenieConfig, EvalCaseResult, EvalLossLabel } from "../types.js";
@@ -15,7 +14,6 @@ export type EvalCommandOptions = {
 };
 
 type ExecuteEvalCommandOptions = {
-  repoRoot?: string;
   homeOverride?: string;
   env?: NodeJS.ProcessEnv;
   allowOutput?: boolean;
@@ -32,8 +30,6 @@ type CommanderEvalOptions = {
 export async function executeEvalCommand(argv: string[], opts: ExecuteEvalCommandOptions = {}): Promise<number> {
   const parsed = parseEvalCommand(argv, opts);
   const loaded = loadConfig({
-    repoRoot: path.resolve(opts.repoRoot ?? process.cwd()),
-    loadRepoConfig: false,
     ...(opts.homeOverride !== undefined ? { homeOverride: opts.homeOverride } : {}),
     ...(opts.env !== undefined ? { env: opts.env } : {})
   });

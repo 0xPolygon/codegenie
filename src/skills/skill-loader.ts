@@ -1,8 +1,9 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { sha256Hex } from "../util/hashing.js";
 import { CodegenieError } from "../util/errors.js";
+import { discoverMarkdownFiles, type RepositorySkillFile } from "../repo/repository-policy.js";
 import type { Logger } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 
@@ -44,13 +45,13 @@ export type SkillLoadResult = {
 
 export async function loadSkills(opts: {
   repoRoot: string;
+  repoSkillFiles: RepositorySkillFile[];
   extraSkillPaths: Array<string | ExtraSkillPathSpec>;
   logger: Logger;
   telemetry: TelemetryRecorder;
 }): Promise<SkillLoadResult> {
   const repoRoot = path.resolve(opts.repoRoot);
   const bundledRoot = bundledSkillsRoot();
-  const repoSkillsRoot = path.join(repoRoot, ".codegenie", "skills");
   const failures: SkillLoadFailure[] = [];
   const skills: Skill[] = [];
   const seenIds = new Set<string>();
@@ -58,20 +59,23 @@ export async function loadSkills(opts: {
   const extraSpecs = opts.extraSkillPaths.map((entry) =>
     typeof entry === "string" ? { path: entry, source: "user" as const } : entry
   );
-  const extra = discoverExtraSkillFiles(extraSpecs, repoRoot);
+  const extra = discoverExtraSkillFiles(extraSpecs, repoRoot, opts.logger, opts.telemetry);
   for (const failure of extra.failures) {
     recordFailure(failure, opts.logger, opts.telemetry);
     failures.push(failure);
   }
-  const sources: Array<{ source: SkillSource; files: string[] }> = [
-    { source: "bundled", files: discoverMarkdownFiles(bundledRoot) },
-    { source: "repo", files: discoverMarkdownFiles(repoSkillsRoot) },
-    { source: "extra", files: extra.files }
+  const sources: Array<{ source: SkillSource; files: Array<RepositorySkillFile | { path: string }> }> = [
+    { source: "bundled", files: discoverMarkdownFiles(bundledRoot).map((filePath) => ({ path: filePath })) },
+    { source: "repo", files: opts.repoSkillFiles },
+    { source: "extra", files: extra.files.map((filePath) => ({ path: filePath })) }
   ];
 
   for (const group of sources) {
-    for (const filePath of group.files) {
-      const parsed = parseSkillFile(filePath, group.source, opts.logger);
+    for (const file of group.files) {
+      const filePath = file.path;
+      const parsed = "readError" in file ? { failure: { filePath, reason: `failed to read skill file: ${file.readError}` } }
+        : "content" in file ? parseSkillText(file.content, filePath, group.source, opts.logger)
+          : parseSkillFile(filePath, group.source, opts.logger);
       if ("failure" in parsed) {
         recordFailure(parsed.failure, opts.logger, opts.telemetry);
         failures.push(parsed.failure);
@@ -113,18 +117,28 @@ function bundledSkillsRoot(): string {
 
 function discoverExtraSkillFiles(
   specs: ExtraSkillPathSpec[],
-  repoRoot: string
+  repoRoot: string,
+  logger: Logger,
+  telemetry: TelemetryRecorder
 ): { files: string[]; failures: SkillLoadFailure[] } {
   const files: string[] = [];
   const failures: SkillLoadFailure[] = [];
   for (const spec of specs) {
     const resolved = path.resolve(spec.path);
-    if (spec.source === "repo-config" && !isContainedIn(repoRoot, resolved)) {
+    const inRepository = isContainedIn(repoRoot, resolved);
+    if (spec.source === "repo-config" && !inRepository) {
       failures.push({
         filePath: resolved,
         reason: "repo-configured extra skill path resolves outside the repository root and was refused"
       });
       continue;
+    }
+    if (inRepository) {
+      const event = "extra_skill_path_in_repository";
+      const message = "extra skill path inside the repository is read from the working tree, not the base revision";
+      const data = { filePath: resolved };
+      logger.warn({ runId: telemetry.runId, stage: 0, event, message, data });
+      telemetry.event({ stage: 0, level: "warn", message: event, data: { ...data, message } });
     }
     files.push(...discoverMarkdownFiles(resolved));
   }
@@ -138,34 +152,7 @@ function isContainedIn(root: string, candidate: string): boolean {
     return true;
   }
   const relative = path.relative(normalizedRoot, normalizedCandidate);
-  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
-}
-
-function discoverMarkdownFiles(root: string): string[] {
-  if (!existsSync(root)) {
-    return [];
-  }
-  const stat = statSync(root);
-  if (stat.isFile()) {
-    return root.endsWith(".md") ? [root] : [];
-  }
-  if (!stat.isDirectory()) {
-    return [];
-  }
-
-  const files: string[] = [];
-  const visit = (dir: string): void => {
-    for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      const entryPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        visit(entryPath);
-      } else if (entry.isFile() && entry.name.endsWith(".md")) {
-        files.push(entryPath);
-      }
-    }
-  };
-  visit(root);
-  return files.sort(comparePaths);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
 function parseSkillFile(
@@ -184,6 +171,10 @@ function parseSkillFile(
       }
     };
   }
+  return parseSkillText(raw, filePath, source, logger);
+}
+
+function parseSkillText(raw: string, filePath: string, source: SkillSource, logger: Logger): { skill: Skill } | { failure: SkillLoadFailure } {
   if (Buffer.byteLength(raw, "utf8") > 256 * 1024) {
     return { failure: { filePath, reason: "skill file exceeds 256KB" } };
   }
@@ -224,7 +215,7 @@ function parseSkillFile(
     skill: {
       ...metadata.value,
       source,
-      filePath: path.resolve(filePath),
+      filePath,
       contentSha: sha256Hex(raw),
       sections,
       summaryLine: summarizeSkill(metadata.value.title, sections)

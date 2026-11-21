@@ -927,11 +927,7 @@ function configuredDefault<T>(settingsValue: T | undefined, resolvedValue: T | u
 }
 
 function loadResolvedUserConfig(paths: CodegeniePaths, env?: NodeJS.ProcessEnv): ProviderConfigLayers {
-  const base = {
-    repoRoot: process.cwd(),
-    homeOverride: paths.home,
-    loadRepoConfig: false
-  } as const;
+  const base = { homeOverride: paths.home };
   return {
     defaults: loadConfig({ ...base, env: {} }),
     effective: loadConfig({

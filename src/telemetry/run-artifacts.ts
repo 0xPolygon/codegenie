@@ -40,6 +40,7 @@ export type RunTelemetry = {
   logger: Logger;
   recorder: TelemetryRecorder;
   attachRunDirectory(repoRoot: string): Promise<{ runId: string; runDir: string }>;
+  updateReviewMetadata(patch: ReviewPolicyMetadata): void;
   finalize(outcome: RunOutcome): Promise<void>;
 };
 
@@ -249,6 +250,8 @@ type RunArtifactMetadata = {
   };
 };
 
+type ReviewPolicyMetadata = Pick<NonNullable<RunArtifactMetadata["review"]>, "depth" | "budgetBoost" | "lenses">;
+
 type RunReviewArtifactMetadata = {
   mode: string;
   target: unknown;
@@ -370,6 +373,7 @@ export function createRunTelemetry(opts: CreateRunTelemetryOptions): RunTelemetr
     logger: impl.logger,
     recorder: impl.recorder,
     attachRunDirectory: (repoRoot) => impl.attachRunDirectory(repoRoot),
+    updateReviewMetadata: (patch) => impl.updateReviewMetadata(patch),
     finalize: (outcome) => impl.finalize(outcome)
   };
 }
@@ -517,6 +521,10 @@ class RunTelemetryImpl {
     this.flushBuffers();
     this.recordPruneResult(pruneRuns(runsRoot, runDir, this.config.retainRuns));
     return { runId: this.runId, runDir };
+  }
+
+  updateReviewMetadata(patch: ReviewPolicyMetadata): void {
+    this.metadata.review = { ...this.metadata.review, ...structuredClone(patch) };
   }
 
   async finalize(outcome: RunOutcome): Promise<void> {

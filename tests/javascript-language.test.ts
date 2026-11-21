@@ -45,6 +45,7 @@ describe("Plan 98 JavaScript vertical slice", () => {
     const index = await buildRepositoryIndex(resolved, kept, facts, defaultConfig, telemetry);
     const { skills, failures } = await loadSkills({
       repoRoot: repo,
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger: silentLogger(),
       telemetry
@@ -259,6 +260,7 @@ describe("Plan 98 JavaScript vertical slice", () => {
   it("holds every JavaScript skill check to the owner matrix and keeps TypeScript guidance separate", async () => {
     const { skills, failures } = await loadSkills({
       repoRoot: process.cwd(),
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger: silentLogger(),
       telemetry: nullTelemetry()

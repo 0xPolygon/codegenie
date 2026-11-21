@@ -7,14 +7,19 @@ import type {
   ReviewInput
 } from "../types.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
-import { CodegenieError } from "../util/errors.js";
+import { CodegenieError, isCodegenieError } from "../util/errors.js";
 import { createGitClient, type InternalGitClient } from "./git-client.js";
 import { createGitHubClient } from "../github/github-client.js";
+import { parseRepoConfigText } from "../config/config-loader.js";
+import { readRepoConfigAt } from "../repo/repository-policy.js";
+import { safeDiagnosticLine } from "../util/review-health.js";
+import { assertSafeRef } from "./subprocess.js";
 
 type ResolveOptions = {
   repoRoot?: string;
   git?: InternalGitClient;
   github?: GitHubClient;
+  repositoryBaseBranch?: boolean;
 };
 
 type ResolvedBranch = {
@@ -52,7 +57,7 @@ export async function resolveReviewCommandTarget(
       config,
       telemetry,
       git,
-      { defaultBranchName: currentBranch }
+      { defaultBranchName: currentBranch, repositoryBaseBranch: opts.repositoryBaseBranch !== false }
     );
   }
 
@@ -65,7 +70,7 @@ export async function resolveReviewCommandTarget(
         config,
         telemetry,
         git,
-        { preResolvedBranch: branch }
+        { preResolvedBranch: branch, repositoryBaseBranch: opts.repositoryBaseBranch !== false }
       );
     }
     if (target.baseBranch !== undefined) {
@@ -93,7 +98,7 @@ export async function resolveReviewInput(
     case "github_pr":
       return resolvePullRequestReview(input, telemetry, git, opts.github ?? createGitHubClient(await git.repoRoot()));
     case "branch":
-      return resolveBranchReview(input, config, telemetry, git);
+      return resolveBranchReview(input, config, telemetry, git, { repositoryBaseBranch: opts.repositoryBaseBranch !== false });
     case "head":
       return resolveHeadReview(input, telemetry, git);
     case "commit_range":
@@ -352,7 +357,7 @@ async function resolveBranchReview(
   config: CodegenieConfig,
   telemetry: TelemetryRecorder,
   git: InternalGitClient,
-  opts: { defaultBranchName?: string; preResolvedBranch?: ResolvedBranch } = {}
+  opts: { defaultBranchName?: string; preResolvedBranch?: ResolvedBranch; repositoryBaseBranch: boolean }
 ): Promise<ResolvedReviewInput> {
   const repoRoot = await git.repoRoot();
   const branch = opts.preResolvedBranch ?? await resolveBranchWithShallowRecovery(input.branchName, git, telemetry);
@@ -360,7 +365,7 @@ async function resolveBranchReview(
     throw new CodegenieError("git_ref_missing", `review branch '${input.branchName}' could not be resolved`);
   }
 
-  const base = await resolveBaseBranch(input, config, git, telemetry);
+  const base = await resolveBaseBranch(input, config, git, telemetry, branch, opts.repositoryBaseBranch);
   if (opts.defaultBranchName !== undefined && opts.defaultBranchName === base.shortName) {
     throw new CodegenieError(
       "invalid_args",
@@ -416,7 +421,9 @@ async function resolveBaseBranch(
   input: Extract<ReviewInput, { mode: "branch" }>,
   config: CodegenieConfig,
   git: InternalGitClient,
-  telemetry: TelemetryRecorder
+  telemetry: TelemetryRecorder,
+  branch: ResolvedBranch,
+  repositoryBaseBranch: boolean
 ): Promise<ResolvedBranch> {
   if (input.baseBranch !== undefined) {
     return resolveRequiredBase(input.baseBranch, git, telemetry, "CLI --base");
@@ -425,17 +432,68 @@ async function resolveBaseBranch(
     return resolveRequiredBase(config.git.baseBranch, git, telemetry, "git.baseBranch");
   }
 
-  for (const candidate of ["master", "main"]) {
-    const resolved = await resolveBranchWithShallowRecovery(candidate, git, telemetry);
-    if (resolved) {
-      return resolved;
-    }
+  let base = await resolveBranchWithShallowRecovery("master", git, telemetry)
+    ?? await resolveBranchWithShallowRecovery("main", git, telemetry);
+  if (!repositoryBaseBranch) {
+    if (base) return base;
+    throw new CodegenieError("git_base_branch_unresolved", "no base branch could be resolved; pass --base or configure git.baseBranch");
   }
 
-  throw new CodegenieError(
-    "git_base_branch_unresolved",
-    "no base branch could be resolved; pass --base or configure git.baseBranch"
-  );
+  if (base !== undefined) {
+    const redirected = await configuredBaseBranchAt(git, base.sha);
+    if (redirected !== undefined && redirected !== base.shortName) {
+      base = await resolveRequiredBase(redirected, git, telemetry, `git.baseBranch in ${base.sha}:codegenie.toml`);
+    }
+  }
+  const reviewedHint = await reviewedBaseBranchHint(git, branch.sha);
+  if (base === undefined) {
+    const detail = reviewedHint === undefined ? "" : ` The reviewed branch suggests ${displayBaseHint(reviewedHint)}.`;
+    throw new CodegenieError(
+      "git_base_branch_unresolved",
+      `neither master nor main could be resolved, and the reviewed branch cannot choose its own base.${detail} Pass ${baseFlagHint(reviewedHint)} or set git.baseBranch in your user config.`
+    );
+  }
+  if (reviewedHint !== undefined && reviewedHint !== base.shortName) {
+    const value = displayBaseHint(reviewedHint);
+    throw new CodegenieError(
+      "git_base_branch_unresolved",
+      `the reviewed branch's codegenie.toml sets git.baseBranch = ${value}, but a branch cannot choose its own base (resolved base: ${JSON.stringify(base.shortName)}). Pass ${baseFlagHint(reviewedHint)} to confirm, or set git.baseBranch in your user config.`
+    );
+  }
+  return base;
+}
+
+function baseFlagHint(branch: string | undefined): string {
+  if (branch === undefined) return "--base";
+  // The reviewed file is untrusted. Only simple names go in a copyable command.
+  const display = displayBaseHint(branch);
+  if (/^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/u.test(branch) && display === JSON.stringify(branch)) {
+    try {
+      assertSafeRef(branch);
+      return `--base ${display}`;
+    } catch {
+      // A syntactically invalid ref can still be shown as a diagnostic.
+    }
+  }
+  return "--base with the branch you intend";
+}
+
+function displayBaseHint(branch: string): string {
+  return JSON.stringify(safeDiagnosticLine(branch).slice(0, 200));
+}
+
+async function configuredBaseBranchAt(git: InternalGitClient, revision: string): Promise<string | undefined> {
+  const file = await readRepoConfigAt(git, revision);
+  return file === undefined ? undefined : parseRepoConfigText({ text: file.content, label: `${revision}:${file.path}` }).git?.baseBranch;
+}
+
+async function reviewedBaseBranchHint(git: InternalGitClient, revision: string): Promise<string | undefined> {
+  try {
+    return await configuredBaseBranchAt(git, revision);
+  } catch (error) {
+    if (isCodegenieError(error) && error.code === "config_error") return undefined;
+    throw error;
+  }
 }
 
 async function resolveRequiredBase(
@@ -444,6 +502,7 @@ async function resolveRequiredBase(
   telemetry: TelemetryRecorder,
   source: string
 ): Promise<ResolvedBranch> {
+  assertSafeRef(branchName, source);
   const resolved = await resolveBranchWithShallowRecovery(branchName, git, telemetry);
   if (!resolved) {
     throw new CodegenieError(

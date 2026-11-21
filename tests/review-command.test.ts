@@ -18,11 +18,13 @@ describe("review command", () => {
     [undefined, "--no-composition-reasoning-step-down", false, "cli"]
   ] as const)("resolves composition step-down config=%s flag=%s", (configured, flag, expected, source) => {
     const ctx = testContext();
-    if (configured !== undefined) writeFileSync(path.join(ctx.repoRoot, "codegenie.toml"), `[review]\ncompositionReasoningStepDown = ${configured}\n`);
     const parsed = parseReviewCommand(["review", "--branch", "feature", ...(flag ? [flag] : [])], ctx);
-    expect(parsed.config.review.compositionReasoningStepDown).toBe(expected);
-    expect(parsed.configSources["review.compositionReasoningStepDown"]).toBe(source);
-    expect(parsed.warnings).toEqual([]);
+    const finalized = parsed.finalizeConfig(configured === undefined ? undefined : {
+      label: "base:codegenie.toml", text: `[review]\ncompositionReasoningStepDown = ${configured}\n`
+    });
+    expect(finalized.config.review.compositionReasoningStepDown).toBe(expected);
+    expect(finalized.sources["review.compositionReasoningStepDown"]).toBe(source);
+    expect(finalized.warnings).toEqual([]);
   });
 
   it.each([
@@ -35,11 +37,13 @@ describe("review command", () => {
     [undefined, "--no-skip-svg-review", false, "cli"]
   ] as const)("resolves SVG skipping config=%s flag=%s", (configured, flag, expected, source) => {
     const ctx = testContext();
-    if (configured !== undefined) writeFileSync(path.join(ctx.repoRoot, "codegenie.toml"), `[review]\nskipSvgReview = ${configured}\n`);
     const parsed = parseReviewCommand(["review", "--branch", "feature", ...(flag ? [flag] : [])], ctx);
-    expect(parsed.config.review.skipSvgReview).toBe(expected);
-    expect(parsed.configSources["review.skipSvgReview"]).toBe(source);
-    expect(parsed.warnings).toEqual([]);
+    const finalized = parsed.finalizeConfig(configured === undefined ? undefined : {
+      label: "base:codegenie.toml", text: `[review]\nskipSvgReview = ${configured}\n`
+    });
+    expect(finalized.config.review.skipSvgReview).toBe(expected);
+    expect(finalized.sources["review.skipSvgReview"]).toBe(source);
+    expect(finalized.warnings).toEqual([]);
   });
 
   it("treats top-level help as a successful display exit", () => {
@@ -146,12 +150,12 @@ describe("review command", () => {
   it("applies --max-time in minutes as the highest-precedence max time override", () => {
     const ctx = testContext();
     writeFileSync(path.join(ctx.homeOverride, "config.toml"), "[review]\nmaxTime = 45\n");
-    writeFileSync(path.join(ctx.repoRoot, "codegenie.toml"), "[review]\nmaxTime = 60\n");
 
     const parsed = parseReviewCommand(["review", "feature", "--max-time", "75.5"], ctx);
+    const finalized = parsed.finalizeConfig({ label: "base:codegenie.toml", text: "[review]\nmaxTime = 60\n" });
 
-    expect(parsed.config.review.maxTimeMs).toBe(75.5 * 60 * 1000);
-    expect(parsed.configSources["review.maxTime"]).toBe("cli");
+    expect(finalized.config.review.maxTimeMs).toBe(75.5 * 60 * 1000);
+    expect(finalized.sources["review.maxTime"]).toBe("cli");
   });
 
   it("rejects a non-positive or non-numeric --max-time", () => {
@@ -247,7 +251,7 @@ describe("review command", () => {
     ).toThrow(/--base is only valid/);
   });
 
-  it("loads repo config from the git worktree root when invoked inside a subdirectory", () => {
+  it("locates the git worktree root without reading its on-disk repository config", () => {
     const ctx = testContext();
     execFileSync("git", ["init"], { cwd: ctx.repoRoot, stdio: "ignore" });
     writeFileSync(path.join(ctx.repoRoot, "codegenie.toml"), "[review]\ndepth = \"deep\"\n");
@@ -259,7 +263,11 @@ describe("review command", () => {
     });
 
     expect(parsed.repoRoot).toBe(ctx.repoRoot);
-    expect(parsed.config.review.depth).toBe("deep");
+    expect(parsed.config.review.depth).toBe("normal");
+    expect(parsed.configSources["review.depth"]).toBe("defaults");
+    const finalized = parsed.finalizeConfig({ label: "base:codegenie.toml", text: "[review]\ndepth = \"deep\"\n" });
+    expect(finalized.config.review.depth).toBe("deep");
+    expect(finalized.sources["review.depth"]).toBe("repo-config");
   });
 
   it("lets --no-cache override a configured cache default", () => {

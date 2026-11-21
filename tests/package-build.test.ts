@@ -281,6 +281,7 @@ import { loadSkills } from "@0xsequence/codegenie/dist/skills/skill-loader.js";
 const noop = () => undefined;
 const { skills, failures } = await loadSkills({
   repoRoot: process.cwd(),
+  repoSkillFiles: [],
   extraSkillPaths: [],
   logger: { debug: noop, info: noop, warn: noop, error: noop },
   telemetry: { event: noop }

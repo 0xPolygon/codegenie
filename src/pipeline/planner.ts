@@ -12,6 +12,7 @@ import {
 import type { Skill } from "../skills/skill-loader.js";
 import type { TelemetryRecorder } from "../telemetry/telemetry-recorder.js";
 import { buildIntentSignals } from "./intent-signals.js";
+import { isRepositoryPolicyPath } from "../repo/repository-policy.js";
 import type {
   CodegenieConfig,
   CoverageLevel,
@@ -138,7 +139,7 @@ export async function buildPlannerDossier(
       ...decisions.map((decision) => decision.path),
       ...policyInventory.flatMap((file) => [file.path, file.oldPath].filter((entry): entry is string => entry !== undefined))
     ])
-      .filter(isPolicyPath)
+      .filter(isRepositoryPolicyPath)
       .sort(),
     hunkIndex: filtered.map((file) => ({
       path: file.path,
@@ -1689,10 +1690,6 @@ function changedExcerpt(lines: DiffLine[]): string {
     .filter((line) => line.kind !== "context")
     .map((line) => `${line.kind === "add" ? "+" : "-"}${line.content}`)
     .join("\n");
-}
-
-function isPolicyPath(filePath: string): boolean {
-  return filePath === "codegenie.toml" || filePath.startsWith(".codegenie/skills/");
 }
 
 function truncate(input: string, maxChars: number): string {

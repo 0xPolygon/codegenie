@@ -1,6 +1,6 @@
 # Plan: read repository skills and `codegenie.toml` from the review's base revision (issue #113)
 
-Status: PENDING. Design approved by the operator on 2026-11-20, including the five decisions in section 9. Not implemented.
+Status: IMPLEMENTED on the issue branch. The operator approved the five decisions in section 9 on 2026-11-20.
 Branch: `peter/113-policy-from-base-revision`.
 Line numbers are master `8a4c5bd`; the files cited are unchanged at `b8258f5`.
 
@@ -89,6 +89,8 @@ Step 4 exists because step 3 alone would silently review a branch against `maste
 
 Pull request, `--head`/`--base` and commit modes do not use `git.baseBranch` and are unaffected.
 
+For branch-mode evals with a working-tree policy, explicit and configured bases still win, and the `master`/`main` fallback skips both committed config reads.
+
 ### 3.6 Case 2: no base tree
 
 - Root commit (`review-input-resolver.ts:466`): policy origin `none`. No repository config, no repository skills.
@@ -110,6 +112,8 @@ Evals review historical commits. In the 2026-11-20 campaign, 2 of 3 cases review
 
 So evals keep the checkout's policy, explicitly: `eval-runner` reads it with `readWorkingTreePolicy(repoRoot)`, applies the config layer itself as it does today, and passes the policy to `runReview` through `overrides.repositoryPolicy`. This is the only caller of the working-tree reader. It is not reachable from the CLI or the Action.
 
+If an eval checkout names no base and the case supplies no explicit base, branch resolution uses the existing `master`/`main` fallback without the committed-policy redirect or advisory check.
+
 ### 3.9 Report line
 
 When the diff adds, changes, deletes or renames a policy file, add one coverage reason next to `discloseSkillLoadFailures` (`review-runner.ts:1195-1209`):
@@ -125,12 +129,13 @@ With origin `none`: `... this review has no base revision and used default polic
 export function isRepositoryPolicyPath(filePath: string): boolean;
 
 export type RepositoryPolicyFile = { path: string; content: string }; // repository-relative path
+export type RepositorySkillFile = RepositoryPolicyFile | { path: string; readError: string }; // readError only for eval disk reads
 
 export type RepositoryPolicy = {
   origin: "base-revision" | "working-tree" | "none";
   revision?: string;                    // commit read from; only for "base-revision"
   config?: RepositoryPolicyFile;        // codegenie.toml; absent when the file is absent
-  skillFiles: RepositoryPolicyFile[];   // .codegenie/skills/**/*.md, sorted by path
+  skillFiles: RepositorySkillFile[];    // .codegenie/skills/**/*.md, sorted by path
 };
 
 export async function readRepoConfigAt(git: InternalGitClient, revision: string): Promise<RepositoryPolicyFile | undefined>;
@@ -156,7 +161,7 @@ export function applyRepoConfigLayer(baseConfig: CodegenieConfig, repoConfig: Re
 // src/skills/skill-loader.ts
 export async function loadSkills(opts: {
   repoRoot: string;                        // only for the in-repository check on extra paths
-  repoSkillFiles: RepositoryPolicyFile[];  // required; no disk discovery for repository skills
+  repoSkillFiles: RepositorySkillFile[];   // required; no disk discovery for repository skills
   extraSkillPaths: Array<string | ExtraSkillPathSpec>;
   logger: Logger;
   telemetry: TelemetryRecorder;

@@ -138,6 +138,7 @@ describe("bundled skills: provenance ledger and projection caps", () => {
     const noop = () => undefined;
     const loaded = await loadSkills({
       repoRoot: process.cwd(),
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger: { debug: noop, info: noop, warn: noop, error: noop } as never,
       telemetry: nullTelemetry()
@@ -158,6 +159,7 @@ describe("bundled skills: provenance ledger and projection caps", () => {
     const noop = () => undefined;
     const loaded = await loadSkills({
       repoRoot: process.cwd(),
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger: { debug: noop, info: noop, warn: noop, error: noop } as never,
       telemetry: nullTelemetry()
@@ -187,6 +189,7 @@ describe("bundled skills: provenance ledger and projection caps", () => {
     const noop = () => undefined;
     const loaded = await loadSkills({
       repoRoot: process.cwd(),
+      repoSkillFiles: [],
       extraSkillPaths: [],
       logger: { debug: noop, info: noop, warn: noop, error: noop } as never,
       telemetry: nullTelemetry()

@@ -64,7 +64,7 @@ Interactive review runs should show a small ASCII progress spinner on stderr, in
 
 All v1 modes require running from inside a local git worktree. This means the repository must exist locally so codegenie can inspect files, map diff paths to source files, build context, and run read-only repository tools. The `--pr` mode uses GitHub metadata for PR context and posting, but the reviewed diff, changed files, and commit information should come from local git whenever possible.
 
-The checked-out worktree does not need to match the reviewed head. Reviewed source reads resolve against the reviewed revisions through git, so codegenie can review a PR or branch that is not checked out, and reviewed source content is unaffected by dirty worktree state. Review policy, config, and skills load separately from the trusted local checkout.
+The checked-out worktree does not need to match the reviewed head. Reviewed source reads resolve against the reviewed revisions through git, so codegenie can review a PR or branch that is not checked out, and reviewed source content is unaffected by dirty worktree state. Repository policy loads from the resolved base tip, which can differ from the merge base used for source reads.
 
 ### `--pr`
 
@@ -91,10 +91,9 @@ Behavior:
 - Compute the effective diff between the base branch and branch head.
 - Resolve the base branch in this order:
   - `--base <base-branch>` when passed on the CLI.
-  - The configured default base branch in `codegenie.toml`.
-  - A local or remote `master` branch, if it exists.
-  - A local or remote `main` branch, if it exists.
-- If no base branch can be resolved, fail with a clear error asking the user to pass `--base` or configure the default base branch.
+  - `git.baseBranch` in user config.
+  - The first existing local or remote `master` or `main`. Follow `git.baseBranch` from that branch's committed `codegenie.toml` once if it names another branch.
+- If the reviewed branch names a different base from the result of the `master`/`main` fallback, require confirmation with `--base` or user config. If neither default exists, fail with the same options and show the reviewed branch's hint when available.
 - Collect commit titles and commit descriptions across the reviewed range as planner input.
 - Prefer merge-base semantics for branch review so the reviewed diff matches pull-request-style changes.
 - Prefer branch interpretation for a single positional target that resolves as a branch. If the target does not resolve as a branch, fall back to single-commit review.
@@ -1006,11 +1005,11 @@ Repository tool path containment should be enforced at a single chokepoint in th
 
 Config trust partitioning:
 
-- Repo `codegenie.toml` may set safe keys only: lenses on/off, classification path rules, depth, base branch, labels, caps, and `telemetry.enabled`.
-- Out-of-repo or provider-routing settings — `lenses.extraSkillPaths` outside the repo, `telemetry.runDir` / `cache.dir` outside the repo, and LLM provider/model/reasoning defaults — take effect only with user-level opt-in: a CLI flag, `~/.codegenie/settings.json`, or the user-scoped config file `~/.codegenie/config.toml` (all under `CODEGENIE_HOME`). Repo-config values for these are ignored with a warning.
+- Repo `codegenie.toml` may set safe keys only: lenses on/off, classification path rules, depth, base branch, labels, and caps.
+- `lenses.extraSkillPaths`, telemetry and cache settings, and LLM provider/model/reasoning defaults require user-level configuration. Repo-config values for these are ignored with a warning.
 - Repo-config-relative paths are constrained to the repo root.
 
-Policy load revision: `codegenie.toml` and `.codegenie/skills/` always load from the trusted local checkout (the user's working copy), never from the PR head revision. If the PR under review modifies policy files (config or skills), that should be surfaced to the planner as a risk signal and noted in the report.
+Repository policy comes from `codegenie.toml` and `.codegenie/skills/**/*.md` at the resolved base commit. A root commit uses bundled skills and user policy. An unreadable base tree or malformed base config fails the review. Changes to repository policy are surfaced to the planner and disclosed in the report. User extra skill paths still read from disk and warn when they lie inside the repository. The eval harness explicitly uses its checkout's policy to preserve historical comparisons.
 
 Subprocess hygiene for git, GitHub, and tool subprocess invocations:
 

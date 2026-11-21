@@ -105,7 +105,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}  # trusted base; PR head is fetched as review data
+          ref: ${{ github.event.pull_request.base.sha }}  # trusted checkout; --pr reads policy from the PR base commit
           fetch-depth: 0
       - uses: 0xPolygon/codegenie@v0.8.0
         with:
@@ -186,7 +186,7 @@ The full list of supported models — every provider, model id, context window, 
 
 ## Configuration
 
-Drop a `codegenie.toml` in your repo root. Everything has sensible defaults; a typical config is small:
+Commit a `codegenie.toml` at your repo root on the base branch. Reviews read the file from the resolved base commit regardless of the current checkout. Everything has sensible defaults.
 
 ```toml
 [git]
@@ -198,9 +198,6 @@ maxTime = 60        # positive number of minutes; --max-time overrides this per 
 budgetBoost = 1.0   # scales per-packet review budgets; does not change finding caps
 compositionReasoningStepDown = true # default; set false to keep configured reasoning for composition
 
-[telemetry]
-enabled = true      # opt into local run artifacts under .codegenie/runs
-
 [[classification.pathRules]]
 pattern = "lib/payments/**"
 reviewPriority = "critical"
@@ -211,8 +208,9 @@ pattern = "generated/**"
 processingMode = "skip"
 ```
 
-- **Telemetry is off by default.** Repo config may only set `telemetry.enabled`; user-level `~/.codegenie/config.toml` can also set run directory, log level, and retention.
-- **Skills travel with the repo.** Teams can version project-specific review expertise as Markdown skills in `.codegenie/skills/` — concrete checks, false-positive rules, and safe patterns.
+- **Telemetry is off by default.** Set `[telemetry] enabled = true` in your user-level `~/.codegenie/config.toml` to write local run artifacts. Run directory, log level, and retention are also user-level settings.
+- **Repository skills come from the base commit.** Commit Markdown skills in `.codegenie/skills/`. Editing a skill in a branch takes effect for reviews after it reaches their base. User-configured `lenses.extraSkillPaths` still read from disk and warn if the path is inside the worktree.
+- **Local branch reviews resolve the base first.** `--base` takes precedence, then user config `git.baseBranch`, then the first existing `master` or `main`. That default branch's committed `codegenie.toml` may redirect to another branch once. If the reviewed branch names a base that differs from the default resolution, or neither default branch exists, pass `--base` or configure it in your user config.
 - **Budgets are dispatch controls, not mid-call interrupts.** `review.maxTime` defaults to 30 minutes and may be set in repo or user config; `--max-time <minutes>` is the final per-run override. Crossing a soft cap lets in-flight work finish, records the overrun, and stops dispatching non-essential work.
 
 ## How a review runs
