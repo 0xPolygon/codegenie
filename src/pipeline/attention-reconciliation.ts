@@ -50,7 +50,9 @@ type Inventory = {
   concerns: Array<Pick<Concern, "id" | "question"> & { files: string[] }>;
   // Published observations are already in the composition source components.
   // Register their IDs without duplicating their text in this bounded inventory.
-  evidence: Array<Omit<Evidence, "text" | "verdict" | "proofStatus" | "assumptions"> & { text?: string }>;
+  // Repository reads omit the internal packet key: they carry no verifier
+  // qualification to look up.
+  evidence: Array<Omit<Evidence, "text" | "verdict" | "proofStatus" | "assumptions" | "candidateId"> & { text?: string; candidateId?: string }>;
   // Shared qualifications are retained once, keyed by each entry's candidateId.
   evidenceContexts: Array<Pick<Evidence, "candidateId" | "verdict" | "proofStatus" | "assumptions">>;
 };
@@ -216,7 +218,7 @@ export function buildAttentionReconciliation(
   const admit = (evidence: Evidence): "added" | "covered" | "rejected" => {
     if (inventory.evidence.some(entry => entry.id === evidence.id)) return "covered";
     const { observation, context } = evidenceProjection(evidence);
-    const contexts = inventory.evidenceContexts.some(entry => entry.candidateId === evidence.candidateId)
+    const contexts = !context || inventory.evidenceContexts.some(entry => entry.candidateId === evidence.candidateId)
       ? inventory.evidenceContexts : [...inventory.evidenceContexts, context];
     const key = JSON.stringify([evidence.candidateId, evidence.kind, evidence.sourceField,
       evidence.path, evidence.source, evidence.text, evidence.explanation]);
@@ -278,6 +280,12 @@ export function buildAttentionReconciliation(
 
 function evidenceProjection(evidence: Evidence) {
   const { verdict, proofStatus, assumptions, ...observation } = evidence;
+  // A tool read has no verifier verdict to share. Its internal packet key, shown
+  // beside the read's own ID, invited hybrid references (#155).
+  if (evidence.origin === "repository_tool") {
+    const { candidateId: _packet, ...read } = observation;
+    return { observation: read, context: undefined };
+  }
   const { text: _text, explanation: _explanation, ...reference } = observation;
   return { observation: evidence.sourceRef ? reference : observation,
     context: { candidateId: evidence.candidateId, verdict,
