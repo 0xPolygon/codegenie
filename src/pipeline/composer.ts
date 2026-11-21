@@ -270,6 +270,8 @@ export async function dedupeRankAndComposeReview(
   const publishableCount = findings.length + summaryOnlyFindings.length;
   const reconciledAttention = reconcileAttention(attentionReconciliation, composition.attentionResolutions,
     compositionMode === "llm");
+  if (reconciledAttention.canonicalizedConcernIds.length) telemetry.event({ stage: 10, level: "info", message: "attention_unchanged_question_canonicalized",
+    data: { concernIds: reconciledAttention.canonicalizedConcernIds, disposition: "unresolved" } });
   const decisionsByHint = new Map(reconciledAttention.decisions.filter(decision => decision.accepted).map(decision => [decision.concernId, decision]));
   const regroupedAttention = buildHumanAttentionNotes([], { packets: opts.packets ?? [], rawHints: attention.raw.flatMap(hint => {
     const decision = decisionsByHint.get(`packet/${hint.id}`);
